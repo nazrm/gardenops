@@ -1,0 +1,16 @@
+# GardenOps Documentation
+
+This directory contains public-facing documentation for installing, configuring,
+deploying, and contributing to GardenOps.
+
+| Goal | Document |
+|---|---|
+| Local install | [installation.md](installation.md) |
+| Environment and providers | [configuration.md](configuration.md) |
+| ShadeMap sun/shade integration | [shademap.md](shademap.md) |
+| Production deployment | [deployment.md](deployment.md) |
+| Development and PR checks | [development.md](development.md) |
+
+Keep secrets in `.env`, `.env.test.local`, or your deployment secret store. Do
+not commit real provider keys, database URLs, backup files, media uploads,
+terrain datasets, or generated runtime output.

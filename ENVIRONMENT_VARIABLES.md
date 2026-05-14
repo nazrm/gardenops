@@ -1,0 +1,125 @@
+# GardenOps Environment Variables
+
+This public reference documents the variables needed for a clean GardenOps
+instance. Values shown here are placeholders; do not commit real local env files.
+
+## Required
+
+| Variable | Purpose | Example |
+|---|---|---|
+| `DATABASE_URL` | PostgreSQL connection string for the app database. | `postgresql://gardenops:change-me@127.0.0.1:5432/gardenops` |
+| `GARDENOPS_TEST_POSTGRES_URL` | PostgreSQL connection string for tests. | `postgresql://gardenops:change-me@127.0.0.1:5432/gardenops_test` |
+| `APP_ENV` | Runtime environment: `development`, `test`, or `production`. | `development` |
+
+## Authentication
+
+| Variable | Purpose | Example |
+|---|---|---|
+| `AUTH_REQUIRED` | Require users to sign in. Use `true` outside local demos. | `true` |
+| `AUTH_MODE` | Authentication mode. Use `session` for browser deployments. | `session` |
+| `AUTH_SESSION_COOKIE_SECURE` | Send session cookies only over HTTPS. | `true` |
+| `AUTH_MFA_SECRET_KEY` | Secret key for MFA state encryption/signing. | `change-me` |
+
+## HTTP And Proxy
+
+| Variable | Purpose | Example |
+|---|---|---|
+| `INTERNET_EXPOSED` | Enables internet-exposed safety checks. | `true` |
+| `ALLOW_INSECURE_REMOTE` | Allows unsafe remote settings only for deliberate local use. | `false` |
+| `CORS_ALLOW_ORIGINS` | Comma-separated allowed browser origins. | `https://gardenops.example.com` |
+| `ALLOWED_HOSTS` | Comma-separated accepted Host headers. | `gardenops.example.com` |
+| `TRUST_PROXY_HEADERS` | Trust reverse-proxy forwarded headers. | `true` |
+| `TRUSTED_PROXY_CIDRS` | CIDRs allowed to set trusted proxy headers. | `127.0.0.1/32,::1/128` |
+
+## Rate Limiting
+
+| Variable | Purpose | Example |
+|---|---|---|
+| `RATE_LIMIT_BACKEND` | `memory` for local use, `redis` for production. | `redis` |
+| `RATE_LIMIT_REDIS_URL` | Redis URL for production rate limiting. | `redis://127.0.0.1:6379/0` |
+
+## Optional Providers
+
+| Variable | Purpose | Example |
+|---|---|---|
+| `OPENAI_API_KEY` | Optional AI features. Leave unset to disable. | `change-me` |
+| `ANTHROPIC_API_KEY` | Optional AI features. Leave unset to disable. | `change-me` |
+| `PLANTNET_API_KEY` | Optional plant-identification provider. | `change-me` |
+| `WEATHER_API_KEY` | Optional weather provider key. | `change-me` |
+
+## ShadeMap Integration
+
+ShadeMap is a paid third-party service. GardenOps does not provide ShadeMap API
+access; operators must obtain their own access from
+`https://shademap.app/about` and follow the provider terms. See
+`docs/shademap.md` for the full integration guide, data-flow notes, local
+terrain setup, and production cautions.
+
+| Variable | Purpose | Example |
+|---|---|---|
+| `SHADEMAP` | Server-side ShadeMap API key, checked first. Required to enable the ShadeMap panel. Leave unset to disable the integration. | `change-me` |
+| `SHADEMAP_API_KEY` | Alternative server-side ShadeMap API key. | `change-me` |
+| `SHADEMAP_KEY` | Alternative server-side ShadeMap API key. | `change-me` |
+| `SHADEMAP_PUBLIC_API_KEY` | Browser-safe ShadeMap key returned to authenticated clients by `/api/shademap/config`. Required to enable the panel. | `change-me` |
+| `SHADEMAP_PUBLIC_KEY` | Alternative client/public ShadeMap key. | `change-me` |
+| `SHADEMAP_CLIENT_KEY` | Alternative client/public ShadeMap key. | `change-me` |
+| `SHADEMAP_TILE_SIGNING_SECRET` | GardenOps HMAC secret for signed same-origin terrain tile URLs. This is not a ShadeMap key. Replace in production. | `change-me` |
+| `SHADEMAP_TILE_TOKEN_TTL_SECONDS` | Terrain tile token lifetime. Clamped by the app. | `600` |
+| `SHADEMAP_TERRAIN_URL_TEMPLATE` | Optional remote Terrarium-compatible PNG terrain tile URL template with `{z}`, `{x}`, and `{y}` placeholders. This is for remote tile fetching, not a local file path. | unset |
+| `SHADEMAP_OVERPASS_URL` | Optional single Overpass API URL for building feature data. | unset |
+| `SHADEMAP_OVERPASS_URLS` | Optional comma-separated Overpass fallback URLs. | unset |
+| `SHADEMAP_SHARE_URL` | Optional public-safe ShadeMap share URL for your own location. | unset |
+| `SHADEMAP_LAT` | Optional latitude override for the default map location. | `51.50095` |
+| `SHADEMAP_LNG` | Optional longitude override for the default map location. | `-0.12448` |
+| `SHADEMAP_ZOOM` | Optional default ShadeMap zoom. | `17` |
+| `SHADEMAP_LABEL` | Optional default map marker label. | `Garden` |
+| `SHADEMAP_HOUSE_HEIGHT_METERS` | Default house extrusion height for terrain/house shadow calculations. | `9.0` |
+| `SHADEMAP_LOCAL_TERRAIN_PATH` | Optional path to a private local LiDAR `.laz` terrain file. This is the local terrain input; do not commit the file. | unset |
+| `SHADEMAP_LOCAL_TERRAIN_RESOLUTION_M` | Local terrain grid resolution in meters. | `1.0` |
+
+## Advanced Variable Families
+
+Most instances can keep these unset and use the application defaults. They are
+documented so operators and PR checks have complete coverage of every runtime
+environment variable read by the public app.
+
+| Variable or family | Purpose | Example |
+|---|---|---|
+| `APP_NAME` | Runtime product name used in metadata, MFA issuer defaults, calendar exports, and user-agent labels. | `GardenOps` |
+| `APP_SLUG` | Runtime slug used for exports and user-agent labels. | `gardenops` |
+| `MULTI_INSTANCE` | Enables multi-instance deployment assumptions. | `false` |
+| `API_<SETTING>` | API docs, mutation, and request-timeout tuning. | `API_DOCS_ENABLED=false` |
+| `MAX_<SETTING>` | Request body limits for standard API, import, and AI photo routes. | `MAX_API_BODY_BYTES=1048576` |
+| `CLIENT_ERROR_RATE_LIMIT` | Rate limit applied to repeated client-error responses. | `60` |
+| `MUTATION_RATE_LIMIT` | General mutation request rate limit. | `20` |
+| `AUTH_<SETTING>` | Authentication, session-cookie, CSRF, password-policy, invitation, MFA, adaptive-friction, bootstrap, and admin step-up settings. | `AUTH_ADMIN_MFA_REQUIRED=true` |
+| `CSP_REPORT_<SETTING>` | Content Security Policy report mode, endpoint, rate, and body-size settings. | `CSP_REPORT_ONLY=false` |
+| `RATE_LIMIT_<SETTING>` | Rate-limit backend, Redis, bucket, timeout, and global-limit settings. | `RATE_LIMIT_MAX_BUCKETS=50000` |
+| `REDIS_URL` | Fallback Redis URL when `RATE_LIMIT_REDIS_URL` is not set. | `redis://127.0.0.1:6379/0` |
+| `AI_<SETTING>` | AI feature rate limits, quotas, concurrency limits, care-batch settings, and rich-context opt-in. | `AI_RICH_CONTEXT_ENABLED=false` |
+| `ANTHROPIC_API_<SETTING>` | Anthropic provider timeout and retry settings. | `ANTHROPIC_API_TIMEOUT_SECONDS=25` |
+| `PLANTNET_<SETTING>` | PlantNet provider timeout and confidence-threshold settings. | `PLANTNET_CONFIDENCE_THRESHOLD=0.40` |
+| `PLANT_COVER_IMPORT_<SETTING>` | External plant-cover import timeout, redirect, and page-size limits. | `PLANT_COVER_IMPORT_TIMEOUT_SECONDS=8` |
+| `CSV_IMPORT_MAX_ROWS` | Maximum CSV rows accepted by import endpoints. | `5000` |
+| `MEDIA_<SETTING>` | Media upload storage directory, byte quotas, asset limits, pixel limits, preview sizing, and upload rate limits. | `MEDIA_MAX_UPLOAD_BYTES=10485760` |
+| `GARDEN_<SETTING>` | Garden invitation, membership, settings, onboarding, and zone-creation rate limits. | `GARDEN_SETTINGS_UPDATE_RATE_LIMIT=10` |
+| `NOTIFICATION_<SETTING>` | Notification generation, delivery, maintenance, digest, and task-scan limits. | `NOTIFICATION_GENERATE_RATE_LIMIT=10` |
+| `GARDENOPS_LOGS_DIR` | Directory for runtime JSONL error logs. | `./logs` |
+| `GARDENOPS_NOTIFICATION_SCHEDULER_<SETTING>` | Background notification scheduler enablement, poll interval, and lease duration. | `GARDENOPS_NOTIFICATION_SCHEDULER_ENABLED=auto` |
+| `GARDENOPS_SMTP_<SETTING>` | SMTP host, port, sender, username, password, and TLS settings for notification email. | `GARDENOPS_SMTP_HOST=smtp.example.com` |
+| `SHADEMAP_<SETTING>` | ShadeMap keys, location defaults, terrain, Overpass, token, rate-limit, quota, distinct-bound, and local terrain settings. | `SHADEMAP_TILE_TOKEN_TTL_SECONDS=600` |
+| `TERRAIN_REQUEST_TIMEOUT_SECONDS` | Timeout for outbound terrain tile fetches. | `20` |
+| `SECURITY_TELEMETRY_<SETTING>` | Security telemetry webhook, token, delivery format, privacy, batching, polling, and timeout settings. | `SECURITY_TELEMETRY_PRIVACY_MODE=minimized` |
+| `TAILLIGHT_<SETTING>` | Optional Taillight-compatible log and telemetry sink settings. | `TAILLIGHT_URL=https://logs.example.com` |
+| `ALERT_<SETTING>` | Security alert thresholds shown in admin/security views. | `ALERT_AUTH_FAILURES_PER_MINUTE=30` |
+| `DEPLOYED_READINESS_ADMIN_BEARER_TOKEN` | Optional bearer token for protected system health checks. Keep secret and do not use a user session token. | unset |
+
+## Local Development Defaults
+
+For local development, start with `.env.example`, keep provider keys unset, and
+set `AUTH_REQUIRED=false` only when you intentionally want an unauthenticated
+local demo.
+
+For tests, copy `.env.test.example` to `.env.test.local` and keep both
+`DATABASE_URL` and `GARDENOPS_TEST_POSTGRES_URL` pointed at the disposable test
+database. Do not source the runtime `.env` or production service env for pytest.

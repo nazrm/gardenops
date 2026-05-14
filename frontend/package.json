@@ -1,0 +1,34 @@
+{
+  "name": "gardenops-frontend",
+  "version": "0.1.1",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "vite",
+    "check:xss-sinks": "python3 ../scripts/check_innerhtml_sinks.py --root src --allowlist security/innerhtml_allowlist.txt",
+    "check:invite-token": "node ../scripts/check_invite_token_hash_only.cjs",
+    "check:no-sourcemaps": "node ../scripts/check_no_sourcemaps.cjs dist",
+    "build": "npm run check:xss-sinks && npm run check:invite-token && tsc --noEmit && vite build && npm run check:no-sourcemaps",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@emnapi/core": "^1.9.2",
+    "@emnapi/runtime": "^1.9.2",
+    "@types/leaflet": "^1.9.21",
+    "playwright-core": "1.59.0",
+    "typescript": "6.0.2",
+    "vite": "^8.0.7"
+  },
+  "dependencies": {
+    "@fullcalendar/core": "^6.1.20",
+    "@fullcalendar/daygrid": "^6.1.20",
+    "@fullcalendar/interaction": "^6.1.20",
+    "@fullcalendar/list": "^6.1.20",
+    "@fullcalendar/timegrid": "^6.1.20",
+    "leaflet": "^1.9.4"
+  }
+}

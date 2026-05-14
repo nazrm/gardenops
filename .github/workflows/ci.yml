@@ -1,0 +1,65 @@
+name: GardenOps CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gardenops
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: gardenops_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gardenops -d gardenops_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      APP_ENV: test
+      AUTH_REQUIRED: "false"
+      DATABASE_URL: postgresql://gardenops:test@127.0.0.1:5432/gardenops_test
+      GARDENOPS_TEST_POSTGRES_URL: postgresql://gardenops:test@127.0.0.1:5432/gardenops_test
+      GARDENOPS_LOGS_DIR: /tmp/gardenops-logs
+      MEDIA_STORAGE_DIR: /tmp/gardenops-media
+      RATE_LIMIT_BACKEND: memory
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --group test --group lint
+      - run: uv run ruff check gardenops tests
+      - run: uv run ruff format --check gardenops tests
+      - run: uv run python scripts/check_env_docs.py
+      - run: uv run python -c "import gardenops.db as db; db.run_migrations()"
+      - run: uv run python scripts/check_backend_integrity.py --format text
+      - run: uv run pytest tests/ -q --tb=short
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: node scripts/check_no_sourcemaps.cjs frontend/dist
