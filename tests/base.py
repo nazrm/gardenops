@@ -30,6 +30,8 @@ _CLASS_ENV = {
     "SHADEMAP": "test-private-key",
     "SHADEMAP_PUBLIC_API_KEY": "test-public-key",
     "SHADEMAP_TILE_SIGNING_SECRET": "test-tile-signing-secret",
+    "SHADEMAP_LAT": "51.50095",
+    "SHADEMAP_LNG": "-0.12448",
     "AUTH_REQUIRED": "false",
     "RATE_LIMIT_BACKEND": "memory",
     "APP_ENV": "test",

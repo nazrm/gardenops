@@ -49,6 +49,7 @@ uv run python -m pytest tests/ -q --tb=short
 - TypeScript errors
 - production bundling errors
 - sourcemap leakage
+- stale generated asset references
 
 If a change intentionally adds a raw HTML sink, document it in
 `frontend/security/innerhtml_allowlist.txt` and explain why the sink is safe.
