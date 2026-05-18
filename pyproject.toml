@@ -26,7 +26,7 @@ dependencies = [
 [dependency-groups]
 test = [
     "pytest>=9.0.3",
-    "pytest-xdist>=3.5.0",
+    "pytest-xdist>=3.8.0",
 ]
 lint = [
     "ruff>=0.11.0",
