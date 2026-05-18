@@ -144,6 +144,24 @@ class TestStatisticsAutomationStatus(BaseApiTest):
         self.assertIsInstance(data["automated_tasks"], list)
         self.assertEqual(data["total"], 0)
 
+    def test_automation_status_returns_issue_followup_tasks(self) -> None:
+        created = self.client.post(
+            "/api/issues",
+            json={
+                "issue_type": "disease",
+                "title": "Blight on tomatoes",
+                "severity": "normal",
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+
+        resp = self.client.get("/api/statistics/automation-status")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertGreaterEqual(data["total"], 1)
+        sources = [task["rule_source"] for task in data["automated_tasks"]]
+        self.assertTrue(any("auto:issue_followup" in source for source in sources))
+
 
 class TestStatisticsReports(BaseApiTest):
     """Tests for GET /api/statistics/reports."""
@@ -209,3 +227,36 @@ class TestExportsBackup(BaseApiTest):
         self.assertIn("inventory", data)
         self.assertIn("inventory_transactions", data)
         self.assertIn("procurement", data)
+
+    def test_backup_export_includes_inventory_transactions_with_public_ids(self) -> None:
+        created = self.client.post(
+            "/api/inventory",
+            json={
+                "label": "Backup stock",
+                "inventory_type": "seed",
+                "unit": "pieces",
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        item_id = created.json()["id"]
+        transaction = self.client.post(
+            f"/api/inventory/{item_id}/transactions",
+            json={
+                "delta": 3,
+                "reason": "purchased",
+                "source_name": "Backup Vendor",
+                "occurred_on": "2026-03-15",
+            },
+        )
+        self.assertEqual(transaction.status_code, 201, transaction.text)
+
+        resp = self.client.get("/api/exports/backup")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(any(item["label"] == "Backup stock" for item in data["inventory"]))
+        self.assertTrue(
+            any(tx["item_id"] == item_id for tx in data["inventory_transactions"]),
+        )
+        self.assertTrue(all(not isinstance(item["id"], int) for item in data["tasks"]))
+        self.assertTrue(all(not isinstance(item["id"], int) for item in data["inventory"]))
+        self.assertTrue(all(not isinstance(item["id"], int) for item in data["procurement"]))

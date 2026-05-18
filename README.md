@@ -222,11 +222,12 @@ the disposable test database. Do not source the runtime `.env` or any production
 service env file for pytest.
 
 The frontend build includes security checks for unsafe HTML sinks, invite-token
-storage, TypeScript, production bundling, and sourcemap leakage. If a change
-adds a new raw HTML sink, it must be reviewed and documented in
-`frontend/security/innerhtml_allowlist.txt`.
+storage, TypeScript, production bundling, sourcemap leakage, and stale generated
+asset references. If a change adds a new raw HTML sink, it must be reviewed and
+documented in `frontend/security/innerhtml_allowlist.txt`.
 
-GitHub Actions runs backend and frontend checks on pushes and pull requests.
+GitHub Actions runs backend, frontend, and dependency audit checks on pushes and
+pull requests.
 
 ## Production Notes
 
