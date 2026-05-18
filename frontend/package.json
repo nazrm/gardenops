@@ -17,12 +17,12 @@
     "preview": "vite preview"
   },
   "devDependencies": {
-    "@emnapi/core": "^1.9.2",
-    "@emnapi/runtime": "^1.9.2",
+    "@emnapi/core": "^1.10.0",
+    "@emnapi/runtime": "^1.10.0",
     "@types/leaflet": "^1.9.21",
-    "playwright-core": "1.59.0",
-    "typescript": "6.0.2",
-    "vite": "^8.0.7"
+    "playwright-core": "1.60.0",
+    "typescript": "6.0.3",
+    "vite": "^8.0.13"
   },
   "dependencies": {
     "@fullcalendar/core": "^6.1.20",
