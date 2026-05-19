@@ -194,8 +194,12 @@ class TestTaskDescriptionOverrides(unittest.TestCase):
         }
 
         with (
-            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}, clear=False),
-            patch("gardenops.services.task_generator.Anthropic", return_value=mocked_client),
+            patch.dict(
+                "os.environ",
+                {"AI_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "test-key"},
+                clear=False,
+            ),
+            patch("gardenops.services.ai_provider.Anthropic", return_value=mocked_client),
         ):
             overrides = generate_task_description_overrides([spec], preferred_locale="en")
 
@@ -257,8 +261,12 @@ class TestTaskDescriptionOverrides(unittest.TestCase):
         }
 
         with (
-            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}, clear=False),
-            patch("gardenops.services.task_generator.Anthropic", return_value=mocked_client),
+            patch.dict(
+                "os.environ",
+                {"AI_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "test-key"},
+                clear=False,
+            ),
+            patch("gardenops.services.ai_provider.Anthropic", return_value=mocked_client),
         ):
             overrides = generate_task_description_overrides([spec], preferred_locale="no")
 
@@ -365,8 +373,12 @@ class TestTaskDescriptionOverrides(unittest.TestCase):
         ]
 
         with (
-            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}, clear=False),
-            patch("gardenops.services.task_generator.Anthropic", return_value=mocked_client),
+            patch.dict(
+                "os.environ",
+                {"AI_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "test-key"},
+                clear=False,
+            ),
+            patch("gardenops.services.ai_provider.Anthropic", return_value=mocked_client),
         ):
             overrides = generate_task_description_overrides(specs, preferred_locale="en")
 

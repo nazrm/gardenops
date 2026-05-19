@@ -53,10 +53,15 @@ Provider keys are optional. Leave them unset to disable the associated feature.
 
 | Area | Common variables |
 |---|---|
-| AI assistant features | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` |
+| AI assistant features | `AI_PROVIDER`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
 | Plant identification | `PLANTNET_API_KEY` |
 | Weather | `WEATHER_API_KEY` |
 | ShadeMap | `SHADEMAP`, `SHADEMAP_PUBLIC_API_KEY`, `SHADEMAP_TILE_SIGNING_SECRET` |
+
+`AI_PROVIDER` accepts `anthropic` or `openai`. Leave it unset to disable
+LLM-backed AI features. Plant identification still tries PlantNet first when
+`PLANTNET_API_KEY` is configured; the configured AI provider is used only as
+fallback for identification, and directly for diagnosis and other AI features.
 
 ## ShadeMap Configuration
 

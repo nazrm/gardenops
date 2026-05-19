@@ -2601,6 +2601,7 @@ class TestPlots(BaseApiTest):
                     "AUTH_REQUIRED": "true",
                     "AUTH_MODE": "session",
                     "AUTH_API_KEY": "",
+                    "AI_PROVIDER": "anthropic",
                     "ANTHROPIC_API_KEY": "test-key",
                     "AI_CHAT_DAILY_BUDGET_USER": "1",
                     "AI_CHAT_DAILY_BUDGET_GARDEN": "5",
@@ -2608,7 +2609,7 @@ class TestPlots(BaseApiTest):
                 clear=False,
             ),
             patch(
-                "gardenops.routers.ai.Anthropic",
+                "gardenops.services.ai_provider.Anthropic",
                 return_value=mocked_client,
             ),
         ):
