@@ -40,6 +40,52 @@ uv run python scripts/check_backend_integrity.py --format text
 uv run python -m pytest tests/ -q --tb=short
 ```
 
+For a faster deploy or local sanity check, run:
+
+```bash
+set -a
+. ./.env.test.local
+set +a
+scripts/run_backend_smoke.sh
+```
+
+The smoke script covers startup-critical backend behavior and uses the
+test-only password hash cost selected by `AUTH_PASSWORD_HASH_FAST_FOR_TESTS`.
+Run the full backend suite before merging larger backend or security changes.
+
+For the fastest local full backend run, use the disposable Postgres runner:
+
+```bash
+.venv/bin/python scripts/run_fast_postgres_tests.py --full-suite --shards 4
+```
+
+The runner creates a temporary local Postgres cluster, generates test-only
+credentials and databases, runs the shard suite, and removes the cluster on
+success. It does not read `/etc/gardenops.env` or use the live database.
+
+To verify cleanup behavior after runner changes:
+
+```bash
+.venv/bin/python scripts/run_fast_postgres_tests.py --cleanup-smoke after-start
+.venv/bin/python scripts/run_fast_postgres_tests.py --cleanup-smoke during-migration
+.venv/bin/python scripts/run_fast_postgres_tests.py --cleanup-smoke during-pytest
+```
+
+As a normal-durability fallback, provision one disposable database per shard,
+named by appending `_shard0`, `_shard1`, and so on to
+`GARDENOPS_TEST_POSTGRES_URL`'s database name. Then run:
+
+```bash
+set -a
+. ./.env.test.local
+set +a
+uv run python scripts/run_backend_shards.py --shards 4
+```
+
+For the fallback sharded runner, the default file-level split is the fastest
+validated mode on the live host. Use `--scope node` only when whole-file shard
+balance becomes a problem.
+
 ## Frontend Security Checks
 
 `npm run build` also checks for:
@@ -60,6 +106,8 @@ Create `.env.test.local` from `.env.test.example` and use it for test and PR
 check commands. `GARDENOPS_TEST_POSTGRES_URL` and `DATABASE_URL` must both point
 at the disposable test database because tests can truncate and rewrite data. Do
 not source the runtime `.env` or a production service env file for pytest.
+When `APP_ENV=test`, `AUTH_PASSWORD_HASH_FAST_FOR_TESTS=true` lowers Argon2 cost
+only inside the test process so repeated user seeding does not dominate runtime.
 
 ## Pull Request Expectations
 

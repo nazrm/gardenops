@@ -217,6 +217,47 @@ uv run python scripts/check_backend_integrity.py --format text
 uv run python -m pytest tests/ -q --tb=short
 ```
 
+For a faster backend smoke check during deploy verification or local iteration:
+
+```bash
+set -a
+. ./.env.test.local
+set +a
+scripts/run_backend_smoke.sh
+```
+
+For the fastest local full backend run, use the disposable Postgres runner:
+
+```bash
+.venv/bin/python scripts/run_fast_postgres_tests.py --full-suite --shards 4
+```
+
+The runner creates a temporary local Postgres cluster, generates test-only
+credentials and databases, runs the shard suite, and removes the cluster on
+success. It does not read `/etc/gardenops.env` or use the live database.
+
+To verify the cleanup paths after runner changes:
+
+```bash
+.venv/bin/python scripts/run_fast_postgres_tests.py --cleanup-smoke after-start
+.venv/bin/python scripts/run_fast_postgres_tests.py --cleanup-smoke during-migration
+.venv/bin/python scripts/run_fast_postgres_tests.py --cleanup-smoke during-pytest
+```
+
+As a normal-durability fallback, provision sibling disposable databases named
+with `_shard0`, `_shard1`, and so on, then run:
+
+```bash
+set -a
+. ./.env.test.local
+set +a
+uv run python scripts/run_backend_shards.py --shards 4
+```
+
+For the fallback sharded runner, the default file-level split is the fastest
+validated mode on the live host. Use `--scope node` only when whole-file shard
+balance becomes a problem.
+
 Create `.env.test.local` from `.env.test.example` and keep it pointed only at
 the disposable test database. Do not source the runtime `.env` or any production
 service env file for pytest.

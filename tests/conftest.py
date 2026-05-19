@@ -23,6 +23,7 @@ os.environ["AUTH_PASSWORD_REQUIRE_UPPER"] = "false"
 os.environ["AUTH_PASSWORD_REQUIRE_DIGIT"] = "false"
 os.environ["AUTH_PASSWORD_REQUIRE_SYMBOL"] = "false"
 os.environ["AUTH_PASSWORD_DISALLOW_USERNAME"] = "false"
+os.environ["AUTH_PASSWORD_HASH_FAST_FOR_TESTS"] = "true"
 # Test runs must not ship warnings or failures to the live Taillight stream.
 os.environ["TAILLIGHT_URL"] = ""
 os.environ["TAILLIGHT_API_KEY"] = ""

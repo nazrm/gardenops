@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from starlette.requests import Request as StarletteRequest
 
 import gardenops.db as db
+import gardenops.security as security
 from gardenops.security import (
     AuthContext,
     _authenticate_session_token,
@@ -42,6 +43,22 @@ class TestHashVerifyPassword(unittest.TestCase):
     def test_hash_format(self) -> None:
         hashed = hash_password("testpass")
         self.assertTrue(hashed.startswith("$argon2id$"))
+
+    def test_test_env_uses_fast_password_hash_costs(self) -> None:
+        previous = security._ARGON2_HASHER
+        security._ARGON2_HASHER = None
+        try:
+            with patch.dict(
+                "os.environ",
+                {
+                    "APP_ENV": "test",
+                    "AUTH_PASSWORD_HASH_FAST_FOR_TESTS": "true",
+                },
+            ):
+                hashed = hash_password("testpass")
+            self.assertIn("m=1024,t=1,p=1", hashed)
+        finally:
+            security._ARGON2_HASHER = previous
 
     def test_different_hashes_same_password(self) -> None:
         """Random salt means different hashes each time."""

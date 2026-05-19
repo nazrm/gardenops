@@ -243,9 +243,25 @@ def _password_salt() -> str:
     return base64.urlsafe_b64encode(secrets.token_bytes(16)).decode("ascii").rstrip("=")
 
 
+def _use_fast_test_password_hashing() -> bool:
+    if os.environ.get("APP_ENV", "").strip().lower() != "test":
+        return False
+    raw = os.environ.get("AUTH_PASSWORD_HASH_FAST_FOR_TESTS", "true").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 def _argon2_hasher() -> PasswordHasher:
     global _ARGON2_HASHER  # noqa: PLW0603
     if _ARGON2_HASHER is not None:
+        return _ARGON2_HASHER
+    if _use_fast_test_password_hashing():
+        _ARGON2_HASHER = PasswordHasher(
+            time_cost=1,
+            memory_cost=1024,
+            parallelism=1,
+            hash_len=32,
+            salt_len=16,
+        )
         return _ARGON2_HASHER
     _ARGON2_HASHER = PasswordHasher(
         time_cost=3,
