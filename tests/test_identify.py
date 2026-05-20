@@ -248,6 +248,47 @@ class TestIdentifyPlant(BaseApiTest):
 
     @patch("gardenops.routers.ai.identify_plant_with_ai")
     @patch("gardenops.services.plantnet.identify")
+    def test_identify_provider_only_attribution_does_not_claim_plantnet(
+        self,
+        mock_pn: MagicMock,
+        mock_ai: MagicMock,
+    ) -> None:
+        mock_ai.return_value = [
+            {
+                "name": "Nyperose",
+                "latin": "Rosa canina",
+                "scientific_name": "Rosa canina",
+                "family": "Rosaceae",
+                "confidence": 0.78,
+                "source": "openai",
+                "gbif_id": "",
+            },
+        ]
+
+        with patch.dict(
+            os.environ,
+            {
+                "AI_PROVIDER": "openai",
+                "OPENAI_API_KEY": "test-openai-key",
+                "PLANTNET_API_KEY": "",
+                "PLANTNET_CONFIDENCE_THRESHOLD": "0.40",
+            },
+        ):
+            img = _make_jpeg()
+            resp = self.client.post(
+                "/api/ai/identify-plant?organ=leaf",
+                content=img,
+                headers={"Content-Type": "image/jpeg"},
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["candidates"][0]["source"], "openai")
+        self.assertEqual(data["attribution"], "Identification powered by OpenAI")
+        mock_pn.assert_not_called()
+
+    @patch("gardenops.routers.ai.identify_plant_with_ai")
+    @patch("gardenops.services.plantnet.identify")
     def test_both_fail_returns_502(
         self,
         mock_pn: MagicMock,

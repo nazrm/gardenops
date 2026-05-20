@@ -788,6 +788,30 @@ def garden_chat(body: ChatRequest, db: DB, request: Request) -> dict:
 # Plant identification (PlantNet + configured AI fallback)
 # ---------------------------------------------------------------------------
 
+_IDENTIFY_SOURCE_LABELS = {
+    "plantnet": "Pl@ntNet (https://plantnet.org)",
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+}
+
+
+def _join_labels(labels: list[str]) -> str:
+    if len(labels) <= 1:
+        return labels[0] if labels else "unknown source"
+    if len(labels) == 2:
+        return f"{labels[0]} and {labels[1]}"
+    return f"{', '.join(labels[:-1])}, and {labels[-1]}"
+
+
+def _identify_attribution(candidates: list[dict[str, Any]]) -> str:
+    returned_sources = {
+        str(candidate.get("source", "")).strip().lower() for candidate in candidates
+    }
+    labels = [
+        label for source, label in _IDENTIFY_SOURCE_LABELS.items() if source in returned_sources
+    ]
+    return f"Identification powered by {_join_labels(labels)}"
+
 
 @router.post("/ai/identify-plant")
 async def identify_plant(
@@ -933,7 +957,7 @@ async def identify_plant(
     candidates.sort(key=lambda c: c["confidence"], reverse=True)
     return {
         "candidates": candidates[:5],
-        "attribution": "Identification powered by Pl@ntNet (https://plantnet.org)",
+        "attribution": _identify_attribution(candidates[:5]),
         "plantnet_remaining": plantnet_remaining,
     }
 

@@ -42,7 +42,7 @@ instance. Values shown here are placeholders; do not commit real local env files
 
 | Variable | Purpose | Example |
 |---|---|---|
-| `AI_PROVIDER` | Configured LLM provider for AI features. Use `anthropic` or `openai`; leave unset to disable LLM-backed AI features. | `anthropic` |
+| `AI_PROVIDER` | Configured LLM provider for AI features. Use `anthropic` or `openai`; leave unset to disable LLM-backed AI features. | unset |
 | `ANTHROPIC_API_KEY` | Anthropic key used when `AI_PROVIDER=anthropic`. Leave unset to disable Anthropic-backed AI. | `change-me` |
 | `ANTHROPIC_MODEL` | Anthropic model for configured AI features. | `claude-sonnet-4-6` |
 | `OPENAI_API_KEY` | OpenAI key used when `AI_PROVIDER=openai`. Leave unset to disable OpenAI-backed AI. | `change-me` |
