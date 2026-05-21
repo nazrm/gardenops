@@ -11,6 +11,7 @@ deploying, and contributing to GardenOps.
 | ShadeMap sun/shade integration | [shademap.md](shademap.md) |
 | Production deployment | [deployment.md](deployment.md) |
 | Development and PR checks | [development.md](development.md) |
+| PR review workflow | [pr-review-runbook.md](pr-review-runbook.md) |
 
 Keep secrets in `.env`, `.env.test.local`, or your deployment secret store. Do
 not commit real provider keys, database URLs, backup files, media uploads,
