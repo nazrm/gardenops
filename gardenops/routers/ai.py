@@ -1,16 +1,13 @@
-"""AI-powered plant lookup, garden chat, identification, and diagnosis using Claude."""
+"""AI-powered plant lookup, garden chat, identification, and diagnosis."""
 
-import base64
-import json
 import logging
 import os
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
-from anthropic import Anthropic
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import Field
 
@@ -36,6 +33,17 @@ from gardenops.router_helpers import (
 )
 from gardenops.security import AuthContext, has_write_access, resolve_request_auth_context
 from gardenops.security_metrics import record_security_event
+from gardenops.services.ai_provider import (
+    AIProviderError,
+    AIProviderNotConfigured,
+    chat_with_ai,
+    diagnose_plant_with_ai,
+    generate_care_batch_with_ai,
+    identify_plant_with_ai,
+    is_ai_provider_configured,
+    lookup_plant_with_ai,
+    require_ai_provider_configured,
+)
 
 router = APIRouter()
 
@@ -52,14 +60,6 @@ def _ai_rich_context_enabled() -> bool:
 
 def _ai_photo_body_limit() -> int:
     return env_int("MAX_AI_PHOTO_BODY_BYTES", 5 * 1024 * 1024)
-
-
-def _anthropic_client(api_key: str) -> Anthropic:
-    return Anthropic(
-        api_key=api_key,
-        timeout=float(env_int("ANTHROPIC_API_TIMEOUT_SECONDS", 25)),
-        max_retries=env_nonneg_int("ANTHROPIC_API_MAX_RETRIES", 1),
-    )
 
 
 _ALLOWED_LINK_DOMAINS = {
@@ -188,105 +188,6 @@ def _validate_plant_link(link: str, latin: str = "") -> str:
     return ""
 
 
-TOOL_SCHEMA = {
-    "name": "plant_data",
-    "description": "Return structured data about a plant.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "Common name of the plant (Norwegian preferred)",
-            },
-            "latin": {
-                "type": "string",
-                "description": "Latin/botanical name",
-            },
-            "category": {
-                "type": "string",
-                "enum": [
-                    "løk",
-                    "frø",
-                    "busker",
-                    "baerbusker",
-                    "trær",
-                    "stauder",
-                    "grønnsaker",
-                    "urter",
-                    "klatreplanter",
-                    "stueplanter",
-                    "sukkulenter",
-                    "orkidéer",
-                    "prydgress",
-                ],
-                "description": "Plant category",
-            },
-            "bloom_month": {
-                "type": "string",
-                "description": "Bloom period, e.g. 'mai-juni' or month number",
-            },
-            "color": {
-                "type": "string",
-                "description": "Primary flower/foliage color (Norwegian)",
-            },
-            "hardiness": {
-                "type": "string",
-                "description": "RHS hardiness rating, e.g. 'H5', 'H6'",
-            },
-            "height_cm": {
-                "type": "integer",
-                "description": "Typical mature height in centimeters",
-            },
-            "light": {
-                "type": "string",
-                "description": "Light requirement (Norwegian), e.g. 'sol', 'halvskygge', 'skygge'",
-            },
-            "link": {
-                "type": "string",
-                "description": (
-                    "URL to a well-known plant reference page. "
-                    "ONLY use URLs you are confident exist. "
-                    "Preferred sources: rhs.org.uk/plants/, "
-                    "en.wikipedia.org/wiki/, snl.no/. "
-                    "Return empty string if unsure."
-                ),
-            },
-        },
-        "required": [
-            "name",
-            "latin",
-            "category",
-            "bloom_month",
-            "color",
-            "hardiness",
-            "height_cm",
-            "light",
-            "link",
-        ],
-    },
-}
-
-SYSTEM_PROMPT = (
-    "You are a horticultural expert. Given a plant name (common or Latin), "
-    "return accurate structured data using the plant_data tool. "
-    "Prefer Norwegian common names and terms. "
-    "For category: use 'løk' for bulbs/tubers/rhizomes, 'frø' for seed-grown "
-    "annuals, 'stauder' for herbaceous perennials, 'busker' for shrubs, "
-    "'baerbusker' for berry bushes, 'trær' for trees, 'urter' for herbs, "
-    "'grønnsaker' for vegetables, 'klatreplanter' for climbers, "
-    "'stueplanter' for houseplants, 'sukkulenter' for succulents, "
-    "'orkidéer' for orchids, 'prydgress' for ornamental grasses. "
-    "For hardiness use RHS ratings (H1-H7). "
-    "For light use Norwegian: 'sol', 'halvskygge', 'skygge', or combinations. "
-    "For link: provide a URL to a well-known reference page. "
-    "Prefer rhs.org.uk/plants/ for the latin name, or en.wikipedia.org/wiki/. "
-    "ONLY provide a URL you are confident is real and correct. "
-    "If unsure, return an empty string for link. "
-    "NEVER fabricate or guess URLs. "
-    "If you cannot identify the plant, still call the tool with your best guess "
-    "and set the name to what the user asked for."
-)
-
 CARE_FIELD_NAMES = (
     "care_watering",
     "care_soil",
@@ -295,49 +196,6 @@ CARE_FIELD_NAMES = (
     "care_notes",
 )
 
-CARE_TOOL_SCHEMA = {
-    "name": "care_instructions_batch",
-    "description": "Return concise care instructions for every requested plant.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "plants": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "plt_id": {
-                            "type": "string",
-                            "description": "Exact plant id from the request",
-                        },
-                        "care_watering": {"type": "string"},
-                        "care_soil": {"type": "string"},
-                        "care_planting": {"type": "string"},
-                        "care_maintenance": {"type": "string"},
-                        "care_notes": {"type": "string"},
-                    },
-                    "required": [
-                        "plt_id",
-                        "care_watering",
-                        "care_soil",
-                        "care_planting",
-                        "care_maintenance",
-                        "care_notes",
-                    ],
-                },
-            },
-        },
-        "required": ["plants"],
-    },
-}
-
-CARE_SYSTEM_PROMPT = (
-    "You are an experienced horticulturist gardening in Norway. "
-    "Generate concise, practical plant care guidance in Norwegian. "
-    "Use short plain-text sentences or fragments. No markdown. "
-    "Tailor advice to Norwegian seasons, frost, and short growing seasons. "
-    "Return one object for every requested plt_id exactly once using the tool."
-)
 CARE_REQUEST_PLANT_LIMIT_DEFAULT = 6
 
 
@@ -408,56 +266,6 @@ def _care_candidates_for_context(
     return [dict(row) for row in rows]
 
 
-def _generate_care_batch(
-    client: Anthropic,
-    plants: list[dict[str, Any]],
-) -> dict[str, dict[str, str]]:
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4096,
-        system=CARE_SYSTEM_PROMPT,
-        tools=cast(Any, [CARE_TOOL_SCHEMA]),
-        tool_choice=cast(Any, {"type": "tool", "name": "care_instructions_batch"}),
-        messages=cast(
-            Any,
-            [
-                {
-                    "role": "user",
-                    "content": (
-                        "Generate care instructions for these plants. "
-                        "Use the metadata as hints and return concise Norwegian guidance.\n"
-                        f"{json.dumps(plants, ensure_ascii=False)}"
-                    ),
-                },
-            ],
-        ),
-    )
-    expected_ids = {str(plant["plt_id"]) for plant in plants}
-    for block_data in cast(list[Any], response.content):
-        if block_data.type != "tool_use" or block_data.name != "care_instructions_batch":
-            continue
-        raw_plants = block_data.input.get("plants")
-        if not isinstance(raw_plants, list):
-            break
-        generated: dict[str, dict[str, str]] = {}
-        for item in raw_plants:
-            if not isinstance(item, dict):
-                continue
-            item_data = cast(dict[str, object], item)
-            plt_id = str(item_data.get("plt_id", "")).strip()
-            if not plt_id or plt_id not in expected_ids or plt_id in generated:
-                continue
-            care_fields = {
-                field: _normalize_care_text(item_data.get(field, "")) for field in CARE_FIELD_NAMES
-            }
-            if any(care_fields.values()):
-                generated[plt_id] = care_fields
-        if generated:
-            return generated
-        break
-    raise HTTPException(500, "AI did not return care instructions")
-
-
 class LookupRequest(StrictBaseModel):
     query: str = Field(min_length=1, max_length=200)
 
@@ -469,7 +277,7 @@ class GenerateMissingCareRequest(StrictBaseModel):
 
 @router.post("/ai/plant-lookup")
 def ai_plant_lookup(body: LookupRequest, request: Request, db: DB) -> dict:
-    """Look up structured plant data using Claude AI."""
+    """Look up structured plant data using the configured AI provider."""
     record_security_event("ai_requests_total")
     record_security_event("ai_requests_plant_lookup")
     enforce_layered_rate_limit(
@@ -481,12 +289,10 @@ def ai_plant_lookup(body: LookupRequest, request: Request, db: DB) -> dict:
         garden_limit=env_nonneg_int("AI_LOOKUP_RATE_LIMIT_GARDEN", 24),
         global_limit=env_nonneg_int("AI_LOOKUP_RATE_LIMIT_GLOBAL", 120),
     )
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise HTTPException(
-            503,
-            "ANTHROPIC_API_KEY not configured",
-        )
+    try:
+        provider = require_ai_provider_configured()
+    except AIProviderNotConfigured as exc:
+        raise HTTPException(503, exc.detail) from exc
 
     auth_context = resolve_request_auth_context(request)
     limits = provider_limit_profile("ai-plant-lookup")
@@ -504,24 +310,24 @@ def ai_plant_lookup(body: LookupRequest, request: Request, db: DB) -> dict:
             bucket="ai-plant-lookup",
             limit=int(limits["concurrency_limit"]),
         ):
-            client = _anthropic_client(api_key)
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1024,
-                system=SYSTEM_PROMPT,
-                tools=cast(Any, [TOOL_SCHEMA]),
-                tool_choice=cast(Any, {"type": "tool", "name": "plant_data"}),
-                messages=cast(
-                    Any,
-                    [
-                        {"role": "user", "content": f"Look up: {body.query}"},
-                    ],
-                ),
-            )
+            data = lookup_plant_with_ai(body.query)
+    except AIProviderNotConfigured as exc:
+        raise HTTPException(503, exc.detail) from exc
+    except AIProviderError as exc:
+        _log_provider_failure(
+            "AI plant lookup failed",
+            upstream=exc.provider,
+            feature_area="ai-plant-lookup",
+            garden_id=auth_context.garden_id,
+            user_id=auth_context.user_id,
+        )
+        record_security_event("ai_provider_failures")
+        record_security_event("ai_provider_failures_plant_lookup")
+        raise HTTPException(502, "AI provider request failed") from exc
     except Exception as exc:  # noqa: BLE001
         _log_provider_failure(
-            "Claude plant lookup failed",
-            upstream="anthropic",
+            "AI plant lookup failed",
+            upstream=provider,
             feature_area="ai-plant-lookup",
             garden_id=auth_context.garden_id,
             user_id=auth_context.user_id,
@@ -530,20 +336,11 @@ def ai_plant_lookup(body: LookupRequest, request: Request, db: DB) -> dict:
         record_security_event("ai_provider_failures_plant_lookup")
         raise HTTPException(502, "AI provider request failed") from exc
 
-    for block_data in cast(list[Any], response.content):
-        if block_data.type == "tool_use" and block_data.name == "plant_data":
-            data = cast(dict[str, Any], block_data.input)
-            # Validate the link if provided
-            link = str(data.get("link", ""))
-            if link:
-                latin = str(data.get("latin", ""))
-                data["link"] = _validate_plant_link(
-                    link,
-                    latin=latin,
-                )
-            return data
-
-    raise HTTPException(500, "AI did not return plant data")
+    link = str(data.get("link", ""))
+    if link:
+        latin = str(data.get("latin", ""))
+        data["link"] = _validate_plant_link(link, latin=latin)
+    return data
 
 
 @router.post("/ai/generate-missing-care")
@@ -564,9 +361,10 @@ def generate_missing_care(
         garden_limit=env_nonneg_int("AI_CARE_RATE_LIMIT_GARDEN", 80),
         global_limit=env_nonneg_int("AI_CARE_RATE_LIMIT_GLOBAL", 320),
     )
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise HTTPException(503, "ANTHROPIC_API_KEY not configured")
+    try:
+        provider = require_ai_provider_configured()
+    except AIProviderNotConfigured as exc:
+        raise HTTPException(503, exc.detail) from exc
 
     auth_context = resolve_request_auth_context(request)
     if not has_write_access(auth_context):
@@ -607,7 +405,6 @@ def generate_missing_care(
             bucket="ai-care-instructions",
             limit=int(limits["concurrency_limit"]),
         ):
-            client = _anthropic_client(api_key)
             for batch in _chunk_plants(selected_missing, _care_batch_size()):
                 reserve_daily_provider_budget(
                     db,
@@ -618,7 +415,7 @@ def generate_missing_care(
                     garden_limit=int(limits["garden_limit"]),
                     request_count=len(batch),
                 )
-                generated = _generate_care_batch(client, batch)
+                generated = generate_care_batch_with_ai(batch)
                 for plant in batch:
                     care_fields = generated.get(str(plant["plt_id"]))
                     if not care_fields:
@@ -646,10 +443,23 @@ def generate_missing_care(
                 db.commit()
     except HTTPException:
         raise
+    except AIProviderNotConfigured as exc:
+        raise HTTPException(503, exc.detail) from exc
+    except AIProviderError as exc:
+        _log_provider_failure(
+            "AI care generation failed",
+            upstream=exc.provider,
+            feature_area="ai-care-generation",
+            garden_id=auth_context.garden_id,
+            user_id=auth_context.user_id,
+        )
+        record_security_event("ai_provider_failures")
+        record_security_event("ai_provider_failures_care_generation")
+        raise HTTPException(502, "AI provider request failed") from exc
     except Exception as exc:  # noqa: BLE001
         _log_provider_failure(
-            "Claude care generation failed",
-            upstream="anthropic",
+            "AI care generation failed",
+            upstream=provider,
             feature_area="ai-care-generation",
             garden_id=auth_context.garden_id,
             user_id=auth_context.user_id,
@@ -919,12 +729,10 @@ def garden_chat(body: ChatRequest, db: DB, request: Request) -> dict:
         garden_limit=env_nonneg_int("AI_CHAT_RATE_LIMIT_GARDEN", 16),
         global_limit=env_nonneg_int("AI_CHAT_RATE_LIMIT_GLOBAL", 60),
     )
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise HTTPException(
-            503,
-            "ANTHROPIC_API_KEY not configured",
-        )
+    try:
+        provider = require_ai_provider_configured()
+    except AIProviderNotConfigured as exc:
+        raise HTTPException(503, exc.detail) from exc
 
     auth_context = resolve_request_auth_context(request)
     limits = provider_limit_profile("ai-garden-chat")
@@ -947,17 +755,24 @@ def garden_chat(body: ChatRequest, db: DB, request: Request) -> dict:
             bucket="ai-garden-chat",
             limit=int(limits["concurrency_limit"]),
         ):
-            client = _anthropic_client(api_key)
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2048,
-                system=system,
-                messages=cast(Any, messages),
-            )
+            reply = chat_with_ai(system, messages)
+    except AIProviderNotConfigured as exc:
+        raise HTTPException(503, exc.detail) from exc
+    except AIProviderError as exc:
+        _log_provider_failure(
+            "AI garden chat failed",
+            upstream=exc.provider,
+            feature_area="ai-garden-chat",
+            garden_id=auth_context.garden_id,
+            user_id=auth_context.user_id,
+        )
+        record_security_event("ai_provider_failures")
+        record_security_event("ai_provider_failures_garden_chat")
+        raise HTTPException(502, "AI provider request failed") from exc
     except Exception as exc:  # noqa: BLE001
         _log_provider_failure(
-            "Claude garden chat failed",
-            upstream="anthropic",
+            "AI garden chat failed",
+            upstream=provider,
             feature_area="ai-garden-chat",
             garden_id=auth_context.garden_id,
             user_id=auth_context.user_id,
@@ -966,141 +781,36 @@ def garden_chat(body: ChatRequest, db: DB, request: Request) -> dict:
         record_security_event("ai_provider_failures_garden_chat")
         raise HTTPException(502, "AI provider request failed") from exc
 
-    reply = ""
-    for block_data in cast(list[Any], response.content):
-        if block_data.type == "text":
-            reply += str(block_data.text)
-
     return {"reply": reply}
 
 
 # ---------------------------------------------------------------------------
-# Plant identification (PlantNet + Claude fallback)
+# Plant identification (PlantNet + configured AI fallback)
 # ---------------------------------------------------------------------------
 
-IDENTIFY_TOOL_SCHEMA = {
-    "name": "plant_candidates",
-    "description": "Return ranked plant identification candidates from a photo.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "candidates": {
-                "type": "array",
-                "maxItems": 3,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "Common name (Norwegian preferred)",
-                        },
-                        "latin": {
-                            "type": "string",
-                            "description": "Binomial Latin name without author",
-                        },
-                        "family": {
-                            "type": "string",
-                            "description": "Plant family",
-                        },
-                        "confidence": {
-                            "type": "number",
-                            "description": "0.0-1.0 confidence score",
-                        },
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Brief reasoning for this identification",
-                        },
-                    },
-                    "required": ["name", "latin", "family", "confidence", "reasoning"],
-                },
-            },
-        },
-        "required": ["candidates"],
-    },
+_IDENTIFY_SOURCE_LABELS = {
+    "plantnet": "Pl@ntNet (https://plantnet.org)",
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
 }
 
-IDENTIFY_SYSTEM_PROMPT = (
-    "You are a botanical identification expert. Given a photo of a plant, "
-    "identify the most likely species. Return up to 3 ranked candidates. "
-    "Prefer Norwegian common names. For confidence: 0.8+ = very confident, "
-    "0.5-0.8 = likely, 0.3-0.5 = possible, <0.3 = guess. "
-    "If the photo is not a plant or is too blurry to identify, return an "
-    "empty candidates array. Consider: leaf shape, flower structure, growth "
-    "habit, and any visible fruits/bark. Factor in that this garden is in "
-    "Norway when ranking likelihood."
-)
+
+def _join_labels(labels: list[str]) -> str:
+    if len(labels) <= 1:
+        return labels[0] if labels else "unknown source"
+    if len(labels) == 2:
+        return f"{labels[0]} and {labels[1]}"
+    return f"{', '.join(labels[:-1])}, and {labels[-1]}"
 
 
-def _claude_identify_plant(
-    image_bytes: bytes,
-    organ: str,
-    api_key: str,
-) -> list[dict[str, Any]]:
-    """Use Claude vision to identify a plant from a photo."""
-    b64_image = base64.standard_b64encode(image_bytes).decode("ascii")
-
-    client = _anthropic_client(api_key)
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1024,
-        system=IDENTIFY_SYSTEM_PROMPT,
-        tools=cast(Any, [IDENTIFY_TOOL_SCHEMA]),
-        tool_choice=cast(Any, {"type": "tool", "name": "plant_candidates"}),
-        messages=cast(
-            Any,
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": b64_image,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": f"Identify this plant. The photo shows the {organ}.",
-                        },
-                    ],
-                },
-            ],
-        ),
-    )
-
-    for block_data in cast(list[Any], response.content):
-        if block_data.type == "tool_use" and block_data.name == "plant_candidates":
-            raw = block_data.input.get("candidates")
-            if not isinstance(raw, list):
-                continue
-            result: list[dict[str, Any]] = []
-            for item in raw:
-                if not isinstance(item, dict):
-                    continue
-                item_data = cast(dict[str, object], item)
-                conf = item_data.get("confidence", 0.0)
-                try:
-                    conf = max(0.0, min(1.0, float(cast(int | float | str, conf))))
-                except (
-                    TypeError,
-                    ValueError,
-                ):
-                    conf = 0.0
-                result.append(
-                    {
-                        "name": str(item_data.get("name", "")).strip()[:200],
-                        "latin": str(item_data.get("latin", "")).strip()[:200],
-                        "scientific_name": str(item_data.get("latin", "")).strip()[:200],
-                        "family": str(item_data.get("family", "")).strip()[:100],
-                        "confidence": round(conf, 3),
-                        "source": "claude",
-                        "gbif_id": "",
-                    },
-                )
-            return result
-    return []
+def _identify_attribution(candidates: list[dict[str, Any]]) -> str:
+    returned_sources = {
+        str(candidate.get("source", "")).strip().lower() for candidate in candidates
+    }
+    labels = [
+        label for source, label in _IDENTIFY_SOURCE_LABELS.items() if source in returned_sources
+    ]
+    return f"Identification powered by {_join_labels(labels)}"
 
 
 @router.post("/ai/identify-plant")
@@ -1109,7 +819,7 @@ async def identify_plant(
     db: DB,
     organ: str = Query(default="auto"),
 ) -> dict[str, Any]:
-    """Identify a plant from a photo using PlantNet + Claude fallback."""
+    """Identify a plant from a photo using PlantNet + configured AI fallback."""
     from gardenops.services.plantnet import (
         ALLOWED_ORGANS,
         PlantNetError,
@@ -1153,8 +863,7 @@ async def identify_plant(
 
     # Check API keys
     plantnet_api_key = os.environ.get("PLANTNET_API_KEY", "")
-    anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not plantnet_api_key and not anthropic_api_key:
+    if not plantnet_api_key and not is_ai_provider_configured():
         raise HTTPException(503, "No identification API configured")
 
     reserve_daily_provider_budget(
@@ -1215,33 +924,32 @@ async def identify_plant(
             record_security_event("ai_provider_failures")
             record_security_event("ai_provider_failures_identify_plantnet")
 
-    # Claude enrichment/fallback
-    needs_claude = not candidates or (
+    # Configured AI enrichment/fallback
+    needs_ai_fallback = not candidates or (
         candidates and candidates[0]["confidence"] < confidence_threshold
     )
-    if needs_claude and anthropic_api_key:
+    if needs_ai_fallback:
         try:
-            claude_candidates = _claude_identify_plant(
-                image_bytes,
-                organ,
-                anthropic_api_key,
-            )
+            ai_candidates = identify_plant_with_ai(image_bytes, organ)
             existing_latins = {c["latin"].lower() for c in candidates}
-            for cc in claude_candidates:
+            for cc in ai_candidates:
                 if cc["latin"].lower() not in existing_latins:
                     candidates.append(cc)
-        except Exception:
+        except AIProviderNotConfigured as exc:
+            if not candidates:
+                raise HTTPException(503, exc.detail) from exc
+        except AIProviderError as exc:
             _log_provider_failure(
-                "Claude identify fallback failed",
-                upstream="anthropic",
+                "AI identify fallback failed",
+                upstream=exc.provider,
                 feature_area="ai-identify",
                 garden_id=auth_context.garden_id,
                 user_id=auth_context.user_id,
             )
             record_security_event("ai_provider_failures")
-            record_security_event("ai_provider_failures_identify_claude")
+            record_security_event("ai_provider_failures_identify_ai")
             if not candidates:
-                raise HTTPException(502, "Identification service unavailable")
+                raise HTTPException(502, "Identification service unavailable") from exc
 
     if not candidates:
         raise HTTPException(502, "Identification service unavailable")
@@ -1249,97 +957,14 @@ async def identify_plant(
     candidates.sort(key=lambda c: c["confidence"], reverse=True)
     return {
         "candidates": candidates[:5],
-        "attribution": "Identification powered by Pl@ntNet (https://plantnet.org)",
+        "attribution": _identify_attribution(candidates[:5]),
         "plantnet_remaining": plantnet_remaining,
     }
 
 
 # ---------------------------------------------------------------------------
-# Disease diagnosis (Claude with garden context)
+# Disease diagnosis (configured AI provider with garden context)
 # ---------------------------------------------------------------------------
-
-DIAGNOSE_TOOL_SCHEMA = {
-    "name": "plant_diagnoses",
-    "description": "Return ranked possible diagnoses for a plant health issue.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "diagnoses": {
-                "type": "array",
-                "maxItems": 3,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "issue_type": {
-                            "type": "string",
-                            "enum": [
-                                "pest",
-                                "disease",
-                                "fungal",
-                                "nutrient",
-                                "environmental",
-                                "damage",
-                                "other",
-                            ],
-                        },
-                        "likely_cause": {
-                            "type": "string",
-                            "description": "Specific cause name",
-                        },
-                        "confidence": {
-                            "type": "string",
-                            "enum": ["high", "medium", "low"],
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "What you see and why",
-                        },
-                        "suggested_treatment": {"type": "string"},
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Why this diagnosis, referencing visual evidence",
-                        },
-                        "related_history": {
-                            "type": "string",
-                            "description": "Reference to prior issues if relevant, or empty string",
-                        },
-                    },
-                    "required": [
-                        "issue_type",
-                        "likely_cause",
-                        "confidence",
-                        "description",
-                        "suggested_treatment",
-                        "reasoning",
-                        "related_history",
-                    ],
-                },
-            },
-        },
-        "required": ["diagnoses"],
-    },
-}
-
-DIAGNOSE_SYSTEM_PROMPT = (
-    "You are a plant pathologist with 30 years of experience in Norwegian gardens. "
-    "Given a photo of a plant with possible health issues, diagnose the most likely "
-    "problems. Return up to 3 ranked diagnoses.\n\n"
-    "Rules:\n"
-    "- Be specific: name the disease/pest/condition, not just symptoms.\n"
-    "- For confidence: 'high' = classic unmistakable symptoms, 'medium' = likely "
-    "but could be something else, 'low' = possible but ambiguous.\n"
-    "- If the plant looks healthy, return an empty diagnoses array.\n"
-    "- Consider Norwegian climate: season, common local pests, hardiness zone.\n"
-    "- If prior issues are provided, check for recurrence patterns.\n"
-    "- Treatment should be practical: specific products or methods available in Norway.\n"
-    "- Always reply in English.\n"
-    "- issue_type must be one of: pest, disease, fungal, nutrient, environmental, damage, other.\n"
-)
-
-_VALID_ISSUE_TYPES = frozenset(
-    {"pest", "disease", "fungal", "nutrient", "environmental", "damage", "other"},
-)
-_VALID_CONFIDENCE_LEVELS = frozenset({"high", "medium", "low"})
 
 
 def _load_diagnosis_context(
@@ -1494,80 +1119,6 @@ def _build_diagnosis_prompt(
     return "Diagnose the issue in this photo."
 
 
-def _claude_diagnose(
-    image_bytes: bytes,
-    prompt_text: str,
-    api_key: str,
-) -> list[dict[str, Any]]:
-    """Use Claude vision to diagnose plant health issues."""
-    b64_image = base64.standard_b64encode(image_bytes).decode("ascii")
-
-    client = _anthropic_client(api_key)
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=2048,
-        system=DIAGNOSE_SYSTEM_PROMPT,
-        tools=cast(Any, [DIAGNOSE_TOOL_SCHEMA]),
-        tool_choice=cast(Any, {"type": "tool", "name": "plant_diagnoses"}),
-        messages=cast(
-            Any,
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": b64_image,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt_text,
-                        },
-                    ],
-                },
-            ],
-        ),
-    )
-
-    for block_data in cast(list[Any], response.content):
-        if block_data.type == "tool_use" and block_data.name == "plant_diagnoses":
-            raw = block_data.input.get("diagnoses")
-            if not isinstance(raw, list):
-                continue
-            result: list[dict[str, Any]] = []
-            for item in raw:
-                if not isinstance(item, dict):
-                    continue
-                item_data = cast(dict[str, object], item)
-                issue_type = str(item_data.get("issue_type", "other")).strip()
-                if issue_type not in _VALID_ISSUE_TYPES:
-                    issue_type = "other"
-                confidence = str(item_data.get("confidence", "low")).strip()
-                if confidence not in _VALID_CONFIDENCE_LEVELS:
-                    confidence = "low"
-                result.append(
-                    {
-                        "issue_type": issue_type,
-                        "likely_cause": str(item_data.get("likely_cause", "")).strip()[:500],
-                        "confidence": confidence,
-                        "description": str(item_data.get("description", "")).strip()[:2000],
-                        "suggested_treatment": str(
-                            item_data.get("suggested_treatment", ""),
-                        ).strip()[:2000],
-                        "reasoning": str(item_data.get("reasoning", "")).strip()[:2000],
-                        "related_history": str(
-                            item_data.get("related_history", ""),
-                        ).strip()[:500],
-                    },
-                )
-            return result
-    return []
-
-
 @router.post("/ai/diagnose-plant")
 async def diagnose_plant(
     request: Request,
@@ -1576,7 +1127,7 @@ async def diagnose_plant(
     plot_id: str = Query(default=""),
     symptoms: str = Query(default="", max_length=500),
 ) -> dict[str, Any]:
-    """Diagnose plant health issues from a photo using Claude with garden context."""
+    """Diagnose plant health issues from a photo using the configured AI provider."""
     from gardenops.services.plantnet import preprocess_image_for_identification
 
     record_security_event("ai_requests_total")
@@ -1594,9 +1145,10 @@ async def diagnose_plant(
     auth_context = resolve_request_auth_context(request)
     limits = provider_limit_profile("ai-diagnose")
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise HTTPException(503, "ANTHROPIC_API_KEY not configured")
+    try:
+        provider = require_ai_provider_configured()
+    except AIProviderNotConfigured as exc:
+        raise HTTPException(503, exc.detail) from exc
 
     # Read and preprocess image
     max_photo_bytes = _ai_photo_body_limit()
@@ -1623,19 +1175,32 @@ async def diagnose_plant(
         garden_limit=int(limits["garden_limit"]),
     )
 
-    # Call Claude
+    # Call configured AI provider
     try:
         with acquire_concurrency_slot(
             bucket="ai-diagnose",
             limit=int(limits["concurrency_limit"]),
         ):
-            diagnoses = _claude_diagnose(image_bytes, prompt_text, api_key)
+            diagnoses = diagnose_plant_with_ai(image_bytes, prompt_text)
     except HTTPException:
         raise
+    except AIProviderNotConfigured as exc:
+        raise HTTPException(503, exc.detail) from exc
+    except AIProviderError as exc:
+        _log_provider_failure(
+            "AI diagnose failed",
+            upstream=exc.provider,
+            feature_area="ai-diagnose",
+            garden_id=auth_context.garden_id,
+            user_id=auth_context.user_id,
+        )
+        record_security_event("ai_provider_failures")
+        record_security_event("ai_provider_failures_diagnose")
+        raise HTTPException(502, "Diagnosis service unavailable") from exc
     except Exception as exc:  # noqa: BLE001
         _log_provider_failure(
-            "Claude diagnose failed",
-            upstream="anthropic",
+            "AI diagnose failed",
+            upstream=provider,
             feature_area="ai-diagnose",
             garden_id=auth_context.garden_id,
             user_id=auth_context.user_id,

@@ -42,8 +42,12 @@ instance. Values shown here are placeholders; do not commit real local env files
 
 | Variable | Purpose | Example |
 |---|---|---|
-| `OPENAI_API_KEY` | Optional AI features. Leave unset to disable. | `change-me` |
-| `ANTHROPIC_API_KEY` | Optional AI features. Leave unset to disable. | `change-me` |
+| `AI_PROVIDER` | Configured LLM provider for AI features. Use `anthropic` or `openai`; leave unset to disable LLM-backed AI features. | unset |
+| `ANTHROPIC_API_KEY` | Anthropic key used when `AI_PROVIDER=anthropic`. Leave unset to disable Anthropic-backed AI. | `change-me` |
+| `ANTHROPIC_MODEL` | Anthropic model for configured AI features. | `claude-sonnet-4-6` |
+| `OPENAI_API_KEY` | OpenAI key used when `AI_PROVIDER=openai`. Leave unset to disable OpenAI-backed AI. | `change-me` |
+| `OPENAI_MODEL` | OpenAI model for configured AI features. | `gpt-5.5` |
+| `OPENAI_FAST_MODEL` | Optional lower-cost OpenAI model reserved for future fast-path AI tasks. | `gpt-5.4-mini` |
 | `PLANTNET_API_KEY` | Optional plant-identification provider. | `change-me` |
 | `WEATHER_API_KEY` | Optional weather provider key. | `change-me` |
 
@@ -98,6 +102,7 @@ environment variable read by the public app.
 | `REDIS_URL` | Fallback Redis URL when `RATE_LIMIT_REDIS_URL` is not set. | `redis://127.0.0.1:6379/0` |
 | `AI_<SETTING>` | AI feature rate limits, quotas, concurrency limits, care-batch settings, and rich-context opt-in. | `AI_RICH_CONTEXT_ENABLED=false` |
 | `ANTHROPIC_API_<SETTING>` | Anthropic provider timeout and retry settings. | `ANTHROPIC_API_TIMEOUT_SECONDS=25` |
+| `OPENAI_API_<SETTING>` | OpenAI provider timeout and retry settings. | `OPENAI_API_TIMEOUT_SECONDS=25` |
 | `PLANTNET_<SETTING>` | PlantNet provider timeout and confidence-threshold settings. | `PLANTNET_CONFIDENCE_THRESHOLD=0.40` |
 | `PLANT_COVER_IMPORT_<SETTING>` | External plant-cover import timeout, redirect, and page-size limits. | `PLANT_COVER_IMPORT_TIMEOUT_SECONDS=8` |
 | `CSV_IMPORT_MAX_ROWS` | Maximum CSV rows accepted by import endpoints. | `5000` |

@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from collections.abc import Mapping
 from datetime import date
-from typing import Any, cast
-
-from anthropic import Anthropic
+from typing import Any
 
 from gardenops.db import DbConn, DbRow, current_timestamp_ms
+from gardenops.services.ai_provider import (
+    AIProviderError,
+    AIProviderNotConfigured,
+    generate_task_descriptions_with_ai,
+    is_ai_provider_configured,
+)
 from gardenops.services.task_windows import derive_recommended_window_strings
 
 _logger = logging.getLogger(__name__)
@@ -105,52 +108,6 @@ _NO_MONTHS: dict[int, str] = {
 
 _TASK_DESCRIPTION_BATCH_SIZE = 12
 _AI_TASK_DESCRIPTION_TYPES = {"prune"}
-
-_TASK_DESCRIPTION_TOOL_SCHEMA = {
-    "name": "task_descriptions_batch",
-    "description": "Return localized task descriptions with a clear why-it-matters explanation.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "tasks": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "task_key": {"type": "string"},
-                        "description_en": {"type": "string"},
-                        "description_no": {"type": "string"},
-                    },
-                    "required": ["task_key", "description_en", "description_no"],
-                },
-            },
-        },
-        "required": ["tasks"],
-    },
-}
-
-_TASK_DESCRIPTION_SYSTEM_PROMPT = (
-    "You are a horticultural planning assistant. "
-    "For each task, write one concise English description and one concise Norwegian Bokm\u00e5l "
-    "description. Each description must say what to do and why it matters. "
-    "Use the provided plant care fields as the factual basis. "
-    "When the preferred locale is Norwegian, make the Norwegian wording "
-    "especially natural and direct. "
-    "Keep each description practical, specific, and short enough for a task card. "
-    "Do not use markdown or bullet points. Return one object per task_key exactly once."
-)
-
-
-def _anthropic_client(api_key: str) -> Anthropic:
-    try:
-        timeout = max(1, int(os.environ.get("ANTHROPIC_API_TIMEOUT_SECONDS", "25") or "25"))
-    except ValueError:
-        timeout = 25
-    try:
-        max_retries = max(0, int(os.environ.get("ANTHROPIC_API_MAX_RETRIES", "1") or "1"))
-    except ValueError:
-        max_retries = 1
-    return Anthropic(api_key=api_key, timeout=float(timeout), max_retries=max_retries)
 
 
 def _generated_description_metadata(description_no: str) -> str:
@@ -311,13 +268,11 @@ def generate_task_description_overrides(
     *,
     preferred_locale: str = "en",
 ) -> dict[str, tuple[str, str]]:
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     eligible_specs = [spec for spec in task_specs if _uses_ai_task_description(spec)]
-    if not api_key or not eligible_specs:
+    if not eligible_specs or not is_ai_provider_configured():
         return {}
 
     try:
-        client = _anthropic_client(api_key)
         overrides: dict[str, tuple[str, str]] = {}
         for batch in _chunk_task_specs(eligible_specs):
             prompt_items = [
@@ -339,58 +294,28 @@ def generate_task_description_overrides(
                 }
                 for spec in batch
             ]
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=4096,
-                system=_TASK_DESCRIPTION_SYSTEM_PROMPT,
-                tools=cast(Any, [_TASK_DESCRIPTION_TOOL_SCHEMA]),
-                tool_choice=cast(
-                    Any,
-                    {"type": "tool", "name": "task_descriptions_batch"},
-                ),
-                messages=cast(
-                    Any,
-                    [
-                        {
-                            "role": "user",
-                            "content": (
-                                "Generate localized task descriptions for these garden tasks. "
-                                f"The current user's preferred locale is '{preferred_locale}'. "
-                                "Return both English and Norwegian for every task.\n"
-                                f"{json.dumps(prompt_items, ensure_ascii=False)}"
-                            ),
-                        },
-                    ],
-                ),
+            raw_tasks = generate_task_descriptions_with_ai(
+                prompt_items,
+                preferred_locale=preferred_locale,
             )
             expected = {str(spec["task_key"]): spec for spec in batch}
-            for block_data in cast(list[Any], response.content):
-                if block_data.type != "tool_use" or block_data.name != "task_descriptions_batch":
+            for item in raw_tasks:
+                task_key = str(item.get("task_key", "")).strip()
+                spec = expected.get(task_key)
+                if spec is None or task_key in overrides:
                     continue
-                raw_tasks = block_data.input.get("tasks")
-                if not isinstance(raw_tasks, list):
-                    break
-                for item in raw_tasks:
-                    if not isinstance(item, dict):
-                        continue
-                    item_data = cast(dict[str, object], item)
-                    task_key = str(item_data.get("task_key", "")).strip()
-                    spec = expected.get(task_key)
-                    if spec is None or task_key in overrides:
-                        continue
-                    overrides[task_key] = (
-                        _normalize_generated_description(
-                            item_data.get("description_en"),
-                            spec["fallback_en"],
-                        ),
-                        _normalize_generated_description(
-                            item_data.get("description_no"),
-                            spec["fallback_no"],
-                        ),
-                    )
-                break
+                overrides[task_key] = (
+                    _normalize_generated_description(
+                        item.get("description_en"),
+                        spec["fallback_en"],
+                    ),
+                    _normalize_generated_description(
+                        item.get("description_no"),
+                        spec["fallback_no"],
+                    ),
+                )
         return overrides
-    except Exception:  # noqa: BLE001
+    except AIProviderError, AIProviderNotConfigured, Exception:  # noqa: BLE001
         _logger.warning("AI task description generation failed; using deterministic fallback")
         return {}
 

@@ -425,12 +425,13 @@ class TestPlants(BaseApiTest):
                     "AUTH_REQUIRED": "true",
                     "AUTH_MODE": "session",
                     "AUTH_API_KEY": "",
+                    "AI_PROVIDER": "anthropic",
                     "ANTHROPIC_API_KEY": "test-key",
                 },
                 clear=False,
             ),
             patch(
-                "gardenops.routers.ai.Anthropic",
+                "gardenops.services.ai_provider.Anthropic",
                 return_value=mocked_client,
             ),
         ):
@@ -605,12 +606,13 @@ class TestPlants(BaseApiTest):
                     "AUTH_REQUIRED": "true",
                     "AUTH_MODE": "session",
                     "AUTH_API_KEY": "",
+                    "AI_PROVIDER": "anthropic",
                     "ANTHROPIC_API_KEY": "test-key",
                 },
                 clear=False,
             ),
             patch(
-                "gardenops.routers.ai.Anthropic",
+                "gardenops.services.ai_provider.Anthropic",
                 return_value=mocked_client,
             ),
         ):
@@ -701,6 +703,7 @@ class TestPlants(BaseApiTest):
                     "AUTH_REQUIRED": "true",
                     "AUTH_MODE": "session",
                     "AUTH_API_KEY": "",
+                    "AI_PROVIDER": "anthropic",
                     "ANTHROPIC_API_KEY": "test-key",
                     "AI_CARE_DAILY_BUDGET_USER": "1",
                     "AI_CARE_DAILY_BUDGET_GARDEN": "5",
@@ -708,7 +711,7 @@ class TestPlants(BaseApiTest):
                 clear=False,
             ),
             patch(
-                "gardenops.routers.ai.Anthropic",
+                "gardenops.services.ai_provider.Anthropic",
                 return_value=mocked_client,
             ),
         ):

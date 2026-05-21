@@ -4016,12 +4016,13 @@ class TestSecurity(BaseApiTest):
                     "AUTH_REQUIRED": "true",
                     "AUTH_MODE": "session",
                     "AUTH_API_KEY": "",
+                    "AI_PROVIDER": "anthropic",
                     "ANTHROPIC_API_KEY": "test-key",
                 },
                 clear=False,
             ),
             patch(
-                "gardenops.routers.ai.Anthropic",
+                "gardenops.services.ai_provider.Anthropic",
                 return_value=mocked_client,
             ),
         ):
