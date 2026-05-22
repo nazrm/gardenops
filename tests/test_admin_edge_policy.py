@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -20,11 +21,22 @@ class TestAdminEdgePolicy(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
     def _location_block(self, header: str) -> str:
-        start = self.nginx_config.find(header)
-        self.assertNotEqual(start, -1, f"Missing nginx location header: {header}")
-        end = self.nginx_config.find("\n    }\n", start)
-        self.assertNotEqual(end, -1, f"Could not determine location block end for: {header}")
-        return self.nginx_config[start:end]
+        pattern = r"\s+".join(re.escape(tok) for tok in header.split())
+        match = re.search(pattern, self.nginx_config)
+        self.assertIsNotNone(match, f"Missing nginx location header: {header}")
+        start = match.start()
+        brace = self.nginx_config.find("{", start)
+        depth = 1
+        i = brace + 1
+        while i < len(self.nginx_config) and depth > 0:
+            ch = self.nginx_config[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+            i += 1
+        self.assertEqual(depth, 0, f"Unbalanced braces for: {header}")
+        return self.nginx_config[start:i]
 
     def test_manifest_routes_resolve_to_expected_edge_bucket(self) -> None:
         mismatches: list[str] = []
@@ -52,17 +64,20 @@ class TestAdminEdgePolicy(unittest.TestCase):
             self.nginx_config,
         )
 
+        self.assertIn("client_max_body_size 1m;", self.nginx_config)
+        self.assertIn("upstream gardenops {", self.nginx_config)
+
         for rule in ADMIN_EDGE_LOCATION_RULES:
             header = nginx_location_header(rule)
             block = self._location_block(header)
             expected_zone = ADMIN_EDGE_RATE_LIMIT_ZONES[rule.bucket]
             with self.subTest(header=header):
                 self.assertIn(f"limit_req zone={expected_zone}", block)
-                self.assertIn("proxy_pass http://127.0.0.1:8000;", block)
+                self.assertIn("proxy_pass http://gardenops;", block)
                 if rule.pattern == "/api/plots/import":
                     self.assertIn("client_max_body_size 8m;", block)
                 else:
-                    self.assertIn("client_max_body_size 1m;", block)
+                    self.assertNotIn("client_max_body_size 8m;", block)
 
     def test_production_nginx_template_allows_larger_photo_and_upload_routes(self) -> None:
         for header in (
@@ -74,10 +89,10 @@ class TestAdminEdgePolicy(unittest.TestCase):
             with self.subTest(header=header):
                 block = self._location_block(header)
                 self.assertIn("client_max_body_size 8m;", block)
-                self.assertIn("proxy_pass http://127.0.0.1:8000;", block)
+                self.assertIn("proxy_pass http://gardenops;", block)
 
         generic_ai_block = self._location_block("location ^~ /api/ai/ {")
-        self.assertIn("client_max_body_size 1m;", generic_ai_block)
+        self.assertNotIn("client_max_body_size 8m;", generic_ai_block)
 
     def test_production_nginx_template_overwrites_spoofable_client_ip_headers(self) -> None:
         self.assertIn("proxy_set_header X-Real-IP $remote_addr;", self.nginx_config)
