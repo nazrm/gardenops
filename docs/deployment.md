@@ -29,7 +29,6 @@ Add provider keys only for integrations you intend to enable.
 The `deploy/` directory contains example files:
 
 - `gardenops.service.example`
-- `nginx.example.conf`
 - `nginx.production.example.conf`
 
 Review and adapt them for your host paths, service user, Python environment,

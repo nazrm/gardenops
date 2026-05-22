@@ -50,6 +50,21 @@ class TestAdminEdgePolicy(unittest.TestCase):
                 )
         self.assertEqual([], mismatches)
 
+    def test_admin_edge_policy_does_not_capture_neighboring_paths(self) -> None:
+        neighbors = (
+            "/api/snapshots-metadata",
+            "/api/auth/users-public",
+            "/api/auth/user-invitations-extra",
+            "/api/auth/audit-events-export",
+            "/api/auth/security-metrics-export",
+            "/api/auth/sessions-extra",
+            "/api/auth/revoke-danger",
+            "/api/auth/emergency-read-only-mode",
+        )
+        for path in neighbors:
+            with self.subTest(path=path):
+                self.assertIsNone(admin_edge_bucket_for_path(path))
+
     def test_production_nginx_template_tracks_admin_edge_policy(self) -> None:
         self.assertIn(
             "limit_req_zone $binary_remote_addr zone=gardenops_admin_read:10m rate=12r/m;",
@@ -93,6 +108,21 @@ class TestAdminEdgePolicy(unittest.TestCase):
 
         generic_ai_block = self._location_block("location ^~ /api/ai/ {")
         self.assertNotIn("client_max_body_size 8m;", generic_ai_block)
+
+    def test_production_nginx_template_avoids_unbounded_admin_prefixes(self) -> None:
+        forbidden_headers = (
+            "location ^~ /api/snapshots {",
+            "location ^~ /api/auth/users {",
+            "location ^~ /api/auth/user-invitations {",
+            "location ^~ /api/auth/audit-events {",
+            "location ^~ /api/auth/security- {",
+            "location ^~ /api/auth/sessions {",
+            "location ^~ /api/auth/revoke- {",
+            "location ^~ /api/auth/emergency-read-only {",
+        )
+        for header in forbidden_headers:
+            with self.subTest(header=header):
+                self.assertNotIn(header, self.nginx_config)
 
     def test_production_nginx_template_overwrites_spoofable_client_ip_headers(self) -> None:
         self.assertIn("proxy_set_header X-Real-IP $remote_addr;", self.nginx_config)
