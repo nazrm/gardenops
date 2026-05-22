@@ -1,10 +1,6 @@
 # GardenOps
 
 <p align="center">
-  <img src="docs/assets/gardenops-logo.png" alt="GardenOps logo" width="520">
-</p>
-
-<p align="center">
   <strong>Self-hosted garden operations for mapping the space, managing plants,
   scheduling work, and keeping a durable garden history.</strong>
 </p>
