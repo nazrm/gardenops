@@ -117,3 +117,7 @@ only inside the test process so repeated user seeding does not dominate runtime.
   expectations change.
 - Do not commit `.env`, database dumps, media uploads, local terrain files, or
   generated build output.
+
+For a repeatable local review process, including worktree checkout, agent-assisted
+review prompts, Dependabot handling, and merge gates, see
+[pr-review-runbook.md](pr-review-runbook.md).
