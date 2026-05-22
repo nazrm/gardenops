@@ -41,7 +41,9 @@ def parse_args() -> argparse.Namespace:
         "--log-file",
         type=Path,
         default=None,
-        help="Explicit errors.jsonl path. Defaults to GARDENOPS_LOGS_DIR/errors.jsonl or repo logs.",
+        help=(
+            "Explicit errors.jsonl path. Defaults to GARDENOPS_LOGS_DIR/errors.jsonl or repo logs."
+        ),
     )
     parser.add_argument(
         "--require-log",
@@ -139,7 +141,7 @@ def _load_recent_entries(
             ts_str = entry.get("ts", "")
             try:
                 ts = datetime.fromisoformat(ts_str)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
 
             if ts < cutoff:

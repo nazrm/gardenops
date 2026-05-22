@@ -35,7 +35,11 @@ def _python_source_files() -> list[Path]:
 
 
 def _js_source_files() -> list[Path]:
-    return [path for path in EXTRA_SOURCE_FILES if path.suffix in {".cjs", ".js", ".mjs", ".ts"} and path.exists()]
+    return [
+        path
+        for path in EXTRA_SOURCE_FILES
+        if path.suffix in {".cjs", ".js", ".mjs", ".ts"} and path.exists()
+    ]
 
 
 def _record(mapping: dict[str, set[str]], name: str, rel_path: str) -> None:

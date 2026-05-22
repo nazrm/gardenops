@@ -35,6 +35,7 @@ frontend/dist/
 
 # Logs, backups, output, and runtime media
 *.log
+.clawpatch/
 logs/
 backups/
 output/

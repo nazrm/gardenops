@@ -10,7 +10,7 @@ test:
 	uv run python -m pytest tests/ -q --tb=short
 
 lint:
-	uvx ruff check gardenops/ && uvx ruff format --check gardenops/
+	uv run ruff check . && uv run ruff format --check .
 
 typecheck:
 	cd frontend && npx tsc --noEmit
