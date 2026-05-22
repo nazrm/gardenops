@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/gardenops-logo.png" alt="GardenOps" width="900">
+</p>
+
 # GardenOps
 
 <p align="center">
