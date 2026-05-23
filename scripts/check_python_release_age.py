@@ -15,11 +15,11 @@ COOLDOWN_DAYS = 14
 # dependency policy was introduced. The dates are the point where the locked
 # artifact has aged out of the 14-day window; remove entries after they expire.
 TEMPORARY_EXCEPTIONS = {
-    "anthropic": datetime(2026, 5, 27, 18, 12, 44, tzinfo=UTC),
-    "idna": datetime(2026, 5, 26, 22, 45, 58, tzinfo=UTC),
-    "openai": datetime(2026, 5, 29, 22, 30, 36, tzinfo=UTC),
-    "starlette": datetime(2026, 6, 4, 21, 58, 59, tzinfo=UTC),
-    "uvicorn": datetime(2026, 5, 28, 18, 16, 55, tzinfo=UTC),
+    "anthropic==0.102.0": datetime(2026, 5, 27, 18, 12, 44, tzinfo=UTC),
+    "idna==3.15": datetime(2026, 5, 26, 22, 45, 58, tzinfo=UTC),
+    "openai==2.37.0": datetime(2026, 5, 29, 22, 30, 36, tzinfo=UTC),
+    "starlette==1.0.1": datetime(2026, 6, 4, 21, 58, 59, tzinfo=UTC),
+    "uvicorn==0.47.0": datetime(2026, 5, 28, 18, 16, 55, tzinfo=UTC),
 }
 
 
@@ -51,25 +51,27 @@ def main() -> None:
 
     for package_info in lock_data.get("package", []):
         name = str(package_info.get("name", "<unknown>"))
+        version = str(package_info.get("version", "<unknown>"))
+        key = f"{name}=={version}"
         if name == "gardenops":
             continue
 
         upload_times = _candidate_upload_times(package_info)
         if not upload_times:
-            errors.append(f"{name} has no artifact upload-time metadata in uv.lock")
+            errors.append(f"{key} has no artifact upload-time metadata in uv.lock")
             continue
 
         newest_upload = max(upload_times)
         if newest_upload <= cutoff:
             continue
 
-        exception_until = TEMPORARY_EXCEPTIONS.get(name)
+        exception_until = TEMPORARY_EXCEPTIONS.get(key)
         if exception_until and datetime.now(UTC) < exception_until:
-            allowed.append(f"{name} until {exception_until.isoformat()}")
+            allowed.append(f"{key} until {exception_until.isoformat()}")
             continue
 
         errors.append(
-            f"{name} newest artifact {newest_upload.isoformat()} is inside the "
+            f"{key} newest artifact {newest_upload.isoformat()} is inside the "
             f"{COOLDOWN_DAYS}-day cooldown window"
         )
 
