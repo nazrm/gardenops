@@ -37,6 +37,24 @@ systemd/nginx deployment examples. It is designed for self-hosted instances:
 your data, provider keys, logs, media uploads, and terrain files stay under your
 control.
 
+### Operational Strengths
+
+- Private operations hub: maps, plots, plants, tasks, issues, journal entries,
+  media, reports, and garden history live in one system.
+- Self-hosted control: location data, photos, logs, provider keys, terrain
+  files, and operational records stay under the operator's control.
+- Durable garden memory: observations, treatments, harvests, media, and task
+  history are structured so a garden can be managed across seasons instead of
+  recreated from scattered notes.
+- Map-linked workflows: plant records, plot context, issues, journal entries,
+  media, and work planning connect back to the physical garden layout.
+- Built for serious operators: multi-garden memberships, roles, exports,
+  calendar subscriptions, notifications, weather context, optional AI, and
+  ShadeMap support are available for more complex garden operations.
+- Inspectable and maintainable: open source code, migrations, CI checks,
+  security controls, deployment examples, and documented configuration make the
+  system practical to operate and adapt.
+
 ## Features
 
 ### Garden Planning
