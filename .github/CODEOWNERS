@@ -1,0 +1,10 @@
+# Dependency and workflow changes need owner review because they affect the
+# trusted code executed during install, build, test, audit, and CI.
+/.github/CODEOWNERS @nazrm
+/.github/dependabot.yml @nazrm
+/.github/workflows/ @nazrm
+/pyproject.toml @nazrm
+/uv.lock @nazrm
+/frontend/package.json @nazrm
+/frontend/package-lock.json @nazrm
+/docs/dependency-security-policy.md @nazrm
