@@ -33,7 +33,7 @@ jobs:
       - run: uv pip freeze | grep -v '^-e ' > /tmp/gardenops-backend-requirements.txt
       - run: uv run --frozen --group audit pip-audit --strict -r /tmp/gardenops-backend-requirements.txt
       - run: uv export --frozen --format cyclonedx1.5 --all-groups --output-file gardenops-python.cdx.json --quiet
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: gardenops-python-sbom
           path: gardenops-python.cdx.json
@@ -57,7 +57,7 @@ jobs:
       - run: npm audit --audit-level=high
       - run: npm audit signatures
       - run: npm sbom --package-lock-only --sbom-format cyclonedx --sbom-type application > gardenops-frontend.cdx.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: gardenops-frontend-sbom
           path: frontend/gardenops-frontend.cdx.json
