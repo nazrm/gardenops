@@ -45,6 +45,10 @@ for the affected behavior.
   dependency graphs for installation and review.
 - Development, CI, deployment, and agent workflows must install from lockfiles:
   `uv sync --frozen` for Python and `npm ci` for frontend dependencies.
+- Routine Python lock refreshes are checked against package upload timestamps in
+  `uv.lock`. Routine npm lock refreshes query npm registry publish timestamps.
+  Newly published packages need a documented temporary exception until their
+  normal cooldown window has passed.
 - PRs that refresh lockfiles without the cooldown guard or without explaining a
   security bypass should be rejected even if audits are green.
 - Lockfile changes must be reviewed as code because they can add new transitive
@@ -74,6 +78,12 @@ and this policy require owner review through `CODEOWNERS`.
 
 The dependency review workflow must fail PRs that introduce high or critical
 known vulnerabilities in runtime or development dependency scopes.
+
+CI must also reject lockfiles that resolve packages from unexpected registries,
+direct URLs, git sources, local paths, or registry packages without integrity
+metadata. Python and npm lockfiles must also reject packages whose uploaded
+artifacts or package versions are inside the 14-day cooldown window unless a
+temporary exception is present in the release-age check.
 
 ## Rollback And Exceptions
 

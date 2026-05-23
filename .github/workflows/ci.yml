@@ -43,6 +43,9 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+      - run: uv lock --check
+      - run: python scripts/check_dependency_sources.py
+      - run: python scripts/check_python_release_age.py
       - run: uv sync --frozen --group test --group lint
       - run: uv run ruff check gardenops tests
       - run: uv run ruff format --check gardenops tests
@@ -63,6 +66,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
         working-directory: frontend
+      - run: node scripts/check_npm_release_age.cjs
       - run: npm run build
         working-directory: frontend
       - run: node scripts/check_no_sourcemaps.cjs frontend/dist
