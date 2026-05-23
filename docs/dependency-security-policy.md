@@ -17,6 +17,8 @@ fixes should move through a separate emergency path.
   Action updates.
 - Dependabot enforces the routine cooldown window for pip, npm, and GitHub
   Actions updates.
+- GitHub Actions must be pinned to immutable commit SHAs. Keep a version comment
+  on each pinned action so the intended upstream ref is reviewable.
 
 ## Emergency Security Updates
 
@@ -45,6 +47,8 @@ for the affected behavior.
   dependency graphs for installation and review.
 - Development, CI, deployment, and agent workflows must install from lockfiles:
   `uv sync --frozen` for Python and `npm ci` for frontend dependencies.
+- Audit tools are dependencies too. They must be declared in project manifests
+  and installed from lockfiles rather than installed ad hoc in CI.
 - Routine Python lock refreshes are checked against package upload timestamps in
   `uv.lock`. Routine npm lock refreshes query npm registry publish timestamps.
   Newly published packages need a documented temporary exception until their
@@ -84,6 +88,10 @@ direct URLs, git sources, local paths, or registry packages without integrity
 metadata. Python and npm lockfiles must also reject packages whose uploaded
 artifacts or package versions are inside the 14-day cooldown window unless a
 temporary exception is present in the release-age check.
+
+The scheduled dependency audit should publish CycloneDX SBOM artifacts for the
+Python and frontend dependency graphs. The frontend audit must also run npm
+registry signature and attestation verification.
 
 ## Rollback And Exceptions
 

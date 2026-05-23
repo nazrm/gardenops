@@ -8,3 +8,6 @@
 /frontend/package.json @nazrm
 /frontend/package-lock.json @nazrm
 /docs/dependency-security-policy.md @nazrm
+/scripts/check_dependency_sources.py @nazrm
+/scripts/check_npm_release_age.cjs @nazrm
+/scripts/check_python_release_age.py @nazrm
