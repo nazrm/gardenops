@@ -29,7 +29,7 @@ jobs:
       - run: uv lock --check
       - run: python scripts/check_dependency_sources.py
       - run: python scripts/check_python_release_age.py
-      - run: uv sync --frozen --group test --group audit
+      - run: uv sync --frozen --all-groups
       - run: uv pip freeze | grep -v '^-e ' > /tmp/gardenops-backend-requirements.txt
       - run: uv run --frozen --group audit pip-audit --strict -r /tmp/gardenops-backend-requirements.txt
       - run: uv export --frozen --format cyclonedx1.5 --all-groups --output-file gardenops-python.cdx.json --quiet
