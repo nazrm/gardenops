@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from gardenops.admin_edge_policy import (
+    ADMIN_EDGE_GENERIC_ROUTE_EXCEPTIONS,
     ADMIN_EDGE_LOCATION_RULES,
     ADMIN_EDGE_RATE_LIMIT_ZONES,
     ADMIN_EDGE_ROUTE_MANIFEST,
@@ -38,6 +39,48 @@ class TestAdminEdgePolicy(unittest.TestCase):
         self.assertEqual(depth, 0, f"Unbalanced braces for: {header}")
         return self.nginx_config[start:i]
 
+    def _api_route_keys(self) -> set[tuple[str, str]]:
+        from gardenops.main import app
+
+        route_keys: set[tuple[str, str]] = set()
+        for route in app.routes:
+            path = getattr(route, "path", "")
+            methods = getattr(route, "methods", None)
+            if not path.startswith("/api/") or not methods:
+                continue
+            for method in methods:
+                if method not in {"HEAD", "OPTIONS"}:
+                    route_keys.add((method, path))
+        return route_keys
+
+    @staticmethod
+    def _route_requires_admin_edge_decision(path: str) -> bool:
+        exact_paths = {
+            "/api/snapshots",
+            "/api/plots/export",
+            "/api/plots/import",
+            "/api/auth/users",
+            "/api/auth/user-invitations",
+            "/api/auth/audit-events",
+            "/api/auth/security-metrics",
+            "/api/auth/security-alerts",
+            "/api/auth/sessions",
+            "/api/auth/revoke-user-sessions",
+            "/api/auth/revoke-all-sessions",
+            "/api/auth/emergency-read-only",
+            "/api/gardens/{garden_id}",
+        }
+        prefixes = (
+            "/api/admin/",
+            "/api/snapshots/",
+            "/api/auth/mfa/",
+            "/api/auth/users/",
+            "/api/auth/user-invitations/",
+            "/api/gardens/{garden_id}/",
+            "/api/media/plants/",
+        )
+        return path in exact_paths or any(path.startswith(prefix) for prefix in prefixes)
+
     def test_manifest_routes_resolve_to_expected_edge_bucket(self) -> None:
         mismatches: list[str] = []
         for route in ADMIN_EDGE_ROUTE_MANIFEST:
@@ -49,6 +92,33 @@ class TestAdminEdgePolicy(unittest.TestCase):
                     f"{route.bucket}, got {actual_bucket}",
                 )
         self.assertEqual([], mismatches)
+
+    def test_route_surface_has_explicit_admin_edge_decisions(self) -> None:
+        documented_routes = {
+            (route.method, route.path_template) for route in ADMIN_EDGE_ROUTE_MANIFEST
+        }
+        documented_routes.update(
+            (route.method, route.path_template) for route in ADMIN_EDGE_GENERIC_ROUTE_EXCEPTIONS
+        )
+
+        missing_decisions = [
+            f"{method} {path}"
+            for method, path in sorted(self._api_route_keys())
+            if self._route_requires_admin_edge_decision(path)
+            and (method, path) not in documented_routes
+        ]
+        self.assertEqual(
+            [],
+            missing_decisions,
+            "Add each route to ADMIN_EDGE_ROUTE_MANIFEST or ADMIN_EDGE_GENERIC_ROUTE_EXCEPTIONS.",
+        )
+
+    def test_generic_route_exceptions_stay_on_standard_api_edge(self) -> None:
+        for route in ADMIN_EDGE_GENERIC_ROUTE_EXCEPTIONS:
+            with self.subTest(route=f"{route.method} {route.path_template}"):
+                self.assertEqual("generic_api", route.decision)
+                concrete_path = materialize_path_template(route.path_template)
+                self.assertIsNone(admin_edge_bucket_for_path(concrete_path))
 
     def test_admin_edge_policy_does_not_capture_neighboring_paths(self) -> None:
         neighbors = (

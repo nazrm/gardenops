@@ -845,6 +845,10 @@ def _validate_runtime_security_config() -> None:
             raise RuntimeError("INTERNET_EXPOSED=true requires explicit ALLOWED_HOSTS")
         if any(host == "*" for host in allowed_hosts):
             raise RuntimeError("INTERNET_EXPOSED=true forbids wildcard ALLOWED_HOSTS")
+        if _csp_report_only():
+            raise RuntimeError("INTERNET_EXPOSED=true forbids CSP_REPORT_ONLY=true")
+        if _api_docs_enabled():
+            raise RuntimeError("INTERNET_EXPOSED=true forbids API_DOCS_ENABLED=true")
 
     if not _is_production():
         return
@@ -875,6 +879,8 @@ def _validate_runtime_security_config() -> None:
     _local = {"localhost", "127.0.0.1", "::1", "[::1]", "testserver"}
     if any(host in _local for host in allowed_hosts):
         raise RuntimeError("APP_ENV=production requires non-localhost ALLOWED_HOSTS")
+    if _api_docs_enabled():
+        raise RuntimeError("APP_ENV=production forbids API_DOCS_ENABLED=true")
 
 
 def _trust_proxy_headers() -> bool:

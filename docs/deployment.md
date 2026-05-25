@@ -19,8 +19,13 @@ TRUST_PROXY_HEADERS=true
 TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 RATE_LIMIT_BACKEND=redis
 RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379/0
+API_DOCS_ENABLED=false
+CSP_REPORT_ONLY=false
 AUTH_MFA_SECRET_KEY=change-me
 ```
+
+The service rejects `API_DOCS_ENABLED=true` in production or internet-exposed
+deployments, and rejects `CSP_REPORT_ONLY=true` when `INTERNET_EXPOSED=true`.
 
 Add provider keys only for integrations you intend to enable.
 
@@ -81,6 +86,6 @@ Before exposing a deployment:
   secrets.
 - Confirm `ALLOWED_HOSTS` and `CORS_ALLOW_ORIGINS` match the public origin.
 - Confirm HTTPS is enforced at the proxy.
-- Confirm API docs are disabled unless you deliberately enabled them.
+- Confirm API docs are disabled and CSP is enforced.
 - Run the repository checks from [development.md](development.md).
 - Review [SECURITY.md](../SECURITY.md).
