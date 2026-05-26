@@ -92,12 +92,12 @@ environment variable read by the public app.
 | `APP_NAME` | Runtime product name used in metadata, MFA issuer defaults, calendar exports, and user-agent labels. | `GardenOps` |
 | `APP_SLUG` | Runtime slug used for exports and user-agent labels. | `gardenops` |
 | `MULTI_INSTANCE` | Enables multi-instance deployment assumptions. | `false` |
-| `API_<SETTING>` | API docs, mutation, and request-timeout tuning. | `API_DOCS_ENABLED=false` |
+| `API_<SETTING>` | API docs, mutation, and request-timeout tuning. Production and internet-exposed deployments reject enabled API docs. | `API_DOCS_ENABLED=false` |
 | `MAX_<SETTING>` | Request body limits for standard API, import, and AI photo routes. | `MAX_API_BODY_BYTES=1048576` |
 | `CLIENT_ERROR_RATE_LIMIT` | Rate limit applied to repeated client-error responses. | `60` |
 | `MUTATION_RATE_LIMIT` | General mutation request rate limit. | `20` |
 | `AUTH_<SETTING>` | Authentication, session-cookie, CSRF, password-policy, invitation, MFA, adaptive-friction, bootstrap, and admin step-up settings. | `AUTH_ADMIN_MFA_REQUIRED=true` |
-| `CSP_REPORT_<SETTING>` | Content Security Policy report mode, endpoint, rate, and body-size settings. | `CSP_REPORT_ONLY=false` |
+| `CSP_REPORT_<SETTING>` | Content Security Policy report mode, endpoint, rate, and body-size settings. Internet-exposed deployments reject report-only mode. | `CSP_REPORT_ONLY=false` |
 | `RATE_LIMIT_<SETTING>` | Rate-limit backend, Redis, bucket, timeout, and global-limit settings. | `RATE_LIMIT_MAX_BUCKETS=50000` |
 | `REDIS_URL` | Fallback Redis URL when `RATE_LIMIT_REDIS_URL` is not set. | `redis://127.0.0.1:6379/0` |
 | `AI_<SETTING>` | AI feature rate limits, quotas, concurrency limits, care-batch settings, and rich-context opt-in. | `AI_RICH_CONTEXT_ENABLED=false` |

@@ -3502,17 +3502,49 @@ class TestSecurity(BaseApiTest):
             allowed = self.client.get("/api/plots")
             self.assertEqual(allowed.status_code, 200)
 
+    @staticmethod
+    def _valid_production_runtime_env() -> dict[str, str]:
+        return {
+            "APP_ENV": "production",
+            "INTERNET_EXPOSED": "false",
+            "MULTI_INSTANCE": "false",
+            "AUTH_REQUIRED": "true",
+            "AUTH_MODE": "session",
+            "AUTH_SESSION_COOKIE_SECURE": "true",
+            "AUTH_SESSION_COOKIE_SAMESITE": "lax",
+            "ALLOW_INSECURE_REMOTE": "false",
+            "CORS_ALLOW_ORIGINS": "https://gardenops.example.com",
+            "ALLOWED_HOSTS": "gardenops.example.com",
+            "API_DOCS_ENABLED": "false",
+            "CSP_REPORT_ONLY": "false",
+        }
+
+    @staticmethod
+    def _valid_internet_exposed_runtime_env() -> dict[str, str]:
+        return {
+            "APP_ENV": "development",
+            "INTERNET_EXPOSED": "true",
+            "MULTI_INSTANCE": "false",
+            "AUTH_REQUIRED": "true",
+            "AUTH_MODE": "session",
+            "AUTH_API_KEY": "",
+            "AUTH_SESSION_COOKIE_SECURE": "true",
+            "AUTH_SESSION_COOKIE_SAMESITE": "lax",
+            "ALLOW_INSECURE_REMOTE": "false",
+            "CORS_ALLOW_ORIGINS": "https://gardenops.example.com",
+            "ALLOWED_HOSTS": "gardenops.example.com",
+            "TRUST_PROXY_HEADERS": "true",
+            "TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
+            "RATE_LIMIT_BACKEND": "redis",
+            "RATE_LIMIT_REDIS_URL": "redis://example.invalid:6379/0",
+            "API_DOCS_ENABLED": "false",
+            "CSP_REPORT_ONLY": "false",
+        }
+
     def test_validate_runtime_security_config_requires_secure_prod_cors(self) -> None:
         with patch.dict(
             os.environ,
-            {
-                "APP_ENV": "production",
-                "AUTH_REQUIRED": "true",
-                "AUTH_MODE": "session",
-                "ALLOW_INSECURE_REMOTE": "false",
-                "CORS_ALLOW_ORIGINS": "https://gardenops.example.com",
-                "ALLOWED_HOSTS": "gardenops.example.com",
-            },
+            self._valid_production_runtime_env(),
             clear=False,
         ):
             _validate_runtime_security_config()
@@ -3520,12 +3552,8 @@ class TestSecurity(BaseApiTest):
         with patch.dict(
             os.environ,
             {
-                "APP_ENV": "production",
-                "AUTH_REQUIRED": "true",
-                "AUTH_MODE": "session",
-                "ALLOW_INSECURE_REMOTE": "false",
+                **self._valid_production_runtime_env(),
                 "CORS_ALLOW_ORIGINS": "*",
-                "ALLOWED_HOSTS": "gardenops.example.com",
             },
             clear=False,
         ):
@@ -3537,19 +3565,7 @@ class TestSecurity(BaseApiTest):
     ) -> None:
         with patch.dict(
             os.environ,
-            {
-                "APP_ENV": "development",
-                "INTERNET_EXPOSED": "true",
-                "AUTH_REQUIRED": "true",
-                "AUTH_MODE": "session",
-                "AUTH_API_KEY": "",
-                "ALLOW_INSECURE_REMOTE": "false",
-                "TRUST_PROXY_HEADERS": "true",
-                "TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
-                "RATE_LIMIT_BACKEND": "redis",
-                "RATE_LIMIT_REDIS_URL": "redis://example.invalid:6379/0",
-                "ALLOWED_HOSTS": "gardenops.example.com",
-            },
+            self._valid_internet_exposed_runtime_env(),
             clear=False,
         ):
             _validate_runtime_security_config()
@@ -3557,17 +3573,8 @@ class TestSecurity(BaseApiTest):
         with patch.dict(
             os.environ,
             {
-                "APP_ENV": "development",
-                "INTERNET_EXPOSED": "true",
+                **self._valid_internet_exposed_runtime_env(),
                 "AUTH_REQUIRED": "false",
-                "AUTH_MODE": "session",
-                "AUTH_API_KEY": "",
-                "ALLOW_INSECURE_REMOTE": "false",
-                "TRUST_PROXY_HEADERS": "true",
-                "TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
-                "RATE_LIMIT_BACKEND": "redis",
-                "RATE_LIMIT_REDIS_URL": "redis://example.invalid:6379/0",
-                "ALLOWED_HOSTS": "gardenops.example.com",
             },
             clear=False,
         ):
@@ -3579,17 +3586,8 @@ class TestSecurity(BaseApiTest):
                 with patch.dict(
                     os.environ,
                     {
-                        "APP_ENV": "development",
-                        "INTERNET_EXPOSED": "true",
-                        "AUTH_REQUIRED": "true",
+                        **self._valid_internet_exposed_runtime_env(),
                         "AUTH_MODE": mode,
-                        "AUTH_API_KEY": "",
-                        "ALLOW_INSECURE_REMOTE": "false",
-                        "TRUST_PROXY_HEADERS": "true",
-                        "TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
-                        "RATE_LIMIT_BACKEND": "redis",
-                        "RATE_LIMIT_REDIS_URL": "redis://example.invalid:6379/0",
-                        "ALLOWED_HOSTS": "gardenops.example.com",
                     },
                     clear=False,
                 ):
@@ -3599,17 +3597,8 @@ class TestSecurity(BaseApiTest):
         with patch.dict(
             os.environ,
             {
-                "APP_ENV": "development",
-                "INTERNET_EXPOSED": "true",
-                "AUTH_REQUIRED": "true",
-                "AUTH_MODE": "session",
+                **self._valid_internet_exposed_runtime_env(),
                 "AUTH_API_KEY": "legacy-shared-key",
-                "ALLOW_INSECURE_REMOTE": "false",
-                "TRUST_PROXY_HEADERS": "true",
-                "TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
-                "RATE_LIMIT_BACKEND": "redis",
-                "RATE_LIMIT_REDIS_URL": "redis://example.invalid:6379/0",
-                "ALLOWED_HOSTS": "gardenops.example.com",
             },
             clear=False,
         ):
@@ -3619,17 +3608,8 @@ class TestSecurity(BaseApiTest):
         with patch.dict(
             os.environ,
             {
-                "APP_ENV": "development",
-                "INTERNET_EXPOSED": "true",
-                "AUTH_REQUIRED": "true",
-                "AUTH_MODE": "session",
-                "AUTH_API_KEY": "",
+                **self._valid_internet_exposed_runtime_env(),
                 "ALLOW_INSECURE_REMOTE": "true",
-                "TRUST_PROXY_HEADERS": "true",
-                "TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
-                "RATE_LIMIT_BACKEND": "redis",
-                "RATE_LIMIT_REDIS_URL": "redis://example.invalid:6379/0",
-                "ALLOWED_HOSTS": "gardenops.example.com",
             },
             clear=False,
         ):
@@ -3642,16 +3622,8 @@ class TestSecurity(BaseApiTest):
         with patch.dict(
             os.environ,
             {
-                "APP_ENV": "development",
-                "INTERNET_EXPOSED": "true",
-                "AUTH_REQUIRED": "true",
-                "AUTH_MODE": "session",
-                "AUTH_API_KEY": "",
-                "ALLOW_INSECURE_REMOTE": "false",
+                **self._valid_internet_exposed_runtime_env(),
                 "TRUST_PROXY_HEADERS": "false",
-                "RATE_LIMIT_BACKEND": "redis",
-                "RATE_LIMIT_REDIS_URL": "redis://example.invalid:6379/0",
-                "ALLOWED_HOSTS": "gardenops.example.com",
             },
             clear=False,
         ):
@@ -3661,18 +3633,7 @@ class TestSecurity(BaseApiTest):
     def test_validate_runtime_security_config_internet_exposed_requires_trusted_proxy_cidrs(
         self,
     ) -> None:
-        base_env = {
-            "APP_ENV": "development",
-            "INTERNET_EXPOSED": "true",
-            "AUTH_REQUIRED": "true",
-            "AUTH_MODE": "session",
-            "AUTH_API_KEY": "",
-            "ALLOW_INSECURE_REMOTE": "false",
-            "TRUST_PROXY_HEADERS": "true",
-            "RATE_LIMIT_BACKEND": "redis",
-            "RATE_LIMIT_REDIS_URL": "redis://example.invalid:6379/0",
-            "ALLOWED_HOSTS": "gardenops.example.com",
-        }
+        base_env = self._valid_internet_exposed_runtime_env()
         with patch.dict(
             os.environ,
             {
@@ -3720,11 +3681,7 @@ class TestSecurity(BaseApiTest):
         with patch.dict(
             os.environ,
             {
-                "APP_ENV": "production",
-                "AUTH_REQUIRED": "true",
-                "AUTH_MODE": "session",
-                "ALLOW_INSECURE_REMOTE": "false",
-                "CORS_ALLOW_ORIGINS": "https://gardenops.example.com",
+                **self._valid_production_runtime_env(),
                 "ALLOWED_HOSTS": "",
             },
             clear=False,
@@ -3735,16 +3692,7 @@ class TestSecurity(BaseApiTest):
         with patch.dict(
             os.environ,
             {
-                "APP_ENV": "development",
-                "INTERNET_EXPOSED": "true",
-                "AUTH_REQUIRED": "true",
-                "AUTH_MODE": "session",
-                "AUTH_API_KEY": "",
-                "ALLOW_INSECURE_REMOTE": "false",
-                "TRUST_PROXY_HEADERS": "true",
-                "TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
-                "RATE_LIMIT_BACKEND": "redis",
-                "RATE_LIMIT_REDIS_URL": "redis://example.invalid:6379/0",
+                **self._valid_internet_exposed_runtime_env(),
                 "ALLOWED_HOSTS": "",
             },
             clear=False,
@@ -3785,6 +3733,56 @@ class TestSecurity(BaseApiTest):
             clear=False,
         ):
             self.assertFalse(_api_docs_enabled())
+
+    def test_validate_runtime_security_config_internet_exposed_requires_enforced_csp(
+        self,
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                **self._valid_internet_exposed_runtime_env(),
+                "CSP_REPORT_ONLY": "true",
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "CSP_REPORT_ONLY=true"):
+                _validate_runtime_security_config()
+
+    def test_validate_runtime_security_config_forbids_public_api_docs(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                **self._valid_production_runtime_env(),
+                "API_DOCS_ENABLED": "true",
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "API_DOCS_ENABLED=true"):
+                _validate_runtime_security_config()
+
+        with patch.dict(
+            os.environ,
+            {
+                **self._valid_internet_exposed_runtime_env(),
+                "API_DOCS_ENABLED": "true",
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "API_DOCS_ENABLED=true"):
+                _validate_runtime_security_config()
+
+        with patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "development",
+                "INTERNET_EXPOSED": "false",
+                "MULTI_INSTANCE": "false",
+                "API_DOCS_ENABLED": "true",
+                "CSP_REPORT_ONLY": "true",
+            },
+            clear=False,
+        ):
+            _validate_runtime_security_config()
 
     def test_internet_exposed_requests_require_trusted_edge_proxy(self) -> None:
         with patch.dict(
@@ -3844,19 +3842,7 @@ class TestSecurity(BaseApiTest):
     def test_validate_runtime_security_config_requires_shared_rate_limit_backend(self) -> None:
         with patch.dict(
             os.environ,
-            {
-                "APP_ENV": "development",
-                "INTERNET_EXPOSED": "true",
-                "AUTH_REQUIRED": "true",
-                "AUTH_MODE": "session",
-                "AUTH_API_KEY": "",
-                "ALLOW_INSECURE_REMOTE": "false",
-                "TRUST_PROXY_HEADERS": "true",
-                "TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
-                "RATE_LIMIT_BACKEND": "redis",
-                "RATE_LIMIT_REDIS_URL": "redis://example.invalid:6379/0",
-                "ALLOWED_HOSTS": "gardenops.example.com",
-            },
+            self._valid_internet_exposed_runtime_env(),
             clear=False,
         ):
             _validate_runtime_security_config()
@@ -3864,18 +3850,10 @@ class TestSecurity(BaseApiTest):
         with patch.dict(
             os.environ,
             {
-                "APP_ENV": "development",
-                "INTERNET_EXPOSED": "true",
-                "AUTH_REQUIRED": "true",
-                "AUTH_MODE": "session",
-                "AUTH_API_KEY": "",
-                "ALLOW_INSECURE_REMOTE": "false",
-                "TRUST_PROXY_HEADERS": "true",
-                "TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
+                **self._valid_internet_exposed_runtime_env(),
                 "RATE_LIMIT_BACKEND": "memory",
                 "RATE_LIMIT_REDIS_URL": "",
                 "REDIS_URL": "",
-                "ALLOWED_HOSTS": "gardenops.example.com",
             },
             clear=False,
         ):

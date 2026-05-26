@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Final, Literal
 
 AdminEdgeBucket = Literal["admin_read", "admin_write"]
+AdminEdgeDecision = Literal["admin_read", "admin_write", "generic_api"]
 AdminEdgeMatchKind = Literal["exact", "prefix", "regex"]
 
 
@@ -21,6 +22,14 @@ class AdminEdgeLocationRule:
     match_kind: AdminEdgeMatchKind
     pattern: str
     bucket: AdminEdgeBucket
+    rationale: str
+
+
+@dataclass(frozen=True)
+class AdminEdgeRouteDecision:
+    method: str
+    path_template: str
+    decision: AdminEdgeDecision
     rationale: str
 
 
@@ -262,6 +271,72 @@ ADMIN_EDGE_ROUTE_MANIFEST: Final[tuple[AdminEdgeRoute, ...]] = (
         path_template="/api/media/plants/populate-missing-covers",
         bucket="admin_write",
         rationale="Cover population performs admin-triggered remote fetch and mutation work.",
+    ),
+)
+
+
+# Garden-scoped management routes still require application auth and
+# authorization, but intentionally remain on the standard API edge bucket.
+ADMIN_EDGE_GENERIC_ROUTE_EXCEPTIONS: Final[tuple[AdminEdgeRouteDecision, ...]] = (
+    AdminEdgeRouteDecision(
+        method="GET",
+        path_template="/api/gardens/{garden_id}/memberships",
+        decision="generic_api",
+        rationale="Garden membership reads are garden-scoped rather than platform-admin.",
+    ),
+    AdminEdgeRouteDecision(
+        method="POST",
+        path_template="/api/gardens/{garden_id}/memberships",
+        decision="generic_api",
+        rationale="Garden membership changes rely on application garden-owner authorization.",
+    ),
+    AdminEdgeRouteDecision(
+        method="DELETE",
+        path_template="/api/gardens/{garden_id}/memberships/{user_id}",
+        decision="generic_api",
+        rationale="Garden member removal relies on application garden-owner authorization.",
+    ),
+    AdminEdgeRouteDecision(
+        method="GET",
+        path_template="/api/gardens/{garden_id}/settings",
+        decision="generic_api",
+        rationale="Garden settings reads are garden-scoped rather than platform-admin.",
+    ),
+    AdminEdgeRouteDecision(
+        method="PATCH",
+        path_template="/api/gardens/{garden_id}/settings",
+        decision="generic_api",
+        rationale="Garden settings updates rely on application garden-owner authorization.",
+    ),
+    AdminEdgeRouteDecision(
+        method="POST",
+        path_template="/api/gardens/{garden_id}/zones",
+        decision="generic_api",
+        rationale="Garden zone creation is a garden-scoped management operation.",
+    ),
+    AdminEdgeRouteDecision(
+        method="PUT",
+        path_template="/api/gardens/{garden_id}/complete-onboarding",
+        decision="generic_api",
+        rationale="Garden onboarding completion is scoped to the selected garden.",
+    ),
+    AdminEdgeRouteDecision(
+        method="PATCH",
+        path_template="/api/gardens/{garden_id}/complete-onboarding",
+        decision="generic_api",
+        rationale="Garden onboarding completion is scoped to the selected garden.",
+    ),
+    AdminEdgeRouteDecision(
+        method="POST",
+        path_template="/api/gardens/{garden_id}/complete-onboarding",
+        decision="generic_api",
+        rationale="Garden onboarding completion is scoped to the selected garden.",
+    ),
+    AdminEdgeRouteDecision(
+        method="POST",
+        path_template="/api/media/plants/{plt_id}/cover",
+        decision="generic_api",
+        rationale="Plant-cover selection is a garden/content management operation.",
     ),
 )
 
