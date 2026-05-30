@@ -1,5 +1,5 @@
 import { t } from "../core/i18n";
-import { setEscapedHtml } from "../core/sanitize";
+import { setReviewedDynamicHtml } from "../core/sanitize";
 
 export function trapFocus(container: HTMLElement): () => void {
   const selector = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
@@ -32,7 +32,7 @@ export function createModal(ariaLabel: string, innerMarkup: string): {
   dialog.setAttribute("role", "dialog");
   dialog.setAttribute("aria-modal", "true");
   dialog.setAttribute("aria-label", ariaLabel);
-  setEscapedHtml(dialog, innerMarkup);
+  setReviewedDynamicHtml(dialog, innerMarkup);
   document.body.appendChild(dialog);
 
   const releaseFocusTrap = trapFocus(dialog);

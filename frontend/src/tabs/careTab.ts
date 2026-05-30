@@ -354,7 +354,15 @@ async function generateMissingCareInstructions(): Promise<void> {
     ctx.invalidatePlantsCache();
     ctx.state.plantsCache = await getPlants();
     const remainingCount = result.remaining_without_care;
-    if (totalGenerated === 0) {
+    if (result.status === "partial") {
+      ctx.showToast(
+        t("care.generated_partial_failure", {
+          generated: totalGenerated,
+          remaining: remainingCount,
+        }),
+        "error",
+      );
+    } else if (totalGenerated === 0) {
       ctx.showToast(
         t("care.all_already_generated"),
         "success",

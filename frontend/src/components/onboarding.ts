@@ -1,4 +1,4 @@
-import { escapeHtml, setEscapedHtml } from "../core/sanitize";
+import { escapeHtml, setReviewedDynamicHtml } from "../core/sanitize";
 import { getLocale, setLocale, subscribeLocaleChange, t } from "../core/i18n";
 import {
   completeGardenOnboardingApi,
@@ -297,7 +297,7 @@ export function showOnboarding(
 
   function render(): void {
     const stepTitles = getStepTitles();
-    setEscapedHtml(el, `
+    setReviewedDynamicHtml(el, `
       <div class="onboarding-card">
         <div class="onboarding-card-header">
           <span class="onboarding-card-language-label">${escapeHtml(t("common.language"))}</span>

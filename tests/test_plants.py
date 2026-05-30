@@ -641,6 +641,226 @@ class TestPlants(BaseApiTest):
         )
         mocked_client.messages.create.assert_called_once()
 
+    def test_generate_missing_care_returns_partial_when_later_batch_fails(self) -> None:
+        from gardenops.services.ai_provider import AIProviderError
+
+        default_garden_id = self._get_default_garden_id()
+        created = self._create_test_user(
+            "care_partial_user",
+            "carepartialpass123",
+            role="editor",
+        )
+        user_id = int(created["id"])
+
+        conn = db.get_db()
+        try:
+            db.executemany(
+                conn,
+                """
+                INSERT INTO plants (
+                    plt_id, name, latin, category, bloom_month, color,
+                    hardiness, height_cm, light, link
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                [
+                    (
+                        "PLT-PART-1",
+                        "A Partial Basil",
+                        "Ocimum basilicum",
+                        "frø",
+                        "juli",
+                        "grønn",
+                        "H1",
+                        40,
+                        "sol",
+                        "",
+                    ),
+                    (
+                        "PLT-PART-2",
+                        "B Partial Chard",
+                        "Beta vulgaris",
+                        "frø",
+                        "august",
+                        "grønn",
+                        "H3",
+                        35,
+                        "sol",
+                        "",
+                    ),
+                ],
+            )
+            db.executemany(
+                conn,
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES (%s, %s, %s)
+                ON CONFLICT(plt_id, garden_id) DO UPDATE SET
+                    owner_user_id = excluded.owner_user_id
+                """,
+                [
+                    ("PLT-PART-1", user_id, default_garden_id),
+                    ("PLT-PART-2", user_id, default_garden_id),
+                ],
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        care_fields = {
+            "care_watering": "Water the first batch deeply.",
+            "care_soil": "Use rich, free-draining soil.",
+            "care_planting": "Plant after frost risk has passed.",
+            "care_maintenance": "Pinch regularly to keep growth compact.",
+            "care_notes": "Harvest often.",
+        }
+        mock_generate = MagicMock(
+            side_effect=[
+                {"PLT-PART-1": care_fields},
+                AIProviderError("provider down", provider="anthropic"),
+            ],
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AUTH_REQUIRED": "true",
+                    "AUTH_MODE": "session",
+                    "AUTH_API_KEY": "",
+                    "AI_PROVIDER": "anthropic",
+                    "ANTHROPIC_API_KEY": "test-key",
+                    "AI_CARE_BATCH_SIZE": "1",
+                },
+                clear=False,
+            ),
+            patch("gardenops.routers.ai.generate_care_batch_with_ai", mock_generate),
+            patch("gardenops.routers.ai.notify_garden_modified") as mock_notify,
+        ):
+            client = self._new_client()
+            _, csrf = self._login_session(
+                "care_partial_user",
+                "carepartialpass123",
+                client=client,
+            )
+            headers = self._session_headers(csrf, garden_id=default_garden_id)
+
+            response = client.post(
+                "/api/ai/generate-missing-care",
+                headers=headers,
+                json={"max_plants": 2},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json(),
+            {
+                "status": "partial",
+                "generated": 1,
+                "missing_before": 2,
+                "remaining_without_care": 1,
+                "updated_plant_ids": ["PLT-PART-1"],
+                "attempted": 2,
+                "has_more": False,
+                "error": "provider down",
+            },
+        )
+        self.assertEqual(mock_generate.call_count, 2)
+        mock_notify.assert_called_once_with()
+
+        conn = db.get_db()
+        try:
+            rows = conn.execute(
+                """
+                SELECT plt_id, care_watering
+                FROM plants
+                WHERE plt_id IN ('PLT-PART-1', 'PLT-PART-2')
+                ORDER BY plt_id
+                """,
+            ).fetchall()
+        finally:
+            db.return_db(conn)
+
+        care_by_id = {str(row["plt_id"]): str(row["care_watering"] or "") for row in rows}
+        self.assertEqual(care_by_id["PLT-PART-1"], "Water the first batch deeply.")
+        self.assertEqual(care_by_id["PLT-PART-2"], "")
+
+    def test_generate_missing_care_provider_failure_without_updates_still_returns_502(self) -> None:
+        from gardenops.services.ai_provider import AIProviderError
+
+        default_garden_id = self._get_default_garden_id()
+        created = self._create_test_user("care_fail_user", "carefailpass123", role="editor")
+        user_id = int(created["id"])
+
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO plants (
+                    plt_id, name, latin, category, bloom_month, color,
+                    hardiness, height_cm, light, link
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    "PLT-FAIL-1",
+                    "A Failing Mint",
+                    "Mentha spicata",
+                    "frø",
+                    "juli",
+                    "grønn",
+                    "H5",
+                    30,
+                    "halvskygge",
+                    "",
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES (%s, %s, %s)
+                ON CONFLICT(plt_id, garden_id) DO UPDATE SET
+                    owner_user_id = excluded.owner_user_id
+                """,
+                ("PLT-FAIL-1", user_id, default_garden_id),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        mock_generate = MagicMock(
+            side_effect=AIProviderError("provider down", provider="anthropic"),
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AUTH_REQUIRED": "true",
+                    "AUTH_MODE": "session",
+                    "AUTH_API_KEY": "",
+                    "AI_PROVIDER": "anthropic",
+                    "ANTHROPIC_API_KEY": "test-key",
+                    "AI_CARE_BATCH_SIZE": "1",
+                },
+                clear=False,
+            ),
+            patch("gardenops.routers.ai.generate_care_batch_with_ai", mock_generate),
+            patch("gardenops.routers.ai.notify_garden_modified") as mock_notify,
+        ):
+            client = self._new_client()
+            _, csrf = self._login_session("care_fail_user", "carefailpass123", client=client)
+            headers = self._session_headers(csrf, garden_id=default_garden_id)
+
+            response = client.post(
+                "/api/ai/generate-missing-care",
+                headers=headers,
+                json={"max_plants": 1},
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["detail"], "AI provider request failed")
+        mock_generate.assert_called_once()
+        mock_notify.assert_not_called()
+
     def test_generate_missing_care_daily_budget_counts_plants(self) -> None:
         conn = db.get_db()
         try:

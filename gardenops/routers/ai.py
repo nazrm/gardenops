@@ -400,6 +400,24 @@ def generate_missing_care(
 
     limits = provider_limit_profile("ai-care-instructions")
     updated_ids: list[str] = []
+    total_selected = len(selected)
+
+    def partial_response(detail: object) -> dict[str, Any]:
+        notify_garden_modified()
+        return {
+            "status": "partial",
+            "generated": len(updated_ids),
+            "missing_before": missing_before,
+            "remaining_without_care": max(
+                0,
+                total_selected - len(updated_ids),
+            ),
+            "updated_plant_ids": updated_ids,
+            "attempted": len(selected_missing),
+            "has_more": False,
+            "error": str(detail),
+        }
+
     try:
         with acquire_concurrency_slot(
             bucket="ai-care-instructions",
@@ -416,6 +434,7 @@ def generate_missing_care(
                     request_count=len(batch),
                 )
                 generated = generate_care_batch_with_ai(batch)
+                batch_updated_ids: list[str] = []
                 for plant in batch:
                     care_fields = generated.get(str(plant["plt_id"]))
                     if not care_fields:
@@ -439,11 +458,16 @@ def generate_missing_care(
                             str(plant["plt_id"]),
                         ),
                     )
-                    updated_ids.append(str(plant["plt_id"]))
+                    batch_updated_ids.append(str(plant["plt_id"]))
                 db.commit()
-    except HTTPException:
+                updated_ids.extend(batch_updated_ids)
+    except HTTPException as exc:
+        if updated_ids:
+            return partial_response(exc.detail)
         raise
     except AIProviderNotConfigured as exc:
+        if updated_ids:
+            return partial_response(exc.detail)
         raise HTTPException(503, exc.detail) from exc
     except AIProviderError as exc:
         _log_provider_failure(
@@ -455,6 +479,8 @@ def generate_missing_care(
         )
         record_security_event("ai_provider_failures")
         record_security_event("ai_provider_failures_care_generation")
+        if updated_ids:
+            return partial_response(exc.detail)
         raise HTTPException(502, "AI provider request failed") from exc
     except Exception as exc:  # noqa: BLE001
         _log_provider_failure(
@@ -466,11 +492,12 @@ def generate_missing_care(
         )
         record_security_event("ai_provider_failures")
         record_security_event("ai_provider_failures_care_generation")
+        if updated_ids:
+            return partial_response("AI provider request failed")
         raise HTTPException(502, "AI provider request failed") from exc
 
     if updated_ids:
         notify_garden_modified()
-    total_selected = len(selected)
     return {
         "status": "ok",
         "generated": len(updated_ids),

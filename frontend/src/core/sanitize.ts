@@ -64,7 +64,7 @@ function setReviewedHtml(
   element.innerHTML = reviewedHtmlValue(html) as string;
 }
 
-export function setEscapedHtml(element: Element, html: string): void {
+export function setReviewedDynamicHtml(element: Element, html: string): void {
   setReviewedHtml(element, html, "escaped-dynamic");
 }
 

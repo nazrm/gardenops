@@ -8,7 +8,7 @@ import type { WeatherAlert, WeatherSummary } from "../core/models";
 import {
   clearChildren,
   escapeHtml,
-  setEscapedHtml,
+  setReviewedDynamicHtml,
   setStaticTemplateHtml,
 } from "../core/sanitize";
 
@@ -198,7 +198,7 @@ export function renderWeatherDashboard(
     `);
   }
 
-  setEscapedHtml(container, sections.join(""));
+  setReviewedDynamicHtml(container, sections.join(""));
 
   // Wire event handlers
   container.querySelector(".weather-check-btn")?.addEventListener("click", () => {
