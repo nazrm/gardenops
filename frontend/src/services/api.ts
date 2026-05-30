@@ -2003,13 +2003,14 @@ export async function aiPlantLookup(
 }
 
 export interface GeneratedCareResult {
-  status: "ok";
+  status: "ok" | "partial";
   generated: number;
   missing_before: number;
   remaining_without_care: number;
   updated_plant_ids: string[];
   attempted: number;
   has_more: boolean;
+  error?: string;
 }
 
 export async function generateMissingCareInstructionsApi(

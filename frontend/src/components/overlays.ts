@@ -6,7 +6,7 @@ import {
   normalizePlotAssignmentId,
   resolvePlotAssignmentMeaning,
 } from "../core/plotAssignmentMeanings";
-import { clearChildren, setEscapedHtml, setStaticTemplateHtml } from "../core/sanitize";
+import { clearChildren, setReviewedDynamicHtml, setStaticTemplateHtml } from "../core/sanitize";
 import type { MediaLinkRef, PlotAssignment, PlotAssignmentMeaning } from "../services/api";
 import {
   bulkUpdateSeenGrowingApi,
@@ -42,7 +42,7 @@ export function createModal(ariaLabel: string, innerMarkup: string): {
   dialog.setAttribute("role", "dialog");
   dialog.setAttribute("aria-modal", "true");
   dialog.setAttribute("aria-label", ariaLabel);
-  setEscapedHtml(dialog, innerMarkup);
+  setReviewedDynamicHtml(dialog, innerMarkup);
   document.body.appendChild(dialog);
 
   const releaseFocusTrap = trapFocus(dialog);

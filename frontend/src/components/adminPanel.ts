@@ -1,4 +1,4 @@
-import { escapeHtml, sanitizeUrl, setEscapedHtml } from "../core/sanitize";
+import { escapeHtml, sanitizeUrl, setReviewedDynamicHtml } from "../core/sanitize";
 import { getLocaleTag, t } from "../core/i18n";
 import { buildInvitationLink } from "../core/urlSecurity";
 import { queryInput, querySelect, queryTextArea } from "../core/dom";
@@ -1535,7 +1535,7 @@ function getContainer(): HTMLElement | null {
 function repaint(): void {
   const main = document.getElementById("adm-main");
   if (main) {
-    setEscapedHtml(main, renderContent());
+    setReviewedDynamicHtml(main, renderContent());
     wireSection();
   }
 }
@@ -1543,7 +1543,7 @@ function repaint(): void {
 function repaintFull(): void {
   const container = getContainer();
   if (!container) return;
-  setEscapedHtml(container, renderAdmin());
+  setReviewedDynamicHtml(container, renderAdmin());
   wireSidebar();
   wireSection();
 }
@@ -1570,7 +1570,7 @@ export function resetAdminPanelSensitiveState(): void {
   adminPanelInitialized = false;
   const container = getContainer();
   if (container) {
-    setEscapedHtml(container, "");
+    setReviewedDynamicHtml(container, "");
   }
 }
 

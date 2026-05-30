@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 PATTERNS = ("innerHTML =", "innerHTML=", "outerHTML =", "outerHTML=", "insertAdjacentHTML(")
+REVIEWED_DYNAMIC_HELPER = "setReviewedDynamicHtml("
 
 PLACEHOLDER_VALUES = {"", "TODO", "TBD", "REQUIRED"}
 
@@ -28,6 +29,22 @@ def find_sinks(root: Path) -> list[str]:
             line = raw.strip()
             if any(pattern in raw for pattern in PATTERNS):
                 entries.append(f"{rel}:{lineno}|{line}")
+    return entries
+
+
+def find_reviewed_dynamic_helpers(root: Path) -> list[str]:
+    entries: list[str] = []
+    for path in sorted(root.rglob("*.ts")):
+        if "node_modules" in path.parts or "dist" in path.parts:
+            continue
+        rel = path.relative_to(root)
+        for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            line = raw.strip()
+            if REVIEWED_DYNAMIC_HELPER not in raw:
+                continue
+            if line.startswith(f"export function {REVIEWED_DYNAMIC_HELPER}"):
+                continue
+            entries.append(f"{rel}:{lineno}|{line}")
     return entries
 
 
@@ -97,6 +114,11 @@ def main() -> int:
         default="frontend/security/innerhtml_allowlist.txt",
         help="Allowlist file path",
     )
+    parser.add_argument(
+        "--helper-allowlist",
+        default="",
+        help="Reviewed dynamic HTML helper allowlist path",
+    )
     parser.add_argument("--write", action="store_true", help="Write/refresh allowlist")
     args = parser.parse_args()
 
@@ -104,38 +126,69 @@ def main() -> int:
     allowlist_path = Path(args.allowlist)
     if not allowlist_path.is_absolute():
         allowlist_path = Path.cwd() / allowlist_path
+    helper_allowlist_path = (
+        Path(args.helper_allowlist)
+        if args.helper_allowlist
+        else allowlist_path.with_name("reviewed_dynamic_html_allowlist.txt")
+    )
+    if not helper_allowlist_path.is_absolute():
+        helper_allowlist_path = Path.cwd() / helper_allowlist_path
 
     sinks = find_sinks(root)
+    reviewed_dynamic_helpers = find_reviewed_dynamic_helpers(root)
     if args.write:
         write_allowlist(allowlist_path, sinks)
+        write_allowlist(helper_allowlist_path, reviewed_dynamic_helpers)
         print(f"Wrote allowlist with {len(sinks)} sinks: {allowlist_path}")
+        print(
+            "Wrote reviewed dynamic HTML helper allowlist with "
+            f"{len(reviewed_dynamic_helpers)} calls: {helper_allowlist_path}"
+        )
         return 0
 
     allowed, metadata_errors = load_allowlist(allowlist_path)
+    helper_allowed, helper_metadata_errors = load_allowlist(helper_allowlist_path)
     current = set(sinks)
     allowlist_sinks = set(allowed)
     new_sinks = sorted(current - allowlist_sinks)
     stale = sorted(allowlist_sinks - current)
+    current_helpers = set(reviewed_dynamic_helpers)
+    allowlist_helpers = set(helper_allowed)
+    new_helpers = sorted(current_helpers - allowlist_helpers)
+    stale_helpers = sorted(allowlist_helpers - current_helpers)
 
-    if metadata_errors or new_sinks:
+    if metadata_errors or helper_metadata_errors or new_sinks or new_helpers:
         print("Unsafe HTML sink check failed.")
         if metadata_errors:
             print("\nAllowlist metadata issues:")
             for item in metadata_errors:
                 print(f"  ! {item}")
+        if helper_metadata_errors:
+            print("\nReviewed dynamic HTML helper allowlist metadata issues:")
+            for item in helper_metadata_errors:
+                print(f"  ! {item}")
         if new_sinks:
             print("\nNew sinks detected:")
             for item in new_sinks:
+                print(f"  + {item}")
+        if new_helpers:
+            print("\nNew reviewed dynamic HTML helper calls detected:")
+            for item in new_helpers:
                 print(f"  + {item}")
         if stale:
             print("\nAllowlist entries no longer present (optional cleanup):")
             for item in stale[:20]:
                 print(f"  - {item}")
+        if stale_helpers:
+            print("\nReviewed dynamic HTML helper entries no longer present (optional cleanup):")
+            for item in stale_helpers[:20]:
+                print(f"  - {item}")
         return 1
 
     print(
         "Unsafe HTML sink check passed. "
-        f"{len(current)} sinks match the reviewed allowlist inventory."
+        f"{len(current)} sinks and {len(current_helpers)} reviewed dynamic HTML "
+        "helper calls match the allowlist inventories."
     )
     return 0
 

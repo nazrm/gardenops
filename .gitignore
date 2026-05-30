@@ -38,6 +38,7 @@ frontend/dist/
 .clawpatch/
 logs/
 backups/
+output/full-stack-code-review.md
 output/
 media_uploads/
 
