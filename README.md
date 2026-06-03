@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/gardenops-logo.png" alt="GardenOps" width="900">
+  <img src="docs/assets/gardenops-logo.webp" alt="GardenOps" width="900" height="600">
 </p>
 
 # GardenOps

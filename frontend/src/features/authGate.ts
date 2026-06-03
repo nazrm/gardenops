@@ -1,4 +1,5 @@
 import { t } from "../core/i18n";
+import gardenOpsLogoUrl from "../assets/gardenops-logo-auth-hero.webp";
 import type { PasswordPolicy } from "../core/models";
 import {
   clearPrimedInviteToken,
@@ -21,21 +22,61 @@ import {
   setActiveGardenContext,
 } from "../services/api";
 
+const authGateShells = new WeakMap<HTMLDivElement, HTMLDivElement>();
+
 function createAuthGateCard(
   subtitle: string,
 ): HTMLDivElement {
+  const shell = document.createElement("div");
+  shell.className = "auth-gate-shell";
+
+  const brand = document.createElement("div");
+  brand.className = "auth-gate-brand";
+  brand.appendChild(createAuthGateLogo());
+
   const card = document.createElement("div");
   card.className = "auth-gate-card";
+  appendAuthGateHeader(card, t("auth.app_title"), subtitle);
+  shell.append(brand, card);
+  authGateShells.set(card, shell);
+  return card;
+}
 
-  const heading = document.createElement("h1");
-  heading.textContent = t("auth.app_title");
+function appendAuthGateCard(gate: HTMLDivElement, card: HTMLDivElement): void {
+  gate.appendChild(authGateShells.get(card) ?? card);
+}
+
+function createAuthGateLogo(): HTMLImageElement {
+  const logo = document.createElement("img");
+  logo.className = "auth-gate-logo";
+  logo.src = gardenOpsLogoUrl;
+  logo.alt = t("auth.app_title");
+  logo.width = 720;
+  logo.height = 310;
+  logo.decoding = "async";
+  return logo;
+}
+
+function appendAuthGateHeader(
+  card: HTMLDivElement,
+  headingText: string,
+  subtitle: string,
+): void {
+  const heading = headingText === t("auth.app_title")
+    ? null
+    : document.createElement("h1");
+  if (heading) {
+    heading.textContent = headingText;
+  }
 
   const subtitleEl = document.createElement("p");
   subtitleEl.className = "auth-gate-subtitle";
   subtitleEl.textContent = subtitle;
 
-  card.append(heading, subtitleEl);
-  return card;
+  if (heading) {
+    card.append(heading);
+  }
+  card.append(subtitleEl);
 }
 
 export function showForcedPasswordChangeGate(
@@ -50,7 +91,7 @@ export function showForcedPasswordChangeGate(
     const card = createAuthGateCard(
       t("auth.password_change_required_subtitle", { username }),
     );
-    gate.appendChild(card);
+    appendAuthGateCard(gate, card);
     document.body.prepend(gate);
     renderForcedPasswordChangeForm(gate, card, username, "", resolve);
   });
@@ -95,12 +136,11 @@ function renderForcedPasswordChangeForm(
   resolve: () => void,
 ): void {
   card.replaceChildren();
-  const heading = document.createElement("h1");
-  heading.textContent = t("auth.password_change_required");
-  const subtitle = document.createElement("p");
-  subtitle.className = "auth-gate-subtitle";
-  subtitle.textContent = t("auth.password_change_required_subtitle", { username });
-  card.append(heading, subtitle);
+  appendAuthGateHeader(
+    card,
+    t("auth.password_change_required"),
+    t("auth.password_change_required_subtitle", { username }),
+  );
 
   const form = document.createElement("form");
   form.id = "auth-gate-change-password-form";
@@ -222,7 +262,7 @@ function renderInviteFlow(
   spinner.className = "auth-gate-spinner";
   loadingDiv.appendChild(spinner);
   loadingCard.appendChild(loadingDiv);
-  gate.appendChild(loadingCard);
+  appendAuthGateCard(gate, loadingCard);
   document.body.prepend(gate);
 
   // Fetch peek + policy in parallel
@@ -283,11 +323,11 @@ function renderInviteInvalidCard(
 ): void {
   clearPrimedInviteToken();
   loadingCard.replaceChildren();
-  const heading = document.createElement("h1");
-  heading.textContent = t("auth.app_title");
-  const errorMsg = document.createElement("p");
-  errorMsg.className = "auth-gate-subtitle";
-  errorMsg.textContent = t("auth.invite_invalid");
+  appendAuthGateHeader(
+    loadingCard,
+    t("auth.app_title"),
+    t("auth.invite_invalid"),
+  );
   const signInBtn = document.createElement("button");
   signInBtn.type = "button";
   signInBtn.className = "auth-gate-link-btn";
@@ -297,7 +337,7 @@ function renderInviteInvalidCard(
     gate.remove();
     void showAuthGate(bootstrapRequired).then(resolve);
   });
-  loadingCard.append(heading, errorMsg, signInBtn);
+  loadingCard.append(signInBtn);
 }
 
 function renderInviteLoadErrorCard(
@@ -308,11 +348,7 @@ function renderInviteLoadErrorCard(
   message: string,
 ): void {
   loadingCard.replaceChildren();
-  const heading = document.createElement("h1");
-  heading.textContent = t("auth.app_title");
-  const errorMsg = document.createElement("p");
-  errorMsg.className = "auth-gate-subtitle";
-  errorMsg.textContent = message;
+  appendAuthGateHeader(loadingCard, t("auth.app_title"), message);
   const retryBtn = document.createElement("button");
   retryBtn.type = "button";
   retryBtn.textContent = t("common.refresh");
@@ -329,7 +365,7 @@ function renderInviteLoadErrorCard(
     gate.remove();
     void showAuthGate(bootstrapRequired).then(resolve);
   });
-  loadingCard.append(heading, errorMsg, retryBtn, signInBtn);
+  loadingCard.append(retryBtn, signInBtn);
 }
 
 function renderInviteForm(
@@ -342,14 +378,11 @@ function renderInviteForm(
   resolve: () => void,
 ): void {
   card.replaceChildren();
-  const heading = document.createElement("h1");
-  heading.textContent = t("auth.app_title");
-  const subtitle = document.createElement("p");
-  subtitle.className = "auth-gate-subtitle";
-  subtitle.textContent = t("auth.invite_welcome", {
-    username,
-  });
-  card.append(heading, subtitle);
+  appendAuthGateHeader(
+    card,
+    t("auth.app_title"),
+    t("auth.invite_welcome", { username }),
+  );
 
   const form = document.createElement("form");
   form.id = "auth-gate-invite-form";
@@ -448,20 +481,18 @@ function renderInviteForm(
         setActiveGardenContext(result.garden_id);
       }
       card.replaceChildren();
-      const h1 = document.createElement("h1");
-      h1.textContent = t("auth.welcome");
-      const info = document.createElement("p");
-      info.className = "auth-gate-subtitle";
-      info.textContent = t("auth.signed_in_as", {
-        username: result.username,
-      });
+      appendAuthGateHeader(
+        card,
+        t("auth.welcome"),
+        t("auth.signed_in_as", { username: result.username }),
+      );
       const continueBtn = document.createElement("button");
       continueBtn.textContent = t("auth.continue");
       continueBtn.addEventListener("click", () => {
         gate.remove();
         resolve();
       });
-      card.append(h1, info, continueBtn);
+      card.append(continueBtn);
     } catch (err) {
       submitBtn.disabled = false;
       submitBtn.textContent = t("auth.accept_invitation");
@@ -601,7 +632,7 @@ function renderLoginFlow(
     submitBtn,
   );
   card.appendChild(form);
-  gate.appendChild(card);
+  appendAuthGateCard(gate, card);
   document.body.prepend(gate);
 
   usernameInput.focus();

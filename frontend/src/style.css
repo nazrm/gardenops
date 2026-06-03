@@ -235,9 +235,9 @@ textarea {
 
 .mobile-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: var(--sp-3);
-  align-items: end;
+  align-items: center;
   padding: calc(env(safe-area-inset-top) + var(--sp-3)) var(--sp-4) var(--sp-3);
   padding-left: max(var(--sp-4), env(safe-area-inset-left));
   padding-right: max(var(--sp-4), env(safe-area-inset-right));
@@ -246,6 +246,13 @@ textarea {
     linear-gradient(180deg, #18251d 0%, #101711 100%);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   color: var(--text-inv);
+}
+
+.mobile-header-logo {
+  width: 60px;
+  height: 40px;
+  object-fit: cover;
+  object-position: center;
 }
 
 .mobile-header-main {
@@ -737,6 +744,34 @@ textarea {
 
 .nav-tabs {
   display: contents;
+}
+
+.app-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  min-width: 0;
+  padding-right: var(--sp-1);
+}
+
+.app-brand-logo {
+  width: 72px;
+  height: 48px;
+  flex: 0 0 auto;
+  object-fit: cover;
+  object-position: center;
+}
+
+.app-brand-name {
+  max-width: 120px;
+  overflow: hidden;
+  color: #f2eddc;
+  font-family: var(--font-display);
+  font-size: 16px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .top-tab {
@@ -3247,6 +3282,8 @@ body.moving-house .house-placeholder {
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: auto;
+  padding: clamp(24px, 5vh, 56px) var(--sp-4);
   background:
     radial-gradient(circle at top, rgba(95, 130, 92, 0.22), transparent 34%),
     radial-gradient(circle at bottom right, rgba(176, 111, 74, 0.18), transparent 30%),
@@ -3254,14 +3291,39 @@ body.moving-house .house-placeholder {
   z-index: 2000;
 }
 
+.auth-gate-shell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(16px, 3vh, 28px);
+  width: min(460px, 92vw);
+}
+
+.auth-gate-brand {
+  display: flex;
+  justify-content: center;
+  width: min(540px, 96vw);
+  filter: drop-shadow(0 22px 38px rgba(0, 0, 0, 0.42));
+}
+
 .auth-gate-card {
-  width: min(380px, 90vw);
+  width: min(380px, 100%);
   background: #20261f;
   border: 1px solid rgba(213, 202, 180, 0.14);
   border-radius: var(--r-xl);
   padding: var(--sp-8) var(--sp-6);
   box-shadow: 0 22px 60px rgba(0, 0, 0, 0.38);
   text-align: center;
+}
+
+.auth-gate-logo {
+  display: block;
+  width: min(540px, 96vw);
+  height: auto;
+  aspect-ratio: 720 / 310;
+  object-fit: contain;
+  object-position: center;
+  margin: 0;
 }
 
 .auth-gate-card h1 {
@@ -3361,6 +3423,48 @@ body.moving-house .house-placeholder {
 }
 .auth-gate-link-btn:hover {
   color: #d5e6c3;
+}
+
+@media (max-width: 520px) {
+  .auth-gate {
+    align-items: flex-start;
+    padding-top: max(20px, env(safe-area-inset-top));
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+  }
+
+  .auth-gate-shell {
+    gap: var(--sp-4);
+    width: min(380px, 94vw);
+  }
+
+  .auth-gate-brand,
+  .auth-gate-logo {
+    width: min(430px, 96vw);
+  }
+
+  .auth-gate-card {
+    padding: var(--sp-6) var(--sp-5);
+  }
+}
+
+@media (max-height: 720px) {
+  .auth-gate {
+    align-items: flex-start;
+  }
+
+  .auth-gate-shell {
+    gap: var(--sp-4);
+  }
+
+  .auth-gate-brand,
+  .auth-gate-logo {
+    width: min(440px, 90vw);
+  }
+
+  .auth-gate-card {
+    padding-top: var(--sp-6);
+    padding-bottom: var(--sp-6);
+  }
 }
 
 /* Password checklist */
