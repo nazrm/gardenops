@@ -14,8 +14,15 @@ import argparse
 import json
 import os
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+
+try:
+    from datetime import UTC
+except ImportError:  # pragma: no cover - compatibility with older system python3.
+    from datetime import timezone
+
+    UTC = timezone.utc  # noqa: UP017
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -26,6 +33,7 @@ DEFAULT_LOG_FILE = ROOT / "logs" / "errors.jsonl"
 MSG_MAX = 200
 TRACEBACK_MAX = 500
 SYNTHETIC_CSP_PROBE = "CSP report received: {'csp-report': {'blocked-uri': 'https://example.com'}}"
+DATETIME_PARSE_ERRORS = (TypeError, ValueError)
 
 
 def sanitize(value: str, max_len: int = MSG_MAX) -> str:
@@ -141,7 +149,7 @@ def _load_recent_entries(
             ts_str = entry.get("ts", "")
             try:
                 ts = datetime.fromisoformat(ts_str)
-            except ValueError, TypeError:
+            except DATETIME_PARSE_ERRORS:
                 continue
 
             if ts < cutoff:

@@ -150,6 +150,45 @@ def test_grouped_summary_excludes_deployed_readiness_admin_probe_auth_rejection(
     assert "admin-health-probe" not in result.stdout
 
 
+def test_summary_skips_invalid_timestamps(tmp_path: Path) -> None:
+    log_file = tmp_path / "errors.jsonl"
+    now = datetime.now(UTC).isoformat()
+    with log_file.open("w", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "ts": {"not": "a timestamp"},
+                    "level": "ERROR",
+                    "logger": "gardenops.main",
+                    "message": "Malformed timestamp entry",
+                },
+            )
+            + "\n",
+        )
+        handle.write(
+            json.dumps(
+                {
+                    "ts": now,
+                    "level": "ERROR",
+                    "logger": "gardenops.main",
+                    "message": "Real runtime error",
+                    "path": "/api/plants",
+                    "method": "GET",
+                    "status_code": 500,
+                    "request_id": "valid-error",
+                },
+            )
+            + "\n",
+        )
+
+    result = _run_summary(log_file, "--grouped")
+
+    assert result.returncode == 0
+    assert "=== 1 error group(s)" in result.stdout
+    assert "Real runtime error" in result.stdout
+    assert "Malformed timestamp entry" not in result.stdout
+
+
 def test_grouped_summary_redacts_tokens_urls_and_secret_assignments(tmp_path: Path) -> None:
     log_file = tmp_path / "errors.jsonl"
     _write_log(
