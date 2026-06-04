@@ -108,6 +108,7 @@ _ROUTE_GATES: tuple[tuple[str, str], ...] = tuple(
             ("/api/exports/inventory", "exports_full"),
             ("/api/exports/procurement", "exports_full"),
             ("/api/exports/workflows", "exports_full"),
+            ("/api/exports/backup", "exports_full"),
         ],
         key=lambda pair: -len(pair[0]),
     )

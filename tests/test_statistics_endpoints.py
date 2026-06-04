@@ -1,4 +1,6 @@
+import os
 from datetime import date
+from unittest.mock import patch
 
 import gardenops.db as db
 from tests.base import BaseApiTest
@@ -227,6 +229,19 @@ class TestExportsBackup(BaseApiTest):
         self.assertIn("inventory", data)
         self.assertIn("inventory_transactions", data)
         self.assertIn("procurement", data)
+
+    def test_backup_export_requires_write_access(self) -> None:
+        self._create_test_user("backup_viewer", "backupviewerpass", role="viewer")
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            client = self._new_client()
+            _, csrf = self._login_session("backup_viewer", "backupviewerpass", client=client)
+            resp = client.get("/api/exports/backup", headers=self._session_headers(csrf))
+
+        self.assertEqual(resp.status_code, 403, resp.text)
 
     def test_backup_export_includes_inventory_transactions_with_public_ids(self) -> None:
         created = self.client.post(

@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import Field, field_validator
 
 from gardenops.db import DB, current_timestamp_ms
+from gardenops.feature_gates import feature_allowed
 from gardenops.models import StrictBaseModel
 from gardenops.rate_limit import enforce_rate_limit, env_int
 from gardenops.router_helpers import (
@@ -17,6 +18,9 @@ from gardenops.router_helpers import (
 )
 from gardenops.router_helpers import (
     auth_context as _auth_context,
+)
+from gardenops.router_helpers import (
+    effective_role as _effective_role,
 )
 from gardenops.router_helpers import (
     is_local_admin_fallback as _is_local_admin_fallback,
@@ -153,6 +157,24 @@ def _serialize_preferences(row: dict[str, Any] | None) -> dict:
         "notification_rules": rules,
         "policy": notification_policy_catalog(),
     }
+
+
+def _explicit_email_rule_enabled(raw_rules: dict[str, dict[str, Any]]) -> bool:
+    for rule in raw_rules.values():
+        if isinstance(rule, dict) and bool(rule.get("email_enabled", False)):
+            return True
+    return False
+
+
+def _require_email_notifications_feature(context) -> None:
+    if not feature_allowed(context.subscription_tier, "email_notifications"):
+        raise HTTPException(status_code=403, detail="Email notifications require a Pro plan")
+
+
+def _require_notification_delivery_admin(context) -> None:
+    if _effective_role(context) != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    _require_email_notifications_feature(context)
 
 
 # ── Endpoints ─────────────────────────────────────────────
@@ -353,6 +375,8 @@ def update_notification_preferences(
 
     now = current_timestamp_ms()
     qh_json = json.dumps(body.quiet_hours_json) if body.quiet_hours_json else "{}"
+    if body.email_enabled or _explicit_email_rule_enabled(body.notification_rules):
+        _require_email_notifications_feature(context)
     rules = normalize_notification_rules(body.notification_rules)
     if not body.notification_rules:
         rules["task_due"]["in_app_enabled"] = bool(body.task_due_enabled)
@@ -426,6 +450,7 @@ def process_notification_delivery(request: Request, db: DB) -> dict:
     """Process pending email digests for users with email notifications enabled."""
     context = _auth_context(request)
     _require_write(context)
+    _require_notification_delivery_admin(context)
     enforce_rate_limit(
         request,
         bucket="notification-delivery",
@@ -441,6 +466,7 @@ def run_notification_maintenance(request: Request, db: DB) -> dict:
     """Run notification generation + email delivery for the active garden."""
     context = _auth_context(request)
     _require_write(context)
+    _require_notification_delivery_admin(context)
     enforce_rate_limit(
         request,
         bucket="notification-maintenance",

@@ -136,6 +136,48 @@ class TestMedia(BaseApiTest):
         )
         self.assertEqual(blocked.status_code, 404, blocked.text)
 
+    def test_viewer_cannot_list_or_fetch_peer_plant_media_in_same_garden(self) -> None:
+        uploaded = self.client.post(
+            "/api/media/upload?target_type=plant&target_id=PLT-TEST",
+            content=self._image_bytes(fmt="PNG"),
+            headers={
+                "content-type": "image/png",
+                "x-upload-filename": "peer-plant.png",
+            },
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        asset_id = uploaded.json()["asset_id"]
+
+        self._create_test_user("media_viewer", "mediaviewerpass", role="viewer")
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            client = self._new_client()
+            _, csrf = self._login_session("media_viewer", "mediaviewerpass", client=client)
+            headers = self._session_headers(csrf)
+
+            targeted = client.get(
+                "/api/media?target_type=plant&target_id=PLT-TEST",
+                headers=headers,
+            )
+            self.assertEqual(targeted.status_code, 404, targeted.text)
+
+            all_media = client.get("/api/media", headers=headers)
+            self.assertEqual(all_media.status_code, 200, all_media.text)
+            self.assertEqual(all_media.json()["total"], 0)
+
+            summaries = client.post(
+                "/api/media/summaries",
+                headers=headers,
+                json={"target_type": "plant", "target_ids": ["PLT-TEST"]},
+            )
+            self.assertEqual(summaries.status_code, 403, summaries.text)
+
+            original = client.get(f"/api/media/{asset_id}", headers=headers)
+            self.assertEqual(original.status_code, 404, original.text)
+
     def test_media_summaries_return_latest_asset_per_target(self) -> None:
         older = self.client.post(
             "/api/media/upload?target_type=plant&target_id=PLT-TEST",

@@ -1770,7 +1770,9 @@ def deliver_pending_email_digests(
                p.task_overdue_enabled
         FROM user_notification_preferences p
         JOIN garden_memberships gm ON gm.user_id = p.user_id
+        JOIN auth_users u ON u.id = p.user_id
         WHERE gm.garden_id = %s
+          AND u.subscription_tier = 'pro'
           AND p.email_enabled = 1
           AND TRIM(p.email_address) != ''
           AND p.digest_frequency IN ('daily', 'weekly')

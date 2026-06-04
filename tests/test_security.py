@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import os
@@ -72,6 +73,131 @@ class TestSecurity(BaseApiTest):
             "server": ("testserver", 80),
         }
         return StarletteRequest(scope)
+
+    def test_forged_auth_headers_do_not_create_distinct_pre_auth_rate_limit_keys(self) -> None:
+        request_a = self._request_with_bearer("forged-a")
+        request_b = self._request_with_bearer("forged-b")
+
+        self.assertEqual(
+            rate_limit_module._client_key(request_a, "auth-fail"),
+            rate_limit_module._client_key(request_b, "auth-fail"),
+        )
+
+    def test_authenticated_rate_limit_key_uses_resolved_user_context(self) -> None:
+        request_a = self._request_with_bearer("session-a", host="127.0.0.1")
+        request_b = self._request_with_bearer("session-b", host="10.0.0.10")
+        for request in (request_a, request_b):
+            request.state.auth_context = AuthContext(
+                user_id=42,
+                username="rate-user",
+                role="editor",
+                auth_type="session",
+            )
+
+        self.assertEqual(
+            rate_limit_module._client_key(request_a, "api-mutation"),
+            rate_limit_module._client_key(request_b, "api-mutation"),
+        )
+
+    def test_streamed_api_body_without_content_length_still_enforces_limit(self) -> None:
+        async def exercise_request() -> int:
+            body_chunks = [
+                {"type": "http.request", "body": b'{"name":"', "more_body": True},
+                {"type": "http.request", "body": b"a" * 64, "more_body": True},
+                {"type": "http.request", "body": b'"}', "more_body": False},
+            ]
+            scope = {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": "POST",
+                "scheme": "http",
+                "path": "/api/snapshots",
+                "raw_path": b"/api/snapshots",
+                "query_string": b"",
+                "headers": [(b"content-type", b"application/json")],
+                "client": ("127.0.0.1", 5000),
+                "server": ("testserver", 80),
+            }
+            sent: list[dict] = []
+
+            async def receive() -> dict:
+                if body_chunks:
+                    return body_chunks.pop(0)
+                return {"type": "http.disconnect"}
+
+            async def send(message: dict) -> None:
+                sent.append(message)
+
+            with patch.dict(os.environ, {"MAX_API_BODY_BYTES": "16"}, clear=False):
+                await main_module.app(scope, receive, send)
+
+            for message in sent:
+                if message["type"] == "http.response.start":
+                    return int(message["status"])
+            self.fail("ASGI app did not send a response start")
+
+        self.assertEqual(asyncio.run(exercise_request()), 413)
+
+    def test_provider_daily_budget_reservation_is_atomic_under_race(self) -> None:
+        now_ms = 1_770_000_000_000
+        feature = "race-budget-test"
+        usage_day = rate_limit_module._provider_usage_day(now_ms)
+        barrier = threading.Barrier(2)
+
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                DELETE FROM provider_daily_usage
+                WHERE usage_day = %s AND feature = %s
+                """,
+                (usage_day, feature),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        def reserve_once() -> int:
+            conn = db.get_db()
+            try:
+                barrier.wait(timeout=10)
+                try:
+                    rate_limit_module.reserve_daily_provider_budget(
+                        conn,
+                        feature=feature,
+                        user_id=self._owner_id,
+                        user_limit=1,
+                        request_count=1,
+                        now_ms=now_ms,
+                    )
+                    return 200
+                except HTTPException as exc:
+                    return exc.status_code
+            finally:
+                db.return_db(conn)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses = list(pool.map(lambda _: reserve_once(), range(2)))
+
+        self.assertEqual(sorted(statuses), [200, 429])
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                """
+                SELECT request_count
+                FROM provider_daily_usage
+                WHERE usage_day = %s
+                  AND feature = %s
+                  AND scope_type = 'user'
+                  AND scope_id = %s
+                """,
+                (usage_day, feature, self._owner_id),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertLessEqual(int(row["request_count"]), 1)
+        finally:
+            db.return_db(conn)
 
     def test_request_id_header_is_echoed_for_api_responses(self) -> None:
         response = self.client.get(
@@ -155,9 +281,9 @@ class TestSecurity(BaseApiTest):
         old_max_buckets = os.environ.get("RATE_LIMIT_MAX_BUCKETS")
         os.environ["RATE_LIMIT_MAX_BUCKETS"] = "2"
         try:
-            request_a = self._request_with_api_key("key-a")
-            request_b = self._request_with_api_key("key-b")
-            request_c = self._request_with_api_key("key-c")
+            request_a = self._request_with_api_key("key-a", host="127.0.0.1")
+            request_b = self._request_with_api_key("key-b", host="127.0.0.2")
+            request_c = self._request_with_api_key("key-c", host="127.0.0.3")
 
             with patch(
                 "gardenops.rate_limit.time.monotonic",

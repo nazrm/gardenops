@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from gardenops.models import ImportBody, ShadeMapObstacleBody, SnapshotBody
+from gardenops.models import ImportBody, LayoutExportBody, ShadeMapObstacleBody, SnapshotBody
 from gardenops.routers.auth import AdminCreateUserBody
 from gardenops.routers.calendar import CreateCalendarSubscriptionBody
 from gardenops.routers.media import CreateMediaLinkBody
@@ -119,3 +119,45 @@ class TestStrictRequestModels(unittest.TestCase):
             },
         )
         self.assertEqual(body.shademap_obstacles[0].id, 42)
+
+    def test_onboarding_layout_import_reuses_plot_count_limit(self) -> None:
+        plot = {
+            "plot_id": "A1",
+            "zone_code": "A",
+            "zone_name": "Alpha",
+            "plot_number": 1,
+            "grid_row": 1,
+            "grid_col": 1,
+        }
+        with self.assertRaises(ValidationError):
+            LayoutExportBody.model_validate(
+                {"plots": [plot | {"plot_id": f"A{i}"} for i in range(1001)]}
+            )
+
+    def test_onboarding_layout_import_reuses_obstacle_count_limit(self) -> None:
+        plot = {
+            "plot_id": "A1",
+            "zone_code": "A",
+            "zone_name": "Alpha",
+            "plot_number": 1,
+            "grid_row": 1,
+            "grid_col": 1,
+        }
+        obstacle = {
+            "label": "Cherry tree",
+            "kind": "tree",
+            "latitude": 60.38,
+            "longitude": 5.27,
+            "height_m": 4.9,
+            "crown_radius_m": 1.9,
+            "active": True,
+        }
+        with self.assertRaises(ValidationError):
+            LayoutExportBody.model_validate(
+                {
+                    "plots": [plot],
+                    "shademap_obstacles": [
+                        obstacle | {"label": f"Obstacle {i}"} for i in range(501)
+                    ],
+                },
+            )

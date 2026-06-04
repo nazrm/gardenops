@@ -3,7 +3,6 @@ import secrets
 import threading
 import time
 from collections import deque
-from hashlib import sha256
 from typing import Any, cast
 
 from fastapi import HTTPException, Request
@@ -113,22 +112,15 @@ def _client_ip(request: Request) -> str:
 
 
 def _identity_key(request: Request) -> str:
-    auth = request.headers.get("authorization", "").strip()
-    api_key = request.headers.get("x-api-key", "").strip()
+    auth_context = getattr(request.state, "auth_context", None)
+    if auth_context is not None and auth_context.user_id is not None:
+        return f"user:{int(auth_context.user_id)}"
     host = _client_ip(request)
-    ident_source = ""
-    if auth.lower().startswith("bearer "):
-        ident_source = auth[7:].strip()
-    elif api_key:
-        ident_source = api_key
-    if ident_source:
-        key_hash = sha256(ident_source.encode("utf-8")).hexdigest()[:24]
-        return f"token:{key_hash}"
     return f"host:{host}"
 
 
 def _client_key(request: Request, bucket: str) -> str:
-    return f"{bucket}:{_identity_key(request)}"
+    return f"{bucket}:identity:{_identity_key(request)}"
 
 
 def _prune_expired_buckets(now: float) -> None:
@@ -383,17 +375,18 @@ def _provider_usage_count(
     return int(row["request_count"])
 
 
-def _increment_provider_usage(
+def _reserve_provider_usage(
     conn: DbConn,
     *,
     usage_day: str,
     feature: str,
     scope_type: str,
     scope_id: int,
+    limit: int,
     request_count: int,
     now_ms: int,
-) -> None:
-    conn.execute(
+) -> int:
+    updated = conn.execute(
         """
         INSERT INTO provider_daily_usage (
             usage_day,
@@ -403,14 +396,35 @@ def _increment_provider_usage(
             request_count,
             last_request_at_ms
         )
-        VALUES (%s, %s, %s, %s, %s, %s)
+        SELECT %s, %s, %s, %s, %s, %s
+        WHERE %s <= %s
         ON CONFLICT(usage_day, feature, scope_type, scope_id)
         DO UPDATE SET
             request_count = provider_daily_usage.request_count + excluded.request_count,
             last_request_at_ms = excluded.last_request_at_ms
+        WHERE provider_daily_usage.request_count + excluded.request_count <= %s
+        RETURNING request_count
         """,
-        (usage_day, feature, scope_type, scope_id, request_count, now_ms),
-    )
+        (
+            usage_day,
+            feature,
+            scope_type,
+            scope_id,
+            request_count,
+            now_ms,
+            request_count,
+            limit,
+            limit,
+        ),
+    ).fetchone()
+    if not updated:
+        _record_provider_budget_hit(feature, scope_type)
+        scope_label = scope_type.capitalize()
+        raise HTTPException(
+            status_code=429,
+            detail=(f"{scope_label} daily budget exhausted for {feature}. Try again tomorrow."),
+        )
+    return int(updated["request_count"])
 
 
 def _record_provider_budget_hit(feature: str, scope_type: str) -> None:
@@ -443,38 +457,22 @@ def reserve_daily_provider_budget(
     if not checkpoints:
         return {"day": usage_day, "feature": feature}
 
-    # psycopg auto-transactions prevent TOCTOU races.
     status: dict[str, Any] = {"day": usage_day, "feature": feature}
     try:
         for scope_type, scope_id, limit in checkpoints:
-            current = _provider_usage_count(
+            used = _reserve_provider_usage(
                 conn,
                 usage_day=usage_day,
                 feature=feature,
                 scope_type=scope_type,
                 scope_id=scope_id,
-            )
-            if current + effective_request_count > limit:
-                _record_provider_budget_hit(feature, scope_type)
-                scope_label = scope_type.capitalize()
-                raise HTTPException(
-                    status_code=429,
-                    detail=(
-                        f"{scope_label} daily budget exhausted for {feature}. Try again tomorrow."
-                    ),
-                )
-            _increment_provider_usage(
-                conn,
-                usage_day=usage_day,
-                feature=feature,
-                scope_type=scope_type,
-                scope_id=scope_id,
+                limit=limit,
                 request_count=effective_request_count,
                 now_ms=effective_now_ms,
             )
             status[scope_type] = {
                 "scope_id": scope_id,
-                "used": current + effective_request_count,
+                "used": used,
                 "limit": limit,
             }
         conn.commit()

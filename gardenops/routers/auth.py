@@ -2404,6 +2404,7 @@ def auth_reset_password(
         FROM auth_password_reset_tokens
         WHERE token_hash = %s
         LIMIT 1
+        FOR UPDATE
         """,
         (token_hash,),
     ).fetchone()
@@ -2449,14 +2450,18 @@ def auth_reset_password(
         """,
         (hash_password(body.new_password), int(user_row["id"])),
     )
-    db.execute(
+    consumed = db.execute(
         """
         UPDATE auth_password_reset_tokens
         SET used_at_ms = %s, used_by_user_id = %s
-        WHERE id = %s
+        WHERE id = %s AND used_at_ms IS NULL
+        RETURNING id
         """,
         (now_ms, int(user_row["id"]), int(token_row["id"])),
-    )
+    ).fetchone()
+    if not consumed:
+        _record_invalid_reset_password_attempt()
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
     revoked = _revoke_sessions_for_user(db, user_id=int(user_row["id"]))
     db.commit()
     _audit_user_lifecycle_event(
