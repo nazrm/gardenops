@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -7,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import psycopg
 
 import gardenops.db as db
+from gardenops.main import app
 from gardenops.router_helpers import generate_public_id
 from gardenops.security import create_user
 from tests.base import BaseApiTest, strong_password
@@ -2559,6 +2561,47 @@ class TestPlots(BaseApiTest):
                 json={"name": "this payload is definitely too large"},
             )
         self.assertEqual(response.status_code, 413)
+
+    def test_api_request_body_limit_is_enforced_without_content_length(self) -> None:
+        async def send_lengthless_request() -> int:
+            body = b'{"username":"' + (b"a" * 64) + b'","password":"pw"}'
+            messages = [
+                {"type": "http.request", "body": body[:16], "more_body": True},
+                {"type": "http.request", "body": body[16:], "more_body": False},
+            ]
+            sent: list[dict[str, object]] = []
+
+            async def receive() -> dict[str, object]:
+                if messages:
+                    return messages.pop(0)
+                return {"type": "http.disconnect"}
+
+            async def send(message: dict[str, object]) -> None:
+                sent.append(message)
+
+            scope = {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": "POST",
+                "scheme": "http",
+                "path": "/api/auth/login",
+                "raw_path": b"/api/auth/login",
+                "query_string": b"",
+                "headers": [
+                    (b"host", b"testserver"),
+                    (b"content-type", b"application/json"),
+                ],
+                "client": ("testclient", 50000),
+                "server": ("testserver", 80),
+            }
+            await app(scope, receive, send)
+            start = next(message for message in sent if message["type"] == "http.response.start")
+            return int(start["status"])
+
+        with patch.dict(os.environ, {"MAX_API_BODY_BYTES": "24"}, clear=False):
+            status_code = asyncio.run(send_lengthless_request())
+        self.assertEqual(status_code, 413)
 
     def test_csp_report_only_header_is_present(self) -> None:
         with patch.dict(
