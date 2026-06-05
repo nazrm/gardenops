@@ -125,13 +125,16 @@ function collectLockedPackages() {
     throw new Error("frontend/package-lock.json is missing npm packages metadata");
   }
 
+  const dependencyPackages = Object.entries(lockData.packages).filter(
+    ([packagePath]) => packagePath !== "",
+  );
+  if (dependencyPackages.length === 0) {
+    throw new Error("frontend/package-lock.json does not contain npm dependency package entries");
+  }
+
   const packages = new Map();
 
-  for (const [packagePath, packageInfo] of Object.entries(lockData.packages)) {
-    if (packagePath === "") {
-      continue;
-    }
-
+  for (const [packagePath, packageInfo] of dependencyPackages) {
     const name = packageNameFromLockPath(packagePath);
     const version = packageInfo && packageInfo.version;
     if (!name || typeof version !== "string") {

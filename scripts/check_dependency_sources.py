@@ -78,9 +78,16 @@ def check_package_lock() -> list[str]:
         errors.append("frontend/package-lock.json is missing npm packages metadata")
         return errors
 
-    for package_path, package_info in packages.items():
-        if package_path == "":
-            continue
+    dependency_packages = [
+        (package_path, package_info)
+        for package_path, package_info in packages.items()
+        if package_path != ""
+    ]
+    if not dependency_packages:
+        errors.append("frontend/package-lock.json does not contain npm dependency package entries")
+        return errors
+
+    for package_path, package_info in dependency_packages:
         if not isinstance(package_info, dict):
             errors.append(f"{package_path} has invalid npm package metadata")
             continue
