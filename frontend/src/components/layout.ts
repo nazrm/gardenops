@@ -1,4 +1,5 @@
 import { getLocale, t } from "../core/i18n";
+import { escapeHtml } from "../core/sanitize";
 import gardenOpsLogoUrl from "../assets/gardenops-logo-transparent.webp";
 
 function getAnalysisStarters() {
@@ -111,13 +112,15 @@ export function createAnalysisStartersElement(): HTMLDivElement {
 }
 
 export function getAppShellMarkup(): string {
+  const appTitle = escapeHtml(t("auth.app_title"));
+
   return `
     <div class="app-shell">
       <header class="mobile-header">
         <img
           class="mobile-header-logo"
           src="${gardenOpsLogoUrl}"
-          alt="${t("auth.app_title")}"
+          alt="${appTitle}"
           width="640"
           height="427"
           decoding="async"
@@ -142,16 +145,16 @@ export function getAppShellMarkup(): string {
 
       <header class="top-nav desktop-top-nav" role="tablist" aria-label="${t("nav.main_sections")}" data-i18n-aria-label="nav.main_sections">
         <div class="nav-tabs" id="nav-tabs">
-          <div class="app-brand" aria-label="${t("auth.app_title")}">
+          <div class="app-brand" aria-label="${appTitle}">
             <img
               class="app-brand-logo"
               src="${gardenOpsLogoUrl}"
-              alt="${t("auth.app_title")}"
+              alt="${appTitle}"
               width="640"
               height="427"
               decoding="async"
             />
-            <span class="app-brand-name">${t("auth.app_title")}</span>
+            <span class="app-brand-name">${appTitle}</span>
           </div>
           <button id="top-tab-map" class="top-tab active" data-tab="map" role="tab" aria-selected="true" aria-controls="map-view" tabindex="0" data-i18n="nav.map">${t("nav.map")}</button>
           <button id="top-tab-garden" class="top-tab" data-tab="garden" role="tab" aria-selected="false" aria-controls="plants-view" tabindex="-1" data-i18n="nav.garden">${t("nav.garden")}</button>
