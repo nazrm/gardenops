@@ -109,15 +109,34 @@ async function mapWithConcurrency(items, concurrency, worker) {
 function collectLockedPackages() {
   const lockPath = path.join(ROOT, "frontend", "package-lock.json");
   const lockData = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+
+  if (![2, 3].includes(lockData.lockfileVersion)) {
+    throw new Error(
+      "frontend/package-lock.json must use lockfileVersion 2 or 3 " +
+        `to expose per-package release metadata; found ${lockData.lockfileVersion || "<missing>"}`,
+    );
+  }
+  if (
+    !lockData.packages ||
+    typeof lockData.packages !== "object" ||
+    Array.isArray(lockData.packages) ||
+    Object.keys(lockData.packages).length === 0
+  ) {
+    throw new Error("frontend/package-lock.json is missing npm packages metadata");
+  }
+
+  const dependencyPackages = Object.entries(lockData.packages).filter(
+    ([packagePath]) => packagePath !== "",
+  );
+  if (dependencyPackages.length === 0) {
+    throw new Error("frontend/package-lock.json does not contain npm dependency package entries");
+  }
+
   const packages = new Map();
 
-  for (const [packagePath, packageInfo] of Object.entries(lockData.packages || {})) {
-    if (packagePath === "") {
-      continue;
-    }
-
+  for (const [packagePath, packageInfo] of dependencyPackages) {
     const name = packageNameFromLockPath(packagePath);
-    const version = packageInfo.version;
+    const version = packageInfo && packageInfo.version;
     if (!name || typeof version !== "string") {
       continue;
     }
