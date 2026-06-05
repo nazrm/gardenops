@@ -71,7 +71,7 @@ from gardenops.observability import (  # noqa: E402
 )
 from gardenops.rate_limit import enforce_rate_limit, ensure_backend_ready, env_int  # noqa: E402
 from gardenops.redaction import redact_external_log_text, redact_sensitive_text  # noqa: E402
-from gardenops.request_body import read_body_limited  # noqa: E402
+from gardenops.request_body import read_and_cache_body_limited, read_body_limited  # noqa: E402
 from gardenops.router_helpers import generate_public_id as _generate_public_id  # noqa: E402
 from gardenops.router_helpers import (  # noqa: E402
     is_local_admin_fallback as _is_local_admin_fallback,
@@ -976,37 +976,6 @@ def _max_body_bytes_for_path(path: str) -> int:
     return env_int("MAX_API_BODY_BYTES", 1 * 1024 * 1024)
 
 
-async def _buffer_request_body_with_limit(request: Request, max_bytes: int) -> None:
-    chunks: list[bytes] = []
-    total = 0
-    original_receive = request._receive  # type: ignore[attr-defined]  # noqa: SLF001
-    while True:
-        message = await original_receive()
-        if message["type"] == "http.disconnect":
-            break
-        if message["type"] != "http.request":
-            continue
-        chunk = message.get("body", b"")
-        if chunk:
-            total += len(chunk)
-            if total > max_bytes:
-                raise HTTPException(status_code=413, detail="Request body too large")
-            chunks.append(chunk)
-        if not message.get("more_body", False):
-            break
-    body = b"".join(chunks)
-    replayed = False
-
-    async def replay_receive() -> dict[str, object]:
-        nonlocal replayed
-        if not replayed:
-            replayed = True
-            return {"type": "http.request", "body": body, "more_body": False}
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    request._receive = replay_receive  # type: ignore[attr-defined]  # noqa: SLF001
-
-
 def _request_timeout_seconds(path: str) -> float:
     if path.startswith("/shademap/terrain/"):
         return float(env_int("TERRAIN_REQUEST_TIMEOUT_SECONDS", 20))
@@ -1479,8 +1448,8 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
                 content={"detail": "Emergency read-only mode is active"},
             )
     if request.method in {"POST", "PATCH", "PUT"} and path.startswith("/api"):
-        raw_length = request.headers.get("content-length", "").strip()
         max_body_bytes = _max_body_bytes_for_path(path)
+        raw_length = request.headers.get("content-length", "").strip()
         if raw_length:
             try:
                 content_length = int(raw_length)
@@ -1491,18 +1460,22 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
                     status_code=413,
                     content={"detail": "Request body too large"},
                 )
-        else:
-            request_timeout = _request_timeout_seconds(path)
-            try:
-                await asyncio.wait_for(
-                    _buffer_request_body_with_limit(request, max_body_bytes),
-                    timeout=request_timeout,
+        request_timeout = _request_timeout_seconds(path)
+        try:
+            await asyncio.wait_for(
+                read_and_cache_body_limited(request, max_body_bytes),
+                timeout=request_timeout,
+            )
+        except TimeoutError:
+            _audit_mutation(504, "Request timeout exceeded")
+            return JSONResponse(status_code=504, content={"detail": "Request timed out"})
+        except HTTPException as exc:
+            if exc.status_code == 413:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request body too large"},
                 )
-            except TimeoutError:
-                _audit_mutation(504, "Request timeout exceeded")
-                return JSONResponse(status_code=504, content={"detail": "Request timed out"})
-            except HTTPException as exc:
-                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+            raise
     try:
         response = await asyncio.wait_for(
             call_next(request),

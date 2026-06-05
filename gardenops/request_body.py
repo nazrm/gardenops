@@ -16,3 +16,9 @@ async def read_body_limited(request: Request, max_bytes: int) -> bytes:
             raise HTTPException(status_code=413, detail="Request body too large")
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+async def read_and_cache_body_limited(request: Request, max_bytes: int) -> bytes:
+    body = await read_body_limited(request, max_bytes)
+    request._body = body  # noqa: SLF001 - Starlette uses this cache for downstream consumers.
+    return body
