@@ -66,8 +66,23 @@ def check_package_lock() -> list[str]:
     lock_path = ROOT / "frontend" / "package-lock.json"
     lock_data = json.loads(lock_path.read_text())
 
-    for package_path, package_info in lock_data.get("packages", {}).items():
+    lockfile_version = lock_data.get("lockfileVersion")
+    packages = lock_data.get("packages")
+    if lockfile_version not in (2, 3):
+        errors.append(
+            "frontend/package-lock.json must use lockfileVersion 2 or 3 "
+            f"to expose per-package source metadata; found {lockfile_version or '<missing>'}"
+        )
+        return errors
+    if not isinstance(packages, dict) or not packages:
+        errors.append("frontend/package-lock.json is missing npm packages metadata")
+        return errors
+
+    for package_path, package_info in packages.items():
         if package_path == "":
+            continue
+        if not isinstance(package_info, dict):
+            errors.append(f"{package_path} has invalid npm package metadata")
             continue
         resolved = package_info.get("resolved")
         if not isinstance(resolved, str) or not resolved.startswith(NPM_REGISTRY_PREFIX):
