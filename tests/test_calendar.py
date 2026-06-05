@@ -5,10 +5,36 @@ from datetime import UTC, date, datetime, timedelta
 
 import gardenops.db as db
 from gardenops.db import current_timestamp_ms
+from gardenops.services.calendar_service import build_calendar_ics
 from tests.base import BaseApiTest
 
 
 class TestCalendarApi(BaseApiTest):
+    def test_calendar_ics_escapes_lone_carriage_returns(self) -> None:
+        ics, _etag, _last_modified = build_calendar_ics(
+            garden_name="Main garden\rX-WR-RELCALID:evil",
+            events=[
+                {
+                    "id": "manual-1",
+                    "kind": "manual_event",
+                    "source_key": "garden_event",
+                    "title": "Water beds\rATTACH:https://example.invalid/evil",
+                    "description": "Use the blue hose\rORGANIZER:mailto:evil@example.invalid",
+                    "start_on": "2026-06-04",
+                    "end_on": "2026-06-05",
+                    "updated_at_ms": 1_770_000_000_000,
+                    "plot_ids": [],
+                    "plant_ids": [],
+                },
+            ],
+            generated_at=datetime(2026, 6, 4, tzinfo=UTC),
+        )
+
+        self.assertNotIn("\rX-WR-RELCALID", ics)
+        self.assertNotIn("\rATTACH", ics)
+        self.assertNotIn("\rORGANIZER", ics)
+        self.assertIn(r"Water beds\nATTACH", ics)
+
     def _insert_task(
         self,
         *,

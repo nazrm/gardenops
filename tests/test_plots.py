@@ -3187,3 +3187,86 @@ class TestPlots(BaseApiTest):
             self.assertEqual(response.status_code, 404, response.text)
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_bulk_seen_growing_rejects_poisoned_pair_for_plant_outside_active_garden(
+        self,
+    ) -> None:
+        editor = self._create_test_user("seen_owner", "seenownerpass", role="editor")
+        default_garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            second_garden_id = int(
+                conn.execute(
+                    "INSERT INTO gardens (slug, name) VALUES (%s, %s) RETURNING id",
+                    ("seen-growing-second", "Seen Growing Second"),
+                ).fetchone()["id"],
+            )
+            conn.execute(
+                """
+                UPDATE plot_ownership
+                SET owner_user_id = %s
+                WHERE plot_id = 'B1' AND garden_id = %s
+                """,
+                (int(editor["id"]), default_garden_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO plants (plt_id, name, category)
+                VALUES ('SG-FOREIGN-PLANT', 'Foreign status plant', 'frø')
+                """,
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES ('SG-FOREIGN-PLANT', %s, %s)
+                """,
+                (int(editor["id"]), second_garden_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO plot_plants (plot_id, plt_id, quantity)
+                VALUES ('B1', 'SG-FOREIGN-PLANT', 1)
+                """,
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            client = self._new_client()
+            _, csrf = self._login_session("seen_owner", "seenownerpass", client=client)
+            response = client.patch(
+                "/api/plots/plants/seen-growing",
+                headers=self._session_headers(csrf, garden_id=default_garden_id),
+                json={
+                    "updates": [
+                        {
+                            "plot_id": "B1",
+                            "plt_id": "SG-FOREIGN-PLANT",
+                            "seen_growing": True,
+                            "seen_growing_date": "2026-06-04",
+                        },
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("not found", response.json()["detail"])
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                """
+                SELECT seen_growing, seen_growing_date
+                FROM plot_plants
+                WHERE plot_id = 'B1' AND plt_id = 'SG-FOREIGN-PLANT'
+                """,
+            ).fetchone()
+            assert row is not None
+            self.assertFalse(bool(row["seen_growing"]))
+            self.assertIsNone(row["seen_growing_date"])
+        finally:
+            db.return_db(conn)

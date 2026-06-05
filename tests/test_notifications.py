@@ -840,6 +840,56 @@ class TestNotifications(BaseApiTest):
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 
+    def test_notification_preferences_reject_email_for_non_pro_tier(self) -> None:
+        self._create_test_user("prefs_nonpro", "prefsnonpropass", role="editor")
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE auth_users SET subscription_tier = 'enthusiast' WHERE username = %s",
+                ("prefs_nonpro",),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        os.environ["AUTH_API_KEY"] = ""
+        try:
+            client = self._new_client()
+            _, csrf = self._login_session("prefs_nonpro", "prefsnonpropass", client=client)
+            r = client.put(
+                "/api/notifications/preferences",
+                headers=self._session_headers(csrf),
+                json={
+                    "email_enabled": True,
+                    "email_address": "nonpro@example.com",
+                },
+            )
+            self.assertEqual(r.status_code, 403, r.text)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_notification_delivery_requires_admin_role(self) -> None:
+        self._create_test_user("delivery_editor", "deliveryeditorpass", role="editor")
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        os.environ["AUTH_API_KEY"] = ""
+        try:
+            client = self._new_client()
+            _, csrf = self._login_session(
+                "delivery_editor",
+                "deliveryeditorpass",
+                client=client,
+            )
+            response = client.post(
+                "/api/notifications/process-delivery",
+                headers=self._session_headers(csrf),
+            )
+            self.assertEqual(response.status_code, 403, response.text)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
     def test_notification_generate_from_tasks(self) -> None:
         """Create a due task, generate notifications, verify created."""
         # Create a task due today
@@ -1163,6 +1213,10 @@ class TestNotifications(BaseApiTest):
                 username=f"notif_runtime_user_{self.__class__.__name__.lower()}",
                 password=strong_password("runtimepass123"),
                 role="editor",
+            )
+            conn.execute(
+                "UPDATE auth_users SET subscription_tier = 'pro' WHERE id = %s",
+                (int(user["id"]),),
             )
             now = db.current_timestamp_ms()
             conn.execute(

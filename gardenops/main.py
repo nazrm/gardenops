@@ -976,6 +976,37 @@ def _max_body_bytes_for_path(path: str) -> int:
     return env_int("MAX_API_BODY_BYTES", 1 * 1024 * 1024)
 
 
+async def _buffer_request_body_with_limit(request: Request, max_bytes: int) -> None:
+    chunks: list[bytes] = []
+    total = 0
+    original_receive = request._receive  # type: ignore[attr-defined]  # noqa: SLF001
+    while True:
+        message = await original_receive()
+        if message["type"] == "http.disconnect":
+            break
+        if message["type"] != "http.request":
+            continue
+        chunk = message.get("body", b"")
+        if chunk:
+            total += len(chunk)
+            if total > max_bytes:
+                raise HTTPException(status_code=413, detail="Request body too large")
+            chunks.append(chunk)
+        if not message.get("more_body", False):
+            break
+    body = b"".join(chunks)
+    replayed = False
+
+    async def replay_receive() -> dict[str, object]:
+        nonlocal replayed
+        if not replayed:
+            replayed = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    request._receive = replay_receive  # type: ignore[attr-defined]  # noqa: SLF001
+
+
 def _request_timeout_seconds(path: str) -> float:
     if path.startswith("/shademap/terrain/"):
         return float(env_int("TERRAIN_REQUEST_TIMEOUT_SECONDS", 20))
@@ -1449,16 +1480,22 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
             )
     if request.method in {"POST", "PATCH", "PUT"} and path.startswith("/api"):
         raw_length = request.headers.get("content-length", "").strip()
+        max_body_bytes = _max_body_bytes_for_path(path)
         if raw_length:
             try:
                 content_length = int(raw_length)
             except ValueError:
                 return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length"})
-            if content_length > _max_body_bytes_for_path(path):
+            if content_length > max_body_bytes:
                 return JSONResponse(
                     status_code=413,
                     content={"detail": "Request body too large"},
                 )
+        else:
+            try:
+                await _buffer_request_body_with_limit(request, max_body_bytes)
+            except HTTPException as exc:
+                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     try:
         response = await asyncio.wait_for(
             call_next(request),

@@ -252,11 +252,17 @@ def verify_totp_with_replay_protection(
             continue
         candidate = _totp_at(secret, step)
         if hmac.compare_digest(candidate, normalized):
-            conn.execute(
-                "UPDATE auth_users SET last_totp_counter = %s WHERE id = %s",
-                (step, user_id),
-            )
-            return True
+            updated = conn.execute(
+                """
+                UPDATE auth_users
+                SET last_totp_counter = %s
+                WHERE id = %s
+                  AND last_totp_counter < %s
+                RETURNING id
+                """,
+                (step, user_id, step),
+            ).fetchone()
+            return updated is not None
     return False
 
 
@@ -496,18 +502,16 @@ def verify_user_second_factor(
         code_hash = _recovery_hash(conn, normalized_recovery)
         row = conn.execute(
             """
-            SELECT id
-            FROM auth_mfa_recovery_codes
-            WHERE user_id = %s AND code_hash = %s AND used_at_ms IS NULL
-            LIMIT 1
+            UPDATE auth_mfa_recovery_codes
+            SET used_at_ms = %s
+            WHERE user_id = %s
+              AND code_hash = %s
+              AND used_at_ms IS NULL
+            RETURNING id
             """,
-            (user_id, code_hash),
+            (current_timestamp_ms(), user_id, code_hash),
         ).fetchone()
         if row:
-            conn.execute(
-                "UPDATE auth_mfa_recovery_codes SET used_at_ms = %s WHERE id = %s",
-                (current_timestamp_ms(), int(row["id"])),
-            )
             return True, "recovery_code"
     return False, ""
 

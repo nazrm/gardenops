@@ -98,11 +98,14 @@ class PlotImportItem(StrictBaseModel):
 
 
 class LayoutExportBody(StrictBaseModel):
-    plots: list[PlotImportItem]
+    plots: list[PlotImportItem] = Field(min_length=1, max_length=1000)
     house: ImportedLayoutStateBody | None = None
     shademap: ShadeMapStateBody | None = None
     shademap_calibration: ShadeMapCalibrationBody | None = None
-    shademap_obstacles: list[ShadeMapObstacleImportItem] | None = None
+    shademap_obstacles: list[ShadeMapObstacleImportItem] | None = Field(
+        default=None,
+        max_length=500,
+    )
 
 
 class ImportBody(StrictBaseModel):

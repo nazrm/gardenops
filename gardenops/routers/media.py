@@ -18,7 +18,13 @@ from gardenops.router_helpers import (
     auth_context as _auth_context,
 )
 from gardenops.router_helpers import (
+    effective_role as _effective_role,
+)
+from gardenops.router_helpers import (
     is_local_admin_fallback as _is_local_admin_fallback,
+)
+from gardenops.router_helpers import (
+    is_owner_or_admin as _is_owner_or_admin,
 )
 from gardenops.router_helpers import (
     require_write as _require_write,
@@ -74,6 +80,139 @@ def _canonical_target_id(target_type: TargetType, target_id: str) -> str:
     return raw[:120]
 
 
+def _can_read_owned_target(context: AuthContext, owner_user_id: int | None) -> bool:
+    if _is_local_admin_fallback(context) or _effective_role(context) in {"admin", "editor"}:
+        return True
+    return _is_owner_or_admin(context, owner_user_id)
+
+
+def _readable_media_link_sql(
+    context: AuthContext,
+    *,
+    garden_id: int,
+    link_alias: str = "l",
+) -> tuple[str, list[object]]:
+    elevated = (
+        1
+        if _is_local_admin_fallback(context)
+        or _effective_role(context)
+        in {
+            "admin",
+            "editor",
+        }
+        else 0
+    )
+    user_id = int(context.user_id) if context.user_id is not None else -1
+    return (
+        f"""
+        (
+            {link_alias}.target_type NOT IN ('plant', 'plot')
+            OR %s = 1
+            OR (
+                {link_alias}.target_type = 'plant'
+                AND EXISTS (
+                    SELECT 1
+                    FROM plant_ownership po
+                    WHERE po.plt_id = {link_alias}.target_id
+                      AND po.garden_id = %s
+                      AND (%s = 1 OR po.owner_user_id = %s)
+                )
+            )
+            OR (
+                {link_alias}.target_type = 'plot'
+                AND EXISTS (
+                    SELECT 1
+                    FROM plot_ownership plo
+                    WHERE plo.plot_id = {link_alias}.target_id
+                      AND plo.garden_id = %s
+                      AND (%s = 1 OR plo.owner_user_id = %s)
+                )
+            )
+        )
+        """,
+        [elevated, garden_id, elevated, user_id, garden_id, elevated, user_id],
+    )
+
+
+def _media_link_is_readable(
+    db: DbConn,
+    *,
+    context: AuthContext,
+    garden_id: int,
+    target_type: str,
+    target_id: str,
+) -> bool:
+    if target_type == "plant":
+        row = db.execute(
+            """
+            SELECT owner_user_id
+            FROM plant_ownership
+            WHERE plt_id = %s AND garden_id = %s
+            """,
+            (target_id, garden_id),
+        ).fetchone()
+        return bool(row and _can_read_owned_target(context, row["owner_user_id"]))
+    if target_type == "plot":
+        row = db.execute(
+            """
+            SELECT owner_user_id
+            FROM plot_ownership
+            WHERE plot_id = %s AND garden_id = %s
+            """,
+            (target_id, garden_id),
+        ).fetchone()
+        return bool(row and _can_read_owned_target(context, row["owner_user_id"]))
+    return True
+
+
+def _filter_readable_target_ids(
+    db: DbConn,
+    *,
+    context: AuthContext,
+    garden_id: int,
+    target_type: TargetType,
+    target_ids: list[str],
+) -> list[str]:
+    return [
+        target_id
+        for target_id in target_ids
+        if _media_link_is_readable(
+            db,
+            context=context,
+            garden_id=garden_id,
+            target_type=target_type,
+            target_id=target_id,
+        )
+    ]
+
+
+def _asset_has_readable_link(
+    db: DbConn,
+    *,
+    context: AuthContext,
+    garden_id: int,
+    asset_id: str,
+) -> bool:
+    rows = db.execute(
+        """
+        SELECT target_type, target_id
+        FROM media_links
+        WHERE asset_id = %s
+        """,
+        (asset_id,),
+    ).fetchall()
+    return any(
+        _media_link_is_readable(
+            db,
+            context=context,
+            garden_id=garden_id,
+            target_type=str(row["target_type"]),
+            target_id=str(row["target_id"]),
+        )
+        for row in rows
+    )
+
+
 def _validate_media_target(
     db: DbConn,
     *,
@@ -123,13 +262,13 @@ def _validate_media_target(
     if target_type == "plant":
         row = db.execute(
             """
-            SELECT 1
+            SELECT owner_user_id
             FROM plant_ownership
             WHERE plt_id = %s AND garden_id = %s
             """,
             (canonical_id, garden_id),
         ).fetchone()
-        if row:
+        if row and _can_read_owned_target(context, row["owner_user_id"]):
             return canonical_id
         if allow_global:
             global_row = db.execute(
@@ -141,13 +280,13 @@ def _validate_media_target(
         raise HTTPException(status_code=404, detail="Plant not found in active garden")
     row = db.execute(
         """
-        SELECT 1
+        SELECT owner_user_id
         FROM plot_ownership
         WHERE plot_id = %s AND garden_id = %s
         """,
         (canonical_id, garden_id),
     ).fetchone()
-    if row:
+    if row and _can_read_owned_target(context, row["owner_user_id"]):
         return canonical_id
     if allow_global:
         global_row = db.execute(
@@ -442,9 +581,14 @@ def _insert_prepared_asset_link(
 def _asset_links_by_asset_id(
     db: DbConn,
     asset_ids: list[str],
+    *,
+    context: AuthContext | None = None,
+    garden_id: int | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     if not asset_ids:
         return {}
+    if context is not None and garden_id is None:
+        garden_id = _active_garden_id(context)
     placeholders = ",".join(["%s"] * len(asset_ids))
     rows = db.execute(
         f"""
@@ -457,6 +601,18 @@ def _asset_links_by_asset_id(
     ).fetchall()
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
+        if (
+            context is not None
+            and garden_id is not None
+            and not _media_link_is_readable(
+                db,
+                context=context,
+                garden_id=garden_id,
+                target_type=str(row["target_type"]),
+                target_id=str(row["target_id"]),
+            )
+        ):
+            continue
         asset_id = str(row["asset_id"])
         grouped.setdefault(asset_id, []).append(row)
     return grouped
@@ -496,10 +652,17 @@ def _serialize_asset_row(
     db: DbConn,
     row: dict[str, Any],
     *,
+    context: AuthContext | None = None,
+    garden_id: int | None = None,
     is_cover: bool = False,
 ) -> dict[str, object]:
     asset_id = str(row["asset_id"])
-    links_by_asset_id = _asset_links_by_asset_id(db, [asset_id])
+    links_by_asset_id = _asset_links_by_asset_id(
+        db,
+        [asset_id],
+        context=context,
+        garden_id=garden_id,
+    )
     return _serialize_asset_payload(
         row,
         links=links_by_asset_id.get(asset_id, []),
@@ -518,6 +681,13 @@ def _media_file_response_data(
     conn = get_db()
     try:
         row = _fetch_asset_row(conn, garden_id=garden_id, asset_id=asset_id)
+        if not _asset_has_readable_link(
+            conn,
+            context=context,
+            garden_id=garden_id,
+            asset_id=asset_id,
+        ):
+            raise HTTPException(status_code=404, detail="Media asset not found")
         storage_key_field = "preview_storage_key" if preview else "storage_key"
         path = resolve_storage_key(str(row[storage_key_field]))
         if not path.exists():
@@ -576,6 +746,13 @@ def list_media_assets(
                 garden_id=garden_id,
                 plt_id=canonical_target_id,
             )
+    readable_sql, readable_params = _readable_media_link_sql(
+        context,
+        garden_id=garden_id,
+        link_alias="l",
+    )
+    where.append(readable_sql)
+    params.extend(readable_params)
 
     where_sql = " AND ".join(where)
     total_row = db.execute(
@@ -610,6 +787,8 @@ def list_media_assets(
     links_by_asset_id = _asset_links_by_asset_id(
         db,
         [str(row["asset_id"]) for row in rows],
+        context=context,
+        garden_id=garden_id,
     )
     return {
         "items": [
@@ -639,6 +818,13 @@ def list_media_summaries(
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
     canonical_ids = _canonicalize_target_ids(body.target_type, body.target_ids)
+    canonical_ids = _filter_readable_target_ids(
+        db,
+        context=context,
+        garden_id=garden_id,
+        target_type=body.target_type,
+        target_ids=canonical_ids,
+    )
     if not canonical_ids:
         return {"target_type": body.target_type, "items": []}
     placeholders = ",".join(["%s"] * len(canonical_ids))
@@ -694,6 +880,8 @@ def list_media_summaries(
     links_by_asset_id = _asset_links_by_asset_id(
         db,
         [str(row["asset_id"]) for row in rows],
+        context=context,
+        garden_id=garden_id,
     )
     items = [
         {
@@ -885,7 +1073,7 @@ async def upload_media_asset(
         raise
     record_security_event("media_uploads_total")
     row = _fetch_asset_row(db, garden_id=garden_id, asset_id=prepared.asset_id)
-    return _serialize_asset_row(db, row)
+    return _serialize_asset_row(db, row, context=context, garden_id=garden_id)
 
 
 @router.get("/media/{asset_id}/preview")
@@ -920,6 +1108,13 @@ def delete_media_asset(asset_id: str, request: Request, db: DB) -> dict[str, obj
     _require_write(context)
     garden_id = _active_garden_id(context)
     row = _fetch_asset_row(db, garden_id=garden_id, asset_id=asset_id)
+    if not _asset_has_readable_link(
+        db,
+        context=context,
+        garden_id=garden_id,
+        asset_id=asset_id,
+    ):
+        raise HTTPException(status_code=404, detail="Media asset not found")
     db.execute(
         "DELETE FROM media_assets WHERE asset_id = %s AND garden_id = %s",
         (asset_id, garden_id),
@@ -941,6 +1136,13 @@ def remove_media_link(
     _require_write(context)
     garden_id = _active_garden_id(context)
     row = _fetch_asset_row(db, garden_id=garden_id, asset_id=asset_id)
+    if not _asset_has_readable_link(
+        db,
+        context=context,
+        garden_id=garden_id,
+        asset_id=asset_id,
+    ):
+        raise HTTPException(status_code=404, detail="Media asset not found")
     canonical_target_id = _validate_media_target(
         db,
         context=context,
@@ -996,6 +1198,13 @@ def add_media_link(
     _require_write(context)
     garden_id = _active_garden_id(context)
     _fetch_asset_row(db, garden_id=garden_id, asset_id=asset_id)
+    if not _asset_has_readable_link(
+        db,
+        context=context,
+        garden_id=garden_id,
+        asset_id=asset_id,
+    ):
+        raise HTTPException(status_code=404, detail="Media asset not found")
     canonical_target_id = _validate_media_target(
         db,
         context=context,
@@ -1012,7 +1221,7 @@ def add_media_link(
     )
     db.commit()
     row = _fetch_asset_row(db, garden_id=garden_id, asset_id=asset_id)
-    return _serialize_asset_row(db, row)
+    return _serialize_asset_row(db, row, context=context, garden_id=garden_id)
 
 
 @router.post("/media/plants/{plt_id}/cover")
@@ -1044,7 +1253,13 @@ def set_plant_cover(
     return {
         "status": "ok",
         "plant_id": canonical_plt_id,
-        "asset": _serialize_asset_row(db, row, is_cover=True),
+        "asset": _serialize_asset_row(
+            db,
+            row,
+            context=context,
+            garden_id=garden_id,
+            is_cover=True,
+        ),
     }
 
 

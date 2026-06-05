@@ -14,6 +14,7 @@ from gardenops.router_helpers import (
 from gardenops.router_helpers import (
     auth_context as _auth_context,
 )
+from gardenops.security import has_write_access
 from gardenops.services.gardener_reports import get_gardener_reports
 from gardenops.services.notification_service import (
     clear_expired_notifications,
@@ -255,6 +256,8 @@ def get_statistics_reports(
 def export_backup(request: Request, db: DB) -> dict:
     """Full garden data backup as JSON."""
     context = _auth_context(request)
+    if not has_write_access(context):
+        raise HTTPException(status_code=403, detail="Write access required")
     garden_id = _active_garden_id(context)
 
     tables = {

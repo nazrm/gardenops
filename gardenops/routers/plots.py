@@ -1075,13 +1075,24 @@ def bulk_update_seen_growing(body: BulkSeenGrowingBody, db: DB, request: Request
     # Validate all rows exist (all-or-nothing)
     requested_pairs = {(u.plot_id, u.plt_id) for u in body.updates}
     if requested_pairs:
-        pair_clauses = " OR ".join("(plot_id = %s AND plt_id = %s)" for _ in requested_pairs)
+        pair_clauses = " OR ".join("(pp.plot_id = %s AND pp.plt_id = %s)" for _ in requested_pairs)
         pair_params = [v for pair in requested_pairs for v in pair]
+        garden_id = _active_garden_id(context)
         found = {
             (row["plot_id"], row["plt_id"])
             for row in db.execute(
-                f"SELECT plot_id, plt_id FROM plot_plants WHERE {pair_clauses}",
-                pair_params,
+                f"""
+                SELECT pp.plot_id, pp.plt_id
+                FROM plot_plants pp
+                JOIN plot_ownership po
+                  ON po.plot_id = pp.plot_id
+                 AND po.garden_id = %s
+                JOIN plant_ownership plo
+                  ON plo.plt_id = pp.plt_id
+                 AND plo.garden_id = %s
+                WHERE {pair_clauses}
+                """,
+                [garden_id, garden_id, *pair_params],
             ).fetchall()
         }
     else:
@@ -1115,13 +1126,23 @@ def bulk_update_seen_growing(body: BulkSeenGrowingBody, db: DB, request: Request
     executemany(
         db,
         "UPDATE plot_plants SET seen_growing = %s, seen_growing_date = %s"
-        " WHERE plot_id = %s AND plt_id = %s",
+        " WHERE plot_id = %s AND plt_id = %s"
+        " AND EXISTS ("
+        "   SELECT 1 FROM plot_ownership po"
+        "   WHERE po.plot_id = plot_plants.plot_id AND po.garden_id = %s"
+        " )"
+        " AND EXISTS ("
+        "   SELECT 1 FROM plant_ownership plo"
+        "   WHERE plo.plt_id = plot_plants.plt_id AND plo.garden_id = %s"
+        " )",
         [
             (
                 None if u.seen_growing is None else int(u.seen_growing),
                 u.seen_growing_date,
                 u.plot_id,
                 u.plt_id,
+                _active_garden_id(context),
+                _active_garden_id(context),
             )
             for u in body.updates
         ],

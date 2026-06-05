@@ -95,6 +95,7 @@ class RouteFeatureMapTests(unittest.TestCase):
         assert feature_for_route("/api/saved-views") == "saved_views"
         assert feature_for_route("/api/shademap/state") == "shade_map"
         assert feature_for_route("/api/planner/suggestions") == "planner"
+        assert feature_for_route("/api/exports/backup") == "exports_full"
 
     def test_pro_routes(self) -> None:
         assert feature_for_route("/api/procurement") == "procurement"

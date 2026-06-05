@@ -563,6 +563,67 @@ class TestExportImport(BaseApiTest):
         self.assertIn("B1", plant["plot_ids"])
         self.assertEqual(plant["name"], "Imported Test")
 
+    def test_import_plants_csv_rejects_plot_assignments_outside_active_garden(self) -> None:
+        gid1, gid2, username, password = self._setup_admin_two_gardens()
+        conn = db.get_db()
+        try:
+            user = conn.execute(
+                "SELECT id FROM auth_users WHERE username = %s",
+                (username,),
+            ).fetchone()
+            assert user is not None
+            conn.execute(
+                """
+                INSERT INTO plots (plot_id, zone_code, zone_name, plot_number, grid_row, grid_col)
+                VALUES ('CSV-G2-PLOT', 'X', 'Other Garden', 1, 10, 10)
+                """,
+            )
+            conn.execute(
+                """
+                INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id)
+                VALUES ('CSV-G2-PLOT', %s, %s)
+                """,
+                (int(user["id"]), gid2),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        csv_text = (
+            "plt_id,name,latin,category,bloom_month,color,hardiness,height_cm,light,link,"
+            "year_planted,deer_resistant,care_watering,care_soil,care_planting,"
+            "care_maintenance,care_notes,plot_assignments\n"
+            "PLT-TEST,Imported Test,Testus plantus,frø,juli,hvit,H4,140,sol,,2025,1,,,,,,"
+            '"[{""plot_id"":""CSV-G2-PLOT"",""quantity"":1}]"\n'
+        )
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            client = self._new_client()
+            _, csrf = self._login_session(username, password, client=client)
+            response = client.post(
+                "/api/plants/import-csv",
+                headers=self._session_headers(csrf, garden_id=gid1),
+                json={"csv_text": csv_text},
+            )
+
+        self.assertEqual(response.status_code, 404, response.text)
+
+        conn = db.get_db()
+        try:
+            leaked = conn.execute(
+                """
+                SELECT 1
+                FROM plot_plants
+                WHERE plot_id = 'CSV-G2-PLOT' AND plt_id = 'PLT-TEST'
+                """,
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertIsNone(leaked)
+
     def test_import_plants_csv_rolls_back_on_assignment_error(self) -> None:
         csv_text = (
             "plt_id,name,latin,category,bloom_month,color,hardiness,height_cm,light,link,"

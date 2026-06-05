@@ -979,6 +979,15 @@ def import_plants_csv(body: ImportPlantsCsvBody, db: DB, request: Request) -> di
             updated += 1 if exists else 0
             row_count += 1
         if has_assignments_column and imported_assignments:
+            _reject_foreign_plot_targets(
+                db,
+                [
+                    str(assignment["plot_id"])
+                    for assignments in imported_assignments.values()
+                    for assignment in assignments
+                ],
+                context,
+            )
             db.execute("SET CONSTRAINTS ALL DEFERRED")
             for plt_id, assignments in imported_assignments.items():
                 db.execute(
@@ -1340,6 +1349,35 @@ def _validate_batch_plot_targets(
         raise HTTPException(
             404,
             f"Plots not found in active garden: {', '.join(missing_or_foreign[:5])}",
+        )
+    return normalized
+
+
+def _reject_foreign_plot_targets(
+    db: DbConn,
+    plot_ids: list[str],
+    context: AuthContext,
+) -> list[str]:
+    normalized = _normalize_batch_plot_ids(plot_ids)
+    if not normalized:
+        return []
+    garden_id = _active_garden_id(context)
+    placeholders = ",".join(["%s"] * len(normalized))
+    rows = db.execute(
+        f"""
+        SELECT plot_id, garden_id
+        FROM plot_ownership
+        WHERE plot_id IN ({placeholders})
+          AND garden_id IS NOT NULL
+          AND garden_id != %s
+        """,
+        [*normalized, garden_id],
+    ).fetchall()
+    foreign = [str(row["plot_id"]) for row in rows]
+    if foreign:
+        raise HTTPException(
+            404,
+            f"Plots not found in active garden: {', '.join(foreign[:5])}",
         )
     return normalized
 

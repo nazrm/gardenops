@@ -949,10 +949,11 @@ def _in_clause(column: str, values: list[Any]) -> tuple[str, list[Any]]:
 def _ical_text(value: str) -> str:
     return (
         str(value)
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
         .replace("\\", "\\\\")
         .replace(";", r"\;")
         .replace(",", r"\,")
-        .replace("\r\n", r"\n")
         .replace("\n", r"\n")
     )
 
