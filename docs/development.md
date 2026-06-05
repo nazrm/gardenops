@@ -1,0 +1,125 @@
+# Development
+
+This guide covers the normal development loop and PR checks.
+
+## Local Loop
+
+Run the backend:
+
+```bash
+set -a
+. ./.env
+set +a
+.venv/bin/python -m uvicorn gardenops.main:app --host 127.0.0.1 --port 8000
+```
+
+Run the frontend dev server in another shell:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open `http://localhost:5173`.
+
+## PR Checks
+
+Run these before opening a PR:
+
+```bash
+set -a
+. ./.env.test.local
+set +a
+cd frontend
+npm run build
+cd ..
+uv run ruff check gardenops tests
+uv run ruff format --check gardenops tests
+uv run python scripts/check_env_docs.py
+uv run python scripts/check_backend_integrity.py --format text
+uv run python -m pytest tests/ -q --tb=short
+```
+
+For a faster deploy or local sanity check, run:
+
+```bash
+set -a
+. ./.env.test.local
+set +a
+scripts/run_backend_smoke.sh
+```
+
+The smoke script covers startup-critical backend behavior and explicitly opts
+into the test-only password hash cost with `AUTH_PASSWORD_HASH_FAST_FOR_TESTS=true`.
+Run the full backend suite before merging larger backend or security changes.
+
+For the fastest local full backend run, use the disposable Postgres runner:
+
+```bash
+.venv/bin/python scripts/run_fast_postgres_tests.py --full-suite --shards 4
+```
+
+The runner creates a temporary local Postgres cluster, generates test-only
+credentials and databases, runs the shard suite, and removes the cluster on
+success. It does not read `/etc/gardenops.env` or use the live database.
+
+To verify cleanup behavior after runner changes:
+
+```bash
+.venv/bin/python scripts/run_fast_postgres_tests.py --cleanup-smoke after-start
+.venv/bin/python scripts/run_fast_postgres_tests.py --cleanup-smoke during-migration
+.venv/bin/python scripts/run_fast_postgres_tests.py --cleanup-smoke during-pytest
+```
+
+As a normal-durability fallback, provision one disposable database per shard,
+named by appending `_shard0`, `_shard1`, and so on to
+`GARDENOPS_TEST_POSTGRES_URL`'s database name. Then run:
+
+```bash
+set -a
+. ./.env.test.local
+set +a
+uv run python scripts/run_backend_shards.py --shards 4
+```
+
+For the fallback sharded runner, the default file-level split is the fastest
+validated mode on the live host. Use `--scope node` only when whole-file shard
+balance becomes a problem.
+
+## Frontend Security Checks
+
+`npm run build` also checks for:
+
+- unsafe raw HTML sinks
+- invite-token storage regressions
+- TypeScript errors
+- production bundling errors
+- sourcemap leakage
+- stale generated asset references
+
+If a change intentionally adds a raw HTML sink, document it in
+`frontend/security/innerhtml_allowlist.txt` and explain why the sink is safe.
+
+## Test Database
+
+Create `.env.test.local` from `.env.test.example` and use it for test and PR
+check commands. `GARDENOPS_TEST_POSTGRES_URL` and `DATABASE_URL` must both point
+at the disposable test database because tests can truncate and rewrite data. Do
+not source the runtime `.env` or a production service env file for pytest.
+Fast password hashing is not inferred from `APP_ENV=test` alone. Set
+`AUTH_PASSWORD_HASH_FAST_FOR_TESTS=true` only in disposable test-runner
+environments with `INTERNET_EXPOSED=false` to lower Argon2 cost so repeated user
+seeding does not dominate runtime.
+
+## Pull Request Expectations
+
+- Keep changes scoped.
+- Include tests for behavior changes.
+- Update public docs when behavior, setup, environment variables, or deployment
+  expectations change.
+- Do not commit `.env`, database dumps, media uploads, local terrain files, or
+  generated build output.
+
+For a repeatable local review process, including worktree checkout, agent-assisted
+review prompts, Dependabot handling, and merge gates, see
+[pr-review-runbook.md](pr-review-runbook.md).

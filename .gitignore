@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+
+# Database and dumps
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.pgdump
+
+# Node
+node_modules/
+
+# Frontend build output
+frontend/dist/
+
+# Environment and local config
+.env
+.env.*
+!.env.example
+!.env.test.example
+.python/
+
+# Logs, backups, output, and runtime media
+*.log
+.clawpatch/
+.host-scripts/
+logs/
+backups/
+output/full-stack-code-review.md
+output/
+media_uploads/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+
+# IDE and OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

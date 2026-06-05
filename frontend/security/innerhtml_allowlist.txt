@@ -1,0 +1,3 @@
+# Reviewed allowlist for raw HTML sinks.
+# Format: <sink>|review=<class>|reason=<note>
+core/sanitize.ts:64|element.innerHTML = reviewedHtmlValue(html) as string;|review=reviewed-wrapper|reason=central sink used only through reviewed helper APIs and Trusted Types-aware wrapper

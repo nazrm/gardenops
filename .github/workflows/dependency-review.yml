@@ -1,0 +1,43 @@
+name: Dependency Review
+
+on:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - uv.lock
+      - frontend/package.json
+      - frontend/package-lock.json
+      - .github/dependabot.yml
+      - .github/workflows/**
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version-file: .python-version
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: uv lock --check
+      - run: python scripts/check_dependency_sources.py
+      - run: python scripts/check_python_release_age.py
+      - run: uv sync --frozen --all-groups
+      - run: uv pip freeze | grep -v '^-e ' > /tmp/gardenops-backend-requirements.txt
+      - run: uv run --frozen --group audit pip-audit --strict -r /tmp/gardenops-backend-requirements.txt
+      - run: npm ci
+        working-directory: frontend
+      - run: node scripts/check_npm_release_age.cjs
+      - run: npm audit --audit-level=high
+        working-directory: frontend

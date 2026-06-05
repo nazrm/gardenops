@@ -1,0 +1,64 @@
+name: Dependency Audits
+
+on:
+  schedule:
+    - cron: "40 6 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - uv.lock
+      - frontend/package.json
+      - frontend/package-lock.json
+
+permissions:
+  contents: read
+
+jobs:
+  backend-audit:
+    name: Backend Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version-file: .python-version
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+      - run: uv lock --check
+      - run: python scripts/check_dependency_sources.py
+      - run: python scripts/check_python_release_age.py
+      - run: uv sync --frozen --all-groups
+      - run: uv pip freeze | grep -v '^-e ' > /tmp/gardenops-backend-requirements.txt
+      - run: uv run --frozen --group audit pip-audit --strict -r /tmp/gardenops-backend-requirements.txt
+      - run: uv export --frozen --format cyclonedx1.5 --all-groups --output-file gardenops-python.cdx.json --quiet
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gardenops-python-sbom
+          path: gardenops-python.cdx.json
+          if-no-files-found: error
+
+  frontend-audit:
+    name: Frontend Dependency Audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: node ../scripts/check_npm_release_age.cjs
+      - run: npm audit --audit-level=high
+      - run: npm audit signatures
+      - run: npm sbom --package-lock-only --sbom-format cyclonedx --sbom-type application > gardenops-frontend.cdx.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gardenops-frontend-sbom
+          path: frontend/gardenops-frontend.cdx.json
+          if-no-files-found: error
