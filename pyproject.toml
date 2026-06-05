@@ -13,7 +13,7 @@ dependencies = [
     "fastapi==0.136.1",
     "laspy[lazrs]>=2.7.0",
     "numpy>=2.4.2",
-    "openai>=1.109.1",
+    "openai>=2.38.0",
     "pillow>=12.2.0",
     "psycopg[binary]>=3.3.4",
     "pyproj>=3.7.2",
