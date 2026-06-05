@@ -49,8 +49,8 @@ set +a
 scripts/run_backend_smoke.sh
 ```
 
-The smoke script covers startup-critical backend behavior and uses the
-test-only password hash cost selected by `AUTH_PASSWORD_HASH_FAST_FOR_TESTS`.
+The smoke script covers startup-critical backend behavior and explicitly opts
+into the test-only password hash cost with `AUTH_PASSWORD_HASH_FAST_FOR_TESTS=true`.
 Run the full backend suite before merging larger backend or security changes.
 
 For the fastest local full backend run, use the disposable Postgres runner:
@@ -106,8 +106,10 @@ Create `.env.test.local` from `.env.test.example` and use it for test and PR
 check commands. `GARDENOPS_TEST_POSTGRES_URL` and `DATABASE_URL` must both point
 at the disposable test database because tests can truncate and rewrite data. Do
 not source the runtime `.env` or a production service env file for pytest.
-When `APP_ENV=test`, `AUTH_PASSWORD_HASH_FAST_FOR_TESTS=true` lowers Argon2 cost
-only inside the test process so repeated user seeding does not dominate runtime.
+Fast password hashing is not inferred from `APP_ENV=test` alone. Set
+`AUTH_PASSWORD_HASH_FAST_FOR_TESTS=true` only in disposable test-runner
+environments with `INTERNET_EXPOSED=false` to lower Argon2 cost so repeated user
+seeding does not dominate runtime.
 
 ## Pull Request Expectations
 

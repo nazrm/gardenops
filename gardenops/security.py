@@ -246,8 +246,10 @@ def _password_salt() -> str:
 def _use_fast_test_password_hashing() -> bool:
     if os.environ.get("APP_ENV", "").strip().lower() != "test":
         return False
-    raw = os.environ.get("AUTH_PASSWORD_HASH_FAST_FOR_TESTS", "true").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    if _is_internet_exposed():
+        return False
+    raw = os.environ.get("AUTH_PASSWORD_HASH_FAST_FOR_TESTS", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _argon2_hasher() -> PasswordHasher:

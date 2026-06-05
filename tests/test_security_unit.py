@@ -44,7 +44,29 @@ class TestHashVerifyPassword(unittest.TestCase):
         hashed = hash_password("testpass")
         self.assertTrue(hashed.startswith("$argon2id$"))
 
-    def test_test_env_uses_fast_password_hash_costs(self) -> None:
+    def test_test_env_requires_explicit_fast_password_hash_opt_in(self) -> None:
+        previous = security._ARGON2_HASHER
+        security._ARGON2_HASHER = None
+        try:
+            with patch.dict("os.environ", {"APP_ENV": "test"}, clear=True):
+                hashed = hash_password("testpass")
+            self.assertIn("m=65536,t=3,p=4", hashed)
+        finally:
+            security._ARGON2_HASHER = previous
+
+    def test_test_env_without_fast_opt_in_does_not_rehash_strong_hash(self) -> None:
+        previous = security._ARGON2_HASHER
+        security._ARGON2_HASHER = None
+        try:
+            with patch.dict("os.environ", {"APP_ENV": "production"}, clear=True):
+                strong_hash = hash_password("testpass")
+            security._ARGON2_HASHER = None
+            with patch.dict("os.environ", {"APP_ENV": "test"}, clear=True):
+                self.assertFalse(security.password_needs_rehash(strong_hash))
+        finally:
+            security._ARGON2_HASHER = previous
+
+    def test_test_env_uses_fast_password_hash_costs_when_explicitly_enabled(self) -> None:
         previous = security._ARGON2_HASHER
         security._ARGON2_HASHER = None
         try:
@@ -54,9 +76,28 @@ class TestHashVerifyPassword(unittest.TestCase):
                     "APP_ENV": "test",
                     "AUTH_PASSWORD_HASH_FAST_FOR_TESTS": "true",
                 },
+                clear=True,
             ):
                 hashed = hash_password("testpass")
             self.assertIn("m=1024,t=1,p=1", hashed)
+        finally:
+            security._ARGON2_HASHER = previous
+
+    def test_internet_exposed_test_env_ignores_fast_password_hash_opt_in(self) -> None:
+        previous = security._ARGON2_HASHER
+        security._ARGON2_HASHER = None
+        try:
+            with patch.dict(
+                "os.environ",
+                {
+                    "APP_ENV": "test",
+                    "AUTH_PASSWORD_HASH_FAST_FOR_TESTS": "true",
+                    "INTERNET_EXPOSED": "true",
+                },
+                clear=True,
+            ):
+                hashed = hash_password("testpass")
+            self.assertIn("m=65536,t=3,p=4", hashed)
         finally:
             security._ARGON2_HASHER = previous
 
