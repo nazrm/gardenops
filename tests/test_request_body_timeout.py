@@ -57,7 +57,7 @@ class RequestBodyTimeoutTests(unittest.TestCase):
             messages = iter(
                 [
                     {"type": "http.request", "body": b'{"u"', "more_body": True},
-                    {"type": "http.request", "body": b':1}', "more_body": False},
+                    {"type": "http.request", "body": b":1}", "more_body": False},
                 ]
             )
 
