@@ -320,7 +320,7 @@ check:
 
 ```bash
 systemctl status gardenops.service gardenops-backup.timer nginx postgresql --no-pager
-curl -fsS --resolve skohyllen.lossless.science:443:127.0.0.1 https://skohyllen.lossless.science/api/health
+curl -fsS --resolve gardenops.example.com:443:127.0.0.1 https://gardenops.example.com/api/health
 ```
 
 For non-deploy PRs, do not touch the live service checkout.
