@@ -1492,8 +1492,15 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
                     content={"detail": "Request body too large"},
                 )
         else:
+            request_timeout = _request_timeout_seconds(path)
             try:
-                await _buffer_request_body_with_limit(request, max_body_bytes)
+                await asyncio.wait_for(
+                    _buffer_request_body_with_limit(request, max_body_bytes),
+                    timeout=request_timeout,
+                )
+            except TimeoutError:
+                _audit_mutation(504, "Request timeout exceeded")
+                return JSONResponse(status_code=504, content={"detail": "Request timed out"})
             except HTTPException as exc:
                 return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     try:
