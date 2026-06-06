@@ -95,6 +95,7 @@ _ROUTE_GATES: tuple[tuple[str, str], ...] = tuple(
             ("/api/calendar", "calendar"),
             ("/api/saved-views", "saved_views"),
             ("/api/shademap", "shade_map"),
+            ("/shademap/terrain", "shade_map"),
             ("/api/planner", "planner"),
             # ── Professional ──
             ("/api/procurement", "procurement"),

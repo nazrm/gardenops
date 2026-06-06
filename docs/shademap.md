@@ -63,7 +63,7 @@ For a production deployment with ShadeMap enabled:
 ```bash
 SHADEMAP=change-me
 SHADEMAP_PUBLIC_API_KEY=change-me
-SHADEMAP_TILE_SIGNING_SECRET=change-me
+SHADEMAP_TILE_SIGNING_SECRET=<generate-a-unique-random-secret>
 SHADEMAP_SHARE_URL=
 SHADEMAP_LAT=51.50095
 SHADEMAP_LNG=-0.12448

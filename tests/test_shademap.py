@@ -312,6 +312,28 @@ class TestShademap(BaseApiTest):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["detail"], "SHADEMAP_TILE_SIGNING_SECRET not configured")
 
+    def test_shademap_config_rejects_public_placeholder_tile_signing_secret(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SHADEMAP": "shade-private-key",
+                    "SHADEMAP_PUBLIC_API_KEY": "shade-public-key",
+                    "SHADEMAP_TILE_SIGNING_SECRET": "change-me",
+                },
+                clear=False,
+            ),
+            patch("gardenops.routers.shademap._perform_sdk_validation"),
+            patch(
+                "gardenops.routers.shademap.local_terrain_available",
+                return_value=False,
+            ),
+        ):
+            response = self.client.get("/api/shademap/config")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "SHADEMAP_TILE_SIGNING_SECRET not configured")
+
     def test_shademap_config_requires_api_key(self) -> None:
         with patch.dict(
             os.environ,

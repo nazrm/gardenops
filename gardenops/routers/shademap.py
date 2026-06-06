@@ -240,9 +240,12 @@ def _overpass_urls() -> tuple[str, ...]:
     return DEFAULT_OVERPASS_URLS
 
 
+_PUBLIC_TILE_SECRET_PLACEHOLDERS = {"change-me", "<generate-a-unique-random-secret>"}
+
+
 def _tile_signing_secret() -> str:
     value = os.environ.get("SHADEMAP_TILE_SIGNING_SECRET", "").strip()
-    if value:
+    if value and value.lower() not in _PUBLIC_TILE_SECRET_PLACEHOLDERS:
         return value
     raise RuntimeError("SHADEMAP_TILE_SIGNING_SECRET not configured")
 

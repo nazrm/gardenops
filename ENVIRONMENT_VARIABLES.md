@@ -67,7 +67,7 @@ terrain setup, and production cautions.
 | `SHADEMAP_PUBLIC_API_KEY` | Browser-safe ShadeMap key returned to authenticated clients by `/api/shademap/config`. Required to enable the panel. | `change-me` |
 | `SHADEMAP_PUBLIC_KEY` | Alternative client/public ShadeMap key. | `change-me` |
 | `SHADEMAP_CLIENT_KEY` | Alternative client/public ShadeMap key. | `change-me` |
-| `SHADEMAP_TILE_SIGNING_SECRET` | GardenOps HMAC secret for signed same-origin terrain tile URLs. This is not a ShadeMap key. Replace in production. | `change-me` |
+| `SHADEMAP_TILE_SIGNING_SECRET` | GardenOps HMAC secret for signed same-origin terrain tile URLs. This is not a ShadeMap key. Must be a unique random value in production. | unset |
 | `SHADEMAP_TILE_TOKEN_TTL_SECONDS` | Terrain tile token lifetime. Clamped by the app. | `600` |
 | `SHADEMAP_TERRAIN_URL_TEMPLATE` | Optional remote Terrarium-compatible PNG terrain tile URL template with `{z}`, `{x}`, and `{y}` placeholders. This is for remote tile fetching, not a local file path. | unset |
 | `SHADEMAP_OVERPASS_URL` | Optional single Overpass API URL for building feature data. | unset |
