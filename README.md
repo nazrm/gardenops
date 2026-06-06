@@ -307,7 +307,7 @@ RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379/0
 API_DOCS_ENABLED=false
 CSP_REPORT_ONLY=false
 AUTH_MFA_SECRET_KEY=change-me
-SHADEMAP_TILE_SIGNING_SECRET=change-me
+SHADEMAP_TILE_SIGNING_SECRET=<generate-a-unique-random-secret>
 ```
 
 The backend refuses to start with API docs enabled in production or in any

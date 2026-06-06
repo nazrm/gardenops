@@ -82,7 +82,7 @@ At minimum for an enabled production ShadeMap panel, configure:
 ```bash
 SHADEMAP=change-me
 SHADEMAP_PUBLIC_API_KEY=change-me
-SHADEMAP_TILE_SIGNING_SECRET=change-me
+SHADEMAP_TILE_SIGNING_SECRET=<generate-a-unique-random-secret>
 ```
 
 Leave ShadeMap keys unset to disable the integration. Do not set only the tile
