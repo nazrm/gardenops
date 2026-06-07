@@ -10429,10 +10429,6 @@ td.inventory-qty-zero {
     width: auto;
   }
 
-  #adm-my-shademap-key {
-    flex: 1;
-    max-width: 400px;
-  }
 }
 
 /* ── Onboarding wizard ────────────────────────────────────── */

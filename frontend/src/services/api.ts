@@ -718,7 +718,6 @@ export interface AuthManagedUser {
   role: "viewer" | "editor" | "admin";
   is_active: boolean;
   must_change_password: boolean;
-  has_shademap_key: boolean;
   created_by_user_id: number | null;
   deactivated_at: string | null;
   deactivated_reason: string | null;
@@ -982,8 +981,6 @@ export async function getAuthMeApi(): Promise<AuthUserProfile> {
 }
 
 export interface MeSettings {
-  shademap_api_key: string;
-  has_shademap_key: boolean;
   language: "en" | "no";
   mfa: AuthMfaState;
   plot_assignment_meanings: PlotAssignmentMeaning[];
@@ -991,6 +988,66 @@ export interface MeSettings {
 
 export async function getAuthMeSettingsApi(): Promise<MeSettings> {
   return apiGet<MeSettings>("/api/auth/me/settings");
+}
+
+export type ProviderSecretStatus = {
+  configured: boolean;
+  source: "db" | "env" | "none";
+  last4: string | null;
+  updated_at_ms: number | null;
+  updated_by_user_id: number | null;
+  updated_by_username: string | null;
+};
+
+export type ProviderSecretKey =
+  | "openai_api_key"
+  | "anthropic_api_key"
+  | "plantnet_api_key"
+  | "shademap_api_key";
+
+export interface ProviderSettings {
+  ai_provider: "disabled" | "openai" | "anthropic";
+  models: {
+    openai_model: string;
+    openai_fast_model: string;
+    anthropic_model: string;
+  };
+  secrets: Record<ProviderSecretKey, ProviderSecretStatus>;
+  secrets_encryption_configured: boolean;
+}
+
+export interface ProviderSettingsUpdate {
+  ai_provider?: "disabled" | "openai" | "anthropic";
+  openai_model?: string;
+  openai_fast_model?: string;
+  anthropic_model?: string;
+  openai_api_key?: string;
+  anthropic_api_key?: string;
+  plantnet_api_key?: string;
+  shademap_api_key?: string;
+  clear_openai_api_key?: boolean;
+  clear_anthropic_api_key?: boolean;
+  clear_plantnet_api_key?: boolean;
+  clear_shademap_api_key?: boolean;
+  action_reason: string;
+}
+
+export async function getProviderSettingsApi(): Promise<ProviderSettings> {
+  return apiGet<ProviderSettings>("/api/admin/provider-settings");
+}
+
+export async function updateProviderSettingsApi(
+  update: ProviderSettingsUpdate,
+): Promise<ProviderSettings> {
+  const response = await checked(
+    await apiFetch("/api/admin/provider-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(update),
+    }),
+    "/api/admin/provider-settings",
+  );
+  return (await response.json()) as ProviderSettings;
 }
 
 export async function getAuthMfaStatusApi(): Promise<AuthMfaState> {
@@ -1051,7 +1108,6 @@ export async function regenerateAuthMfaRecoveryCodesApi(actionReason: string): P
 
 export async function updateAuthMeSettingsApi(
   settings: {
-    shademap_api_key?: string | null;
     plot_assignment_meanings?: PlotAssignmentMeaning[];
     language?: "en" | "no";
   },
@@ -1285,7 +1341,6 @@ export async function updateAuthUserApi(
     role?: "viewer" | "editor" | "admin";
     is_active?: boolean;
     must_change_password?: boolean;
-    shademap_api_key?: string;
     deactivated_reason?: string;
     action_reason?: string;
   },

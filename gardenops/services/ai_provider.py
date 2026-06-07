@@ -5,22 +5,18 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
 from typing import Any, Literal, cast
 
 from anthropic import Anthropic
 from openai import OpenAI
 
+from gardenops.provider_settings import env_ai_provider_value, get_ai_runtime_config
 from gardenops.rate_limit import env_int, env_nonneg_int
 
 _logger = logging.getLogger(__name__)
 
 AIProvider = Literal["anthropic", "openai"]
 _SUPPORTED_PROVIDERS = frozenset({"anthropic", "openai"})
-
-DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
-DEFAULT_OPENAI_MODEL = "gpt-5.5"
-DEFAULT_OPENAI_FAST_MODEL = "gpt-5.4-mini"
 
 
 class AIProviderNotConfigured(Exception):
@@ -47,35 +43,46 @@ class AIProviderError(Exception):
 
 
 def configured_provider() -> AIProvider:
-    raw = (os.environ.get("AI_PROVIDER") or "").strip().lower()
-    if not raw:
+    provider = get_ai_runtime_config().provider
+    if provider == "disabled":
+        raw_env_provider = env_ai_provider_value()
+        if raw_env_provider and raw_env_provider not in _SUPPORTED_PROVIDERS:
+            raise AIProviderNotConfigured(
+                "AI provider must be one of: anthropic, openai",
+                provider=raw_env_provider,
+            )
         raise AIProviderNotConfigured(
-            "AI_PROVIDER not configured",
+            "AI provider not configured",
             provider=None,
         )
-    if raw not in _SUPPORTED_PROVIDERS:
+    if provider not in _SUPPORTED_PROVIDERS:
         raise AIProviderNotConfigured(
-            "AI_PROVIDER must be one of: anthropic, openai",
-            provider=raw,
+            "AI provider must be one of: anthropic, openai",
+            provider=provider,
         )
-    return cast(AIProvider, raw)
+    return cast(AIProvider, provider)
 
 
 def anthropic_model() -> str:
-    return (os.environ.get("ANTHROPIC_MODEL") or DEFAULT_ANTHROPIC_MODEL).strip()
+    return get_ai_runtime_config().anthropic_model
 
 
 def openai_model() -> str:
-    return (os.environ.get("OPENAI_MODEL") or DEFAULT_OPENAI_MODEL).strip()
+    return get_ai_runtime_config().openai_model
 
 
 def openai_fast_model() -> str:
-    return (os.environ.get("OPENAI_FAST_MODEL") or DEFAULT_OPENAI_FAST_MODEL).strip()
+    return get_ai_runtime_config().openai_fast_model
 
 
 def _provider_api_key(provider: AIProvider) -> str:
-    key_name = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
-    api_key = os.environ.get(key_name, "").strip()
+    config = get_ai_runtime_config()
+    if provider == "anthropic":
+        key_name = "ANTHROPIC_API_KEY"
+        api_key = (config.anthropic_api_key or "").strip()
+    else:
+        key_name = "OPENAI_API_KEY"
+        api_key = (config.openai_api_key or "").strip()
     if not api_key:
         raise AIProviderNotConfigured(f"{key_name} not configured", provider=provider)
     return api_key

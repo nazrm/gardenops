@@ -48,6 +48,7 @@ from gardenops.models import (
     StrictBaseModel,
 )
 from gardenops.observability import observability_extra
+from gardenops.provider_settings import get_shademap_api_key
 from gardenops.rate_limit import (
     acquire_concurrency_slot,
     enforce_layered_rate_limit,
@@ -62,7 +63,6 @@ from gardenops.router_helpers import (
 from gardenops.router_helpers import (
     is_local_admin_fallback as _is_local_admin_fallback,
 )
-from gardenops.security import resolve_request_auth_context
 from gardenops.security_metrics import record_security_event
 from gardenops.services.lidar_terrain import (
     LocalTerrainDataset,
@@ -160,35 +160,12 @@ def reset_shademap_abuse_tracking() -> None:
         _DISTINCT_SIGNATURES.clear()
 
 
-def _read_user_shademap_key(
-    request: FastAPIRequest | None,
-    db: DbConn | None = None,
-) -> str:
-    if request is None:
-        return ""
-    context = resolve_request_auth_context(request)
-    conn = db if db is not None else db_module.get_db()
-    if context.user_id is not None:
-        row = conn.execute(
-            "SELECT shademap_api_key FROM auth_users WHERE id = %s",
-            (context.user_id,),
-        ).fetchone()
-        if row and row["shademap_api_key"]:
-            return str(row["shademap_api_key"])
-    # Fallback: check app_settings (used by API key auth)
-    row = conn.execute("SELECT value FROM app_settings WHERE key = 'shademap_api_key'").fetchone()
-    return str(row["value"]) if row and row["value"] else ""
-
-
 def _read_api_key(
     request: FastAPIRequest | None = None,
     db: DbConn | None = None,
 ) -> str:
-    for name in ("SHADEMAP", "SHADEMAP_API_KEY", "SHADEMAP_KEY"):
-        value = os.environ.get(name, "").strip()
-        if value:
-            return value
-    return _read_user_shademap_key(request, db)
+    del request
+    return get_shademap_api_key(db) or ""
 
 
 def _read_public_api_key(

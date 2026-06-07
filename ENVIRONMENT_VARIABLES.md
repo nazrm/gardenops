@@ -19,6 +19,7 @@ instance. Values shown here are placeholders; do not commit real local env files
 | `AUTH_MODE` | Authentication mode. Use `session` for browser deployments. | `session` |
 | `AUTH_SESSION_COOKIE_SECURE` | Send session cookies only over HTTPS. | `true` |
 | `AUTH_MFA_SECRET_KEY` | Secret key for MFA state encryption/signing. | `change-me` |
+| `APP_SECRETS_ENCRYPTION_KEY` | Fernet key used to encrypt platform-managed provider secrets stored in the database. Required before admins can save or clear provider keys from the admin UI. | `change-me` |
 
 ## HTTP And Proxy
 
@@ -39,6 +40,17 @@ instance. Values shown here are placeholders; do not commit real local env files
 | `RATE_LIMIT_REDIS_URL` | Redis URL for production rate limiting. | `redis://127.0.0.1:6379/0` |
 
 ## Optional Providers
+
+Platform admins can manage OpenAI, Anthropic, PlantNet, and server-side
+ShadeMap keys from the admin UI when `APP_SECRETS_ENCRYPTION_KEY` is
+configured. The environment variables below remain supported as deploy-time
+fallbacks.
+
+Generate a storage key with:
+
+```bash
+.venv/bin/python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
 
 | Variable | Purpose | Example |
 |---|---|---|

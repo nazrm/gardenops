@@ -689,15 +689,14 @@ class TestPlots(BaseApiTest):
             )
             _, bob_csrf = self._login_session("plot_meaning_bob", "bobpass123", client=bob_client)
 
-            shademap_saved = alice_client.put(
+            language_saved = alice_client.put(
                 "/api/auth/me/settings",
                 headers=self._session_headers(alice_csrf, garden_id=default_garden_id),
                 json={
-                    "shademap_api_key": "alice-private-shademap-key",
                     "language": "no",
                 },
             )
-            self.assertEqual(shademap_saved.status_code, 200)
+            self.assertEqual(language_saved.status_code, 200)
 
             saved = alice_client.put(
                 "/api/auth/me/settings",
@@ -739,7 +738,6 @@ class TestPlots(BaseApiTest):
                     },
                 ],
             )
-            self.assertTrue(alice_settings.json()["has_shademap_key"])
             self.assertEqual(alice_settings.json()["language"], "no")
 
             alice_me = alice_client.get(
