@@ -168,14 +168,22 @@ def _env_ai_runtime_config() -> AiRuntimeConfig:
 
 def get_ai_runtime_config(conn: DbConn | None = None) -> AiRuntimeConfig:
     def load(active_conn: DbConn) -> AiRuntimeConfig:
-        return AiRuntimeConfig(
-            provider=_selected_provider(active_conn),
-            openai_api_key=_secret_value(active_conn, OPENAI_API_KEY, OPENAI_API_KEY_ENVS),
-            anthropic_api_key=_secret_value(
+        provider = _selected_provider(active_conn)
+        openai_api_key: str | None = None
+        anthropic_api_key: str | None = None
+        if provider == "openai":
+            openai_api_key = _secret_value(active_conn, OPENAI_API_KEY, OPENAI_API_KEY_ENVS)
+        elif provider == "anthropic":
+            anthropic_api_key = _secret_value(
                 active_conn,
                 ANTHROPIC_API_KEY,
                 ANTHROPIC_API_KEY_ENVS,
-            ),
+            )
+
+        return AiRuntimeConfig(
+            provider=provider,
+            openai_api_key=openai_api_key,
+            anthropic_api_key=anthropic_api_key,
             openai_model=_resolved_setting(
                 active_conn,
                 OPENAI_MODEL_SETTING,
@@ -198,6 +206,8 @@ def get_ai_runtime_config(conn: DbConn | None = None) -> AiRuntimeConfig:
 
     try:
         return _with_connection(conn, load)
+    except ConfigurationError:
+        raise
     except RuntimeError:
         if conn is not None:
             raise
