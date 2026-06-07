@@ -23,6 +23,8 @@ from gardenops.incident_controls import (
     set_emergency_read_only,
 )
 from gardenops.models import StrictBaseModel
+from gardenops.platform_secrets import ConfigurationError
+from gardenops.provider_settings import get_shademap_api_key
 from gardenops.rate_limit import enforce_key_rate_limit, enforce_rate_limit, env_int, env_nonneg_int
 from gardenops.security import (
     AUTH_ROLES,
@@ -135,7 +137,6 @@ class AdminUpdateUserBody(StrictBaseModel):
     role: Literal["viewer", "editor", "admin"] | None = None
     is_active: bool | None = None
     must_change_password: bool | None = None
-    shademap_api_key: str | None = Field(default=None, max_length=200)
     deactivated_reason: str = Field(default="", max_length=400)
     action_reason: str = Field(default="", max_length=400)
 
@@ -468,7 +469,6 @@ def _auth_user_select_fields(user_alias: str) -> str:
         {user_alias}.deactivated_reason,
         {user_alias}.created_at,
         {user_alias}.last_login_at,
-        {user_alias}.shademap_api_key,
         {user_alias}.mfa_totp_enabled,
         {user_alias}.mfa_enrolled_at,
         {user_alias}.subscription_tier,
@@ -548,7 +548,6 @@ def _serialize_auth_user(row: dict[str, Any]) -> dict[str, object]:
         "deactivated_reason": row["deactivated_reason"],
         "created_at": row["created_at"],
         "last_login_at": row["last_login_at"],
-        "has_shademap_key": bool(row["shademap_api_key"]),
         "mfa_enabled": bool(int(row["mfa_totp_enabled"])),
         "mfa_enrolled_at": row["mfa_enrolled_at"],
         "subscription_tier": str(row["subscription_tier"] or "home"),
@@ -978,34 +977,24 @@ def auth_me(request: Request, response: Response, db: DB) -> dict[str, object]:
                 path=session_cookie_path(),
                 domain=session_cookie_domain(),
             )
+    try:
+        server_shademap_key = get_shademap_api_key(db) or ""
+    except ConfigurationError:
+        server_shademap_key = ""
     shademap_available = bool(
-        os.environ.get("SHADEMAP", "").strip()
-        or os.environ.get("SHADEMAP_API_KEY", "").strip()
-        or os.environ.get("SHADEMAP_KEY", "").strip()
+        server_shademap_key
         or os.environ.get("SHADEMAP_PUBLIC_API_KEY", "").strip()
+        or os.environ.get("SHADEMAP_PUBLIC_KEY", "").strip()
+        or os.environ.get("SHADEMAP_CLIENT_KEY", "").strip()
     )
     language = "en"
-    if not shademap_available and context.user_id is not None:
-        row = db.execute(
-            "SELECT shademap_api_key, language FROM auth_users WHERE id = %s",
-            (context.user_id,),
-        ).fetchone()
-        if row:
-            if row["shademap_api_key"]:
-                shademap_available = True
-            if row["language"]:
-                language = "no" if str(row["language"]).strip().lower() == "no" else "en"
-    elif context.user_id is not None:
+    if context.user_id is not None:
         row = db.execute(
             "SELECT language FROM auth_users WHERE id = %s",
             (context.user_id,),
         ).fetchone()
         if row and row["language"]:
             language = "no" if str(row["language"]).strip().lower() == "no" else "en"
-    if not shademap_available:
-        row = db.execute("SELECT value FROM app_settings WHERE key = 'shademap_api_key'").fetchone()
-        if row and row["value"]:
-            shademap_available = True
     mfa = _current_user_mfa_settings(
         db,
         user_id=context.user_id,
@@ -1061,7 +1050,6 @@ _PLOT_ASSIGNMENT_PATTERN_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]*$")
 
 
 class MeSettingsBody(StrictBaseModel):
-    shademap_api_key: str | None = None
     plot_assignment_meanings: list[PlotAssignmentMeaningBody] | None = None
     language: Literal["en", "no"] | None = None
 
@@ -1144,31 +1132,15 @@ def _replace_plot_assignment_meanings(
 @router.get("/auth/me/settings")
 def auth_me_settings(request: Request, db: DB) -> dict[str, object]:
     context = resolve_request_auth_context(request)
-    shademap_key = ""
     language = "en"
     if context.user_id is not None:
         row = db.execute(
-            "SELECT shademap_api_key, language FROM auth_users WHERE id = %s",
+            "SELECT language FROM auth_users WHERE id = %s",
             (context.user_id,),
         ).fetchone()
-        if row:
-            if row["shademap_api_key"]:
-                shademap_key = str(row["shademap_api_key"])
-            if row["language"]:
-                language = "no" if str(row["language"]).strip().lower() == "no" else "en"
-    if not shademap_key:
-        row = db.execute("SELECT value FROM app_settings WHERE key = 'shademap_api_key'").fetchone()
-        if row and row["value"]:
-            shademap_key = str(row["value"])
-    masked = ""
-    if shademap_key:
-        if len(shademap_key) > 8:
-            masked = "\u2022" * 8 + shademap_key[-4:]
-        else:
-            masked = "\u2022" * len(shademap_key)
+        if row and row["language"]:
+            language = "no" if str(row["language"]).strip().lower() == "no" else "en"
     return {
-        "shademap_api_key": masked,
-        "has_shademap_key": bool(shademap_key),
         "language": language,
         "mfa": _current_user_mfa_settings(
             db,
@@ -1204,23 +1176,6 @@ def auth_me_update_settings(
             )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if "shademap_api_key" in field_set:
-        key_value = (body.shademap_api_key or "").strip() or None
-        if context.user_id is not None:
-            db.execute(
-                "UPDATE auth_users SET shademap_api_key = %s WHERE id = %s",
-                (key_value, context.user_id),
-            )
-        else:
-            if key_value:
-                db.execute(
-                    "INSERT INTO app_settings (key, value)"
-                    " VALUES ('shademap_api_key', %s)"
-                    " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-                    (key_value,),
-                )
-            else:
-                db.execute("DELETE FROM app_settings WHERE key = 'shademap_api_key'")
     if "language" in field_set and context.user_id is not None and body.language is not None:
         db.execute(
             "UPDATE auth_users SET language = %s WHERE id = %s",
@@ -1710,12 +1665,7 @@ def auth_update_user(
         bucket="auth-user-update",
         env_name="AUTH_USER_UPDATE_RATE_LIMIT",
     )
-    if (
-        body.role is None
-        and body.is_active is None
-        and body.must_change_password is None
-        and body.shademap_api_key is None
-    ):
+    if body.role is None and body.is_active is None and body.must_change_password is None:
         raise HTTPException(status_code=400, detail="No mutable fields were provided")
 
     current = _load_auth_user(db, user_id)
@@ -1746,10 +1696,6 @@ def auth_update_user(
             next_deactivated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
             next_deactivated_reason = body.deactivated_reason.strip() or "deactivated-by-admin"
 
-    next_shademap_key = current["shademap_api_key"]
-    if body.shademap_api_key is not None:
-        next_shademap_key = body.shademap_api_key.strip() or None
-
     revoked_sessions_on_deactivate = 0
     db.execute(
         """
@@ -1759,8 +1705,7 @@ def auth_update_user(
             is_active = %s,
             must_change_password = %s,
             deactivated_at = %s,
-            deactivated_reason = %s,
-            shademap_api_key = %s
+            deactivated_reason = %s
         WHERE id = %s
         """,
         (
@@ -1769,7 +1714,6 @@ def auth_update_user(
             int(bool(next_must_change)),
             next_deactivated_at,
             next_deactivated_reason,
-            next_shademap_key,
             user_id,
         ),
     )

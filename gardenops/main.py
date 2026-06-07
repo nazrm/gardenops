@@ -106,6 +106,7 @@ from gardenops.routers.plants import (  # noqa: E402
 )
 from gardenops.routers.plots import router as plots_router  # noqa: E402
 from gardenops.routers.procurement import router as procurement_router  # noqa: E402
+from gardenops.routers.provider_settings import router as provider_settings_router  # noqa: E402
 from gardenops.routers.saved_views import router as saved_views_router  # noqa: E402
 from gardenops.routers.shademap import (  # noqa: E402
     asset_router as shademap_asset_router,
@@ -1163,7 +1164,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allow_origins(),
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     expose_headers=["X-Request-ID"],
     allow_headers=[
         "content-type",
@@ -1185,6 +1186,7 @@ app.include_router(plots_router, prefix="/api")
 app.include_router(plants_router, prefix="/api")
 app.include_router(external_router, prefix="/api")
 app.include_router(ai_router, prefix="/api")
+app.include_router(provider_settings_router, prefix="/api")
 app.include_router(journal_router, prefix="/api")
 app.include_router(media_router, prefix="/api")
 app.include_router(statistics_router, prefix="/api")

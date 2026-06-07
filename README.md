@@ -151,6 +151,11 @@ cd frontend && npm run build && cd ..
 
 Open `http://localhost:8000`.
 
+Provider keys for OpenAI, Anthropic, PlantNet, and server-side ShadeMap can be
+entered later from the platform admin UI. Set `APP_SECRETS_ENCRYPTION_KEY`
+before using admin-managed provider keys; environment provider variables remain
+valid fallbacks.
+
 For a fuller walkthrough, see [docs/installation.md](docs/installation.md).
 
 ## Install With An Agent
@@ -200,10 +205,10 @@ GardenOps includes an optional integration with
 paid external service, and GardenOps does not provide API keys, subscriptions,
 provider billing, or permission to use ShadeMap in your deployment.
 
-To enable the panel, configure your own ShadeMap server-side key, browser-safe
-client key, and GardenOps terrain tile-signing secret. The browser talks to
-GardenOps routes for configuration, saved state, calibration, obstacles,
-building features, and signed terrain tile URLs.
+To enable the panel, configure your own platform-admin-managed or environment
+server-side key, browser-safe client key, and GardenOps terrain tile-signing
+secret. The browser talks to GardenOps routes for configuration, saved state,
+calibration, obstacles, building features, and signed terrain tile URLs.
 
 Read [docs/shademap.md](docs/shademap.md) before enabling the feature. It
 explains the required paid access, data flow, key types, calibration, obstacles,

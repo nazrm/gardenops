@@ -15,6 +15,7 @@ from gardenops.branding import app_user_agent
 from gardenops.db import DB, DbConn
 from gardenops.models import StrictBaseModel
 from gardenops.observability import observability_extra
+from gardenops.provider_settings import get_plantnet_api_key
 from gardenops.rate_limit import (
     acquire_concurrency_slot,
     enforce_layered_rate_limit,
@@ -889,7 +890,7 @@ async def identify_plant(
     )
 
     # Check API keys
-    plantnet_api_key = os.environ.get("PLANTNET_API_KEY", "")
+    plantnet_api_key = get_plantnet_api_key(db) or ""
     if not plantnet_api_key and not is_ai_provider_configured():
         raise HTTPException(503, "No identification API configured")
 

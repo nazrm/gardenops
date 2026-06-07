@@ -43,6 +43,7 @@ RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379/0
 API_DOCS_ENABLED=false
 CSP_REPORT_ONLY=false
 AUTH_MFA_SECRET_KEY=change-me
+APP_SECRETS_ENCRYPTION_KEY=change-me
 ```
 
 Production and internet-exposed deployments must keep API docs disabled.
@@ -56,6 +57,10 @@ rotate those bootstrap values.
 ## Optional Providers
 
 Provider keys are optional. Leave them unset to disable the associated feature.
+Platform admins can also set OpenAI, Anthropic, PlantNet, and server-side
+ShadeMap keys from the admin UI. Admin-managed keys are encrypted in
+`app_secrets` and require `APP_SECRETS_ENCRYPTION_KEY`; environment variables
+remain fallback values.
 
 | Area | Common variables |
 |---|---|
@@ -68,6 +73,16 @@ Provider keys are optional. Leave them unset to disable the associated feature.
 LLM-backed AI features. Plant identification still tries PlantNet first when
 `PLANTNET_API_KEY` is configured; the configured AI provider is used only as
 fallback for identification, and directly for diagnosis and other AI features.
+
+Generate `APP_SECRETS_ENCRYPTION_KEY` with:
+
+```bash
+.venv/bin/python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Keep this value stable and private. Losing it makes encrypted database-managed
+provider keys unrecoverable; re-enter the keys from the admin UI after replacing
+the storage key.
 
 ## ShadeMap Configuration
 
@@ -85,9 +100,10 @@ SHADEMAP_PUBLIC_API_KEY=change-me
 SHADEMAP_TILE_SIGNING_SECRET=change-me
 ```
 
-Leave ShadeMap keys unset to disable the integration. Do not set only the tile
-signing secret and assume the provider integration is active; GardenOps still
-needs valid ShadeMap access.
+Leave ShadeMap keys unset to disable the integration. Server-side ShadeMap keys
+are platform-admin-only and are no longer stored per user. Do not set only the
+tile signing secret and assume the provider integration is active; GardenOps
+still needs valid ShadeMap access.
 
 Set `SHADEMAP_SHARE_URL`, `SHADEMAP_LAT`, `SHADEMAP_LNG`, and `SHADEMAP_ZOOM`
 to your own garden area. Do not publish exact private coordinates unless that is

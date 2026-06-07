@@ -23,6 +23,8 @@ import type {
   MeSettings,
   MissingPlantCoverReportItem,
   PopulatePlantCoverResultItem,
+  ProviderSecretKey,
+  ProviderSettings,
   UserInvitation,
   SecurityAlert,
   SecurityAlertsResponse,
@@ -62,10 +64,12 @@ import {
   startAuthTotpEnrollmentApi,
   getGardenSettingsApi,
   getMissingPlantCoversApi,
+  getProviderSettingsApi,
   populateMissingPlantCoversApi,
   updateAuthMeSettingsApi,
   updateGardenSettingsApi,
   updateAuthUserApi,
+  updateProviderSettingsApi,
   updateUserTierApi,
   createUserInvitationApi,
 } from "../services/api";
@@ -86,6 +90,7 @@ interface AdminState {
   lastInviteLink: string;
   me: AuthUserProfile | null;
   meSettings: MeSettings | null;
+  providerSettings: ProviderSettings | null;
   gardenSettings: GardenSettings | null;
   mfaEnrollment: {
     secret: string;
@@ -125,6 +130,7 @@ const state: AdminState = {
   lastInviteLink: "",
   me: null,
   meSettings: null,
+  providerSettings: null,
   gardenSettings: null,
   mfaEnrollment: null,
   latestRecoveryCodes: [],
@@ -387,6 +393,91 @@ async function authorizeSensitiveAdminAction(
   return actionReason;
 }
 
+const PROVIDER_SECRET_ROWS: Array<{ key: ProviderSecretKey; labelKey: string }> = [
+  { key: "openai_api_key", labelKey: "admin.provider_keys.openai" },
+  { key: "anthropic_api_key", labelKey: "admin.provider_keys.anthropic" },
+  { key: "plantnet_api_key", labelKey: "admin.provider_keys.plantnet" },
+  { key: "shademap_api_key", labelKey: "admin.provider_keys.shademap" },
+];
+
+function renderProviderSecretStatus(key: ProviderSecretKey): string {
+  const status = state.providerSettings?.secrets[key];
+  if (!status || !status.configured) return badge(t("admin.provider_keys.not_configured"), "muted");
+  const source = status.source === "db"
+    ? t("admin.provider_keys.source_managed")
+    : t("admin.provider_keys.source_env");
+  const suffix = status.last4 ? ` · ${esc(status.last4)}` : "";
+  return `${badge(source, status.source === "db" ? "green" : "blue")}${suffix}`;
+}
+
+function renderProviderSettingsCard(): string {
+  if (!isPlatformAdmin()) return "";
+  const settings = state.providerSettings;
+  const models = settings?.models ?? {
+    openai_model: "",
+    openai_fast_model: "",
+    anthropic_model: "",
+  };
+  const encryptionReady = Boolean(settings?.secrets_encryption_configured);
+  return `
+    <div class="adm-card adm-card--form">
+      <h3 class="adm-card-title">${t("admin.provider_keys.title")}</h3>
+      <p class="adm-section-desc">${t("admin.provider_keys.desc")}</p>
+      ${settings && !encryptionReady
+        ? `<p class="adm-section-desc">${t("admin.provider_keys.encryption_missing")}</p>`
+        : ""}
+      <div class="adm-form-row">
+        <label>${t("admin.provider_keys.active_provider")}
+          <select id="adm-provider-ai-provider" class="adm-select">
+            ${(["disabled", "openai", "anthropic"] as const).map(provider =>
+              `<option value="${provider}"${settings?.ai_provider === provider ? " selected" : ""}>${t(`admin.provider_keys.provider_${provider}`)}</option>`
+            ).join("")}
+          </select>
+        </label>
+        <label>${t("admin.provider_keys.openai_model")}
+          <input type="text" id="adm-provider-openai-model" class="adm-input" value="${esc(models.openai_model)}" />
+        </label>
+        <label>${t("admin.provider_keys.openai_fast_model")}
+          <input type="text" id="adm-provider-openai-fast-model" class="adm-input" value="${esc(models.openai_fast_model)}" />
+        </label>
+        <label>${t("admin.provider_keys.anthropic_model")}
+          <input type="text" id="adm-provider-anthropic-model" class="adm-input" value="${esc(models.anthropic_model)}" />
+        </label>
+      </div>
+      <div class="adm-table-wrap">
+        <table class="adm-table">
+          <thead>
+            <tr>
+              <th>${t("admin.provider_keys.secret")}</th>
+              <th>${t("common.status")}</th>
+              <th>${t("admin.provider_keys.replace")}</th>
+              <th>${t("admin.provider_keys.clear")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${PROVIDER_SECRET_ROWS.map(({ key, labelKey }) => {
+              const status = settings?.secrets[key];
+              const clearDisabled = !encryptionReady || status?.source !== "db";
+              return `
+                <tr>
+                  <td>${t(labelKey)}</td>
+                  <td>${renderProviderSecretStatus(key)}</td>
+                  <td><input type="password" id="adm-provider-secret-${key}" class="adm-input" autocomplete="off" ${encryptionReady ? "" : "disabled"} /></td>
+                  <td><input type="checkbox" id="adm-provider-clear-${key}" ${clearDisabled ? "disabled" : ""} /></td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+      <div class="adm-btn-group">
+        <button type="button" id="adm-provider-save" class="adm-btn adm-btn--primary">${t("admin.provider_keys.save")}</button>
+        <button type="button" id="adm-provider-refresh" class="adm-btn adm-btn--ghost">${t("common.refresh")}</button>
+      </div>
+    </div>
+  `;
+}
+
 // ── Section: My Settings ───────────────────────────────────
 
 function renderSettingsSection(): string {
@@ -403,15 +494,7 @@ function renderSettingsSection(): string {
         <p class="adm-section-desc">${t("admin.settings.signed_in_as")} <strong>${esc(me?.username ?? "unknown")}</strong> (${esc(me?.role ?? "unknown")})</p>
       </div>
     </div>
-    <div class="adm-card adm-card--form">
-      <h3 class="adm-card-title">${t("admin.settings.shademap_title")}</h3>
-      <p class="adm-section-desc">${t("admin.settings.shademap_desc")}</p>
-      <div class="adm-form-row">
-        <input type="password" id="adm-my-shademap-key" placeholder="${t("admin.settings.shademap_placeholder")}" class="adm-input" autocomplete="off" />
-        <button type="button" id="adm-my-shademap-save" class="adm-btn adm-btn--primary">${t("admin.settings.shademap_save")}</button>
-        <button type="button" id="adm-my-shademap-clear" class="adm-btn adm-btn--ghost">${t("admin.settings.shademap_clear")}</button>
-      </div>
-    </div>
+    ${renderProviderSettingsCard()}
     <div class="adm-card adm-card--form">
       <h3 class="adm-card-title">${t("admin.settings.plot_meanings_title")}</h3>
       <p class="adm-section-desc">${t("admin.settings.plot_meanings_desc")}</p>
@@ -718,7 +801,6 @@ function renderUserCard(u: AuthManagedUser): string {
           <div class="adm-user-card-badges">
             ${u.is_active ? badge(t("admin_panel.badge_active"), "green") : badge(t("admin_panel.badge_inactive"), "red")}
             ${u.must_change_password ? badge(t("admin_panel.badge_must_change_pw"), "amber") : ""}
-            ${u.has_shademap_key ? badge("ShadeMap", "green") : ""}
             ${u.role === "admin" ? (u.mfa_enabled ? badge(t("admin_panel.badge_mfa"), "green") : badge(t("admin_panel.badge_mfa_missing"), "red")) : ""}
             ${tierBadge(u.subscription_tier)}
           </div>
@@ -754,7 +836,6 @@ function renderUserCard(u: AuthManagedUser): string {
         <button class="adm-btn adm-btn--sm adm-btn--ghost adm-act-revoke-sessions">${t("admin_panel.btn_revoke")}</button>
         ${restartOnboardingBtn}
         <button class="adm-btn adm-btn--sm adm-btn--ghost adm-act-reset">${t("admin_panel.btn_reset_pw")}</button>
-        <button class="adm-btn adm-btn--sm adm-btn--ghost adm-act-shademap-key">${t("admin_panel.btn_shademap_key")}</button>
         <button class="adm-btn adm-btn--sm adm-btn--danger adm-act-delete-user">${t("common.delete")}</button>
       </div>
     </div>`;
@@ -799,7 +880,6 @@ function renderUsersSection(): string {
       <td>${u.is_active ? badge(t("admin_panel.badge_active"), "green") : badge(t("admin_panel.badge_inactive"), "red")}</td>
       <td>${u.must_change_password ? badge(t("admin_panel.badge_yes"), "amber") : badge(t("admin_panel.badge_no"), "muted")}</td>
       <td>${u.role === "admin" ? (u.mfa_enabled ? badge(t("admin_panel.badge_enabled"), "green") : badge(t("admin_panel.badge_missing"), "red")) : badge(t("admin_panel.badge_na"), "muted")}</td>
-      <td>${u.has_shademap_key ? badge(t("admin_panel.badge_set"), "green") : badge(t("admin_panel.badge_none"), "muted")}</td>
       <td class="adm-cell-date">${fmtDate(u.last_login_at)}</td>
       <td class="adm-cell-date">${fmtDate(u.created_at)}</td>
       <td class="adm-cell-actions">
@@ -808,7 +888,6 @@ function renderUsersSection(): string {
         <button class="adm-btn adm-btn--sm adm-btn--ghost adm-act-revoke-sessions" title="${t("admin.revoke_sessions")}">${t("admin.revoke")}</button>
         ${u.managed_garden_id !== null ? `<button class="adm-btn adm-btn--sm adm-btn--ghost adm-act-restart-onboarding" title="${esc(t("admin.redo_setup_title", { username: u.username, garden: u.managed_garden_name ?? `garden ${u.managed_garden_id}` }))}">${t("admin.redo_setup")}</button>` : ""}
         <button class="adm-btn adm-btn--sm adm-btn--ghost adm-act-reset" title="${t("admin.issue_reset_token")}">${t("admin.reset_pw")}</button>
-        <button class="adm-btn adm-btn--sm adm-btn--ghost adm-act-shademap-key" title="${t("admin.set_shademap_key")}">${t("admin.shademap_key")}</button>
         <button class="adm-btn adm-btn--sm adm-btn--danger adm-act-delete-user" title="${t("common.delete")}">${t("common.delete")}</button>
       </td>
     </tr>
@@ -895,7 +974,6 @@ function renderUsersSection(): string {
               <th style="width:90px">${t("common.status")}</th>
               <th style="width:100px">${t("admin_panel.th_must_change")}</th>
               <th style="width:100px">${t("admin_panel.th_mfa")}</th>
-              <th style="width:90px">ShadeMap</th>
               <th style="width:150px">${t("admin_panel.label_last_login")}</th>
               <th style="width:150px">${t("admin_panel.label_created")}</th>
               <th style="width:340px">${t("common.actions")}</th>
@@ -1457,6 +1535,16 @@ async function loadSettings(): Promise<void> {
   try {
     state.me = await getAuthMeApi();
   } catch { /* non-fatal */ }
+  if (isPlatformAdmin()) {
+    try {
+      state.providerSettings = await getProviderSettingsApi();
+    } catch (err) {
+      state.providerSettings = null;
+      showToast(getApiErrorMessage(err), "error");
+    }
+  } else {
+    state.providerSettings = null;
+  }
   if (state.me?.mfa_setup_required) {
     state.section = "settings";
   }
@@ -1836,30 +1924,47 @@ function wireSection(): void {
     }
   });
 
-  // My Settings section
-  const shademapKeyEl = container.querySelector("#adm-my-shademap-key");
-  const shademapKeyInput = shademapKeyEl instanceof HTMLInputElement ? shademapKeyEl : null;
-  if (shademapKeyInput) {
-    void getAuthMeSettingsApi().then(s => {
-      shademapKeyInput.placeholder = s.has_shademap_key
-        ? t("admin.settings.shademap_placeholder_set")
-        : t("admin.settings.shademap_placeholder");
-      shademapKeyInput.value = "";
-    }).catch(() => {});
-  }
-  container.querySelector("#adm-my-shademap-save")?.addEventListener("click", async () => {
-    const key = queryInput("adm-my-shademap-key")?.value.trim() ?? "";
+  // Provider Settings section
+  container.querySelector("#adm-provider-refresh")?.addEventListener("click", async () => {
     try {
-      await updateAuthMeSettingsApi({ shademap_api_key: key || null });
-      showToast(key ? t("admin.toast.shademap_key_saved") : t("admin.toast.shademap_key_cleared"), "success");
+      state.providerSettings = await getProviderSettingsApi();
+      repaint();
+      showToast(t("admin.provider_keys.refreshed"), "success");
     } catch (err) { showToast(getApiErrorMessage(err), "error"); }
   });
-  container.querySelector("#adm-my-shademap-clear")?.addEventListener("click", async () => {
+  container.querySelector("#adm-provider-save")?.addEventListener("click", async () => {
+    const aiProvider = querySelect("adm-provider-ai-provider")?.value as
+      | "disabled"
+      | "openai"
+      | "anthropic"
+      | undefined;
+    const actionReason = await authorizeSensitiveAdminAction(
+      t("admin.provider_keys.action_label"),
+      "provider-settings-update",
+    );
+    if (!actionReason || !aiProvider) return;
+    const update: Parameters<typeof updateProviderSettingsApi>[0] = {
+      ai_provider: aiProvider,
+      openai_model: queryInput("adm-provider-openai-model")?.value.trim() ?? "",
+      openai_fast_model: queryInput("adm-provider-openai-fast-model")?.value.trim() ?? "",
+      anthropic_model: queryInput("adm-provider-anthropic-model")?.value.trim() ?? "",
+      action_reason: actionReason,
+    };
+    const updateFields = update as unknown as Record<string, string | boolean | undefined>;
+    for (const { key } of PROVIDER_SECRET_ROWS) {
+      const value = queryInput(`adm-provider-secret-${key}`)?.value.trim() ?? "";
+      const clear = container.querySelector<HTMLInputElement>(`#adm-provider-clear-${key}`)?.checked ?? false;
+      if (value) updateFields[key] = value;
+      if (clear) updateFields[`clear_${key}`] = true;
+    }
     try {
-      await updateAuthMeSettingsApi({ shademap_api_key: null });
-      const input = queryInput("adm-my-shademap-key");
-      if (input) input.value = "";
-      showToast(t("admin.toast.shademap_key_cleared"), "success");
+      state.providerSettings = await updateProviderSettingsApi(update);
+      for (const { key } of PROVIDER_SECRET_ROWS) {
+        const input = queryInput(`adm-provider-secret-${key}`);
+        if (input) input.value = "";
+      }
+      showToast(t("admin.provider_keys.saved"), "success");
+      repaint();
     } catch (err) { showToast(getApiErrorMessage(err), "error"); }
   });
   container.querySelector("#adm-plot-meaning-add")?.addEventListener("click", () => {
@@ -2110,27 +2215,6 @@ function wireSection(): void {
           "error",
         );
       }
-    }
-
-    if (btn.classList.contains("adm-act-shademap-key")) {
-      const user = state.users.find(u => u.id === uid);
-      const action = user?.has_shademap_key ? t("admin_panel.action_replace") : t("admin_panel.action_set");
-      const key = (await promptDialog(t("admin.shademap_key_prompt", { action, username: user?.username ?? "user" }), ""))?.trim();
-      if (key === undefined) return; // cancelled
-      const actionReason = await authorizeSensitiveAdminAction(
-        key ? "Set user ShadeMap key" : "Remove user ShadeMap key",
-        `user-shademap-key-update:${uid}`,
-      );
-      if (!actionReason) return;
-      try {
-        await updateAuthUserApi(uid, {
-          shademap_api_key: key || "",
-          action_reason: actionReason,
-        });
-        showToast(key ? t("admin.toast.shademap_key_saved") : t("admin.toast.shademap_key_removed"), "success");
-        await loadUsers();
-        repaint();
-      } catch (err) { showToast(getApiErrorMessage(err), "error"); }
     }
 
     if (btn.classList.contains("adm-act-reset")) {

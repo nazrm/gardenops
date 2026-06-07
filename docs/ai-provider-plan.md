@@ -4,6 +4,11 @@ This is the implementation spec for moving GardenOps AI features from
 hardcoded Anthropic calls to a configured provider model while preserving
 PlantNet as the primary plant-identification provider.
 
+Current deployments can manage OpenAI and Anthropic keys from the platform
+admin UI. `AI_PROVIDER` and provider key environment variables remain supported
+as fallback configuration, but the env-only setup described below is superseded
+by admin-managed provider settings when `APP_SECRETS_ENCRYPTION_KEY` is set.
+
 ## Original Problem
 
 - `gardenops/routers/ai.py` hardcoded `claude-sonnet-4-20250514` in multiple

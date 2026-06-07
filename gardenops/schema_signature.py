@@ -10,6 +10,7 @@ import psycopg
 
 REQUIRED_TABLES = (
     "schema_migrations",
+    "app_secrets",
     "auth_users",
     "audit_events",
     "gardens",
@@ -35,6 +36,15 @@ REQUIRED_TABLES = (
 
 REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     "schema_migrations": ("version", "applied_at"),
+    "app_secrets": (
+        "key",
+        "encrypted_value",
+        "encryption_key_id",
+        "value_last4",
+        "created_at_ms",
+        "updated_at_ms",
+        "updated_by_user_id",
+    ),
     "auth_users": (
         "id",
         "username",
@@ -79,10 +89,13 @@ REQUIRED_INDEXES = (
     "idx_media_links_target",
     "idx_shademap_state_garden",
     "idx_shademap_obstacles_garden",
+    "app_secrets_updated_by_user_id_idx",
 )
 
 REQUIRED_CONSTRAINTS = (
     "schema_migrations_pkey",
+    "app_secrets_pkey",
+    "app_secrets_updated_by_user_id_fkey",
     "auth_users_pkey",
     "gardens_pkey",
     "plots_pkey",

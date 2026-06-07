@@ -1,7 +1,10 @@
 import os
 from unittest.mock import patch
 
+from cryptography.fernet import Fernet
+
 import gardenops.db as db
+from gardenops.platform_secrets import OPENAI_API_KEY, get_database_secret, set_database_secret
 from tests.base import BaseApiTest, strong_password
 
 
@@ -68,8 +71,8 @@ class TestAuthMeSettings(BaseApiTest):
         resp = self.client.get("/api/auth/me/settings")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
-        self.assertIn("shademap_api_key", data)
-        self.assertIn("has_shademap_key", data)
+        self.assertNotIn("shademap_api_key", data)
+        self.assertNotIn("has_shademap_key", data)
         self.assertIn("language", data)
         self.assertIn("mfa", data)
 
@@ -89,13 +92,12 @@ class TestAuthMeSettings(BaseApiTest):
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 
-    def test_update_settings_shademap_key(self) -> None:
+    def test_update_settings_shademap_key_is_rejected(self) -> None:
         resp = self.client.put(
             "/api/auth/me/settings",
             json={"shademap_api_key": "test-key-12345678"},
         )
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json()["status"], "ok")
+        self.assertEqual(resp.status_code, 422)
 
     def test_update_settings_language(self) -> None:
         os.environ["AUTH_REQUIRED"] = "true"
@@ -117,6 +119,148 @@ class TestAuthMeSettings(BaseApiTest):
             self.assertEqual(resp.json()["language"], "no")
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
+
+
+class TestAdminProviderSettings(BaseApiTest):
+    """Tests for platform-admin provider settings endpoints."""
+
+    def test_provider_settings_requires_platform_admin(self) -> None:
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        try:
+            self._create_test_user("provider_editor", "providerpass", "editor")
+            client, headers = self._authenticated_client(
+                "provider_editor",
+                "providerpass",
+            )
+
+            read_resp = client.get("/api/admin/provider-settings", headers=headers)
+            self.assertEqual(read_resp.status_code, 403)
+
+            write_resp = client.put(
+                "/api/admin/provider-settings",
+                headers=headers,
+                json={"ai_provider": "disabled", "action_reason": "provider-denied"},
+            )
+            self.assertEqual(write_resp.status_code, 403)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_provider_settings_get_returns_safe_secret_metadata(self) -> None:
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        fernet_key = Fernet.generate_key().decode()
+        try:
+            with patch.dict(
+                "os.environ",
+                {"APP_SECRETS_ENCRYPTION_KEY": fernet_key},
+                clear=False,
+            ):
+                conn = db.get_db()
+                try:
+                    set_database_secret(
+                        conn,
+                        OPENAI_API_KEY,
+                        "openai endpoint secret 1234",
+                        updated_by_user_id=self._owner_id,
+                    )
+                    conn.commit()
+                finally:
+                    db.return_db(conn)
+
+                _, csrf = self._login_session("test_admin", "testadminpass")
+                resp = self.client.get(
+                    "/api/admin/provider-settings",
+                    headers=self._session_headers(csrf),
+                )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            data = resp.json()
+            openai_status = data["secrets"]["openai_api_key"]
+            self.assertTrue(openai_status["configured"])
+            self.assertEqual(openai_status["source"], "db")
+            self.assertEqual(openai_status["last4"], "1234")
+            self.assertEqual(openai_status["updated_by_username"], "test_admin")
+            self.assertNotIn("openai endpoint secret", resp.text)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_provider_settings_update_encrypts_secret_and_audits_metadata_only(self) -> None:
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        fernet_key = Fernet.generate_key().decode()
+        secret_value = "sk-test-provider-secret-9876"
+        try:
+            with patch.dict(
+                "os.environ",
+                {"APP_SECRETS_ENCRYPTION_KEY": fernet_key},
+                clear=False,
+            ):
+                _, csrf = self._login_session("test_admin", "testadminpass")
+                headers = self._session_headers(csrf)
+                headers = self._reauth_and_refresh_headers(
+                    self.client,
+                    headers,
+                    password=strong_password("testadminpass"),
+                )
+                resp = self.client.put(
+                    "/api/admin/provider-settings",
+                    headers=headers,
+                    json={
+                        "ai_provider": "openai",
+                        "openai_model": "gpt-test-provider",
+                        "openai_api_key": secret_value,
+                        "action_reason": "provider-settings-test",
+                    },
+                )
+
+                conn = db.get_db()
+                try:
+                    stored_secret = get_database_secret(conn, OPENAI_API_KEY)
+                    secret_row = conn.execute(
+                        """
+                        SELECT encrypted_value
+                        FROM public.app_secrets
+                        WHERE key = %s
+                        """,
+                        (OPENAI_API_KEY,),
+                    ).fetchone()
+                    provider_row = conn.execute(
+                        "SELECT value FROM app_settings WHERE key = 'ai_provider'",
+                    ).fetchone()
+                    audit_row = conn.execute(
+                        """
+                        SELECT detail
+                        FROM audit_events
+                        WHERE path = '/api/admin/provider-settings'
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                    ).fetchone()
+                finally:
+                    db.return_db(conn)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        openai_status = data["secrets"]["openai_api_key"]
+        self.assertEqual(data["ai_provider"], "openai")
+        self.assertEqual(data["models"]["openai_model"], "gpt-test-provider")
+        self.assertEqual(openai_status["source"], "db")
+        self.assertEqual(openai_status["last4"], "9876")
+        self.assertNotIn(secret_value, resp.text)
+        self.assertEqual(stored_secret, secret_value)
+        self.assertIsNotNone(secret_row)
+        encrypted_value = secret_row["encrypted_value"]
+        if isinstance(encrypted_value, memoryview):
+            encrypted_bytes = encrypted_value.tobytes()
+        else:
+            encrypted_bytes = bytes(encrypted_value)
+        self.assertNotIn(secret_value.encode("utf-8"), encrypted_bytes)
+        self.assertEqual(provider_row["value"], "openai")
+        self.assertIsNotNone(audit_row)
+        self.assertIn("openai_api_key", audit_row["detail"])
+        self.assertNotIn(secret_value, audit_row["detail"])
 
 
 class TestAuthUsersCrud(BaseApiTest):

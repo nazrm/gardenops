@@ -49,6 +49,21 @@ ADMIN_EDGE_ROUTE_MANIFEST: Final[tuple[AdminEdgeRoute, ...]] = (
         rationale="Admin diagnostics should not sit behind the public health policy.",
     ),
     AdminEdgeRoute(
+        method="GET",
+        path_template="/api/admin/provider-settings",
+        bucket="admin_write",
+        rationale=(
+            "Provider secret status shares the exact path with destructive "
+            "secret updates, so the path-only edge bucket stays strict."
+        ),
+    ),
+    AdminEdgeRoute(
+        method="PUT",
+        path_template="/api/admin/provider-settings",
+        bucket="admin_write",
+        rationale="Provider secret updates are destructive platform-admin actions.",
+    ),
+    AdminEdgeRoute(
         method="POST",
         path_template="/api/snapshots",
         bucket="admin_write",
@@ -350,6 +365,12 @@ ADMIN_EDGE_LOCATION_RULES: Final[tuple[AdminEdgeLocationRule, ...]] = (
     ),
     AdminEdgeLocationRule(
         match_kind="exact",
+        pattern="/api/admin/provider-settings",
+        bucket="admin_write",
+        rationale="Provider settings reads and writes share a destructive admin path.",
+    ),
+    AdminEdgeLocationRule(
+        match_kind="exact",
         pattern="/api/snapshots",
         bucket="admin_write",
         rationale="Snapshot list/create path.",
@@ -478,9 +499,10 @@ def location_matches_path(rule: AdminEdgeLocationRule, path: str) -> bool:
 
 
 def admin_edge_bucket_for_path(path: str) -> AdminEdgeBucket | None:
-    for rule in ADMIN_EDGE_LOCATION_RULES:
-        if location_matches_path(rule, path):
-            return rule.bucket
+    for match_kind in ("exact", "prefix", "regex"):
+        for rule in ADMIN_EDGE_LOCATION_RULES:
+            if rule.match_kind == match_kind and location_matches_path(rule, path):
+                return rule.bucket
     return None
 
 

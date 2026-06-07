@@ -49,18 +49,22 @@ GardenOps expects two kinds of ShadeMap key material:
 
 | Need | GardenOps variables | Visibility |
 |---|---|---|
-| Server-side ShadeMap API validation | `SHADEMAP`, `SHADEMAP_API_KEY`, or `SHADEMAP_KEY` | Secret; stays on the server |
+| Server-side ShadeMap API validation | Platform-admin provider settings, or fallback env vars `SHADEMAP`, `SHADEMAP_API_KEY`, or `SHADEMAP_KEY` | Secret; stays on the server |
 | Browser/client ShadeMap SDK access | `SHADEMAP_PUBLIC_API_KEY`, `SHADEMAP_PUBLIC_KEY`, or `SHADEMAP_CLIENT_KEY` | Sent to the authenticated browser by `/api/shademap/config` |
 
 Depending on your ShadeMap account, these may be separate values or the same
 provider-issued value. Treat anything named secret/private as server-only, and
 confirm with ShadeMap which key is safe to expose to a browser.
 
+Server-side ShadeMap keys are platform-admin-only. GardenOps no longer accepts
+per-user ShadeMap keys from `/api/auth/me/settings` or admin user management.
+
 ## Minimum Configuration
 
 For a production deployment with ShadeMap enabled:
 
 ```bash
+APP_SECRETS_ENCRYPTION_KEY=change-me
 SHADEMAP=change-me
 SHADEMAP_PUBLIC_API_KEY=change-me
 SHADEMAP_TILE_SIGNING_SECRET=change-me
@@ -72,8 +76,11 @@ SHADEMAP_LABEL=Garden
 ```
 
 Replace all `change-me` values with real deployment-specific values and replace
-the example coordinates with your own garden location. The defaults in the
-public repository are placeholders and are not intended to describe your site.
+the example coordinates with your own garden location. You may enter the
+server-side ShadeMap key through the platform admin UI instead of `SHADEMAP`;
+the public/client key and tile-signing secret remain environment configuration.
+The defaults in the public repository are placeholders and are not intended to
+describe your site.
 
 `SHADEMAP_TILE_SIGNING_SECRET` is not a ShadeMap key. It is a GardenOps-owned
 HMAC secret used to sign expiring same-origin terrain tile URLs. Use a unique
