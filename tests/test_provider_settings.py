@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 
+from gardenops.platform_secrets import ConfigurationError
 from gardenops.provider_settings import (
     AI_PROVIDER_SETTING,
     ANTHROPIC_MODEL_SETTING,
@@ -142,6 +143,61 @@ class ProviderSettingsTests(unittest.TestCase):
 
         self.assertEqual(config.provider, "openai")
         self.assertEqual(config.openai_api_key, "database-openai-key")
+
+    def test_runtime_config_does_not_swallow_database_secret_decrypt_errors(self) -> None:
+        conn = _FakeConn()
+        conn.app_settings[AI_PROVIDER_SETTING] = "openai"
+        conn.app_secrets["openai_api_key"] = {
+            "key": "openai_api_key",
+            "encrypted_value": b"not-a-fernet-token",
+            "value_last4": "fake",
+            "updated_at_ms": 1,
+            "updated_by_user_id": 7,
+        }
+        fernet_key = Fernet.generate_key().decode()
+
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "APP_SECRETS_ENCRYPTION_KEY": fernet_key,
+                    "AI_PROVIDER": "openai",
+                    "OPENAI_API_KEY": "env-openai-key",
+                },
+                clear=False,
+            ),
+            patch("gardenops.provider_settings.get_db", return_value=conn),
+            patch("gardenops.provider_settings.return_db"),
+        ):
+            with self.assertRaises(ConfigurationError):
+                get_ai_runtime_config()
+
+    def test_runtime_config_does_not_decrypt_secret_when_database_disables_ai(self) -> None:
+        conn = _FakeConn()
+        conn.app_settings[AI_PROVIDER_SETTING] = "disabled"
+        conn.app_secrets["openai_api_key"] = {
+            "key": "openai_api_key",
+            "encrypted_value": b"not-a-fernet-token",
+            "value_last4": "fake",
+            "updated_at_ms": 1,
+            "updated_by_user_id": 7,
+        }
+        fernet_key = Fernet.generate_key().decode()
+
+        with patch.dict(
+            "os.environ",
+            {
+                "APP_SECRETS_ENCRYPTION_KEY": fernet_key,
+                "AI_PROVIDER": "openai",
+                "OPENAI_API_KEY": "env-openai-key",
+            },
+            clear=False,
+        ):
+            config = get_ai_runtime_config(conn)
+
+        self.assertEqual(config.provider, "disabled")
+        self.assertIsNone(config.openai_api_key)
+        self.assertIsNone(config.anthropic_api_key)
 
     def test_update_rejects_empty_secret_value(self) -> None:
         conn = _FakeConn()
