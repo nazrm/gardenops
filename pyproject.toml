@@ -35,7 +35,7 @@ lint = [
 ]
 audit = [
     "pip-audit==2.9.0",
-    "requests<2.34.0",
+    "requests<2.35.0",
 ]
 
 [tool.pytest.ini_options]
