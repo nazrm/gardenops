@@ -989,6 +989,9 @@ def _admin_mfa_setup_path_allowed(path: str) -> bool:
         "/api/auth/me/settings",
         "/api/auth/logout",
         "/api/auth/reauthenticate",
+        "/api/auth/passkeys",
+        "/api/auth/passkeys/register/options",
+        "/api/auth/passkeys/register/verify",
     } or path.startswith("/api/auth/mfa")
 
 
@@ -1225,6 +1228,8 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         "/api/auth/status",
         "/api/auth/bootstrap",
         "/api/auth/login",
+        "/api/auth/passkeys/login/options",
+        "/api/auth/passkeys/login/verify",
         "/api/auth/reset-password",
         "/api/auth/password-policy",
         "/api/auth/invitations/accept",
@@ -1237,6 +1242,8 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
     csrf_exempt_mutation_paths = {
         "/api/auth/bootstrap",
         "/api/auth/login",
+        "/api/auth/passkeys/login/options",
+        "/api/auth/passkeys/login/verify",
         "/api/auth/reset-password",
         "/api/auth/invitations/accept",
         "/api/auth/invitations/peek",

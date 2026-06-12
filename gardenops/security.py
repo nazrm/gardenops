@@ -776,10 +776,13 @@ def _authenticate_session_token(
             return None
         role = _coerce_role(row["role"])
         mfa_enabled = bool(int(row["mfa_totp_enabled"]))
-        current_mfa_setup_required = (
-            _admin_mfa_enforced_for_role(role, mfa_enabled=mfa_enabled) and not mfa_enabled
-        )
+        mfa_authenticated_at_ms = int(row["mfa_authenticated_at_ms"])
         stored_mfa_setup_required = bool(int(row["mfa_setup_required"]))
+        current_mfa_setup_required = (
+            _admin_mfa_enforced_for_role(role, mfa_enabled=mfa_enabled)
+            and not mfa_enabled
+            and (stored_mfa_setup_required or mfa_authenticated_at_ms <= 0)
+        )
         # Sliding session: extend expiry when more than half the TTL has elapsed,
         # so active users don't get logged out mid-use.
         ttl = _session_ttl_ms()
@@ -809,7 +812,7 @@ def _authenticate_session_token(
             auth_type="session",
             session_token_hash=token_hash,
             reauthenticated_at_ms=int(row["reauthenticated_at_ms"]),
-            mfa_authenticated_at_ms=int(row["mfa_authenticated_at_ms"]),
+            mfa_authenticated_at_ms=mfa_authenticated_at_ms,
             mfa_enabled=mfa_enabled,
             mfa_setup_required=current_mfa_setup_required,
             session_via_cookie=via_cookie,

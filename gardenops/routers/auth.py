@@ -12,6 +12,7 @@ from typing import Any, Literal, TypedDict, cast
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import Field, field_validator
 
+import gardenops.passkeys as passkeys
 from gardenops.audit import list_audit_events, write_audit_event
 from gardenops.db import DB, DbConn, current_timestamp_ms, executemany
 from gardenops.feature_gates import TIER_ORDER, features_for_tier
@@ -152,6 +153,29 @@ class ReauthenticateBody(StrictBaseModel):
     recovery_code: str = Field(default="", max_length=64)
 
 
+class PasskeyRegistrationOptionsBody(StrictBaseModel):
+    nickname: str = Field(default="", max_length=80)
+
+
+class PasskeyRegistrationVerifyBody(StrictBaseModel):
+    challenge_token: str = Field(min_length=20, max_length=256)
+    nickname: str = Field(default="", max_length=80)
+    credential: dict[str, Any]
+
+
+class PasskeyLoginOptionsBody(StrictBaseModel):
+    username: str = Field(default="", max_length=80)
+
+
+class PasskeyLoginVerifyBody(StrictBaseModel):
+    challenge_token: str = Field(min_length=20, max_length=256)
+    credential: dict[str, Any]
+
+
+class PasskeyActionBody(StrictBaseModel):
+    action_reason: str = Field(default="", max_length=400)
+
+
 class ConfirmTotpEnrollmentBody(StrictBaseModel):
     code: str = Field(min_length=6, max_length=32)
 
@@ -239,6 +263,33 @@ def _enforce_optional_key_rate_limit(
         limit=limit,
         window_seconds=60,
         scope_label=scope_label,
+    )
+
+
+def _session_cookie_kwargs(expires_at_ms: int) -> SessionCookieKwargs:
+    ttl_seconds = max(1, int((expires_at_ms - int(time.time() * 1000)) / 1000))
+    return {
+        "max_age": ttl_seconds,
+        "secure": session_cookie_secure(),
+        "samesite": cast(SameSiteValue, session_cookie_samesite()),
+        "path": session_cookie_path(),
+        "domain": session_cookie_domain(),
+    }
+
+
+def _set_session_cookies(response: Response, *, token: str, expires_at_ms: int) -> None:
+    cookie_kwargs = _session_cookie_kwargs(expires_at_ms)
+    response.set_cookie(
+        key=session_cookie_name(),
+        value=token,
+        httponly=True,
+        **cookie_kwargs,
+    )
+    response.set_cookie(
+        key=csrf_cookie_name(),
+        value=csrf_token_for_session_token(token),
+        httponly=False,
+        **cookie_kwargs,
     )
 
 
@@ -357,6 +408,10 @@ def _admin_mfa_enforced_for_context(context: AuthContext) -> bool:
     return _admin_mfa_enforced_for_role(context.role, mfa_enabled=context.mfa_enabled)
 
 
+def _context_has_strong_admin_auth(context: AuthContext) -> bool:
+    return context.mfa_enabled or int(context.mfa_authenticated_at_ms or 0) > 0
+
+
 def enforce_destructive_admin_controls(
     request: Request,
     *,
@@ -375,10 +430,10 @@ def enforce_destructive_admin_controls(
     if context.mfa_setup_required:
         raise HTTPException(status_code=403, detail="Admin MFA setup is required")
     if _admin_mfa_enforced_for_context(context):
-        if not context.mfa_enabled:
+        if not _context_has_strong_admin_auth(context):
             raise HTTPException(
                 status_code=403,
-                detail="Platform-admin MFA must be enabled before destructive actions",
+                detail="Platform-admin MFA or passkey authentication is required",
             )
         if int(context.mfa_authenticated_at_ms or 0) <= 0:
             raise HTTPException(status_code=403, detail="MFA-backed session required")
@@ -388,6 +443,31 @@ def enforce_destructive_admin_controls(
     if (reauthenticated_at_ms + _admin_step_up_window_ms()) < current_timestamp_ms():
         raise HTTPException(status_code=403, detail="Recent reauthentication required")
     return context, action_reason
+
+
+def _require_session_context(request: Request) -> AuthContext:
+    context = resolve_request_auth_context(request)
+    if context.auth_type != "session" or context.user_id is None or not context.session_token_hash:
+        raise HTTPException(status_code=400, detail="Session auth user is required")
+    if context.must_change_password:
+        raise HTTPException(status_code=403, detail="Password change is required")
+    return context
+
+
+def _require_recent_session_context(
+    request: Request,
+    *,
+    allow_mfa_setup: bool = False,
+) -> AuthContext:
+    context = _require_session_context(request)
+    if context.mfa_setup_required and not allow_mfa_setup:
+        raise HTTPException(status_code=403, detail="Admin MFA setup is required")
+    reauthenticated_at_ms = int(context.reauthenticated_at_ms or 0)
+    if reauthenticated_at_ms <= 0:
+        raise HTTPException(status_code=403, detail="Recent reauthentication required")
+    if (reauthenticated_at_ms + _admin_step_up_window_ms()) < current_timestamp_ms():
+        raise HTTPException(status_code=403, detail="Recent reauthentication required")
+    return context
 
 
 def _record_destructive_admin_action(metric_suffix: str) -> None:
@@ -454,6 +534,17 @@ def _current_user_mfa_settings(
     status = get_user_mfa_status(db, user_id)
     if role is not None and role != "admin":
         status["setup_required"] = False
+    elif role == "admin" and passkeys.passkeys_configured():
+        row = db.execute(
+            "SELECT COUNT(*) AS count FROM auth_passkeys WHERE user_id = %s",
+            (user_id,),
+        ).fetchone()
+        if row and int(row["count"] or 0) > 0:
+            status["setup_required"] = False
+            methods = list(cast(list[str], status.get("methods") or []))
+            if "passkey" not in methods:
+                methods.append("passkey")
+            status["methods"] = methods
     return status
 
 
@@ -728,6 +819,7 @@ def auth_status(db: DB) -> dict[str, object]:
         "bootstrap_required": bootstrap_required,
         "user_lifecycle_enabled": user_lifecycle_enabled(),
         "admin_mfa_required": admin_mfa_required(),
+        "passkeys_enabled": passkeys.passkeys_configured(),
     }
 
 
@@ -915,6 +1007,380 @@ def auth_login(
             "setup_required": session_requires_setup,
             "methods": ["totp", "recovery_code"] if mfa_enabled else [],
             "method": second_factor_method or None,
+        },
+    }
+
+
+@router.get("/auth/passkeys")
+def auth_passkeys(request: Request, db: DB) -> dict[str, object]:
+    context = _require_session_context(request)
+    rows = db.execute(
+        """
+        SELECT id, nickname, created_at_ms, last_used_at_ms, transports,
+               credential_device_type, credential_backed_up
+        FROM auth_passkeys
+        WHERE user_id = %s
+        ORDER BY created_at_ms DESC, id DESC
+        """,
+        (context.user_id,),
+    ).fetchall()
+    return {"passkeys": [passkeys.serialize_passkey(dict(row)) for row in rows]}
+
+
+@router.post("/auth/passkeys/register/options")
+def auth_passkey_register_options(
+    _body: PasskeyRegistrationOptionsBody,
+    request: Request,
+    db: DB,
+) -> dict[str, object]:
+    context = _require_recent_session_context(request, allow_mfa_setup=True)
+    assert context.user_id is not None
+    assert context.session_token_hash is not None
+    passkeys.require_passkeys_configured()
+    challenge = passkeys.create_challenge(
+        db,
+        flow="registration",
+        user_id=context.user_id,
+        session_token_hash=context.session_token_hash,
+    )
+    public_key = passkeys.registration_options_for_user(
+        db,
+        user_id=context.user_id,
+        username=context.username,
+        challenge=challenge.challenge,
+    )
+    db.commit()
+    return {"challenge_token": challenge.token, "publicKey": public_key}
+
+
+@router.post("/auth/passkeys/register/verify", status_code=201)
+def auth_passkey_register_verify(
+    body: PasskeyRegistrationVerifyBody,
+    request: Request,
+    db: DB,
+) -> dict[str, object]:
+    context = _require_recent_session_context(request, allow_mfa_setup=True)
+    assert context.user_id is not None
+    assert context.session_token_hash is not None
+    challenge = passkeys.consume_challenge(
+        db,
+        token=body.challenge_token,
+        flow="registration",
+        user_id=context.user_id,
+        session_token_hash=context.session_token_hash,
+    )
+    try:
+        verified = passkeys.verify_registration_credential(
+            credential=body.credential,
+            expected_challenge=challenge.challenge,
+        )
+    except HTTPException:
+        db.commit()
+        raise
+    now_ms = current_timestamp_ms()
+    credential_id = passkeys.encode_public_key(verified.credential_id)
+    row = db.execute(
+        """
+        INSERT INTO auth_passkeys (
+            user_id,
+            credential_id,
+            credential_public_key,
+            sign_count,
+            nickname,
+            transports,
+            credential_device_type,
+            credential_backed_up,
+            created_at_ms,
+            updated_at_ms,
+            last_used_at_ms
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+        ON CONFLICT (credential_id) DO NOTHING
+        RETURNING id, nickname, created_at_ms, last_used_at_ms, transports,
+                  credential_device_type, credential_backed_up
+        """,
+        (
+            context.user_id,
+            credential_id,
+            passkeys.encode_public_key(verified.credential_public_key),
+            verified.sign_count,
+            body.nickname.strip(),
+            passkeys.credential_transports(body.credential),
+            verified.credential_device_type,
+            int(verified.credential_backed_up),
+            now_ms,
+            now_ms,
+        ),
+    ).fetchone()
+    if not row:
+        db.commit()
+        raise HTTPException(status_code=409, detail="Passkey is already registered")
+    db.execute(
+        """
+        UPDATE auth_sessions
+        SET
+            mfa_authenticated_at_ms = %s,
+            mfa_setup_required = 0,
+            reauthenticated_at_ms = %s
+        WHERE token_hash = %s
+        """,
+        (now_ms, now_ms, context.session_token_hash),
+    )
+    db.commit()
+    request.state.auth_context = replace(
+        context,
+        mfa_authenticated_at_ms=now_ms,
+        mfa_setup_required=False,
+        reauthenticated_at_ms=now_ms,
+    )
+    _audit_user_lifecycle_event(
+        request,
+        auth_context=context,
+        status_code=201,
+        detail=_lifecycle_detail(
+            "auth.passkey.register",
+            user_id=context.user_id,
+            passkey_id=int(row["id"]),
+        ),
+        db=db,
+    )
+    return {"status": "ok", "passkey": passkeys.serialize_passkey(dict(row))}
+
+
+@router.delete("/auth/passkeys/{passkey_id}")
+def auth_passkey_delete(
+    passkey_id: int,
+    body: PasskeyActionBody,
+    request: Request,
+    db: DB,
+) -> dict[str, object]:
+    context = _require_recent_session_context(request)
+    action_reason = _normalize_action_reason(request, body_reason=body.action_reason)
+    row = db.execute(
+        """
+        DELETE FROM auth_passkeys
+        WHERE id = %s AND user_id = %s
+        RETURNING id
+        """,
+        (passkey_id, context.user_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Passkey not found")
+    remaining_passkeys = db.execute(
+        "SELECT COUNT(*) AS count FROM auth_passkeys WHERE user_id = %s",
+        (context.user_id,),
+    ).fetchone()
+    current_requires_setup = (
+        context.role == "admin"
+        and admin_mfa_required()
+        and not context.mfa_enabled
+        and int(remaining_passkeys["count"] if remaining_passkeys else 0) <= 0
+    )
+    now_ms = current_timestamp_ms()
+    if current_requires_setup:
+        _revoke_sessions_for_user(
+            db,
+            user_id=int(context.user_id),
+            except_token_hash=context.session_token_hash,
+        )
+        if context.session_token_hash:
+            db.execute(
+                """
+                UPDATE auth_sessions
+                SET
+                    mfa_authenticated_at_ms = 0,
+                    mfa_setup_required = 1,
+                    reauthenticated_at_ms = %s
+                WHERE token_hash = %s
+                """,
+                (now_ms, context.session_token_hash),
+            )
+    db.commit()
+    if current_requires_setup:
+        request.state.auth_context = replace(
+            context,
+            mfa_authenticated_at_ms=0,
+            mfa_setup_required=True,
+            reauthenticated_at_ms=now_ms,
+        )
+    _audit_user_lifecycle_event(
+        request,
+        auth_context=context,
+        status_code=200,
+        detail=_lifecycle_detail(
+            "auth.passkey.delete",
+            user_id=context.user_id,
+            passkey_id=passkey_id,
+            action_reason=action_reason,
+        ),
+        db=db,
+    )
+    return {"status": "ok", "passkey_id": passkey_id}
+
+
+@router.post("/auth/passkeys/login/options")
+def auth_passkey_login_options(
+    _body: PasskeyLoginOptionsBody,
+    request: Request,
+    db: DB,
+) -> dict[str, object]:
+    if not is_auth_required():
+        raise HTTPException(status_code=400, detail="Authentication is not required")
+    if not session_auth_enabled():
+        raise HTTPException(status_code=400, detail="Session auth mode is disabled")
+    passkeys.require_passkeys_configured()
+    enforce_rate_limit(
+        request,
+        bucket="auth-passkey-login",
+        limit=env_int("AUTH_PASSKEY_LOGIN_RATE_LIMIT", 20),
+        window_seconds=60,
+    )
+    challenge = passkeys.create_challenge(db, flow="authentication")
+    public_key = passkeys.authentication_options(
+        db,
+        challenge=challenge.challenge,
+    )
+    db.commit()
+    return {"challenge_token": challenge.token, "publicKey": public_key}
+
+
+@router.post("/auth/passkeys/login/verify")
+def auth_passkey_login_verify(
+    body: PasskeyLoginVerifyBody,
+    request: Request,
+    response: Response,
+    db: DB,
+) -> dict[str, object]:
+    if not is_auth_required():
+        raise HTTPException(status_code=400, detail="Authentication is not required")
+    if not session_auth_enabled():
+        raise HTTPException(status_code=400, detail="Session auth mode is disabled")
+    enforce_rate_limit(
+        request,
+        bucket="auth-passkey-login",
+        limit=env_int("AUTH_PASSKEY_LOGIN_RATE_LIMIT", 20),
+        window_seconds=60,
+    )
+    challenge = passkeys.consume_challenge(
+        db,
+        token=body.challenge_token,
+        flow="authentication",
+    )
+    try:
+        credential_id = passkeys.credential_id_from_public_key_credential(body.credential)
+    except HTTPException:
+        record_security_event("auth_failures")
+        record_security_event("auth_passkey_failures")
+        db.commit()
+        raise
+    row = db.execute(
+        """
+        SELECT
+            p.id AS passkey_id,
+            p.user_id,
+            p.credential_public_key,
+            p.sign_count,
+            u.username,
+            u.role,
+            u.is_active,
+            u.must_change_password
+        FROM auth_passkeys p
+        JOIN auth_users u ON u.id = p.user_id
+        WHERE p.credential_id = %s
+        LIMIT 1
+        """,
+        (credential_id,),
+    ).fetchone()
+    if (
+        not row
+        or int(row["is_active"]) != 1
+        or (challenge.user_id is not None and int(row["user_id"]) != challenge.user_id)
+    ):
+        record_security_event("auth_failures")
+        record_security_event("auth_passkey_failures")
+        db.commit()
+        raise HTTPException(status_code=401, detail="Invalid passkey authentication")
+    try:
+        verified = passkeys.verify_authentication_credential(
+            credential=body.credential,
+            expected_challenge=challenge.challenge,
+            credential_public_key=passkeys.b64decode(str(row["credential_public_key"])),
+            credential_current_sign_count=int(row["sign_count"]),
+        )
+    except HTTPException:
+        record_security_event("auth_failures")
+        record_security_event("auth_passkey_failures")
+        db.commit()
+        raise
+    stored_sign_count = int(row["sign_count"])
+    if verified.new_sign_count == 0 and stored_sign_count > 0:
+        record_security_event("auth_failures")
+        record_security_event("auth_passkey_failures")
+        db.commit()
+        raise HTTPException(status_code=400, detail="Invalid passkey authentication")
+    now_ms = current_timestamp_ms()
+    updated = db.execute(
+        """
+        UPDATE auth_passkeys
+        SET
+            sign_count = %s,
+            credential_device_type = %s,
+            credential_backed_up = %s,
+            updated_at_ms = %s,
+            last_used_at_ms = %s
+        WHERE id = %s
+          AND (%s = 0 OR sign_count < %s)
+        RETURNING id
+        """,
+        (
+            verified.new_sign_count,
+            verified.credential_device_type,
+            int(verified.credential_backed_up),
+            now_ms,
+            now_ms,
+            int(row["passkey_id"]),
+            verified.new_sign_count,
+            verified.new_sign_count,
+        ),
+    ).fetchone()
+    if not updated:
+        record_security_event("auth_failures")
+        record_security_event("auth_passkey_failures")
+        db.commit()
+        raise HTTPException(status_code=400, detail="Invalid passkey authentication")
+    user_id = int(row["user_id"])
+    token, expires_at_ms = create_session_for_user(
+        user_id,
+        mfa_authenticated=True,
+        mfa_setup_required=False,
+    )
+    db.execute(
+        "UPDATE auth_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
+        (user_id,),
+    )
+    db.commit()
+    _set_session_cookies(response, token=token, expires_at_ms=expires_at_ms)
+    remote = _remote_host(request)
+    logger.info(
+        "Passkey login successful: user=%r role=%s ip=%s",
+        row["username"],
+        row["role"],
+        remote,
+    )
+    status = "password_change_required" if bool(int(row["must_change_password"])) else "ok"
+    return {
+        "status": status,
+        "expires_at_ms": expires_at_ms,
+        "user": {
+            "username": row["username"],
+            "role": row["role"],
+            "must_change_password": bool(int(row["must_change_password"])),
+        },
+        "mfa": {
+            "required": False,
+            "setup_required": False,
+            "methods": ["passkey"],
+            "method": "passkey",
         },
     }
 
