@@ -12,15 +12,19 @@ import {
 import {
   ApiError,
   acceptInvitationApi,
+  beginPasskeyLoginApi,
   bootstrapAuthApi,
   changePasswordApi,
   clearStoredAuthToken,
+  finishPasskeyLoginApi,
   getApiErrorMessage,
   getPasswordPolicyApi,
   loginApi,
+  logoutApi,
   peekInvitationApi,
   setActiveGardenContext,
 } from "../services/api";
+import { getPasskey, isPasskeySupported } from "./passkeys";
 
 const authGateShells = new WeakMap<HTMLDivElement, HTMLDivElement>();
 
@@ -99,6 +103,7 @@ export function showForcedPasswordChangeGate(
 
 export function showAuthGate(
   bootstrapRequired: boolean,
+  passkeysEnabled = false,
 ): Promise<void> {
   const inviteToken = peekPrimedInviteToken();
 
@@ -115,6 +120,7 @@ export function showAuthGate(
         createAuthGateCard,
         inviteToken,
         bootstrapRequired,
+        passkeysEnabled,
         resolve,
       );
     } else {
@@ -122,6 +128,7 @@ export function showAuthGate(
         gate,
         createAuthGateCard,
         bootstrapRequired,
+        passkeysEnabled,
         resolve,
       );
     }
@@ -250,6 +257,7 @@ function renderInviteFlow(
   createGateCard: (subtitle: string) => HTMLDivElement,
   inviteToken: string,
   bootstrapRequired: boolean,
+  passkeysEnabled: boolean,
   resolve: () => void,
 ): void {
   // Show loading state
@@ -280,6 +288,7 @@ function renderInviteFlow(
           gate,
           loadingCard,
           bootstrapRequired,
+          passkeysEnabled,
           resolve,
         );
         return;
@@ -288,6 +297,7 @@ function renderInviteFlow(
         gate,
         loadingCard,
         bootstrapRequired,
+        passkeysEnabled,
         resolve,
         getApiErrorMessage(err),
       );
@@ -298,6 +308,7 @@ function renderInviteFlow(
         gate,
         loadingCard,
         bootstrapRequired,
+        passkeysEnabled,
         resolve,
         getApiErrorMessage(policyResult.reason),
       );
@@ -310,6 +321,7 @@ function renderInviteFlow(
       peekResult.value.username,
       policyResult.value,
       bootstrapRequired,
+      passkeysEnabled,
       resolve,
     );
   });
@@ -319,6 +331,7 @@ function renderInviteInvalidCard(
   gate: HTMLDivElement,
   loadingCard: HTMLDivElement,
   bootstrapRequired: boolean,
+  passkeysEnabled: boolean,
   resolve: () => void,
 ): void {
   clearPrimedInviteToken();
@@ -335,7 +348,7 @@ function renderInviteInvalidCard(
   signInBtn.addEventListener("click", () => {
     clearPrimedInviteToken();
     gate.remove();
-    void showAuthGate(bootstrapRequired).then(resolve);
+    void showAuthGate(bootstrapRequired, passkeysEnabled).then(resolve);
   });
   loadingCard.append(signInBtn);
 }
@@ -344,6 +357,7 @@ function renderInviteLoadErrorCard(
   gate: HTMLDivElement,
   loadingCard: HTMLDivElement,
   bootstrapRequired: boolean,
+  passkeysEnabled: boolean,
   resolve: () => void,
   message: string,
 ): void {
@@ -354,7 +368,7 @@ function renderInviteLoadErrorCard(
   retryBtn.textContent = t("common.refresh");
   retryBtn.addEventListener("click", () => {
     gate.remove();
-    void showAuthGate(bootstrapRequired).then(resolve);
+    void showAuthGate(bootstrapRequired, passkeysEnabled).then(resolve);
   });
   const signInBtn = document.createElement("button");
   signInBtn.type = "button";
@@ -363,7 +377,7 @@ function renderInviteLoadErrorCard(
   signInBtn.addEventListener("click", () => {
     clearPrimedInviteToken();
     gate.remove();
-    void showAuthGate(bootstrapRequired).then(resolve);
+    void showAuthGate(bootstrapRequired, passkeysEnabled).then(resolve);
   });
   loadingCard.append(retryBtn, signInBtn);
 }
@@ -375,6 +389,7 @@ function renderInviteForm(
   username: string,
   policy: PasswordPolicy,
   bootstrapRequired: boolean,
+  passkeysEnabled: boolean,
   resolve: () => void,
 ): void {
   card.replaceChildren();
@@ -441,7 +456,7 @@ function renderInviteForm(
     checklist.destroy();
     clearPrimedInviteToken();
     gate.remove();
-    void showAuthGate(bootstrapRequired).then(resolve);
+    void showAuthGate(bootstrapRequired, passkeysEnabled).then(resolve);
   });
 
   form.addEventListener("submit", async (e) => {
@@ -512,6 +527,7 @@ function renderLoginFlow(
   gate: HTMLDivElement,
   createGateCard: (subtitle: string) => HTMLDivElement,
   bootstrapRequired: boolean,
+  passkeysEnabled: boolean,
   resolve: () => void,
 ): void {
   const card = createGateCard(
@@ -601,6 +617,12 @@ function renderLoginFlow(
     ? t("auth.create_account")
     : t("auth.sign_in_action");
 
+  const passkeyBtn = document.createElement("button");
+  passkeyBtn.type = "button";
+  passkeyBtn.className = "auth-gate-link-btn";
+  passkeyBtn.textContent = t("auth.sign_in_with_passkey");
+  const passkeyAvailable = !bootstrapRequired && passkeysEnabled && isPasskeySupported();
+
   // Load policy and init checklist if bootstrap
   if (bootstrapRequired) {
     const updateBootstrapGate = (): void => {
@@ -631,11 +653,61 @@ function renderLoginFlow(
     mfaWrap,
     submitBtn,
   );
+  if (passkeyAvailable) {
+    form.appendChild(passkeyBtn);
+  }
   card.appendChild(form);
   appendAuthGateCard(gate, card);
   document.body.prepend(gate);
 
   usernameInput.focus();
+
+  passkeyBtn.addEventListener("click", async () => {
+    if (!passkeyAvailable) return;
+    submitBtn.disabled = true;
+    passkeyBtn.disabled = true;
+    passkeyBtn.textContent = t("auth.passkey_signing_in");
+    gate
+      .querySelector(".auth-gate-error")
+      ?.remove();
+
+    try {
+      const options = await beginPasskeyLoginApi(usernameInput.value.trim());
+      const credential = await getPasskey(options.publicKey);
+      const result = await finishPasskeyLoginApi(
+        options.challenge_token,
+        credential,
+      );
+      if (
+        result.status === "password_change_required"
+        || result.user.must_change_password
+      ) {
+        await logoutApi().catch(() => undefined);
+        clearStoredAuthToken();
+        const errDiv = document.createElement("div");
+        errDiv.className = "auth-gate-error";
+        errDiv.textContent = t("auth.passkey_password_change_required");
+        form.appendChild(errDiv);
+        return;
+      }
+      clearStoredAuthToken();
+      gate.remove();
+      resolve();
+    } catch (err) {
+      const errDiv = document.createElement("div");
+      errDiv.className = "auth-gate-error";
+      errDiv.textContent = err instanceof DOMException && err.name === "NotAllowedError"
+        ? t("auth.passkey_cancelled")
+        : getApiErrorMessage(err);
+      form.appendChild(errDiv);
+    } finally {
+      if (gate.isConnected) {
+        submitBtn.disabled = false;
+        passkeyBtn.disabled = false;
+        passkeyBtn.textContent = t("auth.sign_in_with_passkey");
+      }
+    }
+  });
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
