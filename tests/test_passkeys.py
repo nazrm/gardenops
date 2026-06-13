@@ -301,7 +301,7 @@ class TestPasskeyRegistration(PasskeyApiTest):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(
             response.json()["detail"],
-            "Passkey or MFA authentication required to add another passkey",
+            "Platform-admin MFA or passkey authentication is required",
         )
         conn = db.get_db()
         try:
@@ -349,6 +349,112 @@ class TestPasskeyRegistration(PasskeyApiTest):
             users.json()["detail"],
             "Platform-admin MFA or passkey authentication is required",
         )
+
+    def test_admin_password_login_cannot_use_non_auth_platform_admin_routes(self) -> None:
+        os.environ["AUTH_ADMIN_MFA_REQUIRED"] = "true"
+        username = "admin_passkey_garden_blocked"
+        password = "admin-garden-block-pass"
+        admin_client, _headers, _passkey_id = self._register_passkey(
+            username=username,
+            password=password,
+            role="admin",
+        )
+        admin_client.post("/api/auth/logout")
+        password_client = self._new_client()
+        login = password_client.post(
+            "/api/auth/login",
+            json={"username": username, "password": strong_password(password)},
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+        csrf = password_client.cookies.get("gardenops_csrf") or ""
+        password_headers = self._session_headers(csrf)
+
+        gardens = password_client.get("/api/gardens", headers=password_headers)
+        create_garden = password_client.post(
+            "/api/gardens",
+            headers=password_headers,
+            json={"name": "Blocked Garden"},
+        )
+
+        self.assertEqual(gardens.status_code, 403)
+        self.assertEqual(
+            gardens.json()["detail"],
+            "Platform-admin MFA or passkey authentication is required",
+        )
+        self.assertEqual(create_garden.status_code, 403)
+        self.assertEqual(
+            create_garden.json()["detail"],
+            "Platform-admin MFA or passkey authentication is required",
+        )
+
+    def test_admin_password_login_cannot_replace_existing_passkey(self) -> None:
+        os.environ["AUTH_ADMIN_MFA_REQUIRED"] = "true"
+        username = "admin_passkey_replace_blocked"
+        password = "admin-replace-block-pass"
+        admin_client, _headers, passkey_id = self._register_passkey(
+            username=username,
+            password=password,
+            role="admin",
+        )
+        admin_client.post("/api/auth/logout")
+        password_client = self._new_client()
+        login = password_client.post(
+            "/api/auth/login",
+            json={"username": username, "password": strong_password(password)},
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+        csrf = password_client.cookies.get("gardenops_csrf") or ""
+        password_headers = self._session_headers(csrf)
+        conn = db.get_db()
+        try:
+            challenges_before = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM auth_passkey_challenges
+                WHERE flow = 'registration'
+                """,
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+
+        listed = password_client.get("/api/auth/passkeys", headers=password_headers)
+        deleted = password_client.request(
+            "DELETE",
+            f"/api/auth/passkeys/{passkey_id}",
+            headers=password_headers,
+            json={"action_reason": "password-only-passkey-replace"},
+        )
+        registered = password_client.post(
+            "/api/auth/passkeys/register/options",
+            headers=password_headers,
+            json={
+                "nickname": "Replacement",
+                "current_password": strong_password(password),
+            },
+        )
+
+        for response in (listed, deleted, registered):
+            self.assertEqual(response.status_code, 403, response.text)
+            self.assertEqual(
+                response.json()["detail"],
+                "Platform-admin MFA or passkey authentication is required",
+            )
+        conn = db.get_db()
+        try:
+            passkey_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM auth_passkeys",
+            ).fetchone()
+            challenge_count = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM auth_passkey_challenges
+                WHERE flow = 'registration'
+                """,
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertEqual(int(passkey_count["count"]), 1)
+        self.assertEqual(int(challenge_count["count"]), int(challenges_before["count"]))
 
     def test_admin_first_passkey_setup_does_not_unlock_destructive_actions(self) -> None:
         os.environ["AUTH_ADMIN_MFA_REQUIRED"] = "true"
@@ -991,6 +1097,30 @@ class TestPasskeyLogin(PasskeyApiTest):
             password="admin-delete-pass",
             role="admin",
         )
+        options = admin_client.post(
+            "/api/auth/reauthenticate/passkey/options",
+            headers=headers,
+            json={},
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+        with patch(
+            "gardenops.passkeys.verify_authentication_credential",
+            return_value=VerifiedPasskeyAuthentication(
+                new_sign_count=2,
+                credential_device_type="multi_device",
+                credential_backed_up=True,
+            ),
+        ):
+            verified = admin_client.post(
+                "/api/auth/reauthenticate/passkey/verify",
+                headers=headers,
+                json={
+                    "challenge_token": str(options.json()["challenge_token"]),
+                    "credential": _fake_authentication_credential(),
+                },
+            )
+        self.assertEqual(verified.status_code, 200, verified.text)
+        headers = self._session_headers(str(verified.json()["csrf_token"]))
 
         delete_response = admin_client.request(
             "DELETE",
