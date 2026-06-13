@@ -26,7 +26,7 @@ import {
 } from "./components/globalSearch";
 import { getAppShellMarkup } from "./components/layout";
 import { renderMapGrid, applyPlotIndicators, syncSelectedPlots } from "./components/mapView";
-import { confirmDialog, promptDialog } from "./components/dialogCore";
+import { confirmDialog, promptDialog, promptPasswordDialog } from "./components/dialogCore";
 import { showCreatePlantDialogLazy, showCreatePlotDialogLazy, showCreateZoneDialogLazy, showDeleteMenuLazy, showEditPlantDialogLazy, showEditPlotDialogLazy, showElevationEditorLazy } from "./components/gardenDialogsLoader";
 import type { AiPlantData } from "./components/overlays";
 import { showPlantSearchDialog } from "./features/plantSearchFeature";
@@ -73,6 +73,7 @@ import {
   refreshOfflineIndicator,
 } from "./features/offlineFeature";
 import { showAuthGate, showForcedPasswordChangeGate } from "./features/authGate";
+import { getPasskey, isPasskeySupported } from "./features/passkeys";
 import {
   GRID_COLS,
   GRID_ROWS,
@@ -101,6 +102,7 @@ import {
   ApiError,
   addPlantToPlotApi,
   aiPlantLookup,
+  beginPasskeyReauthenticationApi,
   clearStoredAuthToken,
   createGardenApi,
   createPlantApi,
@@ -156,6 +158,7 @@ import {
   fetchSeasonalSummary,
   fetchIssueApi,
   fetchPlotAlertsApi,
+  finishPasskeyReauthenticationApi,
 } from "./services/api";
 import type {
   MediaAsset,
@@ -4158,9 +4161,22 @@ async function confirmSensitiveAdminAction(
   ))?.trim() ?? "";
   if (!actionReason) return null;
   if (authProfile?.auth_type === "session" && authProfile.role === "admin") {
-    const currentPassword = (await promptDialog(
+    if (authProfile.mfa_methods.includes("passkey") && isPasskeySupported()) {
+      try {
+        const options = await beginPasskeyReauthenticationApi();
+        const credential = await getPasskey(options.publicKey);
+        await finishPasskeyReauthenticationApi(options.challenge_token, credential);
+        authProfile = { ...authProfile, mfa_authenticated: true };
+        return actionReason;
+      } catch (err) {
+        if (!authProfile.mfa_enabled && err instanceof DOMException && err.name === "NotAllowedError") {
+          return null;
+        }
+        if (!authProfile.mfa_enabled) throw err;
+      }
+    }
+    const currentPassword = (await promptPasswordDialog(
       `Confirm your current password to ${actionLabel.toLowerCase()}:`,
-      "",
     )) ?? "";
     if (!currentPassword.trim()) return null;
     let reauthOptions: { mfaCode?: string; recoveryCode?: string } = {};

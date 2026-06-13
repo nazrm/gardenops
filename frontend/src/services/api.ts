@@ -982,10 +982,11 @@ export async function getPasskeysApi(): Promise<PasskeySummary[]> {
 
 export async function beginPasskeyRegistrationApi(
   nickname = "",
+  currentPassword = "",
 ): Promise<PasskeyOptionsResponse> {
   return apiPost<PasskeyOptionsResponse>(
     "/api/auth/passkeys/register/options",
-    { nickname },
+    { nickname, current_password: currentPassword },
   );
 }
 
@@ -1038,6 +1039,35 @@ export async function finishPasskeyLoginApi(
       credential,
     },
   );
+}
+
+export async function beginPasskeyReauthenticationApi(): Promise<PasskeyOptionsResponse> {
+  return apiPost<PasskeyOptionsResponse>(
+    "/api/auth/reauthenticate/passkey/options",
+    {},
+  );
+}
+
+export async function finishPasskeyReauthenticationApi(
+  challengeToken: string,
+  credential: unknown,
+): Promise<{
+  status: string;
+  csrf_token: string;
+  reauthenticated_at_ms: number;
+  reauthenticated_until_ms: number;
+  mfa_authenticated_at_ms: number;
+}> {
+  return apiPost<{
+    status: string;
+    csrf_token: string;
+    reauthenticated_at_ms: number;
+    reauthenticated_until_ms: number;
+    mfa_authenticated_at_ms: number;
+  }>("/api/auth/reauthenticate/passkey/verify", {
+    challenge_token: challengeToken,
+    credential,
+  });
 }
 
 export async function changePasswordApi(

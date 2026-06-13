@@ -21,6 +21,7 @@ from webauthn import (
 from webauthn.helpers.structs import (
     AttestationConveyancePreference,
     AuthenticatorSelectionCriteria,
+    AuthenticatorTransport,
     PublicKeyCredentialDescriptor,
     ResidentKeyRequirement,
     UserVerificationRequirement,
@@ -29,7 +30,7 @@ from webauthn.helpers.structs import (
 from gardenops.branding import app_name
 from gardenops.db import DbConn, current_timestamp_ms
 
-PasskeyFlow = Literal["registration", "authentication"]
+PasskeyFlow = Literal["registration", "authentication", "reauthentication"]
 
 _CHALLENGE_BYTES = 32
 _CHALLENGE_TOKEN_BYTES = 32
@@ -256,7 +257,12 @@ def _parse_transports(raw: str) -> list[str]:
 def _credential_descriptors(rows: list[dict[str, Any]]) -> list[PublicKeyCredentialDescriptor]:
     descriptors: list[PublicKeyCredentialDescriptor] = []
     for row in rows:
-        transports = _parse_transports(str(row.get("transports") or ""))
+        transports: list[AuthenticatorTransport] = []
+        for transport in _parse_transports(str(row.get("transports") or "")):
+            try:
+                transports.append(AuthenticatorTransport(transport))
+            except ValueError:
+                continue
         descriptors.append(
             PublicKeyCredentialDescriptor(
                 id=b64decode(str(row["credential_id"])),

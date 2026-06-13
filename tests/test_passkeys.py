@@ -6,8 +6,9 @@ from fastapi import HTTPException
 
 import gardenops.db as db
 import gardenops.passkeys as passkey_service
+from gardenops.incident_controls import set_runtime_flag
 from gardenops.passkeys import VerifiedPasskeyAuthentication, VerifiedPasskeyRegistration
-from tests.base import BaseApiTest
+from tests.base import BaseApiTest, strong_password
 
 
 def _b64url(raw: bytes) -> str:
@@ -59,6 +60,7 @@ class PasskeyApiTest(BaseApiTest):
         os.environ["AUTH_REQUIRED"] = "false"
         os.environ.pop("AUTH_PASSKEY_RP_ID", None)
         os.environ.pop("AUTH_PASSKEY_ORIGINS", None)
+        os.environ.pop("AUTH_PASSKEY_REGISTER_RATE_LIMIT", None)
         os.environ.pop("AUTH_API_KEY", None)
         os.environ.pop("AUTH_ADMIN_MFA_REQUIRED", None)
         super().tearDown()
@@ -76,7 +78,7 @@ class PasskeyApiTest(BaseApiTest):
         options = client.post(
             "/api/auth/passkeys/register/options",
             headers=headers,
-            json={"nickname": "Laptop"},
+            json={"nickname": "Laptop", "current_password": strong_password(password)},
         )
         self.assertEqual(options.status_code, 200, options.text)
         challenge_token = str(options.json()["challenge_token"])
@@ -138,7 +140,7 @@ class TestPasskeyRegistration(PasskeyApiTest):
         response = client.post(
             "/api/auth/passkeys/register/options",
             headers=headers,
-            json={"nickname": "Laptop"},
+            json={"nickname": "Laptop", "current_password": strong_password("missing-config-pass")},
         )
 
         self.assertEqual(response.status_code, 503)
@@ -196,11 +198,181 @@ class TestPasskeyRegistration(PasskeyApiTest):
         response = client.post(
             "/api/auth/passkeys/register/options",
             headers=headers,
-            json={"nickname": "Laptop"},
+            json={"nickname": "Laptop", "current_password": strong_password("stale-pass")},
         )
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["detail"], "Recent reauthentication required")
+
+    def test_register_options_requires_current_password_for_fresh_session(self) -> None:
+        self._create_test_user("session_only_passkey_user", "session-only-pass", "editor")
+        client, headers = self._authenticated_client(
+            "session_only_passkey_user",
+            "session-only-pass",
+        )
+
+        response = client.post(
+            "/api/auth/passkeys/register/options",
+            headers=headers,
+            json={"nickname": "Laptop"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["detail"], "Current password is required")
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM auth_passkey_challenges",
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertEqual(int(row["count"]), 0)
+
+    def test_register_options_bad_current_password_is_rate_limited_without_challenge(self) -> None:
+        os.environ["AUTH_PASSKEY_REGISTER_RATE_LIMIT"] = "1"
+        self._create_test_user("bad_password_passkey_user", "bad-current-pass", "editor")
+        client, headers = self._authenticated_client(
+            "bad_password_passkey_user",
+            "bad-current-pass",
+        )
+
+        first = client.post(
+            "/api/auth/passkeys/register/options",
+            headers=headers,
+            json={"nickname": "Laptop", "current_password": strong_password("wrong-password")},
+        )
+        second = client.post(
+            "/api/auth/passkeys/register/options",
+            headers=headers,
+            json={
+                "nickname": "Laptop",
+                "current_password": strong_password("still-wrong-password"),
+            },
+        )
+
+        self.assertEqual(first.status_code, 401)
+        self.assertEqual(first.json()["detail"], "Current password is incorrect")
+        self.assertEqual(second.status_code, 429)
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM auth_passkey_challenges",
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertEqual(int(row["count"]), 0)
+
+    def test_admin_password_login_cannot_register_additional_passkey(self) -> None:
+        os.environ["AUTH_ADMIN_MFA_REQUIRED"] = "true"
+        username = "admin_second_passkey_blocked"
+        password = "admin-second-pass"
+        admin_client, _headers, _passkey_id = self._register_passkey(
+            username=username,
+            password=password,
+            role="admin",
+        )
+        admin_client.post("/api/auth/logout")
+        password_client = self._new_client()
+        login = password_client.post(
+            "/api/auth/login",
+            json={"username": username, "password": strong_password(password)},
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+        csrf = password_client.cookies.get("gardenops_csrf") or ""
+        self.assertTrue(csrf)
+        password_headers = self._session_headers(csrf)
+        conn = db.get_db()
+        try:
+            before = conn.execute(
+                "SELECT COUNT(*) AS count FROM auth_passkey_challenges",
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+
+        response = password_client.post(
+            "/api/auth/passkeys/register/options",
+            headers=password_headers,
+            json={
+                "nickname": "Attacker key",
+                "current_password": strong_password(password),
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json()["detail"],
+            "Passkey or MFA authentication required to add another passkey",
+        )
+        conn = db.get_db()
+        try:
+            passkey_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM auth_passkeys",
+            ).fetchone()
+            after = conn.execute(
+                "SELECT COUNT(*) AS count FROM auth_passkey_challenges",
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertEqual(int(passkey_count["count"]), 1)
+        self.assertEqual(int(after["count"]), int(before["count"]))
+
+    def test_admin_password_login_cannot_read_admin_surfaces_after_passkey_enrollment(self) -> None:
+        os.environ["AUTH_ADMIN_MFA_REQUIRED"] = "true"
+        username = "admin_passkey_read_blocked"
+        password = "admin-read-block-pass"
+        admin_client, _headers, _passkey_id = self._register_passkey(
+            username=username,
+            password=password,
+            role="admin",
+        )
+        admin_client.post("/api/auth/logout")
+        password_client = self._new_client()
+        login = password_client.post(
+            "/api/auth/login",
+            json={"username": username, "password": strong_password(password)},
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+        self.assertEqual(login.json()["status"], "ok")
+        csrf = password_client.cookies.get("gardenops_csrf") or ""
+        password_headers = self._session_headers(csrf)
+
+        me = password_client.get("/api/auth/me")
+        self.assertEqual(me.status_code, 200, me.text)
+        self.assertFalse(me.json()["mfa_setup_required"])
+        self.assertFalse(me.json()["mfa_authenticated"])
+        self.assertIn("passkey", me.json()["mfa_methods"])
+
+        users = password_client.get("/api/auth/users", headers=password_headers)
+
+        self.assertEqual(users.status_code, 403)
+        self.assertEqual(
+            users.json()["detail"],
+            "Platform-admin MFA or passkey authentication is required",
+        )
+
+    def test_admin_first_passkey_setup_does_not_unlock_destructive_actions(self) -> None:
+        os.environ["AUTH_ADMIN_MFA_REQUIRED"] = "true"
+        admin_client, headers, _passkey_id = self._register_passkey(
+            username="admin_first_passkey_setup",
+            password="admin-first-pass",
+            role="admin",
+        )
+
+        me = admin_client.get("/api/auth/me")
+        self.assertEqual(me.status_code, 200, me.text)
+        self.assertFalse(me.json()["mfa_setup_required"])
+        self.assertFalse(me.json()["mfa_authenticated"])
+
+        destructive = admin_client.post(
+            "/api/auth/revoke-all-sessions",
+            headers=headers,
+            json={"action_reason": "first-passkey-setup-must-not-step-up"},
+        )
+        self.assertEqual(destructive.status_code, 403)
+        self.assertEqual(
+            destructive.json()["detail"],
+            "Platform-admin MFA or passkey authentication is required",
+        )
 
     def test_register_options_returns_required_user_verified_resident_key_options(self) -> None:
         self._create_test_user("options_passkey_user", "options-pass", "editor")
@@ -209,7 +381,7 @@ class TestPasskeyRegistration(PasskeyApiTest):
         response = client.post(
             "/api/auth/passkeys/register/options",
             headers=headers,
-            json={"nickname": "Laptop"},
+            json={"nickname": "Laptop", "current_password": strong_password("options-pass")},
         )
 
         self.assertEqual(response.status_code, 200, response.text)
@@ -266,7 +438,7 @@ class TestPasskeyRegistration(PasskeyApiTest):
         options = client.post(
             "/api/auth/passkeys/register/options",
             headers=headers,
-            json={"nickname": "Laptop"},
+            json={"nickname": "Laptop", "current_password": strong_password("replay-pass")},
         )
         self.assertEqual(options.status_code, 200, options.text)
         challenge_token = str(options.json()["challenge_token"])
@@ -314,7 +486,7 @@ class TestPasskeyRegistration(PasskeyApiTest):
         options = first_client.post(
             "/api/auth/passkeys/register/options",
             headers=first_headers,
-            json={"nickname": "Laptop"},
+            json={"nickname": "Laptop", "current_password": strong_password("cross-session-pass")},
         )
         self.assertEqual(options.status_code, 200, options.text)
 
@@ -552,6 +724,265 @@ class TestPasskeyLogin(PasskeyApiTest):
             json={"action_reason": "passkey-backed-admin-session-test"},
         )
         self.assertEqual(destructive.status_code, 200, destructive.text)
+
+    def test_passkey_reauthenticate_marks_session_strong_for_admin_step_up(self) -> None:
+        os.environ["AUTH_ADMIN_MFA_REQUIRED"] = "true"
+        admin_client, headers, _passkey_id = self._register_passkey(
+            username="admin_passkey_reauth_user",
+            password="admin-passkey-reauth-pass",
+            role="admin",
+        )
+
+        blocked = admin_client.post(
+            "/api/auth/revoke-all-sessions",
+            headers=headers,
+            json={"action_reason": "passkey-reauth-before-step-up"},
+        )
+        self.assertEqual(blocked.status_code, 403)
+
+        options = admin_client.post(
+            "/api/auth/reauthenticate/passkey/options",
+            headers=headers,
+            json={},
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+        challenge_token = str(options.json()["challenge_token"])
+        self.assertTrue(options.json()["publicKey"].get("allowCredentials"))
+
+        with patch(
+            "gardenops.passkeys.verify_authentication_credential",
+            return_value=VerifiedPasskeyAuthentication(
+                new_sign_count=2,
+                credential_device_type="multi_device",
+                credential_backed_up=True,
+            ),
+        ):
+            verified = admin_client.post(
+                "/api/auth/reauthenticate/passkey/verify",
+                headers=headers,
+                json={
+                    "challenge_token": challenge_token,
+                    "credential": _fake_authentication_credential(),
+                },
+            )
+        self.assertEqual(verified.status_code, 200, verified.text)
+        body = verified.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertTrue(body["csrf_token"])
+        self.assertGreater(int(body["reauthenticated_at_ms"]), 0)
+        self.assertGreater(int(body["mfa_authenticated_at_ms"]), 0)
+        refreshed_headers = self._session_headers(str(body["csrf_token"]))
+
+        destructive = admin_client.post(
+            "/api/auth/revoke-all-sessions",
+            headers=refreshed_headers,
+            json={"action_reason": "passkey-reauth-after-step-up"},
+        )
+        self.assertEqual(destructive.status_code, 200, destructive.text)
+
+    def test_passkey_reauthenticate_requires_csrf_before_challenge_creation(self) -> None:
+        admin_client, _headers, _passkey_id = self._register_passkey(
+            username="csrf_reauth_passkey_user",
+            password="csrf-reauth-pass",
+            role="admin",
+        )
+
+        response = admin_client.post("/api/auth/reauthenticate/passkey/options", json={})
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["detail"], "Forbidden: invalid or missing CSRF token")
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM auth_passkey_challenges
+                WHERE flow = 'reauthentication'
+                """,
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertEqual(int(row["count"]), 0)
+
+    def test_passkey_reauthenticate_rotates_session_and_rejects_replay(self) -> None:
+        admin_client, headers, _passkey_id = self._register_passkey(
+            username="reauth_rotate_passkey_user",
+            password="reauth-rotate-pass",
+            role="admin",
+        )
+        old_session = admin_client.cookies.get("gardenops_session") or ""
+        old_csrf = headers["x-csrf-token"]
+        options = admin_client.post(
+            "/api/auth/reauthenticate/passkey/options",
+            headers=headers,
+            json={},
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+        challenge_token = str(options.json()["challenge_token"])
+
+        with patch(
+            "gardenops.passkeys.verify_authentication_credential",
+            return_value=VerifiedPasskeyAuthentication(
+                new_sign_count=2,
+                credential_device_type="multi_device",
+                credential_backed_up=True,
+            ),
+        ):
+            verified = admin_client.post(
+                "/api/auth/reauthenticate/passkey/verify",
+                headers=headers,
+                json={
+                    "challenge_token": challenge_token,
+                    "credential": _fake_authentication_credential(),
+                },
+            )
+        self.assertEqual(verified.status_code, 200, verified.text)
+        new_csrf = str(verified.json()["csrf_token"])
+        self.assertNotEqual(new_csrf, old_csrf)
+
+        old_session_client = self._new_client()
+        old_session_client.cookies.set("gardenops_session", old_session)
+        old_me = old_session_client.get("/api/auth/me")
+        self.assertEqual(old_me.status_code, 401)
+
+        old_csrf_rejected = admin_client.post(
+            "/api/auth/reauthenticate/passkey/options",
+            headers=headers,
+            json={},
+        )
+        self.assertEqual(old_csrf_rejected.status_code, 403)
+        self.assertEqual(
+            old_csrf_rejected.json()["detail"],
+            "Forbidden: invalid or missing CSRF token",
+        )
+
+        with patch("gardenops.passkeys.verify_authentication_credential") as verify_mock:
+            replay = admin_client.post(
+                "/api/auth/reauthenticate/passkey/verify",
+                headers=self._session_headers(new_csrf),
+                json={
+                    "challenge_token": challenge_token,
+                    "credential": _fake_authentication_credential(),
+                },
+            )
+        self.assertEqual(replay.status_code, 400)
+        self.assertEqual(replay.json()["detail"], "Invalid or expired passkey challenge")
+        verify_mock.assert_not_called()
+
+    def test_passkey_reauthenticate_allows_emergency_read_only_recovery(self) -> None:
+        os.environ["AUTH_ADMIN_MFA_REQUIRED"] = "true"
+        admin_client, headers, _passkey_id = self._register_passkey(
+            username="emergency_reauth_passkey_user",
+            password="emergency-reauth-pass",
+            role="admin",
+        )
+        conn = db.get_db()
+        try:
+            set_runtime_flag(conn, "emergency_read_only", "1")
+            set_runtime_flag(conn, "emergency_read_only_expires_at_ms", "0")
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        options = admin_client.post(
+            "/api/auth/reauthenticate/passkey/options",
+            headers=headers,
+            json={},
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+        with patch(
+            "gardenops.passkeys.verify_authentication_credential",
+            return_value=VerifiedPasskeyAuthentication(
+                new_sign_count=2,
+                credential_device_type="multi_device",
+                credential_backed_up=True,
+            ),
+        ):
+            verified = admin_client.post(
+                "/api/auth/reauthenticate/passkey/verify",
+                headers=headers,
+                json={
+                    "challenge_token": str(options.json()["challenge_token"]),
+                    "credential": _fake_authentication_credential(),
+                },
+            )
+        self.assertEqual(verified.status_code, 200, verified.text)
+
+        disabled = admin_client.patch(
+            "/api/auth/emergency-read-only",
+            headers=self._session_headers(str(verified.json()["csrf_token"])),
+            json={
+                "enabled": False,
+                "action_reason": "passkey-emergency-disable",
+            },
+        )
+        self.assertEqual(disabled.status_code, 200, disabled.text)
+
+    def test_passkey_reauthenticate_verify_rejects_public_login_challenge(self) -> None:
+        admin_client, headers, _passkey_id = self._register_passkey(
+            username="public_challenge_reauth_user",
+            password="public-challenge-pass",
+            role="admin",
+        )
+        public_options = self.client.post("/api/auth/passkeys/login/options", json={})
+        self.assertEqual(public_options.status_code, 200, public_options.text)
+
+        with patch("gardenops.passkeys.verify_authentication_credential") as verify_mock:
+            response = admin_client.post(
+                "/api/auth/reauthenticate/passkey/verify",
+                headers=headers,
+                json={
+                    "challenge_token": str(public_options.json()["challenge_token"]),
+                    "credential": _fake_authentication_credential(),
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Invalid or expired passkey challenge")
+        verify_mock.assert_not_called()
+
+    def test_passkey_reauthenticate_verify_rejects_cross_session_challenge_reuse(self) -> None:
+        username = "cross_session_reauth_user"
+        password = "cross-session-reauth-pass"
+        first_client, first_headers, _passkey_id = self._register_passkey(
+            username=username,
+            password=password,
+            role="admin",
+        )
+        second_client, second_headers = self._authenticated_client(username, password)
+        options = first_client.post(
+            "/api/auth/reauthenticate/passkey/options",
+            headers=first_headers,
+            json={},
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+
+        with patch("gardenops.passkeys.verify_authentication_credential") as verify_mock:
+            response = second_client.post(
+                "/api/auth/reauthenticate/passkey/verify",
+                headers=second_headers,
+                json={
+                    "challenge_token": str(options.json()["challenge_token"]),
+                    "credential": _fake_authentication_credential(),
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Invalid or expired passkey challenge")
+        verify_mock.assert_not_called()
+
+    def test_passkey_reauthenticate_options_requires_existing_passkey(self) -> None:
+        self._create_test_user("no_reauth_passkey_user", "no-reauth-passkey", "editor")
+        client, headers = self._authenticated_client("no_reauth_passkey_user", "no-reauth-passkey")
+
+        response = client.post(
+            "/api/auth/reauthenticate/passkey/options",
+            headers=headers,
+            json={},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["detail"], "Passkey authentication is not available")
 
     def test_deleting_admin_only_passkey_restores_setup_required_state(self) -> None:
         os.environ["AUTH_ADMIN_MFA_REQUIRED"] = "true"

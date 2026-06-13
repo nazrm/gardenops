@@ -4,7 +4,7 @@ import { buildInvitationLink } from "../core/urlSecurity";
 import { queryInput, querySelect, queryTextArea } from "../core/dom";
 import { getApiErrorMessage } from "../services/api";
 import { featuresLostOnDowngrade } from "../core/featureGates";
-import { confirmDialog, promptDialog } from "./dialogCore";
+import { confirmDialog, promptDialog, promptPasswordDialog } from "./dialogCore";
 import { showToast } from "./toast";
 import { clearOfflineQueue } from "../services/offlineQueue";
 import type {
@@ -32,12 +32,14 @@ import type {
   SecurityMetrics,
 } from "../services/api";
 import {
+  beginPasskeyReauthenticationApi,
   beginPasskeyRegistrationApi,
   confirmAuthTotpEnrollmentApi,
   createAuthUserApi,
   deleteAuthUserApi,
   deletePasskeyApi,
   disableAuthMfaApi,
+  finishPasskeyReauthenticationApi,
   finishPasskeyRegistrationApi,
   getAuthAuditEventsApi,
   getAuthMeApi,
@@ -79,7 +81,7 @@ import {
   updateUserTierApi,
   createUserInvitationApi,
 } from "../services/api";
-import { createPasskey, isPasskeySupported } from "../features/passkeys";
+import { createPasskey, getPasskey, isPasskeySupported } from "../features/passkeys";
 
 const esc = escapeHtml;
 
@@ -441,7 +443,21 @@ async function authorizeSensitiveAdminAction(
   const actionReason = await promptRequired(`${actionLabel} reason:`, defaultReason);
   if (!actionReason) return null;
   if (state.me?.auth_type === "session") {
-    const currentPassword = await promptRequired(
+    if (state.me.mfa_methods.includes("passkey") && isPasskeySupported()) {
+      try {
+        const options = await beginPasskeyReauthenticationApi();
+        const credential = await getPasskey(options.publicKey);
+        await finishPasskeyReauthenticationApi(options.challenge_token, credential);
+        state.me = { ...state.me, mfa_authenticated: true };
+        return actionReason;
+      } catch (err) {
+        if (!state.me.mfa_enabled && err instanceof DOMException && err.name === "NotAllowedError") {
+          return null;
+        }
+        if (!state.me.mfa_enabled) throw err;
+      }
+    }
+    const currentPassword = await promptPasswordDialog(
       t("admin_panel.confirm_password_prompt", { action: actionLabel.toLowerCase() }),
     );
     if (!currentPassword) return null;
@@ -2101,8 +2117,10 @@ function wireSection(): void {
     );
     if (nicknameValue === null) return;
     const nickname = nicknameValue.trim();
+    const currentPassword = await promptPasswordDialog(t("auth.current_password"));
+    if (currentPassword === null || !currentPassword) return;
     try {
-      const options = await beginPasskeyRegistrationApi(nickname);
+      const options = await beginPasskeyRegistrationApi(nickname, currentPassword);
       const credential = await createPasskey(options.publicKey);
       await finishPasskeyRegistrationApi(
         options.challenge_token,

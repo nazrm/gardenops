@@ -1441,6 +1441,8 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         emergency_exempt_paths = {
             "/api/auth/logout",
             "/api/auth/reauthenticate",
+            "/api/auth/reauthenticate/passkey/options",
+            "/api/auth/reauthenticate/passkey/verify",
             "/api/auth/emergency-read-only",
             "/api/auth/revoke-all-sessions",
             "/api/auth/revoke-user-sessions",
