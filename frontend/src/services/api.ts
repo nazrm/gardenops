@@ -1019,12 +1019,14 @@ export async function deletePasskeyApi(
   );
 }
 
-export async function beginPasskeyLoginApi(
-  username = "",
-): Promise<PasskeyOptionsResponse> {
+export async function beginPasskeyLoginApi(username: string): Promise<PasskeyOptionsResponse> {
+  const trimmedUsername = username.trim();
+  if (!trimmedUsername) {
+    throw new Error("Username is required before passkey sign-in.");
+  }
   return apiPost<PasskeyOptionsResponse>(
     "/api/auth/passkeys/login/options",
-    { username },
+    { username: trimmedUsername },
   );
 }
 

@@ -1412,15 +1412,22 @@ def auth_passkey_login_options(
         limit=env_int("AUTH_PASSKEY_LOGIN_RATE_LIMIT", 20),
         window_seconds=60,
     )
+    username = body.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required")
     user_id: int | None = None
-    login_candidate = _load_login_candidate(db, body.username) if body.username.strip() else None
+    login_candidate = _load_login_candidate(db, username)
     if (
         login_candidate
         and int(login_candidate["is_active"]) == 1
         and _user_has_passkey(db, int(login_candidate["id"]))
     ):
         user_id = int(login_candidate["id"])
-    challenge = passkeys.create_challenge(db, flow="authentication", user_id=user_id)
+    challenge = passkeys.create_challenge(
+        db,
+        flow="authentication" if user_id is not None else "authentication_denied",
+        user_id=user_id,
+    )
     public_key = passkeys.authentication_options(
         db,
         challenge=challenge.challenge,
@@ -1452,6 +1459,8 @@ def auth_passkey_login_verify(
         token=body.challenge_token,
         flow="authentication",
     )
+    if challenge.user_id is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired passkey challenge")
     row = _verify_and_update_passkey_authentication(
         db,
         challenge=challenge,

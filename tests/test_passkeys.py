@@ -622,6 +622,14 @@ class TestPasskeyRegistration(PasskeyApiTest):
 
 
 class TestPasskeyLogin(PasskeyApiTest):
+    def test_login_options_require_username(self) -> None:
+        for payload in ({}, {"username": ""}, {"username": "   "}):
+            with self.subTest(payload=payload):
+                response = self.client.post("/api/auth/passkeys/login/options", json=payload)
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["detail"], "Username is required")
+
     def test_login_options_include_username_scoped_credentials(self) -> None:
         client, _headers, _passkey_id = self._register_passkey()
         client.post("/api/auth/logout")
@@ -674,6 +682,95 @@ class TestPasskeyLogin(PasskeyApiTest):
                 self.assertIn("publicKey", body)
                 self.assertFalse(body["publicKey"].get("allowCredentials"))
 
+    def test_denied_passkey_challenge_cannot_authenticate_other_credential(self) -> None:
+        client, _headers, _passkey_id = self._register_passkey()
+        client.post("/api/auth/logout")
+        self._create_test_user(
+            "password_only_denied_passkey_login_user",
+            "password-only-denied",
+            "editor",
+        )
+        self._create_test_user("inactive_denied_passkey_login_user", "inactive-denied", "editor")
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE auth_users SET is_active = 0 WHERE username = %s",
+                ("inactive_denied_passkey_login_user",),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        for username in (
+            "missing_passkey_login_user",
+            "password_only_denied_passkey_login_user",
+            "inactive_denied_passkey_login_user",
+        ):
+            with self.subTest(username=username):
+                options = self.client.post(
+                    "/api/auth/passkeys/login/options",
+                    json={"username": username},
+                )
+                self.assertEqual(options.status_code, 200, options.text)
+
+                with patch("gardenops.passkeys.verify_authentication_credential") as verify_mock:
+                    login = self.client.post(
+                        "/api/auth/passkeys/login/verify",
+                        json={
+                            "challenge_token": str(options.json()["challenge_token"]),
+                            "credential": _fake_authentication_credential(),
+                        },
+                    )
+
+                self.assertEqual(login.status_code, 400)
+                self.assertEqual(login.json()["detail"], "Invalid or expired passkey challenge")
+                verify_mock.assert_not_called()
+
+    def test_legacy_global_authentication_challenge_cannot_authenticate_credential(self) -> None:
+        client, _headers, _passkey_id = self._register_passkey()
+        client.post("/api/auth/logout")
+        challenge_token = "legacy-global-authentication-challenge-token"
+        conn = db.get_db()
+        try:
+            now_ms = passkey_service.current_timestamp_ms()
+            conn.execute(
+                """
+                INSERT INTO auth_passkey_challenges (
+                    token_hash,
+                    challenge,
+                    flow,
+                    user_id,
+                    session_token_hash,
+                    created_at_ms,
+                    expires_at_ms,
+                    used_at_ms
+                )
+                VALUES (%s, %s, 'authentication', NULL, NULL, %s, %s, NULL)
+                """,
+                (
+                    passkey_service._hash_token(challenge_token),
+                    passkey_service._b64encode(b"legacy-global-authentication-challenge"),
+                    now_ms,
+                    now_ms + 60000,
+                ),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch("gardenops.passkeys.verify_authentication_credential") as verify_mock:
+            login = self.client.post(
+                "/api/auth/passkeys/login/verify",
+                json={
+                    "challenge_token": challenge_token,
+                    "credential": _fake_authentication_credential(),
+                },
+            )
+
+        self.assertEqual(login.status_code, 400)
+        self.assertEqual(login.json()["detail"], "Invalid or expired passkey challenge")
+        verify_mock.assert_not_called()
+
     def test_username_scoped_passkey_challenge_rejects_other_user_credential(self) -> None:
         first_client, _first_headers, _first_passkey_id = self._register_passkey(
             username="first_passkey_login_user",
@@ -720,7 +817,10 @@ class TestPasskeyLogin(PasskeyApiTest):
         client, _headers, passkey_id = self._register_passkey()
         client.post("/api/auth/logout")
 
-        options = self.client.post("/api/auth/passkeys/login/options", json={})
+        options = self.client.post(
+            "/api/auth/passkeys/login/options",
+            json={"username": "passkey_user"},
+        )
         self.assertEqual(options.status_code, 200, options.text)
         challenge_token = str(options.json()["challenge_token"])
         with patch(
@@ -768,7 +868,10 @@ class TestPasskeyLogin(PasskeyApiTest):
         client, _headers, _passkey_id = self._register_passkey()
         client.post("/api/auth/logout")
 
-        options = self.client.post("/api/auth/passkeys/login/options", json={})
+        options = self.client.post(
+            "/api/auth/passkeys/login/options",
+            json={"username": "passkey_user"},
+        )
         self.assertEqual(options.status_code, 200, options.text)
         with patch(
             "gardenops.passkeys.verify_authentication_credential",
@@ -802,7 +905,10 @@ class TestPasskeyLogin(PasskeyApiTest):
             db.return_db(conn)
         client.post("/api/auth/logout")
 
-        options = self.client.post("/api/auth/passkeys/login/options", json={})
+        options = self.client.post(
+            "/api/auth/passkeys/login/options",
+            json={"username": "passkey_user"},
+        )
         self.assertEqual(options.status_code, 200, options.text)
         with patch(
             "gardenops.passkeys.verify_authentication_credential",
@@ -836,7 +942,10 @@ class TestPasskeyLogin(PasskeyApiTest):
         client, _headers, _passkey_id = self._register_passkey()
         client.post("/api/auth/logout")
 
-        options = self.client.post("/api/auth/passkeys/login/options", json={})
+        options = self.client.post(
+            "/api/auth/passkeys/login/options",
+            json={"username": "passkey_user"},
+        )
         self.assertEqual(options.status_code, 200, options.text)
         challenge_token = str(options.json()["challenge_token"])
 
@@ -876,7 +985,10 @@ class TestPasskeyLogin(PasskeyApiTest):
         )
         admin_client.post("/api/auth/logout")
 
-        options = self.client.post("/api/auth/passkeys/login/options", json={})
+        options = self.client.post(
+            "/api/auth/passkeys/login/options",
+            json={"username": "admin_passkey_user"},
+        )
         self.assertEqual(options.status_code, 200, options.text)
         with patch(
             "gardenops.passkeys.verify_authentication_credential",
@@ -1112,7 +1224,10 @@ class TestPasskeyLogin(PasskeyApiTest):
             password="public-challenge-pass",
             role="admin",
         )
-        public_options = self.client.post("/api/auth/passkeys/login/options", json={})
+        public_options = self.client.post(
+            "/api/auth/passkeys/login/options",
+            json={"username": "public_challenge_reauth_user"},
+        )
         self.assertEqual(public_options.status_code, 200, public_options.text)
 
         with patch("gardenops.passkeys.verify_authentication_credential") as verify_mock:

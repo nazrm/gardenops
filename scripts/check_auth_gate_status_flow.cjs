@@ -68,9 +68,13 @@ function main() {
   const sourcePath = path.resolve(__dirname, "../frontend/src/main.ts");
   const authGatePath = path.resolve(__dirname, "../frontend/src/features/authGate.ts");
   const passkeysPath = path.resolve(__dirname, "../frontend/src/features/passkeys.ts");
+  const apiPath = path.resolve(__dirname, "../frontend/src/services/api.ts");
+  const i18nPath = path.resolve(__dirname, "../frontend/src/core/i18n.ts");
   const sourceText = fs.readFileSync(sourcePath, "utf8");
   const authGateText = fs.readFileSync(authGatePath, "utf8");
   const passkeysText = fs.readFileSync(passkeysPath, "utf8");
+  const apiText = fs.readFileSync(apiPath, "utf8");
+  const i18nText = fs.readFileSync(i18nPath, "utf8");
   const source = ts.createSourceFile(sourcePath, sourceText, ts.ScriptTarget.Latest, true);
 
   const statusHelper = findFunction(source, "showAuthGateFromCurrentStatus");
@@ -104,23 +108,41 @@ function main() {
     fail("handleAuthButton must show the login gate from fresh auth status in both auth branches");
   }
 
-  if (!authGateText.includes("\"username webauthn\"")) {
-    fail("passkey-enabled login must annotate the username field with autocomplete=\"username webauthn\"");
+  if (authGateText.includes("\"username webauthn\"")) {
+    fail("passkey login must not enable username-less WebAuthn autofill");
   }
-  if (!passkeysText.includes("isConditionalPasskeyLoginSupported")) {
-    fail("passkeys feature must expose conditional login capability detection");
+  if (passkeysText.includes("isConditionalPasskeyLoginSupported")) {
+    fail("passkeys feature must not expose conditional username-less login for this app");
   }
-  if (!passkeysText.includes("mediation") || !passkeysText.includes("signal")) {
-    fail("passkey login must support conditional mediation and abort signals");
+  if (passkeysText.includes("mediation") || passkeysText.includes("signal")) {
+    fail("passkey login must not request conditional mediation or keep abort-only conditional plumbing");
   }
-  if (!authGateText.includes("AbortController")) {
-    fail("auth gate must use AbortController for pending conditional passkey login");
+  if (authGateText.includes("beginPasskeyLoginApi(\"\")")) {
+    fail("auth gate must not start passkey login options with an empty username");
   }
-  if (!authGateText.includes("startConditionalPasskeyLogin")) {
-    fail("auth gate must start conditional passkey login from the username-first form");
+  if (authGateText.includes("beginPasskeyLoginApi()")) {
+    fail("auth gate must not start passkey login options without a username");
   }
-  if (!authGateText.includes("abortConditionalPasskeyLogin")) {
-    fail("auth gate must abort conditional passkey login before explicit alternate login paths");
+  if (apiText.includes("username = \"\"")) {
+    fail("passkey login API helper must not default to an empty username");
+  }
+  if (!apiText.includes("username: string")) {
+    fail("passkey login API helper must require an explicit username");
+  }
+  if (!apiText.includes("username.trim()")) {
+    fail("passkey login API helper must reject blank usernames before making a request");
+  }
+  if (authGateText.includes("startConditionalPasskeyLogin")) {
+    fail("auth gate must not start conditional passkey login before username entry");
+  }
+  if (!authGateText.includes("auth.passkey_username_required")) {
+    fail("auth gate must show a username-required error before passkey login");
+  }
+  if (
+    !i18nText.includes("\"auth.passkey_username_required\": \"Enter your username before using a passkey.\"") ||
+    !i18nText.includes("\"auth.passkey_username_required\": \"Skriv inn brukernavnet ditt før du bruker passnøkkel.\"")
+  ) {
+    fail("auth gate username-required passkey message must be translated for English and Norwegian");
   }
 
   console.log("Auth gate status flow check passed.");

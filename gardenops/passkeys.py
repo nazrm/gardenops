@@ -30,7 +30,7 @@ from webauthn.helpers.structs import (
 from gardenops.branding import app_name
 from gardenops.db import DbConn, current_timestamp_ms
 
-PasskeyFlow = Literal["registration", "authentication", "reauthentication"]
+PasskeyFlow = Literal["registration", "authentication", "authentication_denied", "reauthentication"]
 
 _CHALLENGE_BYTES = 32
 _CHALLENGE_TOKEN_BYTES = 32
@@ -168,6 +168,11 @@ def create_challenge(
     user_id: int | None = None,
     session_token_hash: str | None = None,
 ) -> PasskeyChallenge:
+    if flow == "authentication" and user_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Authentication passkey challenges require a user",
+        )
     cleanup_expired_challenges(conn)
     token = secrets.token_urlsafe(_CHALLENGE_TOKEN_BYTES)
     challenge = secrets.token_bytes(_CHALLENGE_BYTES)
@@ -215,6 +220,8 @@ def consume_challenge(
     if user_id is not None:
         user_clause = "AND user_id = %s"
         params.append(user_id)
+    elif flow == "authentication":
+        user_clause = "AND user_id IS NOT NULL"
     elif flow == "registration":
         user_clause = "AND user_id IS NULL"
     session_clause = ""

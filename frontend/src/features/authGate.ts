@@ -24,7 +24,7 @@ import {
   peekInvitationApi,
   setActiveGardenContext,
 } from "../services/api";
-import { getPasskey, isConditionalPasskeyLoginSupported, isPasskeySupported } from "./passkeys";
+import { getPasskey, isPasskeySupported } from "./passkeys";
 
 const authGateShells = new WeakMap<HTMLDivElement, HTMLDivElement>();
 
@@ -622,9 +622,6 @@ function renderLoginFlow(
   passkeyBtn.className = "auth-gate-link-btn";
   passkeyBtn.textContent = t("auth.sign_in_with_passkey");
   const passkeyAvailable = !bootstrapRequired && passkeysEnabled && isPasskeySupported();
-  if (passkeyAvailable) {
-    usernameInput.autocomplete = "username webauthn";
-  }
 
   // Load policy and init checklist if bootstrap
   if (bootstrapRequired) {
@@ -664,13 +661,6 @@ function renderLoginFlow(
   document.body.prepend(gate);
 
   usernameInput.focus();
-
-  let conditionalPasskeyAbort: AbortController | null = null;
-
-  const abortConditionalPasskeyLogin = (): void => {
-    conditionalPasskeyAbort?.abort();
-    conditionalPasskeyAbort = null;
-  };
 
   const removeAuthGateError = (): void => {
     gate
@@ -719,44 +709,24 @@ function renderLoginFlow(
     resolve();
   };
 
-  const startConditionalPasskeyLogin = async (): Promise<void> => {
-    if (!passkeyAvailable || !(await isConditionalPasskeyLoginSupported())) {
-      return;
-    }
-    conditionalPasskeyAbort = new AbortController();
-    const abortController = conditionalPasskeyAbort;
-    try {
-      const options = await beginPasskeyLoginApi("");
-      const credential = await getPasskey(options.publicKey, {
-        mediation: "conditional",
-        signal: abortController.signal,
-      });
-      if (abortController.signal.aborted) {
-        return;
-      }
-      removeAuthGateError();
-      await finishPasskeySignIn(options.challenge_token, credential);
-    } catch (err) {
-      showPasskeyError(err, false);
-    } finally {
-      if (conditionalPasskeyAbort === abortController) {
-        conditionalPasskeyAbort = null;
-      }
-    }
-  };
-
-  void startConditionalPasskeyLogin();
-
   passkeyBtn.addEventListener("click", async () => {
     if (!passkeyAvailable) return;
-    abortConditionalPasskeyLogin();
+    const username = usernameInput.value.trim();
+    removeAuthGateError();
+    if (!username) {
+      const errDiv = document.createElement("div");
+      errDiv.className = "auth-gate-error";
+      errDiv.textContent = t("auth.passkey_username_required");
+      form.appendChild(errDiv);
+      usernameInput.focus();
+      return;
+    }
     submitBtn.disabled = true;
     passkeyBtn.disabled = true;
     passkeyBtn.textContent = t("auth.passkey_signing_in");
-    removeAuthGateError();
 
     try {
-      const options = await beginPasskeyLoginApi(usernameInput.value.trim());
+      const options = await beginPasskeyLoginApi(username);
       const credential = await getPasskey(options.publicKey);
       await finishPasskeySignIn(options.challenge_token, credential);
     } catch (err) {
@@ -772,7 +742,6 @@ function renderLoginFlow(
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    abortConditionalPasskeyLogin();
     const username = usernameInput.value.trim();
     const password = passwordInput.value;
     if (!username || !password) return;
