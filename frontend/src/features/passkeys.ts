@@ -51,6 +51,30 @@ export function isPasskeySupported(): boolean {
   );
 }
 
+type ConditionalPasskeyCredentialConstructor = typeof PublicKeyCredential & {
+  getClientCapabilities?: () => Promise<{ conditionalGet?: boolean }>;
+  isConditionalMediationAvailable?: () => Promise<boolean>;
+};
+
+export async function isConditionalPasskeyLoginSupported(): Promise<boolean> {
+  if (!isPasskeySupported()) {
+    return false;
+  }
+  const credentialConstructor = PublicKeyCredential as ConditionalPasskeyCredentialConstructor;
+  try {
+    if (typeof credentialConstructor.getClientCapabilities === "function") {
+      const capabilities = await credentialConstructor.getClientCapabilities();
+      return capabilities["conditionalGet"] === true;
+    }
+    if (typeof credentialConstructor.isConditionalMediationAvailable === "function") {
+      return await credentialConstructor.isConditionalMediationAvailable();
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 export async function createPasskey(
   publicKey: unknown,
 ): Promise<PasskeyRegistrationCredentialJson> {
@@ -71,13 +95,24 @@ export async function createPasskey(
 
 export async function getPasskey(
   publicKey: unknown,
+  options: {
+    mediation?: CredentialMediationRequirement;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<PasskeyAuthenticationCredentialJson> {
   if (!isPasskeySupported()) {
     throw new Error("Passkeys are not supported by this browser.");
   }
-  const credential = await navigator.credentials.get({
+  const credentialRequest: CredentialRequestOptions = {
     publicKey: decodeRequestOptions(publicKey),
-  });
+  };
+  if (options.mediation) {
+    credentialRequest.mediation = options.mediation;
+  }
+  if (options.signal) {
+    credentialRequest.signal = options.signal;
+  }
+  const credential = await navigator.credentials.get(credentialRequest);
   if (!(credential instanceof PublicKeyCredential)) {
     throw new Error("Passkey sign-in did not return a credential.");
   }

@@ -622,7 +622,7 @@ class TestPasskeyRegistration(PasskeyApiTest):
 
 
 class TestPasskeyLogin(PasskeyApiTest):
-    def test_login_options_do_not_expose_username_scoped_credentials(self) -> None:
+    def test_login_options_include_username_scoped_credentials(self) -> None:
         client, _headers, _passkey_id = self._register_passkey()
         client.post("/api/auth/logout")
 
@@ -632,7 +632,89 @@ class TestPasskeyLogin(PasskeyApiTest):
         )
 
         self.assertEqual(options.status_code, 200, options.text)
-        self.assertFalse(options.json()["publicKey"].get("allowCredentials"))
+        allow_credentials = options.json()["publicKey"].get("allowCredentials")
+        self.assertEqual(
+            allow_credentials,
+            [
+                {
+                    "id": _b64url(b"credential-1"),
+                    "type": "public-key",
+                    "transports": ["internal", "hybrid"],
+                }
+            ],
+        )
+
+    def test_login_options_do_not_reveal_missing_passkey_users(self) -> None:
+        self._create_test_user("password_only_passkey_login_user", "password-only", "editor")
+        self._create_test_user("inactive_passkey_login_user", "inactive-pass", "editor")
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE auth_users SET is_active = 0 WHERE username = %s",
+                ("inactive_passkey_login_user",),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        for username in (
+            "missing_passkey_login_user",
+            "password_only_passkey_login_user",
+            "inactive_passkey_login_user",
+        ):
+            with self.subTest(username=username):
+                options = self.client.post(
+                    "/api/auth/passkeys/login/options",
+                    json={"username": username},
+                )
+
+                self.assertEqual(options.status_code, 200, options.text)
+                body = options.json()
+                self.assertTrue(body.get("challenge_token"))
+                self.assertIn("publicKey", body)
+                self.assertFalse(body["publicKey"].get("allowCredentials"))
+
+    def test_username_scoped_passkey_challenge_rejects_other_user_credential(self) -> None:
+        first_client, _first_headers, _first_passkey_id = self._register_passkey(
+            username="first_passkey_login_user",
+            password="first-passkey-login-pass",
+            credential_id=b"first-passkey-credential",
+        )
+        second_client, _second_headers, _second_passkey_id = self._register_passkey(
+            username="second_passkey_login_user",
+            password="second-passkey-login-pass",
+            credential_id=b"second-passkey-credential",
+        )
+        first_client.post("/api/auth/logout")
+        second_client.post("/api/auth/logout")
+
+        options = self.client.post(
+            "/api/auth/passkeys/login/options",
+            json={"username": "first_passkey_login_user"},
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+
+        with patch(
+            "gardenops.passkeys.verify_authentication_credential",
+            return_value=VerifiedPasskeyAuthentication(
+                new_sign_count=2,
+                credential_device_type="multi_device",
+                credential_backed_up=True,
+            ),
+        ) as verify_mock:
+            login = self.client.post(
+                "/api/auth/passkeys/login/verify",
+                json={
+                    "challenge_token": str(options.json()["challenge_token"]),
+                    "credential": _fake_authentication_credential(
+                        b"second-passkey-credential",
+                    ),
+                },
+            )
+
+        self.assertEqual(login.status_code, 401)
+        self.assertEqual(login.json()["detail"], "Invalid passkey authentication")
+        verify_mock.assert_not_called()
 
     def test_passkey_login_creates_session_and_updates_credential_counter(self) -> None:
         client, _headers, passkey_id = self._register_passkey()

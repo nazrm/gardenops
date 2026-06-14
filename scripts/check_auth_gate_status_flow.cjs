@@ -66,7 +66,11 @@ function collectCalls(node, predicate) {
 
 function main() {
   const sourcePath = path.resolve(__dirname, "../frontend/src/main.ts");
+  const authGatePath = path.resolve(__dirname, "../frontend/src/features/authGate.ts");
+  const passkeysPath = path.resolve(__dirname, "../frontend/src/features/passkeys.ts");
   const sourceText = fs.readFileSync(sourcePath, "utf8");
+  const authGateText = fs.readFileSync(authGatePath, "utf8");
+  const passkeysText = fs.readFileSync(passkeysPath, "utf8");
   const source = ts.createSourceFile(sourcePath, sourceText, ts.ScriptTarget.Latest, true);
 
   const statusHelper = findFunction(source, "showAuthGateFromCurrentStatus");
@@ -98,6 +102,25 @@ function main() {
   const statusGateCalls = collectCalls(authButton, isShowCurrentStatusCall);
   if (statusGateCalls.length !== 2) {
     fail("handleAuthButton must show the login gate from fresh auth status in both auth branches");
+  }
+
+  if (!authGateText.includes("\"username webauthn\"")) {
+    fail("passkey-enabled login must annotate the username field with autocomplete=\"username webauthn\"");
+  }
+  if (!passkeysText.includes("isConditionalPasskeyLoginSupported")) {
+    fail("passkeys feature must expose conditional login capability detection");
+  }
+  if (!passkeysText.includes("mediation") || !passkeysText.includes("signal")) {
+    fail("passkey login must support conditional mediation and abort signals");
+  }
+  if (!authGateText.includes("AbortController")) {
+    fail("auth gate must use AbortController for pending conditional passkey login");
+  }
+  if (!authGateText.includes("startConditionalPasskeyLogin")) {
+    fail("auth gate must start conditional passkey login from the username-first form");
+  }
+  if (!authGateText.includes("abortConditionalPasskeyLogin")) {
+    fail("auth gate must abort conditional passkey login before explicit alternate login paths");
   }
 
   console.log("Auth gate status flow check passed.");

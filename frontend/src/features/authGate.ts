@@ -24,7 +24,7 @@ import {
   peekInvitationApi,
   setActiveGardenContext,
 } from "../services/api";
-import { getPasskey, isPasskeySupported } from "./passkeys";
+import { getPasskey, isConditionalPasskeyLoginSupported, isPasskeySupported } from "./passkeys";
 
 const authGateShells = new WeakMap<HTMLDivElement, HTMLDivElement>();
 
@@ -622,6 +622,9 @@ function renderLoginFlow(
   passkeyBtn.className = "auth-gate-link-btn";
   passkeyBtn.textContent = t("auth.sign_in_with_passkey");
   const passkeyAvailable = !bootstrapRequired && passkeysEnabled && isPasskeySupported();
+  if (passkeyAvailable) {
+    usernameInput.autocomplete = "username webauthn";
+  }
 
   // Load policy and init checklist if bootstrap
   if (bootstrapRequired) {
@@ -662,44 +665,102 @@ function renderLoginFlow(
 
   usernameInput.focus();
 
-  passkeyBtn.addEventListener("click", async () => {
-    if (!passkeyAvailable) return;
-    submitBtn.disabled = true;
-    passkeyBtn.disabled = true;
-    passkeyBtn.textContent = t("auth.passkey_signing_in");
+  let conditionalPasskeyAbort: AbortController | null = null;
+
+  const abortConditionalPasskeyLogin = (): void => {
+    conditionalPasskeyAbort?.abort();
+    conditionalPasskeyAbort = null;
+  };
+
+  const removeAuthGateError = (): void => {
     gate
       .querySelector(".auth-gate-error")
       ?.remove();
+  };
+
+  const showPasskeyError = (err: unknown, showCancelled: boolean): void => {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return;
+    }
+    const isCancelled = err instanceof DOMException && err.name === "NotAllowedError";
+    if (isCancelled && !showCancelled) {
+      return;
+    }
+    const errDiv = document.createElement("div");
+    errDiv.className = "auth-gate-error";
+    errDiv.textContent = isCancelled
+      ? t("auth.passkey_cancelled")
+      : getApiErrorMessage(err);
+    form.appendChild(errDiv);
+  };
+
+  const finishPasskeySignIn = async (
+    challengeToken: string,
+    credential: unknown,
+  ): Promise<void> => {
+    const result = await finishPasskeyLoginApi(
+      challengeToken,
+      credential,
+    );
+    if (
+      result.status === "password_change_required"
+      || result.user.must_change_password
+    ) {
+      await logoutApi().catch(() => undefined);
+      clearStoredAuthToken();
+      const errDiv = document.createElement("div");
+      errDiv.className = "auth-gate-error";
+      errDiv.textContent = t("auth.passkey_password_change_required");
+      form.appendChild(errDiv);
+      return;
+    }
+    clearStoredAuthToken();
+    gate.remove();
+    resolve();
+  };
+
+  const startConditionalPasskeyLogin = async (): Promise<void> => {
+    if (!passkeyAvailable || !(await isConditionalPasskeyLoginSupported())) {
+      return;
+    }
+    conditionalPasskeyAbort = new AbortController();
+    const abortController = conditionalPasskeyAbort;
+    try {
+      const options = await beginPasskeyLoginApi("");
+      const credential = await getPasskey(options.publicKey, {
+        mediation: "conditional",
+        signal: abortController.signal,
+      });
+      if (abortController.signal.aborted) {
+        return;
+      }
+      removeAuthGateError();
+      await finishPasskeySignIn(options.challenge_token, credential);
+    } catch (err) {
+      showPasskeyError(err, false);
+    } finally {
+      if (conditionalPasskeyAbort === abortController) {
+        conditionalPasskeyAbort = null;
+      }
+    }
+  };
+
+  void startConditionalPasskeyLogin();
+
+  passkeyBtn.addEventListener("click", async () => {
+    if (!passkeyAvailable) return;
+    abortConditionalPasskeyLogin();
+    submitBtn.disabled = true;
+    passkeyBtn.disabled = true;
+    passkeyBtn.textContent = t("auth.passkey_signing_in");
+    removeAuthGateError();
 
     try {
       const options = await beginPasskeyLoginApi(usernameInput.value.trim());
       const credential = await getPasskey(options.publicKey);
-      const result = await finishPasskeyLoginApi(
-        options.challenge_token,
-        credential,
-      );
-      if (
-        result.status === "password_change_required"
-        || result.user.must_change_password
-      ) {
-        await logoutApi().catch(() => undefined);
-        clearStoredAuthToken();
-        const errDiv = document.createElement("div");
-        errDiv.className = "auth-gate-error";
-        errDiv.textContent = t("auth.passkey_password_change_required");
-        form.appendChild(errDiv);
-        return;
-      }
-      clearStoredAuthToken();
-      gate.remove();
-      resolve();
+      await finishPasskeySignIn(options.challenge_token, credential);
     } catch (err) {
-      const errDiv = document.createElement("div");
-      errDiv.className = "auth-gate-error";
-      errDiv.textContent = err instanceof DOMException && err.name === "NotAllowedError"
-        ? t("auth.passkey_cancelled")
-        : getApiErrorMessage(err);
-      form.appendChild(errDiv);
+      showPasskeyError(err, true);
     } finally {
       if (gate.isConnected) {
         submitBtn.disabled = false;
@@ -711,6 +772,7 @@ function renderLoginFlow(
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
+    abortConditionalPasskeyLogin();
     const username = usernameInput.value.trim();
     const password = passwordInput.value;
     if (!username || !password) return;

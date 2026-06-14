@@ -1397,7 +1397,7 @@ def auth_passkey_delete(
 
 @router.post("/auth/passkeys/login/options")
 def auth_passkey_login_options(
-    _body: PasskeyLoginOptionsBody,
+    body: PasskeyLoginOptionsBody,
     request: Request,
     db: DB,
 ) -> dict[str, object]:
@@ -1412,10 +1412,19 @@ def auth_passkey_login_options(
         limit=env_int("AUTH_PASSKEY_LOGIN_RATE_LIMIT", 20),
         window_seconds=60,
     )
-    challenge = passkeys.create_challenge(db, flow="authentication")
+    user_id: int | None = None
+    login_candidate = _load_login_candidate(db, body.username) if body.username.strip() else None
+    if (
+        login_candidate
+        and int(login_candidate["is_active"]) == 1
+        and _user_has_passkey(db, int(login_candidate["id"]))
+    ):
+        user_id = int(login_candidate["id"])
+    challenge = passkeys.create_challenge(db, flow="authentication", user_id=user_id)
     public_key = passkeys.authentication_options(
         db,
         challenge=challenge.challenge,
+        user_id=user_id,
     )
     db.commit()
     return {"challenge_token": challenge.token, "publicKey": public_key}
@@ -1447,6 +1456,7 @@ def auth_passkey_login_verify(
         db,
         challenge=challenge,
         credential=body.credential,
+        expected_user_id=challenge.user_id,
     )
     user_id = int(row["user_id"])
     token, expires_at_ms = create_session_for_user(
