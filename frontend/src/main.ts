@@ -4653,6 +4653,15 @@ function refreshDataAfterAuthChange(): void {
   void refreshGardenDataForCurrentContext();
 }
 
+async function showAuthGateFromCurrentStatus(): Promise<void> {
+  try {
+    const status = await getAuthStatusApi();
+    await showAuthGate(status.bootstrap_required, status.passkeys_enabled);
+  } catch {
+    await showAuthGate(false, false);
+  }
+}
+
 async function handleAuthButton(): Promise<void> {
   if (authProfile || hasStoredAuthToken()) {
     // Already signed in — sign out and redirect to login
@@ -4666,17 +4675,12 @@ async function handleAuthButton(): Promise<void> {
     clearStoredAuthToken();
     authProfile = null;
     setActiveGardenContext(null);
-    await showAuthGate(false, false);
+    await showAuthGateFromCurrentStatus();
     await refreshGardenContext();
     refreshDataAfterAuthChange();
   } else {
     // Not signed in — use the login gate
-    try {
-      const status = await getAuthStatusApi();
-      await showAuthGate(status.bootstrap_required, status.passkeys_enabled);
-    } catch {
-      await showAuthGate(false, false);
-    }
+    await showAuthGateFromCurrentStatus();
     await refreshGardenContext();
     refreshDataAfterAuthChange();
   }
