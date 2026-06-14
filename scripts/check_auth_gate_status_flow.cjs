@@ -135,9 +135,6 @@ function main() {
   if (authGateText.includes("startConditionalPasskeyLogin")) {
     fail("auth gate must not start conditional passkey login before username entry");
   }
-  if (!authGateText.includes("auth.passkey_username_required")) {
-    fail("auth gate must show a username-required error before passkey login");
-  }
   if (!authGateText.includes("passwordLabel.hidden = true")) {
     fail("non-bootstrap login must hide the password field on the initial username step");
   }
@@ -150,20 +147,23 @@ function main() {
   if (!authGateText.includes("allowCredentials?.length")) {
     fail("auth gate must decide passkey versus password from username-scoped passkey options");
   }
-  if (!authGateText.includes("auth.use_password_instead")) {
-    fail("passkey-first login must expose password fallback only after username resolution");
+  if (authGateText.includes("auth.use_password_instead")) {
+    fail("passkey-first login must auto-start passkey authentication instead of showing a password fallback button first");
+  }
+  if (!authGateText.includes("auth.login_action")) {
+    fail("password fallback after username resolution must expose a Login action");
+  }
+  if (!authGateText.includes("startPasskeyLogin")) {
+    fail("passkey-first login must auto-start passkey authentication after username resolution");
+  }
+  if (!authGateText.includes("await startPasskeyLogin(options, username)")) {
+    fail("username-scoped passkey options with credentials must immediately start passkey login");
   }
   if (
-    !i18nText.includes("\"auth.passkey_username_required\": \"Enter your username before using a passkey.\"") ||
-    !i18nText.includes("\"auth.passkey_username_required\": \"Skriv inn brukernavnet ditt før du bruker passnøkkel.\"")
+    !i18nText.includes("\"auth.login_action\": \"Login\"") ||
+    !i18nText.includes("\"auth.login_action\": \"Logg inn\"")
   ) {
-    fail("auth gate username-required passkey message must be translated for English and Norwegian");
-  }
-  if (
-    !i18nText.includes("\"auth.use_password_instead\": \"Use password instead\"") ||
-    !i18nText.includes("\"auth.use_password_instead\": \"Bruk passord i stedet\"")
-  ) {
-    fail("auth gate password fallback message must be translated for English and Norwegian");
+    fail("auth gate password fallback Login action must be translated for English and Norwegian");
   }
 
   console.log("Auth gate status flow check passed.");
