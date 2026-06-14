@@ -14,10 +14,12 @@ COOLDOWN_DAYS = 14
 # These packages were already locked inside the cooldown window when the
 # dependency policy was introduced. The dates are the point where the locked
 # artifact has aged out of the 14-day window; remove entries after they expire.
+# Security fixes may also use this narrow path when the PR documents the bypass.
 TEMPORARY_EXCEPTIONS = {
     "anthropic==0.102.0": datetime(2026, 5, 27, 18, 12, 44, tzinfo=UTC),
     "idna==3.15": datetime(2026, 5, 26, 22, 45, 58, tzinfo=UTC),
     "openai==2.37.0": datetime(2026, 5, 29, 22, 30, 36, tzinfo=UTC),
+    "pip==26.1.2": datetime(2026, 6, 14, 17, 33, 59, tzinfo=UTC),
     "starlette==1.0.1": datetime(2026, 6, 4, 21, 58, 59, tzinfo=UTC),
     "uvicorn==0.47.0": datetime(2026, 5, 28, 18, 16, 55, tzinfo=UTC),
 }

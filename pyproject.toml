@@ -22,6 +22,8 @@ dependencies = [
     "uvicorn[standard]==0.49.0",
     "redis>=7.4.0",
     "psycopg-pool>=3.3.0",
+    "webauthn==2.7.1",
+    "cbor2==6.0.1",
 ]
 
 [dependency-groups]
@@ -34,6 +36,7 @@ lint = [
     "ty>=0.0.1",
 ]
 audit = [
+    "pip==26.1.2",
     "pip-audit==2.10.0",
     "requests<2.34.0",
 ]
