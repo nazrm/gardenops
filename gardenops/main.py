@@ -127,6 +127,7 @@ from gardenops.routers.tasks import router as tasks_router  # noqa: E402
 from gardenops.routers.weather import router as weather_router  # noqa: E402
 from gardenops.routers.workflows import router as workflows_router  # noqa: E402
 from gardenops.security import (  # noqa: E402
+    admin_mfa_required,
     auth_mode,
     create_user,
     csrf_token_matches_context,
@@ -989,7 +990,31 @@ def _admin_mfa_setup_path_allowed(path: str) -> bool:
         "/api/auth/me/settings",
         "/api/auth/logout",
         "/api/auth/reauthenticate",
+        "/api/auth/passkeys",
+        "/api/auth/passkeys/register/options",
+        "/api/auth/passkeys/register/verify",
     } or path.startswith("/api/auth/mfa")
+
+
+def _admin_strong_auth_path_allowed(path: str) -> bool:
+    return path in {
+        "/api/auth/status",
+        "/api/auth/me",
+        "/api/auth/me/settings",
+        "/api/auth/logout",
+        "/api/auth/reauthenticate",
+        "/api/auth/reauthenticate/passkey/options",
+        "/api/auth/reauthenticate/passkey/verify",
+    }
+
+
+def _admin_session_requires_strong_auth(context: Any) -> bool:
+    return (
+        context.auth_type == "session"
+        and context.role == "admin"
+        and (admin_mfa_required() or context.mfa_enabled or context.passkey_enrolled)
+        and int(context.mfa_authenticated_at_ms or 0) <= 0
+    )
 
 
 def _forced_password_change_path_allowed(path: str) -> bool:
@@ -1225,6 +1250,8 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         "/api/auth/status",
         "/api/auth/bootstrap",
         "/api/auth/login",
+        "/api/auth/passkeys/login/options",
+        "/api/auth/passkeys/login/verify",
         "/api/auth/reset-password",
         "/api/auth/password-policy",
         "/api/auth/invitations/accept",
@@ -1237,6 +1264,8 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
     csrf_exempt_mutation_paths = {
         "/api/auth/bootstrap",
         "/api/auth/login",
+        "/api/auth/passkeys/login/options",
+        "/api/auth/passkeys/login/verify",
         "/api/auth/reset-password",
         "/api/auth/invitations/accept",
         "/api/auth/invitations/peek",
@@ -1370,6 +1399,18 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
                 )
             if (
                 auth_context
+                and not auth_context.mfa_setup_required
+                and protected
+                and _admin_session_requires_strong_auth(auth_context)
+                and not _admin_strong_auth_path_allowed(path)
+            ):
+                _audit_mutation(403, "Platform-admin strong authentication required")
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Platform-admin MFA or passkey authentication is required"},
+                )
+            if (
+                auth_context
                 and request.method in {"POST", "PUT", "PATCH", "DELETE"}
                 and path.startswith("/api")
                 and not path.startswith("/api/auth/")
@@ -1434,6 +1475,8 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         emergency_exempt_paths = {
             "/api/auth/logout",
             "/api/auth/reauthenticate",
+            "/api/auth/reauthenticate/passkey/options",
+            "/api/auth/reauthenticate/passkey/verify",
             "/api/auth/emergency-read-only",
             "/api/auth/revoke-all-sessions",
             "/api/auth/revoke-user-sessions",

@@ -527,6 +527,7 @@ export interface AuthStatus {
   bootstrap_required: boolean;
   user_lifecycle_enabled: boolean;
   admin_mfa_required: boolean;
+  passkeys_enabled: boolean;
 }
 
 export interface AppVersionInfo {
@@ -928,6 +929,21 @@ export interface LoginResponse {
   mfa?: AuthMfaChallenge;
 }
 
+export interface PasskeySummary {
+  id: number;
+  nickname: string;
+  created_at_ms: number;
+  last_used_at_ms: number | null;
+  transports: string[];
+  credential_device_type: string;
+  credential_backed_up: boolean;
+}
+
+export interface PasskeyOptionsResponse {
+  challenge_token: string;
+  publicKey: unknown;
+}
+
 export async function getAuthStatusApi(): Promise<AuthStatus> {
   return apiGet<AuthStatus>("/api/auth/status");
 }
@@ -956,6 +972,101 @@ export async function loginApi(
     password,
     mfa_code: options.mfaCode ?? "",
     recovery_code: options.recoveryCode ?? "",
+  });
+}
+
+export async function getPasskeysApi(): Promise<PasskeySummary[]> {
+  const body = await apiGet<{ passkeys?: PasskeySummary[] }>("/api/auth/passkeys");
+  return Array.isArray(body.passkeys) ? body.passkeys : [];
+}
+
+export async function beginPasskeyRegistrationApi(
+  nickname = "",
+  currentPassword = "",
+): Promise<PasskeyOptionsResponse> {
+  return apiPost<PasskeyOptionsResponse>(
+    "/api/auth/passkeys/register/options",
+    { nickname, current_password: currentPassword },
+  );
+}
+
+export async function finishPasskeyRegistrationApi(
+  challengeToken: string,
+  nickname: string,
+  credential: unknown,
+): Promise<{ status: string; passkey: PasskeySummary }> {
+  return apiPost<{ status: string; passkey: PasskeySummary }>(
+    "/api/auth/passkeys/register/verify",
+    {
+      challenge_token: challengeToken,
+      nickname,
+      credential,
+    },
+  );
+}
+
+export async function deletePasskeyApi(
+  passkeyId: number,
+  actionReason = "ui-passkey-delete",
+): Promise<void> {
+  await checked(
+    await apiFetch(`/api/auth/passkeys/${passkeyId}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action_reason: actionReason }),
+    }),
+    `/api/auth/passkeys/${passkeyId}`,
+  );
+}
+
+export async function beginPasskeyLoginApi(
+  username = "",
+): Promise<PasskeyOptionsResponse> {
+  return apiPost<PasskeyOptionsResponse>(
+    "/api/auth/passkeys/login/options",
+    { username },
+  );
+}
+
+export async function finishPasskeyLoginApi(
+  challengeToken: string,
+  credential: unknown,
+): Promise<LoginResponse> {
+  return apiPost<LoginResponse>(
+    "/api/auth/passkeys/login/verify",
+    {
+      challenge_token: challengeToken,
+      credential,
+    },
+  );
+}
+
+export async function beginPasskeyReauthenticationApi(): Promise<PasskeyOptionsResponse> {
+  return apiPost<PasskeyOptionsResponse>(
+    "/api/auth/reauthenticate/passkey/options",
+    {},
+  );
+}
+
+export async function finishPasskeyReauthenticationApi(
+  challengeToken: string,
+  credential: unknown,
+): Promise<{
+  status: string;
+  csrf_token: string;
+  reauthenticated_at_ms: number;
+  reauthenticated_until_ms: number;
+  mfa_authenticated_at_ms: number;
+}> {
+  return apiPost<{
+    status: string;
+    csrf_token: string;
+    reauthenticated_at_ms: number;
+    reauthenticated_until_ms: number;
+    mfa_authenticated_at_ms: number;
+  }>("/api/auth/reauthenticate/passkey/verify", {
+    challenge_token: challengeToken,
+    credential,
   });
 }
 

@@ -26,7 +26,7 @@ import {
 } from "./components/globalSearch";
 import { getAppShellMarkup } from "./components/layout";
 import { renderMapGrid, applyPlotIndicators, syncSelectedPlots } from "./components/mapView";
-import { confirmDialog, promptDialog } from "./components/dialogCore";
+import { confirmDialog, promptDialog, promptPasswordDialog } from "./components/dialogCore";
 import { showCreatePlantDialogLazy, showCreatePlotDialogLazy, showCreateZoneDialogLazy, showDeleteMenuLazy, showEditPlantDialogLazy, showEditPlotDialogLazy, showElevationEditorLazy } from "./components/gardenDialogsLoader";
 import type { AiPlantData } from "./components/overlays";
 import { showPlantSearchDialog } from "./features/plantSearchFeature";
@@ -73,6 +73,7 @@ import {
   refreshOfflineIndicator,
 } from "./features/offlineFeature";
 import { showAuthGate, showForcedPasswordChangeGate } from "./features/authGate";
+import { getPasskey, isPasskeySupported } from "./features/passkeys";
 import {
   GRID_COLS,
   GRID_ROWS,
@@ -101,6 +102,7 @@ import {
   ApiError,
   addPlantToPlotApi,
   aiPlantLookup,
+  beginPasskeyReauthenticationApi,
   clearStoredAuthToken,
   createGardenApi,
   createPlantApi,
@@ -156,6 +158,7 @@ import {
   fetchSeasonalSummary,
   fetchIssueApi,
   fetchPlotAlertsApi,
+  finishPasskeyReauthenticationApi,
 } from "./services/api";
 import type {
   MediaAsset,
@@ -4158,9 +4161,22 @@ async function confirmSensitiveAdminAction(
   ))?.trim() ?? "";
   if (!actionReason) return null;
   if (authProfile?.auth_type === "session" && authProfile.role === "admin") {
-    const currentPassword = (await promptDialog(
+    if (authProfile.mfa_methods.includes("passkey") && isPasskeySupported()) {
+      try {
+        const options = await beginPasskeyReauthenticationApi();
+        const credential = await getPasskey(options.publicKey);
+        await finishPasskeyReauthenticationApi(options.challenge_token, credential);
+        authProfile = { ...authProfile, mfa_authenticated: true };
+        return actionReason;
+      } catch (err) {
+        if (!authProfile.mfa_enabled && err instanceof DOMException && err.name === "NotAllowedError") {
+          return null;
+        }
+        if (!authProfile.mfa_enabled) throw err;
+      }
+    }
+    const currentPassword = (await promptPasswordDialog(
       `Confirm your current password to ${actionLabel.toLowerCase()}:`,
-      "",
     )) ?? "";
     if (!currentPassword.trim()) return null;
     let reauthOptions: { mfaCode?: string; recoveryCode?: string } = {};
@@ -4650,16 +4666,16 @@ async function handleAuthButton(): Promise<void> {
     clearStoredAuthToken();
     authProfile = null;
     setActiveGardenContext(null);
-    await showAuthGate(false);
+    await showAuthGate(false, false);
     await refreshGardenContext();
     refreshDataAfterAuthChange();
   } else {
     // Not signed in — use the login gate
     try {
       const status = await getAuthStatusApi();
-      await showAuthGate(status.bootstrap_required);
+      await showAuthGate(status.bootstrap_required, status.passkeys_enabled);
     } catch {
-      await showAuthGate(false);
+      await showAuthGate(false, false);
     }
     await refreshGardenContext();
     refreshDataAfterAuthChange();
@@ -4787,6 +4803,7 @@ async function bootstrapApp(): Promise<void> {
   // Always check authentication before showing any UI.
   // If /api/auth/me fails for any reason, show the login gate.
   let bootstrapRequired = false;
+  let passkeysEnabled = false;
   let initialMe: AuthUserProfile | null = null;
   try {
     initialMe = await getAuthMeApi();
@@ -4807,10 +4824,11 @@ async function bootstrapApp(): Promise<void> {
     try {
       const status = await getAuthStatusApi();
       bootstrapRequired = status.bootstrap_required;
+      passkeysEnabled = status.passkeys_enabled;
     } catch {
       // can't reach status either — gate will show the real error on submit
     }
-    await showAuthGate(bootstrapRequired);
+    await showAuthGate(bootstrapRequired, passkeysEnabled);
   }
 
   setupLayout();

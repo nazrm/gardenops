@@ -15,6 +15,8 @@ AUTH_MODE=session
 ALLOW_INSECURE_REMOTE=false
 CORS_ALLOW_ORIGINS=https://gardenops.example.com
 ALLOWED_HOSTS=gardenops.example.com
+AUTH_PASSKEY_RP_ID=gardenops.example.com
+AUTH_PASSKEY_ORIGINS=https://gardenops.example.com
 TRUST_PROXY_HEADERS=true
 TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 RATE_LIMIT_BACKEND=redis
@@ -85,6 +87,8 @@ Before exposing a deployment:
 - Confirm `.env` or the host env file contains no placeholder production
   secrets.
 - Confirm `ALLOWED_HOSTS` and `CORS_ALLOW_ORIGINS` match the public origin.
+- Confirm `AUTH_PASSKEY_RP_ID` and `AUTH_PASSKEY_ORIGINS` match the public
+  HTTPS origin if passkeys are enabled.
 - Confirm HTTPS is enforced at the proxy.
 - Confirm API docs are disabled and CSP is enforced.
 - Run the repository checks from [development.md](development.md).

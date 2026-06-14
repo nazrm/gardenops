@@ -149,3 +149,25 @@ export function promptDialog(
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") finish(input.value); });
   });
 }
+
+export function promptPasswordDialog(message: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const { dialog, close } = createModal(t("common.ok"), `
+      <div class="modal-content confirm-dialog">
+        <p></p>
+        <input type="password" class="prompt-dialog-input" autocomplete="current-password" />
+        <div class="button-row">
+          <button type="button" class="confirm-yes">${t("common.ok")}</button>
+          <button type="button" class="confirm-no">${t("common.cancel")}</button>
+        </div>
+      </div>
+    `);
+    dialog.querySelector("p")!.textContent = message;
+    const input = dialog.querySelector<HTMLInputElement>(".prompt-dialog-input")!;
+    input.focus();
+    const finish = (value: string | null) => { close(); resolve(value); };
+    dialog.querySelector(".confirm-yes")!.addEventListener("click", () => finish(input.value));
+    dialog.querySelector(".confirm-no")!.addEventListener("click", () => finish(null));
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") finish(input.value); });
+  });
+}
