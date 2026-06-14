@@ -23,6 +23,7 @@ import {
   logoutApi,
   peekInvitationApi,
   setActiveGardenContext,
+  type PasskeyOptionsResponse,
 } from "../services/api";
 import { getPasskey, isPasskeySupported } from "./passkeys";
 
@@ -622,6 +623,15 @@ function renderLoginFlow(
   passkeyBtn.className = "auth-gate-link-btn";
   passkeyBtn.textContent = t("auth.sign_in_with_passkey");
   const passkeyAvailable = !bootstrapRequired && passkeysEnabled && isPasskeySupported();
+  type LoginStep = "username" | "passkey" | "password";
+  let loginStep: LoginStep = bootstrapRequired ? "password" : "username";
+  let resolvedUsername = "";
+  let pendingPasskeyOptions: PasskeyOptionsResponse | null = null;
+
+  const passkeyOptionsHaveCredentials = (options: PasskeyOptionsResponse): boolean => {
+    const publicKey = options.publicKey as { allowCredentials?: unknown[] };
+    return Boolean(publicKey.allowCredentials?.length);
+  };
 
   // Load policy and init checklist if bootstrap
   if (bootstrapRequired) {
@@ -656,6 +666,40 @@ function renderLoginFlow(
   if (passkeyAvailable) {
     form.appendChild(passkeyBtn);
   }
+
+  const setLoginStep = (step: LoginStep): void => {
+    loginStep = step;
+    if (bootstrapRequired) {
+      passwordLabel.hidden = false;
+      passwordInput.required = true;
+      submitBtn.textContent = t("auth.create_account");
+      return;
+    }
+
+    passwordLabel.hidden = true;
+    passwordInput.required = false;
+    passkeyBtn.hidden = true;
+
+    if (step === "username") {
+      passwordInput.value = "";
+      submitBtn.textContent = t("auth.continue");
+      return;
+    }
+
+    if (step === "passkey") {
+      submitBtn.textContent = t("auth.use_password_instead");
+      if (passkeyAvailable) {
+        passkeyBtn.hidden = false;
+      }
+      return;
+    }
+
+    passwordLabel.hidden = false;
+    passwordInput.required = true;
+    submitBtn.textContent = t("auth.sign_in_action");
+  };
+
+  setLoginStep(loginStep);
   card.appendChild(form);
   appendAuthGateCard(gate, card);
   document.body.prepend(gate);
@@ -684,6 +728,39 @@ function renderLoginFlow(
     form.appendChild(errDiv);
   };
 
+  const revealPasswordLogin = (): void => {
+    pendingPasskeyOptions = null;
+    setLoginStep("password");
+    passwordInput.focus();
+  };
+
+  const resolveUsernameLoginStep = async (username: string): Promise<void> => {
+    resolvedUsername = username;
+    pendingPasskeyOptions = null;
+    submitBtn.disabled = true;
+    submitBtn.textContent = t("auth.signing_in");
+    removeAuthGateError();
+
+    try {
+      if (passkeyAvailable) {
+        const options = await beginPasskeyLoginApi(username);
+        if (passkeyOptionsHaveCredentials(options)) {
+          pendingPasskeyOptions = options;
+          setLoginStep("passkey");
+          passkeyBtn.focus();
+          return;
+        }
+      }
+      revealPasswordLogin();
+    } catch {
+      revealPasswordLogin();
+    } finally {
+      if (gate.isConnected) {
+        submitBtn.disabled = false;
+      }
+    }
+  };
+
   const finishPasskeySignIn = async (
     challengeToken: string,
     credential: unknown,
@@ -702,6 +779,7 @@ function renderLoginFlow(
       errDiv.className = "auth-gate-error";
       errDiv.textContent = t("auth.passkey_password_change_required");
       form.appendChild(errDiv);
+      revealPasswordLogin();
       return;
     }
     clearStoredAuthToken();
@@ -726,7 +804,13 @@ function renderLoginFlow(
     passkeyBtn.textContent = t("auth.passkey_signing_in");
 
     try {
-      const options = await beginPasskeyLoginApi(username);
+      const options = pendingPasskeyOptions && resolvedUsername === username
+        ? pendingPasskeyOptions
+        : await beginPasskeyLoginApi(username);
+      if (!passkeyOptionsHaveCredentials(options)) {
+        revealPasswordLogin();
+        return;
+      }
       const credential = await getPasskey(options.publicKey);
       await finishPasskeySignIn(options.challenge_token, credential);
     } catch (err) {
@@ -743,8 +827,23 @@ function renderLoginFlow(
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const username = usernameInput.value.trim();
+    if (!username) {
+      usernameInput.focus();
+      return;
+    }
+    if (!bootstrapRequired && loginStep === "username") {
+      await resolveUsernameLoginStep(username);
+      return;
+    }
+    if (!bootstrapRequired && loginStep === "passkey") {
+      revealPasswordLogin();
+      return;
+    }
     const password = passwordInput.value;
-    if (!username || !password) return;
+    if (!password) {
+      passwordInput.focus();
+      return;
+    }
     if (bootstrapChecklist && !bootstrapChecklist.allPassed()) return;
 
     submitBtn.disabled = true;
@@ -793,15 +892,25 @@ function renderLoginFlow(
       resolve();
     } catch (err) {
       submitBtn.disabled = false;
-      submitBtn.textContent = awaitingMfa
-        ? t("auth.verify_sign_in")
-        : bootstrapRequired
-          ? t("auth.create_account")
-          : t("auth.sign_in_action");
+      if (awaitingMfa) {
+        submitBtn.textContent = t("auth.verify_sign_in");
+      } else {
+        setLoginStep(loginStep);
+      }
       const errDiv = document.createElement("div");
       errDiv.className = "auth-gate-error";
       errDiv.textContent = getApiErrorMessage(err);
       form.appendChild(errDiv);
     }
+  });
+
+  usernameInput.addEventListener("input", () => {
+    if (bootstrapRequired || awaitingMfa || loginStep === "username") {
+      return;
+    }
+    resolvedUsername = "";
+    pendingPasskeyOptions = null;
+    removeAuthGateError();
+    setLoginStep("username");
   });
 }
