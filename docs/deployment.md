@@ -23,11 +23,13 @@ RATE_LIMIT_BACKEND=redis
 RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379/0
 API_DOCS_ENABLED=false
 CSP_REPORT_ONLY=false
-AUTH_MFA_SECRET_KEY=change-me
+AUTH_MFA_SECRET_KEY=<generate-at-least-32-random-characters>
 ```
 
 The service rejects `API_DOCS_ENABLED=true` in production or internet-exposed
 deployments, and rejects `CSP_REPORT_ONLY=true` when `INTERNET_EXPOSED=true`.
+Session-auth deployments in production or internet-exposed mode must also set
+`AUTH_MFA_SECRET_KEY` to a secret with at least 32 characters.
 
 Add provider keys only for integrations you intend to enable.
 

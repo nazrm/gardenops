@@ -29,6 +29,7 @@ from gardenops.router_helpers import (
 from gardenops.router_helpers import (
     require_write as _require_write,
 )
+from gardenops.routers.auth import enforce_destructive_admin_controls
 from gardenops.security import AuthContext
 from gardenops.security_metrics import record_security_event
 from gardenops.services.media_store import (
@@ -66,6 +67,7 @@ class SetPlantCoverBody(StrictBaseModel):
 class PopulateMissingPlantCoversBody(StrictBaseModel):
     cursor: str = Field(default="", max_length=120)
     max_plants: int = Field(default=15, ge=1, le=25)
+    action_reason: str = Field(default="", max_length=400)
 
 
 def _require_platform_admin(context: AuthContext) -> None:
@@ -1269,8 +1271,10 @@ def populate_missing_plant_covers(
     request: Request,
     db: DB,
 ) -> dict[str, object]:
-    context = _auth_context(request)
-    _require_platform_admin(context)
+    context, _action_reason = enforce_destructive_admin_controls(
+        request,
+        body_reason=body.action_reason,
+    )
     garden_id = _active_garden_id(context)
     allow_global = _is_local_admin_fallback(context)
     enforce_rate_limit(

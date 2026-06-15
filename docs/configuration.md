@@ -44,13 +44,14 @@ RATE_LIMIT_BACKEND=redis
 RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379/0
 API_DOCS_ENABLED=false
 CSP_REPORT_ONLY=false
-AUTH_MFA_SECRET_KEY=change-me
+AUTH_MFA_SECRET_KEY=<generate-at-least-32-random-characters>
 APP_SECRETS_ENCRYPTION_KEY=change-me
 ```
 
 Production and internet-exposed deployments must keep API docs disabled.
 Internet-exposed deployments must also enforce CSP; `CSP_REPORT_ONLY=true`
-is rejected at startup.
+is rejected at startup. Session-auth deployments in either mode must set
+`AUTH_MFA_SECRET_KEY` to a secret with at least 32 characters.
 
 For first login, set `AUTH_BOOTSTRAP_USERNAME` and
 `AUTH_BOOTSTRAP_PASSWORD`, start the app, create the admin user, then remove or

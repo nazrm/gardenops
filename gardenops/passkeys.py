@@ -254,6 +254,41 @@ def consume_challenge(
     )
 
 
+def consume_public_authentication_challenge(
+    conn: DbConn,
+    *,
+    token: str,
+) -> ConsumedPasskeyChallenge:
+    if not token:
+        raise HTTPException(status_code=400, detail="Invalid or expired passkey challenge")
+    now_ms = current_timestamp_ms()
+    row = conn.execute(
+        """
+        UPDATE auth_passkey_challenges
+        SET used_at_ms = %s
+        WHERE token_hash = %s
+          AND used_at_ms IS NULL
+          AND expires_at_ms > %s
+          AND (
+              (flow = 'authentication' AND user_id IS NOT NULL)
+              OR (flow = 'authentication_denied' AND user_id IS NULL)
+          )
+        RETURNING id, challenge, user_id, session_token_hash
+        """,
+        (now_ms, _hash_token(token), now_ms),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="Invalid or expired passkey challenge")
+    return ConsumedPasskeyChallenge(
+        id=int(row["id"]),
+        challenge=b64decode(str(row["challenge"])),
+        user_id=int(row["user_id"]) if row["user_id"] is not None else None,
+        session_token_hash=(
+            str(row["session_token_hash"]) if row["session_token_hash"] is not None else None
+        ),
+    )
+
+
 def _parse_transports(raw: str) -> list[str]:
     if not raw:
         return []
@@ -313,9 +348,10 @@ def authentication_options(
     *,
     challenge: bytes,
     user_id: int | None = None,
+    include_allow_credentials: bool = True,
 ) -> dict[str, Any]:
     allow_credentials = None
-    if user_id is not None:
+    if include_allow_credentials and user_id is not None:
         rows = conn.execute(
             "SELECT credential_id, transports FROM auth_passkeys WHERE user_id = %s",
             (user_id,),

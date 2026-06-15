@@ -712,9 +712,44 @@ class TestPasskeyLogin(PasskeyApiTest):
                         },
                     )
 
-                self.assertEqual(login.status_code, 400)
-                self.assertEqual(login.json()["detail"], "Invalid or expired passkey challenge")
+                self.assertEqual(login.status_code, 401)
+                self.assertEqual(login.json()["detail"], "Invalid passkey authentication")
                 verify_mock.assert_not_called()
+
+    def test_public_passkey_verify_failure_does_not_reveal_enrollment(self) -> None:
+        client, _headers, _passkey_id = self._register_passkey()
+        client.post("/api/auth/logout")
+        self._create_test_user("password_only_verify_user", "password-only", "editor")
+
+        failures: list[tuple[int, str]] = []
+        for username in (
+            "passkey_user",
+            "password_only_verify_user",
+            "missing_verify_user",
+        ):
+            with self.subTest(username=username):
+                options = self.client.post(
+                    "/api/auth/passkeys/login/options",
+                    json={"username": username},
+                )
+                self.assertEqual(options.status_code, 200, options.text)
+                response = self.client.post(
+                    "/api/auth/passkeys/login/verify",
+                    json={
+                        "challenge_token": str(options.json()["challenge_token"]),
+                        "credential": {},
+                    },
+                )
+                failures.append((response.status_code, response.json()["detail"]))
+
+        self.assertEqual(
+            failures,
+            [
+                (401, "Invalid passkey authentication"),
+                (401, "Invalid passkey authentication"),
+                (401, "Invalid passkey authentication"),
+            ],
+        )
 
     def test_legacy_global_authentication_challenge_cannot_authenticate_credential(self) -> None:
         client, _headers, _passkey_id = self._register_passkey()
@@ -757,8 +792,8 @@ class TestPasskeyLogin(PasskeyApiTest):
                 },
             )
 
-        self.assertEqual(login.status_code, 400)
-        self.assertEqual(login.json()["detail"], "Invalid or expired passkey challenge")
+        self.assertEqual(login.status_code, 401)
+        self.assertEqual(login.json()["detail"], "Invalid passkey authentication")
         verify_mock.assert_not_called()
 
     def test_username_scoped_passkey_challenge_rejects_other_user_credential(self) -> None:
@@ -879,7 +914,7 @@ class TestPasskeyLogin(PasskeyApiTest):
                 },
             )
 
-        self.assertEqual(login.status_code, 400)
+        self.assertEqual(login.status_code, 401)
         self.assertEqual(login.json()["detail"], "Invalid passkey authentication")
 
     def test_passkey_login_rejects_zero_counter_downgrade(self) -> None:
@@ -916,7 +951,7 @@ class TestPasskeyLogin(PasskeyApiTest):
                 },
             )
 
-        self.assertEqual(login.status_code, 400)
+        self.assertEqual(login.status_code, 401)
         self.assertEqual(login.json()["detail"], "Invalid passkey authentication")
         conn = db.get_db()
         try:
@@ -943,8 +978,8 @@ class TestPasskeyLogin(PasskeyApiTest):
             "/api/auth/passkeys/login/verify",
             json={"challenge_token": challenge_token, "credential": {}},
         )
-        self.assertEqual(malformed.status_code, 400)
-        self.assertEqual(malformed.json()["detail"], "Invalid passkey credential")
+        self.assertEqual(malformed.status_code, 401)
+        self.assertEqual(malformed.json()["detail"], "Invalid passkey authentication")
 
         with patch(
             "gardenops.passkeys.verify_authentication_credential",
@@ -962,8 +997,8 @@ class TestPasskeyLogin(PasskeyApiTest):
                 },
             )
 
-        self.assertEqual(replay.status_code, 400)
-        self.assertEqual(replay.json()["detail"], "Invalid or expired passkey challenge")
+        self.assertEqual(replay.status_code, 401)
+        self.assertEqual(replay.json()["detail"], "Invalid passkey authentication")
         verify_mock.assert_not_called()
 
     def test_admin_passkey_login_satisfies_strong_admin_session_controls(self) -> None:
@@ -980,6 +1015,7 @@ class TestPasskeyLogin(PasskeyApiTest):
             json={"username": "admin_passkey_user"},
         )
         self.assertEqual(options.status_code, 200, options.text)
+        self.assertFalse(options.json()["publicKey"].get("allowCredentials"))
         with patch(
             "gardenops.passkeys.verify_authentication_credential",
             return_value=VerifiedPasskeyAuthentication(

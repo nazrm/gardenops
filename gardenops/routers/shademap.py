@@ -403,7 +403,7 @@ def _tile_token_ttl_ms() -> int:
     return seconds * 1000
 
 
-def _validate_tile_token(token: str, *, garden_id: int) -> None:
+def _validate_tile_token(token: str, *, garden_id: int) -> int:
     payload, separator, signature = token.partition(".")
     if not payload or not separator or not signature:
         raise HTTPException(status_code=401, detail="Invalid ShadeMap terrain token")
@@ -427,6 +427,13 @@ def _validate_tile_token(token: str, *, garden_id: int) -> None:
         raise HTTPException(status_code=401, detail="Invalid ShadeMap terrain token")
     if expires_at_ms < current_timestamp_ms():
         raise HTTPException(status_code=401, detail="ShadeMap terrain token expired")
+    return expires_at_ms
+
+
+def _terrain_tile_response_headers(*, token_expires_at_ms: int) -> dict[str, str]:
+    remaining_seconds = max(0, int((token_expires_at_ms - current_timestamp_ms()) / 1000))
+    max_age = min(remaining_seconds, 300)
+    return {"Cache-Control": f"private, max-age={max_age}"}
 
 
 def _sdk_cache_key(api_key: str) -> str:
@@ -2360,7 +2367,7 @@ def get_shademap_terrain_tile(
         global_limit=env_nonneg_int("SHADEMAP_TERRAIN_RATE_LIMIT_GLOBAL", 2400),
     )
     _validate_tile_coords(z, x, y)
-    _validate_tile_token(token, garden_id=garden_id)
+    token_expires_at_ms = _validate_tile_token(token, garden_id=garden_id)
     tile_sig = f"{z}:{x}:{y}"
     _enforce_distinct_signature_budget(
         request=request,
@@ -2378,7 +2385,7 @@ def get_shademap_terrain_tile(
         return Response(
             content=bytes(cached["payload_blob"]),
             media_type=str(cached["content_type"] or "image/png"),
-            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            headers=_terrain_tile_response_headers(token_expires_at_ms=token_expires_at_ms),
         )
 
     enforce_layered_rate_limit(
@@ -2412,7 +2419,7 @@ def get_shademap_terrain_tile(
         return Response(
             content=payload,
             media_type="image/png",
-            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            headers=_terrain_tile_response_headers(token_expires_at_ms=token_expires_at_ms),
         )
 
     terrain_limits = provider_limit_profile("shademap-terrain-miss")
@@ -2439,7 +2446,7 @@ def get_shademap_terrain_tile(
             return Response(
                 content=bytes(cached["payload_blob"]),
                 media_type=str(cached["content_type"] or "image/png"),
-                headers={"Cache-Control": "public, max-age=86400"},
+                headers=_terrain_tile_response_headers(token_expires_at_ms=token_expires_at_ms),
             )
         if local_tile is None:
             raise
@@ -2463,7 +2470,7 @@ def get_shademap_terrain_tile(
         return Response(
             content=payload,
             media_type="image/png",
-            headers={"Cache-Control": "public, max-age=86400"},
+            headers=_terrain_tile_response_headers(token_expires_at_ms=token_expires_at_ms),
         )
 
     if local_tile is not None and not local_tile.fully_covered:
@@ -2501,7 +2508,7 @@ def get_shademap_terrain_tile(
     return Response(
         content=payload,
         media_type=content_type,
-        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        headers=_terrain_tile_response_headers(token_expires_at_ms=token_expires_at_ms),
     )
 
 

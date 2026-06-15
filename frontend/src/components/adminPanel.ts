@@ -1965,6 +1965,11 @@ function wireSection(): void {
 
   container.querySelector("#adm-garden-cover-import")?.addEventListener("click", async () => {
     if (state.plantCoverImport.running) return;
+    const actionReason = await authorizeSensitiveAdminAction(
+      "Populate missing plant covers",
+      "media-cover-import",
+    );
+    if (!actionReason) return;
     state.plantCoverImport = {
       running: true,
       total: 0,
@@ -1978,7 +1983,10 @@ function wireSection(): void {
     repaint();
     try {
       let cursor: string | null = null;
-      let batchResult = await populateMissingPlantCoversApi({ maxPlants: 25 });
+      let batchResult = await populateMissingPlantCoversApi({
+        maxPlants: 25,
+        actionReason,
+      });
       state.plantCoverImport.total = batchResult.total_without_cover_before;
       while (true) {
         state.plantCoverImport.processed += batchResult.processed;
@@ -1995,6 +2003,7 @@ function wireSection(): void {
         batchResult = await populateMissingPlantCoversApi({
           cursor,
           maxPlants: 25,
+          actionReason,
         });
       }
       state.plantCoverImport.running = false;
@@ -2538,8 +2547,19 @@ function wireSection(): void {
     const ttlRaw = queryInput("adm-inv-ttl")?.value.trim() ?? "";
     if (!username) return;
     const ttl = ttlRaw ? Number(ttlRaw) : undefined;
+    const actionReason = await authorizeSensitiveAdminAction(
+      "Create garden invitation",
+      `garden-invitation-create:${username}:${role}`,
+    );
+    if (!actionReason) return;
     try {
-      const result = await createGardenInvitationApi(ctx.activeGardenId, username, role, ttl);
+      const result = await createGardenInvitationApi(
+        ctx.activeGardenId,
+        username,
+        role,
+        ttl,
+        actionReason,
+      );
       const inviteLink = buildInvitationLink(result.invite_token);
       void navigator.clipboard?.writeText(inviteLink).catch(() => {});
       state.lastInviteLink = inviteLink;
@@ -2568,8 +2588,13 @@ function wireSection(): void {
     const ctx = gardenContextFn?.();
     if (!ctx?.activeGardenId || !Number.isFinite(invId)) return;
     if (!(await confirmDialog(t("admin.confirm_revoke_invite")))) return;
+    const actionReason = await authorizeSensitiveAdminAction(
+      "Revoke garden invitation",
+      `garden-invitation-revoke:${invId}`,
+    );
+    if (!actionReason) return;
     try {
-      await revokeGardenInvitationApi(ctx.activeGardenId, invId);
+      await revokeGardenInvitationApi(ctx.activeGardenId, invId, actionReason);
       showToast(t("admin.invite_revoked"), "success");
       await loadInvitations();
       repaint();

@@ -2454,10 +2454,12 @@ export async function populateMissingPlantCoversApi(options?: {
   cursor?: string | null;
   maxPlants?: number;
   timeoutMs?: number;
+  actionReason?: string;
 }): Promise<PopulatePlantCoversResult> {
-  const body: { cursor?: string; max_plants?: number } = {};
+  const body: { cursor?: string; max_plants?: number; action_reason?: string } = {};
   if (options?.cursor) body.cursor = options.cursor;
   if (options?.maxPlants !== undefined) body.max_plants = options.maxPlants;
+  if (options?.actionReason) body.action_reason = options.actionReason;
   return apiPost<PopulatePlantCoversResult>(
     "/api/media/plants/populate-missing-covers",
     body,
