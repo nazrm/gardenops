@@ -630,7 +630,7 @@ class TestPasskeyLogin(PasskeyApiTest):
                 self.assertEqual(response.status_code, 400)
                 self.assertEqual(response.json()["detail"], "Username is required")
 
-    def test_login_options_include_username_scoped_credentials(self) -> None:
+    def test_login_options_do_not_reveal_username_scoped_credentials(self) -> None:
         client, _headers, _passkey_id = self._register_passkey()
         client.post("/api/auth/logout")
 
@@ -640,17 +640,7 @@ class TestPasskeyLogin(PasskeyApiTest):
         )
 
         self.assertEqual(options.status_code, 200, options.text)
-        allow_credentials = options.json()["publicKey"].get("allowCredentials")
-        self.assertEqual(
-            allow_credentials,
-            [
-                {
-                    "id": _b64url(b"credential-1"),
-                    "type": "public-key",
-                    "transports": ["internal", "hybrid"],
-                }
-            ],
-        )
+        self.assertFalse(options.json()["publicKey"].get("allowCredentials"))
 
     def test_login_options_do_not_reveal_missing_passkey_users(self) -> None:
         self._create_test_user("password_only_passkey_login_user", "password-only", "editor")

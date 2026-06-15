@@ -1431,7 +1431,6 @@ def auth_passkey_login_options(
     public_key = passkeys.authentication_options(
         db,
         challenge=challenge.challenge,
-        user_id=user_id,
     )
     db.commit()
     return {"challenge_token": challenge.token, "publicKey": public_key}
