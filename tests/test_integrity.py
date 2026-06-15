@@ -338,6 +338,7 @@ class HealthEndpointTests(unittest.TestCase):
                 "AUTH_REQUIRED": "true",
                 "AUTH_MODE": "session",
                 "AUTH_API_KEY": "",
+                "AUTH_MFA_SECRET_KEY": "test-integrity-mfa-secret-32chars",
                 "ALLOW_INSECURE_REMOTE": "false",
                 "TRUST_PROXY_HEADERS": "true",
                 "TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
