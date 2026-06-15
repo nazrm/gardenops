@@ -143,7 +143,7 @@ class TestAuthorizationNegativeSweep(BaseApiTest):
                     conn,
                 )
             self.assertEqual(populate_exc.exception.status_code, 403)
-            self.assertEqual(populate_exc.exception.detail, "Platform admin required")
+            self.assertEqual(populate_exc.exception.detail, "Admin role required")
         finally:
             db.return_db(conn)
 
