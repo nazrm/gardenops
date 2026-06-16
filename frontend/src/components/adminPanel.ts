@@ -1965,11 +1965,6 @@ function wireSection(): void {
 
   container.querySelector("#adm-garden-cover-import")?.addEventListener("click", async () => {
     if (state.plantCoverImport.running) return;
-    const actionReason = await authorizeSensitiveAdminAction(
-      "Populate missing plant covers",
-      "media-cover-import",
-    );
-    if (!actionReason) return;
     state.plantCoverImport = {
       running: true,
       total: 0,
@@ -1981,6 +1976,15 @@ function wireSection(): void {
       lastItems: [],
     };
     repaint();
+    const actionReason = await authorizeSensitiveAdminAction(
+      "Populate missing plant covers",
+      "media-cover-import",
+    );
+    if (!actionReason) {
+      state.plantCoverImport.running = false;
+      repaint();
+      return;
+    }
     try {
       let cursor: string | null = null;
       let batchResult = await populateMissingPlantCoversApi({

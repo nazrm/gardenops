@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -7,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import Field
 
+from gardenops.audit import write_audit_event
 from gardenops.db import DB, DbConn, current_timestamp_ms, get_db, return_db
 from gardenops.models import StrictBaseModel
 from gardenops.rate_limit import enforce_rate_limit, env_int
@@ -68,6 +70,21 @@ class PopulateMissingPlantCoversBody(StrictBaseModel):
     cursor: str = Field(default="", max_length=120)
     max_plants: int = Field(default=15, ge=1, le=25)
     action_reason: str = Field(default="", max_length=400)
+
+
+def _normalize_action_reason(
+    request: Request,
+    *,
+    body_reason: str = "",
+) -> str:
+    reason = body_reason.strip() or request.headers.get("x-action-reason", "").strip()
+    if not reason:
+        return "unspecified"
+    return reason[:400]
+
+
+def _remote_host(request: Request) -> str:
+    return request.client.host if request.client else ""
 
 
 def _require_platform_admin(context: AuthContext) -> None:
@@ -1271,10 +1288,14 @@ def populate_missing_plant_covers(
     request: Request,
     db: DB,
 ) -> dict[str, object]:
-    context, _action_reason = enforce_destructive_admin_controls(
-        request,
-        body_reason=body.action_reason,
-    )
+    context = _auth_context(request)
+    if _is_local_admin_fallback(context):
+        action_reason = _normalize_action_reason(request, body_reason=body.action_reason)
+    else:
+        context, action_reason = enforce_destructive_admin_controls(
+            request,
+            body_reason=body.action_reason,
+        )
     garden_id = _active_garden_id(context)
     allow_global = _is_local_admin_fallback(context)
     enforce_rate_limit(
@@ -1478,7 +1499,7 @@ def populate_missing_plant_covers(
         (garden_id, garden_id, 1 if allow_global else 0),
     ).fetchone()
     remaining = int(remaining_row["c"] or 0) if remaining_row else 0
-    return {
+    response = {
         "status": "ok",
         "cursor": last_processed if has_more and last_processed else None,
         "has_more": has_more,
@@ -1490,6 +1511,34 @@ def populate_missing_plant_covers(
         "skipped": skipped,
         "items": items,
     }
+    request.state.audited_by_handler = True
+    record_security_event("destructive_admin_actions")
+    record_security_event("destructive_admin_actions_media_cover_import")
+    write_audit_event(
+        method=request.method,
+        path=request.url.path,
+        status_code=200,
+        remote_host=_remote_host(request),
+        detail=json.dumps(
+            {
+                "event": "media.plant_cover_import",
+                "garden_id": garden_id,
+                "action_reason": action_reason,
+                "processed": len(batch_rows),
+                "total_without_cover_before": total_before,
+                "remaining_without_cover": remaining,
+                "adopted_existing": adopted_existing,
+                "imported_remote": imported_remote,
+                "skipped": skipped,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        auth_context=context,
+        garden_id=garden_id,
+        db=db,
+    )
+    return response
 
 
 def collect_media_cleanup_for_target(

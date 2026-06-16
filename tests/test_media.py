@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import os
 from unittest.mock import patch
 
@@ -501,6 +502,92 @@ class TestMedia(BaseApiTest):
         self.assertEqual(summary.status_code, 200, summary.text)
         self.assertEqual(summary.json()["items"][0]["asset"]["asset_id"], asset_id)
         self.assertTrue(summary.json()["items"][0]["asset"]["is_cover"])
+
+    def test_media_bulk_populate_missing_covers_allows_local_admin_fallback(self) -> None:
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO plants (plt_id, name, latin, category, link)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    "PLT-LOCAL-FALLBACK",
+                    "Local fallback plant",
+                    "Localis fallbackii",
+                    "busker",
+                    "",
+                ),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch(
+            "gardenops.routers.media.discover_cover_from_plant_link",
+            side_effect=AssertionError("remote fetch should not run"),
+        ):
+            response = self.client.post(
+                "/api/media/plants/populate-missing-covers",
+                json={"max_plants": 25},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["total_without_cover_before"], 3)
+        self.assertEqual(body["processed"], 3)
+        self.assertEqual(body["skipped"], 3)
+        self.assertIn(
+            "PLT-LOCAL-FALLBACK",
+            {str(item["plant_id"]) for item in body["items"]},
+        )
+
+    def test_media_bulk_populate_missing_covers_audits_action_reason(self) -> None:
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        os.environ["AUTH_API_KEY"] = ""
+        try:
+            admin_client, admin_headers = self._stepped_up_admin_headers(
+                "media_cover_audit_admin",
+                "media-audit-pass",
+            )
+            with patch(
+                "gardenops.routers.media.discover_cover_from_plant_link",
+                side_effect=AssertionError("remote fetch should not run"),
+            ):
+                response = admin_client.post(
+                    "/api/media/plants/populate-missing-covers",
+                    headers=admin_headers,
+                    json={
+                        "max_plants": 10,
+                        "action_reason": "audit missing cover import",
+                    },
+                )
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+            os.environ["AUTH_MODE"] = "session"
+            os.environ["AUTH_API_KEY"] = ""
+
+        self.assertEqual(response.status_code, 200, response.text)
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                """
+                SELECT detail
+                FROM audit_events
+                WHERE path = '/api/media/plants/populate-missing-covers'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertIsNotNone(row)
+        assert row is not None
+        detail = json.loads(str(row["detail"]))
+        self.assertEqual(detail["event"], "media.plant_cover_import")
+        self.assertEqual(detail["action_reason"], "audit missing cover import")
+        self.assertEqual(detail["skipped"], 2)
 
     def test_media_bulk_populate_missing_covers_requires_step_up(self) -> None:
         os.environ["AUTH_REQUIRED"] = "true"
