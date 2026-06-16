@@ -622,11 +622,6 @@ function renderLoginFlow(
   type LoginStep = "username" | "passkey" | "password";
   let loginStep: LoginStep = bootstrapRequired ? "password" : "username";
 
-  const passkeyOptionsHaveCredentials = (options: PasskeyOptionsResponse): boolean => {
-    const publicKey = options.publicKey as { allowCredentials?: unknown[] };
-    return Boolean(publicKey.allowCredentials?.length);
-  };
-
   // Load policy and init checklist if bootstrap
   if (bootstrapRequired) {
     const updateBootstrapGate = (): void => {
@@ -750,10 +745,8 @@ function renderLoginFlow(
     try {
       if (passkeyAvailable) {
         const options = await beginPasskeyLoginApi(username);
-        if (passkeyOptionsHaveCredentials(options)) {
-          await startPasskeyLogin(options, username);
-          return;
-        }
+        await startPasskeyLogin(options, username);
+        return;
       }
       revealPasswordLogin();
     } catch {

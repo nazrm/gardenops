@@ -144,8 +144,8 @@ function main() {
   if (!authGateText.includes("submitBtn.textContent = t(\"auth.continue\")")) {
     fail("non-bootstrap login must start with a username-only Continue action");
   }
-  if (!authGateText.includes("allowCredentials?.length")) {
-    fail("auth gate must decide passkey versus password from username-scoped passkey options");
+  if (authGateText.includes("allowCredentials?.length")) {
+    fail("auth gate must not branch on public allowCredentials because that leaks passkey enrollment");
   }
   if (authGateText.includes("auth.use_password_instead")) {
     fail("passkey-first login must auto-start passkey authentication instead of showing a password fallback button first");
@@ -157,7 +157,7 @@ function main() {
     fail("passkey-first login must auto-start passkey authentication after username resolution");
   }
   if (!authGateText.includes("await startPasskeyLogin(options, username)")) {
-    fail("username-scoped passkey options with credentials must immediately start passkey login");
+    fail("username-resolved passkey options must immediately start passkey login");
   }
   if (
     !i18nText.includes("\"auth.login_action\": \"Login\"") ||

@@ -818,6 +818,18 @@ def _validate_runtime_security_config() -> None:
                 "APP_ENV=production or INTERNET_EXPOSED=true forbids "
                 "AUTH_SESSION_COOKIE_SAMESITE=none",
             )
+        if is_auth_required() and session_auth_enabled():
+            mfa_secret = os.environ.get("AUTH_MFA_SECRET_KEY", "").strip()
+            if not mfa_secret:
+                raise RuntimeError(
+                    "APP_ENV=production or INTERNET_EXPOSED=true requires AUTH_MFA_SECRET_KEY "
+                    "to keep MFA secrets out of the database",
+                )
+            if len(mfa_secret) < 32:
+                raise RuntimeError(
+                    "APP_ENV=production or INTERNET_EXPOSED=true requires "
+                    "AUTH_MFA_SECRET_KEY to be at least 32 characters",
+                )
 
     if _is_internet_exposed():
         if not is_auth_required():
@@ -1298,6 +1310,10 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         # Let CORS middleware answer browser preflight checks.
         if request.method == "OPTIONS":
             return await call_next(request)
+        edge_detail = _edge_proxy_violation_detail(request)
+        if edge_detail is not None:
+            record_security_event("edge_origin_rejections")
+            return JSONResponse(status_code=403, content={"detail": edge_detail})
         if _is_production():
             if _forwarding_headers_present(request) and not _trust_proxy_headers():
                 return JSONResponse(

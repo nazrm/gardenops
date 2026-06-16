@@ -7,7 +7,7 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, NoReturn, TypedDict, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import Field, field_validator
@@ -641,6 +641,13 @@ def _verify_and_update_passkey_authentication(
         db.commit()
         raise HTTPException(status_code=400, detail="Invalid passkey authentication")
     return dict(row)
+
+
+def _raise_public_passkey_login_failure(db: DB) -> NoReturn:
+    record_security_event("auth_failures")
+    record_security_event("auth_passkey_failures")
+    db.commit()
+    raise HTTPException(status_code=401, detail="Invalid passkey authentication")
 
 
 def _record_destructive_admin_action(metric_suffix: str) -> None:
@@ -1431,6 +1438,8 @@ def auth_passkey_login_options(
     public_key = passkeys.authentication_options(
         db,
         challenge=challenge.challenge,
+        user_id=user_id,
+        include_allow_credentials=False,
     )
     db.commit()
     return {"challenge_token": challenge.token, "publicKey": public_key}
@@ -1453,19 +1462,27 @@ def auth_passkey_login_verify(
         limit=env_int("AUTH_PASSKEY_LOGIN_RATE_LIMIT", 20),
         window_seconds=60,
     )
-    challenge = passkeys.consume_challenge(
-        db,
-        token=body.challenge_token,
-        flow="authentication",
-    )
+    try:
+        challenge = passkeys.consume_public_authentication_challenge(
+            db,
+            token=body.challenge_token,
+        )
+    except HTTPException:
+        _raise_public_passkey_login_failure(db)
     if challenge.user_id is None:
-        raise HTTPException(status_code=400, detail="Invalid or expired passkey challenge")
-    row = _verify_and_update_passkey_authentication(
-        db,
-        challenge=challenge,
-        credential=body.credential,
-        expected_user_id=challenge.user_id,
-    )
+        _raise_public_passkey_login_failure(db)
+    try:
+        row = _verify_and_update_passkey_authentication(
+            db,
+            challenge=challenge,
+            credential=body.credential,
+            expected_user_id=challenge.user_id,
+        )
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid passkey authentication",
+        ) from exc
     user_id = int(row["user_id"])
     token, expires_at_ms = create_session_for_user(
         user_id,

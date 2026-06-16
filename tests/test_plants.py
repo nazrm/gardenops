@@ -485,6 +485,90 @@ class TestPlants(BaseApiTest):
             "Hold jorden jevnt fuktig den første vekstsesongen.",
         )
 
+    def test_generate_missing_care_skips_shared_global_plants(self) -> None:
+        os.environ.update(_AUTH_ENV)
+        try:
+            gid1, gid2, username, password = self._setup_admin_two_gardens()
+            conn = db.get_db()
+            try:
+                conn.execute("DELETE FROM plant_ownership")
+                conn.execute(
+                    """
+                    UPDATE plants
+                    SET care_watering = '', care_soil = '', care_planting = '',
+                        care_maintenance = '', care_notes = ''
+                    WHERE plt_id = %s
+                    """,
+                    ("PLT-TEST",),
+                )
+                db.executemany(
+                    conn,
+                    """
+                    INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT(plt_id, garden_id) DO UPDATE SET
+                        owner_user_id = excluded.owner_user_id
+                    """,
+                    [
+                        ("PLT-TEST", self._owner_id, gid1),
+                        ("PLT-TEST", self._owner_id, gid2),
+                    ],
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            mock_generate = MagicMock(
+                return_value={
+                    "PLT-TEST": {
+                        "care_watering": "Water from garden one.",
+                        "care_soil": "Soil from garden one.",
+                        "care_planting": "Planting from garden one.",
+                        "care_maintenance": "Maintenance from garden one.",
+                        "care_notes": "Notes from garden one.",
+                    },
+                },
+            )
+            client = self._new_client()
+            _, csrf = self._login_session(username, password, client=client)
+            headers = self._session_headers(csrf, garden_id=gid1)
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "AUTH_REQUIRED": "true",
+                        "AUTH_MODE": "session",
+                        "AUTH_API_KEY": "",
+                        "AI_PROVIDER": "anthropic",
+                        "ANTHROPIC_API_KEY": "test-key",
+                    },
+                    clear=False,
+                ),
+                patch("gardenops.routers.ai.generate_care_batch_with_ai", mock_generate),
+            ):
+                response = client.post(
+                    "/api/ai/generate-missing-care",
+                    headers=headers,
+                    json={"max_plants": 1},
+                )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["generated"], 0)
+            mock_generate.assert_not_called()
+
+            conn = db.get_db()
+            try:
+                row = conn.execute(
+                    "SELECT care_watering FROM plants WHERE plt_id = %s",
+                    ("PLT-TEST",),
+                ).fetchone()
+            finally:
+                db.return_db(conn)
+            self.assertEqual(str(row["care_watering"] or ""), "")
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
     def test_generate_missing_care_respects_max_plants_and_reports_remaining(self) -> None:
         conn = db.get_db()
         try:
@@ -1340,6 +1424,58 @@ class TestPlants(BaseApiTest):
             )
             self.assertEqual(response.status_code, 409, response.text)
             self.assertIn("shared with another garden", response.json()["detail"])
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_batch_update_rejects_same_garden_peer_editor_plant(self) -> None:
+        os.environ.update(_AUTH_ENV)
+        try:
+            owner = self._create_test_user("batch_owner", "batchownerpass", role="editor")
+            self._create_test_user("batch_peer", "batchpeerpass", role="editor")
+            garden_id = self._get_default_garden_id()
+            conn = db.get_db()
+            try:
+                conn.execute(
+                    """
+                    UPDATE plant_ownership
+                    SET owner_user_id = %s
+                    WHERE plt_id = %s AND garden_id = %s
+                    """,
+                    (int(owner["id"]), "PLT-TEST", garden_id),
+                )
+                conn.execute(
+                    "UPDATE plants SET year_planted = NULL WHERE plt_id = %s",
+                    ("PLT-TEST",),
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            peer_client, peer_headers = self._authenticated_client(
+                "batch_peer",
+                "batchpeerpass",
+            )
+            response = peer_client.post(
+                "/api/plants/batch-update",
+                headers=peer_headers,
+                json={
+                    "plt_ids": ["PLT-TEST"],
+                    "updates": {"year_planted": "2026"},
+                    "plot_ids": [],
+                    "plot_action": "assign",
+                },
+            )
+            self.assertEqual(response.status_code, 404, response.text)
+
+            conn = db.get_db()
+            try:
+                row = conn.execute(
+                    "SELECT year_planted FROM plants WHERE plt_id = %s",
+                    ("PLT-TEST",),
+                ).fetchone()
+            finally:
+                db.return_db(conn)
+            self.assertIsNone(row["year_planted"])
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 
