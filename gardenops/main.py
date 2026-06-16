@@ -830,6 +830,11 @@ def _validate_runtime_security_config() -> None:
                     "APP_ENV=production or INTERNET_EXPOSED=true requires "
                     "AUTH_MFA_SECRET_KEY to be at least 32 characters",
                 )
+            if mfa_secret == "generate-at-least-32-random-characters":
+                raise RuntimeError(
+                    "APP_ENV=production or INTERNET_EXPOSED=true requires "
+                    "AUTH_MFA_SECRET_KEY to be generated secret material, not a placeholder",
+                )
 
     if _is_internet_exposed():
         if not is_auth_required():
