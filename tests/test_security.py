@@ -4137,6 +4137,11 @@ class TestSecurity(BaseApiTest):
             with self.assertRaisesRegex(RuntimeError, "not a placeholder"):
                 _validate_runtime_security_config()
 
+        strict_env["AUTH_MFA_SECRET_KEY"] = "<generate-at-least-32-random-characters>"
+        with patch.dict(os.environ, strict_env, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "not a placeholder"):
+                _validate_runtime_security_config()
+
     @patch("gardenops.routers.ai.os.environ.get")
     def test_chat_no_api_key(self, mock_env: MagicMock) -> None:
         mock_env.return_value = ""

@@ -44,14 +44,23 @@ RATE_LIMIT_BACKEND=redis
 RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379/0
 API_DOCS_ENABLED=false
 CSP_REPORT_ONLY=false
-AUTH_MFA_SECRET_KEY=<generate-at-least-32-random-characters>
+AUTH_MFA_SECRET_KEY=
 APP_SECRETS_ENCRYPTION_KEY=change-me
 ```
 
 Production and internet-exposed deployments must keep API docs disabled.
 Internet-exposed deployments must also enforce CSP; `CSP_REPORT_ONLY=true`
 is rejected at startup. Session-auth deployments in either mode must set
-`AUTH_MFA_SECRET_KEY` to a secret with at least 32 characters.
+`AUTH_MFA_SECRET_KEY` to a generated secret with at least 32 characters. Generate
+one with `python -c "import secrets; print(secrets.token_urlsafe(32))"` and
+paste the output as the value.
+
+If an older deployment copied the previous public placeholder value, rotate it
+while the service is private: start a maintenance instance with
+`APP_ENV=development` and `INTERNET_EXPOSED=false` using the old value, disable
+and re-enroll MFA for affected admins, then set a generated
+`AUTH_MFA_SECRET_KEY` and restart in strict mode. Do not expose the app while
+using the old placeholder key.
 
 For first login, set `AUTH_BOOTSTRAP_USERNAME` and
 `AUTH_BOOTSTRAP_PASSWORD`, start the app, create the admin user, then remove or
