@@ -172,6 +172,12 @@ IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 _LOG_MSG_MAX_LEN = 500
 _LOG_TRACEBACK_MAX_LEN = 2000
+_MFA_SECRET_PLACEHOLDERS = frozenset(
+    {
+        "generate-at-least-32-random-characters",
+        "<generate-at-least-32-random-characters>",
+    },
+)
 _TAILLOG_MAX_QUEUE = 1000
 _TAILLOG_TIMEOUT_SECONDS = 3
 _TAILLOG_SKIP_FIELDS = frozenset(
@@ -829,6 +835,11 @@ def _validate_runtime_security_config() -> None:
                 raise RuntimeError(
                     "APP_ENV=production or INTERNET_EXPOSED=true requires "
                     "AUTH_MFA_SECRET_KEY to be at least 32 characters",
+                )
+            if mfa_secret in _MFA_SECRET_PLACEHOLDERS:
+                raise RuntimeError(
+                    "APP_ENV=production or INTERNET_EXPOSED=true requires "
+                    "AUTH_MFA_SECRET_KEY to be generated secret material, not a placeholder",
                 )
 
     if _is_internet_exposed():
