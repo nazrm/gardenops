@@ -125,6 +125,99 @@ class TestJournal(BaseApiTest):
         self.assertCountEqual(entry["plant_ids"], ["PLT-TEST", "PLT-002"])
         self.assertCountEqual(entry["plot_ids"], ["B1", "B2"])
 
+    def test_bloom_observation_does_not_update_shared_global_plant(self) -> None:
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        os.environ["AUTH_API_KEY"] = ""
+        try:
+            gid1, gid2, username, password = self._setup_admin_two_gardens()
+            conn = db.get_db()
+            try:
+                conn.execute("DELETE FROM plant_ownership")
+                db.executemany(
+                    conn,
+                    """
+                    INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT(plt_id, garden_id) DO UPDATE SET
+                        owner_user_id = excluded.owner_user_id
+                    """,
+                    [
+                        ("PLT-TEST", self._owner_id, gid1),
+                        ("PLT-TEST", self._owner_id, gid2),
+                    ],
+                )
+                conn.execute(
+                    """
+                    UPDATE plants
+                    SET seen_growing = NULL, seen_growing_date = NULL
+                    WHERE plt_id = %s
+                    """,
+                    ("PLT-TEST",),
+                )
+                conn.execute(
+                    """
+                    UPDATE plot_plants
+                    SET seen_growing = NULL, seen_growing_date = NULL
+                    WHERE plot_id = %s AND plt_id = %s
+                    """,
+                    ("B1", "PLT-TEST"),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO plot_plants (
+                        plot_id, plt_id, quantity, seen_growing, seen_growing_date
+                    )
+                    VALUES (%s, %s, 1, NULL, NULL)
+                    ON CONFLICT(plot_id, plt_id) DO UPDATE SET
+                        seen_growing = NULL,
+                        seen_growing_date = NULL
+                    """,
+                    ("B1", "PLT-TEST"),
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            client = self._new_client()
+            _, csrf = self._login_session(username, password, client=client)
+            headers = self._session_headers(csrf, garden_id=gid1)
+            response = client.post(
+                "/api/journal",
+                headers=headers,
+                json={
+                    "event_type": "bloomed",
+                    "occurred_on": "2026-06-15",
+                    "plant_ids": ["PLT-TEST"],
+                    "plot_ids": ["B1"],
+                },
+            )
+            self.assertEqual(response.status_code, 201, response.text)
+
+            conn = db.get_db()
+            try:
+                plant_row = conn.execute(
+                    "SELECT seen_growing, seen_growing_date FROM plants WHERE plt_id = %s",
+                    ("PLT-TEST",),
+                ).fetchone()
+                assignment_row = conn.execute(
+                    """
+                    SELECT seen_growing, seen_growing_date
+                    FROM plot_plants
+                    WHERE plot_id = %s AND plt_id = %s
+                    """,
+                    ("B1", "PLT-TEST"),
+                ).fetchone()
+            finally:
+                db.return_db(conn)
+
+            self.assertIsNone(plant_row["seen_growing"])
+            self.assertIsNone(plant_row["seen_growing_date"])
+            self.assertEqual(int(assignment_row["seen_growing"]), 1)
+            self.assertEqual(str(assignment_row["seen_growing_date"]), "2026-06-15")
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
     def test_journal_batch_entry_rejects_invalid_date(self) -> None:
         r = self.client.post(
             "/api/plants/batch-journal-entry",

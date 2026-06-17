@@ -927,6 +927,8 @@ def batch_move_plots(body: BatchMoveBody, db: DB, request: Request) -> dict:
     seen_targets: set[tuple[int, int]] = set()
     seen_plot_ids: set[str] = set()
     moving_ids = {m.plot_id for m in body.moves}
+    for plot_id in moving_ids:
+        _require_plot_access(db, plot_id, context)
 
     if _is_local_admin_fallback(context):
         current_rows = db.execute(

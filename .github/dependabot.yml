@@ -21,10 +21,10 @@ updates:
           - "minor"
           - "patch"
     cooldown:
-      default-days: 14
+      default-days: 7
       semver-major-days: 30
-      semver-minor-days: 14
-      semver-patch-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 7
 
   - package-ecosystem: "npm"
     directory: "/frontend"
@@ -47,10 +47,10 @@ updates:
           - "minor"
           - "patch"
     cooldown:
-      default-days: 14
+      default-days: 7
       semver-major-days: 30
-      semver-minor-days: 14
-      semver-patch-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 7
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -73,7 +73,7 @@ updates:
           - "minor"
           - "patch"
     cooldown:
-      default-days: 14
+      default-days: 7
       semver-major-days: 30
-      semver-minor-days: 14
-      semver-patch-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 7

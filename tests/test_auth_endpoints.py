@@ -674,10 +674,19 @@ class TestInvitationPeek(BaseApiTest):
             self.assertEqual(created.status_code, 201)
             garden_id = int(created.json()["id"])
 
+            headers = self._reauth_and_refresh_headers(
+                client,
+                headers,
+                password=strong_password("peek-admin-pass"),
+            )
             invitation = client.post(
                 f"/api/gardens/{garden_id}/invitations",
                 headers=headers,
-                json={"invitee_username": "peek_target_user", "role": "viewer"},
+                json={
+                    "invitee_username": "peek_target_user",
+                    "role": "viewer",
+                    "action_reason": "peek-invitation-test",
+                },
             )
             self.assertEqual(invitation.status_code, 201)
             invite_token = invitation.json()["invite_token"]

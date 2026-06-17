@@ -1154,10 +1154,33 @@ class TestExportImport(BaseApiTest):
         with patch(
             "gardenops.routers.media.discover_cover_from_plant_link", side_effect=mock_discover
         ):
-            result = self.client.post(
-                "/api/media/plants/populate-missing-covers",
-                json={"max_plants": 10},
-            )
+            os.environ["AUTH_REQUIRED"] = "true"
+            os.environ["AUTH_MODE"] = "session"
+            os.environ["AUTH_API_KEY"] = ""
+            try:
+                self._create_test_user("remote_cover_admin", "remote-cover-pass", role="admin")
+                admin_client = self._new_client()
+                _, csrf = self._login_session(
+                    "remote_cover_admin",
+                    "remote-cover-pass",
+                    client=admin_client,
+                )
+                headers = self._session_headers(csrf)
+                headers = self._reauth_and_refresh_headers(
+                    admin_client,
+                    headers,
+                    password=strong_password("remote-cover-pass"),
+                )
+                result = admin_client.post(
+                    "/api/media/plants/populate-missing-covers",
+                    headers={
+                        **headers,
+                        "x-action-reason": "populate-remote-covers",
+                    },
+                    json={"max_plants": 10},
+                )
+            finally:
+                os.environ["AUTH_REQUIRED"] = "false"
         self.assertEqual(result.status_code, 200, result.text)
         body = result.json()
         self.assertEqual(body["total_without_cover_before"], 2)

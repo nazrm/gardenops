@@ -311,13 +311,29 @@ RATE_LIMIT_BACKEND=redis
 RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379/0
 API_DOCS_ENABLED=false
 CSP_REPORT_ONLY=false
-AUTH_MFA_SECRET_KEY=change-me
+AUTH_MFA_SECRET_KEY=
 SHADEMAP_TILE_SIGNING_SECRET=<generate-a-unique-random-secret>
 ```
 
 The backend refuses to start with API docs enabled in production or in any
 internet-exposed deployment, and internet-exposed deployments must enforce CSP
-rather than running in report-only mode.
+rather than running in report-only mode. Production and internet-exposed
+session-auth deployments also require `AUTH_MFA_SECRET_KEY` to be set to a
+generated secret with at least 32 characters so MFA seed encryption does not
+fall back to database-local state. Generate one with:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Paste the output as the value.
+
+If an older deployment copied the previous public placeholder value, rotate it
+while the service is private: start a maintenance instance with
+`APP_ENV=development` and `INTERNET_EXPOSED=false` using the old value, disable
+and re-enroll MFA for affected admins, then set a generated
+`AUTH_MFA_SECRET_KEY` and restart in strict mode. Do not expose the app while
+using the old placeholder key.
 
 Set `AUTH_BOOTSTRAP_USERNAME` and `AUTH_BOOTSTRAP_PASSWORD` for the first
 production admin account, then remove or rotate those values after bootstrap.

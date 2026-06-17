@@ -18,7 +18,10 @@ instance. Values shown here are placeholders; do not commit real local env files
 | `AUTH_REQUIRED` | Require users to sign in. Use `true` outside local demos. | `true` |
 | `AUTH_MODE` | Authentication mode. Use `session` for browser deployments. | `session` |
 | `AUTH_SESSION_COOKIE_SECURE` | Send session cookies only over HTTPS. | `true` |
-| `AUTH_MFA_SECRET_KEY` | Secret key for MFA state encryption/signing. | `change-me` |
+| `AUTH_MFA_SECRET_KEY` | Secret key for MFA state encryption/signing. Production and internet-exposed session-auth deployments require a generated value with at least 32 characters. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(32))"`. | _(empty)_ |
+| `AUTH_PASSKEY_RP_ID` | Optional WebAuthn relying-party ID for passkey registration and login. Must match the public hostname, without scheme or port. | `gardenops.example.com` |
+| `AUTH_PASSKEY_ORIGINS` | Optional comma-separated exact browser origins allowed for passkeys. Use HTTPS outside localhost/test development. | `https://gardenops.example.com` |
+| `AUTH_PASSKEY_CHALLENGE_TTL_SECONDS` | Optional passkey ceremony challenge lifetime, clamped between 60 and 900 seconds. | `300` |
 | `APP_SECRETS_ENCRYPTION_KEY` | Fernet key used to encrypt platform-managed provider secrets stored in the database. Required before admins can save or clear provider keys from the admin UI. | `change-me` |
 
 ## HTTP And Proxy

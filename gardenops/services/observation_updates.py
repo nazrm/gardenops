@@ -49,11 +49,17 @@ def mark_seen_growing_from_observation(
     plant_placeholders = ",".join(["%s"] * len(normalized_plant_ids))
     plant_rows = db.execute(
         f"""
-        SELECT plt_id, seen_growing_date
-        FROM plants
-        WHERE plt_id IN ({plant_placeholders})
+        SELECT p.plt_id, p.seen_growing_date
+        FROM plants p
+        WHERE p.plt_id IN ({plant_placeholders})
+          AND NOT EXISTS (
+              SELECT 1
+              FROM plant_ownership po
+              WHERE po.plt_id = p.plt_id
+                AND po.garden_id <> %s
+          )
         """,
-        normalized_plant_ids,
+        [*normalized_plant_ids, garden_id],
     ).fetchall()
     plant_updates = [
         (seen_date, str(row["plt_id"]))

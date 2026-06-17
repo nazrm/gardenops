@@ -42,6 +42,7 @@ backups/
 output/full-stack-code-review.md
 output/
 media_uploads/
+.gardenops/
 
 # Tool caches
 .pytest_cache/
