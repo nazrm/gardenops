@@ -30,8 +30,8 @@
 
 @font-face {
   font-family: "GardenOps Map Label";
-  src: url("./assets/fonts/DejaVuSansCondensed-Bold.ttf") format("truetype");
-  font-weight: 700;
+  src: url("./assets/fonts/DejaVuSansCondensed.ttf") format("truetype");
+  font-weight: 600;
   font-style: normal;
   font-display: swap;
 }
@@ -2518,7 +2518,7 @@ textarea {
     box-shadow 200ms var(--ease),
     filter 200ms var(--ease),
     background-color 200ms var(--ease);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   overflow: hidden;
   position: relative;
 }
@@ -2539,13 +2539,15 @@ textarea {
 
 .plot-label {
   display: block;
+  min-width: 0;
   max-width: calc(100% - 4px);
   overflow: hidden;
   text-align: center;
   text-overflow: clip;
   white-space: nowrap;
   font-family: var(--font-map-label);
-  font-size: clamp(7px, calc(var(--cell) * 0.28), 11px);
+  font-size: clamp(5px, calc(var(--cell) * 0.28), 8px);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
