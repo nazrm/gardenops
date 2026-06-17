@@ -542,6 +542,32 @@ class TestMedia(BaseApiTest):
             {str(item["plant_id"]) for item in body["items"]},
         )
 
+    def test_media_bulk_populate_missing_covers_rejects_api_key_admin(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "api_key",
+                "AUTH_API_KEY": "shared-test-key",
+            },
+            clear=False,
+        ):
+            with patch(
+                "gardenops.routers.media.discover_cover_from_plant_link",
+                side_effect=AssertionError("remote fetch should not run"),
+            ):
+                response = self.client.post(
+                    "/api/media/plants/populate-missing-covers",
+                    headers={"x-api-key": "shared-test-key"},
+                    json={"max_plants": 1, "action_reason": "api-key-denied"},
+                )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json()["detail"],
+            "Session-backed admin authentication required",
+        )
+
     def test_media_bulk_populate_missing_covers_audits_action_reason(self) -> None:
         os.environ["AUTH_REQUIRED"] = "true"
         os.environ["AUTH_MODE"] = "session"

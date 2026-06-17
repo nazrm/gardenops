@@ -28,7 +28,7 @@ def require_write(context: AuthContext) -> None:
 
 
 def is_local_admin_fallback(context: AuthContext) -> bool:
-    return context.user_id is None and context.role == "admin"
+    return context.auth_type == "none" and context.user_id is None and context.role == "admin"
 
 
 def effective_role(context: AuthContext) -> str:
