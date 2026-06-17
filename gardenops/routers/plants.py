@@ -1390,6 +1390,7 @@ def batch_update_plants(body: BatchUpdateBody, db: DB, request: Request) -> dict
     garden_id = _active_garden_id(context)  # validates garden context
     _validate_batch_plant_ids(db, body.plt_ids, context)
     for plt_id in body.plt_ids:
+        _require_plant_access(db, plt_id, context)
         _require_plant_can_be_adopted_or_modified(db, plt_id=plt_id, garden_id=garden_id)
 
     count = 0

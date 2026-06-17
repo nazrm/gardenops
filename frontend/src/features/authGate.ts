@@ -12,15 +12,20 @@ import {
 import {
   ApiError,
   acceptInvitationApi,
+  beginPasskeyLoginApi,
   bootstrapAuthApi,
   changePasswordApi,
   clearStoredAuthToken,
+  finishPasskeyLoginApi,
   getApiErrorMessage,
   getPasswordPolicyApi,
   loginApi,
+  logoutApi,
   peekInvitationApi,
   setActiveGardenContext,
+  type PasskeyOptionsResponse,
 } from "../services/api";
+import { getPasskey, isPasskeySupported } from "./passkeys";
 
 const authGateShells = new WeakMap<HTMLDivElement, HTMLDivElement>();
 
@@ -99,6 +104,7 @@ export function showForcedPasswordChangeGate(
 
 export function showAuthGate(
   bootstrapRequired: boolean,
+  passkeysEnabled = false,
 ): Promise<void> {
   const inviteToken = peekPrimedInviteToken();
 
@@ -115,6 +121,7 @@ export function showAuthGate(
         createAuthGateCard,
         inviteToken,
         bootstrapRequired,
+        passkeysEnabled,
         resolve,
       );
     } else {
@@ -122,6 +129,7 @@ export function showAuthGate(
         gate,
         createAuthGateCard,
         bootstrapRequired,
+        passkeysEnabled,
         resolve,
       );
     }
@@ -250,6 +258,7 @@ function renderInviteFlow(
   createGateCard: (subtitle: string) => HTMLDivElement,
   inviteToken: string,
   bootstrapRequired: boolean,
+  passkeysEnabled: boolean,
   resolve: () => void,
 ): void {
   // Show loading state
@@ -280,6 +289,7 @@ function renderInviteFlow(
           gate,
           loadingCard,
           bootstrapRequired,
+          passkeysEnabled,
           resolve,
         );
         return;
@@ -288,6 +298,7 @@ function renderInviteFlow(
         gate,
         loadingCard,
         bootstrapRequired,
+        passkeysEnabled,
         resolve,
         getApiErrorMessage(err),
       );
@@ -298,6 +309,7 @@ function renderInviteFlow(
         gate,
         loadingCard,
         bootstrapRequired,
+        passkeysEnabled,
         resolve,
         getApiErrorMessage(policyResult.reason),
       );
@@ -310,6 +322,7 @@ function renderInviteFlow(
       peekResult.value.username,
       policyResult.value,
       bootstrapRequired,
+      passkeysEnabled,
       resolve,
     );
   });
@@ -319,6 +332,7 @@ function renderInviteInvalidCard(
   gate: HTMLDivElement,
   loadingCard: HTMLDivElement,
   bootstrapRequired: boolean,
+  passkeysEnabled: boolean,
   resolve: () => void,
 ): void {
   clearPrimedInviteToken();
@@ -335,7 +349,7 @@ function renderInviteInvalidCard(
   signInBtn.addEventListener("click", () => {
     clearPrimedInviteToken();
     gate.remove();
-    void showAuthGate(bootstrapRequired).then(resolve);
+    void showAuthGate(bootstrapRequired, passkeysEnabled).then(resolve);
   });
   loadingCard.append(signInBtn);
 }
@@ -344,6 +358,7 @@ function renderInviteLoadErrorCard(
   gate: HTMLDivElement,
   loadingCard: HTMLDivElement,
   bootstrapRequired: boolean,
+  passkeysEnabled: boolean,
   resolve: () => void,
   message: string,
 ): void {
@@ -354,7 +369,7 @@ function renderInviteLoadErrorCard(
   retryBtn.textContent = t("common.refresh");
   retryBtn.addEventListener("click", () => {
     gate.remove();
-    void showAuthGate(bootstrapRequired).then(resolve);
+    void showAuthGate(bootstrapRequired, passkeysEnabled).then(resolve);
   });
   const signInBtn = document.createElement("button");
   signInBtn.type = "button";
@@ -363,7 +378,7 @@ function renderInviteLoadErrorCard(
   signInBtn.addEventListener("click", () => {
     clearPrimedInviteToken();
     gate.remove();
-    void showAuthGate(bootstrapRequired).then(resolve);
+    void showAuthGate(bootstrapRequired, passkeysEnabled).then(resolve);
   });
   loadingCard.append(retryBtn, signInBtn);
 }
@@ -375,6 +390,7 @@ function renderInviteForm(
   username: string,
   policy: PasswordPolicy,
   bootstrapRequired: boolean,
+  passkeysEnabled: boolean,
   resolve: () => void,
 ): void {
   card.replaceChildren();
@@ -441,7 +457,7 @@ function renderInviteForm(
     checklist.destroy();
     clearPrimedInviteToken();
     gate.remove();
-    void showAuthGate(bootstrapRequired).then(resolve);
+    void showAuthGate(bootstrapRequired, passkeysEnabled).then(resolve);
   });
 
   form.addEventListener("submit", async (e) => {
@@ -512,6 +528,7 @@ function renderLoginFlow(
   gate: HTMLDivElement,
   createGateCard: (subtitle: string) => HTMLDivElement,
   bootstrapRequired: boolean,
+  passkeysEnabled: boolean,
   resolve: () => void,
 ): void {
   const card = createGateCard(
@@ -601,6 +618,10 @@ function renderLoginFlow(
     ? t("auth.create_account")
     : t("auth.sign_in_action");
 
+  const passkeyAvailable = !bootstrapRequired && passkeysEnabled && isPasskeySupported();
+  type LoginStep = "username" | "passkey" | "password";
+  let loginStep: LoginStep = bootstrapRequired ? "password" : "username";
+
   // Load policy and init checklist if bootstrap
   if (bootstrapRequired) {
     const updateBootstrapGate = (): void => {
@@ -631,17 +652,157 @@ function renderLoginFlow(
     mfaWrap,
     submitBtn,
   );
+
+  const setLoginStep = (step: LoginStep): void => {
+    loginStep = step;
+    if (bootstrapRequired) {
+      passwordLabel.hidden = false;
+      passwordInput.required = true;
+      submitBtn.textContent = t("auth.create_account");
+      return;
+    }
+
+    passwordLabel.hidden = true;
+    passwordInput.required = false;
+
+    if (step === "username") {
+      passwordInput.value = "";
+      submitBtn.disabled = false;
+      submitBtn.textContent = t("auth.continue");
+      return;
+    }
+
+    if (step === "passkey") {
+      submitBtn.disabled = true;
+      submitBtn.textContent = t("auth.passkey_signing_in");
+      return;
+    }
+
+    passwordLabel.hidden = false;
+    passwordInput.required = true;
+    submitBtn.disabled = false;
+    submitBtn.textContent = t("auth.login_action");
+  };
+
+  setLoginStep(loginStep);
   card.appendChild(form);
   appendAuthGateCard(gate, card);
   document.body.prepend(gate);
 
   usernameInput.focus();
 
+  const removeAuthGateError = (): void => {
+    gate
+      .querySelector(".auth-gate-error")
+      ?.remove();
+  };
+
+  const showPasskeyError = (err: unknown, showCancelled: boolean): void => {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return;
+    }
+    const isCancelled = err instanceof DOMException && err.name === "NotAllowedError";
+    if (isCancelled && !showCancelled) {
+      return;
+    }
+    const errDiv = document.createElement("div");
+    errDiv.className = "auth-gate-error";
+    errDiv.textContent = isCancelled
+      ? t("auth.passkey_cancelled")
+      : getApiErrorMessage(err);
+    form.appendChild(errDiv);
+  };
+
+  const revealPasswordLogin = (): void => {
+    setLoginStep("password");
+    submitBtn.disabled = false;
+    passwordInput.focus();
+  };
+
+  const startPasskeyLogin = async (
+    options: PasskeyOptionsResponse,
+    username: string,
+  ): Promise<void> => {
+    setLoginStep("passkey");
+    try {
+      const credential = await getPasskey(options.publicKey);
+      if (usernameInput.value.trim() !== username) {
+        revealPasswordLogin();
+        return;
+      }
+      await finishPasskeySignIn(options.challenge_token, credential);
+    } catch (err) {
+      showPasskeyError(err, true);
+      revealPasswordLogin();
+    }
+  };
+
+  const resolveUsernameLoginStep = async (username: string): Promise<void> => {
+    submitBtn.disabled = true;
+    submitBtn.textContent = t("auth.signing_in");
+    removeAuthGateError();
+
+    try {
+      if (passkeyAvailable) {
+        const options = await beginPasskeyLoginApi(username);
+        await startPasskeyLogin(options, username);
+        return;
+      }
+      revealPasswordLogin();
+    } catch {
+      revealPasswordLogin();
+    } finally {
+      if (gate.isConnected) {
+        submitBtn.disabled = false;
+      }
+    }
+  };
+
+  const finishPasskeySignIn = async (
+    challengeToken: string,
+    credential: unknown,
+  ): Promise<void> => {
+    const result = await finishPasskeyLoginApi(
+      challengeToken,
+      credential,
+    );
+    if (
+      result.status === "password_change_required"
+      || result.user.must_change_password
+    ) {
+      await logoutApi().catch(() => undefined);
+      clearStoredAuthToken();
+      const errDiv = document.createElement("div");
+      errDiv.className = "auth-gate-error";
+      errDiv.textContent = t("auth.passkey_password_change_required");
+      form.appendChild(errDiv);
+      revealPasswordLogin();
+      return;
+    }
+    clearStoredAuthToken();
+    gate.remove();
+    resolve();
+  };
+
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const username = usernameInput.value.trim();
+    if (!username) {
+      usernameInput.focus();
+      return;
+    }
+    if (!bootstrapRequired && loginStep === "username") {
+      await resolveUsernameLoginStep(username);
+      return;
+    }
+    if (!bootstrapRequired && loginStep === "passkey") {
+      return;
+    }
     const password = passwordInput.value;
-    if (!username || !password) return;
+    if (!password) {
+      passwordInput.focus();
+      return;
+    }
     if (bootstrapChecklist && !bootstrapChecklist.allPassed()) return;
 
     submitBtn.disabled = true;
@@ -690,15 +851,23 @@ function renderLoginFlow(
       resolve();
     } catch (err) {
       submitBtn.disabled = false;
-      submitBtn.textContent = awaitingMfa
-        ? t("auth.verify_sign_in")
-        : bootstrapRequired
-          ? t("auth.create_account")
-          : t("auth.sign_in_action");
+      if (awaitingMfa) {
+        submitBtn.textContent = t("auth.verify_sign_in");
+      } else {
+        setLoginStep(loginStep);
+      }
       const errDiv = document.createElement("div");
       errDiv.className = "auth-gate-error";
       errDiv.textContent = getApiErrorMessage(err);
       form.appendChild(errDiv);
     }
+  });
+
+  usernameInput.addEventListener("input", () => {
+    if (bootstrapRequired || awaitingMfa || loginStep === "username") {
+      return;
+    }
+    removeAuthGateError();
+    setLoginStep("username");
   });
 }

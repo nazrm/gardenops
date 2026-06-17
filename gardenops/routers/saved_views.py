@@ -191,6 +191,11 @@ def list_presets(request: Request) -> dict:
     return {"presets": PRESETS}
 
 
+def _require_saved_view_write_principal(context: Any) -> None:
+    if context.user_id is None and context.auth_type != "none":
+        raise HTTPException(status_code=403, detail="Saved views require a user session")
+
+
 @router.post("/saved-views", status_code=201)
 def create_saved_view(
     request: Request,
@@ -201,6 +206,7 @@ def create_saved_view(
     _require_write(context)
     garden_id = _active_garden_id(context)
     user_id = context.user_id
+    _require_saved_view_write_principal(context)
     now = current_timestamp_ms()
 
     filter_str = json.dumps(body.filter_json, ensure_ascii=False)
@@ -246,6 +252,9 @@ def update_saved_view(
     # Verify ownership
     if int(row["garden_id"]) != garden_id:
         raise HTTPException(status_code=404, detail="Saved view not found")
+    _require_saved_view_write_principal(context)
+    if row["user_id"] is None and context.auth_type != "none":
+        raise HTTPException(status_code=403, detail="Cannot modify a shared saved view")
     if row["user_id"] is not None and user_id is not None:
         if int(row["user_id"]) != user_id:
             raise HTTPException(status_code=403, detail="Cannot modify another user's view")
@@ -295,6 +304,9 @@ def delete_saved_view(
 
     if int(row["garden_id"]) != garden_id:
         raise HTTPException(status_code=404, detail="Saved view not found")
+    _require_saved_view_write_principal(context)
+    if row["user_id"] is None and context.auth_type != "none":
+        raise HTTPException(status_code=403, detail="Cannot delete a shared saved view")
     if row["user_id"] is not None and user_id is not None:
         if int(row["user_id"]) != user_id:
             raise HTTPException(status_code=403, detail="Cannot delete another user's view")

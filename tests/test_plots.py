@@ -653,6 +653,59 @@ class TestPlots(BaseApiTest):
         )
         self.assertEqual(response.status_code, 409)
 
+    def test_batch_move_rejects_same_garden_peer_editor_plot(self) -> None:
+        os.environ.update(
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+            },
+        )
+        try:
+            owner = self._create_test_user("plot_batch_owner", "plotownerpass", role="editor")
+            self._create_test_user("plot_batch_peer", "plotpeerpass", role="editor")
+            garden_id = self._get_default_garden_id()
+            conn = db.get_db()
+            try:
+                conn.execute(
+                    """
+                    UPDATE plot_ownership
+                    SET owner_user_id = %s
+                    WHERE plot_id = %s AND garden_id = %s
+                    """,
+                    (int(owner["id"]), "B1", garden_id),
+                )
+                conn.execute(
+                    "UPDATE plots SET grid_row = 1, grid_col = 1 WHERE plot_id = %s",
+                    ("B1",),
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            peer_client, peer_headers = self._authenticated_client(
+                "plot_batch_peer",
+                "plotpeerpass",
+            )
+            response = peer_client.post(
+                "/api/plots/batch-move",
+                headers=peer_headers,
+                json={"moves": [{"plot_id": "B1", "grid_row": 2, "grid_col": 2}]},
+            )
+            self.assertEqual(response.status_code, 404, response.text)
+
+            conn = db.get_db()
+            try:
+                row = conn.execute(
+                    "SELECT grid_row, grid_col FROM plots WHERE plot_id = %s",
+                    ("B1",),
+                ).fetchone()
+            finally:
+                db.return_db(conn)
+            self.assertEqual((int(row["grid_row"]), int(row["grid_col"])), (1, 1))
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
     def test_plot_assignment_meanings_are_saved_per_user(self) -> None:
         conn = db.get_db()
         try:
@@ -941,6 +994,11 @@ class TestPlots(BaseApiTest):
             self.assertEqual(created_garden.status_code, 201)
             garden_id = int(created_garden.json()["id"])
 
+            headers = self._reauth_and_refresh_headers(
+                self.client,
+                headers,
+                password=strong_password("admin-password-123"),
+            )
             invitation = self.client.post(
                 f"/api/gardens/{garden_id}/invitations",
                 headers=headers,
@@ -948,6 +1006,7 @@ class TestPlots(BaseApiTest):
                     "invitee_username": "invited_pending",
                     "role": "viewer",
                     "expires_in_minutes": 30,
+                    "action_reason": "create-pending-garden-invite",
                 },
             )
             self.assertEqual(invitation.status_code, 201)
@@ -967,7 +1026,10 @@ class TestPlots(BaseApiTest):
 
             revoked = self.client.delete(
                 f"/api/gardens/{garden_id}/invitations/{invitation_id}",
-                headers=headers,
+                headers={
+                    **headers,
+                    "x-action-reason": "revoke-pending-garden-invite",
+                },
             )
             self.assertEqual(revoked.status_code, 200)
             self.assertEqual(int(revoked.json()["invitation_id"]), invitation_id)
@@ -1039,6 +1101,11 @@ class TestPlots(BaseApiTest):
             )
             self.assertEqual(created_garden.status_code, 201)
             garden_id = int(created_garden.json()["id"])
+            admin_headers = self._reauth_and_refresh_headers(
+                admin_client,
+                admin_headers,
+                password=strong_password("adminpass123"),
+            )
 
             invitation = admin_client.post(
                 f"/api/gardens/{garden_id}/invitations",
@@ -1047,6 +1114,7 @@ class TestPlots(BaseApiTest):
                     "invitee_username": "invite_existing_user",
                     "role": "viewer",
                     "expires_in_minutes": 30,
+                    "action_reason": "create-invalid-attempt-test-invite",
                 },
             )
             self.assertEqual(invitation.status_code, 201)
