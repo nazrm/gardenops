@@ -44,6 +44,23 @@ const TASK_NOTIF_KEYS: Record<
   },
 };
 
+function formatNotificationPlants(
+  metadata: NotificationEvent["metadata"],
+): string {
+  if (!metadata) return "";
+  const rawPlants = metadata["plants"];
+  const plants = Array.isArray(rawPlants) ? (rawPlants as string[]) : [];
+  const rawCount = metadata["plant_count"];
+  const count =
+    typeof rawCount === "number"
+      ? rawCount
+      : plants.length;
+  if (count > 3) {
+    return t("notifications.plant_count", { count }) as string;
+  }
+  return plants.join(", ");
+}
+
 function localizeNotification(
   n: NotificationEvent,
 ): { title: string; body: string } {
@@ -53,10 +70,7 @@ function localizeNotification(
   const m = n.metadata;
   const taskTitle = m ? m["task_title"] : null;
   if (m && typeof taskTitle === "string" && taskTitle) {
-    const rawPlants = m["plants"];
-    const plants = Array.isArray(rawPlants)
-      ? (rawPlants as string[]).join(", ")
-      : "";
+    const plants = formatNotificationPlants(m);
     const rawDue = m["due_on"];
     const due = typeof rawDue === "string" ? rawDue : "";
     return {
