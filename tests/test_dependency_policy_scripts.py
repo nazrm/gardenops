@@ -78,15 +78,15 @@ def test_npm_release_age_check_rejects_root_only_npm_packages(tmp_path):
 
 def write_uv_lock(root: Path, package_name: str = "fresh-package", version: str = "2.0.0") -> None:
     (root / "uv.lock").write_text(
-        f"""
+        (
+            f"""
 [[package]]
 name = "{package_name}"
 version = "{version}"
-sdist = {{
-    url = "https://files.pythonhosted.org/packages/fresh.tar.gz",
-    upload-time = "2999-01-01T00:00:00Z",
-}}
-""".lstrip(),
+""".lstrip()
+            + 'sdist = { url = "https://files.pythonhosted.org/packages/fresh.tar.gz", '
+            + 'upload-time = "2999-01-01T00:00:00Z" }\n'
+        ),
         encoding="utf-8",
     )
 
