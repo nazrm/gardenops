@@ -19,8 +19,8 @@
     "preview": "vite preview"
   },
   "devDependencies": {
-    "@emnapi/core": "^1.10.0",
-    "@emnapi/runtime": "^1.10.0",
+    "@emnapi/core": "^1.11.0",
+    "@emnapi/runtime": "^1.11.0",
     "@types/leaflet": "^1.9.21",
     "playwright-core": "1.60.0",
     "typescript": "6.0.3",
