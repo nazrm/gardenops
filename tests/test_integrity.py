@@ -68,6 +68,29 @@ class MigrationGuardTests(unittest.TestCase):
         self.assertTrue(diagnostics["can_stamp_migrations"])
         self.assertEqual(diagnostics["missing"], [])
 
+    def test_passkey_schema_signature_covers_migration_surface(self) -> None:
+        self.assertTrue(
+            {
+                "nickname",
+                "transports",
+                "credential_device_type",
+                "credential_backed_up",
+                "created_at_ms",
+                "updated_at_ms",
+                "last_used_at_ms",
+            }.issubset(set(REQUIRED_COLUMNS["auth_passkeys"]))
+        )
+        self.assertTrue(
+            {
+                "user_id",
+                "session_token_hash",
+                "created_at_ms",
+            }.issubset(set(REQUIRED_COLUMNS["auth_passkey_challenges"]))
+        )
+        self.assertIn("idx_auth_passkey_challenges_user", REQUIRED_INDEXES)
+        self.assertIn("auth_passkeys_user_id_fkey", REQUIRED_CONSTRAINTS)
+        self.assertIn("auth_passkey_challenges_user_id_fkey", REQUIRED_CONSTRAINTS)
+
     def test_partial_bootstrap_signature_is_rejected(self) -> None:
         snapshot = SchemaSnapshot(
             tables={"schema_migrations", "gardens"},
@@ -315,6 +338,7 @@ class HealthEndpointTests(unittest.TestCase):
                 "AUTH_REQUIRED": "true",
                 "AUTH_MODE": "session",
                 "AUTH_API_KEY": "",
+                "AUTH_MFA_SECRET_KEY": "test-integrity-mfa-secret-32chars",
                 "ALLOW_INSECURE_REMOTE": "false",
                 "TRUST_PROXY_HEADERS": "true",
                 "TRUSTED_PROXY_CIDRS": "127.0.0.1/32",

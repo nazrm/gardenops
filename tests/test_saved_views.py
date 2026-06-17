@@ -1,5 +1,6 @@
 import os
 
+import gardenops.db as db
 from tests.base import BaseApiTest
 
 
@@ -163,3 +164,107 @@ class TestSavedViewsApi(BaseApiTest):
             self.assertEqual(r.status_code, 403)
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_shared_saved_view_is_readable_but_not_mutable_by_writer(self) -> None:
+        """Shared NULL-owned saved views are presets, not user-owned mutable views."""
+        try:
+            os.environ["AUTH_REQUIRED"] = "true"
+
+            self._create_test_user("sv_writer", "writerpass", "editor")
+            default_garden_id = self._get_default_garden_id()
+            conn = db.get_db()
+            try:
+                row = conn.execute(
+                    """
+                    INSERT INTO user_saved_views (
+                        user_id, garden_id, view_type, label, filter_json,
+                        is_preset, sort_order, created_at_ms, updated_at_ms
+                    )
+                    VALUES (NULL, %s, 'plants', 'Shared preset', '{}', 1, 1, 1, 1)
+                    RETURNING id
+                    """,
+                    (default_garden_id,),
+                ).fetchone()
+                conn.commit()
+                view_id = int(row["id"])
+            finally:
+                db.return_db(conn)
+
+            writer_client, writer_headers = self._authenticated_client(
+                "sv_writer",
+                "writerpass",
+            )
+            listed = writer_client.get("/api/saved-views", headers=writer_headers)
+            self.assertEqual(listed.status_code, 200, listed.text)
+            self.assertIn(
+                "Shared preset",
+                {view["label"] for view in listed.json()["views"]},
+            )
+
+            patched = writer_client.patch(
+                f"/api/saved-views/{view_id}",
+                headers=writer_headers,
+                json={"label": "tampered"},
+            )
+            self.assertEqual(patched.status_code, 403, patched.text)
+
+            deleted = writer_client.delete(
+                f"/api/saved-views/{view_id}",
+                headers=writer_headers,
+            )
+            self.assertEqual(deleted.status_code, 403, deleted.text)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_api_key_auth_cannot_write_saved_views_without_user_principal(self) -> None:
+        default_garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                """
+                INSERT INTO user_saved_views (
+                    user_id, garden_id, view_type, label, filter_json,
+                    is_preset, sort_order, created_at_ms, updated_at_ms
+                )
+                VALUES (NULL, %s, 'plants', 'Shared API preset', '{}', 1, 1, 1, 1)
+                RETURNING id
+                """,
+                (default_garden_id,),
+            ).fetchone()
+            conn.commit()
+            view_id = int(row["id"])
+        finally:
+            db.return_db(conn)
+
+        try:
+            os.environ["AUTH_REQUIRED"] = "true"
+            os.environ["AUTH_MODE"] = "api_key"
+            os.environ["AUTH_API_KEY"] = "saved-view-test-key"
+            headers = {"x-api-key": "saved-view-test-key"}
+
+            listed = self.client.get("/api/saved-views", headers=headers)
+            self.assertEqual(listed.status_code, 200, listed.text)
+
+            created = self.client.post(
+                "/api/saved-views",
+                headers=headers,
+                json={"view_type": "plants", "label": "API key view", "filter_json": {}},
+            )
+            self.assertEqual(created.status_code, 403, created.text)
+            self.assertEqual(created.json()["detail"], "Saved views require a user session")
+
+            patched = self.client.patch(
+                f"/api/saved-views/{view_id}",
+                headers=headers,
+                json={"label": "tampered"},
+            )
+            self.assertEqual(patched.status_code, 403, patched.text)
+            self.assertEqual(patched.json()["detail"], "Saved views require a user session")
+
+            deleted = self.client.delete(f"/api/saved-views/{view_id}", headers=headers)
+            self.assertEqual(deleted.status_code, 403, deleted.text)
+            self.assertEqual(deleted.json()["detail"], "Saved views require a user session")
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+            os.environ["AUTH_MODE"] = "session"
+            os.environ["AUTH_API_KEY"] = ""
