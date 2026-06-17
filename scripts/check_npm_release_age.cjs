@@ -5,12 +5,15 @@ const https = require("node:https");
 const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "..");
-const COOLDOWN_DAYS = 14;
+const COOLDOWN_DAYS = 7;
 const REGISTRY_URL = "https://registry.npmjs.org";
+const SECURITY_BYPASS_PATH =
+  process.env.GARDENOPS_SECURITY_RELEASE_BYPASS ||
+  path.join(ROOT, ".gardenops", "security-release-bypass.json");
 
 // These packages were already locked inside the cooldown window when the
 // dependency policy was introduced. The dates are the point where the locked
-// version has aged out of the 14-day window; remove entries after they expire.
+// version has aged out of the cooldown window; remove entries after they expire.
 const TEMPORARY_EXCEPTIONS = {
   "@oxc-project/types@0.130.0": "2026-05-25T15:05:37.000Z",
   "@rolldown/binding-android-arm64@1.0.1": "2026-05-27T12:44:25.000Z",
@@ -51,6 +54,61 @@ function packageNameFromLockPath(packagePath) {
 
 function packageKey(name, version) {
   return `${name}@${version}`;
+}
+
+function loadSecurityReleaseBypasses() {
+  if (!fs.existsSync(SECURITY_BYPASS_PATH)) {
+    return new Map();
+  }
+
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(SECURITY_BYPASS_PATH, "utf8"));
+  } catch (error) {
+    throw new Error(`${SECURITY_BYPASS_PATH} is not valid JSON: ${error.message}`);
+  }
+
+  const entries = data.npm === undefined ? [] : data.npm;
+  if (!Array.isArray(entries)) {
+    throw new Error(`${SECURITY_BYPASS_PATH} field 'npm' must be a list`);
+  }
+
+  const bypasses = new Map();
+  for (const [index, entry] of entries.entries()) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`${SECURITY_BYPASS_PATH} npm[${index}] must be an object`);
+    }
+
+    const packageName = entry.package;
+    const fromVersion = entry.from;
+    const toVersion = entry.to;
+    const advisories = entry.advisories_fixed;
+    if (typeof packageName !== "string" || packageName.length === 0) {
+      throw new Error(`${SECURITY_BYPASS_PATH} npm[${index}].package must be a non-empty string`);
+    }
+    if (typeof fromVersion !== "string" || fromVersion.length === 0) {
+      throw new Error(`${SECURITY_BYPASS_PATH} npm[${index}].from must be a non-empty string`);
+    }
+    if (typeof toVersion !== "string" || toVersion.length === 0) {
+      throw new Error(`${SECURITY_BYPASS_PATH} npm[${index}].to must be a non-empty string`);
+    }
+    if (fromVersion === toVersion) {
+      throw new Error(`${SECURITY_BYPASS_PATH} npm[${index}] must change versions`);
+    }
+    if (
+      !Array.isArray(advisories) ||
+      advisories.length === 0 ||
+      !advisories.every((advisory) => typeof advisory === "string" && advisory.length > 0)
+    ) {
+      throw new Error(
+        `${SECURITY_BYPASS_PATH} npm[${index}].advisories_fixed must be a non-empty string list`,
+      );
+    }
+
+    bypasses.set(packageKey(packageName, toVersion), [...new Set(advisories)].sort());
+  }
+
+  return bypasses;
 }
 
 function fetchJson(url) {
@@ -163,6 +221,7 @@ async function main() {
   const cutoff = new Date(now.getTime() - COOLDOWN_DAYS * 24 * 60 * 60 * 1000);
   const lockedPackages = collectLockedPackages();
   const publishTimes = await mapWithConcurrency(lockedPackages, 8, lookupPublishTime);
+  const securityBypasses = loadSecurityReleaseBypasses();
   const errors = [];
   const allowed = [];
 
@@ -184,6 +243,12 @@ async function main() {
       continue;
     }
 
+    const bypassAdvisories = securityBypasses.get(key);
+    if (bypassAdvisories) {
+      allowed.push(`${key} fixing ${bypassAdvisories.join(", ")}`);
+      continue;
+    }
+
     errors.push(
       `${key} was published at ${publishedAt.toISOString()} inside the ${COOLDOWN_DAYS}-day ` +
         "cooldown window",
@@ -198,7 +263,7 @@ async function main() {
   }
 
   if (allowed.length > 0) {
-    console.log("Temporary npm release-age exceptions:");
+    console.log("Allowed npm release-age exceptions:");
     for (const item of allowed) {
       console.log(`- ${item}`);
     }

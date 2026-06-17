@@ -7,7 +7,7 @@ fixes should move through a separate emergency path.
 
 ## Cooling-Off Rule
 
-- Routine dependency updates must wait at least 14 days after the package
+- Routine dependency updates must wait at least 7 days after the package
   artifact was published before they are accepted.
 - Major-version updates should wait at least 30 days unless they are part of an
   approved security remediation.
@@ -24,6 +24,8 @@ fixes should move through a separate emergency path.
 
 Security updates may bypass the routine cooldown when a known advisory affects
 the locked dependency graph.
+The bypass must come from generated base/head audit evidence, not from PR title,
+labels, bot identity, or reviewer assertion alone.
 
 Before merging a cooldown bypass:
 
@@ -86,8 +88,9 @@ known vulnerabilities in runtime or development dependency scopes.
 CI must also reject lockfiles that resolve packages from unexpected registries,
 direct URLs, git sources, local paths, or registry packages without integrity
 metadata. Python and npm lockfiles must also reject packages whose uploaded
-artifacts or package versions are inside the 14-day cooldown window unless a
-temporary exception is present in the release-age check.
+artifacts or package versions are inside the 7-day cooldown window unless a
+temporary exception or generated security-bypass evidence is present in the
+release-age check.
 
 The scheduled dependency audit should publish CycloneDX SBOM artifacts for the
 Python and frontend dependency graphs. The frontend audit must also run npm
