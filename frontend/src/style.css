@@ -742,7 +742,7 @@ textarea {
 
 .mobile-tabbar {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   padding: 10px var(--sp-3) calc(max(10px, env(safe-area-inset-bottom)));
   padding-left: max(var(--sp-3), env(safe-area-inset-left));
@@ -1027,8 +1027,8 @@ textarea {
 .locale-switch {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px;
+  gap: 2px;
+  padding: 2px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.04);
@@ -1037,14 +1037,14 @@ textarea {
 .locale-switch-btn {
   border: 0;
   border-radius: 999px;
-  min-width: 38px;
-  min-height: 44px;
-  padding: 0 10px;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0 7px;
   background: transparent;
   color: var(--nav-text);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.04em;
   cursor: pointer;
   transition: background 140ms var(--ease), color 140ms var(--ease);
 }
@@ -1262,6 +1262,24 @@ textarea {
   min-height: 0;
   overflow: hidden;
   background: var(--bg-2);
+}
+
+.map-layers-collapse-btn {
+  display: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.map-layers-collapse-btn:hover {
+  background: var(--bg-3);
 }
 
 .map-workspace {
@@ -3139,6 +3157,16 @@ body.moving-house .house-placeholder {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.popover-plant-link {
+  color: var(--brand);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.popover-plant-link:hover {
+  text-decoration: underline;
 }
 
 .popover-actions {
@@ -5568,6 +5596,31 @@ th.sort-desc::after {
     display: flex;
   }
 
+  .map-layers-collapse-btn {
+    display: grid;
+    flex: 0 0 auto;
+  }
+
+  .map-shell.map-layers-collapsed {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+
+  .map-shell.map-layers-collapsed .map-layers-panel {
+    gap: 0;
+    overflow: hidden;
+    padding: var(--sp-3) 7px;
+  }
+
+  .map-shell.map-layers-collapsed .map-layers-header {
+    justify-content: center;
+  }
+
+  .map-shell.map-layers-collapsed .map-layers-header > div,
+  .map-shell.map-layers-collapsed .map-layers-panel > details,
+  .map-shell.map-layers-collapsed .map-layers-panel > section {
+    display: none;
+  }
+
   .top-search {
     flex: 0 1 220px;
   }
@@ -5731,7 +5784,7 @@ th.sort-desc::after {
 
   .mobile-map-actionbar {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 4px;
     position: fixed;
     left: var(--sp-2);
@@ -5745,6 +5798,10 @@ th.sort-desc::after {
     border: 1px solid var(--border);
     border-radius: var(--r-lg);
     box-shadow: var(--shadow-lg);
+  }
+
+  .mobile-map-actionbar:has(#mobile-map-shade-btn[hidden]) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .mobile-map-action {
@@ -11967,6 +12024,8 @@ td.inventory-qty-zero {
 
   body.map-tab-active .mobile-fab {
     bottom: calc(136px + env(safe-area-inset-bottom, 0px));
+    left: 16px;
+    right: auto;
     z-index: 43;
   }
 

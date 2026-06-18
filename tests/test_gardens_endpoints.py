@@ -1,5 +1,7 @@
 import os
+from unittest.mock import patch
 
+import gardenops.db as db
 from tests.base import BaseApiTest
 
 
@@ -107,6 +109,97 @@ class TestGardenSettings(BaseApiTest):
                 headers=headers,
             )
             self.assertEqual(resp.status_code, 404)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_geocode_garden_location_returns_bounded_results(self) -> None:
+        try:
+            client, headers, garden_id = self._create_garden_with_admin()
+            with patch(
+                "gardenops.routers.gardens._geocode_query",
+                return_value=[
+                    {
+                        "display_name": "Oslo, Norway",
+                        "latitude": 59.9139,
+                        "longitude": 10.7522,
+                    },
+                ],
+            ) as geocode_mock:
+                resp = client.get(
+                    f"/api/gardens/{garden_id}/geocode",
+                    headers=headers,
+                    params={"q": "  Oslo  "},
+                )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            self.assertEqual(resp.json()["results"][0]["display_name"], "Oslo, Norway")
+            geocode_mock.assert_called_once_with("Oslo")
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_garden_lidar_upload_status_and_delete(self) -> None:
+        try:
+            client, headers, garden_id = self._create_garden_with_admin()
+            conn = db.get_db()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO shademap_cache (
+                        cache_kind, cache_key, fetched_at_ms, content_type,
+                        payload_text, payload_blob, garden_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        "terrain-tile",
+                        f"lidar-upload-{garden_id}",
+                        db.current_timestamp_ms(),
+                        "application/json",
+                        "{}",
+                        None,
+                        garden_id,
+                    ),
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            upload = client.post(
+                f"/api/gardens/{garden_id}/lidar",
+                headers={
+                    **headers,
+                    "content-type": "application/octet-stream",
+                    "x-upload-filename": "terrain.laz",
+                },
+                content=b"fake-laz-data",
+            )
+            self.assertEqual(upload.status_code, 201, upload.text)
+            upload_body = upload.json()
+            self.assertTrue(upload_body["available"])
+            self.assertTrue(upload_body["uploaded"])
+            self.assertEqual(upload_body["filename"], "terrain.laz")
+
+            stored = self.test_media_dir / "lidar" / f"garden-{garden_id}" / "terrain.laz"
+            self.assertTrue(stored.exists())
+            self.assertEqual(stored.read_bytes(), b"fake-laz-data")
+
+            status = client.get(f"/api/gardens/{garden_id}/lidar", headers=headers)
+            self.assertEqual(status.status_code, 200, status.text)
+            self.assertTrue(status.json()["uploaded"])
+
+            conn = db.get_db()
+            try:
+                cached = conn.execute(
+                    "SELECT 1 FROM shademap_cache "
+                    "WHERE garden_id = %s AND cache_kind = 'terrain-tile'",
+                    (garden_id,),
+                ).fetchone()
+            finally:
+                db.return_db(conn)
+            self.assertIsNone(cached)
+
+            deleted = client.delete(f"/api/gardens/{garden_id}/lidar", headers=headers)
+            self.assertEqual(deleted.status_code, 200, deleted.text)
+            self.assertFalse(deleted.json()["uploaded"])
+            self.assertFalse(stored.exists())
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 

@@ -692,6 +692,25 @@ export interface GardenSettings {
   onboarding_complete: boolean;
 }
 
+export interface GardenLidarStatus {
+  garden_id: number;
+  available: boolean;
+  uploaded: boolean;
+  filename: string;
+  uploaded_filename: string;
+  bytes: number;
+  uploaded_bytes: number;
+  updated_at_ms: number | null;
+  source: string;
+  max_upload_bytes: number;
+}
+
+export interface GardenGeocodeResult {
+  display_name: string;
+  latitude: number;
+  longitude: number;
+}
+
 export interface ZoneCreateResult {
   zone_code: string;
   zone_name: string;
@@ -2221,6 +2240,49 @@ export async function updateGardenSettingsApi(
     `/api/gardens/${gardenId}/settings`,
     settings,
   );
+}
+
+export async function geocodeGardenLocationApi(
+  gardenId: number,
+  query: string,
+): Promise<GardenGeocodeResult[]> {
+  const params = new URLSearchParams({ q: query });
+  const response = await apiGet<{ results?: GardenGeocodeResult[] }>(
+    `/api/gardens/${gardenId}/geocode?${params.toString()}`,
+  );
+  return Array.isArray(response.results) ? response.results : [];
+}
+
+export async function getGardenLidarApi(
+  gardenId: number,
+): Promise<GardenLidarStatus> {
+  return apiGet<GardenLidarStatus>(`/api/gardens/${gardenId}/lidar`);
+}
+
+export async function uploadGardenLidarApi(options: {
+  gardenId: number;
+  file: File;
+  onProgress?: (pct: number) => void;
+}): Promise<GardenLidarStatus> {
+  const uploadOptions: { onProgress?: (pct: number) => void; gardenId: number } = {
+    gardenId: options.gardenId,
+  };
+  if (options.onProgress) uploadOptions.onProgress = options.onProgress;
+  return uploadBinary<GardenLidarStatus>(
+    `/api/gardens/${options.gardenId}/lidar`,
+    options.file,
+    {
+      "content-type": options.file.type || "application/octet-stream",
+      "x-upload-filename": options.file.name || "terrain.laz",
+    },
+    uploadOptions,
+  );
+}
+
+export async function deleteGardenLidarApi(
+  gardenId: number,
+): Promise<GardenLidarStatus> {
+  return apiDelete<GardenLidarStatus>(`/api/gardens/${gardenId}/lidar`);
 }
 
 export async function createZoneApi(

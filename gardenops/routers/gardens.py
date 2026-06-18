@@ -4,23 +4,35 @@ import re
 import secrets
 from hashlib import sha256
 from typing import Any, Literal
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 
 import psycopg
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import Field
 
 from gardenops.audit import write_audit_event
+from gardenops.branding import app_user_agent
 from gardenops.constants import GRID_COLS, GRID_ROWS
 from gardenops.db import DB, DbConn, current_timestamp_ms, ensure_indoor_plot
 from gardenops.events import notify_garden_modified
 from gardenops.models import LayoutExportBody, LayoutStateBody, StrictBaseModel
 from gardenops.rate_limit import enforce_rate_limit, env_int
+from gardenops.request_body import read_body_limited
 from gardenops.router_helpers import auth_context as _auth_context
 from gardenops.router_helpers import is_local_admin_fallback as _is_local_admin_fallback
 from gardenops.routers.auth import enforce_destructive_admin_controls
 from gardenops.security import AuthContext, user_lifecycle_enabled
 from gardenops.security_metrics import record_security_event
 from gardenops.services.garden_layout_lock import lock_garden_layout
+from gardenops.services.lidar_terrain import (
+    clear_uploaded_terrain,
+    lidar_upload_max_bytes,
+    local_terrain_storage_info,
+    save_uploaded_terrain,
+)
 from gardenops.services.media_store import unlink_storage_keys
 from gardenops.services.plot_references import delete_plots_for_replacement
 
@@ -146,6 +158,63 @@ def _enforce_lifecycle_rate_limit(
     )
 
 
+def _geocode_query(query: str) -> list[dict[str, object]]:
+    params = urlencode(
+        {
+            "format": "jsonv2",
+            "limit": "5",
+            "addressdetails": "0",
+            "q": query,
+        },
+    )
+    request = UrlRequest(
+        f"https://nominatim.openstreetmap.org/search?{params}",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": app_user_agent("garden-geocoder"),
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=8.0) as response:  # noqa: S310 - fixed public host.
+            payload = response.read(200_000)
+    except HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Location lookup failed") from exc
+    except URLError as exc:
+        raise HTTPException(status_code=502, detail="Location lookup unavailable") from exc
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=502, detail="Location lookup returned invalid data"
+        ) from exc
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=502, detail="Location lookup returned invalid data")
+
+    results: list[dict[str, object]] = []
+    for item in parsed[:5]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            latitude = float(str(item.get("lat", "")))
+            longitude = float(str(item.get("lon", "")))
+        except ValueError:
+            continue
+        if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+            continue
+        display_name = str(item.get("display_name") or "").strip()
+        if not display_name:
+            continue
+        results.append(
+            {
+                "display_name": display_name[:500],
+                "latitude": latitude,
+                "longitude": longitude,
+            },
+        )
+    return results
+
+
 def _require_user_lifecycle_enabled() -> None:
     if not user_lifecycle_enabled():
         raise HTTPException(status_code=404, detail="User lifecycle is disabled")
@@ -177,6 +246,14 @@ def _require_garden_exists(db: DbConn, garden_id: int) -> None:
     ).fetchone()
     if not exists:
         raise HTTPException(status_code=404, detail="Garden not found")
+
+
+def _invalidate_garden_terrain_state(db: DbConn, garden_id: int) -> None:
+    db.execute(
+        "DELETE FROM shademap_cache WHERE garden_id = %s AND cache_kind = 'terrain-tile'",
+        (garden_id,),
+    )
+    db.execute("DELETE FROM plot_elevations WHERE garden_id = %s", (garden_id,))
 
 
 def _require_membership_admin(
@@ -1296,6 +1373,110 @@ def get_garden_settings(
     }
 
 
+@router.get("/gardens/{garden_id}/geocode")
+def geocode_garden_location(
+    garden_id: int,
+    request: Request,
+    db: DB,
+    q: str = Query(..., min_length=2, max_length=500),
+) -> dict[str, object]:
+    context = _auth_context(request)
+    _require_membership_editor(db, context=context, garden_id=garden_id)
+    enforce_rate_limit(
+        request,
+        bucket="garden-geocode",
+        limit=env_int("GARDEN_GEOCODE_RATE_LIMIT", 20),
+        window_seconds=60,
+    )
+    query = q.strip()
+    if len(query) < 2:
+        raise HTTPException(status_code=400, detail="Location query is too short")
+    return {"results": _geocode_query(query)}
+
+
+@router.get("/gardens/{garden_id}/lidar")
+def get_garden_lidar_status(
+    garden_id: int,
+    request: Request,
+    db: DB,
+) -> dict[str, object]:
+    context = _auth_context(request)
+    _require_garden_exists(db, garden_id)
+    if not _is_platform_admin(context) and not _is_local_admin_fallback(context):
+        if context.user_id is None:
+            raise HTTPException(status_code=404, detail="Garden not found")
+        membership = db.execute(
+            "SELECT 1 FROM garden_memberships WHERE garden_id = %s AND user_id = %s LIMIT 1",
+            (garden_id, context.user_id),
+        ).fetchone()
+        if not membership:
+            raise HTTPException(status_code=404, detail="Garden not found")
+    return {"garden_id": garden_id, **local_terrain_storage_info(garden_id)}
+
+
+@router.post("/gardens/{garden_id}/lidar", status_code=201)
+async def upload_garden_lidar(
+    garden_id: int,
+    request: Request,
+    db: DB,
+) -> dict[str, object]:
+    context = _auth_context(request)
+    _require_membership_editor(db, context=context, garden_id=garden_id)
+    enforce_rate_limit(
+        request,
+        bucket="garden-lidar-upload",
+        limit=env_int("GARDEN_LIDAR_UPLOAD_RATE_LIMIT", 4),
+        window_seconds=60,
+    )
+    max_bytes = lidar_upload_max_bytes()
+    content_length_raw = request.headers.get("content-length", "").strip()
+    if content_length_raw:
+        try:
+            if int(content_length_raw) > max_bytes:
+                raise HTTPException(status_code=413, detail="LiDAR upload exceeds size limit")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length header") from None
+    payload = await read_body_limited(request, max_bytes)
+    filename = request.headers.get("x-upload-filename", "").strip()
+    try:
+        status = save_uploaded_terrain(garden_id, payload, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _invalidate_garden_terrain_state(db, garden_id)
+    db.commit()
+    notify_garden_modified()
+    _audit_membership_change(
+        request,
+        context,
+        _lifecycle_detail("garden.lidar.upload", garden_id=garden_id, filename=filename[:120]),
+        garden_id=garden_id,
+        db=db,
+    )
+    return {"garden_id": garden_id, **status}
+
+
+@router.delete("/gardens/{garden_id}/lidar")
+def delete_garden_lidar(
+    garden_id: int,
+    request: Request,
+    db: DB,
+) -> dict[str, object]:
+    context = _auth_context(request)
+    _require_membership_editor(db, context=context, garden_id=garden_id)
+    status = clear_uploaded_terrain(garden_id)
+    _invalidate_garden_terrain_state(db, garden_id)
+    db.commit()
+    notify_garden_modified()
+    _audit_membership_change(
+        request,
+        context,
+        _lifecycle_detail("garden.lidar.delete", garden_id=garden_id),
+        garden_id=garden_id,
+        db=db,
+    )
+    return {"garden_id": garden_id, **status}
+
+
 @router.patch("/gardens/{garden_id}/settings")
 def update_garden_settings(
     garden_id: int,
@@ -1404,10 +1585,11 @@ def update_garden_settings(
             },
             garden_id=garden_id,
         )
-        db.execute(
-            "DELETE FROM shademap_cache WHERE garden_id = %s AND cache_kind = 'terrain-tile'",
-            (garden_id,),
-        )
+        _invalidate_garden_terrain_state(db, garden_id)
+
+    if {"latitude", "longitude", "address"} & provided:
+        _invalidate_garden_terrain_state(db, garden_id)
+        db.execute("DELETE FROM weather_cache WHERE garden_id = %s", (garden_id,))
 
     params.append(garden_id)
     db.execute(

@@ -18,6 +18,7 @@ import type {
   AuthUserProfile,
   GardenMembership,
   GardenSettings,
+  GardenLidarStatus,
   GardenInvitation,
   GardenSummary,
   MeSettings,
@@ -52,7 +53,9 @@ import {
   getEmergencyReadOnlyApi,
   getGardenMembershipsApi,
   getGardenInvitationsApi,
+  geocodeGardenLocationApi,
   createGardenInvitationApi,
+  deleteGardenLidarApi,
   deleteGardenApi,
   deleteGardenMembershipApi,
   getAdminSystemHealthApi,
@@ -70,12 +73,14 @@ import {
   setEmergencyReadOnlyApi,
   startAuthTotpEnrollmentApi,
   getGardenSettingsApi,
+  getGardenLidarApi,
   getMissingPlantCoversApi,
   getPasskeysApi,
   getProviderSettingsApi,
   populateMissingPlantCoversApi,
   updateAuthMeSettingsApi,
   updateGardenSettingsApi,
+  uploadGardenLidarApi,
   updateAuthUserApi,
   updateProviderSettingsApi,
   updateUserTierApi,
@@ -121,6 +126,9 @@ interface AdminState {
   passkeysEnabled: boolean;
   providerSettings: ProviderSettings | null;
   gardenSettings: GardenSettings | null;
+  gardenLidarStatus: GardenLidarStatus | null;
+  gardenLidarUploading: boolean;
+  gardenLidarProgress: number;
   mfaEnrollment: {
     secret: string;
     provisioning_uri: string;
@@ -163,6 +171,9 @@ const state: AdminState = {
   passkeysEnabled: false,
   providerSettings: null,
   gardenSettings: null,
+  gardenLidarStatus: null,
+  gardenLidarUploading: false,
+  gardenLidarProgress: 0,
   mfaEnrollment: null,
   latestRecoveryCodes: [],
   emergencyReadOnly: { enabled: false, expires_at_ms: null },
@@ -220,6 +231,19 @@ function fmtDate(value: number | string | null | undefined): string {
     year: "numeric", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
+}
+
+function fmtBytes(value: number | null | undefined): string {
+  if (!value || value <= 0) return "\u2014";
+  const units = ["B", "KB", "MB", "GB"];
+  let amount = value;
+  let index = 0;
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024;
+    index += 1;
+  }
+  const digits = amount >= 10 || index === 0 ? 0 : 1;
+  return `${amount.toFixed(digits)} ${units[index]}`;
 }
 
 function badge(text: string, variant: "green" | "red" | "muted" | "amber" | "blue" | "purple" = "muted"): string {
@@ -900,6 +924,36 @@ function renderGardenSection(): string {
       </div>
     `
     : "";
+  const lidarStatus = state.gardenLidarStatus;
+  const lidarProgress = Math.max(0, Math.min(100, state.gardenLidarProgress));
+  const lidarMeta = lidarStatus?.available
+    ? t("admin.garden.lidar_status_ready", {
+      filename: lidarStatus.filename || t("common.na"),
+      size: fmtBytes(lidarStatus.bytes),
+    })
+    : t("admin.garden.lidar_status_empty");
+  const lidarUpdated = lidarStatus?.updated_at_ms
+    ? `<p class="adm-section-desc">${t("admin.garden.lidar_updated", { date: fmtDate(lidarStatus.updated_at_ms) })}</p>`
+    : "";
+  const lidarCard = `
+    <div class="adm-card adm-card--form">
+      <h3 class="adm-card-title">${t("admin.garden.lidar_title")}</h3>
+      <p class="adm-section-desc">${t("admin.garden.lidar_desc")}</p>
+      <p class="adm-section-desc">${esc(lidarMeta)}</p>
+      ${lidarUpdated}
+      ${state.gardenLidarUploading ? `
+        <div class="adm-progress-track" aria-hidden="true">
+          <div class="adm-progress-fill" style="width:${lidarProgress}%"></div>
+        </div>
+        <p class="adm-section-desc">${t("media.upload_progress", { percent: lidarProgress })}</p>
+      ` : ""}
+      <input id="adm-garden-lidar-input" type="file" accept=".las,.laz" hidden />
+      <div class="adm-btn-group">
+        <button type="button" id="adm-garden-lidar-upload" class="adm-btn"${state.gardenLidarUploading ? " disabled" : ""}>${t("admin.garden.lidar_upload")}</button>
+        <button type="button" id="adm-garden-lidar-remove" class="adm-btn adm-btn--ghost"${lidarStatus?.uploaded && !state.gardenLidarUploading ? "" : " disabled"}>${t("admin.garden.lidar_remove")}</button>
+      </div>
+    </div>
+  `;
   return `
     <div class="adm-section-header">
       <div>
@@ -913,17 +967,12 @@ function renderGardenSection(): string {
         <label>${t("admin.garden.name_label")}
           <input type="text" id="adm-garden-name" class="adm-input" maxlength="120" value="${esc(settings.name)}" />
         </label>
-        <div class="adm-form-row">
-          <label>${t("onboarding.width")}
-            <input type="number" id="adm-garden-grid-cols" class="adm-input" min="5" max="100" step="1" value="${settings.grid_cols}" />
-          </label>
-          <label>${t("onboarding.depth")}
-            <input type="number" id="adm-garden-grid-rows" class="adm-input" min="5" max="100" step="1" value="${settings.grid_rows}" />
-          </label>
-        </div>
         <label>${t("admin.garden.address_label")}
           <input type="text" id="adm-garden-address" class="adm-input" maxlength="500" value="${esc(settings.address)}" />
         </label>
+        <div class="adm-btn-group">
+          <button type="button" id="adm-garden-geocode" class="adm-btn adm-btn--ghost">${t("admin.garden.find_coordinates")}</button>
+        </div>
         <div class="adm-form-row">
           <label>${t("onboarding.latitude")}
             <input type="number" id="adm-garden-latitude" class="adm-input" min="-90" max="90" step="0.0001" value="${settings.latitude ?? ""}" />
@@ -938,6 +987,7 @@ function renderGardenSection(): string {
       </div>
     </div>
     ${mapSetupCard}
+    ${lidarCard}
     <div class="adm-card adm-card--form">
       <h3 class="adm-card-title">${t("admin.garden.onboarding_title")}</h3>
       <p class="adm-section-desc">${t("common.status")}: ${onboardingStatus}</p>
@@ -1736,15 +1786,22 @@ async function loadGardenSettings(): Promise<void> {
   const ctx = gardenContextFn?.();
   if (!ctx?.activeGardenId || !canEditActiveGarden()) {
     state.gardenSettings = null;
+    state.gardenLidarStatus = null;
     state.gardenMemberships = [];
     state.missingPlantCovers = [];
     state.missingPlantCoversTotal = 0;
     return;
   }
   try {
-    state.gardenSettings = await getGardenSettingsApi(ctx.activeGardenId);
+    const [settings, lidarStatus] = await Promise.all([
+      getGardenSettingsApi(ctx.activeGardenId),
+      getGardenLidarApi(ctx.activeGardenId),
+    ]);
+    state.gardenSettings = settings;
+    state.gardenLidarStatus = lidarStatus;
   } catch (err) {
     state.gardenSettings = null;
+    state.gardenLidarStatus = null;
     showToast(getApiErrorMessage(err), "error");
   }
   if (isPlatformAdmin()) {
@@ -1949,21 +2006,13 @@ function wireSection(): void {
       return;
     }
     const name = queryInput("adm-garden-name")?.value.trim() ?? "";
-    const gridColsRaw = queryInput("adm-garden-grid-cols")?.value.trim() ?? "";
-    const gridRowsRaw = queryInput("adm-garden-grid-rows")?.value.trim() ?? "";
     const address = queryInput("adm-garden-address")?.value ?? "";
     const latRaw = queryInput("adm-garden-latitude")?.value.trim() ?? "";
     const lonRaw = queryInput("adm-garden-longitude")?.value.trim() ?? "";
-    const gridCols = Number.parseInt(gridColsRaw, 10);
-    const gridRows = Number.parseInt(gridRowsRaw, 10);
     const latitude = latRaw ? Number(latRaw) : null;
     const longitude = lonRaw ? Number(lonRaw) : null;
     if (!name) {
       showToast(t("admin.toast.garden_name_required"), "error");
-      return;
-    }
-    if (!Number.isFinite(gridCols) || !Number.isFinite(gridRows) || gridCols < 5 || gridCols > 100 || gridRows < 5 || gridRows > 100) {
-      showToast(t("admin.toast.grid_invalid"), "error");
       return;
     }
     if (latRaw && !Number.isFinite(latitude)) {
@@ -1977,8 +2026,6 @@ function wireSection(): void {
     try {
       state.gardenSettings = await updateGardenSettingsApi(ctx.activeGardenId, {
         name,
-        grid_cols: gridCols,
-        grid_rows: gridRows,
         address,
         latitude,
         longitude,
@@ -1988,6 +2035,91 @@ function wireSection(): void {
       showToast(t("admin.toast.garden_saved"), "success");
       repaint();
     } catch (err) { showToast(getApiErrorMessage(err), "error"); }
+  });
+
+  container.querySelector("#adm-garden-geocode")?.addEventListener("click", async () => {
+    const ctx = gardenContextFn?.();
+    if (!ctx?.activeGardenId) {
+      showToast(t("admin.toast.no_active_garden"), "error");
+      return;
+    }
+    const addressInput = queryInput("adm-garden-address");
+    const query = (addressInput?.value.trim() || queryInput("adm-garden-name")?.value.trim() || "").trim();
+    if (query.length < 2) {
+      showToast(t("admin.garden.geocode_no_query"), "error");
+      return;
+    }
+    try {
+      const results = await geocodeGardenLocationApi(ctx.activeGardenId, query);
+      const first = results[0];
+      if (!first) {
+        showToast(t("admin.garden.geocode_no_results"), "error");
+        return;
+      }
+      if (addressInput) addressInput.value = first.display_name;
+      const latitudeInput = queryInput("adm-garden-latitude");
+      const longitudeInput = queryInput("adm-garden-longitude");
+      if (latitudeInput) latitudeInput.value = String(first.latitude);
+      if (longitudeInput) longitudeInput.value = String(first.longitude);
+      showToast(t("admin.garden.geocode_applied"), "success");
+    } catch (err) {
+      showToast(getApiErrorMessage(err), "error");
+    }
+  });
+
+  container.querySelector("#adm-garden-lidar-upload")?.addEventListener("click", () => {
+    queryInput("adm-garden-lidar-input")?.click();
+  });
+  container.querySelector("#adm-garden-lidar-input")?.addEventListener("change", async (event) => {
+    const ctx = gardenContextFn?.();
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0] ?? null;
+    input.value = "";
+    if (!ctx?.activeGardenId || !file) return;
+    if (!/\.(las|laz)$/i.test(file.name)) {
+      showToast(t("admin.garden.lidar_bad_file"), "error");
+      return;
+    }
+    state.gardenLidarUploading = true;
+    state.gardenLidarProgress = 0;
+    repaint();
+    try {
+      state.gardenLidarStatus = await uploadGardenLidarApi({
+        gardenId: ctx.activeGardenId,
+        file,
+        onProgress: (pct) => {
+          state.gardenLidarProgress = pct;
+          repaint();
+        },
+      });
+      state.gardenLidarProgress = 100;
+      await onGardenStateChanged?.();
+      await loadGardenSettings();
+      showToast(t("admin.garden.lidar_uploaded"), "success");
+    } catch (err) {
+      showToast(getApiErrorMessage(err), "error");
+    } finally {
+      state.gardenLidarUploading = false;
+      state.gardenLidarProgress = 0;
+      repaint();
+    }
+  });
+  container.querySelector("#adm-garden-lidar-remove")?.addEventListener("click", async () => {
+    const ctx = gardenContextFn?.();
+    if (!ctx?.activeGardenId) {
+      showToast(t("admin.toast.no_active_garden"), "error");
+      return;
+    }
+    if (!window.confirm(t("admin.garden.lidar_confirm_remove"))) return;
+    try {
+      state.gardenLidarStatus = await deleteGardenLidarApi(ctx.activeGardenId);
+      await onGardenStateChanged?.();
+      await loadGardenSettings();
+      showToast(t("admin.garden.lidar_removed"), "success");
+      repaint();
+    } catch (err) {
+      showToast(getApiErrorMessage(err), "error");
+    }
   });
 
   container.querySelector("#adm-map-open-editor-btn")?.addEventListener("click", () => {
