@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import secrets
+import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ GROUND_CLASSIFICATION: Final[int] = 2
 DEFAULT_RESOLUTION_METERS: Final[float] = 1.0
 TILE_SIZE: Final[int] = 256
 LOCAL_TERRAIN_SCAN_PATTERN: Final[str] = "*.laz"
+DEFAULT_MAX_TERRAIN_GRID_CELLS: Final[int] = 4_000_000
 
 
 @dataclass(frozen=True)
@@ -139,6 +141,16 @@ def lidar_upload_max_bytes() -> int:
     return 256 * 1024 * 1024
 
 
+def _max_terrain_grid_cells() -> int:
+    raw = os.environ.get("SHADEMAP_LOCAL_TERRAIN_MAX_GRID_CELLS", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return DEFAULT_MAX_TERRAIN_GRID_CELLS
+
+
 def _uploaded_terrain_dir(garden_id: int) -> Path:
     return _media_storage_root() / "lidar" / f"garden-{garden_id}"
 
@@ -234,6 +246,8 @@ def save_uploaded_terrain(
     if len(payload) > max_bytes:
         raise ValueError("LiDAR upload exceeds size limit")
 
+    _validate_uploaded_terrain_payload(payload, suffix)
+
     target_dir = _uploaded_terrain_dir(garden_id)
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"terrain{suffix}"
@@ -304,15 +318,57 @@ def _fill_nan_grid(grid: np.ndarray) -> np.ndarray:
     return result
 
 
+def _terrain_grid_dimensions(
+    reader: laspy.LasReader,
+    *,
+    resolution_m: float,
+) -> tuple[int, int, float, float, float, float]:
+    min_x, min_y, _ = map(float, reader.header.mins)
+    max_x, max_y, _ = map(float, reader.header.maxs)
+    bounds = (min_x, max_x, min_y, max_y)
+    if not all(math.isfinite(value) for value in bounds):
+        raise ValueError("LiDAR bounds must be finite")
+    if max_x < min_x or max_y < min_y:
+        raise ValueError("LiDAR bounds are invalid")
+    cols = int(math.ceil((max_x - min_x) / resolution_m)) + 1
+    rows = int(math.ceil((max_y - min_y) / resolution_m)) + 1
+    if rows < 1 or cols < 1:
+        raise ValueError("LiDAR bounds are invalid")
+    max_cells = _max_terrain_grid_cells()
+    if rows * cols > max_cells:
+        raise ValueError(
+            "LiDAR bounds are too large for terrain processing "
+            f"({rows * cols} cells; limit {max_cells})"
+        )
+    return rows, cols, min_x, max_x, min_y, max_y
+
+
+def _validate_uploaded_terrain_payload(payload: bytes, suffix: str) -> None:
+    with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+        tmp.write(payload)
+        tmp.flush()
+        try:
+            with laspy.open(tmp.name) as reader:
+                if reader.header.parse_crs() is None:
+                    raise ValueError("LiDAR upload is missing CRS metadata")
+                _terrain_grid_dimensions(reader, resolution_m=_resolution_meters())
+                for _points in reader.chunk_iterator(1_000_000):
+                    pass
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("LiDAR upload is not a readable LAS/LAZ file") from exc
+
+
 def _accumulate_average_grid(
     reader: laspy.LasReader,
     *,
     resolution_m: float,
 ) -> tuple[np.ndarray, float, float, float, float]:
-    min_x, min_y, _ = map(float, reader.header.mins)
-    max_x, max_y, _ = map(float, reader.header.maxs)
-    cols = int(math.ceil((max_x - min_x) / resolution_m)) + 1
-    rows = int(math.ceil((max_y - min_y) / resolution_m)) + 1
+    rows, cols, min_x, max_x, min_y, max_y = _terrain_grid_dimensions(
+        reader,
+        resolution_m=resolution_m,
+    )
 
     ground_sum = np.zeros((rows, cols), dtype=np.float64)
     ground_count = np.zeros((rows, cols), dtype=np.uint32)
