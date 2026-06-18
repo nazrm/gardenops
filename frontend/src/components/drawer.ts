@@ -14,6 +14,7 @@ export interface DrawerParams {
   onSearch: (event: Event) => void;
   onRemove: (pltId: string) => void;
   onEdit: (plant: Plant) => void;
+  onDeletePlot?: (() => void) | undefined;
   onCreatePlant?: ((plotId: string) => void) | undefined;
   onCreateCalendarEvent?:
     | ((prefill: { plant_ids?: string[]; plot_ids?: string[] }) => void)
@@ -163,7 +164,22 @@ export function showDrawer(params: DrawerParams): void {
   closeBtn.type = "button";
   closeBtn.textContent = "\u00d7";
 
-  header.append(title, closeBtn);
+  const headerActions = document.createElement("div");
+  headerActions.className = "drawer-header-actions";
+
+  if (params.canWrite !== false && params.onDeletePlot) {
+    const deletePlotBtn = document.createElement("button");
+    deletePlotBtn.type = "button";
+    deletePlotBtn.className = "drawer-delete-plot-btn";
+    deletePlotBtn.textContent = t("popover.delete_plot");
+    deletePlotBtn.addEventListener("click", () => {
+      params.onDeletePlot?.();
+    });
+    headerActions.appendChild(deletePlotBtn);
+  }
+
+  headerActions.appendChild(closeBtn);
+  header.append(title, headerActions);
 
   const addPlantSection = document.createElement("div");
   addPlantSection.className = "add-plant-section";

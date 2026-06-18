@@ -3070,7 +3070,8 @@ body.moving-house .house-placeholder {
 .plot-popover {
   position: fixed;
   z-index: 100;
-  width: 230px;
+  width: 260px;
+  max-width: min(260px, calc(100vw - 24px));
   background: var(--bg-1);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
@@ -3129,6 +3130,8 @@ body.moving-house .house-placeholder {
   margin: 0 0 var(--sp-2) 0;
   padding: 0;
   font-size: 13px;
+  max-height: min(240px, 42vh);
+  overflow-y: auto;
 }
 
 .popover-plants li {
@@ -3234,6 +3237,7 @@ body.moving-house .house-placeholder {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--sp-3);
   padding: var(--sp-4);
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -3243,6 +3247,33 @@ body.moving-house .house-placeholder {
   font-size: 20px;
   font-weight: 400;
   color: var(--brand-text);
+}
+
+.drawer-header-actions,
+.sheet-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.drawer-delete-plot-btn {
+  border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border));
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-1));
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+  min-height: 34px;
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms var(--ease), color 120ms var(--ease), border-color 120ms var(--ease);
+}
+
+.drawer-delete-plot-btn:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--text-inv);
 }
 
 .close-btn {
@@ -5488,6 +5519,7 @@ th.sort-desc::after {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--sp-3);
   padding: 0 var(--sp-4) var(--sp-2);
   flex-shrink: 0;
 }

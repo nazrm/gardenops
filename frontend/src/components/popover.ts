@@ -5,13 +5,11 @@ export interface PopoverParams {
   plotId: string;
   zone: string;
   plantCount: number;
-  topPlants: Plant[];
+  plants: Plant[];
   anchorRect: DOMRect;
   viewportRect: DOMRect;
   onViewDetails: () => void;
-  onCreateCalendarEvent?: (() => void) | undefined;
   onEdit?: (() => void) | undefined;
-  onDelete?: (() => void) | undefined;
   onDismiss: () => void;
 }
 
@@ -22,9 +20,9 @@ export function showPopover(params: PopoverParams): void {
   dismissPopover();
 
   const {
-    plotId, zone, plantCount, topPlants,
+    plotId, zone, plantCount, plants,
     anchorRect, viewportRect,
-    onViewDetails, onCreateCalendarEvent, onEdit, onDelete, onDismiss,
+    onViewDetails, onEdit, onDismiss,
   } = params;
 
   const el = document.createElement("div");
@@ -49,8 +47,8 @@ export function showPopover(params: PopoverParams): void {
 
   const plantList = document.createElement("ul");
   plantList.className = "popover-plants";
-  if (topPlants.length > 0) {
-    topPlants.forEach((plant) => {
+  if (plants.length > 0) {
+    plants.forEach((plant) => {
       const item = document.createElement("li");
       item.textContent = plant.name;
       plantList.appendChild(item);
@@ -75,18 +73,7 @@ export function showPopover(params: PopoverParams): void {
     onViewDetails();
   });
 
-  const calendarBtn = document.createElement("button");
-  calendarBtn.className = "popover-details-btn";
-  calendarBtn.type = "button";
-  calendarBtn.dataset["createCalendarEventPlot"] = plotId;
-  calendarBtn.textContent = t("calendar.new_event");
-  calendarBtn.hidden = !onCreateCalendarEvent;
-  calendarBtn.addEventListener("click", () => {
-    dismissPopover();
-    onCreateCalendarEvent?.();
-  });
-
-  actions.append(detailsBtn, calendarBtn);
+  actions.append(detailsBtn);
   if (onEdit) {
     const editBtn = document.createElement("button");
     editBtn.className = "popover-edit-btn";
@@ -98,19 +85,6 @@ export function showPopover(params: PopoverParams): void {
       onEdit();
     });
     actions.appendChild(editBtn);
-  }
-
-  if (onDelete) {
-    const deleteBtn = document.createElement("button");
-    deleteBtn.className = "popover-delete-btn";
-    deleteBtn.type = "button";
-    deleteBtn.title = t("popover.delete_plot");
-    deleteBtn.textContent = "\u00d7";
-    deleteBtn.addEventListener("click", () => {
-      dismissPopover();
-      onDelete();
-    });
-    actions.appendChild(deleteBtn);
   }
   el.append(header, meta, plantList, actions);
 
@@ -154,8 +128,8 @@ function positionPopover(
   let left = anchor.right + gap;
   let top = anchor.top;
 
-  const popW = 220;
-  const popH = 180;
+  const popW = el.offsetWidth || 260;
+  const popH = el.offsetHeight || 240;
 
   if (left + popW > viewport.right - 8) {
     left = anchor.left - popW - gap;
