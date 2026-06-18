@@ -237,10 +237,16 @@ def _care_candidates_for_context(
             SELECT DISTINCT {fields}
             FROM plants p
             LEFT JOIN plant_ownership po ON po.plt_id = p.plt_id
-            WHERE po.garden_id = %s OR po.garden_id IS NULL
+            WHERE (po.garden_id = %s OR po.garden_id IS NULL)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM plant_ownership other_po
+                  WHERE other_po.plt_id = p.plt_id
+                    AND other_po.garden_id <> %s
+              )
             ORDER BY p.name
             """,
-            (int(context.garden_id),),
+            (int(context.garden_id), int(context.garden_id)),
         ).fetchall()
     elif context.role == "admin":
         rows = db.execute(
@@ -249,9 +255,15 @@ def _care_candidates_for_context(
             FROM plants p
             JOIN plant_ownership po ON po.plt_id = p.plt_id
             WHERE po.garden_id = %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM plant_ownership other_po
+                  WHERE other_po.plt_id = p.plt_id
+                    AND other_po.garden_id <> %s
+              )
             ORDER BY p.name
             """,
-            (int(context.garden_id),),
+            (int(context.garden_id), int(context.garden_id)),
         ).fetchall()
     else:
         rows = db.execute(
@@ -260,9 +272,15 @@ def _care_candidates_for_context(
             FROM plants p
             JOIN plant_ownership po ON po.plt_id = p.plt_id
             WHERE po.garden_id = %s AND po.owner_user_id = %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM plant_ownership other_po
+                  WHERE other_po.plt_id = p.plt_id
+                    AND other_po.garden_id <> %s
+              )
             ORDER BY p.name
             """,
-            (int(context.garden_id), int(context.user_id or 0)),
+            (int(context.garden_id), int(context.user_id or 0), int(context.garden_id)),
         ).fetchall()
     return [dict(row) for row in rows]
 

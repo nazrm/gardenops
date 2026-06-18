@@ -127,6 +127,7 @@ from gardenops.routers.tasks import router as tasks_router  # noqa: E402
 from gardenops.routers.weather import router as weather_router  # noqa: E402
 from gardenops.routers.workflows import router as workflows_router  # noqa: E402
 from gardenops.security import (  # noqa: E402
+    admin_mfa_required,
     auth_mode,
     create_user,
     csrf_token_matches_context,
@@ -171,6 +172,12 @@ IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 _LOG_MSG_MAX_LEN = 500
 _LOG_TRACEBACK_MAX_LEN = 2000
+_MFA_SECRET_PLACEHOLDERS = frozenset(
+    {
+        "generate-at-least-32-random-characters",
+        "<generate-at-least-32-random-characters>",
+    },
+)
 _TAILLOG_MAX_QUEUE = 1000
 _TAILLOG_TIMEOUT_SECONDS = 3
 _TAILLOG_SKIP_FIELDS = frozenset(
@@ -817,6 +824,23 @@ def _validate_runtime_security_config() -> None:
                 "APP_ENV=production or INTERNET_EXPOSED=true forbids "
                 "AUTH_SESSION_COOKIE_SAMESITE=none",
             )
+        if is_auth_required() and session_auth_enabled():
+            mfa_secret = os.environ.get("AUTH_MFA_SECRET_KEY", "").strip()
+            if not mfa_secret:
+                raise RuntimeError(
+                    "APP_ENV=production or INTERNET_EXPOSED=true requires AUTH_MFA_SECRET_KEY "
+                    "to keep MFA secrets out of the database",
+                )
+            if len(mfa_secret) < 32:
+                raise RuntimeError(
+                    "APP_ENV=production or INTERNET_EXPOSED=true requires "
+                    "AUTH_MFA_SECRET_KEY to be at least 32 characters",
+                )
+            if mfa_secret in _MFA_SECRET_PLACEHOLDERS:
+                raise RuntimeError(
+                    "APP_ENV=production or INTERNET_EXPOSED=true requires "
+                    "AUTH_MFA_SECRET_KEY to be generated secret material, not a placeholder",
+                )
 
     if _is_internet_exposed():
         if not is_auth_required():
@@ -989,7 +1013,31 @@ def _admin_mfa_setup_path_allowed(path: str) -> bool:
         "/api/auth/me/settings",
         "/api/auth/logout",
         "/api/auth/reauthenticate",
+        "/api/auth/passkeys",
+        "/api/auth/passkeys/register/options",
+        "/api/auth/passkeys/register/verify",
     } or path.startswith("/api/auth/mfa")
+
+
+def _admin_strong_auth_path_allowed(path: str) -> bool:
+    return path in {
+        "/api/auth/status",
+        "/api/auth/me",
+        "/api/auth/me/settings",
+        "/api/auth/logout",
+        "/api/auth/reauthenticate",
+        "/api/auth/reauthenticate/passkey/options",
+        "/api/auth/reauthenticate/passkey/verify",
+    }
+
+
+def _admin_session_requires_strong_auth(context: Any) -> bool:
+    return (
+        context.auth_type == "session"
+        and context.role == "admin"
+        and (admin_mfa_required() or context.mfa_enabled or context.passkey_enrolled)
+        and int(context.mfa_authenticated_at_ms or 0) <= 0
+    )
 
 
 def _forced_password_change_path_allowed(path: str) -> bool:
@@ -1225,6 +1273,8 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         "/api/auth/status",
         "/api/auth/bootstrap",
         "/api/auth/login",
+        "/api/auth/passkeys/login/options",
+        "/api/auth/passkeys/login/verify",
         "/api/auth/reset-password",
         "/api/auth/password-policy",
         "/api/auth/invitations/accept",
@@ -1237,6 +1287,8 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
     csrf_exempt_mutation_paths = {
         "/api/auth/bootstrap",
         "/api/auth/login",
+        "/api/auth/passkeys/login/options",
+        "/api/auth/passkeys/login/verify",
         "/api/auth/reset-password",
         "/api/auth/invitations/accept",
         "/api/auth/invitations/peek",
@@ -1269,6 +1321,10 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         # Let CORS middleware answer browser preflight checks.
         if request.method == "OPTIONS":
             return await call_next(request)
+        edge_detail = _edge_proxy_violation_detail(request)
+        if edge_detail is not None:
+            record_security_event("edge_origin_rejections")
+            return JSONResponse(status_code=403, content={"detail": edge_detail})
         if _is_production():
             if _forwarding_headers_present(request) and not _trust_proxy_headers():
                 return JSONResponse(
@@ -1370,6 +1426,18 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
                 )
             if (
                 auth_context
+                and not auth_context.mfa_setup_required
+                and protected
+                and _admin_session_requires_strong_auth(auth_context)
+                and not _admin_strong_auth_path_allowed(path)
+            ):
+                _audit_mutation(403, "Platform-admin strong authentication required")
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Platform-admin MFA or passkey authentication is required"},
+                )
+            if (
+                auth_context
                 and request.method in {"POST", "PUT", "PATCH", "DELETE"}
                 and path.startswith("/api")
                 and not path.startswith("/api/auth/")
@@ -1434,6 +1502,8 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         emergency_exempt_paths = {
             "/api/auth/logout",
             "/api/auth/reauthenticate",
+            "/api/auth/reauthenticate/passkey/options",
+            "/api/auth/reauthenticate/passkey/verify",
             "/api/auth/emergency-read-only",
             "/api/auth/revoke-all-sessions",
             "/api/auth/revoke-user-sessions",

@@ -4,7 +4,7 @@ import { buildInvitationLink } from "../core/urlSecurity";
 import { queryInput, querySelect, queryTextArea } from "../core/dom";
 import { getApiErrorMessage } from "../services/api";
 import { featuresLostOnDowngrade } from "../core/featureGates";
-import { confirmDialog, promptDialog } from "./dialogCore";
+import { confirmDialog, promptDialog, promptPasswordDialog } from "./dialogCore";
 import { showToast } from "./toast";
 import { clearOfflineQueue } from "../services/offlineQueue";
 import type {
@@ -22,6 +22,7 @@ import type {
   GardenSummary,
   MeSettings,
   MissingPlantCoverReportItem,
+  PasskeySummary,
   PopulatePlantCoverResultItem,
   ProviderSecretKey,
   ProviderSettings,
@@ -31,13 +32,19 @@ import type {
   SecurityMetrics,
 } from "../services/api";
 import {
+  beginPasskeyReauthenticationApi,
+  beginPasskeyRegistrationApi,
   confirmAuthTotpEnrollmentApi,
   createAuthUserApi,
   deleteAuthUserApi,
+  deletePasskeyApi,
   disableAuthMfaApi,
+  finishPasskeyReauthenticationApi,
+  finishPasskeyRegistrationApi,
   getAuthAuditEventsApi,
   getAuthMeApi,
   getAuthMeSettingsApi,
+  getAuthStatusApi,
   getSecurityAlertsApi,
   getAuthSessionsApi,
   getSecurityMetricsApi,
@@ -64,6 +71,7 @@ import {
   startAuthTotpEnrollmentApi,
   getGardenSettingsApi,
   getMissingPlantCoversApi,
+  getPasskeysApi,
   getProviderSettingsApi,
   populateMissingPlantCoversApi,
   updateAuthMeSettingsApi,
@@ -73,6 +81,7 @@ import {
   updateUserTierApi,
   createUserInvitationApi,
 } from "../services/api";
+import { createPasskey, getPasskey, isPasskeySupported } from "../features/passkeys";
 
 const esc = escapeHtml;
 
@@ -90,6 +99,8 @@ interface AdminState {
   lastInviteLink: string;
   me: AuthUserProfile | null;
   meSettings: MeSettings | null;
+  passkeys: PasskeySummary[];
+  passkeysEnabled: boolean;
   providerSettings: ProviderSettings | null;
   gardenSettings: GardenSettings | null;
   mfaEnrollment: {
@@ -130,6 +141,8 @@ const state: AdminState = {
   lastInviteLink: "",
   me: null,
   meSettings: null,
+  passkeys: [],
+  passkeysEnabled: false,
   providerSettings: null,
   gardenSettings: null,
   mfaEnrollment: null,
@@ -330,6 +343,68 @@ function renderMfaStatusBadge(mfa: AuthMfaState | null, me: AuthUserProfile | nu
   return badge(t("admin.mfa.badge_disabled"), "muted");
 }
 
+function passkeyDisplayName(passkey: PasskeySummary): string {
+  return passkey.nickname.trim() || t("admin.passkeys.default_name");
+}
+
+function renderPasskeyDevice(passkey: PasskeySummary): string {
+  const parts: string[] = [];
+  if (passkey.credential_device_type === "multi_device") {
+    parts.push(t("admin.passkeys.device_multi"));
+  } else if (passkey.credential_device_type === "single_device") {
+    parts.push(t("admin.passkeys.device_single"));
+  }
+  if (passkey.credential_backed_up) {
+    parts.push(t("admin.passkeys.backed_up"));
+  }
+  return parts.length ? parts.join(" · ") : t("common.na");
+}
+
+function renderPasskeysCard(): string {
+  const browserSupported = isPasskeySupported();
+  const addDisabled = !state.passkeysEnabled || !browserSupported;
+  const unavailableText = !state.passkeysEnabled
+    ? t("admin.passkeys.unavailable")
+    : (!browserSupported ? t("admin.passkeys.browser_unsupported") : "");
+  const rows = state.passkeys.map((passkey) => `
+    <tr data-passkey-id="${passkey.id}">
+      <td>${esc(passkeyDisplayName(passkey))}</td>
+      <td>${esc(fmtDate(passkey.created_at_ms))}</td>
+      <td>${esc(passkey.last_used_at_ms ? fmtDate(passkey.last_used_at_ms) : t("admin.passkeys.never_used"))}</td>
+      <td>${esc(renderPasskeyDevice(passkey))}</td>
+      <td>
+        <button type="button" class="adm-btn adm-btn--ghost adm-passkey-remove">${t("admin.passkeys.remove")}</button>
+      </td>
+    </tr>
+  `).join("");
+  return `
+    <div class="adm-card adm-card--form">
+      <h3 class="adm-card-title">${t("admin.passkeys.title")}</h3>
+      <p class="adm-section-desc">${t("admin.passkeys.desc")}</p>
+      ${unavailableText ? `<p class="adm-section-desc">${unavailableText}</p>` : ""}
+      ${state.passkeys.length > 0 ? `
+        <div class="adm-table-wrap">
+          <table class="adm-table">
+            <thead>
+              <tr>
+                <th>${t("admin.passkeys.name")}</th>
+                <th>${t("admin.passkeys.created")}</th>
+                <th>${t("admin.passkeys.last_used")}</th>
+                <th>${t("admin.passkeys.device")}</th>
+                <th>${t("common.actions")}</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      ` : `<p class="adm-empty">${t("admin.passkeys.none")}</p>`}
+      <div class="adm-btn-group">
+        <button type="button" id="adm-passkey-add" class="adm-btn adm-btn--primary" ${addDisabled ? "disabled" : ""}>${t("admin.passkeys.add")}</button>
+      </div>
+    </div>
+  `;
+}
+
 function isPlatformAdmin(): boolean {
   return state.me?.role === "admin";
 }
@@ -368,7 +443,21 @@ async function authorizeSensitiveAdminAction(
   const actionReason = await promptRequired(`${actionLabel} reason:`, defaultReason);
   if (!actionReason) return null;
   if (state.me?.auth_type === "session") {
-    const currentPassword = await promptRequired(
+    if (state.me.mfa_methods.includes("passkey") && isPasskeySupported()) {
+      try {
+        const options = await beginPasskeyReauthenticationApi();
+        const credential = await getPasskey(options.publicKey);
+        await finishPasskeyReauthenticationApi(options.challenge_token, credential);
+        state.me = { ...state.me, mfa_authenticated: true };
+        return actionReason;
+      } catch (err) {
+        if (!state.me.mfa_enabled && err instanceof DOMException && err.name === "NotAllowedError") {
+          return null;
+        }
+        if (!state.me.mfa_enabled) throw err;
+      }
+    }
+    const currentPassword = await promptPasswordDialog(
       t("admin_panel.confirm_password_prompt", { action: actionLabel.toLowerCase() }),
     );
     if (!currentPassword) return null;
@@ -515,6 +604,7 @@ function renderSettingsSection(): string {
         <button type="button" id="adm-plot-meaning-save" class="adm-btn adm-btn--primary">${t("admin.settings.plot_meanings_save")}</button>
       </div>
     </div>
+    ${renderPasskeysCard()}
     <div class="adm-card adm-card--form">
       <h3 class="adm-card-title">${t("admin.mfa.title")}</h3>
       <p class="adm-section-desc">
@@ -1551,6 +1641,16 @@ async function loadSettings(): Promise<void> {
   try {
     state.meSettings = await getAuthMeSettingsApi();
   } catch { /* non-fatal */ }
+  try {
+    state.passkeysEnabled = (await getAuthStatusApi()).passkeys_enabled;
+  } catch {
+    state.passkeysEnabled = false;
+  }
+  try {
+    state.passkeys = await getPasskeysApi();
+  } catch {
+    state.passkeys = [];
+  }
   if (!state.meSettings?.mfa.pending_enrollment) {
     state.mfaEnrollment = null;
   }
@@ -1647,6 +1747,8 @@ export function resetAdminPanelSensitiveState(): void {
   state.lastInviteLink = "";
   state.me = null;
   state.meSettings = null;
+  state.passkeys = [];
+  state.passkeysEnabled = false;
   state.gardenSettings = null;
   state.mfaEnrollment = null;
   state.latestRecoveryCodes = [];
@@ -1874,9 +1976,21 @@ function wireSection(): void {
       lastItems: [],
     };
     repaint();
+    const actionReason = await authorizeSensitiveAdminAction(
+      "Populate missing plant covers",
+      "media-cover-import",
+    );
+    if (!actionReason) {
+      state.plantCoverImport.running = false;
+      repaint();
+      return;
+    }
     try {
       let cursor: string | null = null;
-      let batchResult = await populateMissingPlantCoversApi({ maxPlants: 25 });
+      let batchResult = await populateMissingPlantCoversApi({
+        maxPlants: 25,
+        actionReason,
+      });
       state.plantCoverImport.total = batchResult.total_without_cover_before;
       while (true) {
         state.plantCoverImport.processed += batchResult.processed;
@@ -1893,6 +2007,7 @@ function wireSection(): void {
         batchResult = await populateMissingPlantCoversApi({
           cursor,
           maxPlants: 25,
+          actionReason,
         });
       }
       state.plantCoverImport.running = false;
@@ -1999,6 +2114,65 @@ function wireSection(): void {
       showToast(t("admin.toast.plot_meanings_saved"), "success");
       repaint();
     } catch (err) { showToast(getApiErrorMessage(err), "error"); }
+  });
+  container.querySelector("#adm-passkey-add")?.addEventListener("click", async () => {
+    if (!state.passkeysEnabled) {
+      showToast(t("admin.passkeys.unavailable"), "error");
+      return;
+    }
+    if (!isPasskeySupported()) {
+      showToast(t("admin.passkeys.browser_unsupported"), "error");
+      return;
+    }
+    const nicknameValue = await promptDialog(
+      t("admin.passkeys.nickname_prompt"),
+      t("admin.passkeys.default_name"),
+    );
+    if (nicknameValue === null) return;
+    const nickname = nicknameValue.trim();
+    const currentPassword = await promptPasswordDialog(t("auth.current_password"));
+    if (currentPassword === null || !currentPassword) return;
+    try {
+      const options = await beginPasskeyRegistrationApi(nickname, currentPassword);
+      const credential = await createPasskey(options.publicKey);
+      await finishPasskeyRegistrationApi(
+        options.challenge_token,
+        nickname,
+        credential,
+      );
+      await loadSettings();
+      onAuthStateChanged?.();
+      showToast(t("admin.passkeys.added"), "success");
+      repaint();
+    } catch (err) {
+      showToast(
+        err instanceof DOMException && err.name === "NotAllowedError"
+          ? t("auth.passkey_cancelled")
+          : getApiErrorMessage(err),
+        "error",
+      );
+    }
+  });
+  container.querySelectorAll<HTMLButtonElement>(".adm-passkey-remove").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const row = btn.closest<HTMLElement>("[data-passkey-id]");
+      const passkeyId = Number(row?.dataset["passkeyId"]);
+      if (!Number.isFinite(passkeyId)) return;
+      const passkey = state.passkeys.find((item) => item.id === passkeyId);
+      const name = passkey ? passkeyDisplayName(passkey) : t("admin.passkeys.default_name");
+      if (!(await confirmDialog(t("admin.passkeys.remove_confirm", { name })))) {
+        return;
+      }
+      try {
+        await deletePasskeyApi(passkeyId, "ui-passkey-delete");
+        await loadSettings();
+        onAuthStateChanged?.();
+        showToast(t("admin.passkeys.removed"), "success");
+        repaint();
+      } catch (err) {
+        showToast(getApiErrorMessage(err), "error");
+      }
+    });
   });
   container.querySelector("#adm-mfa-start")?.addEventListener("click", async () => {
     try {
@@ -2377,8 +2551,19 @@ function wireSection(): void {
     const ttlRaw = queryInput("adm-inv-ttl")?.value.trim() ?? "";
     if (!username) return;
     const ttl = ttlRaw ? Number(ttlRaw) : undefined;
+    const actionReason = await authorizeSensitiveAdminAction(
+      "Create garden invitation",
+      `garden-invitation-create:${username}:${role}`,
+    );
+    if (!actionReason) return;
     try {
-      const result = await createGardenInvitationApi(ctx.activeGardenId, username, role, ttl);
+      const result = await createGardenInvitationApi(
+        ctx.activeGardenId,
+        username,
+        role,
+        ttl,
+        actionReason,
+      );
       const inviteLink = buildInvitationLink(result.invite_token);
       void navigator.clipboard?.writeText(inviteLink).catch(() => {});
       state.lastInviteLink = inviteLink;
@@ -2407,8 +2592,13 @@ function wireSection(): void {
     const ctx = gardenContextFn?.();
     if (!ctx?.activeGardenId || !Number.isFinite(invId)) return;
     if (!(await confirmDialog(t("admin.confirm_revoke_invite")))) return;
+    const actionReason = await authorizeSensitiveAdminAction(
+      "Revoke garden invitation",
+      `garden-invitation-revoke:${invId}`,
+    );
+    if (!actionReason) return;
     try {
-      await revokeGardenInvitationApi(ctx.activeGardenId, invId);
+      await revokeGardenInvitationApi(ctx.activeGardenId, invId, actionReason);
       showToast(t("admin.invite_revoked"), "success");
       await loadInvitations();
       repaint();

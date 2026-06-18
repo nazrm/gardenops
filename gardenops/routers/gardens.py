@@ -1086,17 +1086,15 @@ def create_garden_invitation(
     db: DB,
 ) -> dict[str, object]:
     _require_user_lifecycle_enabled()
-    context = _auth_context(request)
     _enforce_lifecycle_rate_limit(
         request,
         bucket="garden-invitation-create",
         env_name="GARDEN_INVITATION_CREATE_RATE_LIMIT",
     )
-    action_reason = _normalize_action_reason(
+    context, action_reason = enforce_destructive_admin_controls(
         request,
         body_reason=body.action_reason,
     )
-    _require_platform_admin(context)
     _require_garden_exists(db, garden_id)
     invitee_username = body.invitee_username.strip()
     if not invitee_username:
@@ -1203,14 +1201,12 @@ def revoke_garden_invitation(
     db: DB,
 ) -> dict[str, object]:
     _require_user_lifecycle_enabled()
-    context = _auth_context(request)
     _enforce_lifecycle_rate_limit(
         request,
         bucket="garden-invitation-revoke",
         env_name="GARDEN_INVITATION_REVOKE_RATE_LIMIT",
     )
-    action_reason = _normalize_action_reason(request)
-    _require_platform_admin(context)
+    context, action_reason = enforce_destructive_admin_controls(request)
     _require_garden_exists(db, garden_id)
     invitation = db.execute(
         """
