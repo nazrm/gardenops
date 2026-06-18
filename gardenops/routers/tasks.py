@@ -1094,6 +1094,7 @@ def refresh_descriptions(
                 "task_key": str(task["id"]),
                 "task_id": int(task["id"]),
                 "task_type": str(task["task_type"]),
+                "work_order": bool(metadata.get("work_order")),
                 "due_on": str(task["due_on"]),
                 "plant": (
                     _lookup_plant_context(db, plant_id)

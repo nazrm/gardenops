@@ -586,8 +586,48 @@ def _task_metadata(
     return {
         "task_title": task_title or "",
         "plants": plant_names,
+        "plant_count": len(plant_names),
         "due_on": due_on,
     }
+
+
+def _task_is_work_order(metadata_raw: object) -> bool:
+    if not metadata_raw:
+        return False
+    try:
+        metadata = json.loads(str(metadata_raw))
+    except (
+        TypeError,
+        json.JSONDecodeError,
+    ):
+        return False
+    return isinstance(metadata, dict) and bool(metadata.get("work_order"))
+
+
+def _task_plant_label(plant_names: list[str]) -> str:
+    if not plant_names:
+        return ""
+    if len(plant_names) <= 3:
+        return ", ".join(plant_names)
+    return f"{len(plant_names)} plants"
+
+
+def _task_notification_title(
+    *,
+    label: str,
+    task_title: str | None,
+    plant_names: list[str],
+    metadata_raw: object,
+    fallback: str,
+) -> str:
+    if not task_title:
+        return fallback
+    if _task_is_work_order(metadata_raw):
+        return f"{label}: {task_title}"
+    plant_label = _task_plant_label(plant_names)
+    if plant_label:
+        return f"{label}: {task_title} ({plant_label})"
+    return f"{label}: {task_title}"
 
 
 def _metadata_due_on(raw: object) -> str:
@@ -813,7 +853,8 @@ def create_task_due_notifications(
 
     tasks = db.execute(
         f"""
-        SELECT id, public_id, title, COALESCE(snoozed_until, due_on) AS action_on
+        SELECT id, public_id, title, metadata_json,
+               COALESCE(snoozed_until, due_on) AS action_on
         FROM garden_tasks
         WHERE garden_id = %s
           AND {actionable_status_clause}
@@ -828,7 +869,8 @@ def create_task_due_notifications(
 
     upcoming_tasks = db.execute(
         f"""
-        SELECT id, public_id, title, COALESCE(snoozed_until, due_on) AS action_on
+        SELECT id, public_id, title, metadata_json,
+               COALESCE(snoozed_until, due_on) AS action_on
         FROM garden_tasks
         WHERE garden_id = %s
           AND {actionable_status_clause}
@@ -890,19 +932,20 @@ def create_task_due_notifications(
         task_id = int(task_row["id"])
         task_public_id = str(task_row["public_id"])
         task_title = task_row["title"]
+        metadata_raw = task_row["metadata_json"]
         task_due = str(task_row["action_on"])
         plant_names = task_plants.get(task_id, [])
 
         is_overdue = task_due < today
         ntype = "task_overdue" if is_overdue else "task_due"
-        plants_str = ", ".join(plant_names) if plant_names else ""
         label = "Overdue" if is_overdue else "Due today"
-        if task_title and plants_str:
-            ntitle = f"{label}: {task_title} ({plants_str})"
-        elif task_title:
-            ntitle = f"{label}: {task_title}"
-        else:
-            ntitle = "Task overdue" if is_overdue else "Task due today"
+        ntitle = _task_notification_title(
+            label=label,
+            task_title=str(task_title or ""),
+            plant_names=plant_names,
+            metadata_raw=metadata_raw,
+            fallback="Task overdue" if is_overdue else "Task due today",
+        )
         nbody = f"Due on {task_due}" if is_overdue else "Due today"
         meta = _task_metadata(task_title, plant_names, task_due)
 
@@ -957,17 +1000,18 @@ def create_task_due_notifications(
         task_id = int(task_row["id"])
         task_public_id = str(task_row["public_id"])
         task_title = task_row["title"]
+        metadata_raw = task_row["metadata_json"]
         task_due = str(task_row["action_on"])
         plant_names = task_plants.get(task_id, [])
 
         ntype = "task_upcoming"
-        plants_str = ", ".join(plant_names) if plant_names else ""
-        if task_title and plants_str:
-            ntitle = f"Coming up: {task_title} ({plants_str})"
-        elif task_title:
-            ntitle = f"Coming up: {task_title}"
-        else:
-            ntitle = "Task coming up"
+        ntitle = _task_notification_title(
+            label="Coming up",
+            task_title=str(task_title or ""),
+            plant_names=plant_names,
+            metadata_raw=metadata_raw,
+            fallback="Task coming up",
+        )
         nbody = f"Due on {task_due}"
         meta = _task_metadata(task_title, plant_names, task_due)
 

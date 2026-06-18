@@ -206,6 +206,41 @@ class TestTaskDescriptionOverrides(unittest.TestCase):
         self.assertEqual(overrides, {})
         mocked_client.messages.create.assert_not_called()
 
+    def test_ai_prompt_skips_work_order_tasks(self) -> None:
+        mocked_client = MagicMock()
+        spec = {
+            "task_key": "work-order-1",
+            "task_type": "prune",
+            "work_order": True,
+            "due_on": "2026-03-01",
+            "plant": {
+                "name": "Grouped pruning",
+                "category": "",
+                "light": "",
+                "hardiness": "",
+                "care_watering": "",
+                "care_soil": "",
+                "care_planting": "",
+                "care_maintenance": "",
+                "care_notes": "",
+            },
+            "fallback_en": "Prune these plants this week.",
+            "fallback_no": "Beskjær disse plantene denne uken.",
+        }
+
+        with (
+            patch.dict(
+                "os.environ",
+                {"AI_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "test-key"},
+                clear=False,
+            ),
+            patch("gardenops.services.ai_provider.Anthropic", return_value=mocked_client),
+        ):
+            overrides = generate_task_description_overrides([spec], preferred_locale="en")
+
+        self.assertEqual(overrides, {})
+        mocked_client.messages.create.assert_not_called()
+
     def test_ai_prompt_uses_preferred_locale_and_full_care_context(self) -> None:
         response_block = type(
             "ToolBlock",

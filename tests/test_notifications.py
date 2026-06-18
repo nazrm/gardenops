@@ -1,3 +1,4 @@
+import json
 import os
 
 import gardenops.db as db
@@ -911,6 +912,84 @@ class TestNotifications(BaseApiTest):
         # At minimum it should return the right structure
         self.assertIn("created", result)
         self.assertIn("skipped", result)
+
+    def test_work_order_task_notification_uses_plant_count(self) -> None:
+        from gardenops.services.notification_service import create_task_due_notifications
+        from gardenops.sql_dates import offset_days_iso
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            assert garden is not None
+            garden_id = int(garden["id"])
+            now = db.current_timestamp_ms()
+            plant_ids = ["WO1", "WO2", "WO3", "WO4"]
+            for idx, plant_id in enumerate(plant_ids, start=1):
+                conn.execute(
+                    """
+                    INSERT INTO plants
+                        (plt_id, name, latin, category, bloom_month, color,
+                         hardiness, height_cm, light, link)
+                    VALUES (%s, %s, '', 'busker', '', '', '', NULL, '', '')
+                    """,
+                    (plant_id, f"Work Plant {idx}"),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (plant_id, self._owner_id, garden_id),
+                )
+            task = conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (garden_id, task_type, title, description, status, severity,
+                     due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+                VALUES (%s, 'prune', 'Prune 4 plants', '', 'pending', 'normal',
+                        %s, 'work_order:prune:2026-W11', %s, %s, %s)
+                RETURNING id, public_id
+                """,
+                (
+                    garden_id,
+                    offset_days_iso(0),
+                    json.dumps({"work_order": True}),
+                    now,
+                    now,
+                ),
+            ).fetchone()
+            assert task is not None
+            for plant_id in plant_ids:
+                conn.execute(
+                    "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
+                    (task["id"], plant_id),
+                )
+            conn.commit()
+
+            result = create_task_due_notifications(conn, garden_id)
+            self.assertGreaterEqual(int(result["created"]), 1)
+            notification = conn.execute(
+                """
+                SELECT title, metadata_json
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND target_type = 'task'
+                  AND target_id = %s
+                  AND notification_type = 'task_due'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (garden_id, task["public_id"]),
+            ).fetchone()
+            assert notification is not None
+            self.assertEqual(notification["title"], "Due today: Prune 4 plants")
+            metadata = json.loads(str(notification["metadata_json"]))
+            self.assertEqual(metadata["plant_count"], 4)
+            self.assertEqual(len(metadata["plants"]), 4)
+        finally:
+            db.return_db(conn)
 
     def test_dismissed_task_notification_does_not_regenerate(self) -> None:
         from gardenops.services.notification_service import (

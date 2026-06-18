@@ -1,5 +1,6 @@
 """Unit tests for gardenops.services.task_generator."""
 
+import json
 import unittest
 
 from gardenops.services.task_generator import (
@@ -100,16 +101,20 @@ class TestGenerateTasksPruning(DbTestBase):
         self._insert_plant("PR1", "Bush", category="busker")
         generate_tasks(self.conn, self.garden_id, 3, 2026, None)
         task = self.conn.execute(
-            "SELECT * FROM garden_tasks WHERE rule_source LIKE 'seasonal_prune:PR1%'",
+            "SELECT * FROM garden_tasks WHERE task_type = 'prune'",
         ).fetchone()
         assert task is not None
         assert task["task_type"] == "prune"
+        assert str(task["rule_source"]).startswith("work_order:prune:")
+        metadata = json.loads(str(task["metadata_json"]))
+        assert metadata["work_order"] is True
+        assert metadata["grouped_task_type"] == "prune"
 
     def test_creates_prune_task_october(self) -> None:
         self._insert_plant("PR2", "Tree", category="traer")
         generate_tasks(self.conn, self.garden_id, 10, 2026, None)
         task = self.conn.execute(
-            "SELECT * FROM garden_tasks WHERE rule_source LIKE 'seasonal_prune:PR2%'",
+            "SELECT * FROM garden_tasks WHERE task_type = 'prune'",
         ).fetchone()
         assert task is not None
 
@@ -117,7 +122,7 @@ class TestGenerateTasksPruning(DbTestBase):
         self._insert_plant("PR3", "Tree", category="tr\u00e6r")
         generate_tasks(self.conn, self.garden_id, 3, 2026, None)
         task = self.conn.execute(
-            "SELECT * FROM garden_tasks WHERE rule_source LIKE 'seasonal_prune:PR3%'",
+            "SELECT * FROM garden_tasks WHERE task_type = 'prune'",
         ).fetchone()
         assert task is not None
 
@@ -125,7 +130,7 @@ class TestGenerateTasksPruning(DbTestBase):
         self._insert_plant("PR4", "Flower", category="stauder")
         generate_tasks(self.conn, self.garden_id, 3, 2026, None)
         task = self.conn.execute(
-            "SELECT * FROM garden_tasks WHERE rule_source LIKE 'seasonal_prune:PR4%'",
+            "SELECT * FROM garden_tasks WHERE task_type = 'prune'",
         ).fetchone()
         assert task is None
 
@@ -133,9 +138,26 @@ class TestGenerateTasksPruning(DbTestBase):
         self._insert_plant("PR5", "Bush", category="busker")
         generate_tasks(self.conn, self.garden_id, 6, 2026, None)
         task = self.conn.execute(
-            "SELECT * FROM garden_tasks WHERE rule_source LIKE 'seasonal_prune:PR5%'",
+            "SELECT * FROM garden_tasks WHERE task_type = 'prune'",
         ).fetchone()
         assert task is None
+
+    def test_groups_prune_tasks_by_week(self) -> None:
+        self._insert_plant("PR6", "Currant", category="busker")
+        self._insert_plant("PR7", "Apple", category="traer")
+        result = generate_tasks(self.conn, self.garden_id, 3, 2026, None)
+        tasks = self.conn.execute(
+            "SELECT * FROM garden_tasks WHERE task_type = 'prune'",
+        ).fetchall()
+        assert result["created"] == 1
+        assert len(tasks) == 1
+        task = tasks[0]
+        assert task["title"] == "Prune 2 plants"
+        links = self.conn.execute(
+            "SELECT plt_id FROM garden_task_plants WHERE task_id = %s ORDER BY plt_id",
+            (task["id"],),
+        ).fetchall()
+        assert [row["plt_id"] for row in links] == ["PR6", "PR7"]
 
 
 class TestGenerateTasksFertilize(DbTestBase):
@@ -147,10 +169,16 @@ class TestGenerateTasksFertilize(DbTestBase):
         )
         generate_tasks(self.conn, self.garden_id, 4, 2026, None)
         task = self.conn.execute(
-            "SELECT * FROM garden_tasks WHERE rule_source LIKE 'fertilize:FT1%'",
+            """
+            SELECT * FROM garden_tasks
+            WHERE task_type = 'fertilize'
+            ORDER BY due_on
+            LIMIT 1
+            """,
         ).fetchone()
         assert task is not None
         assert task["task_type"] == "fertilize"
+        assert str(task["rule_source"]).startswith("work_order:fertilize:")
 
     def test_norwegian_gjodsl_keyword(self) -> None:
         self._insert_plant(
@@ -160,7 +188,7 @@ class TestGenerateTasksFertilize(DbTestBase):
         )
         generate_tasks(self.conn, self.garden_id, 5, 2026, None)
         task = self.conn.execute(
-            "SELECT * FROM garden_tasks WHERE rule_source LIKE 'fertilize:FT2%'",
+            "SELECT * FROM garden_tasks WHERE task_type = 'fertilize'",
         ).fetchone()
         assert task is not None
 
@@ -168,9 +196,57 @@ class TestGenerateTasksFertilize(DbTestBase):
         self._insert_plant("FT3", "Plant", care_maintenance="Fertilize")
         generate_tasks(self.conn, self.garden_id, 8, 2026, None)
         task = self.conn.execute(
-            "SELECT * FROM garden_tasks WHERE rule_source LIKE 'fertilize:FT3%'",
+            "SELECT * FROM garden_tasks WHERE task_type = 'fertilize'",
         ).fetchone()
         assert task is None
+
+    def test_groups_fertilize_tasks_by_week(self) -> None:
+        self._insert_plant("FT4", "Rose", care_maintenance="Fertilize monthly")
+        self._insert_plant("FT5", "Dahlia", care_maintenance="Fertilize monthly")
+        result = generate_tasks(self.conn, self.garden_id, 4, 2026, None)
+        tasks = self.conn.execute(
+            "SELECT * FROM garden_tasks WHERE task_type = 'fertilize' ORDER BY due_on",
+        ).fetchall()
+        assert result["created"] == 2
+        assert len(tasks) == 2
+        assert [task["title"] for task in tasks] == [
+            "Fertilize 2 plants",
+            "Fertilize 2 plants",
+        ]
+        for task in tasks:
+            links = self.conn.execute(
+                "SELECT plt_id FROM garden_task_plants WHERE task_id = %s ORDER BY plt_id",
+                (task["id"],),
+            ).fetchall()
+            assert [row["plt_id"] for row in links] == ["FT4", "FT5"]
+
+    def test_replaces_pending_legacy_generated_prune_tasks(self) -> None:
+        self._insert_plant("LG1", "Legacy Bush", category="busker")
+        now_ms = 1_800_000_000_000
+        row = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (garden_id, task_type, title, description, status, severity,
+                 due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+            VALUES (%s, 'prune', 'Prune: Legacy Bush', '', 'pending', 'normal',
+                    '2026-03-01', 'seasonal_prune:LG1:2026-03', '{}', %s, %s)
+            RETURNING id
+            """,
+            (self.garden_id, now_ms, now_ms),
+        ).fetchone()
+        self.conn.execute(
+            "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
+            (row["id"], "LG1"),
+        )
+        generate_tasks(self.conn, self.garden_id, 3, 2026, None)
+        legacy = self.conn.execute(
+            "SELECT * FROM garden_tasks WHERE rule_source = 'seasonal_prune:LG1:2026-03'",
+        ).fetchone()
+        grouped = self.conn.execute(
+            "SELECT * FROM garden_tasks WHERE rule_source LIKE 'work_order:prune:%'",
+        ).fetchall()
+        assert legacy is None
+        assert len(grouped) == 1
 
 
 class TestGenerateTasksWatering(DbTestBase):
@@ -198,6 +274,22 @@ class TestGenerateTasksWatering(DbTestBase):
             "SELECT * FROM garden_tasks WHERE rule_source LIKE 'water:WT3%'",
         ).fetchone()
         assert task is None
+
+    def test_watering_stays_ungrouped(self) -> None:
+        self._insert_plant("WT4", "Hydrangea", care_watering="Water regularly")
+        self._insert_plant("WT5", "Astilbe", care_watering="Water often")
+        generate_tasks(self.conn, self.garden_id, 7, 2026, None)
+        tasks = self.conn.execute(
+            "SELECT id, rule_source FROM garden_tasks WHERE task_type = 'water'",
+        ).fetchall()
+        assert len(tasks) == 8
+        for task in tasks:
+            links = self.conn.execute(
+                "SELECT plt_id FROM garden_task_plants WHERE task_id = %s",
+                (task["id"],),
+            ).fetchall()
+            assert len(links) == 1
+            assert str(task["rule_source"]).startswith(f"water:{links[0]['plt_id']}:")
 
 
 class TestGenerateTasksSowing(DbTestBase):

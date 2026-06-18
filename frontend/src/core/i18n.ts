@@ -656,6 +656,8 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
       plants
         ? `${title} (${plants}) is due on ${due}`
         : `${title} is due on ${due}`,
+    "notifications.plant_count": ({ count }) =>
+      `${count} plant${Number(count) === 1 ? "" : "s"}`,
     "weather.title": "Weather",
     "weather.forecast_title": "7-Day Forecast",
     "weather.alerts_title": "Weather Alerts",
@@ -2782,6 +2784,8 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
       plants
         ? `${title} (${plants}) forfaller ${due}`
         : `${title} forfaller ${due}`,
+    "notifications.plant_count": ({ count }) =>
+      `${count} plante${Number(count) === 1 ? "" : "r"}`,
     "weather.title": "V\u00e6r",
     "weather.forecast_title": "7-dagers varsel",
     "weather.alerts_title": "V\u00e6rvarsler",

@@ -108,16 +108,22 @@ _NO_MONTHS: dict[int, str] = {
 
 _TASK_DESCRIPTION_BATCH_SIZE = 12
 _AI_TASK_DESCRIPTION_TYPES = {"prune"}
+_WORK_ORDER_SOURCE_PREFIX = "work_order"
+_WORK_ORDER_GROUP_TYPES = {"prune", "fertilize"}
 
 
-def _generated_description_metadata(description_no: str) -> str:
-    return json.dumps(
-        {
-            "description_no": description_no,
-            "description_generated": True,
-            "description_source": "care_instructions",
-        }
-    )
+def _generated_description_metadata(
+    description_no: str,
+    extra: dict[str, Any] | None = None,
+) -> str:
+    metadata: dict[str, Any] = {
+        "description_no": description_no,
+        "description_generated": True,
+        "description_source": "care_instructions",
+    }
+    if extra:
+        metadata.update(extra)
+    return json.dumps(metadata)
 
 
 def _plant_context_from_row(plant: DbRow | Mapping[str, object]) -> dict[str, str]:
@@ -250,6 +256,8 @@ def _chunk_task_specs(
 
 
 def _uses_ai_task_description(spec: dict[str, Any]) -> bool:
+    if spec.get("work_order"):
+        return False
     task_type = str(spec.get("task_type") or "").strip().lower()
     return task_type in _AI_TASK_DESCRIPTION_TYPES
 
@@ -403,6 +411,39 @@ def _create_task(
     description: str = "",
     metadata_json: str = "{}",
 ) -> int:
+    return _create_task_for_plants(
+        db,
+        garden_id,
+        task_type,
+        title,
+        due_on,
+        rule_source,
+        [plt_id],
+        actor_user_id,
+        now_ms,
+        severity=severity,
+        description=description,
+        metadata_json=metadata_json,
+    )
+
+
+def _create_task_for_plants(
+    db: DbConn,
+    garden_id: int,
+    task_type: str,
+    title: str,
+    due_on: str,
+    rule_source: str,
+    plant_ids: list[str],
+    actor_user_id: int | None,
+    now_ms: int,
+    severity: str = "normal",
+    description: str = "",
+    metadata_json: str = "{}",
+) -> int:
+    normalized_plant_ids = list(dict.fromkeys(plant_ids))
+    if not normalized_plant_ids:
+        raise ValueError("At least one plant id is required to create a generated task")
     window_start_on, window_end_on, window_kind = (None, None, None)
     derived_window = derive_recommended_window_strings(task_type, due_on)
     if derived_window is not None:
@@ -441,11 +482,148 @@ def _create_task(
     ).fetchone()
     assert row is not None
     task_id = int(row["id"])
-    db.execute(
-        "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
-        (task_id, plt_id),
-    )
+    for plant_id in normalized_plant_ids:
+        db.execute(
+            "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
+            (task_id, plant_id),
+        )
     return task_id
+
+
+def _iso_week_key(date_str: str) -> str:
+    due_date = date.fromisoformat(date_str)
+    iso_year, iso_week, _ = due_date.isocalendar()
+    return f"{iso_year}-W{iso_week:02d}"
+
+
+def _work_order_rule_source(task_type: str, week_key: str) -> str:
+    return f"{_WORK_ORDER_SOURCE_PREFIX}:{task_type}:{week_key}"
+
+
+def _plant_names_for_summary(plant_contexts: list[dict[str, str]]) -> list[str]:
+    return sorted({plant["name"] for plant in plant_contexts})
+
+
+def _summarize_names(names: list[str], *, max_names: int = 8) -> str:
+    if len(names) <= max_names:
+        return ", ".join(names)
+    shown = ", ".join(names[:max_names])
+    return f"{shown}, and {len(names) - max_names} more"
+
+
+def _work_order_text(
+    task_type: str,
+    plant_contexts: list[dict[str, str]],
+) -> tuple[str, str, str]:
+    count = len(plant_contexts)
+    names = _plant_names_for_summary(plant_contexts)
+    names_text = _summarize_names(names)
+    if task_type == "prune":
+        if count == 1:
+            title = f"Prune: {names[0]}"
+            description_en = (
+                f"Prune {names[0]} this week. Why: pruning in this window improves "
+                "airflow, structure, and fruiting wood before the next growth period. "
+                "Complete this work order when the plant is done."
+            )
+            description_no = (
+                f"Beskjær {names[0]} denne uken. Hvorfor: beskjæring i dette "
+                "tidsvinduet gir bedre lufting, struktur og fruktved før neste "
+                "vekstperiode. Fullfør arbeidsordren når planten er ferdig."
+            )
+        else:
+            title = f"Prune {count} plants"
+            description_en = (
+                f"Prune these {count} plants this week: {names_text}. "
+                "Why: pruning in this window improves airflow, structure, and "
+                "fruiting wood before the next growth period. "
+                "Complete this work order when all listed plants are done."
+            )
+            description_no = (
+                f"Beskjær disse {count} plantene denne uken: {names_text}. "
+                "Hvorfor: beskjæring i dette tidsvinduet gir bedre lufting, "
+                "struktur og fruktved før neste vekstperiode. "
+                "Fullfør arbeidsordren når alle plantene på listen er ferdige."
+            )
+        return title, description_en, description_no
+
+    if count == 1:
+        title = f"Fertilize: {names[0]}"
+        description_en = (
+            f"Fertilize {names[0]} this week. Why: feeding during active growth "
+            "supports strong new growth, flowering, and fruit set. Complete this "
+            "work order when the plant is done."
+        )
+        description_no = (
+            f"Gjødsle {names[0]} denne uken. Hvorfor: gjødsling i aktiv vekst "
+            "støtter kraftig ny vekst, blomstring og fruktsetting. Fullfør "
+            "arbeidsordren når planten er ferdig."
+        )
+    else:
+        title = f"Fertilize {count} plants"
+        description_en = (
+            f"Fertilize these {count} plants this week: {names_text}. "
+            "Why: feeding during active growth supports strong new growth, "
+            "flowering, and fruit set. "
+            "Complete this work order when all listed plants are done."
+        )
+        description_no = (
+            f"Gjødsle disse {count} plantene denne uken: {names_text}. "
+            "Hvorfor: gjødsling i aktiv vekst støtter kraftig ny vekst, "
+            "blomstring og fruktsetting. "
+            "Fullfør arbeidsordren når alle plantene på listen er ferdige."
+        )
+    if count == 1:
+        return title, description_en, description_no
+    return title, description_en, description_no
+
+
+def _work_order_metadata(
+    *,
+    description_no: str,
+    task_type: str,
+    week_key: str,
+    due_on: str,
+    plant_ids: list[str],
+) -> str:
+    return _generated_description_metadata(
+        description_no,
+        {
+            "description_source": "work_order",
+            "work_order": True,
+            "grouped_task_type": task_type,
+            "group_key": f"{task_type}:{week_key}",
+            "week_key": week_key,
+            "due_on": due_on,
+            "plant_count": len(plant_ids),
+        },
+    )
+
+
+def _delete_legacy_grouped_tasks_for_month(
+    db: DbConn,
+    *,
+    garden_id: int,
+    target_month: int,
+    target_year: int,
+) -> int:
+    removed = 0
+    if target_month in (3, 10):
+        removed += _delete_pending_rule_tasks(
+            db,
+            garden_id=garden_id,
+            task_type="prune",
+            rule_source_like=f"seasonal_prune:%:{target_year}-{target_month:02d}",
+        )
+    if target_month in (4, 5):
+        for day in (1, 15):
+            removed += _delete_pending_rule_tasks(
+                db,
+                garden_id=garden_id,
+                task_type="fertilize",
+                rule_source_like=f"fertilize:%:{target_year}-{target_month:02d}-{day:02d}",
+            )
+    return removed
 
 
 def generate_tasks(
@@ -465,6 +643,7 @@ def generate_tasks(
     created = 0
     skipped = 0
     created_specs: list[dict[str, Any]] = []
+    work_order_candidates: dict[tuple[str, str], dict[str, Any]] = {}
 
     plants = db.execute(
         """
@@ -485,6 +664,12 @@ def generate_tasks(
         garden_id=garden_id,
         task_type="sow",
         rule_source_like="sow:%",
+    )
+    _delete_legacy_grouped_tasks_for_month(
+        db,
+        garden_id=garden_id,
+        target_month=target_month,
+        target_year=target_year,
     )
 
     for plant_ctx in plant_contexts:
@@ -535,39 +720,21 @@ def generate_tasks(
         # Rule 2: Seasonal pruning (March/October)
         if category in ("busker", "baerbusker", "traer", "tr\u00e6r") and target_month in (3, 10):
             rule = f"seasonal_prune:{plt_id}:{target_year}-{target_month:02d}"
-            if _rule_exists(db, garden_id, rule):
+            week_key = _iso_week_key(due_on)
+            group_rule = _work_order_rule_source("prune", week_key)
+            if _rule_exists(db, garden_id, group_rule) or _rule_exists(db, garden_id, rule):
                 skipped += 1
             else:
-                desc_en, desc_no = _infer_descriptions_for_rule(
-                    plant_ctx,
-                    "seasonal_prune",
-                    target_month,
-                )
-                task_id = _create_task(
-                    db,
-                    garden_id,
-                    "prune",
-                    f"Prune: {name}",
-                    due_on,
-                    rule,
-                    plt_id,
-                    actor_user_id,
-                    now_ms,
-                    description=desc_en,
-                    metadata_json=_generated_description_metadata(desc_no),
-                )
-                created_specs.append(
+                bucket = work_order_candidates.setdefault(
+                    ("prune", week_key),
                     {
-                        "task_key": str(task_id),
-                        "task_id": task_id,
                         "task_type": "prune",
                         "due_on": due_on,
-                        "plant": plant_ctx,
-                        "fallback_en": desc_en,
-                        "fallback_no": desc_no,
-                    }
+                        "week_key": week_key,
+                        "plant_contexts": [],
+                    },
                 )
-                created += 1
+                bucket["plant_contexts"].append(plant_ctx)
 
         # Rule 3: Fertilize biweekly (April/May)
         if target_month in (4, 5) and (
@@ -576,39 +743,23 @@ def generate_tasks(
             for day in (1, 15):
                 fert_date = f"{target_year}-{target_month:02d}-{day:02d}"
                 rule = f"fertilize:{plt_id}:{fert_date}"
-                if _rule_exists(db, garden_id, rule):
+                week_key = _iso_week_key(fert_date)
+                group_rule = _work_order_rule_source("fertilize", week_key)
+                if _rule_exists(db, garden_id, group_rule) or _rule_exists(db, garden_id, rule):
                     skipped += 1
                 else:
-                    desc_en, desc_no = _infer_descriptions_for_rule(
-                        plant_ctx,
-                        "fertilize",
-                        target_month,
-                    )
-                    task_id = _create_task(
-                        db,
-                        garden_id,
-                        "fertilize",
-                        f"Fertilize: {name}",
-                        fert_date,
-                        rule,
-                        plt_id,
-                        actor_user_id,
-                        now_ms,
-                        description=desc_en,
-                        metadata_json=_generated_description_metadata(desc_no),
-                    )
-                    created_specs.append(
+                    bucket = work_order_candidates.setdefault(
+                        ("fertilize", week_key),
                         {
-                            "task_key": str(task_id),
-                            "task_id": task_id,
                             "task_type": "fertilize",
                             "due_on": fert_date,
-                            "plant": plant_ctx,
-                            "fallback_en": desc_en,
-                            "fallback_no": desc_no,
-                        }
+                            "week_key": week_key,
+                            "plant_contexts": [],
+                        },
                     )
-                    created += 1
+                    if fert_date < str(bucket["due_on"]):
+                        bucket["due_on"] = fert_date
+                    bucket["plant_contexts"].append(plant_ctx)
 
         # Rule 4: Weekly watering (June-August)
         # Skip watering if a rain_surplus alert covers the due date.
@@ -742,6 +893,45 @@ def generate_tasks(
                         created += 1
                     break
 
+    for _, bucket in sorted(
+        work_order_candidates.items(),
+        key=lambda item: (str(item[1]["due_on"]), str(item[1]["task_type"])),
+    ):
+        task_type = str(bucket["task_type"])
+        if task_type not in _WORK_ORDER_GROUP_TYPES:
+            continue
+        week_key = str(bucket["week_key"])
+        group_rule = _work_order_rule_source(task_type, week_key)
+        if _rule_exists(db, garden_id, group_rule):
+            skipped += len(bucket["plant_contexts"])
+            continue
+        plant_contexts = sorted(
+            bucket["plant_contexts"],
+            key=lambda plant: (plant["name"], plant["plt_id"]),
+        )
+        plant_ids = [plant["plt_id"] for plant in plant_contexts]
+        title, desc_en, desc_no = _work_order_text(task_type, plant_contexts)
+        _create_task_for_plants(
+            db,
+            garden_id,
+            task_type,
+            title,
+            str(bucket["due_on"]),
+            group_rule,
+            plant_ids,
+            actor_user_id,
+            now_ms,
+            description=desc_en,
+            metadata_json=_work_order_metadata(
+                description_no=desc_no,
+                task_type=task_type,
+                week_key=week_key,
+                due_on=str(bucket["due_on"]),
+                plant_ids=plant_ids,
+            ),
+        )
+        created += 1
+
     overrides = generate_task_description_overrides(
         created_specs,
         preferred_locale=preferred_locale,
@@ -796,6 +986,22 @@ def _lookup_plant_context(db: DbConn, plt_id: str) -> dict[str, str]:
             "care_notes": "",
         }
     return _plant_context_from_row(row)
+
+
+def _lookup_task_plant_contexts(db: DbConn, task_id: int) -> list[dict[str, str]]:
+    rows = db.execute(
+        """
+        SELECT p.plt_id, p.name, p.category, p.bloom_month, p.light, p.hardiness,
+               p.care_watering, p.care_soil, p.care_planting, p.care_maintenance,
+               p.care_notes
+        FROM garden_task_plants gtp
+        JOIN plants p ON p.plt_id = gtp.plt_id
+        WHERE gtp.task_id = %s
+        ORDER BY p.name, p.plt_id
+        """,
+        (task_id,),
+    ).fetchall()
+    return [_plant_context_from_row(row) for row in rows]
 
 
 def _infer_bloom(plant: dict[str, str], month: int) -> tuple[str, str]:
@@ -1051,6 +1257,17 @@ def infer_task_description(
     # workflow:{wf_id}:{step_id}:{year}
     if parts[0] == "workflow":
         return ("", "")
+
+    # work_order:{task_type}:{iso_week}
+    if parts[0] == _WORK_ORDER_SOURCE_PREFIX and len(parts) >= 3:
+        task_type = parts[1]
+        if task_type not in _WORK_ORDER_GROUP_TYPES or "id" not in task_row:
+            return ("", "")
+        plant_contexts = _lookup_task_plant_contexts(db, int(task_row["id"]))
+        if not plant_contexts:
+            return ("", "")
+        _, description_en, description_no = _work_order_text(task_type, plant_contexts)
+        return description_en, description_no
 
     # Plant-based rules: type:{plt_id}:{date}
     if len(parts) < 3:
