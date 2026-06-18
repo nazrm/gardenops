@@ -248,49 +248,11 @@ export function getAppShellMarkup(): string {
             </aside>
 
             <div class="map-workspace">
-              <div class="toolbar map-command-bar">
-                <div class="edit-menu-group">
-                  <button id="edit-mode-btn" type="button" aria-haspopup="true" aria-expanded="false" data-i18n="map.edit">${t("map.edit")}</button>
-                  <div id="edit-menu-dropdown" class="edit-menu-dropdown" hidden>
-                    <div class="map-direction-control" aria-label="${t("map.north_direction_control")}" data-i18n-aria-label="map.north_direction_control" hidden>
-                      <div class="map-direction-title">
-                        <span class="map-direction-icon">↑</span>
-                        <span data-i18n="map.north_calibration">${t("map.north_calibration")}</span>
-                      </div>
-                      <div class="map-direction-inputs">
-                        <button id="map-direction-dec-btn" type="button" title="${t("map.rotate_north_ccw")}" data-i18n-title="map.rotate_north_ccw">-5°</button>
-                        <div class="map-direction-number-wrap">
-                          <input id="map-direction-input" type="number" min="0" max="359" step="1" value="0" aria-label="${t("map.north_direction_degrees")}" data-i18n-aria-label="map.north_direction_degrees" />
-                          <span>°</span>
-                        </div>
-                        <button id="map-direction-inc-btn" type="button" title="${t("map.rotate_north_cw")}" data-i18n-title="map.rotate_north_cw">+5°</button>
-                      </div>
-                      <input id="map-direction-slider" type="range" min="0" max="359" step="1" value="0" aria-label="${t("map.adjust_north_degrees")}" data-i18n-aria-label="map.adjust_north_degrees" />
-                    </div>
-                    <div class="grid-dims-control" hidden>
-                      <div class="grid-dims-title" data-i18n="map.property_size">${t("map.property_size")}</div>
-                      <div class="grid-dims-inputs">
-                        <label><span data-i18n="onboarding.width">${t("onboarding.width")}</span> <input id="grid-cols-input" type="number" min="5" max="100" step="1" value="22" /> m</label>
-                        <label><span data-i18n="onboarding.depth">${t("onboarding.depth")}</span> <input id="grid-rows-input" type="number" min="5" max="100" step="1" value="30" /> m</label>
-                        <button id="grid-dims-apply-btn" type="button" data-i18n="common.apply">${t("common.apply")}</button>
-                      </div>
-                    </div>
-                    <button id="create-zone-btn" type="button" data-i18n="map.create_zone">${t("map.create_zone")}</button>
-                  </div>
-                </div>
+              <input id="import-map-input" type="file" accept=".json" hidden />
+              <div id="map-edit-context-bar" class="toolbar map-edit-context-bar" hidden>
                 <button id="select-all-btn" style="display:none;" data-i18n="map.select_all">${t("map.select_all")}</button>
                 <button id="clear-selection-btn" style="display:none;" data-i18n="map.clear_selection">${t("map.clear_selection")}</button>
                 <button id="undo-btn" style="display:none;" disabled data-i18n="common.undo">${t("common.undo")}</button>
-                <div class="snapshot-group">
-                  <button id="save-layout-btn" data-i18n="map.save_layout">${t("map.save_layout")}</button>
-                  <button id="snapshots-btn" data-i18n="common.layouts">${t("common.layouts")}</button>
-                  <div id="snapshots-dropdown" class="snapshots-dropdown" hidden></div>
-                </div>
-                <div class="file-io-group">
-                  <button id="export-map-btn" title="${t("map.export_map_title")}" data-i18n="map.export_map" data-i18n-title="map.export_map_title">${t("map.export_map")}</button>
-                  <button id="import-map-btn" title="${t("map.import_map_title")}" data-i18n="map.import_map" data-i18n-title="map.import_map_title">${t("map.import_map")}</button>
-                  <input id="import-map-input" type="file" accept=".json" hidden />
-                </div>
                 <span id="selection-count" style="display:none;"></span>
               </div>
 
@@ -321,24 +283,6 @@ export function getAppShellMarkup(): string {
                   aria-expanded="false"
                 >
                   <span data-i18n="map.shade">${t("map.shade")}</span>
-                </button>
-                <button
-                  id="mobile-map-tools-btn"
-                  class="mobile-map-action"
-                  type="button"
-                  aria-controls="mobile-map-tools-sheet"
-                  aria-expanded="false"
-                >
-                  <span data-i18n="map.edit_short">${t("map.edit_short")}</span>
-                </button>
-                <button
-                  id="mobile-map-layouts-btn"
-                  class="mobile-map-action"
-                  type="button"
-                  aria-controls="mobile-map-layouts-sheet"
-                  aria-expanded="false"
-                >
-                  <span data-i18n="common.layouts">${t("common.layouts")}</span>
                 </button>
               </div>
 

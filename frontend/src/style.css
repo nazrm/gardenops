@@ -1271,8 +1271,12 @@ textarea {
   min-height: 0;
 }
 
-.map-command-bar {
+.map-edit-context-bar {
   border-left: 1px solid var(--border-subtle);
+}
+
+.map-edit-context-bar:not([hidden]) {
+  justify-content: flex-start;
 }
 
 .map-layers-panel {
@@ -10207,6 +10211,64 @@ td.inventory-qty-zero {
   display: flex;
   gap: var(--sp-2);
   flex-wrap: wrap;
+}
+
+.adm-map-setup-card {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.adm-map-setup-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--sp-2);
+}
+
+.adm-map-setup-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--sp-3);
+}
+
+.adm-map-tool-panel {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  background: var(--bg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+}
+
+.adm-map-tool-title {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.adm-map-stepper {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 180px) auto;
+  gap: var(--sp-2);
+  align-items: end;
+  justify-content: start;
+}
+
+.adm-map-number-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.map-layouts-dialog-content {
+  width: min(520px, calc(100vw - 32px));
+  display: grid;
+  gap: var(--sp-4);
 }
 
 .adm-plot-meaning-list {

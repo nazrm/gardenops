@@ -54,10 +54,11 @@ import { initThemeFeature, updateThemeIcon } from "./features/themeFeature";
 import {
   initSnapshotsFeature,
   saveLayout,
-  toggleSnapshotsDropdown,
+  openLayoutsDialog,
   openMobileLayoutsSheet,
   exportMap,
 } from "./features/snapshotsFeature";
+import type { AdminMapSetupAction } from "./components/adminPanel";
 import {
   initWeatherFeature,
   loadWeather,
@@ -928,19 +929,21 @@ const plotCbs: PlotCallbacks = {
 };
 
 const WRITE_CONTROL_IDS = [
-  "edit-mode-btn",
-  "create-zone-btn",
-  "save-layout-btn",
-  "snapshots-btn",
-  "import-map-btn",
   "import-csv-btn",
   "add-plant-btn",
   "generate-care-btn",
   "elevation-edit-btn",
-  "map-direction-input",
-  "map-direction-slider",
-  "map-direction-dec-btn",
-  "map-direction-inc-btn",
+  "adm-map-open-editor-btn",
+  "adm-map-save-layout-btn",
+  "adm-map-import-btn",
+  "adm-map-north-input",
+  "adm-map-north-dec-btn",
+  "adm-map-north-inc-btn",
+  "adm-map-north-apply-btn",
+  "adm-map-grid-cols-input",
+  "adm-map-grid-rows-input",
+  "adm-map-grid-apply-btn",
+  "adm-map-create-zone-btn",
   "mobile-map-save-btn",
   "mobile-map-layouts-save-btn",
   "mobile-create-zone-btn",
@@ -1080,6 +1083,14 @@ function ensureAdminPanelModule(): Promise<AdminPanelModule> {
           gardens: gardenOptions,
           activeGardenId: getActiveGardenContext(),
         }),
+        onMapSetupAction: handleAdminMapSetupAction,
+        getMapSetupState: () => ({
+          canWrite: canWriteInGarden,
+          editorAvailable: !isMobile(),
+          northDegrees: normalizeDegrees(state.northDegrees),
+          gridCols: state.gridCols,
+          gridRows: state.gridRows,
+        }),
       });
       return mod;
     })
@@ -1088,6 +1099,53 @@ function ensureAdminPanelModule(): Promise<AdminPanelModule> {
       throw err;
     });
   return adminPanelModulePromise;
+}
+
+async function handleAdminMapSetupAction(action: AdminMapSetupAction): Promise<void> {
+  switch (action.type) {
+    case "open-editor":
+      setActiveTab("map");
+      setMobileMapSheetOpen(null);
+      if (!ensureWriteAccess()) return;
+      if (isMobile()) {
+        showToast(t("map.desktop_only"), "error");
+        return;
+      }
+      if (!state.editMode) {
+        toggleEditMode(state, editCbs);
+      }
+      updateMapDirectionControlVisibility();
+      break;
+    case "save-layout":
+      await saveLayout();
+      break;
+    case "open-layouts":
+      setActiveTab("map");
+      if (isMobile()) {
+        await openMobileLayoutsSheet();
+      } else {
+        await openLayoutsDialog();
+      }
+      break;
+    case "export-map":
+      await exportMap();
+      break;
+    case "import-map":
+      if (!ensureWriteAccess()) return;
+      queryInput("import-map-input")?.click();
+      break;
+    case "apply-north":
+      if (!ensureWriteAccess()) return;
+      applyNorthDirection(action.degrees, true);
+      break;
+    case "apply-grid":
+      if (!ensureWriteAccess()) return;
+      await applyGridDimensions(String(action.cols), String(action.rows));
+      break;
+    case "create-zone":
+      openCreateZoneDialog();
+      break;
+  }
 }
 
 async function activateAdminPanel(): Promise<void> {
@@ -1543,7 +1601,6 @@ function setupLayout(): void {
     });
   });
 
-  const editModeBtn = queryButton("edit-mode-btn");
   const selectAllBtn = queryButton("select-all-btn");
   const clearBtn = queryButton("clear-selection-btn");
   const undoBtn = queryButton("undo-btn");
@@ -1569,17 +1626,10 @@ function setupLayout(): void {
     });
   });
 
-  editModeBtn?.addEventListener("click", () => {
-    if (editModeBtn.disabled) return;
-    toggleEditMode(state, editCbs);
-    updateMapDirectionControlVisibility();
-  });
   selectAllBtn?.addEventListener("click", () => selectAll(state, editCbs));
   clearBtn?.addEventListener("click", () => clearSelection(state, editCbs));
   undoBtn?.addEventListener("click", () => void undo(state, editCbs));
 
-  const saveLayoutBtn = queryButton("save-layout-btn");
-  const snapshotsBtn = queryButton("snapshots-btn");
   const mobileMapLayersBtn = queryButton("mobile-map-layers-btn");
   const mobileMapHighlightBtn = queryButton("mobile-map-highlight-btn");
   const mobileMapShadeBtn = queryButton("mobile-map-shade-btn");
@@ -1594,20 +1644,13 @@ function setupLayout(): void {
   const mobileMapLayoutsSaveBtn = queryButton("mobile-map-layouts-save-btn");
   const shadeMobileBackdrop = document.getElementById("shade-mobile-backdrop");
 
-  const exportMapBtn = queryButton("export-map-btn");
-  const importMapBtn = queryButton("import-map-btn");
   const importMapInput = queryInput("import-map-input");
-  const mapDirectionInput = queryInput("map-direction-input");
-  const mapDirectionSlider = queryInput("map-direction-slider");
-  const mapDirectionDecBtn = queryButton("map-direction-dec-btn");
-  const mapDirectionIncBtn = queryButton("map-direction-inc-btn");
   const mobileMapDirectionInput = queryInput("mobile-map-direction-input");
   const mobileMapDirectionDecBtn = queryButton("mobile-map-direction-dec-btn");
   const mobileMapDirectionIncBtn = queryButton("mobile-map-direction-inc-btn");
   const mobileGridColsInput = queryInput("mobile-grid-cols-input");
   const mobileGridRowsInput = queryInput("mobile-grid-rows-input");
   const mobileGridDimsApplyBtn = queryButton("mobile-grid-dims-apply-btn");
-  const createZoneBtn = queryButton("create-zone-btn");
   const mobileCreateZoneBtn = queryButton("mobile-create-zone-btn");
   const mobileExportMapBtn = queryButton("mobile-export-map-btn");
   const mobileImportMapBtn = queryButton("mobile-import-map-btn");
@@ -1615,8 +1658,6 @@ function setupLayout(): void {
   const importCsvBtn = queryButton("import-csv-btn");
   const importCsvInput = queryInput("import-csv-input");
 
-  saveLayoutBtn?.addEventListener("click", () => void saveLayout());
-  snapshotsBtn?.addEventListener("click", () => void toggleSnapshotsDropdown());
   mobileMapLayersBtn?.addEventListener("click", () => {
     if (isMobileMapSheetOpen("map-layers-panel")) {
       setMobileMapSheetOpen(null);
@@ -1657,48 +1698,20 @@ function setupLayout(): void {
       }
     })();
   });
-  exportMapBtn?.addEventListener("click", () => void exportMap());
   mobileExportMapBtn?.addEventListener("click", () => void exportMap());
-  importMapBtn?.addEventListener("click", () => importMapInput?.click());
   mobileImportMapBtn?.addEventListener("click", () => importMapInput?.click());
   importMapInput?.addEventListener("change", () => void importMap());
-  const onDirectionInput = (raw: string, persistImmediately = false) => {
-    const parsed = Number.parseInt(raw, 10);
-    if (Number.isNaN(parsed)) return;
-    state.northDegrees = normalizeDegrees(parsed);
-    syncDirectionControls();
-    renderDirectionLabels();
-    syncShadePanelContext();
-    if (persistImmediately) {
-      void persistHouseGeometry().catch(showFetchError);
-    } else {
-      scheduleLayoutPersist();
-    }
-  };
-  mapDirectionInput?.addEventListener("input", () => onDirectionInput(mapDirectionInput.value));
-  mapDirectionInput?.addEventListener("change", () => onDirectionInput(mapDirectionInput.value, true));
-  mapDirectionSlider?.addEventListener("input", () => onDirectionInput(mapDirectionSlider.value));
-  mapDirectionSlider?.addEventListener("change", () => onDirectionInput(mapDirectionSlider.value, true));
-  mapDirectionDecBtn?.addEventListener("click", () => onDirectionInput(String(state.northDegrees - 5), true));
-  mapDirectionIncBtn?.addEventListener("click", () => onDirectionInput(String(state.northDegrees + 5), true));
-  mobileMapDirectionInput?.addEventListener("input", () => onDirectionInput(mobileMapDirectionInput.value));
-  mobileMapDirectionInput?.addEventListener("change", () => onDirectionInput(mobileMapDirectionInput.value, true));
-  mobileMapDirectionDecBtn?.addEventListener("click", () => onDirectionInput(String(state.northDegrees - 5), true));
-  mobileMapDirectionIncBtn?.addEventListener("click", () => onDirectionInput(String(state.northDegrees + 5), true));
+  mobileMapDirectionInput?.addEventListener("input", () => applyNorthDirection(mobileMapDirectionInput.value));
+  mobileMapDirectionInput?.addEventListener("change", () => applyNorthDirection(mobileMapDirectionInput.value, true));
+  mobileMapDirectionDecBtn?.addEventListener("click", () => applyNorthDirection(String(state.northDegrees - 5), true));
+  mobileMapDirectionIncBtn?.addEventListener("click", () => applyNorthDirection(String(state.northDegrees + 5), true));
   importCsvBtn?.addEventListener("click", () => importCsvInput?.click());
   importCsvInput?.addEventListener("change", () => void importPlantsCsv());
   exportCsvBtn?.addEventListener("click", exportPlantsCsv);
 
-  const gridDimsApplyBtn = queryButton("grid-dims-apply-btn");
-  gridDimsApplyBtn?.addEventListener("click", () => {
-    const colsInput = queryInput("grid-cols-input");
-    const rowsInput = queryInput("grid-rows-input");
-    void applyGridDimensions(colsInput?.value ?? "", rowsInput?.value ?? "");
-  });
   mobileGridDimsApplyBtn?.addEventListener("click", () => {
     void applyGridDimensions(mobileGridColsInput?.value ?? "", mobileGridRowsInput?.value ?? "");
   });
-  createZoneBtn?.addEventListener("click", () => openCreateZoneDialog());
   mobileCreateZoneBtn?.addEventListener("click", () => {
     setMobileMapSheetOpen(null);
     openCreateZoneDialog();
@@ -2308,10 +2321,28 @@ function normalizeDegrees(value: number): number {
   return wrapped < 0 ? wrapped + 360 : wrapped;
 }
 
+function applyNorthDirection(raw: string | number, persistImmediately = false): boolean {
+  const parsed = typeof raw === "number" ? raw : Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) {
+    showToast(t("map.north_direction_invalid"), "error");
+    return false;
+  }
+  state.northDegrees = normalizeDegrees(parsed);
+  syncDirectionControls();
+  renderDirectionLabels();
+  syncShadePanelContext();
+  if (persistImmediately) {
+    void persistHouseGeometry().catch(showFetchError);
+  } else {
+    scheduleLayoutPersist();
+  }
+  return true;
+}
+
 function syncDirectionControls(): void {
   const normalized = String(normalizeDegrees(state.northDegrees));
   [
-    document.getElementById("map-direction-input"),
+    document.getElementById("adm-map-north-input"),
     document.getElementById("mobile-map-direction-input"),
   ].forEach((element) => {
     if (element instanceof HTMLInputElement) {
@@ -2326,7 +2357,7 @@ function syncGridDimensionInputs(): void {
   const nextCols = String(state.gridCols);
   const nextRows = String(state.gridRows);
   [
-    document.getElementById("grid-cols-input"),
+    document.getElementById("adm-map-grid-cols-input"),
     document.getElementById("mobile-grid-cols-input"),
   ].forEach((element) => {
     if (element instanceof HTMLInputElement) {
@@ -2334,7 +2365,7 @@ function syncGridDimensionInputs(): void {
     }
   });
   [
-    document.getElementById("grid-rows-input"),
+    document.getElementById("adm-map-grid-rows-input"),
     document.getElementById("mobile-grid-rows-input"),
   ].forEach((element) => {
     if (element instanceof HTMLInputElement) {
@@ -4843,18 +4874,21 @@ function showFetchError(err: unknown): void {
 function syncMobileCapabilities(): void {
   const editBtn = queryButton("edit-mode-btn");
   const editMenuDropdown = document.getElementById("edit-menu-dropdown") as HTMLElement | null;
-  if (!editBtn) return;
   if (isMobile()) {
     if (state.editMode) toggleEditMode(state, editCbs);
     if (editMenuDropdown) editMenuDropdown.hidden = true;
-    editBtn.setAttribute("aria-expanded", "false");
-    editBtn.disabled = true;
-    editBtn.title = t("map.desktop_only");
-    editBtn.textContent = t("map.edit_desktop");
+    if (editBtn) {
+      editBtn.setAttribute("aria-expanded", "false");
+      editBtn.disabled = true;
+      editBtn.title = t("map.desktop_only");
+      editBtn.textContent = t("map.edit_desktop");
+    }
   } else {
-    editBtn.disabled = !canWriteInGarden;
-    editBtn.title = canWriteInGarden ? "" : t("map.read_only");
-    editBtn.textContent = canWriteInGarden ? t("map.edit") : t("map.edit_read_only");
+    if (editBtn) {
+      editBtn.disabled = !canWriteInGarden;
+      editBtn.title = canWriteInGarden ? "" : t("map.read_only");
+      editBtn.textContent = canWriteInGarden ? t("map.edit") : t("map.edit_read_only");
+    }
   }
   syncMobileMapSheetAccessibility();
   updateMapDirectionControlVisibility();

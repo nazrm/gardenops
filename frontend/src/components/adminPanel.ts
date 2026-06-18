@@ -87,6 +87,24 @@ const esc = escapeHtml;
 
 type AdminSection = "settings" | "garden" | "users" | "sessions" | "audit" | "invitations" | "system";
 
+export type AdminMapSetupAction =
+  | { type: "open-editor" }
+  | { type: "save-layout" }
+  | { type: "open-layouts" }
+  | { type: "export-map" }
+  | { type: "import-map" }
+  | { type: "apply-north"; degrees: number }
+  | { type: "apply-grid"; cols: number; rows: number }
+  | { type: "create-zone" };
+
+export interface AdminMapSetupState {
+  canWrite: boolean;
+  editorAvailable: boolean;
+  northDegrees: number;
+  gridCols: number;
+  gridRows: number;
+}
+
 interface AdminState {
   section: AdminSection;
   users: AuthManagedUser[];
@@ -170,6 +188,8 @@ let onAuthStateChanged: (() => void) | null = null;
 let onGardenStateChanged: (() => Promise<void>) | null = null;
 let onRestartOnboarding: (() => Promise<void>) | null = null;
 let gardenContextFn: (() => { gardens: GardenSummary[]; activeGardenId: number | null }) | null = null;
+let onMapSetupAction: ((action: AdminMapSetupAction) => Promise<void> | void) | null = null;
+let mapSetupStateFn: (() => AdminMapSetupState) | null = null;
 let adminPanelInitialized = false;
 
 export function setAdminCallbacks(cbs: {
@@ -178,12 +198,16 @@ export function setAdminCallbacks(cbs: {
   onGardenStateChanged: () => Promise<void>;
   onRestartOnboarding: () => Promise<void>;
   getGardenContext: () => { gardens: GardenSummary[]; activeGardenId: number | null };
+  onMapSetupAction: (action: AdminMapSetupAction) => Promise<void> | void;
+  getMapSetupState: () => AdminMapSetupState;
 }): void {
   onSignOut = cbs.onSignOut;
   onAuthStateChanged = cbs.onAuthStateChanged;
   onGardenStateChanged = cbs.onGardenStateChanged;
   onRestartOnboarding = cbs.onRestartOnboarding;
   gardenContextFn = cbs.getGardenContext;
+  onMapSetupAction = cbs.onMapSetupAction;
+  mapSetupStateFn = cbs.getMapSetupState;
 }
 
 // ── Rendering helpers ──────────────────────────────────────
@@ -825,6 +849,57 @@ function renderGardenSection(): string {
       </div>
     `
     : "";
+  const mapSetup = mapSetupStateFn?.();
+  const mapWriteDisabled = mapSetup?.canWrite ? "" : " disabled";
+  const mapEditorDisabled = mapSetup?.canWrite && mapSetup.editorAvailable ? "" : " disabled";
+  const mapSetupCard = mapSetup
+    ? `
+      <div class="adm-card adm-card--form adm-map-setup-card">
+        <h3 class="adm-card-title">${t("admin.garden.map_setup_title")}</h3>
+
+        <div class="adm-map-setup-actions">
+          <button type="button" id="adm-map-open-editor-btn" class="adm-btn adm-btn--primary"${mapEditorDisabled}>${t("admin.garden.open_map_editor")}</button>
+          <button type="button" id="adm-map-save-layout-btn" class="adm-btn"${mapWriteDisabled}>${t("map.save_layout")}</button>
+          <button type="button" id="adm-map-layouts-btn" class="adm-btn">${t("map.garden_layouts")}</button>
+          <button type="button" id="adm-map-export-btn" class="adm-btn">${t("map.export_map")}</button>
+          <button type="button" id="adm-map-import-btn" class="adm-btn"${mapWriteDisabled}>${t("map.import_map")}</button>
+        </div>
+
+        <div class="adm-map-setup-grid">
+          <section class="adm-map-tool-panel" aria-labelledby="adm-map-north-title">
+            <h4 id="adm-map-north-title" class="adm-map-tool-title">${t("map.north_calibration")}</h4>
+            <div class="adm-map-stepper">
+              <button type="button" id="adm-map-north-dec-btn" class="adm-btn"${mapWriteDisabled}>-5°</button>
+              <label class="adm-map-number-field" for="adm-map-north-input">
+                <span>${t("map.north_direction_degrees")}</span>
+                <input id="adm-map-north-input" class="adm-input" type="number" min="0" max="359" step="1" value="${mapSetup.northDegrees}"${mapWriteDisabled} />
+              </label>
+              <button type="button" id="adm-map-north-inc-btn" class="adm-btn"${mapWriteDisabled}>+5°</button>
+            </div>
+            <div class="adm-btn-group">
+              <button type="button" id="adm-map-north-apply-btn" class="adm-btn"${mapWriteDisabled}>${t("common.apply")}</button>
+            </div>
+          </section>
+
+          <section class="adm-map-tool-panel" aria-labelledby="adm-map-property-title">
+            <h4 id="adm-map-property-title" class="adm-map-tool-title">${t("map.property_size")}</h4>
+            <div class="adm-form-row">
+              <label>${t("onboarding.width")}
+                <input type="number" id="adm-map-grid-cols-input" class="adm-input" min="5" max="100" step="1" value="${mapSetup.gridCols}"${mapWriteDisabled} />
+              </label>
+              <label>${t("onboarding.depth")}
+                <input type="number" id="adm-map-grid-rows-input" class="adm-input" min="5" max="100" step="1" value="${mapSetup.gridRows}"${mapWriteDisabled} />
+              </label>
+            </div>
+            <div class="adm-btn-group">
+              <button type="button" id="adm-map-grid-apply-btn" class="adm-btn"${mapWriteDisabled}>${t("map.apply_property_size")}</button>
+              <button type="button" id="adm-map-create-zone-btn" class="adm-btn"${mapWriteDisabled}>${t("map.create_zone")}</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    `
+    : "";
   return `
     <div class="adm-section-header">
       <div>
@@ -862,6 +937,7 @@ function renderGardenSection(): string {
         <button type="button" id="adm-garden-save" class="adm-btn adm-btn--primary">${t("admin.garden.save_settings")}</button>
       </div>
     </div>
+    ${mapSetupCard}
     <div class="adm-card adm-card--form">
       <h3 class="adm-card-title">${t("admin.garden.onboarding_title")}</h3>
       <p class="adm-section-desc">${t("common.status")}: ${onboardingStatus}</p>
@@ -1821,6 +1897,47 @@ function readAuditFilters(): {
   return filters;
 }
 
+function normalizeDegrees(value: number): number {
+  const wrapped = value % 360;
+  return wrapped < 0 ? wrapped + 360 : wrapped;
+}
+
+function dispatchMapSetupAction(action: AdminMapSetupAction): void {
+  if (!onMapSetupAction) return;
+  void Promise.resolve(onMapSetupAction(action))
+    .catch((err) => showToast(getApiErrorMessage(err), "error"));
+}
+
+function readMapNorthDegrees(): number | null {
+  const input = queryInput("adm-map-north-input");
+  const parsed = Number.parseInt(input?.value.trim() ?? "", 10);
+  if (!Number.isFinite(parsed)) {
+    showToast(t("map.north_direction_invalid"), "error");
+    return null;
+  }
+  const normalized = normalizeDegrees(parsed);
+  if (input) input.value = String(normalized);
+  return normalized;
+}
+
+function updateMapNorthDegrees(delta: number): void {
+  const input = queryInput("adm-map-north-input");
+  const current = Number.parseInt(input?.value.trim() ?? String(mapSetupStateFn?.().northDegrees ?? 0), 10);
+  const next = normalizeDegrees(Number.isFinite(current) ? current + delta : delta);
+  if (input) input.value = String(next);
+  dispatchMapSetupAction({ type: "apply-north", degrees: next });
+}
+
+function readMapGridDimensions(): { cols: number; rows: number } | null {
+  const cols = Number.parseInt(queryInput("adm-map-grid-cols-input")?.value.trim() ?? "", 10);
+  const rows = Number.parseInt(queryInput("adm-map-grid-rows-input")?.value.trim() ?? "", 10);
+  if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols < 5 || cols > 100 || rows < 5 || rows > 100) {
+    showToast(t("map.grid_dimensions_invalid"), "error");
+    return null;
+  }
+  return { cols, rows };
+}
+
 function wireSection(): void {
   const container = getContainer();
   if (!container) return;
@@ -1871,6 +1988,39 @@ function wireSection(): void {
       showToast(t("admin.toast.garden_saved"), "success");
       repaint();
     } catch (err) { showToast(getApiErrorMessage(err), "error"); }
+  });
+
+  container.querySelector("#adm-map-open-editor-btn")?.addEventListener("click", () => {
+    dispatchMapSetupAction({ type: "open-editor" });
+  });
+  container.querySelector("#adm-map-save-layout-btn")?.addEventListener("click", () => {
+    dispatchMapSetupAction({ type: "save-layout" });
+  });
+  container.querySelector("#adm-map-layouts-btn")?.addEventListener("click", () => {
+    dispatchMapSetupAction({ type: "open-layouts" });
+  });
+  container.querySelector("#adm-map-export-btn")?.addEventListener("click", () => {
+    dispatchMapSetupAction({ type: "export-map" });
+  });
+  container.querySelector("#adm-map-import-btn")?.addEventListener("click", () => {
+    dispatchMapSetupAction({ type: "import-map" });
+  });
+  container.querySelector("#adm-map-north-dec-btn")?.addEventListener("click", () => {
+    updateMapNorthDegrees(-5);
+  });
+  container.querySelector("#adm-map-north-inc-btn")?.addEventListener("click", () => {
+    updateMapNorthDegrees(5);
+  });
+  container.querySelector("#adm-map-north-apply-btn")?.addEventListener("click", () => {
+    const degrees = readMapNorthDegrees();
+    if (degrees !== null) dispatchMapSetupAction({ type: "apply-north", degrees });
+  });
+  container.querySelector("#adm-map-grid-apply-btn")?.addEventListener("click", () => {
+    const dims = readMapGridDimensions();
+    if (dims) dispatchMapSetupAction({ type: "apply-grid", ...dims });
+  });
+  container.querySelector("#adm-map-create-zone-btn")?.addEventListener("click", () => {
+    dispatchMapSetupAction({ type: "create-zone" });
   });
 
   container.querySelector("#adm-garden-onboarding")?.addEventListener("click", async () => {

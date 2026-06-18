@@ -29,6 +29,7 @@ export function toggleEditMode(
   const clearBtn = document.getElementById("clear-selection-btn");
   const countSpan = document.getElementById("selection-count");
   const undoBtn = document.getElementById("undo-btn");
+  const editContextBar = document.getElementById("map-edit-context-bar");
 
   if (btn) {
     btn.textContent = t("map.edit");
@@ -48,6 +49,9 @@ export function toggleEditMode(
     undoBtn.style.display = state.editMode ? "block" : "none";
     (undoBtn as HTMLButtonElement).disabled =
       state.undoStack.length === 0;
+  }
+  if (editContextBar instanceof HTMLElement) {
+    editContextBar.hidden = !state.editMode;
   }
 
   updateSelectionCount(state);

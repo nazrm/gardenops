@@ -1,4 +1,5 @@
 import type { Snapshot } from "../services/api";
+import { createModal } from "../components/dialogCore";
 import { appSlug } from "../core/branding";
 import { t } from "../core/i18n";
 import {
@@ -30,7 +31,7 @@ export interface SnapshotsContext {
 
 let ctx: SnapshotsContext;
 
-type SnapshotListMode = "dropdown" | "mobile";
+type SnapshotListMode = "dropdown" | "mobile" | "dialog";
 
 export function initSnapshotsFeature(
   snapshotsCtx: SnapshotsContext,
@@ -82,8 +83,10 @@ function renderSnapshotsList(
         if (!restored) return;
         if (mode === "dropdown") {
           container.hidden = true;
-        } else {
+        } else if (mode === "mobile") {
           ctx.setMobileMapSheetOpen(null);
+        } else {
+          container.closest(".modal")?.remove();
         }
       })();
     });
@@ -163,6 +166,15 @@ export async function refreshOpenSnapshotViews(): Promise<void> {
       "mobile",
     );
   }
+  const dialogList = document.getElementById(
+    "map-layouts-dialog-list",
+  );
+  if (dialogList instanceof HTMLElement) {
+    await populateSnapshotsList(
+      dialogList,
+      "dialog",
+    );
+  }
 }
 
 export async function openMobileLayoutsSheet(): Promise<void> {
@@ -175,6 +187,39 @@ export async function openMobileLayoutsSheet(): Promise<void> {
     ctx.setMobileMapSheetOpen(
       "mobile-map-layouts-sheet",
     );
+  } catch (err) {
+    ctx.showFetchError(err);
+  }
+}
+
+export async function openLayoutsDialog(): Promise<void> {
+  document.getElementById("map-layouts-dialog")?.remove();
+  const { dialog } = createModal(t("map.garden_layouts"), `
+    <div class="modal-content map-layouts-dialog-content">
+      <h3>${t("map.garden_layouts")}</h3>
+      <div class="mobile-map-sheet-actions">
+        <button id="map-layouts-dialog-save-btn" class="mobile-map-sheet-btn mobile-map-sheet-btn--primary" type="button">${t("map.save_current_layout")}</button>
+      </div>
+      <div id="map-layouts-dialog-list" class="mobile-snapshots-list" aria-live="polite"></div>
+    </div>
+  `);
+  dialog.id = "map-layouts-dialog";
+  const list = document.getElementById("map-layouts-dialog-list");
+  const saveBtn = document.getElementById("map-layouts-dialog-save-btn");
+  if (saveBtn instanceof HTMLButtonElement) {
+    saveBtn.disabled = !ctx.canWrite();
+    saveBtn.addEventListener("click", () => {
+      void (async () => {
+        const saved = await saveLayout();
+        if (saved && list instanceof HTMLElement) {
+          await populateSnapshotsList(list, "dialog");
+        }
+      })();
+    });
+  }
+  if (!(list instanceof HTMLElement)) return;
+  try {
+    await populateSnapshotsList(list, "dialog");
   } catch (err) {
     ctx.showFetchError(err);
   }
