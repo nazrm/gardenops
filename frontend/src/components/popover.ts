@@ -1,5 +1,6 @@
 import type { Plant } from "../core/models";
 import { t } from "../core/i18n";
+import { sanitizeUrl } from "../core/sanitize";
 
 export interface PopoverParams {
   plotId: string;
@@ -50,7 +51,19 @@ export function showPopover(params: PopoverParams): void {
   if (plants.length > 0) {
     plants.forEach((plant) => {
       const item = document.createElement("li");
-      item.textContent = plant.name;
+      const safeLink = sanitizeUrl(plant.link ?? "");
+      if (safeLink) {
+        const link = document.createElement("a");
+        link.className = "popover-plant-link";
+        link.href = safeLink;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = plant.name;
+        link.setAttribute("aria-label", t("plants.open_plant_link", { name: plant.name }));
+        item.appendChild(link);
+      } else {
+        item.textContent = plant.name;
+      }
       plantList.appendChild(item);
     });
   } else {

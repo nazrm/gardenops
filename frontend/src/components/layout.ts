@@ -213,6 +213,15 @@ export function getAppShellMarkup(): string {
                   <p class="map-layers-kicker" data-i18n="map.map_controls">${t("map.map_controls")}</p>
                   <h2 id="map-layers-title" data-i18n="map.layers">${t("map.layers")}</h2>
                 </div>
+                <button
+                  id="map-layers-collapse-btn"
+                  class="map-layers-collapse-btn"
+                  type="button"
+                  aria-label="${t("map.collapse_layers")}"
+                  title="${t("map.collapse_layers")}"
+                  aria-controls="map-layers-panel"
+                  aria-expanded="true"
+                >&#8249;</button>
                 <button id="mobile-map-layers-close-btn" class="map-layers-close close-btn" type="button" aria-label="${t("map.close_layers")}" data-i18n-aria-label="map.close_layers">&times;</button>
               </div>
 

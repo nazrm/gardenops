@@ -74,6 +74,7 @@ from gardenops.services.lidar_terrain import (
     sample_elevations_wgs84,
     sample_local_terrain_tile,
     serialize_dataset,
+    terrain_path_for_signature,
 )
 
 router = APIRouter()
@@ -326,8 +327,6 @@ def _cache_fresh(row: dict[str, Any] | None, ttl_ms: int) -> bool:
 
 def _load_grid_from_db(signature: str) -> LocalTerrainDataset | None:
     """Load cached LiDAR grid from DB if signature matches."""
-    from gardenops.services.lidar_terrain import _terrain_path
-
     conn = db_module.get_db()
     try:
         row = conn.execute(
@@ -336,7 +335,7 @@ def _load_grid_from_db(signature: str) -> LocalTerrainDataset | None:
         ).fetchone()
         if not row:
             return None
-        path = _terrain_path()
+        path = terrain_path_for_signature(signature)
         if not path:
             return None
         return restore_dataset(dict(row), path, signature)
@@ -719,7 +718,7 @@ def _terrain_cache_key(
     override_sig: str = "",
     house_sig: str = "",
 ) -> str:
-    local_sig = local_terrain_signature()
+    local_sig = local_terrain_signature(garden_id)
     if local_sig:
         base = f"g:{garden_id}:local:{local_sig}:{z}:{x}:{y}"
         extra = ":".join(s for s in (override_sig, house_sig) if s)
@@ -1619,15 +1618,29 @@ class GeoContext:
     calibration: dict[str, float] | None
 
 
+def _garden_coordinates(db: DbConn, garden_id: int) -> tuple[float, float]:
+    row = db.execute(
+        "SELECT latitude, longitude FROM gardens WHERE id = %s LIMIT 1",
+        (garden_id,),
+    ).fetchone()
+    if row and row["latitude"] is not None and row["longitude"] is not None:
+        return float(row["latitude"]), float(row["longitude"])
+    return (
+        _read_float("SHADEMAP_LAT", DEFAULT_LATITUDE),
+        _read_float("SHADEMAP_LNG", DEFAULT_LONGITUDE),
+    )
+
+
 def _load_geo_context(db: DbConn, garden_id: int) -> GeoContext | None:
     """Load layout, coordinates, and calibration transform."""
     layout = _read_layout_state(db, garden_id)
     if not layout:
         return None
+    latitude, longitude = _garden_coordinates(db, garden_id)
     return GeoContext(
         layout=layout,
-        latitude=_read_float("SHADEMAP_LAT", DEFAULT_LATITUDE),
-        longitude=_read_float("SHADEMAP_LNG", DEFAULT_LONGITUDE),
+        latitude=latitude,
+        longitude=longitude,
         house_row=int(layout["house_row"]),
         house_col=int(layout["house_col"]),
         house_width=int(layout["house_width"]),
@@ -2112,15 +2125,16 @@ def get_shademap_config(db: DB, request: FastAPIRequest) -> dict[str, object]:
         raise HTTPException(status_code=503, detail="SHADEMAP public API key not configured")
     garden_id = _active_garden_id(request)
     _ensure_sdk_ready(db, garden_id, request)
-    terrain_max_zoom = 18 if local_terrain_available() else TERRAIN_MAX_ZOOM
+    latitude, longitude = _garden_coordinates(db, garden_id)
+    terrain_max_zoom = 18 if local_terrain_available(garden_id) else TERRAIN_MAX_ZOOM
     try:
         terrain_token, terrain_token_expires_at_ms = _tile_token(garden_id=garden_id)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "api_key": api_key,
-        "latitude": _read_float("SHADEMAP_LAT", DEFAULT_LATITUDE),
-        "longitude": _read_float("SHADEMAP_LNG", DEFAULT_LONGITUDE),
+        "latitude": latitude,
+        "longitude": longitude,
         "zoom": max(FEATURES_MIN_ZOOM, _read_int("SHADEMAP_ZOOM", DEFAULT_ZOOM)),
         "label": os.environ.get("SHADEMAP_LABEL", DEFAULT_LABEL).strip() or DEFAULT_LABEL,
         "share_url": os.environ.get("SHADEMAP_SHARE_URL", DEFAULT_SHARE_URL).strip()
@@ -2397,7 +2411,7 @@ def get_shademap_terrain_tile(
         garden_limit=env_nonneg_int("SHADEMAP_TERRAIN_MISS_RATE_LIMIT_GARDEN", 120),
         global_limit=env_nonneg_int("SHADEMAP_TERRAIN_MISS_RATE_LIMIT_GLOBAL", 800),
     )
-    local_tile = sample_local_terrain_tile(z, x, y)
+    local_tile = sample_local_terrain_tile(z, x, y, garden_id)
     if local_tile is not None and local_tile.fully_covered:
         payload = _prepare_terrain_tile(
             local_tile.elevations,
@@ -2517,7 +2531,7 @@ def get_plot_elevations(request: FastAPIRequest, db: DB) -> dict[str, object]:
     """Per-plot elevations from local LiDAR, cached in DB."""
     context = _auth_context(request)
     garden_id = _active_garden_id(request)
-    terrain_sig = local_terrain_signature()
+    terrain_sig = local_terrain_signature(garden_id)
     if not terrain_sig:
         return {
             "available": False,
@@ -2696,6 +2710,7 @@ def _compute_and_cache_elevations(
     elevations = sample_elevations_wgs84(
         np.array(lats, dtype=np.float64),
         np.array(lngs, dtype=np.float64),
+        garden_id,
     )
 
     db.execute("DELETE FROM plot_elevations WHERE garden_id = %s", (garden_id,))

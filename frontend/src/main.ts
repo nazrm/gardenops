@@ -383,6 +383,7 @@ function loadSubMode(): SubMode {
 
 let activeTab: AppTab = loadActiveTab();
 let subMode: SubMode = loadSubMode();
+const MAP_LAYERS_COLLAPSED_STORAGE_KEY = "gardenops-map-layers-collapsed";
 
 function normalizeNavigation(tab: AppTab, mode: SubMode): { tab: AppTab; subMode: SubMode } {
   const normalizedMode = isSubModeEnabled(mode)
@@ -794,6 +795,10 @@ function isMobileMapSheetOpen(sheetId: MobileMapSheetId): boolean {
   return sheet?.classList.contains("mobile-map-sheet--open") ?? false;
 }
 
+function shouldLoadShadeMapPanelNow(): boolean {
+  return !isMobile() || isMobileMapSheetOpen("shade-panel");
+}
+
 function syncMobileMapSheetAccessibility(): void {
   MOBILE_MAP_SHEET_IDS.forEach((id) => {
     const sheet = document.getElementById(id);
@@ -844,7 +849,30 @@ function setMobileMapSheetOpen(sheetId: MobileMapSheetId | null): void {
     trigger?.setAttribute("aria-expanded", String(nextOpen === triggerSheetId));
   });
   document.body.classList.toggle("mobile-map-sheet-open", nextOpen !== null);
+  if (nextOpen === "shade-panel") {
+    void ensureShadeMapPanelLoaded();
+  }
   requestAnimationFrame(() => cameraCtrl?.fitAll());
+}
+
+function setMapLayersCollapsed(collapsed: boolean, persist = true): void {
+  const applied = !isMobile() && collapsed;
+  const shell = document.querySelector<HTMLElement>(".map-shell");
+  const button = queryButton("map-layers-collapse-btn");
+  shell?.classList.toggle("map-layers-collapsed", applied);
+  if (button) {
+    button.setAttribute("aria-expanded", applied ? "false" : "true");
+    button.setAttribute("aria-label", t(applied ? "map.expand_layers" : "map.collapse_layers"));
+    button.title = t(applied ? "map.expand_layers" : "map.collapse_layers");
+    button.textContent = applied ? "\u203a" : "\u2039";
+  }
+  if (persist) {
+    localStorage.setItem(MAP_LAYERS_COLLAPSED_STORAGE_KEY, collapsed ? "1" : "0");
+  }
+}
+
+function syncMapLayersCollapsedFromStorage(): void {
+  setMapLayersCollapsed(localStorage.getItem(MAP_LAYERS_COLLAPSED_STORAGE_KEY) === "1", false);
 }
 
 function openMobileMapLayerSheet(sectionId: string): void {
@@ -1582,6 +1610,7 @@ function setupLayout(): void {
   if (!localeUiSubscriptionBound) {
     subscribeLocaleChange(() => {
       applyLocalizedShellText();
+      syncMapLayersCollapsedFromStorage();
       refreshLocalizedSignedInViews();
     });
     localeUiSubscriptionBound = true;
@@ -1624,6 +1653,12 @@ function setupLayout(): void {
       const nextLocale = button.dataset["localeOption"] === "no" ? "no" : "en";
       void persistLocalePreference(nextLocale);
     });
+  });
+  syncMapLayersCollapsedFromStorage();
+  queryButton("map-layers-collapse-btn")?.addEventListener("click", () => {
+    const currentlyCollapsed = document.querySelector<HTMLElement>(".map-shell")
+      ?.classList.contains("map-layers-collapsed") ?? false;
+    setMapLayersCollapsed(!currentlyCollapsed);
   });
 
   selectAllBtn?.addEventListener("click", () => selectAll(state, editCbs));
@@ -1668,9 +1703,12 @@ function setupLayout(): void {
   mobileMapHighlightBtn?.addEventListener("click", () => {
     openMobileMapLayerSheet("map-layer-highlight-section");
   });
-  mobileMapShadeBtn?.addEventListener("click", () => {
+  mobileMapShadeBtn?.addEventListener("click", async () => {
     const shadePanelEl = document.getElementById("shade-panel");
     if (!(shadePanelEl instanceof HTMLElement) || shadePanelEl.hidden || mobileMapShadeBtn.disabled) return;
+    if (!isMobileMapSheetOpen("shade-panel")) {
+      await ensureShadeMapPanelLoaded();
+    }
     setMobileMapSheetOpen(isMobileMapSheetOpen("shade-panel") ? null : "shade-panel");
   });
   mobileMapLayoutsBtn?.addEventListener("click", () => {
@@ -2059,7 +2097,7 @@ function applyNavigationState(opts: { triggerLoads?: boolean } = {}): void {
 
   updateMapDirectionControlVisibility();
   if (activeTab === "map") {
-    void ensureShadeMapPanelLoaded();
+    if (shouldLoadShadeMapPanelNow()) void ensureShadeMapPanelLoaded();
     void loadPlotAlerts();
   }
   updateMobileHeader();
@@ -4817,7 +4855,7 @@ async function refreshGardenDataForCurrentContext(): Promise<void> {
   await Promise.all([fetchPlots(), fetchLayoutState(), refreshElevationAvailability()]);
   if (!isCurrentGardenRequest(requestGardenId)) return;
   invalidatePlantsCache();
-  if (activeTab === "map") await ensureShadeMapPanelLoaded();
+  if (activeTab === "map" && shouldLoadShadeMapPanelNow()) await ensureShadeMapPanelLoaded();
   if (!isCurrentGardenRequest(requestGardenId)) return;
   await refreshActiveNavigationContent();
 }
@@ -4954,6 +4992,7 @@ window.addEventListener("resize", () => {
   }
   syncMobileShadeDisclosureState();
   syncMobileViewportOffset();
+  syncMapLayersCollapsedFromStorage();
 });
 
 if (window.visualViewport) {
@@ -5049,7 +5088,7 @@ async function bootstrapApp(): Promise<void> {
   if (needsOnboarding) return;
 
   await Promise.all([fetchPlots(), fetchLayoutState(), refreshElevationAvailability()]);
-  if (activeTab === "map") {
+  if (activeTab === "map" && shouldLoadShadeMapPanelNow()) {
     await ensureShadeMapPanelLoaded();
   }
 }
@@ -5070,7 +5109,7 @@ async function checkOnboardingNeeded(): Promise<boolean> {
       void (async () => {
         await refreshGardenContext();
         await Promise.all([fetchPlots(), fetchLayoutState(), refreshElevationAvailability()]);
-        if (activeTab === "map") {
+        if (activeTab === "map" && shouldLoadShadeMapPanelNow()) {
           await ensureShadeMapPanelLoaded();
         }
         resolve(true);

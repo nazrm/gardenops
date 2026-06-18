@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import secrets
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -55,8 +56,8 @@ class LocalTerrainDataset:
 
 
 _DATASET_LOCK = threading.Lock()
-_DATASET_CACHE: LocalTerrainDataset | None = None
-_DATASET_SIGNATURE: str | None = None
+_DATASET_CACHE: dict[str, LocalTerrainDataset] = {}
+_ALLOWED_UPLOAD_SUFFIXES: Final[set[str]] = {".las", ".laz"}
 
 GridCacheLoad = Callable[[str], LocalTerrainDataset | None]
 GridCacheSave = Callable[[str, LocalTerrainDataset], None]
@@ -120,30 +121,142 @@ def restore_dataset(
     )
 
 
-def _terrain_path() -> Path | None:
+def _media_storage_root() -> Path:
+    raw = os.environ.get("MEDIA_STORAGE_DIR", "").strip()
+    root = Path(raw) if raw else (ROOT / "media_uploads")
+    if not root.is_absolute():
+        root = ROOT / root
+    return root
+
+
+def lidar_upload_max_bytes() -> int:
+    raw = os.environ.get("SHADEMAP_LOCAL_TERRAIN_MAX_UPLOAD_BYTES", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return 256 * 1024 * 1024
+
+
+def _uploaded_terrain_dir(garden_id: int) -> Path:
+    return _media_storage_root() / "lidar" / f"garden-{garden_id}"
+
+
+def _uploaded_terrain_path(garden_id: int) -> Path | None:
+    root = _uploaded_terrain_dir(garden_id)
+    for suffix in (".laz", ".las"):
+        candidate = root / f"terrain{suffix}"
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
+def _terrain_source(garden_id: int | None = None) -> tuple[str, Path] | None:
+    if garden_id is not None:
+        uploaded = _uploaded_terrain_path(garden_id)
+        if uploaded is not None:
+            return f"uploaded:{garden_id}", uploaded
+
     explicit = os.environ.get("SHADEMAP_LOCAL_TERRAIN_PATH", "").strip()
     if explicit:
         candidate = Path(explicit).expanduser()
         if not candidate.is_absolute():
             candidate = ROOT / candidate
-        return candidate if candidate.exists() else None
+        return ("env", candidate) if candidate.exists() else None
 
     candidates = sorted(ROOT.glob(LOCAL_TERRAIN_SCAN_PATTERN))
     if len(candidates) == 1:
-        return candidates[0]
+        return "root", candidates[0]
     return None
 
 
-def local_terrain_signature() -> str | None:
-    path = _terrain_path()
-    if not path:
+def _terrain_path(garden_id: int | None = None) -> Path | None:
+    source = _terrain_source(garden_id)
+    return source[1] if source else None
+
+
+def terrain_path_for_signature(signature: str) -> Path | None:
+    parts = signature.split(":", 3)
+    if len(parts) < 4:
+        return _terrain_path()
+    source_kind = parts[0]
+    if source_kind == "uploaded":
+        try:
+            garden_id = int(parts[1])
+        except ValueError:
+            return None
+        return _uploaded_terrain_path(garden_id)
+    return _terrain_path()
+
+
+def local_terrain_signature(garden_id: int | None = None) -> str | None:
+    source = _terrain_source(garden_id)
+    if not source:
         return None
+    source_key, path = source
     stat = path.stat()
-    return f"{path.name}:{int(stat.st_mtime_ns)}:{stat.st_size}"
+    return f"{source_key}:{path.name}:{int(stat.st_mtime_ns)}:{stat.st_size}"
 
 
-def local_terrain_available() -> bool:
-    return local_terrain_signature() is not None
+def local_terrain_available(garden_id: int | None = None) -> bool:
+    return local_terrain_signature(garden_id) is not None
+
+
+def local_terrain_storage_info(garden_id: int) -> dict[str, object]:
+    uploaded = _uploaded_terrain_path(garden_id)
+    active = _terrain_source(garden_id)
+    active_path = active[1] if active else None
+    uploaded_stat = uploaded.stat() if uploaded else None
+    active_stat = active_path.stat() if active_path else None
+    return {
+        "available": active_path is not None,
+        "uploaded": uploaded is not None,
+        "filename": active_path.name if active_path else "",
+        "uploaded_filename": uploaded.name if uploaded else "",
+        "bytes": int(active_stat.st_size) if active_stat else 0,
+        "uploaded_bytes": int(uploaded_stat.st_size) if uploaded_stat else 0,
+        "updated_at_ms": int(active_stat.st_mtime * 1000) if active_stat else None,
+        "source": active[0] if active else "none",
+        "max_upload_bytes": lidar_upload_max_bytes(),
+    }
+
+
+def save_uploaded_terrain(
+    garden_id: int, payload: bytes, original_filename: str
+) -> dict[str, object]:
+    suffix = Path(original_filename or "").suffix.lower()
+    if suffix not in _ALLOWED_UPLOAD_SUFFIXES:
+        raise ValueError("LiDAR upload must be a .las or .laz file")
+    if not payload:
+        raise ValueError("LiDAR upload is empty")
+    max_bytes = lidar_upload_max_bytes()
+    if len(payload) > max_bytes:
+        raise ValueError("LiDAR upload exceeds size limit")
+
+    target_dir = _uploaded_terrain_dir(garden_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"terrain{suffix}"
+    tmp = target_dir / f".terrain-{secrets.token_hex(8)}.tmp"
+    tmp.write_bytes(payload)
+    tmp.replace(target)
+    for other_suffix in _ALLOWED_UPLOAD_SUFFIXES - {suffix}:
+        (target_dir / f"terrain{other_suffix}").unlink(missing_ok=True)
+    clear_local_terrain_cache()
+    return local_terrain_storage_info(garden_id)
+
+
+def clear_uploaded_terrain(garden_id: int) -> dict[str, object]:
+    target_dir = _uploaded_terrain_dir(garden_id)
+    for suffix in _ALLOWED_UPLOAD_SUFFIXES:
+        (target_dir / f"terrain{suffix}").unlink(missing_ok=True)
+    clear_local_terrain_cache()
+    return local_terrain_storage_info(garden_id)
+
+
+def clear_local_terrain_cache() -> None:
+    with _DATASET_LOCK:
+        _DATASET_CACHE.clear()
 
 
 def _resolution_meters() -> float:
@@ -270,34 +383,34 @@ def _build_dataset(path: Path, signature: str) -> LocalTerrainDataset:
     )
 
 
-def _dataset() -> LocalTerrainDataset | None:
-    path = _terrain_path()
-    signature = local_terrain_signature()
+def _dataset(garden_id: int | None = None) -> LocalTerrainDataset | None:
+    path = _terrain_path(garden_id)
+    signature = local_terrain_signature(garden_id)
     if not path or not signature:
         return None
 
-    global _DATASET_CACHE, _DATASET_SIGNATURE
-    if _DATASET_CACHE is not None and _DATASET_SIGNATURE == signature:
-        return _DATASET_CACHE
+    cached_dataset = _DATASET_CACHE.get(signature)
+    if cached_dataset is not None:
+        return cached_dataset
 
     with _DATASET_LOCK:
-        if _DATASET_CACHE is not None and _DATASET_SIGNATURE == signature:
-            return _DATASET_CACHE
+        cached_dataset = _DATASET_CACHE.get(signature)
+        if cached_dataset is not None:
+            return cached_dataset
 
         if _grid_cache_load is not None:
             cached = _grid_cache_load(signature)
             if cached is not None:
-                _DATASET_CACHE = cached
-                _DATASET_SIGNATURE = signature
-                return _DATASET_CACHE
+                _DATASET_CACHE[signature] = cached
+                return cached
 
-        _DATASET_CACHE = _build_dataset(path, signature)
-        _DATASET_SIGNATURE = signature
+        dataset = _build_dataset(path, signature)
+        _DATASET_CACHE[signature] = dataset
 
         if _grid_cache_save is not None:
-            _grid_cache_save(signature, _DATASET_CACHE)
+            _grid_cache_save(signature, dataset)
 
-        return _DATASET_CACHE
+        return dataset
 
 
 def _tile_lon(x: np.ndarray, z: int) -> np.ndarray:
@@ -379,12 +492,13 @@ def _sample_bilinear(
 def sample_elevations_wgs84(
     latitudes: np.ndarray,
     longitudes: np.ndarray,
+    garden_id: int | None = None,
 ) -> np.ndarray:
     """Sample elevations for WGS84 coordinates.
 
     Returns array of elevations in meters; NaN for out-of-coverage.
     """
-    dataset = _dataset()
+    dataset = _dataset(garden_id)
     if dataset is None:
         return np.full(len(latitudes), np.nan, dtype=np.float32)
 
@@ -398,8 +512,13 @@ def sample_elevations_wgs84(
     return result
 
 
-def sample_local_terrain_tile(z: int, x: int, y: int) -> LocalTerrainTile | None:
-    dataset = _dataset()
+def sample_local_terrain_tile(
+    z: int,
+    x: int,
+    y: int,
+    garden_id: int | None = None,
+) -> LocalTerrainTile | None:
+    dataset = _dataset(garden_id)
     if dataset is None:
         return None
     if not _bbox_intersects_dataset(dataset, z, x, y):
