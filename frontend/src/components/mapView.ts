@@ -4,6 +4,7 @@ import { t } from "../core/i18n";
 const ZOOM_MIN = 1.0;
 const ZOOM_MAX = 3.0;
 const ZOOM_STEP = 0.5;
+const SVG_NS = "http://www.w3.org/2000/svg";
 
 let zoomLevel = 1.0;
 const zoomControlsByGrid = new WeakMap<HTMLElement, HTMLElement>();
@@ -159,6 +160,43 @@ function ensureZoomControls(grid: HTMLElement): void {
   applyZoom(grid);
 }
 
+function plotIdTextLength(label: string): string {
+  if (label.length <= 2) return "58";
+  if (label.length === 3) return "70";
+  return "80";
+}
+
+function buildPlotIdLabel(label: string): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.classList.add("plot-label", "plot-label-svg");
+  svg.dataset["labelKind"] = "plot-id";
+  svg.dataset["labelLength"] = String(label.length);
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+
+  const text = document.createElementNS(SVG_NS, "text");
+  text.classList.add("plot-label-svg-text");
+  text.setAttribute("x", "50");
+  text.setAttribute("y", "53");
+  text.setAttribute("text-anchor", "middle");
+  text.setAttribute("dominant-baseline", "middle");
+  text.setAttribute("textLength", plotIdTextLength(label));
+  text.setAttribute("lengthAdjust", "spacingAndGlyphs");
+  text.textContent = label;
+  svg.appendChild(text);
+  return svg;
+}
+
+function buildIconLabel(label: string): HTMLSpanElement {
+  const labelEl = document.createElement("span");
+  labelEl.className = "plot-label plot-label-icon";
+  labelEl.dataset["labelKind"] = "icon";
+  labelEl.textContent = label;
+  return labelEl;
+}
+
 interface RenderMapParams {
   grid: HTMLElement;
   plots: Plot[];
@@ -297,18 +335,21 @@ function buildPlotCell(
   el.style.gridColumn = String(col);
 
   const count = plot.plant_count;
-  const density = count === 0 ? "" : count <= 2 ? "\u00B7" : count <= 5 ? "\u00B7\u00B7" : "\u00B7\u00B7\u00B7";
+  const densityLevel = count === 0 ? 0 : count <= 2 ? 1 : count <= 5 ? 2 : 3;
   const label = plot.has_tree ? "🌳" : plot.has_bush ? "🌿" : plot.plot_id;
 
-  const labelEl = document.createElement("span");
-  labelEl.className = "plot-label";
-  labelEl.textContent = label;
-  el.appendChild(labelEl);
+  el.appendChild(label === plot.plot_id ? buildPlotIdLabel(label) : buildIconLabel(label));
 
-  if (density) {
+  if (densityLevel > 0) {
     const densityEl = document.createElement("span");
     densityEl.className = "plot-density";
-    densityEl.textContent = density;
+    densityEl.dataset["density"] = String(densityLevel);
+    densityEl.setAttribute("aria-hidden", "true");
+    for (let i = 0; i < densityLevel; i += 1) {
+      const dot = document.createElement("span");
+      dot.className = "plot-density-dot";
+      densityEl.appendChild(dot);
+    }
     el.appendChild(densityEl);
   }
 

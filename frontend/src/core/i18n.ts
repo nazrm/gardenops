@@ -656,6 +656,8 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
       plants
         ? `${title} (${plants}) is due on ${due}`
         : `${title} is due on ${due}`,
+    "notifications.plant_count": ({ count }) =>
+      `${count} plant${Number(count) === 1 ? "" : "s"}`,
     "weather.title": "Weather",
     "weather.forecast_title": "7-Day Forecast",
     "weather.alerts_title": "Weather Alerts",
@@ -1171,7 +1173,13 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
     "map.export_map_title": "Download map as JSON file",
     "map.import_map_title": "Load map from JSON file",
     "map.map_tools": "Map tools",
+    "map.layers": "Layers",
+    "map.close_layers": "Close layers",
     "map.highlight": "Highlight:",
+    "map.highlight_layer": "Highlight",
+    "map.shade": "Shade",
+    "map.close_shade": "Close shade",
+    "map.edit_short": "Edit",
     "map.elevation": "Elevation",
     "map.elevation_toggle_title": "Toggle elevation heatmap",
     "map.elevation_edit_title": "Edit elevation overrides",
@@ -2782,6 +2790,8 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
       plants
         ? `${title} (${plants}) forfaller ${due}`
         : `${title} forfaller ${due}`,
+    "notifications.plant_count": ({ count }) =>
+      `${count} plante${Number(count) === 1 ? "" : "r"}`,
     "weather.title": "V\u00e6r",
     "weather.forecast_title": "7-dagers varsel",
     "weather.alerts_title": "V\u00e6rvarsler",
@@ -3297,7 +3307,13 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
     "map.export_map_title": "Last ned kart som JSON-fil",
     "map.import_map_title": "Last inn kart fra JSON-fil",
     "map.map_tools": "Kartverktøy",
+    "map.layers": "Lag",
+    "map.close_layers": "Lukk lag",
     "map.highlight": "Marker:",
+    "map.highlight_layer": "Marker",
+    "map.shade": "Skygge",
+    "map.close_shade": "Lukk skygge",
+    "map.edit_short": "Rediger",
     "map.elevation": "Høyde",
     "map.elevation_toggle_title": "Bytt høydekart",
     "map.elevation_edit_title": "Rediger høydeoverstyringer",

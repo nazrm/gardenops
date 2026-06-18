@@ -117,14 +117,16 @@ export function getAppShellMarkup(): string {
   return `
     <div class="app-shell">
       <header class="mobile-header">
-        <img
-          class="mobile-header-logo"
-          src="${gardenOpsLogoUrl}"
-          alt="${appTitle}"
-          width="640"
-          height="427"
-          decoding="async"
-        />
+        <button class="mobile-header-logo-button" type="button" data-brand-home aria-label="${t("nav.map")}" title="${t("nav.map")}">
+          <img
+            class="mobile-header-logo"
+            src="${gardenOpsLogoUrl}"
+            alt="${appTitle}"
+            width="640"
+            height="427"
+            decoding="async"
+          />
+        </button>
         <div class="mobile-header-main">
           <p class="mobile-header-kicker" id="mobile-garden-name">${t("nav.active_garden")}</p>
           <h1 class="mobile-header-title" id="mobile-view-title">${t("nav.map")}</h1>
@@ -145,7 +147,7 @@ export function getAppShellMarkup(): string {
 
       <header class="top-nav desktop-top-nav" role="tablist" aria-label="${t("nav.main_sections")}" data-i18n-aria-label="nav.main_sections">
         <div class="nav-tabs" id="nav-tabs">
-          <div class="app-brand" aria-label="${appTitle}">
+          <button class="app-brand" type="button" data-brand-home aria-label="${t("nav.map")}" title="${t("nav.map")}">
             <img
               class="app-brand-logo"
               src="${gardenOpsLogoUrl}"
@@ -155,7 +157,7 @@ export function getAppShellMarkup(): string {
               decoding="async"
             />
             <span class="app-brand-name">${appTitle}</span>
-          </div>
+          </button>
           <button id="top-tab-map" class="top-tab active" data-tab="map" role="tab" aria-selected="true" aria-controls="map-view" tabindex="0" data-i18n="nav.map">${t("nav.map")}</button>
           <button id="top-tab-garden" class="top-tab" data-tab="garden" role="tab" aria-selected="false" aria-controls="plants-view" tabindex="-1" data-i18n="nav.garden">${t("nav.garden")}</button>
           <button id="top-tab-activity" class="top-tab" data-tab="activity" role="tab" aria-selected="false" aria-controls="plants-view" tabindex="-1" data-i18n="nav.activity"><span data-tab-label>${t("nav.activity")}</span><span class="tab-badge" id="tab-badge-activity" hidden></span></button>
@@ -174,7 +176,6 @@ export function getAppShellMarkup(): string {
             <div id="global-search-dropdown" class="search-dropdown global-search-dropdown" aria-live="polite" hidden></div>
           </div>
           <span class="top-nav-spacer"></span>
-          <span class="top-meta app-clock" id="top-clock"></span>
           <div class="garden-switch">
             <select id="garden-select" class="garden-select" data-garden-select aria-label="${t("nav.active_garden")}" hidden></select>
             <button id="garden-create-btn" class="garden-create-btn" data-garden-create title="${t("nav.create_garden")}" data-i18n-title="nav.create_garden" hidden>+</button>
@@ -190,10 +191,7 @@ export function getAppShellMarkup(): string {
             </button>
           </span>
           <button id="theme-toggle" class="theme-toggle" data-theme-toggle aria-label="${t("nav.toggle_theme")}" title="${t("nav.toggle_theme")}"></button>
-          <span class="app-version-shell">
-            <span class="app-version" title="${t("version.title", { version: __APP_VERSION__ })}">${__APP_VERSION__}</span>
-            <span class="app-version-updated" title="${t("version.unknown_title")}">${t("nav.updated_recently")}</span>
-          </span>
+          <span class="top-meta app-clock" id="top-clock"></span>
         </div>
       </header>
 
@@ -208,92 +206,145 @@ export function getAppShellMarkup(): string {
           </div>
         </div>
         <section id="map-view" class="view view-map active" role="tabpanel" aria-labelledby="top-tab-map">
-          <div class="toolbar">
-            <div class="edit-menu-group">
-              <button id="edit-mode-btn" type="button" aria-haspopup="true" aria-expanded="false" data-i18n="map.edit">${t("map.edit")}</button>
-              <div id="edit-menu-dropdown" class="edit-menu-dropdown" hidden>
-                <div class="map-direction-control" aria-label="${t("map.north_direction_control")}" data-i18n-aria-label="map.north_direction_control" hidden>
-                  <div class="map-direction-title">
-                    <span class="map-direction-icon">↑</span>
-                    <span data-i18n="map.north_calibration">${t("map.north_calibration")}</span>
-                  </div>
-                  <div class="map-direction-inputs">
-                    <button id="map-direction-dec-btn" type="button" title="${t("map.rotate_north_ccw")}" data-i18n-title="map.rotate_north_ccw">-5°</button>
-                    <div class="map-direction-number-wrap">
-                      <input id="map-direction-input" type="number" min="0" max="359" step="1" value="0" aria-label="${t("map.north_direction_degrees")}" data-i18n-aria-label="map.north_direction_degrees" />
-                      <span>°</span>
-                    </div>
-                    <button id="map-direction-inc-btn" type="button" title="${t("map.rotate_north_cw")}" data-i18n-title="map.rotate_north_cw">+5°</button>
-                  </div>
-                  <input id="map-direction-slider" type="range" min="0" max="359" step="1" value="0" aria-label="${t("map.adjust_north_degrees")}" data-i18n-aria-label="map.adjust_north_degrees" />
+          <div class="map-shell">
+            <aside id="map-layers-panel" class="map-layers-panel" aria-labelledby="map-layers-title">
+              <div class="map-layers-header">
+                <div>
+                  <p class="map-layers-kicker" data-i18n="map.map_controls">${t("map.map_controls")}</p>
+                  <h2 id="map-layers-title" data-i18n="map.layers">${t("map.layers")}</h2>
                 </div>
-                <div class="grid-dims-control" hidden>
-                  <div class="grid-dims-title" data-i18n="map.property_size">${t("map.property_size")}</div>
-                  <div class="grid-dims-inputs">
-                    <label><span data-i18n="onboarding.width">${t("onboarding.width")}</span> <input id="grid-cols-input" type="number" min="5" max="100" step="1" value="22" /> m</label>
-                    <label><span data-i18n="onboarding.depth">${t("onboarding.depth")}</span> <input id="grid-rows-input" type="number" min="5" max="100" step="1" value="30" /> m</label>
-                    <button id="grid-dims-apply-btn" type="button" data-i18n="common.apply">${t("common.apply")}</button>
-                  </div>
-                </div>
-                <button id="create-zone-btn" type="button" data-i18n="map.create_zone">${t("map.create_zone")}</button>
+                <button id="mobile-map-layers-close-btn" class="map-layers-close close-btn" type="button" aria-label="${t("map.close_layers")}" data-i18n-aria-label="map.close_layers">&times;</button>
               </div>
-            </div>
-            <button id="select-all-btn" style="display:none;" data-i18n="map.select_all">${t("map.select_all")}</button>
-            <button id="clear-selection-btn" style="display:none;" data-i18n="map.clear_selection">${t("map.clear_selection")}</button>
-            <button id="undo-btn" style="display:none;" disabled data-i18n="common.undo">${t("common.undo")}</button>
-            <div class="snapshot-group">
-              <button id="save-layout-btn" data-i18n="map.save_layout">${t("map.save_layout")}</button>
-              <button id="snapshots-btn" data-i18n="common.layouts">${t("common.layouts")}</button>
-              <div id="snapshots-dropdown" class="snapshots-dropdown" hidden></div>
-            </div>
-            <div class="file-io-group">
-              <button id="export-map-btn" title="${t("map.export_map_title")}" data-i18n="map.export_map" data-i18n-title="map.export_map_title">${t("map.export_map")}</button>
-              <button id="import-map-btn" title="${t("map.import_map_title")}" data-i18n="map.import_map" data-i18n-title="map.import_map_title">${t("map.import_map")}</button>
-              <input id="import-map-input" type="file" accept=".json" hidden />
-            </div>
-            <span id="selection-count" style="display:none;"></span>
-          </div>
 
-          <div class="mobile-map-actionbar">
-            <button
-              id="mobile-map-layouts-btn"
-              class="mobile-map-action"
-              type="button"
-              aria-controls="mobile-map-layouts-sheet"
-              aria-expanded="false"
-            >
-              <span data-i18n="common.layouts">${t("common.layouts")}</span>
-            </button>
-            <button id="mobile-map-save-btn" class="mobile-map-action mobile-map-action--primary" type="button">
-              <span data-i18n="common.save">${t("common.save")}</span>
-            </button>
-            <button
-              id="mobile-map-tools-btn"
-              class="mobile-map-action"
-              type="button"
-              aria-controls="mobile-map-tools-sheet"
-              aria-expanded="false"
-            >
-              <span data-i18n="map.map_tools">${t("map.map_tools")}</span>
-            </button>
-          </div>
+              <details id="map-layer-zones-section" class="map-layer-section map-layer-disclosure">
+                <summary class="map-layer-section-header">
+                  <h3 id="map-layer-zones-title" data-i18n="map.zones">${t("map.zones")}</h3>
+                </summary>
+                <div class="zone-toggles" id="zone-toggles"></div>
+              </details>
 
-          <div id="map-status-slot" class="map-status-slot" aria-live="polite"></div>
+              <section id="map-layer-highlight-section" class="map-layer-section" aria-labelledby="map-layer-highlight-title">
+                <div class="map-layer-section-header">
+                  <h3 id="map-layer-highlight-title" data-i18n="map.highlight_layer">${t("map.highlight_layer")}</h3>
+                </div>
+                <div class="category-filters" id="category-filters">
+                  <button class="cat-filter-btn" data-cat="løk" title="${t("category.lok")}" data-i18n-title="category.lok">🧅 <span data-i18n="category.lok">${t("category.lok")}</span></button>
+                  <button class="cat-filter-btn" data-cat="frø" title="${t("category.fro")}" data-i18n-title="category.fro">🌱 <span data-i18n="category.fro">${t("category.fro")}</span></button>
+                  <button class="cat-filter-btn" data-cat="busker" title="${t("category.busker")}" data-i18n-title="category.busker">🌿 <span data-i18n="category.busker">${t("category.busker")}</span></button>
+                  <button class="cat-filter-btn" data-cat="baerbusker" title="${t("category.baerbusker")}" data-i18n-title="category.baerbusker">🍓 <span data-i18n="category.baerbusker">${t("category.baerbusker")}</span></button>
+                  <button class="cat-filter-btn" data-cat="trær" title="${t("category.traer")}" data-i18n-title="category.traer">🌳 <span data-i18n="category.traer">${t("category.traer")}</span></button>
+                </div>
+              </section>
 
-          <div class="zone-toggles" id="zone-toggles"></div>
+              <section id="map-layer-elevation-section" class="map-layer-section" aria-labelledby="map-layer-elevation-title" hidden>
+                <div class="map-layer-section-header">
+                  <h3 id="map-layer-elevation-title" data-i18n="map.elevation">${t("map.elevation")}</h3>
+                </div>
+                <div class="map-layer-actions">
+                  <button id="elevation-toggle-btn" class="cat-filter-btn" title="${t("map.elevation_toggle_title")}" data-i18n="map.elevation" data-i18n-title="map.elevation_toggle_title">${t("map.elevation")}</button>
+                  <button id="elevation-edit-btn" class="cat-filter-btn elev-edit-btn" title="${t("map.elevation_edit_title")}" data-i18n-title="map.elevation_edit_title" hidden>&#9998;</button>
+                </div>
+              </section>
+            </aside>
 
-          <div class="category-filters" id="category-filters">
-            <span class="filter-label" data-i18n="map.highlight">${t("map.highlight")}</span>
-            <button class="cat-filter-btn" data-cat="løk" title="${t("category.lok")}" data-i18n-title="category.lok">🧅 <span data-i18n="category.lok">${t("category.lok")}</span></button>
-            <button class="cat-filter-btn" data-cat="frø" title="${t("category.fro")}" data-i18n-title="category.fro">🌱 <span data-i18n="category.fro">${t("category.fro")}</span></button>
-            <button class="cat-filter-btn" data-cat="busker" title="${t("category.busker")}" data-i18n-title="category.busker">🌿 <span data-i18n="category.busker">${t("category.busker")}</span></button>
-            <button class="cat-filter-btn" data-cat="baerbusker" title="${t("category.baerbusker")}" data-i18n-title="category.baerbusker">🍓 <span data-i18n="category.baerbusker">${t("category.baerbusker")}</span></button>
-            <button class="cat-filter-btn" data-cat="trær" title="${t("category.traer")}" data-i18n-title="category.traer">🌳 <span data-i18n="category.traer">${t("category.traer")}</span></button>
-            <button id="elevation-toggle-btn" class="cat-filter-btn" title="${t("map.elevation_toggle_title")}" data-i18n="map.elevation" data-i18n-title="map.elevation_toggle_title">${t("map.elevation")}</button>
-            <button id="elevation-edit-btn" class="cat-filter-btn elev-edit-btn" title="${t("map.elevation_edit_title")}" data-i18n-title="map.elevation_edit_title" hidden>&#9998;</button>
-          </div>
+            <div class="map-workspace">
+              <div class="toolbar map-command-bar">
+                <div class="edit-menu-group">
+                  <button id="edit-mode-btn" type="button" aria-haspopup="true" aria-expanded="false" data-i18n="map.edit">${t("map.edit")}</button>
+                  <div id="edit-menu-dropdown" class="edit-menu-dropdown" hidden>
+                    <div class="map-direction-control" aria-label="${t("map.north_direction_control")}" data-i18n-aria-label="map.north_direction_control" hidden>
+                      <div class="map-direction-title">
+                        <span class="map-direction-icon">↑</span>
+                        <span data-i18n="map.north_calibration">${t("map.north_calibration")}</span>
+                      </div>
+                      <div class="map-direction-inputs">
+                        <button id="map-direction-dec-btn" type="button" title="${t("map.rotate_north_ccw")}" data-i18n-title="map.rotate_north_ccw">-5°</button>
+                        <div class="map-direction-number-wrap">
+                          <input id="map-direction-input" type="number" min="0" max="359" step="1" value="0" aria-label="${t("map.north_direction_degrees")}" data-i18n-aria-label="map.north_direction_degrees" />
+                          <span>°</span>
+                        </div>
+                        <button id="map-direction-inc-btn" type="button" title="${t("map.rotate_north_cw")}" data-i18n-title="map.rotate_north_cw">+5°</button>
+                      </div>
+                      <input id="map-direction-slider" type="range" min="0" max="359" step="1" value="0" aria-label="${t("map.adjust_north_degrees")}" data-i18n-aria-label="map.adjust_north_degrees" />
+                    </div>
+                    <div class="grid-dims-control" hidden>
+                      <div class="grid-dims-title" data-i18n="map.property_size">${t("map.property_size")}</div>
+                      <div class="grid-dims-inputs">
+                        <label><span data-i18n="onboarding.width">${t("onboarding.width")}</span> <input id="grid-cols-input" type="number" min="5" max="100" step="1" value="22" /> m</label>
+                        <label><span data-i18n="onboarding.depth">${t("onboarding.depth")}</span> <input id="grid-rows-input" type="number" min="5" max="100" step="1" value="30" /> m</label>
+                        <button id="grid-dims-apply-btn" type="button" data-i18n="common.apply">${t("common.apply")}</button>
+                      </div>
+                    </div>
+                    <button id="create-zone-btn" type="button" data-i18n="map.create_zone">${t("map.create_zone")}</button>
+                  </div>
+                </div>
+                <button id="select-all-btn" style="display:none;" data-i18n="map.select_all">${t("map.select_all")}</button>
+                <button id="clear-selection-btn" style="display:none;" data-i18n="map.clear_selection">${t("map.clear_selection")}</button>
+                <button id="undo-btn" style="display:none;" disabled data-i18n="common.undo">${t("common.undo")}</button>
+                <div class="snapshot-group">
+                  <button id="save-layout-btn" data-i18n="map.save_layout">${t("map.save_layout")}</button>
+                  <button id="snapshots-btn" data-i18n="common.layouts">${t("common.layouts")}</button>
+                  <div id="snapshots-dropdown" class="snapshots-dropdown" hidden></div>
+                </div>
+                <div class="file-io-group">
+                  <button id="export-map-btn" title="${t("map.export_map_title")}" data-i18n="map.export_map" data-i18n-title="map.export_map_title">${t("map.export_map")}</button>
+                  <button id="import-map-btn" title="${t("map.import_map_title")}" data-i18n="map.import_map" data-i18n-title="map.import_map_title">${t("map.import_map")}</button>
+                  <input id="import-map-input" type="file" accept=".json" hidden />
+                </div>
+                <span id="selection-count" style="display:none;"></span>
+              </div>
 
-          <div class="map-layout">
+              <div class="mobile-map-actionbar" role="toolbar" aria-label="${t("map.map_controls")}" data-i18n-aria-label="map.map_controls">
+                <button
+                  id="mobile-map-layers-btn"
+                  class="mobile-map-action"
+                  type="button"
+                  aria-controls="map-layers-panel"
+                  aria-expanded="false"
+                >
+                  <span data-i18n="map.layers">${t("map.layers")}</span>
+                </button>
+                <button
+                  id="mobile-map-highlight-btn"
+                  class="mobile-map-action"
+                  type="button"
+                  aria-controls="map-layers-panel"
+                  aria-expanded="false"
+                >
+                  <span data-i18n="map.highlight_layer">${t("map.highlight_layer")}</span>
+                </button>
+                <button
+                  id="mobile-map-shade-btn"
+                  class="mobile-map-action"
+                  type="button"
+                  aria-controls="shade-panel"
+                  aria-expanded="false"
+                >
+                  <span data-i18n="map.shade">${t("map.shade")}</span>
+                </button>
+                <button
+                  id="mobile-map-tools-btn"
+                  class="mobile-map-action"
+                  type="button"
+                  aria-controls="mobile-map-tools-sheet"
+                  aria-expanded="false"
+                >
+                  <span data-i18n="map.edit_short">${t("map.edit_short")}</span>
+                </button>
+                <button
+                  id="mobile-map-layouts-btn"
+                  class="mobile-map-action"
+                  type="button"
+                  aria-controls="mobile-map-layouts-sheet"
+                  aria-expanded="false"
+                >
+                  <span data-i18n="common.layouts">${t("common.layouts")}</span>
+                </button>
+              </div>
+
+              <div id="map-status-slot" class="map-status-slot" aria-live="polite"></div>
+
+              <div class="map-layout">
             <div class="map-stage">
               <div class="map-viewport" id="map-viewport">
                 <div class="map-camera" id="map-camera">
@@ -311,6 +362,7 @@ export function getAppShellMarkup(): string {
                   <p class="shade-kicker" data-i18n="shade.kicker">${t("shade.kicker")}</p>
                   <h3 data-i18n="shade.title">${t("shade.title")}</h3>
                 </div>
+                <button id="mobile-map-shade-close-btn" class="shade-panel-close close-btn" type="button" aria-label="${t("map.close_shade")}" data-i18n-aria-label="map.close_shade">&times;</button>
               </div>
               <div class="shade-overview-card">
                 <div class="shade-overview-copy">
@@ -485,6 +537,8 @@ export function getAppShellMarkup(): string {
                 </div>
               </details>
             </aside>
+          </div>
+            </div>
           </div>
           <div id="shade-mobile-backdrop" class="shade-mobile-backdrop" aria-hidden="true"></div>
         </section>
