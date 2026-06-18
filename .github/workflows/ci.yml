@@ -37,6 +37,8 @@ jobs:
       RATE_LIMIT_BACKEND: memory
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version-file: .python-version
@@ -45,6 +47,14 @@ jobs:
           enable-cache: true
       - run: uv lock --check
       - run: python scripts/check_dependency_sources.py
+      - run: uv run --frozen --group audit python scripts/generate_security_release_bypass.py --ecosystem python --base-ref "origin/${{ github.base_ref }}"
+        if: github.event_name == 'pull_request'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          name: security-release-bypass-python
+          path: .gardenops/security-release-bypass.json
+          if-no-files-found: ignore
       - run: python scripts/check_python_release_age.py
       - run: uv sync --frozen --group test --group lint
       - run: uv run ruff check .
@@ -59,6 +69,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        if: github.event_name == 'pull_request'
+        with:
+          python-version-file: .python-version
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version-file: .nvmrc
@@ -66,6 +82,14 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
         working-directory: frontend
+      - run: python scripts/generate_security_release_bypass.py --ecosystem npm --base-ref "origin/${{ github.base_ref }}"
+        if: github.event_name == 'pull_request'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          name: security-release-bypass-npm
+          path: .gardenops/security-release-bypass.json
+          if-no-files-found: ignore
       - run: node scripts/check_npm_release_age.cjs
       - run: npm run build
         working-directory: frontend

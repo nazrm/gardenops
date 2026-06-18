@@ -717,6 +717,10 @@ class TestShademap(BaseApiTest):
         self.assertEqual(first.content, b"png-bytes")
         self.assertEqual(second.content, b"png-bytes")
         self.assertEqual(first.headers["content-type"], "image/png")
+        self.assertIn("private", first.headers["cache-control"])
+        self.assertNotIn("public", first.headers["cache-control"])
+        self.assertIn("private", second.headers["cache-control"])
+        self.assertNotIn("public", second.headers["cache-control"])
         self.assertEqual(fetch_mock.call_count, 1)
 
     def test_shademap_terrain_distinct_tile_budget_enforced(self) -> None:

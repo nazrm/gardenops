@@ -59,6 +59,7 @@ class AuthContext:
     reauthenticated_at_ms: int | None = None
     mfa_authenticated_at_ms: int | None = None
     mfa_enabled: bool = False
+    passkey_enrolled: bool = False
     mfa_setup_required: bool = False
     session_via_cookie: bool = False
     subscription_tier: str = "home"
@@ -756,7 +757,12 @@ def _authenticate_session_token(
                 u.is_active,
                 u.must_change_password,
                 u.mfa_totp_enabled,
-                u.subscription_tier
+                u.subscription_tier,
+                (
+                    SELECT COUNT(*)
+                    FROM auth_passkeys p
+                    WHERE p.user_id = s.user_id
+                ) AS passkey_count
             FROM auth_sessions s
             JOIN auth_users u ON u.id = s.user_id
             WHERE s.token_hash = %s
@@ -776,10 +782,12 @@ def _authenticate_session_token(
             return None
         role = _coerce_role(row["role"])
         mfa_enabled = bool(int(row["mfa_totp_enabled"]))
-        current_mfa_setup_required = (
-            _admin_mfa_enforced_for_role(role, mfa_enabled=mfa_enabled) and not mfa_enabled
-        )
+        passkey_enrolled = int(row["passkey_count"] or 0) > 0
+        mfa_authenticated_at_ms = int(row["mfa_authenticated_at_ms"])
         stored_mfa_setup_required = bool(int(row["mfa_setup_required"]))
+        current_mfa_setup_required = _admin_mfa_enforced_for_role(
+            role, mfa_enabled=mfa_enabled
+        ) and not (mfa_enabled or passkey_enrolled)
         # Sliding session: extend expiry when more than half the TTL has elapsed,
         # so active users don't get logged out mid-use.
         ttl = _session_ttl_ms()
@@ -809,8 +817,9 @@ def _authenticate_session_token(
             auth_type="session",
             session_token_hash=token_hash,
             reauthenticated_at_ms=int(row["reauthenticated_at_ms"]),
-            mfa_authenticated_at_ms=int(row["mfa_authenticated_at_ms"]),
+            mfa_authenticated_at_ms=mfa_authenticated_at_ms,
             mfa_enabled=mfa_enabled,
+            passkey_enrolled=passkey_enrolled,
             mfa_setup_required=current_mfa_setup_required,
             session_via_cookie=via_cookie,
             subscription_tier=str(row["subscription_tier"] or "home"),

@@ -1957,10 +1957,19 @@ class TestSecurity(BaseApiTest):
             self.assertEqual(created_garden.status_code, 201)
             garden_id = int(created_garden.json()["id"])
 
+            headers = self._reauth_and_refresh_headers(
+                self.client,
+                headers,
+                password=strong_password("admin-password-123"),
+            )
             invitation = self.client.post(
                 f"/api/gardens/{garden_id}/invitations",
                 headers=headers,
-                json={"invitee_username": "accept_new_user", "role": "viewer"},
+                json={
+                    "invitee_username": "accept_new_user",
+                    "role": "viewer",
+                    "action_reason": "accept-new-user-invitation-test",
+                },
             )
             self.assertEqual(invitation.status_code, 201)
             invite_token = invitation.json()["invite_token"]
@@ -2252,6 +2261,11 @@ class TestSecurity(BaseApiTest):
             self.assertEqual(created_garden.status_code, 201)
             garden_id = int(created_garden.json()["id"])
 
+            headers = self._reauth_and_refresh_headers(
+                self.client,
+                headers,
+                password=strong_password("admin-password-123"),
+            )
             invitation = self.client.post(
                 f"/api/gardens/{garden_id}/invitations",
                 headers=headers,
@@ -2259,6 +2273,7 @@ class TestSecurity(BaseApiTest):
                     "invitee_username": "accept_existing_user",
                     "role": "viewer",
                     "expires_in_minutes": 30,
+                    "action_reason": "accept-existing-user-invitation-test",
                 },
             )
             self.assertEqual(invitation.status_code, 201)
@@ -2287,6 +2302,7 @@ class TestSecurity(BaseApiTest):
                     "invitee_username": "accept_existing_user",
                     "role": "viewer",
                     "expires_in_minutes": 30,
+                    "action_reason": "accept-existing-user-expiry-test",
                 },
             )
             self.assertEqual(next_invitation.status_code, 201)
@@ -2436,6 +2452,11 @@ class TestSecurity(BaseApiTest):
             self.assertEqual(created.status_code, 201)
             garden_id = int(created.json()["id"])
 
+            headers = self._reauth_and_refresh_headers(
+                self.client,
+                headers,
+                password=strong_password("admin-password-123"),
+            )
             active_invite = self.client.post(
                 f"/api/gardens/{garden_id}/invitations",
                 headers=headers,
@@ -3562,14 +3583,62 @@ class TestSecurity(BaseApiTest):
             {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
             clear=False,
         ):
-            # Platform admin (alice) CAN create invitations
+            # Platform admin must step up before creating invitations.
             _, csrf = self._login_session("invitealice", "alicepass123")
             headers = self._session_headers(csrf)
 
-            allow_create = self.client.post(
+            session_token = self.client.cookies.get("gardenops_session", "")
+            self.assertTrue(session_token)
+            session_hash = hashlib.sha256(session_token.encode("utf-8")).hexdigest()
+            conn = db.get_db()
+            try:
+                conn.execute(
+                    """
+                    UPDATE auth_sessions
+                    SET reauthenticated_at_ms = %s
+                    WHERE token_hash = %s
+                    """,
+                    (db.current_timestamp_ms() - (2 * 60 * 60 * 1000), session_hash),
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            stale_create = self.client.post(
+                f"/api/gardens/{garden_one}/invitations",
+                headers=headers,
+                json={
+                    "invitee_username": "invitebob",
+                    "role": "viewer",
+                    "action_reason": "stale-invitation-create",
+                },
+            )
+            self.assertEqual(stale_create.status_code, 403)
+            self.assertEqual(stale_create.json()["detail"], "Recent reauthentication required")
+
+            headers = self._reauth_and_refresh_headers(
+                self.client,
+                headers,
+                password=strong_password("alicepass123"),
+            )
+
+            missing_reason = self.client.post(
                 f"/api/gardens/{garden_one}/invitations",
                 headers=headers,
                 json={"invitee_username": "invitebob", "role": "viewer"},
+            )
+            self.assertEqual(missing_reason.status_code, 400)
+            self.assertEqual(missing_reason.json()["detail"], "Action reason is required")
+
+            # Platform admin (alice) CAN create invitations after step-up.
+            allow_create = self.client.post(
+                f"/api/gardens/{garden_one}/invitations",
+                headers=headers,
+                json={
+                    "invitee_username": "invitebob",
+                    "role": "viewer",
+                    "action_reason": "create-garden-one-invite",
+                },
             )
             self.assertEqual(allow_create.status_code, 201)
             invitation_id = int(allow_create.json()["invitation"]["id"])
@@ -3578,9 +3647,23 @@ class TestSecurity(BaseApiTest):
             allow_create_two = self.client.post(
                 f"/api/gardens/{garden_two}/invitations",
                 headers=headers,
-                json={"invitee_username": "invitebob", "role": "viewer"},
+                json={
+                    "invitee_username": "invitebob",
+                    "role": "viewer",
+                    "action_reason": "create-garden-two-invite",
+                },
             )
             self.assertEqual(allow_create_two.status_code, 201)
+
+            missing_revoke_reason = self.client.delete(
+                f"/api/gardens/{garden_one}/invitations/{invitation_id}",
+                headers=headers,
+            )
+            self.assertEqual(missing_revoke_reason.status_code, 400)
+            self.assertEqual(
+                missing_revoke_reason.json()["detail"],
+                "Action reason is required",
+            )
 
             # Non-platform-admin editor is denied even with garden-admin membership
             _, editor_csrf = self._login_session("inviteeditor", "editorpass123")
@@ -3636,6 +3719,7 @@ class TestSecurity(BaseApiTest):
             "MULTI_INSTANCE": "false",
             "AUTH_REQUIRED": "true",
             "AUTH_MODE": "session",
+            "AUTH_MFA_SECRET_KEY": "test-production-mfa-secret-32chars",
             "AUTH_SESSION_COOKIE_SECURE": "true",
             "AUTH_SESSION_COOKIE_SAMESITE": "lax",
             "ALLOW_INSECURE_REMOTE": "false",
@@ -3654,6 +3738,7 @@ class TestSecurity(BaseApiTest):
             "AUTH_REQUIRED": "true",
             "AUTH_MODE": "session",
             "AUTH_API_KEY": "",
+            "AUTH_MFA_SECRET_KEY": "test-internet-mfa-secret-32chars-ok",
             "AUTH_SESSION_COOKIE_SECURE": "true",
             "AUTH_SESSION_COOKIE_SAMESITE": "lax",
             "ALLOW_INSECURE_REMOTE": "false",
@@ -3965,6 +4050,25 @@ class TestSecurity(BaseApiTest):
             )
             self.assertIsNone(allowed)
 
+    def test_protected_auth_failures_still_enforce_edge_origin_first(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "development",
+                "INTERNET_EXPOSED": "true",
+                "TRUST_PROXY_HEADERS": "true",
+                "TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
+                "ALLOWED_HOSTS": "gardenops.example.com",
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+            },
+            clear=False,
+        ):
+            denied = self.client.get("/api/plots")
+
+        self.assertEqual(denied.status_code, 403)
+        self.assertIn("trusted edge proxy", denied.json()["detail"])
+
     def test_validate_runtime_security_config_requires_shared_rate_limit_backend(self) -> None:
         with patch.dict(
             os.environ,
@@ -4014,6 +4118,28 @@ class TestSecurity(BaseApiTest):
             clear=False,
         ):
             with self.assertRaisesRegex(RuntimeError, "RATE_LIMIT_REDIS_URL or REDIS_URL"):
+                _validate_runtime_security_config()
+
+    def test_validate_runtime_security_config_requires_env_mfa_secret_in_strict_modes(self) -> None:
+        strict_env = self._valid_internet_exposed_runtime_env()
+        strict_env["AUTH_MFA_SECRET_KEY"] = ""
+        with patch.dict(os.environ, strict_env, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "AUTH_MFA_SECRET_KEY"):
+                _validate_runtime_security_config()
+
+        strict_env["AUTH_MFA_SECRET_KEY"] = "short-secret"
+        with patch.dict(os.environ, strict_env, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "at least 32 characters"):
+                _validate_runtime_security_config()
+
+        strict_env["AUTH_MFA_SECRET_KEY"] = "generate-at-least-32-random-characters"
+        with patch.dict(os.environ, strict_env, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "not a placeholder"):
+                _validate_runtime_security_config()
+
+        strict_env["AUTH_MFA_SECRET_KEY"] = "<generate-at-least-32-random-characters>"
+        with patch.dict(os.environ, strict_env, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "not a placeholder"):
                 _validate_runtime_security_config()
 
     @patch("gardenops.routers.ai.os.environ.get")
