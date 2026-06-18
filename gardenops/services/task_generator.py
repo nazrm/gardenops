@@ -572,7 +572,7 @@ def _work_order_text(
             "Hvorfor: gjødsling i aktiv vekst støtter kraftig ny vekst, "
             "blomstring og fruktsetting. "
             "Fullfør arbeidsordren når alle plantene på listen er ferdige."
-    )
+        )
     if count == 1:
         return title, description_en, description_no
     return title, description_en, description_no
