@@ -4,9 +4,44 @@
 
 /* ── Tokens ──────────────────────────────────────────────── */
 
+@font-face {
+  font-family: "GardenOps UI";
+  src: url("./assets/fonts/OpenSans-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "GardenOps UI";
+  src: url("./assets/fonts/OpenSans-Semibold.ttf") format("truetype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "GardenOps UI";
+  src: url("./assets/fonts/OpenSans-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "GardenOps Map Label";
+  src: url("./assets/fonts/DejaVuSansCondensed.ttf") format("truetype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  --font: "Bricolage Grotesque", system-ui, sans-serif;
-  --font-display: "Young Serif", Georgia, "Times New Roman", serif;
+  --font: "GardenOps UI", system-ui, sans-serif;
+  --font-body: var(--font);
+  --font-display: "GardenOps UI", system-ui, sans-serif;
+  --font-heading: var(--font-display);
+  --font-map-label: "GardenOps Map Label", "GardenOps UI", system-ui, sans-serif;
   --mobile-keyboard-offset: 0px;
 
   --sp-1: 4px;
@@ -274,7 +309,7 @@ textarea {
   font-family: var(--font-display);
   font-size: 26px;
   line-height: 1.05;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .mobile-icon-btn {
@@ -2483,7 +2518,7 @@ textarea {
     box-shadow 200ms var(--ease),
     filter 200ms var(--ease),
     background-color 200ms var(--ease);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   overflow: hidden;
   position: relative;
 }
@@ -2503,6 +2538,17 @@ textarea {
 .plot[data-zone="H"] { background: var(--zone-h); }
 
 .plot-label {
+  display: block;
+  min-width: 0;
+  max-width: calc(100% - 4px);
+  overflow: hidden;
+  text-align: center;
+  text-overflow: clip;
+  white-space: nowrap;
+  font-family: var(--font-map-label);
+  font-size: clamp(5px, calc(var(--cell) * 0.28), 8px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
