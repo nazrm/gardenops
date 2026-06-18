@@ -54,10 +54,11 @@ import { initThemeFeature, updateThemeIcon } from "./features/themeFeature";
 import {
   initSnapshotsFeature,
   saveLayout,
-  toggleSnapshotsDropdown,
+  openLayoutsDialog,
   openMobileLayoutsSheet,
   exportMap,
 } from "./features/snapshotsFeature";
+import type { AdminMapSetupAction } from "./components/adminPanel";
 import {
   initWeatherFeature,
   loadWeather,
@@ -440,6 +441,7 @@ const mapInteraction = {
   showElevation: false,
   elevationCache: null as PlotElevations | null,
 };
+let elevationCacheGardenId: number | null = null;
 function loadSort(): { field: SortField; dir: SortDir } {
   return loadFromStorage(
     "gardenops-sort",
@@ -695,11 +697,25 @@ function refreshLocalizedSignedInViews(): void {
   }
 }
 
-type MobileMapSheetId = "mobile-map-layouts-sheet" | "mobile-map-tools-sheet";
+type MobileMapSheetId =
+  | "map-layers-panel"
+  | "shade-panel"
+  | "mobile-map-layouts-sheet"
+  | "mobile-map-tools-sheet";
 
 const MOBILE_MAP_SHEET_IDS: MobileMapSheetId[] = [
+  "map-layers-panel",
+  "shade-panel",
   "mobile-map-layouts-sheet",
   "mobile-map-tools-sheet",
+];
+
+const MOBILE_MAP_SHEET_TRIGGERS: Array<{ triggerId: string; sheetId: MobileMapSheetId }> = [
+  { triggerId: "mobile-map-layers-btn", sheetId: "map-layers-panel" },
+  { triggerId: "mobile-map-highlight-btn", sheetId: "map-layers-panel" },
+  { triggerId: "mobile-map-shade-btn", sheetId: "shade-panel" },
+  { triggerId: "mobile-map-layouts-btn", sheetId: "mobile-map-layouts-sheet" },
+  { triggerId: "mobile-map-tools-btn", sheetId: "mobile-map-tools-sheet" },
 ];
 
 function getTopLevelShadeDisclosures(): HTMLDetailsElement[] {
@@ -773,13 +789,35 @@ function setMobileUtilityOpen(open: boolean): void {
   document.body.classList.toggle("mobile-utility-open", open);
 }
 
+function isMobileMapSheetOpen(sheetId: MobileMapSheetId): boolean {
+  const sheet = document.getElementById(sheetId);
+  return sheet?.classList.contains("mobile-map-sheet--open") ?? false;
+}
+
+function syncMobileMapSheetAccessibility(): void {
+  MOBILE_MAP_SHEET_IDS.forEach((id) => {
+    const sheet = document.getElementById(id);
+    if (!(sheet instanceof HTMLElement)) return;
+    if (isMobile()) {
+      sheet.setAttribute("aria-hidden", sheet.classList.contains("mobile-map-sheet--open") ? "false" : "true");
+    } else {
+      sheet.classList.remove("mobile-map-sheet--open");
+      sheet.removeAttribute("aria-hidden");
+    }
+  });
+}
+
 function setMobileMapSheetOpen(sheetId: MobileMapSheetId | null): void {
   const backdrop = document.getElementById("mobile-map-sheet-backdrop");
-  const layoutsTrigger = queryButton("mobile-map-layouts-btn");
-  const toolsTrigger = queryButton("mobile-map-tools-btn");
-  if (!backdrop || !layoutsTrigger || !toolsTrigger) return;
+  if (!backdrop) return;
 
-  const nextOpen = sheetId && isMobile() && activeTab === "map" ? sheetId : null;
+  let nextOpen = sheetId && isMobile() && activeTab === "map" ? sheetId : null;
+  if (nextOpen === "shade-panel") {
+    const shadePanelEl = document.getElementById("shade-panel");
+    if (!(shadePanelEl instanceof HTMLElement) || shadePanelEl.hidden) {
+      nextOpen = null;
+    }
+  }
   if (nextOpen) {
     setMobileUtilityOpen(false);
     closeMobileShadeDisclosures();
@@ -792,14 +830,32 @@ function setMobileMapSheetOpen(sheetId: MobileMapSheetId | null): void {
     if (!(sheet instanceof HTMLElement)) return;
     const isOpen = id === nextOpen;
     sheet.classList.toggle("mobile-map-sheet--open", isOpen);
-    sheet.setAttribute("aria-hidden", isOpen ? "false" : "true");
+    if (isMobile()) {
+      sheet.setAttribute("aria-hidden", isOpen ? "false" : "true");
+    } else {
+      sheet.removeAttribute("aria-hidden");
+    }
   });
 
   backdrop.classList.toggle("mobile-map-sheet-backdrop--visible", nextOpen !== null);
   backdrop.setAttribute("aria-hidden", nextOpen ? "false" : "true");
-  layoutsTrigger.setAttribute("aria-expanded", String(nextOpen === "mobile-map-layouts-sheet"));
-  toolsTrigger.setAttribute("aria-expanded", String(nextOpen === "mobile-map-tools-sheet"));
+  MOBILE_MAP_SHEET_TRIGGERS.forEach(({ triggerId, sheetId: triggerSheetId }) => {
+    const trigger = queryButton(triggerId);
+    trigger?.setAttribute("aria-expanded", String(nextOpen === triggerSheetId));
+  });
   document.body.classList.toggle("mobile-map-sheet-open", nextOpen !== null);
+  requestAnimationFrame(() => cameraCtrl?.fitAll());
+}
+
+function openMobileMapLayerSheet(sectionId: string): void {
+  setMobileMapSheetOpen("map-layers-panel");
+  if (!isMobile()) return;
+  window.requestAnimationFrame(() => {
+    const section = document.getElementById(sectionId);
+    if (section instanceof HTMLElement) {
+      section.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+  });
 }
 
 function updateMobileHeader(): void {
@@ -873,19 +929,21 @@ const plotCbs: PlotCallbacks = {
 };
 
 const WRITE_CONTROL_IDS = [
-  "edit-mode-btn",
-  "create-zone-btn",
-  "save-layout-btn",
-  "snapshots-btn",
-  "import-map-btn",
   "import-csv-btn",
   "add-plant-btn",
   "generate-care-btn",
   "elevation-edit-btn",
-  "map-direction-input",
-  "map-direction-slider",
-  "map-direction-dec-btn",
-  "map-direction-inc-btn",
+  "adm-map-open-editor-btn",
+  "adm-map-save-layout-btn",
+  "adm-map-import-btn",
+  "adm-map-north-input",
+  "adm-map-north-dec-btn",
+  "adm-map-north-inc-btn",
+  "adm-map-north-apply-btn",
+  "adm-map-grid-cols-input",
+  "adm-map-grid-rows-input",
+  "adm-map-grid-apply-btn",
+  "adm-map-create-zone-btn",
   "mobile-map-save-btn",
   "mobile-map-layouts-save-btn",
   "mobile-create-zone-btn",
@@ -1025,6 +1083,14 @@ function ensureAdminPanelModule(): Promise<AdminPanelModule> {
           gardens: gardenOptions,
           activeGardenId: getActiveGardenContext(),
         }),
+        onMapSetupAction: handleAdminMapSetupAction,
+        getMapSetupState: () => ({
+          canWrite: canWriteInGarden,
+          editorAvailable: !isMobile(),
+          northDegrees: normalizeDegrees(state.northDegrees),
+          gridCols: state.gridCols,
+          gridRows: state.gridRows,
+        }),
       });
       return mod;
     })
@@ -1033,6 +1099,53 @@ function ensureAdminPanelModule(): Promise<AdminPanelModule> {
       throw err;
     });
   return adminPanelModulePromise;
+}
+
+async function handleAdminMapSetupAction(action: AdminMapSetupAction): Promise<void> {
+  switch (action.type) {
+    case "open-editor":
+      setActiveTab("map");
+      setMobileMapSheetOpen(null);
+      if (!ensureWriteAccess()) return;
+      if (isMobile()) {
+        showToast(t("map.desktop_only"), "error");
+        return;
+      }
+      if (!state.editMode) {
+        toggleEditMode(state, editCbs);
+      }
+      updateMapDirectionControlVisibility();
+      break;
+    case "save-layout":
+      await saveLayout();
+      break;
+    case "open-layouts":
+      setActiveTab("map");
+      if (isMobile()) {
+        await openMobileLayoutsSheet();
+      } else {
+        await openLayoutsDialog();
+      }
+      break;
+    case "export-map":
+      await exportMap();
+      break;
+    case "import-map":
+      if (!ensureWriteAccess()) return;
+      queryInput("import-map-input")?.click();
+      break;
+    case "apply-north":
+      if (!ensureWriteAccess()) return;
+      applyNorthDirection(action.degrees, true);
+      break;
+    case "apply-grid":
+      if (!ensureWriteAccess()) return;
+      await applyGridDimensions(String(action.cols), String(action.rows));
+      break;
+    case "create-zone":
+      openCreateZoneDialog();
+      break;
+  }
 }
 
 async function activateAdminPanel(): Promise<void> {
@@ -1476,6 +1589,9 @@ function setupLayout(): void {
   startAppVersionPolling();
   updatePlantCsvActionLabels();
   wireTopTabs(setActiveTab);
+  document.querySelectorAll<HTMLButtonElement>("[data-brand-home]").forEach((button) => {
+    button.addEventListener("click", () => setActiveTab("map"));
+  });
 
   applyFeatureGateUi();
   document.querySelectorAll<HTMLButtonElement>(".mobile-tab-btn").forEach((btn) => {
@@ -1485,7 +1601,6 @@ function setupLayout(): void {
     });
   });
 
-  const editModeBtn = queryButton("edit-mode-btn");
   const selectAllBtn = queryButton("select-all-btn");
   const clearBtn = queryButton("clear-selection-btn");
   const undoBtn = queryButton("undo-btn");
@@ -1511,40 +1626,31 @@ function setupLayout(): void {
     });
   });
 
-  editModeBtn?.addEventListener("click", () => {
-    if (editModeBtn.disabled) return;
-    toggleEditMode(state, editCbs);
-    updateMapDirectionControlVisibility();
-  });
   selectAllBtn?.addEventListener("click", () => selectAll(state, editCbs));
   clearBtn?.addEventListener("click", () => clearSelection(state, editCbs));
   undoBtn?.addEventListener("click", () => void undo(state, editCbs));
 
-  const saveLayoutBtn = queryButton("save-layout-btn");
-  const snapshotsBtn = queryButton("snapshots-btn");
+  const mobileMapLayersBtn = queryButton("mobile-map-layers-btn");
+  const mobileMapHighlightBtn = queryButton("mobile-map-highlight-btn");
+  const mobileMapShadeBtn = queryButton("mobile-map-shade-btn");
   const mobileMapLayoutsBtn = queryButton("mobile-map-layouts-btn");
   const mobileMapSaveBtn = queryButton("mobile-map-save-btn");
   const mobileMapToolsBtn = queryButton("mobile-map-tools-btn");
+  const mobileMapLayersCloseBtn = queryButton("mobile-map-layers-close-btn");
+  const mobileMapShadeCloseBtn = queryButton("mobile-map-shade-close-btn");
   const mobileMapLayoutsCloseBtn = queryButton("mobile-map-layouts-close-btn");
   const mobileMapToolsCloseBtn = queryButton("mobile-map-tools-close-btn");
   const mobileMapSheetBackdrop = document.getElementById("mobile-map-sheet-backdrop");
   const mobileMapLayoutsSaveBtn = queryButton("mobile-map-layouts-save-btn");
   const shadeMobileBackdrop = document.getElementById("shade-mobile-backdrop");
 
-  const exportMapBtn = queryButton("export-map-btn");
-  const importMapBtn = queryButton("import-map-btn");
   const importMapInput = queryInput("import-map-input");
-  const mapDirectionInput = queryInput("map-direction-input");
-  const mapDirectionSlider = queryInput("map-direction-slider");
-  const mapDirectionDecBtn = queryButton("map-direction-dec-btn");
-  const mapDirectionIncBtn = queryButton("map-direction-inc-btn");
   const mobileMapDirectionInput = queryInput("mobile-map-direction-input");
   const mobileMapDirectionDecBtn = queryButton("mobile-map-direction-dec-btn");
   const mobileMapDirectionIncBtn = queryButton("mobile-map-direction-inc-btn");
   const mobileGridColsInput = queryInput("mobile-grid-cols-input");
   const mobileGridRowsInput = queryInput("mobile-grid-rows-input");
   const mobileGridDimsApplyBtn = queryButton("mobile-grid-dims-apply-btn");
-  const createZoneBtn = queryButton("create-zone-btn");
   const mobileCreateZoneBtn = queryButton("mobile-create-zone-btn");
   const mobileExportMapBtn = queryButton("mobile-export-map-btn");
   const mobileImportMapBtn = queryButton("mobile-import-map-btn");
@@ -1552,12 +1658,23 @@ function setupLayout(): void {
   const importCsvBtn = queryButton("import-csv-btn");
   const importCsvInput = queryInput("import-csv-input");
 
-  saveLayoutBtn?.addEventListener("click", () => void saveLayout());
-  snapshotsBtn?.addEventListener("click", () => void toggleSnapshotsDropdown());
+  mobileMapLayersBtn?.addEventListener("click", () => {
+    if (isMobileMapSheetOpen("map-layers-panel")) {
+      setMobileMapSheetOpen(null);
+      return;
+    }
+    openMobileMapLayerSheet("map-layer-zones-section");
+  });
+  mobileMapHighlightBtn?.addEventListener("click", () => {
+    openMobileMapLayerSheet("map-layer-highlight-section");
+  });
+  mobileMapShadeBtn?.addEventListener("click", () => {
+    const shadePanelEl = document.getElementById("shade-panel");
+    if (!(shadePanelEl instanceof HTMLElement) || shadePanelEl.hidden || mobileMapShadeBtn.disabled) return;
+    setMobileMapSheetOpen(isMobileMapSheetOpen("shade-panel") ? null : "shade-panel");
+  });
   mobileMapLayoutsBtn?.addEventListener("click", () => {
-    const sheet = document.getElementById("mobile-map-layouts-sheet");
-    const isOpen = sheet?.classList.contains("mobile-map-sheet--open") ?? false;
-    if (isOpen) {
+    if (isMobileMapSheetOpen("mobile-map-layouts-sheet")) {
       setMobileMapSheetOpen(null);
       return;
     }
@@ -1565,10 +1682,10 @@ function setupLayout(): void {
   });
   mobileMapSaveBtn?.addEventListener("click", () => void saveLayout());
   mobileMapToolsBtn?.addEventListener("click", () => {
-    const sheet = document.getElementById("mobile-map-tools-sheet");
-    const isOpen = sheet?.classList.contains("mobile-map-sheet--open") ?? false;
-    setMobileMapSheetOpen(isOpen ? null : "mobile-map-tools-sheet");
+    setMobileMapSheetOpen(isMobileMapSheetOpen("mobile-map-tools-sheet") ? null : "mobile-map-tools-sheet");
   });
+  mobileMapLayersCloseBtn?.addEventListener("click", () => setMobileMapSheetOpen(null));
+  mobileMapShadeCloseBtn?.addEventListener("click", () => setMobileMapSheetOpen(null));
   mobileMapLayoutsCloseBtn?.addEventListener("click", () => setMobileMapSheetOpen(null));
   mobileMapToolsCloseBtn?.addEventListener("click", () => setMobileMapSheetOpen(null));
   mobileMapSheetBackdrop?.addEventListener("click", () => setMobileMapSheetOpen(null));
@@ -1581,48 +1698,20 @@ function setupLayout(): void {
       }
     })();
   });
-  exportMapBtn?.addEventListener("click", () => void exportMap());
   mobileExportMapBtn?.addEventListener("click", () => void exportMap());
-  importMapBtn?.addEventListener("click", () => importMapInput?.click());
   mobileImportMapBtn?.addEventListener("click", () => importMapInput?.click());
   importMapInput?.addEventListener("change", () => void importMap());
-  const onDirectionInput = (raw: string, persistImmediately = false) => {
-    const parsed = Number.parseInt(raw, 10);
-    if (Number.isNaN(parsed)) return;
-    state.northDegrees = normalizeDegrees(parsed);
-    syncDirectionControls();
-    renderDirectionLabels();
-    syncShadePanelContext();
-    if (persistImmediately) {
-      void persistHouseGeometry().catch(showFetchError);
-    } else {
-      scheduleLayoutPersist();
-    }
-  };
-  mapDirectionInput?.addEventListener("input", () => onDirectionInput(mapDirectionInput.value));
-  mapDirectionInput?.addEventListener("change", () => onDirectionInput(mapDirectionInput.value, true));
-  mapDirectionSlider?.addEventListener("input", () => onDirectionInput(mapDirectionSlider.value));
-  mapDirectionSlider?.addEventListener("change", () => onDirectionInput(mapDirectionSlider.value, true));
-  mapDirectionDecBtn?.addEventListener("click", () => onDirectionInput(String(state.northDegrees - 5), true));
-  mapDirectionIncBtn?.addEventListener("click", () => onDirectionInput(String(state.northDegrees + 5), true));
-  mobileMapDirectionInput?.addEventListener("input", () => onDirectionInput(mobileMapDirectionInput.value));
-  mobileMapDirectionInput?.addEventListener("change", () => onDirectionInput(mobileMapDirectionInput.value, true));
-  mobileMapDirectionDecBtn?.addEventListener("click", () => onDirectionInput(String(state.northDegrees - 5), true));
-  mobileMapDirectionIncBtn?.addEventListener("click", () => onDirectionInput(String(state.northDegrees + 5), true));
+  mobileMapDirectionInput?.addEventListener("input", () => applyNorthDirection(mobileMapDirectionInput.value));
+  mobileMapDirectionInput?.addEventListener("change", () => applyNorthDirection(mobileMapDirectionInput.value, true));
+  mobileMapDirectionDecBtn?.addEventListener("click", () => applyNorthDirection(String(state.northDegrees - 5), true));
+  mobileMapDirectionIncBtn?.addEventListener("click", () => applyNorthDirection(String(state.northDegrees + 5), true));
   importCsvBtn?.addEventListener("click", () => importCsvInput?.click());
   importCsvInput?.addEventListener("change", () => void importPlantsCsv());
   exportCsvBtn?.addEventListener("click", exportPlantsCsv);
 
-  const gridDimsApplyBtn = queryButton("grid-dims-apply-btn");
-  gridDimsApplyBtn?.addEventListener("click", () => {
-    const colsInput = queryInput("grid-cols-input");
-    const rowsInput = queryInput("grid-rows-input");
-    void applyGridDimensions(colsInput?.value ?? "", rowsInput?.value ?? "");
-  });
   mobileGridDimsApplyBtn?.addEventListener("click", () => {
     void applyGridDimensions(mobileGridColsInput?.value ?? "", mobileGridRowsInput?.value ?? "");
   });
-  createZoneBtn?.addEventListener("click", () => openCreateZoneDialog());
   mobileCreateZoneBtn?.addEventListener("click", () => {
     setMobileMapSheetOpen(null);
     openCreateZoneDialog();
@@ -1959,6 +2048,7 @@ function applyNavigationState(opts: { triggerLoads?: boolean } = {}): void {
   analysisView?.classList.toggle("active", showAnalysisView);
   statsView?.classList.toggle("active", showStatsView);
   adminView?.classList.toggle("active", activeTab === "admin");
+  document.body.classList.toggle("map-tab-active", activeTab === "map");
 
   if (mapView) mapView.hidden = activeTab !== "map";
   if (plantsView) plantsView.hidden = !showSharedDataView;
@@ -2231,10 +2321,28 @@ function normalizeDegrees(value: number): number {
   return wrapped < 0 ? wrapped + 360 : wrapped;
 }
 
+function applyNorthDirection(raw: string | number, persistImmediately = false): boolean {
+  const parsed = typeof raw === "number" ? raw : Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) {
+    showToast(t("map.north_direction_invalid"), "error");
+    return false;
+  }
+  state.northDegrees = normalizeDegrees(parsed);
+  syncDirectionControls();
+  renderDirectionLabels();
+  syncShadePanelContext();
+  if (persistImmediately) {
+    void persistHouseGeometry().catch(showFetchError);
+  } else {
+    scheduleLayoutPersist();
+  }
+  return true;
+}
+
 function syncDirectionControls(): void {
   const normalized = String(normalizeDegrees(state.northDegrees));
   [
-    document.getElementById("map-direction-input"),
+    document.getElementById("adm-map-north-input"),
     document.getElementById("mobile-map-direction-input"),
   ].forEach((element) => {
     if (element instanceof HTMLInputElement) {
@@ -2249,7 +2357,7 @@ function syncGridDimensionInputs(): void {
   const nextCols = String(state.gridCols);
   const nextRows = String(state.gridRows);
   [
-    document.getElementById("grid-cols-input"),
+    document.getElementById("adm-map-grid-cols-input"),
     document.getElementById("mobile-grid-cols-input"),
   ].forEach((element) => {
     if (element instanceof HTMLInputElement) {
@@ -2257,7 +2365,7 @@ function syncGridDimensionInputs(): void {
     }
   });
   [
-    document.getElementById("grid-rows-input"),
+    document.getElementById("adm-map-grid-rows-input"),
     document.getElementById("mobile-grid-rows-input"),
   ].forEach((element) => {
     if (element instanceof HTMLInputElement) {
@@ -3119,7 +3227,7 @@ function initCategoryFilters(): void {
   });
 
   const elevBtn = document.getElementById("elevation-toggle-btn");
-  elevBtn?.addEventListener("click", () => void toggleElevation(elevBtn));
+  elevBtn?.addEventListener("click", () => void toggleElevation());
 
   const elevEditBtn = document.getElementById("elevation-edit-btn");
   elevEditBtn?.addEventListener(
@@ -3133,57 +3241,106 @@ function syncElevEditButton(): void {
   if (editBtn) editBtn.hidden = !mapInteraction.showElevation;
 }
 
-async function toggleElevation(btn: HTMLElement): Promise<void> {
+function hasUsableElevationData(elevationData: PlotElevations | null): boolean {
+  return Boolean(
+    elevationData?.available
+    && Object.keys(elevationData.elevations).length > 0,
+  );
+}
+
+function syncElevationSectionVisibility(visible: boolean): void {
+  const section = document.getElementById("map-layer-elevation-section");
+  if (section) section.hidden = !visible;
+  const toggleBtn = queryButton("elevation-toggle-btn");
+  if (toggleBtn) {
+    toggleBtn.disabled = !visible;
+    toggleBtn.classList.toggle("active", visible && mapInteraction.showElevation);
+  }
+  syncElevEditButton();
+}
+
+function clearElevationAvailability(renderIfActive = true): void {
+  const wasShowingElevation = mapInteraction.showElevation;
+  elevationCacheGardenId = null;
+  mapInteraction.elevationCache = null;
+  mapInteraction.showElevation = false;
+  syncElevationSectionVisibility(false);
+  if (wasShowingElevation && renderIfActive) {
+    renderPlots();
+  }
+}
+
+function applyElevationAvailability(gardenId: number, elevationData: PlotElevations): void {
+  if (!hasUsableElevationData(elevationData)) {
+    clearElevationAvailability();
+    return;
+  }
+  elevationCacheGardenId = gardenId;
+  mapInteraction.elevationCache = elevationData;
+  syncElevationSectionVisibility(true);
+}
+
+async function refreshElevationAvailability(): Promise<void> {
+  const requestGardenId = getActiveGardenContext();
+  if (requestGardenId === null) {
+    clearElevationAvailability();
+    return;
+  }
+  if (elevationCacheGardenId !== requestGardenId) {
+    clearElevationAvailability();
+  }
+  try {
+    const elevationData = await getPlotElevationsApi();
+    if (!isCurrentGardenRequest(requestGardenId)) return;
+    applyElevationAvailability(requestGardenId, elevationData);
+  } catch {
+    if (isCurrentGardenRequest(requestGardenId) && elevationCacheGardenId !== requestGardenId) {
+      clearElevationAvailability();
+    }
+  }
+}
+
+async function loadUsableElevationForAction(): Promise<PlotElevations | null> {
+  const activeGardenId = getActiveGardenContext();
+  if (mapInteraction.elevationCache && elevationCacheGardenId === activeGardenId) {
+    return mapInteraction.elevationCache;
+  }
+  try {
+    const elevationData = await getPlotElevationsApi();
+    if (!hasUsableElevationData(elevationData)) {
+      showToast(elevationData.available ? t("map.no_elevation_data") : t("map.lidar_unavailable"), "error");
+      clearElevationAvailability();
+      return null;
+    }
+    if (activeGardenId !== null) {
+      applyElevationAvailability(activeGardenId, elevationData);
+    } else {
+      mapInteraction.elevationCache = elevationData;
+    }
+    return elevationData;
+  } catch {
+    showToast(t("map.elevation_load_failed"), "error");
+    return null;
+  }
+}
+
+async function toggleElevation(): Promise<void> {
   if (mapInteraction.showElevation) {
     mapInteraction.showElevation = false;
-    btn.classList.remove("active");
-    syncElevEditButton();
+    syncElevationSectionVisibility(true);
     renderPlots();
     return;
   }
-  if (!mapInteraction.elevationCache) {
-    try {
-      mapInteraction.elevationCache = await getPlotElevationsApi();
-    } catch {
-      showToast(t("map.elevation_load_failed"), "error");
-      return;
-    }
-    if (!mapInteraction.elevationCache.available) {
-      showToast(t("map.lidar_unavailable"), "error");
-      mapInteraction.elevationCache = null;
-      return;
-    }
-    if (Object.keys(mapInteraction.elevationCache.elevations).length === 0) {
-      showToast(t("map.no_elevation_data"), "error");
-      mapInteraction.elevationCache = null;
-      return;
-    }
-  }
+  const elevationData = await loadUsableElevationForAction();
+  if (!elevationData) return;
   mapInteraction.showElevation = true;
-  btn.classList.add("active");
-  syncElevEditButton();
+  syncElevationSectionVisibility(true);
   renderPlots();
 }
 
 async function openElevationEditor(): Promise<void> {
-  if (!mapInteraction.elevationCache) {
-    try {
-      mapInteraction.elevationCache = await getPlotElevationsApi();
-    } catch {
-      showToast(t("map.elevation_load_failed"), "error");
-      return;
-    }
-    if (!mapInteraction.elevationCache.available) {
-      showToast(t("map.lidar_unavailable"), "error");
-      mapInteraction.elevationCache = null;
-      return;
-    }
-    if (Object.keys(mapInteraction.elevationCache.elevations).length === 0) {
-      showToast(t("map.no_elevation_data"), "error");
-      mapInteraction.elevationCache = null;
-      return;
-    }
-  }
+  const elevationData = await loadUsableElevationForAction();
+  if (!elevationData) return;
 
   const zones: Record<string, string> = {};
   for (const p of state.plots) {
@@ -3201,14 +3358,20 @@ async function openElevationEditor(): Promise<void> {
     }));
 
   showElevationEditorLazy({
-    elevations: mapInteraction.elevationCache.elevations,
-    overrides: mapInteraction.elevationCache.overrides,
+    elevations: elevationData.elevations,
+    overrides: elevationData.overrides,
     zones,
     plots: editorPlots,
     gridRows: state.gridRows,
     gridCols: state.gridCols,
     onSave: async (ovr) => {
-      mapInteraction.elevationCache = await updatePlotElevationsApi(ovr);
+      const activeGardenId = getActiveGardenContext();
+      const updatedElevationData = await updatePlotElevationsApi(ovr);
+      if (activeGardenId !== null) {
+        applyElevationAvailability(activeGardenId, updatedElevationData);
+      } else {
+        mapInteraction.elevationCache = updatedElevationData;
+      }
       if (mapInteraction.showElevation) renderPlots();
       showToast(t("map.elevation_saved"));
     },
@@ -4225,9 +4388,10 @@ async function importMap(): Promise<void> {
     );
     if (!actionReason) return;
     await importMapApi(layout, { actionReason });
-    mapInteraction.elevationCache = null;
+    clearElevationAvailability();
     await fetchPlots();
     await fetchLayoutState();
+    await refreshElevationAvailability();
   } catch (err) {
     showToast(t("map.import_failed", { error: getApiErrorMessage(err) }), "error");
   } finally {
@@ -4580,6 +4744,15 @@ function updateShadeMapAvailabilityUi(): void {
   const available = authProfile?.shademap_available ?? false;
   const shadePanelEl = document.getElementById("shade-panel");
   if (shadePanelEl) shadePanelEl.hidden = !available;
+  const mobileShadeBtn = queryButton("mobile-map-shade-btn");
+  if (mobileShadeBtn) {
+    mobileShadeBtn.hidden = !available;
+    mobileShadeBtn.disabled = !available;
+    mobileShadeBtn.setAttribute("aria-expanded", "false");
+  }
+  if (!available && isMobileMapSheetOpen("shade-panel")) {
+    setMobileMapSheetOpen(null);
+  }
   // Re-fit camera after layout change (shade panel shown/hidden affects available width)
   requestAnimationFrame(() => cameraCtrl?.fitAll());
 }
@@ -4641,7 +4814,7 @@ async function refreshGardenDataForCurrentContext(): Promise<void> {
     showAdminMfaSetupStatus();
     return;
   }
-  await Promise.all([fetchPlots(), fetchLayoutState()]);
+  await Promise.all([fetchPlots(), fetchLayoutState(), refreshElevationAvailability()]);
   if (!isCurrentGardenRequest(requestGardenId)) return;
   invalidatePlantsCache();
   if (activeTab === "map") await ensureShadeMapPanelLoaded();
@@ -4701,19 +4874,23 @@ function showFetchError(err: unknown): void {
 function syncMobileCapabilities(): void {
   const editBtn = queryButton("edit-mode-btn");
   const editMenuDropdown = document.getElementById("edit-menu-dropdown") as HTMLElement | null;
-  if (!editBtn) return;
   if (isMobile()) {
     if (state.editMode) toggleEditMode(state, editCbs);
     if (editMenuDropdown) editMenuDropdown.hidden = true;
-    editBtn.setAttribute("aria-expanded", "false");
-    editBtn.disabled = true;
-    editBtn.title = t("map.desktop_only");
-    editBtn.textContent = t("map.edit_desktop");
+    if (editBtn) {
+      editBtn.setAttribute("aria-expanded", "false");
+      editBtn.disabled = true;
+      editBtn.title = t("map.desktop_only");
+      editBtn.textContent = t("map.edit_desktop");
+    }
   } else {
-    editBtn.disabled = !canWriteInGarden;
-    editBtn.title = canWriteInGarden ? "" : t("map.read_only");
-    editBtn.textContent = canWriteInGarden ? t("map.edit") : t("map.edit_read_only");
+    if (editBtn) {
+      editBtn.disabled = !canWriteInGarden;
+      editBtn.title = canWriteInGarden ? "" : t("map.read_only");
+      editBtn.textContent = canWriteInGarden ? t("map.edit") : t("map.edit_read_only");
+    }
   }
+  syncMobileMapSheetAccessibility();
   updateMapDirectionControlVisibility();
 }
 
@@ -4871,7 +5048,7 @@ async function bootstrapApp(): Promise<void> {
   const needsOnboarding = await checkOnboardingNeeded();
   if (needsOnboarding) return;
 
-  await Promise.all([fetchPlots(), fetchLayoutState()]);
+  await Promise.all([fetchPlots(), fetchLayoutState(), refreshElevationAvailability()]);
   if (activeTab === "map") {
     await ensureShadeMapPanelLoaded();
   }
@@ -4892,7 +5069,7 @@ async function checkOnboardingNeeded(): Promise<boolean> {
       // Reload everything after onboarding or admin dismissal.
       void (async () => {
         await refreshGardenContext();
-        await Promise.all([fetchPlots(), fetchLayoutState()]);
+        await Promise.all([fetchPlots(), fetchLayoutState(), refreshElevationAvailability()]);
         if (activeTab === "map") {
           await ensureShadeMapPanelLoaded();
         }

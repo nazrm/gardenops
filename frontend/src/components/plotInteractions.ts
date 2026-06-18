@@ -752,6 +752,9 @@ export async function selectPlot(
         : {}),
       onSearch: (e) => void handlePlantSearch(state, e, cbs),
       ...panelCallbacks,
+      ...(cbs.canWrite()
+        ? { onDeletePlot: () => void cbs.deletePlot(plotId) }
+        : {}),
       ...(cbs.canWrite() && cbs.onCreatePlant
         ? { onCreatePlant: cbs.onCreatePlant }
         : {}),
@@ -779,15 +782,11 @@ export async function selectPlot(
     plotId,
     zone: plot.zone_code,
     plantCount: plot.plant_count,
-    topPlants: topPlants.slice(0, 3),
+    plants: topPlants,
     anchorRect,
     viewportRect,
     onViewDetails: () => void openDrawerForPlot(state, plotId, cbs),
-    onCreateCalendarEvent: cbs.canWrite() && cbs.onCreateCalendarEvent
-      ? () => cbs.onCreateCalendarEvent?.({ plot_ids: [plotId] })
-      : undefined,
     onEdit: cbs.canWrite() ? () => cbs.onEditPlot(plotId) : undefined,
-    onDelete: cbs.canWrite() ? () => void cbs.deletePlot(plotId) : undefined,
     onDismiss: () => {
       state.selectedPlotId = null;
       cbs.onPlotFocusChanged(null);
@@ -823,6 +822,9 @@ export async function openDrawerForPlot(
       : {}),
     onSearch: (e) => void handlePlantSearch(state, e, cbs),
     ...panelCallbacks,
+    ...(cbs.canWrite()
+      ? { onDeletePlot: () => void cbs.deletePlot(plotId) }
+      : {}),
     ...(cbs.canWrite() && cbs.onCreatePlant
       ? { onCreatePlant: cbs.onCreatePlant }
       : {}),
