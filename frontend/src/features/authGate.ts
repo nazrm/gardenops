@@ -68,8 +68,8 @@ function createAuthGateLogo(): HTMLImageElement {
   logo.className = "auth-gate-logo";
   logo.src = gardenOpsLogoUrl;
   logo.alt = t("auth.app_title");
-  logo.width = 720;
-  logo.height = 310;
+  logo.width = 600;
+  logo.height = 258;
   logo.decoding = "async";
   return logo;
 }

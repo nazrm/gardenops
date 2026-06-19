@@ -66,25 +66,46 @@ function collectCalls(node, predicate) {
 
 function main() {
   const sourcePath = path.resolve(__dirname, "../frontend/src/main.ts");
+  const appSourcePath = path.resolve(__dirname, "../frontend/src/app.ts");
   const authGatePath = path.resolve(__dirname, "../frontend/src/features/authGate.ts");
   const passkeysPath = path.resolve(__dirname, "../frontend/src/features/passkeys.ts");
   const apiPath = path.resolve(__dirname, "../frontend/src/services/api.ts");
   const i18nPath = path.resolve(__dirname, "../frontend/src/core/i18n.ts");
   const stylePath = path.resolve(__dirname, "../frontend/src/style.css");
+  if (!fs.existsSync(appSourcePath)) {
+    fail("missing lazy authenticated app module at frontend/src/app.ts");
+  }
   const sourceText = fs.readFileSync(sourcePath, "utf8");
+  const appSourceText = fs.readFileSync(appSourcePath, "utf8");
   const authGateText = fs.readFileSync(authGatePath, "utf8");
   const passkeysText = fs.readFileSync(passkeysPath, "utf8");
   const apiText = fs.readFileSync(apiPath, "utf8");
   const i18nText = fs.readFileSync(i18nPath, "utf8");
   const styleText = fs.readFileSync(stylePath, "utf8");
-  const source = ts.createSourceFile(sourcePath, sourceText, ts.ScriptTarget.Latest, true);
+  const appSource = ts.createSourceFile(appSourcePath, appSourceText, ts.ScriptTarget.Latest, true);
 
-  const statusHelper = findFunction(source, "showAuthGateFromCurrentStatus");
+  if (!sourceText.includes("import(\"./app\")")) {
+    fail("main entry must lazy-load the authenticated app after the auth gate resolves");
+  }
+  [
+    "./components/dataTables",
+    "./components/mapView",
+    "./components/plotInteractions",
+    "./tabs/calendarTab",
+    "./tabs/careTab",
+    "./components/shadePanel",
+  ].forEach((heavyImport) => {
+    if (sourceText.includes(`from "${heavyImport}"`) || sourceText.includes(`from '${heavyImport}'`)) {
+      fail(`main entry must not statically import authenticated app module ${heavyImport}`);
+    }
+  });
+
+  const statusHelper = findFunction(appSource, "showAuthGateFromCurrentStatus");
   if (!statusHelper) {
     fail("missing showAuthGateFromCurrentStatus helper");
   }
 
-  const helperText = statusHelper.getText(source).replace(/\s+/g, "");
+  const helperText = statusHelper.getText(appSource).replace(/\s+/g, "");
   if (
     !helperText.includes("getAuthStatusApi()") ||
     !helperText.includes("showAuthGate(status.bootstrap_required,status.passkeys_enabled)") ||
@@ -93,13 +114,13 @@ function main() {
     fail("showAuthGateFromCurrentStatus must fetch auth status, pass through passkeys_enabled, and keep a fallback gate");
   }
 
-  const authButton = findFunction(source, "handleAuthButton");
+  const authButton = findFunction(appSource, "handleAuthButton");
   if (!authButton) {
     fail("missing handleAuthButton");
   }
 
   const staleGateCalls = collectCalls(authButton, (node) =>
-    isShowAuthGateFalseFalseCall(source, node),
+    isShowAuthGateFalseFalseCall(appSource, node),
   );
   if (staleGateCalls.length > 0) {
     fail("handleAuthButton must not render showAuthGate(false, false) directly");
@@ -191,7 +212,7 @@ function main() {
   if (!authGateText.includes("auth-gate-active")) {
     fail("auth gate must mark the body while pre-login gates are active");
   }
-  if (!sourceText.includes("document.body.classList.add(\"app-font-active\")")) {
+  if (!appSourceText.includes("document.body.classList.add(\"app-font-active\")")) {
     fail("main app shell must opt into the app font after authentication");
   }
   if (!styleText.includes("body.auth-gate-active")) {

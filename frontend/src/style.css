@@ -3664,7 +3664,7 @@ body.moving-house .house-placeholder {
   display: block;
   width: min(540px, 96vw);
   height: auto;
-  aspect-ratio: 720 / 310;
+  aspect-ratio: 600 / 258;
   object-fit: contain;
   object-position: center;
   margin: 0;
