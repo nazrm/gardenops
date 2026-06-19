@@ -135,6 +135,15 @@ function main() {
   if (!sourceText.includes("import(\"./app\")")) {
     fail("main entry must lazy-load the authenticated app after the auth gate resolves");
   }
+  if (!sourceText.includes("__gardenopsInitialAuthProfile")) {
+    fail("main entry must prime the authenticated app with the auth profile it already fetched");
+  }
+  if (!appSourceText.includes("__gardenopsInitialAuthProfile")) {
+    fail("authenticated app startup must consume the primed auth profile before refetching /api/auth/me");
+  }
+  if (!appSourceText.includes("refreshGardenContext({ profile: initialMe })")) {
+    fail("authenticated app startup must reuse the initial auth profile while loading garden context");
+  }
   [
     "./components/dataTables",
     "./components/mapView",

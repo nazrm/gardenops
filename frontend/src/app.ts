@@ -459,6 +459,17 @@ let displayedAppVersion = __APP_VERSION__;
 let displayedAppVersionUpdatedAtMs: number | null = null;
 const APP_VERSION_POLL_MS = 5 * 60_000;
 
+type InitialAuthProfileWindow = Window & {
+  __gardenopsInitialAuthProfile?: AuthUserProfile | null;
+};
+
+function takePrimedAuthProfile(): AuthUserProfile | null {
+  const appWindow = window as InitialAuthProfileWindow;
+  const profile = appWindow.__gardenopsInitialAuthProfile ?? null;
+  delete appWindow.__gardenopsInitialAuthProfile;
+  return profile;
+}
+
 function isAdminMfaSetupRequired(): boolean {
   return Boolean(authProfile?.role === "admin" && authProfile?.mfa_setup_required);
 }
@@ -4714,16 +4725,16 @@ function ensureWriteAccess(): boolean {
   return false;
 }
 
-async function refreshGardenContext(): Promise<void> {
+async function refreshGardenContext(options?: { profile?: AuthUserProfile | null }): Promise<void> {
   const selects = getGardenSelects();
   const roleChips = getGardenRoleChips();
   if (selects.length === 0 || roleChips.length === 0) return;
   resetShadeMapPanelLoadState();
   gardenContextAvailable = false;
 
-  let me: AuthUserProfile | null = null;
+  let me: AuthUserProfile | null = options?.profile ?? null;
   try {
-    me = await getAuthMeApi();
+    me ??= await getAuthMeApi();
   } catch {
     setActiveGardenContext(null);
     try {
@@ -5089,7 +5100,10 @@ async function bootstrapApp(): Promise<void> {
   let passkeysEnabled = false;
   let initialMe: AuthUserProfile | null = null;
   try {
-    initialMe = await getAuthMeApi();
+    initialMe = takePrimedAuthProfile();
+    if (!initialMe) {
+      initialMe = await getAuthMeApi();
+    }
     setFeatureGates(initialMe.subscription_tier ?? "home", initialMe.allowed_features ?? []);
     clearPrimedInviteToken();
     if (initialMe.language && initialMe.language !== getLocale()) {
@@ -5122,7 +5136,7 @@ async function bootstrapApp(): Promise<void> {
     uploadTargetMediaFiles,
     uploadJournalMediaFiles,
   });
-  await refreshGardenContext();
+  await refreshGardenContext({ profile: initialMe });
   if (isAdminMfaSetupRequired()) {
     setActiveTab("admin");
     showAdminMfaSetupStatus();
