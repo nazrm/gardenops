@@ -67,7 +67,9 @@ function collectCalls(node, predicate) {
 function main() {
   const sourcePath = path.resolve(__dirname, "../frontend/src/main.ts");
   const appSourcePath = path.resolve(__dirname, "../frontend/src/app.ts");
+  const indexPath = path.resolve(__dirname, "../frontend/index.html");
   const authGatePath = path.resolve(__dirname, "../frontend/src/features/authGate.ts");
+  const authStylePath = path.resolve(__dirname, "../frontend/src/auth.css");
   const passwordChecklistPath = path.resolve(__dirname, "../frontend/src/components/passwordChecklist.ts");
   const passkeysPath = path.resolve(__dirname, "../frontend/src/features/passkeys.ts");
   const apiPath = path.resolve(__dirname, "../frontend/src/services/api.ts");
@@ -78,14 +80,27 @@ function main() {
   }
   const sourceText = fs.readFileSync(sourcePath, "utf8");
   const appSourceText = fs.readFileSync(appSourcePath, "utf8");
+  const indexText = fs.readFileSync(indexPath, "utf8");
   const authGateText = fs.readFileSync(authGatePath, "utf8");
   const passwordChecklistText = fs.readFileSync(passwordChecklistPath, "utf8");
   const passkeysText = fs.readFileSync(passkeysPath, "utf8");
   const apiText = fs.readFileSync(apiPath, "utf8");
   const i18nText = fs.readFileSync(i18nPath, "utf8");
   const styleText = fs.readFileSync(stylePath, "utf8");
+  const authStyleText = fs.existsSync(authStylePath)
+    ? fs.readFileSync(authStylePath, "utf8")
+    : "";
   const appSource = ts.createSourceFile(appSourcePath, appSourceText, ts.ScriptTarget.Latest, true);
 
+  if (!indexText.includes("/src/auth.css") || indexText.includes("/src/style.css")) {
+    fail("pre-login HTML must load auth.css instead of the full app stylesheet");
+  }
+  if (!appSourceText.includes("import \"./style.css\"")) {
+    fail("authenticated app module must lazy-load the full app stylesheet");
+  }
+  if (!authStyleText.includes(".auth-gate") || authStyleText.includes("@font-face")) {
+    fail("auth.css must contain login gate styles without preloading app fonts");
+  }
   if (!sourceText.includes("import(\"./app\")")) {
     fail("main entry must lazy-load the authenticated app after the auth gate resolves");
   }

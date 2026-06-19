@@ -1,4 +1,5 @@
 import "./core/trustedTypes"; // Must stay first — documents that no permissive default policy is installed
+import "./style.css";
 import { showOnboarding } from "./components/onboarding";
 import type { CameraController } from "./components/camera";
 import { initCamera } from "./components/camera";
