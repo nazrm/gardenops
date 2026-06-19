@@ -1463,6 +1463,9 @@ def batch_journal_entry(body: BatchJournalEntryBody, db: DB, request: Request) -
     _validate_batch_plant_ids(db, body.plt_ids, context)
     valid_plot_ids = _validate_batch_plot_ids(db, body.plot_ids, context)
     _validate_date(body.occurred_on)
+    if body.event_type == "bloomed":
+        for plt_id in body.plt_ids:
+            _require_plant_access(db, plt_id, context)
 
     now_ms = current_timestamp_ms()
     row = db.execute(

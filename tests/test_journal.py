@@ -218,6 +218,90 @@ class TestJournal(BaseApiTest):
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 
+    def test_bloom_observation_rejects_peer_owned_plant_side_effect(self) -> None:
+        owner = self._create_test_user("bloom_peer_owner", "ownerpass", "editor")
+        self._create_test_user("bloom_peer_editor", "editorpass", "editor")
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                UPDATE plant_ownership
+                SET owner_user_id = %s
+                WHERE plt_id = 'PLT-TEST' AND garden_id = %s
+                """,
+                (int(owner["id"]), garden_id),
+            )
+            conn.execute(
+                """
+                UPDATE plot_ownership
+                SET owner_user_id = %s
+                WHERE plot_id = 'B1' AND garden_id = %s
+                """,
+                (int(owner["id"]), garden_id),
+            )
+            conn.execute(
+                """
+                UPDATE plants
+                SET seen_growing = NULL, seen_growing_date = NULL
+                WHERE plt_id = 'PLT-TEST'
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO plot_plants (plot_id, plt_id, quantity)
+                VALUES ('B1', 'PLT-TEST', 1)
+                ON CONFLICT (plot_id, plt_id) DO UPDATE SET
+                    seen_growing = NULL,
+                    seen_growing_date = NULL
+                """
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        os.environ["AUTH_API_KEY"] = ""
+        try:
+            client = self._new_client()
+            _, csrf = self._login_session("bloom_peer_editor", "editorpass", client=client)
+            response = client.post(
+                "/api/journal",
+                headers=self._session_headers(csrf, garden_id=garden_id),
+                json={
+                    "event_type": "bloomed",
+                    "occurred_on": "2026-06-19",
+                    "plant_ids": ["PLT-TEST"],
+                    "plot_ids": ["B1"],
+                },
+            )
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+        self.assertEqual(response.status_code, 404, response.text)
+        conn = db.get_db()
+        try:
+            plant_row = conn.execute(
+                "SELECT seen_growing, seen_growing_date FROM plants WHERE plt_id = 'PLT-TEST'",
+            ).fetchone()
+            assignment_row = conn.execute(
+                """
+                SELECT seen_growing, seen_growing_date
+                FROM plot_plants
+                WHERE plot_id = 'B1' AND plt_id = 'PLT-TEST'
+                """,
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+
+        assert plant_row is not None
+        assert assignment_row is not None
+        self.assertIsNone(plant_row["seen_growing"])
+        self.assertIsNone(plant_row["seen_growing_date"])
+        self.assertIsNone(assignment_row["seen_growing"])
+        self.assertIsNone(assignment_row["seen_growing_date"])
+
     def test_journal_batch_entry_rejects_invalid_date(self) -> None:
         r = self.client.post(
             "/api/plants/batch-journal-entry",
