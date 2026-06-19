@@ -2,7 +2,7 @@ import "./core/trustedTypes"; // Must stay first — documents that no permissiv
 import "./style.css";
 import type { CameraController } from "./components/camera";
 import { initCamera } from "./components/camera";
-import { filterPlants, renderPlantsMobileCards, renderPlantsTableBody, renderPlantsTableHead, sortPlants, syncPlantsSelectionState } from "./components/dataTables";
+import { clearPlantsMobileCards, clearPlantsTableBody, filterPlants, renderPlantsMobileCards, renderPlantsTableBody, renderPlantsTableHead, sortPlants, syncPlantsSelectionState } from "./components/dataTables";
 import { renderMediaGalleryLazy } from "./components/mediaGalleryLoader";
 import { renderExportBar } from "./components/exportBar";
 import type { ColumnDef, SortDir, SortField } from "./components/dataTables";
@@ -231,6 +231,7 @@ const selectedPlantIds = new Set<string>();
 
 // ── Media / Navigation state ──────────────────────────────
 const MEDIA_SUMMARY_BATCH_SIZE = 80;
+const PLANT_MEDIA_PREVIEW_PREFETCH_LIMIT = 120;
 const plantMediaPreviewById = new Map<string, MediaAsset | null>();
 let plantMediaPreviewSeq = 0;
 let focusedPlantIds: Set<string> | null = null;
@@ -1004,7 +1005,10 @@ const appContext: AppContext = {
   loadCare: () => loadCareTab(),
   renderDataExportBars: () => renderDataExportBars(),
   fetchPlots: () => fetchPlots(),
+  ensurePlantsCacheLoaded: () => ensurePlantsCacheLoaded(),
   ensurePlantsLoaded: () => ensurePlantsLoaded(),
+  getPlantsCacheRevision: () => plantsCacheRevision,
+  setPlantsCache: (plants) => setPlantsCache(plants),
   invalidatePlantsCache: () => invalidatePlantsCache(),
   isMobile,
   canWrite: () => canWriteInGarden,
@@ -1642,6 +1646,26 @@ function isMobile(): boolean {
   return window.innerWidth <= 960;
 }
 
+type DataLayoutMode = "desktop" | "mobile";
+
+function getDataLayoutMode(): DataLayoutMode {
+  return isMobile() ? "mobile" : "desktop";
+}
+
+let lastDataLayoutMode = getDataLayoutMode();
+
+function syncDataLayoutModeAfterResize(): void {
+  const nextLayoutMode = getDataLayoutMode();
+  if (nextLayoutMode === lastDataLayoutMode) return;
+  lastDataLayoutMode = nextLayoutMode;
+  plantsRenderSignature = "";
+  if (activeTab === "garden" || activeTab === "activity") {
+    renderPlantsTable();
+  } else if (activeTab === "insights" && subMode === "care") {
+    renderCareViewLazy();
+  }
+}
+
 function setFocusedPlantIds(pltIds: string[] | null): void {
   if (!pltIds || pltIds.length === 0) {
     focusedPlantIds = null;
@@ -2133,7 +2157,11 @@ function syncSavedViewsAvailability(): void {
 
 async function refreshActiveNavigationContent(): Promise<void> {
   if (activeTab === "garden" || activeTab === "activity") {
-    await ensurePlantsLoaded();
+    if (subMode === "plants") {
+      await ensurePlantsLoaded();
+    } else {
+      await ensurePlantsCacheLoaded();
+    }
     if (subMode === "journal") {
       await loadJournalEntries();
     } else if (subMode === "calendar") {
@@ -2171,6 +2199,19 @@ async function refreshActiveNavigationContent(): Promise<void> {
 
 function loadActiveNavigationContent(): void {
   void refreshActiveNavigationContent();
+}
+
+let navigationLoadSeq = 0;
+
+function scheduleActiveNavigationContentLoad(): void {
+  const seq = ++navigationLoadSeq;
+  const run = () => {
+    if (seq !== navigationLoadSeq) return;
+    loadActiveNavigationContent();
+  };
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(run);
+  });
 }
 
 function applyNavigationState(opts: { triggerLoads?: boolean } = {}): void {
@@ -2250,7 +2291,7 @@ function applyNavigationState(opts: { triggerLoads?: boolean } = {}): void {
     syncMobileShadeDisclosureState();
   }
   if (triggerLoads) {
-    loadActiveNavigationContent();
+    scheduleActiveNavigationContentLoad();
   }
 }
 
@@ -2613,7 +2654,10 @@ function renderDirectionLabels(): void {
 }
 
 let plantsCacheLoaded = false;
+let plantsCacheRevision = 0;
 let plantsTableHeadSignature = "";
+let plantsRenderSignature = "";
+let plantMediaPreviewRevision = 0;
 
 type PlantPresenceFilter = "all" | "current" | "gone" | "unobserved";
 
@@ -2623,40 +2667,63 @@ interface PlantsViewState {
   knownPlotIds: Set<string>;
 }
 
+function setPlantsCache(plants: Plant[]): void {
+  state.plantsCache = plants;
+  plantsCacheLoaded = true;
+  plantsCacheRevision += 1;
+  plantsRenderSignature = "";
+}
+
 function replaceCachedPlant(nextPlant: Plant): void {
   const index = state.plantsCache.findIndex((plant) => plant.plt_id === nextPlant.plt_id);
   if (index === -1) {
     state.plantsCache.push(nextPlant);
+    plantsCacheRevision += 1;
+    plantsRenderSignature = "";
     return;
   }
   state.plantsCache[index] = nextPlant;
+  plantsCacheRevision += 1;
+  plantsRenderSignature = "";
 }
 
 function removeCachedPlant(pltId: string): void {
   const index = state.plantsCache.findIndex((plant) => plant.plt_id === pltId);
-  if (index >= 0) state.plantsCache.splice(index, 1);
+  if (index >= 0) {
+    state.plantsCache.splice(index, 1);
+    plantsCacheRevision += 1;
+    plantsRenderSignature = "";
+  }
 }
 
 function invalidatePlantsCache(): void {
   state.plantsCache = [];
   plantsCacheLoaded = false;
+  plantsCacheRevision += 1;
+  plantMediaPreviewRevision += 1;
+  plantMediaPreviewSeq += 1;
+  plantsRenderSignature = "";
   plantMediaPreviewById.clear();
 }
 
-async function ensurePlantsLoaded(): Promise<void> {
+async function ensurePlantsCacheLoaded(): Promise<void> {
   const requestGardenId = getActiveGardenContext();
   if (!plantsCacheLoaded) {
     try {
       const plants = await getPlants();
       if (!isCurrentGardenRequest(requestGardenId)) return;
-      state.plantsCache = plants;
-      plantsCacheLoaded = true;
+      setPlantsCache(plants);
       clearAppStatus();
     } catch (err) {
       if (!isCurrentGardenRequest(requestGardenId)) return;
       showFetchError(err);
     }
   }
+}
+
+async function ensurePlantsLoaded(): Promise<void> {
+  const requestGardenId = getActiveGardenContext();
+  await ensurePlantsCacheLoaded();
   if (!isCurrentGardenRequest(requestGardenId)) return;
   renderPlantsTable();
 }
@@ -2740,6 +2807,43 @@ function syncRenderedPlantSelection(visiblePlants: Plant[] | null = null): void 
   syncPlantsHeaderSelection(visiblePlants ?? getPlantsViewState().sorted);
 }
 
+function plantIdsSignature(plants: Plant[]): string {
+  return plants.map((plant) => plant.plt_id).join("|");
+}
+
+function selectedPlantsSignature(): string {
+  return Array.from(selectedPlantIds).sort().join("|");
+}
+
+function focusedPlantsSignature(): string {
+  return focusedPlantIds ? Array.from(focusedPlantIds).sort().join("|") : "";
+}
+
+function buildPlantsRenderSignature(
+  view: PlantsViewState,
+  layoutMode: DataLayoutMode,
+): string {
+  return JSON.stringify({
+    gardenId: getActiveGardenContext(),
+    cacheRevision: plantsCacheRevision,
+    mediaRevision: plantMediaPreviewRevision,
+    plotCount: state.plots.length,
+    query: (queryInput("plants-search")?.value || "").trim(),
+    category: querySelect("plants-category")?.value || "",
+    presence: querySelect("plants-presence-filter")?.value || "all",
+    focused: focusedPlantsSignature(),
+    selected: selectedPlantsSignature(),
+    sortField: plantTableState.sortField,
+    sortDir: plantTableState.sortDir,
+    columns: plantTableState.columns.map((column) => column.key),
+    visibleColumns: Array.from(plantTableState.visibleColumns).sort(),
+    layoutMode,
+    canWrite: canWriteInGarden,
+    plotAssignmentMeanings: authProfile?.plot_assignment_meanings?.length ?? 0,
+    plants: plantIdsSignature(view.sorted),
+  });
+}
+
 // ── Plants table ───────────────────────────────────────────
 function renderPlantsTable(): void {
   const thead = document.getElementById("plants-table-head");
@@ -2748,6 +2852,8 @@ function renderPlantsTable(): void {
   const summary = document.getElementById("plants-summary");
   if (!tbody || !mobileList) return;
   const view = getPlantsViewState();
+  const layoutMode = getDataLayoutMode();
+  const nextRenderSignature = buildPlantsRenderSignature(view, layoutMode);
 
   if (thead) {
     const nextHeadSignature = JSON.stringify({
@@ -2789,10 +2895,26 @@ function renderPlantsTable(): void {
     onToggleSelect: (pltId: string) => togglePlantSelection(pltId),
     selectedIds: selectedPlantIds,
   };
-  renderPlantsTableBody(tbody, view.sorted, plantTableState.columns, plantTableState.visibleColumns, tableCbs);
-  renderPlantsMobileCards(mobileList, view.sorted, tableCbs);
+  if (plantsRenderSignature === nextRenderSignature) {
+    syncRenderedPlantSelection(view.sorted);
+    updateSortIndicators();
+    return;
+  }
+
+  if (layoutMode === "desktop") {
+    renderPlantsTableBody(tbody, view.sorted, plantTableState.columns, plantTableState.visibleColumns, tableCbs);
+    if (mobileList.childElementCount > 0) clearPlantsMobileCards(mobileList);
+  } else {
+    if (tbody.childElementCount > 0) clearPlantsTableBody(tbody);
+    renderPlantsMobileCards(mobileList, view.sorted, tableCbs);
+  }
+  plantsRenderSignature = nextRenderSignature;
   renderDataExportBars();
-  void ensurePlantMediaPreviews(view.sorted.map((plant) => plant.plt_id));
+  void ensurePlantMediaPreviews(
+    view.sorted
+      .slice(0, PLANT_MEDIA_PREVIEW_PREFETCH_LIMIT)
+      .map((plant) => plant.plt_id),
+  );
 
   updateSortIndicators();
 }
@@ -3050,11 +3172,18 @@ async function ensurePlantMediaPreviews(pltIds: string[]): Promise<void> {
     }
     if (seq !== plantMediaPreviewSeq) return;
     const found = new Map(items.map((item) => [item.target_id, item.asset]));
+    let foundPreview = false;
     for (const pltId of missingIds) {
-      plantMediaPreviewById.set(pltId, found.get(pltId) ?? null);
+      const asset = found.get(pltId) ?? null;
+      if (asset) foundPreview = true;
+      plantMediaPreviewById.set(pltId, asset);
     }
-    if (activeTab === "garden" && subMode === "plants") {
-      renderPlantsTable();
+    if (foundPreview) {
+      plantMediaPreviewRevision += 1;
+      plantsRenderSignature = "";
+      if (activeTab === "garden" && subMode === "plants") {
+        renderPlantsTable();
+      }
     }
   } catch {
     // Ignore preview-summary failures; the surrounding list remains usable.
@@ -3067,6 +3196,8 @@ async function refreshPlantMediaPreviews(pltIds: string[]): Promise<void> {
   for (const pltId of requestedIds) {
     plantMediaPreviewById.delete(pltId);
   }
+  plantMediaPreviewRevision += 1;
+  plantsRenderSignature = "";
   await ensurePlantMediaPreviews(requestedIds);
 }
 
@@ -4349,6 +4480,8 @@ async function handleDeletePlant(pltId: string): Promise<void> {
   try {
     await deletePlantApi(pltId);
     plantMediaPreviewById.delete(pltId);
+    plantMediaPreviewRevision += 1;
+    plantsRenderSignature = "";
     affectedPlotIds.forEach((plotId) => invalidatePlotPanelCache(plotId));
     invalidatePlantsCache();
     await ensurePlantsLoaded();
@@ -5133,6 +5266,7 @@ window.addEventListener("resize", () => {
   syncMobileShadeDisclosureState();
   syncMobileViewportOffset();
   syncMapLayersCollapsedFromStorage();
+  syncDataLayoutModeAfterResize();
 });
 
 if (window.visualViewport) {

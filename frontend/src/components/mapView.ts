@@ -261,7 +261,12 @@ export function renderMapGrid(params: RenderMapParams): void {
 
   grid.replaceChildren();
   grid.dataset["northDegrees"] = String(northDegrees);
-  grid.dataset["gridLabel"] = `${params.gridCols}m × ${params.gridRows}m`;
+  const gridLabel = `${params.gridCols}m × ${params.gridRows}m`;
+  grid.dataset["gridLabel"] = gridLabel;
+  const camera = grid.parentElement;
+  if (camera instanceof HTMLElement && camera.classList.contains("map-camera")) {
+    camera.dataset["gridLabel"] = gridLabel;
+  }
 
   const byCell = new Map<string, Plot>();
   for (const p of plots) {

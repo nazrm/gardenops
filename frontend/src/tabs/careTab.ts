@@ -7,6 +7,8 @@ import type {
 } from "../components/careTable";
 import { t } from "../core/i18n";
 import {
+  clearCareMobileCards,
+  clearCareTableBody,
   filterCarePlants,
   renderCareMobileCards,
   renderCareTableBody,
@@ -28,6 +30,8 @@ let generatingMissingCare = false;
 let generatingMissingCareCompleted = 0;
 let generatingMissingCareTotal = 0;
 const CARE_GENERATION_REQUEST_BATCH_SIZE = 6;
+let careTableHeadInitialized = false;
+let careRenderSignature = "";
 
 export function initCareTab(appCtx: AppContext): void {
   ctx = appCtx;
@@ -62,7 +66,7 @@ export function initCareTab(appCtx: AppContext): void {
 
 export async function loadCare(): Promise<void> {
   if (!ctx) return;
-  await ctx.ensurePlantsLoaded();
+  await ctx.ensurePlantsCacheLoaded();
   renderCareView();
 }
 
@@ -205,13 +209,14 @@ export function renderCareView(): void {
   );
   if (!tbody || !mobileList) return;
 
-  if (thead) {
+  if (thead && !careTableHeadInitialized) {
     renderCareTableHead(thead);
     thead
       .querySelectorAll("th.sortable")
       .forEach((th) => {
         th.addEventListener("click", handleCareSortClick);
       });
+    careTableHeadInitialized = true;
   }
 
   const query = (queryInput("care-search")?.value ?? "").trim();
@@ -233,12 +238,33 @@ export function renderCareView(): void {
   updateCareSummary(plants.length, sorted.length, missingCount);
   syncGenerateCareButton(missingCount);
   renderCareGenerationProgress();
-  renderCareTableBody(tbody, sorted, {
-    onPlantClick: (plant) => showCareOverlay(plant),
+  const layoutMode = ctx.isMobile() ? "mobile" : "desktop";
+  const nextRenderSignature = JSON.stringify({
+    cacheRevision: ctx.getPlantsCacheRevision(),
+    layoutMode,
+    query,
+    category,
+    sortField: careSortField,
+    sortDir: careSortDir,
+    canWrite: ctx.canWrite(),
+    generatingMissingCare,
+    generatingMissingCareCompleted,
+    generatingMissingCareTotal,
+    plants: sorted.map((plant) => plant.plt_id).join("|"),
   });
-  renderCareMobileCards(mobileList, sorted, {
-    onPlantClick: (plant) => showCareOverlay(plant),
-  });
+  if (careRenderSignature !== nextRenderSignature) {
+    const callbacks = {
+      onPlantClick: (plant: Plant) => showCareOverlay(plant),
+    };
+    if (layoutMode === "desktop") {
+      renderCareTableBody(tbody, sorted, callbacks);
+      if (mobileList.childElementCount > 0) clearCareMobileCards(mobileList);
+    } else {
+      if (tbody.childElementCount > 0) clearCareTableBody(tbody);
+      renderCareMobileCards(mobileList, sorted, callbacks);
+    }
+    careRenderSignature = nextRenderSignature;
+  }
   updateCareSortIndicators();
 }
 
@@ -352,7 +378,7 @@ async function generateMissingCareInstructions(): Promise<void> {
     }
 
     ctx.invalidatePlantsCache();
-    ctx.state.plantsCache = await getPlants();
+    ctx.setPlantsCache(await getPlants());
     const remainingCount = result.remaining_without_care;
     if (result.status === "partial") {
       ctx.showToast(

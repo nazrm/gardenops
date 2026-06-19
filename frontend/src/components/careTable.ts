@@ -1,6 +1,14 @@
 import type { Plant } from "../core/models";
 import { formatPlantCategoryLabel, t } from "../core/i18n";
 import { renderEmptyState } from "./emptyState";
+import {
+  clearVirtualTableBody,
+  renderVirtualTableBody,
+} from "./virtualTable";
+import {
+  clearVirtualList,
+  renderVirtualList,
+} from "./virtualList";
 
 export type CareSortField = "name" | "latin";
 export type CareSortDir = "asc" | "desc";
@@ -82,11 +90,18 @@ export function renderCareTableBody(
     cell.className = "empty-table";
     cell.textContent = t("plants.no_matches");
     row.appendChild(cell);
-    tbody.replaceChildren(row);
+    renderVirtualTableBody({
+      tbody,
+      items: [],
+      totalColumns: 2,
+      estimateRowHeight: 48,
+      createRow: () => row,
+      emptyRow: () => row,
+    });
     return;
   }
 
-  const rows = plants.map((plant) => {
+  const createRow = (plant: Plant): HTMLTableRowElement => {
     const row = document.createElement("tr");
     row.className = "care-row";
     row.dataset["pltId"] = plant.plt_id;
@@ -110,9 +125,29 @@ export function renderCareTableBody(
     row.append(nameCell, latinCell);
     row.addEventListener("click", () => callbacks.onPlantClick(plant));
     return row;
-  });
+  };
 
-  tbody.replaceChildren(...rows);
+  renderVirtualTableBody({
+    tbody,
+    items: plants,
+    totalColumns: 2,
+    estimateRowHeight: 48,
+    overscan: 8,
+    createRow,
+    emptyRow: () => {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 2;
+      cell.className = "empty-table";
+      cell.textContent = t("plants.no_matches");
+      row.appendChild(cell);
+      return row;
+    },
+  });
+}
+
+export function clearCareTableBody(tbody: HTMLElement): void {
+  clearVirtualTableBody(tbody);
 }
 
 export function renderCareMobileCards(
@@ -120,15 +155,14 @@ export function renderCareMobileCards(
   plants: Plant[],
   callbacks: CareTableCallbacks,
 ): void {
-  if (plants.length === 0) {
+  const renderEmpty = (): void => {
     renderEmptyState(container, {
       icon: "\uD83C\uDF3F",
       headline: t("plants.no_matches"),
     });
-    return;
-  }
+  };
 
-  const cards = plants.map((plant) => {
+  const createCard = (plant: Plant): HTMLElement => {
     const button = document.createElement("button");
     button.className = "care-mobile-card";
     button.type = "button";
@@ -199,9 +233,20 @@ export function renderCareMobileCards(
     button.append(header, previewList, cta);
     button.addEventListener("click", () => callbacks.onPlantClick(plant));
     return button;
-  });
+  };
 
-  container.replaceChildren(...cards);
+  renderVirtualList({
+    container,
+    items: plants,
+    estimateItemHeight: 190,
+    overscan: 5,
+    createItem: createCard,
+    renderEmpty,
+  });
+}
+
+export function clearCareMobileCards(container: HTMLElement): void {
+  clearVirtualList(container);
 }
 
 interface CareField {

@@ -19,4 +19,4 @@ def test_page_performance_script_documents_authenticated_app_scenario() -> None:
     result = _run_page_perf("--help")
 
     assert result.returncode == 0
-    assert "app-unauth or app-auth" in result.stdout
+    assert "app-unauth, app-auth, or app-auth-large-tabs" in result.stdout
