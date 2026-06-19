@@ -1,3 +1,4 @@
+import os
 from datetime import date
 
 import gardenops.db as db
@@ -598,6 +599,111 @@ class TestTasks(BaseApiTest):
         self.assertTrue(plants["PLT-002"]["seen_growing"])
         self.assertEqual(plants["PLT-002"]["seen_growing_date"], date.today().isoformat())
         self.assertEqual(plants["PLT-002"]["presence_status"], "present")
+
+    def test_observe_bloom_task_rejects_peer_owned_plant_side_effect(self) -> None:
+        owner = self._create_test_user("task_peer_owner", "ownerpass", "editor")
+        self._create_test_user("task_peer_editor", "editorpass", "editor")
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                UPDATE plant_ownership
+                SET owner_user_id = %s
+                WHERE plt_id = 'PLT-002' AND garden_id = %s
+                """,
+                (int(owner["id"]), garden_id),
+            )
+            conn.execute(
+                """
+                UPDATE plants
+                SET seen_growing = NULL, seen_growing_date = NULL
+                WHERE plt_id = 'PLT-002'
+                """
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        os.environ["AUTH_API_KEY"] = ""
+        try:
+            client = self._new_client()
+            _, csrf = self._login_session("task_peer_editor", "editorpass", client=client)
+            response = client.post(
+                "/api/tasks",
+                headers=self._session_headers(csrf, garden_id=garden_id),
+                json={
+                    "task_type": "observe_bloom",
+                    "title": "Observe bloom: peer plant",
+                    "due_on": "2026-06-01",
+                    "plant_ids": ["PLT-002"],
+                },
+            )
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+        self.assertEqual(response.status_code, 404, response.text)
+        conn = db.get_db()
+        try:
+            plant = conn.execute(
+                "SELECT seen_growing, seen_growing_date FROM plants WHERE plt_id = 'PLT-002'",
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        assert plant is not None
+        self.assertIsNone(plant["seen_growing"])
+        self.assertIsNone(plant["seen_growing_date"])
+
+    def test_observe_bloom_task_type_update_rejects_peer_owned_existing_plant(self) -> None:
+        owner = self._create_test_user("task_update_peer_owner", "ownerpass", "editor")
+        self._create_test_user("task_update_peer_editor", "editorpass", "editor")
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                UPDATE plant_ownership
+                SET owner_user_id = %s
+                WHERE plt_id = 'PLT-002' AND garden_id = %s
+                """,
+                (int(owner["id"]), garden_id),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        os.environ["AUTH_API_KEY"] = ""
+        try:
+            client = self._new_client()
+            _, csrf = self._login_session("task_update_peer_editor", "editorpass", client=client)
+            create = client.post(
+                "/api/tasks",
+                headers=self._session_headers(csrf, garden_id=garden_id),
+                json={
+                    "task_type": "water",
+                    "title": "Water peer plant",
+                    "due_on": "2026-06-01",
+                    "plant_ids": ["PLT-002"],
+                },
+            )
+            self.assertEqual(create.status_code, 201, create.text)
+            task_id = create.json()["id"]
+
+            update = client.patch(
+                f"/api/tasks/{task_id}",
+                headers=self._session_headers(csrf, garden_id=garden_id),
+                json={"task_type": "observe_bloom"},
+            )
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+        self.assertEqual(update.status_code, 404, update.text)
+        task = self.client.get(f"/api/tasks/{task_id}").json()
+        self.assertEqual(task["task_type"], "water")
 
     def test_observe_bloom_completion_without_plot_context_does_not_guess_multiple_assignments(
         self,

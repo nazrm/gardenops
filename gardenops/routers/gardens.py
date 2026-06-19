@@ -1769,6 +1769,20 @@ def complete_garden_onboarding(
     db.commit()
     media_storage_pairs: list[tuple[str, str]] = []
     try:
+        existing_garden = db.execute(
+            """
+            SELECT onboarding_complete
+            FROM gardens
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (garden_id,),
+        ).fetchone()
+        if existing_garden is None:
+            raise HTTPException(status_code=404, detail="Garden not found")
+        if bool(int(existing_garden["onboarding_complete"])):
+            raise HTTPException(status_code=409, detail="Garden onboarding is already complete")
+
         db.execute(
             """
             UPDATE gardens

@@ -202,7 +202,7 @@ def _require_plot_in_garden_or_unowned(
     garden_id = _active_garden_id(context)
     row = db.execute(
         """
-        SELECT po.garden_id
+        SELECT po.owner_user_id, po.garden_id
         FROM plots p
         LEFT JOIN plot_ownership po ON po.plot_id = p.plot_id
         WHERE p.plot_id = %s
@@ -214,6 +214,8 @@ def _require_plot_in_garden_or_unowned(
     if row["garden_id"] is None:
         return  # No ownership record — unowned, allowed
     if int(row["garden_id"]) != garden_id:
+        raise HTTPException(status_code=404, detail="Plot not found")
+    if not _is_owner_or_admin(context, row["owner_user_id"]):
         raise HTTPException(status_code=404, detail="Plot not found")
 
 

@@ -2037,6 +2037,114 @@ class TestPlots(BaseApiTest):
         finally:
             db.return_db(conn)
 
+    def test_complete_onboarding_rejects_already_completed_garden(self) -> None:
+        conn = db.get_db()
+        try:
+            create_user(
+                conn,
+                username="onboardrepeat",
+                password=strong_password("repeatpass123"),
+                role="editor",
+            )
+            user = conn.execute(
+                "SELECT id FROM auth_users WHERE username = %s LIMIT 1",
+                ("onboardrepeat",),
+            ).fetchone()
+            assert user is not None
+            garden_id = int(
+                conn.execute(
+                    """
+                    INSERT INTO gardens (slug, name, onboarding_complete)
+                    VALUES (%s, %s, 1)
+                    RETURNING id
+                    """,
+                    (f"onboard-repeat-{os.urandom(3).hex()}", "Completed Garden"),
+                ).fetchone()["id"],
+            )
+            conn.execute(
+                """
+                INSERT INTO garden_memberships (garden_id, user_id, role)
+                VALUES (%s, %s, 'editor')
+                """,
+                (garden_id, int(user["id"])),
+            )
+            conn.execute(
+                """
+                INSERT INTO plots (plot_id, zone_code, zone_name, plot_number, grid_row, grid_col)
+                VALUES ('REPEAT-OLD', 'R', 'Repeat', 1, 8, 8)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id)
+                VALUES ('REPEAT-OLD', %s, %s)
+                """,
+                (int(user["id"]), garden_id),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            client = self._new_client()
+            _, csrf = self._login_session("onboardrepeat", "repeatpass123", client=client)
+            response = client.post(
+                f"/api/gardens/{garden_id}/complete-onboarding",
+                headers=self._session_headers(csrf, garden_id=garden_id),
+                json={
+                    "name": "Should Not Replace",
+                    "grid_rows": 30,
+                    "grid_cols": 22,
+                    "latitude": None,
+                    "longitude": None,
+                    "address": "",
+                    "mode": "manual",
+                    "house": {
+                        "row": 1,
+                        "col": 1,
+                        "width": 2,
+                        "height": 2,
+                        "north_degrees": 0,
+                        "grid_rows": 30,
+                        "grid_cols": 22,
+                    },
+                    "zones": [
+                        {
+                            "zone_code": "N",
+                            "zone_name": "New Zone",
+                            "start_row": 5,
+                            "start_col": 5,
+                            "end_row": 5,
+                            "end_col": 5,
+                            "color": "#4a7c59",
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"], "Garden onboarding is already complete")
+        conn = db.get_db()
+        try:
+            self.assertIsNotNone(
+                conn.execute(
+                    "SELECT 1 FROM plot_ownership WHERE plot_id = 'REPEAT-OLD'",
+                ).fetchone(),
+            )
+            self.assertEqual(
+                conn.execute(
+                    "SELECT name FROM gardens WHERE id = %s",
+                    (garden_id,),
+                ).fetchone()["name"],
+                "Completed Garden",
+            )
+        finally:
+            db.return_db(conn)
+
     def test_update_garden_settings_syncs_layout_grid_and_clears_location(self) -> None:
         conn = db.get_db()
         try:
@@ -3296,6 +3404,65 @@ class TestPlots(BaseApiTest):
             self.assertEqual(response.status_code, 404, response.text)
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_editor_cannot_assign_owned_plant_to_peer_owned_plot(self) -> None:
+        owner = self._create_test_user("plot_peer_owner", "ownerpass123", role="editor")
+        editor = self._create_test_user("plot_peer_editor", "editorpass123", role="editor")
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                UPDATE plot_ownership
+                SET owner_user_id = %s
+                WHERE plot_id = 'B1' AND garden_id = %s
+                """,
+                (int(owner["id"]), garden_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO plants (plt_id, name, category)
+                VALUES ('PEER-EDITOR-PLANT', 'Peer Editor Plant', 'frø')
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES ('PEER-EDITOR-PLANT', %s, %s)
+                """,
+                (int(editor["id"]), garden_id),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            client = self._new_client()
+            _, csrf = self._login_session("plot_peer_editor", "editorpass123", client=client)
+            response = client.post(
+                "/api/plots/B1/plants/PEER-EDITOR-PLANT",
+                headers=self._session_headers(csrf, garden_id=garden_id),
+                json={"quantity": 2},
+            )
+
+        self.assertEqual(response.status_code, 404, response.text)
+        conn = db.get_db()
+        try:
+            self.assertIsNone(
+                conn.execute(
+                    """
+                    SELECT 1
+                    FROM plot_plants
+                    WHERE plot_id = 'B1' AND plt_id = 'PEER-EDITOR-PLANT'
+                    """,
+                ).fetchone(),
+            )
+        finally:
+            db.return_db(conn)
 
     def test_bulk_seen_growing_rejects_poisoned_pair_for_plant_outside_active_garden(
         self,
