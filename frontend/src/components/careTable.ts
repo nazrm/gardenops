@@ -75,6 +75,8 @@ export function renderCareTableBody(
   plants: Plant[],
   callbacks: CareTableCallbacks,
 ): void {
+  const CARE_TABLE_INITIAL_ROWS = 80;
+  const CARE_TABLE_CHUNK_ROWS = 100;
   if (plants.length === 0) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
@@ -83,10 +85,12 @@ export function renderCareTableBody(
     cell.textContent = t("plants.no_matches");
     row.appendChild(cell);
     tbody.replaceChildren(row);
+    tbody.dataset["renderReady"] = "true";
+    tbody.dataset["renderComplete"] = "true";
     return;
   }
 
-  const rows = plants.map((plant) => {
+  const createRow = (plant: Plant) => {
     const row = document.createElement("tr");
     row.className = "care-row";
     row.dataset["pltId"] = plant.plt_id;
@@ -110,9 +114,49 @@ export function renderCareTableBody(
     row.append(nameCell, latinCell);
     row.addEventListener("click", () => callbacks.onPlantClick(plant));
     return row;
-  });
+  };
 
-  tbody.replaceChildren(...rows);
+  const renderToken = String(Date.now() + Math.random());
+  tbody.dataset["renderToken"] = renderToken;
+  tbody.dataset["renderReady"] = "false";
+  tbody.dataset["renderComplete"] = "false";
+
+  const renderRows = (start: number, end: number): HTMLElement[] =>
+    plants.slice(start, end).map(createRow);
+  const initialCount = Math.min(plants.length, CARE_TABLE_INITIAL_ROWS);
+  tbody.replaceChildren(...renderRows(0, initialCount));
+  tbody.dataset["renderReady"] = "true";
+  tbody.dataset["renderedRows"] = String(initialCount);
+
+  if (initialCount >= plants.length) {
+    tbody.dataset["renderComplete"] = "true";
+    return;
+  }
+
+  const appendNextChunk = (start: number): void => {
+    const run = () => {
+      if (tbody.dataset["renderToken"] !== renderToken) return;
+      const view = tbody.closest(".view");
+      if (view instanceof HTMLElement && view.hidden) {
+        globalThis.setTimeout(() => appendNextChunk(start), 250);
+        return;
+      }
+      const nextEnd = Math.min(plants.length, start + CARE_TABLE_CHUNK_ROWS);
+      tbody.append(...renderRows(start, nextEnd));
+      tbody.dataset["renderedRows"] = String(nextEnd);
+      if (nextEnd >= plants.length) {
+        tbody.dataset["renderComplete"] = "true";
+        return;
+      }
+      appendNextChunk(nextEnd);
+    };
+    if ("requestIdleCallback" in window) {
+      window.requestIdleCallback(run);
+    } else {
+      globalThis.setTimeout(run, 250);
+    }
+  };
+  appendNextChunk(initialCount);
 }
 
 export function renderCareMobileCards(

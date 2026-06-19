@@ -10,7 +10,6 @@ import { renderStatistics } from "../components/statistics";
 import { renderPlannerDashboard } from "../components/planner";
 import { renderGardenerReports } from "../components/reports";
 import {
-  getPlants,
   getApiErrorMessage,
   fetchIssueApi,
   fetchTaskApi,
@@ -110,11 +109,7 @@ export function getGardenerReportsZoneCode(): string {
 export async function loadStatistics(): Promise<void> {
   if (!ctx) return;
   if (ctx.state.plantsCache.length === 0) {
-    try {
-      ctx.state.plantsCache = await getPlants();
-    } catch (err) {
-      ctx.showFetchError(err);
-    }
+    await ctx.ensurePlantsCacheLoaded();
   }
   let actions: StatisticsActions | null = null;
   try {

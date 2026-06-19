@@ -18,12 +18,29 @@ const PLAYWRIGHT_PATH = path.join(
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 5177;
 const DEFAULT_TIMEOUT_MS = 15_000;
-const SCENARIOS = new Set(["app-unauth", "app-auth"]);
+const SCENARIOS = new Set(["app-unauth", "app-auth", "app-auth-large-tabs"]);
 const SCENARIO_METRICS = {
   "app-auth": [
     "appShellReadyMs",
     "appReadyMs",
     "tabSwitchMs",
+    "domContentLoadedMs",
+    "loadEventMs",
+    "firstContentfulPaintMs",
+    "resourceEncodedBytes",
+  ],
+  "app-auth-large-tabs": [
+    "appShellReadyMs",
+    "appReadyMs",
+    "mapToGardenMs",
+    "gardenToInsightsMs",
+    "insightsToMapMs",
+    "warmMapToGardenMs",
+    "warmGardenToInsightsMs",
+    "warmInsightsToMapMs",
+    "maxTabSwitchMs",
+    "maxLongTaskMs",
+    "longTaskCount",
     "domContentLoadedMs",
     "loadEventMs",
     "firstContentfulPaintMs",
@@ -50,7 +67,7 @@ Options:
   --url <url>                     Target URL. Defaults to http://127.0.0.1:5177/ with --serve.
   --host <host>                   Managed server host. Default: ${DEFAULT_HOST}.
   --port <port>                   Managed server port. Default: ${DEFAULT_PORT}.
-  --scenario <name>               Scenario to run: app-unauth or app-auth. Default: app-unauth.
+  --scenario <name>               Scenario to run: app-unauth, app-auth, or app-auth-large-tabs. Default: app-unauth.
   --no-api-stubs                  Let auth API calls hit the target server.
   --skip-interaction              Measure load only; useful when live passkeys intercept Enter.
   --runs <count>                  Measured runs. Default: 3.
@@ -60,6 +77,7 @@ Options:
   --max-regression-ms <number>    Extra timing jitter allowed in compare mode. Default: 15.
   --navigation-budget-ms <ms>     Optional p75 budget for auth-gate readiness.
   --interaction-budget-ms <ms>    Optional p75 budget for username Enter interaction.
+  --tab-switch-budget-ms <ms>     Optional p75 budget for every measured tab switch.
   --browser <path>                Chromium executable path. Also supports PERF_CHROMIUM.
   --timeout-ms <ms>               Browser and server wait timeout. Default: ${DEFAULT_TIMEOUT_MS}.
   --headful                       Run Chromium with a visible browser.
@@ -109,6 +127,7 @@ function parseArgs(argv) {
     serveMode: "dev",
     skipInteraction: false,
     stubApi: true,
+    tabSwitchBudgetMs: null,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     url: "",
   };
@@ -164,6 +183,11 @@ function parseArgs(argv) {
       options.interactionBudgetMs = parseNonNegativeNumber(
         next(),
         "--interaction-budget-ms",
+      );
+    } else if (arg === "--tab-switch-budget-ms") {
+      options.tabSwitchBudgetMs = parseNonNegativeNumber(
+        next(),
+        "--tab-switch-budget-ms",
       );
     } else if (arg === "--browser") {
       options.browserPath = next();
@@ -348,75 +372,86 @@ function apiJson(status, body) {
   };
 }
 
-async function installScenarioRoutes(context, scenario) {
-  if (scenario === "app-unauth") {
-    await context.route("**/api/auth/me", (route) => {
-      route.fulfill(apiJson(401, { detail: "Not authenticated" }));
-    });
-    await context.route("**/api/auth/status", (route) => {
-      route.fulfill(
-        apiJson(200, {
-          auth_required: true,
-          auth_mode: "session",
-          session_auth_enabled: true,
-          api_key_auth_enabled: false,
-          bootstrap_required: false,
-          user_lifecycle_enabled: true,
-          admin_mfa_required: false,
-          passkeys_enabled: false,
-        }),
-      );
-    });
-    return;
-  }
+function buildAuthPerformanceData(large) {
+  const profile = {
+    username: "perf_probe",
+    role: "editor",
+    garden_id: 1,
+    garden_visible: true,
+    garden_role: "editor",
+    auth_type: "session",
+    write_access: true,
+    language: "en",
+    shademap_available: false,
+    mfa_enabled: false,
+    mfa_setup_required: false,
+    mfa_authenticated: true,
+    mfa_methods: [],
+    must_change_password: false,
+    plot_assignment_meanings: [],
+    subscription_tier: "enthusiast",
+    allowed_features: [
+      "map",
+      "plots",
+      "plants",
+      "journal",
+      "harvest_basic",
+      "theme",
+      "snapshots",
+      "exports_basic",
+      "care",
+      "statistics",
+      "weather",
+    ],
+    security_warnings: [],
+  };
+  const garden = {
+    id: 1,
+    slug: "perf-garden",
+    name: "Performance Garden",
+    role: "editor",
+    active: true,
+    onboarding_complete: true,
+    owned_by_current_user: true,
+  };
 
-  if (scenario !== "app-auth") return;
+  const makePlant = (index, plotIds) => {
+    const categories = ["frø", "løk", "busker", "trær", "baerbusker"];
+    const category = categories[index % categories.length];
+    return {
+      plt_id: `PLT-${String(index + 1).padStart(4, "0")}`,
+      name: `Performance Plant ${String(index + 1).padStart(4, "0")}`,
+      latin: `Planta perf ${index + 1}`,
+      category,
+      bloom_month: `${(index % 9) + 3}-${(index % 9) + 4}`,
+      color: ["red", "blue", "white", "yellow", "purple"][index % 5],
+      hardiness: index % 4 === 0 ? "H3" : "H5",
+      height_cm: 20 + (index % 180),
+      light: index % 3 === 0 ? "Full sun" : "Partial shade",
+      link: "",
+      year_planted: String(2020 + (index % 7)),
+      deer_resistant: index % 6 === 0,
+      care_watering: "Water when the top soil is dry.",
+      care_soil: "Well-drained soil.",
+      care_planting: "Plant at standard depth.",
+      care_maintenance: "Remove spent growth through the season.",
+      care_notes: index % 5 === 0 ? "Watch growth after heavy rain." : "",
+      quantity: 1 + (index % 3),
+      plot_ids: plotIds,
+      seen_growing: true,
+      seen_growing_date: null,
+      seen_growing_year: 2026,
+      seen_growing_is_current_year: true,
+      observed_this_year: true,
+      last_bloomed_on: null,
+      last_bloomed_year: null,
+      bloomed_this_year: index % 7 === 0,
+      presence_status: "present",
+      last_not_seen_year: null,
+    };
+  };
 
-  await context.route("**/api/**", (route) => {
-    const request = route.request();
-    const url = new URL(request.url());
-    if (request.method() !== "GET") {
-      route.fulfill(apiJson(405, { detail: "Method not allowed in performance stub" }));
-      return;
-    }
-    const profile = {
-      username: "perf_probe",
-      role: "editor",
-      garden_id: 1,
-      garden_visible: true,
-      garden_role: "editor",
-      auth_type: "session",
-      write_access: true,
-      language: "en",
-      shademap_available: false,
-      mfa_enabled: false,
-      mfa_setup_required: false,
-      mfa_authenticated: true,
-      mfa_methods: [],
-      must_change_password: false,
-      plot_assignment_meanings: [],
-      subscription_tier: "home",
-      allowed_features: [
-        "map",
-        "plots",
-        "plants",
-        "journal",
-        "harvest_basic",
-        "theme",
-        "snapshots",
-        "exports_basic",
-      ],
-      security_warnings: [],
-    };
-    const garden = {
-      id: 1,
-      slug: "perf-garden",
-      name: "Performance Garden",
-      role: "editor",
-      active: true,
-      onboarding_complete: true,
-      owned_by_current_user: true,
-    };
+  if (!large) {
     const plots = [
       {
         plot_id: "A1",
@@ -464,51 +499,9 @@ async function installScenarioRoutes(context, scenario) {
         categories: ["busker"],
       },
     ];
-    const plants = [
-      {
-        plt_id: "TOM-001",
-        name: "Tomato",
-        latin: "Solanum lycopersicum",
-        category: "frø",
-        bloom_month: "",
-        color: "red",
-        hardiness: "",
-        height_cm: 120,
-        light: "Full sun",
-        link: "",
-        year_planted: "2026",
-        deer_resistant: false,
-        care_watering: "",
-        care_soil: "",
-        care_planting: "",
-        care_maintenance: "",
-        care_notes: "",
-        quantity: 1,
-        plot_ids: ["A1"],
-        seen_growing: true,
-        seen_growing_date: null,
-        seen_growing_year: 2026,
-        seen_growing_is_current_year: true,
-        observed_this_year: true,
-        last_bloomed_on: null,
-        last_bloomed_year: null,
-        bloomed_this_year: false,
-        presence_status: "present",
-        last_not_seen_year: null,
-      },
-    ];
-    const responses = new Map([
-      ["/api/auth/me", profile],
-      ["/api/gardens", [garden]],
-      ["/api/version", {
-        version: "perf",
-        base_version: "perf",
-        git_commit: null,
-        dirty: false,
-        last_updated_at_ms: Date.now(),
-      }],
-      ["/api/plots", plots],
-      ["/api/layout-state", {
+    return {
+      garden,
+      layoutState: {
         row: 1,
         col: 4,
         width: 3,
@@ -516,7 +509,138 @@ async function installScenarioRoutes(context, scenario) {
         north_degrees: 0,
         grid_rows: 6,
         grid_cols: 8,
+      },
+      plants: [makePlant(0, ["A1"])],
+      plots,
+      profile,
+    };
+  }
+
+  const rows = 30;
+  const cols = 20;
+  const plots = [];
+  const plantCounts = new Map();
+  for (let row = 1; row <= rows; row += 1) {
+    for (let col = 1; col <= cols; col += 1) {
+      const index = (row - 1) * cols + col;
+      const zoneNumber = Math.floor((row - 1) / 3) + 1;
+      const plotId = `Z${String(zoneNumber).padStart(2, "0")}-${String(col).padStart(2, "0")}-${String(row).padStart(2, "0")}`;
+      plantCounts.set(plotId, 0);
+      plots.push({
+        plot_id: plotId,
+        zone_code: `Z${String(zoneNumber).padStart(2, "0")}`,
+        zone_name: `Zone ${zoneNumber}`,
+        plot_number: index,
+        grid_row: row,
+        grid_col: col,
+        sub_zone: "",
+        notes: "",
+        color: index % 5 === 0 ? "#8fbf62" : null,
+        plant_count: 0,
+        has_tree: index % 23 === 0,
+        has_bush: index % 17 === 0,
+        categories: [],
+      });
+    }
+  }
+
+  const plants = [];
+  const assignmentCount = 1_028;
+  let assigned = 0;
+  for (let index = 0; index < 900; index += 1) {
+    const primary = plots[(index * 7) % plots.length].plot_id;
+    const plotIds = [primary];
+    assigned += 1;
+    if (assigned < assignmentCount) {
+      const secondary = plots[(index * 13 + 41) % plots.length].plot_id;
+      if (secondary !== primary) {
+        plotIds.push(secondary);
+        assigned += 1;
+      }
+    }
+    for (const plotId of plotIds) {
+      plantCounts.set(plotId, (plantCounts.get(plotId) ?? 0) + 1);
+    }
+    plants.push(makePlant(index, plotIds));
+  }
+
+  for (const plot of plots) {
+    const count = plantCounts.get(plot.plot_id) ?? 0;
+    plot.plant_count = count;
+    if (count > 0) {
+      plot.categories = ["frø"];
+    }
+  }
+
+  return {
+    garden,
+    layoutState: {
+      row: 2,
+      col: 8,
+      width: 4,
+      height: 3,
+      north_degrees: 0,
+      grid_rows: rows,
+      grid_cols: cols,
+    },
+    plants,
+    plots,
+    profile,
+  };
+}
+
+async function installScenarioRoutes(context, scenario) {
+  if (scenario === "app-unauth") {
+    await context.route("**/api/auth/me", (route) => {
+      route.fulfill(apiJson(401, { detail: "Not authenticated" }));
+    });
+    await context.route("**/api/auth/status", (route) => {
+      route.fulfill(
+        apiJson(200, {
+          auth_required: true,
+          auth_mode: "session",
+          session_auth_enabled: true,
+          api_key_auth_enabled: false,
+          bootstrap_required: false,
+          user_lifecycle_enabled: true,
+          admin_mfa_required: false,
+          passkeys_enabled: false,
+        }),
+      );
+    });
+    return;
+  }
+
+  if (scenario !== "app-auth" && scenario !== "app-auth-large-tabs") return;
+
+  const fixture = buildAuthPerformanceData(scenario === "app-auth-large-tabs");
+
+  await context.route("**/api/**", (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "POST" && url.pathname === "/api/media/summaries") {
+      route.fulfill(apiJson(200, {
+        target_type: "plant",
+        items: [],
+      }));
+      return;
+    }
+    if (request.method() !== "GET") {
+      route.fulfill(apiJson(405, { detail: "Method not allowed in performance stub" }));
+      return;
+    }
+    const responses = new Map([
+      ["/api/auth/me", fixture.profile],
+      ["/api/gardens", [fixture.garden]],
+      ["/api/version", {
+        version: "perf",
+        base_version: "perf",
+        git_commit: null,
+        dirty: false,
+        last_updated_at_ms: Date.now(),
       }],
+      ["/api/plots", fixture.plots],
+      ["/api/layout-state", fixture.layoutState],
       ["/api/plots/elevations", {
         available: false,
         elevations: {},
@@ -524,7 +648,19 @@ async function installScenarioRoutes(context, scenario) {
         min_m: null,
         max_m: null,
       }],
-      ["/api/plants", plants],
+      ["/api/plots/alerts", {
+        alerts: [],
+        plot_ids: [],
+        generated_at_ms: Date.now(),
+      }],
+      ["/api/plants", fixture.plants],
+      ["/api/weather/summary", {
+        forecast_available: false,
+        forecast_days: [],
+        alerts: [],
+        frost_vulnerable_plants: [],
+        watering_sensitive_plants: [],
+      }],
     ]);
     const response = responses.get(url.pathname);
     if (response === undefined) {
@@ -883,6 +1019,185 @@ async function runAppAuthScenario(page, options) {
   };
 }
 
+async function runAppAuthLargeTabsScenario(page, options) {
+  const { timeoutMs, url } = options;
+  await page.addInitScript(() => {
+    window.__gardenopsPerfLongTasks = [];
+    try {
+      const observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          window.__gardenopsPerfLongTasks.push({
+            duration: entry.duration,
+            name: entry.name,
+            startTime: entry.startTime,
+          });
+        }
+      });
+      observer.observe({ entryTypes: ["longtask"] });
+    } catch {
+      // Long Task API is not available in every browser context.
+    }
+  });
+
+  const startedAt = performance.now();
+  const response = await page.goto(url, {
+    waitUntil: "domcontentloaded",
+    timeout: timeoutMs,
+  });
+  if (!response || !response.ok()) {
+    throw new Error(`Navigation failed with status ${response?.status() ?? "unknown"}`);
+  }
+  const gotoMs = performance.now() - startedAt;
+
+  await page.waitForSelector(".app-shell", { state: "visible", timeout: timeoutMs });
+  const appShellReadyMs = performance.now() - startedAt;
+
+  const mapReady = () => {
+    const grid = document.querySelector("#map-grid");
+    const activeMapTab = document.querySelector("#top-tab-map");
+    const mapView = document.querySelector("#map-view");
+    return (
+      grid instanceof HTMLElement
+      && mapView instanceof HTMLElement
+      && !mapView.hidden
+      && !grid.querySelector(".map-grid-loading")
+      && grid.querySelectorAll(".plot").length >= 600
+      && activeMapTab?.getAttribute("aria-selected") === "true"
+    );
+  };
+  await page.waitForFunction(mapReady, undefined, { timeout: timeoutMs });
+  const appReadyMs = performance.now() - startedAt;
+
+  const gardenReady = () => {
+    const plantsView = document.querySelector("#plants-view");
+    const gardenTab = document.querySelector("#top-tab-garden");
+    const tableBody = document.querySelector("#plants-table-body");
+    return (
+      plantsView instanceof HTMLElement
+      && !plantsView.hidden
+      && gardenTab?.getAttribute("aria-selected") === "true"
+      && tableBody instanceof HTMLElement
+      && tableBody.dataset.renderReady === "true"
+      && tableBody.querySelectorAll("tr").length >= 80
+    );
+  };
+  const careReady = () => {
+    const careView = document.querySelector("#care-view");
+    const insightsTab = document.querySelector("#top-tab-insights");
+    const tableBody = document.querySelector("#care-table-body");
+    return (
+      careView instanceof HTMLElement
+      && !careView.hidden
+      && insightsTab?.getAttribute("aria-selected") === "true"
+      && tableBody instanceof HTMLElement
+      && tableBody.dataset.renderReady === "true"
+      && tableBody.querySelectorAll("tr").length >= 80
+    );
+  };
+  const measureSwitch = async (selector, readyFn) => {
+    const interactionStartedAt = performance.now();
+    await page.click(selector);
+    await page.waitForFunction(readyFn, undefined, { timeout: timeoutMs });
+    return performance.now() - interactionStartedAt;
+  };
+
+  const initialFlow = await page.evaluate(() => {
+    const grid = document.querySelector("#map-grid");
+    const gardenSelect = document.querySelector("#garden-select");
+    return {
+      activeTab: document.querySelector("[role='tab'][aria-selected='true']")?.id ?? "",
+      gardenName: gardenSelect instanceof HTMLSelectElement
+        ? gardenSelect.selectedOptions[0]?.textContent?.trim() ?? ""
+        : "",
+      plotCount: grid?.querySelectorAll(".plot").length ?? 0,
+    };
+  });
+
+  if (options.skipInteraction) {
+    const browserMetrics = await collectBrowserMetrics(page);
+    return {
+      flow: {
+        initial: initialFlow,
+        final: null,
+      },
+      resources: normalizeResources(browserMetrics.resources),
+      timings: {
+        appReadyMs: roundMs(appReadyMs),
+        appShellReadyMs: roundMs(appShellReadyMs),
+        domContentLoadedMs: roundMs(browserMetrics.navigation?.domContentLoadedMs ?? NaN),
+        firstContentfulPaintMs: roundMs(browserMetrics.paints.firstContentfulPaintMs ?? NaN),
+        firstPaintMs: roundMs(browserMetrics.paints.firstPaintMs ?? NaN),
+        gotoMs: roundMs(gotoMs),
+        loadEventMs: roundMs(browserMetrics.navigation?.loadEventMs ?? NaN),
+        resourceEncodedBytes: browserMetrics.resources.totals.encodedBodySize,
+        resourceTransferBytes: browserMetrics.resources.totals.transferSize,
+        responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
+      },
+    };
+  }
+
+  const mapToGardenMs = await measureSwitch("#top-tab-garden", gardenReady);
+  const gardenToInsightsMs = await measureSwitch("#top-tab-insights", careReady);
+  const insightsToMapMs = await measureSwitch("#top-tab-map", mapReady);
+  const warmMapToGardenMs = await measureSwitch("#top-tab-garden", gardenReady);
+  const warmGardenToInsightsMs = await measureSwitch("#top-tab-insights", careReady);
+  const warmInsightsToMapMs = await measureSwitch("#top-tab-map", mapReady);
+
+  const switchTimings = [
+    mapToGardenMs,
+    gardenToInsightsMs,
+    insightsToMapMs,
+    warmMapToGardenMs,
+    warmGardenToInsightsMs,
+    warmInsightsToMapMs,
+  ];
+  const longTasks = await page.evaluate(() => window.__gardenopsPerfLongTasks ?? []);
+  const maxLongTaskMs = longTasks.reduce(
+    (max, entry) => Math.max(max, Number(entry.duration) || 0),
+    0,
+  );
+  const finalFlow = await page.evaluate(() => ({
+    activeTab: document.querySelector("[role='tab'][aria-selected='true']")?.id ?? "",
+    careRenderComplete: document.querySelector("#care-table-body")?.dataset.renderComplete ?? "",
+    careRenderedRows: document.querySelector("#care-table-body")?.dataset.renderedRows ?? "",
+    careRows: document.querySelector("#care-table-body")?.querySelectorAll("tr").length ?? 0,
+    plantRenderComplete: document.querySelector("#plants-table-body")?.dataset.renderComplete ?? "",
+    plantRenderedRows: document.querySelector("#plants-table-body")?.dataset.renderedRows ?? "",
+    plantRows: document.querySelector("#plants-table-body")?.querySelectorAll("tr").length ?? 0,
+    plotCount: document.querySelector("#map-grid")?.querySelectorAll(".plot").length ?? 0,
+  }));
+
+  const browserMetrics = await collectBrowserMetrics(page);
+  return {
+    flow: {
+      initial: initialFlow,
+      final: finalFlow,
+    },
+    resources: normalizeResources(browserMetrics.resources),
+    timings: {
+      appReadyMs: roundMs(appReadyMs),
+      appShellReadyMs: roundMs(appShellReadyMs),
+      domContentLoadedMs: roundMs(browserMetrics.navigation?.domContentLoadedMs ?? NaN),
+      firstContentfulPaintMs: roundMs(browserMetrics.paints.firstContentfulPaintMs ?? NaN),
+      firstPaintMs: roundMs(browserMetrics.paints.firstPaintMs ?? NaN),
+      gardenToInsightsMs: roundMs(gardenToInsightsMs),
+      gotoMs: roundMs(gotoMs),
+      insightsToMapMs: roundMs(insightsToMapMs),
+      loadEventMs: roundMs(browserMetrics.navigation?.loadEventMs ?? NaN),
+      longTaskCount: longTasks.length,
+      mapToGardenMs: roundMs(mapToGardenMs),
+      maxLongTaskMs: roundMs(maxLongTaskMs),
+      maxTabSwitchMs: roundMs(Math.max(...switchTimings)),
+      resourceEncodedBytes: browserMetrics.resources.totals.encodedBodySize,
+      resourceTransferBytes: browserMetrics.resources.totals.transferSize,
+      responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
+      warmGardenToInsightsMs: roundMs(warmGardenToInsightsMs),
+      warmInsightsToMapMs: roundMs(warmInsightsToMapMs),
+      warmMapToGardenMs: roundMs(warmMapToGardenMs),
+    },
+  };
+}
+
 async function runMeasuredScenario(browser, options, runIndex) {
   const context = await browser.newContext({
     viewport: { height: 900, width: 1440 },
@@ -901,9 +1216,11 @@ async function runMeasuredScenario(browser, options, runIndex) {
   page.on("pageerror", (err) => pageErrors.push(err.message));
 
   try {
-    const result = options.scenario === "app-auth"
-      ? await runAppAuthScenario(page, options)
-      : await runAppUnauthScenario(page, options);
+    const result = options.scenario === "app-auth-large-tabs"
+      ? await runAppAuthLargeTabsScenario(page, options)
+      : options.scenario === "app-auth"
+        ? await runAppAuthScenario(page, options)
+        : await runAppUnauthScenario(page, options);
     return {
       ...result,
       consoleErrors: consoleMessages,
@@ -945,8 +1262,12 @@ function compareSummaries(current, previous, options) {
 
 function enforceBudgets(result, options) {
   const failures = [];
-  const navigationMetric = result.scenario === "app-auth" ? "appReadyMs" : "authGateReadyMs";
-  const interactionMetric = result.scenario === "app-auth" ? "tabSwitchMs" : "usernameEnterMs";
+  const navigationMetric = result.scenario === "app-unauth" ? "authGateReadyMs" : "appReadyMs";
+  const interactionMetric = result.scenario === "app-auth-large-tabs"
+    ? "maxTabSwitchMs"
+    : result.scenario === "app-auth"
+      ? "tabSwitchMs"
+      : "usernameEnterMs";
   const navigationP75 = result.summary.metrics[navigationMetric]?.p75;
   const interactionP75 = result.summary.metrics[interactionMetric]?.p75;
   if (
@@ -962,6 +1283,24 @@ function enforceBudgets(result, options) {
     && interactionP75 > options.interactionBudgetMs
   ) {
     failures.push(`${interactionMetric} p75 ${interactionP75}ms exceeds ${options.interactionBudgetMs}ms`);
+  }
+  if (
+    options.tabSwitchBudgetMs !== null
+    && result.scenario === "app-auth-large-tabs"
+  ) {
+    for (const metric of [
+      "mapToGardenMs",
+      "gardenToInsightsMs",
+      "insightsToMapMs",
+      "warmMapToGardenMs",
+      "warmGardenToInsightsMs",
+      "warmInsightsToMapMs",
+    ]) {
+      const p75 = result.summary.metrics[metric]?.p75;
+      if (Number.isFinite(p75) && p75 > options.tabSwitchBudgetMs) {
+        failures.push(`${metric} p75 ${p75}ms exceeds ${options.tabSwitchBudgetMs}ms`);
+      }
+    }
   }
   if (failures.length > 0) {
     throw new Error(failures.join("; "));
@@ -983,7 +1322,23 @@ function printHuman(result, outputPath) {
   console.log(`Serve mode: ${result.serveMode ?? "external"}`);
   console.log(`URL: ${result.url}`);
   console.log(`Runs: ${result.runs.length}`);
-  if (result.scenario === "app-auth") {
+  if (result.scenario === "app-auth-large-tabs") {
+    console.log(
+      `App shell ready: median ${fmtMs(metrics.appShellReadyMs.median)}, p75 ${fmtMs(metrics.appShellReadyMs.p75)}`,
+    );
+    console.log(
+      `App ready: median ${fmtMs(metrics.appReadyMs.median)}, p75 ${fmtMs(metrics.appReadyMs.p75)}`,
+    );
+    console.log(
+      `Tab switches: map->garden ${fmtMs(metrics.mapToGardenMs.median)}, garden->insights ${fmtMs(metrics.gardenToInsightsMs.median)}, insights->map ${fmtMs(metrics.insightsToMapMs.median)}`,
+    );
+    console.log(
+      `Warm switches: map->garden ${fmtMs(metrics.warmMapToGardenMs.median)}, garden->insights ${fmtMs(metrics.warmGardenToInsightsMs.median)}, insights->map ${fmtMs(metrics.warmInsightsToMapMs.median)}`,
+    );
+    console.log(
+      `Max tab switch: median ${fmtMs(metrics.maxTabSwitchMs.median)}, p75 ${fmtMs(metrics.maxTabSwitchMs.p75)}; max long task median ${fmtMs(metrics.maxLongTaskMs.median)}`,
+    );
+  } else if (result.scenario === "app-auth") {
     console.log(
       `App shell ready: median ${fmtMs(metrics.appShellReadyMs.median)}, p75 ${fmtMs(metrics.appShellReadyMs.p75)}`,
     );

@@ -69,7 +69,10 @@ export interface AppContext {
   renderDataExportBars(): void;
 
   fetchPlots(): Promise<void>;
+  ensurePlantsCacheLoaded(): Promise<void>;
   ensurePlantsLoaded(): Promise<void>;
+  getPlantsCacheRevision(): number;
+  setPlantsCache(plants: Plant[]): void;
   invalidatePlantsCache(): void;
 
   isMobile(): boolean;
