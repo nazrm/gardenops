@@ -1000,6 +1000,8 @@ const appContext: AppContext = {
   renderPlots: () => renderPlots(),
   renderPlantsTable: () => renderPlantsTable(),
   renderCareView: () => renderCareViewLazy(),
+  openCareForPlants: (pltIds) => openCareForPlantsLazy(pltIds),
+  loadCare: () => loadCareTab(),
   renderDataExportBars: () => renderDataExportBars(),
   fetchPlots: () => fetchPlots(),
   ensurePlantsLoaded: () => ensurePlantsLoaded(),
@@ -1511,6 +1513,13 @@ function renderCareViewLazy(): void {
     return;
   }
   void ensureCareTabInitialized().then((mod) => mod.renderCareView());
+}
+
+function openCareForPlantsLazy(pltIds: string[]): void {
+  if (!isFeatureEnabled("care")) return;
+  void ensureCareTabInitialized().then((mod) => {
+    mod.openCareForPlants(pltIds);
+  });
 }
 
 type ShadePanelModule = typeof import("./components/shadePanel");

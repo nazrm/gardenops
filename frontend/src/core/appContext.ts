@@ -66,6 +66,8 @@ export interface AppContext {
   renderPlots(): void;
   renderPlantsTable(): void;
   renderCareView(): void;
+  openCareForPlants(pltIds: string[]): void;
+  loadCare(): Promise<void>;
   renderDataExportBars(): void;
 
   fetchPlots(): Promise<void>;

@@ -26,7 +26,6 @@ import {
 import type { AvailableWorkflow } from "../services/api";
 import type { TodayDashboard } from "../services/api";
 import { renderTodayDashboard } from "../components/today";
-import { openCareForPlants } from "../tabs/careTab";
 import {
   loadTasks,
   setTasksView,
@@ -38,8 +37,6 @@ import {
   setHarvestOffset,
   openHarvestSummaryPanel,
 } from "../tabs/harvestTab";
-import { loadCare } from "../tabs/careTab";
-
 type StatsMode = "today" | "overview" | "reports" | "planner";
 
 let ctx: AppContext;
@@ -174,7 +171,7 @@ async function loadTodayDashboard(): Promise<void> {
       },
       onWeatherClick: () => {
         ctx.navigateToSubMode("care");
-        void loadCare();
+        void ctx.loadCare();
       },
     });
   } catch {
@@ -347,7 +344,7 @@ const statisticsCallbacks: StatisticsCallbacks = {
     ctx.openMapForPlots(plotIds);
   },
   onNavigateCare: (pltIds) => {
-    openCareForPlants(pltIds);
+    ctx.openCareForPlants(pltIds);
   },
   onOpenBatchJournal: (pltIds) => {
     ctx.openBatchJournalForPlants(pltIds);
@@ -406,7 +403,7 @@ const gardenerReportsCallbacks: GardenerReportsCallbacks =
     },
     onOpenWeather: () => {
       ctx.navigateToSubMode("care");
-      void loadCare();
+      void ctx.loadCare();
     },
     onOpenPlants: (pltIds) => {
       ctx.focusPlantsInPlantsView(pltIds);
@@ -418,7 +415,7 @@ const gardenerReportsCallbacks: GardenerReportsCallbacks =
       ctx.openMapForPlots(plotIds);
     },
     onOpenCare: (pltIds) => {
-      openCareForPlants(pltIds);
+      ctx.openCareForPlants(pltIds);
     },
     onOpenHarvest: () => {
       setHarvestOffset(0);
