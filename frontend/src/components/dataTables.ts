@@ -8,6 +8,14 @@ import {
 import { sanitizeUrl } from "../core/sanitize";
 import type { MediaAsset, PlotAssignmentMeaning } from "../services/api";
 import { createLazyMediaThumbnailButton } from "./mediaGalleryLoader";
+import {
+  clearVirtualTableBody,
+  renderVirtualTableBody,
+} from "./virtualTable";
+import {
+  clearVirtualList,
+  renderVirtualList,
+} from "./virtualList";
 
 export interface ColumnDef {
   key: string;
@@ -458,28 +466,23 @@ export function renderPlantsTableBody(
   visibleColumns: Set<string>,
   callbacks: PlantsTableCallbacks,
 ): void {
-  const PLANT_TABLE_INITIAL_ROWS = 80;
-  const PLANT_TABLE_CHUNK_ROWS = 80;
   const {
     onOpenPlot, onEdit, knownPlotIds, plotAssignmentMeanings, mediaPreviewByPlantId,
     onToggleSelect, selectedIds,
   } = callbacks;
   const totalCols = columns.length + 1 + (onToggleSelect ? 1 : 0);
 
-  if (plants.length === 0) {
+  const emptyRow = (): HTMLTableRowElement => {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
     cell.colSpan = totalCols;
     cell.className = "empty-table";
     cell.textContent = t("plants.no_matches");
     row.appendChild(cell);
-    tbody.replaceChildren(row);
-    tbody.dataset["renderReady"] = "true";
-    tbody.dataset["renderComplete"] = "true";
-    return;
-  }
+    return row;
+  };
 
-  const createRow = (plant: Plant) => {
+  const createRow = (plant: Plant): HTMLTableRowElement => {
     const row = document.createElement("tr");
     row.dataset["pltId"] = plant.plt_id;
     const bs = bloomStatus(plant.bloom_month);
@@ -538,47 +541,19 @@ export function renderPlantsTableBody(
     return row;
   };
 
-  const renderToken = String(Date.now() + Math.random());
-  tbody.dataset["renderToken"] = renderToken;
-  tbody.dataset["renderReady"] = "false";
-  tbody.dataset["renderComplete"] = "false";
+  renderVirtualTableBody({
+    tbody,
+    items: plants,
+    totalColumns: totalCols,
+    estimateRowHeight: 58,
+    overscan: 8,
+    createRow,
+    emptyRow,
+  });
+}
 
-  const renderRows = (start: number, end: number): HTMLElement[] =>
-    plants.slice(start, end).map(createRow);
-  const initialCount = Math.min(plants.length, PLANT_TABLE_INITIAL_ROWS);
-  tbody.replaceChildren(...renderRows(0, initialCount));
-  tbody.dataset["renderReady"] = "true";
-  tbody.dataset["renderedRows"] = String(initialCount);
-
-  if (initialCount >= plants.length) {
-    tbody.dataset["renderComplete"] = "true";
-    return;
-  }
-
-  const appendNextChunk = (start: number): void => {
-    const run = () => {
-      if (tbody.dataset["renderToken"] !== renderToken) return;
-      const view = tbody.closest(".view");
-      if (view instanceof HTMLElement && view.hidden) {
-        globalThis.setTimeout(() => appendNextChunk(start), 250);
-        return;
-      }
-      const nextEnd = Math.min(plants.length, start + PLANT_TABLE_CHUNK_ROWS);
-      tbody.append(...renderRows(start, nextEnd));
-      tbody.dataset["renderedRows"] = String(nextEnd);
-      if (nextEnd >= plants.length) {
-        tbody.dataset["renderComplete"] = "true";
-        return;
-      }
-      appendNextChunk(nextEnd);
-    };
-    if ("requestIdleCallback" in window) {
-      window.requestIdleCallback(run);
-    } else {
-      globalThis.setTimeout(run, 250);
-    }
-  };
-  appendNextChunk(initialCount);
+export function clearPlantsTableBody(tbody: HTMLElement): void {
+  clearVirtualTableBody(tbody);
 }
 
 export function renderPlantsMobileCards(
@@ -591,15 +566,14 @@ export function renderPlantsMobileCards(
     onToggleSelect, selectedIds,
   } = callbacks;
 
-  if (plants.length === 0) {
+  const renderEmpty = (): void => {
     renderEmptyState(container, {
       icon: "\uD83C\uDF3F",
       headline: t("plants.no_matches"),
     });
-    return;
-  }
+  };
 
-  const cards = plants.map((plant) => {
+  const createCard = (plant: Plant): HTMLElement => {
     const article = document.createElement("article");
     article.className = "mobile-data-card mobile-data-card--plant";
     article.dataset["pltId"] = plant.plt_id;
@@ -716,9 +690,20 @@ export function renderPlantsMobileCards(
 
     article.append(header, chipRow, factGrid, plotRow);
     return article;
-  });
+  };
 
-  container.replaceChildren(...cards);
+  renderVirtualList({
+    container,
+    items: plants,
+    estimateItemHeight: 270,
+    overscan: 4,
+    createItem: createCard,
+    renderEmpty,
+  });
+}
+
+export function clearPlantsMobileCards(container: HTMLElement): void {
+  clearVirtualList(container);
 }
 
 export function syncPlantsSelectionState(

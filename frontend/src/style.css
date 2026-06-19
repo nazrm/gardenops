@@ -2005,6 +2005,7 @@ textarea {
 .map-stage {
   min-width: 0;
   min-height: 0;
+  contain: layout paint style;
 }
 
 .map-viewport {
@@ -2017,6 +2018,7 @@ textarea {
   height: 100%;
   border-radius: var(--r-md);
   box-shadow: inset 0 1px 4px rgba(42, 38, 30, 0.08);
+  contain: layout paint style;
 }
 
 .map-viewport:active {
@@ -2637,6 +2639,7 @@ textarea {
   padding: 1px;
   background: var(--grid-bg);
   position: relative;
+  contain: layout paint style;
 }
 
 .map-grid::before {
@@ -4256,6 +4259,22 @@ body.moving-house .house-placeholder {
   gap: var(--sp-3);
 }
 
+.mobile-data-list.virtual-list-wrap {
+  display: block;
+  max-height: min(70vh, 720px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  contain: layout paint style;
+}
+
+.mobile-data-list.virtual-list-wrap > [data-virtual-item] {
+  margin-bottom: var(--sp-3);
+}
+
+.virtual-list-spacer {
+  width: 100%;
+}
+
 .mobile-data-card,
 .care-mobile-card {
   border: 1px solid var(--border);
@@ -4464,6 +4483,12 @@ body.moving-house .house-placeholder {
   box-shadow: var(--shadow-sm);
 }
 
+.virtual-table-wrap {
+  max-height: min(62vh, 680px);
+  overscroll-behavior: contain;
+  contain: layout paint style;
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
@@ -4580,6 +4605,15 @@ th.sort-desc::after {
 
 .data-table tbody tr {
   transition: background 100ms var(--ease);
+}
+
+.data-table tbody tr[data-virtual-row] {
+  height: var(--virtual-row-height, 52px);
+}
+
+.virtual-table-spacer td {
+  border-bottom: 0;
+  padding: 0;
 }
 
 .data-table tbody tr:hover {
@@ -5775,6 +5809,10 @@ th.sort-desc::after {
 
   .mobile-sort-controls,
   .mobile-data-list {
+    display: none;
+  }
+
+  .mobile-data-list.virtual-list-wrap {
     display: none;
   }
 

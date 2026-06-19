@@ -1,6 +1,14 @@
 import type { Plant } from "../core/models";
 import { formatPlantCategoryLabel, t } from "../core/i18n";
 import { renderEmptyState } from "./emptyState";
+import {
+  clearVirtualTableBody,
+  renderVirtualTableBody,
+} from "./virtualTable";
+import {
+  clearVirtualList,
+  renderVirtualList,
+} from "./virtualList";
 
 export type CareSortField = "name" | "latin";
 export type CareSortDir = "asc" | "desc";
@@ -75,8 +83,6 @@ export function renderCareTableBody(
   plants: Plant[],
   callbacks: CareTableCallbacks,
 ): void {
-  const CARE_TABLE_INITIAL_ROWS = 80;
-  const CARE_TABLE_CHUNK_ROWS = 100;
   if (plants.length === 0) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
@@ -84,13 +90,18 @@ export function renderCareTableBody(
     cell.className = "empty-table";
     cell.textContent = t("plants.no_matches");
     row.appendChild(cell);
-    tbody.replaceChildren(row);
-    tbody.dataset["renderReady"] = "true";
-    tbody.dataset["renderComplete"] = "true";
+    renderVirtualTableBody({
+      tbody,
+      items: [],
+      totalColumns: 2,
+      estimateRowHeight: 48,
+      createRow: () => row,
+      emptyRow: () => row,
+    });
     return;
   }
 
-  const createRow = (plant: Plant) => {
+  const createRow = (plant: Plant): HTMLTableRowElement => {
     const row = document.createElement("tr");
     row.className = "care-row";
     row.dataset["pltId"] = plant.plt_id;
@@ -116,47 +127,27 @@ export function renderCareTableBody(
     return row;
   };
 
-  const renderToken = String(Date.now() + Math.random());
-  tbody.dataset["renderToken"] = renderToken;
-  tbody.dataset["renderReady"] = "false";
-  tbody.dataset["renderComplete"] = "false";
+  renderVirtualTableBody({
+    tbody,
+    items: plants,
+    totalColumns: 2,
+    estimateRowHeight: 48,
+    overscan: 8,
+    createRow,
+    emptyRow: () => {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 2;
+      cell.className = "empty-table";
+      cell.textContent = t("plants.no_matches");
+      row.appendChild(cell);
+      return row;
+    },
+  });
+}
 
-  const renderRows = (start: number, end: number): HTMLElement[] =>
-    plants.slice(start, end).map(createRow);
-  const initialCount = Math.min(plants.length, CARE_TABLE_INITIAL_ROWS);
-  tbody.replaceChildren(...renderRows(0, initialCount));
-  tbody.dataset["renderReady"] = "true";
-  tbody.dataset["renderedRows"] = String(initialCount);
-
-  if (initialCount >= plants.length) {
-    tbody.dataset["renderComplete"] = "true";
-    return;
-  }
-
-  const appendNextChunk = (start: number): void => {
-    const run = () => {
-      if (tbody.dataset["renderToken"] !== renderToken) return;
-      const view = tbody.closest(".view");
-      if (view instanceof HTMLElement && view.hidden) {
-        globalThis.setTimeout(() => appendNextChunk(start), 250);
-        return;
-      }
-      const nextEnd = Math.min(plants.length, start + CARE_TABLE_CHUNK_ROWS);
-      tbody.append(...renderRows(start, nextEnd));
-      tbody.dataset["renderedRows"] = String(nextEnd);
-      if (nextEnd >= plants.length) {
-        tbody.dataset["renderComplete"] = "true";
-        return;
-      }
-      appendNextChunk(nextEnd);
-    };
-    if ("requestIdleCallback" in window) {
-      window.requestIdleCallback(run);
-    } else {
-      globalThis.setTimeout(run, 250);
-    }
-  };
-  appendNextChunk(initialCount);
+export function clearCareTableBody(tbody: HTMLElement): void {
+  clearVirtualTableBody(tbody);
 }
 
 export function renderCareMobileCards(
@@ -164,15 +155,14 @@ export function renderCareMobileCards(
   plants: Plant[],
   callbacks: CareTableCallbacks,
 ): void {
-  if (plants.length === 0) {
+  const renderEmpty = (): void => {
     renderEmptyState(container, {
       icon: "\uD83C\uDF3F",
       headline: t("plants.no_matches"),
     });
-    return;
-  }
+  };
 
-  const cards = plants.map((plant) => {
+  const createCard = (plant: Plant): HTMLElement => {
     const button = document.createElement("button");
     button.className = "care-mobile-card";
     button.type = "button";
@@ -243,9 +233,20 @@ export function renderCareMobileCards(
     button.append(header, previewList, cta);
     button.addEventListener("click", () => callbacks.onPlantClick(plant));
     return button;
-  });
+  };
 
-  container.replaceChildren(...cards);
+  renderVirtualList({
+    container,
+    items: plants,
+    estimateItemHeight: 190,
+    overscan: 5,
+    createItem: createCard,
+    renderEmpty,
+  });
+}
+
+export function clearCareMobileCards(container: HTMLElement): void {
+  clearVirtualList(container);
 }
 
 interface CareField {

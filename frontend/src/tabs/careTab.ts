@@ -7,6 +7,8 @@ import type {
 } from "../components/careTable";
 import { t } from "../core/i18n";
 import {
+  clearCareMobileCards,
+  clearCareTableBody,
   filterCarePlants,
   renderCareMobileCards,
   renderCareTableBody,
@@ -256,9 +258,9 @@ export function renderCareView(): void {
     };
     if (layoutMode === "desktop") {
       renderCareTableBody(tbody, sorted, callbacks);
-      if (mobileList.childElementCount > 0) mobileList.replaceChildren();
+      if (mobileList.childElementCount > 0) clearCareMobileCards(mobileList);
     } else {
-      if (tbody.childElementCount > 0) tbody.replaceChildren();
+      if (tbody.childElementCount > 0) clearCareTableBody(tbody);
       renderCareMobileCards(mobileList, sorted, callbacks);
     }
     careRenderSignature = nextRenderSignature;

@@ -41,6 +41,10 @@ const SCENARIO_METRICS = {
     "maxTabSwitchMs",
     "maxLongTaskMs",
     "longTaskCount",
+    "mountedCareCards",
+    "mountedCareRows",
+    "mountedPlantCards",
+    "mountedPlantRows",
     "domContentLoadedMs",
     "loadEventMs",
     "firstContentfulPaintMs",
@@ -78,6 +82,9 @@ Options:
   --navigation-budget-ms <ms>     Optional p75 budget for auth-gate readiness.
   --interaction-budget-ms <ms>    Optional p75 budget for username Enter interaction.
   --tab-switch-budget-ms <ms>     Optional p75 budget for every measured tab switch.
+  --rendered-row-budget <count>   Optional budget for mounted Plant/Care rows in large-tab scenario.
+  --viewport-width <px>           Browser viewport width. Default: 1440.
+  --viewport-height <px>          Browser viewport height. Default: 900.
   --browser <path>                Chromium executable path. Also supports PERF_CHROMIUM.
   --timeout-ms <ms>               Browser and server wait timeout. Default: ${DEFAULT_TIMEOUT_MS}.
   --headful                       Run Chromium with a visible browser.
@@ -121,6 +128,7 @@ function parseArgs(argv) {
     navigationBudgetMs: null,
     outputPath: "",
     port: DEFAULT_PORT,
+    renderedRowBudget: null,
     runs: 3,
     scenario: "app-unauth",
     serve: false,
@@ -130,6 +138,8 @@ function parseArgs(argv) {
     tabSwitchBudgetMs: null,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     url: "",
+    viewportHeight: 900,
+    viewportWidth: 1440,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -189,10 +199,19 @@ function parseArgs(argv) {
         next(),
         "--tab-switch-budget-ms",
       );
+    } else if (arg === "--rendered-row-budget") {
+      options.renderedRowBudget = parsePositiveInt(
+        next(),
+        "--rendered-row-budget",
+      );
     } else if (arg === "--browser") {
       options.browserPath = next();
     } else if (arg === "--timeout-ms") {
       options.timeoutMs = parsePositiveInt(next(), "--timeout-ms");
+    } else if (arg === "--viewport-width") {
+      options.viewportWidth = parsePositiveInt(next(), "--viewport-width");
+    } else if (arg === "--viewport-height") {
+      options.viewportHeight = parsePositiveInt(next(), "--viewport-height");
     } else if (arg === "--headful") {
       options.headful = true;
     } else if (arg === "--json") {
@@ -1072,31 +1091,62 @@ async function runAppAuthLargeTabsScenario(page, options) {
     const plantsView = document.querySelector("#plants-view");
     const gardenTab = document.querySelector("#top-tab-garden");
     const tableBody = document.querySelector("#plants-table-body");
+    const mobileList = document.querySelector("#plants-mobile-list");
+    const isMobile = window.innerWidth <= 960;
+    const tableReady = tableBody instanceof HTMLElement
+      && tableBody.dataset.renderReady === "true"
+      && (
+        tableBody.dataset.renderMode === "virtual"
+          ? tableBody.querySelectorAll("tr[data-virtual-row]").length > 0
+          : tableBody.querySelectorAll("tr").length >= 80
+      );
+    const mobileReady = mobileList instanceof HTMLElement
+      && mobileList.dataset.renderReady === "true"
+      && (
+        mobileList.dataset.renderMode === "virtual"
+          ? mobileList.querySelectorAll("[data-virtual-item]").length > 0
+          : mobileList.querySelectorAll(".mobile-data-card").length >= 80
+      );
     return (
       plantsView instanceof HTMLElement
       && !plantsView.hidden
       && gardenTab?.getAttribute("aria-selected") === "true"
-      && tableBody instanceof HTMLElement
-      && tableBody.dataset.renderReady === "true"
-      && tableBody.querySelectorAll("tr").length >= 80
+      && (isMobile ? mobileReady : tableReady)
     );
   };
   const careReady = () => {
     const careView = document.querySelector("#care-view");
     const insightsTab = document.querySelector("#top-tab-insights");
     const tableBody = document.querySelector("#care-table-body");
+    const mobileList = document.querySelector("#care-mobile-list");
+    const isMobile = window.innerWidth <= 960;
+    const tableReady = tableBody instanceof HTMLElement
+      && tableBody.dataset.renderReady === "true"
+      && (
+        tableBody.dataset.renderMode === "virtual"
+          ? tableBody.querySelectorAll("tr[data-virtual-row]").length > 0
+          : tableBody.querySelectorAll("tr").length >= 80
+      );
+    const mobileReady = mobileList instanceof HTMLElement
+      && mobileList.dataset.renderReady === "true"
+      && (
+        mobileList.dataset.renderMode === "virtual"
+          ? mobileList.querySelectorAll("[data-virtual-item]").length > 0
+          : mobileList.querySelectorAll(".care-mobile-card").length >= 80
+      );
     return (
       careView instanceof HTMLElement
       && !careView.hidden
       && insightsTab?.getAttribute("aria-selected") === "true"
-      && tableBody instanceof HTMLElement
-      && tableBody.dataset.renderReady === "true"
-      && tableBody.querySelectorAll("tr").length >= 80
+      && (isMobile ? mobileReady : tableReady)
     );
   };
-  const measureSwitch = async (selector, readyFn) => {
+  const tabSelector = (tab) => (
+    options.viewportWidth <= 960 ? `#mobile-tab-${tab}` : `#top-tab-${tab}`
+  );
+  const measureSwitch = async (tab, readyFn) => {
     const interactionStartedAt = performance.now();
-    await page.click(selector);
+    await page.click(tabSelector(tab));
     await page.waitForFunction(readyFn, undefined, { timeout: timeoutMs });
     return performance.now() - interactionStartedAt;
   };
@@ -1136,12 +1186,12 @@ async function runAppAuthLargeTabsScenario(page, options) {
     };
   }
 
-  const mapToGardenMs = await measureSwitch("#top-tab-garden", gardenReady);
-  const gardenToInsightsMs = await measureSwitch("#top-tab-insights", careReady);
-  const insightsToMapMs = await measureSwitch("#top-tab-map", mapReady);
-  const warmMapToGardenMs = await measureSwitch("#top-tab-garden", gardenReady);
-  const warmGardenToInsightsMs = await measureSwitch("#top-tab-insights", careReady);
-  const warmInsightsToMapMs = await measureSwitch("#top-tab-map", mapReady);
+  const mapToGardenMs = await measureSwitch("garden", gardenReady);
+  const gardenToInsightsMs = await measureSwitch("insights", careReady);
+  const insightsToMapMs = await measureSwitch("map", mapReady);
+  const warmMapToGardenMs = await measureSwitch("garden", gardenReady);
+  const warmGardenToInsightsMs = await measureSwitch("insights", careReady);
+  const warmInsightsToMapMs = await measureSwitch("map", mapReady);
 
   const switchTimings = [
     mapToGardenMs,
@@ -1156,16 +1206,85 @@ async function runAppAuthLargeTabsScenario(page, options) {
     (max, entry) => Math.max(max, Number(entry.duration) || 0),
     0,
   );
+  const scrollVirtualSurfaceToEnd = async (
+    tableBodySelector,
+    listSelector,
+  ) => page.evaluate(
+    async ({ listSelector, tableBodySelector }) => {
+      const isMobile = window.innerWidth <= 960;
+      const body = document.querySelector(tableBodySelector);
+      const list = document.querySelector(listSelector);
+      const scrollElement = isMobile
+        ? list
+        : body instanceof HTMLElement
+          ? body.closest(".table-wrap")
+          : null;
+      if (!(scrollElement instanceof HTMLElement)) {
+        return { ok: false, reason: "missing virtual surface" };
+      }
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        scrollElement.scrollTop = scrollElement.scrollHeight;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      for (let i = 0; i < 8; i += 1) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      const virtualItems = isMobile && list instanceof HTMLElement
+        ? Array.from(list.querySelectorAll("[data-virtual-item]"))
+        : body instanceof HTMLElement
+          ? Array.from(body.querySelectorAll("tr[data-virtual-row]"))
+          : [];
+      const lastItem = virtualItems.at(-1);
+      const firstItem = virtualItems[0];
+      const virtualHost = isMobile ? list : body;
+      return {
+        ok: true,
+        firstId: firstItem?.getAttribute("data-plt-id")
+          ?? firstItem?.getAttribute("data-care-plt")
+          ?? "",
+        itemCount: virtualItems.length,
+        lastId: lastItem?.getAttribute("data-plt-id")
+          ?? lastItem?.getAttribute("data-care-plt")
+          ?? "",
+        surface: isMobile ? "list" : "table",
+        virtualEnd: virtualHost instanceof HTMLElement ? virtualHost.dataset.virtualEnd ?? "" : "",
+        virtualStart: virtualHost instanceof HTMLElement ? virtualHost.dataset.virtualStart ?? "" : "",
+      };
+    },
+    { listSelector, tableBodySelector },
+  );
+  await page.click(tabSelector("garden"));
+  await page.waitForFunction(gardenReady, undefined, { timeout: timeoutMs });
+  const plantVirtualScroll = await scrollVirtualSurfaceToEnd(
+    "#plants-table-body",
+    "#plants-mobile-list",
+  );
+  await page.click(tabSelector("insights"));
+  await page.waitForFunction(careReady, undefined, { timeout: timeoutMs });
+  const careVirtualScroll = await scrollVirtualSurfaceToEnd(
+    "#care-table-body",
+    "#care-mobile-list",
+  );
+
   const finalFlow = await page.evaluate(() => ({
     activeTab: document.querySelector("[role='tab'][aria-selected='true']")?.id ?? "",
+    careCards: document.querySelector("#care-mobile-list")?.querySelectorAll("[data-virtual-item]").length ?? 0,
     careRenderComplete: document.querySelector("#care-table-body")?.dataset.renderComplete ?? "",
     careRenderedRows: document.querySelector("#care-table-body")?.dataset.renderedRows ?? "",
     careRows: document.querySelector("#care-table-body")?.querySelectorAll("tr").length ?? 0,
+    layoutMode: window.innerWidth <= 960 ? "mobile" : "desktop",
+    plantCards: document.querySelector("#plants-mobile-list")?.querySelectorAll("[data-virtual-item]").length ?? 0,
     plantRenderComplete: document.querySelector("#plants-table-body")?.dataset.renderComplete ?? "",
     plantRenderedRows: document.querySelector("#plants-table-body")?.dataset.renderedRows ?? "",
     plantRows: document.querySelector("#plants-table-body")?.querySelectorAll("tr").length ?? 0,
     plotCount: document.querySelector("#map-grid")?.querySelectorAll(".plot").length ?? 0,
+    virtualizedCareCards: document.querySelector("#care-mobile-list")?.dataset.renderMode === "virtual",
+    virtualizedCare: document.querySelector("#care-table-body")?.dataset.renderMode === "virtual",
+    virtualizedPlantCards: document.querySelector("#plants-mobile-list")?.dataset.renderMode === "virtual",
+    virtualizedPlants: document.querySelector("#plants-table-body")?.dataset.renderMode === "virtual",
   }));
+  finalFlow.plantVirtualScroll = plantVirtualScroll;
+  finalFlow.careVirtualScroll = careVirtualScroll;
 
   const browserMetrics = await collectBrowserMetrics(page);
   return {
@@ -1188,6 +1307,10 @@ async function runAppAuthLargeTabsScenario(page, options) {
       mapToGardenMs: roundMs(mapToGardenMs),
       maxLongTaskMs: roundMs(maxLongTaskMs),
       maxTabSwitchMs: roundMs(Math.max(...switchTimings)),
+      mountedCareCards: finalFlow.careCards,
+      mountedCareRows: finalFlow.careRows,
+      mountedPlantCards: finalFlow.plantCards,
+      mountedPlantRows: finalFlow.plantRows,
       resourceEncodedBytes: browserMetrics.resources.totals.encodedBodySize,
       resourceTransferBytes: browserMetrics.resources.totals.transferSize,
       responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
@@ -1200,7 +1323,7 @@ async function runAppAuthLargeTabsScenario(page, options) {
 
 async function runMeasuredScenario(browser, options, runIndex) {
   const context = await browser.newContext({
-    viewport: { height: 900, width: 1440 },
+    viewport: { height: options.viewportHeight, width: options.viewportWidth },
   });
   if (options.stubApi) {
     await installScenarioRoutes(context, options.scenario);
@@ -1302,6 +1425,48 @@ function enforceBudgets(result, options) {
       }
     }
   }
+  if (
+    options.renderedRowBudget !== null
+    && result.scenario === "app-auth-large-tabs"
+  ) {
+    for (const run of result.runs) {
+      const isMobile = run.flow?.final?.layoutMode === "mobile";
+      const plantCards = run.flow?.final?.plantCards;
+      const plantRows = run.flow?.final?.plantRows;
+      const careCards = run.flow?.final?.careCards;
+      const careRows = run.flow?.final?.careRows;
+      if (Number.isFinite(plantCards) && plantCards > options.renderedRowBudget) {
+        failures.push(`mounted plant cards ${plantCards} exceeds ${options.renderedRowBudget}`);
+      }
+      if (Number.isFinite(plantRows) && plantRows > options.renderedRowBudget) {
+        failures.push(`mounted plant rows ${plantRows} exceeds ${options.renderedRowBudget}`);
+      }
+      if (Number.isFinite(careCards) && careCards > options.renderedRowBudget) {
+        failures.push(`mounted care cards ${careCards} exceeds ${options.renderedRowBudget}`);
+      }
+      if (Number.isFinite(careRows) && careRows > options.renderedRowBudget) {
+        failures.push(`mounted care rows ${careRows} exceeds ${options.renderedRowBudget}`);
+      }
+      if (!isMobile && run.flow?.final?.virtualizedPlants !== true) {
+        failures.push("plants table did not use virtual rendering");
+      }
+      if (!isMobile && run.flow?.final?.virtualizedCare !== true) {
+        failures.push("care table did not use virtual rendering");
+      }
+      if (isMobile && run.flow?.final?.virtualizedPlantCards !== true) {
+        failures.push("plants mobile list did not use virtual rendering");
+      }
+      if (isMobile && run.flow?.final?.virtualizedCareCards !== true) {
+        failures.push("care mobile list did not use virtual rendering");
+      }
+      if (Number(run.flow?.final?.plantVirtualScroll?.virtualEnd) < 900) {
+        failures.push("plants virtual surface did not scroll to final item range");
+      }
+      if (Number(run.flow?.final?.careVirtualScroll?.virtualEnd) < 900) {
+        failures.push("care virtual surface did not scroll to final item range");
+      }
+    }
+  }
   if (failures.length > 0) {
     throw new Error(failures.join("; "));
   }
@@ -1337,6 +1502,12 @@ function printHuman(result, outputPath) {
     );
     console.log(
       `Max tab switch: median ${fmtMs(metrics.maxTabSwitchMs.median)}, p75 ${fmtMs(metrics.maxTabSwitchMs.p75)}; max long task median ${fmtMs(metrics.maxLongTaskMs.median)}`,
+    );
+    console.log(
+      `Mounted rows: plants median ${metrics.mountedPlantRows.median}, care median ${metrics.mountedCareRows.median}`,
+    );
+    console.log(
+      `Mounted cards: plants median ${metrics.mountedPlantCards.median}, care median ${metrics.mountedCareCards.median}`,
     );
   } else if (result.scenario === "app-auth") {
     console.log(

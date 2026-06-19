@@ -2,7 +2,7 @@ import "./core/trustedTypes"; // Must stay first — documents that no permissiv
 import "./style.css";
 import type { CameraController } from "./components/camera";
 import { initCamera } from "./components/camera";
-import { filterPlants, renderPlantsMobileCards, renderPlantsTableBody, renderPlantsTableHead, sortPlants, syncPlantsSelectionState } from "./components/dataTables";
+import { clearPlantsMobileCards, clearPlantsTableBody, filterPlants, renderPlantsMobileCards, renderPlantsTableBody, renderPlantsTableHead, sortPlants, syncPlantsSelectionState } from "./components/dataTables";
 import { renderMediaGalleryLazy } from "./components/mediaGalleryLoader";
 import { renderExportBar } from "./components/exportBar";
 import type { ColumnDef, SortDir, SortField } from "./components/dataTables";
@@ -2894,9 +2894,9 @@ function renderPlantsTable(): void {
 
   if (layoutMode === "desktop") {
     renderPlantsTableBody(tbody, view.sorted, plantTableState.columns, plantTableState.visibleColumns, tableCbs);
-    if (mobileList.childElementCount > 0) mobileList.replaceChildren();
+    if (mobileList.childElementCount > 0) clearPlantsMobileCards(mobileList);
   } else {
-    if (tbody.childElementCount > 0) tbody.replaceChildren();
+    if (tbody.childElementCount > 0) clearPlantsTableBody(tbody);
     renderPlantsMobileCards(mobileList, view.sorted, tableCbs);
   }
   plantsRenderSignature = nextRenderSignature;
