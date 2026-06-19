@@ -129,6 +129,36 @@ function main() {
   if (quickActionsText.includes("from \"../tabs/harvestTab\"") || quickActionsText.includes("from '../tabs/harvestTab'")) {
     fail("quick actions must not import the Harvest tab during authenticated app startup");
   }
+  if (appSourceText.includes("from \"./components/onboarding\"") || appSourceText.includes("from './components/onboarding'")) {
+    fail("authenticated app module must lazy-load onboarding instead of importing it during app startup");
+  }
+  if (!appSourceText.includes("import(\"./components/onboarding\")")) {
+    fail("authenticated app module must keep a lazy onboarding import boundary");
+  }
+  if (appSourceText.includes("from \"./features/plantSearchFeature\"") || appSourceText.includes("from './features/plantSearchFeature'")) {
+    fail("authenticated app module must lazy-load plant search instead of importing it during app startup");
+  }
+  if (!appSourceText.includes("import(\"./features/plantSearchFeature\")")) {
+    fail("authenticated app module must keep a lazy plant search import boundary");
+  }
+  if (appSourceText.includes("from \"./components/diagnosePlant\"") || appSourceText.includes("from './components/diagnosePlant'")) {
+    fail("authenticated app module must lazy-load the Diagnose Plant modal instead of importing it during app startup");
+  }
+  if (!appSourceText.includes("import(\"./components/diagnosePlant\")")) {
+    fail("authenticated app module must keep a lazy Diagnose Plant modal import boundary");
+  }
+  if (appSourceText.includes("from \"./components/identifyPlant\"") || appSourceText.includes("from './components/identifyPlant'")) {
+    fail("authenticated app module must lazy-load the Identify Plant modal instead of importing it during app startup");
+  }
+  if (!appSourceText.includes("import(\"./components/identifyPlant\")")) {
+    fail("authenticated app module must keep a lazy Identify Plant modal import boundary");
+  }
+  if (quickActionsText.includes("from \"../components/identifyPlant\"") || quickActionsText.includes("from '../components/identifyPlant'")) {
+    fail("quick actions must lazy-load the Identify Plant modal instead of importing it during authenticated app startup");
+  }
+  if (!quickActionsText.includes("import(\"../components/identifyPlant\")")) {
+    fail("quick actions must keep a lazy Identify Plant modal import boundary");
+  }
   if (!authStyleText.includes(".auth-gate") || authStyleText.includes("@font-face")) {
     fail("auth.css must contain login gate styles without preloading app fonts");
   }
