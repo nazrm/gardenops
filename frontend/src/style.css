@@ -1204,6 +1204,16 @@ textarea {
   cursor: pointer;
 }
 
+.view-stack {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .view {
   display: none;
   height: 100%;
@@ -1225,6 +1235,36 @@ textarea {
 
 .view-map.active {
   display: grid;
+}
+
+@media (min-width: 961px) {
+  .view-map.view-map--standby {
+    display: grid;
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    visibility: hidden;
+    pointer-events: none;
+    content-visibility: hidden;
+    contain-intrinsic-size: 720px 960px;
+  }
+
+  .view-map.view-map--standby[inert] {
+    user-select: none;
+  }
+
+  .view-map.active {
+    position: relative;
+    z-index: 1;
+    visibility: visible;
+    pointer-events: auto;
+    content-visibility: visible;
+  }
+
+  .view-stack > .view.active:not(.view-map) {
+    position: relative;
+    z-index: 1;
+  }
 }
 
 /* ── Toolbar ─────────────────────────────────────────────── */

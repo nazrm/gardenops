@@ -205,6 +205,7 @@ export function getAppShellMarkup(): string {
             <button id="app-status-dismiss" aria-label="${t("common.close")}" data-i18n-aria-label="common.close" hidden>&times;</button>
           </div>
         </div>
+        <div id="view-stack" class="view-stack">
         <section id="map-view" class="view view-map active" role="tabpanel" aria-labelledby="top-tab-map">
           <div class="map-shell">
             <aside id="map-layers-panel" class="map-layers-panel" aria-labelledby="map-layers-title">
@@ -982,6 +983,7 @@ export function getAppShellMarkup(): string {
         </section>
 
         ${getAdminViewMarkup()}
+        </div>
 
       </main>
 
