@@ -1,6 +1,5 @@
-import { t } from "../core/i18n";
+import { t } from "../core/authI18n";
 import gardenOpsLogoUrl from "../assets/gardenops-logo-auth-hero.webp";
-import type { PasswordPolicy } from "../core/models";
 import {
   clearPrimedInviteToken,
   peekPrimedInviteToken,
@@ -23,8 +22,9 @@ import {
   logoutApi,
   peekInvitationApi,
   setActiveGardenContext,
+  type PasswordPolicy,
   type PasskeyOptionsResponse,
-} from "../services/api";
+} from "../services/authApi";
 import { getPasskey, isPasskeySupported } from "./passkeys";
 
 const authGateShells = new WeakMap<HTMLDivElement, HTMLDivElement>();

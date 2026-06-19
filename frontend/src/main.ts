@@ -1,6 +1,6 @@
 import "./core/trustedTypes"; // Must stay first — documents that no permissive default policy is installed
 import { showAuthGate, showForcedPasswordChangeGate } from "./features/authGate";
-import { getLocale, setLocale } from "./core/i18n";
+import { getLocale, setLocale } from "./core/authI18n";
 import {
   clearPrimedInviteToken,
   primeInviteTokenFromLocation,
@@ -9,7 +9,7 @@ import {
   ApiError,
   getAuthMeApi,
   getAuthStatusApi,
-} from "./services/api";
+} from "./services/authApi";
 
 let authenticatedAppPromise: Promise<unknown> | null = null;
 

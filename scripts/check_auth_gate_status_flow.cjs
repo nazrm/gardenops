@@ -68,6 +68,7 @@ function main() {
   const sourcePath = path.resolve(__dirname, "../frontend/src/main.ts");
   const appSourcePath = path.resolve(__dirname, "../frontend/src/app.ts");
   const authGatePath = path.resolve(__dirname, "../frontend/src/features/authGate.ts");
+  const passwordChecklistPath = path.resolve(__dirname, "../frontend/src/components/passwordChecklist.ts");
   const passkeysPath = path.resolve(__dirname, "../frontend/src/features/passkeys.ts");
   const apiPath = path.resolve(__dirname, "../frontend/src/services/api.ts");
   const i18nPath = path.resolve(__dirname, "../frontend/src/core/i18n.ts");
@@ -78,6 +79,7 @@ function main() {
   const sourceText = fs.readFileSync(sourcePath, "utf8");
   const appSourceText = fs.readFileSync(appSourcePath, "utf8");
   const authGateText = fs.readFileSync(authGatePath, "utf8");
+  const passwordChecklistText = fs.readFileSync(passwordChecklistPath, "utf8");
   const passkeysText = fs.readFileSync(passkeysPath, "utf8");
   const apiText = fs.readFileSync(apiPath, "utf8");
   const i18nText = fs.readFileSync(i18nPath, "utf8");
@@ -97,6 +99,18 @@ function main() {
   ].forEach((heavyImport) => {
     if (sourceText.includes(`from "${heavyImport}"`) || sourceText.includes(`from '${heavyImport}'`)) {
       fail(`main entry must not statically import authenticated app module ${heavyImport}`);
+    }
+  });
+  [
+    ["main entry", sourceText],
+    ["auth gate", authGateText],
+    ["password checklist", passwordChecklistText],
+  ].forEach(([label, text]) => {
+    if (text.includes("/core/i18n") || text.includes("../core/i18n") || text.includes("./core/i18n")) {
+      fail(`${label} must use auth-only i18n instead of the full app translation table`);
+    }
+    if (text.includes("/services/api") || text.includes("../services/api") || text.includes("./services/api")) {
+      fail(`${label} must use auth-only API helpers instead of the full app API module`);
     }
   });
 
