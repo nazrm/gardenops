@@ -162,15 +162,16 @@ class TestGardenSettings(BaseApiTest):
             finally:
                 db.return_db(conn)
 
-            upload = client.post(
-                f"/api/gardens/{garden_id}/lidar",
-                headers={
-                    **headers,
-                    "content-type": "application/octet-stream",
-                    "x-upload-filename": "terrain.laz",
-                },
-                content=b"fake-laz-data",
-            )
+            with patch("gardenops.services.lidar_terrain._validate_uploaded_terrain_payload"):
+                upload = client.post(
+                    f"/api/gardens/{garden_id}/lidar",
+                    headers={
+                        **headers,
+                        "content-type": "application/octet-stream",
+                        "x-upload-filename": "terrain.laz",
+                    },
+                    content=b"fake-laz-data",
+                )
             self.assertEqual(upload.status_code, 201, upload.text)
             upload_body = upload.json()
             self.assertTrue(upload_body["available"])
