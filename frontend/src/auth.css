@@ -24,6 +24,10 @@
   padding: 0;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   font-family: var(--font);
   font-size: 14px;
@@ -135,11 +139,11 @@ body.auth-gate-active {
   font-weight: 600;
 }
 
-.auth-gate-username-label--identity {
+.auth-gate-identity-label {
   gap: var(--sp-2);
 }
 
-.auth-gate-username-label--identity .auth-gate-field-label {
+.auth-gate-identity-label .auth-gate-field-label {
   position: absolute;
   width: 1px;
   height: 1px;

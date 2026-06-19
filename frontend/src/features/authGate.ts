@@ -570,7 +570,7 @@ function renderLoginFlow(
   if (bootstrapRequired) {
     usernameLabel.appendChild(usernameInput);
   } else {
-    usernameLabel.className = "auth-gate-username-label auth-gate-username-label--identity";
+    usernameLabel.className = "auth-gate-identity-label auth-gate-username-label";
     usernameInput.placeholder = t("auth.username");
     const usernameField = document.createElement("span");
     usernameField.className = "auth-gate-identity-field";
@@ -580,16 +580,26 @@ function renderLoginFlow(
 
   const passwordLabel =
     document.createElement("label");
-  passwordLabel.append(
-    document.createTextNode(t("auth.password")),
-  );
+  const passwordLabelText = document.createElement("span");
+  passwordLabelText.className = "auth-gate-field-label";
+  passwordLabelText.textContent = t("auth.password");
+  passwordLabel.append(passwordLabelText);
   const passwordInput =
     document.createElement("input");
   passwordInput.type = "password";
   passwordInput.name = "password";
   passwordInput.autocomplete = "current-password";
   passwordInput.required = true;
-  passwordLabel.appendChild(passwordInput);
+  if (bootstrapRequired) {
+    passwordLabel.appendChild(passwordInput);
+  } else {
+    passwordLabel.className = "auth-gate-identity-label auth-gate-password-label";
+    passwordInput.placeholder = t("auth.password");
+    const passwordField = document.createElement("span");
+    passwordField.className = "auth-gate-identity-field";
+    passwordField.appendChild(passwordInput);
+    passwordLabel.appendChild(passwordField);
+  }
 
   // Password checklist for bootstrap (new account creation) only
   let bootstrapChecklist: ChecklistHandle | null = null;
