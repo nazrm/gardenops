@@ -1,6 +1,5 @@
 import "./core/trustedTypes"; // Must stay first — documents that no permissive default policy is installed
 import "./style.css";
-import { showOnboarding } from "./components/onboarding";
 import type { CameraController } from "./components/camera";
 import { initCamera } from "./components/camera";
 import { filterPlants, renderPlantsMobileCards, renderPlantsTableBody, renderPlantsTableHead, sortPlants, syncPlantsSelectionState } from "./components/dataTables";
@@ -30,8 +29,6 @@ import { renderMapGrid, applyPlotIndicators, syncSelectedPlots } from "./compone
 import { confirmDialog, promptDialog, promptPasswordDialog } from "./components/dialogCore";
 import { showCreatePlantDialogLazy, showCreatePlotDialogLazy, showCreateZoneDialogLazy, showDeleteMenuLazy, showEditPlantDialogLazy, showEditPlotDialogLazy, showElevationEditorLazy } from "./components/gardenDialogsLoader";
 import type { AiPlantData } from "./components/overlays";
-import { showPlantSearchDialog } from "./features/plantSearchFeature";
-import type { PlantSearchDialogParams } from "./features/plantSearchFeature";
 import { dismissPopover } from "./components/popover";
 import type { ShadePanelController } from "./components/shadePanel";
 import {
@@ -48,8 +45,6 @@ import {
 import { showToast } from "./components/toast";
 import { dismissBottomSheet } from "./components/bottomSheet";
 import { dismissDrawer } from "./components/drawer";
-import { showDiagnosePlantModal } from "./components/diagnosePlant";
-import { showIdentifyPlantModal } from "./components/identifyPlant";
 import { initAnalysisTab, renderAnalysisStarters } from "./tabs/analysisTab";
 import { initThemeFeature, updateThemeIcon } from "./features/themeFeature";
 import {
@@ -1063,6 +1058,11 @@ type StatisticsTabModule = typeof import("./tabs/statisticsTab");
 type CareTabModule = typeof import("./tabs/careTab");
 type TasksTabModule = typeof import("./tabs/tasksTab");
 type HarvestTabModule = typeof import("./tabs/harvestTab");
+type OnboardingModule = typeof import("./components/onboarding");
+type PlantSearchModule = typeof import("./features/plantSearchFeature");
+type PlantSearchDialogParams = import("./features/plantSearchFeature").PlantSearchDialogParams;
+type DiagnosePlantModule = typeof import("./components/diagnosePlant");
+type IdentifyPlantModule = typeof import("./components/identifyPlant");
 
 let adminPanelModule: AdminPanelModule | null = null;
 let adminPanelModulePromise: Promise<AdminPanelModule> | null = null;
@@ -1082,6 +1082,10 @@ let tasksTabModule: TasksTabModule | null = null;
 let tasksTabModulePromise: Promise<TasksTabModule> | null = null;
 let harvestTabModule: HarvestTabModule | null = null;
 let harvestTabModulePromise: Promise<HarvestTabModule> | null = null;
+let onboardingModulePromise: Promise<OnboardingModule> | null = null;
+let plantSearchModulePromise: Promise<PlantSearchModule> | null = null;
+let diagnosePlantModulePromise: Promise<DiagnosePlantModule> | null = null;
+let identifyPlantModulePromise: Promise<IdentifyPlantModule> | null = null;
 
 function ensureAdminPanelModule(): Promise<AdminPanelModule> {
   adminPanelModulePromise ??= import("./components/adminPanel")
@@ -1315,6 +1319,59 @@ function ensureHarvestTabInitialized(): Promise<HarvestTabModule> {
 async function loadHarvestTab(): Promise<void> {
   const mod = await ensureHarvestTabInitialized();
   await mod.loadHarvest();
+}
+
+function loadOnboardingModule(): Promise<OnboardingModule> {
+  onboardingModulePromise ??= import("./components/onboarding")
+    .catch((err) => {
+      onboardingModulePromise = null;
+      throw err;
+    });
+  return onboardingModulePromise;
+}
+
+async function showOnboardingLazy(
+  ...params: Parameters<OnboardingModule["showOnboarding"]>
+): Promise<void> {
+  const mod = await loadOnboardingModule();
+  mod.showOnboarding(...params);
+}
+
+function showPlantSearchDialogLazy(params: PlantSearchDialogParams): void {
+  plantSearchModulePromise ??= import("./features/plantSearchFeature")
+    .catch((err) => {
+      plantSearchModulePromise = null;
+      throw err;
+    });
+  void plantSearchModulePromise
+    .then((mod) => mod.showPlantSearchDialog(params))
+    .catch(showFetchError);
+}
+
+function showDiagnosePlantModalLazy(
+  ...params: Parameters<DiagnosePlantModule["showDiagnosePlantModal"]>
+): void {
+  diagnosePlantModulePromise ??= import("./components/diagnosePlant")
+    .catch((err) => {
+      diagnosePlantModulePromise = null;
+      throw err;
+    });
+  void diagnosePlantModulePromise
+    .then((mod) => mod.showDiagnosePlantModal(...params))
+    .catch(showFetchError);
+}
+
+function showIdentifyPlantModalLazy(
+  ...params: Parameters<IdentifyPlantModule["showIdentifyPlantModal"]>
+): void {
+  identifyPlantModulePromise ??= import("./components/identifyPlant")
+    .catch((err) => {
+      identifyPlantModulePromise = null;
+      throw err;
+    });
+  void identifyPlantModulePromise
+    .then((mod) => mod.showIdentifyPlantModal(...params))
+    .catch(showFetchError);
 }
 
 async function openTaskForm(existingTask?: GardenTask): Promise<void> {
@@ -2272,7 +2329,7 @@ async function fetchPlots(retries = 2): Promise<void> {
           origOnAssigned();
           void loadIndoorPlants().then(() => renderIndoorPlants(container));
         };
-        showPlantSearchDialog(params);
+        showPlantSearchDialogLazy(params);
       });
     }
     clearAppStatus();
@@ -4252,7 +4309,7 @@ function openEditPlantDialog(plant: Plant): void {
       const p = state.plantsCache.find((pl) => pl.plt_id === pltId);
       const pName = p ? p.name : pltId;
       const plotIds = p?.plot_ids ?? [];
-      showDiagnosePlantModal(pltId, plotIds, pName, {
+      showDiagnosePlantModalLazy(pltId, plotIds, pName, {
         onIssueCreated: (issueId) => {
           navigateToSubMode("issues");
           void loadIssues();
@@ -4364,7 +4421,7 @@ function buildPlantSearchParams(
       void fetchPlots();
     },
     onIdentifyFromPhoto: () => {
-      showIdentifyPlantModal({
+      showIdentifyPlantModalLazy({
         onAddPlant: (prefill) => {
           void openCreatePlantDialog(
             preselectedPlotId,
@@ -4388,7 +4445,7 @@ function openCreatePlantDialog(
     );
     return;
   }
-  showPlantSearchDialog(
+  showPlantSearchDialogLazy(
     buildPlantSearchParams(preselectedPlotId),
   );
 }
@@ -5192,13 +5249,16 @@ async function checkOnboardingNeeded(): Promise<boolean> {
         resolve(true);
       })();
     };
-    showOnboarding(app, {
+    void showOnboardingLazy(app, {
       gardenId: activeId,
       gardenName: activeGarden.name,
       username: authProfile?.username ?? "",
       canDismiss: authProfile?.role === "admin",
       onComplete: finishOnboardingFlow,
       onDismiss: finishOnboardingFlow,
+    }).catch((err) => {
+      showFetchError(err);
+      resolve(false);
     });
   });
 }

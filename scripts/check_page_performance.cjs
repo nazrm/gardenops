@@ -18,6 +18,26 @@ const PLAYWRIGHT_PATH = path.join(
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 5177;
 const DEFAULT_TIMEOUT_MS = 15_000;
+const SCENARIOS = new Set(["app-unauth", "app-auth"]);
+const SCENARIO_METRICS = {
+  "app-auth": [
+    "appShellReadyMs",
+    "appReadyMs",
+    "tabSwitchMs",
+    "domContentLoadedMs",
+    "loadEventMs",
+    "firstContentfulPaintMs",
+    "resourceEncodedBytes",
+  ],
+  "app-unauth": [
+    "authGateReadyMs",
+    "usernameEnterMs",
+    "domContentLoadedMs",
+    "loadEventMs",
+    "firstContentfulPaintMs",
+    "resourceEncodedBytes",
+  ],
+};
 
 function usage() {
   console.log(`
@@ -30,7 +50,7 @@ Options:
   --url <url>                     Target URL. Defaults to http://127.0.0.1:5177/ with --serve.
   --host <host>                   Managed server host. Default: ${DEFAULT_HOST}.
   --port <port>                   Managed server port. Default: ${DEFAULT_PORT}.
-  --scenario <name>               Scenario to run. Currently: app-unauth. Default: app-unauth.
+  --scenario <name>               Scenario to run: app-unauth or app-auth. Default: app-unauth.
   --no-api-stubs                  Let auth API calls hit the target server.
   --skip-interaction              Measure load only; useful when live passkeys intercept Enter.
   --runs <count>                  Measured runs. Default: 3.
@@ -158,7 +178,7 @@ function parseArgs(argv) {
     }
   }
 
-  if (options.scenario !== "app-unauth") {
+  if (!SCENARIOS.has(options.scenario)) {
     throw new Error(`Unknown scenario: ${options.scenario}`);
   }
   if (!["dev", "preview"].includes(options.serveMode)) {
@@ -203,15 +223,13 @@ function metricStats(runs, metricName) {
   };
 }
 
-function summarizeRuns(runs) {
-  const metricNames = [
-    "authGateReadyMs",
-    "usernameEnterMs",
-    "domContentLoadedMs",
-    "loadEventMs",
-    "firstContentfulPaintMs",
-    "resourceEncodedBytes",
-  ];
+function summarizeRuns(runs, scenario) {
+  const metricNames = new Set(SCENARIO_METRICS[scenario] ?? []);
+  for (const run of runs) {
+    Object.keys(run.timings).forEach((metricName) => {
+      metricNames.add(metricName);
+    });
+  }
   const metrics = {};
   for (const metricName of metricNames) {
     metrics[metricName] = metricStats(runs, metricName);
@@ -331,19 +349,189 @@ function apiJson(status, body) {
 }
 
 async function installScenarioRoutes(context, scenario) {
-  if (scenario !== "app-unauth") return;
+  if (scenario === "app-unauth") {
+    await context.route("**/api/auth/me", (route) => {
+      route.fulfill(apiJson(401, { detail: "Not authenticated" }));
+    });
+    await context.route("**/api/auth/status", (route) => {
+      route.fulfill(
+        apiJson(200, {
+          auth_required: true,
+          auth_mode: "session",
+          session_auth_enabled: true,
+          api_key_auth_enabled: false,
+          bootstrap_required: false,
+          user_lifecycle_enabled: true,
+          admin_mfa_required: false,
+          passkeys_enabled: false,
+        }),
+      );
+    });
+    return;
+  }
 
-  await context.route("**/api/auth/me", (route) => {
-    route.fulfill(apiJson(401, { detail: "Not authenticated" }));
-  });
-  await context.route("**/api/auth/status", (route) => {
-    route.fulfill(
-      apiJson(200, {
-        auth_required: true,
-        bootstrap_required: false,
-        passkeys_enabled: false,
-      }),
-    );
+  if (scenario !== "app-auth") return;
+
+  await context.route("**/api/**", (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() !== "GET") {
+      route.fulfill(apiJson(405, { detail: "Method not allowed in performance stub" }));
+      return;
+    }
+    const profile = {
+      username: "perf_probe",
+      role: "editor",
+      garden_id: 1,
+      garden_visible: true,
+      garden_role: "editor",
+      auth_type: "session",
+      write_access: true,
+      language: "en",
+      shademap_available: false,
+      mfa_enabled: false,
+      mfa_setup_required: false,
+      mfa_authenticated: true,
+      mfa_methods: [],
+      must_change_password: false,
+      plot_assignment_meanings: [],
+      subscription_tier: "home",
+      allowed_features: [
+        "map",
+        "plots",
+        "plants",
+        "journal",
+        "harvest_basic",
+        "theme",
+        "snapshots",
+        "exports_basic",
+      ],
+      security_warnings: [],
+    };
+    const garden = {
+      id: 1,
+      slug: "perf-garden",
+      name: "Performance Garden",
+      role: "editor",
+      active: true,
+      onboarding_complete: true,
+      owned_by_current_user: true,
+    };
+    const plots = [
+      {
+        plot_id: "A1",
+        zone_code: "A",
+        zone_name: "North Bed",
+        plot_number: 1,
+        grid_row: 1,
+        grid_col: 1,
+        sub_zone: "",
+        notes: "",
+        color: "#8fbf62",
+        plant_count: 1,
+        has_tree: false,
+        has_bush: false,
+        categories: ["frø"],
+      },
+      {
+        plot_id: "A2",
+        zone_code: "A",
+        zone_name: "North Bed",
+        plot_number: 2,
+        grid_row: 1,
+        grid_col: 2,
+        sub_zone: "",
+        notes: "",
+        color: null,
+        plant_count: 0,
+        has_tree: false,
+        has_bush: false,
+        categories: [],
+      },
+      {
+        plot_id: "B1",
+        zone_code: "B",
+        zone_name: "South Bed",
+        plot_number: 1,
+        grid_row: 2,
+        grid_col: 1,
+        sub_zone: "",
+        notes: "",
+        color: "#c4a35a",
+        plant_count: 0,
+        has_tree: false,
+        has_bush: true,
+        categories: ["busker"],
+      },
+    ];
+    const plants = [
+      {
+        plt_id: "TOM-001",
+        name: "Tomato",
+        latin: "Solanum lycopersicum",
+        category: "frø",
+        bloom_month: "",
+        color: "red",
+        hardiness: "",
+        height_cm: 120,
+        light: "Full sun",
+        link: "",
+        year_planted: "2026",
+        deer_resistant: false,
+        care_watering: "",
+        care_soil: "",
+        care_planting: "",
+        care_maintenance: "",
+        care_notes: "",
+        quantity: 1,
+        plot_ids: ["A1"],
+        seen_growing: true,
+        seen_growing_date: null,
+        seen_growing_year: 2026,
+        seen_growing_is_current_year: true,
+        observed_this_year: true,
+        last_bloomed_on: null,
+        last_bloomed_year: null,
+        bloomed_this_year: false,
+        presence_status: "present",
+        last_not_seen_year: null,
+      },
+    ];
+    const responses = new Map([
+      ["/api/auth/me", profile],
+      ["/api/gardens", [garden]],
+      ["/api/version", {
+        version: "perf",
+        base_version: "perf",
+        git_commit: null,
+        dirty: false,
+        last_updated_at_ms: Date.now(),
+      }],
+      ["/api/plots", plots],
+      ["/api/layout-state", {
+        row: 1,
+        col: 4,
+        width: 3,
+        height: 2,
+        north_degrees: 0,
+        grid_rows: 6,
+        grid_cols: 8,
+      }],
+      ["/api/plots/elevations", {
+        available: false,
+        elevations: {},
+        overrides: {},
+        min_m: null,
+        max_m: null,
+      }],
+      ["/api/plants", plants],
+    ]);
+    const response = responses.get(url.pathname);
+    if (response === undefined) {
+      route.fulfill(apiJson(404, { detail: `Unhandled performance stub path: ${url.pathname}` }));
+      return;
+    }
+    route.fulfill(apiJson(200, response));
   });
 }
 
@@ -560,6 +748,126 @@ async function runAppUnauthScenario(page, options) {
   };
 }
 
+async function runAppAuthScenario(page, options) {
+  const { timeoutMs, url } = options;
+  const startedAt = performance.now();
+  const response = await page.goto(url, {
+    waitUntil: "domcontentloaded",
+    timeout: timeoutMs,
+  });
+  if (!response || !response.ok()) {
+    throw new Error(`Navigation failed with status ${response?.status() ?? "unknown"}`);
+  }
+  const gotoMs = performance.now() - startedAt;
+
+  await page.waitForSelector(".app-shell", { state: "visible", timeout: timeoutMs });
+  const appShellReadyMs = performance.now() - startedAt;
+
+  await page.waitForFunction(
+    () => {
+      const grid = document.querySelector("#map-grid");
+      const activeMapTab = document.querySelector("#top-tab-map");
+      return (
+        grid instanceof HTMLElement
+        && !grid.querySelector(".map-grid-loading")
+        && grid.querySelectorAll(".plot").length >= 3
+        && activeMapTab?.getAttribute("aria-selected") === "true"
+      );
+    },
+    undefined,
+    { timeout: timeoutMs },
+  );
+  const appReadyMs = performance.now() - startedAt;
+  const initialFlow = await page.evaluate(() => {
+    const grid = document.querySelector("#map-grid");
+    const gardenSelect = document.querySelector("#garden-select");
+    return {
+      activeTab: document.querySelector("[role='tab'][aria-selected='true']")?.id ?? "",
+      gardenName: gardenSelect instanceof HTMLSelectElement
+        ? gardenSelect.selectedOptions[0]?.textContent?.trim() ?? ""
+        : "",
+      plotCount: grid?.querySelectorAll(".plot").length ?? 0,
+    };
+  });
+
+  if (initialFlow.plotCount < 3) {
+    throw new Error(`Expected authenticated map to render at least 3 plots, got ${initialFlow.plotCount}`);
+  }
+
+  if (options.skipInteraction) {
+    const browserMetrics = await collectBrowserMetrics(page);
+    return {
+      flow: {
+        initial: initialFlow,
+        final: null,
+      },
+      resources: normalizeResources(browserMetrics.resources),
+      timings: {
+        appReadyMs: roundMs(appReadyMs),
+        appShellReadyMs: roundMs(appShellReadyMs),
+        domContentLoadedMs: roundMs(browserMetrics.navigation?.domContentLoadedMs ?? NaN),
+        firstContentfulPaintMs: roundMs(browserMetrics.paints.firstContentfulPaintMs ?? NaN),
+        firstPaintMs: roundMs(browserMetrics.paints.firstPaintMs ?? NaN),
+        gotoMs: roundMs(gotoMs),
+        loadEventMs: roundMs(browserMetrics.navigation?.loadEventMs ?? NaN),
+        resourceEncodedBytes: browserMetrics.resources.totals.encodedBodySize,
+        resourceTransferBytes: browserMetrics.resources.totals.transferSize,
+        responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
+        tabSwitchMs: null,
+      },
+    };
+  }
+
+  const interactionStartedAt = performance.now();
+  await page.click("#top-tab-garden");
+  await page.waitForFunction(
+    () => {
+      const plantsView = document.querySelector("#plants-view");
+      const gardenTab = document.querySelector("#top-tab-garden");
+      const tableBody = document.querySelector("#plants-table-body");
+      return (
+        plantsView instanceof HTMLElement
+        && !plantsView.hidden
+        && gardenTab?.getAttribute("aria-selected") === "true"
+        && tableBody?.querySelectorAll("tr").length === 1
+      );
+    },
+    undefined,
+    { timeout: timeoutMs },
+  );
+  const tabSwitchMs = performance.now() - interactionStartedAt;
+  const finalFlow = await page.evaluate(() => {
+    const tableBody = document.querySelector("#plants-table-body");
+    return {
+      activeTab: document.querySelector("[role='tab'][aria-selected='true']")?.id ?? "",
+      plantRows: tableBody?.querySelectorAll("tr").length ?? 0,
+      firstPlant: tableBody?.querySelector("tr")?.textContent?.trim() ?? "",
+    };
+  });
+
+  const browserMetrics = await collectBrowserMetrics(page);
+  return {
+    flow: {
+      initial: initialFlow,
+      final: finalFlow,
+    },
+    resources: normalizeResources(browserMetrics.resources),
+    timings: {
+      appReadyMs: roundMs(appReadyMs),
+      appShellReadyMs: roundMs(appShellReadyMs),
+      domContentLoadedMs: roundMs(browserMetrics.navigation?.domContentLoadedMs ?? NaN),
+      firstContentfulPaintMs: roundMs(browserMetrics.paints.firstContentfulPaintMs ?? NaN),
+      firstPaintMs: roundMs(browserMetrics.paints.firstPaintMs ?? NaN),
+      gotoMs: roundMs(gotoMs),
+      loadEventMs: roundMs(browserMetrics.navigation?.loadEventMs ?? NaN),
+      resourceEncodedBytes: browserMetrics.resources.totals.encodedBodySize,
+      resourceTransferBytes: browserMetrics.resources.totals.transferSize,
+      responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
+      tabSwitchMs: roundMs(tabSwitchMs),
+    },
+  };
+}
+
 async function runMeasuredScenario(browser, options, runIndex) {
   const context = await browser.newContext({
     viewport: { height: 900, width: 1440 },
@@ -578,7 +886,9 @@ async function runMeasuredScenario(browser, options, runIndex) {
   page.on("pageerror", (err) => pageErrors.push(err.message));
 
   try {
-    const result = await runAppUnauthScenario(page, options);
+    const result = options.scenario === "app-auth"
+      ? await runAppAuthScenario(page, options)
+      : await runAppUnauthScenario(page, options);
     return {
       ...result,
       consoleErrors: consoleMessages,
@@ -591,14 +901,7 @@ async function runMeasuredScenario(browser, options, runIndex) {
 }
 
 function compareSummaries(current, previous, options) {
-  const coreMetrics = [
-    "authGateReadyMs",
-    "usernameEnterMs",
-    "domContentLoadedMs",
-    "loadEventMs",
-    "firstContentfulPaintMs",
-    "resourceEncodedBytes",
-  ];
+  const coreMetrics = Object.keys(current.summary.metrics);
   return coreMetrics.map((metric) => {
     const currentValue = current.summary.metrics[metric]?.median;
     const previousValue = previous.summary?.metrics?.[metric]?.median;
@@ -627,21 +930,23 @@ function compareSummaries(current, previous, options) {
 
 function enforceBudgets(result, options) {
   const failures = [];
-  const authGateP75 = result.summary.metrics.authGateReadyMs.p75;
-  const usernameEnterP75 = result.summary.metrics.usernameEnterMs.p75;
+  const navigationMetric = result.scenario === "app-auth" ? "appReadyMs" : "authGateReadyMs";
+  const interactionMetric = result.scenario === "app-auth" ? "tabSwitchMs" : "usernameEnterMs";
+  const navigationP75 = result.summary.metrics[navigationMetric]?.p75;
+  const interactionP75 = result.summary.metrics[interactionMetric]?.p75;
   if (
     options.navigationBudgetMs !== null
-    && Number.isFinite(authGateP75)
-    && authGateP75 > options.navigationBudgetMs
+    && Number.isFinite(navigationP75)
+    && navigationP75 > options.navigationBudgetMs
   ) {
-    failures.push(`auth gate p75 ${authGateP75}ms exceeds ${options.navigationBudgetMs}ms`);
+    failures.push(`${navigationMetric} p75 ${navigationP75}ms exceeds ${options.navigationBudgetMs}ms`);
   }
   if (
     options.interactionBudgetMs !== null
-    && Number.isFinite(usernameEnterP75)
-    && usernameEnterP75 > options.interactionBudgetMs
+    && Number.isFinite(interactionP75)
+    && interactionP75 > options.interactionBudgetMs
   ) {
-    failures.push(`username Enter p75 ${usernameEnterP75}ms exceeds ${options.interactionBudgetMs}ms`);
+    failures.push(`${interactionMetric} p75 ${interactionP75}ms exceeds ${options.interactionBudgetMs}ms`);
   }
   if (failures.length > 0) {
     throw new Error(failures.join("; "));
@@ -663,12 +968,24 @@ function printHuman(result, outputPath) {
   console.log(`Serve mode: ${result.serveMode ?? "external"}`);
   console.log(`URL: ${result.url}`);
   console.log(`Runs: ${result.runs.length}`);
-  console.log(
-    `Auth gate ready: median ${fmtMs(metrics.authGateReadyMs.median)}, p75 ${fmtMs(metrics.authGateReadyMs.p75)}`,
-  );
-  console.log(
-    `Username Enter: median ${fmtMs(metrics.usernameEnterMs.median)}, p75 ${fmtMs(metrics.usernameEnterMs.p75)}`,
-  );
+  if (result.scenario === "app-auth") {
+    console.log(
+      `App shell ready: median ${fmtMs(metrics.appShellReadyMs.median)}, p75 ${fmtMs(metrics.appShellReadyMs.p75)}`,
+    );
+    console.log(
+      `App ready: median ${fmtMs(metrics.appReadyMs.median)}, p75 ${fmtMs(metrics.appReadyMs.p75)}`,
+    );
+    console.log(
+      `Garden tab switch: median ${fmtMs(metrics.tabSwitchMs.median)}, p75 ${fmtMs(metrics.tabSwitchMs.p75)}`,
+    );
+  } else {
+    console.log(
+      `Auth gate ready: median ${fmtMs(metrics.authGateReadyMs.median)}, p75 ${fmtMs(metrics.authGateReadyMs.p75)}`,
+    );
+    console.log(
+      `Username Enter: median ${fmtMs(metrics.usernameEnterMs.median)}, p75 ${fmtMs(metrics.usernameEnterMs.p75)}`,
+    );
+  }
   console.log(
     `DOMContentLoaded: median ${fmtMs(metrics.domContentLoadedMs.median)}; load: median ${fmtMs(metrics.loadEventMs.median)}; FCP: median ${fmtMs(metrics.firstContentfulPaintMs.median)}`,
   );
@@ -732,7 +1049,7 @@ async function main() {
         serveMode: options.serve ? options.serveMode : "external",
         skipInteraction: options.skipInteraction,
         stubApi: options.stubApi,
-        summary: summarizeRuns(runs),
+        summary: summarizeRuns(runs, options.scenario),
         url: options.url,
         runs,
       };
