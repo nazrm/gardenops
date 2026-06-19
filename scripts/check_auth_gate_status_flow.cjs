@@ -70,11 +70,13 @@ function main() {
   const passkeysPath = path.resolve(__dirname, "../frontend/src/features/passkeys.ts");
   const apiPath = path.resolve(__dirname, "../frontend/src/services/api.ts");
   const i18nPath = path.resolve(__dirname, "../frontend/src/core/i18n.ts");
+  const stylePath = path.resolve(__dirname, "../frontend/src/style.css");
   const sourceText = fs.readFileSync(sourcePath, "utf8");
   const authGateText = fs.readFileSync(authGatePath, "utf8");
   const passkeysText = fs.readFileSync(passkeysPath, "utf8");
   const apiText = fs.readFileSync(apiPath, "utf8");
   const i18nText = fs.readFileSync(i18nPath, "utf8");
+  const styleText = fs.readFileSync(stylePath, "utf8");
   const source = ts.createSourceFile(sourcePath, sourceText, ts.ScriptTarget.Latest, true);
 
   const statusHelper = findFunction(source, "showAuthGateFromCurrentStatus");
@@ -141,8 +143,8 @@ function main() {
   if (!authGateText.includes("passwordInput.required = false")) {
     fail("hidden password field must not remain required on the initial username step");
   }
-  if (!authGateText.includes("submitBtn.textContent = t(\"auth.continue\")")) {
-    fail("non-bootstrap login must start with a username-only Continue action");
+  if (!authGateText.includes("submitBtn.textContent = t(\"auth.enter_action\")")) {
+    fail("non-bootstrap login must start with a username-only Enter action");
   }
   if (authGateText.includes("allowCredentials?.length")) {
     fail("auth gate must not branch on public allowCredentials because that leaks passkey enrollment");
@@ -158,6 +160,42 @@ function main() {
   }
   if (!authGateText.includes("await startPasskeyLogin(options, username)")) {
     fail("username-resolved passkey options must immediately start passkey login");
+  }
+  if (!authGateText.includes("auth-gate-username-label--identity")) {
+    fail("username-first login must render the username control as an identity row");
+  }
+  if (!authGateText.includes("auth-gate-identity-field")) {
+    fail("username-first login must wrap the username input in an identity field");
+  }
+  if (authGateText.includes("usernameIcon") || authGateText.includes("auth-gate-identity-icon")) {
+    fail("username-first login must not show a username icon or email-like symbol");
+  }
+  if (!authGateText.includes("usernameInput.placeholder = t(\"auth.username\")")) {
+    fail("username-first login must show Username as faded placeholder text");
+  }
+  if (!styleText.includes(".auth-gate-username-label--identity .auth-gate-field-label")) {
+    fail("username-first login must keep the username label accessible without visible field text");
+  }
+  if (!styleText.includes(".auth-gate-identity-field:focus-within")) {
+    fail("username-first login identity row must expose an obvious focus state");
+  }
+  if (styleText.includes(".auth-gate-identity-field input:placeholder-shown")) {
+    fail("username-first login placeholder must stay left-aligned");
+  }
+  if (styleText.includes(".auth-gate-identity-field input:not(:placeholder-shown)")) {
+    fail("username-first login must not need separate alignment after typing");
+  }
+  if (!authGateText.includes("if (subtitle)")) {
+    fail("auth gate header must skip empty subtitles instead of rendering blank space");
+  }
+  if (!i18nText.includes("\"auth.signin_subtitle\": \"\"")) {
+    fail("English sign-in subtitle must be removed");
+  }
+  if (!i18nText.includes("\"auth.enter_action\": \"Enter\"")) {
+    fail("English username-step Enter action must be translated");
+  }
+  if (!i18nText.includes("\"auth.enter_action\": \"Gå inn\"")) {
+    fail("Norwegian username-step Enter action must be translated");
   }
   if (
     !i18nText.includes("\"auth.login_action\": \"Login\"") ||

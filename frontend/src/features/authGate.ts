@@ -74,14 +74,15 @@ function appendAuthGateHeader(
     heading.textContent = headingText;
   }
 
-  const subtitleEl = document.createElement("p");
-  subtitleEl.className = "auth-gate-subtitle";
-  subtitleEl.textContent = subtitle;
-
   if (heading) {
     card.append(heading);
   }
-  card.append(subtitleEl);
+  if (subtitle) {
+    const subtitleEl = document.createElement("p");
+    subtitleEl.className = "auth-gate-subtitle";
+    subtitleEl.textContent = subtitle;
+    card.append(subtitleEl);
+  }
 }
 
 export function showForcedPasswordChangeGate(
@@ -542,16 +543,26 @@ function renderLoginFlow(
 
   const usernameLabel =
     document.createElement("label");
-  usernameLabel.append(
-    document.createTextNode(t("auth.username")),
-  );
+  const usernameLabelText = document.createElement("span");
+  usernameLabelText.className = "auth-gate-field-label";
+  usernameLabelText.textContent = t("auth.username");
+  usernameLabel.append(usernameLabelText);
   const usernameInput =
     document.createElement("input");
   usernameInput.type = "text";
   usernameInput.name = "username";
   usernameInput.autocomplete = "username";
   usernameInput.required = true;
-  usernameLabel.appendChild(usernameInput);
+  if (bootstrapRequired) {
+    usernameLabel.appendChild(usernameInput);
+  } else {
+    usernameLabel.className = "auth-gate-username-label auth-gate-username-label--identity";
+    usernameInput.placeholder = t("auth.username");
+    const usernameField = document.createElement("span");
+    usernameField.className = "auth-gate-identity-field";
+    usernameField.appendChild(usernameInput);
+    usernameLabel.appendChild(usernameField);
+  }
 
   const passwordLabel =
     document.createElement("label");
@@ -668,7 +679,7 @@ function renderLoginFlow(
     if (step === "username") {
       passwordInput.value = "";
       submitBtn.disabled = false;
-      submitBtn.textContent = t("auth.continue");
+      submitBtn.textContent = t("auth.enter_action");
       return;
     }
 
