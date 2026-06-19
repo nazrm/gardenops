@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import Response  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import Field  # noqa: E402
+from starlette.middleware.gzip import GZipMiddleware  # noqa: E402
 from starlette.middleware.trustedhost import TrustedHostMiddleware  # noqa: E402
 from starlette.responses import JSONResponse  # noqa: E402
 
@@ -2530,4 +2531,9 @@ def export_plants_csv(db: DB, request: Request) -> Response:
 
 
 if DIST.exists():
+    app.mount(
+        "/assets",
+        GZipMiddleware(StaticFiles(directory=DIST / "assets"), minimum_size=1024),
+        name="static-assets",
+    )
     app.mount("/", StaticFiles(directory=DIST, html=True), name="static")

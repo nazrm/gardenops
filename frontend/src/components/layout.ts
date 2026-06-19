@@ -1,6 +1,6 @@
 import { getLocale, t } from "../core/i18n";
 import { escapeHtml } from "../core/sanitize";
-import gardenOpsLogoUrl from "../assets/gardenops-logo-transparent.webp";
+import headerIconUrl from "../assets/header-icon.webp";
 
 function getAnalysisStarters() {
   return [
@@ -120,10 +120,10 @@ export function getAppShellMarkup(): string {
         <button class="mobile-header-logo-button" type="button" data-brand-home aria-label="${t("nav.map")}" title="${t("nav.map")}">
           <img
             class="mobile-header-logo"
-            src="${gardenOpsLogoUrl}"
+            src="${headerIconUrl}"
             alt="${appTitle}"
-            width="640"
-            height="427"
+            width="216"
+            height="144"
             decoding="async"
           />
         </button>
@@ -150,10 +150,10 @@ export function getAppShellMarkup(): string {
           <button class="app-brand" type="button" data-brand-home aria-label="${t("nav.map")}" title="${t("nav.map")}">
             <img
               class="app-brand-logo"
-              src="${gardenOpsLogoUrl}"
+              src="${headerIconUrl}"
               alt="${appTitle}"
-              width="640"
-              height="427"
+              width="216"
+              height="144"
               decoding="async"
             />
             <span class="app-brand-name">${appTitle}</span>

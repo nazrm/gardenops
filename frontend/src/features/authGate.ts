@@ -28,6 +28,18 @@ import {
 import { getPasskey, isPasskeySupported } from "./passkeys";
 
 const authGateShells = new WeakMap<HTMLDivElement, HTMLDivElement>();
+const AUTH_GATE_ACTIVE_CLASS = "auth-gate-active";
+
+function activateAuthGate(resolve: () => void): () => void {
+  document.body.classList.add(AUTH_GATE_ACTIVE_CLASS);
+  let settled = false;
+  return () => {
+    if (settled) return;
+    settled = true;
+    document.body.classList.remove(AUTH_GATE_ACTIVE_CLASS);
+    resolve();
+  };
+}
 
 function createAuthGateCard(
   subtitle: string,
@@ -91,6 +103,7 @@ export function showForcedPasswordChangeGate(
   return new Promise((resolve) => {
     const app = document.getElementById("app");
     if (!app) return;
+    const complete = activateAuthGate(resolve);
 
     const gate = document.createElement("div");
     gate.className = "auth-gate";
@@ -99,7 +112,7 @@ export function showForcedPasswordChangeGate(
     );
     appendAuthGateCard(gate, card);
     document.body.prepend(gate);
-    renderForcedPasswordChangeForm(gate, card, username, "", resolve);
+    renderForcedPasswordChangeForm(gate, card, username, "", complete);
   });
 }
 
@@ -112,6 +125,7 @@ export function showAuthGate(
   return new Promise((resolve) => {
     const app = document.getElementById("app");
     if (!app) return;
+    const complete = activateAuthGate(resolve);
 
     const gate = document.createElement("div");
     gate.className = "auth-gate";
@@ -123,7 +137,7 @@ export function showAuthGate(
         inviteToken,
         bootstrapRequired,
         passkeysEnabled,
-        resolve,
+        complete,
       );
     } else {
       renderLoginFlow(
@@ -131,7 +145,7 @@ export function showAuthGate(
         createAuthGateCard,
         bootstrapRequired,
         passkeysEnabled,
-        resolve,
+        complete,
       );
     }
   });

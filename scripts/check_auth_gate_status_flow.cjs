@@ -188,6 +188,18 @@ function main() {
   if (!authGateText.includes("if (subtitle)")) {
     fail("auth gate header must skip empty subtitles instead of rendering blank space");
   }
+  if (!authGateText.includes("auth-gate-active")) {
+    fail("auth gate must mark the body while pre-login gates are active");
+  }
+  if (!sourceText.includes("document.body.classList.add(\"app-font-active\")")) {
+    fail("main app shell must opt into the app font after authentication");
+  }
+  if (!styleText.includes("body.auth-gate-active")) {
+    fail("pre-login auth gate must avoid loading the app font before sign-in");
+  }
+  if (!styleText.includes("body.app-font-active")) {
+    fail("app font must be scoped to the authenticated app shell");
+  }
   if (!i18nText.includes("\"auth.signin_subtitle\": \"\"")) {
     fail("English sign-in subtitle must be removed");
   }

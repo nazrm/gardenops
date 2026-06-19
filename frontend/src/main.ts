@@ -1604,6 +1604,7 @@ function setupLayout(): void {
   if (!app) return;
 
   document.title = appName();
+  document.body.classList.add("app-font-active");
   setStaticTemplateHtml(app, getAppShellMarkup());
   invalidateSearchCache();
   applyLocalizedShellText(app);
