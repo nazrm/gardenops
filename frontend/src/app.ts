@@ -93,6 +93,7 @@ import type {
   CameraState,
   GardenIssue,
   GardenTask,
+  HarvestEntry,
   Plant,
   Plot,
 } from "./core/models";
@@ -182,20 +183,6 @@ import type {
   SubMode,
 } from "./core/appContext";
 import {
-  initTasksTab,
-  loadTasks,
-  syncTasksViewButtons,
-  getTasksView,
-  setTasksView,
-  setTasksOffset,
-  openTaskForm as openTaskDialog,
-} from "./tabs/tasksTab";
-import {
-  initHarvestTab,
-  loadHarvest,
-  setHarvestOffset,
-} from "./tabs/harvestTab";
-import {
   initProcurementTab,
   loadProcurement,
   setProcurementOffset,
@@ -207,12 +194,6 @@ import {
 import {
   initSavedViewsFeature,
 } from "./features/savedViewsFeature";
-import {
-  initCareTab,
-  loadCare,
-  renderCareView,
-  openCareForPlants,
-} from "./tabs/careTab";
 import {
   setIndoorPlotId,
   setOnAddPlant,
@@ -685,7 +666,7 @@ function refreshLocalizedSignedInViews(): void {
     refreshCalendarTabLocalization();
   }
   if (subMode === "care") {
-    renderCareView();
+    renderCareViewLazy();
   }
   renderDataExportBars();
   if (activeTab === "insights" && subMode === "statistics") {
@@ -926,7 +907,7 @@ const plotCbs: PlotCallbacks = {
     }
     invalidatePlantsCache();
     if (activeTab === "garden" || activeTab === "activity") void ensurePlantsLoaded();
-    if (activeTab === "insights" && subMode === "care") { void loadCare(); void loadWeather(); }
+    if (activeTab === "insights" && subMode === "care") { void loadCareTab(); void loadWeather(); }
   },
   onPlotFocusChanged: (plotId) => {
     shadePanel?.setSelectedPlot(plotId);
@@ -1012,7 +993,7 @@ const appContext: AppContext = {
   navigateToSubMode: (mode, opts) => navigateToSubMode(mode, opts),
   renderPlots: () => renderPlots(),
   renderPlantsTable: () => renderPlantsTable(),
-  renderCareView: () => renderCareView(),
+  renderCareView: () => renderCareViewLazy(),
   renderDataExportBars: () => renderDataExportBars(),
   fetchPlots: () => fetchPlots(),
   ensurePlantsLoaded: () => ensurePlantsLoaded(),
@@ -1043,10 +1024,11 @@ const appContext: AppContext = {
   openMapForPlots,
   openBatchJournalForPlants,
   openTaskForm: (task) => openTaskForm(task),
+  openHarvestForm: (entry) => openHarvestForm(entry),
   openJournalComposer: () => openJournalComposer(),
   openIssueForm: (issue) => openIssueForm(issue),
   openCalendarEventComposer: (prefill) => openCalendarEventComposer(prefill),
-  loadTasks: () => loadTasks(),
+  loadTasks: () => loadTasksTab(),
   loadJournalEntries: (extra) => loadJournalEntries(extra),
   setJournalOffset: (offset) => setJournalOffset(offset),
   loadIssues: () => loadIssues(),
@@ -1067,6 +1049,9 @@ type CalendarTabModule = typeof import("./tabs/calendarTab");
 type AttachIssueHistorySectionFn = IssuesTabModule["attachIssueHistorySection"];
 type InventoryTabModule = typeof import("./tabs/inventoryTab");
 type StatisticsTabModule = typeof import("./tabs/statisticsTab");
+type CareTabModule = typeof import("./tabs/careTab");
+type TasksTabModule = typeof import("./tabs/tasksTab");
+type HarvestTabModule = typeof import("./tabs/harvestTab");
 
 let adminPanelModule: AdminPanelModule | null = null;
 let adminPanelModulePromise: Promise<AdminPanelModule> | null = null;
@@ -1080,6 +1065,12 @@ let inventoryTabModule: InventoryTabModule | null = null;
 let inventoryTabModulePromise: Promise<InventoryTabModule> | null = null;
 let statisticsTabModule: StatisticsTabModule | null = null;
 let statisticsTabModulePromise: Promise<StatisticsTabModule> | null = null;
+let careTabModule: CareTabModule | null = null;
+let careTabModulePromise: Promise<CareTabModule> | null = null;
+let tasksTabModule: TasksTabModule | null = null;
+let tasksTabModulePromise: Promise<TasksTabModule> | null = null;
+let harvestTabModule: HarvestTabModule | null = null;
+let harvestTabModulePromise: Promise<HarvestTabModule> | null = null;
 
 function ensureAdminPanelModule(): Promise<AdminPanelModule> {
   adminPanelModulePromise ??= import("./components/adminPanel")
@@ -1273,8 +1264,57 @@ async function setIssuesOffset(offset: number): Promise<void> {
   mod.setIssuesOffset(offset);
 }
 
+function ensureTasksTabInitialized(): Promise<TasksTabModule> {
+  tasksTabModulePromise ??= import("./tabs/tasksTab")
+    .then((mod) => {
+      tasksTabModule = mod;
+      if (!gatedFeatureInitState.tasks) {
+        mod.initTasksTab(appContext);
+        gatedFeatureInitState.tasks = true;
+      }
+      return mod;
+    })
+    .catch((err) => {
+      tasksTabModulePromise = null;
+      throw err;
+    });
+  return tasksTabModulePromise;
+}
+
+async function loadTasksTab(): Promise<void> {
+  if (!isFeatureEnabled("tasks")) return;
+  const mod = await ensureTasksTabInitialized();
+  await mod.loadTasks();
+}
+
+function ensureHarvestTabInitialized(): Promise<HarvestTabModule> {
+  harvestTabModulePromise ??= import("./tabs/harvestTab")
+    .then((mod) => {
+      harvestTabModule = mod;
+      mod.initHarvestTab(appContext);
+      return mod;
+    })
+    .catch((err) => {
+      harvestTabModulePromise = null;
+      throw err;
+    });
+  return harvestTabModulePromise;
+}
+
+async function loadHarvestTab(): Promise<void> {
+  const mod = await ensureHarvestTabInitialized();
+  await mod.loadHarvest();
+}
+
 async function openTaskForm(existingTask?: GardenTask): Promise<void> {
-  openTaskDialog(existingTask);
+  if (!isFeatureEnabled("tasks")) return;
+  const mod = await ensureTasksTabInitialized();
+  mod.openTaskForm(existingTask);
+}
+
+async function openHarvestForm(existingEntry?: HarvestEntry): Promise<void> {
+  const mod = await ensureHarvestTabInitialized();
+  mod.openHarvestForm(existingEntry);
 }
 
 async function openIssueForm(existingIssue?: GardenIssue): Promise<void> {
@@ -1371,6 +1411,38 @@ async function loadStatistics(): Promise<void> {
 
 function resetStatisticsState(): void {
   statisticsTabModule?.resetStatisticsState();
+}
+
+function ensureCareTabInitialized(): Promise<CareTabModule> {
+  careTabModulePromise ??= import("./tabs/careTab")
+    .then((mod) => {
+      careTabModule = mod;
+      if (!gatedFeatureInitState.care) {
+        mod.initCareTab(appContext);
+        gatedFeatureInitState.care = true;
+      }
+      return mod;
+    })
+    .catch((err) => {
+      careTabModulePromise = null;
+      throw err;
+    });
+  return careTabModulePromise;
+}
+
+async function loadCareTab(): Promise<void> {
+  if (!isFeatureEnabled("care")) return;
+  const mod = await ensureCareTabInitialized();
+  await mod.loadCare();
+}
+
+function renderCareViewLazy(): void {
+  if (!isFeatureEnabled("care")) return;
+  if (careTabModule) {
+    careTabModule.renderCareView();
+    return;
+  }
+  void ensureCareTabInitialized().then((mod) => mod.renderCareView());
 }
 
 type ShadePanelModule = typeof import("./components/shadePanel");
@@ -1535,17 +1607,9 @@ function ensureGatedFeatureInitializers(): void {
     initSavedViewsFeature(appContext);
     gatedFeatureInitState.savedViews = true;
   }
-  if (isFeatureEnabled("tasks") && !gatedFeatureInitState.tasks) {
-    initTasksTab(appContext);
-    gatedFeatureInitState.tasks = true;
-  }
   if (isFeatureEnabled("procurement") && !gatedFeatureInitState.procurement) {
     initProcurementTab(appContext);
     gatedFeatureInitState.procurement = true;
-  }
-  if (isFeatureEnabled("care") && !gatedFeatureInitState.care) {
-    initCareTab(appContext);
-    gatedFeatureInitState.care = true;
   }
   if (isFeatureEnabled("weather") && !gatedFeatureInitState.weather) {
     initWeatherFeature(appContext);
@@ -1905,9 +1969,6 @@ function setupLayout(): void {
     });
   });
 
-  // Harvest event listeners (wired by initHarvestTab)
-  initHarvestTab(appContext);
-
   // Mobile FAB + quick action sheet
   initQuickActionsFeature(appContext);
 
@@ -2003,11 +2064,11 @@ async function refreshActiveNavigationContent(): Promise<void> {
     } else if (subMode === "inventory") {
       await loadInventoryItems();
     } else if (subMode === "tasks") {
-      await loadTasks();
+      await loadTasksTab();
     } else if (subMode === "issues") {
       await loadIssues();
     } else if (subMode === "harvest") {
-      await loadHarvest();
+      await loadHarvestTab();
     } else if (subMode === "procurement") {
       await loadProcurement();
     } else if (subMode === "indoor") {
@@ -2019,7 +2080,7 @@ async function refreshActiveNavigationContent(): Promise<void> {
   }
   if (activeTab === "insights") {
     if (subMode === "care") {
-      await loadCare();
+      await loadCareTab();
       await loadWeather();
     } else if (subMode === "statistics") {
       await loadStatistics();
@@ -2539,7 +2600,7 @@ function rerenderPlantDependentViews(): void {
     renderPlantsTable();
   }
   if (activeTab === "insights" && subMode === "care") {
-    void loadCare();
+    void loadCareTab();
     void loadWeather();
   }
 }

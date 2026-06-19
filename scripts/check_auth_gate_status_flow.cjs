@@ -69,6 +69,8 @@ function main() {
   const appSourcePath = path.resolve(__dirname, "../frontend/src/app.ts");
   const indexPath = path.resolve(__dirname, "../frontend/index.html");
   const authGatePath = path.resolve(__dirname, "../frontend/src/features/authGate.ts");
+  const savedViewsPath = path.resolve(__dirname, "../frontend/src/features/savedViewsFeature.ts");
+  const quickActionsPath = path.resolve(__dirname, "../frontend/src/features/quickActionsFeature.ts");
   const authStylePath = path.resolve(__dirname, "../frontend/src/auth.css");
   const passwordChecklistPath = path.resolve(__dirname, "../frontend/src/components/passwordChecklist.ts");
   const passkeysPath = path.resolve(__dirname, "../frontend/src/features/passkeys.ts");
@@ -82,6 +84,8 @@ function main() {
   const appSourceText = fs.readFileSync(appSourcePath, "utf8");
   const indexText = fs.readFileSync(indexPath, "utf8");
   const authGateText = fs.readFileSync(authGatePath, "utf8");
+  const savedViewsText = fs.readFileSync(savedViewsPath, "utf8");
+  const quickActionsText = fs.readFileSync(quickActionsPath, "utf8");
   const passwordChecklistText = fs.readFileSync(passwordChecklistPath, "utf8");
   const passkeysText = fs.readFileSync(passkeysPath, "utf8");
   const apiText = fs.readFileSync(apiPath, "utf8");
@@ -97,6 +101,33 @@ function main() {
   }
   if (!appSourceText.includes("import \"./style.css\"")) {
     fail("authenticated app module must lazy-load the full app stylesheet");
+  }
+  if (appSourceText.includes("from \"./tabs/careTab\"") || appSourceText.includes("from './tabs/careTab'")) {
+    fail("authenticated app module must lazy-load the Care tab instead of importing it during app startup");
+  }
+  if (!appSourceText.includes("import(\"./tabs/careTab\")")) {
+    fail("authenticated app module must keep a lazy Care tab import boundary");
+  }
+  if (appSourceText.includes("from \"./tabs/tasksTab\"") || appSourceText.includes("from './tabs/tasksTab'")) {
+    fail("authenticated app module must lazy-load the Tasks tab instead of importing it during app startup");
+  }
+  if (!appSourceText.includes("import(\"./tabs/tasksTab\")")) {
+    fail("authenticated app module must keep a lazy Tasks tab import boundary");
+  }
+  if (appSourceText.includes("from \"./tabs/harvestTab\"") || appSourceText.includes("from './tabs/harvestTab'")) {
+    fail("authenticated app module must lazy-load the Harvest tab instead of importing it during app startup");
+  }
+  if (!appSourceText.includes("import(\"./tabs/harvestTab\")")) {
+    fail("authenticated app module must keep a lazy Harvest tab import boundary");
+  }
+  if (savedViewsText.includes("from \"../tabs/tasksTab\"") || savedViewsText.includes("from '../tabs/tasksTab'")) {
+    fail("saved views must not import the Tasks tab during authenticated app startup");
+  }
+  if (savedViewsText.includes("from \"../tabs/harvestTab\"") || savedViewsText.includes("from '../tabs/harvestTab'")) {
+    fail("saved views must not import the Harvest tab during authenticated app startup");
+  }
+  if (quickActionsText.includes("from \"../tabs/harvestTab\"") || quickActionsText.includes("from '../tabs/harvestTab'")) {
+    fail("quick actions must not import the Harvest tab during authenticated app startup");
   }
   if (!authStyleText.includes(".auth-gate") || authStyleText.includes("@font-face")) {
     fail("auth.css must contain login gate styles without preloading app fonts");

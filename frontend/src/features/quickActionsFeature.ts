@@ -15,7 +15,6 @@ import {
   isOnline,
   enqueueDraft,
 } from "../services/offlineQueue";
-import { openHarvestForm } from "../tabs/harvestTab";
 import { showIdentifyPlantModal } from "../components/identifyPlant";
 
 let ctx: AppContext;
@@ -56,7 +55,7 @@ function getQuickActionCallbacks(): QuickActionCallbacks {
     onLogHarvest: () => {
       closeQuickActionSheet();
       ctx.navigateToSubMode("harvest");
-      openHarvestForm();
+      void ctx.openHarvestForm();
     },
     onSnoozeTask: () =>
       void showTaskQuickSnooze(),
