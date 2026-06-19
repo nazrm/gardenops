@@ -162,6 +162,9 @@ function main() {
   if (!authStyleText.includes(".auth-gate") || authStyleText.includes("@font-face")) {
     fail("auth.css must contain login gate styles without preloading app fonts");
   }
+  if (!authStyleText.includes("[hidden]") || !authStyleText.includes("display: none !important")) {
+    fail("auth.css must preserve hidden rendering for auth gate step transitions");
+  }
   if (!sourceText.includes("import(\"./app\")")) {
     fail("main entry must lazy-load the authenticated app after the auth gate resolves");
   }
@@ -263,6 +266,9 @@ function main() {
   if (!authGateText.includes("passwordInput.required = false")) {
     fail("hidden password field must not remain required on the initial username step");
   }
+  if (!authGateText.includes("passwordInput.placeholder = t(\"auth.password\")")) {
+    fail("non-bootstrap login password field must use an in-field Password placeholder");
+  }
   if (!authGateText.includes("submitBtn.textContent = t(\"auth.enter_action\")")) {
     fail("non-bootstrap login must start with a username-only Enter action");
   }
@@ -281,7 +287,7 @@ function main() {
   if (!authGateText.includes("await startPasskeyLogin(options, username)")) {
     fail("username-resolved passkey options must immediately start passkey login");
   }
-  if (!authGateText.includes("auth-gate-username-label--identity")) {
+  if (!authGateText.includes("auth-gate-identity-label auth-gate-username-label")) {
     fail("username-first login must render the username control as an identity row");
   }
   if (!authGateText.includes("auth-gate-identity-field")) {
@@ -293,7 +299,7 @@ function main() {
   if (!authGateText.includes("usernameInput.placeholder = t(\"auth.username\")")) {
     fail("username-first login must show Username as faded placeholder text");
   }
-  if (!styleText.includes(".auth-gate-username-label--identity .auth-gate-field-label")) {
+  if (!authStyleText.includes(".auth-gate-identity-label .auth-gate-field-label")) {
     fail("username-first login must keep the username label accessible without visible field text");
   }
   if (!styleText.includes(".auth-gate-identity-field:focus-within")) {

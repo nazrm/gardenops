@@ -645,12 +645,20 @@ async function runAppUnauthScenario(page, options) {
       const passwordInput = document.querySelector(passwordSelector);
       const submitButton = document.querySelector(submitSelector);
       const passwordElement = passwordInput;
+      const passwordLabel = passwordElement instanceof HTMLElement
+        ? passwordElement.closest("label")
+        : null;
+      const passwordRendered = passwordLabel instanceof HTMLElement
+        && window.getComputedStyle(passwordLabel).display !== "none"
+        && passwordLabel.getClientRects().length > 0;
       return {
         activeElementName: document.activeElement?.getAttribute("name") ?? "",
         buttonText: submitButton?.textContent?.trim() ?? "",
-        passwordHidden: passwordElement instanceof HTMLElement
-          ? passwordElement.closest("label")?.hidden === true
+        passwordHidden: passwordLabel instanceof HTMLElement
+          ? passwordLabel.hidden === true
           : false,
+        passwordPlaceholder: passwordElement?.getAttribute("placeholder") ?? "",
+        passwordRendered,
         usernamePlaceholder: usernameInput?.getAttribute("placeholder") ?? "",
       };
     },
@@ -665,6 +673,9 @@ async function runAppUnauthScenario(page, options) {
   }
   if (!initialFlow.passwordHidden) {
     throw new Error("Expected password field to be hidden on username step");
+  }
+  if (initialFlow.passwordRendered) {
+    throw new Error("Expected password field to be visually hidden on username step");
   }
 
   if (options.skipInteraction) {
@@ -719,12 +730,16 @@ async function runAppUnauthScenario(page, options) {
       return {
         buttonText: submitButton?.textContent?.trim() ?? "",
         passwordFocused: document.activeElement === passwordInput,
+        passwordPlaceholder: passwordInput?.getAttribute("placeholder") ?? "",
         passwordVisible: label instanceof HTMLElement ? !label.hidden : false,
         usernameValue: usernameInput instanceof HTMLInputElement ? usernameInput.value : "",
       };
     },
     { passwordSelector, submitSelector, usernameSelector },
   );
+  if (finalFlow.passwordPlaceholder !== "Password") {
+    throw new Error(`Expected password placeholder "Password", got "${finalFlow.passwordPlaceholder}"`);
+  }
 
   const browserMetrics = await collectBrowserMetrics(page);
   return {
