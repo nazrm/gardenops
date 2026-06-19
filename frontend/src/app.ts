@@ -216,6 +216,16 @@ const state: AppState = {
   plotAlerts: null,
 };
 
+const PLOT_ALERTS_CACHE_MS = 60_000;
+let plotAlertsLoadedAt = 0;
+let plotAlertsLoadPromise: Promise<void> | null = null;
+let plotAlertsScheduleSeq = 0;
+const WEATHER_SUMMARY_CACHE_MS = 60_000;
+const WEATHER_SUMMARY_IDLE_DELAY_MS = 250;
+let weatherLoadedAt = 0;
+let weatherLoadPromise: Promise<void> | null = null;
+let weatherScheduleSeq = 0;
+
 const gatedFeatureInitState = {
   notifications: false,
   savedViews: false,
@@ -232,8 +242,10 @@ const selectedPlantIds = new Set<string>();
 // ── Media / Navigation state ──────────────────────────────
 const MEDIA_SUMMARY_BATCH_SIZE = 80;
 const PLANT_MEDIA_PREVIEW_PREFETCH_LIMIT = 120;
+const PLANT_MEDIA_PREVIEW_IDLE_DELAY_MS = 1_000;
 const plantMediaPreviewById = new Map<string, MediaAsset | null>();
 let plantMediaPreviewSeq = 0;
+let plantMediaPreviewScheduleSeq = 0;
 let focusedPlantIds: Set<string> | null = null;
 
 type PrimaryContentTab = Exclude<AppTab, "map" | "admin">;
@@ -2186,7 +2198,7 @@ async function refreshActiveNavigationContent(): Promise<void> {
   if (activeTab === "insights") {
     if (subMode === "care") {
       await loadCareTab();
-      await loadWeather();
+      requestWeatherAfterPaint();
     } else if (subMode === "statistics") {
       await loadStatistics();
     }
@@ -2201,6 +2213,41 @@ function loadActiveNavigationContent(): void {
   void refreshActiveNavigationContent();
 }
 
+async function loadWeatherCached(): Promise<void> {
+  if (Date.now() - weatherLoadedAt < WEATHER_SUMMARY_CACHE_MS) {
+    return;
+  }
+  if (weatherLoadPromise) {
+    await weatherLoadPromise;
+    return;
+  }
+  weatherLoadPromise = loadWeather()
+    .then(() => {
+      weatherLoadedAt = Date.now();
+    })
+    .finally(() => {
+      weatherLoadPromise = null;
+    });
+  await weatherLoadPromise;
+}
+
+function requestWeatherAfterPaint(): void {
+  if (Date.now() - weatherLoadedAt < WEATHER_SUMMARY_CACHE_MS || weatherLoadPromise) {
+    return;
+  }
+  const seq = ++weatherScheduleSeq;
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      window.setTimeout(() => {
+        if (seq !== weatherScheduleSeq || activeTab !== "insights" || subMode !== "care") {
+          return;
+        }
+        void loadWeatherCached();
+      }, WEATHER_SUMMARY_IDLE_DELAY_MS);
+    });
+  });
+}
+
 let navigationLoadSeq = 0;
 
 function scheduleActiveNavigationContentLoad(): void {
@@ -2212,6 +2259,62 @@ function scheduleActiveNavigationContentLoad(): void {
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(run);
   });
+}
+
+function syncViewHiddenState(
+  view: HTMLElement | null,
+  visible: boolean,
+): void {
+  if (!view) return;
+  view.classList.toggle("active", visible);
+  view.hidden = !visible;
+  view.classList.remove("view-map--standby");
+  view.toggleAttribute("inert", !visible);
+  view.setAttribute("aria-hidden", visible ? "false" : "true");
+}
+
+function syncPrimaryViewVisibility(params: {
+  adminView: HTMLElement | null;
+  analysisView: HTMLElement | null;
+  careView: HTMLElement | null;
+  mapView: HTMLElement | null;
+  plantsView: HTMLElement | null;
+  showAdminView: boolean;
+  showAnalysisView: boolean;
+  showCareView: boolean;
+  showMapView: boolean;
+  showSharedDataView: boolean;
+  showStatsView: boolean;
+  statsView: HTMLElement | null;
+}): void {
+  const keepMapAlive = !isMobile();
+  const {
+    adminView,
+    analysisView,
+    careView,
+    mapView,
+    plantsView,
+    showAdminView,
+    showAnalysisView,
+    showCareView,
+    showMapView,
+    showSharedDataView,
+    showStatsView,
+    statsView,
+  } = params;
+
+  if (mapView) {
+    mapView.classList.toggle("active", showMapView);
+    mapView.classList.toggle("view-map--standby", keepMapAlive && !showMapView);
+    mapView.hidden = keepMapAlive ? false : !showMapView;
+    mapView.toggleAttribute("inert", !showMapView);
+    mapView.setAttribute("aria-hidden", showMapView ? "false" : "true");
+  }
+  syncViewHiddenState(plantsView, showSharedDataView);
+  syncViewHiddenState(careView, showCareView);
+  syncViewHiddenState(analysisView, showAnalysisView);
+  syncViewHiddenState(statsView, showStatsView);
+  syncViewHiddenState(adminView, showAdminView);
 }
 
 function applyNavigationState(opts: { triggerLoads?: boolean } = {}): void {
@@ -2260,26 +2363,29 @@ function applyNavigationState(opts: { triggerLoads?: boolean } = {}): void {
   const showCareView = activeTab === "insights" && subMode === "care";
   const showAnalysisView = activeTab === "insights" && subMode === "analysis";
   const showStatsView = activeTab === "insights" && subMode === "statistics";
-
-  mapView?.classList.toggle("active", activeTab === "map");
-  plantsView?.classList.toggle("active", showSharedDataView);
-  careView?.classList.toggle("active", showCareView);
-  analysisView?.classList.toggle("active", showAnalysisView);
-  statsView?.classList.toggle("active", showStatsView);
-  adminView?.classList.toggle("active", activeTab === "admin");
+  if (!(showSharedDataView && subMode === "plants")) {
+    plantMediaPreviewScheduleSeq += 1;
+  }
   document.body.classList.toggle("map-tab-active", activeTab === "map");
-
-  if (mapView) mapView.hidden = activeTab !== "map";
-  if (plantsView) plantsView.hidden = !showSharedDataView;
-  if (careView) careView.hidden = !showCareView;
-  if (analysisView) analysisView.hidden = !showAnalysisView;
-  if (statsView) statsView.hidden = !showStatsView;
-  if (adminView) adminView.hidden = activeTab !== "admin";
+  syncPrimaryViewVisibility({
+    adminView,
+    analysisView,
+    careView,
+    mapView,
+    plantsView,
+    showAdminView: activeTab === "admin",
+    showAnalysisView,
+    showCareView,
+    showMapView: activeTab === "map",
+    showSharedDataView,
+    showStatsView,
+    statsView,
+  });
 
   updateMapDirectionControlVisibility();
   if (activeTab === "map") {
     if (shouldLoadShadeMapPanelNow()) void ensureShadeMapPanelLoaded();
-    void loadPlotAlerts();
+    requestPlotAlertsAfterPaint();
   }
   updateMobileHeader();
   if (activeTab !== "map" || !isMobile()) {
@@ -2654,10 +2760,13 @@ function renderDirectionLabels(): void {
 }
 
 let plantsCacheLoaded = false;
+let plantsCacheLoadPromise: Promise<void> | null = null;
+let plantsCachePrefetchSeq = 0;
 let plantsCacheRevision = 0;
 let plantsTableHeadSignature = "";
 let plantsRenderSignature = "";
 let plantMediaPreviewRevision = 0;
+const PLANTS_CACHE_PREFETCH_DELAY_MS = 0;
 
 type PlantPresenceFilter = "all" | "current" | "gone" | "unobserved";
 
@@ -2699,6 +2808,8 @@ function removeCachedPlant(pltId: string): void {
 function invalidatePlantsCache(): void {
   state.plantsCache = [];
   plantsCacheLoaded = false;
+  plantsCacheLoadPromise = null;
+  plantsCachePrefetchSeq += 1;
   plantsCacheRevision += 1;
   plantMediaPreviewRevision += 1;
   plantMediaPreviewSeq += 1;
@@ -2708,7 +2819,12 @@ function invalidatePlantsCache(): void {
 
 async function ensurePlantsCacheLoaded(): Promise<void> {
   const requestGardenId = getActiveGardenContext();
-  if (!plantsCacheLoaded) {
+  if (plantsCacheLoaded) return;
+  if (plantsCacheLoadPromise) {
+    await plantsCacheLoadPromise;
+    return;
+  }
+  plantsCacheLoadPromise = (async () => {
     try {
       const plants = await getPlants();
       if (!isCurrentGardenRequest(requestGardenId)) return;
@@ -2717,8 +2833,11 @@ async function ensurePlantsCacheLoaded(): Promise<void> {
     } catch (err) {
       if (!isCurrentGardenRequest(requestGardenId)) return;
       showFetchError(err);
+    } finally {
+      plantsCacheLoadPromise = null;
     }
-  }
+  })();
+  await plantsCacheLoadPromise;
 }
 
 async function ensurePlantsLoaded(): Promise<void> {
@@ -2726,6 +2845,20 @@ async function ensurePlantsLoaded(): Promise<void> {
   await ensurePlantsCacheLoaded();
   if (!isCurrentGardenRequest(requestGardenId)) return;
   renderPlantsTable();
+}
+
+function requestPlantsCachePrefetchAfterPaint(): void {
+  if (plantsCacheLoaded || plantsCacheLoadPromise) return;
+  const seq = ++plantsCachePrefetchSeq;
+  void (async () => {
+    await ensurePlantsCacheLoaded();
+    window.setTimeout(() => {
+      if (seq !== plantsCachePrefetchSeq || activeTab !== "map" || !plantsCacheLoaded) {
+        return;
+      }
+      renderPlantsTable();
+    }, PLANTS_CACHE_PREFETCH_DELAY_MS);
+  })();
 }
 
 async function fetchPlantDetails(pltId: string): Promise<Plant | null> {
@@ -2910,7 +3043,7 @@ function renderPlantsTable(): void {
   }
   plantsRenderSignature = nextRenderSignature;
   renderDataExportBars();
-  void ensurePlantMediaPreviews(
+  requestPlantMediaPreviewsAfterPaint(
     view.sorted
       .slice(0, PLANT_MEDIA_PREVIEW_PREFETCH_LIMIT)
       .map((plant) => plant.plt_id),
@@ -3188,6 +3321,28 @@ async function ensurePlantMediaPreviews(pltIds: string[]): Promise<void> {
   } catch {
     // Ignore preview-summary failures; the surrounding list remains usable.
   }
+}
+
+function requestPlantMediaPreviewsAfterPaint(pltIds: string[]): void {
+  const requestedIds = Array.from(new Set(pltIds.map((pltId) => pltId.trim()).filter(Boolean)));
+  if (requestedIds.length === 0) return;
+  const missingIds = requestedIds.filter((pltId) => !plantMediaPreviewById.has(pltId));
+  if (missingIds.length === 0) return;
+  const seq = ++plantMediaPreviewScheduleSeq;
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      window.setTimeout(() => {
+        if (
+          seq !== plantMediaPreviewScheduleSeq
+          || !(activeTab === "garden" || activeTab === "activity")
+          || subMode !== "plants"
+        ) {
+          return;
+        }
+        void ensurePlantMediaPreviews(requestedIds);
+      }, PLANT_MEDIA_PREVIEW_IDLE_DELAY_MS);
+    });
+  });
 }
 
 async function refreshPlantMediaPreviews(pltIds: string[]): Promise<void> {
@@ -3783,6 +3938,17 @@ function showDropGhosts(targetRow: number, targetCol: number): void {
 }
 
 async function loadPlotAlerts(): Promise<void> {
+  const now = Date.now();
+  if (
+    state.plotAlerts
+    && now - plotAlertsLoadedAt < PLOT_ALERTS_CACHE_MS
+  ) {
+    return;
+  }
+  if (plotAlertsLoadPromise) {
+    return plotAlertsLoadPromise;
+  }
+  plotAlertsLoadPromise = (async () => {
   try {
     const data = await fetchPlotAlertsApi();
     state.plotAlerts = {
@@ -3790,11 +3956,35 @@ async function loadPlotAlerts(): Promise<void> {
       issue_plots: new Set(data.issue_plots),
       frost_plots: new Set(data.frost_plots),
     };
+    plotAlertsLoadedAt = Date.now();
     const grid = document.getElementById("map-grid");
     if (grid) applyPlotIndicators(grid, state.plotAlerts);
   } catch {
     // Non-critical — degrade silently
+  } finally {
+    plotAlertsLoadPromise = null;
   }
+  })();
+  return plotAlertsLoadPromise;
+}
+
+function requestPlotAlertsAfterPaint(): void {
+  const now = Date.now();
+  if (
+    state.plotAlerts
+    && now - plotAlertsLoadedAt < PLOT_ALERTS_CACHE_MS
+  ) {
+    return;
+  }
+  const seq = ++plotAlertsScheduleSeq;
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      window.setTimeout(() => {
+        if (seq !== plotAlertsScheduleSeq || activeTab !== "map") return;
+        void loadPlotAlerts();
+      }, 0);
+    });
+  });
 }
 
 function showIndoorPanel(): void {
@@ -5128,6 +5318,7 @@ async function refreshGardenDataForCurrentContext(): Promise<void> {
   await Promise.all([fetchPlots(), fetchLayoutState(), refreshElevationAvailability()]);
   if (!isCurrentGardenRequest(requestGardenId)) return;
   invalidatePlantsCache();
+  if (activeTab === "map") requestPlantsCachePrefetchAfterPaint();
   if (activeTab === "map" && shouldLoadShadeMapPanelNow()) await ensureShadeMapPanelLoaded();
   if (!isCurrentGardenRequest(requestGardenId)) return;
   await refreshActiveNavigationContent();
@@ -5365,6 +5556,7 @@ async function bootstrapApp(): Promise<void> {
   if (needsOnboarding) return;
 
   await Promise.all([fetchPlots(), fetchLayoutState(), refreshElevationAvailability()]);
+  requestPlantsCachePrefetchAfterPaint();
   if (activeTab === "map" && shouldLoadShadeMapPanelNow()) {
     await ensureShadeMapPanelLoaded();
   }
@@ -5386,6 +5578,7 @@ async function checkOnboardingNeeded(): Promise<boolean> {
       void (async () => {
         await refreshGardenContext();
         await Promise.all([fetchPlots(), fetchLayoutState(), refreshElevationAvailability()]);
+        requestPlantsCachePrefetchAfterPaint();
         if (activeTab === "map" && shouldLoadShadeMapPanelNow()) {
           await ensureShadeMapPanelLoaded();
         }

@@ -266,6 +266,94 @@ function metricStats(runs, metricName) {
   };
 }
 
+async function createCdpMetricsSession(page) {
+  try {
+    const session = await page.context().newCDPSession(page);
+    await session.send("Performance.enable");
+    return session;
+  } catch {
+    return null;
+  }
+}
+
+async function collectCdpMetrics(session) {
+  if (!session) return null;
+  try {
+    const result = await session.send("Performance.getMetrics");
+    return Object.fromEntries(
+      result.metrics.map((metric) => [metric.name, metric.value]),
+    );
+  } catch {
+    return null;
+  }
+}
+
+function metricDeltaMs(before, after, name) {
+  const beforeValue = before?.[name];
+  const afterValue = after?.[name];
+  if (!Number.isFinite(beforeValue) || !Number.isFinite(afterValue)) {
+    return null;
+  }
+  return roundMs((afterValue - beforeValue) * 1_000);
+}
+
+function metricDeltaCount(before, after, name) {
+  const beforeValue = before?.[name];
+  const afterValue = after?.[name];
+  if (!Number.isFinite(beforeValue) || !Number.isFinite(afterValue)) {
+    return null;
+  }
+  return roundMs(afterValue - beforeValue);
+}
+
+function summarizeCdpDelta(before, after) {
+  const recalcStyleDurationMs = metricDeltaMs(before, after, "RecalcStyleDuration");
+  const layoutDurationMs = metricDeltaMs(before, after, "LayoutDuration");
+  const styleLayoutDurationMs = Number.isFinite(recalcStyleDurationMs)
+    && Number.isFinite(layoutDurationMs)
+    ? roundMs(recalcStyleDurationMs + layoutDurationMs)
+    : null;
+  return {
+    jsHeapUsedDeltaBytes: metricDeltaCount(before, after, "JSHeapUsedSize"),
+    layoutCount: metricDeltaCount(before, after, "LayoutCount"),
+    layoutDurationMs,
+    nodesDelta: metricDeltaCount(before, after, "Nodes"),
+    recalcStyleCount: metricDeltaCount(before, after, "RecalcStyleCount"),
+    recalcStyleDurationMs,
+    scriptDurationMs: metricDeltaMs(before, after, "ScriptDuration"),
+    styleLayoutDurationMs,
+    taskDurationMs: metricDeltaMs(before, after, "TaskDuration"),
+  };
+}
+
+async function afterPaint(page) {
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => window.setTimeout(resolve, 0));
+    });
+  }));
+}
+
+async function collectDomSnapshot(page) {
+  return page.evaluate(() => {
+    const countNodes = (selector) => {
+      const root = document.querySelector(selector);
+      return root instanceof HTMLElement
+        ? root.getElementsByTagName("*").length + 1
+        : 0;
+    };
+    return {
+      careViewNodes: countNodes("#care-view"),
+      mapViewNodes: countNodes("#map-view"),
+      plantRows: document.querySelector("#plants-table-body")?.querySelectorAll("tr").length ?? 0,
+      plantsViewNodes: countNodes("#plants-view"),
+      plotCount: document.querySelector("#map-grid")?.querySelectorAll(".plot").length ?? 0,
+      statsViewNodes: countNodes("#statistics-view"),
+      totalNodes: document.getElementsByTagName("*").length,
+    };
+  });
+}
+
 function summarizeRuns(runs, scenario) {
   const metricNames = new Set(SCENARIO_METRICS[scenario] ?? []);
   for (const run of runs) {
@@ -1144,11 +1232,61 @@ async function runAppAuthLargeTabsScenario(page, options) {
   const tabSelector = (tab) => (
     options.viewportWidth <= 960 ? `#mobile-tab-${tab}` : `#top-tab-${tab}`
   );
-  const measureSwitch = async (tab, readyFn) => {
+  const cdpSession = await createCdpMetricsSession(page);
+  const measureSwitch = async (name, tab, readyFn) => {
     const interactionStartedAt = performance.now();
+    const browserStartedAt = await page.evaluate(() => performance.now());
+    const beforeCdp = await collectCdpMetrics(cdpSession);
+    const domBefore = await collectDomSnapshot(page);
+    const clickStartedAt = performance.now();
     await page.click(tabSelector(tab));
+    const playwrightActionMs = performance.now() - clickStartedAt;
     await page.waitForFunction(readyFn, undefined, { timeout: timeoutMs });
-    return performance.now() - interactionStartedAt;
+    const readyMs = performance.now() - interactionStartedAt;
+    await afterPaint(page);
+    const presentedMs = performance.now() - interactionStartedAt;
+    const browserEndedAt = await page.evaluate(() => performance.now());
+    const afterCdp = await collectCdpMetrics(cdpSession);
+    const domAfter = await collectDomSnapshot(page);
+    const longTasks = await page.evaluate(
+      ({ end, start }) => (window.__gardenopsPerfLongTasks ?? [])
+        .filter((entry) => entry.startTime >= start && entry.startTime <= end)
+        .map((entry) => ({
+          duration: Math.round(entry.duration * 10) / 10,
+          name: entry.name,
+          startTime: Math.round(entry.startTime * 10) / 10,
+        })),
+      { end: browserEndedAt, start: browserStartedAt },
+    );
+    const networkDuringSwitch = await page.evaluate(
+      ({ end, start }) => performance.getEntriesByType("resource")
+        .filter((entry) => entry.startTime >= start && entry.startTime <= end)
+        .map((entry) => ({
+          duration: Math.round(entry.duration * 10) / 10,
+          initiatorType: entry.initiatorType,
+          name: entry.name,
+          startTime: Math.round(entry.startTime * 10) / 10,
+          transferSize: entry.transferSize ?? 0,
+        })),
+      { end: browserEndedAt, start: browserStartedAt },
+    );
+    const cdpDelta = summarizeCdpDelta(beforeCdp, afterCdp);
+    return {
+      cdpDelta,
+      dom: {
+        after: domAfter,
+        before: domBefore,
+        totalNodesDelta: domAfter.totalNodes - domBefore.totalNodes,
+      },
+      longTasks,
+      name,
+      networkDuringSwitch,
+      playwrightActionMs: roundMs(playwrightActionMs),
+      presentedMs: roundMs(presentedMs),
+      readyMs: roundMs(readyMs),
+      target: tabSelector(tab),
+      wallMs: roundMs(presentedMs),
+    };
   };
 
   const initialFlow = await page.evaluate(() => {
@@ -1186,12 +1324,23 @@ async function runAppAuthLargeTabsScenario(page, options) {
     };
   }
 
-  const mapToGardenMs = await measureSwitch("garden", gardenReady);
-  const gardenToInsightsMs = await measureSwitch("insights", careReady);
-  const insightsToMapMs = await measureSwitch("map", mapReady);
-  const warmMapToGardenMs = await measureSwitch("garden", gardenReady);
-  const warmGardenToInsightsMs = await measureSwitch("insights", careReady);
-  const warmInsightsToMapMs = await measureSwitch("map", mapReady);
+  const tabSwitchDetails = [
+    await measureSwitch("mapToGarden", "garden", gardenReady),
+    await measureSwitch("gardenToInsights", "insights", careReady),
+    await measureSwitch("insightsToMap", "map", mapReady),
+    await measureSwitch("warmMapToGarden", "garden", gardenReady),
+    await measureSwitch("warmGardenToInsights", "insights", careReady),
+    await measureSwitch("warmInsightsToMap", "map", mapReady),
+  ];
+  const switchByName = Object.fromEntries(
+    tabSwitchDetails.map((entry) => [entry.name, entry]),
+  );
+  const mapToGardenMs = switchByName.mapToGarden.presentedMs;
+  const gardenToInsightsMs = switchByName.gardenToInsights.presentedMs;
+  const insightsToMapMs = switchByName.insightsToMap.presentedMs;
+  const warmMapToGardenMs = switchByName.warmMapToGarden.presentedMs;
+  const warmGardenToInsightsMs = switchByName.warmGardenToInsights.presentedMs;
+  const warmInsightsToMapMs = switchByName.warmInsightsToMap.presentedMs;
 
   const switchTimings = [
     mapToGardenMs,
@@ -1286,6 +1435,12 @@ async function runAppAuthLargeTabsScenario(page, options) {
   finalFlow.plantVirtualScroll = plantVirtualScroll;
   finalFlow.careVirtualScroll = careVirtualScroll;
 
+  const maxPhaseValue = (readValue) => {
+    const values = tabSwitchDetails
+      .map(readValue)
+      .filter((value) => Number.isFinite(value));
+    return values.length > 0 ? roundMs(Math.max(...values)) : null;
+  };
   const browserMetrics = await collectBrowserMetrics(page);
   return {
     flow: {
@@ -1293,6 +1448,7 @@ async function runAppAuthLargeTabsScenario(page, options) {
       final: finalFlow,
     },
     resources: normalizeResources(browserMetrics.resources),
+    tabSwitchDetails,
     timings: {
       appReadyMs: roundMs(appReadyMs),
       appShellReadyMs: roundMs(appShellReadyMs),
@@ -1305,7 +1461,11 @@ async function runAppAuthLargeTabsScenario(page, options) {
       loadEventMs: roundMs(browserMetrics.navigation?.loadEventMs ?? NaN),
       longTaskCount: longTasks.length,
       mapToGardenMs: roundMs(mapToGardenMs),
+      maxPlaywrightActionMs: maxPhaseValue((entry) => entry.playwrightActionMs),
+      maxScriptDurationMs: maxPhaseValue((entry) => entry.cdpDelta.scriptDurationMs),
+      maxStyleLayoutDurationMs: maxPhaseValue((entry) => entry.cdpDelta.styleLayoutDurationMs),
       maxLongTaskMs: roundMs(maxLongTaskMs),
+      maxTabSwitchReadyMs: maxPhaseValue((entry) => entry.readyMs),
       maxTabSwitchMs: roundMs(Math.max(...switchTimings)),
       mountedCareCards: finalFlow.careCards,
       mountedCareRows: finalFlow.careRows,
@@ -1316,6 +1476,8 @@ async function runAppAuthLargeTabsScenario(page, options) {
       responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
       warmGardenToInsightsMs: roundMs(warmGardenToInsightsMs),
       warmInsightsToMapMs: roundMs(warmInsightsToMapMs),
+      warmInsightsToMapScriptDurationMs: switchByName.warmInsightsToMap.cdpDelta.scriptDurationMs,
+      warmInsightsToMapStyleLayoutDurationMs: switchByName.warmInsightsToMap.cdpDelta.styleLayoutDurationMs,
       warmMapToGardenMs: roundMs(warmMapToGardenMs),
     },
   };
@@ -1502,6 +1664,9 @@ function printHuman(result, outputPath) {
     );
     console.log(
       `Max tab switch: median ${fmtMs(metrics.maxTabSwitchMs.median)}, p75 ${fmtMs(metrics.maxTabSwitchMs.p75)}; max long task median ${fmtMs(metrics.maxLongTaskMs.median)}`,
+    );
+    console.log(
+      `Switch phases: ready median ${fmtMs(metrics.maxTabSwitchReadyMs.median)}, Playwright action median ${fmtMs(metrics.maxPlaywrightActionMs.median)}, JS median ${fmtMs(metrics.maxScriptDurationMs.median)}, style/layout median ${fmtMs(metrics.maxStyleLayoutDurationMs.median)}`,
     );
     console.log(
       `Mounted rows: plants median ${metrics.mountedPlantRows.median}, care median ${metrics.mountedCareRows.median}`,
