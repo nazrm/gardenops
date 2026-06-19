@@ -2033,6 +2033,22 @@ textarea {
   padding: 40px 52px;
 }
 
+.map-camera[data-grid-label]::before {
+  content: attr(data-grid-label);
+  position: absolute;
+  top: 12px;
+  left: 52px;
+  z-index: 2;
+  background: var(--grid-label-bg);
+  color: var(--text-inv);
+  border-radius: var(--r-sm);
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
 .shade-panel {
   display: grid;
   grid-template-rows: auto auto auto auto auto auto;
@@ -2640,20 +2656,6 @@ textarea {
   background: var(--grid-bg);
   position: relative;
   contain: layout paint style;
-}
-
-.map-grid::before {
-  content: attr(data-grid-label);
-  position: absolute;
-  top: -28px;
-  left: 0;
-  background: var(--grid-label-bg);
-  color: var(--text-inv);
-  border-radius: var(--r-sm);
-  padding: 2px 10px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
 }
 
 /* ── Map loading state ────────────────────────────────────── */
