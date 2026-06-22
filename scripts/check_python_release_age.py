@@ -21,6 +21,7 @@ SECURITY_BYPASS_PATH = ROOT / ".gardenops" / "security-release-bypass.json"
 TEMPORARY_EXCEPTIONS = {
     "anthropic==0.102.0": datetime(2026, 5, 27, 18, 12, 44, tzinfo=UTC),
     "idna==3.15": datetime(2026, 5, 26, 22, 45, 58, tzinfo=UTC),
+    "msgpack==1.2.1": datetime(2026, 6, 25, 16, 13, 53, tzinfo=UTC),
     "openai==2.37.0": datetime(2026, 5, 29, 22, 30, 36, tzinfo=UTC),
     "pip==26.1.2": datetime(2026, 6, 14, 17, 33, 59, tzinfo=UTC),
     "starlette==1.0.1": datetime(2026, 6, 4, 21, 58, 59, tzinfo=UTC),
