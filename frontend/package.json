@@ -20,19 +20,19 @@
     "preview": "vite preview"
   },
   "devDependencies": {
-    "@emnapi/core": "^1.11.0",
-    "@emnapi/runtime": "^1.11.0",
+    "@emnapi/core": "^1.11.1",
+    "@emnapi/runtime": "^1.11.1",
     "@types/leaflet": "^1.9.21",
-    "playwright-core": "1.60.0",
+    "playwright-core": "1.61.0",
     "typescript": "6.0.3",
     "vite": "^8.0.16"
   },
   "dependencies": {
-    "@fullcalendar/core": "^6.1.20",
-    "@fullcalendar/daygrid": "^6.1.20",
-    "@fullcalendar/interaction": "^6.1.20",
-    "@fullcalendar/list": "^6.1.20",
-    "@fullcalendar/timegrid": "^6.1.20",
+    "@fullcalendar/core": "^6.1.21",
+    "@fullcalendar/daygrid": "^6.1.21",
+    "@fullcalendar/interaction": "^6.1.21",
+    "@fullcalendar/list": "^6.1.21",
+    "@fullcalendar/timegrid": "^6.1.21",
     "leaflet": "^1.9.4"
   }
 }
