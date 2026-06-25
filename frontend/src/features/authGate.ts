@@ -1,6 +1,5 @@
-import { t } from "../core/i18n";
+import { t } from "../core/authI18n";
 import gardenOpsLogoUrl from "../assets/gardenops-logo-auth-hero.webp";
-import type { PasswordPolicy } from "../core/models";
 import {
   clearPrimedInviteToken,
   peekPrimedInviteToken,
@@ -23,11 +22,24 @@ import {
   logoutApi,
   peekInvitationApi,
   setActiveGardenContext,
+  type PasswordPolicy,
   type PasskeyOptionsResponse,
-} from "../services/api";
+} from "../services/authApi";
 import { getPasskey, isPasskeySupported } from "./passkeys";
 
 const authGateShells = new WeakMap<HTMLDivElement, HTMLDivElement>();
+const AUTH_GATE_ACTIVE_CLASS = "auth-gate-active";
+
+function activateAuthGate(resolve: () => void): () => void {
+  document.body.classList.add(AUTH_GATE_ACTIVE_CLASS);
+  let settled = false;
+  return () => {
+    if (settled) return;
+    settled = true;
+    document.body.classList.remove(AUTH_GATE_ACTIVE_CLASS);
+    resolve();
+  };
+}
 
 function createAuthGateCard(
   subtitle: string,
@@ -56,8 +68,8 @@ function createAuthGateLogo(): HTMLImageElement {
   logo.className = "auth-gate-logo";
   logo.src = gardenOpsLogoUrl;
   logo.alt = t("auth.app_title");
-  logo.width = 720;
-  logo.height = 310;
+  logo.width = 600;
+  logo.height = 258;
   logo.decoding = "async";
   return logo;
 }
@@ -74,14 +86,15 @@ function appendAuthGateHeader(
     heading.textContent = headingText;
   }
 
-  const subtitleEl = document.createElement("p");
-  subtitleEl.className = "auth-gate-subtitle";
-  subtitleEl.textContent = subtitle;
-
   if (heading) {
     card.append(heading);
   }
-  card.append(subtitleEl);
+  if (subtitle) {
+    const subtitleEl = document.createElement("p");
+    subtitleEl.className = "auth-gate-subtitle";
+    subtitleEl.textContent = subtitle;
+    card.append(subtitleEl);
+  }
 }
 
 export function showForcedPasswordChangeGate(
@@ -90,6 +103,7 @@ export function showForcedPasswordChangeGate(
   return new Promise((resolve) => {
     const app = document.getElementById("app");
     if (!app) return;
+    const complete = activateAuthGate(resolve);
 
     const gate = document.createElement("div");
     gate.className = "auth-gate";
@@ -98,7 +112,7 @@ export function showForcedPasswordChangeGate(
     );
     appendAuthGateCard(gate, card);
     document.body.prepend(gate);
-    renderForcedPasswordChangeForm(gate, card, username, "", resolve);
+    renderForcedPasswordChangeForm(gate, card, username, "", complete);
   });
 }
 
@@ -111,6 +125,7 @@ export function showAuthGate(
   return new Promise((resolve) => {
     const app = document.getElementById("app");
     if (!app) return;
+    const complete = activateAuthGate(resolve);
 
     const gate = document.createElement("div");
     gate.className = "auth-gate";
@@ -122,7 +137,7 @@ export function showAuthGate(
         inviteToken,
         bootstrapRequired,
         passkeysEnabled,
-        resolve,
+        complete,
       );
     } else {
       renderLoginFlow(
@@ -130,7 +145,7 @@ export function showAuthGate(
         createAuthGateCard,
         bootstrapRequired,
         passkeysEnabled,
-        resolve,
+        complete,
       );
     }
   });
@@ -542,29 +557,49 @@ function renderLoginFlow(
 
   const usernameLabel =
     document.createElement("label");
-  usernameLabel.append(
-    document.createTextNode(t("auth.username")),
-  );
+  const usernameLabelText = document.createElement("span");
+  usernameLabelText.className = "auth-gate-field-label";
+  usernameLabelText.textContent = t("auth.username");
+  usernameLabel.append(usernameLabelText);
   const usernameInput =
     document.createElement("input");
   usernameInput.type = "text";
   usernameInput.name = "username";
   usernameInput.autocomplete = "username";
   usernameInput.required = true;
-  usernameLabel.appendChild(usernameInput);
+  if (bootstrapRequired) {
+    usernameLabel.appendChild(usernameInput);
+  } else {
+    usernameLabel.className = "auth-gate-identity-label auth-gate-username-label";
+    usernameInput.placeholder = t("auth.username");
+    const usernameField = document.createElement("span");
+    usernameField.className = "auth-gate-identity-field";
+    usernameField.appendChild(usernameInput);
+    usernameLabel.appendChild(usernameField);
+  }
 
   const passwordLabel =
     document.createElement("label");
-  passwordLabel.append(
-    document.createTextNode(t("auth.password")),
-  );
+  const passwordLabelText = document.createElement("span");
+  passwordLabelText.className = "auth-gate-field-label";
+  passwordLabelText.textContent = t("auth.password");
+  passwordLabel.append(passwordLabelText);
   const passwordInput =
     document.createElement("input");
   passwordInput.type = "password";
   passwordInput.name = "password";
   passwordInput.autocomplete = "current-password";
   passwordInput.required = true;
-  passwordLabel.appendChild(passwordInput);
+  if (bootstrapRequired) {
+    passwordLabel.appendChild(passwordInput);
+  } else {
+    passwordLabel.className = "auth-gate-identity-label auth-gate-password-label";
+    passwordInput.placeholder = t("auth.password");
+    const passwordField = document.createElement("span");
+    passwordField.className = "auth-gate-identity-field";
+    passwordField.appendChild(passwordInput);
+    passwordLabel.appendChild(passwordField);
+  }
 
   // Password checklist for bootstrap (new account creation) only
   let bootstrapChecklist: ChecklistHandle | null = null;
@@ -668,7 +703,7 @@ function renderLoginFlow(
     if (step === "username") {
       passwordInput.value = "";
       submitBtn.disabled = false;
-      submitBtn.textContent = t("auth.continue");
+      submitBtn.textContent = t("auth.enter_action");
       return;
     }
 

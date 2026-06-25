@@ -4,6 +4,7 @@ import type {
   CalendarManualEventDraft,
   GardenIssue,
   GardenTask,
+  HarvestEntry,
   Plant,
   Plot,
 } from "./models";
@@ -65,10 +66,15 @@ export interface AppContext {
   renderPlots(): void;
   renderPlantsTable(): void;
   renderCareView(): void;
+  openCareForPlants(pltIds: string[]): void;
+  loadCare(): Promise<void>;
   renderDataExportBars(): void;
 
   fetchPlots(): Promise<void>;
+  ensurePlantsCacheLoaded(): Promise<void>;
   ensurePlantsLoaded(): Promise<void>;
+  getPlantsCacheRevision(): number;
+  setPlantsCache(plants: Plant[]): void;
   invalidatePlantsCache(): void;
 
   isMobile(): boolean;
@@ -131,6 +137,7 @@ export interface AppContext {
   openMapForPlots(plotIds: string[]): void;
   openBatchJournalForPlants(pltIds: string[]): void;
   openTaskForm(task?: GardenTask): Promise<void>;
+  openHarvestForm(entry?: HarvestEntry): Promise<void>;
   openJournalComposer(): Promise<void>;
   openIssueForm(issue?: GardenIssue): Promise<void>;
   openCalendarEventComposer(

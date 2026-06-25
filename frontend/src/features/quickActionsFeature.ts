@@ -15,12 +15,27 @@ import {
   isOnline,
   enqueueDraft,
 } from "../services/offlineQueue";
-import { openHarvestForm } from "../tabs/harvestTab";
-import { showIdentifyPlantModal } from "../components/identifyPlant";
 
 let ctx: AppContext;
 let quickActionSheetOpen = false;
 let escapeHandler: ((e: KeyboardEvent) => void) | null = null;
+type IdentifyPlantModule = typeof import("../components/identifyPlant");
+let identifyPlantModulePromise: Promise<IdentifyPlantModule> | null = null;
+
+function showIdentifyPlantModalLazy(
+  ...params: Parameters<IdentifyPlantModule["showIdentifyPlantModal"]>
+): void {
+  identifyPlantModulePromise ??= import("../components/identifyPlant")
+    .catch((err) => {
+      identifyPlantModulePromise = null;
+      throw err;
+    });
+  void identifyPlantModulePromise
+    .then((mod) => mod.showIdentifyPlantModal(...params))
+    .catch((err) => {
+      console.error("Failed to load identify plant modal", err);
+    });
+}
 
 export function isQuickActionSheetOpen(): boolean {
   return quickActionSheetOpen;
@@ -56,13 +71,13 @@ function getQuickActionCallbacks(): QuickActionCallbacks {
     onLogHarvest: () => {
       closeQuickActionSheet();
       ctx.navigateToSubMode("harvest");
-      openHarvestForm();
+      void ctx.openHarvestForm();
     },
     onSnoozeTask: () =>
       void showTaskQuickSnooze(),
     onIdentifyPlant: () => {
       closeQuickActionSheet();
-      showIdentifyPlantModal({
+      showIdentifyPlantModalLazy({
         onAddPlant: (prefill) => {
           ctx.navigateToSubMode("plants");
           ctx.openCreatePlantDialog(

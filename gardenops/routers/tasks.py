@@ -25,6 +25,9 @@ from gardenops.router_helpers import (
     is_local_admin_fallback as _is_local_admin_fallback,
 )
 from gardenops.router_helpers import (
+    is_owner_or_admin as _is_owner_or_admin,
+)
+from gardenops.router_helpers import (
     require_write as _require_write,
 )
 from gardenops.router_helpers import (
@@ -226,6 +229,37 @@ def _validate_plant_ids(
             detail=f"Plants not found in active garden: {', '.join(missing[:5])}",
         )
     return normalized
+
+
+def _require_observation_plant_access(
+    db: DbConn,
+    context: AuthContext,
+    plant_ids: list[str],
+) -> None:
+    normalized = _validate_plant_ids(db, context, plant_ids)
+    if not normalized or _is_local_admin_fallback(context):
+        return
+    placeholders = ",".join(["%s"] * len(normalized))
+    rows = db.execute(
+        f"""
+        SELECT plt_id, owner_user_id
+        FROM plant_ownership
+        WHERE garden_id = %s AND plt_id IN ({placeholders})
+        """,
+        [_active_garden_id(context), *normalized],
+    ).fetchall()
+    rows_by_plant = {str(row["plt_id"]): row for row in rows}
+    denied = [
+        plant_id
+        for plant_id in normalized
+        if plant_id not in rows_by_plant
+        or not _is_owner_or_admin(context, rows_by_plant[plant_id]["owner_user_id"])
+    ]
+    if denied:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Plants not found in active garden: {', '.join(denied[:5])}",
+        )
 
 
 def _validate_plot_ids(
@@ -449,6 +483,7 @@ def _task_linked_plot_ids(
 
 def _mark_seen_growing_for_completed_bloom_task(
     db: DbConn,
+    context: AuthContext,
     task_row: dict,
 ) -> None:
     if str(task_row.get("task_type") or "") != "observe_bloom":
@@ -460,6 +495,7 @@ def _mark_seen_growing_for_completed_bloom_task(
     if not plant_ids:
         return
 
+    _require_observation_plant_access(db, context, plant_ids)
     task_plot_ids = _task_linked_plot_ids(db, task_id)
     mark_seen_growing_from_observation(
         db,
@@ -487,6 +523,7 @@ def _record_completed_bloom_observation(
     if not plant_ids:
         return
 
+    _require_observation_plant_access(db, context, plant_ids)
     metadata = {
         "source": "task_completion",
         "source_task_id": str(task_row["public_id"]),
@@ -611,7 +648,7 @@ def _apply_task_action(
             (context.user_id, now_ms, now_ms, task_id),
         )
         _record_completed_bloom_observation(db, context, task_row, now_ms)
-        _mark_seen_growing_for_completed_bloom_task(db, task_row)
+        _mark_seen_growing_for_completed_bloom_task(db, context, task_row)
     elif body.action == "skip":
         db.execute(
             """
@@ -855,6 +892,8 @@ def create_task(
         window_start_on=body.window_start_on,
         window_end_on=body.window_end_on,
     )
+    if body.task_type == "observe_bloom":
+        _require_observation_plant_access(db, context, body.plant_ids)
 
     now_ms = current_timestamp_ms()
     row = db.execute(
@@ -912,6 +951,17 @@ def update_task(
         existing_task=existing_task,
         updates=updates,
     )
+    next_task_type = str(updates.get("task_type") or existing_task["task_type"])
+    if next_task_type == "observe_bloom":
+        if "plant_ids" in updates:
+            observation_plant_ids = updates["plant_ids"] if updates["plant_ids"] is not None else []
+        else:
+            existing_plants = db.execute(
+                "SELECT plt_id FROM garden_task_plants WHERE task_id = %s",
+                (internal_task_id,),
+            ).fetchall()
+            observation_plant_ids = [str(r["plt_id"]) for r in existing_plants]
+        _require_observation_plant_access(db, context, observation_plant_ids)
 
     set_clauses: list[str] = []
     params: list = []

@@ -12,16 +12,6 @@ import {
   getApiErrorMessage,
 } from "../services/api";
 import {
-  loadTasks,
-  getTasksView,
-  setTasksView,
-  setTasksOffset,
-} from "../tabs/tasksTab";
-import {
-  loadHarvest,
-  setHarvestOffset,
-} from "../tabs/harvestTab";
-import {
   loadProcurement,
   setProcurementOffset,
 } from "../tabs/procurementTab";
@@ -192,6 +182,12 @@ function toggleSavedViewsDropdown(): void {
   }
 }
 
+function currentTasksViewFromDom(): string {
+  return document.querySelector<HTMLButtonElement>(
+    "[data-tasks-view].active",
+  )?.dataset["tasksView"] || "today";
+}
+
 function applySavedViewFilters(
   view: SavedView | SavedViewPreset,
 ): void {
@@ -223,21 +219,6 @@ function applySavedViewFilters(
         : "all";
     ctx.renderPlantsTable();
   } else if (viewType === "tasks") {
-    setTasksView(
-      filters["view"]
-        ? String(filters["view"])
-        : "today",
-    );
-    document
-      .querySelectorAll<HTMLButtonElement>(
-        "[data-tasks-view]",
-      )
-      .forEach((btn) => {
-        btn.classList.toggle(
-          "active",
-          btn.dataset["tasksView"] === getTasksView(),
-        );
-      });
     const typeFilter = querySelect("tasks-filter-type");
     if (typeFilter)
       typeFilter.value = filters["task_type"]
@@ -248,8 +229,16 @@ function applySavedViewFilters(
       statusFilter.value = filters["status"]
         ? String(filters["status"])
         : "";
-    setTasksOffset(0);
-    void loadTasks();
+    void import("../tabs/tasksTab").then((mod) => {
+      mod.setTasksView(
+        filters["view"]
+          ? String(filters["view"])
+          : "today",
+      );
+      mod.syncTasksViewButtons();
+      mod.setTasksOffset(0);
+      void ctx.loadTasks();
+    });
   } else if (viewType === "calendar") {
     const recentHistory = document.getElementById(
       "calendar-recent-history",
@@ -344,8 +333,10 @@ function applySavedViewFilters(
       toF.value = filters["date_to"]
         ? String(filters["date_to"])
         : "";
-    setHarvestOffset(0);
-    void loadHarvest();
+    void import("../tabs/harvestTab").then((mod) => {
+      mod.setHarvestOffset(0);
+      ctx.navigateToSubMode("harvest");
+    });
   } else if (viewType === "procurement") {
     const statusF = querySelect("procurement-filter-status");
     if (statusF)
@@ -376,7 +367,7 @@ function getCurrentFiltersForMode(): Record<
     };
   } else if (mode === "tasks") {
     return {
-      view: getTasksView(),
+      view: currentTasksViewFromDom(),
       task_type: querySelect("tasks-filter-type")?.value || "",
       status: querySelect("tasks-filter-status")?.value || "",
     };

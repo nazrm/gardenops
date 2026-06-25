@@ -24,6 +24,9 @@ from gardenops.router_helpers import (
     is_local_admin_fallback as _is_local_admin_fallback,
 )
 from gardenops.router_helpers import (
+    is_owner_or_admin as _is_owner_or_admin,
+)
+from gardenops.router_helpers import (
     require_write as _require_write,
 )
 from gardenops.router_helpers import (
@@ -105,6 +108,37 @@ def _validate_plant_ids(
             detail=f"Plants not found in active garden: {', '.join(missing[:5])}",
         )
     return normalized
+
+
+def _require_observation_plant_access(
+    db: DbConn,
+    context: AuthContext,
+    plant_ids: list[str],
+) -> None:
+    normalized = _validate_plant_ids(db, context, plant_ids)
+    if not normalized or _is_local_admin_fallback(context):
+        return
+    placeholders = ",".join(["%s"] * len(normalized))
+    rows = db.execute(
+        f"""
+        SELECT plt_id, owner_user_id
+        FROM plant_ownership
+        WHERE garden_id = %s AND plt_id IN ({placeholders})
+        """,
+        [_active_garden_id(context), *normalized],
+    ).fetchall()
+    rows_by_plant = {str(row["plt_id"]): row for row in rows}
+    denied = [
+        plant_id
+        for plant_id in normalized
+        if plant_id not in rows_by_plant
+        or not _is_owner_or_admin(context, rows_by_plant[plant_id]["owner_user_id"])
+    ]
+    if denied:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Plants not found in active garden: {', '.join(denied[:5])}",
+        )
 
 
 def _validate_plot_ids(
@@ -252,6 +286,7 @@ def _set_links(
 def _apply_bloom_side_effects(
     db: DbConn,
     *,
+    context: AuthContext,
     garden_id: int,
     event_type: str,
     occurred_on: str,
@@ -260,6 +295,7 @@ def _apply_bloom_side_effects(
 ) -> None:
     if event_type != "bloomed" or not plant_ids:
         return
+    _require_observation_plant_access(db, context, plant_ids)
     mark_seen_growing_from_observation(
         db,
         garden_id=garden_id,
@@ -417,6 +453,10 @@ def create_journal_entry(
     _require_write(context)
     garden_id = _active_garden_id(context)
     _validate_date(body.occurred_on)
+    valid_plant_ids = _validate_plant_ids(db, context, body.plant_ids)
+    valid_plot_ids = _validate_plot_ids(db, context, body.plot_ids)
+    if body.event_type == "bloomed":
+        _require_observation_plant_access(db, context, valid_plant_ids)
 
     now_ms = current_timestamp_ms()
     metadata_str = json.dumps(body.metadata, sort_keys=True, separators=(",", ":"))
@@ -444,11 +484,10 @@ def create_journal_entry(
     assert row is not None
     entry_id = int(row["id"])
     entry_public_id = str(row["public_id"])
-    valid_plant_ids = _validate_plant_ids(db, context, body.plant_ids)
-    valid_plot_ids = _validate_plot_ids(db, context, body.plot_ids)
     _set_links(db, context, entry_id, valid_plant_ids, valid_plot_ids)
     _apply_bloom_side_effects(
         db,
+        context=context,
         garden_id=garden_id,
         event_type=body.event_type,
         occurred_on=body.occurred_on,

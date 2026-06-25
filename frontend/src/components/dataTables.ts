@@ -8,6 +8,14 @@ import {
 import { sanitizeUrl } from "../core/sanitize";
 import type { MediaAsset, PlotAssignmentMeaning } from "../services/api";
 import { createLazyMediaThumbnailButton } from "./mediaGalleryLoader";
+import {
+  clearVirtualTableBody,
+  renderVirtualTableBody,
+} from "./virtualTable";
+import {
+  clearVirtualList,
+  renderVirtualList,
+} from "./virtualList";
 
 export interface ColumnDef {
   key: string;
@@ -464,18 +472,17 @@ export function renderPlantsTableBody(
   } = callbacks;
   const totalCols = columns.length + 1 + (onToggleSelect ? 1 : 0);
 
-  if (plants.length === 0) {
+  const emptyRow = (): HTMLTableRowElement => {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
     cell.colSpan = totalCols;
     cell.className = "empty-table";
     cell.textContent = t("plants.no_matches");
     row.appendChild(cell);
-    tbody.replaceChildren(row);
-    return;
-  }
+    return row;
+  };
 
-  const rows = plants.map((plant) => {
+  const createRow = (plant: Plant): HTMLTableRowElement => {
     const row = document.createElement("tr");
     row.dataset["pltId"] = plant.plt_id;
     const bs = bloomStatus(plant.bloom_month);
@@ -532,9 +539,21 @@ export function renderPlantsTableBody(
     actionCell.appendChild(editButton);
     row.appendChild(actionCell);
     return row;
-  });
+  };
 
-  tbody.replaceChildren(...rows);
+  renderVirtualTableBody({
+    tbody,
+    items: plants,
+    totalColumns: totalCols,
+    estimateRowHeight: 58,
+    overscan: 8,
+    createRow,
+    emptyRow,
+  });
+}
+
+export function clearPlantsTableBody(tbody: HTMLElement): void {
+  clearVirtualTableBody(tbody);
 }
 
 export function renderPlantsMobileCards(
@@ -547,15 +566,14 @@ export function renderPlantsMobileCards(
     onToggleSelect, selectedIds,
   } = callbacks;
 
-  if (plants.length === 0) {
+  const renderEmpty = (): void => {
     renderEmptyState(container, {
       icon: "\uD83C\uDF3F",
       headline: t("plants.no_matches"),
     });
-    return;
-  }
+  };
 
-  const cards = plants.map((plant) => {
+  const createCard = (plant: Plant): HTMLElement => {
     const article = document.createElement("article");
     article.className = "mobile-data-card mobile-data-card--plant";
     article.dataset["pltId"] = plant.plt_id;
@@ -672,9 +690,20 @@ export function renderPlantsMobileCards(
 
     article.append(header, chipRow, factGrid, plotRow);
     return article;
-  });
+  };
 
-  container.replaceChildren(...cards);
+  renderVirtualList({
+    container,
+    items: plants,
+    estimateItemHeight: 270,
+    overscan: 4,
+    createItem: createCard,
+    renderEmpty,
+  });
+}
+
+export function clearPlantsMobileCards(container: HTMLElement): void {
+  clearVirtualList(container);
 }
 
 export function syncPlantsSelectionState(

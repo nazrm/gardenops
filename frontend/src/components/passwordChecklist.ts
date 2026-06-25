@@ -1,6 +1,5 @@
-import type { PasswordPolicy } from "../core/models";
-import { checkHibpApi } from "../services/api";
-import { t } from "../core/i18n";
+import { t } from "../core/authI18n";
+import { checkHibpApi, type PasswordPolicy } from "../services/authApi";
 
 export interface ChecklistHandle {
   destroy(): void;

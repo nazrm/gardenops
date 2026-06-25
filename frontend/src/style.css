@@ -29,9 +29,11 @@
 }
 
 :root {
-  --font: "GardenOps UI", system-ui, sans-serif;
+  --font-system: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-app: "GardenOps UI", var(--font-system);
+  --font: var(--font-system);
   --font-body: var(--font);
-  --font-display: "GardenOps UI", system-ui, sans-serif;
+  --font-display: var(--font-system);
   --font-heading: var(--font-display);
   --font-map-label: var(--font);
   --mobile-keyboard-offset: 0px;
@@ -205,6 +207,16 @@ body {
   color: var(--text-1);
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+}
+
+body.auth-gate-active {
+  --font: var(--font-system);
+  --font-display: var(--font);
+}
+
+body.app-font-active {
+  --font: var(--font-app);
+  --font-display: var(--font-app);
 }
 
 /* Paper grain overlay */
@@ -1192,6 +1204,16 @@ textarea {
   cursor: pointer;
 }
 
+.view-stack {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .view {
   display: none;
   height: 100%;
@@ -1213,6 +1235,36 @@ textarea {
 
 .view-map.active {
   display: grid;
+}
+
+@media (min-width: 961px) {
+  .view-map.view-map--standby {
+    display: grid;
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    visibility: hidden;
+    pointer-events: none;
+    content-visibility: hidden;
+    contain-intrinsic-size: 720px 960px;
+  }
+
+  .view-map.view-map--standby[inert] {
+    user-select: none;
+  }
+
+  .view-map.active {
+    position: relative;
+    z-index: 1;
+    visibility: visible;
+    pointer-events: auto;
+    content-visibility: visible;
+  }
+
+  .view-stack > .view.active:not(.view-map) {
+    position: relative;
+    z-index: 1;
+  }
 }
 
 /* ── Toolbar ─────────────────────────────────────────────── */
@@ -1993,6 +2045,7 @@ textarea {
 .map-stage {
   min-width: 0;
   min-height: 0;
+  contain: layout paint style;
 }
 
 .map-viewport {
@@ -2005,6 +2058,7 @@ textarea {
   height: 100%;
   border-radius: var(--r-md);
   box-shadow: inset 0 1px 4px rgba(42, 38, 30, 0.08);
+  contain: layout paint style;
 }
 
 .map-viewport:active {
@@ -2017,6 +2071,22 @@ textarea {
   display: inline-block;
   position: relative;
   padding: 40px 52px;
+}
+
+.map-camera[data-grid-label]::before {
+  content: attr(data-grid-label);
+  position: absolute;
+  top: 12px;
+  left: 52px;
+  z-index: 2;
+  background: var(--grid-label-bg);
+  color: var(--text-inv);
+  border-radius: var(--r-sm);
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  pointer-events: none;
 }
 
 .shade-panel {
@@ -2625,20 +2695,7 @@ textarea {
   padding: 1px;
   background: var(--grid-bg);
   position: relative;
-}
-
-.map-grid::before {
-  content: attr(data-grid-label);
-  position: absolute;
-  top: -28px;
-  left: 0;
-  background: var(--grid-label-bg);
-  color: var(--text-inv);
-  border-radius: var(--r-sm);
-  padding: 2px 10px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  contain: layout paint style;
 }
 
 /* ── Map loading state ────────────────────────────────────── */
@@ -3652,7 +3709,7 @@ body.moving-house .house-placeholder {
   display: block;
   width: min(540px, 96vw);
   height: auto;
-  aspect-ratio: 720 / 310;
+  aspect-ratio: 600 / 258;
   object-fit: contain;
   object-position: center;
   margin: 0;
@@ -3688,6 +3745,41 @@ body.moving-house .house-placeholder {
   color: #d7ddcf;
 }
 
+.auth-gate-username-label--identity {
+  gap: var(--sp-2);
+}
+
+.auth-gate-username-label--identity .auth-gate-field-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.auth-gate-identity-field {
+  display: block;
+  min-height: 46px;
+  padding: 3px 12px;
+  border: 1px solid rgba(213, 202, 180, 0.14);
+  border-radius: var(--r-sm);
+  background: rgba(17, 21, 16, 0.82);
+  transition:
+    background 160ms var(--ease),
+    border-color 160ms var(--ease),
+    box-shadow 160ms var(--ease);
+}
+
+.auth-gate-identity-field:focus-within {
+  border-color: #9fb66a;
+  background: rgba(17, 21, 16, 0.96);
+  box-shadow: 0 0 0 3px rgba(159, 182, 106, 0.2);
+}
+
 .auth-gate-card input {
   box-sizing: border-box;
   width: 100%;
@@ -3708,6 +3800,17 @@ body.moving-house .house-placeholder {
   border-color: #9fb66a;
   outline: none;
   box-shadow: 0 0 0 3px rgba(159, 182, 106, 0.2);
+}
+
+.auth-gate-identity-field input {
+  border: 0;
+  padding: 10px 0;
+  background: transparent;
+}
+
+.auth-gate-identity-field input:focus {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .auth-gate-card button[type="submit"] {
@@ -4198,6 +4301,22 @@ body.moving-house .house-placeholder {
   gap: var(--sp-3);
 }
 
+.mobile-data-list.virtual-list-wrap {
+  display: block;
+  max-height: min(70vh, 720px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  contain: layout paint style;
+}
+
+.mobile-data-list.virtual-list-wrap > [data-virtual-item] {
+  margin-bottom: var(--sp-3);
+}
+
+.virtual-list-spacer {
+  width: 100%;
+}
+
 .mobile-data-card,
 .care-mobile-card {
   border: 1px solid var(--border);
@@ -4406,6 +4525,12 @@ body.moving-house .house-placeholder {
   box-shadow: var(--shadow-sm);
 }
 
+.virtual-table-wrap {
+  max-height: min(62vh, 680px);
+  overscroll-behavior: contain;
+  contain: layout paint style;
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
@@ -4522,6 +4647,15 @@ th.sort-desc::after {
 
 .data-table tbody tr {
   transition: background 100ms var(--ease);
+}
+
+.data-table tbody tr[data-virtual-row] {
+  height: var(--virtual-row-height, 52px);
+}
+
+.virtual-table-spacer td {
+  border-bottom: 0;
+  padding: 0;
 }
 
 .data-table tbody tr:hover {
@@ -5717,6 +5851,10 @@ th.sort-desc::after {
 
   .mobile-sort-controls,
   .mobile-data-list {
+    display: none;
+  }
+
+  .mobile-data-list.virtual-list-wrap {
     display: none;
   }
 
