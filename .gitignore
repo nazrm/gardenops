@@ -45,6 +45,7 @@ media_uploads/
 .gardenops/
 
 # Tool caches
+.codex/
 .pytest_cache/
 .ruff_cache/
 

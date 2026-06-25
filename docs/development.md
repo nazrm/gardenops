@@ -22,6 +22,13 @@ npm run dev
 
 Open `http://localhost:5173`.
 
+## Repo-Local Codex Skills
+
+GardenOps-specific Codex skills live in `.codex/skills/` so the workflow stays
+with the repository instead of a single developer's global Codex directory.
+When these skills change, keep the repo-local copies authoritative and avoid
+adding GardenOps-specific skills under `/root/.codex/skills`.
+
 ## PR Checks
 
 Run these before opening a PR:
