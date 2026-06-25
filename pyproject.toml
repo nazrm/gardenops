@@ -10,7 +10,7 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "anthropic>=0.107.1",
     "cryptography>=48.0.1,<49.0.0",
-    "fastapi==0.136.1",
+    "fastapi==0.137.1",
     "laspy[lazrs]>=2.7.0",
     "numpy>=2.4.2",
     "openai>=2.38.0",
@@ -19,11 +19,10 @@ dependencies = [
     "pyproj>=3.7.2",
     "PyYAML>=6.0.3",
     "python-dotenv>=1.2.2",
-    "uvicorn[standard]==0.47.0",
+    "uvicorn[standard]==0.49.0",
     "redis>=8.0.0",
     "psycopg-pool>=3.3.0",
-    "webauthn==2.7.1",
-    "cbor2==6.0.1",
+    "webauthn==2.8.0",
 ]
 
 [dependency-groups]
@@ -37,7 +36,7 @@ lint = [
 ]
 audit = [
     "pip==26.1.2",
-    "pip-audit==2.9.0",
+    "pip-audit==2.10.1",
     "msgpack>=1.2.1",
     "requests<2.35.0",
 ]
