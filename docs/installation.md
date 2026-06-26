@@ -10,8 +10,8 @@ This guide sets up a local GardenOps development instance.
 - Node.js 24.x and npm
 - PostgreSQL 16+
 
-Redis is recommended for production-like rate limiting, but it is not required
-for a local development instance.
+Redis is required for production, internet-exposed, or multi-instance rate
+limiting. It is not required for a local development instance.
 
 ## Clone And Install Dependencies
 

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import psycopg
@@ -14,6 +15,7 @@ REQUIRED_TABLES = (
     "auth_users",
     "auth_passkeys",
     "auth_passkey_challenges",
+    "auth_password_reset_tokens",
     "audit_events",
     "gardens",
     "plots",
@@ -50,6 +52,9 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     "auth_users": (
         "id",
         "username",
+        "password_auth_disabled",
+        "passkey_user_handle",
+        "passkey_prompt_dismissed_until_ms",
         "role",
         "is_active",
         "must_change_password",
@@ -77,9 +82,26 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "flow",
         "user_id",
         "session_token_hash",
+        "invitation_token_hash",
+        "invitation_scope",
+        "invitation_id",
+        "invitee_username",
+        "invitation_user_handle",
         "created_at_ms",
         "expires_at_ms",
         "used_at_ms",
+    ),
+    "auth_password_reset_tokens": (
+        "id",
+        "token_hash",
+        "user_id",
+        "created_by_user_id",
+        "created_at_ms",
+        "expires_at_ms",
+        "used_at_ms",
+        "used_by_user_id",
+        "metadata",
+        "purpose",
     ),
     "audit_events": ("id", "actor_user_id", "actor_username", "garden_id"),
     "gardens": ("id", "slug", "name", "owner_user_id"),
@@ -122,6 +144,8 @@ REQUIRED_INDEXES = (
     "ux_auth_passkey_challenges_token_hash",
     "idx_auth_passkey_challenges_expires",
     "idx_auth_passkey_challenges_user",
+    "idx_auth_passkey_challenges_invitation",
+    "ux_auth_users_passkey_user_handle",
 )
 
 REQUIRED_CONSTRAINTS = (
@@ -129,6 +153,7 @@ REQUIRED_CONSTRAINTS = (
     "app_secrets_pkey",
     "app_secrets_updated_by_user_id_fkey",
     "auth_users_pkey",
+    "ck_auth_users_password_auth_state",
     "auth_passkeys_pkey",
     "auth_passkeys_user_id_fkey",
     "auth_passkey_challenges_pkey",
@@ -147,6 +172,41 @@ REQUIRED_CONSTRAINTS = (
     "fk_shademap_state_garden_id_gardens",
 )
 
+REQUIRED_COLUMN_NULLABILITY: dict[str, bool] = {
+    "auth_users.password_hash": True,
+    "auth_users.password_auth_disabled": False,
+    "auth_users.passkey_user_handle": True,
+    "auth_users.passkey_prompt_dismissed_until_ms": False,
+    "auth_password_reset_tokens.purpose": False,
+    "auth_passkey_challenges.invitation_user_handle": True,
+}
+
+REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
+    "idx_auth_passkey_challenges_invitation": (
+        "auth_passkey_challenges",
+        "invitation_token_hash",
+        "expires_at_ms",
+    ),
+    "ux_auth_users_passkey_user_handle": (
+        "unique index",
+        "auth_users",
+        "passkey_user_handle",
+        "where",
+        "passkey_user_handle is not null",
+    ),
+}
+
+REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
+    "ck_auth_users_password_auth_state": (
+        "check",
+        "password_auth_disabled = 0",
+        "password_hash is not null",
+        "length(password_hash) > 0",
+        "password_auth_disabled = 1",
+        "password_hash is null",
+    ),
+}
+
 _IGNORED_BOOTSTRAP_TABLES = frozenset({"schema_migrations"})
 
 
@@ -156,6 +216,13 @@ class SchemaSnapshot:
     columns: dict[str, set[str]]
     indexes: set[str]
     constraints: set[str]
+    column_nullability: dict[str, bool] = field(default_factory=dict)
+    index_definitions: dict[str, str] = field(default_factory=dict)
+    constraint_definitions: dict[str, str] = field(default_factory=dict)
+
+
+def _normalize_definition(value: str) -> str:
+    return re.sub(r"\s+", " ", value.lower()).strip()
 
 
 def collect_schema_snapshot(conn: psycopg.Connection[Any]) -> SchemaSnapshot:
@@ -170,38 +237,47 @@ def collect_schema_snapshot(conn: psycopg.Connection[Any]) -> SchemaSnapshot:
 
     column_rows = conn.execute(
         """
-        SELECT table_name, column_name
+        SELECT table_name, column_name, is_nullable
         FROM information_schema.columns
         WHERE table_schema = 'public'
         """,
     ).fetchall()
     columns: dict[str, set[str]] = {}
+    column_nullability: dict[str, bool] = {}
     for row in column_rows:
-        columns.setdefault(str(row["table_name"]), set()).add(str(row["column_name"]))
+        table_name = str(row["table_name"])
+        column_name = str(row["column_name"])
+        columns.setdefault(table_name, set()).add(column_name)
+        column_nullability[f"{table_name}.{column_name}"] = str(row["is_nullable"]) == "YES"
 
     index_rows = conn.execute(
         """
-        SELECT indexname
+        SELECT indexname, indexdef
         FROM pg_indexes
         WHERE schemaname = 'public'
         """,
     ).fetchall()
     indexes = {str(row["indexname"]) for row in index_rows}
+    index_definitions = {str(row["indexname"]): str(row["indexdef"]) for row in index_rows}
 
     constraint_rows = conn.execute(
         """
-        SELECT conname
+        SELECT conname, pg_get_constraintdef(oid) AS condef
         FROM pg_constraint
         WHERE connamespace = 'public'::regnamespace
         """,
     ).fetchall()
     constraints = {str(row["conname"]) for row in constraint_rows}
+    constraint_definitions = {str(row["conname"]): str(row["condef"]) for row in constraint_rows}
 
     return SchemaSnapshot(
         tables=tables,
         columns=columns,
         indexes=indexes,
         constraints=constraints,
+        column_nullability=column_nullability,
+        index_definitions=index_definitions,
+        constraint_definitions=constraint_definitions,
     )
 
 
@@ -212,6 +288,15 @@ def missing_schema_parts(
     required_columns: Mapping[str, tuple[str, ...]] = REQUIRED_COLUMNS,
     required_indexes: tuple[str, ...] = REQUIRED_INDEXES,
     required_constraints: tuple[str, ...] = REQUIRED_CONSTRAINTS,
+    required_column_nullability: Mapping[str, bool] = REQUIRED_COLUMN_NULLABILITY,
+    required_index_definition_fragments: Mapping[
+        str,
+        tuple[str, ...],
+    ] = REQUIRED_INDEX_DEFINITION_FRAGMENTS,
+    required_constraint_definition_fragments: Mapping[
+        str,
+        tuple[str, ...],
+    ] = REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS,
 ) -> list[dict[str, object]]:
     missing: list[dict[str, object]] = []
     for table in required_tables:
@@ -228,6 +313,21 @@ def missing_schema_parts(
     for constraint in required_constraints:
         if constraint not in snapshot.constraints:
             missing.append({"kind": "constraint", "object": constraint})
+    for column, nullable in required_column_nullability.items():
+        if snapshot.column_nullability.get(column) is not nullable:
+            missing.append({"kind": "column-nullability", "object": column})
+    for index, fragments in required_index_definition_fragments.items():
+        actual = _normalize_definition(snapshot.index_definitions.get(index, ""))
+        if not actual or any(
+            _normalize_definition(fragment) not in actual for fragment in fragments
+        ):
+            missing.append({"kind": "index-definition", "object": index})
+    for constraint, fragments in required_constraint_definition_fragments.items():
+        actual = _normalize_definition(snapshot.constraint_definitions.get(constraint, ""))
+        if not actual or any(
+            _normalize_definition(fragment) not in actual for fragment in fragments
+        ):
+            missing.append({"kind": "constraint-definition", "object": constraint})
     return missing
 
 

@@ -3837,6 +3837,30 @@ body.moving-house .house-placeholder {
   transform: none;
 }
 
+.auth-gate-secondary-action {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid rgba(159, 182, 106, 0.36);
+  border-radius: var(--r-sm);
+  background: rgba(159, 182, 106, 0.12);
+  color: #dce9ca;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 160ms var(--ease), border-color 160ms var(--ease);
+}
+
+.auth-gate-secondary-action:hover {
+  border-color: rgba(159, 182, 106, 0.62);
+  background: rgba(159, 182, 106, 0.18);
+}
+
+.auth-gate-secondary-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .auth-gate-error {
   margin: var(--sp-2) 0 0;
   padding: 8px 12px;
@@ -4050,6 +4074,15 @@ body.moving-house .house-placeholder {
   font-size: 22px;
   font-weight: 400;
   color: var(--text-1);
+}
+
+.passkey-prompt-modal {
+  width: min(360px, 92vw);
+}
+
+.passkey-prompt-modal h3 {
+  margin-bottom: var(--sp-3);
+  font-size: 20px;
 }
 
 .modal-help-text {

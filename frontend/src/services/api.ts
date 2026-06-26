@@ -658,6 +658,12 @@ export interface AuthUserProfile {
   mfa_authenticated: boolean;
   mfa_methods: string[];
   must_change_password: boolean;
+  passkeys_enabled: boolean;
+  passkey_enrolled: boolean;
+  passkey_count: number;
+  password_auth_disabled: boolean;
+  passkey_prompt_eligible: boolean;
+  passkey_prompt_dismissed_until_ms: number;
   plot_assignment_meanings: PlotAssignmentMeaning[];
   subscription_tier: "home" | "enthusiast" | "pro";
   allowed_features: string[];
@@ -1021,6 +1027,15 @@ export async function finishPasskeyRegistrationApi(
       nickname,
       credential,
     },
+  );
+}
+
+export async function dismissPasskeyPromptApi(
+  dismissForDays = 30,
+): Promise<{ status: string; passkey_prompt_dismissed_until_ms: number }> {
+  return apiPost<{ status: string; passkey_prompt_dismissed_until_ms: number }>(
+    "/api/auth/passkeys/prompt/dismiss",
+    { dismiss_for_days: dismissForDays },
   );
 }
 

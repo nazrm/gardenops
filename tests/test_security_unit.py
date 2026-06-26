@@ -397,6 +397,27 @@ class TestAuthenticateUserCredentials(BaseApiTest):
         result = authenticate_user_credentials("cred_user", strong_password("credpass1"))
         self.assertIsNone(result)
 
+    def test_passwordless_user_cannot_authenticate_with_password(self) -> None:
+        conn = db.get_db()
+        try:
+            create_user(
+                conn,
+                username="passkey_only_cred_user",
+                password=None,  # type: ignore[arg-type]
+                role="editor",
+                password_auth_disabled=True,
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        result = authenticate_user_credentials(
+            "passkey_only_cred_user",
+            strong_password("credpass1"),
+        )
+
+        self.assertIsNone(result)
+
 
 class TestCreateUser(BaseApiTest):
     """create_user creates user correctly (needs DB)."""
@@ -414,6 +435,81 @@ class TestCreateUser(BaseApiTest):
             self.assertEqual(user["username"], "new_user")
             self.assertEqual(user["role"], "viewer")
             self.assertTrue(user["is_active"])
+        finally:
+            db.return_db(conn)
+
+    def test_creates_passwordless_passkey_user_security_state(self) -> None:
+        conn = db.get_db()
+        try:
+            user = create_user(
+                conn,
+                username="passkey_only_user",
+                password=None,  # type: ignore[arg-type]
+                role="viewer",
+                password_auth_disabled=True,
+                must_change_password=True,
+            )
+            conn.commit()
+            row = conn.execute(
+                """
+                SELECT
+                    password_hash,
+                    password_auth_disabled,
+                    passkey_user_handle,
+                    passkey_prompt_dismissed_until_ms,
+                    must_change_password
+                FROM auth_users
+                WHERE id = %s
+                """,
+                (int(user["id"]),),
+            ).fetchone()
+            self.assertEqual(user["username"], "passkey_only_user")
+            self.assertEqual(user["role"], "viewer")
+            self.assertIsNone(row["password_hash"])
+            self.assertEqual(int(row["password_auth_disabled"]), 1)
+            self.assertGreaterEqual(len(str(row["passkey_user_handle"])), 32)
+            self.assertEqual(int(row["passkey_prompt_dismissed_until_ms"]), 0)
+            self.assertEqual(int(row["must_change_password"]), 0)
+        finally:
+            db.return_db(conn)
+
+    def test_create_user_reports_passkey_handle_conflict_separately(self) -> None:
+        conn = db.get_db()
+        try:
+            create_user(
+                conn,
+                username="passkey_handle_owner",
+                password=None,  # type: ignore[arg-type]
+                role="viewer",
+                password_auth_disabled=True,
+                passkey_user_handle="stable-passkey-handle-conflict",
+            )
+            with self.assertRaises(HTTPException) as cm:
+                create_user(
+                    conn,
+                    username="passkey_handle_conflict",
+                    password=None,  # type: ignore[arg-type]
+                    role="viewer",
+                    password_auth_disabled=True,
+                    passkey_user_handle="stable-passkey-handle-conflict",
+                )
+            self.assertEqual(cm.exception.status_code, 409)
+            self.assertEqual(cm.exception.detail, "Passkey user handle already exists")
+        finally:
+            db.return_db(conn)
+
+    def test_password_is_required_when_password_auth_enabled(self) -> None:
+        conn = db.get_db()
+        try:
+            with self.assertRaises(HTTPException) as cm:
+                create_user(
+                    conn,
+                    username="missing_password_user",
+                    password=None,  # type: ignore[arg-type]
+                    role="editor",
+                )
+            self.assertEqual(cm.exception.status_code, 400)
+            self.assertEqual(cm.exception.detail, "Password is required")
         finally:
             db.return_db(conn)
 

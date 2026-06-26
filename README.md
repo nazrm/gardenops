@@ -114,9 +114,9 @@ control.
 
 ### Security And Operations
 
-- Session auth, API-key compatibility mode, roles, MFA support, password policy,
-  audit logging, rate limits, invite-token hashing checks, and security
-  telemetry hooks.
+- Session auth, API-key compatibility mode, roles, MFA support, passkeys,
+  invite-gated passwordless registration, password policy, audit logging, rate
+  limits, invite-token hashing checks, and security telemetry hooks.
 - Production-oriented proxy settings for trusted hosts, CORS, trusted proxy
   CIDRs, internet-exposed mode, Redis rate limiting, and CSP checks.
 - Deployment examples for systemd and nginx, plus CI checks for backend tests,

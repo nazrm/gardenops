@@ -45,6 +45,7 @@ _COMMON_WEAK_PASSWORDS = {
 }
 _DEFAULT_GARDEN_SLUG = "default"
 _ARGON2_HASHER: PasswordHasher | None = None
+_PASSKEY_USER_HANDLE_BYTES = 32
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,9 @@ class AuthContext:
     session_via_cookie: bool = False
     subscription_tier: str = "home"
     must_change_password: bool = False
+    passkey_count: int = 0
+    password_auth_disabled: bool = False
+    passkey_prompt_dismissed_until_ms: int = 0
 
 
 def is_auth_required() -> bool:
@@ -290,6 +294,10 @@ def _legacy_pbkdf2_hash_password(password: str) -> str:
 
 def hash_password(password: str) -> str:
     return _argon2_hasher().hash(password)
+
+
+def generate_passkey_user_handle() -> str:
+    return secrets.token_urlsafe(_PASSKEY_USER_HANDLE_BYTES)
 
 
 def verify_password(password: str, password_hash: str) -> bool:
@@ -627,10 +635,12 @@ def create_user(
     conn: DbConn,
     *,
     username: str,
-    password: str,
+    password: str | None,
     role: Role,
     created_by_user_id: int | None = None,
     must_change_password: bool = False,
+    password_auth_disabled: bool = False,
+    passkey_user_handle: str | None = None,
 ) -> dict[str, object]:
     users_before = count_users(conn)
     normalized = username.strip()
@@ -638,34 +648,62 @@ def create_user(
         raise HTTPException(status_code=400, detail="Username is required")
     if len(normalized) > 80:
         raise HTTPException(status_code=400, detail="Username is too long")
-    validate_password_policy(password, username=normalized)
     if role not in AUTH_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
+    if password_auth_disabled:
+        password_hash: str | None = None
+        must_change_password = False
+    else:
+        if password is None or not password:
+            raise HTTPException(status_code=400, detail="Password is required")
+        validate_password_policy(password, username=normalized)
+        password_hash = hash_password(password)
     try:
         conn.execute(
             """
             INSERT INTO auth_users (
                 username,
                 password_hash,
+                password_auth_disabled,
+                passkey_user_handle,
                 role,
                 created_by_user_id,
                 must_change_password
             )
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 normalized,
-                hash_password(password),
+                password_hash,
+                int(bool(password_auth_disabled)),
+                passkey_user_handle or generate_passkey_user_handle(),
                 role,
                 created_by_user_id,
                 int(bool(must_change_password)),
             ),
         )
     except psycopg.IntegrityError as exc:
-        raise HTTPException(status_code=409, detail="Username already exists") from exc
+        constraint = str(getattr(getattr(exc, "diag", None), "constraint_name", "") or "")
+        if constraint == "ux_auth_users_username":
+            raise HTTPException(status_code=409, detail="Username already exists") from exc
+        if constraint == "ux_auth_users_passkey_user_handle":
+            raise HTTPException(
+                status_code=409,
+                detail="Passkey user handle already exists",
+            ) from exc
+        raise HTTPException(status_code=500, detail="Failed to create user") from exc
     row = conn.execute(
         """
-        SELECT id, username, role, is_active, created_by_user_id, must_change_password
+        SELECT
+            id,
+            username,
+            role,
+            is_active,
+            created_by_user_id,
+            must_change_password,
+            password_auth_disabled,
+            passkey_user_handle,
+            passkey_prompt_dismissed_until_ms
         FROM auth_users
         WHERE username = %s
         """,
@@ -695,6 +733,9 @@ def create_user(
             int(row["created_by_user_id"]) if row["created_by_user_id"] is not None else None
         ),
         "must_change_password": bool(int(row["must_change_password"])),
+        "password_auth_disabled": bool(int(row["password_auth_disabled"])),
+        "passkey_user_handle": str(row["passkey_user_handle"] or ""),
+        "passkey_prompt_dismissed_until_ms": int(row["passkey_prompt_dismissed_until_ms"] or 0),
     }
 
 
@@ -756,6 +797,8 @@ def _authenticate_session_token(
                 u.role,
                 u.is_active,
                 u.must_change_password,
+                u.password_auth_disabled,
+                u.passkey_prompt_dismissed_until_ms,
                 u.mfa_totp_enabled,
                 u.subscription_tier,
                 (
@@ -782,7 +825,8 @@ def _authenticate_session_token(
             return None
         role = _coerce_role(row["role"])
         mfa_enabled = bool(int(row["mfa_totp_enabled"]))
-        passkey_enrolled = int(row["passkey_count"] or 0) > 0
+        passkey_count = int(row["passkey_count"] or 0)
+        passkey_enrolled = passkey_count > 0
         mfa_authenticated_at_ms = int(row["mfa_authenticated_at_ms"])
         stored_mfa_setup_required = bool(int(row["mfa_setup_required"]))
         current_mfa_setup_required = _admin_mfa_enforced_for_role(
@@ -824,6 +868,9 @@ def _authenticate_session_token(
             session_via_cookie=via_cookie,
             subscription_tier=str(row["subscription_tier"] or "home"),
             must_change_password=bool(int(row["must_change_password"])),
+            passkey_count=passkey_count,
+            password_auth_disabled=bool(int(row["password_auth_disabled"])),
+            passkey_prompt_dismissed_until_ms=int(row["passkey_prompt_dismissed_until_ms"] or 0),
         )
     finally:
         if owns_conn:
@@ -899,6 +946,7 @@ def authenticate_user_credentials(username: str, password: str) -> dict[str, Any
                 id,
                 username,
                 password_hash,
+                password_auth_disabled,
                 role,
                 is_active,
                 must_change_password,
@@ -911,6 +959,8 @@ def authenticate_user_credentials(username: str, password: str) -> dict[str, Any
         if not row:
             return None
         if int(row["is_active"]) != 1:
+            return None
+        if int(row["password_auth_disabled"]) == 1 or row["password_hash"] is None:
             return None
         if not verify_password_and_upgrade(
             conn,

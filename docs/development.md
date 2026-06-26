@@ -29,11 +29,19 @@ with the repository instead of a single developer's global Codex directory.
 When these skills change, keep the repo-local copies authoritative and avoid
 adding GardenOps-specific skills under `/root/.codex/skills`.
 
+The git push sanitizer's reviewed implementation is tracked in
+`scripts/git_push_sanitizer.py`; the local `.codex` skill entrypoint delegates
+to that script. Run it before staging, committing, pushing, or opening/updating
+a PR. High-confidence token detectors remain hard blockers, while broad
+`SECRET_ASSIGNMENT` matches only allow narrow inline suppressions for reviewed
+fixtures.
+
 ## PR Checks
 
 Run these before opening a PR:
 
 ```bash
+python scripts/git_push_sanitizer.py
 set -a
 . ./.env.test.local
 set +a

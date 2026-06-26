@@ -1,7 +1,8 @@
 # Deployment
 
-GardenOps can run as a standard FastAPI service behind nginx with PostgreSQL
-and optional Redis.
+GardenOps can run as a standard FastAPI service behind nginx with PostgreSQL.
+Redis is required for production, internet-exposed, or multi-instance rate
+limiting.
 
 ## Production Baseline
 
@@ -27,11 +28,13 @@ AUTH_MFA_SECRET_KEY=
 ```
 
 The service rejects `API_DOCS_ENABLED=true` in production or internet-exposed
-deployments, and rejects `CSP_REPORT_ONLY=true` when `INTERNET_EXPOSED=true`.
-Session-auth deployments in production or internet-exposed mode must also set
-`AUTH_MFA_SECRET_KEY` to a generated secret with at least 32 characters. Generate
-one with `python -c "import secrets; print(secrets.token_urlsafe(32))"` and
-paste the output as the value.
+deployments, rejects `CSP_REPORT_ONLY=true` when `INTERNET_EXPOSED=true`, and
+requires `RATE_LIMIT_BACKEND=redis` in production, internet-exposed, or
+multi-instance modes. Session-auth deployments in production or internet-exposed
+mode must also set `AUTH_MFA_SECRET_KEY` to a generated secret with at least 32
+characters. Generate one with
+`python -c "import secrets; print(secrets.token_urlsafe(32))"` and paste the
+output as the value.
 
 If an older deployment copied the previous public placeholder value, rotate it
 while the service is private: start a maintenance instance with
@@ -82,7 +85,7 @@ and local terrain files out of Git.
 
 ## Redis
 
-Use Redis for production rate limiting:
+Use Redis for production, internet-exposed, and multi-instance rate limiting:
 
 ```bash
 RATE_LIMIT_BACKEND=redis

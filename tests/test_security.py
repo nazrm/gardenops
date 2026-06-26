@@ -12,6 +12,7 @@ from starlette.requests import Request as StarletteRequest
 
 import gardenops.db as db
 import gardenops.main as main_module
+import gardenops.passkeys as passkey_service
 import gardenops.rate_limit as rate_limit_module
 from gardenops.main import (
     _api_docs_enabled,
@@ -1643,6 +1644,253 @@ class TestSecurity(BaseApiTest):
             self.assertIsNotNone(used_token)
             assert used_token is not None
             self.assertIsNotNone(used_token["used_at_ms"])
+        finally:
+            db.return_db(conn)
+
+    def test_passwordless_user_requires_explicit_recovery_reset_purpose(self) -> None:
+        conn = db.get_db()
+        try:
+            create_user(
+                conn,
+                username="passwordless_reset_admin",
+                password=strong_password("admin-password-123"),
+                role="admin",
+            )
+            target = create_user(
+                conn,
+                username="passwordless_reset_target",
+                password=None,  # type: ignore[arg-type]
+                role="viewer",
+                password_auth_disabled=True,
+            )
+            now_ms = db.current_timestamp_ms()
+            conn.execute(
+                """
+                INSERT INTO auth_passkeys (
+                    user_id,
+                    credential_id,
+                    credential_public_key,
+                    sign_count,
+                    nickname,
+                    transports,
+                    credential_device_type,
+                    credential_backed_up,
+                    created_at_ms,
+                    updated_at_ms,
+                    last_used_at_ms
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+                """,
+                (
+                    int(target["id"]),
+                    passkey_service.encode_public_key(b"passwordless-reset-credential"),
+                    passkey_service.encode_public_key(b"public-key"),
+                    1,
+                    "Phone",
+                    "internal",
+                    "multi_device",
+                    1,
+                    now_ms,
+                    now_ms,
+                ),
+            )
+            conn.commit()
+            target_id = int(target["id"])
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            os.environ,
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+            },
+            clear=False,
+        ):
+            _, admin_csrf = self._login_session(
+                "passwordless_reset_admin",
+                "admin-password-123",
+            )
+            admin_headers = self._session_headers(admin_csrf)
+
+            issued_default = self.client.post(
+                f"/api/auth/users/{target_id}/issue-reset",
+                headers=admin_headers,
+                json={"action_reason": "default-reset-passwordless-test"},
+            )
+            self.assertEqual(issued_default.status_code, 200, issued_default.text)
+            blocked = self.client.post(
+                "/api/auth/reset-password",
+                json={
+                    "token": issued_default.json()["reset_token"],
+                    "new_password": strong_password("restored-password-123"),
+                },
+            )
+            self.assertEqual(blocked.status_code, 400)
+            self.assertEqual(
+                blocked.json()["detail"],
+                "Password reset is unavailable for this account",
+            )
+
+            issued_recovery = self.client.post(
+                f"/api/auth/users/{target_id}/issue-reset",
+                headers=admin_headers,
+                json={
+                    "purpose": "passwordless_recovery",
+                    "action_reason": "passwordless-recovery-test",
+                },
+            )
+            self.assertEqual(issued_recovery.status_code, 200, issued_recovery.text)
+            self.assertEqual(issued_recovery.json()["purpose"], "passwordless_recovery")
+            recovered = self.client.post(
+                "/api/auth/reset-password",
+                json={
+                    "token": issued_recovery.json()["reset_token"],
+                    "new_password": strong_password("restored-password-123"),
+                },
+            )
+            self.assertEqual(recovered.status_code, 200, recovered.text)
+            self.assertEqual(recovered.json()["revoked_passkeys"], 1)
+
+            login = self.client.post(
+                "/api/auth/login",
+                json={
+                    "username": "passwordless_reset_target",
+                    "password": strong_password("restored-password-123"),
+                },
+            )
+            self.assertEqual(login.status_code, 200, login.text)
+
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                """
+                SELECT password_hash, password_auth_disabled
+                FROM auth_users
+                WHERE id = %s
+                """,
+                (target_id,),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            assert row is not None
+            self.assertIsNotNone(row["password_hash"])
+            self.assertEqual(int(row["password_auth_disabled"]), 0)
+            passkey_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM auth_passkeys WHERE user_id = %s",
+                (target_id,),
+            ).fetchone()
+            self.assertEqual(int(passkey_count["count"]), 0)
+            audit = conn.execute(
+                """
+                SELECT detail
+                FROM audit_events
+                WHERE detail LIKE 'auth.user.passwordless-recovery-reset %'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+            ).fetchone()
+            self.assertIsNotNone(audit)
+        finally:
+            db.return_db(conn)
+
+    def test_passwordless_recovery_token_requires_passwordless_target(self) -> None:
+        conn = db.get_db()
+        try:
+            create_user(
+                conn,
+                username="recovery_scope_admin",
+                password=strong_password("admin-password-123"),
+                role="admin",
+            )
+            target = create_user(
+                conn,
+                username="recovery_scope_target",
+                password=strong_password("target-password-123"),
+                role="viewer",
+            )
+            conn.commit()
+            target_id = int(target["id"])
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            os.environ,
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+            },
+            clear=False,
+        ):
+            _, admin_csrf = self._login_session("recovery_scope_admin", "admin-password-123")
+            response = self.client.post(
+                f"/api/auth/users/{target_id}/issue-reset",
+                headers=self._session_headers(admin_csrf),
+                json={
+                    "purpose": "passwordless_recovery",
+                    "action_reason": "passwordless-recovery-scope-test",
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["detail"],
+            "Passwordless recovery is only available for passwordless accounts",
+        )
+
+    def test_admin_cannot_set_must_change_password_for_passwordless_user(self) -> None:
+        conn = db.get_db()
+        try:
+            create_user(
+                conn,
+                username="passwordless_mcp_admin",
+                password=strong_password("admin-password-123"),
+                role="admin",
+            )
+            target = create_user(
+                conn,
+                username="passwordless_mcp_target",
+                password=None,  # type: ignore[arg-type]
+                role="viewer",
+                password_auth_disabled=True,
+            )
+            conn.commit()
+            target_id = int(target["id"])
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            os.environ,
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+            },
+            clear=False,
+        ):
+            _, admin_csrf = self._login_session("passwordless_mcp_admin", "admin-password-123")
+            response = self.client.patch(
+                f"/api/auth/users/{target_id}",
+                headers=self._session_headers(admin_csrf),
+                json={
+                    "must_change_password": True,
+                    "action_reason": "passwordless-must-change-test",
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["detail"],
+            "Password change requirement is unavailable for passwordless accounts",
+        )
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                "SELECT must_change_password FROM auth_users WHERE id = %s",
+                (target_id,),
+            ).fetchone()
+            self.assertEqual(int(row["must_change_password"]), 0)
         finally:
             db.return_db(conn)
 
@@ -3725,6 +3973,8 @@ class TestSecurity(BaseApiTest):
             "ALLOW_INSECURE_REMOTE": "false",
             "CORS_ALLOW_ORIGINS": "https://gardenops.example.com",
             "ALLOWED_HOSTS": "gardenops.example.com",
+            "RATE_LIMIT_BACKEND": "redis",
+            "RATE_LIMIT_REDIS_URL": "redis://example.invalid:6379/0",
             "API_DOCS_ENABLED": "false",
             "CSP_REPORT_ONLY": "false",
         }
@@ -4119,6 +4369,47 @@ class TestSecurity(BaseApiTest):
         ):
             with self.assertRaisesRegex(RuntimeError, "RATE_LIMIT_REDIS_URL or REDIS_URL"):
                 _validate_runtime_security_config()
+
+    def test_validate_runtime_security_config_production_requires_shared_rate_limit_backend(
+        self,
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            self._valid_production_runtime_env(),
+            clear=False,
+        ):
+            _validate_runtime_security_config()
+
+        with patch.dict(
+            os.environ,
+            {
+                **self._valid_production_runtime_env(),
+                "RATE_LIMIT_BACKEND": "memory",
+                "RATE_LIMIT_REDIS_URL": "",
+                "REDIS_URL": "",
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "RATE_LIMIT_BACKEND=redis"):
+                _validate_runtime_security_config()
+
+    def test_rate_limit_backend_fails_closed_for_memory_backend_in_strict_modes(self) -> None:
+        rate_limit_module.reset_rate_limits()
+        with patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "production",
+                "INTERNET_EXPOSED": "false",
+                "MULTI_INSTANCE": "false",
+                "RATE_LIMIT_BACKEND": "memory",
+                "RATE_LIMIT_REDIS_URL": "",
+                "REDIS_URL": "",
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "RATE_LIMIT_BACKEND=redis"):
+                rate_limit_module.ensure_backend_ready()
+        rate_limit_module.reset_rate_limits()
 
     def test_validate_runtime_security_config_requires_env_mfa_secret_in_strict_modes(self) -> None:
         strict_env = self._valid_internet_exposed_runtime_env()

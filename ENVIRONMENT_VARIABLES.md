@@ -22,6 +22,12 @@ instance. Values shown here are placeholders; do not commit real local env files
 | `AUTH_PASSKEY_RP_ID` | Optional WebAuthn relying-party ID for passkey registration and login. Must match the public hostname, without scheme or port. | `gardenops.example.com` |
 | `AUTH_PASSKEY_ORIGINS` | Optional comma-separated exact browser origins allowed for passkeys. Use HTTPS outside localhost/test development. | `https://gardenops.example.com` |
 | `AUTH_PASSKEY_CHALLENGE_TTL_SECONDS` | Optional passkey ceremony challenge lifetime, clamped between 60 and 900 seconds. | `300` |
+| `AUTH_PASSKEY_REGISTER_RATE_LIMIT` | Optional per-client limit for logged-in passkey registration attempts and current-password checks. | `10` |
+| `AUTH_PASSKEY_PROMPT_DISMISS_RATE_LIMIT` | Optional per-client limit for dismissing the logged-in passkey enrollment prompt. | `20` |
+| `AUTH_INVITE_PASSKEY_REGISTER_RATE_LIMIT` | Optional per-client limit for invite-scoped passwordless passkey registration options and verify requests. | `20` |
+| `AUTH_INVITE_PASSKEY_REGISTER_TOKEN_RATE_LIMIT` | Optional per-token limit for invite-scoped passwordless passkey registration options requests. | `6` |
+| `AUTH_INVITE_PASSKEY_REGISTER_INVITEE_RATE_LIMIT` | Optional per-invitee limit for invite-scoped passwordless passkey registration options requests. | `6` |
+| `AUTH_ADAPTIVE_FRICTION_FLOWS` | Optional comma-separated public auth flows covered by adaptive friction when enabled. Supported defaults include `login`, `reset-password`, `invitation-accept`, and `invitation-passkey-register`. | `login,reset-password,invitation-accept,invitation-passkey-register` |
 | `APP_SECRETS_ENCRYPTION_KEY` | Fernet key used to encrypt platform-managed provider secrets stored in the database. Required before admins can save or clear provider keys from the admin UI. | `change-me` |
 
 ## HTTP And Proxy
