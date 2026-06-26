@@ -84,12 +84,27 @@ class MigrationGuardTests(unittest.TestCase):
             {
                 "user_id",
                 "session_token_hash",
+                "invitation_token_hash",
+                "invitation_scope",
+                "invitation_id",
+                "invitee_username",
                 "created_at_ms",
             }.issubset(set(REQUIRED_COLUMNS["auth_passkey_challenges"]))
         )
+        self.assertTrue(
+            {
+                "password_auth_disabled",
+                "passkey_user_handle",
+                "passkey_prompt_dismissed_until_ms",
+            }.issubset(set(REQUIRED_COLUMNS["auth_users"]))
+        )
+        self.assertIn("purpose", REQUIRED_COLUMNS["auth_password_reset_tokens"])
         self.assertIn("idx_auth_passkey_challenges_user", REQUIRED_INDEXES)
+        self.assertIn("idx_auth_passkey_challenges_invitation", REQUIRED_INDEXES)
+        self.assertIn("ux_auth_users_passkey_user_handle", REQUIRED_INDEXES)
         self.assertIn("auth_passkeys_user_id_fkey", REQUIRED_CONSTRAINTS)
         self.assertIn("auth_passkey_challenges_user_id_fkey", REQUIRED_CONSTRAINTS)
+        self.assertIn("ck_auth_users_password_auth_state", REQUIRED_CONSTRAINTS)
 
     def test_partial_bootstrap_signature_is_rejected(self) -> None:
         snapshot = SchemaSnapshot(

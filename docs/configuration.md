@@ -66,6 +66,19 @@ For first login, set `AUTH_BOOTSTRAP_USERNAME` and
 `AUTH_BOOTSTRAP_PASSWORD`, start the app, create the admin user, then remove or
 rotate those bootstrap values.
 
+## Passkeys And Invitations
+
+Passkeys require `AUTH_PASSKEY_RP_ID` and `AUTH_PASSKEY_ORIGINS` to match the
+public browser hostname and origin. When configured, existing password users are
+offered a passkey after login and can dismiss that prompt for a quiet period.
+Passwordless passkey registration is only available through a valid invitation:
+the invitee username must match the invitation, existing usernames are rejected,
+and platform-admin invitations still require the password-based invitation path.
+
+Normal password reset tokens do not convert passkey-only accounts back to
+password accounts. Admins must issue an explicit `passwordless_recovery` reset
+token when a passkey-only user needs password recovery.
+
 ## Optional Providers
 
 Provider keys are optional. Leave them unset to disable the associated feature.

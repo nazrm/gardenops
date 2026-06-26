@@ -1646,6 +1646,106 @@ class TestSecurity(BaseApiTest):
         finally:
             db.return_db(conn)
 
+    def test_passwordless_user_requires_explicit_recovery_reset_purpose(self) -> None:
+        conn = db.get_db()
+        try:
+            create_user(
+                conn,
+                username="passwordless_reset_admin",
+                password=strong_password("admin-password-123"),
+                role="admin",
+            )
+            target = create_user(
+                conn,
+                username="passwordless_reset_target",
+                password=None,  # type: ignore[arg-type]
+                role="viewer",
+                password_auth_disabled=True,
+            )
+            conn.commit()
+            target_id = int(target["id"])
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            os.environ,
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+            },
+            clear=False,
+        ):
+            _, admin_csrf = self._login_session(
+                "passwordless_reset_admin",
+                "admin-password-123",
+            )
+            admin_headers = self._session_headers(admin_csrf)
+
+            issued_default = self.client.post(
+                f"/api/auth/users/{target_id}/issue-reset",
+                headers=admin_headers,
+                json={"action_reason": "default-reset-passwordless-test"},
+            )
+            self.assertEqual(issued_default.status_code, 200, issued_default.text)
+            blocked = self.client.post(
+                "/api/auth/reset-password",
+                json={
+                    "token": issued_default.json()["reset_token"],
+                    "new_password": strong_password("restored-password-123"),
+                },
+            )
+            self.assertEqual(blocked.status_code, 400)
+            self.assertEqual(
+                blocked.json()["detail"],
+                "Password reset is unavailable for this account",
+            )
+
+            issued_recovery = self.client.post(
+                f"/api/auth/users/{target_id}/issue-reset",
+                headers=admin_headers,
+                json={
+                    "purpose": "passwordless_recovery",
+                    "action_reason": "passwordless-recovery-test",
+                },
+            )
+            self.assertEqual(issued_recovery.status_code, 200, issued_recovery.text)
+            self.assertEqual(issued_recovery.json()["purpose"], "passwordless_recovery")
+            recovered = self.client.post(
+                "/api/auth/reset-password",
+                json={
+                    "token": issued_recovery.json()["reset_token"],
+                    "new_password": strong_password("restored-password-123"),
+                },
+            )
+            self.assertEqual(recovered.status_code, 200, recovered.text)
+
+            login = self.client.post(
+                "/api/auth/login",
+                json={
+                    "username": "passwordless_reset_target",
+                    "password": strong_password("restored-password-123"),
+                },
+            )
+            self.assertEqual(login.status_code, 200, login.text)
+
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                """
+                SELECT password_hash, password_auth_disabled
+                FROM auth_users
+                WHERE id = %s
+                """,
+                (target_id,),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            assert row is not None
+            self.assertIsNotNone(row["password_hash"])
+            self.assertEqual(int(row["password_auth_disabled"]), 0)
+        finally:
+            db.return_db(conn)
+
     def test_auth_reset_password_rejects_expired_token(self) -> None:
         conn = db.get_db()
         try:

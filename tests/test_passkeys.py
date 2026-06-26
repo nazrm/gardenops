@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import os
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ import gardenops.db as db
 import gardenops.passkeys as passkey_service
 from gardenops.incident_controls import set_runtime_flag
 from gardenops.passkeys import VerifiedPasskeyAuthentication, VerifiedPasskeyRegistration
+from gardenops.security import create_user
 from tests.base import BaseApiTest, strong_password
 
 
@@ -107,6 +109,40 @@ class PasskeyApiTest(BaseApiTest):
 
 
 class TestPasskeyRegistration(PasskeyApiTest):
+    def _insert_personal_invitation(
+        self,
+        *,
+        invitee_username: str,
+        role: str = "editor",
+        token: str = "passkey-invite-token",
+    ) -> str:
+        conn = db.get_db()
+        try:
+            now_ms = db.current_timestamp_ms()
+            conn.execute(
+                """
+                INSERT INTO auth_user_invitations (
+                    invitee_username,
+                    role,
+                    token_hash,
+                    created_at_ms,
+                    expires_at_ms
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    invitee_username,
+                    role,
+                    hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                    now_ms,
+                    now_ms + 60_000,
+                ),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        return token
+
     def test_auth_status_reports_passkey_capability(self) -> None:
         enabled = self.client.get("/api/auth/status")
         self.assertEqual(enabled.status_code, 200, enabled.text)
@@ -117,6 +153,167 @@ class TestPasskeyRegistration(PasskeyApiTest):
         disabled = self.client.get("/api/auth/status")
         self.assertEqual(disabled.status_code, 200, disabled.text)
         self.assertFalse(disabled.json()["passkeys_enabled"])
+
+    def test_auth_me_reports_passkey_prompt_and_dismissal(self) -> None:
+        self._create_test_user("prompt_passkey_user", "prompt-pass", "editor")
+        client, headers = self._authenticated_client("prompt_passkey_user", "prompt-pass")
+
+        me = client.get("/api/auth/me", headers=headers)
+        self.assertEqual(me.status_code, 200, me.text)
+        self.assertTrue(me.json()["passkeys_enabled"])
+        self.assertFalse(me.json()["passkey_enrolled"])
+        self.assertEqual(me.json()["passkey_count"], 0)
+        self.assertFalse(me.json()["password_auth_disabled"])
+        self.assertTrue(me.json()["passkey_prompt_eligible"])
+
+        dismissed = client.post(
+            "/api/auth/passkeys/prompt/dismiss",
+            headers=headers,
+            json={"dismiss_for_days": 1},
+        )
+        self.assertEqual(dismissed.status_code, 200, dismissed.text)
+        self.assertGreater(dismissed.json()["passkey_prompt_dismissed_until_ms"], 0)
+
+        muted = client.get("/api/auth/me", headers=headers)
+        self.assertEqual(muted.status_code, 200, muted.text)
+        self.assertFalse(muted.json()["passkey_prompt_eligible"])
+
+    def test_auth_me_does_not_prompt_after_passkey_enrollment(self) -> None:
+        client, headers, _passkey_id = self._register_passkey(
+            username="prompt_enrolled_user",
+            password="prompt-enrolled-pass",
+        )
+
+        me = client.get("/api/auth/me", headers=headers)
+
+        self.assertEqual(me.status_code, 200, me.text)
+        self.assertTrue(me.json()["passkey_enrolled"])
+        self.assertEqual(me.json()["passkey_count"], 1)
+        self.assertFalse(me.json()["passkey_prompt_eligible"])
+
+    def test_invitation_passkey_register_creates_passwordless_user_and_session(self) -> None:
+        invite_token = self._insert_personal_invitation(
+            invitee_username="invite_passkey_user",
+            token="invite-passkey-create-token",
+        )
+
+        options = self.client.post(
+            "/api/auth/invitations/passkey/register/options",
+            json={"token": invite_token, "username": "invite_passkey_user"},
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+        challenge_token = str(options.json()["challenge_token"])
+        self.assertIn("publicKey", options.json())
+
+        with patch(
+            "gardenops.passkeys.verify_registration_credential",
+            return_value=VerifiedPasskeyRegistration(
+                credential_id=b"invite-credential-1",
+                credential_public_key=b"public-key",
+                sign_count=1,
+                credential_device_type="multi_device",
+                credential_backed_up=True,
+            ),
+        ):
+            verified = self.client.post(
+                "/api/auth/invitations/passkey/register/verify",
+                json={
+                    "challenge_token": challenge_token,
+                    "nickname": "Phone",
+                    "credential": _fake_registration_credential(b"invite-credential-1"),
+                },
+            )
+        self.assertEqual(verified.status_code, 201, verified.text)
+        body = verified.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["username"], "invite_passkey_user")
+        self.assertEqual(body["role"], "editor")
+        self.assertTrue(body["created_user"])
+        self.assertEqual(body["invitation_scope"], "personal_garden")
+
+        me = self.client.get("/api/auth/me")
+        self.assertEqual(me.status_code, 200, me.text)
+        self.assertEqual(me.json()["username"], "invite_passkey_user")
+        self.assertTrue(me.json()["passkey_enrolled"])
+        self.assertTrue(me.json()["password_auth_disabled"])
+
+        password_login = self.client.post(
+            "/api/auth/login",
+            json={"username": "invite_passkey_user", "password": strong_password("unused-pass")},
+        )
+        self.assertEqual(password_login.status_code, 401)
+
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                """
+                SELECT u.password_hash, u.password_auth_disabled, i.accepted_at_ms
+                FROM auth_users u
+                JOIN auth_user_invitations i ON i.accepted_user_id = u.id
+                WHERE u.username = %s
+                """,
+                ("invite_passkey_user",),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            assert row is not None
+            self.assertIsNone(row["password_hash"])
+            self.assertEqual(int(row["password_auth_disabled"]), 1)
+            self.assertIsNotNone(row["accepted_at_ms"])
+        finally:
+            db.return_db(conn)
+
+    def test_invitation_passkey_register_rejects_existing_username_generically(self) -> None:
+        conn = db.get_db()
+        try:
+            create_user(
+                conn,
+                username="existing_invite_passkey_user",
+                password=strong_password("existing-passkey-pass"),
+                role="viewer",
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        invite_token = self._insert_personal_invitation(
+            invitee_username="existing_invite_passkey_user",
+            token="existing-invite-passkey-token",
+        )
+
+        response = self.client.post(
+            "/api/auth/invitations/passkey/register/options",
+            json={"token": invite_token, "username": "existing_invite_passkey_user"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Invalid or expired invitation token")
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM auth_passkey_challenges
+                WHERE invitation_token_hash = %s
+                """,
+                (hashlib.sha256(invite_token.encode("utf-8")).hexdigest(),),
+            ).fetchone()
+            self.assertEqual(int(row["count"]), 0)
+        finally:
+            db.return_db(conn)
+
+    def test_invitation_passkey_register_rejects_admin_invitation_generically(self) -> None:
+        invite_token = self._insert_personal_invitation(
+            invitee_username="admin_invite_passkey_user",
+            role="admin",
+            token="admin-invite-passkey-token",
+        )
+
+        response = self.client.post(
+            "/api/auth/invitations/passkey/register/options",
+            json={"token": invite_token, "username": "admin_invite_passkey_user"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Invalid or expired invitation token")
 
     def test_register_options_requires_csrf_for_cookie_session(self) -> None:
         self._create_test_user("csrf_passkey_user", "csrf-pass", "editor")

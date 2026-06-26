@@ -11,10 +11,12 @@ import {
 import {
   ApiError,
   acceptInvitationApi,
+  beginInvitationPasskeyRegistrationApi,
   beginPasskeyLoginApi,
   bootstrapAuthApi,
   changePasswordApi,
   clearStoredAuthToken,
+  finishInvitationPasskeyRegistrationApi,
   finishPasskeyLoginApi,
   getApiErrorMessage,
   getPasswordPolicyApi,
@@ -25,10 +27,14 @@ import {
   type PasswordPolicy,
   type PasskeyOptionsResponse,
 } from "../services/authApi";
-import { getPasskey, isPasskeySupported } from "./passkeys";
+import { createPasskey, getPasskey, isPasskeySupported } from "./passkeys";
 
 const authGateShells = new WeakMap<HTMLDivElement, HTMLDivElement>();
 const AUTH_GATE_ACTIVE_CLASS = "auth-gate-active";
+
+function isPasskeyUserCancelled(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "NotAllowedError";
+}
 
 function activateAuthGate(resolve: () => void): () => void {
   document.body.classList.add(AUTH_GATE_ACTIVE_CLASS);
@@ -434,6 +440,11 @@ function renderInviteForm(
   submitBtn.type = "submit";
   submitBtn.textContent = t("auth.accept_invitation");
   submitBtn.classList.add("gated");
+  const passkeyAvailable = passkeysEnabled && isPasskeySupported();
+  const passkeyBtn = document.createElement("button");
+  passkeyBtn.type = "button";
+  passkeyBtn.className = "auth-gate-secondary-action";
+  passkeyBtn.textContent = t("auth.use_passkey");
 
   const updateGate = (): void => {
     submitBtn.classList.toggle(
@@ -461,9 +472,31 @@ function renderInviteForm(
     submitBtn,
     skipBtn,
   );
+  if (passkeyAvailable) {
+    form.prepend(passkeyBtn);
+  }
   card.appendChild(form);
 
   passwordInput.focus();
+
+  const renderAccepted = (acceptedUsername: string, gardenId: number | null): void => {
+    if (gardenId !== null) {
+      setActiveGardenContext(gardenId);
+    }
+    card.replaceChildren();
+    appendAuthGateHeader(
+      card,
+      t("auth.welcome"),
+      t("auth.signed_in_as", { username: acceptedUsername }),
+    );
+    const continueBtn = document.createElement("button");
+    continueBtn.textContent = t("auth.continue");
+    continueBtn.addEventListener("click", () => {
+      gate.remove();
+      resolve();
+    });
+    card.append(continueBtn);
+  };
 
   // Gate submit button based on checklist
   passwordInput.addEventListener("input", updateGate);
@@ -473,6 +506,40 @@ function renderInviteForm(
     clearPrimedInviteToken();
     gate.remove();
     void showAuthGate(bootstrapRequired, passkeysEnabled).then(resolve);
+  });
+
+  passkeyBtn.addEventListener("click", async () => {
+    if (!passkeyAvailable) return;
+    gate.querySelector(".auth-gate-error")?.remove();
+    passkeyBtn.disabled = true;
+    submitBtn.disabled = true;
+    passkeyBtn.textContent = t("auth.creating_passkey");
+    try {
+      const options = await beginInvitationPasskeyRegistrationApi(inviteToken, username);
+      const credential = await createPasskey(options.publicKey);
+      const result = await finishInvitationPasskeyRegistrationApi(
+        options.challenge_token,
+        t("auth.passkey_default_name"),
+        credential,
+      );
+      checklist.destroy();
+      clearPrimedInviteToken();
+      clearStoredAuthToken();
+      renderAccepted(result.username, result.garden_id);
+    } catch (err) {
+      passkeyBtn.disabled = false;
+      submitBtn.disabled = false;
+      submitBtn.classList.toggle(
+        "gated",
+        !checklist.allPassed(),
+      );
+      passkeyBtn.textContent = t("auth.use_passkey");
+      if (isPasskeyUserCancelled(err)) return;
+      const errDiv = document.createElement("div");
+      errDiv.className = "auth-gate-error";
+      errDiv.textContent = getApiErrorMessage(err);
+      form.appendChild(errDiv);
+    }
   });
 
   form.addEventListener("submit", async (e) => {
@@ -508,22 +575,7 @@ function renderInviteForm(
         );
         return;
       }
-      if (result.garden_id !== null) {
-        setActiveGardenContext(result.garden_id);
-      }
-      card.replaceChildren();
-      appendAuthGateHeader(
-        card,
-        t("auth.welcome"),
-        t("auth.signed_in_as", { username: result.username }),
-      );
-      const continueBtn = document.createElement("button");
-      continueBtn.textContent = t("auth.continue");
-      continueBtn.addEventListener("click", () => {
-        gate.remove();
-        resolve();
-      });
-      card.append(continueBtn);
+      renderAccepted(result.username, result.garden_id);
     } catch (err) {
       submitBtn.disabled = false;
       submitBtn.textContent = t("auth.accept_invitation");
@@ -736,7 +788,7 @@ function renderLoginFlow(
     if (err instanceof DOMException && err.name === "AbortError") {
       return;
     }
-    const isCancelled = err instanceof DOMException && err.name === "NotAllowedError";
+    const isCancelled = isPasskeyUserCancelled(err);
     if (isCancelled && !showCancelled) {
       return;
     }

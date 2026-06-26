@@ -26,7 +26,7 @@ import {
 } from "./components/globalSearch";
 import { getAppShellMarkup } from "./components/layout";
 import { renderMapGrid, applyPlotIndicators, syncSelectedPlots } from "./components/mapView";
-import { confirmDialog, promptDialog, promptPasswordDialog } from "./components/dialogCore";
+import { confirmDialog, createModal, promptDialog, promptPasswordDialog } from "./components/dialogCore";
 import { showCreatePlantDialogLazy, showCreatePlotDialogLazy, showCreateZoneDialogLazy, showDeleteMenuLazy, showEditPlantDialogLazy, showEditPlotDialogLazy, showElevationEditorLazy } from "./components/gardenDialogsLoader";
 import type { AiPlantData } from "./components/overlays";
 import { dismissPopover } from "./components/popover";
@@ -70,7 +70,7 @@ import {
   refreshOfflineIndicator,
 } from "./features/offlineFeature";
 import { showAuthGate, showForcedPasswordChangeGate } from "./features/authGate";
-import { getPasskey, isPasskeySupported } from "./features/passkeys";
+import { createPasskey, getPasskey, isPasskeySupported } from "./features/passkeys";
 import {
   GRID_COLS,
   GRID_ROWS,
@@ -101,6 +101,7 @@ import {
   addPlantToPlotApi,
   aiPlantLookup,
   beginPasskeyReauthenticationApi,
+  beginPasskeyRegistrationApi,
   clearStoredAuthToken,
   createGardenApi,
   createPlantApi,
@@ -156,7 +157,9 @@ import {
   fetchSeasonalSummary,
   fetchIssueApi,
   fetchPlotAlertsApi,
+  dismissPasskeyPromptApi,
   finishPasskeyReauthenticationApi,
+  finishPasskeyRegistrationApi,
 } from "./services/api";
 import type {
   MediaAsset,
@@ -220,11 +223,13 @@ const PLOT_ALERTS_CACHE_MS = 60_000;
 let plotAlertsLoadedAt = 0;
 let plotAlertsLoadPromise: Promise<void> | null = null;
 let plotAlertsScheduleSeq = 0;
+const PASSKEY_PROMPT_SESSION_KEY = "gardenops-passkey-prompt-shown";
 const WEATHER_SUMMARY_CACHE_MS = 60_000;
 const WEATHER_SUMMARY_IDLE_DELAY_MS = 250;
 let weatherLoadedAt = 0;
 let weatherLoadPromise: Promise<void> | null = null;
 let weatherScheduleSeq = 0;
+let passkeyPromptInFlight = false;
 
 const gatedFeatureInitState = {
   notifications: false,
@@ -5114,6 +5119,135 @@ function ensureWriteAccess(): boolean {
   return false;
 }
 
+function isPasskeyUserCancelled(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "NotAllowedError";
+}
+
+function passkeyPromptSuppressedThisSession(): boolean {
+  try {
+    return sessionStorage.getItem(PASSKEY_PROMPT_SESSION_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function suppressPasskeyPromptThisSession(): void {
+  try {
+    sessionStorage.setItem(PASSKEY_PROMPT_SESSION_KEY, "1");
+  } catch {
+    // ignore storage access issues
+  }
+}
+
+function shouldShowPasskeyPrompt(profile: AuthUserProfile | null): boolean {
+  return Boolean(
+    profile
+    && profile.passkey_prompt_eligible
+    && profile.passkeys_enabled
+    && !profile.passkey_enrolled
+    && !profile.password_auth_disabled
+    && isPasskeySupported()
+    && !passkeyPromptInFlight
+    && !passkeyPromptSuppressedThisSession(),
+  );
+}
+
+function schedulePasskeyPrompt(profile: AuthUserProfile | null): void {
+  if (!shouldShowPasskeyPrompt(profile)) return;
+  passkeyPromptInFlight = true;
+  suppressPasskeyPromptThisSession();
+  window.setTimeout(() => {
+    void showPasskeyPrompt();
+  }, 500);
+}
+
+async function refreshAuthProfileAfterPasskeyChange(): Promise<void> {
+  try {
+    authProfile = await getAuthMeApi();
+    setFeatureGates(authProfile.subscription_tier ?? "home", authProfile.allowed_features ?? []);
+    applyFeatureGateUi();
+    applyWriteAccessUi();
+    updateAuthButton();
+    syncAdminTabLabels();
+  } catch {
+    // The session may have expired between prompt display and completion.
+  }
+}
+
+async function showPasskeyPrompt(): Promise<void> {
+  if (
+    !authProfile
+    || !authProfile.passkey_prompt_eligible
+    || !authProfile.passkeys_enabled
+    || authProfile.passkey_enrolled
+    || authProfile.password_auth_disabled
+    || !isPasskeySupported()
+  ) {
+    passkeyPromptInFlight = false;
+    return;
+  }
+  const { dialog, close } = createModal(
+    t("auth.add_passkey"),
+    `
+      <div class="modal-content passkey-prompt-modal">
+        <h3></h3>
+        <div class="button-row">
+          <button type="button" class="confirm-yes"></button>
+          <button type="button" class="confirm-no"></button>
+        </div>
+      </div>
+    `,
+  );
+  const title = dialog.querySelector<HTMLHeadingElement>("h3");
+  const addBtn = dialog.querySelector<HTMLButtonElement>(".confirm-yes");
+  const notNowBtn = dialog.querySelector<HTMLButtonElement>(".confirm-no");
+  if (!title || !addBtn || !notNowBtn) {
+    close();
+    passkeyPromptInFlight = false;
+    return;
+  }
+  title.textContent = t("auth.add_passkey");
+  addBtn.textContent = t("auth.add_passkey");
+  notNowBtn.textContent = t("auth.not_now");
+
+  const finish = (): void => {
+    close();
+    passkeyPromptInFlight = false;
+  };
+
+  notNowBtn.addEventListener("click", () => {
+    finish();
+    void dismissPasskeyPromptApi(30)
+      .then((result) => {
+        if (authProfile) {
+          authProfile = {
+            ...authProfile,
+            passkey_prompt_eligible: false,
+            passkey_prompt_dismissed_until_ms: result.passkey_prompt_dismissed_until_ms,
+          };
+        }
+      })
+      .catch(() => undefined);
+  });
+
+  addBtn.addEventListener("click", async () => {
+    finish();
+    const currentPassword = await promptPasswordDialog(t("auth.current_password"));
+    if (!currentPassword) return;
+    try {
+      const nickname = t("auth.passkey_default_name");
+      const options = await beginPasskeyRegistrationApi(nickname, currentPassword);
+      const credential = await createPasskey(options.publicKey);
+      await finishPasskeyRegistrationApi(options.challenge_token, nickname, credential);
+      await refreshAuthProfileAfterPasskeyChange();
+      showToast(t("auth.passkey_added"), "success");
+    } catch (err) {
+      if (isPasskeyUserCancelled(err)) return;
+      showToast(getApiErrorMessage(err), "error");
+    }
+  });
+}
+
 async function refreshGardenContext(options?: { profile?: AuthUserProfile | null }): Promise<void> {
   const selects = getGardenSelects();
   const roleChips = getGardenRoleChips();
@@ -5153,6 +5287,7 @@ async function refreshGardenContext(options?: { profile?: AuthUserProfile | null
   authProfile = me;
   setFeatureGates(me.subscription_tier ?? "home", me.allowed_features ?? []);
   applyFeatureGateUi();
+  schedulePasskeyPrompt(me);
   showSecurityWarnings(me);
   if (me.language && me.language !== getLocale()) {
     setLocale(me.language);

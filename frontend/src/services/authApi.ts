@@ -52,6 +52,12 @@ export interface AuthUserProfile {
   mfa_authenticated: boolean;
   mfa_methods: string[];
   must_change_password: boolean;
+  passkeys_enabled: boolean;
+  passkey_enrolled: boolean;
+  passkey_count: number;
+  password_auth_disabled: boolean;
+  passkey_prompt_eligible: boolean;
+  passkey_prompt_dismissed_until_ms: number;
   plot_assignment_meanings: unknown[];
   subscription_tier: "home" | "enthusiast" | "pro";
   allowed_features: string[];
@@ -394,6 +400,40 @@ export async function acceptInvitationApi(
   return apiPost<{ garden_id: number | null; username: string; role: string; invitation_scope: string }>(
     "/api/auth/invitations/accept",
     { token, password },
+  );
+}
+
+export async function beginInvitationPasskeyRegistrationApi(
+  token: string,
+  username: string,
+): Promise<PasskeyOptionsResponse> {
+  return apiPost<PasskeyOptionsResponse>(
+    "/api/auth/invitations/passkey/register/options",
+    { token, username },
+  );
+}
+
+export async function finishInvitationPasskeyRegistrationApi(
+  challengeToken: string,
+  nickname: string,
+  credential: unknown,
+): Promise<{
+  status: string;
+  expires_at_ms: number;
+  garden_id: number | null;
+  user_id: number;
+  username: string;
+  role: string;
+  created_user: boolean;
+  invitation_scope: string;
+}> {
+  return apiPost(
+    "/api/auth/invitations/passkey/register/verify",
+    {
+      challenge_token: challengeToken,
+      nickname,
+      credential,
+    },
   );
 }
 

@@ -79,6 +79,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 type SameSiteValue = Literal["lax", "strict", "none"]
+type InvitationScope = Literal["garden", "personal_garden"]
+
+_GENERIC_INVITATION_TOKEN_DETAIL = "Invalid or expired invitation token"
 
 
 class SessionCookieKwargs(TypedDict):
@@ -164,6 +167,10 @@ class PasskeyRegistrationVerifyBody(StrictBaseModel):
     credential: dict[str, Any]
 
 
+class PasskeyPromptDismissBody(StrictBaseModel):
+    dismiss_for_days: int = Field(default=30, ge=1, le=365)
+
+
 class PasskeyLoginOptionsBody(StrictBaseModel):
     username: str = Field(default="", max_length=80)
 
@@ -192,6 +199,7 @@ class MfaActionBody(StrictBaseModel):
 class IssueResetTokenBody(StrictBaseModel):
     expires_in_minutes: int | None = Field(default=None, ge=5, le=24 * 60)
     must_change_password: bool = False
+    purpose: Literal["password_reset", "passwordless_recovery"] = "password_reset"
     action_reason: str = Field(default="", max_length=400)
 
 
@@ -203,6 +211,17 @@ class ResetPasswordBody(AdaptiveFrictionFields):
 class InvitationAcceptBody(AdaptiveFrictionFields):
     token: str = Field(min_length=10, max_length=512)
     password: str = Field(min_length=1, max_length=200)
+
+
+class InvitationPasskeyRegisterOptionsBody(AdaptiveFrictionFields):
+    token: str = Field(min_length=10, max_length=512)
+    username: str = Field(min_length=1, max_length=80)
+
+
+class InvitationPasskeyRegisterVerifyBody(StrictBaseModel):
+    challenge_token: str = Field(min_length=20, max_length=256)
+    nickname: str = Field(default="", max_length=80)
+    credential: dict[str, Any]
 
 
 class RevokeUserSessionsByIdBody(StrictBaseModel):
@@ -321,7 +340,7 @@ def _adaptive_friction_mode() -> str:
 def _adaptive_friction_flows() -> set[str]:
     raw = os.environ.get(
         "AUTH_ADAPTIVE_FRICTION_FLOWS",
-        "login,reset-password,invitation-accept",
+        "login,reset-password,invitation-accept,invitation-passkey-register",
     ).strip()
     if not raw:
         return set()
@@ -506,7 +525,7 @@ def _verify_current_password_for_context(
         raise HTTPException(status_code=400, detail="Session auth user is required")
     user_row = db.execute(
         """
-        SELECT id, password_hash, is_active
+        SELECT id, password_hash, password_auth_disabled, is_active
         FROM auth_users
         WHERE id = %s
         LIMIT 1
@@ -515,6 +534,8 @@ def _verify_current_password_for_context(
     ).fetchone()
     if not user_row or int(user_row["is_active"]) != 1:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    if int(user_row["password_auth_disabled"]) == 1 or user_row["password_hash"] is None:
+        raise HTTPException(status_code=403, detail="Password authentication is unavailable")
     if not verify_password_and_upgrade(
         db,
         user_id=int(user_row["id"]),
@@ -986,6 +1007,196 @@ def _user_invitation_ttl_minutes(requested: int | None) -> int:
     return max(5, min(parsed, 30 * 24 * 60))
 
 
+def _raise_invalid_invitation_token() -> NoReturn:
+    _record_invalid_invitation_attempt()
+    raise HTTPException(status_code=400, detail=_GENERIC_INVITATION_TOKEN_DETAIL)
+
+
+def _invitation_is_open(row: dict[str, Any], *, now_ms: int) -> bool:
+    return (
+        row["accepted_at_ms"] is None
+        and row["revoked_at_ms"] is None
+        and int(row["expires_at_ms"]) > now_ms
+    )
+
+
+def _select_active_invitation(
+    db: DB,
+    *,
+    scope: InvitationScope,
+    token_hash: str,
+    now_ms: int,
+    invitation_id: int | None = None,
+) -> dict[str, Any] | None:
+    id_clause = "AND id = %s" if invitation_id is not None else ""
+    params: tuple[object, ...] = (
+        (token_hash, invitation_id) if invitation_id is not None else (token_hash,)
+    )
+    if scope == "garden":
+        row = db.execute(
+            f"""
+            SELECT
+                id,
+                garden_id,
+                invitee_username,
+                role,
+                expires_at_ms,
+                accepted_at_ms,
+                revoked_at_ms
+            FROM garden_invitations
+            WHERE token_hash = %s
+              {id_clause}
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+    else:
+        row = db.execute(
+            f"""
+            SELECT
+                id,
+                invitee_username,
+                role,
+                expires_at_ms,
+                accepted_at_ms,
+                revoked_at_ms
+            FROM auth_user_invitations
+            WHERE token_hash = %s
+              {id_clause}
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+    if not row:
+        return None
+    invitation = dict(row)
+    if not _invitation_is_open(invitation, now_ms=now_ms):
+        return None
+    return invitation
+
+
+def _load_active_invitation_by_token(
+    db: DB,
+    *,
+    token_hash: str,
+    now_ms: int,
+) -> tuple[InvitationScope, dict[str, Any]] | None:
+    garden_invitation = _select_active_invitation(
+        db,
+        scope="garden",
+        token_hash=token_hash,
+        now_ms=now_ms,
+    )
+    if garden_invitation is not None:
+        return "garden", garden_invitation
+    personal_invitation = _select_active_invitation(
+        db,
+        scope="personal_garden",
+        token_hash=token_hash,
+        now_ms=now_ms,
+    )
+    if personal_invitation is not None:
+        return "personal_garden", personal_invitation
+    return None
+
+
+def _invitation_passkey_user_handle(token_hash: str) -> str:
+    return sha256(f"gardenops-invitation-passkey-user:{token_hash}".encode()).hexdigest()
+
+
+def _validate_passwordless_invitation_candidate(
+    db: DB,
+    *,
+    invitation_scope: InvitationScope,
+    invitation: dict[str, Any],
+    username: str,
+) -> str:
+    invitee_username = str(invitation["invitee_username"]).strip()
+    if not invitee_username or username.strip() != invitee_username:
+        _raise_invalid_invitation_token()
+    if invitation_scope == "personal_garden" and str(invitation["role"]) == "admin":
+        _raise_invalid_invitation_token()
+    existing_user = db.execute(
+        """
+        SELECT id
+        FROM auth_users
+        WHERE username = %s
+        LIMIT 1
+        """,
+        (invitee_username,),
+    ).fetchone()
+    if existing_user:
+        _raise_invalid_invitation_token()
+    return invitee_username
+
+
+def _accept_invitation_atomically(
+    db: DB,
+    *,
+    invitation_scope: InvitationScope,
+    invitation: dict[str, Any],
+    token_hash: str,
+    user_id: int,
+    now_ms: int,
+) -> None:
+    invitation_role = str(invitation["role"])
+    if invitation_scope == "garden":
+        db.execute(
+            """
+            INSERT INTO garden_memberships (garden_id, user_id, role)
+            VALUES (%s, %s, %s)
+            ON CONFLICT(garden_id, user_id) DO UPDATE SET
+                role = excluded.role
+            """,
+            (
+                int(invitation["garden_id"]),
+                user_id,
+                invitation_role,
+            ),
+        )
+        accepted = db.execute(
+            """
+            UPDATE garden_invitations
+            SET accepted_at_ms = %s, accepted_user_id = %s
+            WHERE id = %s
+              AND token_hash = %s
+              AND accepted_at_ms IS NULL
+              AND revoked_at_ms IS NULL
+              AND expires_at_ms > %s
+            RETURNING id
+            """,
+            (
+                now_ms,
+                user_id,
+                int(invitation["id"]),
+                token_hash,
+                now_ms,
+            ),
+        ).fetchone()
+    else:
+        accepted = db.execute(
+            """
+            UPDATE auth_user_invitations
+            SET accepted_at_ms = %s, accepted_user_id = %s
+            WHERE id = %s
+              AND token_hash = %s
+              AND accepted_at_ms IS NULL
+              AND revoked_at_ms IS NULL
+              AND expires_at_ms > %s
+            RETURNING id
+            """,
+            (
+                now_ms,
+                user_id,
+                int(invitation["id"]),
+                token_hash,
+                now_ms,
+            ),
+        ).fetchone()
+    if not accepted:
+        _raise_invalid_invitation_token()
+
+
 @router.get("/auth/status")
 def auth_status(db: DB) -> dict[str, object]:
     bootstrap_required = False
@@ -1240,6 +1451,12 @@ def auth_passkey_register_options(
         user_id=context.user_id,
         username=context.username,
         challenge=challenge.challenge,
+        user_handle=str(
+            db.execute(
+                "SELECT passkey_user_handle FROM auth_users WHERE id = %s",
+                (context.user_id,),
+            ).fetchone()["passkey_user_handle"]
+        ),
     )
     db.commit()
     return {"challenge_token": challenge.token, "publicKey": public_key}
@@ -1329,6 +1546,41 @@ def auth_passkey_register_verify(
         db=db,
     )
     return {"status": "ok", "passkey": passkeys.serialize_passkey(dict(row))}
+
+
+@router.post("/auth/passkeys/prompt/dismiss")
+def auth_passkey_prompt_dismiss(
+    body: PasskeyPromptDismissBody,
+    request: Request,
+    db: DB,
+) -> dict[str, object]:
+    context = _require_session_context(request)
+    assert context.user_id is not None
+    _enforce_lifecycle_rate_limit(
+        request,
+        bucket="auth-passkey-prompt-dismiss",
+        env_name="AUTH_PASSKEY_PROMPT_DISMISS_RATE_LIMIT",
+        default_limit=20,
+    )
+    now_ms = current_timestamp_ms()
+    dismissed_until_ms = now_ms + (body.dismiss_for_days * 24 * 60 * 60 * 1000)
+    db.execute(
+        """
+        UPDATE auth_users
+        SET passkey_prompt_dismissed_until_ms = %s
+        WHERE id = %s
+        """,
+        (dismissed_until_ms, context.user_id),
+    )
+    db.commit()
+    request.state.auth_context = replace(
+        context,
+        passkey_prompt_dismissed_until_ms=dismissed_until_ms,
+    )
+    return {
+        "status": "ok",
+        "passkey_prompt_dismissed_until_ms": dismissed_until_ms,
+    }
 
 
 @router.delete("/auth/passkeys/{passkey_id}")
@@ -1726,6 +1978,17 @@ def auth_me(request: Request, response: Response, db: DB) -> dict[str, object]:
         ).fetchone()
         garden_visible = visible_row is not None
     password_change_required = bool(context.must_change_password)
+    passkeys_enabled = passkeys.passkeys_configured()
+    passkey_prompt_dismissed_until_ms = int(context.passkey_prompt_dismissed_until_ms or 0)
+    passkey_prompt_eligible = (
+        context.auth_type == "session"
+        and context.user_id is not None
+        and passkeys_enabled
+        and not password_change_required
+        and not context.password_auth_disabled
+        and not context.passkey_enrolled
+        and passkey_prompt_dismissed_until_ms <= current_timestamp_ms()
+    )
     return {
         "authenticated": True,
         "username": context.username,
@@ -1742,6 +2005,12 @@ def auth_me(request: Request, response: Response, db: DB) -> dict[str, object]:
         "mfa_authenticated": int(context.mfa_authenticated_at_ms or 0) > 0,
         "mfa_methods": list(cast(list[str], mfa["methods"])),
         "must_change_password": password_change_required,
+        "passkeys_enabled": passkeys_enabled,
+        "passkey_enrolled": bool(context.passkey_enrolled),
+        "passkey_count": int(context.passkey_count),
+        "password_auth_disabled": bool(context.password_auth_disabled),
+        "passkey_prompt_eligible": passkey_prompt_eligible,
+        "passkey_prompt_dismissed_until_ms": passkey_prompt_dismissed_until_ms,
         "plot_assignment_meanings": (
             []
             if password_change_required
@@ -2755,7 +3024,14 @@ def auth_reauthenticate(
 
     user_row = db.execute(
         """
-        SELECT id, username, password_hash, is_active, role, mfa_totp_enabled
+        SELECT
+            id,
+            username,
+            password_hash,
+            password_auth_disabled,
+            is_active,
+            role,
+            mfa_totp_enabled
         FROM auth_users
         WHERE id = %s
         LIMIT 1
@@ -2764,6 +3040,8 @@ def auth_reauthenticate(
     ).fetchone()
     if not user_row or int(user_row["is_active"]) != 1:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    if int(user_row["password_auth_disabled"]) == 1 or user_row["password_hash"] is None:
+        raise HTTPException(status_code=403, detail="Password authentication is unavailable")
     if not verify_password_and_upgrade(
         db,
         user_id=int(user_row["id"]),
@@ -2886,7 +3164,7 @@ def auth_change_password(
 
     user_row = db.execute(
         """
-        SELECT id, username, password_hash, is_active
+        SELECT id, username, password_hash, password_auth_disabled, is_active
         FROM auth_users
         WHERE id = %s
         LIMIT 1
@@ -2895,6 +3173,8 @@ def auth_change_password(
     ).fetchone()
     if not user_row or int(user_row["is_active"]) != 1:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    if int(user_row["password_auth_disabled"]) == 1 or user_row["password_hash"] is None:
+        raise HTTPException(status_code=403, detail="Password authentication is unavailable")
 
     current_hash = str(user_row["password_hash"])
     if not verify_password(body.current_password, current_hash):
@@ -2910,7 +3190,7 @@ def auth_change_password(
     db.execute(
         """
         UPDATE auth_users
-        SET password_hash = %s, must_change_password = 0
+        SET password_hash = %s, password_auth_disabled = 0, must_change_password = 0
         WHERE id = %s
         """,
         (hash_password(body.new_password), int(user_row["id"])),
@@ -2988,9 +3268,10 @@ def auth_issue_reset_token(
             created_by_user_id,
             created_at_ms,
             expires_at_ms,
+            purpose,
             metadata
         )
-        VALUES (%s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
         (
             token_hash,
@@ -2998,6 +3279,7 @@ def auth_issue_reset_token(
             context.user_id,
             now_ms,
             expires_at_ms,
+            body.purpose,
             f"issued-by-admin reason={action_reason}",
         ),
     )
@@ -3018,6 +3300,7 @@ def auth_issue_reset_token(
             user_id=user_id,
             ttl_minutes=ttl_minutes,
             must_change_password=bool(body.must_change_password),
+            purpose=body.purpose,
             revoked_sessions=revoked_sessions,
             action_reason=action_reason,
         ),
@@ -3029,6 +3312,7 @@ def auth_issue_reset_token(
         "reset_token": token,
         "expires_at_ms": expires_at_ms,
         "must_change_password": bool(body.must_change_password),
+        "purpose": body.purpose,
         "revoked_sessions": revoked_sessions,
     }
 
@@ -3062,7 +3346,7 @@ def auth_reset_password(
     )
     token_row = db.execute(
         """
-        SELECT id, user_id, expires_at_ms, used_at_ms
+        SELECT id, user_id, expires_at_ms, used_at_ms, purpose
         FROM auth_password_reset_tokens
         WHERE token_hash = %s
         LIMIT 1
@@ -3087,7 +3371,7 @@ def auth_reset_password(
 
     user_row = db.execute(
         """
-        SELECT id, username, password_hash
+        SELECT id, username, password_hash, password_auth_disabled
         FROM auth_users
         WHERE id = %s
         LIMIT 1
@@ -3097,7 +3381,15 @@ def auth_reset_password(
     if not user_row:
         _record_invalid_reset_password_attempt()
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
-    if verify_password(body.new_password, str(user_row["password_hash"])):
+    purpose = str(token_row["purpose"] or "password_reset")
+    password_auth_disabled = int(user_row["password_auth_disabled"]) == 1
+    if password_auth_disabled and purpose != "passwordless_recovery":
+        raise HTTPException(
+            status_code=400,
+            detail="Password reset is unavailable for this account",
+        )
+    current_hash = user_row["password_hash"]
+    if current_hash is not None and verify_password(body.new_password, str(current_hash)):
         raise HTTPException(
             status_code=400,
             detail="New password must differ from current password",
@@ -3107,7 +3399,7 @@ def auth_reset_password(
     db.execute(
         """
         UPDATE auth_users
-        SET password_hash = %s, must_change_password = 0
+        SET password_hash = %s, password_auth_disabled = 0, must_change_password = 0
         WHERE id = %s
         """,
         (hash_password(body.new_password), int(user_row["id"])),
@@ -3179,6 +3471,229 @@ def auth_invitation_peek(
     raise HTTPException(status_code=400, detail="Invalid or expired invitation token")
 
 
+@router.post("/auth/invitations/passkey/register/options")
+def auth_invitation_passkey_register_options(
+    body: InvitationPasskeyRegisterOptionsBody,
+    request: Request,
+    db: DB,
+) -> dict[str, object]:
+    _require_user_lifecycle_enabled()
+    passkeys.require_passkeys_configured()
+    enforce_rate_limit(
+        request,
+        bucket="auth-invite-passkey-register",
+        limit=env_int("AUTH_INVITE_PASSKEY_REGISTER_RATE_LIMIT", 20),
+        window_seconds=60,
+    )
+    now_ms = current_timestamp_ms()
+    token_hash = sha256(body.token.strip().encode("utf-8")).hexdigest()
+    _enforce_optional_key_rate_limit(
+        bucket="auth-invite-passkey-register-token",
+        key=_hashed_rate_limit_key("invite", token_hash, casefold=False),
+        env_name="AUTH_INVITE_PASSKEY_REGISTER_TOKEN_RATE_LIMIT",
+        default_limit=6,
+        scope_label="Invitation token",
+    )
+    _enforce_adaptive_friction(
+        flow="invitation-passkey-register",
+        friction_provider=body.friction_provider,
+        friction_token=body.friction_token,
+    )
+    loaded = _load_active_invitation_by_token(db, token_hash=token_hash, now_ms=now_ms)
+    if loaded is None:
+        _raise_invalid_invitation_token()
+    invitation_scope, invitation = loaded
+    invitee_username = _validate_passwordless_invitation_candidate(
+        db,
+        invitation_scope=invitation_scope,
+        invitation=invitation,
+        username=body.username,
+    )
+    _enforce_optional_key_rate_limit(
+        bucket="auth-invite-passkey-register-invitee",
+        key=_hashed_rate_limit_key("invitee", invitee_username),
+        env_name="AUTH_INVITE_PASSKEY_REGISTER_INVITEE_RATE_LIMIT",
+        default_limit=6,
+        scope_label="Invitee",
+    )
+    user_handle = _invitation_passkey_user_handle(token_hash)
+    challenge = passkeys.create_challenge(
+        db,
+        flow="registration",
+        invitation_token_hash=token_hash,
+        invitation_scope=invitation_scope,
+        invitation_id=int(invitation["id"]),
+        invitee_username=invitee_username,
+    )
+    public_key = passkeys.registration_options_for_user(
+        db,
+        user_id=0,
+        username=invitee_username,
+        challenge=challenge.challenge,
+        user_handle=user_handle,
+    )
+    db.commit()
+    return {"challenge_token": challenge.token, "publicKey": public_key}
+
+
+@router.post("/auth/invitations/passkey/register/verify", status_code=201)
+def auth_invitation_passkey_register_verify(
+    body: InvitationPasskeyRegisterVerifyBody,
+    request: Request,
+    response: Response,
+    db: DB,
+) -> dict[str, object]:
+    _require_user_lifecycle_enabled()
+    passkeys.require_passkeys_configured()
+    enforce_rate_limit(
+        request,
+        bucket="auth-invite-passkey-register",
+        limit=env_int("AUTH_INVITE_PASSKEY_REGISTER_RATE_LIMIT", 20),
+        window_seconds=60,
+    )
+    challenge = passkeys.consume_challenge(
+        db,
+        token=body.challenge_token,
+        flow="registration",
+    )
+    if (
+        not challenge.invitation_token_hash
+        or challenge.invitation_scope not in {"garden", "personal_garden"}
+        or challenge.invitation_id is None
+        or not challenge.invitee_username
+    ):
+        _raise_invalid_invitation_token()
+    invitation_scope = cast(InvitationScope, challenge.invitation_scope)
+    now_ms = current_timestamp_ms()
+    invitation = _select_active_invitation(
+        db,
+        scope=invitation_scope,
+        token_hash=challenge.invitation_token_hash,
+        now_ms=now_ms,
+        invitation_id=challenge.invitation_id,
+    )
+    if invitation is None:
+        _raise_invalid_invitation_token()
+    invitee_username = _validate_passwordless_invitation_candidate(
+        db,
+        invitation_scope=invitation_scope,
+        invitation=invitation,
+        username=challenge.invitee_username,
+    )
+    try:
+        verified = passkeys.verify_registration_credential(
+            credential=body.credential,
+            expected_challenge=challenge.challenge,
+        )
+    except HTTPException:
+        db.commit()
+        raise
+    created_role = cast(
+        Literal["viewer", "editor", "admin"],
+        "viewer" if invitation_scope == "garden" else str(invitation["role"]),
+    )
+    try:
+        created = create_user(
+            db,
+            username=invitee_username,
+            password=None,
+            role=created_role,
+            password_auth_disabled=True,
+            passkey_user_handle=_invitation_passkey_user_handle(challenge.invitation_token_hash),
+        )
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            _raise_invalid_invitation_token()
+        raise
+    user_id = _coerce_int(created["id"])
+    credential_id = passkeys.encode_public_key(verified.credential_id)
+    row = db.execute(
+        """
+        INSERT INTO auth_passkeys (
+            user_id,
+            credential_id,
+            credential_public_key,
+            sign_count,
+            nickname,
+            transports,
+            credential_device_type,
+            credential_backed_up,
+            created_at_ms,
+            updated_at_ms,
+            last_used_at_ms
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+        ON CONFLICT (credential_id) DO NOTHING
+        RETURNING id, nickname, created_at_ms, last_used_at_ms, transports,
+                  credential_device_type, credential_backed_up
+        """,
+        (
+            user_id,
+            credential_id,
+            passkeys.encode_public_key(verified.credential_public_key),
+            verified.sign_count,
+            body.nickname.strip(),
+            passkeys.credential_transports(body.credential),
+            verified.credential_device_type,
+            int(verified.credential_backed_up),
+            now_ms,
+            now_ms,
+        ),
+    ).fetchone()
+    if not row:
+        db.commit()
+        raise HTTPException(status_code=409, detail="Passkey is already registered")
+    _accept_invitation_atomically(
+        db,
+        invitation_scope=invitation_scope,
+        invitation=invitation,
+        token_hash=challenge.invitation_token_hash,
+        user_id=user_id,
+        now_ms=now_ms,
+    )
+    db.commit()
+    token, expires_at_ms = create_session_for_user(
+        user_id,
+        mfa_authenticated=True,
+        mfa_setup_required=False,
+    )
+    db.execute(
+        "UPDATE auth_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
+        (user_id,),
+    )
+    db.commit()
+    _set_session_cookies(response, token=token, expires_at_ms=expires_at_ms)
+    _audit_user_lifecycle_event(
+        request,
+        auth_context=None,
+        status_code=201,
+        detail=_lifecycle_detail(
+            "auth.invitation.passkey-register",
+            invitation_id=int(invitation["id"]),
+            invitation_scope=invitation_scope,
+            garden_id=(int(invitation["garden_id"]) if invitation_scope == "garden" else None),
+            user_id=user_id,
+            username=invitee_username,
+            role=str(invitation["role"]),
+            created_user=True,
+            passkey_id=int(row["id"]),
+        ),
+        garden_id=(int(invitation["garden_id"]) if invitation_scope == "garden" else None),
+        db=db,
+    )
+    return {
+        "status": "ok",
+        "expires_at_ms": expires_at_ms,
+        "garden_id": (int(invitation["garden_id"]) if invitation_scope == "garden" else None),
+        "user_id": user_id,
+        "username": invitee_username,
+        "role": str(invitation["role"]),
+        "created_user": True,
+        "invitation_scope": invitation_scope,
+        "passkey": passkeys.serialize_passkey(dict(row)),
+    }
+
+
 @router.post("/auth/invitations/accept")
 def auth_accept_invitation(
     body: InvitationAcceptBody,
@@ -3206,63 +3721,14 @@ def auth_accept_invitation(
         friction_provider=body.friction_provider,
         friction_token=body.friction_token,
     )
-    garden_invitation = db.execute(
-        """
-        SELECT
-            id,
-            garden_id,
-            invitee_username,
-            role,
-            expires_at_ms,
-            accepted_at_ms,
-            revoked_at_ms
-        FROM garden_invitations
-        WHERE token_hash = %s
-        LIMIT 1
-        """,
-        (token_hash,),
-    ).fetchone()
-    personal_invitation = db.execute(
-        """
-        SELECT
-            id,
-            invitee_username,
-            role,
-            expires_at_ms,
-            accepted_at_ms,
-            revoked_at_ms
-        FROM auth_user_invitations
-        WHERE token_hash = %s
-        LIMIT 1
-        """,
-        (token_hash,),
-    ).fetchone()
-    invitation_scope: Literal["garden", "personal_garden"] | None = None
-    invitation = None
-    if (
-        garden_invitation
-        and garden_invitation["accepted_at_ms"] is None
-        and garden_invitation["revoked_at_ms"] is None
-        and int(garden_invitation["expires_at_ms"]) > now_ms
-    ):
-        invitation = garden_invitation
-        invitation_scope = "garden"
-    elif (
-        personal_invitation
-        and personal_invitation["accepted_at_ms"] is None
-        and personal_invitation["revoked_at_ms"] is None
-        and int(personal_invitation["expires_at_ms"]) > now_ms
-    ):
-        invitation = personal_invitation
-        invitation_scope = "personal_garden"
-    if invitation is None or invitation_scope is None:
-        _record_invalid_invitation_attempt()
-        raise HTTPException(status_code=400, detail="Invalid or expired invitation token")
+    loaded = _load_active_invitation_by_token(db, token_hash=token_hash, now_ms=now_ms)
+    if loaded is None:
+        _raise_invalid_invitation_token()
+    invitation_scope, invitation = loaded
 
     invitee_username = str(invitation["invitee_username"]).strip()
     if not invitee_username:
-        _record_invalid_invitation_attempt()
-        raise HTTPException(status_code=400, detail="Invalid or expired invitation token")
+        _raise_invalid_invitation_token()
     _enforce_optional_key_rate_limit(
         bucket="auth-invite-accept-invitee",
         key=_hashed_rate_limit_key("invitee", invitee_username),
@@ -3273,7 +3739,14 @@ def auth_accept_invitation(
 
     user_row = db.execute(
         """
-        SELECT id, username, password_hash, role, is_active, mfa_totp_enabled
+        SELECT
+            id,
+            username,
+            password_hash,
+            password_auth_disabled,
+            role,
+            is_active,
+            mfa_totp_enabled
         FROM auth_users
         WHERE username = %s
         LIMIT 1
@@ -3284,6 +3757,9 @@ def auth_accept_invitation(
     created_user = False
     if user_row:
         if int(user_row["is_active"]) != 1:
+            _record_invalid_invitation_attempt()
+            raise HTTPException(status_code=401, detail="Invalid invitation credentials")
+        if int(user_row["password_auth_disabled"]) == 1 or user_row["password_hash"] is None:
             _record_invalid_invitation_attempt()
             raise HTTPException(status_code=401, detail="Invalid invitation credentials")
         if not verify_password_and_upgrade(
@@ -3333,45 +3809,14 @@ def auth_accept_invitation(
                     user_id=user_id,
                     mfa_setup_required=bool(mfa_status["setup_required"]),
                 )
-    if invitation_scope == "garden":
-        db.execute(
-            """
-            INSERT INTO garden_memberships (garden_id, user_id, role)
-            VALUES (%s, %s, %s)
-            ON CONFLICT(garden_id, user_id) DO UPDATE SET
-                role = excluded.role
-            """,
-            (
-                int(invitation["garden_id"]),
-                user_id,
-                invitation_role,
-            ),
-        )
-        db.execute(
-            """
-            UPDATE garden_invitations
-            SET accepted_at_ms = %s, accepted_user_id = %s
-            WHERE id = %s
-            """,
-            (
-                now_ms,
-                user_id,
-                int(invitation["id"]),
-            ),
-        )
-    else:
-        db.execute(
-            """
-            UPDATE auth_user_invitations
-            SET accepted_at_ms = %s, accepted_user_id = %s
-            WHERE id = %s
-            """,
-            (
-                now_ms,
-                user_id,
-                int(invitation["id"]),
-            ),
-        )
+    _accept_invitation_atomically(
+        db,
+        invitation_scope=invitation_scope,
+        invitation=invitation,
+        token_hash=token_hash,
+        user_id=user_id,
+        now_ms=now_ms,
+    )
     db.commit()
     _audit_user_lifecycle_event(
         request,

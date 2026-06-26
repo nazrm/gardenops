@@ -52,6 +52,10 @@ class ConsumedPasskeyChallenge:
     challenge: bytes
     user_id: int | None
     session_token_hash: str | None
+    invitation_token_hash: str | None = None
+    invitation_scope: str | None = None
+    invitation_id: int | None = None
+    invitee_username: str | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +171,10 @@ def create_challenge(
     flow: PasskeyFlow,
     user_id: int | None = None,
     session_token_hash: str | None = None,
+    invitation_token_hash: str | None = None,
+    invitation_scope: str | None = None,
+    invitation_id: int | None = None,
+    invitee_username: str | None = None,
 ) -> PasskeyChallenge:
     if flow == "authentication" and user_id is None:
         raise HTTPException(
@@ -185,11 +193,15 @@ def create_challenge(
             flow,
             user_id,
             session_token_hash,
+            invitation_token_hash,
+            invitation_scope,
+            invitation_id,
+            invitee_username,
             created_at_ms,
             expires_at_ms,
             used_at_ms
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, NULL)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
         """,
         (
             _hash_token(token),
@@ -197,6 +209,10 @@ def create_challenge(
             flow,
             user_id,
             session_token_hash,
+            invitation_token_hash,
+            invitation_scope,
+            invitation_id,
+            invitee_username,
             now_ms,
             now_ms + _challenge_ttl_ms(),
         ),
@@ -238,7 +254,15 @@ def consume_challenge(
           AND expires_at_ms > %s
           {user_clause}
           {session_clause}
-        RETURNING id, challenge, user_id, session_token_hash
+        RETURNING
+            id,
+            challenge,
+            user_id,
+            session_token_hash,
+            invitation_token_hash,
+            invitation_scope,
+            invitation_id,
+            invitee_username
         """,
         tuple(params),
     ).fetchone()
@@ -250,6 +274,16 @@ def consume_challenge(
         user_id=int(row["user_id"]) if row["user_id"] is not None else None,
         session_token_hash=(
             str(row["session_token_hash"]) if row["session_token_hash"] is not None else None
+        ),
+        invitation_token_hash=(
+            str(row["invitation_token_hash"]) if row["invitation_token_hash"] is not None else None
+        ),
+        invitation_scope=(
+            str(row["invitation_scope"]) if row["invitation_scope"] is not None else None
+        ),
+        invitation_id=(int(row["invitation_id"]) if row["invitation_id"] is not None else None),
+        invitee_username=(
+            str(row["invitee_username"]) if row["invitee_username"] is not None else None
         ),
     )
 
@@ -320,6 +354,7 @@ def registration_options_for_user(
     user_id: int,
     username: str,
     challenge: bytes,
+    user_handle: str | None = None,
 ) -> dict[str, Any]:
     rows = conn.execute(
         "SELECT credential_id, transports FROM auth_passkeys WHERE user_id = %s",
@@ -328,7 +363,7 @@ def registration_options_for_user(
     options = generate_registration_options(
         rp_id=passkey_rp_id(),
         rp_name=app_name(),
-        user_id=str(user_id).encode("utf-8"),
+        user_id=(user_handle or str(user_id)).encode("utf-8"),
         user_name=username,
         user_display_name=username,
         challenge=challenge,
