@@ -71,6 +71,35 @@ api_key = "{synthetic_openai_key}"  # push-sanitizer: allow SECRET_ASSIGNMENT
             ["OPENAI_KEY at line 3"],
         )
 
+    def test_path_scan_can_skip_unchanged_secret_patterns(self) -> None:
+        synthetic_value = "ZP6i7Pz4_" + "aN3KqQpt" + "9VxLm2s" + "R0bYfE8c"
+        data = f'token = "{synthetic_value}"\n'.encode()
+
+        full_scan = self.sanitizer.scan_path_and_content(
+            "example.py",
+            data,
+            "unit",
+        )
+        path_only_scan = self.sanitizer.scan_path_and_content(
+            "example.py",
+            data,
+            "unit",
+            scan_secrets=False,
+        )
+        added_line_scan = self.sanitizer.find_secret_patterns_in_lines(
+            [(12, f'token = "{synthetic_value}"')],
+            "example.py",
+            "unit",
+            detail_label="added line",
+        )
+
+        self.assertEqual([finding.detail for finding in full_scan], ["SECRET_ASSIGNMENT at line 1"])
+        self.assertEqual(path_only_scan, [])
+        self.assertEqual(
+            [finding.detail for finding in added_line_scan],
+            ["SECRET_ASSIGNMENT at added line 12"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,10 +4,12 @@ import os
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 import gardenops.db as db
 import gardenops.passkeys as passkey_service
 from gardenops.incident_controls import set_runtime_flag
+from gardenops.main import app
 from gardenops.passkeys import VerifiedPasskeyAuthentication, VerifiedPasskeyRegistration
 from gardenops.security import create_user
 from tests.base import BaseApiTest, strong_password
@@ -143,6 +145,47 @@ class TestPasskeyRegistration(PasskeyApiTest):
             db.return_db(conn)
         return token
 
+    def _insert_garden_invitation(
+        self,
+        *,
+        invitee_username: str,
+        role: str = "viewer",
+        token: str = "garden-passkey-invite-token",
+    ) -> str:
+        conn = db.get_db()
+        try:
+            garden_id = int(
+                conn.execute("SELECT id FROM gardens WHERE slug = 'default' LIMIT 1").fetchone()[
+                    "id"
+                ],
+            )
+            now_ms = db.current_timestamp_ms()
+            conn.execute(
+                """
+                INSERT INTO garden_invitations (
+                    garden_id,
+                    invitee_username,
+                    role,
+                    token_hash,
+                    created_at_ms,
+                    expires_at_ms
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    garden_id,
+                    invitee_username,
+                    role,
+                    hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                    now_ms,
+                    now_ms + 60_000,
+                ),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        return token
+
     def test_auth_status_reports_passkey_capability(self) -> None:
         enabled = self.client.get("/api/auth/status")
         self.assertEqual(enabled.status_code, 200, enabled.text)
@@ -259,6 +302,269 @@ class TestPasskeyRegistration(PasskeyApiTest):
             self.assertIsNone(row["password_hash"])
             self.assertEqual(int(row["password_auth_disabled"]), 1)
             self.assertIsNotNone(row["accepted_at_ms"])
+        finally:
+            db.return_db(conn)
+
+    def test_invitation_passkey_duplicate_credential_rolls_back_created_user(self) -> None:
+        self._register_passkey(
+            username="duplicate_credential_owner",
+            password="duplicate-owner-pass",
+            credential_id=b"shared-invite-credential",
+        )
+        invite_token = self._insert_personal_invitation(
+            invitee_username="duplicate_invite_user",
+            token="duplicate-invite-passkey-token",
+        )
+
+        options = self.client.post(
+            "/api/auth/invitations/passkey/register/options",
+            json={"token": invite_token, "username": "duplicate_invite_user"},
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+        challenge_token = str(options.json()["challenge_token"])
+
+        with patch(
+            "gardenops.passkeys.verify_registration_credential",
+            return_value=VerifiedPasskeyRegistration(
+                credential_id=b"shared-invite-credential",
+                credential_public_key=b"public-key",
+                sign_count=1,
+                credential_device_type="multi_device",
+                credential_backed_up=True,
+            ),
+        ):
+            response = self.client.post(
+                "/api/auth/invitations/passkey/register/verify",
+                json={
+                    "challenge_token": challenge_token,
+                    "nickname": "Phone",
+                    "credential": _fake_registration_credential(b"shared-invite-credential"),
+                },
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "Passkey is already registered")
+        conn = db.get_db()
+        try:
+            user = conn.execute(
+                "SELECT id FROM auth_users WHERE username = %s",
+                ("duplicate_invite_user",),
+            ).fetchone()
+            invitation = conn.execute(
+                """
+                SELECT accepted_at_ms, accepted_user_id
+                FROM auth_user_invitations
+                WHERE token_hash = %s
+                """,
+                (hashlib.sha256(invite_token.encode("utf-8")).hexdigest(),),
+            ).fetchone()
+            self.assertIsNone(user)
+            self.assertIsNotNone(invitation)
+            assert invitation is not None
+            self.assertIsNone(invitation["accepted_at_ms"])
+            self.assertIsNone(invitation["accepted_user_id"])
+        finally:
+            db.return_db(conn)
+
+    def test_invitation_passkey_verify_soft_reject_consumes_challenge(self) -> None:
+        invite_token = self._insert_personal_invitation(
+            invitee_username="revoked_passkey_invite_user",
+            token="revoked-passkey-invite-token",
+        )
+        options = self.client.post(
+            "/api/auth/invitations/passkey/register/options",
+            json={"token": invite_token, "username": "revoked_passkey_invite_user"},
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+        challenge_token = str(options.json()["challenge_token"])
+
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                UPDATE auth_user_invitations
+                SET revoked_at_ms = %s
+                WHERE token_hash = %s
+                """,
+                (
+                    db.current_timestamp_ms(),
+                    hashlib.sha256(invite_token.encode("utf-8")).hexdigest(),
+                ),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        response = self.client.post(
+            "/api/auth/invitations/passkey/register/verify",
+            json={
+                "challenge_token": challenge_token,
+                "nickname": "Phone",
+                "credential": _fake_registration_credential(b"unused-after-revoke"),
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Invalid or expired invitation token")
+        conn = db.get_db()
+        try:
+            challenge = conn.execute(
+                """
+                SELECT used_at_ms
+                FROM auth_passkey_challenges
+                WHERE token_hash = %s
+                """,
+                (hashlib.sha256(challenge_token.encode("utf-8")).hexdigest(),),
+            ).fetchone()
+            self.assertIsNotNone(challenge)
+            assert challenge is not None
+            self.assertIsNotNone(challenge["used_at_ms"])
+        finally:
+            db.return_db(conn)
+
+    def test_invitation_passkey_options_store_random_challenge_user_handles(self) -> None:
+        invite_token = self._insert_personal_invitation(
+            invitee_username="random_handle_invite_user",
+            token="random-handle-invite-token",
+        )
+
+        first = self.client.post(
+            "/api/auth/invitations/passkey/register/options",
+            json={"token": invite_token, "username": "random_handle_invite_user"},
+        )
+        second = self.client.post(
+            "/api/auth/invitations/passkey/register/options",
+            json={"token": invite_token, "username": "random_handle_invite_user"},
+        )
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertNotEqual(
+            first.json()["publicKey"]["user"]["id"],
+            second.json()["publicKey"]["user"]["id"],
+        )
+        conn = db.get_db()
+        try:
+            rows = conn.execute(
+                """
+                SELECT invitation_user_handle
+                FROM auth_passkey_challenges
+                WHERE invitation_token_hash = %s
+                ORDER BY id
+                """,
+                (hashlib.sha256(invite_token.encode("utf-8")).hexdigest(),),
+            ).fetchall()
+            handles = [str(row["invitation_user_handle"]) for row in rows]
+            self.assertEqual(len(handles), 2)
+            self.assertEqual(len(set(handles)), 2)
+            self.assertTrue(all(len(handle) >= 32 for handle in handles))
+        finally:
+            db.return_db(conn)
+
+    def test_invitation_passkey_register_requires_session_auth_mode(self) -> None:
+        invite_token = self._insert_personal_invitation(
+            invitee_username="session_mode_invite_user",
+            token="session-mode-passkey-invite-token",
+        )
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "api_key", "AUTH_API_KEY": "shared-key"},
+            clear=False,
+        ):
+            response = self.client.post(
+                "/api/auth/invitations/passkey/register/options",
+                json={"token": invite_token, "username": "session_mode_invite_user"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Session auth mode is disabled")
+
+    def test_invitation_passkey_register_rejects_non_viewer_garden_invitation(self) -> None:
+        invite_token = self._insert_garden_invitation(
+            invitee_username="garden_admin_invite_user",
+            role="admin",
+            token="garden-admin-passkey-invite-token",
+        )
+
+        response = self.client.post(
+            "/api/auth/invitations/passkey/register/options",
+            json={"token": invite_token, "username": "garden_admin_invite_user"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Invalid or expired invitation token")
+
+    def test_invitation_passkey_username_match_normalizes_unicode(self) -> None:
+        invite_token = self._insert_personal_invitation(
+            invitee_username="caf\u00e9_invite_user",
+            token="unicode-passkey-invite-token",
+        )
+
+        response = self.client.post(
+            "/api/auth/invitations/passkey/register/options",
+            json={"token": invite_token, "username": "cafe\u0301_invite_user"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def test_invitation_passkey_session_failure_keeps_recoverable_account_response(self) -> None:
+        invite_token = self._insert_personal_invitation(
+            invitee_username="session_failure_invite_user",
+            token="session-failure-passkey-invite-token",
+        )
+        client = TestClient(app, raise_server_exceptions=False)
+        self.addCleanup(client.close)
+        options = client.post(
+            "/api/auth/invitations/passkey/register/options",
+            json={"token": invite_token, "username": "session_failure_invite_user"},
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+        challenge_token = str(options.json()["challenge_token"])
+
+        with (
+            patch(
+                "gardenops.passkeys.verify_registration_credential",
+                return_value=VerifiedPasskeyRegistration(
+                    credential_id=b"session-failure-credential",
+                    credential_public_key=b"public-key",
+                    sign_count=1,
+                    credential_device_type="multi_device",
+                    credential_backed_up=True,
+                ),
+            ),
+            patch(
+                "gardenops.routers.auth.create_session_for_user",
+                side_effect=RuntimeError("session store down"),
+            ),
+        ):
+            response = client.post(
+                "/api/auth/invitations/passkey/register/verify",
+                json={
+                    "challenge_token": challenge_token,
+                    "nickname": "Phone",
+                    "credential": _fake_registration_credential(b"session-failure-credential"),
+                },
+            )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        body = response.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertFalse(body["session_established"])
+        self.assertIn("Sign in", body["message"])
+        self.assertIsNone(client.cookies.get("gardenops_session"))
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM auth_users u
+                JOIN auth_passkeys p ON p.user_id = u.id
+                WHERE u.username = %s
+                """,
+                ("session_failure_invite_user",),
+            ).fetchone()
+            self.assertEqual(int(row["count"]), 1)
         finally:
             db.return_db(conn)
 

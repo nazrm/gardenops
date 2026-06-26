@@ -56,6 +56,7 @@ class ConsumedPasskeyChallenge:
     invitation_scope: str | None = None
     invitation_id: int | None = None
     invitee_username: str | None = None
+    invitation_user_handle: str | None = None
 
 
 @dataclass(frozen=True)
@@ -175,6 +176,7 @@ def create_challenge(
     invitation_scope: str | None = None,
     invitation_id: int | None = None,
     invitee_username: str | None = None,
+    invitation_user_handle: str | None = None,
 ) -> PasskeyChallenge:
     if flow == "authentication" and user_id is None:
         raise HTTPException(
@@ -197,11 +199,12 @@ def create_challenge(
             invitation_scope,
             invitation_id,
             invitee_username,
+            invitation_user_handle,
             created_at_ms,
             expires_at_ms,
             used_at_ms
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
         """,
         (
             _hash_token(token),
@@ -213,6 +216,7 @@ def create_challenge(
             invitation_scope,
             invitation_id,
             invitee_username,
+            invitation_user_handle,
             now_ms,
             now_ms + _challenge_ttl_ms(),
         ),
@@ -262,7 +266,8 @@ def consume_challenge(
             invitation_token_hash,
             invitation_scope,
             invitation_id,
-            invitee_username
+            invitee_username,
+            invitation_user_handle
         """,
         tuple(params),
     ).fetchone()
@@ -284,6 +289,11 @@ def consume_challenge(
         invitation_id=(int(row["invitation_id"]) if row["invitation_id"] is not None else None),
         invitee_username=(
             str(row["invitee_username"]) if row["invitee_username"] is not None else None
+        ),
+        invitation_user_handle=(
+            str(row["invitation_user_handle"])
+            if row["invitation_user_handle"] is not None
+            else None
         ),
     )
 

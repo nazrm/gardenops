@@ -5,12 +5,16 @@ from unittest.mock import patch
 
 import gardenops.db as db
 from gardenops.schema_signature import (
+    REQUIRED_COLUMN_NULLABILITY,
     REQUIRED_COLUMNS,
+    REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS,
     REQUIRED_CONSTRAINTS,
+    REQUIRED_INDEX_DEFINITION_FRAGMENTS,
     REQUIRED_INDEXES,
     REQUIRED_TABLES,
     SchemaSnapshot,
     bootstrap_schema_diagnostics_from_snapshot,
+    missing_schema_parts,
 )
 
 
@@ -35,6 +39,24 @@ def _truncate_all() -> None:
 class MigrationGuardTests(unittest.TestCase):
     """Verify run_migrations is idempotent and does not crash on repeated runs."""
 
+    @staticmethod
+    def _complete_schema_snapshot() -> SchemaSnapshot:
+        return SchemaSnapshot(
+            tables=set(REQUIRED_TABLES),
+            columns={table: set(columns) for table, columns in REQUIRED_COLUMNS.items()},
+            indexes=set(REQUIRED_INDEXES),
+            constraints=set(REQUIRED_CONSTRAINTS),
+            column_nullability=dict(REQUIRED_COLUMN_NULLABILITY),
+            index_definitions={
+                name: " ".join(fragments)
+                for name, fragments in REQUIRED_INDEX_DEFINITION_FRAGMENTS.items()
+            },
+            constraint_definitions={
+                name: " ".join(fragments)
+                for name, fragments in REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS.items()
+            },
+        )
+
     def test_run_migrations_idempotent(self) -> None:
         """Re-running run_migrations must not crash."""
         db.run_migrations()
@@ -55,12 +77,7 @@ class MigrationGuardTests(unittest.TestCase):
         self.assertEqual(diagnostics["missing"], [])
 
     def test_complete_bootstrap_signature_can_be_stamped(self) -> None:
-        snapshot = SchemaSnapshot(
-            tables=set(REQUIRED_TABLES),
-            columns={table: set(columns) for table, columns in REQUIRED_COLUMNS.items()},
-            indexes=set(REQUIRED_INDEXES),
-            constraints=set(REQUIRED_CONSTRAINTS),
-        )
+        snapshot = self._complete_schema_snapshot()
 
         diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
 
@@ -88,6 +105,7 @@ class MigrationGuardTests(unittest.TestCase):
                 "invitation_scope",
                 "invitation_id",
                 "invitee_username",
+                "invitation_user_handle",
                 "created_at_ms",
             }.issubset(set(REQUIRED_COLUMNS["auth_passkey_challenges"]))
         )
@@ -98,6 +116,7 @@ class MigrationGuardTests(unittest.TestCase):
                 "passkey_prompt_dismissed_until_ms",
             }.issubset(set(REQUIRED_COLUMNS["auth_users"]))
         )
+        self.assertIn("auth_password_reset_tokens", REQUIRED_TABLES)
         self.assertIn("purpose", REQUIRED_COLUMNS["auth_password_reset_tokens"])
         self.assertIn("idx_auth_passkey_challenges_user", REQUIRED_INDEXES)
         self.assertIn("idx_auth_passkey_challenges_invitation", REQUIRED_INDEXES)
@@ -105,6 +124,36 @@ class MigrationGuardTests(unittest.TestCase):
         self.assertIn("auth_passkeys_user_id_fkey", REQUIRED_CONSTRAINTS)
         self.assertIn("auth_passkey_challenges_user_id_fkey", REQUIRED_CONSTRAINTS)
         self.assertIn("ck_auth_users_password_auth_state", REQUIRED_CONSTRAINTS)
+        self.assertIn("auth_users.password_hash", REQUIRED_COLUMN_NULLABILITY)
+        self.assertIn("idx_auth_passkey_challenges_invitation", REQUIRED_INDEX_DEFINITION_FRAGMENTS)
+        self.assertIn("ux_auth_users_passkey_user_handle", REQUIRED_INDEX_DEFINITION_FRAGMENTS)
+        self.assertIn(
+            "ck_auth_users_password_auth_state",
+            REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS,
+        )
+
+    def test_schema_signature_validates_critical_definitions(self) -> None:
+        snapshot = self._complete_schema_snapshot()
+        snapshot.column_nullability["auth_users.password_hash"] = False
+        snapshot.index_definitions["ux_auth_users_passkey_user_handle"] = (
+            "CREATE UNIQUE INDEX ux_auth_users_passkey_user_handle ON auth_users (id)"
+        )
+        snapshot.constraint_definitions["ck_auth_users_password_auth_state"] = "CHECK (true)"
+
+        missing = missing_schema_parts(snapshot)
+
+        self.assertIn(
+            {"kind": "column-nullability", "object": "auth_users.password_hash"},
+            missing,
+        )
+        self.assertIn(
+            {"kind": "index-definition", "object": "ux_auth_users_passkey_user_handle"},
+            missing,
+        )
+        self.assertIn(
+            {"kind": "constraint-definition", "object": "ck_auth_users_password_auth_state"},
+            missing,
+        )
 
     def test_partial_bootstrap_signature_is_rejected(self) -> None:
         snapshot = SchemaSnapshot(

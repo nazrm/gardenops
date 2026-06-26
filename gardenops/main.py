@@ -751,7 +751,7 @@ def _is_multi_instance() -> bool:
 
 
 def _shared_rate_limits_required() -> bool:
-    return _is_internet_exposed() or _is_multi_instance()
+    return _is_production() or _is_internet_exposed() or _is_multi_instance()
 
 
 def _validate_shared_rate_limit_backend() -> None:
@@ -760,7 +760,8 @@ def _validate_shared_rate_limit_backend() -> None:
     backend = os.environ.get("RATE_LIMIT_BACKEND", "").strip().lower() or "memory"
     if backend != "redis":
         raise RuntimeError(
-            "INTERNET_EXPOSED=true or MULTI_INSTANCE=true requires RATE_LIMIT_BACKEND=redis",
+            "APP_ENV=production, INTERNET_EXPOSED=true, or MULTI_INSTANCE=true "
+            "requires RATE_LIMIT_BACKEND=redis",
         )
     redis_url = (
         os.environ.get("RATE_LIMIT_REDIS_URL", "").strip()

@@ -10,7 +10,8 @@ ALTER TABLE public.auth_passkey_challenges
     ADD COLUMN IF NOT EXISTS invitation_token_hash text,
     ADD COLUMN IF NOT EXISTS invitation_scope text,
     ADD COLUMN IF NOT EXISTS invitation_id bigint,
-    ADD COLUMN IF NOT EXISTS invitee_username text;
+    ADD COLUMN IF NOT EXISTS invitee_username text,
+    ADD COLUMN IF NOT EXISTS invitation_user_handle text;
 
 UPDATE public.auth_users
 SET passkey_user_handle =

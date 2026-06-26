@@ -10,6 +10,7 @@ import math
 import re
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 MAX_TEXT_BYTES = 512_000
@@ -264,8 +265,23 @@ def find_secret_patterns(data: bytes, path: str, surface: str) -> list[Finding]:
     if not data or is_binary(data):
         return []
     sample = data[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
+    return find_secret_patterns_in_lines(
+        ((line_no, line) for line_no, line in enumerate(sample.splitlines(), start=1)),
+        path,
+        surface,
+        detail_label="line",
+    )
+
+
+def find_secret_patterns_in_lines(
+    lines: Iterable[tuple[int, str]],
+    path: str,
+    surface: str,
+    *,
+    detail_label: str,
+) -> list[Finding]:
     findings: list[Finding] = []
-    for line_no, line in enumerate(sample.splitlines(), start=1):
+    for line_no, line in lines:
         if SAFE_EXAMPLE_RE.search(line):
             continue
         for name in secret_pattern_details_for_line(line):
@@ -273,14 +289,20 @@ def find_secret_patterns(data: bytes, path: str, surface: str) -> list[Finding]:
                 Finding(
                     code="SECRET_PATTERN",
                     path=path,
-                    detail=f"{name} at line {line_no}",
+                    detail=f"{name} at {detail_label} {line_no}",
                     surface=surface,
                 )
             )
     return findings
 
 
-def scan_path_and_content(path: str, data: bytes | None, surface: str) -> list[Finding]:
+def scan_path_and_content(
+    path: str,
+    data: bytes | None,
+    surface: str,
+    *,
+    scan_secrets: bool = True,
+) -> list[Finding]:
     rel = normalize(path)
     findings: list[Finding] = []
     blocked = is_blocked_path(rel)
@@ -292,7 +314,8 @@ def scan_path_and_content(path: str, data: bytes | None, surface: str) -> list[F
         findings.append(Finding("LARGE_FILE", rel, f"{len(data)} bytes", surface))
     if is_binary(data) and not is_allowed_path(rel):
         findings.append(Finding("BINARY_FILE", rel, "binary file needs explicit review", surface))
-    findings.extend(find_secret_patterns(data, rel, surface))
+    if scan_secrets:
+        findings.extend(find_secret_patterns(data, rel, surface))
     return findings
 
 
@@ -308,18 +331,68 @@ def untracked_files() -> list[str]:
     return git_lines(["ls-files", "--others", "--exclude-standard"])
 
 
+def scan_added_secret_patterns(diff_args: list[str], surface: str) -> list[Finding]:
+    completed = run_git(diff_args, check=False)
+    if completed.returncode not in {0, 1}:
+        stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"git {' '.join(diff_args)} failed: {stderr}")
+    text = completed.stdout[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
+    findings: list[Finding] = []
+    current_path = "<patch>"
+    new_line_no = 0
+    hunk_re = re.compile(r"@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,\d+)? @@")
+    for patch_line in text.splitlines():
+        if patch_line.startswith("+++ b/"):
+            current_path = normalize(patch_line[6:])
+            continue
+        if patch_line.startswith("@@"):
+            match = hunk_re.search(patch_line)
+            new_line_no = int(match.group("start")) if match else 0
+            continue
+        if patch_line.startswith("+") and not patch_line.startswith("+++"):
+            findings.extend(
+                find_secret_patterns_in_lines(
+                    [(new_line_no, patch_line[1:])],
+                    current_path,
+                    surface,
+                    detail_label="added line",
+                )
+            )
+            new_line_no += 1
+            continue
+        if patch_line.startswith("-") and not patch_line.startswith("---"):
+            continue
+        if new_line_no > 0:
+            new_line_no += 1
+    return findings
+
+
 def scan_pre_add(root: Path) -> list[Finding]:
     findings: list[Finding] = []
-    for path in sorted(set(unstaged_files() + untracked_files())):
+    unstaged = set(unstaged_files())
+    untracked = set(untracked_files())
+    for path in sorted(unstaged | untracked):
         data = read_worktree_file(root, path)
-        path_findings = scan_path_and_content(path, data, "pre-add")
+        path_findings = scan_path_and_content(
+            path,
+            data,
+            "pre-add",
+            scan_secrets=path in untracked,
+        )
         for finding in path_findings:
-            if finding.code == "BLOCKED_PATH" and path in untracked_files():
+            if finding.code == "BLOCKED_PATH" and path in untracked:
                 findings.append(
                     Finding("UNTRACKED_SENSITIVE", finding.path, finding.detail, finding.surface)
                 )
             else:
                 findings.append(finding)
+    if unstaged:
+        findings.extend(
+            scan_added_secret_patterns(
+                ["diff", "--unified=0", "--no-ext-diff", "--diff-filter=ACMR"],
+                "pre-add",
+            )
+        )
     return findings
 
 
@@ -327,7 +400,13 @@ def scan_pre_commit() -> list[Finding]:
     findings: list[Finding] = []
     for path in staged_files():
         data = read_git_blob(f":{path}")
-        findings.extend(scan_path_and_content(path, data, "pre-commit"))
+        findings.extend(scan_path_and_content(path, data, "pre-commit", scan_secrets=False))
+    findings.extend(
+        scan_added_secret_patterns(
+            ["diff", "--cached", "--unified=0", "--no-ext-diff", "--diff-filter=ACMR"],
+            "pre-commit",
+        )
+    )
     findings.extend(scan_tracked_ignored())
     return findings
 
@@ -394,7 +473,14 @@ def scan_pre_push() -> list[Finding]:
     for commit in commits:
         for path in commit_paths(commit):
             data = read_git_blob(f"{commit}:{path}")
-            findings.extend(scan_path_and_content(path, data, f"pre-push:{commit[:12]}"))
+            findings.extend(
+                scan_path_and_content(
+                    path,
+                    data,
+                    f"pre-push:{commit[:12]}",
+                    scan_secrets=False,
+                )
+            )
         findings.extend(scan_commit_patch(commit))
     return findings
 

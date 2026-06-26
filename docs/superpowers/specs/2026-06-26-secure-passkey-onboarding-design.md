@@ -70,13 +70,13 @@ The flow:
 6. If the invite username already belongs to any active or inactive `auth_users` row, passwordless registration is generically rejected. Existing users must accept invitations with their current password or use an explicit admin recovery flow.
 7. Passwordless invite registration for platform-admin personal invitations is rejected in this version. Admin invitees must use the password path and then complete the existing MFA/passkey setup requirements.
 8. Frontend requests passkey registration options for the invite token.
-9. Backend validates the invite token, checks it is not expired, revoked, or accepted, and creates a short-lived challenge bound to the invite token hash, invitation scope, invitation ID, and invited username.
+9. Backend validates the invite token, checks it is not expired, revoked, or accepted, and creates a short-lived challenge bound to the invite token hash, invitation scope, invitation ID, invited username, and a random WebAuthn user handle for this registration attempt.
 10. Frontend calls `navigator.credentials.create()`.
 11. Frontend sends the credential and challenge token to the backend.
 12. Backend consumes the challenge once, verifies the WebAuthn response, revalidates and atomically accepts the invitation with an `UPDATE ... WHERE accepted_at_ms IS NULL AND revoked_at_ms IS NULL AND expires_at_ms > now RETURNING ...`, creates the user, stores the passkey, creates a session, and returns the normal authenticated response.
 
 The user account is not created until the WebAuthn response verifies successfully.
-The invite/user/passkey transaction is committed before session creation unless session creation is refactored to use the same database connection. If session creation fails after commit, the account remains valid and the user can sign in with the new passkey.
+Challenge consumption is committed before later soft invitation rejections so a consumed challenge cannot be replayed. The invite/user/passkey transaction is committed before session creation unless session creation is refactored to use the same database connection. If session creation fails after commit, the account remains valid and the user can sign in with the new passkey.
 
 ### Passwordless User State
 
@@ -105,7 +105,7 @@ Password authentication behavior:
 - Existing password users continue to authenticate normally.
 - Users with `password_auth_disabled = 1` cannot authenticate with `/api/auth/login`.
 - Password reauthentication and password change endpoints reject passwordless users with a generic password-auth unavailable error.
-- Password reset tokens get an explicit purpose. Only a reset token with `purpose = 'passwordless_recovery'` may clear `password_auth_disabled` and set a first password for a passwordless user.
+- Password reset tokens get an explicit purpose. Only a reset token with `purpose = 'passwordless_recovery'` may clear `password_auth_disabled` and set a first password for a passwordless user. Passwordless recovery revokes existing passkeys before enabling password authentication.
 - Normal password reset tokens for password users continue to set `password_hash`, clear `must_change_password`, and keep `password_auth_disabled = 0`.
 - Invitation password acceptance for an existing passwordless user must not silently enable password auth.
 
@@ -126,13 +126,14 @@ Abuse and challenge schema changes:
 - Add nullable `auth_passkey_challenges.invitation_scope text`.
 - Add nullable `auth_passkey_challenges.invitation_id bigint`.
 - Add nullable `auth_passkey_challenges.invitee_username text`.
+- Add nullable `auth_passkey_challenges.invitation_user_handle text` for the random WebAuthn handle minted with each invitation registration challenge.
 - Challenge consume for invitation registration must match all invite-bound fields, not only the opaque challenge token.
 - Multiple challenges may be minted for one invitation, but only the first valid verify that atomically accepts the invitation can create the account and session.
 - Existing password invitation acceptance also uses the same atomic accept helper so old and new flows share replay/race protection.
 
 Requirements:
 
-- Use the existing invitation accept rate limits and add token-scoped limits for passwordless options and verify.
+- Use the existing invitation accept rate limits and add token-, invitee-, and challenge-scoped limits for passwordless options and verify.
 - Add tests for two challenges from one invite, revoke-after-options, and accepted-after-options.
 - Failed passwordless verify returns generic invalid invitation/passkey messages.
 - Challenge tokens are single-use and expire.

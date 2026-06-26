@@ -546,6 +546,14 @@ def provider_budget_snapshot() -> dict[str, object]:
 def _make_backend() -> RateLimitBackend:
     backend_name = os.environ.get("RATE_LIMIT_BACKEND", "").strip().lower() or "memory"
     if backend_name != "redis":
+        app_env = os.environ.get("APP_ENV", "").strip().lower()
+        internet_exposed = os.environ.get("INTERNET_EXPOSED", "false").strip().lower() == "true"
+        multi_instance = os.environ.get("MULTI_INSTANCE", "false").strip().lower() == "true"
+        if app_env in {"prod", "production"} or internet_exposed or multi_instance:
+            raise RuntimeError(
+                "APP_ENV=production, INTERNET_EXPOSED=true, or MULTI_INSTANCE=true "
+                "requires RATE_LIMIT_BACKEND=redis",
+            )
         return InMemoryRateLimitBackend()
     redis_url = (
         os.environ.get("RATE_LIMIT_REDIS_URL", "").strip()

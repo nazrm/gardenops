@@ -683,7 +683,15 @@ def create_user(
             ),
         )
     except psycopg.IntegrityError as exc:
-        raise HTTPException(status_code=409, detail="Username already exists") from exc
+        constraint = str(getattr(getattr(exc, "diag", None), "constraint_name", "") or "")
+        if constraint == "ux_auth_users_username":
+            raise HTTPException(status_code=409, detail="Username already exists") from exc
+        if constraint == "ux_auth_users_passkey_user_handle":
+            raise HTTPException(
+                status_code=409,
+                detail="Passkey user handle already exists",
+            ) from exc
+        raise HTTPException(status_code=500, detail="Failed to create user") from exc
     row = conn.execute(
         """
         SELECT

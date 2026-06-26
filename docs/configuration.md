@@ -54,6 +54,9 @@ is rejected at startup. Session-auth deployments in either mode must set
 `AUTH_MFA_SECRET_KEY` to a generated secret with at least 32 characters. Generate
 one with `python -c "import secrets; print(secrets.token_urlsafe(32))"` and
 paste the output as the value.
+Production, internet-exposed, and multi-instance deployments must use the Redis
+rate-limit backend; the in-memory backend is only for local development and
+tests.
 
 If an older deployment copied the previous public placeholder value, rotate it
 while the service is private: start a maintenance instance with
@@ -77,7 +80,9 @@ and platform-admin invitations still require the password-based invitation path.
 
 Normal password reset tokens do not convert passkey-only accounts back to
 password accounts. Admins must issue an explicit `passwordless_recovery` reset
-token when a passkey-only user needs password recovery.
+token when a passkey-only user needs password recovery. Using that recovery
+token revokes existing passkeys before enabling password authentication so the
+account has one active recovery path.
 
 ## Optional Providers
 

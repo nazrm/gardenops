@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import time
+import unicodedata
 from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -41,6 +42,7 @@ from gardenops.security import (
     csrf_cookie_name,
     csrf_token_for_session_hash,
     csrf_token_for_session_token,
+    generate_passkey_user_handle,
     get_password_policy,
     has_write_access,
     hash_password,
@@ -1100,8 +1102,30 @@ def _load_active_invitation_by_token(
     return None
 
 
-def _invitation_passkey_user_handle(token_hash: str) -> str:
-    return sha256(f"gardenops-invitation-passkey-user:{token_hash}".encode()).hexdigest()
+def _require_invitation_passkey_session_mode() -> None:
+    if not is_auth_required():
+        raise HTTPException(status_code=400, detail="Authentication is not required")
+    if not session_auth_enabled():
+        raise HTTPException(status_code=400, detail="Session auth mode is disabled")
+
+
+def _username_match_key(value: str) -> str:
+    return unicodedata.normalize("NFC", value.strip())
+
+
+def _validated_passwordless_invitation_role(
+    *,
+    invitation_scope: InvitationScope,
+    invitation: dict[str, Any],
+) -> Literal["viewer", "editor"]:
+    invitation_role = str(invitation["role"])
+    if invitation_scope == "garden":
+        if invitation_role != "viewer":
+            _raise_invalid_invitation_token()
+        return "viewer"
+    if invitation_role not in {"viewer", "editor"}:
+        _raise_invalid_invitation_token()
+    return cast(Literal["viewer", "editor"], invitation_role)
 
 
 def _validate_passwordless_invitation_candidate(
@@ -1112,10 +1136,14 @@ def _validate_passwordless_invitation_candidate(
     username: str,
 ) -> str:
     invitee_username = str(invitation["invitee_username"]).strip()
-    if not invitee_username or username.strip() != invitee_username:
+    if not invitee_username or _username_match_key(username) != _username_match_key(
+        invitee_username
+    ):
         _raise_invalid_invitation_token()
-    if invitation_scope == "personal_garden" and str(invitation["role"]) == "admin":
-        _raise_invalid_invitation_token()
+    _validated_passwordless_invitation_role(
+        invitation_scope=invitation_scope,
+        invitation=invitation,
+    )
     existing_user = db.execute(
         """
         SELECT id
@@ -1138,8 +1166,9 @@ def _accept_invitation_atomically(
     token_hash: str,
     user_id: int,
     now_ms: int,
+    membership_role: str | None = None,
 ) -> None:
-    invitation_role = str(invitation["role"])
+    invitation_role = str(membership_role or invitation["role"])
     if invitation_scope == "garden":
         db.execute(
             """
@@ -2665,6 +2694,24 @@ def auth_update_user(
     next_must_change = (
         body.must_change_password if body.must_change_password is not None else current_must_change
     )
+    if body.must_change_password is True:
+        password_state = db.execute(
+            """
+            SELECT password_hash, password_auth_disabled
+            FROM auth_users
+            WHERE id = %s
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+        if password_state and (
+            int(password_state["password_auth_disabled"]) == 1
+            or password_state["password_hash"] is None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Password change requirement is unavailable for passwordless accounts",
+            )
 
     if current_role == "admin" and current_active and (next_role != "admin" or not next_active):
         if _active_admin_count(db, exclude_user_id=user_id) <= 0:
@@ -3247,6 +3294,32 @@ def auth_issue_reset_token(
         env_name="AUTH_USER_ISSUE_RESET_RATE_LIMIT",
     )
     _load_auth_user(db, user_id)
+    password_state = db.execute(
+        """
+        SELECT password_hash, password_auth_disabled
+        FROM auth_users
+        WHERE id = %s
+        LIMIT 1
+        """,
+        (user_id,),
+    ).fetchone()
+    target_passwordless = bool(
+        password_state
+        and (
+            int(password_state["password_auth_disabled"]) == 1
+            or password_state["password_hash"] is None
+        ),
+    )
+    if body.purpose == "passwordless_recovery" and not target_passwordless:
+        raise HTTPException(
+            status_code=400,
+            detail="Passwordless recovery is only available for passwordless accounts",
+        )
+    if body.must_change_password and target_passwordless:
+        raise HTTPException(
+            status_code=400,
+            detail="Password change requirement is unavailable for passwordless accounts",
+        )
     ttl_minutes = _reset_token_ttl_minutes(body.expires_in_minutes)
     now_ms = current_timestamp_ms()
     expires_at_ms = now_ms + (ttl_minutes * 60 * 1000)
@@ -3388,6 +3461,11 @@ def auth_reset_password(
             status_code=400,
             detail="Password reset is unavailable for this account",
         )
+    if purpose == "passwordless_recovery" and not password_auth_disabled:
+        raise HTTPException(
+            status_code=400,
+            detail="Passwordless recovery is only available for passwordless accounts",
+        )
     current_hash = user_row["password_hash"]
     if current_hash is not None and verify_password(body.new_password, str(current_hash)):
         raise HTTPException(
@@ -3404,6 +3482,18 @@ def auth_reset_password(
         """,
         (hash_password(body.new_password), int(user_row["id"])),
     )
+    revoked_passkeys = 0
+    if purpose == "passwordless_recovery":
+        revoked_passkeys = len(
+            db.execute(
+                """
+                DELETE FROM auth_passkeys
+                WHERE user_id = %s
+                RETURNING id
+                """,
+                (int(user_row["id"]),),
+            ).fetchall(),
+        )
     consumed = db.execute(
         """
         UPDATE auth_password_reset_tokens
@@ -3423,13 +3513,18 @@ def auth_reset_password(
         auth_context=None,
         status_code=200,
         detail=_lifecycle_detail(
-            "auth.user.reset-password",
+            (
+                "auth.user.passwordless-recovery-reset"
+                if purpose == "passwordless_recovery"
+                else "auth.user.reset-password"
+            ),
             user_id=int(user_row["id"]),
             revoked_sessions=revoked,
+            revoked_passkeys=revoked_passkeys,
         ),
         db=db,
     )
-    return {"status": "ok", "revoked_sessions": revoked}
+    return {"status": "ok", "revoked_sessions": revoked, "revoked_passkeys": revoked_passkeys}
 
 
 class InvitationPeekBody(StrictBaseModel):
@@ -3478,6 +3573,7 @@ def auth_invitation_passkey_register_options(
     db: DB,
 ) -> dict[str, object]:
     _require_user_lifecycle_enabled()
+    _require_invitation_passkey_session_mode()
     passkeys.require_passkeys_configured()
     enforce_rate_limit(
         request,
@@ -3516,7 +3612,7 @@ def auth_invitation_passkey_register_options(
         default_limit=6,
         scope_label="Invitee",
     )
-    user_handle = _invitation_passkey_user_handle(token_hash)
+    user_handle = generate_passkey_user_handle()
     challenge = passkeys.create_challenge(
         db,
         flow="registration",
@@ -3524,6 +3620,7 @@ def auth_invitation_passkey_register_options(
         invitation_scope=invitation_scope,
         invitation_id=int(invitation["id"]),
         invitee_username=invitee_username,
+        invitation_user_handle=user_handle,
     )
     public_key = passkeys.registration_options_for_user(
         db,
@@ -3544,6 +3641,7 @@ def auth_invitation_passkey_register_verify(
     db: DB,
 ) -> dict[str, object]:
     _require_user_lifecycle_enabled()
+    _require_invitation_passkey_session_mode()
     passkeys.require_passkeys_configured()
     enforce_rate_limit(
         request,
@@ -3551,19 +3649,36 @@ def auth_invitation_passkey_register_verify(
         limit=env_int("AUTH_INVITE_PASSKEY_REGISTER_RATE_LIMIT", 20),
         window_seconds=60,
     )
+    challenge_token_hash = sha256(body.challenge_token.strip().encode("utf-8")).hexdigest()
+    _enforce_optional_key_rate_limit(
+        bucket="auth-invite-passkey-register-challenge",
+        key=_hashed_rate_limit_key("passkey-challenge", challenge_token_hash, casefold=False),
+        env_name="AUTH_INVITE_PASSKEY_REGISTER_CHALLENGE_RATE_LIMIT",
+        default_limit=6,
+        scope_label="Passkey challenge",
+    )
     challenge = passkeys.consume_challenge(
         db,
         token=body.challenge_token,
         flow="registration",
     )
+    db.commit()
     if (
         not challenge.invitation_token_hash
         or challenge.invitation_scope not in {"garden", "personal_garden"}
         or challenge.invitation_id is None
         or not challenge.invitee_username
+        or not challenge.invitation_user_handle
     ):
         _raise_invalid_invitation_token()
     invitation_scope = cast(InvitationScope, challenge.invitation_scope)
+    _enforce_optional_key_rate_limit(
+        bucket="auth-invite-passkey-register-invitee",
+        key=_hashed_rate_limit_key("invitee", challenge.invitee_username),
+        env_name="AUTH_INVITE_PASSKEY_REGISTER_VERIFY_INVITEE_RATE_LIMIT",
+        default_limit=6,
+        scope_label="Invitee",
+    )
     now_ms = current_timestamp_ms()
     invitation = _select_active_invitation(
         db,
@@ -3580,6 +3695,10 @@ def auth_invitation_passkey_register_verify(
         invitation=invitation,
         username=challenge.invitee_username,
     )
+    created_role = _validated_passwordless_invitation_role(
+        invitation_scope=invitation_scope,
+        invitation=invitation,
+    )
     try:
         verified = passkeys.verify_registration_credential(
             credential=body.credential,
@@ -3588,10 +3707,6 @@ def auth_invitation_passkey_register_verify(
     except HTTPException:
         db.commit()
         raise
-    created_role = cast(
-        Literal["viewer", "editor", "admin"],
-        "viewer" if invitation_scope == "garden" else str(invitation["role"]),
-    )
     try:
         created = create_user(
             db,
@@ -3599,7 +3714,7 @@ def auth_invitation_passkey_register_verify(
             password=None,
             role=created_role,
             password_auth_disabled=True,
-            passkey_user_handle=_invitation_passkey_user_handle(challenge.invitation_token_hash),
+            passkey_user_handle=challenge.invitation_user_handle,
         )
     except HTTPException as exc:
         if exc.status_code == 409:
@@ -3641,7 +3756,7 @@ def auth_invitation_passkey_register_verify(
         ),
     ).fetchone()
     if not row:
-        db.commit()
+        db.rollback()
         raise HTTPException(status_code=409, detail="Passkey is already registered")
     _accept_invitation_atomically(
         db,
@@ -3650,19 +3765,29 @@ def auth_invitation_passkey_register_verify(
         token_hash=challenge.invitation_token_hash,
         user_id=user_id,
         now_ms=now_ms,
+        membership_role=created_role,
     )
     db.commit()
-    token, expires_at_ms = create_session_for_user(
-        user_id,
-        mfa_authenticated=True,
-        mfa_setup_required=False,
-    )
-    db.execute(
-        "UPDATE auth_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
-        (user_id,),
-    )
-    db.commit()
-    _set_session_cookies(response, token=token, expires_at_ms=expires_at_ms)
+    session_established = True
+    session_message = ""
+    expires_at_ms: int | None = None
+    try:
+        token, expires_at_ms = create_session_for_user(
+            user_id,
+            mfa_authenticated=True,
+            mfa_setup_required=False,
+        )
+        db.execute(
+            "UPDATE auth_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
+            (user_id,),
+        )
+        db.commit()
+        _set_session_cookies(response, token=token, expires_at_ms=expires_at_ms)
+    except Exception:
+        logger.exception("Passwordless invitation created account but session creation failed")
+        db.rollback()
+        session_established = False
+        session_message = "Sign in to continue."
     _audit_user_lifecycle_event(
         request,
         auth_context=None,
@@ -3677,6 +3802,7 @@ def auth_invitation_passkey_register_verify(
             role=str(invitation["role"]),
             created_user=True,
             passkey_id=int(row["id"]),
+            session_established=session_established,
         ),
         garden_id=(int(invitation["garden_id"]) if invitation_scope == "garden" else None),
         db=db,
@@ -3691,6 +3817,8 @@ def auth_invitation_passkey_register_verify(
         "created_user": True,
         "invitation_scope": invitation_scope,
         "passkey": passkeys.serialize_passkey(dict(row)),
+        "session_established": session_established,
+        "message": session_message,
     }
 
 

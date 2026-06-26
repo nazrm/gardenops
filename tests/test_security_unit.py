@@ -473,6 +473,31 @@ class TestCreateUser(BaseApiTest):
         finally:
             db.return_db(conn)
 
+    def test_create_user_reports_passkey_handle_conflict_separately(self) -> None:
+        conn = db.get_db()
+        try:
+            create_user(
+                conn,
+                username="passkey_handle_owner",
+                password=None,  # type: ignore[arg-type]
+                role="viewer",
+                password_auth_disabled=True,
+                passkey_user_handle="stable-passkey-handle-conflict",
+            )
+            with self.assertRaises(HTTPException) as cm:
+                create_user(
+                    conn,
+                    username="passkey_handle_conflict",
+                    password=None,  # type: ignore[arg-type]
+                    role="viewer",
+                    password_auth_disabled=True,
+                    passkey_user_handle="stable-passkey-handle-conflict",
+                )
+            self.assertEqual(cm.exception.status_code, 409)
+            self.assertEqual(cm.exception.detail, "Passkey user handle already exists")
+        finally:
+            db.return_db(conn)
+
     def test_password_is_required_when_password_auth_enabled(self) -> None:
         conn = db.get_db()
         try:
