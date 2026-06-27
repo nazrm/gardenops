@@ -103,6 +103,12 @@ remain fallback values.
 LLM-backed AI features. Plant identification still tries PlantNet first when
 `PLANTNET_API_KEY` is configured; the configured AI provider is used only as
 fallback for identification, and directly for diagnosis and other AI features.
+Garden chat uses the configured OpenAI fast model when OpenAI is active, caps
+chat output with `AI_CHAT_MAX_OUTPUT_TOKENS` (default `1024`), and gives the
+upstream provider `AI_CHAT_PROVIDER_TIMEOUT_SECONDS` (default `60`) before
+returning a timeout response to the browser. Keep that backend timeout below
+the frontend garden-chat timeout so users receive the clearer AI timeout
+message instead of a generic network abort.
 
 Generate `APP_SECRETS_ENCRYPTION_KEY` with:
 

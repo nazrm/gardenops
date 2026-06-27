@@ -184,6 +184,7 @@ function readStoredActiveGardenId(): number | null {
 let activeGardenId: number | null = readStoredActiveGardenId();
 type ApiRequestOptions = {
   timeoutMs?: number;
+  timeoutMessage?: string;
   gardenId?: number | null;
 };
 
@@ -269,6 +270,9 @@ export function setOnAuthExpired(cb: () => void): void {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MESSAGE = "Request timed out";
+const AI_CHAT_TIMEOUT_MS = 90_000;
+const AI_CHAT_TIMEOUT_MESSAGE = "AI request timed out";
 
 async function apiFetch(
   input: RequestInfo | URL,
@@ -277,6 +281,7 @@ async function apiFetch(
   const path = normalizeApiPath(input);
   const {
     timeoutMs: requestedTimeoutMs,
+    timeoutMessage: requestedTimeoutMessage,
     gardenId,
     ...fetchInit
   } = init ?? {};
@@ -313,7 +318,7 @@ async function apiFetch(
     const timedOut = controller.signal.aborted && !(fetchInit.signal?.aborted ?? false);
     const apiError = new ApiError(
       0,
-      timedOut ? "Request timed out" : "Network request failed",
+      timedOut ? (requestedTimeoutMessage ?? DEFAULT_TIMEOUT_MESSAGE) : "Network request failed",
       { path, reportable: true },
     );
     emitApiErrorReport(apiError);
@@ -365,6 +370,9 @@ async function apiPost<T>(
   };
   if (options?.timeoutMs !== undefined) {
     request.timeoutMs = options.timeoutMs;
+  }
+  if (options?.timeoutMessage !== undefined) {
+    request.timeoutMessage = options.timeoutMessage;
   }
   if (options?.gardenId !== undefined) {
     request.gardenId = options.gardenId;
@@ -2179,6 +2187,7 @@ export async function gardenChatApi(
   const data = await apiPost<{ reply: string }>(
     "/api/ai/garden-chat",
     { message, history },
+    { timeoutMs: AI_CHAT_TIMEOUT_MS, timeoutMessage: AI_CHAT_TIMEOUT_MESSAGE },
   );
   return data.reply;
 }

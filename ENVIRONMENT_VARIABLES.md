@@ -121,7 +121,7 @@ environment variable read by the public app.
 | `CSP_REPORT_<SETTING>` | Content Security Policy report mode, endpoint, rate, and body-size settings. Internet-exposed deployments reject report-only mode. | `CSP_REPORT_ONLY=false` |
 | `RATE_LIMIT_<SETTING>` | Rate-limit backend, Redis, bucket, timeout, and global-limit settings. | `RATE_LIMIT_MAX_BUCKETS=50000` |
 | `REDIS_URL` | Fallback Redis URL when `RATE_LIMIT_REDIS_URL` is not set. | `redis://127.0.0.1:6379/0` |
-| `AI_<SETTING>` | AI feature rate limits, quotas, concurrency limits, care-batch settings, and rich-context opt-in. | `AI_RICH_CONTEXT_ENABLED=false` |
+| `AI_<SETTING>` | AI feature rate limits, quotas, concurrency limits, care-batch settings, garden-chat provider timeout/output tuning, and rich-context opt-in. | `AI_CHAT_PROVIDER_TIMEOUT_SECONDS=60` |
 | `ANTHROPIC_API_<SETTING>` | Anthropic provider timeout and retry settings. | `ANTHROPIC_API_TIMEOUT_SECONDS=25` |
 | `OPENAI_API_<SETTING>` | OpenAI provider timeout and retry settings. | `OPENAI_API_TIMEOUT_SECONDS=25` |
 | `PLANTNET_<SETTING>` | PlantNet provider timeout and confidence-threshold settings. | `PLANTNET_CONFIDENCE_THRESHOLD=0.40` |
