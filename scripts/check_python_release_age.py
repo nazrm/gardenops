@@ -13,6 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 COOLDOWN_DAYS = 7
 SECURITY_BYPASS_PATH = ROOT / ".gardenops" / "security-release-bypass.json"
+TRUSTED_PYTHON_BYPASS_SOURCE = "pip-audit base/head diff"
 
 # These packages were already locked inside the cooldown window when the
 # dependency policy was introduced. The dates are the point where the locked
@@ -59,7 +60,17 @@ def _normalize_python_name(name: str) -> str:
 
 
 def _load_security_release_bypasses() -> dict[str, list[str]]:
-    path = Path(os.environ.get("GARDENOPS_SECURITY_RELEASE_BYPASS", SECURITY_BYPASS_PATH))
+    configured_path = os.environ.get("GARDENOPS_SECURITY_RELEASE_BYPASS", "").strip()
+    path = Path(configured_path) if configured_path else SECURITY_BYPASS_PATH
+    if configured_path:
+        allow_override = os.environ.get(
+            "GARDENOPS_ALLOW_SECURITY_RELEASE_BYPASS_OVERRIDE", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if not allow_override:
+            raise SecurityBypassError(
+                "external bypass file overrides require "
+                "GARDENOPS_ALLOW_SECURITY_RELEASE_BYPASS_OVERRIDE=true"
+            )
     if not path.exists():
         return {}
 
@@ -68,6 +79,8 @@ def _load_security_release_bypasses() -> dict[str, list[str]]:
     except json.JSONDecodeError as error:
         raise SecurityBypassError(f"{path} is not valid JSON: {error}") from error
 
+    if data.get("schema") != 1:
+        raise SecurityBypassError(f"{path} field 'schema' must be 1")
     entries = data.get("python", [])
     if not isinstance(entries, list):
         raise SecurityBypassError(f"{path} field 'python' must be a list")
@@ -81,6 +94,7 @@ def _load_security_release_bypasses() -> dict[str, list[str]]:
         from_version = entry.get("from")
         to_version = entry.get("to")
         advisories = entry.get("advisories_fixed")
+        source = entry.get("source")
         if not isinstance(package, str) or not package:
             raise SecurityBypassError(f"{path} python[{index}].package must be a non-empty string")
         if not isinstance(from_version, str) or not from_version:
@@ -89,6 +103,10 @@ def _load_security_release_bypasses() -> dict[str, list[str]]:
             raise SecurityBypassError(f"{path} python[{index}].to must be a non-empty string")
         if from_version == to_version:
             raise SecurityBypassError(f"{path} python[{index}] must change versions")
+        if source != TRUSTED_PYTHON_BYPASS_SOURCE:
+            raise SecurityBypassError(
+                f"{path} python[{index}].source must be {TRUSTED_PYTHON_BYPASS_SOURCE!r}"
+            )
         if (
             not isinstance(advisories, list)
             or not advisories
@@ -109,7 +127,11 @@ def main() -> None:
     cutoff = datetime.now(UTC) - timedelta(days=COOLDOWN_DAYS)
     errors: list[str] = []
     allowed: list[str] = []
-    security_bypasses = _load_security_release_bypasses()
+    try:
+        security_bypasses = _load_security_release_bypasses()
+    except SecurityBypassError as error:
+        print(f"python release-age check: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
 
     for package_info in lock_data.get("package", []):
         name = _normalize_python_name(str(package_info.get("name", "<unknown>")))

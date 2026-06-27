@@ -220,6 +220,30 @@ def test_grouped_summary_redacts_tokens_urls_and_secret_assignments(tmp_path: Pa
     assert "ANTHROPIC_API_KEY=[REDACTED]" in result.stdout
 
 
+def test_redactor_redacts_colon_and_json_style_secret_values() -> None:
+    key_field = "api" + "_key"
+    header_field = "x-" + key_field.replace("_", "-")
+    json_secret = "sk" + "-json-secret-123456789"
+    header_secret = "sk" + "-hyphen-secret-123456789"
+    colon_secret = "sk" + "-colon-secret-123456789"
+    bearer_secret = "bearer-like-secret-123456789"
+    text = (
+        f'provider error {{"{key_field}":"{json_secret}"}} '
+        f'{{"{header_field}":"{header_secret}"}} '
+        f"upstream {key_field}: {colon_secret} "
+        f"auth_token : {bearer_secret}"
+    )
+
+    redacted = redact_sensitive_text(text)
+
+    assert json_secret not in redacted
+    assert header_secret not in redacted
+    assert colon_secret not in redacted
+    assert bearer_secret not in redacted
+    assert f'"{key_field}":"[REDACTED]"' in redacted
+    assert f"{key_field}: [REDACTED]" in redacted
+
+
 def test_redactor_redacts_calendar_terrain_invite_reset_and_malformed_urls() -> None:
     text = (
         "Feed https://example.com/calendar/subscriptions/feed-token-123.ics "

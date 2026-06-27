@@ -41,3 +41,12 @@ class TestLidarTerrainValidation(unittest.TestCase):
                 lidar_terrain.save_uploaded_terrain(999_001, b"not-las", "terrain.las")
 
         self.assertIsNone(lidar_terrain._uploaded_terrain_path(999_001))
+
+    def test_point_count_limit_rejects_large_upload(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"SHADEMAP_LOCAL_TERRAIN_MAX_POINTS": "10"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(ValueError, "point count"):
+                lidar_terrain._enforce_point_count_limit(11)

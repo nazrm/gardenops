@@ -879,7 +879,9 @@ export class ShadePanelController {
         fillColor: "#d35322",
         fillOpacity: 0.95,
       }).addTo(this.map);
-      this.houseMarker.bindTooltip(t("shade.house_center", { label: config.label }), {
+      const houseTooltipLabel = document.createElement("span");
+      houseTooltipLabel.textContent = t("shade.house_center", { label: config.label });
+      this.houseMarker.bindTooltip(houseTooltipLabel, {
         direction: "top",
         offset: [0, -6],
       });
@@ -1797,7 +1799,9 @@ export class ShadePanelController {
       return;
     }
     this.targetMarker.setLatLng([target.latitude, target.longitude]);
-    this.targetMarker.bindTooltip(target.label, {
+    const tooltipLabel = document.createElement("span");
+    tooltipLabel.textContent = target.label;
+    this.targetMarker.bindTooltip(tooltipLabel, {
       direction: "top",
       offset: [0, -8],
     });

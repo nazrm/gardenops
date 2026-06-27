@@ -172,6 +172,38 @@ class TestPlannerApi(BaseApiTest):
         if len(data["companions"]) > 0:
             self.assertIn("description", data["companions"][0])
 
+    def test_companion_candidate_must_belong_to_active_garden(self) -> None:
+        """Candidate plant lookup should not read categories from another garden."""
+        conn = db.get_db()
+        try:
+            other_garden = conn.execute(
+                """
+                INSERT INTO gardens (slug, name, owner_user_id)
+                VALUES (%s, %s, %s)
+                RETURNING id
+                """,
+                ("planner-other", "Planner Other", self._owner_id),
+            ).fetchone()
+            assert other_garden is not None
+            conn.execute(
+                "INSERT INTO plants (plt_id, name, category) VALUES (%s,%s,%s)",
+                ("PLT-OTHER-GARDEN", "Foreign Plant", "busker"),
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES (%s, %s, %s)
+                """,
+                ("PLT-OTHER-GARDEN", self._owner_id, int(other_garden["id"])),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        resp = self.client.get("/api/planner/companions?plot_id=B1&plt_id=PLT-OTHER-GARDEN")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"companions": [], "conflicts": []})
+
     def test_planner_specific_plot(self) -> None:
         """Test suggestions for a specific plot_id."""
         resp = self.client.get("/api/planner/suggestions?plot_id=B2")

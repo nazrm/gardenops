@@ -51,6 +51,8 @@ cd ..
 uv run ruff check gardenops tests
 uv run ruff format --check gardenops tests
 uv run python scripts/check_env_docs.py
+python scripts/check_github_action_pins.py
+python scripts/check_innerhtml_sinks.py
 uv run python scripts/check_backend_integrity.py --format text
 uv run python -m pytest tests/ -q --tb=short
 ```
@@ -114,6 +116,8 @@ balance becomes a problem.
 
 If a change intentionally adds a raw HTML sink, document it in
 `frontend/security/innerhtml_allowlist.txt` and explain why the sink is safe.
+The guard detects `innerHTML`/`outerHTML` dot and bracket assignment,
+`insertAdjacentHTML`, and reviewed dynamic HTML helper calls including aliases.
 
 ## Test Database
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from collections import defaultdict, deque
@@ -12,6 +13,11 @@ _LOCK = threading.Lock()
 _COUNTERS: dict[str, int] = defaultdict(int)
 _EVENTS: dict[str, deque[float]] = defaultdict(deque)
 _MAX_WINDOW_SECONDS = 3600
+_VALID_METRIC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_:.-]{0,119}$")
+_RESERVED_METRICS = {
+    "security_events_invalid_metric",
+    "security_events_metric_overflow",
+}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -26,19 +32,55 @@ def _env_int(name: str, default: int) -> int:
 
 def _prune(now: float) -> None:
     cutoff = now - _MAX_WINDOW_SECONDS
-    for key, values in _EVENTS.items():
+    for key, values in list(_EVENTS.items()):
         while values and values[0] < cutoff:
             values.popleft()
+        if not values:
+            _EVENTS.pop(key, None)
+
+
+def _max_metric_keys() -> int:
+    return _env_int("SECURITY_METRICS_MAX_KEYS", 2048)
+
+
+def _metric_name_allowed(metric: str) -> bool:
+    return bool(_VALID_METRIC_RE.fullmatch(metric))
+
+
+def _record_metric_unchecked(metric: str, *, now: float, count: int) -> None:
+    _COUNTERS[metric] += count
+    values = _EVENTS[metric]
+    for _ in range(count):
+        values.append(now)
 
 
 def record_security_event(metric: str, count: int = 1) -> None:
     now = time.monotonic()
+    safe_metric = str(metric or "").strip()
     safe_count = max(1, int(count))
     with _LOCK:
-        _COUNTERS[metric] += safe_count
-        values = _EVENTS[metric]
-        for _ in range(safe_count):
-            values.append(now)
+        if not _metric_name_allowed(safe_metric):
+            _record_metric_unchecked(
+                "security_events_invalid_metric",
+                now=now,
+                count=safe_count,
+            )
+            _prune(now)
+            return
+        is_new_metric = safe_metric not in _COUNTERS and safe_metric not in _EVENTS
+        if (
+            is_new_metric
+            and safe_metric not in _RESERVED_METRICS
+            and len(_COUNTERS) >= _max_metric_keys()
+        ):
+            _record_metric_unchecked(
+                "security_events_metric_overflow",
+                now=now,
+                count=safe_count,
+            )
+            _prune(now)
+            return
+        _record_metric_unchecked(safe_metric, now=now, count=safe_count)
         _prune(now)
 
 

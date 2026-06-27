@@ -349,6 +349,40 @@ class HealthEndpointTests(unittest.TestCase):
             self.assertEqual(allowed["status"], "ok")
             self.assertIn("db_quick_check", allowed)
 
+    def test_admin_system_health_session_fallback_requires_strong_admin_auth(self) -> None:
+        """Admin sessions must satisfy the same strong-auth state as global guarded routes."""
+        from fastapi import HTTPException
+
+        from gardenops.routers import health as health_router
+        from gardenops.security import AuthContext
+
+        request = self._request("/api/admin/system/health")
+        weak_admin = AuthContext(
+            user_id=7,
+            username="admin",
+            role="admin",
+            auth_type="session",
+            mfa_enabled=True,
+            mfa_authenticated_at_ms=0,
+        )
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "AUTH_REQUIRED": "true",
+                    "AUTH_ADMIN_MFA_REQUIRED": "true",
+                    "RATE_LIMIT_BACKEND": "memory",
+                    "INTERNET_EXPOSED": "false",
+                    "ALLOWED_HOSTS": "localhost,127.0.0.1,testserver,testclient",
+                },
+            ),
+            patch.object(health_router, "validate_request_auth", return_value=weak_admin),
+        ):
+            with self.assertRaises(HTTPException) as denied_exc:
+                health_router.admin_system_health(request)
+            self.assertEqual(denied_exc.exception.status_code, 403)
+            self.assertIn("MFA", str(denied_exc.exception.detail))
+
     def test_admin_system_health_review_token_passes_global_auth_guard(self) -> None:
         """The review token must reach the route instead of dying in middleware."""
         from fastapi.testclient import TestClient

@@ -2,7 +2,9 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from gardenops.public_ids import normalize_public_id
 
 
 class StrictBaseModel(BaseModel):
@@ -95,6 +97,11 @@ class PlotImportItem(StrictBaseModel):
     sub_zone: str | None = Field(default="", max_length=120)
     notes: str | None = Field(default="", max_length=4000)
     color: str | None = None
+
+    @field_validator("plot_id")
+    @classmethod
+    def validate_plot_id(cls, value: str) -> str:
+        return normalize_public_id(value, field_name="plot_id")
 
 
 class LayoutExportBody(StrictBaseModel):

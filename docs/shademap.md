@@ -224,6 +224,7 @@ You can point GardenOps at a local LiDAR `.laz` point-cloud file:
 ```bash
 SHADEMAP_LOCAL_TERRAIN_PATH=/path/to/private-terrain.laz
 SHADEMAP_LOCAL_TERRAIN_RESOLUTION_M=1.0
+SHADEMAP_LOCAL_TERRAIN_MAX_POINTS=2000000
 ```
 
 Local terrain files are often large and location-sensitive. Keep them outside
@@ -234,6 +235,10 @@ When a requested tile is fully covered by local terrain, GardenOps can generate
 the browser-facing PNG terrain tile locally from the `.laz` data. If local
 coverage is partial or missing, GardenOps can fall back to the configured remote
 terrain source.
+
+Uploaded LAS/LAZ terrain is checked for CRS metadata, grid size, byte size, and
+point count before storage and processing. Lower
+`SHADEMAP_LOCAL_TERRAIN_MAX_POINTS` if your host has limited CPU or memory.
 
 ## Rate Limits And Budgets
 
