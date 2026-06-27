@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ENV_DOC_PATH = ROOT / "ENVIRONMENT_VARIABLES.md"
 PYTHON_SOURCE_ROOTS = (ROOT / "gardenops",)
+FRONTEND_SOURCE_ROOTS = (ROOT / "frontend" / "src",)
 EXTRA_SOURCE_FILES = (
     ROOT / "scripts" / "security_ops_smoke.py",
     ROOT / "scripts" / "csp_smoke_check.cjs",
@@ -18,6 +19,10 @@ EXTRA_SOURCE_FILES = (
 ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
 DOC_ENV_RE = re.compile(r"`([A-Z][A-Z0-9_<>]+)`")
 JS_ENV_RE = re.compile(r"(?:process\.env|import\.meta\.env)\.([A-Z][A-Z0-9_]*)")
+JS_ENV_BRACKET_RE = re.compile(
+    r"(?:process\.env|import\.meta\.env)\[\s*['\"]([A-Z][A-Z0-9_]*)['\"]\s*\]"
+)
+JS_ENV_DESTRUCTURE_RE = re.compile(r"\{(?P<names>[^}]+)\}\s*=\s*(?:process\.env|import\.meta\.env)")
 EXACT_ENV_NAMES = {"SHADEMAP"}
 IGNORED_ENV_NAMES = {"CURRENT_DATE", "HOSTNAME"}
 RATE_LIMIT_BUCKET_PLACEHOLDER = "RATE_LIMIT_GLOBAL_LIMIT_<BUCKET>"
@@ -35,11 +40,23 @@ def _python_source_files() -> list[Path]:
 
 
 def _js_source_files() -> list[Path]:
-    return [
+    files = [
         path
         for path in EXTRA_SOURCE_FILES
         if path.suffix in {".cjs", ".js", ".mjs", ".ts"} and path.exists()
     ]
+    for root in FRONTEND_SOURCE_ROOTS:
+        if root.exists():
+            files.extend(
+                sorted(
+                    path
+                    for path in root.rglob("*")
+                    if path.suffix in {".cjs", ".js", ".mjs", ".ts", ".tsx"}
+                    and "node_modules" not in path.parts
+                    and "dist" not in path.parts
+                )
+            )
+    return files
 
 
 def _record(mapping: dict[str, set[str]], name: str, rel_path: str) -> None:
@@ -87,6 +104,12 @@ def _scan_js_files(mapping: dict[str, set[str]]) -> dict[str, set[str]]:
         text = path.read_text(encoding="utf-8")
         for match in JS_ENV_RE.findall(text):
             _record(mapping, match.strip(), rel_path)
+        for match in JS_ENV_BRACKET_RE.findall(text):
+            _record(mapping, match.strip(), rel_path)
+        for match in JS_ENV_DESTRUCTURE_RE.finditer(text):
+            for raw_name in match.group("names").split(","):
+                name = raw_name.strip().split(":", 1)[0].strip()
+                _record(mapping, name, rel_path)
     return mapping
 
 

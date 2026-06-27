@@ -14,6 +14,7 @@ from gardenops.db import DB, DbConn, current_timestamp_ms, executemany
 from gardenops.events import notify_garden_modified
 from gardenops.models import StrictBaseModel
 from gardenops.parsing import parse_bool, parse_optional_bool
+from gardenops.public_ids import normalize_public_id, normalize_public_id_list, require_public_id
 from gardenops.router_helpers import (
     active_garden_id as _active_garden_id,
 )
@@ -79,6 +80,11 @@ class CreatePlantBody(StrictBaseModel):
     link: str = Field(default="", max_length=2000)
     year_planted: str | None = Field(default=None, max_length=80)
     deer_resistant: bool = False
+
+    @field_validator("plt_id")
+    @classmethod
+    def validate_plt_id(cls, value: str) -> str:
+        return normalize_public_id(value, field_name="plt_id")
 
 
 class UpdatePlantBody(StrictBaseModel):
@@ -196,8 +202,7 @@ def _parse_plot_assignments(
             if not isinstance(item, dict):
                 raise ValueError("plot_assignments array items must be objects")
             plot_id = str(item.get("plot_id", "")).strip()
-            if not plot_id:
-                raise ValueError("plot_assignments items must include plot_id")
+            plot_id = normalize_public_id(plot_id, field_name="plot_assignments.plot_id")
             quantity_raw = item.get("quantity", 1)
             try:
                 quantity = int(quantity_raw)
@@ -247,8 +252,7 @@ def _parse_plot_assignments(
                 plot_id = maybe_plot_id.strip()
                 quantity = _parse_positive_int(maybe_quantity)
         plot_id = plot_id.strip()
-        if not plot_id:
-            raise ValueError("plot_assignments contains an empty plot id")
+        plot_id = normalize_public_id(plot_id, field_name="plot_assignments.plot_id")
         existing = assignments.get(plot_id)
         if existing is None:
             assignments[plot_id] = {
@@ -301,6 +305,7 @@ def _require_plant_access(
     *,
     read_only: bool = False,
 ) -> None:
+    plt_id = require_public_id(plt_id, field_name="plt_id")
     garden_id = _active_garden_id(context)
     plant_exists = db.execute(
         "SELECT 1 FROM plants WHERE plt_id = %s",
@@ -889,7 +894,7 @@ def import_plants_csv(body: ImportPlantsCsvBody, db: DB, request: Request) -> di
                     400,
                     f"CSV exceeds maximum of {max_rows} rows",
                 )
-            plt_id = (row.get("plt_id") or "").strip()
+            plt_id = normalize_public_id((row.get("plt_id") or "").strip(), field_name="plt_id")
             name = (row.get("name") or "").strip()
             category = (row.get("category") or "").strip()
             if not plt_id or not name or not category:
@@ -1144,6 +1149,7 @@ def delete_plant(plt_id: str, db: DB, request: Request) -> dict:
 def plant_plots(plt_id: str, db: DB, request: Request) -> list[str]:
     """Return plot IDs where a given plant is assigned."""
     context = _auth_context(request)
+    plt_id = require_public_id(plt_id, field_name="plt_id")
     garden_id = _active_garden_id(context)
     plant_exists = db.execute(
         "SELECT 1 FROM plants WHERE plt_id = %s",
@@ -1187,6 +1193,7 @@ def plant_plots(plt_id: str, db: DB, request: Request) -> list[str]:
 def plant_assignments(plt_id: str, db: DB, request: Request) -> list[dict]:
     """Return plot assignments (with seen_growing) for a given plant."""
     context = _auth_context(request)
+    plt_id = require_public_id(plt_id, field_name="plt_id")
     garden_id = _active_garden_id(context)
     plant_exists = db.execute(
         "SELECT 1 FROM plants WHERE plt_id = %s",
@@ -1228,6 +1235,16 @@ class BatchUpdateBody(StrictBaseModel):
     plot_action: str | None = Field(default=None, pattern=r"^(assign|remove)$")
     care_note_append: str = Field(default="", max_length=4000)
 
+    @field_validator("plt_ids")
+    @classmethod
+    def validate_plt_ids(cls, values: list[str]) -> list[str]:
+        return normalize_public_id_list(values, field_name="plt_ids")
+
+    @field_validator("plot_ids")
+    @classmethod
+    def validate_plot_ids(cls, values: list[str]) -> list[str]:
+        return normalize_public_id_list(values, field_name="plot_ids")
+
 
 class BatchJournalEntryBody(StrictBaseModel):
     plt_ids: list[str] = Field(min_length=1, max_length=500)
@@ -1239,6 +1256,16 @@ class BatchJournalEntryBody(StrictBaseModel):
     title: str = Field(default="", max_length=200)
     notes: str = Field(default="", max_length=4000)
     plot_ids: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("plt_ids")
+    @classmethod
+    def validate_plt_ids(cls, values: list[str]) -> list[str]:
+        return normalize_public_id_list(values, field_name="plt_ids")
+
+    @field_validator("plot_ids")
+    @classmethod
+    def validate_plot_ids(cls, values: list[str]) -> list[str]:
+        return normalize_public_id_list(values, field_name="plot_ids")
 
 
 def _validate_batch_plant_ids(

@@ -352,7 +352,7 @@ def build_npm_bypasses(
 
 
 def generate_python_bypasses(
-    base_ref: str, temp_dir: Path, cache_dir: Path
+    base_ref: str, temp_dir: Path, cache_dir: Path, head_root: Path = ROOT
 ) -> tuple[list[dict[str, Any]], list[str]]:
     base_dir = temp_dir / "base-python"
     _materialize_base(base_ref, ["pyproject.toml", "uv.lock"], base_dir)
@@ -360,19 +360,21 @@ def generate_python_bypasses(
     base_requirements = temp_dir / "base-python-requirements.txt"
     head_requirements = temp_dir / "head-python-requirements.txt"
     _export_python_requirements(base_dir, base_requirements)
-    _export_python_requirements(ROOT, head_requirements)
+    _export_python_requirements(head_root, head_requirements)
 
     base_audit = _run_pip_audit(base_requirements, cache_dir)
     head_audit = _run_pip_audit(head_requirements, cache_dir)
     return build_python_bypasses(base_audit, head_audit)
 
 
-def generate_npm_bypasses(base_ref: str, temp_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
+def generate_npm_bypasses(
+    base_ref: str, temp_dir: Path, head_root: Path = ROOT
+) -> tuple[list[dict[str, Any]], list[str]]:
     base_dir = temp_dir / "base-npm"
     _materialize_base(base_ref, ["frontend/package.json", "frontend/package-lock.json"], base_dir)
 
     base_frontend = base_dir / "frontend"
-    head_frontend = ROOT / "frontend"
+    head_frontend = head_root / "frontend"
     base_lock = _load_package_lock(base_frontend)
     head_lock = _load_package_lock(head_frontend)
     base_audit = _run_npm_audit(base_frontend)
@@ -401,6 +403,12 @@ def parse_args() -> argparse.Namespace:
         default=Path(os.environ.get("PIP_AUDIT_CACHE_DIR", "/tmp/pip-audit-cache")),
         help="Cache directory passed to pip-audit",
     )
+    parser.add_argument(
+        "--head-root",
+        type=Path,
+        default=ROOT,
+        help="Repository root for pull-request dependency files treated as data",
+    )
     return parser.parse_args()
 
 
@@ -413,14 +421,15 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="gardenops-security-bypass-") as temp_path:
         temp_dir = Path(temp_path)
+        head_root = args.head_root.resolve()
         if args.ecosystem in {"all", "python"}:
             python_entries, python_warnings = generate_python_bypasses(
-                args.base_ref, temp_dir, args.pip_audit_cache_dir
+                args.base_ref, temp_dir, args.pip_audit_cache_dir, head_root
             )
             warnings.extend(python_warnings)
 
         if args.ecosystem in {"all", "npm"}:
-            npm_entries, npm_warnings = generate_npm_bypasses(args.base_ref, temp_dir)
+            npm_entries, npm_warnings = generate_npm_bypasses(args.base_ref, temp_dir, head_root)
             warnings.extend(npm_warnings)
 
     evidence = {

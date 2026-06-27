@@ -162,6 +162,7 @@ uv sync --frozen --group test --group lint
 uv run ruff check gardenops tests
 uv run ruff format --check gardenops tests
 uv run python scripts/check_env_docs.py
+python scripts/check_github_action_pins.py
 uv run python -c "import gardenops.db as db; db.run_migrations()"
 uv run python scripts/check_backend_integrity.py --format text
 uv run python -m pytest tests/ -q --tb=short
@@ -172,6 +173,7 @@ The GitHub CI frontend job maps to these local checks:
 ```bash
 cd frontend
 npm ci
+python ../scripts/check_innerhtml_sinks.py --root src --allowlist security/innerhtml_allowlist.txt
 npm run build
 cd ..
 node scripts/check_no_sourcemaps.cjs frontend/dist

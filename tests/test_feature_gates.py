@@ -95,6 +95,8 @@ class RouteFeatureMapTests(unittest.TestCase):
         assert feature_for_route("/api/saved-views") == "saved_views"
         assert feature_for_route("/api/shademap/state") == "shade_map"
         assert feature_for_route("/shademap/terrain/1/0/0.png") == "shade_map"
+        assert feature_for_route("/api/gardens/42/lidar") == "shade_map"
+        assert feature_for_route("/api/gardens/+42/lidar") == "shade_map"
         assert feature_for_route("/api/planner/suggestions") == "planner"
         assert feature_for_route("/api/exports/backup") == "exports_full"
 

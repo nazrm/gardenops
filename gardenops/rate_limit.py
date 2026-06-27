@@ -227,6 +227,18 @@ class RateLimitBackend:
     def consume(self, *, key: str, limit: int, window_seconds: int) -> bool:
         raise NotImplementedError
 
+    def acquire_concurrency_slot(
+        self,
+        *,
+        bucket: str,
+        limit: int,
+        ttl_seconds: int,
+    ) -> str | None:
+        return None
+
+    def release_concurrency_slot(self, *, bucket: str, token: str) -> None:
+        return None
+
     def reset(self) -> None:
         raise NotImplementedError
 
@@ -273,6 +285,23 @@ redis.call('ZADD', key, now_ms, member)
 redis.call('EXPIRE', key, ttl)
 return 1
 """
+    _CONCURRENCY_LUA = """
+local key = KEYS[1]
+local now_ms = tonumber(ARGV[1])
+local ttl_ms = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+local token = ARGV[4]
+local ttl = tonumber(ARGV[5])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now_ms - ttl_ms)
+local count = redis.call('ZCARD', key)
+if count >= limit then
+  redis.call('EXPIRE', key, ttl)
+  return nil
+end
+redis.call('ZADD', key, now_ms, token)
+redis.call('EXPIRE', key, ttl)
+return token
+"""
 
     def __init__(self, *, url: str, prefix: str):
         from redis import Redis
@@ -306,6 +335,35 @@ return 1
             ttl,
         )
         return bool(result)
+
+    def acquire_concurrency_slot(
+        self,
+        *,
+        bucket: str,
+        limit: int,
+        ttl_seconds: int,
+    ) -> str | None:
+        now_ms = int(time.time() * 1000)
+        lease_value = f"{now_ms}:{secrets.token_hex(12)}"
+        ttl = max(ttl_seconds + 5, 10)
+        result = self._client.eval(
+            self._CONCURRENCY_LUA,
+            1,
+            self._full_key(f"concurrency:{bucket}"),
+            now_ms,
+            ttl_seconds * 1000,
+            limit,
+            lease_value,
+            ttl,
+        )
+        if result is None:
+            return None
+        if isinstance(result, bytes):
+            return result.decode("utf-8")
+        return str(result)
+
+    def release_concurrency_slot(self, *, bucket: str, token: str) -> None:
+        self._client.zrem(self._full_key(f"concurrency:{bucket}"), token)
 
     def reset(self) -> None:
         # Shared redis data should not be mass-deleted by local test helper.
@@ -354,7 +412,58 @@ def provider_limit_profile(feature: str) -> dict[str, int | str]:
     }
 
 
-def acquire_concurrency_slot(*, bucket: str, limit: int) -> ConcurrencyLease:
+class SharedConcurrencyLease:
+    def __init__(self, *, backend: RateLimitBackend, bucket: str, limit: int):
+        self.backend = backend
+        self.bucket = bucket
+        self.limit = max(0, int(limit))
+        self.token = ""
+        self.ttl_seconds = env_int("PROVIDER_CONCURRENCY_LEASE_TTL_SECONDS", 120)
+
+    def __enter__(self) -> SharedConcurrencyLease:
+        if self.limit <= 0:
+            return self
+        token = self.backend.acquire_concurrency_slot(
+            bucket=self.bucket,
+            limit=self.limit,
+            ttl_seconds=self.ttl_seconds,
+        )
+        if not token:
+            record_security_event("concurrency_limit_hits")
+            record_security_event(
+                f"concurrency_limit_hits_{_normalize_bucket_name(self.bucket)}",
+            )
+            raise HTTPException(
+                status_code=429,
+                detail=f"Concurrent request limit exceeded for {self.bucket}. Try again later.",
+            )
+        self.token = token
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if self.limit <= 0 or not self.token:
+            return
+        try:
+            self.backend.release_concurrency_slot(bucket=self.bucket, token=self.token)
+        except Exception:
+            record_security_event("concurrency_release_failures")
+            record_security_event(
+                f"concurrency_release_failures_{_normalize_bucket_name(self.bucket)}",
+            )
+        finally:
+            self.token = ""
+
+
+def _backend_supports_shared_concurrency(backend: RateLimitBackend) -> bool:
+    return type(backend).acquire_concurrency_slot is not RateLimitBackend.acquire_concurrency_slot
+
+
+def acquire_concurrency_slot(
+    *, bucket: str, limit: int
+) -> ConcurrencyLease | SharedConcurrencyLease:
+    backend = _get_backend()
+    if _backend_supports_shared_concurrency(backend):
+        return SharedConcurrencyLease(backend=backend, bucket=bucket, limit=limit)
     return ConcurrencyLease(bucket=bucket, limit=limit)
 
 

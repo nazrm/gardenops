@@ -204,8 +204,14 @@ def check_companions(
     """
     # Get the candidate's category
     candidate = db.execute(
-        "SELECT category FROM plants WHERE plt_id = %s",
-        (candidate_plt_id,),
+        """
+        SELECT p.category
+        FROM plants p
+        JOIN plant_ownership po ON po.plt_id = p.plt_id
+        WHERE p.plt_id = %s AND po.garden_id = %s
+        LIMIT 1
+        """,
+        (candidate_plt_id, garden_id),
     ).fetchone()
     if not candidate:
         return {"companions": [], "conflicts": []}

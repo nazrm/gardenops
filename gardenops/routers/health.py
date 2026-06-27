@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 
 import gardenops.db as db
-from gardenops.security import validate_request_auth
+from gardenops.security import admin_mfa_required, validate_request_auth
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -143,6 +143,17 @@ def _require_admin_health_access(request: Request) -> None:
     context = validate_request_auth(request)
     if context.role != "admin":
         raise HTTPException(status_code=403, detail="Admin role required")
+    if context.mfa_setup_required:
+        raise HTTPException(status_code=403, detail="Admin MFA setup is required")
+    if (
+        context.auth_type == "session"
+        and (admin_mfa_required() or context.mfa_enabled or context.passkey_enrolled)
+        and int(context.mfa_authenticated_at_ms or 0) <= 0
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Platform-admin MFA or passkey authentication is required",
+        )
 
 
 @router.get("/health")

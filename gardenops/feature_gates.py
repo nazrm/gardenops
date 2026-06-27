@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 Tier = Literal["home", "enthusiast", "pro"]
@@ -115,9 +116,13 @@ _ROUTE_GATES: tuple[tuple[str, str], ...] = tuple(
     )
 )
 
+_GARDEN_LIDAR_RE = re.compile(r"^/api/gardens/[+-]?\d+/lidar(?:/.*)?$")
+
 
 def feature_for_route(path: str) -> str | None:
     """Return the feature key that gates *path*, or None if ungated."""
+    if _GARDEN_LIDAR_RE.fullmatch(path):
+        return "shade_map"
     for prefix, feature in _ROUTE_GATES:
         if path == prefix or path.startswith(prefix + "/"):
             return feature

@@ -8,7 +8,11 @@ _BEARER_RE = re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{12,}")
 _BASIC_RE = re.compile(r"(?i)\b(basic)\s+[A-Za-z0-9._~+/=-]{12,}")
 _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 _ASSIGNMENT_SECRET_RE = re.compile(
-    r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL|AUTH)[A-Z0-9_]*)=([^\s&;,]+)",
+    r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL)[A-Z0-9_]*)=([^\s&;,]+)",
+)
+_COLON_SECRET_RE = re.compile(
+    r"(?i)([\"']?[A-Z0-9_-]*(?:TOKEN|SECRET|PASSWORD|API[-_]?KEY|DATABASE[-_]?URL)"
+    r"[A-Z0-9_-]*[\"']?\s*:\s*[\"']?)([^\"'\s,}]+)([\"']?)",
 )
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 _POSTGRES_URL_RE = re.compile(r"postgres(?:ql)?://[^\s\"'<>]+", re.IGNORECASE)
@@ -78,6 +82,7 @@ def redact_sensitive_text(value: object, max_len: int | None = None) -> str:
     text = _BASIC_RE.sub(r"\1 [REDACTED_TOKEN]", text)
     text = _JWT_RE.sub("[REDACTED_TOKEN]", text)
     text = _ASSIGNMENT_SECRET_RE.sub(r"\1=[REDACTED]", text)
+    text = _COLON_SECRET_RE.sub(r"\1[REDACTED]\3", text)
     text = _CALENDAR_FEED_PATH_RE.sub(r"\1[REDACTED]\2", text)
     text = _SHADEMAP_TERRAIN_PATH_RE.sub(r"\1?[REDACTED]", text)
     text = _URL_RE.sub(lambda match: _redact_url(match.group(0)), text)

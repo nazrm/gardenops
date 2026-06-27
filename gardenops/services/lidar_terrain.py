@@ -24,6 +24,7 @@ DEFAULT_RESOLUTION_METERS: Final[float] = 1.0
 TILE_SIZE: Final[int] = 256
 LOCAL_TERRAIN_SCAN_PATTERN: Final[str] = "*.laz"
 DEFAULT_MAX_TERRAIN_GRID_CELLS: Final[int] = 4_000_000
+DEFAULT_MAX_TERRAIN_POINTS: Final[int] = 2_000_000
 
 
 @dataclass(frozen=True)
@@ -284,6 +285,38 @@ def _resolution_meters() -> float:
     return parsed if parsed > 0 else DEFAULT_RESOLUTION_METERS
 
 
+def _max_terrain_points() -> int:
+    raw = os.environ.get("SHADEMAP_LOCAL_TERRAIN_MAX_POINTS", "").strip()
+    if not raw:
+        return DEFAULT_MAX_TERRAIN_POINTS
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_TERRAIN_POINTS
+    return parsed if parsed > 0 else DEFAULT_MAX_TERRAIN_POINTS
+
+
+def _enforce_point_count_limit(point_count: int | None) -> None:
+    if point_count is None:
+        return
+    max_points = _max_terrain_points()
+    if int(point_count) > max_points:
+        raise ValueError(
+            f"LiDAR point count exceeds processing limit ({int(point_count)} points; "
+            f"limit {max_points})"
+        )
+
+
+def _reader_point_count(reader: laspy.LasReader) -> int | None:
+    raw_count = getattr(reader.header, "point_count", None)
+    if raw_count is None:
+        return None
+    try:
+        return int(raw_count)
+    except TypeError, ValueError:
+        return None
+
+
 def _fill_nan_grid(grid: np.ndarray) -> np.ndarray:
     result = np.array(grid, copy=True, dtype=np.float32)
     global_mean = float(np.nanmean(result)) if np.isfinite(np.nanmean(result)) else 0.0
@@ -351,9 +384,12 @@ def _validate_uploaded_terrain_payload(payload: bytes, suffix: str) -> None:
             with laspy.open(tmp.name) as reader:
                 if reader.header.parse_crs() is None:
                     raise ValueError("LiDAR upload is missing CRS metadata")
+                _enforce_point_count_limit(_reader_point_count(reader))
                 _terrain_grid_dimensions(reader, resolution_m=_resolution_meters())
+                observed_points = 0
                 for _points in reader.chunk_iterator(1_000_000):
-                    pass
+                    observed_points += len(_points)
+                    _enforce_point_count_limit(observed_points)
         except ValueError:
             raise
         except Exception as exc:
@@ -369,13 +405,17 @@ def _accumulate_average_grid(
         reader,
         resolution_m=resolution_m,
     )
+    _enforce_point_count_limit(_reader_point_count(reader))
 
     ground_sum = np.zeros((rows, cols), dtype=np.float64)
     ground_count = np.zeros((rows, cols), dtype=np.uint32)
     all_sum = np.zeros((rows, cols), dtype=np.float64)
     all_count = np.zeros((rows, cols), dtype=np.uint32)
 
+    observed_points = 0
     for points in reader.chunk_iterator(1_000_000):
+        observed_points += len(points)
+        _enforce_point_count_limit(observed_points)
         x = np.asarray(points.x, dtype=np.float64)
         y = np.asarray(points.y, dtype=np.float64)
         z = np.asarray(points.z, dtype=np.float64)

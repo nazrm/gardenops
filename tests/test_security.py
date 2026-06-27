@@ -570,6 +570,63 @@ class TestSecurity(BaseApiTest):
 
         self.assertNotIn("concurrency-test", rate_limit_module.active_concurrency_snapshot())
 
+    def test_concurrency_slot_uses_shared_backend_when_available(self) -> None:
+        class SharedBackend(rate_limit_module.InMemoryRateLimitBackend):
+            def __init__(self) -> None:
+                self.acquired: list[str] = []
+                self.released: list[tuple[str, str]] = []
+
+            def acquire_concurrency_slot(
+                self,
+                *,
+                bucket: str,
+                limit: int,
+                ttl_seconds: int,
+            ) -> str | None:
+                self.acquired.append(f"{bucket}:{limit}:{ttl_seconds}")
+                if len(self.acquired) > limit:
+                    return None
+                return f"lease-{len(self.acquired)}"
+
+            def release_concurrency_slot(self, *, bucket: str, token: str) -> None:
+                self.released.append((bucket, token))
+
+        backend = SharedBackend()
+        with patch.object(rate_limit_module, "_get_backend", return_value=backend):
+            with rate_limit_module.acquire_concurrency_slot(bucket="shared-test", limit=1):
+                with self.assertRaises(HTTPException) as exc:
+                    with rate_limit_module.acquire_concurrency_slot(
+                        bucket="shared-test",
+                        limit=1,
+                    ):
+                        pass
+
+        self.assertIn("Concurrent request limit exceeded", str(exc.exception.detail))
+        self.assertEqual(backend.acquired, ["shared-test:1:120", "shared-test:1:120"])
+        self.assertEqual(backend.released, [("shared-test", "lease-1")])
+
+    def test_concurrency_slot_release_failures_do_not_mask_successful_request(self) -> None:
+        class FailingReleaseBackend(rate_limit_module.InMemoryRateLimitBackend):
+            def acquire_concurrency_slot(
+                self,
+                *,
+                bucket: str,
+                limit: int,
+                ttl_seconds: int,
+            ) -> str | None:
+                return "lease-token"
+
+            def release_concurrency_slot(self, *, bucket: str, token: str) -> None:
+                raise OSError("redis unavailable")
+
+        with patch.object(
+            rate_limit_module,
+            "_get_backend",
+            return_value=FailingReleaseBackend(),
+        ):
+            with rate_limit_module.acquire_concurrency_slot(bucket="release-test", limit=1):
+                pass
+
     def test_rate_limit_redis_backend_requires_explicit_url(self) -> None:
         old_backend = os.environ.get("RATE_LIMIT_BACKEND")
         old_url = os.environ.get("RATE_LIMIT_REDIS_URL")
@@ -4261,6 +4318,18 @@ class TestSecurity(BaseApiTest):
             self.assertIsNotNone(direct)
             assert direct is not None
             self.assertIn("trusted edge proxy", direct)
+
+            missing_client_ip = _edge_proxy_violation_detail(
+                self._edge_request(
+                    headers={
+                        "x-forwarded-proto": "https",
+                        "x-forwarded-host": "gardenops.example.com",
+                    },
+                ),
+            )
+            self.assertIsNotNone(missing_client_ip)
+            assert missing_client_ip is not None
+            self.assertIn("X-Forwarded-For or X-Real-IP", missing_client_ip)
 
             untrusted_proxy = _edge_proxy_violation_detail(
                 self._edge_request(
