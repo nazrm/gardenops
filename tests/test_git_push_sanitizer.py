@@ -71,6 +71,24 @@ api_key = "{synthetic_openai_key}"  # push-sanitizer: allow SECRET_ASSIGNMENT
             ["OPENAI_KEY at line 3"],
         )
 
+    def test_safe_example_text_does_not_disable_hard_secret_detectors(self) -> None:
+        synthetic_openai_key = "sk-proj-" + ("B" * 24)
+        text = f'OPENAI_API_KEY="{synthetic_openai_key}"  # placeholder until prod deploy\n'
+
+        self.assertEqual(self._finding_details(text), ["OPENAI_KEY at line 1"])
+
+    def test_dot_prefixed_sensitive_paths_remain_blocked(self) -> None:
+        self.assertEqual(self.sanitizer.is_blocked_path(".env"), ".env")
+        self.assertEqual(self.sanitizer.is_blocked_path("./.env"), ".env")
+        self.assertEqual(
+            self.sanitizer.is_blocked_path(".gardenops/security-release-bypass.json"),
+            ".gardenops/**",
+        )
+        self.assertEqual(
+            self.sanitizer.is_blocked_path("./.codex/local/settings.json"),
+            ".codex/**",
+        )
+
     def test_path_scan_can_skip_unchanged_secret_patterns(self) -> None:
         synthetic_value = "ZP6i7Pz4_" + "aN3KqQpt" + "9VxLm2s" + "R0bYfE8c"
         data = f'token = "{synthetic_value}"\n'.encode()

@@ -55,6 +55,15 @@ _PROVIDER_LIMIT_PROFILES: dict[str, dict[str, object]] = {
         "concurrency_limit_env": "AI_IDENTIFY_CONCURRENCY_LIMIT",
         "concurrency_limit_default": 2,
     },
+    "ai-task-descriptions": {
+        "label": "AI task descriptions",
+        "user_limit_env": "AI_TASK_DESCRIPTION_DAILY_BUDGET_USER",
+        "user_limit_default": 60,
+        "garden_limit_env": "AI_TASK_DESCRIPTION_DAILY_BUDGET_GARDEN",
+        "garden_limit_default": 180,
+        "concurrency_limit_env": "AI_TASK_DESCRIPTION_CONCURRENCY_LIMIT",
+        "concurrency_limit_default": 1,
+    },
     "ai-diagnose": {
         "label": "AI plant diagnosis",
         "user_limit_env": "AI_DIAGNOSE_DAILY_BUDGET_USER",

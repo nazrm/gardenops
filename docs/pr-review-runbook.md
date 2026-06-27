@@ -173,8 +173,8 @@ The GitHub CI frontend job maps to these local checks:
 cd frontend
 npm ci
 npm run build
-node scripts/check_no_sourcemaps.cjs frontend/dist
 cd ..
+node scripts/check_no_sourcemaps.cjs frontend/dist
 ```
 
 For dependency PRs, also run the relevant audit locally when feasible:

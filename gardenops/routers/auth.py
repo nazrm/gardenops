@@ -2215,9 +2215,7 @@ def auth_mfa_status(request: Request, db: DB) -> dict[str, object]:
 
 @router.post("/auth/mfa/totp/start")
 def auth_mfa_totp_start(request: Request, db: DB) -> dict[str, object]:
-    context = resolve_request_auth_context(request)
-    if context.user_id is None or context.auth_type != "session":
-        raise HTTPException(status_code=400, detail="Session auth user is required")
+    context = _require_recent_session_context(request, allow_mfa_setup=True)
     if context.role != "admin":
         raise HTTPException(
             status_code=403,
@@ -2257,8 +2255,8 @@ def auth_mfa_totp_confirm(
     request: Request,
     db: DB,
 ) -> dict[str, object]:
-    context = resolve_request_auth_context(request)
-    if context.user_id is None or context.auth_type != "session" or not context.session_token_hash:
+    context = _require_recent_session_context(request, allow_mfa_setup=True)
+    if not context.session_token_hash:
         raise HTTPException(status_code=400, detail="Session auth user is required")
     if context.role != "admin":
         raise HTTPException(

@@ -1,8 +1,10 @@
 import os
 from datetime import date
+from unittest.mock import patch
 
 import gardenops.db as db
 from gardenops.db import current_timestamp_ms
+from gardenops.rate_limit import acquire_concurrency_slot
 from gardenops.security import create_user
 from gardenops.services.task_generator import generate_tasks
 from tests.base import BaseApiTest, strong_password
@@ -1058,3 +1060,63 @@ class TestTasks(BaseApiTest):
         self.assertEqual(refreshed["metadata"]["description_source"], "care_instructions")
         self.assertTrue(str(refreshed["metadata"]["description_no"]).strip())
         self.assertNotIn("description_customized", refreshed["metadata"])
+
+    def test_refresh_descriptions_respects_task_description_ai_concurrency_limit(self) -> None:
+        conn = db.get_db()
+        try:
+            garden_id = self._get_default_garden_id()
+            now_ms = current_timestamp_ms()
+            task_id = int(
+                conn.execute(
+                    """
+                    INSERT INTO garden_tasks
+                        (garden_id, task_type, title, description, status,
+                         severity, due_on, rule_source, metadata_json,
+                         created_at_ms, updated_at_ms)
+                    VALUES (%s, 'prune', 'Prune: Rose', '', 'pending',
+                            'normal', '2026-03-01',
+                            'seasonal_prune:PLT-002:2026-03',
+                            '{}', %s, %s)
+                    RETURNING id
+                    """,
+                    (garden_id, now_ms, now_ms),
+                ).fetchone()["id"]
+            )
+            conn.execute(
+                "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, 'PLT-002')",
+                (task_id,),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AI_PROVIDER": "anthropic",
+                    "ANTHROPIC_API_KEY": "test-anthropic-key",
+                    "AI_TASK_DESCRIPTION_CONCURRENCY_LIMIT": "1",
+                },
+                clear=False,
+            ),
+            patch(
+                "gardenops.services.task_generator.generate_task_descriptions_with_ai",
+                return_value=[
+                    {
+                        "task_key": str(task_id),
+                        "description_en": "Generated prune description",
+                        "description_no": "Generert beskrivelse",
+                    }
+                ],
+            ) as mock_ai,
+            acquire_concurrency_slot(bucket="ai-task-descriptions", limit=1),
+        ):
+            response = self.client.post(
+                "/api/tasks/refresh-descriptions",
+                json={"force_all": True},
+            )
+
+        self.assertEqual(response.status_code, 429, response.text)
+        self.assertIn("Concurrent request limit exceeded", response.json()["detail"])
+        mock_ai.assert_not_called()

@@ -69,6 +69,9 @@ Generate a storage key with:
 | `OPENAI_API_KEY` | OpenAI key used when `AI_PROVIDER=openai`. Leave unset to disable OpenAI-backed AI. | `change-me` |
 | `OPENAI_MODEL` | OpenAI model for configured AI features. | `gpt-5.5` |
 | `OPENAI_FAST_MODEL` | Optional lower-cost OpenAI model reserved for future fast-path AI tasks. | `gpt-5.4-mini` |
+| `AI_TASK_DESCRIPTION_DAILY_BUDGET_USER` | Optional per-user daily budget for AI-generated task descriptions. | `60` |
+| `AI_TASK_DESCRIPTION_DAILY_BUDGET_GARDEN` | Optional per-garden daily budget for AI-generated task descriptions. | `180` |
+| `AI_TASK_DESCRIPTION_CONCURRENCY_LIMIT` | Optional concurrency limit for AI-generated task descriptions. | `1` |
 | `PLANTNET_API_KEY` | Optional plant-identification provider. | `change-me` |
 | `WEATHER_API_KEY` | Optional weather provider key. | `change-me` |
 
@@ -135,6 +138,7 @@ environment variable read by the public app.
 | `GARDENOPS_SMTP_<SETTING>` | SMTP host, port, sender, username, password, and TLS settings for notification email. | `GARDENOPS_SMTP_HOST=smtp.example.com` |
 | `SHADEMAP_<SETTING>` | ShadeMap keys, location defaults, terrain, Overpass, token, rate-limit, quota, distinct-bound, and local terrain settings. | `SHADEMAP_TILE_TOKEN_TTL_SECONDS=600` |
 | `TERRAIN_REQUEST_TIMEOUT_SECONDS` | Timeout for outbound terrain tile fetches. | `20` |
+| `SECURITY_TELEMETRY_PRIVACY_SALT` | Deployment-specific salt for hashing identifiers when security telemetry privacy mode is `minimized`. Required in production or internet-exposed mode when security telemetry is enabled. | `change-me-generated-salt` |
 | `SECURITY_TELEMETRY_<SETTING>` | Security telemetry webhook, token, delivery format, privacy, batching, polling, and timeout settings. | `SECURITY_TELEMETRY_PRIVACY_MODE=minimized` |
 | `TAILLIGHT_<SETTING>` | Optional Taillight-compatible log and telemetry sink settings. | `TAILLIGHT_URL=https://logs.example.com` |
 | `ALERT_<SETTING>` | Security alert thresholds shown in admin/security views. | `ALERT_AUTH_FAILURES_PER_MINUTE=30` |

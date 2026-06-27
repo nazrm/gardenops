@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 from PIL import Image
 
+from gardenops.rate_limit import acquire_concurrency_slot
 from tests.base import BaseApiTest
 
 
@@ -420,6 +421,33 @@ class TestIdentifyPlant(BaseApiTest):
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["candidates"][0]["source"], "plantnet")
+        mock_ai.assert_not_called()
+
+    @patch("gardenops.routers.ai.identify_plant_with_ai")
+    def test_ai_fallback_respects_identify_concurrency_limit(self, mock_ai: MagicMock) -> None:
+        mock_ai.return_value = _CLAUDE_IDENTIFY_RESPONSE
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AI_PROVIDER": "anthropic",
+                    "ANTHROPIC_API_KEY": "test-anthropic-key",
+                    "PLANTNET_API_KEY": "",
+                    "AI_IDENTIFY_CONCURRENCY_LIMIT": "1",
+                },
+            ),
+            acquire_concurrency_slot(bucket="ai-identify", limit=1),
+        ):
+            img = _make_jpeg()
+            resp = self.client.post(
+                "/api/ai/identify-plant?organ=leaf",
+                content=img,
+                headers={"Content-Type": "image/jpeg"},
+            )
+
+        self.assertEqual(resp.status_code, 429, resp.text)
+        self.assertIn("Concurrent request limit exceeded", resp.json()["detail"])
         mock_ai.assert_not_called()
 
 

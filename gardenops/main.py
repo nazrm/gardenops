@@ -146,6 +146,7 @@ from gardenops.security import (  # noqa: E402
 )
 from gardenops.security_metrics import record_security_event  # noqa: E402
 from gardenops.security_telemetry import (  # noqa: E402
+    security_telemetry_enabled,
     start_security_telemetry_exporter,
     stop_security_telemetry_exporter,
 )
@@ -842,6 +843,24 @@ def _validate_runtime_security_config() -> None:
                 raise RuntimeError(
                     "APP_ENV=production or INTERNET_EXPOSED=true requires "
                     "AUTH_MFA_SECRET_KEY to be generated secret material, not a placeholder",
+                )
+        if security_telemetry_enabled():
+            telemetry_privacy_mode = (
+                os.environ.get("SECURITY_TELEMETRY_PRIVACY_MODE", "minimized").strip().lower()
+            )
+            telemetry_privacy_salt = os.environ.get(
+                "SECURITY_TELEMETRY_PRIVACY_SALT",
+                "",
+            ).strip()
+            if telemetry_privacy_mode == "minimized" and not telemetry_privacy_salt:
+                raise RuntimeError(
+                    "APP_ENV=production or INTERNET_EXPOSED=true requires "
+                    "SECURITY_TELEMETRY_PRIVACY_SALT when security telemetry is enabled",
+                )
+            if telemetry_privacy_salt == "gardenops-security-telemetry":
+                raise RuntimeError(
+                    "APP_ENV=production or INTERNET_EXPOSED=true requires "
+                    "SECURITY_TELEMETRY_PRIVACY_SALT to be deployment-specific",
                 )
 
     if _is_internet_exposed():

@@ -198,6 +198,31 @@ class TestIdentify(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 401)
 
     @patch("gardenops.services.plantnet.urllib.request.build_opener")
+    def test_http_error_detail_redacts_query_api_key(self, mock_build_opener: MagicMock) -> None:
+        import urllib.error
+        from urllib.parse import urlencode
+
+        secret_key = "plantnet-secret-key-value"
+        query = urlencode({"api-key": secret_key, "lang": "en", "nb-results": "5"})
+        echoed_url = f"https://my-api.plantnet.org/v2/identify/all?{query}"
+        mock_opener = MagicMock()
+        mock_opener.open.side_effect = urllib.error.HTTPError(
+            url=echoed_url,
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=BytesIO(f"failed request {echoed_url}".encode()),  # type: ignore[arg-type]
+        )
+        mock_build_opener.return_value = mock_opener
+
+        with self.assertRaises(PlantNetError) as ctx:
+            identify(b"fake-jpeg", "leaf", secret_key)
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertNotIn(secret_key, ctx.exception.detail)
+        self.assertIn("[REDACTED]", ctx.exception.detail)
+
+    @patch("gardenops.services.plantnet.urllib.request.build_opener")
     def test_http_429_raises_plantnet_error(self, mock_build_opener: MagicMock) -> None:
         import urllib.error
 

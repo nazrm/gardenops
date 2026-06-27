@@ -1058,7 +1058,11 @@ async def identify_plant(
     )
     if needs_ai_fallback:
         try:
-            ai_candidates = identify_plant_with_ai(image_bytes, organ)
+            with acquire_concurrency_slot(
+                bucket="ai-identify",
+                limit=int(limits["concurrency_limit"]),
+            ):
+                ai_candidates = identify_plant_with_ai(image_bytes, organ)
             existing_latins = {c["latin"].lower() for c in candidates}
             for cc in ai_candidates:
                 if cc["latin"].lower() not in existing_latins:
