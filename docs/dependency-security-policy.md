@@ -105,6 +105,10 @@ When a PR changes the dependency policy scripts themselves, CI may be running
 against a base branch that does not yet support the newest script flags. In
 that bootstrap case, the workflow must fall back to trusted base-branch tooling
 without external bypass evidence rather than running PR-controlled audit code.
+The same bootstrap exception applies to the first PR that introduces the
+action-pin checker: if the base checkout lacks that script, CI copies the
+reviewed PR checker into the otherwise trusted checkout. After that PR merges,
+future PRs must run the checker from the base branch.
 
 Generated release-age bypass evidence must include trusted audit source
 metadata, including `source: pip-audit base/head diff` for Python entries.
