@@ -8,6 +8,8 @@ import logging
 from typing import Any, Literal, cast
 
 from anthropic import Anthropic
+from anthropic import APITimeoutError as AnthropicAPITimeoutError
+from openai import APITimeoutError as OpenAIAPITimeoutError
 from openai import OpenAI
 
 from gardenops.provider_settings import env_ai_provider_value, get_ai_runtime_config
@@ -40,6 +42,18 @@ class AIProviderError(Exception):
         self.detail = detail
         self.provider = provider
         super().__init__(detail)
+
+
+class AIProviderTimeout(AIProviderError):
+    """Raised when the configured AI provider does not respond before its timeout."""
+
+    def __init__(
+        self,
+        detail: str = "AI provider request timed out",
+        *,
+        provider: str,
+    ) -> None:
+        super().__init__(detail, provider=provider)
 
 
 def configured_provider() -> AIProvider:
@@ -102,18 +116,30 @@ def is_ai_provider_configured() -> bool:
     return True
 
 
-def _anthropic_client(api_key: str) -> Anthropic:
+def _anthropic_client(
+    provider_api_key: str,
+    *,
+    timeout_seconds: float | None = None,
+) -> Anthropic:
     return Anthropic(
-        api_key=api_key,
-        timeout=float(env_int("ANTHROPIC_API_TIMEOUT_SECONDS", 25)),
+        api_key=provider_api_key,
+        timeout=timeout_seconds
+        if timeout_seconds is not None
+        else float(env_int("ANTHROPIC_API_TIMEOUT_SECONDS", 25)),
         max_retries=env_nonneg_int("ANTHROPIC_API_MAX_RETRIES", 1),
     )
 
 
-def _openai_client(api_key: str) -> OpenAI:
+def _openai_client(
+    provider_api_key: str,
+    *,
+    timeout_seconds: float | None = None,
+) -> OpenAI:
     return OpenAI(
-        api_key=api_key,
-        timeout=float(env_int("OPENAI_API_TIMEOUT_SECONDS", 25)),
+        api_key=provider_api_key,
+        timeout=timeout_seconds
+        if timeout_seconds is not None
+        else float(env_int("OPENAI_API_TIMEOUT_SECONDS", 25)),
         max_retries=env_nonneg_int("OPENAI_API_MAX_RETRIES", 1),
     )
 
@@ -236,8 +262,9 @@ def _openai_text_call(
     messages: list[dict[str, str]],
     max_tokens: int,
     model: str | None = None,
+    timeout_seconds: float | None = None,
 ) -> str:
-    client = _openai_client(api_key)
+    client = _openai_client(api_key, timeout_seconds=timeout_seconds)
     input_messages = [
         {
             "role": message["role"],
@@ -692,15 +719,22 @@ def generate_care_batch_with_ai(plants: list[dict[str, Any]]) -> dict[str, dict[
         raise AIProviderError(provider=provider) from exc
 
 
-def chat_with_ai(system: str, messages: list[dict[str, str]]) -> str:
+def chat_with_ai(
+    system: str,
+    messages: list[dict[str, str]],
+    *,
+    use_fast_model: bool = False,
+    max_tokens: int = 2048,
+    timeout_seconds: float | None = None,
+) -> str:
     provider = configured_provider()
     api_key = _provider_api_key(provider)
     try:
         if provider == "anthropic":
-            client = _anthropic_client(api_key)
+            client = _anthropic_client(api_key, timeout_seconds=timeout_seconds)
             response = client.messages.create(
                 model=anthropic_model(),
-                max_tokens=2048,
+                max_tokens=max_tokens,
                 system=system,
                 messages=cast(Any, messages),
             )
@@ -709,12 +743,16 @@ def chat_with_ai(system: str, messages: list[dict[str, str]]) -> str:
             api_key=api_key,
             system=system,
             messages=messages,
-            max_tokens=2048,
+            max_tokens=max_tokens,
+            model=openai_fast_model() if use_fast_model else None,
+            timeout_seconds=timeout_seconds,
         )
     except AIProviderNotConfigured:
         raise
     except AIProviderError:
         raise
+    except (AnthropicAPITimeoutError, OpenAIAPITimeoutError) as exc:
+        raise AIProviderTimeout(provider=provider) from exc
     except Exception as exc:  # noqa: BLE001
         raise AIProviderError(provider=provider) from exc
 

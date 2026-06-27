@@ -7,8 +7,13 @@ import os
 import unittest
 from unittest.mock import MagicMock, patch
 
+import anthropic
+import httpx
+import openai
+
 from gardenops.services.ai_provider import (
     AIProviderNotConfigured,
+    AIProviderTimeout,
     chat_with_ai,
     configured_provider,
     diagnose_plant_with_ai,
@@ -177,6 +182,104 @@ class TestAIProviderAdapter(unittest.TestCase):
         self.assertEqual(
             mocked_client.responses.create.call_args.kwargs["instructions"], "You are concise."
         )
+
+    def test_openai_chat_can_use_fast_model_and_smaller_output_budget(self) -> None:
+        mocked_client = MagicMock()
+        mocked_client.responses.create.return_value = type(
+            "OpenAIResponse",
+            (),
+            {"output_text": "Mulch now."},
+        )()
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AI_PROVIDER": "openai",
+                    "OPENAI_API_KEY": "test-key",
+                    "OPENAI_MODEL": "gpt-main-test",
+                    "OPENAI_FAST_MODEL": "gpt-fast-test",
+                },
+                clear=False,
+            ),
+            patch("gardenops.services.ai_provider.OpenAI", return_value=mocked_client),
+        ):
+            reply = chat_with_ai(
+                "You are concise.",
+                [{"role": "user", "content": "Tip?"}],
+                use_fast_model=True,
+                max_tokens=768,
+            )
+
+        call = mocked_client.responses.create.call_args.kwargs
+        self.assertEqual(reply, "Mulch now.")
+        self.assertEqual(call["model"], "gpt-fast-test")
+        self.assertEqual(call["max_output_tokens"], 768)
+
+    def test_openai_chat_can_override_provider_timeout(self) -> None:
+        mocked_client = MagicMock()
+        mocked_client.responses.create.return_value = type(
+            "OpenAIResponse",
+            (),
+            {"output_text": "Mulch now."},
+        )()
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AI_PROVIDER": "openai",
+                    "OPENAI_API_KEY": "test-key",
+                },
+                clear=False,
+            ),
+            patch(
+                "gardenops.services.ai_provider.OpenAI",
+                return_value=mocked_client,
+            ) as mocked_openai,
+        ):
+            chat_with_ai(
+                "You are concise.",
+                [{"role": "user", "content": "Tip?"}],
+                timeout_seconds=60,
+            )
+
+        self.assertEqual(mocked_openai.call_args.kwargs["timeout"], 60.0)
+
+    def test_openai_chat_timeout_raises_timeout_error(self) -> None:
+        request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+        mocked_client = MagicMock()
+        mocked_client.responses.create.side_effect = openai.APITimeoutError(request)
+
+        with (
+            patch.dict(
+                os.environ,
+                {"AI_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"},
+                clear=False,
+            ),
+            patch("gardenops.services.ai_provider.OpenAI", return_value=mocked_client),
+        ):
+            with self.assertRaises(AIProviderTimeout):
+                chat_with_ai("You are concise.", [{"role": "user", "content": "Tip?"}])
+
+    def test_anthropic_chat_timeout_raises_timeout_error(self) -> None:
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        mocked_client = MagicMock()
+        mocked_client.messages.create.side_effect = anthropic.APITimeoutError(request)
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AI_PROVIDER": "anthropic",
+                    "ANTHROPIC_API_KEY": "test-key",
+                },
+                clear=False,
+            ),
+            patch("gardenops.services.ai_provider.Anthropic", return_value=mocked_client),
+        ):
+            with self.assertRaises(AIProviderTimeout):
+                chat_with_ai("You are concise.", [{"role": "user", "content": "Tip?"}])
 
     def test_openai_task_descriptions_use_configured_provider(self) -> None:
         mocked_client = MagicMock()

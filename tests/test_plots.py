@@ -11,6 +11,7 @@ import gardenops.db as db
 from gardenops.main import app
 from gardenops.router_helpers import generate_public_id
 from gardenops.security import create_user
+from gardenops.services.ai_provider import AIProviderTimeout
 from tests.base import BaseApiTest, strong_password
 
 
@@ -2849,6 +2850,66 @@ class TestPlots(BaseApiTest):
         self.assertEqual(first.json()["reply"], "Use compost.")
         self.assertEqual(second.status_code, 429)
         self.assertIn("daily budget exhausted", second.json()["detail"])
+
+    def test_ai_garden_chat_uses_openai_fast_model(self) -> None:
+        mocked_client = MagicMock()
+        mocked_client.responses.create.return_value = type(
+            "OpenAIResponse",
+            (),
+            {"output_text": "Use compost."},
+        )()
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AI_PROVIDER": "openai",
+                    "OPENAI_API_KEY": "test-key",
+                    "OPENAI_MODEL": "gpt-main-test",
+                    "OPENAI_FAST_MODEL": "gpt-fast-test",
+                },
+                clear=False,
+            ),
+            patch(
+                "gardenops.services.ai_provider.OpenAI",
+                return_value=mocked_client,
+            ) as mocked_openai,
+        ):
+            response = self.client.post(
+                "/api/ai/garden-chat",
+                json={"message": "What should I plant?", "history": []},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["reply"], "Use compost.")
+        self.assertEqual(
+            mocked_client.responses.create.call_args.kwargs["model"],
+            "gpt-fast-test",
+        )
+        self.assertEqual(mocked_openai.call_args.kwargs["timeout"], 60.0)
+
+    def test_ai_garden_chat_provider_timeout_returns_504(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AI_PROVIDER": "openai",
+                    "OPENAI_API_KEY": "test-key",
+                },
+                clear=False,
+            ),
+            patch(
+                "gardenops.routers.ai.chat_with_ai",
+                side_effect=AIProviderTimeout(provider="openai"),
+            ),
+        ):
+            response = self.client.post(
+                "/api/ai/garden-chat",
+                json={"message": "What should I plant?", "history": []},
+            )
+
+        self.assertEqual(response.status_code, 504)
+        self.assertEqual(response.json()["detail"], "AI provider request timed out")
 
     def test_plot_plants_not_found(self) -> None:
         response = self.client.get(

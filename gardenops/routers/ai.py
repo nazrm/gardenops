@@ -37,6 +37,7 @@ from gardenops.security_metrics import record_security_event
 from gardenops.services.ai_provider import (
     AIProviderError,
     AIProviderNotConfigured,
+    AIProviderTimeout,
     chat_with_ai,
     diagnose_plant_with_ai,
     generate_care_batch_with_ai,
@@ -52,6 +53,9 @@ _log = logging.getLogger(__name__)
 
 _context_cache: dict[str, tuple[str, float]] = {}
 _CACHE_TTL = 300.0  # seconds
+_AI_CHAT_TIMEOUT_DETAIL = "AI provider request timed out"
+_AI_CHAT_DEFAULT_MAX_OUTPUT_TOKENS = 1024
+_AI_CHAT_DEFAULT_PROVIDER_TIMEOUT_SECONDS = 60
 
 
 def _ai_rich_context_enabled() -> bool:
@@ -88,20 +92,39 @@ def _log_provider_failure(
     *,
     upstream: str,
     feature_area: str,
+    error_kind: str = "upstream_failure",
     exc_info: bool = True,
     garden_id: int | None = None,
     user_id: int | None = None,
+    **extra_fields: object,
 ) -> None:
     _log.warning(
         message,
         exc_info=exc_info,
         extra=observability_extra(
-            error_kind="upstream_failure",
+            error_kind=error_kind,
             upstream=upstream,
             feature_area=feature_area,
             garden_id=garden_id,
             user_id=user_id,
+            **extra_fields,
         ),
+    )
+
+
+def _ai_chat_max_output_tokens() -> int:
+    return max(256, env_int("AI_CHAT_MAX_OUTPUT_TOKENS", _AI_CHAT_DEFAULT_MAX_OUTPUT_TOKENS))
+
+
+def _ai_chat_provider_timeout_seconds() -> float:
+    return float(
+        max(
+            1,
+            env_int(
+                "AI_CHAT_PROVIDER_TIMEOUT_SECONDS",
+                _AI_CHAT_DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+            ),
+        )
     )
 
 
@@ -792,41 +815,100 @@ def garden_chat(body: ChatRequest, db: DB, request: Request) -> dict:
     )
     context = get_cached_context(db, auth_context)
     system = CHAT_SYSTEM_TEMPLATE.format(context=context)
+    context_chars = len(context)
+    max_output_tokens = _ai_chat_max_output_tokens()
+    provider_timeout_seconds = _ai_chat_provider_timeout_seconds()
 
     messages: list[dict[str, str]] = [{"role": m.role, "content": m.content} for m in body.history]
     messages.append({"role": "user", "content": body.message})
 
+    started = time.perf_counter()
     try:
         with acquire_concurrency_slot(
             bucket="ai-garden-chat",
             limit=int(limits["concurrency_limit"]),
         ):
-            reply = chat_with_ai(system, messages)
+            reply = chat_with_ai(
+                system,
+                messages,
+                use_fast_model=provider == "openai",
+                max_tokens=max_output_tokens,
+                timeout_seconds=provider_timeout_seconds,
+            )
     except AIProviderNotConfigured as exc:
         raise HTTPException(503, exc.detail) from exc
+    except AIProviderTimeout as exc:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        _log_provider_failure(
+            "AI garden chat timed out",
+            upstream=exc.provider,
+            feature_area="ai-garden-chat",
+            error_kind="upstream_timeout",
+            garden_id=auth_context.garden_id,
+            user_id=auth_context.user_id,
+            duration_ms=duration_ms,
+            context_chars=context_chars,
+            history_count=len(body.history),
+            message_count=len(messages),
+            max_output_tokens=max_output_tokens,
+            provider_timeout_seconds=provider_timeout_seconds,
+        )
+        record_security_event("ai_provider_failures")
+        record_security_event("ai_provider_failures_garden_chat")
+        raise HTTPException(504, _AI_CHAT_TIMEOUT_DETAIL) from exc
     except AIProviderError as exc:
+        duration_ms = int((time.perf_counter() - started) * 1000)
         _log_provider_failure(
             "AI garden chat failed",
             upstream=exc.provider,
             feature_area="ai-garden-chat",
             garden_id=auth_context.garden_id,
             user_id=auth_context.user_id,
+            duration_ms=duration_ms,
+            context_chars=context_chars,
+            history_count=len(body.history),
+            message_count=len(messages),
+            max_output_tokens=max_output_tokens,
+            provider_timeout_seconds=provider_timeout_seconds,
         )
         record_security_event("ai_provider_failures")
         record_security_event("ai_provider_failures_garden_chat")
         raise HTTPException(502, "AI provider request failed") from exc
     except Exception as exc:  # noqa: BLE001
+        duration_ms = int((time.perf_counter() - started) * 1000)
         _log_provider_failure(
             "AI garden chat failed",
             upstream=provider,
             feature_area="ai-garden-chat",
             garden_id=auth_context.garden_id,
             user_id=auth_context.user_id,
+            duration_ms=duration_ms,
+            context_chars=context_chars,
+            history_count=len(body.history),
+            message_count=len(messages),
+            max_output_tokens=max_output_tokens,
+            provider_timeout_seconds=provider_timeout_seconds,
         )
         record_security_event("ai_provider_failures")
         record_security_event("ai_provider_failures_garden_chat")
         raise HTTPException(502, "AI provider request failed") from exc
 
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    _log.info(
+        "AI garden chat completed",
+        extra=observability_extra(
+            upstream=provider,
+            feature_area="ai-garden-chat",
+            duration_ms=duration_ms,
+            context_chars=context_chars,
+            history_count=len(body.history),
+            message_count=len(messages),
+            max_output_tokens=max_output_tokens,
+            provider_timeout_seconds=provider_timeout_seconds,
+            garden_id=auth_context.garden_id,
+            user_id=auth_context.user_id,
+        ),
+    )
     return {"reply": reply}
 
 
