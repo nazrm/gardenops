@@ -4433,6 +4433,22 @@ class TestSecurity(BaseApiTest):
             with self.assertRaisesRegex(RuntimeError, "not a placeholder"):
                 _validate_runtime_security_config()
 
+    def test_validate_runtime_security_config_requires_telemetry_privacy_salt(self) -> None:
+        strict_env = {
+            **self._valid_internet_exposed_runtime_env(),
+            "SECURITY_TELEMETRY_WEBHOOK_URL": "https://telemetry.example.invalid/hooks",
+            "SECURITY_TELEMETRY_BACKGROUND_EXPORT": "false",
+            "SECURITY_TELEMETRY_PRIVACY_MODE": "minimized",
+            "SECURITY_TELEMETRY_PRIVACY_SALT": "",
+        }
+        with patch.dict(os.environ, strict_env, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "SECURITY_TELEMETRY_PRIVACY_SALT"):
+                _validate_runtime_security_config()
+
+        strict_env["SECURITY_TELEMETRY_PRIVACY_SALT"] = "deployment-specific-salt-32chars-ok"
+        with patch.dict(os.environ, strict_env, clear=False):
+            _validate_runtime_security_config()
+
     @patch("gardenops.routers.ai.os.environ.get")
     def test_chat_no_api_key(self, mock_env: MagicMock) -> None:
         mock_env.return_value = ""

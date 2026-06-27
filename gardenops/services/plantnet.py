@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from gardenops.branding import app_user_agent
+from gardenops.redaction import redact_external_log_text
 
 _log = logging.getLogger(__name__)
 
@@ -164,7 +165,10 @@ def identify(
             detail = exc.read().decode("utf-8", errors="replace")[:500]
         except Exception:
             pass
-        raise PlantNetError(exc.code, detail or str(exc)) from exc
+        raise PlantNetError(
+            exc.code,
+            redact_external_log_text(detail or str(exc), max_len=500),
+        ) from exc
     except (TimeoutError, OSError) as exc:
         raise PlantNetError(0, "PlantNet API timeout") from exc
 

@@ -18,6 +18,13 @@ function collectSourceMaps(rootDir) {
       }
       if (entry.isFile() && entry.name.endsWith(".map")) {
         matches.push(path.relative(rootDir, absolutePath));
+        continue;
+      }
+      if (entry.isFile() && /\.(?:js|css)$/i.test(entry.name)) {
+        const data = fs.readFileSync(absolutePath, "utf8");
+        if (/sourceMappingURL\s*=/.test(data)) {
+          matches.push(`${path.relative(rootDir, absolutePath)} contains sourceMappingURL`);
+        }
       }
     }
   }

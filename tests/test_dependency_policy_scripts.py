@@ -187,6 +187,12 @@ def test_security_bypass_generator_emits_python_advisory_fix():
     ]
 
 
+def test_codeowners_covers_security_release_bypass_generator():
+    codeowners = (ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
+
+    assert "/scripts/generate_security_release_bypass.py @nazrm" in codeowners
+
+
 def test_security_bypass_generator_rejects_still_vulnerable_python_update():
     module = load_security_bypass_module()
     base_audit = {

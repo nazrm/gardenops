@@ -5,6 +5,7 @@ const ZOOM_MIN = 1.0;
 const ZOOM_MAX = 3.0;
 const ZOOM_STEP = 0.5;
 const SVG_NS = "http://www.w3.org/2000/svg";
+const SAFE_PLOT_COLOR_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 
 let zoomLevel = 1.0;
 const zoomControlsByGrid = new WeakMap<HTMLElement, HTMLElement>();
@@ -197,6 +198,11 @@ function buildIconLabel(label: string): HTMLSpanElement {
   return labelEl;
 }
 
+function safePlotColor(value: string | null | undefined): string | null {
+  const normalized = (value ?? "").trim();
+  return SAFE_PLOT_COLOR_RE.test(normalized) ? normalized : null;
+}
+
 interface RenderMapParams {
   grid: HTMLElement;
   plots: Plot[];
@@ -384,8 +390,9 @@ function buildPlotCell(
     }
   }
 
-  if (!elevActive && plot.color) {
-    el.style.background = plot.color;
+  const plotColor = safePlotColor(plot.color);
+  if (!elevActive && plotColor) {
+    el.style.background = plotColor;
   }
   if (selectedPlotIds.has(plot.plot_id)) {
     el.classList.add("multi-selected");

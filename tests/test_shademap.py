@@ -733,7 +733,9 @@ class TestShademap(BaseApiTest):
         ):
             config = self.client.get("/api/shademap/config")
         self.assertEqual(config.status_code, 200)
-        token = parse_qs(urlparse(config.json()["terrain_url_template"]).query)["token"][0]
+        signed_tile_token = parse_qs(
+            urlparse(config.json()["terrain_url_template"]).query,
+        )["token"][0]
 
         with (
             patch.dict(
@@ -762,10 +764,10 @@ class TestShademap(BaseApiTest):
             ),
         ):
             first = self.client.get(
-                f"/shademap/terrain/1/0/0.png?token={token}",
+                f"/shademap/terrain/1/0/0.png?token={signed_tile_token}",
             )
             second = self.client.get(
-                f"/shademap/terrain/1/1/0.png?token={token}",
+                f"/shademap/terrain/1/1/0.png?token={signed_tile_token}",
             )
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 429)
@@ -780,7 +782,9 @@ class TestShademap(BaseApiTest):
         ):
             config = self.client.get("/api/shademap/config")
         self.assertEqual(config.status_code, 200)
-        token = parse_qs(urlparse(config.json()["terrain_url_template"]).query)["token"][0]
+        signed_tile_token = parse_qs(
+            urlparse(config.json()["terrain_url_template"]).query,
+        )["token"][0]
 
         with (
             patch.dict(
@@ -809,13 +813,43 @@ class TestShademap(BaseApiTest):
             ),
         ):
             first = self.client.get(
-                f"/shademap/terrain/1/0/0.png?token={token}",
+                f"/shademap/terrain/1/0/0.png?token={signed_tile_token}",
             )
             second = self.client.get(
-                f"/shademap/terrain/1/1/0.png?token={token}",
+                f"/shademap/terrain/1/1/0.png?token={signed_tile_token}",
             )
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 429)
+
+    def test_shademap_terrain_rejects_non_image_remote_content(self) -> None:
+        with (
+            patch("gardenops.routers.shademap._perform_sdk_validation"),
+            patch(
+                "gardenops.routers.shademap.local_terrain_available",
+                return_value=False,
+            ),
+        ):
+            config = self.client.get("/api/shademap/config")
+        self.assertEqual(config.status_code, 200)
+        signed_tile_token = parse_qs(
+            urlparse(config.json()["terrain_url_template"]).query,
+        )["token"][0]
+
+        with (
+            patch(
+                "gardenops.routers.shademap._request_bytes",
+                return_value=(b"<script></script>", "text/html"),
+            ),
+            patch("gardenops.routers.shademap.sample_local_terrain_tile", return_value=None),
+            patch("gardenops.routers.shademap.local_terrain_signature", return_value=None),
+            patch("gardenops.routers.shademap._house_overlaps_tile", return_value=False),
+        ):
+            response = self.client.get(
+                f"/shademap/terrain/1/0/0.png?token={signed_tile_token}",
+            )
+
+        self.assertEqual(response.status_code, 502, response.text)
+        self.assertIn("terrain", response.json()["detail"].lower())
 
     def test_shademap_terrain_daily_budget_enforced_on_remote_miss(self) -> None:
         self._create_test_user("terrain_budget_user", "terrain-budget-pass", role="editor")

@@ -58,6 +58,12 @@ Production, internet-exposed, and multi-instance deployments must use the Redis
 rate-limit backend; the in-memory backend is only for local development and
 tests.
 
+If security telemetry is enabled with `SECURITY_TELEMETRY_WEBHOOK_URL` and the
+privacy mode is `minimized`, production and internet-exposed deployments must
+set a deployment-specific `SECURITY_TELEMETRY_PRIVACY_SALT`. Do not reuse the
+public default placeholder because it would make hashed telemetry identifiers
+linkable across deployments.
+
 If an older deployment copied the previous public placeholder value, rotate it
 while the service is private: start a maintenance instance with
 `APP_ENV=development` and `INTERNET_EXPOSED=false` using the old value, disable
@@ -109,6 +115,10 @@ upstream provider `AI_CHAT_PROVIDER_TIMEOUT_SECONDS` (default `60`) before
 returning a timeout response to the browser. Keep that backend timeout below
 the frontend garden-chat timeout so users receive the clearer AI timeout
 message instead of a generic network abort.
+AI-generated task descriptions have separate daily budgets and concurrency
+controls: `AI_TASK_DESCRIPTION_DAILY_BUDGET_USER` defaults to `60`,
+`AI_TASK_DESCRIPTION_DAILY_BUDGET_GARDEN` defaults to `180`, and
+`AI_TASK_DESCRIPTION_CONCURRENCY_LIMIT` defaults to `1`.
 
 Generate `APP_SECRETS_ENCRYPTION_KEY` with:
 

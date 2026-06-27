@@ -136,7 +136,10 @@ def git_lines(args: list[str], *, check: bool = True) -> list[str]:
 
 
 def normalize(path: str) -> str:
-    return path.replace("\\", "/").lstrip("./")
+    rel = path.replace("\\", "/")
+    while rel.startswith("./"):
+        rel = rel[2:]
+    return rel.lstrip("/")
 
 
 def is_allowed_path(path: str) -> bool:
@@ -252,7 +255,7 @@ def secret_pattern_details_for_line(line: str) -> list[str]:
         if pattern.search(line):
             details.append(name)
             break
-    if not assignment_suppressed(line):
+    if not assignment_suppressed(line) and not SAFE_EXAMPLE_RE.search(line):
         assignment = SECRET_ASSIGNMENT_RE.search(line)
         if assignment:
             value, quoted = extract_assignment_value(assignment.group("value"))
@@ -282,8 +285,6 @@ def find_secret_patterns_in_lines(
 ) -> list[Finding]:
     findings: list[Finding] = []
     for line_no, line in lines:
-        if SAFE_EXAMPLE_RE.search(line):
-            continue
         for name in secret_pattern_details_for_line(line):
             findings.append(
                 Finding(
@@ -442,8 +443,6 @@ def scan_commit_patch(commit: str) -> list[Finding]:
             current_path = normalize(line[6:])
             continue
         if not line.startswith("+") or line.startswith("+++"):
-            continue
-        if SAFE_EXAMPLE_RE.search(line):
             continue
         for name in secret_pattern_details_for_line(line):
             findings.append(

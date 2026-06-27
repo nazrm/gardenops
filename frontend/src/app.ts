@@ -5609,6 +5609,7 @@ function handleAuthExpired(): void {
   _authExpiredPending = true;
   adminPanelModule?.resetAdminPanelSensitiveState();
   clearStoredAuthToken();
+  void clearOfflineQueue().catch(() => undefined);
   showAppStatus(t("status.session_expired"), t("status.sign_in"), () => {
     _authExpiredPending = false;
     void handleAuthButton();

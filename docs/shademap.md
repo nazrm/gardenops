@@ -212,6 +212,11 @@ Override it only if you operate a compatible source:
 SHADEMAP_TERRAIN_URL_TEMPLATE=https://example.com/terrarium/{z}/{x}/{y}.png
 ```
 
+Remote terrain responses must be `image/png`. GardenOps rejects unexpected
+remote content types before caching or serving the tile, so do not point the
+template at HTML landing pages, JSON APIs, or services that return mixed
+formats for missing tiles.
+
 ### Local Terrain
 
 You can point GardenOps at a local LiDAR `.laz` point-cloud file:

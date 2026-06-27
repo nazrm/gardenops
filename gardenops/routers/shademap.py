@@ -556,6 +556,16 @@ def _request_bytes(
         raise HTTPException(status_code=502, detail="Request timed out") from exc
 
 
+def _validate_remote_terrain_content_type(content_type: str) -> str:
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if media_type != "image/png":
+        raise HTTPException(
+            status_code=502,
+            detail="ShadeMap terrain upstream returned a non-PNG tile",
+        )
+    return media_type
+
+
 def _parse_decimal(raw: str) -> float | None:
     value = raw.strip().replace(",", ".")
     if not value:
@@ -2455,6 +2465,7 @@ def get_shademap_terrain_tile(
                 _terrain_source_url(z, x, y),
                 headers={"Accept": "image/png,image/*;q=0.8,*/*;q=0.1"},
             )
+            content_type = _validate_remote_terrain_content_type(content_type)
     except HTTPException:
         if cached and cached["payload_blob"] is not None:
             return Response(

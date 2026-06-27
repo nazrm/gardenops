@@ -109,7 +109,7 @@ balance becomes a problem.
 - invite-token storage regressions
 - TypeScript errors
 - production bundling errors
-- sourcemap leakage
+- sourcemap leakage, including inline `sourceMappingURL` references
 - stale generated asset references
 
 If a change intentionally adds a raw HTML sink, document it in

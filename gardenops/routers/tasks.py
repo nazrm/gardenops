@@ -9,6 +9,11 @@ from pydantic import Field
 
 from gardenops.db import DB, DbConn, current_timestamp_ms, executemany
 from gardenops.models import StrictBaseModel
+from gardenops.rate_limit import (
+    acquire_concurrency_slot,
+    provider_limit_profile,
+    reserve_daily_provider_budget,
+)
 from gardenops.router_helpers import (
     active_garden_id as _active_garden_id,
 )
@@ -34,6 +39,7 @@ from gardenops.router_helpers import (
     validate_date as _validate_date,
 )
 from gardenops.security import AuthContext
+from gardenops.services.ai_provider import is_ai_provider_configured
 from gardenops.services.notification_service import clear_task_notifications
 from gardenops.services.observation_updates import mark_seen_growing_from_observation
 from gardenops.services.task_windows import derive_recommended_window_strings
@@ -1107,6 +1113,7 @@ def refresh_descriptions(
 
     from gardenops.services.task_generator import (
         _lookup_plant_context,
+        _uses_ai_task_description,
         generate_task_description_overrides,
         infer_task_description,
     )
@@ -1166,10 +1173,32 @@ def refresh_descriptions(
             }
         )
 
-    overrides = generate_task_description_overrides(
-        task_specs,
-        preferred_locale=preferred_locale,
+    uses_ai_descriptions = is_ai_provider_configured() and any(
+        _uses_ai_task_description(spec) for spec in task_specs
     )
+    if uses_ai_descriptions:
+        limits = provider_limit_profile("ai-task-descriptions")
+        reserve_daily_provider_budget(
+            db,
+            feature="ai-task-descriptions",
+            user_id=context.user_id,
+            garden_id=context.garden_id,
+            user_limit=int(limits["user_limit"]),
+            garden_limit=int(limits["garden_limit"]),
+        )
+        with acquire_concurrency_slot(
+            bucket="ai-task-descriptions",
+            limit=int(limits["concurrency_limit"]),
+        ):
+            overrides = generate_task_description_overrides(
+                task_specs,
+                preferred_locale=preferred_locale,
+            )
+    else:
+        overrides = generate_task_description_overrides(
+            task_specs,
+            preferred_locale=preferred_locale,
+        )
     for spec in task_specs:
         desc_en, desc_no = overrides.get(
             str(spec["task_key"]),
