@@ -70,9 +70,16 @@ jobs:
       - run: python scripts/check_dependency_sources.py --root /tmp/gardenops-pr-dependency-data
         if: github.event_name == 'pull_request'
         working-directory: /tmp/gardenops-policy-python
-      - run: uv run --frozen --group audit python scripts/generate_security_release_bypass.py --ecosystem python --base-ref "origin/${{ github.base_ref }}" --head-root /tmp/gardenops-pr-dependency-data
+      - name: Generate trusted Python security-release bypass evidence
         if: github.event_name == 'pull_request'
         working-directory: /tmp/gardenops-policy-python
+        run: |
+          set -euo pipefail
+          if python scripts/generate_security_release_bypass.py --help | grep -q -- "--head-root"; then
+            uv run --frozen --group audit python scripts/generate_security_release_bypass.py --ecosystem python --base-ref "origin/${{ github.base_ref }}" --head-root /tmp/gardenops-pr-dependency-data
+          else
+            uv run --frozen --group audit python scripts/generate_security_release_bypass.py --ecosystem python --base-ref "origin/${{ github.base_ref }}"
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: github.event_name == 'pull_request'
         with:
@@ -126,9 +133,16 @@ jobs:
           git fetch origin "${{ github.base_ref }}" --depth=1
           git worktree prune
           git worktree add --detach /tmp/gardenops-policy-npm "origin/${{ github.base_ref }}"
-      - run: python scripts/generate_security_release_bypass.py --ecosystem npm --base-ref "origin/${{ github.base_ref }}" --head-root /tmp/gardenops-pr-npm-data
+      - name: Generate trusted npm security-release bypass evidence
         if: github.event_name == 'pull_request'
         working-directory: /tmp/gardenops-policy-npm
+        run: |
+          set -euo pipefail
+          if python scripts/generate_security_release_bypass.py --help | grep -q -- "--head-root"; then
+            python scripts/generate_security_release_bypass.py --ecosystem npm --base-ref "origin/${{ github.base_ref }}" --head-root /tmp/gardenops-pr-npm-data
+          else
+            python scripts/generate_security_release_bypass.py --ecosystem npm --base-ref "origin/${{ github.base_ref }}"
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: github.event_name == 'pull_request'
         with:

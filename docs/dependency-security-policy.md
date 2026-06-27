@@ -101,6 +101,11 @@ base-ref checkout. The PR's manifest and lockfile changes are copied into that
 checkout as data before source, integrity, and release-age checks run. Do not
 replace this with a helper script from the PR branch.
 
+When a PR changes the dependency policy scripts themselves, CI may be running
+against a base branch that does not yet support the newest script flags. In
+that bootstrap case, the workflow must fall back to trusted base-branch tooling
+without external bypass evidence rather than running PR-controlled audit code.
+
 Generated release-age bypass evidence must include trusted audit source
 metadata, including `source: pip-audit base/head diff` for Python entries.
 Package/version-only bypass JSON is not sufficient evidence.
