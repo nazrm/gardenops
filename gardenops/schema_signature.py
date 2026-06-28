@@ -198,6 +198,7 @@ REQUIRED_CONSTRAINTS = (
     "plots_pkey",
     "garden_map_objects_pkey",
     "garden_map_objects_public_id_key",
+    "ck_garden_map_objects_internal_layout_bool",
     "garden_map_object_units_pkey",
     "garden_map_object_units_public_id_key",
     "plot_ownership_pkey",

@@ -278,7 +278,7 @@ Expected: import/export tests fail until models and snapshot functions include m
 
 - [ ] **Step 3: Implement import/export**
 
-Extend `snapshot_layout`, `parse_layout_payload`, and `restore_snapshot_data` to round-trip map objects and units. Clear existing map objects when restoring a layout, after plot replacement starts and before inserting imported objects. Export should include `public_id`, but import must regenerate an object's or unit's public ID if that exported ID already belongs to another garden. The unit import must map old object IDs to the inserted parent object rows instead of trusting raw numeric IDs from the file.
+Extend `snapshot_layout`, `parse_layout_payload`, and `restore_snapshot_data` to round-trip map objects and units. When the import payload includes `map_objects`, clear existing map objects after plot replacement starts and before inserting imported objects; when legacy payloads omit the key, preserve existing map objects. Export should include `public_id`, but import must regenerate an object's or unit's public ID if that exported ID already belongs to another garden. The unit import must map old object IDs to the inserted parent object rows instead of trusting raw numeric IDs from the file.
 
 - [ ] **Step 4: Run tests and verify GREEN**
 

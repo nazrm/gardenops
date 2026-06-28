@@ -1685,6 +1685,47 @@ class TestPlots(BaseApiTest):
                 """,
                 ("DEL1", 13.0, garden_id),
             )
+            map_object = conn.execute(
+                """
+                INSERT INTO garden_map_objects (
+                    public_id, garden_id, object_type, name, shape_type,
+                    geometry_json, style_json, z_index, has_internal_layout,
+                    internal_layout_json, created_by_user_id, created_at_ms, updated_at_ms
+                )
+                VALUES (%s, %s, 'patio', 'Delete Patio', 'rectangle', %s, %s, 0, 1, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    "delete-mapobj",
+                    garden_id,
+                    json.dumps({"x": 1, "y": 1, "width": 2, "height": 2}),
+                    json.dumps({"color": "#7d9f7a"}),
+                    json.dumps({"rows": 6, "cols": 8}),
+                    int(admin["id"]),
+                    db.current_timestamp_ms(),
+                    db.current_timestamp_ms(),
+                ),
+            ).fetchone()
+            assert map_object is not None
+            conn.execute(
+                """
+                INSERT INTO garden_map_object_units (
+                    public_id, garden_id, map_object_id, unit_type, name,
+                    shape_type, geometry_json, style_json, sort_order,
+                    created_at_ms, updated_at_ms
+                )
+                VALUES (%s, %s, %s, 'pot', 'Delete Pot', 'ellipse', %s, %s, 0, %s, %s)
+                """,
+                (
+                    "delete-mapunit",
+                    garden_id,
+                    int(map_object["id"]),
+                    json.dumps({"x": 1, "y": 1, "width": 1, "height": 1}),
+                    json.dumps({"color": "#c58f5c"}),
+                    db.current_timestamp_ms(),
+                    db.current_timestamp_ms(),
+                ),
+            )
             conn.commit()
         finally:
             db.return_db(conn)
@@ -1780,6 +1821,16 @@ class TestPlots(BaseApiTest):
             self.assertIsNone(
                 conn.execute(
                     "SELECT 1 FROM plot_elevation_overrides WHERE garden_id = %s", (garden_id,)
+                ).fetchone(),
+            )
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM garden_map_objects WHERE garden_id = %s", (garden_id,)
+                ).fetchone(),
+            )
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM garden_map_object_units WHERE garden_id = %s", (garden_id,)
                 ).fetchone(),
             )
         finally:

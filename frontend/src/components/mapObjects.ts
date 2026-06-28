@@ -131,6 +131,7 @@ function buildUnitGrid(
     cell.style.setProperty("--map-object-unit-color", unit.style.color);
     cell.textContent = unit.name;
     cell.title = `${unit.name} · ${unitTypeLabel(unit.unit_type)}`;
+    cell.setAttribute("aria-label", `${t("common.delete")} ${unit.name}`);
     cell.disabled = !params.canWrite;
     cell.addEventListener("click", () => {
       params.onDeleteUnit(object.public_id, unit.public_id);

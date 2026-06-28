@@ -381,10 +381,36 @@ class TestExportImport(BaseApiTest):
         restored_res = self.client.get(f"/api/gardens/{garden_id}/map-objects")
         self.assertEqual(restored_res.status_code, 200, restored_res.text)
         restored = restored_res.json()["objects"]
+        exported_object = exported["map_objects"][0]
+        exported_unit = exported_object["units"][0]
         self.assertEqual(len(restored), 1)
-        self.assertEqual(restored[0]["public_id"], patio_id)
-        self.assertEqual(restored[0]["name"], "Kitchen patio")
-        self.assertEqual(restored[0]["units"][0]["name"], "Rosemary pot")
+        restored_object = restored[0]
+        for field in (
+            "public_id",
+            "object_type",
+            "name",
+            "shape_type",
+            "geometry",
+            "style",
+            "z_index",
+            "has_internal_layout",
+            "internal_layout",
+        ):
+            with self.subTest(field=field):
+                self.assertEqual(restored_object[field], exported_object[field])
+        self.assertEqual(len(restored_object["units"]), 1)
+        restored_unit = restored_object["units"][0]
+        for field in (
+            "public_id",
+            "unit_type",
+            "name",
+            "shape_type",
+            "geometry",
+            "style",
+            "sort_order",
+        ):
+            with self.subTest(field=f"unit.{field}"):
+                self.assertEqual(restored_unit[field], exported_unit[field])
 
     def test_export_plants_csv(self) -> None:
         response = self.client.get("/api/plants/export-csv")

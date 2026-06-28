@@ -500,6 +500,15 @@ export function syncSelectedPlots(
   }
 }
 
+export function syncSelectedMapObject(
+  grid: HTMLElement,
+  selectedMapObjectId: string | null,
+): void {
+  for (const overlay of grid.querySelectorAll<HTMLElement>(".map-object-overlay[data-object-id]")) {
+    overlay.classList.toggle("active", overlay.dataset["objectId"] === selectedMapObjectId);
+  }
+}
+
 interface GridCallbacks {
   editMode: boolean;
   onPlotClick: (plot: Plot, event: MouseEvent) => void;

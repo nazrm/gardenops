@@ -30,6 +30,10 @@ Map object labels can be selected directly on the map. The overlay is visual
 only, so ordinary plot clicks still work unless the user clicks the object
 label or object controls.
 
+Objects with existing nested units must keep their internal layout enabled until
+those units are removed. GardenOps rejects updates that would leave nested units
+attached to a layout-less object.
+
 ## Export And Import
 
 Layout export includes `map_objects` with their nested `units`. Import restores
@@ -37,11 +41,19 @@ the map object layer together with the rest of the layout. If imported public
 ids collide with objects outside the target garden, GardenOps regenerates those
 ids during import instead of linking across gardens.
 
+When an import or snapshot restore omits the `map_objects` key, GardenOps treats
+that as a legacy payload and preserves existing map objects. An explicit
+`"map_objects": []` clears the map-object layer. Imported map objects must fit
+inside the garden grid, nested units must fit inside their parent internal
+layout, and imports are limited to 200 map objects and 500 nested units total.
+
 ## Current Limits
 
 - Nested units do not yet accept plant assignments, tasks, journals, issues, or
   harvest records.
 - Custom editing for object dimensions, shape changes, colors, names, and unit
   movement is not exposed yet.
+- Shrinking the garden grid is blocked while an existing map object would fall
+  outside the new bounds.
 - Non-rectangular grouping beyond rectangle and ellipse remains a future map
   design problem, not a plot-model rewrite.

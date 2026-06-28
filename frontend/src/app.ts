@@ -25,7 +25,7 @@ import {
   invalidateSearchCache,
 } from "./components/globalSearch";
 import { getAppShellMarkup } from "./components/layout";
-import { renderMapGrid, applyPlotIndicators, syncSelectedPlots } from "./components/mapView";
+import { renderMapGrid, applyPlotIndicators, syncSelectedMapObject, syncSelectedPlots } from "./components/mapView";
 import { renderMapObjectsPanel } from "./components/mapObjects";
 import { confirmDialog, createModal, promptDialog, promptPasswordDialog } from "./components/dialogCore";
 import { showCreatePlantDialogLazy, showCreatePlotDialogLazy, showCreateZoneDialogLazy, showDeleteMenuLazy, showEditPlantDialogLazy, showEditPlotDialogLazy, showElevationEditorLazy } from "./components/gardenDialogsLoader";
@@ -1818,8 +1818,6 @@ function setupLayout(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-brand-home]").forEach((button) => {
     button.addEventListener("click", () => setActiveTab("map"));
   });
-  document.addEventListener("click", handleMapObjectLabelClick, true);
-
   applyFeatureGateUi();
   document.querySelectorAll<HTMLButtonElement>(".mobile-tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -2616,16 +2614,13 @@ function renderMapObjectsPanelView(): void {
     selectedPlotCount: state.selectedPlotIds.size,
     onToggleObjects: (show) => {
       state.showMapObjects = show;
-      renderMapObjectsPanelView();
       renderPlots();
     },
     onCreateObject: (type) => {
       void createMapObjectFromSelection(type);
     },
     onSelectObject: (publicId) => {
-      state.selectedMapObjectId = publicId;
-      renderMapObjectsPanelView();
-      renderPlots();
+      selectMapObject(publicId);
     },
     onDeleteObject: (publicId) => {
       void deleteSelectedMapObject(publicId);
@@ -2639,49 +2634,11 @@ function renderMapObjectsPanelView(): void {
   });
 }
 
-function handleMapObjectLabelClick(event: MouseEvent): void {
-  const target = event.target;
-  if (!(target instanceof Element)) return;
-
-  let label: HTMLElement | null = target.closest<HTMLElement>(".map-object-label[data-object-id]");
-  if (!label) {
-    label = document.elementsFromPoint(event.clientX, event.clientY)
-      .find((element): element is HTMLElement => (
-        element instanceof HTMLElement
-        && element.matches(".map-object-label[data-object-id]")
-      )) ?? null;
-  }
-  if (!label) {
-    label = Array.from(document.querySelectorAll<HTMLElement>(".map-object-label[data-object-id]"))
-      .find((candidate) => {
-        const rect = candidate.getBoundingClientRect();
-        return (
-          event.clientX >= rect.left - 2
-          && event.clientX <= rect.right + 2
-          && event.clientY >= rect.top - 2
-          && event.clientY <= rect.bottom + 2
-        );
-      }) ?? null;
-  }
-  if (!label || !label.closest("#map-camera")) return;
-
-  const publicId = label.dataset["objectId"];
-  const object = state.mapObjects.find((item) => item.public_id === publicId);
-  if (!object) return;
-
-  event.preventDefault();
-  event.stopPropagation();
-  state.selectedMapObjectId = state.selectedMapObjectId === object.public_id ? null : object.public_id;
-  renderMapObjectsPanelView();
-  renderPlots();
-}
-
 async function fetchMapObjects(): Promise<void> {
   const requestGardenId = getActiveGardenContext();
   if (requestGardenId === null) {
     state.mapObjects = [];
     state.selectedMapObjectId = null;
-    renderMapObjectsPanelView();
     renderPlots();
     return;
   }
@@ -2695,7 +2652,6 @@ async function fetchMapObjects(): Promise<void> {
     ) {
       state.selectedMapObjectId = null;
     }
-    renderMapObjectsPanelView();
     renderPlots();
   } catch (err) {
     if (!isCurrentGardenRequest(requestGardenId)) return;
@@ -4321,6 +4277,15 @@ function syncMapSelectedPlots(): void {
   renderMapObjectsPanelView();
 }
 
+function selectMapObject(publicId: string | null): void {
+  state.selectedMapObjectId = publicId;
+  const grid = document.getElementById("map-grid");
+  if (grid) {
+    syncSelectedMapObject(grid, state.selectedMapObjectId);
+  }
+  renderMapObjectsPanelView();
+}
+
 function selectPlotRangeInPlace(endPlotId: string): void {
   if (state.selectedPlotIds.size === 0) return;
 
@@ -4377,10 +4342,7 @@ function renderPlots(): void {
     showMapObjects: state.showMapObjects,
     selectedMapObjectId: state.selectedMapObjectId,
     onMapObjectClick: (object) => {
-      state.selectedMapObjectId =
-        state.selectedMapObjectId === object.public_id ? null : object.public_id;
-      renderMapObjectsPanelView();
-      renderPlots();
+      selectMapObject(state.selectedMapObjectId === object.public_id ? null : object.public_id);
     },
     onPlotClick: (plot, event) => {
       if (state.editMode) {

@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import Field, field_validator
 
 from gardenops.audit import write_audit_event
-from gardenops.db import DB, DbConn, current_timestamp_ms
+from gardenops.db import DB, DbConn, current_timestamp_ms, executemany
 from gardenops.events import notify_garden_modified
 from gardenops.models import MapObjectImportItem, StrictBaseModel
 from gardenops.rate_limit import enforce_rate_limit, env_int
@@ -26,6 +26,7 @@ SAFE_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$
 DEFAULT_INTERNAL_LAYOUT = {"rows": 6, "cols": 8}
 MAX_MAP_OBJECTS_PER_GARDEN = 200
 MAX_UNITS_PER_OBJECT = 100
+MAX_UNITS_PER_IMPORT = 500
 PUBLIC_ID_TABLES = frozenset({"garden_map_objects", "garden_map_object_units"})
 
 
@@ -372,20 +373,20 @@ def replace_map_objects(
     map_objects: list[dict[str, Any]] | None,
     created_by_user_id: int | None,
 ) -> int:
-    db.execute("DELETE FROM garden_map_objects WHERE garden_id = %s", (garden_id,))
     if map_objects is None:
         return 0
     if len(map_objects) > MAX_MAP_OBJECTS_PER_GARDEN:
         raise HTTPException(status_code=400, detail="Map object limit reached for this garden")
 
     grid_rows, grid_cols = _garden_size(db, garden_id)
-    used_object_public_ids: set[str] = set()
-    used_unit_public_ids: set[str] = set()
-    now_ms = current_timestamp_ms()
-    inserted = 0
-
-    for raw_item in map_objects:
-        item = MapObjectImportItem.model_validate(raw_item)
+    items = [MapObjectImportItem.model_validate(raw_item) for raw_item in map_objects]
+    total_units = sum(len(item.units) for item in items)
+    if total_units > MAX_UNITS_PER_IMPORT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Nested unit limit reached for this import ({MAX_UNITS_PER_IMPORT} max)",
+        )
+    for item in items:
         geometry = item.geometry.model_dump()
         _validate_geometry_fits(geometry, rows=grid_rows, cols=grid_cols, label="Map object")
         if not item.has_internal_layout and item.units:
@@ -402,6 +403,16 @@ def replace_map_objects(
                 cols=layout["cols"],
                 label="Nested unit",
             )
+
+    db.execute("DELETE FROM garden_map_objects WHERE garden_id = %s", (garden_id,))
+    used_object_public_ids: set[str] = set()
+    used_unit_public_ids: set[str] = set()
+    now_ms = current_timestamp_ms()
+    inserted = 0
+
+    for item in items:
+        geometry = item.geometry.model_dump()
+        layout = _layout_dict(item.internal_layout)
 
         object_public_id = _import_public_id(
             db,
@@ -438,6 +449,7 @@ def replace_map_objects(
         ).fetchone()
         assert object_row is not None
         map_object_id = int(object_row["id"])
+        unit_rows = []
         for unit in item.units:
             unit_public_id = _import_public_id(
                 db,
@@ -446,14 +458,7 @@ def replace_map_objects(
                 requested_public_id=unit.public_id,
                 used=used_unit_public_ids,
             )
-            db.execute(
-                """
-                INSERT INTO garden_map_object_units (
-                    public_id, garden_id, map_object_id, unit_type, name, shape_type,
-                    geometry_json, style_json, sort_order, created_at_ms, updated_at_ms
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
+            unit_rows.append(
                 (
                     unit_public_id,
                     garden_id,
@@ -468,6 +473,18 @@ def replace_map_objects(
                     now_ms,
                 ),
             )
+        if unit_rows:
+            executemany(
+                db,
+                """
+                INSERT INTO garden_map_object_units (
+                    public_id, garden_id, map_object_id, unit_type, name, shape_type,
+                    geometry_json, style_json, sort_order, created_at_ms, updated_at_ms
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                unit_rows,
+            )
         inserted += 1
     return inserted
 
@@ -477,13 +494,16 @@ def _object_row_by_public_id(
     *,
     garden_id: int,
     object_public_id: str,
+    for_update: bool = False,
 ) -> dict[str, Any]:
+    lock_clause = "FOR UPDATE" if for_update else ""
     row = db.execute(
-        """
+        f"""
         SELECT *
         FROM garden_map_objects
         WHERE garden_id = %s AND public_id = %s
         LIMIT 1
+        {lock_clause}
         """,
         (garden_id, object_public_id),
     ).fetchone()
@@ -564,6 +584,7 @@ def create_map_object(
     context = _auth_context(request)
     _require_editor(db, context=context, garden_id=garden_id)
     _enforce_map_object_rate_limit(request, bucket=f"map-object-create:{garden_id}")
+    db.execute("SELECT id FROM gardens WHERE id = %s FOR UPDATE", (garden_id,))
     count_row = db.execute(
         "SELECT COUNT(*) AS c FROM garden_map_objects WHERE garden_id = %s",
         (garden_id,),
@@ -633,7 +654,12 @@ def update_map_object(
 ) -> dict[str, object]:
     context = _auth_context(request)
     _require_editor(db, context=context, garden_id=garden_id)
-    existing = _object_row_by_public_id(db, garden_id=garden_id, object_public_id=object_public_id)
+    existing = _object_row_by_public_id(
+        db,
+        garden_id=garden_id,
+        object_public_id=object_public_id,
+        for_update=True,
+    )
 
     updates: list[str] = []
     params: list[object] = []
@@ -659,6 +685,20 @@ def update_map_object(
         updates.append("z_index = %s")
         params.append(body.z_index)
     if body.has_internal_layout is not None:
+        if body.has_internal_layout is False:
+            unit_count = db.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM garden_map_object_units
+                WHERE garden_id = %s AND map_object_id = %s
+                """,
+                (garden_id, int(existing["id"])),
+            ).fetchone()
+            if int(unit_count["c"] if unit_count else 0) > 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Remove nested units before disabling the internal layout",
+                )
         updates.append("has_internal_layout = %s")
         params.append(1 if body.has_internal_layout else 0)
     if body.internal_layout is not None:
@@ -688,9 +728,11 @@ def update_map_object(
         """,
         params,
     ).fetchone()
+    if row is None:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Map object not found")
     db.commit()
     notify_garden_modified()
-    assert row is not None
     row_dict = dict(row)
     _audit_map_object_change(
         request,
@@ -750,7 +792,12 @@ def create_map_object_unit(
     context = _auth_context(request)
     _require_editor(db, context=context, garden_id=garden_id)
     _enforce_map_object_rate_limit(request, bucket=f"map-object-unit-create:{garden_id}")
-    parent = _object_row_by_public_id(db, garden_id=garden_id, object_public_id=object_public_id)
+    parent = _object_row_by_public_id(
+        db,
+        garden_id=garden_id,
+        object_public_id=object_public_id,
+        for_update=True,
+    )
     if not bool(int(parent["has_internal_layout"])):
         raise HTTPException(status_code=400, detail="Map object does not have an internal layout")
     unit_count = db.execute(
@@ -873,9 +920,11 @@ def update_map_object_unit(
         """,
         params,
     ).fetchone()
+    if row is None:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Nested unit not found")
     db.commit()
     notify_garden_modified()
-    assert row is not None
     _audit_map_object_change(
         request,
         context,

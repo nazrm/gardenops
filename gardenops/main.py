@@ -1970,6 +1970,49 @@ def _ensure_garden_plots_fit_grid(
         )
 
 
+def _ensure_garden_map_objects_fit_grid(
+    db: DbConn,
+    *,
+    garden_id: int,
+    grid_rows: int,
+    grid_cols: int,
+) -> None:
+    rows = db.execute(
+        """
+        SELECT public_id, name, geometry_json
+        FROM garden_map_objects
+        WHERE garden_id = %s
+        ORDER BY z_index DESC, id DESC
+        """,
+        (garden_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            geometry = json.loads(str(row["geometry_json"] or "{}"))
+            x = _coerce_required_int(geometry["x"])
+            y = _coerce_required_int(geometry["y"])
+            width = _coerce_required_int(geometry["width"])
+            height = _coerce_required_int(geometry["height"])
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Existing map object {row['public_id']} has invalid geometry",
+            ) from exc
+        if x + width - 1 > grid_cols or y + height - 1 > grid_rows:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Grid is too small for existing map object {row['name']} "
+                    f"at row {y}, col {x}"
+                ),
+            )
+
+
 def set_layout_state(
     db: DbConn,
     house: Mapping[str, object],
@@ -2227,6 +2270,13 @@ def restore_snapshot_data(
             set_shademap_calibration(db, shademap_calibration, garden_id=garden_id)
         if shademap_obstacles is not None:
             replace_shademap_obstacles(db, shademap_obstacles, garden_id=garden_id)
+        if map_objects is None:
+            _ensure_garden_map_objects_fit_grid(
+                db,
+                garden_id=garden_id,
+                grid_rows=updated_house["grid_rows"],
+                grid_cols=updated_house["grid_cols"],
+            )
         replace_map_objects(
             db,
             garden_id=garden_id,
@@ -2301,6 +2351,12 @@ def get_layout_state_api(db: DB, request: Request) -> dict[str, int]:
 def update_layout_state(body: LayoutStateBody, db: DB, request: Request) -> dict[str, int]:
     garden_id = _active_garden_id(request)
     _ensure_garden_plots_fit_grid(
+        db,
+        garden_id=garden_id,
+        grid_rows=body.grid_rows,
+        grid_cols=body.grid_cols,
+    )
+    _ensure_garden_map_objects_fit_grid(
         db,
         garden_id=garden_id,
         grid_rows=body.grid_rows,
