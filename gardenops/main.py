@@ -92,6 +92,11 @@ from gardenops.routers.health import router as health_router  # noqa: E402
 from gardenops.routers.inventory import router as inventory_router  # noqa: E402
 from gardenops.routers.issues import router as issues_router  # noqa: E402
 from gardenops.routers.journal import router as journal_router  # noqa: E402
+from gardenops.routers.map_objects import (  # noqa: E402
+    replace_map_objects,
+    router as map_objects_router,
+    snapshot_map_objects,
+)
 from gardenops.routers.media import router as media_router  # noqa: E402
 from gardenops.routers.notifications import router as notifications_router  # noqa: E402
 from gardenops.routers.planner import router as planner_router  # noqa: E402
@@ -1252,6 +1257,7 @@ app.include_router(shademap_asset_router)
 app.include_router(auth_router, prefix="/api")
 app.include_router(gardens_router, prefix="/api")
 app.include_router(plots_router, prefix="/api")
+app.include_router(map_objects_router, prefix="/api")
 app.include_router(plants_router, prefix="/api")
 app.include_router(external_router, prefix="/api")
 app.include_router(ai_router, prefix="/api")
@@ -2051,6 +2057,7 @@ def snapshot_layout(
         "shademap": get_shademap_state(db, garden_id=garden_id),
         "shademap_calibration": get_shademap_calibration(db, garden_id=garden_id),
         "shademap_obstacles": list_shademap_obstacles(db, garden_id=garden_id),
+        "map_objects": snapshot_map_objects(db, garden_id),
     }
     return json.dumps(payload)
 
@@ -2065,6 +2072,7 @@ def restore_snapshot_data(
     shademap: dict[str, object] | None = None,
     shademap_calibration: dict[str, object] | None = None,
     shademap_obstacles: list[dict[str, object]] | None = None,
+    map_objects: list[dict[str, Any]] | None = None,
     manage_transaction: bool = True,
     media_storage_pairs_out: list[tuple[str, str]] | None = None,
 ) -> int:
@@ -2219,6 +2227,12 @@ def restore_snapshot_data(
             set_shademap_calibration(db, shademap_calibration, garden_id=garden_id)
         if shademap_obstacles is not None:
             replace_shademap_obstacles(db, shademap_obstacles, garden_id=garden_id)
+        replace_map_objects(
+            db,
+            garden_id=garden_id,
+            map_objects=map_objects,
+            created_by_user_id=owner_user_id,
+        )
         db.execute("DELETE FROM plot_elevations WHERE garden_id = %s", (garden_id,))
         db.execute("DELETE FROM plot_elevation_overrides WHERE garden_id = %s", (garden_id,))
         db.execute(
@@ -2248,9 +2262,10 @@ def parse_layout_payload(
     dict[str, Any] | None,
     dict[str, Any] | None,
     list[dict[str, Any]] | None,
+    list[dict[str, Any]] | None,
 ]:
     if isinstance(raw, list):
-        return cast(list[dict[str, Any]], raw), None, None, None, None
+        return cast(list[dict[str, Any]], raw), None, None, None, None, None
     if isinstance(raw, dict):
         payload = cast(dict[str, object], raw)
         plots = payload.get("plots")
@@ -2258,6 +2273,7 @@ def parse_layout_payload(
         shademap = payload.get("shademap")
         shademap_calibration = payload.get("shademap_calibration")
         shademap_obstacles = payload.get("shademap_obstacles")
+        map_objects = payload.get("map_objects")
         if isinstance(plots, list):
             return (
                 cast(list[dict[str, Any]], plots),
@@ -2268,6 +2284,9 @@ def parse_layout_payload(
                 else None,
                 cast(list[dict[str, Any]], shademap_obstacles)
                 if isinstance(shademap_obstacles, list)
+                else None,
+                cast(list[dict[str, Any]], map_objects)
+                if isinstance(map_objects, list)
                 else None,
             )
     raise HTTPException(status_code=400, detail="Invalid layout payload")
@@ -2359,9 +2378,14 @@ def restore_snapshot(
     ).fetchone()
     if not row:
         raise HTTPException(404, "Snapshot not found")
-    plots, house, shademap, shademap_calibration, shademap_obstacles = parse_layout_payload(
-        json.loads(row["data"]),
-    )
+    (
+        plots,
+        house,
+        shademap,
+        shademap_calibration,
+        shademap_obstacles,
+        map_objects,
+    ) = parse_layout_payload(json.loads(row["data"]))
     count = restore_snapshot_data(
         db,
         plots,
@@ -2371,6 +2395,7 @@ def restore_snapshot(
         shademap=shademap,
         shademap_calibration=shademap_calibration,
         shademap_obstacles=shademap_obstacles,
+        map_objects=map_objects,
     )
     request.state.audited_by_handler = True
     write_audit_event(
@@ -2468,6 +2493,11 @@ def import_plots(body: ImportBody, db: DB, request: Request) -> dict:
         shademap_obstacles=(
             [item.model_dump() for item in body.shademap_obstacles]
             if body.shademap_obstacles is not None
+            else None
+        ),
+        map_objects=(
+            [item.model_dump() for item in body.map_objects]
+            if body.map_objects is not None
             else None
         ),
     )

@@ -59,7 +59,8 @@ control.
 
 ### Garden Planning
 
-- Editable garden map with plots, zones, plant placement, saved views, and
+- Editable garden map with plots, zones, plant placement, saved views,
+  layout-only map objects for patios/terraces and their pots/planters, and
   import/export workflows.
 - Multi-garden support with active garden context, memberships, invitations, and
   garden-specific settings.

@@ -255,6 +255,8 @@ export function getAppShellMarkup(): string {
                   <button id="elevation-edit-btn" class="cat-filter-btn elev-edit-btn" title="${t("map.elevation_edit_title")}" data-i18n-title="map.elevation_edit_title" hidden>&#9998;</button>
                 </div>
               </section>
+
+              <section id="map-objects-panel" class="map-layer-section map-objects-panel" aria-label="${t("map.objects")}"></section>
             </aside>
 
             <div class="map-workspace">

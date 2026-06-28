@@ -71,6 +71,7 @@ export interface AppContext {
   renderDataExportBars(): void;
 
   fetchPlots(): Promise<void>;
+  fetchMapObjects(): Promise<void>;
   ensurePlantsCacheLoaded(): Promise<void>;
   ensurePlantsLoaded(): Promise<void>;
   getPlantsCacheRevision(): number;

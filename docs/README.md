@@ -9,6 +9,7 @@ deploying, and contributing to GardenOps.
 | Environment and providers | [configuration.md](configuration.md) |
 | AI provider plan | [ai-provider-plan.md](ai-provider-plan.md) |
 | Dependency security policy | [dependency-security-policy.md](dependency-security-policy.md) |
+| Map objects and nested layouts | [map-objects.md](map-objects.md) |
 | ShadeMap sun/shade integration | [shademap.md](shademap.md) |
 | Production deployment | [deployment.md](deployment.md) |
 | Development and PR checks | [development.md](development.md) |

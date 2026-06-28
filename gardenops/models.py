@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class StrictBaseModel(BaseModel):
@@ -97,6 +97,70 @@ class PlotImportItem(StrictBaseModel):
     color: str | None = None
 
 
+MapObjectType = Literal["patio", "terrace", "greenhouse", "shed", "pond", "path", "bed", "other"]
+MapObjectShape = Literal["rectangle", "ellipse"]
+MapObjectUnitType = Literal["pot", "planter", "raised_bed", "shelf", "other"]
+
+
+class MapObjectGeometryImport(StrictBaseModel):
+    x: int = Field(ge=1, le=100)
+    y: int = Field(ge=1, le=100)
+    width: int = Field(ge=1, le=100)
+    height: int = Field(ge=1, le=100)
+
+
+class MapObjectStyleImport(StrictBaseModel):
+    color: str = "#7d9f7a"
+
+    @field_validator("color")
+    @classmethod
+    def validate_color(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized.startswith("#") or len(normalized) not in {4, 7, 9}:
+            raise ValueError("Color must be a safe hex color")
+        if any(ch not in "0123456789abcdefABCDEF" for ch in normalized[1:]):
+            raise ValueError("Color must be a safe hex color")
+        return normalized
+
+
+class MapObjectInternalLayoutImport(StrictBaseModel):
+    rows: int = Field(ge=1, le=100)
+    cols: int = Field(ge=1, le=100)
+
+
+class MapObjectUnitImportItem(StrictBaseModel):
+    public_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    unit_type: MapObjectUnitType
+    name: str = Field(min_length=1, max_length=120)
+    shape_type: MapObjectShape
+    geometry: MapObjectGeometryImport
+    style: MapObjectStyleImport = Field(default_factory=MapObjectStyleImport)
+    sort_order: int = Field(default=0, ge=-1000, le=1000)
+
+
+class MapObjectImportItem(StrictBaseModel):
+    public_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    object_type: MapObjectType
+    name: str = Field(min_length=1, max_length=120)
+    shape_type: MapObjectShape
+    geometry: MapObjectGeometryImport
+    style: MapObjectStyleImport = Field(default_factory=MapObjectStyleImport)
+    z_index: int = Field(default=0, ge=-1000, le=1000)
+    has_internal_layout: bool = False
+    internal_layout: MapObjectInternalLayoutImport | None = None
+    units: list[MapObjectUnitImportItem] = Field(default_factory=list, max_length=100)
+
+
 class LayoutExportBody(StrictBaseModel):
     plots: list[PlotImportItem] = Field(min_length=1, max_length=1000)
     house: ImportedLayoutStateBody | None = None
@@ -106,6 +170,7 @@ class LayoutExportBody(StrictBaseModel):
         default=None,
         max_length=500,
     )
+    map_objects: list[MapObjectImportItem] | None = Field(default=None, max_length=200)
 
 
 class ImportBody(StrictBaseModel):
@@ -117,3 +182,4 @@ class ImportBody(StrictBaseModel):
         default=None,
         max_length=500,
     )
+    map_objects: list[MapObjectImportItem] | None = Field(default=None, max_length=200)

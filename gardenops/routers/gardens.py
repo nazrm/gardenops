@@ -1833,6 +1833,14 @@ def complete_garden_onboarding(
                     if imported_layout.shademap_obstacles is not None
                     else None
                 ),
+                map_objects=(
+                    [
+                        item.model_dump(exclude_none=True)
+                        for item in imported_layout.map_objects
+                    ]
+                    if imported_layout.map_objects is not None
+                    else None
+                ),
                 manage_transaction=False,
                 media_storage_pairs_out=media_storage_pairs,
             )

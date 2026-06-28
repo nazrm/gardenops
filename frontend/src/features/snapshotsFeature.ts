@@ -24,6 +24,7 @@ export interface SnapshotsContext {
   ): Promise<string | null>;
   fetchPlots(): Promise<void>;
   fetchLayoutState(): Promise<void>;
+  fetchMapObjects(): Promise<void>;
   setMobileMapSheetOpen(
     sheetId: string | null,
   ): void;
@@ -281,6 +282,7 @@ async function restoreLayout(
     await restoreSnapshotApi(id, actionReason);
     await ctx.fetchPlots();
     await ctx.fetchLayoutState();
+    await ctx.fetchMapObjects();
     return true;
   } catch (err) {
     ctx.showFetchError(err);

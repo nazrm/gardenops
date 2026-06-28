@@ -18,6 +18,10 @@ import type {
   IssueSummary,
   JournalEntry,
   JournalListResponse,
+  MapObject,
+  MapObjectInput,
+  MapObjectUnit,
+  MapObjectUnitInput,
   NotificationListResponse,
   NotificationPreferences,
   PasswordPolicy,
@@ -1696,6 +1700,7 @@ export interface LayoutExport {
   shademap?: PersistedShadeMapState;
   shademap_calibration?: ShadeMapCalibration;
   shademap_obstacles?: ShadeMapObstacle[];
+  map_objects?: MapObject[];
 }
 
 export type ShadeMapMode = "shadow" | "sun-hours";
@@ -1889,6 +1894,48 @@ export async function updateLayoutStateApi(
   house: HouseLayoutState,
 ): Promise<HouseLayoutState> {
   return apiPatch<HouseLayoutState>("/api/layout-state", house);
+}
+
+export async function listMapObjectsApi(gardenId: number): Promise<MapObject[]> {
+  const body = await apiGet<{ objects: MapObject[] }>(
+    `/api/gardens/${gardenId}/map-objects`,
+  );
+  return body.objects;
+}
+
+export async function createMapObjectApi(
+  gardenId: number,
+  object: MapObjectInput,
+): Promise<MapObject> {
+  return apiPost<MapObject>(`/api/gardens/${gardenId}/map-objects`, object);
+}
+
+export async function deleteMapObjectApi(
+  gardenId: number,
+  publicId: string,
+): Promise<void> {
+  await apiDelete<unknown>(`/api/gardens/${gardenId}/map-objects/${publicId}`);
+}
+
+export async function createMapObjectUnitApi(
+  gardenId: number,
+  objectPublicId: string,
+  unit: MapObjectUnitInput,
+): Promise<MapObjectUnit> {
+  return apiPost<MapObjectUnit>(
+    `/api/gardens/${gardenId}/map-objects/${objectPublicId}/units`,
+    unit,
+  );
+}
+
+export async function deleteMapObjectUnitApi(
+  gardenId: number,
+  objectPublicId: string,
+  unitPublicId: string,
+): Promise<void> {
+  await apiDelete<unknown>(
+    `/api/gardens/${gardenId}/map-objects/${objectPublicId}/units/${unitPublicId}`,
+  );
 }
 
 export async function getPlants(q = "", category = ""): Promise<Plant[]> {
