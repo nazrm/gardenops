@@ -1851,10 +1851,7 @@ def complete_garden_onboarding(
                     else None
                 ),
                 map_objects=(
-                    [
-                        item.model_dump(exclude_none=True)
-                        for item in imported_layout.map_objects
-                    ]
+                    [item.model_dump(exclude_none=True) for item in imported_layout.map_objects]
                     if imported_layout.map_objects is not None
                     else None
                 ),

@@ -94,8 +94,10 @@ from gardenops.routers.issues import router as issues_router  # noqa: E402
 from gardenops.routers.journal import router as journal_router  # noqa: E402
 from gardenops.routers.map_objects import (  # noqa: E402
     replace_map_objects,
-    router as map_objects_router,
     snapshot_map_objects,
+)
+from gardenops.routers.map_objects import (  # noqa: E402
+    router as map_objects_router,
 )
 from gardenops.routers.media import router as media_router  # noqa: E402
 from gardenops.routers.notifications import router as notifications_router  # noqa: E402
@@ -2068,8 +2070,7 @@ def _ensure_garden_map_objects_fit_grid(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Grid is too small for existing map object {row['name']} "
-                    f"at row {y}, col {x}"
+                    f"Grid is too small for existing map object {row['name']} at row {y}, col {x}"
                 ),
             )
 
@@ -2396,9 +2397,7 @@ def parse_layout_payload(
                 cast(list[dict[str, Any]], shademap_obstacles)
                 if isinstance(shademap_obstacles, list)
                 else None,
-                cast(list[dict[str, Any]], map_objects)
-                if isinstance(map_objects, list)
-                else None,
+                cast(list[dict[str, Any]], map_objects) if isinstance(map_objects, list) else None,
             )
     raise HTTPException(status_code=400, detail="Invalid layout payload")
 

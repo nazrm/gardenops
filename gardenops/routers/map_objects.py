@@ -215,7 +215,10 @@ def _validate_geometry_fits(
     cols: int,
     label: str,
 ) -> None:
-    if geometry["x"] + geometry["width"] - 1 > cols or geometry["y"] + geometry["height"] - 1 > rows:
+    if (
+        geometry["x"] + geometry["width"] - 1 > cols
+        or geometry["y"] + geometry["height"] - 1 > rows
+    ):
         raise HTTPException(status_code=400, detail=f"{label} does not fit within the layout")
 
 
@@ -224,7 +227,10 @@ def _next_public_id(db: DbConn, *, table: str, prefix: str) -> str:
         raise RuntimeError("Unsupported public id table")
     for _ in range(10):
         public_id = generate_public_id(prefix)
-        row = db.execute(f"SELECT 1 FROM {table} WHERE public_id = %s LIMIT 1", (public_id,)).fetchone()
+        row = db.execute(
+            f"SELECT 1 FROM {table} WHERE public_id = %s LIMIT 1",
+            (public_id,),
+        ).fetchone()
         if not row:
             return public_id
     raise HTTPException(status_code=500, detail="Could not allocate public id")
@@ -361,8 +367,7 @@ def snapshot_map_objects(db: DbConn, garden_id: int) -> list[dict[str, object]]:
             _export_unit(unit_dict),
         )
     return [
-        _export_object(dict(row), units_by_object.get(int(row["id"]), []))
-        for row in object_rows
+        _export_object(dict(row), units_by_object.get(int(row["id"]), [])) for row in object_rows
     ]
 
 
@@ -533,7 +538,11 @@ def _serialize_object_with_units(db: DbConn, row: dict[str, Any]) -> dict[str, o
 
 
 @router.get("/gardens/{garden_id}/map-objects")
-def list_map_objects(garden_id: int, db: DB, request: Request) -> dict[str, list[dict[str, object]]]:
+def list_map_objects(
+    garden_id: int,
+    db: DB,
+    request: Request,
+) -> dict[str, list[dict[str, object]]]:
     context = _auth_context(request)
     _require_member(db, context=context, garden_id=garden_id)
     object_rows = db.execute(
@@ -811,7 +820,10 @@ def create_map_object_unit(
     if int(unit_count["c"] if unit_count else 0) >= MAX_UNITS_PER_OBJECT:
         raise HTTPException(status_code=400, detail="Nested unit limit reached for this map object")
 
-    layout = cast(dict[str, int], _loads_dict(parent["internal_layout_json"], DEFAULT_INTERNAL_LAYOUT))
+    layout = cast(
+        dict[str, int],
+        _loads_dict(parent["internal_layout_json"], DEFAULT_INTERNAL_LAYOUT),
+    )
     geometry = _geometry_dict(body.geometry)
     _validate_geometry_fits(geometry, rows=layout["rows"], cols=layout["cols"], label="Nested unit")
     now_ms = current_timestamp_ms()
@@ -853,7 +865,11 @@ def create_map_object_unit(
         db=db,
         garden_id=garden_id,
         event="garden.map_object_unit.create",
-        fields={"garden_id": garden_id, "object_public_id": object_public_id, "public_id": public_id},
+        fields={
+            "garden_id": garden_id,
+            "object_public_id": object_public_id,
+            "public_id": public_id,
+        },
     )
     return _serialize_unit(dict(row))
 
@@ -894,9 +910,17 @@ def update_map_object_unit(
         updates.append("shape_type = %s")
         params.append(body.shape_type)
     if body.geometry is not None:
-        layout = cast(dict[str, int], _loads_dict(parent["internal_layout_json"], DEFAULT_INTERNAL_LAYOUT))
+        layout = cast(
+            dict[str, int],
+            _loads_dict(parent["internal_layout_json"], DEFAULT_INTERNAL_LAYOUT),
+        )
         geometry = _geometry_dict(body.geometry)
-        _validate_geometry_fits(geometry, rows=layout["rows"], cols=layout["cols"], label="Nested unit")
+        _validate_geometry_fits(
+            geometry,
+            rows=layout["rows"],
+            cols=layout["cols"],
+            label="Nested unit",
+        )
         updates.append("geometry_json = %s")
         params.append(_dump_json(cast(dict[str, object], geometry)))
     if body.style is not None:
@@ -931,7 +955,11 @@ def update_map_object_unit(
         db=db,
         garden_id=garden_id,
         event="garden.map_object_unit.update",
-        fields={"garden_id": garden_id, "object_public_id": object_public_id, "public_id": unit_public_id},
+        fields={
+            "garden_id": garden_id,
+            "object_public_id": object_public_id,
+            "public_id": unit_public_id,
+        },
     )
     return _serialize_unit(dict(row))
 
@@ -964,6 +992,10 @@ def delete_map_object_unit(
         db=db,
         garden_id=garden_id,
         event="garden.map_object_unit.delete",
-        fields={"garden_id": garden_id, "object_public_id": object_public_id, "public_id": unit_public_id},
+        fields={
+            "garden_id": garden_id,
+            "object_public_id": object_public_id,
+            "public_id": unit_public_id,
+        },
     )
     return {"status": "ok"}
