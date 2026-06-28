@@ -18,6 +18,7 @@ from gardenops.branding import app_user_agent
 from gardenops.constants import GRID_COLS, GRID_ROWS
 from gardenops.db import DB, DbConn, current_timestamp_ms, ensure_indoor_plot
 from gardenops.events import notify_garden_modified
+from gardenops.feature_gates import feature_allowed
 from gardenops.models import LayoutExportBody, LayoutStateBody, StrictBaseModel
 from gardenops.rate_limit import enforce_rate_limit, env_int
 from gardenops.request_body import read_body_limited
@@ -39,6 +40,16 @@ from gardenops.services.plot_references import delete_plots_for_replacement
 router = APIRouter()
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _imported_layout_has_shademap_fields(layout: LayoutExportBody | None) -> bool:
+    if layout is None:
+        return False
+    return (
+        layout.shademap is not None
+        or layout.shademap_calibration is not None
+        or layout.shademap_obstacles is not None
+    )
 
 
 class GardenSettingsBody(StrictBaseModel):
@@ -1725,6 +1736,12 @@ def complete_garden_onboarding(
 
     if body.mode == "import" and body.imported_layout is None:
         raise HTTPException(status_code=400, detail="Imported layout is required for import mode")
+    if body.mode == "import" and _imported_layout_has_shademap_fields(body.imported_layout):
+        if not feature_allowed(context.subscription_tier, "shade_map"):
+            raise HTTPException(
+                status_code=403,
+                detail="ShadeMap import fields require the shade_map feature",
+            )
     normalized_name = _normalize_garden_name(body.name)
 
     grid_rows, grid_cols = (

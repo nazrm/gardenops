@@ -3,12 +3,13 @@
 /.github/CODEOWNERS @nazrm
 /.github/dependabot.yml @nazrm
 /.github/workflows/ @nazrm
+/.nvmrc @nazrm
+/.python-version @nazrm
 /pyproject.toml @nazrm
 /uv.lock @nazrm
 /frontend/package.json @nazrm
 /frontend/package-lock.json @nazrm
+/frontend/security/ @nazrm
+/frontend/vite.config.ts @nazrm
 /docs/dependency-security-policy.md @nazrm
-/scripts/check_dependency_sources.py @nazrm
-/scripts/generate_security_release_bypass.py @nazrm
-/scripts/check_npm_release_age.cjs @nazrm
-/scripts/check_python_release_age.py @nazrm
+/scripts/ @nazrm

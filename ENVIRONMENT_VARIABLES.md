@@ -48,6 +48,16 @@ instance. Values shown here are placeholders; do not commit real local env files
 | `RATE_LIMIT_BACKEND` | `memory` for local use, `redis` for production. | `redis` |
 | `RATE_LIMIT_REDIS_URL` | Redis URL for production rate limiting. | `redis://127.0.0.1:6379/0` |
 
+## Frontend Build-Time
+
+These `VITE_` values are embedded in the browser bundle at build time and are
+not secrets.
+
+| Variable | Purpose | Example |
+|---|---|---|
+| `VITE_APP_NAME` | Public product name shown by the frontend. | `GardenOps` |
+| `VITE_APP_SLUG` | Public slug used by the frontend for generated labels and filenames. | `gardenops` |
+
 ## Optional Providers
 
 Platform admins can manage OpenAI, Anthropic, PlantNet, and server-side
@@ -124,6 +134,7 @@ environment variable read by the public app.
 | `CSP_REPORT_<SETTING>` | Content Security Policy report mode, endpoint, rate, and body-size settings. Internet-exposed deployments reject report-only mode. | `CSP_REPORT_ONLY=false` |
 | `RATE_LIMIT_<SETTING>` | Rate-limit backend, Redis, bucket, timeout, and global-limit settings. | `RATE_LIMIT_MAX_BUCKETS=50000` |
 | `REDIS_URL` | Fallback Redis URL when `RATE_LIMIT_REDIS_URL` is not set. | `redis://127.0.0.1:6379/0` |
+| `PROVIDER_CONCURRENCY_LEASE_TTL_SECONDS` | Redis-backed provider concurrency lease lifetime; keep above the expected provider request timeout. | `120` |
 | `AI_<SETTING>` | AI feature rate limits, quotas, concurrency limits, care-batch settings, garden-chat provider timeout/output tuning, and rich-context opt-in. | `AI_CHAT_PROVIDER_TIMEOUT_SECONDS=60` |
 | `ANTHROPIC_API_<SETTING>` | Anthropic provider timeout and retry settings. | `ANTHROPIC_API_TIMEOUT_SECONDS=25` |
 | `OPENAI_API_<SETTING>` | OpenAI provider timeout and retry settings. | `OPENAI_API_TIMEOUT_SECONDS=25` |
@@ -140,6 +151,7 @@ environment variable read by the public app.
 | `TERRAIN_REQUEST_TIMEOUT_SECONDS` | Timeout for outbound terrain tile fetches. | `20` |
 | `SECURITY_TELEMETRY_PRIVACY_SALT` | Deployment-specific salt for hashing identifiers when security telemetry privacy mode is `minimized`. Required in production or internet-exposed mode when security telemetry is enabled. | `change-me-generated-salt` |
 | `SECURITY_TELEMETRY_<SETTING>` | Security telemetry webhook, token, delivery format, privacy, batching, polling, and timeout settings. | `SECURITY_TELEMETRY_PRIVACY_MODE=minimized` |
+| `SECURITY_METRICS_MAX_KEYS` | Maximum number of distinct in-memory security metric keys retained before new arbitrary metric names are coalesced. | `2048` |
 | `TAILLIGHT_<SETTING>` | Optional Taillight-compatible log and telemetry sink settings. | `TAILLIGHT_URL=https://logs.example.com` |
 | `ALERT_<SETTING>` | Security alert thresholds shown in admin/security views. | `ALERT_AUTH_FAILURES_PER_MINUTE=30` |
 | `DEPLOYED_READINESS_ADMIN_BEARER_TOKEN` | Optional bearer token for protected system health checks. Keep secret and do not use a user session token. | unset |

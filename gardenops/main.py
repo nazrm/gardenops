@@ -951,6 +951,13 @@ def _forwarding_headers_present(request: Request) -> bool:
     )
 
 
+def _client_ip_forwarding_header_present(request: Request) -> bool:
+    return bool(
+        request.headers.get("x-forwarded-for", "").strip()
+        or request.headers.get("x-real-ip", "").strip()
+    )
+
+
 def _request_source_ip(request: Request) -> IPAddress | None:
     host = request.client.host if request.client else ""
     if not host:
@@ -1005,6 +1012,8 @@ def _edge_proxy_violation_detail(request: Request) -> str | None:
         return (
             "Internet-exposed deployments require requests to arrive through the trusted edge proxy"
         )
+    if not _client_ip_forwarding_header_present(request):
+        return "Internet-exposed deployments require X-Forwarded-For or X-Real-IP"
     if not _request_from_trusted_proxy(request):
         return "Forwarded headers are only accepted from TRUSTED_PROXY_CIDRS"
     forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
@@ -1031,6 +1040,61 @@ def _request_timeout_seconds(path: str) -> float:
     if path.startswith("/shademap/terrain/"):
         return float(env_int("TERRAIN_REQUEST_TIMEOUT_SECONDS", 20))
     return float(env_int("API_REQUEST_TIMEOUT_SECONDS", 30))
+
+
+_MUTATION_METRIC_BUCKETS = {
+    "ai",
+    "auth",
+    "calendar",
+    "client-errors",
+    "exports",
+    "external",
+    "gardens",
+    "harvest",
+    "inventory",
+    "issues",
+    "journal",
+    "media",
+    "notifications",
+    "planner",
+    "plants",
+    "plots",
+    "procurement",
+    "provider-settings",
+    "saved-views",
+    "security",
+    "shademap",
+    "snapshots",
+    "statistics",
+    "tasks",
+    "weather",
+    "workflows",
+}
+
+
+def _mutation_metric_bucket(path: str) -> str:
+    parts = path.split("/")
+    segment = parts[2].strip().lower() if len(parts) > 2 else "root"
+    if segment not in _MUTATION_METRIC_BUCKETS:
+        return "other"
+    return "".join(char if char.isalnum() else "_" for char in segment)
+
+
+def _shademap_import_fields_present(
+    *,
+    shademap: object | None,
+    shademap_calibration: object | None,
+    shademap_obstacles: object | None,
+) -> bool:
+    return (
+        shademap is not None or shademap_calibration is not None or shademap_obstacles is not None
+    )
+
+
+def _require_shademap_import_allowed(subscription_tier: str, *, detail: str) -> None:
+    if feature_allowed(subscription_tier, "shade_map"):
+        return
+    raise HTTPException(status_code=403, detail=detail)
 
 
 def _admin_mfa_setup_path_allowed(path: str) -> bool:
@@ -1594,10 +1658,7 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         and not path.startswith("/api/security/csp-report")
     ):
         record_security_event("mutations_total")
-        record_security_event(
-            f"mutations_{request.method}_"
-            f"{path.split('/', 3)[2] if path.count('/') >= 2 else 'root'}",
-        )
+        record_security_event(f"mutations_{request.method}_{_mutation_metric_bucket(path)}")
     return response
 
 
@@ -2442,6 +2503,15 @@ def restore_snapshot(
         shademap_obstacles,
         map_objects,
     ) = parse_layout_payload(json.loads(row["data"]))
+    if _shademap_import_fields_present(
+        shademap=shademap,
+        shademap_calibration=shademap_calibration,
+        shademap_obstacles=shademap_obstacles,
+    ):
+        _require_shademap_import_allowed(
+            context.subscription_tier,
+            detail="ShadeMap snapshot restore fields require the shade_map feature",
+        )
     count = restore_snapshot_data(
         db,
         plots,
@@ -2531,6 +2601,15 @@ def export_plots(db: DB, request: Request) -> Response:
 def import_plots(body: ImportBody, db: DB, request: Request) -> dict:
     context, action_reason = enforce_destructive_admin_controls(request)
     garden_id = _active_garden_id(request)
+    if _shademap_import_fields_present(
+        shademap=body.shademap,
+        shademap_calibration=body.shademap_calibration,
+        shademap_obstacles=body.shademap_obstacles,
+    ):
+        _require_shademap_import_allowed(
+            context.subscription_tier,
+            detail="ShadeMap import fields require the shade_map feature",
+        )
     owner_user_id = _owner_user_for_garden(
         db,
         garden_id=garden_id,

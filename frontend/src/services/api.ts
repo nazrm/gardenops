@@ -82,6 +82,10 @@ function normalizeApiPath(input: RequestInfo | URL): string {
   return "";
 }
 
+function encodeApiPathSegment(value: string): string {
+  return encodeURIComponent(value);
+}
+
 function responseRequestId(response: Response): string {
   return (response.headers.get("X-Request-ID") || "").trim();
 }
@@ -1974,7 +1978,7 @@ export async function searchPlantsApi(
 }
 
 export async function getPlotPlants(plotId: string): Promise<Plant[]> {
-  return apiGet<Plant[]>(`/api/plots/${plotId}/plants`);
+  return apiGet<Plant[]>(`/api/plots/${encodeApiPathSegment(plotId)}/plants`);
 }
 
 export interface PlotPlantAlerts {
@@ -1985,7 +1989,7 @@ export async function getPlotPlantAlerts(
   plotId: string,
 ): Promise<PlotPlantAlerts> {
   return apiGet<PlotPlantAlerts>(
-    `/api/plots/${plotId}/plant-alerts`,
+    `/api/plots/${encodeApiPathSegment(plotId)}/plant-alerts`,
   );
 }
 
@@ -2004,7 +2008,7 @@ export async function addPlantToPlotApi(
   roomLabel?: string | null,
 ): Promise<AddPlantToPlotResult> {
   return apiPost<AddPlantToPlotResult>(
-    `/api/plots/${plotId}/plants/${pltId}`,
+    `/api/plots/${encodeApiPathSegment(plotId)}/plants/${encodeApiPathSegment(pltId)}`,
     { quantity, ...(roomLabel != null ? { room_label: roomLabel } : {}) },
   );
 }
@@ -2013,11 +2017,13 @@ export async function removePlantFromPlotApi(
   plotId: string,
   pltId: string,
 ): Promise<void> {
-  await apiDelete<unknown>(`/api/plots/${plotId}/plants/${pltId}`);
+  await apiDelete<unknown>(
+    `/api/plots/${encodeApiPathSegment(plotId)}/plants/${encodeApiPathSegment(pltId)}`,
+  );
 }
 
 export async function getRoomLabels(plotId: string): Promise<string[]> {
-  return apiGet<string[]>(`/api/plots/${plotId}/room-labels`);
+  return apiGet<string[]>(`/api/plots/${encodeApiPathSegment(plotId)}/room-labels`);
 }
 
 export async function updatePlotPlant(
@@ -2027,13 +2033,13 @@ export async function updatePlotPlant(
   roomLabel?: string | null,
 ): Promise<{ status: string }> {
   return apiPatch<{ status: string }>(
-    `/api/plots/${plotId}/plants/${pltId}`,
+    `/api/plots/${encodeApiPathSegment(plotId)}/plants/${encodeApiPathSegment(pltId)}`,
     { quantity, ...(roomLabel != null ? { room_label: roomLabel } : {}) },
   );
 }
 
 export async function deletePlotApi(plotId: string): Promise<void> {
-  await apiDelete<unknown>(`/api/plots/${plotId}`);
+  await apiDelete<unknown>(`/api/plots/${encodeApiPathSegment(plotId)}`);
 }
 
 export interface PlotDeleteImpact {
@@ -2044,7 +2050,9 @@ export interface PlotDeleteImpact {
 }
 
 export async function getPlotDeleteImpactApi(plotId: string): Promise<PlotDeleteImpact> {
-  return apiGet<PlotDeleteImpact>(`/api/plots/${plotId}/delete-impact`);
+  return apiGet<PlotDeleteImpact>(
+    `/api/plots/${encodeApiPathSegment(plotId)}/delete-impact`,
+  );
 }
 
 export async function batchMovePlotsApi(
@@ -2063,7 +2071,7 @@ export async function updatePlotApi(
   plotId: string,
   fields: Record<string, string | number | null>,
 ): Promise<void> {
-  await apiPatch<unknown>(`/api/plots/${plotId}`, fields);
+  await apiPatch<unknown>(`/api/plots/${encodeApiPathSegment(plotId)}`, fields);
 }
 
 export async function movePlantBetweenPlotsApi(
@@ -2072,24 +2080,26 @@ export async function movePlantBetweenPlotsApi(
   pltId: string,
 ): Promise<void> {
   await apiPost<unknown>(
-    `/api/plots/${fromPlotId}/plants/${pltId}/move/${toPlotId}`,
+    `/api/plots/${encodeApiPathSegment(fromPlotId)}/plants/${encodeApiPathSegment(
+      pltId,
+    )}/move/${encodeApiPathSegment(toPlotId)}`,
     {},
   );
 }
 
 export async function getPlantPlots(pltId: string): Promise<string[]> {
-  return apiGet<string[]>(`/api/plants/${pltId}/plots`);
+  return apiGet<string[]>(`/api/plants/${encodeApiPathSegment(pltId)}/plots`);
 }
 
 export async function updatePlantApi(
   pltId: string,
   fields: Record<string, string | number | boolean | null>,
 ): Promise<void> {
-  await apiPatch<unknown>(`/api/plants/${pltId}`, fields);
+  await apiPatch<unknown>(`/api/plants/${encodeApiPathSegment(pltId)}`, fields);
 }
 
 export async function getPlantApi(pltId: string): Promise<Plant> {
-  return apiGet<Plant>(`/api/plants/${encodeURIComponent(pltId)}/details`);
+  return apiGet<Plant>(`/api/plants/${encodeApiPathSegment(pltId)}/details`);
 }
 
 export async function getNextPlantIdApi(): Promise<string> {
@@ -2104,7 +2114,7 @@ export async function createPlantApi(
 }
 
 export async function deletePlantApi(pltId: string): Promise<void> {
-  await apiDelete<unknown>(`/api/plants/${pltId}`);
+  await apiDelete<unknown>(`/api/plants/${encodeApiPathSegment(pltId)}`);
 }
 
 export interface CatalogPlant {
@@ -3647,7 +3657,9 @@ export interface PlotAssignment {
 export async function getPlantAssignmentsApi(
   pltId: string,
 ): Promise<PlotAssignment[]> {
-  return apiGet<PlotAssignment[]>(`/api/plants/${pltId}/assignments`);
+  return apiGet<PlotAssignment[]>(
+    `/api/plants/${encodeApiPathSegment(pltId)}/assignments`,
+  );
 }
 
 export interface PlotSeenGrowingUpdate {

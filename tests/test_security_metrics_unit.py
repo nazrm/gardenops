@@ -53,6 +53,25 @@ class TestRecordSecurityEvent(unittest.TestCase):
             self.assertEqual(_COUNTERS["metric_a"], 2)
             self.assertEqual(_COUNTERS["metric_b"], 7)
 
+    def test_metric_names_are_bounded_and_validated(self) -> None:
+        record_security_event("valid_metric")
+        record_security_event("../bad-metric")
+        with _LOCK:
+            self.assertEqual(_COUNTERS["valid_metric"], 1)
+            self.assertNotIn("../bad-metric", _COUNTERS)
+            self.assertEqual(_COUNTERS["security_events_invalid_metric"], 1)
+
+    def test_new_metric_keys_are_capped(self) -> None:
+        with patch.dict("os.environ", {"SECURITY_METRICS_MAX_KEYS": "2"}):
+            record_security_event("metric_one")
+            record_security_event("metric_two")
+            record_security_event("metric_three")
+        with _LOCK:
+            self.assertIn("metric_one", _COUNTERS)
+            self.assertIn("metric_two", _COUNTERS)
+            self.assertNotIn("metric_three", _COUNTERS)
+            self.assertEqual(_COUNTERS["security_events_metric_overflow"], 1)
+
 
 class TestSecurityEventRate(unittest.TestCase):
     """security_event_rate — windowed rate calculation."""

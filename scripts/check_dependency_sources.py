@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import tomllib
@@ -36,9 +37,16 @@ def _check_pypi_file(
         errors.append(f"{package} {field} is missing a sha256 hash")
 
 
-def check_uv_lock() -> list[str]:
+def _is_hashed_pypi_file(file_info: dict[str, Any]) -> bool:
+    return str(file_info.get("url", "")).startswith(PYPI_FILES_PREFIX) and str(
+        file_info.get("hash", "")
+    ).startswith("sha256:")
+
+
+def check_uv_lock(root: Path | None = None) -> list[str]:
     errors: list[str] = []
-    lock_path = ROOT / "uv.lock"
+    effective_root = root or ROOT
+    lock_path = effective_root / "uv.lock"
     lock_data = tomllib.loads(lock_path.read_text())
     packages = lock_data.get("package", [])
 
@@ -51,19 +59,27 @@ def check_uv_lock() -> list[str]:
             errors.append(f"{name} uses unsupported Python source: {source}")
             continue
 
+        hashed_artifact_count = 0
         sdist = package_info.get("sdist")
         if isinstance(sdist, dict):
             _check_pypi_file(name, "sdist", sdist, errors)
+            if _is_hashed_pypi_file(sdist):
+                hashed_artifact_count += 1
         for wheel in package_info.get("wheels", []):
             if isinstance(wheel, dict):
                 _check_pypi_file(name, "wheel", wheel, errors)
+                if _is_hashed_pypi_file(wheel):
+                    hashed_artifact_count += 1
+        if hashed_artifact_count == 0:
+            errors.append(f"{name} has no hashed PyPI artifact metadata")
 
     return errors
 
 
-def check_package_lock() -> list[str]:
+def check_package_lock(root: Path | None = None) -> list[str]:
     errors: list[str] = []
-    lock_path = ROOT / "frontend" / "package-lock.json"
+    effective_root = root or ROOT
+    lock_path = effective_root / "frontend" / "package-lock.json"
     lock_data = json.loads(lock_path.read_text())
 
     lockfile_version = lock_data.get("lockfileVersion")
@@ -104,7 +120,16 @@ def check_package_lock() -> list[str]:
 
 
 def main() -> None:
-    errors = [*check_uv_lock(), *check_package_lock()]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=ROOT,
+        help="Repository root containing uv.lock and frontend/package-lock.json",
+    )
+    args = parser.parse_args()
+    root = args.root.resolve()
+    errors = [*check_uv_lock(root), *check_package_lock(root)]
     _fail(errors)
     print("Dependency lockfile sources are restricted to approved registries.")
 

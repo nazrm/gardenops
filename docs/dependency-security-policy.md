@@ -19,6 +19,10 @@ fixes should move through a separate emergency path.
   Actions updates.
 - GitHub Actions must be pinned to immutable commit SHAs. Keep a version comment
   on each pinned action so the intended upstream ref is reviewable.
+- CI enforces pinned action refs with `scripts/check_github_action_pins.py`.
+  `uses:` entries must use a full 40-character commit SHA. Local repository
+  actions are not allowed in PR-triggered workflows unless this policy is
+  deliberately revised with a narrow allowlist.
 
 ## Emergency Security Updates
 
@@ -91,6 +95,24 @@ metadata. Python and npm lockfiles must also reject packages whose uploaded
 artifacts or package versions are inside the 7-day cooldown window unless a
 temporary exception or generated security-bypass evidence is present in the
 release-age check.
+
+For pull requests, dependency policy scripts must execute from a trusted
+base-ref checkout. The PR's manifest and lockfile changes are copied into that
+checkout as data before source, integrity, and release-age checks run. Do not
+replace this with a helper script from the PR branch.
+
+When a PR changes the dependency policy scripts themselves, CI may be running
+against a base branch that does not yet support the newest script flags. In
+that bootstrap case, the workflow must fall back to trusted base-branch tooling
+without external bypass evidence rather than running PR-controlled audit code.
+The same bootstrap exception applies to the first PR that introduces the
+action-pin checker: if the base checkout lacks that script, CI copies the
+reviewed PR checker into the otherwise trusted checkout. After that PR merges,
+future PRs must run the checker from the base branch.
+
+Generated release-age bypass evidence must include trusted audit source
+metadata, including `source: pip-audit base/head diff` for Python entries.
+Package/version-only bypass JSON is not sufficient evidence.
 
 The scheduled dependency audit should publish CycloneDX SBOM artifacts for the
 Python and frontend dependency graphs. The frontend audit must also run npm

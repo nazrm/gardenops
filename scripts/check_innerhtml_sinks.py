@@ -4,11 +4,31 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 from typing import NamedTuple
 
-PATTERNS = ("innerHTML =", "innerHTML=", "outerHTML =", "outerHTML=", "insertAdjacentHTML(")
-REVIEWED_DYNAMIC_HELPER = "setReviewedDynamicHtml("
+SINK_RE = re.compile(
+    r"(?i)(?:"
+    r"(?:\.\s*(?:innerHTML|outerHTML)|\[\s*['\"](?:innerHTML|outerHTML)['\"]\s*\])"
+    r"\s*(?:=|\+=)"
+    r"|"
+    r"\binsertAdjacentHTML\s*\("
+    r")",
+)
+SINK_SPAN_RE = re.compile(
+    r"(?is)(?:"
+    r"(?:\.\s*(?:innerHTML|outerHTML)|\[\s*['\"](?:innerHTML|outerHTML)['\"]\s*\])"
+    r"\s*(?:=|\+=)"
+    r"|"
+    r"\binsertAdjacentHTML\s*\("
+    r")",
+)
+REVIEWED_DYNAMIC_HELPER = "setReviewedDynamicHtml"
+REVIEWED_DYNAMIC_HELPER_CALL_RE = re.compile(r"\bsetReviewedDynamicHtml\s*\(")
+REVIEWED_DYNAMIC_HELPER_ALIAS_RE = re.compile(
+    r"\bsetReviewedDynamicHtml\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)",
+)
 
 PLACEHOLDER_VALUES = {"", "TODO", "TBD", "REQUIRED"}
 
@@ -21,30 +41,55 @@ class AllowlistEntry(NamedTuple):
 
 def find_sinks(root: Path) -> list[str]:
     entries: list[str] = []
-    for path in sorted(root.rglob("*.ts")):
+    for path in sorted([*root.rglob("*.ts"), *root.rglob("*.tsx")]):
         if "node_modules" in path.parts or "dist" in path.parts:
             continue
         rel = path.relative_to(root)
-        for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        seen_lines: set[int] = set()
+        for lineno, raw in enumerate(lines, start=1):
             line = raw.strip()
-            if any(pattern in raw for pattern in PATTERNS):
+            if SINK_RE.search(raw):
                 entries.append(f"{rel}:{lineno}|{line}")
+                seen_lines.add(lineno)
+        text = "\n".join(lines)
+        line_starts = [0]
+        for match in re.finditer("\n", text):
+            line_starts.append(match.end())
+        for match in SINK_SPAN_RE.finditer(text):
+            lineno = max(
+                index + 1 for index, start in enumerate(line_starts) if start <= match.start()
+            )
+            if lineno in seen_lines:
+                continue
+            line = lines[lineno - 1].strip()
+            entries.append(f"{rel}:{lineno}|{line}")
+            seen_lines.add(lineno)
     return entries
 
 
 def find_reviewed_dynamic_helpers(root: Path) -> list[str]:
     entries: list[str] = []
-    for path in sorted(root.rglob("*.ts")):
+    for path in sorted([*root.rglob("*.ts"), *root.rglob("*.tsx")]):
         if "node_modules" in path.parts or "dist" in path.parts:
             continue
         rel = path.relative_to(root)
-        for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        text = "\n".join(lines)
+        aliases = set(REVIEWED_DYNAMIC_HELPER_ALIAS_RE.findall(text))
+        alias_call_re = (
+            re.compile(r"\b(?:" + "|".join(re.escape(alias) for alias in aliases) + r")\s*\(")
+            if aliases
+            else None
+        )
+        for lineno, raw in enumerate(lines, start=1):
             line = raw.strip()
-            if REVIEWED_DYNAMIC_HELPER not in raw:
-                continue
             if line.startswith(f"export function {REVIEWED_DYNAMIC_HELPER}"):
                 continue
-            entries.append(f"{rel}:{lineno}|{line}")
+            if REVIEWED_DYNAMIC_HELPER_CALL_RE.search(raw) or (
+                alias_call_re is not None and alias_call_re.search(raw)
+            ):
+                entries.append(f"{rel}:{lineno}|{line}")
     return entries
 
 

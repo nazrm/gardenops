@@ -9,6 +9,7 @@ from pydantic import Field, field_validator
 from gardenops.db import DB, DbConn, executemany
 from gardenops.events import notify_garden_modified
 from gardenops.models import StrictBaseModel
+from gardenops.public_ids import normalize_public_id, require_public_id
 from gardenops.router_helpers import (
     active_garden_id as _active_garden_id,
 )
@@ -62,7 +63,7 @@ class UpdateQuantityBody(StrictBaseModel):
 
 
 class CreatePlotBody(StrictBaseModel):
-    plot_id: str
+    plot_id: str = Field(min_length=1, max_length=40)
     zone_code: str
     zone_name: str
     plot_number: int
@@ -71,6 +72,11 @@ class CreatePlotBody(StrictBaseModel):
     sub_zone: str = ""
     notes: str = ""
     color: str | None = None
+
+    @field_validator("plot_id")
+    @classmethod
+    def validate_plot_id(cls, value: str) -> str:
+        return normalize_public_id(value, field_name="plot_id")
 
 
 class UpdatePlotBody(StrictBaseModel):
@@ -82,13 +88,25 @@ class UpdatePlotBody(StrictBaseModel):
     sub_zone: str | None = None
     notes: str | None = None
     color: str | None = None
-    new_plot_id: str | None = None
+    new_plot_id: str | None = Field(default=None, min_length=1, max_length=40)
+
+    @field_validator("new_plot_id")
+    @classmethod
+    def validate_new_plot_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_public_id(value, field_name="new_plot_id")
 
 
 class BatchMoveItem(StrictBaseModel):
-    plot_id: str
+    plot_id: str = Field(min_length=1, max_length=40)
     grid_row: int = Field(ge=1, le=100)
     grid_col: int = Field(ge=1, le=100)
+
+    @field_validator("plot_id")
+    @classmethod
+    def validate_plot_id(cls, value: str) -> str:
+        return normalize_public_id(value, field_name="plot_id")
 
 
 class BatchMoveBody(StrictBaseModel):
@@ -165,6 +183,7 @@ def _require_plot_access(
     *,
     read_only: bool = False,
 ) -> None:
+    plot_id = require_public_id(plot_id, field_name="plot_id")
     garden_id = _active_garden_id(context)
     row = db.execute(
         """
@@ -199,6 +218,7 @@ def _require_plot_in_garden_or_unowned(
 
     Reject if the plot exists and belongs to a different garden.
     """
+    plot_id = require_public_id(plot_id, field_name="plot_id")
     garden_id = _active_garden_id(context)
     row = db.execute(
         """
@@ -220,6 +240,7 @@ def _require_plot_in_garden_or_unowned(
 
 
 def _require_plant_access(db: DbConn, plt_id: str, context: AuthContext) -> None:
+    plt_id = require_public_id(plt_id, field_name="plt_id")
     garden_id = _active_garden_id(context)
     plant_exists = db.execute(
         "SELECT 1 FROM plants WHERE plt_id = %s",
@@ -1058,6 +1079,16 @@ class SeenGrowingUpdate(StrictBaseModel):
         from gardenops.routers.plants import _validate_seen_growing_date
 
         return _validate_seen_growing_date(v)
+
+    @field_validator("plot_id")
+    @classmethod
+    def validate_plot_id(cls, value: str) -> str:
+        return normalize_public_id(value, field_name="plot_id")
+
+    @field_validator("plt_id")
+    @classmethod
+    def validate_plt_id(cls, value: str) -> str:
+        return normalize_public_id(value, field_name="plt_id")
 
 
 class BulkSeenGrowingBody(StrictBaseModel):
