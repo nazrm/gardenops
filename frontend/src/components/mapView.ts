@@ -203,6 +203,9 @@ function safePlotColor(value: string | null | undefined): string | null {
   return SAFE_PLOT_COLOR_RE.test(normalized) ? normalized : null;
 }
 
+export type MapObjectManipulationMode = "move" | "resize";
+export type MapObjectResizeHandle = "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
+
 interface RenderMapParams {
   grid: HTMLElement;
   plots: Plot[];
@@ -234,6 +237,13 @@ interface RenderMapParams {
   selectedMapObjectId?: string | null;
   onMapObjectClick: ((object: MapObject) => void) | undefined;
   onMapObjectGeometryChange?: (object: MapObject, geometry: MapObject["geometry"]) => void;
+  onMapObjectManipulationStart?: (
+    object: MapObject,
+    mode: MapObjectManipulationMode,
+    handle: MapObjectResizeHandle | null,
+    event: PointerEvent,
+  ) => void;
+  onMapObjectKeyEdit?: (object: MapObject, event: KeyboardEvent) => void;
 }
 
 function cellData(el: EventTarget | null): { row: number; col: number } | null {
@@ -337,7 +347,10 @@ export function renderMapGrid(params: RenderMapParams): void {
     params.mapObjects ?? [],
     params.showMapObjects ?? true,
     params.selectedMapObjectId ?? null,
+    params.editMode,
     params.onMapObjectGeometryChange,
+    params.onMapObjectManipulationStart,
+    params.onMapObjectKeyEdit,
   );
 
   ensureZoomControls(grid);
@@ -348,7 +361,15 @@ function renderMapObjects(
   objects: MapObject[],
   showObjects: boolean,
   selectedMapObjectId: string | null,
+  editMode: boolean,
   onMapObjectGeometryChange?: (object: MapObject, geometry: MapObject["geometry"]) => void,
+  onMapObjectManipulationStart?: (
+    object: MapObject,
+    mode: MapObjectManipulationMode,
+    handle: MapObjectResizeHandle | null,
+    event: PointerEvent,
+  ) => void,
+  onMapObjectKeyEdit?: (object: MapObject, event: KeyboardEvent) => void,
 ): void {
   if (!showObjects || objects.length === 0) return;
 
@@ -377,121 +398,106 @@ function renderMapObjects(
     label.title = object.name;
     grid.appendChild(label);
 
-    if (object.public_id === selectedMapObjectId && onMapObjectGeometryChange) {
-      grid.appendChild(renderMapObjectEditControls(object, gridRow, gridColumn, onMapObjectGeometryChange));
+    if (
+      object.public_id === selectedMapObjectId
+      && editMode
+      && onMapObjectGeometryChange
+      && onMapObjectManipulationStart
+    ) {
+      grid.appendChild(
+        renderMapObjectInteractionLayer(
+          object,
+          gridRow,
+          gridColumn,
+          onMapObjectManipulationStart,
+          onMapObjectKeyEdit,
+        ),
+      );
     }
   }
 }
 
-function makeObjectEditButton(
-  className: string,
-  direction: string,
-  label: string,
-  title: string,
-  onClick: (event: MouseEvent) => void,
-): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = className;
-  button.dataset["dir"] = direction;
-  button.textContent = label;
-  button.title = title;
-  button.setAttribute("aria-label", title);
-  button.addEventListener("pointerdown", (event) => {
-    event.stopPropagation();
-  });
-  button.addEventListener("pointerup", (event) => {
-    event.stopPropagation();
-  });
-  button.addEventListener("mousedown", (event) => {
-    event.stopPropagation();
-  });
-  button.addEventListener("mouseup", (event) => {
-    event.stopPropagation();
-  });
-  button.addEventListener("click", onClick);
-  return button;
+function stopObjectPointerEvent(event: Event): void {
+  event.preventDefault();
+  event.stopPropagation();
 }
 
-function renderMapObjectEditControls(
+function resizeHandleLabel(handle: MapObjectResizeHandle): string {
+  const labels: Record<MapObjectResizeHandle, string> = {
+    n: t("map.object_resize_north"),
+    ne: t("map.object_resize_northeast"),
+    e: t("map.object_resize_east"),
+    se: t("map.object_resize_southeast"),
+    s: t("map.object_resize_south"),
+    sw: t("map.object_resize_southwest"),
+    w: t("map.object_resize_west"),
+    nw: t("map.object_resize_northwest"),
+  };
+  return labels[handle];
+}
+
+function renderMapObjectInteractionLayer(
   object: MapObject,
   gridRow: string,
   gridColumn: string,
-  onMapObjectGeometryChange: (object: MapObject, geometry: MapObject["geometry"]) => void,
+  onMapObjectManipulationStart: (
+    object: MapObject,
+    mode: MapObjectManipulationMode,
+    handle: MapObjectResizeHandle | null,
+    event: PointerEvent,
+  ) => void,
+  onMapObjectKeyEdit?: (object: MapObject, event: KeyboardEvent) => void,
 ): HTMLElement {
   const controls = document.createElement("div");
-  controls.className = "map-object-edit-controls";
+  controls.className = "map-object-edit-controls map-object-direct-controls";
+  controls.dataset["objectId"] = object.public_id;
   controls.style.gridRow = gridRow;
   controls.style.gridColumn = gridColumn;
   controls.style.zIndex = String(12 + object.z_index);
 
-  const update = (
-    event: MouseEvent,
-    geometry: MapObject["geometry"],
-  ) => {
-    event.preventDefault();
-    event.stopPropagation();
-    onMapObjectGeometryChange(object, geometry);
-  };
+  const preview = document.createElement("div");
+  preview.className = `map-object-preview map-object-preview--${object.shape_type}`;
+  preview.dataset["objectId"] = object.public_id;
+  preview.style.setProperty("--map-object-color", object.style.color);
+  preview.hidden = true;
 
-  controls.append(
-    makeObjectEditButton(
-      "map-object-move-handle",
-      "up",
-      "N",
-      t("map.object_move_up"),
-      (event) => update(event, { ...object.geometry, y: object.geometry.y - 1 }),
-    ),
-    makeObjectEditButton(
-      "map-object-move-handle",
-      "down",
-      "S",
-      t("map.object_move_down"),
-      (event) => update(event, { ...object.geometry, y: object.geometry.y + 1 }),
-    ),
-    makeObjectEditButton(
-      "map-object-move-handle",
-      "left",
-      "W",
-      t("map.object_move_left"),
-      (event) => update(event, { ...object.geometry, x: object.geometry.x - 1 }),
-    ),
-    makeObjectEditButton(
-      "map-object-move-handle",
-      "right",
-      "E",
-      t("map.object_move_right"),
-      (event) => update(event, { ...object.geometry, x: object.geometry.x + 1 }),
-    ),
-    makeObjectEditButton(
-      "map-object-resize-handle",
-      "wider",
-      "+W",
-      t("map.object_resize_wider"),
-      (event) => update(event, { ...object.geometry, width: object.geometry.width + 1 }),
-    ),
-    makeObjectEditButton(
-      "map-object-resize-handle",
-      "narrower",
-      "-W",
-      t("map.object_resize_narrower"),
-      (event) => update(event, { ...object.geometry, width: object.geometry.width - 1 }),
-    ),
-    makeObjectEditButton(
-      "map-object-resize-handle",
-      "taller",
-      "+H",
-      t("map.object_resize_taller"),
-      (event) => update(event, { ...object.geometry, height: object.geometry.height + 1 }),
-    ),
-    makeObjectEditButton(
-      "map-object-resize-handle",
-      "shorter",
-      "-H",
-      t("map.object_resize_shorter"),
-      (event) => update(event, { ...object.geometry, height: object.geometry.height - 1 }),
-    ),
+  const surface = document.createElement("div");
+  surface.className = "map-object-interaction-surface";
+  surface.dataset["objectId"] = object.public_id;
+  surface.tabIndex = 0;
+  surface.setAttribute("role", "button");
+  surface.setAttribute("aria-label", t("map.object_drag_surface", { name: object.name }));
+  surface.setAttribute(
+    "aria-keyshortcuts",
+    "ArrowUp ArrowDown ArrowLeft ArrowRight Shift+ArrowUp Shift+ArrowDown Shift+ArrowLeft Shift+ArrowRight Escape",
   );
+  surface.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    stopObjectPointerEvent(event);
+    onMapObjectManipulationStart(object, "move", null, event);
+  });
+  surface.addEventListener("keydown", (event) => {
+    onMapObjectKeyEdit?.(object, event);
+  });
+  surface.addEventListener("click", stopObjectPointerEvent);
+
+  const handles: MapObjectResizeHandle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+  for (const handle of handles) {
+    const button = document.createElement("div");
+    button.className = "map-object-resize-handle";
+    button.dataset["handle"] = handle;
+    button.setAttribute("aria-hidden", "true");
+    button.title = resizeHandleLabel(handle);
+    button.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      stopObjectPointerEvent(event);
+      onMapObjectManipulationStart(object, "resize", handle, event);
+    });
+    button.addEventListener("click", stopObjectPointerEvent);
+    controls.appendChild(button);
+  }
+
+  controls.append(preview, surface);
 
   return controls;
 }

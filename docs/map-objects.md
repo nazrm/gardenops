@@ -23,19 +23,23 @@ from the current plot selection. If no plots are selected, GardenOps creates a
 small default object at the top-left of the map.
 
 Selecting the object opens editor controls for its name, rectangle or ellipse
-shape, color, row, column, width, height, and optional internal layout. Editors
-can also use the selected-object map handles to move or resize the object one
-grid cell at a time. Viewers can see objects and nested layouts but cannot
-create or edit them.
+shape, color, row, column, width, height, and optional internal layout. In map
+edit mode, editors can drag a selected object to move it, drag edge or corner
+handles to resize it, or use keyboard controls on the selected object surface:
+arrow keys move by one grid cell, Shift+arrow resizes, and Escape cancels the
+active manipulation or deselects the object. Viewers can see objects and nested
+layouts but cannot create or edit them.
 
 When internal layout is enabled, editors can add pots or planters inside that
 layout. Clicking an existing nested unit deletes it after the normal UI
 confirmation path. Custom objects may remain layout-only surfaces without nested
 units.
 
-Map object labels can be selected directly on the map. The overlay is visual
-only, so ordinary plot clicks still work unless the user clicks the object
-label or object controls.
+Map object labels can be selected directly on the map. Unselected overlays are
+visual only, so ordinary plot clicks still work unless the user clicks the
+object label. When an editor selects an object in map edit mode, only that
+object's direct-manipulation surface and resize handles capture pointer/touch
+input; all other object overlays remain click-through.
 
 Objects with existing nested units must keep their internal layout enabled until
 those units are removed. GardenOps rejects updates that would leave nested units

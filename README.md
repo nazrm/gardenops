@@ -60,8 +60,8 @@ control.
 ### Garden Planning
 
 - Editable garden map with plots, zones, plant placement, saved views,
-  layout-only map objects for patios, terraces, custom surfaces, optional
-  pots/planters, and import/export workflows.
+  draggable/resizable layout-only map objects for patios, terraces, custom
+  surfaces, optional pots/planters, and import/export workflows.
 - Multi-garden support with active garden context, memberships, invitations, and
   garden-specific settings.
 - Onboarding flows for defining the garden, location, main structure, map zones,

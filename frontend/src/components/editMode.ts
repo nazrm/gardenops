@@ -12,6 +12,10 @@ export interface EditCallbacks {
   renderPlots: () => void;
   fetchPlots: () => Promise<void>;
   persistHouse: () => Promise<void>;
+  restoreMapObjectGeometry: (
+    publicId: string,
+    geometry: NonNullable<MoveAction["mapObject"]>["geometry"],
+  ) => Promise<void>;
 }
 
 export function toggleEditMode(
@@ -308,6 +312,13 @@ export async function undo(
     } catch (err) {
       showToast(getApiErrorMessage(err), "error");
     }
+  }
+
+  if (action.mapObject) {
+    await cbs.restoreMapObjectGeometry(
+      action.mapObject.public_id,
+      action.mapObject.geometry,
+    );
   }
 
   updateUndoButton(state);

@@ -68,7 +68,11 @@ export function initCamera(
     return (
       !target.closest(".plot") &&
       !target.closest(".empty-cell") &&
-      !target.closest(".house-placeholder")
+      !target.closest(".house-placeholder") &&
+      !target.closest(".map-object-label") &&
+      !target.closest(".map-object-interaction-surface") &&
+      !target.closest(".map-object-resize-handle") &&
+      !target.closest(".map-object-preview")
     );
   }
 
@@ -109,7 +113,11 @@ export function initCamera(
       e.target instanceof HTMLElement &&
       (e.target.closest(".plot") ||
         e.target.closest(".empty-cell") ||
-        e.target.closest(".house-placeholder"))
+        e.target.closest(".house-placeholder") ||
+        e.target.closest(".map-object-label") ||
+        e.target.closest(".map-object-interaction-surface") ||
+        e.target.closest(".map-object-resize-handle") ||
+        e.target.closest(".map-object-preview"))
     ) {
       return;
     }

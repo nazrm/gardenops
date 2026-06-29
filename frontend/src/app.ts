@@ -25,7 +25,13 @@ import {
   invalidateSearchCache,
 } from "./components/globalSearch";
 import { getAppShellMarkup } from "./components/layout";
-import { renderMapGrid, applyPlotIndicators, syncSelectedPlots } from "./components/mapView";
+import {
+  renderMapGrid,
+  applyPlotIndicators,
+  syncSelectedPlots,
+  type MapObjectManipulationMode,
+  type MapObjectResizeHandle,
+} from "./components/mapView";
 import { renderMapObjectsPanel, type MapObjectCustomDraft } from "./components/mapObjects";
 import { confirmDialog, createModal, promptDialog, promptPasswordDialog } from "./components/dialogCore";
 import { showCreatePlantDialogLazy, showCreatePlotDialogLazy, showCreateZoneDialogLazy, showDeleteMenuLazy, showEditPlantDialogLazy, showEditPlotDialogLazy, showElevationEditorLazy } from "./components/gardenDialogsLoader";
@@ -429,6 +435,19 @@ function persistNavigationState(): void {
 const mapInteraction = {
   draggedPlotId: null as string | null,
   dragStartPosition: null as { row: number; col: number } | null,
+  mapObjectManipulationSession: null as {
+    objectId: string;
+    mode: MapObjectManipulationMode;
+    handle: MapObjectResizeHandle | null;
+    pointerId: number;
+    sourceElement: HTMLElement | null;
+    startX: number;
+    startY: number;
+    cellWidth: number;
+    cellHeight: number;
+    startGeometry: MapObject["geometry"];
+    previewGeometry: MapObject["geometry"];
+  } | null,
   houseMoveSession: null as {
     startX: number;
     startY: number;
@@ -925,6 +944,7 @@ const editCbs: EditCallbacks = {
   renderPlots,
   fetchPlots,
   persistHouse: persistHouseGeometry,
+  restoreMapObjectGeometry,
 };
 
 const plotCbs: PlotCallbacks = {
@@ -2763,6 +2783,7 @@ async function createCustomMapObjectFromSelection(draft: MapObjectCustomDraft): 
 async function updateMapObject(
   publicId: string,
   patch: Partial<MapObjectInput>,
+  options: { showSuccessToast?: boolean } = {},
 ): Promise<void> {
   if (!ensureWriteAccess()) return;
   const gardenId = getActiveGardenContext();
@@ -2774,7 +2795,9 @@ async function updateMapObject(
     const object = await updateMapObjectApi(gardenId, publicId, normalizeMapObjectPatch(patch));
     state.selectedMapObjectId = object.public_id;
     await fetchMapObjects();
-    showToast(t("map.object_updated"), "success");
+    if (options.showSuccessToast !== false) {
+      showToast(t("map.object_updated"), "success");
+    }
   } catch (err) {
     showFetchError(err);
   }
@@ -2783,8 +2806,79 @@ async function updateMapObject(
 function updateMapObjectGeometry(
   object: MapObject,
   geometry: MapObject["geometry"],
+  options: {
+    recordUndo?: boolean;
+    previousGeometry?: MapObject["geometry"];
+    showSuccessToast?: boolean;
+    refocusSurface?: boolean;
+  } = {},
 ): void {
-  void updateMapObject(object.public_id, { geometry });
+  const nextGeometry = clampMapObjectGeometry(geometry);
+  if (sameMapObjectGeometry(object.geometry, nextGeometry)) return;
+  if (options.recordUndo) {
+    pushMapObjectGeometryUndo(
+      object.public_id,
+      options.previousGeometry ?? object.geometry,
+    );
+  }
+  const localObject = state.mapObjects.find((item) => item.public_id === object.public_id);
+  if (localObject) {
+    localObject.geometry = nextGeometry;
+    renderPlots();
+    if (options.refocusSurface) {
+      requestAnimationFrame(() => {
+        const surface = Array.from(
+          document.querySelectorAll<HTMLElement>(".map-object-interaction-surface[data-object-id]"),
+        ).find((item) => item.dataset["objectId"] === object.public_id);
+        surface?.focus({ preventScroll: true });
+      });
+    }
+  }
+  void updateMapObject(
+    object.public_id,
+    { geometry: nextGeometry },
+    { showSuccessToast: options.showSuccessToast ?? false },
+  );
+}
+
+function sameMapObjectGeometry(
+  a: MapObject["geometry"],
+  b: MapObject["geometry"],
+): boolean {
+  return (
+    a.x === b.x
+    && a.y === b.y
+    && a.width === b.width
+    && a.height === b.height
+  );
+}
+
+function pushMapObjectGeometryUndo(
+  publicId: string,
+  geometry: MapObject["geometry"],
+): void {
+  state.undoStack.push({
+    plots: [],
+    mapObject: {
+      public_id: publicId,
+      geometry: { ...geometry },
+    },
+  });
+  if (state.undoStack.length > UNDO_STACK_LIMIT) {
+    state.undoStack.shift();
+  }
+  updateUndoButton(state);
+}
+
+async function restoreMapObjectGeometry(
+  publicId: string,
+  geometry: MapObject["geometry"],
+): Promise<void> {
+  await updateMapObject(
+    publicId,
+    { geometry },
+    { showSuccessToast: false },
+  );
 }
 
 async function deleteSelectedMapObject(publicId: string): Promise<void> {
@@ -4456,6 +4550,17 @@ function renderPlots(): void {
           onMapObjectGeometryChange: (object: MapObject, geometry: MapObject["geometry"]) => {
             updateMapObjectGeometry(object, geometry);
           },
+          onMapObjectManipulationStart: (
+            object: MapObject,
+            mode: MapObjectManipulationMode,
+            handle: MapObjectResizeHandle | null,
+            event: PointerEvent,
+          ) => {
+            startMapObjectManipulation(object, mode, handle, event);
+          },
+          onMapObjectKeyEdit: (object: MapObject, event: KeyboardEvent) => {
+            handleMapObjectKeyEdit(object, event);
+          },
         }
       : {}),
     onPlotClick: (plot, event) => {
@@ -4582,6 +4687,237 @@ function renderPlots(): void {
   applyZoneVisibility(grid, mapInteraction.hiddenZones);
   applyCategoryHighlight();
   cameraCtrl?.updateMinimap(state.plots, mapInteraction.hiddenZones);
+}
+
+function gridLineForMapObjectGeometry(geometry: MapObject["geometry"]): {
+  row: string;
+  column: string;
+} {
+  return {
+    row: `${geometry.y} / ${geometry.y + geometry.height}`,
+    column: `${geometry.x} / ${geometry.x + geometry.width}`,
+  };
+}
+
+function updateMapObjectPreview(
+  objectId: string,
+  geometry: MapObject["geometry"],
+  visible: boolean,
+): void {
+  const grid = document.getElementById("map-grid");
+  if (!grid) return;
+  const controls = Array.from(
+    grid.querySelectorAll<HTMLElement>(".map-object-direct-controls[data-object-id]"),
+  ).find((item) => item.dataset["objectId"] === objectId);
+  if (!controls) return;
+  const lines = gridLineForMapObjectGeometry(geometry);
+  controls.style.gridRow = lines.row;
+  controls.style.gridColumn = lines.column;
+  const preview = controls.querySelector<HTMLElement>(".map-object-preview");
+  if (preview) preview.hidden = !visible;
+}
+
+function resizeMapObjectGeometry(
+  start: MapObject["geometry"],
+  handle: MapObjectResizeHandle,
+  colDelta: number,
+  rowDelta: number,
+): MapObject["geometry"] {
+  let left = start.x;
+  let right = start.x + start.width - 1;
+  let top = start.y;
+  let bottom = start.y + start.height - 1;
+
+  if (handle.includes("w")) {
+    left = Math.max(1, Math.min(right, start.x + colDelta));
+  }
+  if (handle.includes("e")) {
+    right = Math.min(state.gridCols, Math.max(left, start.x + start.width - 1 + colDelta));
+  }
+  if (handle.includes("n")) {
+    top = Math.max(1, Math.min(bottom, start.y + rowDelta));
+  }
+  if (handle.includes("s")) {
+    bottom = Math.min(state.gridRows, Math.max(top, start.y + start.height - 1 + rowDelta));
+  }
+
+  return {
+    x: left,
+    y: top,
+    width: right - left + 1,
+    height: bottom - top + 1,
+  };
+}
+
+function mapObjectGeometryForDelta(
+  start: MapObject["geometry"],
+  mode: MapObjectManipulationMode,
+  handle: MapObjectResizeHandle | null,
+  colDelta: number,
+  rowDelta: number,
+): MapObject["geometry"] {
+  if (mode === "resize" && handle) {
+    return resizeMapObjectGeometry(start, handle, colDelta, rowDelta);
+  }
+  return clampMapObjectGeometry({
+    ...start,
+    x: start.x + colDelta,
+    y: start.y + rowDelta,
+  });
+}
+
+function cleanupMapObjectManipulation(resetGeometry?: MapObject["geometry"]): void {
+  const session = mapInteraction.mapObjectManipulationSession;
+  if (!session) return;
+  if (resetGeometry) {
+    updateMapObjectPreview(session.objectId, resetGeometry, false);
+  }
+  try {
+    session.sourceElement?.releasePointerCapture(session.pointerId);
+  } catch {
+    // Capture may already be released after pointercancel.
+  }
+  mapInteraction.mapObjectManipulationSession = null;
+  document.body.classList.remove("manipulating-map-object");
+  window.removeEventListener("pointermove", onMapObjectManipulationMove);
+  window.removeEventListener("pointerup", commitMapObjectManipulation);
+  window.removeEventListener("pointercancel", cancelMapObjectManipulation);
+  window.removeEventListener("keydown", onMapObjectManipulationKeydown);
+  window.removeEventListener("touchstart", onMapObjectManipulationTouchStart);
+}
+
+function startMapObjectManipulation(
+  object: MapObject,
+  mode: MapObjectManipulationMode,
+  handle: MapObjectResizeHandle | null,
+  event: PointerEvent,
+): void {
+  if (!state.editMode || !canWriteInGarden) return;
+  const grid = document.getElementById("map-grid");
+  if (!grid) return;
+  const rect = grid.getBoundingClientRect();
+  const cellWidth = rect.width / Math.max(1, state.gridCols);
+  const cellHeight = rect.height / Math.max(1, state.gridRows);
+  if (cellWidth <= 0 || cellHeight <= 0) return;
+
+  cancelMapObjectManipulation();
+  const sourceElement = event.currentTarget instanceof HTMLElement
+    ? event.currentTarget
+    : null;
+  mapInteraction.mapObjectManipulationSession = {
+    objectId: object.public_id,
+    mode,
+    handle,
+    pointerId: event.pointerId,
+    sourceElement,
+    startX: event.clientX,
+    startY: event.clientY,
+    cellWidth,
+    cellHeight,
+    startGeometry: { ...object.geometry },
+    previewGeometry: { ...object.geometry },
+  };
+  try {
+    sourceElement?.setPointerCapture(event.pointerId);
+  } catch {
+    // Window-level listeners still keep the interaction intact.
+  }
+  document.body.classList.add("manipulating-map-object");
+  updateMapObjectPreview(object.public_id, object.geometry, true);
+  window.addEventListener("pointermove", onMapObjectManipulationMove, { passive: false });
+  window.addEventListener("pointerup", commitMapObjectManipulation);
+  window.addEventListener("pointercancel", cancelMapObjectManipulation);
+  window.addEventListener("keydown", onMapObjectManipulationKeydown);
+  window.addEventListener("touchstart", onMapObjectManipulationTouchStart, { passive: true });
+}
+
+function onMapObjectManipulationMove(event: PointerEvent): void {
+  const session = mapInteraction.mapObjectManipulationSession;
+  if (!session || event.pointerId !== session.pointerId) return;
+  event.preventDefault();
+  const colDelta = Math.round((event.clientX - session.startX) / session.cellWidth);
+  const rowDelta = Math.round((event.clientY - session.startY) / session.cellHeight);
+  const nextGeometry = mapObjectGeometryForDelta(
+    session.startGeometry,
+    session.mode,
+    session.handle,
+    colDelta,
+    rowDelta,
+  );
+  if (sameMapObjectGeometry(session.previewGeometry, nextGeometry)) return;
+  session.previewGeometry = nextGeometry;
+  updateMapObjectPreview(session.objectId, nextGeometry, true);
+}
+
+function commitMapObjectManipulation(): void {
+  const session = mapInteraction.mapObjectManipulationSession;
+  if (!session) return;
+  const object = state.mapObjects.find((item) => item.public_id === session.objectId);
+  const finalGeometry = session.previewGeometry;
+  const startGeometry = session.startGeometry;
+  cleanupMapObjectManipulation(startGeometry);
+  if (!object || sameMapObjectGeometry(startGeometry, finalGeometry)) return;
+  updateMapObjectGeometry(object, finalGeometry, {
+    recordUndo: true,
+    previousGeometry: startGeometry,
+    showSuccessToast: false,
+  });
+}
+
+function cancelMapObjectManipulation(): void {
+  const session = mapInteraction.mapObjectManipulationSession;
+  if (!session) return;
+  cleanupMapObjectManipulation(session.startGeometry);
+}
+
+function onMapObjectManipulationKeydown(event: KeyboardEvent): void {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    cancelMapObjectManipulation();
+  }
+}
+
+function onMapObjectManipulationTouchStart(event: TouchEvent): void {
+  if (event.touches.length >= 2) {
+    cancelMapObjectManipulation();
+  }
+}
+
+function handleMapObjectKeyEdit(object: MapObject, event: KeyboardEvent): void {
+  if (!state.editMode || !canWriteInGarden) return;
+  const next = { ...object.geometry };
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    selectMapObject(null);
+    return;
+  }
+  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.shiftKey) {
+    if (event.key === "ArrowRight") next.width += 1;
+    if (event.key === "ArrowLeft") next.width -= 1;
+    if (event.key === "ArrowDown") next.height += 1;
+    if (event.key === "ArrowUp") next.height -= 1;
+  } else {
+    if (event.key === "ArrowRight") next.x += 1;
+    if (event.key === "ArrowLeft") next.x -= 1;
+    if (event.key === "ArrowDown") next.y += 1;
+    if (event.key === "ArrowUp") next.y -= 1;
+  }
+
+  const clamped = clampMapObjectGeometry(next);
+  if (sameMapObjectGeometry(object.geometry, clamped)) return;
+  updateMapObjectGeometry(object, clamped, {
+    recordUndo: true,
+    previousGeometry: object.geometry,
+    showSuccessToast: false,
+    refocusSurface: true,
+  });
 }
 
 function onHouseMoveMove(event: MouseEvent): void {
