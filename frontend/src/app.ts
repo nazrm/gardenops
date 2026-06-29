@@ -25,7 +25,8 @@ import {
   invalidateSearchCache,
 } from "./components/globalSearch";
 import { getAppShellMarkup } from "./components/layout";
-import { renderMapGrid, applyPlotIndicators, syncSelectedPlots } from "./components/mapView";
+import { renderMapGrid, applyPlotIndicators, syncSelectedMapObject, syncSelectedPlots } from "./components/mapView";
+import { renderMapObjectsPanel } from "./components/mapObjects";
 import { confirmDialog, createModal, promptDialog, promptPasswordDialog } from "./components/dialogCore";
 import { showCreatePlantDialogLazy, showCreatePlotDialogLazy, showCreateZoneDialogLazy, showDeleteMenuLazy, showEditPlantDialogLazy, showEditPlotDialogLazy, showElevationEditorLazy } from "./components/gardenDialogsLoader";
 import type { AiPlantData } from "./components/overlays";
@@ -89,6 +90,9 @@ import type {
   GardenIssue,
   GardenTask,
   HarvestEntry,
+  MapObject,
+  MapObjectType,
+  MapObjectUnitType,
   Plant,
   Plot,
 } from "./core/models";
@@ -104,10 +108,14 @@ import {
   beginPasskeyRegistrationApi,
   clearStoredAuthToken,
   createGardenApi,
+  createMapObjectApi,
+  createMapObjectUnitApi,
   createPlantApi,
   createPlotApi,
   getNextPlantIdApi,
   createZoneApi,
+  deleteMapObjectApi,
+  deleteMapObjectUnitApi,
   deletePlantApi,
   deletePlotApi,
   exportPlantsCsvApi,
@@ -118,6 +126,7 @@ import {
   getGardensApi,
   getActiveGardenContext,
   getLayoutStateApi,
+  listMapObjectsApi,
   getPlants,
   getPlotDeleteImpactApi,
   getPlotElevationsApi,
@@ -203,6 +212,9 @@ import {
 // ── State ──────────────────────────────────────────────────
 const state: AppState = {
   plots: [],
+  mapObjects: [],
+  selectedMapObjectId: null,
+  showMapObjects: true,
   plantsCache: [],
   selectedPlotId: null,
   selectedPlotIds: new Set(),
@@ -1022,6 +1034,7 @@ const appContext: AppContext = {
   loadCare: () => loadCareTab(),
   renderDataExportBars: () => renderDataExportBars(),
   fetchPlots: () => fetchPlots(),
+  fetchMapObjects: () => fetchMapObjects(),
   ensurePlantsCacheLoaded: () => ensurePlantsCacheLoaded(),
   ensurePlantsLoaded: () => ensurePlantsLoaded(),
   getPlantsCacheRevision: () => plantsCacheRevision,
@@ -1805,7 +1818,6 @@ function setupLayout(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-brand-home]").forEach((button) => {
     button.addEventListener("click", () => setActiveTab("map"));
   });
-
   applyFeatureGateUi();
   document.querySelectorAll<HTMLButtonElement>(".mobile-tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1966,6 +1978,7 @@ function setupLayout(): void {
     authorizeSensitiveAdminAction: confirmSensitiveAdminAction,
     fetchPlots,
     fetchLayoutState,
+    fetchMapObjects,
     setMobileMapSheetOpen,
   });
   getAuthButtons().forEach((btn) => {
@@ -2538,6 +2551,223 @@ async function fetchLayoutState(): Promise<void> {
     renderPlots();
   } catch (err) {
     if (!isCurrentGardenRequest(requestGardenId)) return;
+    showFetchError(err);
+  }
+}
+
+function mapObjectTypeName(type: MapObjectType): string {
+  if (type === "terrace") return t("map.object_terrace");
+  if (type === "greenhouse") return t("map.object_greenhouse");
+  if (type === "shed") return t("map.object_shed");
+  if (type === "pond") return t("map.object_pond");
+  if (type === "path") return t("map.object_path");
+  if (type === "bed") return t("map.object_bed");
+  if (type === "other") return t("map.object_other");
+  return t("map.object_patio");
+}
+
+function mapObjectColor(type: MapObjectType): string {
+  if (type === "terrace") return "#b89b72";
+  if (type === "greenhouse") return "#73a7a4";
+  if (type === "pond") return "#6fa8dc";
+  if (type === "path") return "#a4a09a";
+  if (type === "bed") return "#7d9f7a";
+  return "#8f9f7d";
+}
+
+function selectedPlotBounds(): { x: number; y: number; width: number; height: number } {
+  const selected = state.plots.filter(
+    (plot) =>
+      state.selectedPlotIds.has(plot.plot_id)
+      && plot.grid_row !== null
+      && plot.grid_col !== null,
+  );
+  if (selected.length === 0) {
+    return {
+      x: 1,
+      y: 1,
+      width: Math.min(4, state.gridCols),
+      height: Math.min(3, state.gridRows),
+    };
+  }
+  const rows = selected.map((plot) => plot.grid_row ?? 1);
+  const cols = selected.map((plot) => plot.grid_col ?? 1);
+  const minRow = Math.min(...rows);
+  const maxRow = Math.max(...rows);
+  const minCol = Math.min(...cols);
+  const maxCol = Math.max(...cols);
+  return {
+    x: minCol,
+    y: minRow,
+    width: maxCol - minCol + 1,
+    height: maxRow - minRow + 1,
+  };
+}
+
+function renderMapObjectsPanelView(): void {
+  renderMapObjectsPanel({
+    container: document.getElementById("map-objects-panel"),
+    objects: state.mapObjects,
+    selectedObjectId: state.selectedMapObjectId,
+    showObjects: state.showMapObjects,
+    canWrite: canWriteInGarden,
+    selectedPlotCount: state.selectedPlotIds.size,
+    onToggleObjects: (show) => {
+      state.showMapObjects = show;
+      renderPlots();
+    },
+    onCreateObject: (type) => {
+      void createMapObjectFromSelection(type);
+    },
+    onSelectObject: (publicId) => {
+      selectMapObject(publicId);
+    },
+    onDeleteObject: (publicId) => {
+      void deleteSelectedMapObject(publicId);
+    },
+    onAddUnit: (objectPublicId, type) => {
+      void createNestedMapUnit(objectPublicId, type);
+    },
+    onDeleteUnit: (objectPublicId, unitPublicId) => {
+      void deleteNestedMapUnit(objectPublicId, unitPublicId);
+    },
+  });
+}
+
+async function fetchMapObjects(): Promise<void> {
+  const requestGardenId = getActiveGardenContext();
+  if (requestGardenId === null) {
+    state.mapObjects = [];
+    state.selectedMapObjectId = null;
+    renderPlots();
+    return;
+  }
+  try {
+    const objects = await listMapObjectsApi(requestGardenId);
+    if (!isCurrentGardenRequest(requestGardenId)) return;
+    state.mapObjects = objects;
+    if (
+      state.selectedMapObjectId
+      && !objects.some((object) => object.public_id === state.selectedMapObjectId)
+    ) {
+      state.selectedMapObjectId = null;
+    }
+    renderPlots();
+  } catch (err) {
+    if (!isCurrentGardenRequest(requestGardenId)) return;
+    showFetchError(err);
+  }
+}
+
+async function createMapObjectFromSelection(type: MapObjectType): Promise<void> {
+  if (!ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) {
+    showToast(t("error.missing_garden"), "error");
+    return;
+  }
+  try {
+    const object = await createMapObjectApi(gardenId, {
+      object_type: type,
+      name: mapObjectTypeName(type),
+      shape_type: "rectangle",
+      geometry: selectedPlotBounds(),
+      style: { color: mapObjectColor(type) },
+      z_index: 5,
+      has_internal_layout: true,
+      internal_layout: { rows: 6, cols: 8 },
+    });
+    state.selectedMapObjectId = object.public_id;
+    await fetchMapObjects();
+    showToast(t("map.object_created"), "success");
+  } catch (err) {
+    showFetchError(err);
+  }
+}
+
+async function deleteSelectedMapObject(publicId: string): Promise<void> {
+  if (!ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
+  if (!(await confirmDialog(t("map.object_delete_confirm")))) return;
+  try {
+    await deleteMapObjectApi(gardenId, publicId);
+    if (state.selectedMapObjectId === publicId) state.selectedMapObjectId = null;
+    await fetchMapObjects();
+    showToast(t("map.object_deleted"), "success");
+  } catch (err) {
+    showFetchError(err);
+  }
+}
+
+function nextUnitGeometry(
+  object: MapObject,
+  type: MapObjectUnitType,
+): { x: number; y: number; width: number; height: number } | null {
+  const width = type === "planter" ? Math.min(2, object.internal_layout.cols) : 1;
+  const height = 1;
+  const occupied = new Set<string>();
+  for (const unit of object.units) {
+    for (let row = unit.geometry.y; row < unit.geometry.y + unit.geometry.height; row += 1) {
+      for (let col = unit.geometry.x; col < unit.geometry.x + unit.geometry.width; col += 1) {
+        occupied.add(`${row},${col}`);
+      }
+    }
+  }
+  for (let y = 1; y <= object.internal_layout.rows - height + 1; y += 1) {
+    for (let x = 1; x <= object.internal_layout.cols - width + 1; x += 1) {
+      let blocked = false;
+      for (let row = y; row < y + height; row += 1) {
+        for (let col = x; col < x + width; col += 1) {
+          if (occupied.has(`${row},${col}`)) blocked = true;
+        }
+      }
+      if (!blocked) return { x, y, width, height };
+    }
+  }
+  return null;
+}
+
+async function createNestedMapUnit(
+  objectPublicId: string,
+  type: MapObjectUnitType,
+): Promise<void> {
+  if (!ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  const object = state.mapObjects.find((item) => item.public_id === objectPublicId);
+  if (gardenId === null || !object) return;
+  const geometry = nextUnitGeometry(object, type);
+  if (!geometry) {
+    showToast(t("map.object_no_unit_space"), "error");
+    return;
+  }
+  try {
+    await createMapObjectUnitApi(gardenId, objectPublicId, {
+      unit_type: type,
+      name: type === "planter" ? t("map.unit_planter") : t("map.unit_pot"),
+      shape_type: type === "pot" ? "ellipse" : "rectangle",
+      geometry,
+      style: { color: type === "pot" ? "#c58f5c" : "#9eaf77" },
+      sort_order: object.units.length + 1,
+    });
+    state.selectedMapObjectId = objectPublicId;
+    await fetchMapObjects();
+    showToast(t("map.unit_created"), "success");
+  } catch (err) {
+    showFetchError(err);
+  }
+}
+
+async function deleteNestedMapUnit(objectPublicId: string, unitPublicId: string): Promise<void> {
+  if (!ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
+  if (!(await confirmDialog(t("map.unit_delete_confirm")))) return;
+  try {
+    await deleteMapObjectUnitApi(gardenId, objectPublicId, unitPublicId);
+    await fetchMapObjects();
+    showToast(t("map.unit_deleted"), "success");
+  } catch (err) {
     showFetchError(err);
   }
 }
@@ -4044,6 +4274,16 @@ function syncMapSelectedPlots(): void {
   const grid = document.getElementById("map-grid");
   if (!grid) return;
   syncSelectedPlots(grid, state.selectedPlotIds);
+  renderMapObjectsPanelView();
+}
+
+function selectMapObject(publicId: string | null): void {
+  state.selectedMapObjectId = publicId;
+  const grid = document.getElementById("map-grid");
+  if (grid) {
+    syncSelectedMapObject(grid, state.selectedMapObjectId);
+  }
+  renderMapObjectsPanelView();
 }
 
 function selectPlotRangeInPlace(endPlotId: string): void {
@@ -4098,6 +4338,12 @@ function renderPlots(): void {
     housePosition: state.housePosition,
     houseSize: state.houseSize,
     northDegrees: state.northDegrees,
+    mapObjects: state.mapObjects,
+    showMapObjects: state.showMapObjects,
+    selectedMapObjectId: state.selectedMapObjectId,
+    onMapObjectClick: (object) => {
+      selectMapObject(state.selectedMapObjectId === object.public_id ? null : object.public_id);
+    },
     onPlotClick: (plot, event) => {
       if (state.editMode) {
         if (event.ctrlKey || event.metaKey) {
@@ -4217,6 +4463,7 @@ function renderPlots(): void {
   }
 
   refreshZoneToggles();
+  renderMapObjectsPanelView();
   syncShadePanelContext();
   applyZoneVisibility(grid, mapInteraction.hiddenZones);
   applyCategoryHighlight();
@@ -4897,6 +5144,7 @@ async function importMap(): Promise<void> {
     clearElevationAvailability();
     await fetchPlots();
     await fetchLayoutState();
+    await fetchMapObjects();
     await refreshElevationAvailability();
   } catch (err) {
     showToast(t("map.import_failed", { error: getApiErrorMessage(err) }), "error");
@@ -5110,6 +5358,7 @@ function applyWriteAccessUi(): void {
   if (!canWriteInGarden && state.editMode) {
     toggleEditMode(state, editCbs);
   }
+  renderMapObjectsPanelView();
   syncMobileCapabilities();
 }
 
@@ -5450,7 +5699,12 @@ async function refreshGardenDataForCurrentContext(): Promise<void> {
     showAdminMfaSetupStatus();
     return;
   }
-  await Promise.all([fetchPlots(), fetchLayoutState(), refreshElevationAvailability()]);
+  await Promise.all([
+    fetchPlots(),
+    fetchLayoutState(),
+    fetchMapObjects(),
+    refreshElevationAvailability(),
+  ]);
   if (!isCurrentGardenRequest(requestGardenId)) return;
   invalidatePlantsCache();
   if (activeTab === "map") requestPlantsCachePrefetchAfterPaint();
@@ -5691,7 +5945,12 @@ async function bootstrapApp(): Promise<void> {
   const needsOnboarding = await checkOnboardingNeeded();
   if (needsOnboarding) return;
 
-  await Promise.all([fetchPlots(), fetchLayoutState(), refreshElevationAvailability()]);
+  await Promise.all([
+    fetchPlots(),
+    fetchLayoutState(),
+    fetchMapObjects(),
+    refreshElevationAvailability(),
+  ]);
   requestPlantsCachePrefetchAfterPaint();
   if (activeTab === "map" && shouldLoadShadeMapPanelNow()) {
     await ensureShadeMapPanelLoaded();
@@ -5713,7 +5972,12 @@ async function checkOnboardingNeeded(): Promise<boolean> {
       // Reload everything after onboarding or admin dismissal.
       void (async () => {
         await refreshGardenContext();
-        await Promise.all([fetchPlots(), fetchLayoutState(), refreshElevationAvailability()]);
+        await Promise.all([
+          fetchPlots(),
+          fetchLayoutState(),
+          fetchMapObjects(),
+          refreshElevationAvailability(),
+        ]);
         requestPlantsCachePrefetchAfterPaint();
         if (activeTab === "map" && shouldLoadShadeMapPanelNow()) {
           await ensureShadeMapPanelLoaded();

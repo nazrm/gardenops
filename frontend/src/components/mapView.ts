@@ -1,4 +1,4 @@
-import type { Plot } from "../core/models";
+import type { MapObject, Plot } from "../core/models";
 import { t } from "../core/i18n";
 
 const ZOOM_MIN = 1.0;
@@ -229,6 +229,10 @@ interface RenderMapParams {
   onHouseMoveStart: (event: MouseEvent) => void;
   onHouseResizeStart: (event: MouseEvent) => void;
   onHouseClick?: () => void;
+  mapObjects?: MapObject[];
+  showMapObjects?: boolean;
+  selectedMapObjectId?: string | null;
+  onMapObjectClick: ((object: MapObject) => void) | undefined;
 }
 
 function cellData(el: EventTarget | null): { row: number; col: number } | null {
@@ -278,6 +282,10 @@ export function renderMapGrid(params: RenderMapParams): void {
   for (const p of plots) {
     byCell.set(`${p.grid_row},${p.grid_col}`, p);
   }
+  const byMapObject = new Map<string, MapObject>();
+  for (const object of params.mapObjects ?? []) {
+    byMapObject.set(object.public_id, object);
+  }
 
   const fragment = document.createDocumentFragment();
 
@@ -314,6 +322,8 @@ export function renderMapGrid(params: RenderMapParams): void {
     editMode, onPlotClick, onPlotContextMenu, onPlotDragStart,
     onPlotDragEnd, onDragOverCell, onDropToCell, onExtendPlot,
     onEmptyCellClick,
+    byMapObject,
+    onMapObjectClick: params.onMapObjectClick,
   });
 
   renderHouse(
@@ -321,7 +331,47 @@ export function renderMapGrid(params: RenderMapParams): void {
     onHouseMoveStart, onHouseResizeStart, params.onHouseClick,
   );
 
+  renderMapObjects(
+    grid,
+    params.mapObjects ?? [],
+    params.showMapObjects ?? true,
+    params.selectedMapObjectId ?? null,
+  );
+
   ensureZoomControls(grid);
+}
+
+function renderMapObjects(
+  grid: HTMLElement,
+  objects: MapObject[],
+  showObjects: boolean,
+  selectedMapObjectId: string | null,
+): void {
+  if (!showObjects || objects.length === 0) return;
+
+  const sorted = [...objects].sort((a, b) => a.z_index - b.z_index);
+  for (const object of sorted) {
+    const overlay = document.createElement("div");
+    overlay.className = `map-object-overlay map-object-overlay--${object.shape_type}`;
+    overlay.dataset["objectId"] = object.public_id;
+    overlay.style.gridRow = `${object.geometry.y} / ${object.geometry.y + object.geometry.height}`;
+    overlay.style.gridColumn = `${object.geometry.x} / ${object.geometry.x + object.geometry.width}`;
+    overlay.style.setProperty("--map-object-color", object.style.color);
+    overlay.style.zIndex = String(6 + object.z_index);
+    overlay.classList.toggle("active", object.public_id === selectedMapObjectId);
+    grid.appendChild(overlay);
+
+    const label = document.createElement("button");
+    label.type = "button";
+    label.className = "map-object-label";
+    label.dataset["objectId"] = object.public_id;
+    label.style.gridRow = overlay.style.gridRow;
+    label.style.gridColumn = overlay.style.gridColumn;
+    label.style.zIndex = String(7 + object.z_index);
+    label.textContent = object.name;
+    label.title = object.name;
+    grid.appendChild(label);
+  }
 }
 
 function buildPlotCell(
@@ -450,6 +500,15 @@ export function syncSelectedPlots(
   }
 }
 
+export function syncSelectedMapObject(
+  grid: HTMLElement,
+  selectedMapObjectId: string | null,
+): void {
+  for (const overlay of grid.querySelectorAll<HTMLElement>(".map-object-overlay[data-object-id]")) {
+    overlay.classList.toggle("active", overlay.dataset["objectId"] === selectedMapObjectId);
+  }
+}
+
 interface GridCallbacks {
   editMode: boolean;
   onPlotClick: (plot: Plot, event: MouseEvent) => void;
@@ -460,6 +519,8 @@ interface GridCallbacks {
   onDropToCell: (targetRow: number, targetCol: number, targetPlotId?: string, event?: DragEvent) => void;
   onExtendPlot: (plot: Plot) => void;
   onEmptyCellClick: (row: number, col: number) => void;
+  byMapObject: Map<string, MapObject>;
+  onMapObjectClick: ((object: MapObject) => void) | undefined;
 }
 
 function wireGridDelegation(
@@ -490,6 +551,15 @@ function wireGridDelegation(
   };
 
   grid.addEventListener("click", (e) => {
+    const mapObjectLabel = (e.target as HTMLElement).closest<HTMLElement>(".map-object-label");
+    const mapObjectId = mapObjectLabel?.dataset["objectId"];
+    if (mapObjectId) {
+      e.preventDefault();
+      e.stopPropagation();
+      const object = state.callbacks.byMapObject.get(mapObjectId);
+      if (object) state.callbacks.onMapObjectClick?.(object);
+      return;
+    }
     const extBtn = (e.target as HTMLElement).closest<HTMLElement>(".plot-extend-btn");
     if (extBtn) {
       e.stopPropagation();

@@ -325,6 +325,48 @@ ADMIN_EDGE_GENERIC_ROUTE_EXCEPTIONS: Final[tuple[AdminEdgeRouteDecision, ...]] =
     ),
     AdminEdgeRouteDecision(
         method="GET",
+        path_template="/api/gardens/{garden_id}/map-objects",
+        decision="generic_api",
+        rationale="Map object reads are garden-scoped rather than platform-admin.",
+    ),
+    AdminEdgeRouteDecision(
+        method="POST",
+        path_template="/api/gardens/{garden_id}/map-objects",
+        decision="generic_api",
+        rationale="Map object creation relies on garden editor authorization.",
+    ),
+    AdminEdgeRouteDecision(
+        method="PATCH",
+        path_template="/api/gardens/{garden_id}/map-objects/{object_public_id}",
+        decision="generic_api",
+        rationale="Map object updates rely on garden editor authorization.",
+    ),
+    AdminEdgeRouteDecision(
+        method="DELETE",
+        path_template="/api/gardens/{garden_id}/map-objects/{object_public_id}",
+        decision="generic_api",
+        rationale="Map object deletion relies on garden editor authorization.",
+    ),
+    AdminEdgeRouteDecision(
+        method="POST",
+        path_template="/api/gardens/{garden_id}/map-objects/{object_public_id}/units",
+        decision="generic_api",
+        rationale="Nested map unit creation relies on garden editor authorization.",
+    ),
+    AdminEdgeRouteDecision(
+        method="PATCH",
+        path_template="/api/gardens/{garden_id}/map-objects/{object_public_id}/units/{unit_public_id}",
+        decision="generic_api",
+        rationale="Nested map unit updates rely on garden editor authorization.",
+    ),
+    AdminEdgeRouteDecision(
+        method="DELETE",
+        path_template="/api/gardens/{garden_id}/map-objects/{object_public_id}/units/{unit_public_id}",
+        decision="generic_api",
+        rationale="Nested map unit deletion relies on garden editor authorization.",
+    ),
+    AdminEdgeRouteDecision(
+        method="GET",
         path_template="/api/gardens/{garden_id}/geocode",
         decision="generic_api",
         rationale="Garden geocoding is editor-scoped and app-rate-limited.",

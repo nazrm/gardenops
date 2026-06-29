@@ -324,6 +324,94 @@ class TestExportImport(BaseApiTest):
         self.assertEqual(house.status_code, 200)
         self.assertEqual(house.json()["north_degrees"], 270)
 
+    def test_map_objects_round_trip_through_layout_export_import(self) -> None:
+        garden_id = self._get_default_garden_id()
+        patio = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects",
+            json={
+                "object_type": "patio",
+                "name": "Kitchen patio",
+                "shape_type": "rectangle",
+                "geometry": {"x": 1, "y": 1, "width": 4, "height": 3},
+                "style": {"color": "#7d9f7a"},
+                "z_index": 2,
+                "has_internal_layout": True,
+                "internal_layout": {"rows": 6, "cols": 8},
+            },
+        )
+        self.assertEqual(patio.status_code, 201, patio.text)
+        patio_id = patio.json()["public_id"]
+        pot = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects/{patio_id}/units",
+            json={
+                "unit_type": "pot",
+                "name": "Rosemary pot",
+                "shape_type": "ellipse",
+                "geometry": {"x": 2, "y": 2, "width": 2, "height": 2},
+                "style": {"color": "#c58f5c"},
+                "sort_order": 1,
+            },
+        )
+        self.assertEqual(pot.status_code, 201, pot.text)
+
+        export_res = self.client.get("/api/plots/export")
+        self.assertEqual(export_res.status_code, 200, export_res.text)
+        exported = json.loads(export_res.content)
+        self.assertEqual(len(exported["map_objects"]), 1)
+        self.assertEqual(exported["map_objects"][0]["public_id"], patio_id)
+        self.assertEqual(exported["map_objects"][0]["units"][0]["name"], "Rosemary pot")
+
+        delete_res = self.client.delete(f"/api/gardens/{garden_id}/map-objects/{patio_id}")
+        self.assertEqual(delete_res.status_code, 200, delete_res.text)
+        empty_res = self.client.get(f"/api/gardens/{garden_id}/map-objects")
+        self.assertEqual(empty_res.status_code, 200, empty_res.text)
+        self.assertEqual(empty_res.json()["objects"], [])
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            import_res = self.client.post(
+                "/api/plots/import",
+                headers=self._destructive_admin_headers("map-object-round-trip"),
+                json=exported,
+            )
+        self.assertEqual(import_res.status_code, 200, import_res.text)
+        restored_res = self.client.get(f"/api/gardens/{garden_id}/map-objects")
+        self.assertEqual(restored_res.status_code, 200, restored_res.text)
+        restored = restored_res.json()["objects"]
+        exported_object = exported["map_objects"][0]
+        exported_unit = exported_object["units"][0]
+        self.assertEqual(len(restored), 1)
+        restored_object = restored[0]
+        for field in (
+            "public_id",
+            "object_type",
+            "name",
+            "shape_type",
+            "geometry",
+            "style",
+            "z_index",
+            "has_internal_layout",
+            "internal_layout",
+        ):
+            with self.subTest(field=field):
+                self.assertEqual(restored_object[field], exported_object[field])
+        self.assertEqual(len(restored_object["units"]), 1)
+        restored_unit = restored_object["units"][0]
+        for field in (
+            "public_id",
+            "unit_type",
+            "name",
+            "shape_type",
+            "geometry",
+            "style",
+            "sort_order",
+        ):
+            with self.subTest(field=f"unit.{field}"):
+                self.assertEqual(restored_unit[field], exported_unit[field])
+
     def test_export_plants_csv(self) -> None:
         response = self.client.get("/api/plants/export-csv")
         self.assertEqual(response.status_code, 200)

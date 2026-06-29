@@ -598,10 +598,89 @@ export interface OfflineDraft {
   last_error: string;
 }
 
+export type MapObjectType =
+  | "patio"
+  | "terrace"
+  | "greenhouse"
+  | "shed"
+  | "pond"
+  | "path"
+  | "bed"
+  | "other";
+
+export type MapObjectShape = "rectangle" | "ellipse";
+export type MapObjectUnitType = "pot" | "planter" | "raised_bed" | "shelf" | "other";
+
+export interface MapObjectGeometry {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface MapObjectStyle {
+  color: string;
+}
+
+export interface MapObjectInternalLayout {
+  rows: number;
+  cols: number;
+}
+
+export interface MapObjectUnit {
+  public_id: string;
+  unit_type: MapObjectUnitType;
+  name: string;
+  shape_type: MapObjectShape;
+  geometry: MapObjectGeometry;
+  style: MapObjectStyle;
+  sort_order: number;
+  created_at_ms?: number;
+  updated_at_ms?: number;
+}
+
+export interface MapObject {
+  public_id: string;
+  object_type: MapObjectType;
+  name: string;
+  shape_type: MapObjectShape;
+  geometry: MapObjectGeometry;
+  style: MapObjectStyle;
+  z_index: number;
+  has_internal_layout: boolean;
+  internal_layout: MapObjectInternalLayout;
+  created_at_ms?: number;
+  updated_at_ms?: number;
+  units: MapObjectUnit[];
+}
+
+export interface MapObjectInput {
+  object_type: MapObjectType;
+  name: string;
+  shape_type: MapObjectShape;
+  geometry: MapObjectGeometry;
+  style?: MapObjectStyle;
+  z_index?: number;
+  has_internal_layout?: boolean;
+  internal_layout?: MapObjectInternalLayout | null;
+}
+
+export interface MapObjectUnitInput {
+  unit_type: MapObjectUnitType;
+  name: string;
+  shape_type: MapObjectShape;
+  geometry: MapObjectGeometry;
+  style?: MapObjectStyle;
+  sort_order?: number;
+}
+
 export type AppTab = "map" | "garden" | "activity" | "insights" | "admin";
 
 export interface AppState {
   plots: Plot[];
+  mapObjects: MapObject[];
+  selectedMapObjectId: string | null;
+  showMapObjects: boolean;
   plantsCache: Plant[];
   selectedPlotId: string | null;
   selectedPlotIds: Set<string>;
