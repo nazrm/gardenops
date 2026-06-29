@@ -414,6 +414,32 @@ def test_security_bypass_generator_emits_python_advisory_fix():
     ]
 
 
+def test_security_bypass_generator_audits_hashed_requirements_without_pip(
+    tmp_path,
+    monkeypatch,
+):
+    module = load_security_bypass_module()
+    observed: dict[str, object] = {}
+
+    def fake_run(
+        command,
+        *,
+        cwd=module.ROOT,
+        allow_audit_failure=False,
+    ):
+        observed["command"] = command
+        observed["allow_audit_failure"] = allow_audit_failure
+        return subprocess.CompletedProcess(command, 0, '{"dependencies": []}', "")
+
+    monkeypatch.setattr(module, "_run", fake_run)
+
+    audit_data = module._run_pip_audit(tmp_path / "requirements.txt", tmp_path / "cache")
+
+    assert audit_data == {"dependencies": []}
+    assert observed["allow_audit_failure"] is True
+    assert "--disable-pip" in observed["command"]
+
+
 def test_codeowners_covers_security_release_bypass_generator():
     codeowners = (ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
 

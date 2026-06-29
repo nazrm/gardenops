@@ -119,6 +119,7 @@ def _run_pip_audit(requirements_path: Path, cache_dir: Path) -> dict[str, Any]:
             "off",
             "--cache-dir",
             str(cache_dir),
+            "--disable-pip",
         ],
         allow_audit_failure=True,
     )
