@@ -233,6 +233,7 @@ interface RenderMapParams {
   showMapObjects?: boolean;
   selectedMapObjectId?: string | null;
   onMapObjectClick: ((object: MapObject) => void) | undefined;
+  onMapObjectGeometryChange?: (object: MapObject, geometry: MapObject["geometry"]) => void;
 }
 
 function cellData(el: EventTarget | null): { row: number; col: number } | null {
@@ -336,6 +337,7 @@ export function renderMapGrid(params: RenderMapParams): void {
     params.mapObjects ?? [],
     params.showMapObjects ?? true,
     params.selectedMapObjectId ?? null,
+    params.onMapObjectGeometryChange,
   );
 
   ensureZoomControls(grid);
@@ -346,16 +348,19 @@ function renderMapObjects(
   objects: MapObject[],
   showObjects: boolean,
   selectedMapObjectId: string | null,
+  onMapObjectGeometryChange?: (object: MapObject, geometry: MapObject["geometry"]) => void,
 ): void {
   if (!showObjects || objects.length === 0) return;
 
   const sorted = [...objects].sort((a, b) => a.z_index - b.z_index);
   for (const object of sorted) {
+    const gridRow = `${object.geometry.y} / ${object.geometry.y + object.geometry.height}`;
+    const gridColumn = `${object.geometry.x} / ${object.geometry.x + object.geometry.width}`;
     const overlay = document.createElement("div");
     overlay.className = `map-object-overlay map-object-overlay--${object.shape_type}`;
     overlay.dataset["objectId"] = object.public_id;
-    overlay.style.gridRow = `${object.geometry.y} / ${object.geometry.y + object.geometry.height}`;
-    overlay.style.gridColumn = `${object.geometry.x} / ${object.geometry.x + object.geometry.width}`;
+    overlay.style.gridRow = gridRow;
+    overlay.style.gridColumn = gridColumn;
     overlay.style.setProperty("--map-object-color", object.style.color);
     overlay.style.zIndex = String(6 + object.z_index);
     overlay.classList.toggle("active", object.public_id === selectedMapObjectId);
@@ -365,13 +370,130 @@ function renderMapObjects(
     label.type = "button";
     label.className = "map-object-label";
     label.dataset["objectId"] = object.public_id;
-    label.style.gridRow = overlay.style.gridRow;
-    label.style.gridColumn = overlay.style.gridColumn;
+    label.style.gridRow = gridRow;
+    label.style.gridColumn = gridColumn;
     label.style.zIndex = String(7 + object.z_index);
     label.textContent = object.name;
     label.title = object.name;
     grid.appendChild(label);
+
+    if (object.public_id === selectedMapObjectId && onMapObjectGeometryChange) {
+      grid.appendChild(renderMapObjectEditControls(object, gridRow, gridColumn, onMapObjectGeometryChange));
+    }
   }
+}
+
+function makeObjectEditButton(
+  className: string,
+  direction: string,
+  label: string,
+  title: string,
+  onClick: (event: MouseEvent) => void,
+): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.dataset["dir"] = direction;
+  button.textContent = label;
+  button.title = title;
+  button.setAttribute("aria-label", title);
+  button.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+  });
+  button.addEventListener("pointerup", (event) => {
+    event.stopPropagation();
+  });
+  button.addEventListener("mousedown", (event) => {
+    event.stopPropagation();
+  });
+  button.addEventListener("mouseup", (event) => {
+    event.stopPropagation();
+  });
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function renderMapObjectEditControls(
+  object: MapObject,
+  gridRow: string,
+  gridColumn: string,
+  onMapObjectGeometryChange: (object: MapObject, geometry: MapObject["geometry"]) => void,
+): HTMLElement {
+  const controls = document.createElement("div");
+  controls.className = "map-object-edit-controls";
+  controls.style.gridRow = gridRow;
+  controls.style.gridColumn = gridColumn;
+  controls.style.zIndex = String(12 + object.z_index);
+
+  const update = (
+    event: MouseEvent,
+    geometry: MapObject["geometry"],
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onMapObjectGeometryChange(object, geometry);
+  };
+
+  controls.append(
+    makeObjectEditButton(
+      "map-object-move-handle",
+      "up",
+      "N",
+      t("map.object_move_up"),
+      (event) => update(event, { ...object.geometry, y: object.geometry.y - 1 }),
+    ),
+    makeObjectEditButton(
+      "map-object-move-handle",
+      "down",
+      "S",
+      t("map.object_move_down"),
+      (event) => update(event, { ...object.geometry, y: object.geometry.y + 1 }),
+    ),
+    makeObjectEditButton(
+      "map-object-move-handle",
+      "left",
+      "W",
+      t("map.object_move_left"),
+      (event) => update(event, { ...object.geometry, x: object.geometry.x - 1 }),
+    ),
+    makeObjectEditButton(
+      "map-object-move-handle",
+      "right",
+      "E",
+      t("map.object_move_right"),
+      (event) => update(event, { ...object.geometry, x: object.geometry.x + 1 }),
+    ),
+    makeObjectEditButton(
+      "map-object-resize-handle",
+      "wider",
+      "+W",
+      t("map.object_resize_wider"),
+      (event) => update(event, { ...object.geometry, width: object.geometry.width + 1 }),
+    ),
+    makeObjectEditButton(
+      "map-object-resize-handle",
+      "narrower",
+      "-W",
+      t("map.object_resize_narrower"),
+      (event) => update(event, { ...object.geometry, width: object.geometry.width - 1 }),
+    ),
+    makeObjectEditButton(
+      "map-object-resize-handle",
+      "taller",
+      "+H",
+      t("map.object_resize_taller"),
+      (event) => update(event, { ...object.geometry, height: object.geometry.height + 1 }),
+    ),
+    makeObjectEditButton(
+      "map-object-resize-handle",
+      "shorter",
+      "-H",
+      t("map.object_resize_shorter"),
+      (event) => update(event, { ...object.geometry, height: object.geometry.height - 1 }),
+    ),
+  );
+
+  return controls;
 }
 
 function buildPlotCell(

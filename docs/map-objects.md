@@ -1,8 +1,9 @@
 # Map Objects And Nested Layouts
 
 GardenOps supports a layout-only map object layer for garden structures that
-sit above the normal plot grid, such as patios and terraces. These objects let a
-garden map show larger surfaces without changing the existing plot model.
+sit above the normal plot grid, such as patios, terraces, and custom surfaces.
+These objects let a garden map show larger surfaces without changing the
+existing plot model.
 
 ## Model
 
@@ -17,14 +18,20 @@ garden map show larger surfaces without changing the existing plot model.
 
 ## User Workflow
 
-From the map layer panel, editors can create a patio or terrace from the current
-plot selection. If no plots are selected, GardenOps creates a small default
-object at the top-left of the map.
+From the map layer panel, editors can create a patio, terrace, or custom object
+from the current plot selection. If no plots are selected, GardenOps creates a
+small default object at the top-left of the map.
 
-Selecting the object opens its internal layout. Editors can add pots or planters
-inside that layout. Clicking an existing nested unit deletes it after the normal
-UI confirmation path. Viewers can see objects and nested layouts but cannot
-create or delete them.
+Selecting the object opens editor controls for its name, rectangle or ellipse
+shape, color, row, column, width, height, and optional internal layout. Editors
+can also use the selected-object map handles to move or resize the object one
+grid cell at a time. Viewers can see objects and nested layouts but cannot
+create or edit them.
+
+When internal layout is enabled, editors can add pots or planters inside that
+layout. Clicking an existing nested unit deletes it after the normal UI
+confirmation path. Custom objects may remain layout-only surfaces without nested
+units.
 
 Map object labels can be selected directly on the map. The overlay is visual
 only, so ordinary plot clicks still work unless the user clicks the object
@@ -51,8 +58,7 @@ layout, and imports are limited to 200 map objects and 500 nested units total.
 
 - Nested units do not yet accept plant assignments, tasks, journals, issues, or
   harvest records.
-- Custom editing for object dimensions, shape changes, colors, names, and unit
-  movement is not exposed yet.
+- Nested unit movement is not exposed yet.
 - Shrinking the garden grid is blocked while an existing map object would fall
   outside the new bounds.
 - Non-rectangular grouping beyond rectangle and ellipse remains a future map

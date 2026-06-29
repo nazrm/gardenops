@@ -1493,6 +1493,83 @@ textarea {
   gap: var(--sp-2);
 }
 
+.map-object-create-stack,
+.map-object-custom-form,
+.map-object-geometry-form {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.map-object-custom-form,
+.map-object-geometry-form {
+  padding: var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+}
+
+.map-object-form-title {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.map-object-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2);
+}
+
+.map-object-identity-grid .map-object-field:first-child {
+  grid-column: 1 / -1;
+}
+
+.map-object-position-grid .map-object-field:first-child,
+.map-object-layout-grid .map-object-field:first-child {
+  grid-column: auto;
+}
+
+.map-object-field,
+.map-object-checkbox-field {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.map-object-checkbox-field {
+  grid-auto-flow: column;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  justify-content: start;
+  min-height: 30px;
+  text-transform: none;
+}
+
+.map-object-field input,
+.map-object-field select {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.map-object-field input[type="color"] {
+  padding: 3px;
+}
+
+.map-object-submit-btn {
+  min-height: 32px;
+}
+
 .map-object-list {
   display: grid;
   gap: var(--sp-2);
@@ -1607,6 +1684,12 @@ textarea {
 
 .map-object-unit--ellipse {
   border-radius: 999px;
+}
+
+.map-object-layout-empty {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
 }
 
 .map-layers-close,
@@ -3173,6 +3256,82 @@ textarea {
   white-space: nowrap;
   cursor: pointer;
   box-shadow: var(--shadow-sm);
+}
+
+.map-object-edit-controls {
+  position: relative;
+  align-self: stretch;
+  justify-self: stretch;
+  min-width: 0;
+  min-height: 0;
+  pointer-events: auto;
+}
+
+.map-object-edit-controls button {
+  position: absolute;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  pointer-events: auto;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+
+.map-object-edit-controls button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.map-object-move-handle[data-dir="up"] {
+  top: -13px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.map-object-move-handle[data-dir="down"] {
+  bottom: -13px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.map-object-move-handle[data-dir="left"] {
+  top: 50%;
+  left: -13px;
+  transform: translateY(-50%);
+}
+
+.map-object-move-handle[data-dir="right"] {
+  top: 50%;
+  right: -13px;
+  transform: translateY(-50%);
+}
+
+.map-object-resize-handle[data-dir="wider"] {
+  right: -13px;
+  bottom: -13px;
+}
+
+.map-object-resize-handle[data-dir="narrower"] {
+  right: 15px;
+  bottom: -13px;
+}
+
+.map-object-resize-handle[data-dir="taller"] {
+  right: -13px;
+  bottom: 15px;
+}
+
+.map-object-resize-handle[data-dir="shorter"] {
+  right: 15px;
+  bottom: 15px;
 }
 
 @keyframes highlight-pulse {
