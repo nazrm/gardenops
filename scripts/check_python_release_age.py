@@ -25,6 +25,7 @@ TEMPORARY_EXCEPTIONS = {
     "msgpack==1.2.1": datetime(2026, 6, 25, 16, 13, 53, tzinfo=UTC),
     "openai==2.37.0": datetime(2026, 5, 29, 22, 30, 36, tzinfo=UTC),
     "pip==26.1.2": datetime(2026, 6, 14, 17, 33, 59, tzinfo=UTC),
+    "redis==8.0.1": datetime(2026, 6, 30, 14, 52, 37, 728000, tzinfo=UTC),
     "starlette==1.0.1": datetime(2026, 6, 4, 21, 58, 59, tzinfo=UTC),
     "starlette==1.3.1": datetime(2026, 6, 19, 9, 23, 12, tzinfo=UTC),
     "uvicorn==0.47.0": datetime(2026, 5, 28, 18, 16, 55, tzinfo=UTC),
