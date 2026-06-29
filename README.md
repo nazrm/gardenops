@@ -60,8 +60,8 @@ control.
 ### Garden Planning
 
 - Editable garden map with plots, zones, plant placement, saved views,
-  layout-only map objects for patios/terraces and their pots/planters, and
-  import/export workflows.
+  layout-only map objects for patios, terraces, custom surfaces, optional
+  pots/planters, and import/export workflows.
 - Multi-garden support with active garden context, memberships, invitations, and
   garden-specific settings.
 - Onboarding flows for defining the garden, location, main structure, map zones,
@@ -287,8 +287,9 @@ the disposable test database. Do not source the runtime `.env` or any production
 service env file for pytest.
 
 The frontend build includes security checks for unsafe HTML sinks, invite-token
-storage, TypeScript, production bundling, sourcemap leakage, and stale generated
-asset references. If a change adds a new raw HTML sink, it must be reviewed and
+storage, auth-gate flow, AI chat client behavior, map-object editor contracts,
+TypeScript, production bundling, sourcemap leakage, and stale generated asset
+references. If a change adds a new raw HTML sink, it must be reviewed and
 documented in `frontend/security/innerhtml_allowlist.txt`.
 
 GitHub Actions runs backend, frontend, and dependency audit checks on pushes and

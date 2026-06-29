@@ -13,11 +13,12 @@
     "check:invite-token": "node ../scripts/check_invite_token_hash_only.cjs",
     "check:auth-gate-status": "node ../scripts/check_auth_gate_status_flow.cjs",
     "check:ai-chat-client": "node ../scripts/check_ai_chat_client_contract.cjs",
+    "check:map-object-editor": "node ../scripts/check_map_object_editor_contract.cjs",
     "perf:page": "node ../scripts/check_page_performance.cjs",
     "check:no-sourcemaps": "node ../scripts/check_no_sourcemaps.cjs dist",
     "check:dist-assets": "node ../scripts/check_frontend_dist_assets.cjs dist",
     "typecheck": "tsc --noEmit",
-    "build": "npm run check:xss-sinks && npm run check:invite-token && npm run check:auth-gate-status && npm run check:ai-chat-client && tsc --noEmit && vite build && npm run check:no-sourcemaps && npm run check:dist-assets",
+    "build": "npm run check:xss-sinks && npm run check:invite-token && npm run check:auth-gate-status && npm run check:ai-chat-client && npm run check:map-object-editor && tsc --noEmit && vite build && npm run check:no-sourcemaps && npm run check:dist-assets",
     "preview": "vite preview"
   },
   "devDependencies": {

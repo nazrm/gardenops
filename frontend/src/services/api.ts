@@ -1914,6 +1914,14 @@ export async function createMapObjectApi(
   return apiPost<MapObject>(`/api/gardens/${gardenId}/map-objects`, object);
 }
 
+export async function updateMapObjectApi(
+  gardenId: number,
+  publicId: string,
+  object: Partial<MapObjectInput>,
+): Promise<MapObject> {
+  return apiPatch<MapObject>(`/api/gardens/${gardenId}/map-objects/${publicId}`, object);
+}
+
 export async function deleteMapObjectApi(
   gardenId: number,
   publicId: string,

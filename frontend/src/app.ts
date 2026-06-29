@@ -25,8 +25,8 @@ import {
   invalidateSearchCache,
 } from "./components/globalSearch";
 import { getAppShellMarkup } from "./components/layout";
-import { renderMapGrid, applyPlotIndicators, syncSelectedMapObject, syncSelectedPlots } from "./components/mapView";
-import { renderMapObjectsPanel } from "./components/mapObjects";
+import { renderMapGrid, applyPlotIndicators, syncSelectedPlots } from "./components/mapView";
+import { renderMapObjectsPanel, type MapObjectCustomDraft } from "./components/mapObjects";
 import { confirmDialog, createModal, promptDialog, promptPasswordDialog } from "./components/dialogCore";
 import { showCreatePlantDialogLazy, showCreatePlotDialogLazy, showCreateZoneDialogLazy, showDeleteMenuLazy, showEditPlantDialogLazy, showEditPlotDialogLazy, showElevationEditorLazy } from "./components/gardenDialogsLoader";
 import type { AiPlantData } from "./components/overlays";
@@ -91,6 +91,7 @@ import type {
   GardenTask,
   HarvestEntry,
   MapObject,
+  MapObjectInput,
   MapObjectType,
   MapObjectUnitType,
   Plant,
@@ -153,6 +154,7 @@ import {
   setActiveGardenContext,
   setOnAuthExpired,
   updateAuthMeSettingsApi,
+  updateMapObjectApi,
   updateShadeMapStateApi,
   updatePlantApi,
   updateLayoutStateApi,
@@ -2604,6 +2606,47 @@ function selectedPlotBounds(): { x: number; y: number; width: number; height: nu
   };
 }
 
+function positiveIntegerOrFallback(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.trunc(value));
+}
+
+function clampMapObjectGeometry(geometry: MapObject["geometry"]): MapObject["geometry"] {
+  const maxCols = Math.max(1, state.gridCols);
+  const maxRows = Math.max(1, state.gridRows);
+  const width = Math.max(
+    1,
+    Math.min(positiveIntegerOrFallback(geometry.width, 1), maxCols),
+  );
+  const height = Math.max(
+    1,
+    Math.min(positiveIntegerOrFallback(geometry.height, 1), maxRows),
+  );
+  const x = Math.max(
+    1,
+    Math.min(positiveIntegerOrFallback(geometry.x, 1), maxCols - width + 1),
+  );
+  const y = Math.max(
+    1,
+    Math.min(positiveIntegerOrFallback(geometry.y, 1), maxRows - height + 1),
+  );
+  return { x, y, width, height };
+}
+
+function normalizeMapObjectPatch(patch: Partial<MapObjectInput>): Partial<MapObjectInput> {
+  const normalized: Partial<MapObjectInput> = { ...patch };
+  if (patch.geometry) {
+    normalized.geometry = clampMapObjectGeometry(patch.geometry);
+  }
+  if (patch.internal_layout) {
+    normalized.internal_layout = {
+      rows: positiveIntegerOrFallback(patch.internal_layout.rows, 6),
+      cols: positiveIntegerOrFallback(patch.internal_layout.cols, 8),
+    };
+  }
+  return normalized;
+}
+
 function renderMapObjectsPanelView(): void {
   renderMapObjectsPanel({
     container: document.getElementById("map-objects-panel"),
@@ -2618,6 +2661,12 @@ function renderMapObjectsPanelView(): void {
     },
     onCreateObject: (type) => {
       void createMapObjectFromSelection(type);
+    },
+    onCreateCustomObject: (draft) => {
+      void createCustomMapObjectFromSelection(draft);
+    },
+    onUpdateObject: (publicId, patch) => {
+      void updateMapObject(publicId, patch);
     },
     onSelectObject: (publicId) => {
       selectMapObject(publicId);
@@ -2685,6 +2734,59 @@ async function createMapObjectFromSelection(type: MapObjectType): Promise<void> 
   }
 }
 
+async function createCustomMapObjectFromSelection(draft: MapObjectCustomDraft): Promise<void> {
+  if (!ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) {
+    showToast(t("error.missing_garden"), "error");
+    return;
+  }
+  try {
+    const object = await createMapObjectApi(gardenId, {
+      object_type: "other",
+      name: draft.name,
+      shape_type: draft.shape_type,
+      geometry: clampMapObjectGeometry(selectedPlotBounds()),
+      style: draft.style,
+      z_index: 5,
+      has_internal_layout: draft.has_internal_layout,
+      internal_layout: draft.internal_layout,
+    });
+    state.selectedMapObjectId = object.public_id;
+    await fetchMapObjects();
+    showToast(t("map.object_created"), "success");
+  } catch (err) {
+    showFetchError(err);
+  }
+}
+
+async function updateMapObject(
+  publicId: string,
+  patch: Partial<MapObjectInput>,
+): Promise<void> {
+  if (!ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) {
+    showToast(t("error.missing_garden"), "error");
+    return;
+  }
+  try {
+    const object = await updateMapObjectApi(gardenId, publicId, normalizeMapObjectPatch(patch));
+    state.selectedMapObjectId = object.public_id;
+    await fetchMapObjects();
+    showToast(t("map.object_updated"), "success");
+  } catch (err) {
+    showFetchError(err);
+  }
+}
+
+function updateMapObjectGeometry(
+  object: MapObject,
+  geometry: MapObject["geometry"],
+): void {
+  void updateMapObject(object.public_id, { geometry });
+}
+
 async function deleteSelectedMapObject(publicId: string): Promise<void> {
   if (!ensureWriteAccess()) return;
   const gardenId = getActiveGardenContext();
@@ -2736,6 +2838,10 @@ async function createNestedMapUnit(
   const gardenId = getActiveGardenContext();
   const object = state.mapObjects.find((item) => item.public_id === objectPublicId);
   if (gardenId === null || !object) return;
+  if (!object.has_internal_layout) {
+    showToast(t("map.object_layout_disabled"), "error");
+    return;
+  }
   const geometry = nextUnitGeometry(object, type);
   if (!geometry) {
     showToast(t("map.object_no_unit_space"), "error");
@@ -4281,7 +4387,8 @@ function selectMapObject(publicId: string | null): void {
   state.selectedMapObjectId = publicId;
   const grid = document.getElementById("map-grid");
   if (grid) {
-    syncSelectedMapObject(grid, state.selectedMapObjectId);
+    renderPlots();
+    return;
   }
   renderMapObjectsPanelView();
 }
@@ -4344,6 +4451,13 @@ function renderPlots(): void {
     onMapObjectClick: (object) => {
       selectMapObject(state.selectedMapObjectId === object.public_id ? null : object.public_id);
     },
+    ...(canWriteInGarden
+      ? {
+          onMapObjectGeometryChange: (object: MapObject, geometry: MapObject["geometry"]) => {
+            updateMapObjectGeometry(object, geometry);
+          },
+        }
+      : {}),
     onPlotClick: (plot, event) => {
       if (state.editMode) {
         if (event.ctrlKey || event.metaKey) {

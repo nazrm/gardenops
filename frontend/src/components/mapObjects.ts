@@ -1,5 +1,23 @@
-import type { MapObject, MapObjectType, MapObjectUnitType } from "../core/models";
+import type {
+  MapObject,
+  MapObjectGeometry,
+  MapObjectInput,
+  MapObjectInternalLayout,
+  MapObjectShape,
+  MapObjectType,
+  MapObjectUnitType,
+} from "../core/models";
 import { t } from "../core/i18n";
+
+const DEFAULT_CUSTOM_COLOR = "#8f9f7d";
+
+export interface MapObjectCustomDraft {
+  name: string;
+  shape_type: MapObjectShape;
+  style: { color: string };
+  has_internal_layout: boolean;
+  internal_layout: MapObjectInternalLayout | null;
+}
 
 interface RenderMapObjectsPanelParams {
   container: HTMLElement | null;
@@ -10,6 +28,8 @@ interface RenderMapObjectsPanelParams {
   selectedPlotCount: number;
   onToggleObjects: (show: boolean) => void;
   onCreateObject: (type: MapObjectType) => void;
+  onCreateCustomObject: (draft: MapObjectCustomDraft) => void;
+  onUpdateObject: (publicId: string, patch: Partial<MapObjectInput>) => void;
   onSelectObject: (publicId: string | null) => void;
   onDeleteObject: (publicId: string) => void;
   onAddUnit: (objectPublicId: string, type: MapObjectUnitType) => void;
@@ -29,6 +49,10 @@ function objectTypeLabel(type: MapObjectType): string {
   }
 }
 
+function shapeTypeLabel(type: MapObjectShape): string {
+  return type === "ellipse" ? t("map.object_ellipse") : t("map.object_rectangle");
+}
+
 function unitTypeLabel(type: MapObjectUnitType): string {
   switch (type) {
     case "pot": return t("map.unit_pot");
@@ -46,6 +70,67 @@ function makeButton(className: string, label: string, title = label): HTMLButton
   button.textContent = label;
   button.title = title;
   return button;
+}
+
+function makeField(label: string, control: HTMLElement): HTMLLabelElement {
+  const field = document.createElement("label");
+  field.className = "map-object-field";
+  const text = document.createElement("span");
+  text.textContent = label;
+  field.append(text, control);
+  return field;
+}
+
+function makeTextInput(value: string, disabled: boolean): HTMLInputElement {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = value;
+  input.maxLength = 120;
+  input.disabled = disabled;
+  return input;
+}
+
+function makeNumberInput(value: number, min: number, max: number, disabled: boolean): HTMLInputElement {
+  const input = document.createElement("input");
+  input.type = "number";
+  input.value = String(value);
+  input.min = String(min);
+  input.max = String(max);
+  input.step = "1";
+  input.inputMode = "numeric";
+  input.disabled = disabled;
+  return input;
+}
+
+function makeColorInput(value: string, disabled: boolean): HTMLInputElement {
+  const input = document.createElement("input");
+  input.type = "color";
+  input.value = /^#[0-9a-f]{6}$/i.test(value) ? value : DEFAULT_CUSTOM_COLOR;
+  input.disabled = disabled;
+  return input;
+}
+
+function makeShapeSelect(value: MapObjectShape, disabled: boolean): HTMLSelectElement {
+  const select = document.createElement("select");
+  select.disabled = disabled;
+  for (const shape of ["rectangle", "ellipse"] as const) {
+    const option = document.createElement("option");
+    option.value = shape;
+    option.textContent = shapeTypeLabel(shape);
+    select.appendChild(option);
+  }
+  select.value = value;
+  return select;
+}
+
+function positiveIntegerValue(input: HTMLInputElement, fallback: number): number {
+  const value = Number.parseInt(input.value, 10);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(1, value);
+}
+
+function shapeValue(select: HTMLSelectElement): MapObjectShape {
+  return select.value === "ellipse" ? "ellipse" : "rectangle";
 }
 
 function buildCreateRow(params: RenderMapObjectsPanelParams): HTMLElement {
@@ -70,6 +155,84 @@ function buildCreateRow(params: RenderMapObjectsPanelParams): HTMLElement {
 
   row.append(patio, terrace);
   return row;
+}
+
+function buildCustomObjectForm(params: RenderMapObjectsPanelParams): HTMLFormElement {
+  const form = document.createElement("form");
+  form.className = "map-object-custom-form";
+
+  const title = document.createElement("strong");
+  title.className = "map-object-form-title";
+  title.textContent = t("map.object_custom");
+
+  const fields = document.createElement("div");
+  fields.className = "map-object-form-grid map-object-identity-grid";
+
+  const nameInput = makeTextInput(t("map.object_custom"), !params.canWrite);
+  const shapeSelect = makeShapeSelect("rectangle", !params.canWrite);
+  const colorInput = makeColorInput(DEFAULT_CUSTOM_COLOR, !params.canWrite);
+  const layoutToggle = document.createElement("input");
+  layoutToggle.type = "checkbox";
+  layoutToggle.disabled = !params.canWrite;
+
+  const layoutLabel = document.createElement("label");
+  layoutLabel.className = "map-object-checkbox-field";
+  const layoutText = document.createElement("span");
+  layoutText.textContent = t("map.object_layout");
+  layoutLabel.append(layoutToggle, layoutText);
+
+  fields.append(
+    makeField(t("map.object_name"), nameInput),
+    makeField(t("map.object_shape"), shapeSelect),
+    makeField(t("map.object_color"), colorInput),
+    layoutLabel,
+  );
+
+  const layoutFields = document.createElement("div");
+  layoutFields.className = "map-object-form-grid map-object-layout-grid";
+  const layoutRows = makeNumberInput(6, 1, 100, !params.canWrite);
+  const layoutCols = makeNumberInput(8, 1, 100, !params.canWrite);
+  layoutFields.hidden = true;
+  layoutFields.append(
+    makeField(t("map.object_layout_rows"), layoutRows),
+    makeField(t("map.object_layout_cols"), layoutCols),
+  );
+
+  layoutToggle.addEventListener("change", () => {
+    layoutFields.hidden = !layoutToggle.checked;
+  });
+
+  const submit = makeButton("cat-filter-btn map-object-submit-btn", `+ ${t("map.object_create_custom")}`);
+  submit.type = "submit";
+  submit.disabled = !params.canWrite;
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!params.canWrite) return;
+    const name = nameInput.value.trim() || t("map.object_custom");
+    params.onCreateCustomObject({
+      name,
+      shape_type: shapeValue(shapeSelect),
+      style: { color: colorInput.value },
+      has_internal_layout: layoutToggle.checked,
+      internal_layout: layoutToggle.checked
+        ? {
+            rows: positiveIntegerValue(layoutRows, 6),
+            cols: positiveIntegerValue(layoutCols, 8),
+          }
+        : null,
+    });
+  });
+
+  form.append(title, fields, layoutFields, submit);
+  return form;
+}
+
+function buildCreateArea(params: RenderMapObjectsPanelParams): HTMLElement {
+  const area = document.createElement("div");
+  area.className = "map-object-create-stack";
+  area.append(buildCreateRow(params), buildCustomObjectForm(params));
+  return area;
 }
 
 function buildObjectList(params: RenderMapObjectsPanelParams): HTMLElement {
@@ -142,6 +305,95 @@ function buildUnitGrid(
   return grid;
 }
 
+function buildGeometryForm(
+  object: MapObject,
+  params: RenderMapObjectsPanelParams,
+): HTMLFormElement {
+  const form = document.createElement("form");
+  form.className = "map-object-geometry-form";
+
+  const nameInput = makeTextInput(object.name, !params.canWrite);
+  const shapeSelect = makeShapeSelect(object.shape_type, !params.canWrite);
+  const colorInput = makeColorInput(object.style.color, !params.canWrite);
+  const rowInput = makeNumberInput(object.geometry.y, 1, 100, !params.canWrite);
+  const colInput = makeNumberInput(object.geometry.x, 1, 100, !params.canWrite);
+  const widthInput = makeNumberInput(object.geometry.width, 1, 100, !params.canWrite);
+  const heightInput = makeNumberInput(object.geometry.height, 1, 100, !params.canWrite);
+  const layoutToggle = document.createElement("input");
+  layoutToggle.type = "checkbox";
+  layoutToggle.checked = object.has_internal_layout;
+  layoutToggle.disabled = !params.canWrite || (object.has_internal_layout && object.units.length > 0);
+
+  const identity = document.createElement("div");
+  identity.className = "map-object-form-grid map-object-identity-grid";
+  identity.append(
+    makeField(t("map.object_name"), nameInput),
+    makeField(t("map.object_shape"), shapeSelect),
+    makeField(t("map.object_color"), colorInput),
+  );
+
+  const geometry = document.createElement("div");
+  geometry.className = "map-object-form-grid map-object-position-grid";
+  geometry.append(
+    makeField(t("map.object_row"), rowInput),
+    makeField(t("map.object_col"), colInput),
+    makeField(t("map.object_width"), widthInput),
+    makeField(t("map.object_height"), heightInput),
+  );
+
+  const layoutLabel = document.createElement("label");
+  layoutLabel.className = "map-object-checkbox-field";
+  const layoutText = document.createElement("span");
+  layoutText.textContent = t("map.object_layout");
+  layoutLabel.append(layoutToggle, layoutText);
+
+  const layoutFields = document.createElement("div");
+  layoutFields.className = "map-object-form-grid map-object-layout-grid";
+  const rowsInput = makeNumberInput(object.internal_layout.rows, 1, 100, !params.canWrite);
+  const colsInput = makeNumberInput(object.internal_layout.cols, 1, 100, !params.canWrite);
+  layoutFields.hidden = !layoutToggle.checked;
+  layoutFields.append(
+    makeField(t("map.object_layout_rows"), rowsInput),
+    makeField(t("map.object_layout_cols"), colsInput),
+  );
+
+  layoutToggle.addEventListener("change", () => {
+    layoutFields.hidden = !layoutToggle.checked;
+  });
+
+  const submit = makeButton("cat-filter-btn map-object-submit-btn", t("map.object_save"));
+  submit.type = "submit";
+  submit.disabled = !params.canWrite;
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!params.canWrite) return;
+    const nextGeometry: MapObjectGeometry = {
+      x: positiveIntegerValue(colInput, object.geometry.x),
+      y: positiveIntegerValue(rowInput, object.geometry.y),
+      width: positiveIntegerValue(widthInput, object.geometry.width),
+      height: positiveIntegerValue(heightInput, object.geometry.height),
+    };
+    const patch: Partial<MapObjectInput> = {
+      name: nameInput.value.trim() || object.name,
+      shape_type: shapeValue(shapeSelect),
+      geometry: nextGeometry,
+      style: { color: colorInput.value },
+      has_internal_layout: layoutToggle.checked,
+    };
+    if (layoutToggle.checked) {
+      patch.internal_layout = {
+        rows: positiveIntegerValue(rowsInput, object.internal_layout.rows),
+        cols: positiveIntegerValue(colsInput, object.internal_layout.cols),
+      };
+    }
+    params.onUpdateObject(object.public_id, patch);
+  });
+
+  form.append(identity, geometry, layoutLabel, layoutFields, submit);
+  return form;
+}
+
 function buildSelectedObject(params: RenderMapObjectsPanelParams): HTMLElement | null {
   const selected = params.objects.find((object) => object.public_id === params.selectedObjectId);
   if (!selected) return null;
@@ -154,8 +406,20 @@ function buildSelectedObject(params: RenderMapObjectsPanelParams): HTMLElement |
   const name = document.createElement("strong");
   name.textContent = selected.name;
   const status = document.createElement("span");
-  status.textContent = t("map.object_layout_only");
+  status.textContent = selected.has_internal_layout
+    ? t("map.object_layout_only")
+    : t("map.object_layout_disabled");
   heading.append(name, status);
+
+  panel.append(heading, buildGeometryForm(selected, params));
+
+  if (!selected.has_internal_layout) {
+    const empty = document.createElement("p");
+    empty.className = "map-object-layout-empty";
+    empty.textContent = t("map.object_layout_disabled");
+    panel.appendChild(empty);
+    return panel;
+  }
 
   const actions = document.createElement("div");
   actions.className = "map-object-create-row";
@@ -167,7 +431,7 @@ function buildSelectedObject(params: RenderMapObjectsPanelParams): HTMLElement |
   planter.addEventListener("click", () => params.onAddUnit(selected.public_id, "planter"));
   actions.append(pot, planter);
 
-  panel.append(heading, actions, buildUnitGrid(selected, params));
+  panel.append(actions, buildUnitGrid(selected, params));
   return panel;
 }
 
@@ -190,7 +454,7 @@ export function renderMapObjectsPanel(params: RenderMapObjectsPanelParams): void
   const selectedPanel = buildSelectedObject(params);
   container.replaceChildren(
     header,
-    buildCreateRow(params),
+    buildCreateArea(params),
     buildObjectList(params),
     ...(selectedPanel ? [selectedPanel] : []),
   );

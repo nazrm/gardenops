@@ -109,6 +109,9 @@ balance becomes a problem.
 
 - unsafe raw HTML sinks
 - invite-token storage regressions
+- auth-gate status flow regressions
+- AI chat client contract regressions
+- map-object editor contract regressions
 - TypeScript errors
 - production bundling errors
 - sourcemap leakage, including inline `sourceMappingURL` references
