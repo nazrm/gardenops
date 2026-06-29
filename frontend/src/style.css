@@ -3267,71 +3267,122 @@ textarea {
   pointer-events: none;
 }
 
-.map-object-edit-controls button {
+.map-object-direct-controls {
+  isolation: isolate;
+}
+
+.map-object-preview {
   position: absolute;
-  display: inline-grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--accent);
+  inset: 0;
+  pointer-events: none;
+  border: 2px dashed var(--accent);
   border-radius: var(--r-sm);
-  background: var(--bg-1);
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 900;
-  line-height: 1;
+  background:
+    repeating-linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--map-object-color, #8f9f7d) 28%, transparent),
+      color-mix(in srgb, var(--map-object-color, #8f9f7d) 28%, transparent) 6px,
+      color-mix(in srgb, var(--map-object-color, #8f9f7d) 14%, transparent) 6px,
+      color-mix(in srgb, var(--map-object-color, #8f9f7d) 14%, transparent) 12px
+    );
+  box-shadow: 0 0 0 2px var(--accent-muted);
+  opacity: 0.78;
+  z-index: 1;
+}
+
+.map-object-preview--ellipse {
+  border-radius: 999px;
+}
+
+.map-object-interaction-surface {
+  position: absolute;
+  inset: 0;
   pointer-events: auto;
-  cursor: pointer;
+  cursor: move;
+  touch-action: none;
+  z-index: 2;
+}
+
+.map-object-interaction-surface:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+body.manipulating-map-object .map-object-interaction-surface {
+  cursor: grabbing;
+}
+
+.map-object-resize-handle {
+  position: absolute;
+  display: block;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--bg-1);
+  pointer-events: auto;
+  touch-action: none;
+  z-index: 3;
   box-shadow: var(--shadow-sm);
 }
 
-.map-object-edit-controls button:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
+.map-object-resize-handle::before {
+  content: "";
+  position: absolute;
+  inset: -15px;
 }
 
-.map-object-move-handle[data-dir="up"] {
-  top: -13px;
+.map-object-resize-handle[data-handle="nw"] {
+  top: -7px;
+  left: -7px;
+  cursor: nwse-resize;
+}
+
+.map-object-resize-handle[data-handle="n"] {
+  top: -7px;
   left: 50%;
   transform: translateX(-50%);
+  cursor: ns-resize;
 }
 
-.map-object-move-handle[data-dir="down"] {
-  bottom: -13px;
+.map-object-resize-handle[data-handle="ne"] {
+  top: -7px;
+  right: -7px;
+  cursor: nesw-resize;
+}
+
+.map-object-resize-handle[data-handle="e"] {
+  top: 50%;
+  right: -7px;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.map-object-resize-handle[data-handle="se"] {
+  right: -7px;
+  bottom: -7px;
+  cursor: nwse-resize;
+}
+
+.map-object-resize-handle[data-handle="s"] {
+  bottom: -7px;
   left: 50%;
   transform: translateX(-50%);
+  cursor: ns-resize;
 }
 
-.map-object-move-handle[data-dir="left"] {
+.map-object-resize-handle[data-handle="sw"] {
+  bottom: -7px;
+  left: -7px;
+  cursor: nesw-resize;
+}
+
+.map-object-resize-handle[data-handle="w"] {
   top: 50%;
-  left: -13px;
+  left: -7px;
   transform: translateY(-50%);
-}
-
-.map-object-move-handle[data-dir="right"] {
-  top: 50%;
-  right: -13px;
-  transform: translateY(-50%);
-}
-
-.map-object-resize-handle[data-dir="wider"] {
-  right: -13px;
-  bottom: -13px;
-}
-
-.map-object-resize-handle[data-dir="narrower"] {
-  right: 15px;
-  bottom: -13px;
-}
-
-.map-object-resize-handle[data-dir="taller"] {
-  right: -13px;
-  bottom: 15px;
-}
-
-.map-object-resize-handle[data-dir="shorter"] {
-  right: 15px;
-  bottom: 15px;
+  cursor: ew-resize;
 }
 
 @keyframes highlight-pulse {

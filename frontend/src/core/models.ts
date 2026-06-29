@@ -69,6 +69,7 @@ export function formatPlotLabel(
 export interface MoveAction {
   plots: Array<{ plot_id: string; row: number; col: number }>;
   house?: { row: number; col: number; width: number; height: number };
+  mapObject?: { public_id: string; geometry: MapObjectGeometry };
 }
 
 export interface CameraState {

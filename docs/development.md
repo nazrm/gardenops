@@ -122,6 +122,22 @@ If a change intentionally adds a raw HTML sink, document it in
 The guard detects `innerHTML`/`outerHTML` dot and bracket assignment,
 `insertAdjacentHTML`, and reviewed dynamic HTML helper calls including aliases.
 
+## Targeted Frontend E2E Checks
+
+For map-object direct manipulation changes, build or start the frontend and run
+the mocked browser flow:
+
+```bash
+cd frontend
+npm run preview -- --host 127.0.0.1 --port 4173
+cd ..
+BASE_URL=http://127.0.0.1:4173 CHROMIUM_EXECUTABLE=/usr/bin/chromium-browser node scripts/check_map_object_direct_manipulation_e2e.cjs
+```
+
+The check runs against local built assets, mocks GardenOps API responses in the
+browser, and verifies touch move, touch resize, keyboard move/resize, and
+two-finger touch cancellation without touching live data.
+
 ## Test Database
 
 Create `.env.test.local` from `.env.test.example` and use it for test and PR
