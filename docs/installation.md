@@ -96,16 +96,16 @@ Open `http://localhost:5173`.
 Use this when asking a coding agent to set up the project:
 
 ```text
-You are in a fresh clone of GardenOps. Read README.md and docs/README.md first.
-Set up a complete local development instance without committing secrets or
-generated artifacts.
+You are in a fresh clone of GardenOps. Read README.md, docs/README.md, and
+docs/installation.md first. Set up a complete local development instance
+without committing secrets or generated artifacts.
 
 Verify or install Python 3.14, uv, Node.js 24, npm, and PostgreSQL 16+. Install
 dependencies, create local `gardenops` and `gardenops_test` databases, create
 `.env` from `.env.example`, create `.env.test.local` from `.env.test.example`,
 run runtime migrations from `.env`, build the frontend, start the backend on
-`127.0.0.1:8000`, and run the documented development checks with
-`.env.test.local`.
+`127.0.0.1:8000`, and run the commands in the README.md "Development Checks"
+section with `.env.test.local`.
 
 Stop and ask before changing firewall rules, nginx, systemd, TLS certificates,
 public DNS, production databases, or persistent secrets outside this checkout.

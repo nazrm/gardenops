@@ -164,9 +164,9 @@ For a fuller walkthrough, see [docs/installation.md](docs/installation.md).
 Point your coding agent at this README and use this prompt:
 
 ```text
-You are in a fresh clone of GardenOps. Read README.md and docs/README.md first.
-Set up a complete local development instance without committing secrets or
-generated artifacts.
+You are in a fresh clone of GardenOps. Read README.md, docs/README.md, and
+docs/installation.md first. Set up a complete local development instance
+without committing secrets or generated artifacts.
 
 Tasks:
 1. Verify or install Python 3.14, uv, Node.js 24, npm, and PostgreSQL 16+.
@@ -181,8 +181,8 @@ Tasks:
    disposable test database, and never use the runtime `.env` for tests.
 6. Load `.env`, run `gardenops.db.run_migrations()`, build the frontend, and
    run the backend on `127.0.0.1:8000`.
-7. Run the checks listed in README.md and report exactly what passed, what
-   failed, and what still needs user input.
+7. Run the commands in the README.md "Development Checks" section and report
+   exactly what passed, what failed, and what still needs user input.
 
 Stop and ask before changing firewall rules, nginx, systemd, TLS certificates,
 public DNS, production databases, or persistent secrets outside this checkout.
