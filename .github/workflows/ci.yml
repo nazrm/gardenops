@@ -63,8 +63,8 @@ jobs:
           mkdir -p /tmp/gardenops-policy-python/.github
           cp -R .github/workflows /tmp/gardenops-policy-python/.github/workflows
           if [ ! -f /tmp/gardenops-policy-python/scripts/check_github_action_pins.py ]; then
-            mkdir -p /tmp/gardenops-policy-python/scripts
-            cp scripts/check_github_action_pins.py /tmp/gardenops-policy-python/scripts/check_github_action_pins.py
+            echo "Trusted base checkout is missing scripts/check_github_action_pins.py; refusing to run PR-controlled checker." >&2
+            exit 1
           fi
       - run: python scripts/check_github_action_pins.py
         if: github.event_name == 'pull_request'
