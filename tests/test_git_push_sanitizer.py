@@ -48,6 +48,10 @@ token = "invite-passkey-create-token"
         text = f"""
 token = "{synthetic_value}"
 API_KEY={synthetic_value}
+DATABASE_PASSWORD = "{synthetic_value}"
+JWT_SECRET = "{synthetic_value}"
+AWS_SECRET_ACCESS_KEY = "{synthetic_value}"
+STRIPE_API_KEY = "{synthetic_value}"
 """
 
         self.assertEqual(
@@ -55,6 +59,10 @@ API_KEY={synthetic_value}
             [
                 "SECRET_ASSIGNMENT at line 2",
                 "SECRET_ASSIGNMENT at line 3",
+                "SECRET_ASSIGNMENT at line 4",
+                "SECRET_ASSIGNMENT at line 5",
+                "SECRET_ASSIGNMENT at line 6",
+                "SECRET_ASSIGNMENT at line 7",
             ],
         )
 

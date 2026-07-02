@@ -92,7 +92,9 @@ HARD_SECRET_PATTERNS = (
 )
 
 SECRET_ASSIGNMENT_RE = re.compile(
-    r"\b(?P<name>api[_-]?key|secret|token|password|cookie|session[_-]?cookie|bearer)\b\s*[:=]\s*(?P<value>.+)",
+    r"(?<![A-Za-z0-9_$-])"
+    r"(?P<name>[A-Za-z0-9_$-]*(?:api[_-]?key|secret|token|password|session[_-]?cookie|cookie|bearer)[A-Za-z0-9_$-]*)"
+    r"\s*[:=]\s*(?P<value>.+)",
     re.IGNORECASE,
 )
 SECRET_ASSIGNMENT_SUPPRESSION_RE = re.compile(
