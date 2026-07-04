@@ -91,12 +91,11 @@ HARD_SECRET_PATTERNS = (
     ),
 )
 
-SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?<![A-Za-z0-9_$-])"
-    r"(?P<name>[A-Za-z0-9_$-]*(?:api[_-]?key|secret|token|password|session[_-]?cookie|cookie|bearer)[A-Za-z0-9_$-]*)"
-    r"\s*[:=]\s*(?P<value>.+)",
+SECRET_NAME_RE = re.compile(
+    r"(?:api[_-]?key|secret|token|password|session[_-]?cookie|cookie|bearer)",
     re.IGNORECASE,
 )
+ASSIGNMENT_NAME_RE = re.compile(r"(?P<name>[A-Za-z0-9_$-]+)\s*$")
 SECRET_ASSIGNMENT_SUPPRESSION_RE = re.compile(
     r"push-sanitizer:\s*allow\s+SECRET_ASSIGNMENT\b",
     re.IGNORECASE,
@@ -251,6 +250,18 @@ def looks_like_secret_literal(value: str, *, quoted: bool) -> bool:
     return len(normalized) >= 20 and classes >= 3 and entropy >= 4.0
 
 
+def secret_assignment_value(line: str) -> str | None:
+    separators = [index for index in (line.find(":"), line.find("=")) if index != -1]
+    if not separators:
+        return None
+    separator_index = min(separators)
+    name_match = ASSIGNMENT_NAME_RE.search(line[:separator_index])
+    if not name_match or not SECRET_NAME_RE.search(name_match.group("name")):
+        return None
+    value = line[separator_index + 1 :].lstrip()
+    return value or None
+
+
 def secret_pattern_details_for_line(line: str) -> list[str]:
     details: list[str] = []
     for name, pattern in HARD_SECRET_PATTERNS:
@@ -258,9 +269,9 @@ def secret_pattern_details_for_line(line: str) -> list[str]:
             details.append(name)
             break
     if not assignment_suppressed(line) and not SAFE_EXAMPLE_RE.search(line):
-        assignment = SECRET_ASSIGNMENT_RE.search(line)
-        if assignment:
-            value, quoted = extract_assignment_value(assignment.group("value"))
+        assignment_value = secret_assignment_value(line)
+        if assignment_value is not None:
+            value, quoted = extract_assignment_value(assignment_value)
             if looks_like_secret_literal(value, quoted=quoted):
                 details.append("SECRET_ASSIGNMENT")
     return details

@@ -126,6 +126,11 @@ api_key = "{synthetic_openai_key}"  # push-sanitizer: allow SECRET_ASSIGNMENT
             ["SECRET_ASSIGNMENT at added line 12"],
         )
 
+    def test_secret_assignment_rejects_long_non_matching_lines_quickly(self) -> None:
+        text = "secret" * 6000
+
+        self.assertEqual(self._finding_details(text), [])
+
 
 if __name__ == "__main__":
     unittest.main()
