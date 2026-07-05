@@ -286,6 +286,7 @@ class TaskAttentionProvider:
             plot_ids=plot_ids,
             due_on=due_on,
             domain_state=self._domain_state(status),
+            delivery_eligibility=(("panel_only", "inbox", "digest") if active else ("panel_only",)),
             group_key=group_key or None,
             primary_action=(
                 AttentionAction(

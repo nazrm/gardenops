@@ -28,6 +28,7 @@ from gardenops.router_helpers import (
 from gardenops.router_helpers import (
     require_write as _require_write,
 )
+from gardenops.services.attention import load_attention_preferences
 from gardenops.services.notification_service import (
     clear_expired_notifications,
     clear_notifications_hidden_by_preferences,
@@ -41,6 +42,7 @@ from gardenops.services.notification_service import (
     mark_read,
     normalize_notification_rules,
     notification_policy_catalog,
+    notification_rows_allowed_by_attention,
     notification_rules_json,
     run_notification_maintenance_for_garden,
 )
@@ -250,21 +252,42 @@ def list_notifications(
 
     where = " AND ".join(conditions)
 
-    rows = db.execute(
-        f"SELECT * FROM notification_events WHERE {where} "  # noqa: S608
-        "ORDER BY created_at_ms DESC LIMIT %s OFFSET %s",
-        [*params, limit, offset],
-    ).fetchall()
+    if scope == "inbox" and user_id is not None:
+        candidate_rows = db.execute(
+            f"SELECT * FROM notification_events WHERE {where} "  # noqa: S608
+            "ORDER BY created_at_ms DESC",
+            params,
+        ).fetchall()
+        preferences = load_attention_preferences(db, user_id)
+        filtered_rows = notification_rows_allowed_by_attention(
+            [dict(row) for row in candidate_rows],
+            preferences=preferences,
+            surface="inbox",
+            garden_id=garden_id,
+            user_id=user_id,
+        )
+        rows = filtered_rows[offset : offset + limit]
+        total = len(filtered_rows)
+    else:
+        rows = db.execute(
+            f"SELECT * FROM notification_events WHERE {where} "  # noqa: S608
+            "ORDER BY created_at_ms DESC LIMIT %s OFFSET %s",
+            [*params, limit, offset],
+        ).fetchall()
+        total = None
 
     response: dict[str, Any] = {
-        "notifications": [_serialize_notification(r, now_ms=now) for r in rows],
+        "notifications": [_serialize_notification(dict(r), now_ms=now) for r in rows],
     }
     if include_total:
-        total_row = db.execute(
-            f"SELECT COUNT(*) AS c FROM notification_events WHERE {where}",  # noqa: S608
-            params,
-        ).fetchone()
-        response["total"] = total_row["c"] if total_row else 0
+        if total is not None:
+            response["total"] = total
+        else:
+            total_row = db.execute(
+                f"SELECT COUNT(*) AS c FROM notification_events WHERE {where}",  # noqa: S608
+                params,
+            ).fetchone()
+            response["total"] = total_row["c"] if total_row else 0
     return response
 
 

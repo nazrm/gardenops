@@ -1216,6 +1216,51 @@ class TestAttentionTodayApi(BaseApiTest):
             db.return_db(conn)
         self.assertEqual(after, before)
 
+    def test_authenticated_custom_preferences_round_trip_full_customization(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+            },
+        ):
+            _, csrf_token = self._login_session("test_admin", "testadminpass")
+            headers = self._session_headers(csrf_token)
+            payload = {
+                "preset": "custom",
+                "rules": {
+                    "calendar_event_due": {
+                        "panel": False,
+                        "inbox": True,
+                        "digest": False,
+                        "min_severity": "high",
+                    }
+                },
+                "quiet_hours": {"digest": {"enabled": True, "start": "21:30", "end": "06:15"}},
+                "show_no_action_history": False,
+                "metadata": {"weather_aware_watering_suppression": False},
+            }
+
+            saved = self.client.put(
+                "/api/attention/preferences",
+                json=payload,
+                headers=headers,
+            )
+            self.assertEqual(saved.status_code, 200, saved.text)
+
+            loaded = self.client.get("/api/attention/preferences", headers=headers)
+            self.assertEqual(loaded.status_code, 200, loaded.text)
+
+        body = loaded.json()
+        self.assertEqual(body["preset"], "custom")
+        self.assertFalse(body["rules"]["calendar_event_due"]["panel"])
+        self.assertEqual(body["rules"]["calendar_event_due"]["min_severity"], "high")
+        self.assertTrue(body["quiet_hours"]["digest"]["enabled"])
+        self.assertEqual(body["quiet_hours"]["digest"]["start"], "21:30")
+        self.assertFalse(body["show_no_action_history"])
+        self.assertFalse(body["metadata"]["weather_aware_watering_suppression"])
+
 
 class TestAttentionTaskProvider(BaseApiTest):
     def _garden_and_user(self) -> tuple[int, int]:

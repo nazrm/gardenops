@@ -25,10 +25,11 @@ This plan implements the first production-safe Attention slice:
 - First vertical slice: task provider, task-only `/api/attention/today`, compact Today panel, and full-stack Playwright.
 - Second slice: weather-aware rain/watering no-action-needed outcomes written by task/weather automation and read by Attention.
 - Third slice: issue, calendar, and legacy notification/status providers.
-- Attention settings dialog with Calm, Balanced, Detailed, and Custom presets.
+- Attention settings dialog with Calm, Balanced, Detailed, Custom, category/channel
+  matrix controls, quiet-hour controls, and watering/weather preference metadata.
 - Full backend tests plus Playwright coverage for both the task-only slice and the Morning Garden Check journey.
 
-This plan intentionally does not migrate email digest or the existing notification inbox to Attention ownership. The panel may show data derived from `notification_events`, but it must not clear, supersede, rewrite, or delete those rows.
+This plan intentionally does not migrate email digest or the existing notification inbox to Attention lifecycle ownership. The final customization slice lets notification inbox and digest delivery consult Attention preferences for eligibility, but `notification_events` remain the durable inbox/log records and Attention must not clear, supersede, rewrite, or delete those rows during read/filter paths.
 
 ## Resolved Implementation Choices
 
@@ -2287,6 +2288,8 @@ Include `README.md` in this commit only when it changed during Step 4.
 - [x] One user's dismiss/snooze does not hide the item for other users.
 - [x] High/critical safety, frost, security, and system guardrails prevent hiding from every non-email surface.
 - [x] Calm, Balanced, Detailed, and Custom preferences change delivery eligibility and are covered by backend and Playwright tests.
+- [x] Custom Attention settings expose category/channel matrix controls, quiet-hour controls, and watering/weather preference metadata.
+- [x] Notification inbox and email digest delivery consult Attention preference eligibility without mutating notification log rows.
 - [x] Attention phase 1 does not mutate existing `notification_events`; notification inbox absence for rain-suppressed watering is caused by task/weather notification maintenance, not the Attention read endpoint.
 - [x] Provider failure returns usable partial feed plus `degraded_providers`.
 - [x] Playwright covers desktop, keyboard, reduced motion, labelled regions/dialogs, no-action expansion, settings Save/Cancel, action navigation, and mobile handle/sheet behavior.
@@ -2294,7 +2297,7 @@ Include `README.md` in this commit only when it changed during Step 4.
 
 ## Self-Review Notes
 
-- Spec coverage: tasks above cover storage, lifecycle vocabulary, providers, preferences, Map Today panel, rain suppression, API shape, accessibility, backend tests, and full-stack Playwright journey. Email digest and inbox migration are deliberately excluded from this first implementation plan and remain behind a phase gate.
+- Spec coverage: tasks above cover storage, lifecycle vocabulary, providers, preferences, Map Today panel, rain suppression, notification inbox/digest preference filtering, API shape, accessibility, backend tests, and full-stack Playwright journey. Notification lifecycle ownership remains with existing notification tables; the Attention adapter filters delivery without rewriting inbox/log rows.
 - Placeholder scan: this plan avoids unsupported future providers and keeps every code task tied to concrete files, commands, and expected outcomes.
 - Type consistency: backend item fields and frontend `AttentionItem` fields use the same names as the spec and API response.
 

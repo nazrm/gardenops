@@ -15,6 +15,17 @@ from typing import Any, cast
 from gardenops.branding import app_name
 from gardenops.db import DbConn, current_timestamp_ms
 from gardenops.router_helpers import generate_public_id
+from gardenops.services.attention.preferences import (
+    AttentionPreferenceSet,
+    AttentionSurface,
+    apply_preferences,
+)
+from gardenops.services.attention.service import load_attention_preferences
+from gardenops.services.attention.types import (
+    AttentionCategory,
+    AttentionItem,
+    normalize_severity,
+)
 from gardenops.services.automation import (
     escalate_overdue_follow_ups,
     on_dry_spell_alert,
@@ -283,6 +294,93 @@ def _notification_allowed_by_rules(
         return False
     min_severity = _normalize_severity(str(rule.get("min_severity", "low")))
     return _SEVERITY_RANK[_normalize_severity(severity)] >= _SEVERITY_RANK[min_severity]
+
+
+def _attention_type_for_notification(
+    notification_type: str,
+    notification_subtype: str | None,
+) -> str:
+    if notification_type == "weather_alert":
+        if notification_subtype == "frost_warning":
+            return "frost_warning"
+        if notification_subtype == "rain_surplus":
+            return "rain_alert"
+        return "weather_alert"
+    if notification_type == "issue_created":
+        return "issue_follow_up_due"
+    return notification_subtype or notification_type
+
+
+def _attention_category_for_notification(
+    notification_type: str,
+    notification_subtype: str | None,
+) -> AttentionCategory:
+    if notification_type in {"system", "status", "security", "backup"}:
+        return "system"
+    if notification_subtype in {"system", "status", "security", "backup"}:
+        return "system"
+    if notification_type == "weather_alert":
+        return "warning"
+    if notification_type == "task_upcoming":
+        return "upcoming"
+    return "needs_action"
+
+
+def _attention_item_from_notification_row(
+    row: dict[str, Any],
+    *,
+    fallback_garden_id: int,
+    fallback_user_id: int,
+) -> AttentionItem:
+    notification_type = str(row.get("notification_type") or "")
+    notification_subtype = (
+        str(row.get("notification_subtype")) if row.get("notification_subtype") else None
+    )
+    public_id = str(row.get("public_id") or row.get("id") or "")
+    target_type = str(row.get("target_type") or "") or None
+    target_id = str(row.get("target_id") or "") or None
+    row_garden_id = row.get("garden_id")
+    row_user_id = row.get("user_id")
+    return AttentionItem(
+        id=f"attn:notification-event:{public_id}",
+        provider="notification_status",
+        type=_attention_type_for_notification(notification_type, notification_subtype),
+        category=_attention_category_for_notification(notification_type, notification_subtype),
+        severity=normalize_severity(str(row.get("severity") or "normal")),
+        title=str(row.get("title") or ""),
+        body=str(row.get("body") or ""),
+        reason="Notification",
+        target_type=target_type,
+        target_id=target_id,
+        garden_id=int(row_garden_id) if row_garden_id is not None else fallback_garden_id,
+        audience_user_id=int(row_user_id) if row_user_id is not None else fallback_user_id,
+        delivery_eligibility=("panel_only", "inbox", "digest"),
+        updated_at_ms=int(row.get("created_at_ms") or 0),
+        metadata={
+            "notification_type": notification_type,
+            "notification_subtype": notification_subtype,
+        },
+    )
+
+
+def notification_rows_allowed_by_attention(
+    rows: list[dict[str, Any]],
+    *,
+    preferences: AttentionPreferenceSet,
+    surface: AttentionSurface,
+    garden_id: int,
+    user_id: int,
+) -> list[dict[str, Any]]:
+    allowed: list[dict[str, Any]] = []
+    for row in rows:
+        item = _attention_item_from_notification_row(
+            row,
+            fallback_garden_id=garden_id,
+            fallback_user_id=user_id,
+        )
+        if apply_preferences([item], preferences, surface=surface):
+            allowed.append(row)
+    return allowed
 
 
 def _date_start_ms(date_iso: str | None) -> int | None:
@@ -1053,6 +1151,30 @@ def get_unread_count(
 ) -> int:
     """Count unread, non-dismissed notifications for a user in a garden."""
     now = current_timestamp_ms()
+    if user_id is not None:
+        rows = db.execute(
+            """
+            SELECT *
+            FROM notification_events
+            WHERE garden_id = %s
+              AND user_id = %s
+              AND read_at_ms IS NULL
+              AND dismissed = 0
+              AND cleared_at_ms IS NULL
+              AND (expires_at_ms IS NULL OR expires_at_ms >= %s)
+            """,
+            (garden_id, user_id, now),
+        ).fetchall()
+        preferences = load_attention_preferences(db, user_id)
+        return len(
+            notification_rows_allowed_by_attention(
+                [dict(row) for row in rows],
+                preferences=preferences,
+                surface="inbox",
+                garden_id=garden_id,
+                user_id=user_id,
+            )
+        )
     user_condition = "AND user_id = %s" if user_id is not None else ""
     params: tuple[Any, ...] = (
         (
@@ -1839,8 +1961,9 @@ def deliver_pending_email_digests(
 
         notifications = db.execute(
             """
-            SELECT id, notification_type, notification_subtype, severity,
-                   title, body, created_at_ms
+            SELECT id, public_id, garden_id, user_id, notification_type,
+                   notification_subtype, severity, title, body, target_type,
+                   target_id, metadata_json, created_at_ms
             FROM notification_events
             WHERE garden_id = %s
               AND emailed_at_ms IS NULL
@@ -1866,6 +1989,14 @@ def deliver_pending_email_digests(
                 channel="email",
             )
         ]
+        attention_preferences = load_attention_preferences(db, int(pref["user_id"]))
+        notifications = notification_rows_allowed_by_attention(
+            [dict(row) for row in notifications],
+            preferences=attention_preferences,
+            surface="digest",
+            garden_id=garden_id,
+            user_id=int(pref["user_id"]),
+        )
         if not notifications:
             continue
 

@@ -168,6 +168,7 @@ class IssueAttentionProvider:
             plot_ids=plot_ids,
             due_on=follow_up_on,
             domain_state="active" if active else "no_action_needed",
+            delivery_eligibility=(("panel_only", "inbox", "digest") if active else ("panel_only",)),
             primary_action=(
                 AttentionAction(
                     kind="open_issue",

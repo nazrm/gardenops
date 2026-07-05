@@ -96,6 +96,7 @@ class NotificationStatusAttentionProvider:
                 AttentionUserState,
                 "read" if row["read_at_ms"] is not None else "unread",
             ),
+            delivery_eligibility=("panel_only", "inbox", "digest"),
             source_label="Notifications",
             updated_at_ms=int(row["created_at_ms"] or 0),
             metadata={
