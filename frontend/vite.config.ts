@@ -17,6 +17,8 @@ function appVersion(): string {
   }
 }
 
+const apiProxyTarget = process.env["GARDENOPS_VITE_PROXY_TARGET"] || "http://localhost:8000";
+
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(appVersion()),
@@ -36,7 +38,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": "http://localhost:8000",
+      "/api": apiProxyTarget,
     },
   },
 });

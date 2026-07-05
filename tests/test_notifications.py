@@ -1,5 +1,6 @@
 import json
 import os
+from unittest.mock import patch
 
 import gardenops.db as db
 from gardenops.security import create_user
@@ -1276,6 +1277,107 @@ class TestNotifications(BaseApiTest):
         finally:
             db.return_db(conn)
 
+    def test_attention_today_does_not_mutate_generated_watering_notifications(self) -> None:
+        from gardenops.services.notification_service import create_notification as _create_notif
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            user = conn.execute(
+                "SELECT id FROM auth_users WHERE username = 'test_admin'",
+            ).fetchone()
+            assert garden is not None
+            assert user is not None
+            garden_id = int(garden["id"])
+            user_id = int(user["id"])
+            now = db.current_timestamp_ms()
+            task = conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (garden_id, task_type, title, status, severity,
+                     due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+                VALUES (%s, 'water', 'Water generated dry-spell plant',
+                        'pending', 'normal', '2026-07-05',
+                        'auto:dry_water:77:ATTN-NOTIF', '{}', %s, %s)
+                RETURNING public_id
+                """,
+                (garden_id, now, now),
+            ).fetchone()
+            assert task is not None
+            notification_id = _create_notif(
+                conn,
+                garden_id,
+                user_id,
+                "task_due",
+                "Water generated dry-spell plant",
+                "Due today",
+                target_type="task",
+                target_id=str(task["public_id"]),
+                metadata={"due_on": "2026-07-05"},
+            )
+            conn.commit()
+            before = conn.execute(
+                """
+                SELECT dismissed, read_at_ms, cleared_at_ms, clear_reason, superseded_by_id,
+                       metadata_json
+                FROM notification_events
+                WHERE public_id = %s
+                """,
+                (notification_id,),
+            ).fetchone()
+            before_count = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND user_id = %s
+                """,
+                (garden_id, user_id),
+            ).fetchone()
+            assert before is not None
+            assert before_count is not None
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1783180800000",
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-05",
+            },
+        ):
+            response = self.client.get("/api/attention/today")
+        self.assertEqual(response.status_code, 200)
+
+        conn = db.get_db()
+        try:
+            after = conn.execute(
+                """
+                SELECT dismissed, read_at_ms, cleared_at_ms, clear_reason, superseded_by_id,
+                       metadata_json
+                FROM notification_events
+                WHERE public_id = %s
+                """,
+                (notification_id,),
+            ).fetchone()
+            after_count = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND user_id = %s
+                """,
+                (garden_id, user_id),
+            ).fetchone()
+            assert after is not None
+            assert after_count is not None
+            self.assertEqual(dict(after), dict(before))
+            self.assertEqual(int(after_count["c"]), int(before_count["c"]))
+        finally:
+            db.return_db(conn)
+
     def test_notification_runtime_maintenance_generates_and_emails(self) -> None:
         from gardenops.services.notification_service import run_notification_maintenance_once
 
@@ -1627,3 +1729,191 @@ class TestNotifications(BaseApiTest):
             self.assertEqual(r.status_code, 429)
         finally:
             os.environ.pop("NOTIFICATION_GENERATE_RATE_LIMIT", None)
+
+
+class TestRainSuppressedWateringNotificationLifecycle(BaseApiTest):
+    def test_attention_today_read_does_not_mutate_notification_events(self) -> None:
+        from gardenops.services.notification_service import create_notification as _create_notif
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            user = conn.execute(
+                "SELECT id FROM auth_users WHERE username = 'test_admin'",
+            ).fetchone()
+            assert garden is not None
+            assert user is not None
+            garden_id = int(garden["id"])
+            user_id = int(user["id"])
+            now = db.current_timestamp_ms()
+            task = conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (garden_id, task_type, title, status, severity,
+                     due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+                VALUES (%s, 'water', 'Water generated dry-spell plant',
+                        'pending', 'normal', '2026-07-05',
+                        'auto:dry_water:77:ATTN-NOTIF-READ', '{}', %s, %s)
+                RETURNING public_id
+                """,
+                (garden_id, now, now),
+            ).fetchone()
+            assert task is not None
+            notification_id = _create_notif(
+                conn,
+                garden_id,
+                user_id,
+                "task_due",
+                "Water generated dry-spell plant",
+                "Due today",
+                target_type="task",
+                target_id=str(task["public_id"]),
+                metadata={"due_on": "2026-07-05"},
+            )
+            conn.commit()
+            before = conn.execute(
+                """
+                SELECT dismissed, read_at_ms, cleared_at_ms, clear_reason, superseded_by_id,
+                       metadata_json
+                FROM notification_events
+                WHERE public_id = %s
+                """,
+                (notification_id,),
+            ).fetchone()
+            before_count = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND user_id = %s
+                """,
+                (garden_id, user_id),
+            ).fetchone()
+            assert before is not None
+            assert before_count is not None
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1783180800000",
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-05",
+            },
+        ):
+            response = self.client.get("/api/attention/today")
+        self.assertEqual(response.status_code, 200)
+
+        conn = db.get_db()
+        try:
+            after = conn.execute(
+                """
+                SELECT dismissed, read_at_ms, cleared_at_ms, clear_reason, superseded_by_id,
+                       metadata_json
+                FROM notification_events
+                WHERE public_id = %s
+                """,
+                (notification_id,),
+            ).fetchone()
+            after_count = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND user_id = %s
+                """,
+                (garden_id, user_id),
+            ).fetchone()
+            assert after is not None
+            assert after_count is not None
+            self.assertEqual(dict(after), dict(before))
+            self.assertEqual(int(after_count["c"]), int(before_count["c"]))
+        finally:
+            db.return_db(conn)
+
+    def test_task_weather_maintenance_clears_stale_generated_watering_notifications(self) -> None:
+        from gardenops.services.notification_service import (
+            create_notification as _create_notif,
+        )
+        from gardenops.services.notification_service import (
+            create_task_due_notifications,
+        )
+        from gardenops.sql_dates import offset_days_iso
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            user = conn.execute(
+                "SELECT id FROM auth_users WHERE username = 'test_admin'",
+            ).fetchone()
+            assert garden is not None
+            assert user is not None
+            garden_id = int(garden["id"])
+            user_id = int(user["id"])
+            yesterday = offset_days_iso(-1)
+            today = offset_days_iso(0)
+            tomorrow = offset_days_iso(1)
+            now = db.current_timestamp_ms()
+            alert = conn.execute(
+                """
+                INSERT INTO weather_alerts
+                    (garden_id, alert_type, severity, title, description,
+                     valid_from, valid_until, metadata_json, created_at_ms)
+                VALUES (%s, 'dry_spell', 'normal', 'Dry spell',
+                        'Water regularly', %s, %s, '{}', %s)
+                RETURNING id
+                """,
+                (garden_id, today, tomorrow, now),
+            ).fetchone()
+            assert alert is not None
+            task = conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (garden_id, task_type, title, status, severity,
+                     due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+                VALUES (%s, 'water', 'Water regularly: Old plant',
+                        'pending', 'normal', %s, %s, '{}', %s, %s)
+                RETURNING public_id
+                """,
+                (
+                    garden_id,
+                    yesterday,
+                    f"auto:dry_water:{int(alert['id'])}:OLD-PLANT",
+                    now,
+                    now,
+                ),
+            ).fetchone()
+            assert task is not None
+            task_public_id = str(task["public_id"])
+            notification_id = _create_notif(
+                conn,
+                garden_id,
+                user_id,
+                "task_overdue",
+                "Overdue: Water regularly: Old plant",
+                f"Due on {yesterday}",
+                target_type="task",
+                target_id=task_public_id,
+                metadata={"due_on": yesterday},
+            )
+
+            result = create_task_due_notifications(conn, garden_id)
+            self.assertIn("created", result)
+            row = conn.execute(
+                """
+                SELECT clear_reason, cleared_at_ms, superseded_by_id
+                FROM notification_events
+                WHERE public_id = %s
+                """,
+                (notification_id,),
+            ).fetchone()
+            assert row is not None
+            self.assertEqual(row["clear_reason"], "expired")
+            self.assertIsNotNone(row["cleared_at_ms"])
+            self.assertIsNone(row["superseded_by_id"])
+        finally:
+            db.return_db(conn)

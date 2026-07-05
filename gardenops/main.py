@@ -78,6 +78,7 @@ from gardenops.router_helpers import (  # noqa: E402
     is_local_admin_fallback as _is_local_admin_fallback,
 )
 from gardenops.routers.ai import router as ai_router  # noqa: E402
+from gardenops.routers.attention import router as attention_router  # noqa: E402
 from gardenops.routers.auth import (  # noqa: E402
     enforce_destructive_admin_controls,
 )
@@ -1334,6 +1335,7 @@ app.include_router(statistics_router, prefix="/api")
 app.include_router(inventory_router, prefix="/api")
 app.include_router(calendar_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
+app.include_router(attention_router, prefix="/api")
 app.include_router(notifications_router, prefix="/api")
 app.include_router(weather_router, prefix="/api")
 app.include_router(issues_router, prefix="/api")

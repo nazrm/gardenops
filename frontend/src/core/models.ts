@@ -158,6 +158,124 @@ export interface TaskListResponse {
   total: number;
 }
 
+export type AttentionProviderKey =
+  | "task"
+  | "weather"
+  | "issue"
+  | "calendar"
+  | "notification_status";
+
+export type AttentionCategory =
+  | "needs_action"
+  | "warning"
+  | "upcoming"
+  | "no_action_needed"
+  | "system";
+
+export type AttentionSeverity = "low" | "normal" | "high" | "critical";
+
+export type AttentionDomainState =
+  | "active"
+  | "completed"
+  | "skipped"
+  | "dismissed"
+  | "expired"
+  | "superseded"
+  | "no_action_needed";
+
+export type AttentionUserState =
+  | "unread"
+  | "read"
+  | "dismissed"
+  | "snoozed"
+  | "preference_hidden";
+
+export type AttentionSectionKey =
+  | "needs_attention"
+  | "warnings"
+  | "coming_up"
+  | "no_action_needed";
+
+export interface AttentionAction {
+  kind:
+    | "open_task"
+    | "open_issue"
+    | "open_weather"
+    | "focus_plant"
+    | "select_plot"
+    | "open_attention_detail"
+    | "restore_attention_outcome";
+  label: string;
+  target_type: string;
+  target_id: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface AttentionItem {
+  id: string;
+  provider: AttentionProviderKey;
+  type: string;
+  category: AttentionCategory;
+  severity: AttentionSeverity;
+  title: string;
+  body: string;
+  reason: string;
+  target_type: string | null;
+  target_id: string | null;
+  plot_ids: string[];
+  plant_ids: string[];
+  due_on: string | null;
+  domain_state: AttentionDomainState;
+  user_state: AttentionUserState;
+  primary_action: AttentionAction | null;
+  secondary_actions: AttentionAction[];
+  metadata: Record<string, unknown>;
+  source_label: string;
+  updated_at_ms: number;
+}
+
+export interface AttentionSection {
+  key: AttentionSectionKey;
+  count: number;
+  items: AttentionItem[];
+}
+
+export type AttentionPreferencePreset = "calm" | "balanced" | "detailed" | "custom";
+
+export interface AttentionPreferenceRule {
+  enabled?: boolean;
+  panel?: boolean;
+  inbox?: boolean;
+  digest?: boolean;
+  interruptive?: boolean;
+  min_severity?: AttentionSeverity;
+}
+
+export interface AttentionPreferences {
+  user_id: number;
+  preset: AttentionPreferencePreset;
+  rules: Record<string, AttentionPreferenceRule>;
+  quiet_hours: Record<string, unknown>;
+  show_no_action_history: boolean;
+  metadata: Record<string, unknown>;
+}
+
+export interface AttentionPreferencesUpdate {
+  preset: AttentionPreferencePreset;
+  rules: Record<string, AttentionPreferenceRule>;
+  quiet_hours: Record<string, unknown>;
+  show_no_action_history: boolean;
+}
+
+export interface AttentionTodayResponse {
+  garden_id: number;
+  generated_at_ms: number;
+  sections: AttentionSection[];
+  counts: Record<AttentionSectionKey | "total", number>;
+  preferences: AttentionPreferences;
+  degraded_providers: Array<Record<string, string>>;
+}
+
 export type NotificationType =
   | "task_due"
   | "task_overdue"

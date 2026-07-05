@@ -39,6 +39,7 @@ frontend/dist/
 .host-scripts/
 logs/
 backups/
+research/
 output/full-stack-code-review.md
 output/
 media_uploads/

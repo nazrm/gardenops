@@ -112,6 +112,7 @@ balance becomes a problem.
 - auth-gate status flow regressions
 - AI chat client contract regressions
 - map-object editor contract regressions
+- Attention Today panel contract regressions
 - TypeScript errors
 - production bundling errors
 - sourcemap leakage, including inline `sourceMappingURL` references
@@ -137,6 +138,20 @@ BASE_URL=http://127.0.0.1:4173 CHROMIUM_EXECUTABLE=/usr/bin/chromium-browser nod
 The check runs against local built assets, mocks GardenOps API responses in the
 browser, and verifies touch move, touch resize, keyboard move/resize, and
 two-finger touch cancellation without touching live data.
+
+For Attention Today panel changes, run the managed real-backend browser journey
+against a disposable local database named `gardenops_attention_e2e_test` or
+prefixed with `gardenops_attention_e2e_test_`:
+
+```bash
+cd frontend
+GARDENOPS_ATTENTION_E2E_TEST_URL="postgresql://localhost/gardenops_attention_e2e_test" npm run test:attention-today-e2e
+```
+
+The runner refuses to seed unless `APP_ENV=test`, `AUTH_REQUIRED=false`,
+`GARDENOPS_ATTENTION_E2E_ALLOW_TRUNCATE=1`, and the database URL points to an
+allowed local E2E database name. It truncates that database, starts FastAPI and
+Vite, then runs Playwright against real API routes.
 
 ## Test Database
 

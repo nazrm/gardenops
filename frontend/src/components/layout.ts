@@ -312,6 +312,31 @@ export function getAppShellMarkup(): string {
                 </div>
               </div>
             </div>
+            <aside
+              id="attention-today-panel"
+              class="attention-today-panel"
+              data-testid="attention-today-panel"
+              role="region"
+              aria-labelledby="attention-today-title"
+            ></aside>
+            <button
+              id="attention-today-mobile-handle"
+              class="attention-today-mobile-handle"
+              data-testid="attention-today-mobile-handle"
+              type="button"
+              aria-controls="attention-today-mobile-sheet"
+              aria-expanded="false"
+              aria-label="${t("attention.mobile_handle", { count: 0 })}"
+            ></button>
+            <aside
+              id="attention-today-mobile-sheet"
+              class="attention-today-mobile-sheet"
+              data-testid="attention-today-mobile-sheet"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="attention-today-mobile-title"
+              aria-hidden="true"
+            ></aside>
             <aside class="shade-panel" id="shade-panel" data-state="loading">
               <div class="shade-panel-header">
                 <div>

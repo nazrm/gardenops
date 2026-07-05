@@ -102,6 +102,126 @@ class TestInferTaskDescription(DbTestBase):
         assert "Why:" in en
         assert "Hvorfor:" in no
 
+    def test_rain_suppressed_watering_records_attention_outcome(self) -> None:
+        self._insert_plant("RW1", "Hydrangea", care_watering="regular moisture")
+        self.conn.execute(
+            """
+            INSERT INTO plots
+                (plot_id, garden_id, zone_code, zone_name, plot_number,
+                 grid_row, grid_col, sub_zone, notes)
+            VALUES ('RW-OUT', %s, 'R', 'Rain bed', 1, 5, 5, '', '')
+            """,
+            (self.garden_id,),
+        )
+        self.conn.execute(
+            "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES ('RW-OUT', 'RW1', 1)",
+        )
+        alert = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'rain_surplus', 'normal', 'Rain covers watering',
+                    'Enough rain is expected', '2026-07-01', '2026-07-01',
+                    '{"rain_mm":18}', 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert alert is not None
+
+        generate_tasks(self.conn, self.garden_id, 7, 2026, self._owner_id)
+
+        skipped_task = self.conn.execute(
+            """
+            SELECT 1 FROM garden_tasks
+            WHERE garden_id = %s
+              AND task_type = 'water'
+              AND rule_source = 'water:RW1:2026-07-01'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        outcome = self.conn.execute(
+            """
+            SELECT outcome_type, source_type, source_id, source_public_id, target_type, target_id,
+                   explanation, metadata_json
+            FROM attention_outcomes
+            WHERE garden_id = %s
+              AND outcome_type = 'watering_covered_by_rain'
+              AND source_public_id = 'water:RW1:2026-07-01'
+              AND target_type = 'plant'
+              AND target_id = 'RW1'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+
+        assert skipped_task is None
+        assert outcome is not None
+        assert str(outcome["source_type"]) == "task_generator"
+        assert str(outcome["source_id"]) == str(alert["id"])
+        assert str(outcome["source_public_id"]) == "water:RW1:2026-07-01"
+        assert "18 mm rain" in str(outcome["explanation"])
+        assert '"due_on":"2026-07-01"' in str(outcome["metadata_json"])
+
+    def test_rain_suppression_keeps_unplaced_and_indoor_watering_tasks(self) -> None:
+        self._insert_plant("RNOPLOT", "Unplaced Hydrangea", care_watering="regular moisture")
+        self._insert_plant("RINDOOR", "Indoor Hydrangea", care_watering="regular moisture")
+        self.conn.execute(
+            """
+            INSERT INTO plots
+                (plot_id, garden_id, zone_code, zone_name, plot_number,
+                 grid_row, grid_col, sub_zone, notes)
+            VALUES ('RW-IN', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+            """,
+            (self.garden_id,),
+        )
+        self.conn.execute(
+            "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES ('RW-IN', 'RINDOOR', 1)",
+        )
+        self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'rain_surplus', 'normal', 'Rain covers outdoor watering',
+                    'Enough rain is expected outside', '2026-07-01', '2026-07-01',
+                    '{"rain_mm":18}', 1)
+            """,
+            (self.garden_id,),
+        )
+
+        generate_tasks(self.conn, self.garden_id, 7, 2026, self._owner_id)
+
+        task_sources = {
+            str(row["rule_source"])
+            for row in self.conn.execute(
+                """
+                SELECT rule_source
+                FROM garden_tasks
+                WHERE garden_id = %s
+                  AND task_type = 'water'
+                """,
+                (self.garden_id,),
+            ).fetchall()
+        }
+        outcome_sources = {
+            str(row["source_public_id"])
+            for row in self.conn.execute(
+                """
+                SELECT source_public_id
+                FROM attention_outcomes
+                WHERE garden_id = %s
+                  AND outcome_type = 'watering_covered_by_rain'
+                """,
+                (self.garden_id,),
+            ).fetchall()
+        }
+
+        assert "water:RNOPLOT:2026-07-01" in task_sources
+        assert "water:RINDOOR:2026-07-01" in task_sources
+        assert "water:RNOPLOT:2026-07-01" not in outcome_sources
+        assert "water:RINDOOR:2026-07-01" not in outcome_sources
+
     def test_harvest_check(self) -> None:
         self._insert_plant(
             "HA1",

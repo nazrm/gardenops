@@ -132,6 +132,86 @@ class MigrationGuardTests(unittest.TestCase):
             REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS,
         )
 
+    def test_attention_schema_signature_covers_migration_surface(self) -> None:
+        self.assertTrue(
+            {
+                "user_attention_preferences",
+                "user_attention_item_state",
+                "attention_outcomes",
+            }.issubset(set(REQUIRED_TABLES))
+        )
+        self.assertTrue(
+            {
+                "id",
+                "user_id",
+                "preset",
+                "rules_json",
+                "quiet_hours_json",
+                "show_no_action_history",
+                "created_at_ms",
+                "updated_at_ms",
+            }.issubset(set(REQUIRED_COLUMNS["user_attention_preferences"]))
+        )
+        self.assertTrue(
+            {
+                "id",
+                "user_id",
+                "garden_id",
+                "item_id",
+                "user_state",
+                "snoozed_until_ms",
+                "reason",
+                "metadata_json",
+                "created_at_ms",
+                "updated_at_ms",
+            }.issubset(set(REQUIRED_COLUMNS["user_attention_item_state"]))
+        )
+        self.assertTrue(
+            {
+                "id",
+                "public_id",
+                "garden_id",
+                "provider",
+                "outcome_type",
+                "source_type",
+                "source_id",
+                "source_public_id",
+                "title",
+                "explanation",
+                "reason",
+                "target_type",
+                "target_id",
+                "plant_ids_json",
+                "plot_ids_json",
+                "recovery_action_json",
+                "metadata_json",
+                "occurred_at_ms",
+                "expires_at_ms",
+                "created_at_ms",
+                "updated_at_ms",
+            }.issubset(set(REQUIRED_COLUMNS["attention_outcomes"]))
+        )
+        self.assertTrue(
+            {
+                "idx_user_attention_item_state_garden_user",
+                "idx_attention_outcomes_garden_expires",
+                "idx_attention_outcomes_source",
+                "ux_attention_outcomes_source_kind",
+            }.issubset(set(REQUIRED_INDEXES))
+        )
+        self.assertTrue(
+            {
+                "ux_user_attention_preferences_user",
+                "fk_user_attention_preferences_user",
+                "ck_user_attention_preferences_no_action_bool",
+                "ux_user_attention_item_state_user_garden_item",
+                "fk_user_attention_item_state_user",
+                "fk_user_attention_item_state_garden",
+                "attention_outcomes_public_id_key",
+                "fk_attention_outcomes_garden",
+            }.issubset(set(REQUIRED_CONSTRAINTS))
+        )
+
     def test_schema_signature_validates_critical_definitions(self) -> None:
         snapshot = self._complete_schema_snapshot()
         snapshot.column_nullability["auth_users.password_hash"] = False
