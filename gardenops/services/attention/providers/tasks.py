@@ -13,6 +13,10 @@ from gardenops.services.attention.types import (
     is_generated_watering_task,
     normalize_severity,
 )
+from gardenops.services.generated_task_lifecycle import (
+    GENERATED_WATERING_RULE_SOURCE_PATTERNS,
+    stale_generated_watering_sql,
+)
 
 _DAY_MS = 86_400_000
 _ACTIVE_BUCKET_LIMIT = 80
@@ -96,12 +100,30 @@ class TaskAttentionProvider:
             ORDER BY {order_by}
             LIMIT %s
         """
+        stale_generated_pending_watering = stale_generated_watering_sql(
+            task_alias="",
+            action_on_sql="due_on",
+            today_sql="%s",
+        )
+        stale_generated_snoozed_watering = stale_generated_watering_sql(
+            task_alias="",
+            action_on_sql="snoozed_until",
+            today_sql="%s",
+        )
         active_overdue = conn.execute(
             base_select.format(
-                condition="status = 'pending' AND due_on < %s",
+                condition=(
+                    f"status = 'pending' AND due_on < %s AND NOT {stale_generated_pending_watering}"
+                ),
                 order_by=f"{severity_order}, due_on ASC, updated_at_ms DESC, public_id ASC",
             ),
-            (garden_id, today, _ACTIVE_BUCKET_LIMIT),
+            (
+                garden_id,
+                today,
+                *GENERATED_WATERING_RULE_SOURCE_PATTERNS,
+                today,
+                _ACTIVE_BUCKET_LIMIT,
+            ),
         ).fetchall()
         active_due = conn.execute(
             base_select.format(
@@ -113,11 +135,20 @@ class TaskAttentionProvider:
         snoozed_ready = conn.execute(
             base_select.format(
                 condition=(
-                    "status = 'snoozed' AND snoozed_until IS NOT NULL AND snoozed_until <= %s"
+                    "status = 'snoozed' "
+                    "AND snoozed_until IS NOT NULL "
+                    "AND snoozed_until <= %s "
+                    f"AND NOT {stale_generated_snoozed_watering}"
                 ),
                 order_by=f"snoozed_until ASC, {severity_order}, updated_at_ms DESC, public_id ASC",
             ),
-            (garden_id, today, _SNOOZED_BUCKET_LIMIT),
+            (
+                garden_id,
+                today,
+                *GENERATED_WATERING_RULE_SOURCE_PATTERNS,
+                today,
+                _SNOOZED_BUCKET_LIMIT,
+            ),
         ).fetchall()
         terminal = conn.execute(
             base_select.format(

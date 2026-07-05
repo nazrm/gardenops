@@ -2265,3 +2265,166 @@ class TestRainSuppressedWateringNotificationLifecycle(BaseApiTest):
             self.assertIsNone(row["superseded_by_id"])
         finally:
             db.return_db(conn)
+
+    def test_generated_weekly_watering_overdue_does_not_notify(self) -> None:
+        from gardenops.services.notification_service import (
+            create_notification as _create_notif,
+        )
+        from gardenops.services.notification_service import (
+            create_task_due_notifications,
+        )
+        from gardenops.sql_dates import offset_days_iso
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            user = conn.execute(
+                "SELECT id FROM auth_users WHERE username = 'test_admin'",
+            ).fetchone()
+            assert garden is not None
+            assert user is not None
+            garden_id = int(garden["id"])
+            user_id = int(user["id"])
+            yesterday = offset_days_iso(-1)
+            now = db.current_timestamp_ms()
+            generated = conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (public_id, garden_id, task_type, title, status, severity,
+                     due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+                VALUES ('task_generated_weekly_water_old', %s, 'water',
+                        'Generated old weekly water', 'pending', 'normal',
+                        %s, %s, '{}', %s, %s)
+                RETURNING public_id
+                """,
+                (garden_id, yesterday, f"water:PLT-OLD:{yesterday}", now, now),
+            ).fetchone()
+            manual = conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (public_id, garden_id, task_type, title, status, severity,
+                     due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+                VALUES ('task_manual_weekly_water_old', %s, 'water',
+                        'Manual old weekly water', 'pending', 'normal',
+                        %s, '', '{}', %s, %s)
+                RETURNING public_id
+                """,
+                (garden_id, yesterday, now, now),
+            ).fetchone()
+            assert generated is not None
+            assert manual is not None
+            generated_notification = _create_notif(
+                conn,
+                garden_id,
+                user_id,
+                "task_overdue",
+                "Overdue: Generated old weekly water",
+                f"Due on {yesterday}",
+                target_type="task",
+                target_id=str(generated["public_id"]),
+                metadata={"due_on": yesterday},
+            )
+
+            result = create_task_due_notifications(conn, garden_id)
+            self.assertEqual(result["created"], 1)
+            generated_row = conn.execute(
+                """
+                SELECT clear_reason, cleared_at_ms
+                FROM notification_events
+                WHERE public_id = %s
+                """,
+                (generated_notification,),
+            ).fetchone()
+            assert generated_row is not None
+            self.assertEqual(generated_row["clear_reason"], "expired")
+            self.assertIsNotNone(generated_row["cleared_at_ms"])
+            active_rows = conn.execute(
+                """
+                SELECT target_id, cleared_at_ms
+                FROM notification_events
+                WHERE notification_type = 'task_overdue'
+                  AND target_type = 'task'
+                  AND target_id IN (%s, %s)
+                ORDER BY target_id
+                """,
+                (str(generated["public_id"]), str(manual["public_id"])),
+            ).fetchall()
+            active_by_target = {
+                str(row["target_id"]): row for row in active_rows if row["cleared_at_ms"] is None
+            }
+            self.assertNotIn(str(generated["public_id"]), active_by_target)
+            self.assertIn(str(manual["public_id"]), active_by_target)
+        finally:
+            db.return_db(conn)
+
+    def test_generated_weekly_watering_notification_clears_on_stale_maintenance(self) -> None:
+        from gardenops.services.notification_service import (
+            clear_stale_task_notifications,
+        )
+        from gardenops.services.notification_service import (
+            create_notification as _create_notif,
+        )
+        from gardenops.sql_dates import offset_days_iso
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            user = conn.execute(
+                "SELECT id FROM auth_users WHERE username = 'test_admin'",
+            ).fetchone()
+            assert garden is not None
+            assert user is not None
+            garden_id = int(garden["id"])
+            user_id = int(user["id"])
+            yesterday = offset_days_iso(-1)
+            today = offset_days_iso(0)
+            now = db.current_timestamp_ms()
+            generated = conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (public_id, garden_id, task_type, title, status, severity,
+                     due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+                VALUES ('task_generated_weekly_water_stale_clear', %s, 'water',
+                        'Generated stale weekly water', 'pending', 'normal',
+                        %s, %s, '{}', %s, %s)
+                RETURNING public_id
+                """,
+                (garden_id, yesterday, f"water:PLT-CLEAR:{yesterday}", now, now),
+            ).fetchone()
+            assert generated is not None
+            notification_id = _create_notif(
+                conn,
+                garden_id,
+                user_id,
+                "task_overdue",
+                "Overdue: Generated stale weekly water",
+                f"Due on {yesterday}",
+                target_type="task",
+                target_id=str(generated["public_id"]),
+                metadata={"due_on": yesterday},
+            )
+
+            cleared = clear_stale_task_notifications(
+                conn,
+                garden_id=garden_id,
+                today_iso=today,
+                now_ms=now,
+            )
+            self.assertEqual(cleared, 1)
+            row = conn.execute(
+                """
+                SELECT clear_reason, cleared_at_ms
+                FROM notification_events
+                WHERE public_id = %s
+                """,
+                (notification_id,),
+            ).fetchone()
+            assert row is not None
+            self.assertEqual(row["clear_reason"], "expired")
+            self.assertIsNotNone(row["cleared_at_ms"])
+        finally:
+            db.return_db(conn)

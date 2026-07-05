@@ -315,6 +315,56 @@ class TestTasks(BaseApiTest):
         overdue_titles = [t["title"] for t in r.json()["tasks"]]
         self.assertIn("Overdue task", overdue_titles)
 
+    def test_task_action_views_hide_stale_generated_watering_but_keep_manual(self) -> None:
+        from gardenops.sql_dates import offset_days_iso
+
+        garden_id = self._get_default_garden_id()
+        yesterday = offset_days_iso(-1)
+        now_ms = current_timestamp_ms()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (public_id, garden_id, task_type, title, description, status, severity,
+                     due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+                VALUES
+                    ('task_generated_old_water', %s, 'water', 'Generated old water', '',
+                     'pending', 'normal', %s, %s, '{}', %s, %s),
+                    ('task_generated_old_dry_water', %s, 'water', 'Generated old dry water', '',
+                     'pending', 'normal', %s, %s, '{}', %s, %s),
+                    ('task_manual_old_water', %s, 'water', 'Manual old water', '',
+                     'pending', 'normal', %s, '', '{}', %s, %s)
+                """,
+                (
+                    garden_id,
+                    yesterday,
+                    f"water:STALE:{yesterday}",
+                    now_ms,
+                    now_ms,
+                    garden_id,
+                    yesterday,
+                    "auto:dry_water:123:STALE",
+                    now_ms,
+                    now_ms,
+                    garden_id,
+                    yesterday,
+                    now_ms,
+                    now_ms,
+                ),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        for view in ("today", "overdue"):
+            response = self.client.get(f"/api/tasks?view={view}&task_type=water")
+            self.assertEqual(response.status_code, 200, response.text)
+            titles = {task["title"] for task in response.json()["tasks"]}
+            self.assertIn("Manual old water", titles)
+            self.assertNotIn("Generated old water", titles)
+            self.assertNotIn("Generated old dry water", titles)
+
     def test_task_actions(self) -> None:
         """Complete, snooze, skip, and reschedule actions work."""
         r = self.client.post(

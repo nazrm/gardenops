@@ -40,6 +40,10 @@ from gardenops.router_helpers import (
 )
 from gardenops.security import AuthContext
 from gardenops.services.ai_provider import is_ai_provider_configured
+from gardenops.services.generated_task_lifecycle import (
+    GENERATED_WATERING_RULE_SOURCE_PATTERNS,
+    stale_generated_watering_sql,
+)
 from gardenops.services.notification_service import clear_task_notifications
 from gardenops.services.observation_updates import mark_seen_growing_from_observation
 from gardenops.services.task_windows import derive_recommended_window_strings
@@ -795,6 +799,13 @@ def list_tasks(
         conditions.append(
             f"{actionable_status_clause} AND {actionable_date} < {date_expr['today']}"
         )
+    if view in {"today", "week", "month", "overdue"}:
+        stale_generated_watering = stale_generated_watering_sql(
+            action_on_sql=actionable_date,
+            today_sql=date_expr["today"],
+        )
+        conditions.append(f"NOT {stale_generated_watering}")
+        params.extend(GENERATED_WATERING_RULE_SOURCE_PATTERNS)
 
     if status:
         conditions.append("t.status = %s")
