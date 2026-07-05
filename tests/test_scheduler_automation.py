@@ -174,6 +174,7 @@ class TestRunMaintenanceIncludes(DbTestBase):
     def test_run_maintenance_includes_new_keys(self) -> None:
         result = run_notification_maintenance_once(self.conn)
         assert "tasks_auto_created" in result
+        assert "tasks_expired" in result
         assert "weather_checks" in result
         assert "weather_alerts_created" in result
         assert "issues_escalated" in result

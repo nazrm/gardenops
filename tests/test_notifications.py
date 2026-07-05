@@ -2359,6 +2359,144 @@ class TestRainSuppressedWateringNotificationLifecycle(BaseApiTest):
         finally:
             db.return_db(conn)
 
+    def test_maintenance_expires_stale_generated_watering_tasks(self) -> None:
+        from gardenops.services.notification_service import (
+            create_notification as _create_notif,
+        )
+        from gardenops.services.notification_service import (
+            run_notification_maintenance_for_garden,
+        )
+        from gardenops.sql_dates import offset_days_iso
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            user = conn.execute(
+                "SELECT id FROM auth_users WHERE username = 'test_admin'",
+            ).fetchone()
+            assert garden is not None
+            assert user is not None
+            garden_id = int(garden["id"])
+            user_id = int(user["id"])
+            yesterday = offset_days_iso(-1)
+            tomorrow = offset_days_iso(1)
+            now = db.current_timestamp_ms()
+            rows = conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (public_id, garden_id, task_type, title, status, severity,
+                     due_on, snoozed_until, rule_source, metadata_json, created_at_ms,
+                     updated_at_ms)
+                VALUES
+                    ('task_lifecycle_weekly_water_old', %s, 'water',
+                     'Generated old weekly water', 'pending', 'normal',
+                     %s, NULL, %s, '{}', %s, %s),
+                    ('task_lifecycle_dry_water_old', %s, 'water',
+                     'Generated old dry water', 'pending', 'normal',
+                     %s, NULL, %s, '{}', %s, %s),
+                    ('task_lifecycle_snoozed_water_future', %s, 'water',
+                     'Generated snoozed future water', 'snoozed', 'normal',
+                     %s, %s, %s, '{}', %s, %s),
+                    ('task_lifecycle_manual_water_old', %s, 'water',
+                     'Manual old water', 'pending', 'normal',
+                     %s, NULL, '', '{}', %s, %s)
+                RETURNING public_id
+                """,
+                (
+                    garden_id,
+                    yesterday,
+                    f"water:PLT-LIFE:{yesterday}",
+                    now,
+                    now,
+                    garden_id,
+                    yesterday,
+                    "auto:dry_water:123:PLT-LIFE",
+                    now,
+                    now,
+                    garden_id,
+                    yesterday,
+                    tomorrow,
+                    f"water:PLT-SNOOZE:{yesterday}",
+                    now,
+                    now,
+                    garden_id,
+                    yesterday,
+                    now,
+                    now,
+                ),
+            ).fetchall()
+            task_ids = [str(row["public_id"]) for row in rows]
+            generated_notification_ids = [
+                _create_notif(
+                    conn,
+                    garden_id,
+                    user_id,
+                    "task_overdue",
+                    "Overdue generated watering",
+                    f"Due on {yesterday}",
+                    target_type="task",
+                    target_id=task_id,
+                    metadata={"due_on": yesterday},
+                )
+                for task_id in task_ids[:2]
+            ]
+
+            result = run_notification_maintenance_for_garden(
+                conn,
+                garden_id=garden_id,
+                now_ms=now,
+            )
+
+            self.assertEqual(result["tasks_expired"], 2)
+            status_rows = conn.execute(
+                """
+                SELECT public_id, status, snoozed_until, completed_by_user_id,
+                       completed_at_ms, metadata_json
+                FROM garden_tasks
+                WHERE public_id = ANY(%s)
+                ORDER BY public_id
+                """,
+                (task_ids,),
+            ).fetchall()
+            statuses = {str(row["public_id"]): row for row in status_rows}
+            self.assertEqual(statuses["task_lifecycle_weekly_water_old"]["status"], "expired")
+            self.assertEqual(statuses["task_lifecycle_dry_water_old"]["status"], "expired")
+            self.assertEqual(statuses["task_lifecycle_snoozed_water_future"]["status"], "snoozed")
+            self.assertEqual(statuses["task_lifecycle_manual_water_old"]["status"], "pending")
+            for public_id in (
+                "task_lifecycle_weekly_water_old",
+                "task_lifecycle_dry_water_old",
+            ):
+                row = statuses[public_id]
+                self.assertIsNone(row["snoozed_until"])
+                self.assertIsNone(row["completed_by_user_id"])
+                self.assertIsNone(row["completed_at_ms"])
+                metadata = json.loads(str(row["metadata_json"]))
+                self.assertEqual(metadata["lifecycle"]["status"], "expired")
+                self.assertEqual(
+                    metadata["lifecycle"]["reason"],
+                    "stale_generated_watering",
+                )
+                self.assertEqual(metadata["lifecycle"]["expired_at_ms"], now)
+
+            cleared_rows = conn.execute(
+                """
+                SELECT clear_reason, cleared_at_ms
+                FROM notification_events
+                WHERE public_id = ANY(%s)
+                ORDER BY public_id
+                """,
+                (generated_notification_ids,),
+            ).fetchall()
+            self.assertEqual(len(cleared_rows), 2)
+            for row in cleared_rows:
+                self.assertEqual(row["clear_reason"], "expired")
+                self.assertIsNotNone(row["cleared_at_ms"])
+        finally:
+            db.return_db(conn)
+
     def test_generated_weekly_watering_notification_clears_on_stale_maintenance(self) -> None:
         from gardenops.services.notification_service import (
             clear_stale_task_notifications,

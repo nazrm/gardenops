@@ -365,6 +365,55 @@ class TestTasks(BaseApiTest):
             self.assertNotIn("Generated old water", titles)
             self.assertNotIn("Generated old dry water", titles)
 
+    def test_expired_tasks_are_history_not_active_action_items(self) -> None:
+        from gardenops.sql_dates import offset_days_iso
+
+        garden_id = self._get_default_garden_id()
+        yesterday = offset_days_iso(-1)
+        now_ms = current_timestamp_ms()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (public_id, garden_id, task_type, title, description, status, severity,
+                     due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+                VALUES
+                    ('task_expired_generated_water_history', %s, 'water',
+                     'Expired generated water', '', 'expired', 'normal',
+                     %s, %s, '{}', %s, %s),
+                    ('task_pending_manual_water_history', %s, 'water',
+                     'Pending manual water', '', 'pending', 'normal',
+                     %s, '', '{}', %s, %s)
+                """,
+                (
+                    garden_id,
+                    yesterday,
+                    f"water:HISTORY:{yesterday}",
+                    now_ms,
+                    now_ms,
+                    garden_id,
+                    yesterday,
+                    now_ms,
+                    now_ms,
+                ),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        history = self.client.get("/api/tasks?status=expired&task_type=water")
+        self.assertEqual(history.status_code, 200, history.text)
+        history_titles = {task["title"] for task in history.json()["tasks"]}
+        self.assertIn("Expired generated water", history_titles)
+        self.assertNotIn("Pending manual water", history_titles)
+
+        active = self.client.get("/api/tasks?view=today&task_type=water")
+        self.assertEqual(active.status_code, 200, active.text)
+        active_titles = {task["title"] for task in active.json()["tasks"]}
+        self.assertNotIn("Expired generated water", active_titles)
+        self.assertIn("Pending manual water", active_titles)
+
     def test_task_actions(self) -> None:
         """Complete, snooze, skip, and reschedule actions work."""
         r = self.client.post(

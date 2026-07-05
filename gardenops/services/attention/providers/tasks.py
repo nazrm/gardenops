@@ -157,7 +157,7 @@ class TaskAttentionProvider:
                     "("
                     "status = 'completed' AND completed_at_ms IS NOT NULL "
                     "AND completed_at_ms >= %s"
-                    ") OR (status = 'skipped' AND updated_at_ms >= %s)"
+                    ") OR (status IN ('skipped', 'expired') AND updated_at_ms >= %s)"
                     ")"
                 ),
                 order_by="updated_at_ms DESC, public_id ASC",
@@ -364,6 +364,8 @@ class TaskAttentionProvider:
             return "task_snoozed_active"
         if status == "completed":
             return "task_completed"
+        if status == "expired":
+            return "task_expired"
         return "task_skipped"
 
     @staticmethod
@@ -375,6 +377,7 @@ class TaskAttentionProvider:
             "task_overdue": "Overdue",
             "task_snoozed_active": "Snoozed until today",
             "task_completed": "Completed",
+            "task_expired": "Expired",
             "task_skipped": "Skipped",
         }[item_type]
 
@@ -382,6 +385,8 @@ class TaskAttentionProvider:
     def _domain_state(status: str) -> AttentionDomainState:
         if status == "completed":
             return "completed"
+        if status == "expired":
+            return "expired"
         if status == "skipped":
             return "skipped"
         return "active"

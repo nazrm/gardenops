@@ -35,6 +35,7 @@ from gardenops.services.automation import (
 )
 from gardenops.services.generated_task_lifecycle import (
     GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
+    expire_stale_generated_tasks,
 )
 from gardenops.services.task_generator import generate_tasks
 from gardenops.services.weather_service import check_weather_and_generate_alerts
@@ -2266,6 +2267,7 @@ def _empty_maintenance_summary() -> dict[str, int | bool]:
         "notifications_created": 0,
         "notifications_skipped": 0,
         "tasks_auto_created": 0,
+        "tasks_expired": 0,
         "weather_checks": 0,
         "weather_alerts_created": 0,
         "issues_escalated": 0,
@@ -2289,6 +2291,13 @@ def _run_notification_maintenance_for_gardens(
     for garden_id in garden_ids:
         summary["gardens_processed"] = int(summary["gardens_processed"]) + 1
 
+        tasks_expired = expire_stale_generated_tasks(
+            db,
+            garden_id=garden_id,
+            now_ms=now_value,
+        )
+        summary["tasks_expired"] = int(summary["tasks_expired"]) + tasks_expired
+
         generated = create_task_due_notifications(db, garden_id)
         summary["notifications_created"] = int(summary["notifications_created"]) + int(
             generated["created"]
@@ -2311,7 +2320,7 @@ def _run_notification_maintenance_for_gardens(
             now_ms=now_value,
         )
         summary["notifications_marked"] = int(summary["notifications_marked"]) + stale_info
-        if expired or stale_tasks or stale_info:
+        if tasks_expired or expired or stale_tasks or stale_info:
             db.commit()
 
         gen_result = _auto_generate_monthly_tasks(db, garden_id, now_value)

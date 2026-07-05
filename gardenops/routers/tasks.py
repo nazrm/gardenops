@@ -64,7 +64,7 @@ TaskType = Literal[
     "inspect_issue",
 ]
 
-TaskStatus = Literal["pending", "completed", "skipped", "snoozed"]
+TaskStatus = Literal["pending", "completed", "skipped", "snoozed", "expired"]
 TaskSeverity = Literal["low", "normal", "high"]
 
 _ALLOWED_TASK_ACTIONS_BY_STATUS: dict[str, set[str]] = {

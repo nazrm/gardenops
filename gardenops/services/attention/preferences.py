@@ -45,6 +45,7 @@ _ATTENTION_RULE_KEYS = {
     "task_snoozed_active",
     "task_completed",
     "task_skipped",
+    "task_expired",
     "weather_alert",
     "frost_warning",
     "rain_alert",
@@ -189,6 +190,7 @@ def _with_planned_type_rules(
             "task_snoozed_active": _copy_rule(panel_first),
             "task_completed": _copy_rule(panel_first),
             "task_skipped": _copy_rule(panel_first),
+            "task_expired": _copy_rule(panel_first),
             "weather_alert": _copy_rule(category_rules["warning"]),
             "frost_warning": _copy_rule(category_rules["warning"]),
             "rain_alert": _copy_rule(category_rules["warning"]),
@@ -304,7 +306,7 @@ def _domain_state_allows(item: AttentionItem, surface: AttentionSurface) -> bool
         return item.category != "no_action_needed" or surface == "panel"
     if item.domain_state == "no_action_needed":
         return item.category == "no_action_needed" and surface == "panel"
-    if item.domain_state in {"completed", "skipped"}:
+    if item.domain_state in {"completed", "skipped", "expired"}:
         return item.category == "no_action_needed" and surface == "panel"
     return item.domain_state not in _NON_ACTIVE_DOMAIN_STATES
 
