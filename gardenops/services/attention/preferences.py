@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from gardenops.services.attention.types import (
@@ -23,7 +24,13 @@ _HIDDEN_USER_STATES = {"dismissed", "snoozed", "preference_hidden"}
 _PANEL_ELIGIBILITY = {"panel_only", "inbox", "digest", "interruptive"}
 _NON_EMAIL_SURFACES = {"panel", "inbox"}
 _LEGACY_RULE_KEY_MAP = {
+    "issue_created": "issue_follow_up_due",
+    "task_upcoming": "task_upcoming",
+    "task_generated": "task_generated",
     "weather_alert:frost_warning": "frost_warning",
+    "weather_alert:rain_surplus": "rain_alert",
+    "weather_alert:heat_wave": "weather_alert",
+    "weather_alert:dry_spell": "weather_alert",
 }
 _ATTENTION_RULE_KEYS = {
     "needs_action",
@@ -33,9 +40,12 @@ _ATTENTION_RULE_KEYS = {
     "system",
     "task_due",
     "task_overdue",
+    "task_upcoming",
+    "task_generated",
     "task_snoozed_active",
     "task_completed",
     "task_skipped",
+    "weather_alert",
     "frost_warning",
     "rain_alert",
     "watering_covered_by_rain",
@@ -174,9 +184,12 @@ def _with_planned_type_rules(
         {
             "task_due": _copy_rule(category_rules["needs_action"]),
             "task_overdue": _visible_action_rule(category_rules),
+            "task_upcoming": _copy_rule(category_rules["upcoming"]),
+            "task_generated": _copy_rule(panel_first),
             "task_snoozed_active": _copy_rule(panel_first),
             "task_completed": _copy_rule(panel_first),
             "task_skipped": _copy_rule(panel_first),
+            "weather_alert": _copy_rule(category_rules["warning"]),
             "frost_warning": _copy_rule(category_rules["warning"]),
             "rain_alert": _copy_rule(category_rules["warning"]),
             "watering_covered_by_rain": _copy_rule(panel_first),
@@ -240,10 +253,12 @@ def _legacy_rules_and_metadata(
         if normalized_rule_key is None:
             unknown_legacy_rules[raw_rule_key] = dict(legacy_rule)
             continue
+        legacy_enabled = bool(legacy_rule.get("in_app_enabled", True))
+        legacy_email_enabled = bool(legacy_rule.get("email_enabled", legacy_enabled))
         rules[normalized_rule_key] = {
             "panel": True,
-            "inbox": global_inbox and bool(legacy_rule.get("in_app_enabled", True)),
-            "digest": global_digest and bool(legacy_rule.get("email_enabled", False)),
+            "inbox": global_inbox and legacy_enabled,
+            "digest": global_digest and legacy_email_enabled,
             "min_severity": normalize_severity(str(legacy_rule.get("min_severity", "low"))),
         }
     if not global_inbox:
@@ -325,16 +340,58 @@ def _is_guardrail_item(item: AttentionItem) -> bool:
     return item.type in _GUARDRAIL_TYPES or item.category == "system"
 
 
-def _quiet_hours_active(quiet_hours: dict[str, Any], surface: AttentionSurface) -> bool:
+def _quiet_hour(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value if 0 <= value <= 23 else None
+    if isinstance(value, str):
+        try:
+            hour = int(value.split(":", maxsplit=1)[0])
+        except TypeError, ValueError:
+            return None
+        return hour if 0 <= hour <= 23 else None
+    return None
+
+
+def _hour_in_quiet_window(*, current_hour: int, start_hour: int, end_hour: int) -> bool:
+    if start_hour == end_hour:
+        return False
+    if start_hour < end_hour:
+        return start_hour <= current_hour < end_hour
+    return current_hour >= start_hour or current_hour < end_hour
+
+
+def _quiet_hours_active(
+    quiet_hours: dict[str, Any],
+    surface: AttentionSurface,
+    *,
+    now_ms: int | None,
+) -> bool:
     if surface not in {"digest", "interruptive"}:
         return False
     value = quiet_hours.get(surface, quiet_hours.get("active", False))
     if isinstance(value, dict):
-        return bool(
+        if bool(
             value.get("active")
             or value.get("is_active")
             or value.get("quiet")
             or value.get("in_quiet_hours")
+        ):
+            return True
+        if not bool(value.get("enabled")):
+            return False
+        start_hour = _quiet_hour(value.get("start") or value.get("from") or value.get("start_hour"))
+        end_hour = _quiet_hour(value.get("end") or value.get("to") or value.get("end_hour"))
+        if start_hour is None or end_hour is None:
+            return False
+        now_utc = (
+            datetime.fromtimestamp(now_ms / 1000, tz=UTC)
+            if now_ms is not None
+            else datetime.now(UTC)
+        )
+        return _hour_in_quiet_window(
+            current_hour=now_utc.hour,
+            start_hour=start_hour,
+            end_hour=end_hour,
         )
     return bool(value)
 
@@ -355,6 +412,7 @@ def apply_preferences(
     preferences: AttentionPreferenceSet,
     *,
     surface: AttentionSurface,
+    now_ms: int | None = None,
 ) -> list[AttentionItem]:
     visible: list[AttentionItem] = []
     for item in items:
@@ -383,7 +441,7 @@ def apply_preferences(
             continue
         if not _rule_allows_surface(rule, surface):
             continue
-        if _quiet_hours_active(preferences.quiet_hours, surface):
+        if _quiet_hours_active(preferences.quiet_hours, surface, now_ms=now_ms):
             continue
         visible.append(item)
     return visible

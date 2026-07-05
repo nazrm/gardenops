@@ -84,6 +84,107 @@ class TestNotifications(BaseApiTest):
         r = self.client.get("/api/notifications/count")
         self.assertEqual(r.json()["count"], 2)
 
+    def test_attention_preferences_hide_inbox_without_mutating_notification_log(self) -> None:
+        from gardenops.services.notification_service import create_notification as _create_notif
+
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        os.environ["AUTH_API_KEY"] = ""
+        try:
+            client = self._new_client()
+            _, csrf = self._login_session("test_admin", "testadminpass", client=client)
+            headers = self._session_headers(csrf)
+
+            conn = db.get_db()
+            try:
+                garden_id = int(
+                    conn.execute(
+                        "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+                    ).fetchone()["id"]
+                )
+                user_id = int(
+                    conn.execute(
+                        "SELECT id FROM auth_users WHERE username = 'test_admin'",
+                    ).fetchone()["id"]
+                )
+                now = db.current_timestamp_ms()
+                today = str(conn.execute("SELECT CURRENT_DATE::text").fetchone()["current_date"])
+                conn.execute(
+                    """
+                    INSERT INTO user_attention_preferences
+                        (user_id, preset, rules_json, quiet_hours_json,
+                         show_no_action_history, created_at_ms, updated_at_ms)
+                    VALUES (%s, 'custom', %s, '{}', 1, %s, %s)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        preset = excluded.preset,
+                        rules_json = excluded.rules_json,
+                        quiet_hours_json = excluded.quiet_hours_json,
+                        show_no_action_history = excluded.show_no_action_history,
+                        updated_at_ms = excluded.updated_at_ms
+                    """,
+                    (
+                        user_id,
+                        json.dumps(
+                            {
+                                "task_due": {
+                                    "panel": True,
+                                    "inbox": False,
+                                    "digest": True,
+                                    "min_severity": "low",
+                                }
+                            },
+                            separators=(",", ":"),
+                        ),
+                        now,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO garden_tasks
+                        (public_id, garden_id, task_type, title, status, severity,
+                         due_on, metadata_json, created_at_ms, updated_at_ms)
+                    VALUES ('task_attention_inbox_hidden', %s, 'water', 'Water basil',
+                            'pending', 'normal', %s, '{}', %s, %s)
+                    """,
+                    (garden_id, today, now, now),
+                )
+                note_id = _create_notif(
+                    conn,
+                    garden_id,
+                    user_id,
+                    "task_due",
+                    "Water basil",
+                    "Water basil today",
+                    target_type="task",
+                    target_id="task_attention_inbox_hidden",
+                    severity="normal",
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            inbox = client.get("/api/notifications", headers=headers)
+            self.assertEqual(inbox.status_code, 200, inbox.text)
+            self.assertNotIn(note_id, [n["id"] for n in inbox.json()["notifications"]])
+
+            count = client.get("/api/notifications/count", headers=headers)
+            self.assertEqual(count.status_code, 200, count.text)
+            self.assertEqual(count.json()["count"], 0)
+
+            read_all = client.post("/api/notifications/read-all", headers=headers)
+            self.assertEqual(read_all.status_code, 200, read_all.text)
+            self.assertEqual(read_all.json()["updated"], 0)
+
+            log = client.get("/api/notifications?scope=log", headers=headers)
+            self.assertEqual(log.status_code, 200, log.text)
+            rows = [n for n in log.json()["notifications"] if n["id"] == note_id]
+            self.assertEqual(len(rows), 1)
+            self.assertIsNone(rows[0]["read_at_ms"])
+            self.assertIsNone(rows[0]["clear_reason"])
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
     def test_notification_list_can_skip_total_count(self) -> None:
         from gardenops.services.notification_service import create_notification as _create_notif
 
@@ -1451,6 +1552,253 @@ class TestNotifications(BaseApiTest):
             ).fetchone()
             assert row is not None
             self.assertIsNotNone(row["emailed_at_ms"])
+        finally:
+            db.return_db(conn)
+
+    def test_attention_digest_preferences_suppress_email_without_marking_notification(
+        self,
+    ) -> None:
+        from gardenops.services.notification_service import deliver_pending_email_digests
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            assert garden is not None
+            garden_id = int(garden["id"])
+            user = create_user(
+                conn,
+                username=f"notif_attention_digest_{self.__class__.__name__.lower()}",
+                password=strong_password("attndigestpass123"),
+                role="editor",
+            )
+            user_id = int(user["id"])
+            conn.execute(
+                "UPDATE auth_users SET subscription_tier = 'pro' WHERE id = %s",
+                (user_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO garden_memberships (garden_id, user_id, role)
+                VALUES (%s, %s, 'editor')
+                ON CONFLICT DO NOTHING
+                """,
+                (garden_id, user_id),
+            )
+            now = db.current_timestamp_ms()
+            conn.execute(
+                """
+                INSERT INTO user_notification_preferences
+                    (user_id, in_app_enabled, email_enabled, email_address,
+                     digest_frequency, quiet_hours_json,
+                     task_due_enabled, task_overdue_enabled,
+                     created_at_ms, updated_at_ms)
+                VALUES (%s, 1, 1, %s, 'daily', '{}', 1, 1, %s, %s)
+                """,
+                (user_id, "attention-digest@example.test", now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_attention_preferences
+                    (user_id, preset, rules_json, quiet_hours_json,
+                     show_no_action_history, created_at_ms, updated_at_ms)
+                VALUES (%s, 'custom', %s, '{}', 1, %s, %s)
+                """,
+                (
+                    user_id,
+                    json.dumps(
+                        {
+                            "task_due": {
+                                "panel": True,
+                                "inbox": True,
+                                "digest": False,
+                                "min_severity": "low",
+                            }
+                        },
+                        separators=(",", ":"),
+                    ),
+                    now,
+                    now,
+                ),
+            )
+            note = conn.execute(
+                """
+                INSERT INTO notification_events
+                    (public_id, garden_id, user_id, notification_type, title, body,
+                     target_type, target_id, read_at_ms, emailed_at_ms, metadata_json,
+                     dismissed, created_at_ms, notification_subtype, severity, expires_at_ms,
+                     cleared_at_ms, clear_reason, superseded_by_id)
+                VALUES ('note_attention_digest_hidden', %s, %s, 'task_due',
+                        'Water basil', 'Water basil today', 'task', 'task_digest_hidden',
+                        NULL, NULL, '{}', 0, %s, NULL, 'normal', NULL, NULL, NULL, NULL)
+                RETURNING id
+                """,
+                (garden_id, user_id, now),
+            ).fetchone()
+            assert note is not None
+            conn.commit()
+
+            sent: list[tuple[str, str, str]] = []
+            result = deliver_pending_email_digests(
+                conn,
+                garden_id,
+                email_sender=lambda recipient, subject, body: sent.append(
+                    (recipient, subject, body)
+                ),
+                now_ms=now + 86_400_000,
+            )
+
+            self.assertEqual(int(result["processed_users"]), 1)
+            self.assertEqual(int(result["emailed_users"]), 0)
+            self.assertEqual(int(result["notifications_marked"]), 0)
+            self.assertEqual(sent, [])
+            row = conn.execute(
+                """
+                SELECT emailed_at_ms, cleared_at_ms, clear_reason
+                FROM notification_events
+                WHERE id = %s
+                """,
+                (int(note["id"]),),
+            ).fetchone()
+            assert row is not None
+            self.assertIsNone(row["emailed_at_ms"])
+            self.assertIsNone(row["cleared_at_ms"])
+            self.assertIsNone(row["clear_reason"])
+        finally:
+            db.return_db(conn)
+
+    def test_attention_digest_hidden_rows_do_not_starve_later_eligible_rows(self) -> None:
+        from gardenops.services.notification_service import deliver_pending_email_digests
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            assert garden is not None
+            garden_id = int(garden["id"])
+            user = create_user(
+                conn,
+                username=f"notif_attention_digest_starve_{self.__class__.__name__.lower()}",
+                password=strong_password("attndigeststarve123"),
+                role="editor",
+            )
+            user_id = int(user["id"])
+            conn.execute(
+                "UPDATE auth_users SET subscription_tier = 'pro' WHERE id = %s",
+                (user_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO garden_memberships (garden_id, user_id, role)
+                VALUES (%s, %s, 'editor')
+                ON CONFLICT DO NOTHING
+                """,
+                (garden_id, user_id),
+            )
+            now = db.current_timestamp_ms()
+            conn.execute(
+                """
+                INSERT INTO user_notification_preferences
+                    (user_id, in_app_enabled, email_enabled, email_address,
+                     digest_frequency, quiet_hours_json,
+                     task_due_enabled, task_overdue_enabled,
+                     created_at_ms, updated_at_ms)
+                VALUES (%s, 1, 1, %s, 'daily', '{}', 1, 1, %s, %s)
+                """,
+                (user_id, "attention-digest-starve@example.test", now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_attention_preferences
+                    (user_id, preset, rules_json, quiet_hours_json,
+                     show_no_action_history, created_at_ms, updated_at_ms)
+                VALUES (%s, 'custom', %s, '{}', 1, %s, %s)
+                """,
+                (
+                    user_id,
+                    json.dumps(
+                        {
+                            "task_due": {
+                                "panel": True,
+                                "inbox": True,
+                                "digest": False,
+                                "min_severity": "low",
+                            },
+                            "issue_follow_up_due": {
+                                "panel": True,
+                                "inbox": True,
+                                "digest": True,
+                                "min_severity": "low",
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    now,
+                    now,
+                ),
+            )
+            hidden = conn.execute(
+                """
+                INSERT INTO notification_events
+                    (public_id, garden_id, user_id, notification_type, title, body,
+                     target_type, target_id, read_at_ms, emailed_at_ms, metadata_json,
+                     dismissed, created_at_ms, notification_subtype, severity, expires_at_ms,
+                     cleared_at_ms, clear_reason, superseded_by_id)
+                VALUES ('note_attention_digest_old_hidden', %s, %s, 'task_due',
+                        'Water basil', 'Water basil today', 'task', 'task_digest_hidden',
+                        NULL, NULL, '{}', 0, %s, NULL, 'normal', NULL, NULL, NULL, NULL)
+                RETURNING id
+                """,
+                (garden_id, user_id, now),
+            ).fetchone()
+            eligible = conn.execute(
+                """
+                INSERT INTO notification_events
+                    (public_id, garden_id, user_id, notification_type, title, body,
+                     target_type, target_id, read_at_ms, emailed_at_ms, metadata_json,
+                     dismissed, created_at_ms, notification_subtype, severity, expires_at_ms,
+                     cleared_at_ms, clear_reason, superseded_by_id)
+                VALUES ('note_attention_digest_new_eligible', %s, %s, 'issue_created',
+                        'Check mildew', 'Review cucumber mildew', 'issue', 'issue_digest_eligible',
+                        NULL, NULL, '{}', 0, %s, NULL, 'normal', NULL, NULL, NULL, NULL)
+                RETURNING id
+                """,
+                (garden_id, user_id, now + 1),
+            ).fetchone()
+            assert hidden is not None
+            assert eligible is not None
+            conn.commit()
+
+            sent: list[tuple[str, str, str]] = []
+            with patch.dict(os.environ, {"NOTIFICATION_DIGEST_MAX_EVENTS_PER_USER": "1"}):
+                result = deliver_pending_email_digests(
+                    conn,
+                    garden_id,
+                    email_sender=lambda recipient, subject, body: sent.append(
+                        (recipient, subject, body)
+                    ),
+                    now_ms=now + 86_400_000,
+                )
+
+            self.assertEqual(int(result["processed_users"]), 1)
+            self.assertEqual(int(result["emailed_users"]), 1)
+            self.assertEqual(int(result["notifications_marked"]), 1)
+            self.assertEqual(len(sent), 1)
+            self.assertIn("Check mildew", sent[0][2])
+            rows = conn.execute(
+                """
+                SELECT id, emailed_at_ms
+                FROM notification_events
+                WHERE id IN (%s, %s)
+                ORDER BY id
+                """,
+                (int(hidden["id"]), int(eligible["id"])),
+            ).fetchall()
+            by_id = {int(row["id"]): row for row in rows}
+            self.assertIsNone(by_id[int(hidden["id"])]["emailed_at_ms"])
+            self.assertIsNotNone(by_id[int(eligible["id"])]["emailed_at_ms"])
         finally:
             db.return_db(conn)
 

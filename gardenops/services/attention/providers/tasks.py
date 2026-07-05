@@ -33,6 +33,7 @@ class TaskAttentionProvider:
         garden_id: int,
         user_id: int,
         now_ms: int,
+        suppress_rain_handled_watering: bool = True,
     ) -> list[AttentionItem]:
         today = attention_today_date(now_ms=now_ms, frozen_date=self.frozen_date)
         recent_cutoff_ms = now_ms - _DAY_MS
@@ -41,21 +42,23 @@ class TaskAttentionProvider:
         plot_ids_by_task_id = self._plot_ids_by_task_id(conn, task_ids)
         plant_ids_by_task_id = self._plant_ids_by_task_id(conn, task_ids)
         outdoor_task_ids = self._outdoor_task_ids(conn, garden_id, task_ids)
-        handled_watering_targets = self._handled_watering_targets(
-            conn,
-            garden_id,
-            now_ms=now_ms,
-        )
-        visible_rows = [
-            row
-            for row in rows
-            if not self._should_suppress_rain_handled_watering(
-                row,
-                outdoor_task_ids=outdoor_task_ids,
-                handled_watering_targets=handled_watering_targets,
-                plant_ids=plant_ids_by_task_id.get(int(row["id"]), ()),
+        visible_rows = rows
+        if suppress_rain_handled_watering:
+            handled_watering_targets = self._handled_watering_targets(
+                conn,
+                garden_id,
+                now_ms=now_ms,
             )
-        ]
+            visible_rows = [
+                row
+                for row in rows
+                if not self._should_suppress_rain_handled_watering(
+                    row,
+                    outdoor_task_ids=outdoor_task_ids,
+                    handled_watering_targets=handled_watering_targets,
+                    plant_ids=plant_ids_by_task_id.get(int(row["id"]), ()),
+                )
+            ]
         return [
             self._item_from_row(
                 row,
@@ -286,6 +289,7 @@ class TaskAttentionProvider:
             plot_ids=plot_ids,
             due_on=due_on,
             domain_state=self._domain_state(status),
+            delivery_eligibility=(("panel_only", "inbox", "digest") if active else ("panel_only",)),
             group_key=group_key or None,
             primary_action=(
                 AttentionAction(

@@ -2,6 +2,7 @@ import { t } from "../core/i18n";
 import type {
   AttentionAction,
   AttentionItem,
+  AttentionPreferenceRule,
   AttentionPreferencePreset,
   AttentionPreferences,
   AttentionPreferencesUpdate,
@@ -47,6 +48,64 @@ const MOBILE_COUNT_KEYS: AttentionSectionKey[] = [
   "coming_up",
 ];
 const PRESET_OPTIONS: AttentionPreferencePreset[] = ["calm", "balanced", "detailed", "custom"];
+const SEVERITY_OPTIONS: AttentionItem["severity"][] = ["low", "normal", "high", "critical"];
+const MATRIX_SURFACES: Array<"panel" | "inbox" | "digest"> = ["panel", "inbox", "digest"];
+const WEATHER_WATERING_METADATA_KEY = "weather_aware_watering_suppression";
+
+interface PreferenceRuleRow {
+  id: string;
+  ruleKeys: string[];
+  labelKey: string;
+  helpKey: string;
+  guardrail?: boolean;
+}
+
+const PREFERENCE_RULE_ROWS: PreferenceRuleRow[] = [
+  {
+    id: "routine-tasks",
+    ruleKeys: ["task_due", "task_generated", "needs_action"],
+    labelKey: "attention.preferences.category.routine_tasks",
+    helpKey: "attention.preferences.category.routine_tasks_help",
+  },
+  {
+    id: "overdue-tasks",
+    ruleKeys: ["task_overdue"],
+    labelKey: "attention.preferences.category.overdue_tasks",
+    helpKey: "attention.preferences.category.overdue_tasks_help",
+  },
+  {
+    id: "issue-follow-ups",
+    ruleKeys: ["issue_follow_up_due", "issue_follow_up_overdue"],
+    labelKey: "attention.preferences.category.issue_followups",
+    helpKey: "attention.preferences.category.issue_followups_help",
+  },
+  {
+    id: "weather-warnings",
+    ruleKeys: ["warning", "weather_alert", "frost_warning", "rain_alert"],
+    labelKey: "attention.preferences.category.weather_warnings",
+    helpKey: "attention.preferences.category.weather_warnings_help",
+    guardrail: true,
+  },
+  {
+    id: "upcoming-work",
+    ruleKeys: ["upcoming", "task_upcoming", "calendar_event_due", "calendar_event_upcoming"],
+    labelKey: "attention.preferences.category.upcoming_work",
+    helpKey: "attention.preferences.category.upcoming_work_help",
+  },
+  {
+    id: "no-action-history",
+    ruleKeys: ["no_action_needed", "watering_covered_by_rain", "watering_rescheduled_by_rain"],
+    labelKey: "attention.preferences.category.no_action_history",
+    helpKey: "attention.preferences.category.no_action_history_help",
+  },
+  {
+    id: "system-security",
+    ruleKeys: ["system", "security_alert", "safety_alert"],
+    labelKey: "attention.preferences.category.system_security",
+    helpKey: "attention.preferences.category.system_security_help",
+    guardrail: true,
+  },
+];
 
 interface AttentionChildSummary {
   id: string;
@@ -109,6 +168,65 @@ function isPreferenceGuardrail(item: AttentionItem): boolean {
 
 function severityLabel(severity: AttentionItem["severity"]): string {
   return t(`attention.severity.${severity}`);
+}
+
+function surfaceLabel(surface: "panel" | "inbox" | "digest"): string {
+  return t(`attention.preferences.surface.${surface}`);
+}
+
+function clonePreferenceRules(
+  rules: AttentionPreferences["rules"],
+): Record<string, AttentionPreferenceRule> {
+  return Object.fromEntries(
+    Object.entries(rules).map(([key, rule]) => [key, { ...rule }]),
+  );
+}
+
+function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
+  return { ...value };
+}
+
+function ruleForRow(
+  row: PreferenceRuleRow,
+  rules: Record<string, AttentionPreferenceRule>,
+): AttentionPreferenceRule {
+  for (const key of row.ruleKeys) {
+    const rule = rules[key];
+    if (rule) return { ...rule };
+  }
+  return { panel: true, inbox: false, digest: false, min_severity: "low" };
+}
+
+function assignRuleToRow(
+  row: PreferenceRuleRow,
+  rules: Record<string, AttentionPreferenceRule>,
+  rule: AttentionPreferenceRule,
+): void {
+  row.ruleKeys.forEach((key) => {
+    rules[key] = { ...rule };
+  });
+}
+
+function preferenceMetadataBool(
+  preferences: AttentionPreferences,
+  key: string,
+  fallback: boolean,
+): boolean {
+  const value = preferences.metadata[key];
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function quietHourField(
+  quietHours: Record<string, unknown>,
+  channel: "digest" | "interruptive",
+  field: "enabled" | "start" | "end",
+  fallback: string | boolean,
+): string | boolean {
+  const raw = quietHours[channel];
+  if (!isRecord(raw)) return fallback;
+  const value = raw[field];
+  if (typeof fallback === "boolean") return typeof value === "boolean" ? value : fallback;
+  return typeof value === "string" ? value : fallback;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -177,6 +295,7 @@ export function initAttentionTodayPanel(
   }
 
   function trapMobileSheetFocus(event: KeyboardEvent): void {
+    if (preferencesDialog instanceof HTMLElement) return;
     if (!mobileSheetOpen() || !(mobileSheet instanceof HTMLElement)) return;
     if (event.key === "Escape") {
       event.preventDefault();
@@ -291,6 +410,7 @@ export function initAttentionTodayPanel(
     input.name = "attention-preference-preset";
     input.value = preset;
     input.checked = preset === currentPreset;
+    input.setAttribute("data-testid", `attention-preferences-preset-${preset}`);
     label.appendChild(input);
     appendTextElement(
       label,
@@ -315,6 +435,7 @@ export function initAttentionTodayPanel(
     dialog.setAttribute("role", "dialog");
     dialog.setAttribute("aria-modal", "true");
     dialog.setAttribute("aria-labelledby", "attention-preferences-title");
+    dialog.setAttribute("data-testid", "attention-preferences-dialog");
 
     const title = appendTextElement(
       dialog,
@@ -346,6 +467,7 @@ export function initAttentionTodayPanel(
     historyInput.type = "checkbox";
     historyInput.name = "attention-show-no-action-history";
     historyInput.checked = preferences.show_no_action_history;
+    historyInput.setAttribute("data-testid", "attention-preferences-show-history");
     historyChoice.appendChild(historyInput);
     appendTextElement(
       historyChoice,
@@ -354,6 +476,203 @@ export function initAttentionTodayPanel(
       t("attention.preferences.show_no_action_history"),
     );
     form.appendChild(historyChoice);
+
+    const customRadio = fieldset.querySelector<HTMLInputElement>(
+      "input[value='custom']",
+    );
+    const selectCustomPreset = (): void => {
+      if (customRadio) customRadio.checked = true;
+    };
+
+    const matrix = document.createElement("fieldset");
+    matrix.className = "attention-preferences-fieldset attention-preferences-matrix";
+    const matrixLegend = appendTextElement(
+      matrix,
+      "legend",
+      "attention-preferences-legend",
+      t("attention.preferences.delivery_matrix"),
+    );
+    matrixLegend.id = "attention-preferences-matrix";
+
+    const matrixHeader = document.createElement("div");
+    matrixHeader.className = "attention-preferences-matrix-header";
+    appendTextElement(
+      matrixHeader,
+      "span",
+      "attention-preferences-matrix-heading",
+      t("attention.preferences.category"),
+    );
+    MATRIX_SURFACES.forEach((surface) => {
+      appendTextElement(
+        matrixHeader,
+        "span",
+        "attention-preferences-matrix-heading",
+        surfaceLabel(surface),
+      );
+    });
+    appendTextElement(
+      matrixHeader,
+      "span",
+      "attention-preferences-matrix-heading",
+      t("attention.preferences.minimum_severity"),
+    );
+    matrix.appendChild(matrixHeader);
+
+    PREFERENCE_RULE_ROWS.forEach((rowConfig) => {
+      const rule = ruleForRow(rowConfig, preferences.rules);
+      const row = document.createElement("div");
+      row.className = "attention-preferences-rule-row";
+      row.setAttribute("data-testid", `attention-preferences-rule-${rowConfig.id}`);
+
+      const labelWrap = document.createElement("div");
+      labelWrap.className = "attention-preferences-rule-label";
+      appendTextElement(labelWrap, "span", "attention-preferences-rule-title", t(rowConfig.labelKey));
+      appendTextElement(labelWrap, "span", "attention-preferences-rule-help", t(rowConfig.helpKey));
+      if (rowConfig.guardrail) {
+        appendTextElement(
+          labelWrap,
+          "span",
+          "attention-preferences-rule-guardrail",
+          t("attention.preferences.guardrail_note"),
+        );
+      }
+      row.appendChild(labelWrap);
+
+      MATRIX_SURFACES.forEach((surface) => {
+        const surfaceToggle = document.createElement("label");
+        surfaceToggle.className = "attention-preferences-surface-toggle";
+        const toggle = document.createElement("input");
+        toggle.type = "checkbox";
+        toggle.name = `attention-rule-${rowConfig.id}-${surface}`;
+        toggle.checked = Boolean(rule[surface]);
+        toggle.setAttribute(
+          "aria-label",
+          `${t(rowConfig.labelKey)} ${surfaceLabel(surface)}`,
+        );
+        toggle.setAttribute(
+          "data-testid",
+          `attention-preferences-rule-${rowConfig.id}-${surface}`,
+        );
+        toggle.addEventListener("change", selectCustomPreset);
+        surfaceToggle.appendChild(toggle);
+        appendTextElement(
+          surfaceToggle,
+          "span",
+          "attention-preferences-surface-label",
+          surfaceLabel(surface),
+        );
+        row.appendChild(surfaceToggle);
+      });
+
+      const severity = document.createElement("select");
+      severity.name = `attention-rule-${rowConfig.id}-severity`;
+      severity.setAttribute(
+        "aria-label",
+        `${t(rowConfig.labelKey)} ${t("attention.preferences.minimum_severity")}`,
+      );
+      severity.setAttribute(
+        "data-testid",
+        `attention-preferences-rule-${rowConfig.id}-severity`,
+      );
+      SEVERITY_OPTIONS.forEach((optionValue) => {
+        const option = document.createElement("option");
+        option.value = optionValue;
+        option.textContent = severityLabel(optionValue);
+        if ((rule.min_severity ?? "low") === optionValue) option.selected = true;
+        severity.appendChild(option);
+      });
+      severity.addEventListener("change", selectCustomPreset);
+      row.appendChild(severity);
+      matrix.appendChild(row);
+    });
+    form.appendChild(matrix);
+
+    const delivery = document.createElement("fieldset");
+    delivery.className = "attention-preferences-fieldset attention-preferences-delivery";
+    appendTextElement(
+      delivery,
+      "legend",
+      "attention-preferences-legend",
+      t("attention.preferences.delivery_controls"),
+    );
+
+    const weatherChoice = document.createElement("label");
+    weatherChoice.className = "attention-preferences-choice";
+    const weatherInput = document.createElement("input");
+    weatherInput.type = "checkbox";
+    weatherInput.name = "attention-weather-aware-watering";
+    weatherInput.checked = preferenceMetadataBool(
+      preferences,
+      WEATHER_WATERING_METADATA_KEY,
+      true,
+    );
+    weatherInput.setAttribute("data-testid", "attention-preferences-weather-watering");
+    weatherInput.addEventListener("change", selectCustomPreset);
+    weatherChoice.appendChild(weatherInput);
+    appendTextElement(
+      weatherChoice,
+      "span",
+      "attention-preferences-choice-label",
+      t("attention.preferences.weather_watering"),
+    );
+    delivery.appendChild(weatherChoice);
+
+    const quietGrid = document.createElement("div");
+    quietGrid.className = "attention-preferences-quiet-grid";
+    (["digest", "interruptive"] as const).forEach((channel) => {
+      const quietRow = document.createElement("div");
+      quietRow.className = "attention-preferences-quiet-row";
+      const enabled = document.createElement("input");
+      enabled.type = "checkbox";
+      enabled.name = `attention-quiet-${channel}-enabled`;
+      enabled.checked = Boolean(
+        quietHourField(preferences.quiet_hours, channel, "enabled", false),
+      );
+      enabled.setAttribute(
+        "data-testid",
+        `attention-preferences-quiet-${channel}-enabled`,
+      );
+      enabled.setAttribute("aria-label", t(`attention.preferences.quiet_${channel}`));
+      enabled.addEventListener("change", selectCustomPreset);
+      const text = appendTextElement(
+        quietRow,
+        "span",
+        "attention-preferences-quiet-label",
+        t(`attention.preferences.quiet_${channel}`),
+      );
+      quietRow.prepend(enabled);
+      appendTextElement(
+        quietRow,
+        "span",
+        "attention-preferences-quiet-time-label",
+        t("attention.preferences.start"),
+      );
+      const start = document.createElement("input");
+      start.type = "time";
+      start.name = `attention-quiet-${channel}-start`;
+      start.value = String(quietHourField(preferences.quiet_hours, channel, "start", "22:00"));
+      start.setAttribute("aria-label", `${text.textContent} ${t("attention.preferences.start")}`);
+      start.setAttribute("data-testid", `attention-preferences-quiet-${channel}-start`);
+      start.addEventListener("change", selectCustomPreset);
+      quietRow.appendChild(start);
+      appendTextElement(
+        quietRow,
+        "span",
+        "attention-preferences-quiet-time-label",
+        t("attention.preferences.end"),
+      );
+      const end = document.createElement("input");
+      end.type = "time";
+      end.name = `attention-quiet-${channel}-end`;
+      end.value = String(quietHourField(preferences.quiet_hours, channel, "end", "07:00"));
+      end.setAttribute("aria-label", `${text.textContent} ${t("attention.preferences.end")}`);
+      end.setAttribute("data-testid", `attention-preferences-quiet-${channel}-end`);
+      end.addEventListener("change", selectCustomPreset);
+      quietRow.appendChild(end);
+      quietGrid.appendChild(quietRow);
+    });
+    delivery.appendChild(quietGrid);
+    form.appendChild(delivery);
 
     const error = appendTextElement(form, "p", "attention-preferences-error", "");
     error.hidden = true;
@@ -365,6 +684,7 @@ export function initAttentionTodayPanel(
     cancel.type = "button";
     cancel.className = "attention-today-action";
     cancel.textContent = t("common.cancel");
+    cancel.setAttribute("data-testid", "attention-preferences-cancel");
     cancel.addEventListener("click", () => closePreferencesDialog(true));
     actions.appendChild(cancel);
 
@@ -372,8 +692,55 @@ export function initAttentionTodayPanel(
     save.type = "submit";
     save.className = "attention-today-action attention-today-action--primary";
     save.textContent = t("common.save");
+    save.setAttribute("data-testid", "attention-preferences-save");
     actions.appendChild(save);
     form.appendChild(actions);
+
+    function collectCustomRules(): Record<string, AttentionPreferenceRule> {
+      const rules = clonePreferenceRules(preferences.rules);
+      PREFERENCE_RULE_ROWS.forEach((rowConfig) => {
+        const rule: AttentionPreferenceRule = {};
+        MATRIX_SURFACES.forEach((surface) => {
+          rule[surface] = form.querySelector<HTMLInputElement>(
+            `input[name='attention-rule-${rowConfig.id}-${surface}']`,
+          )?.checked ?? false;
+        });
+        rule.min_severity = (
+          form.querySelector<HTMLSelectElement>(
+            `select[name='attention-rule-${rowConfig.id}-severity']`,
+          )?.value ?? "low"
+        ) as AttentionItem["severity"];
+        assignRuleToRow(rowConfig, rules, rule);
+      });
+      return rules;
+    }
+
+    function collectQuietHours(): Record<string, unknown> {
+      const quietHours = cloneRecord(preferences.quiet_hours);
+      (["digest", "interruptive"] as const).forEach((channel) => {
+        quietHours[channel] = {
+          enabled: form.querySelector<HTMLInputElement>(
+            `input[name='attention-quiet-${channel}-enabled']`,
+          )?.checked ?? false,
+          start: form.querySelector<HTMLInputElement>(
+            `input[name='attention-quiet-${channel}-start']`,
+          )?.value ?? "22:00",
+          end: form.querySelector<HTMLInputElement>(
+            `input[name='attention-quiet-${channel}-end']`,
+          )?.value ?? "07:00",
+        };
+      });
+      return quietHours;
+    }
+
+    function collectMetadata(): Record<string, unknown> {
+      return {
+        ...preferences.metadata,
+        [WEATHER_WATERING_METADATA_KEY]: form.querySelector<HTMLInputElement>(
+          "input[name='attention-weather-aware-watering']",
+        )?.checked ?? true,
+      };
+    }
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -389,9 +756,10 @@ export function initAttentionTodayPanel(
       cancel.disabled = true;
       void options.updatePreferences({
         preset,
-        rules: preset === "custom" ? preferences.rules : {},
-        quiet_hours: preferences.quiet_hours,
+        rules: preset === "custom" ? collectCustomRules() : {},
+        quiet_hours: collectQuietHours(),
         show_no_action_history: showNoActionHistory,
+        metadata: collectMetadata(),
       })
         .then(() => {
           closePreferencesDialog(true);

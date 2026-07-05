@@ -148,6 +148,7 @@ class MigrationGuardTests(unittest.TestCase):
                 "rules_json",
                 "quiet_hours_json",
                 "show_no_action_history",
+                "metadata_json",
                 "created_at_ms",
                 "updated_at_ms",
             }.issubset(set(REQUIRED_COLUMNS["user_attention_preferences"]))

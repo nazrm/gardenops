@@ -1,4 +1,5 @@
 import importlib.util
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -539,6 +540,73 @@ def test_legacy_rule_that_already_matches_attention_key_is_preserved():
     assert apply_preferences([item], prefs, surface="inbox") == []
 
 
+def test_legacy_notification_policy_keys_map_to_attention_rule_types():
+    prefs = resolve_attention_preferences(
+        user_id=2,
+        legacy_preferences={
+            "in_app_enabled": True,
+            "email_enabled": True,
+            "notification_rules": {
+                "issue_created": {
+                    "in_app_enabled": False,
+                    "email_enabled": False,
+                    "min_severity": "high",
+                },
+                "weather_alert:rain_surplus": {
+                    "in_app_enabled": False,
+                    "email_enabled": False,
+                    "min_severity": "critical",
+                },
+                "task_upcoming": {
+                    "in_app_enabled": True,
+                    "email_enabled": True,
+                    "min_severity": "normal",
+                },
+            },
+        },
+        saved_attention_preferences=None,
+    )
+
+    assert prefs.rules["issue_follow_up_due"]["inbox"] is False
+    assert prefs.rules["rain_alert"]["digest"] is False
+    assert prefs.rules["task_upcoming"]["digest"] is True
+    assert "issue_created" not in prefs.metadata.get("legacy_notification_rules", {})
+    assert "weather_alert:rain_surplus" not in prefs.metadata.get(
+        "legacy_notification_rules",
+        {},
+    )
+
+
+def test_legacy_rule_without_email_channel_uses_type_enablement_for_digest():
+    prefs = resolve_attention_preferences(
+        user_id=2,
+        legacy_preferences={
+            "in_app_enabled": True,
+            "email_enabled": True,
+            "notification_rules": {
+                "task_due": {
+                    "in_app_enabled": True,
+                    "min_severity": "low",
+                },
+                "task_overdue": {
+                    "in_app_enabled": False,
+                    "min_severity": "low",
+                },
+            },
+        },
+        saved_attention_preferences=None,
+    )
+    due_item = make_item(type="task_due", delivery_eligibility=("digest",))
+    overdue_item = make_item(type="task_overdue", delivery_eligibility=("digest",))
+
+    assert prefs.rules["task_due"]["digest"] is True
+    assert prefs.rules["task_overdue"]["digest"] is False
+    assert [i.id for i in apply_preferences([due_item], prefs, surface="digest")] == [
+        "attn:task:task_1"
+    ]
+    assert apply_preferences([overdue_item], prefs, surface="digest") == []
+
+
 def test_no_action_history_includes_recent_completed_items_on_panel():
     prefs = resolve_attention_preferences(
         user_id=2,
@@ -568,3 +636,168 @@ def test_balanced_preset_has_explicit_rules_for_planned_attention_types():
     assert prefs.rules["task_overdue"]["inbox"] is True
     assert prefs.rules["frost_warning"]["inbox"] is True
     assert prefs.rules["issue_follow_up_overdue"]["inbox"] is True
+
+
+def test_quiet_hours_suppress_digest_but_not_panel():
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={
+            "task_due": {
+                "panel": True,
+                "inbox": True,
+                "digest": True,
+                "min_severity": "low",
+            }
+        },
+        quiet_hours={"digest": {"active": True}},
+        show_no_action_history=True,
+    )
+    item = make_item(delivery_eligibility=("panel_only", "inbox", "digest"))
+
+    assert [i.id for i in apply_preferences([item], prefs, surface="panel")] == ["attn:task:task_1"]
+    assert apply_preferences([item], prefs, surface="digest") == []
+
+
+def test_scheduled_quiet_hours_suppress_digest_only_inside_window():
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={
+            "task_due": {
+                "panel": True,
+                "inbox": True,
+                "digest": True,
+                "min_severity": "low",
+            }
+        },
+        quiet_hours={"digest": {"enabled": True, "start": "21:30", "end": "06:15"}},
+        show_no_action_history=True,
+    )
+    item = make_item(delivery_eligibility=("panel_only", "inbox", "digest"))
+    inside_quiet_hours_ms = int(datetime(2026, 7, 5, 22, 30, tzinfo=UTC).timestamp() * 1000)
+    outside_quiet_hours_ms = int(datetime(2026, 7, 5, 12, 0, tzinfo=UTC).timestamp() * 1000)
+
+    assert apply_preferences([item], prefs, surface="digest", now_ms=inside_quiet_hours_ms) == []
+    assert [
+        i.id
+        for i in apply_preferences([item], prefs, surface="digest", now_ms=outside_quiet_hours_ms)
+    ] == ["attn:task:task_1"]
+    assert [
+        i.id
+        for i in apply_preferences([item], prefs, surface="panel", now_ms=inside_quiet_hours_ms)
+    ] == ["attn:task:task_1"]
+
+
+def test_non_configurable_notification_rows_bypass_attention_delivery_filter():
+    from gardenops.services.notification_service import notification_rows_allowed_by_attention
+
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={
+            "system": {
+                "panel": False,
+                "inbox": False,
+                "digest": False,
+                "min_severity": "critical",
+            }
+        },
+        quiet_hours={},
+        show_no_action_history=True,
+    )
+    row = {
+        "id": 1,
+        "public_id": "note_system",
+        "garden_id": 1,
+        "user_id": 2,
+        "notification_type": "system",
+        "notification_subtype": None,
+        "severity": "low",
+        "title": "System notice",
+        "body": "Backup status changed",
+        "target_type": None,
+        "target_id": None,
+        "created_at_ms": 1,
+    }
+
+    assert notification_rows_allowed_by_attention(
+        [row],
+        preferences=prefs,
+        surface="digest",
+        garden_id=1,
+        user_id=2,
+    ) == [row]
+
+
+def test_active_provider_items_are_eligible_for_inbox_and_digest_surfaces():
+    from gardenops.services.attention.providers.calendar import CalendarAttentionProvider
+    from gardenops.services.attention.providers.issues import IssueAttentionProvider
+    from gardenops.services.attention.providers.tasks import TaskAttentionProvider
+    from gardenops.services.attention.providers.weather import WeatherAttentionProvider
+
+    task_item = TaskAttentionProvider(frozen_date="2026-07-05")._item_from_row(
+        {
+            "public_id": "task_delivery",
+            "garden_id": 1,
+            "status": "pending",
+            "snoozed_until": None,
+            "due_on": "2026-07-05",
+            "metadata_json": "{}",
+            "severity": "normal",
+            "title": "Water basil",
+            "description": "",
+            "task_type": "water",
+            "rule_source": "",
+            "updated_at_ms": 1,
+        },
+        plot_ids=(),
+        plant_ids=(),
+        user_id=2,
+        today="2026-07-05",
+    )
+    weather_provider = WeatherAttentionProvider(frozen_date="2026-07-05")
+    issue_item = IssueAttentionProvider(frozen_date="2026-07-05")._item_from_row(
+        {
+            "public_id": "issue_delivery",
+            "garden_id": 1,
+            "status": "open",
+            "follow_up_on": "2026-07-05",
+            "severity": "normal",
+            "title": "Check mildew",
+            "description": "",
+            "issue_type": "mildew",
+            "updated_at_ms": 1,
+            "resolved_at_ms": None,
+        },
+        plant_ids=(),
+        plot_ids=(),
+        user_id=2,
+        today="2026-07-05",
+    )
+    calendar_item = CalendarAttentionProvider(frozen_date="2026-07-05")._item_from_row(
+        {
+            "public_id": "event_delivery",
+            "garden_id": 1,
+            "event_on": "2026-07-05",
+            "title": "Review beds",
+            "description": "",
+            "updated_at_ms": 1,
+            "created_at_ms": 1,
+        },
+        plant_ids=(),
+        plot_ids=(),
+        user_id=2,
+        today="2026-07-05",
+    )
+    weather_alert = make_item(
+        id="attn:weather:alert:1",
+        provider="weather",
+        type="rain_alert",
+        category="warning",
+        delivery_eligibility=weather_provider._delivery_eligibility("rain_alert", "normal"),
+    )
+
+    for item in [task_item, weather_alert, issue_item, calendar_item]:
+        assert "inbox" in item.delivery_eligibility
+        assert "digest" in item.delivery_eligibility

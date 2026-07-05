@@ -48,6 +48,9 @@ control.
   recreated from scattered notes.
 - Map-linked workflows: plant records, plot context, issues, journal entries,
   media, and work planning connect back to the physical garden layout.
+- Map-first attention overview: a compact Today panel on the map summarizes
+  actionable tasks, warnings, follow-ups, and recent no-action-needed outcomes
+  with user-controlled delivery settings.
 - Built for serious operators: multi-garden memberships, roles, exports,
   calendar subscriptions, notifications, weather context, optional AI, and
   ShadeMap support are available for more complex garden operations.
