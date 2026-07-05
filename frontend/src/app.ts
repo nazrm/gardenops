@@ -26,6 +26,10 @@ import {
 } from "./components/globalSearch";
 import { getAppShellMarkup } from "./components/layout";
 import {
+  initAttentionTodayPanel,
+  type AttentionTodayPanelController,
+} from "./components/attentionTodayPanel";
+import {
   renderMapGrid,
   applyPlotIndicators,
   syncSelectedPlots,
@@ -91,6 +95,8 @@ import { getLocale, localizeRoot, setLocale, subscribeLocaleChange, t } from "./
 import type {
   AppState,
   AppTab,
+  AttentionAction,
+  AttentionItem,
   CalendarManualEventDraft,
   CameraState,
   GardenIssue,
@@ -126,6 +132,8 @@ import {
   deletePlantApi,
   deletePlotApi,
   exportPlantsCsvApi,
+  fetchAttentionPreferencesApi,
+  fetchAttentionTodayApi,
   getAppVersionApi,
   getApiErrorMessage,
   getAuthMeApi,
@@ -177,6 +185,8 @@ import {
   dismissPasskeyPromptApi,
   finishPasskeyReauthenticationApi,
   finishPasskeyRegistrationApi,
+  restoreAttentionOutcomeApi,
+  updateAttentionPreferencesApi,
 } from "./services/api";
 import type {
   MediaAsset,
@@ -1036,6 +1046,8 @@ const WRITE_CONTROL_IDS = [
   "procurement-add-btn",
 ];
 
+let attentionTodayPanel: AttentionTodayPanelController | null = null;
+
 // ── AppContext (dependency injection for extracted modules) ──
 const appContext: AppContext = {
   get state() { return state; },
@@ -1097,7 +1109,10 @@ const appContext: AppContext = {
   setJournalOffset: (offset) => setJournalOffset(offset),
   loadIssues: () => loadIssues(),
   loadWeather: () => loadWeather(),
-  refreshBadgeCounts: () => loadNotificationCount(),
+  refreshBadgeCounts: () => {
+    attentionTodayPanel?.refresh();
+    return loadNotificationCount();
+  },
   setIssuesOffset: (offset) => setIssuesOffset(offset),
   loadInventoryItems: () => loadInventoryItems(),
   setInventoryOffset: (offset) => inventoryTabModule?.setInventoryOffset(offset),
@@ -1816,6 +1831,82 @@ function parsePlotIdInput(raw: string): string[] {
     });
 }
 
+async function handleAttentionTodayAction(
+  item: AttentionItem,
+  action: AttentionAction,
+): Promise<void> {
+  if (action.kind === "restore_attention_outcome") {
+    await restoreAttentionOutcomeApi(action.target_id);
+    attentionTodayPanel?.refresh();
+    return;
+  }
+  const firstPlotId = item.plot_ids[0];
+  if (firstPlotId) {
+    await appContext.selectPlot(firstPlotId);
+  }
+  if (action.kind === "open_issue" || action.target_type === "issue" || item.target_type === "issue") {
+    navigateToSubMode("issues");
+    await loadIssues();
+    attentionTodayPanel?.refresh();
+    return;
+  }
+  if (action.kind === "open_task" || action.target_type === "task" || item.target_type === "task") {
+    navigateToSubMode("tasks");
+    await loadTasksTab();
+    attentionTodayPanel?.refresh();
+    return;
+  }
+  if (action.kind === "open_weather" || action.target_type === "weather_alert") {
+    navigateToSubMode("care");
+    await loadWeather();
+    attentionTodayPanel?.refresh();
+    return;
+  }
+  if (action.kind === "select_plot" && action.target_id) {
+    await appContext.selectPlot(action.target_id);
+    setActiveTab("map");
+    attentionTodayPanel?.refresh();
+    return;
+  }
+  navigateToSubMode("tasks");
+  await loadTasksTab();
+  attentionTodayPanel?.refresh();
+}
+
+function syncAttentionTodayAvailability(): boolean {
+  const available = isFeatureEnabled("attention");
+  [
+    "attention-today-panel",
+    "attention-today-mobile-handle",
+    "attention-today-mobile-sheet",
+  ].forEach((id) => {
+    const element = document.getElementById(id);
+    if (element instanceof HTMLElement) {
+      element.hidden = !available;
+    }
+  });
+  return available;
+}
+
+function ensureAttentionTodayPanel(): void {
+  if (!syncAttentionTodayAvailability()) {
+    attentionTodayPanel?.destroy();
+    attentionTodayPanel = null;
+    return;
+  }
+  if (!attentionTodayPanel) {
+    attentionTodayPanel = initAttentionTodayPanel({
+      fetchToday: fetchAttentionTodayApi,
+      fetchPreferences: fetchAttentionPreferencesApi,
+      updatePreferences: updateAttentionPreferencesApi,
+      onPrimaryAction: handleAttentionTodayAction,
+      onSecondaryAction: handleAttentionTodayAction,
+      onError: (message) => showToast(message, "error"),
+    });
+  }
+  attentionTodayPanel.refresh();
+}
+
 // ── Layout & Setup ─────────────────────────────────────────
 function setupLayout(): void {
   const app = document.getElementById("app");
@@ -1826,6 +1917,7 @@ function setupLayout(): void {
   setStaticTemplateHtml(app, getAppShellMarkup());
   invalidateSearchCache();
   applyLocalizedShellText(app);
+  ensureAttentionTodayPanel();
   if (!localeUiSubscriptionBound) {
     subscribeLocaleChange(() => {
       applyLocalizedShellText();
@@ -2429,6 +2521,7 @@ function applyNavigationState(opts: { triggerLoads?: boolean } = {}): void {
   }
   updateMobileHeader();
   if (activeTab !== "map" || !isMobile()) {
+    attentionTodayPanel?.closeMobileSheet();
     setMobileMapSheetOpen(null);
     closeMobileShadeDisclosures();
   }
@@ -6073,6 +6166,7 @@ async function refreshGardenContext(options?: { profile?: AuthUserProfile | null
   applyLocalizedShellText();
   syncAdminTabLabels();
   updateMobileHeader();
+  ensureAttentionTodayPanel();
 }
 
 function updateShadeMapAvailabilityUi(): void {
@@ -6164,6 +6258,7 @@ async function refreshGardenDataForCurrentContext(): Promise<void> {
 }
 
 function refreshDataAfterAuthChange(): void {
+  ensureAttentionTodayPanel();
   void refreshGardenDataForCurrentContext();
 }
 
@@ -6289,6 +6384,7 @@ window.addEventListener("resize", () => {
   shadePanel?.invalidateSize();
   syncMobileCapabilities();
   if (!isMobile()) {
+    attentionTodayPanel?.closeMobileSheet();
     setMobileUtilityOpen(false);
     setMobileMapSheetOpen(null);
     closeMobileShadeDisclosures();

@@ -16,6 +16,8 @@ from gardenops.services.ai_provider import (
     generate_task_descriptions_with_ai,
     is_ai_provider_configured,
 )
+from gardenops.services.attention.outcomes import upsert_attention_outcome
+from gardenops.services.attention.types import NO_ACTION_RETENTION_DAYS
 from gardenops.services.task_windows import derive_recommended_window_strings
 
 _logger = logging.getLogger(__name__)
@@ -378,23 +380,234 @@ def _delete_pending_rule_tasks(
     return len(task_ids)
 
 
+def _rain_alert_covering_date(
+    db: DbConn,
+    garden_id: int,
+    date_str: str,
+) -> DbRow | None:
+    """Return an active rain_surplus alert covering the given date, if any."""
+    return db.execute(
+        """
+        SELECT id, title, description, valid_from, valid_until, metadata_json
+        FROM weather_alerts
+        WHERE garden_id = %s AND alert_type = 'rain_surplus'
+          AND dismissed = 0
+          AND valid_from <= %s AND valid_until >= %s
+        ORDER BY valid_from ASC, created_at_ms DESC, id ASC
+        LIMIT 1
+        """,
+        (garden_id, date_str, date_str),
+    ).fetchone()
+
+
 def _rain_covers_date(
     db: DbConn,
     garden_id: int,
     date_str: str,
 ) -> bool:
     """Check if an active rain_surplus alert covers the given date."""
-    row = db.execute(
+    return _rain_alert_covering_date(db, garden_id, date_str) is not None
+
+
+def _outdoor_plot_ids_for_plant(db: DbConn, garden_id: int, plt_id: str) -> tuple[str, ...]:
+    rows = db.execute(
         """
-        SELECT 1 FROM weather_alerts
-        WHERE garden_id = %s AND alert_type = 'rain_surplus'
-          AND dismissed = 0
-          AND valid_from <= %s AND valid_until >= %s
+        SELECT DISTINCT pp.plot_id
+        FROM plot_plants pp
+        JOIN plots p ON p.plot_id = pp.plot_id
+        WHERE pp.plt_id = %s
+          AND p.garden_id = %s
+          AND p.grid_row IS NOT NULL
+        ORDER BY pp.plot_id
+        """,
+        (plt_id, garden_id),
+    ).fetchall()
+    return tuple(str(row["plot_id"]) for row in rows)
+
+
+def _parse_mapping_json(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _rain_mm_from_alert_metadata(metadata: dict[str, Any]) -> float | None:
+    for key in ("rain_mm", "total_mm", "total_precip_mm", "precip_mm"):
+        raw = metadata.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _format_rain_mm(rain_mm: float | None) -> str:
+    if rain_mm is None:
+        return "Rain"
+    if rain_mm.is_integer():
+        return f"{int(rain_mm)} mm rain"
+    return f"{rain_mm:.1f} mm rain"
+
+
+def _write_watering_covered_by_rain_outcome(
+    db: DbConn,
+    *,
+    garden_id: int,
+    alert: DbRow,
+    plant_ctx: dict[str, str],
+    water_date: str,
+    rule_source: str,
+    plot_ids: tuple[str, ...],
+    now_ms: int,
+) -> None:
+    plant_id = str(plant_ctx.get("plt_id") or "")
+    plant_name = str(plant_ctx.get("name") or plant_id or "plant")
+    alert_metadata = _parse_mapping_json(alert["metadata_json"])
+    rain_mm = _rain_mm_from_alert_metadata(alert_metadata)
+    metadata = {
+        "due_on": water_date,
+        "rule_source": rule_source,
+        "plant_name": plant_name,
+        "weather_alert_id": str(alert["id"]),
+        "alert_valid_from": str(alert["valid_from"]),
+        "alert_valid_until": str(alert["valid_until"]),
+        "alert": alert_metadata,
+    }
+    if rain_mm is not None:
+        metadata["rain_mm"] = rain_mm
+    upsert_attention_outcome(
+        db,
+        garden_id=garden_id,
+        provider="weather",
+        outcome_type="watering_covered_by_rain",
+        source_type="task_generator",
+        source_id=str(alert["id"]),
+        source_public_id=rule_source,
+        target_type="plant",
+        target_id=plant_id,
+        title="Watering covered by rain",
+        explanation=(
+            f"{_format_rain_mm(rain_mm)} already covers the scheduled watering "
+            f"for {plant_name} on {water_date}."
+        ),
+        reason="Rain covers watering",
+        plant_ids=(plant_id,) if plant_id else (),
+        plot_ids=plot_ids,
+        metadata=metadata,
+        recovery_action={
+            "kind": "restore_generated_watering_task",
+            "label": "Restore watering",
+            "source_public_id": rule_source,
+            "target_type": "plant",
+            "target_id": plant_id,
+            "due_on": water_date,
+            "plant_ids": [plant_id] if plant_id else [],
+            "plot_ids": list(plot_ids),
+        },
+        occurred_at_ms=now_ms,
+        expires_at_ms=now_ms + (NO_ACTION_RETENTION_DAYS * 86_400_000),
+    )
+
+
+def restore_generated_watering_task_from_attention_outcome(
+    db: DbConn,
+    *,
+    garden_id: int,
+    outcome_public_id: str,
+    source_public_id: str,
+    target_id: str,
+    metadata: dict[str, Any],
+    recovery_action: dict[str, Any],
+    actor_user_id: int | None,
+    now_ms: int,
+) -> str:
+    existing = db.execute(
+        """
+        SELECT public_id
+        FROM garden_tasks
+        WHERE garden_id = %s
+          AND rule_source = %s
         LIMIT 1
         """,
-        (garden_id, date_str, date_str),
+        (garden_id, source_public_id),
     ).fetchone()
-    return row is not None
+    if existing is not None:
+        task_public_id = str(existing["public_id"])
+    else:
+        due_on = str(
+            recovery_action.get("due_on")
+            or metadata.get("due_on")
+            or source_public_id.rsplit(":", 1)[-1]
+        )
+        plant_ids = [
+            str(plant_id)
+            for plant_id in recovery_action.get("plant_ids", [target_id])
+            if str(plant_id)
+        ]
+        if target_id and target_id not in plant_ids:
+            plant_ids.insert(0, target_id)
+        plot_ids = [
+            str(plot_id)
+            for plot_id in recovery_action.get("plot_ids", metadata.get("plot_ids", []))
+            if str(plot_id)
+        ]
+        plant_name = str(metadata.get("plant_name") or target_id or "plant")
+        task_id = _create_task_for_plants(
+            db,
+            garden_id,
+            "water",
+            f"Water: {plant_name}",
+            due_on,
+            source_public_id,
+            plant_ids,
+            actor_user_id,
+            now_ms,
+            description="Watering restored from a rain-covered attention outcome.",
+            metadata_json=_generated_description_metadata(
+                "Vanning gjenopprettet fra et regndekket oppfolgingsutfall.",
+                {
+                    "description_source": "attention_restore",
+                    "restored_from_attention_outcome": outcome_public_id,
+                },
+            ),
+        )
+        for plot_id in plot_ids:
+            db.execute(
+                """
+                INSERT INTO garden_task_plots (task_id, plot_id)
+                VALUES (%s, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (task_id, plot_id),
+            )
+        task_row = db.execute(
+            "SELECT public_id FROM garden_tasks WHERE id = %s",
+            (task_id,),
+        ).fetchone()
+        assert task_row is not None
+        task_public_id = str(task_row["public_id"])
+
+    db.execute(
+        """
+        UPDATE attention_outcomes
+        SET expires_at_ms = %s,
+            updated_at_ms = %s
+        WHERE garden_id = %s
+          AND public_id = %s
+        """,
+        (now_ms, now_ms, garden_id, outcome_public_id),
+    )
+    return task_public_id
 
 
 def _create_task(
@@ -766,16 +979,29 @@ def generate_tasks(
         if target_month in (6, 7, 8) and any(
             kw in care_watering for kw in ("regular", "often", "jevnlig", "ofte", "mye")
         ):
+            outdoor_plot_ids = _outdoor_plot_ids_for_plant(db, garden_id, plt_id)
             for day in (1, 8, 15, 22):
                 water_date = f"{target_year}-{target_month:02d}-{day:02d}"
                 rule = f"water:{plt_id}:{water_date}"
                 if _rule_exists(db, garden_id, rule):
                     skipped += 1
-                elif _rain_covers_date(db, garden_id, water_date):
+                elif outdoor_plot_ids and (
+                    rain_alert := _rain_alert_covering_date(db, garden_id, water_date)
+                ):
                     _logger.info(
                         "Skipped watering task for %s on %s — rain alert active",
                         plt_id,
                         water_date,
+                    )
+                    _write_watering_covered_by_rain_outcome(
+                        db,
+                        garden_id=garden_id,
+                        alert=rain_alert,
+                        plant_ctx=plant_ctx,
+                        water_date=water_date,
+                        rule_source=rule,
+                        plot_ids=outdoor_plot_ids,
+                        now_ms=now_ms,
                     )
                     skipped += 1
                 else:

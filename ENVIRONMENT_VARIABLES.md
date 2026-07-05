@@ -145,6 +145,7 @@ environment variable read by the public app.
 | `GARDEN_<SETTING>` | Garden invitation, membership, settings, onboarding, and zone-creation rate limits. | `GARDEN_SETTINGS_UPDATE_RATE_LIMIT=10` |
 | `NOTIFICATION_<SETTING>` | Notification generation, delivery, maintenance, digest, and task-scan limits. | `NOTIFICATION_GENERATE_RATE_LIMIT=10` |
 | `GARDENOPS_LOGS_DIR` | Directory for runtime JSONL error logs. | `./logs` |
+| `GARDENOPS_ATTENTION_<SETTING>` | Attention test clock and guarded E2E settings. Keep unset in normal production; use documented values only for deterministic tests and the disposable Attention Today E2E runner. | `GARDENOPS_ATTENTION_FROZEN_DATE=2026-07-05` |
 | `GARDENOPS_NOTIFICATION_SCHEDULER_<SETTING>` | Background notification scheduler enablement, poll interval, and lease duration. | `GARDENOPS_NOTIFICATION_SCHEDULER_ENABLED=auto` |
 | `GARDENOPS_SMTP_<SETTING>` | SMTP host, port, sender, username, password, and TLS settings for notification email. | `GARDENOPS_SMTP_HOST=smtp.example.com` |
 | `SHADEMAP_<SETTING>` | ShadeMap keys, location defaults, terrain, Overpass, token, rate-limit, quota, distinct-bound, and local terrain settings. | `SHADEMAP_TILE_TOKEN_TTL_SECONDS=600` |

@@ -80,6 +80,9 @@ control.
 
 - Task planning with generated work items, seasonal task windows, manual tasks,
   completion history, and overdue/follow-up views.
+- Map Today attention panel that keeps the map first while summarizing current
+  tasks, issue follow-ups, weather risks, status notices, and rain-covered
+  watering outcomes that need no action.
 - Calendar views, manual events, preferences, and subscription support for
   garden work and observations.
 - Notification and saved-view tooling for keeping recurring work, open issues,

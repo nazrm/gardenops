@@ -2,6 +2,9 @@ import { t } from "../core/i18n";
 import { redactedLocationPath } from "../core/urlSecurity";
 import { reportHandledApiError } from "./errorReporter";
 import type {
+  AttentionTodayResponse,
+  AttentionPreferences,
+  AttentionPreferencesUpdate,
   CalendarEventsResponse,
   CalendarManualEventInput,
   CalendarPreferences,
@@ -3076,6 +3079,74 @@ export async function addInventoryTransactionApi(
 }
 
 // ── Tasks API ─────────────────────────────────────────────────
+
+export async function fetchAttentionTodayApi(): Promise<AttentionTodayResponse> {
+  return apiGet<AttentionTodayResponse>("/api/attention/today");
+}
+
+export async function fetchAttentionPreferencesApi(): Promise<AttentionPreferences> {
+  return apiGet<AttentionPreferences>("/api/attention/preferences");
+}
+
+export async function updateAttentionPreferencesApi(
+  body: AttentionPreferencesUpdate,
+): Promise<AttentionPreferences> {
+  const response = await checked(
+    await apiFetch("/api/attention/preferences", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+    "/api/attention/preferences",
+  );
+  return (await response.json()) as AttentionPreferences;
+}
+
+export async function markAttentionItemReadApi(
+  itemId: string,
+): Promise<{ status: string }> {
+  return apiPost<{ status: string }>(
+    `/api/attention/items/${encodeApiPathSegment(itemId)}/read`,
+    {},
+  );
+}
+
+export async function dismissAttentionItemApi(
+  itemId: string,
+): Promise<{ status: string }> {
+  return apiPost<{ status: string }>(
+    `/api/attention/items/${encodeApiPathSegment(itemId)}/dismiss`,
+    {},
+  );
+}
+
+export async function snoozeAttentionItemApi(
+  itemId: string,
+  body: { snoozed_until_ms: number; reason?: string; metadata?: Record<string, unknown> },
+): Promise<{ status: string }> {
+  return apiPost<{ status: string }>(
+    `/api/attention/items/${encodeApiPathSegment(itemId)}/snooze`,
+    body,
+  );
+}
+
+export async function restoreAttentionItemApi(
+  itemId: string,
+): Promise<{ status: string }> {
+  return apiPost<{ status: string }>(
+    `/api/attention/items/${encodeApiPathSegment(itemId)}/restore`,
+    {},
+  );
+}
+
+export async function restoreAttentionOutcomeApi(
+  outcomeId: string,
+): Promise<{ status: string }> {
+  return apiPost<{ status: string }>(
+    `/api/attention/outcomes/${encodeApiPathSegment(outcomeId)}/restore`,
+    {},
+  );
+}
 
 export async function fetchTasksApi(
   params: Record<string, string | number>,
