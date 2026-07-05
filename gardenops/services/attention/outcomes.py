@@ -126,7 +126,7 @@ def read_active_attention_outcomes(
     target_type: str | None = None,
     now_ms: int,
 ) -> list[dict[str, Any]]:
-    conditions = ["garden_id = %s", "expires_at_ms >= %s"]
+    conditions = ["garden_id = %s", "expires_at_ms > %s"]
     params: list[Any] = [garden_id, now_ms]
     if provider is not None:
         conditions.append("provider = %s")
@@ -144,7 +144,7 @@ def read_active_attention_outcomes(
                plant_ids_json, plot_ids_json, recovery_action_json, metadata_json,
                occurred_at_ms, expires_at_ms, updated_at_ms
         FROM attention_outcomes
-        WHERE {' AND '.join(conditions)}
+        WHERE {" AND ".join(conditions)}
         ORDER BY occurred_at_ms DESC, public_id ASC
         """,
         params,

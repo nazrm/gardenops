@@ -97,6 +97,7 @@ import type {
   AppTab,
   AttentionAction,
   AttentionItem,
+  AttentionSectionKey,
   CalendarManualEventDraft,
   CameraState,
   GardenIssue,
@@ -1840,6 +1841,10 @@ async function handleAttentionTodayAction(
     attentionTodayPanel?.refresh();
     return;
   }
+  if (action.kind === "open_attention_detail") {
+    attentionTodayPanel?.refresh();
+    return;
+  }
   const firstPlotId = item.plot_ids[0];
   if (firstPlotId) {
     await appContext.selectPlot(firstPlotId);
@@ -1873,18 +1878,39 @@ async function handleAttentionTodayAction(
   attentionTodayPanel?.refresh();
 }
 
+async function handleAttentionTodayViewSection(sectionKey: AttentionSectionKey): Promise<void> {
+  attentionTodayPanel?.closeMobileSheet();
+  if (sectionKey === "warnings" || sectionKey === "no_action_needed") {
+    navigateToSubMode("care");
+    await loadWeather();
+    return;
+  }
+  if (sectionKey === "coming_up") {
+    navigateToSubMode("calendar");
+    await loadCalendar();
+    return;
+  }
+  navigateToSubMode("tasks");
+  await loadTasksTab();
+}
+
 function syncAttentionTodayAvailability(): boolean {
   const available = isFeatureEnabled("attention");
   [
     "attention-today-panel",
     "attention-today-mobile-handle",
-    "attention-today-mobile-sheet",
   ].forEach((id) => {
     const element = document.getElementById(id);
     if (element instanceof HTMLElement) {
       element.hidden = !available;
     }
   });
+  const mobileSheet = document.getElementById("attention-today-mobile-sheet");
+  if (!available && mobileSheet instanceof HTMLElement) {
+    mobileSheet.hidden = true;
+    mobileSheet.setAttribute("aria-hidden", "true");
+    mobileSheet.setAttribute("inert", "");
+  }
   return available;
 }
 
@@ -1901,6 +1927,7 @@ function ensureAttentionTodayPanel(): void {
       updatePreferences: updateAttentionPreferencesApi,
       onPrimaryAction: handleAttentionTodayAction,
       onSecondaryAction: handleAttentionTodayAction,
+      onViewSection: handleAttentionTodayViewSection,
       onError: (message) => showToast(message, "error"),
     });
   }

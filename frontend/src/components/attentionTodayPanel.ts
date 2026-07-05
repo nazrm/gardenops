@@ -22,6 +22,7 @@ export interface AttentionTodayPanelOptions {
     item: AttentionItem,
     action: AttentionAction,
   ) => Promise<void> | void;
+  onViewSection?: (sectionKey: AttentionSectionKey) => Promise<void> | void;
   onError?: (message: string) => void;
 }
 
@@ -40,7 +41,20 @@ const SECTION_ORDER: AttentionSectionKey[] = [
   "coming_up",
   "no_action_needed",
 ];
+const MOBILE_COUNT_KEYS: AttentionSectionKey[] = [
+  "needs_attention",
+  "warnings",
+  "coming_up",
+];
 const PRESET_OPTIONS: AttentionPreferencePreset[] = ["calm", "balanced", "detailed", "custom"];
+
+interface AttentionChildSummary {
+  id: string;
+  title: string;
+  reason: string;
+  severity: AttentionItem["severity"];
+  due_on: string | null;
+}
 
 function sectionTitle(key: AttentionSectionKey): string {
   switch (key) {
@@ -75,12 +89,14 @@ function appendTextElement(
 function actionLabel(action: AttentionAction): string {
   if (action.label.trim()) return action.label;
   if (action.kind === "open_task") return t("attention.open_task");
+  if (action.kind === "open_attention_detail") return t("attention.group_items");
   if (action.kind === "restore_attention_outcome") return t("attention.restore");
   return t("attention.open");
 }
 
 function itemCount(feed: AttentionTodayResponse | null): number {
-  return feed?.counts.needs_attention ?? 0;
+  if (!feed) return 0;
+  return MOBILE_COUNT_KEYS.reduce((total, key) => total + (feed.counts[key] ?? 0), 0);
 }
 
 function preferencePresetLabel(preset: AttentionPreferencePreset): string {
@@ -89,6 +105,31 @@ function preferencePresetLabel(preset: AttentionPreferencePreset): string {
 
 function isPreferenceGuardrail(item: AttentionItem): boolean {
   return item.metadata["preference_guardrail"] === true;
+}
+
+function severityLabel(severity: AttentionItem["severity"]): string {
+  return t(`attention.severity.${severity}`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function childSummaries(item: AttentionItem): AttentionChildSummary[] {
+  const children = item.metadata["children"];
+  if (!Array.isArray(children)) return [];
+  return children.filter(isRecord).map((child, index) => {
+    const severity = String(child["severity"] || "normal");
+    return {
+      id: String(child["id"] || `${item.id}-child-${index}`),
+      title: String(child["title"] || t("attention.open")),
+      reason: String(child["reason"] || ""),
+      severity: (
+        ["low", "normal", "high", "critical"].includes(severity) ? severity : "normal"
+      ) as AttentionItem["severity"],
+      due_on: child["due_on"] ? String(child["due_on"]) : null,
+    };
+  });
 }
 
 export function initAttentionTodayPanel(
@@ -299,6 +340,21 @@ export function initAttentionTodayPanel(
     });
     form.appendChild(fieldset);
 
+    const historyChoice = document.createElement("label");
+    historyChoice.className = "attention-preferences-choice";
+    const historyInput = document.createElement("input");
+    historyInput.type = "checkbox";
+    historyInput.name = "attention-show-no-action-history";
+    historyInput.checked = preferences.show_no_action_history;
+    historyChoice.appendChild(historyInput);
+    appendTextElement(
+      historyChoice,
+      "span",
+      "attention-preferences-choice-label",
+      t("attention.preferences.show_no_action_history"),
+    );
+    form.appendChild(historyChoice);
+
     const error = appendTextElement(form, "p", "attention-preferences-error", "");
     error.hidden = true;
     error.setAttribute("role", "alert");
@@ -325,6 +381,9 @@ export function initAttentionTodayPanel(
         "input[name='attention-preference-preset']:checked",
       );
       const preset = (selected?.value ?? preferences.preset) as AttentionPreferencePreset;
+      const showNoActionHistory = form.querySelector<HTMLInputElement>(
+        "input[name='attention-show-no-action-history']",
+      )?.checked ?? preferences.show_no_action_history;
       error.hidden = true;
       save.disabled = true;
       cancel.disabled = true;
@@ -332,7 +391,7 @@ export function initAttentionTodayPanel(
         preset,
         rules: preset === "custom" ? preferences.rules : {},
         quiet_hours: preferences.quiet_hours,
-        show_no_action_history: preferences.show_no_action_history,
+        show_no_action_history: showNoActionHistory,
       })
         .then(() => {
           closePreferencesDialog(true);
@@ -390,17 +449,29 @@ export function initAttentionTodayPanel(
     mobileKeydownBound = false;
   }
 
+  function setMobileSheetHidden(hidden: boolean): void {
+    if (!(mobileSheet instanceof HTMLElement)) return;
+    mobileSheet.hidden = hidden;
+    mobileSheet.setAttribute("aria-hidden", hidden ? "true" : "false");
+    if (hidden) {
+      mobileSheet.setAttribute("inert", "");
+    } else {
+      mobileSheet.removeAttribute("inert");
+    }
+  }
+
   function setMobileOpen(open: boolean, focusHandle = false): void {
     if (!(mobileHandle instanceof HTMLButtonElement) || !(mobileSheet instanceof HTMLElement)) return;
     mobileHandle.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) setMobileSheetHidden(false);
     mobileSheet.classList.toggle("attention-today-mobile-sheet--open", open);
-    mobileSheet.setAttribute("aria-hidden", open ? "false" : "true");
     if (open) {
       bindMobileKeydown();
       window.requestAnimationFrame(focusFirstMobileSheetControl);
       return;
     }
     unbindMobileKeydown();
+    setMobileSheetHidden(true);
     if (focusHandle) mobileHandle.focus();
   }
 
@@ -445,10 +516,37 @@ export function initAttentionTodayPanel(
     return button;
   }
 
+  function createChildDetails(children: AttentionChildSummary[]): HTMLElement {
+    const details = document.createElement("details");
+    details.className = "attention-today-child-details";
+    const summary = document.createElement("summary");
+    summary.className = "attention-today-child-summary";
+    summary.textContent = t("attention.group_items_count", { count: children.length });
+    details.appendChild(summary);
+
+    const list = document.createElement("ul");
+    list.className = "attention-today-child-list";
+    children.forEach((child) => {
+      const row = document.createElement("li");
+      row.className = "attention-today-child-item";
+      appendTextElement(row, "span", "attention-today-child-title", child.title);
+      const metaParts = [
+        severityLabel(child.severity),
+        child.reason,
+        child.due_on,
+      ].filter(Boolean);
+      appendTextElement(row, "span", "attention-today-child-meta", metaParts.join(" - "));
+      list.appendChild(row);
+    });
+    details.appendChild(list);
+    return details;
+  }
+
   function createItem(item: AttentionItem): HTMLElement {
     const article = document.createElement("article");
     article.className = `attention-today-item attention-today-item--${item.severity}`;
     article.setAttribute("data-testid", `attention-today-item-${safeTestId(item.id)}`);
+    article.setAttribute("aria-label", `${item.title} - ${severityLabel(item.severity)}`);
 
     const header = document.createElement("div");
     header.className = "attention-today-item-header";
@@ -458,12 +556,12 @@ export function initAttentionTodayPanel(
     }
     article.appendChild(header);
 
-    if (item.reason || item.due_on) {
-      const meta = document.createElement("p");
-      meta.className = "attention-today-meta";
-      meta.textContent = [item.reason, item.due_on].filter(Boolean).join(" - ");
-      article.appendChild(meta);
-    }
+    const meta = document.createElement("p");
+    meta.className = "attention-today-meta";
+    meta.textContent = [severityLabel(item.severity), item.reason, item.due_on]
+      .filter(Boolean)
+      .join(" - ");
+    article.appendChild(meta);
 
     if (item.body) {
       appendTextElement(article, "p", "attention-today-body", item.body);
@@ -478,9 +576,14 @@ export function initAttentionTodayPanel(
       );
     }
 
+    const children = childSummaries(item);
+    if (children.length > 0) {
+      article.appendChild(createChildDetails(children));
+    }
+
     const actions = document.createElement("div");
     actions.className = "attention-today-actions";
-    if (item.primary_action) {
+    if (item.primary_action && item.primary_action.kind !== "open_attention_detail") {
       actions.appendChild(createActionButton(item, item.primary_action, "primary"));
     }
     item.secondary_actions.forEach((action) => {
@@ -515,6 +618,31 @@ export function initAttentionTodayPanel(
       appendTextElement(list, "p", "attention-today-empty", t("attention.empty_section"));
     } else {
       section.items.forEach((item) => list.appendChild(createItem(item)));
+    }
+    if (section.count > section.items.length) {
+      const overflow = document.createElement("div");
+      overflow.className = "attention-today-overflow";
+      appendTextElement(
+        overflow,
+        "span",
+        "attention-today-overflow-count",
+        t("attention.more_items", { count: section.count - section.items.length }),
+      );
+      if (options.onViewSection) {
+        const viewAll = document.createElement("button");
+        viewAll.type = "button";
+        viewAll.className = "attention-today-action";
+        viewAll.textContent = t("attention.view_all");
+        viewAll.setAttribute(
+          "data-testid",
+          `attention-today-view-all-${safeTestId(section.key)}`,
+        );
+        viewAll.addEventListener("click", () => {
+          void options.onViewSection?.(section.key);
+        });
+        overflow.appendChild(viewAll);
+      }
+      list.appendChild(overflow);
     }
     details.appendChild(list);
     details.addEventListener("toggle", () => {
@@ -683,6 +811,7 @@ export function initAttentionTodayPanel(
     mobileHandle.addEventListener("click", handleMobileHandleClick);
   }
 
+  setMobileSheetHidden(true);
   syncMobileHandle(null);
 
   return {

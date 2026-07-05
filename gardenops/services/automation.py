@@ -9,6 +9,8 @@ from datetime import date, timedelta
 from typing import Any
 
 from gardenops.db import DbConn, current_timestamp_ms
+from gardenops.services.attention.outcomes import upsert_attention_outcome
+from gardenops.services.attention.types import NO_ACTION_RETENTION_DAYS
 
 _logger = logging.getLogger(__name__)
 
@@ -450,6 +452,141 @@ def on_rain_alert(
     return created
 
 
+def _parse_mapping_json(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _rain_mm_from_alert_metadata(metadata: dict[str, Any]) -> float | None:
+    for key in ("rain_mm", "total_mm", "total_precip_mm", "precip_mm"):
+        raw = metadata.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            return float(raw)
+        except TypeError:
+            continue
+        except ValueError:
+            continue
+    return None
+
+
+def _format_rain_mm(rain_mm: float | None) -> str:
+    if rain_mm is None:
+        return "Rain"
+    if rain_mm.is_integer():
+        return f"{int(rain_mm)} mm rain"
+    return f"{rain_mm:.1f} mm rain"
+
+
+def _plant_id_from_water_rule(rule_source: str) -> str:
+    parts = rule_source.split(":")
+    if len(parts) >= 3 and parts[0] == "water":
+        return parts[1]
+    return ""
+
+
+def _plant_ids_for_task(db: DbConn, task_id: int) -> tuple[str, ...]:
+    rows = db.execute(
+        """
+        SELECT plt_id
+        FROM garden_task_plants
+        WHERE task_id = %s
+        ORDER BY plt_id
+        """,
+        (task_id,),
+    ).fetchall()
+    return tuple(str(row["plt_id"]) for row in rows)
+
+
+def _plot_ids_for_task(db: DbConn, task_id: int) -> tuple[str, ...]:
+    rows = db.execute(
+        """
+        SELECT plot_id
+        FROM garden_task_plots
+        WHERE task_id = %s
+        ORDER BY plot_id
+        """,
+        (task_id,),
+    ).fetchall()
+    return tuple(str(row["plot_id"]) for row in rows)
+
+
+def _write_watering_rescheduled_by_rain_outcome(
+    db: DbConn,
+    *,
+    garden_id: int,
+    alert: Any,
+    task: Any,
+    old_due_on: str,
+    new_due_on: str,
+    plant_ids: tuple[str, ...],
+    plot_ids: tuple[str, ...],
+    now_ms: int,
+) -> None:
+    rule_source = str(task["rule_source"] or "")
+    target_id = plant_ids[0] if plant_ids else _plant_id_from_water_rule(rule_source)
+    if not target_id:
+        return
+    alert_metadata = _parse_mapping_json(alert["metadata_json"])
+    rain_mm = _rain_mm_from_alert_metadata(alert_metadata)
+    task_title = str(task["title"] or "Watering")
+    outcome_plant_ids = plant_ids or ((target_id,) if target_id else ())
+    metadata: dict[str, Any] = {
+        "due_on": old_due_on,
+        "new_due_on": new_due_on,
+        "rule_source": rule_source,
+        "task_public_id": str(task["public_id"]),
+        "task_title": task_title,
+        "weather_alert_id": str(alert["id"]),
+        "alert_valid_from": str(alert["valid_from"]),
+        "alert_valid_until": str(alert["valid_until"]),
+        "alert": alert_metadata,
+    }
+    if rain_mm is not None:
+        metadata["rain_mm"] = rain_mm
+    upsert_attention_outcome(
+        db,
+        garden_id=garden_id,
+        provider="weather",
+        outcome_type="watering_rescheduled_by_rain",
+        source_type="task_generator",
+        source_id=str(alert["id"]),
+        source_public_id=rule_source,
+        target_type="plant",
+        target_id=target_id,
+        title="Watering rescheduled by rain",
+        explanation=(
+            f"{_format_rain_mm(rain_mm)} moved {task_title} from {old_due_on} to {new_due_on}."
+        ),
+        reason="Rain rescheduled watering",
+        plant_ids=outcome_plant_ids,
+        plot_ids=plot_ids,
+        metadata=metadata,
+        recovery_action={
+            "kind": "restore_generated_watering_task",
+            "label": "Restore watering",
+            "source_public_id": rule_source,
+            "target_type": "plant",
+            "target_id": target_id,
+            "due_on": old_due_on,
+            "plant_ids": list(outcome_plant_ids),
+            "plot_ids": list(plot_ids),
+        },
+        occurred_at_ms=now_ms,
+        expires_at_ms=now_ms + (NO_ACTION_RETENTION_DAYS * 86_400_000),
+    )
+
+
 def _reschedule_watering_during_rain(
     db: DbConn,
     garden_id: int,
@@ -457,7 +594,11 @@ def _reschedule_watering_during_rain(
 ) -> None:
     """Reschedule seasonal watering tasks that fall within a rain alert window."""
     alert = db.execute(
-        "SELECT valid_from, valid_until FROM weather_alerts WHERE id = %s",
+        """
+        SELECT id, valid_from, valid_until, metadata_json
+        FROM weather_alerts
+        WHERE id = %s
+        """,
         (alert_id,),
     ).fetchone()
     if not alert:
@@ -468,7 +609,8 @@ def _reschedule_watering_during_rain(
     # not auto-generated drainage tasks ('auto:rain_drainage:').
     rows = db.execute(
         """
-        SELECT id, due_on FROM garden_tasks
+        SELECT id, public_id, title, due_on, rule_source, metadata_json
+        FROM garden_tasks
         WHERE garden_id = %s AND task_type = 'water' AND status = 'pending'
           AND rule_source LIKE 'water:%%'
           AND due_on >= %s AND due_on <= %s
@@ -482,15 +624,12 @@ def _reschedule_watering_during_rain(
     now_ms = current_timestamp_ms()
     for row in rows:
         old_meta = row["metadata_json"] if "metadata_json" in row.keys() else "{}"
-        try:
-            meta = json.loads(old_meta or "{}")
-        except (
-            json.JSONDecodeError,
-            TypeError,
-        ):
-            meta = {}
-        meta["rescheduled_from"] = row["due_on"]
+        meta = _parse_mapping_json(old_meta)
+        old_due_on = str(row["due_on"])
+        meta["rescheduled_from"] = old_due_on
         meta["rescheduled_reason"] = "rain_alert"
+        plant_ids = _plant_ids_for_task(db, int(row["id"]))
+        plot_ids = _plot_ids_for_task(db, int(row["id"]))
         db.execute(
             """
             UPDATE garden_tasks
@@ -498,6 +637,17 @@ def _reschedule_watering_during_rain(
             WHERE id = %s
             """,
             (new_due, json.dumps(meta, separators=(",", ":")), now_ms, row["id"]),
+        )
+        _write_watering_rescheduled_by_rain_outcome(
+            db,
+            garden_id=garden_id,
+            alert=alert,
+            task=row,
+            old_due_on=old_due_on,
+            new_due_on=new_due,
+            plant_ids=plant_ids,
+            plot_ids=plot_ids,
+            now_ms=now_ms,
         )
     _logger.info(
         "Rescheduled %d watering tasks to %s due to rain alert %d",

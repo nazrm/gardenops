@@ -299,6 +299,90 @@ class TestWeatherTaskTyping(DbTestBase):
         assert task is not None
         assert task["task_type"] == "protect"
 
+    def test_rain_alert_reschedules_watering_and_records_attention_outcome(self) -> None:
+        self._insert_plant("RN2", "Rain restore", care_watering="Water regularly in summer")
+        self.conn.execute(
+            """
+            INSERT INTO plots
+                (plot_id, garden_id, zone_code, zone_name, plot_number,
+                 grid_row, grid_col, sub_zone, notes)
+            VALUES ('RN-OUT', %s, 'R', 'Rain bed', 2, 4, 4, '', '')
+            """,
+            (self.garden_id,),
+        )
+        self.conn.execute(
+            "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES ('RN-OUT', 'RN2', 1)",
+        )
+        task = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, description, status,
+                 severity, due_on, rule_source, metadata_json,
+                 created_at_ms, updated_at_ms)
+            VALUES ('task_rain_reschedule_existing', %s, 'water',
+                    'Water rain restore', '', 'pending', 'normal',
+                    '2026-07-15', 'water:RN2:2026-07-15', '{}', 1, 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert task is not None
+        self.conn.execute(
+            "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, 'RN2')",
+            (int(task["id"]),),
+        )
+        self.conn.execute(
+            "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'RN-OUT')",
+            (int(task["id"]),),
+        )
+        alert_id = self._create_alert("rain_surplus", valid_from="2026-07-15")
+
+        on_rain_alert(
+            self.conn,
+            self.garden_id,
+            alert_id,
+            self._owner_id,
+        )
+
+        task_after = self.conn.execute(
+            """
+            SELECT due_on, metadata_json
+            FROM garden_tasks
+            WHERE garden_id = %s
+              AND rule_source = 'water:RN2:2026-07-15'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        outcome = self.conn.execute(
+            """
+            SELECT outcome_type, source_type, source_public_id, target_type, target_id,
+                   plant_ids_json, plot_ids_json, metadata_json, recovery_action_json
+            FROM attention_outcomes
+            WHERE garden_id = %s
+              AND outcome_type = 'watering_rescheduled_by_rain'
+              AND source_public_id = 'water:RN2:2026-07-15'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+
+        assert task_after is not None
+        task_metadata = json.loads(str(task_after["metadata_json"]))
+        assert str(task_after["due_on"]) == "2026-07-16"
+        assert task_metadata["rescheduled_from"] == "2026-07-15"
+        assert task_metadata["rescheduled_reason"] == "rain_alert"
+        assert outcome is not None
+        assert str(outcome["source_type"]) == "task_generator"
+        assert str(outcome["target_type"]) == "plant"
+        assert str(outcome["target_id"]) == "RN2"
+        assert json.loads(str(outcome["plant_ids_json"])) == ["RN2"]
+        assert json.loads(str(outcome["plot_ids_json"])) == ["RN-OUT"]
+        outcome_metadata = json.loads(str(outcome["metadata_json"]))
+        recovery_action = json.loads(str(outcome["recovery_action_json"]))
+        assert outcome_metadata["due_on"] == "2026-07-15"
+        assert outcome_metadata["new_due_on"] == "2026-07-16"
+        assert recovery_action["due_on"] == "2026-07-15"
+        assert recovery_action["target_id"] == "RN2"
+
 
 class TestOnHarvestLogged(DbTestBase):
     def _create_harvest(

@@ -446,7 +446,9 @@ def _rain_mm_from_alert_metadata(metadata: dict[str, Any]) -> float | None:
             continue
         try:
             return float(raw)
-        except (TypeError, ValueError):
+        except TypeError:
+            continue
+        except ValueError:
             continue
     return None
 
@@ -531,9 +533,24 @@ def restore_generated_watering_task_from_attention_outcome(
     actor_user_id: int | None,
     now_ms: int,
 ) -> str:
+    due_on = str(
+        recovery_action.get("due_on")
+        or metadata.get("due_on")
+        or source_public_id.rsplit(":", 1)[-1]
+    )
+    plant_ids = [
+        str(plant_id) for plant_id in recovery_action.get("plant_ids", [target_id]) if str(plant_id)
+    ]
+    if target_id and target_id not in plant_ids:
+        plant_ids.insert(0, target_id)
+    plot_ids = [
+        str(plot_id)
+        for plot_id in recovery_action.get("plot_ids", metadata.get("plot_ids", []))
+        if str(plot_id)
+    ]
     existing = db.execute(
         """
-        SELECT public_id
+        SELECT id, public_id, status, due_on, metadata_json
         FROM garden_tasks
         WHERE garden_id = %s
           AND rule_source = %s
@@ -543,24 +560,30 @@ def restore_generated_watering_task_from_attention_outcome(
     ).fetchone()
     if existing is not None:
         task_public_id = str(existing["public_id"])
+        if str(existing["status"]) in {"pending", "snoozed", "skipped"}:
+            task_metadata = _parse_mapping_json(existing["metadata_json"])
+            previous_due_on = str(existing["due_on"] or "")
+            task_metadata["restored_from_attention_outcome"] = outcome_public_id
+            if previous_due_on and previous_due_on != due_on:
+                task_metadata["restored_due_on_from"] = previous_due_on
+            db.execute(
+                """
+                UPDATE garden_tasks
+                SET due_on = %s,
+                    status = 'pending',
+                    snoozed_until = NULL,
+                    metadata_json = %s,
+                    updated_at_ms = %s
+                WHERE id = %s
+                """,
+                (
+                    due_on,
+                    json.dumps(task_metadata, separators=(",", ":")),
+                    now_ms,
+                    int(existing["id"]),
+                ),
+            )
     else:
-        due_on = str(
-            recovery_action.get("due_on")
-            or metadata.get("due_on")
-            or source_public_id.rsplit(":", 1)[-1]
-        )
-        plant_ids = [
-            str(plant_id)
-            for plant_id in recovery_action.get("plant_ids", [target_id])
-            if str(plant_id)
-        ]
-        if target_id and target_id not in plant_ids:
-            plant_ids.insert(0, target_id)
-        plot_ids = [
-            str(plot_id)
-            for plot_id in recovery_action.get("plot_ids", metadata.get("plot_ids", []))
-            if str(plot_id)
-        ]
         plant_name = str(metadata.get("plant_name") or target_id or "plant")
         task_id = _create_task_for_plants(
             db,
@@ -605,7 +628,7 @@ def restore_generated_watering_task_from_attention_outcome(
         WHERE garden_id = %s
           AND public_id = %s
         """,
-        (now_ms, now_ms, garden_id, outcome_public_id),
+        (max(0, now_ms - 1), now_ms, garden_id, outcome_public_id),
     )
     return task_public_id
 

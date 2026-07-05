@@ -2580,6 +2580,57 @@ textarea {
   flex-wrap: wrap;
 }
 
+.attention-today-child-details,
+.attention-today-overflow {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--sp-2);
+}
+
+.attention-today-child-summary {
+  min-height: 30px;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.attention-today-child-list {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attention-today-child-item {
+  display: grid;
+  gap: 2px;
+  padding: 7px 8px;
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+}
+
+.attention-today-child-title {
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.attention-today-child-meta,
+.attention-today-overflow-count {
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.attention-today-overflow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
 .attention-today-action {
   min-width: 0;
   padding: 0 12px;
@@ -6781,7 +6832,7 @@ th.sort-desc::after {
     right: var(--sp-3);
     bottom: calc(132px + env(safe-area-inset-bottom));
     z-index: 52;
-    max-height: min(72dvh, calc(100dvh - 168px - env(safe-area-inset-bottom) - var(--mobile-keyboard-offset)));
+    max-height: min(60dvh, calc(100dvh - 168px - env(safe-area-inset-bottom) - var(--mobile-keyboard-offset)));
     border: 1px solid var(--border);
     border-radius: var(--r-xl);
     background: linear-gradient(180deg, var(--bg-1), var(--bg-2));

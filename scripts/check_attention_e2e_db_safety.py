@@ -225,9 +225,7 @@ def main() -> None:
         os.environ["AUTH_REQUIRED"] = "false"
         os.environ.pop("GARDENOPS_ATTENTION_E2E_ALLOW_TRUNCATE", None)
         try:
-            require_attention_e2e_database(
-                "postgresql://localhost/gardenops_attention_e2e_test"
-            )
+            require_attention_e2e_database("postgresql://localhost/gardenops_attention_e2e_test")
         except RuntimeError as exc:
             if "ALLOW_TRUNCATE" not in str(exc):
                 raise

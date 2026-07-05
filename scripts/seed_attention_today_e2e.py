@@ -420,6 +420,26 @@ def seed_weather_and_outcome(conn, garden_id: int) -> None:
         occurred_at_ms=1783180800000,
         expires_at_ms=1785772800000,
     )
+    for idx in range(5):
+        upsert_attention_outcome(
+            conn,
+            garden_id=garden_id,
+            provider="weather",
+            outcome_type="watering_covered_by_rain",
+            source_type="task_generator",
+            source_id=str(alert_id),
+            source_public_id=f"water:HYD-E2E-EXTRA-{idx}:2026-07-05",
+            target_type="plant",
+            target_id=f"HYD-E2E-EXTRA-{idx}",
+            title=f"Extra watering covered by rain {idx + 1}",
+            explanation=f"Extra rain outcome {idx + 1} stays in no-action history.",
+            reason="Rain surplus covers the watering date",
+            plant_ids=(),
+            plot_ids=("A1",),
+            metadata={"due_on": "2026-07-05", "rain_mm": 18},
+            occurred_at_ms=1783180700000 - idx,
+            expires_at_ms=1785772800000,
+        )
 
 
 def seed_issue(conn, garden_id: int, owner_user_id: int) -> None:
@@ -557,9 +577,7 @@ def print_notification_snapshot(conn) -> None:
                     "target_id": str(row["target_id"] or ""),
                     "dismissed": int(row["dismissed"] or 0),
                     "read_at_ms": int(row["read_at_ms"]) if row["read_at_ms"] else None,
-                    "cleared_at_ms": (
-                        int(row["cleared_at_ms"]) if row["cleared_at_ms"] else None
-                    ),
+                    "cleared_at_ms": (int(row["cleared_at_ms"]) if row["cleared_at_ms"] else None),
                     "clear_reason": str(row["clear_reason"] or ""),
                     "superseded_by_id": (
                         int(row["superseded_by_id"]) if row["superseded_by_id"] else None

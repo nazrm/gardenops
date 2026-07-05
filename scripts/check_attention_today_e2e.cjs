@@ -199,6 +199,10 @@ async function checkDesktop(browser) {
     todayRegion.getByText("Backup status needs review", { exact: true }),
     "seeded status notification",
   );
+  await waitVisible(
+    todayRegion.locator(".attention-today-meta").filter({ hasText: "High" }).first(),
+    "visible severity label",
+  );
   const activeHydrangeaCount = await visibleCount(
     todayRegion
       .getByTestId("attention-today-section-needs_attention")
@@ -223,6 +227,13 @@ async function checkDesktop(browser) {
     noAction.getByText("18 mm rain expected already covers scheduled watering for Hydrangea.", { exact: true }),
     "rain-covered watering explanation",
   );
+  await waitVisible(noAction.getByText("1 more item", { exact: true }), "no-action overflow count");
+  await noAction.getByTestId("attention-today-view-all-no_action_needed").click();
+  await expectAttribute(page.locator("#top-tab-insights"), "aria-selected", "true", "Insights tab after overflow");
+  await waitVisible(page.locator("#care-view"), "Care view after overflow");
+  await waitVisible(page.getByRole("heading", { name: /^Care Instructions$/i }), "Care heading after overflow");
+  await activateTabByKeyboard(page, "#top-tab-map", "Map tab after overflow");
+  await waitVisible(todayRegion, "Today region after overflow return");
 
   const panelBox = await boundingBox(panel, "attention-today-panel");
   assert(panelBox.width <= 360, `Desktop Today panel should be <= 360px wide, got ${panelBox.width}`);
@@ -248,6 +259,9 @@ async function checkDesktop(browser) {
   for (const label of ["Calm", "Balanced", "Detailed", "Custom"]) {
     await waitVisible(settingsDialog.getByLabel(label, { exact: true }), `${label} preference option`);
   }
+  const noActionHistory = settingsDialog.getByLabel("Show no-action history", { exact: true });
+  await waitVisible(noActionHistory, "show no-action history preference");
+  assert(await noActionHistory.isChecked(), "No-action history should be enabled before edits");
   const balancedOption = settingsDialog.getByLabel("Balanced", { exact: true });
   assert(await balancedOption.isChecked(), "Balanced preset should be selected before edits");
   await settingsDialog.getByLabel("Calm", { exact: true }).check();
@@ -339,16 +353,43 @@ async function checkMobile(browser) {
   await waitVisible(handle, "mobile Today handle");
   await expectAttribute(handle, "aria-expanded", "false", "mobile Today handle");
   await assertMinTouchTarget(handle, "mobile Today handle");
+  const mobileSheetShell = page.getByTestId("attention-today-mobile-sheet");
+  await waitAttached(mobileSheetShell, "mobile Today sheet shell");
+  assert(
+    await mobileSheetShell.evaluate((element) => element.hasAttribute("hidden")),
+    "Closed mobile Today sheet should be hidden",
+  );
+  assert(
+    await mobileSheetShell.evaluate((element) => element.hasAttribute("inert")),
+    "Closed mobile Today sheet should be inert",
+  );
 
   await handle.focus();
   await page.keyboard.press("Enter");
   await expectAttribute(handle, "aria-expanded", "true", "mobile Today handle");
   const sheet = page.getByRole("dialog", { name: /^Today$/i });
   await waitVisible(sheet, "mobile Today sheet");
+  assert(
+    !(await mobileSheetShell.evaluate((element) => element.hasAttribute("hidden"))),
+    "Open mobile Today sheet should not be hidden",
+  );
+  const sheetBox = await boundingBox(sheet, "mobile Today sheet");
+  assert(
+    sheetBox.height <= 820 * 0.62,
+    `Mobile Today sheet must stay near the 60vh cap, got ${Math.round(sheetBox.height)}px`,
+  );
   await waitVisible(sheet.getByText("Water indoor basil", { exact: true }), "mobile indoor basil task");
 
   await page.keyboard.press("Escape");
   await expectAttribute(handle, "aria-expanded", "false", "mobile Today handle after Escape");
+  assert(
+    await mobileSheetShell.evaluate((element) => element.hasAttribute("hidden")),
+    "Escape should hide the mobile Today sheet",
+  );
+  assert(
+    await mobileSheetShell.evaluate((element) => element.hasAttribute("inert")),
+    "Escape should make the mobile Today sheet inert",
+  );
   const focusedTestId = await page.evaluate(() => document.activeElement?.getAttribute("data-testid"));
   assert(focusedTestId === "attention-today-mobile-handle", "Focus should return to the mobile Today handle");
 
@@ -357,6 +398,10 @@ async function checkMobile(browser) {
   await expectAttribute(handle, "aria-expanded", "true", "mobile Today handle after reopen");
   await page.getByTestId("attention-today-mobile-close").click();
   await expectAttribute(handle, "aria-expanded", "false", "mobile Today handle after close");
+  assert(
+    await mobileSheetShell.evaluate((element) => element.hasAttribute("hidden")),
+    "Close button should hide the mobile Today sheet",
+  );
   const focusedAfterClose = await page.evaluate(() => document.activeElement?.getAttribute("data-testid"));
   assert(focusedAfterClose === "attention-today-mobile-handle", "Close button should return focus to the handle");
 

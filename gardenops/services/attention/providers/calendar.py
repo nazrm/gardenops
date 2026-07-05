@@ -60,7 +60,7 @@ class CalendarAttentionProvider:
                     user_id=user_id,
                     today=today,
                 )
-        )
+            )
         return items
 
     @staticmethod

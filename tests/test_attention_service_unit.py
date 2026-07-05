@@ -100,8 +100,7 @@ def test_attention_e2e_database_guard_rejects_libpq_host_override(
 
     with pytest.raises(RuntimeError, match="local"):
         require_attention_e2e_database(
-            "postgresql://localhost/"
-            "gardenops_attention_e2e_test?host=db.example.com"
+            "postgresql://localhost/gardenops_attention_e2e_test?host=db.example.com"
         )
 
 
@@ -114,8 +113,7 @@ def test_attention_e2e_database_guard_rejects_libpq_hostaddr_override(
 
     with pytest.raises(RuntimeError, match="local"):
         require_attention_e2e_database(
-            "postgresql://localhost/"
-            "gardenops_attention_e2e_test?hostaddr=192.0.2.1"
+            "postgresql://localhost/gardenops_attention_e2e_test?hostaddr=192.0.2.1"
         )
 
 
@@ -140,9 +138,7 @@ def test_attention_e2e_database_guard_rejects_missing_allow_flag(
     monkeypatch.delenv("GARDENOPS_ATTENTION_E2E_ALLOW_TRUNCATE", raising=False)
 
     with pytest.raises(RuntimeError, match="ALLOW_TRUNCATE"):
-        require_attention_e2e_database(
-            "postgresql://localhost/gardenops_attention_e2e_test"
-        )
+        require_attention_e2e_database("postgresql://localhost/gardenops_attention_e2e_test")
 
 
 def test_attention_e2e_database_guard_accepts_named_test_url(
@@ -151,9 +147,7 @@ def test_attention_e2e_database_guard_accepts_named_test_url(
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("AUTH_REQUIRED", "false")
     monkeypatch.setenv("GARDENOPS_ATTENTION_E2E_ALLOW_TRUNCATE", "1")
-    require_attention_e2e_database(
-        "postgresql://localhost/gardenops_attention_e2e_test"
-    )
+    require_attention_e2e_database("postgresql://localhost/gardenops_attention_e2e_test")
 
 
 def test_attention_e2e_database_guard_accepts_local_socket_url(

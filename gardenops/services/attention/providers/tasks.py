@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from gardenops.services.attention.outcomes import read_active_attention_outcomes
@@ -59,6 +60,7 @@ class TaskAttentionProvider:
             self._item_from_row(
                 row,
                 plot_ids=plot_ids_by_task_id.get(int(row["id"]), ()),
+                plant_ids=plant_ids_by_task_id.get(int(row["id"]), ()),
                 user_id=user_id,
                 today=today,
             )
@@ -256,6 +258,7 @@ class TaskAttentionProvider:
         row: Any,
         *,
         plot_ids: tuple[str, ...],
+        plant_ids: tuple[str, ...],
         user_id: int,
         today: str,
     ) -> AttentionItem:
@@ -264,6 +267,8 @@ class TaskAttentionProvider:
         due_on = str(row["snoozed_until"] or row["due_on"])
         item_type = self._item_type(status=status, due_on=due_on, today=today)
         active = status in {"pending", "snoozed"}
+        metadata = self._parse_metadata(row["metadata_json"])
+        group_key = str(metadata.get("group_key") or "").strip()
         return AttentionItem(
             id=f"attn:task:{public_id}",
             provider=self.key,
@@ -277,9 +282,11 @@ class TaskAttentionProvider:
             target_id=public_id,
             garden_id=int(row["garden_id"]),
             audience_user_id=user_id,
+            plant_ids=plant_ids,
             plot_ids=plot_ids,
             due_on=due_on,
             domain_state=self._domain_state(status),
+            group_key=group_key or None,
             primary_action=(
                 AttentionAction(
                     kind="open_task",
@@ -296,8 +303,23 @@ class TaskAttentionProvider:
                 "status": status,
                 "task_type": str(row["task_type"]),
                 "rule_source": str(row["rule_source"] or ""),
+                **({"group_key": group_key} if group_key else {}),
             },
         )
+
+    @staticmethod
+    def _parse_metadata(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if not value:
+            return {}
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
 
     @staticmethod
     def _item_type(*, status: str, due_on: str, today: str) -> str:

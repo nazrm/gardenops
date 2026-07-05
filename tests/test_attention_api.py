@@ -427,8 +427,9 @@ class TestAttentionMutations(BaseApiTest):
                 403,
             )
             self.assertEqual(
-                home_client.post(f"/api/attention/items/{item_id}/read", headers=home_headers)
-                .status_code,
+                home_client.post(
+                    f"/api/attention/items/{item_id}/read", headers=home_headers
+                ).status_code,
                 403,
             )
 
@@ -674,8 +675,165 @@ class TestAttentionMutations(BaseApiTest):
         self.assertEqual(str(restored_task["due_on"]), "2026-07-05")
         self.assertEqual(restored_plants, ["RESTORE"])
         self.assertEqual(restored_plots, ["B1"])
-        self.assertEqual(int(outcome["expires_at_ms"]), 1783180800000)
+        self.assertEqual(int(outcome["expires_at_ms"]), 1783180799999)
         self.assertEqual(dict(after), dict(before))
+
+    def test_supported_watering_restore_moves_existing_rescheduled_task_back(
+        self,
+    ) -> None:
+        from gardenops.services.attention.outcomes import (
+            read_active_attention_outcomes,
+            upsert_attention_outcome,
+        )
+
+        garden_id, _user_id = self._garden_user_and_task("task_attention_restore_existing")
+        conn = db.get_db()
+        try:
+            owner_id = int(
+                conn.execute("SELECT id FROM auth_users WHERE username = 'test_admin'").fetchone()[
+                    "id"
+                ]
+            )
+            conn.execute(
+                """
+                INSERT INTO plants
+                    (plt_id, name, latin, category, bloom_month, color,
+                     hardiness, height_cm, light, link, year_planted,
+                     care_watering, care_soil, care_planting, care_maintenance,
+                     care_notes)
+                VALUES ('RESTORE2', 'Restore hydrangea', '', 'stauder', '', '',
+                        '', NULL, '', '', NULL, 'regular moisture', '', '', '', '')
+                ON CONFLICT (plt_id) DO NOTHING
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES ('RESTORE2', %s, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (owner_id, garden_id),
+            )
+            task = conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (public_id, garden_id, task_type, title, description, status,
+                     severity, due_on, rule_source, metadata_json,
+                     created_at_ms, updated_at_ms)
+                VALUES ('task_attention_restore_existing', %s, 'water',
+                        'Water restore hydrangea', '', 'pending', 'normal',
+                        '2026-07-08', 'water:RESTORE2:2026-07-05',
+                        '{"rescheduled_from":"2026-07-05","rescheduled_reason":"rain_alert"}',
+                        1, 1)
+                ON CONFLICT (public_id) DO UPDATE SET
+                    garden_id = excluded.garden_id,
+                    task_type = excluded.task_type,
+                    title = excluded.title,
+                    description = excluded.description,
+                    status = excluded.status,
+                    severity = excluded.severity,
+                    due_on = excluded.due_on,
+                    snoozed_until = NULL,
+                    rule_source = excluded.rule_source,
+                    metadata_json = excluded.metadata_json,
+                    completed_by_user_id = NULL,
+                    completed_at_ms = NULL,
+                    updated_at_ms = excluded.updated_at_ms
+                RETURNING id
+                """,
+                (garden_id,),
+            ).fetchone()
+            assert task is not None
+            conn.execute(
+                """
+                INSERT INTO garden_task_plants (task_id, plt_id)
+                VALUES (%s, 'RESTORE2')
+                ON CONFLICT DO NOTHING
+                """,
+                (int(task["id"]),),
+            )
+            outcome_id = upsert_attention_outcome(
+                conn,
+                garden_id=garden_id,
+                provider="weather",
+                outcome_type="watering_rescheduled_by_rain",
+                source_type="task_generator",
+                source_id="77",
+                source_public_id="water:RESTORE2:2026-07-05",
+                target_type="plant",
+                target_id="RESTORE2",
+                title="Watering rescheduled by rain",
+                explanation="Rain moved watering.",
+                reason="Rain rescheduled watering",
+                plant_ids=("RESTORE2",),
+                metadata={"due_on": "2026-07-05", "new_due_on": "2026-07-08"},
+                recovery_action={
+                    "kind": "restore_generated_watering_task",
+                    "label": "Restore watering",
+                    "source_public_id": "water:RESTORE2:2026-07-05",
+                    "target_type": "plant",
+                    "target_id": "RESTORE2",
+                    "due_on": "2026-07-05",
+                    "plant_ids": ["RESTORE2"],
+                    "plot_ids": [],
+                },
+                occurred_at_ms=1783180800000,
+                expires_at_ms=1785772800000,
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1783180800000",
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-05",
+            },
+        ):
+            client, headers = self._authenticated_client(
+                "test_admin",
+                "testadminpass",
+                garden_id=garden_id,
+            )
+            response = client.post(
+                f"/api/attention/outcomes/{outcome_id}/restore",
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+
+        conn = db.get_db()
+        try:
+            task_after = conn.execute(
+                """
+                SELECT due_on, status, metadata_json
+                FROM garden_tasks
+                WHERE garden_id = %s
+                  AND rule_source = 'water:RESTORE2:2026-07-05'
+                """,
+                (garden_id,),
+            ).fetchone()
+            assert task_after is not None
+            active_outcomes = read_active_attention_outcomes(
+                conn,
+                garden_id=garden_id,
+                provider="weather",
+                outcome_types=("watering_rescheduled_by_rain",),
+                now_ms=1783180800000,
+            )
+        finally:
+            db.return_db(conn)
+
+        metadata = json.loads(str(task_after["metadata_json"]))
+        self.assertEqual(str(task_after["due_on"]), "2026-07-05")
+        self.assertEqual(str(task_after["status"]), "pending")
+        self.assertEqual(metadata["restored_from_attention_outcome"], outcome_id)
+        self.assertEqual(metadata["restored_due_on_from"], "2026-07-08")
+        self.assertEqual(active_outcomes, [])
 
 
 class TestAttentionTodayApi(BaseApiTest):
@@ -1029,9 +1187,7 @@ class TestAttentionTodayApi(BaseApiTest):
         conn = db.get_db()
         try:
             before = int(
-                conn.execute("SELECT COUNT(*) AS c FROM user_attention_preferences").fetchone()[
-                    "c"
-                ]
+                conn.execute("SELECT COUNT(*) AS c FROM user_attention_preferences").fetchone()["c"]
             )
         finally:
             db.return_db(conn)
@@ -1054,9 +1210,7 @@ class TestAttentionTodayApi(BaseApiTest):
         conn = db.get_db()
         try:
             after = int(
-                conn.execute("SELECT COUNT(*) AS c FROM user_attention_preferences").fetchone()[
-                    "c"
-                ]
+                conn.execute("SELECT COUNT(*) AS c FROM user_attention_preferences").fetchone()["c"]
             )
         finally:
             db.return_db(conn)
@@ -1093,13 +1247,33 @@ class TestAttentionTaskProvider(BaseApiTest):
             )
             conn.execute(
                 """
+                INSERT INTO plants
+                    (plt_id, name, latin, category, bloom_month, color,
+                     hardiness, height_cm, light, link, year_planted,
+                     care_watering, care_soil, care_planting, care_maintenance,
+                     care_notes)
+                VALUES ('ATTN-BASIL', 'Attention basil', '', 'urter', '', '',
+                        '', NULL, '', '', NULL, 'regular moisture', '', '', '', '')
+                ON CONFLICT (plt_id) DO NOTHING
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES ('ATTN-BASIL', %s, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (user_id, garden_id),
+            )
+            conn.execute(
+                """
                 INSERT INTO garden_tasks
                 (public_id, garden_id, task_type, title, description, status, severity, due_on,
                  snoozed_until, rule_source, metadata_json, completed_at_ms,
                  created_at_ms, updated_at_ms)
                 VALUES
                 ('task_due', %s, 'water', 'Water basil', '', 'pending', 'normal',
-                 '2026-07-05', NULL, '', '{}', NULL, 1, 1),
+                 '2026-07-05', NULL, '', '{"group_key":"water:2026-W27"}', NULL, 1, 1),
                 ('task_overdue', %s, 'prune', 'Prune roses', '', 'pending', 'high',
                  '2026-07-04', NULL, '', '{}', NULL, 1, 1),
                 ('task_snoozed_ready', %s, 'harvest', 'Harvest lettuce', '', 'snoozed',
@@ -1120,6 +1294,10 @@ class TestAttentionTaskProvider(BaseApiTest):
                 "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'A1')",
                 (due_id,),
             )
+            conn.execute(
+                "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, 'ATTN-BASIL')",
+                (due_id,),
+            )
             conn.commit()
             items = TaskAttentionProvider(frozen_date="2026-07-05").collect(
                 conn,
@@ -1133,6 +1311,8 @@ class TestAttentionTaskProvider(BaseApiTest):
         by_id = {item.id: item for item in items}
         assert by_id["attn:task:task_due"].type == "task_due"
         assert by_id["attn:task:task_due"].plot_ids == ("A1",)
+        assert by_id["attn:task:task_due"].plant_ids == ("ATTN-BASIL",)
+        assert by_id["attn:task:task_due"].group_key == "water:2026-W27"
         assert by_id["attn:task:task_overdue"].type == "task_overdue"
         assert by_id["attn:task:task_snoozed_ready"].type == "task_snoozed_active"
         assert "attn:task:task_snoozed_future" not in by_id
@@ -1552,9 +1732,7 @@ class TestAttentionExpandedProviders(BaseApiTest):
         self.assertEqual(today_event["source_label"], "Calendar")
         self.assertEqual(today_event["plot_ids"], ["B1"])
         future_event = next(
-            item
-            for item in sections["coming_up"]
-            if item["id"] == "attn:calendar:calevt_future"
+            item for item in sections["coming_up"] if item["id"] == "attn:calendar:calevt_future"
         )
         self.assertEqual(future_event["category"], "upcoming")
 
@@ -1588,9 +1766,7 @@ class TestAttentionExpandedProviders(BaseApiTest):
 
         warnings = self._sections(self._today())["warnings"]
         notification = next(
-            item
-            for item in warnings
-            if item["id"] == "attn:notification:note_backup_status"
+            item for item in warnings if item["id"] == "attn:notification:note_backup_status"
         )
         self.assertEqual(notification["provider"], "notification_status")
         self.assertEqual(notification["type"], "backup")

@@ -416,7 +416,7 @@ def restore_attention_outcome(
         FROM attention_outcomes
         WHERE garden_id = %s
           AND public_id = %s
-          AND expires_at_ms >= %s
+          AND expires_at_ms > %s
         """,
         (garden_id, outcome_id, now_ms),
     ).fetchone()

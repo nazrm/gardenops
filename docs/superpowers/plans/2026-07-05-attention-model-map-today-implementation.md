@@ -2277,20 +2277,20 @@ Include `README.md` in this commit only when it changed during Step 4.
 
 ## Acceptance Checklist
 
-- [ ] Map remains the first visual surface on desktop.
-- [ ] Desktop Today panel is compact and open by default.
-- [ ] Playwright proves the panel is capped, does not overlap map controls, and pointer interaction outside the panel still reaches the map.
-- [ ] Mobile Today starts as a bottom handle with `aria-expanded=false`.
-- [ ] No action needed is collapsed by default and expandable.
-- [ ] Generated outdoor watering covered by rain is suppressed by task/weather automation, persisted as an `attention_outcomes` row, and then appears only as No action needed.
-- [ ] Manual, indoor, covered, and ambiguous watering remain actionable unless domain automation has a persisted suppression/reschedule outcome.
-- [ ] One user's dismiss/snooze does not hide the item for other users.
-- [ ] High/critical safety, frost, security, and system guardrails prevent hiding from every non-email surface.
-- [ ] Calm, Balanced, Detailed, and Custom preferences change delivery eligibility and are covered by backend and Playwright tests.
-- [ ] Attention phase 1 does not mutate existing `notification_events`; notification inbox absence for rain-suppressed watering is caused by task/weather notification maintenance, not the Attention read endpoint.
-- [ ] Provider failure returns usable partial feed plus `degraded_providers`.
-- [ ] Playwright covers desktop, keyboard, reduced motion, labelled regions/dialogs, no-action expansion, settings Save/Cancel, action navigation, and mobile handle/sheet behavior.
-- [ ] Frontend build and backend focused tests pass.
+- [x] Map remains the first visual surface on desktop.
+- [x] Desktop Today panel is compact and open by default.
+- [x] Playwright proves the panel is capped, does not overlap map controls, and pointer interaction outside the panel still reaches the map.
+- [x] Mobile Today starts as a bottom handle with `aria-expanded=false`.
+- [x] No action needed is collapsed by default and expandable.
+- [x] Generated outdoor watering covered by rain is suppressed by task/weather automation, persisted as an `attention_outcomes` row, and then appears only as No action needed.
+- [x] Manual, indoor, covered, and ambiguous watering remain actionable unless domain automation has a persisted suppression/reschedule outcome.
+- [x] One user's dismiss/snooze does not hide the item for other users.
+- [x] High/critical safety, frost, security, and system guardrails prevent hiding from every non-email surface.
+- [x] Calm, Balanced, Detailed, and Custom preferences change delivery eligibility and are covered by backend and Playwright tests.
+- [x] Attention phase 1 does not mutate existing `notification_events`; notification inbox absence for rain-suppressed watering is caused by task/weather notification maintenance, not the Attention read endpoint.
+- [x] Provider failure returns usable partial feed plus `degraded_providers`.
+- [x] Playwright covers desktop, keyboard, reduced motion, labelled regions/dialogs, no-action expansion, settings Save/Cancel, action navigation, and mobile handle/sheet behavior.
+- [x] Frontend build and backend focused tests pass.
 
 ## Self-Review Notes
 
