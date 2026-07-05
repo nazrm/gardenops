@@ -33,6 +33,7 @@ AttentionPreset = Literal["calm", "balanced", "detailed", "custom"]
 _VALID_PRESETS: set[str] = {"calm", "balanced", "detailed", "custom"}
 _VALID_USER_STATES: set[str] = {"read", "dismissed", "snoozed", "preference_hidden"}
 _SECTION_KEYS = ("needs_attention", "warnings", "coming_up", "no_action_needed")
+_WEATHER_AWARE_WATERING_METADATA_KEY = "weather_aware_watering_suppression"
 _SECTION_LIMITS = {
     "needs_attention": 5,
     "warnings": 5,
@@ -58,6 +59,11 @@ def _parse_mapping(value: Any) -> dict[str, Any]:
 
 def _dump_json(value: dict[str, Any] | None) -> str:
     return json.dumps(value or {}, sort_keys=True, separators=(",", ":"))
+
+
+def _suppresses_rain_handled_watering(preferences: AttentionPreferenceSet) -> bool:
+    value = preferences.metadata.get(_WEATHER_AWARE_WATERING_METADATA_KEY)
+    return value if isinstance(value, bool) else True
 
 
 def _serialize_action(action: AttentionAction | None) -> dict[str, Any] | None:
@@ -93,7 +99,8 @@ def load_attention_preferences(conn: Any, user_id: int | None) -> AttentionPrefe
 
     saved = conn.execute(
         """
-        SELECT user_id, preset, rules_json, quiet_hours_json, show_no_action_history
+        SELECT user_id, preset, rules_json, quiet_hours_json, show_no_action_history,
+               metadata_json
         FROM user_attention_preferences
         WHERE user_id = %s
         """,
@@ -109,6 +116,7 @@ def load_attention_preferences(conn: Any, user_id: int | None) -> AttentionPrefe
                 "rules_json": str(saved["rules_json"] or "{}"),
                 "quiet_hours_json": str(saved["quiet_hours_json"] or "{}"),
                 "show_no_action_history": bool(saved["show_no_action_history"]),
+                "metadata": str(saved["metadata_json"] or "{}"),
             },
         )
 
@@ -154,6 +162,7 @@ def save_attention_preferences(
     rules: dict[str, dict[str, Any]],
     quiet_hours: dict[str, Any],
     show_no_action_history: bool,
+    metadata: dict[str, Any] | None = None,
     now_ms: int,
 ) -> AttentionPreferenceSet:
     normalized_preset = preset.strip().lower()
@@ -164,13 +173,14 @@ def save_attention_preferences(
         """
         INSERT INTO user_attention_preferences
             (user_id, preset, rules_json, quiet_hours_json, show_no_action_history,
-             created_at_ms, updated_at_ms)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+             metadata_json, created_at_ms, updated_at_ms)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT(user_id) DO UPDATE SET
             preset = excluded.preset,
             rules_json = excluded.rules_json,
             quiet_hours_json = excluded.quiet_hours_json,
             show_no_action_history = excluded.show_no_action_history,
+            metadata_json = excluded.metadata_json,
             updated_at_ms = excluded.updated_at_ms
         """,
         (
@@ -179,6 +189,7 @@ def save_attention_preferences(
             _dump_json(cast(dict[str, Any], rules)),
             _dump_json(quiet_hours),
             int(show_no_action_history),
+            _dump_json(metadata),
             now_ms,
             now_ms,
         ),
@@ -483,6 +494,7 @@ class AttentionService:
         garden_id: int,
         user_id: int | None,
         now_ms: int,
+        suppress_rain_handled_watering: bool = True,
         force_degraded_provider: str | None = None,
     ) -> tuple[list[AttentionItem], list[dict[str, str]]]:
         degraded_providers: list[dict[str, str]] = []
@@ -497,14 +509,25 @@ class AttentionService:
             try:
                 conn.execute(f"SAVEPOINT {savepoint}")
                 savepoint_created = True
-                collected.extend(
-                    provider.collect(
-                        conn,
-                        garden_id=garden_id,
-                        user_id=provider_user_id,
-                        now_ms=now_ms,
+                if provider.key == "task":
+                    collected.extend(
+                        provider.collect(
+                            conn,
+                            garden_id=garden_id,
+                            user_id=provider_user_id,
+                            now_ms=now_ms,
+                            suppress_rain_handled_watering=suppress_rain_handled_watering,
+                        )
                     )
-                )
+                else:
+                    collected.extend(
+                        provider.collect(
+                            conn,
+                            garden_id=garden_id,
+                            user_id=provider_user_id,
+                            now_ms=now_ms,
+                        )
+                    )
                 conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             except Exception:  # noqa: BLE001 - provider degradation is intentional.
                 logger.exception("Attention provider failed", extra={"provider": provider.key})
@@ -529,12 +552,14 @@ class AttentionService:
         garden_id: int,
         user_id: int | None,
         now_ms: int,
+        suppress_rain_handled_watering: bool = True,
     ) -> list[AttentionItem]:
         collected, _degraded = self._collect_provider_items_with_degradation(
             conn,
             garden_id=garden_id,
             user_id=user_id,
             now_ms=now_ms,
+            suppress_rain_handled_watering=suppress_rain_handled_watering,
         )
         return collected
 
@@ -547,6 +572,7 @@ class AttentionService:
         item_id: str,
         now_ms: int,
     ) -> None:
+        preferences = load_attention_preferences(conn, user_id)
         if not any(
             item.id == item_id
             for item in self.collect_provider_items(
@@ -554,6 +580,7 @@ class AttentionService:
                 garden_id=garden_id,
                 user_id=user_id,
                 now_ms=now_ms,
+                suppress_rain_handled_watering=_suppresses_rain_handled_watering(preferences),
             )
         ):
             raise HTTPException(status_code=404, detail="Attention item not found")
@@ -579,6 +606,7 @@ class AttentionService:
             garden_id=garden_id,
             user_id=user_id,
             now_ms=now_ms,
+            suppress_rain_handled_watering=_suppresses_rain_handled_watering(preferences),
             force_degraded_provider=force_degraded_provider,
         )
 

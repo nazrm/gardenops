@@ -40,6 +40,7 @@ class AttentionPreferencesBody(StrictBaseModel):
     rules: dict[str, dict[str, Any]] = Field(default_factory=dict)
     quiet_hours: dict[str, Any] = Field(default_factory=dict)
     show_no_action_history: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AttentionSnoozeBody(StrictBaseModel):
@@ -138,6 +139,7 @@ def put_attention_preferences(
                     "rules": body.rules,
                     "quiet_hours": body.quiet_hours,
                     "show_no_action_history": body.show_no_action_history,
+                    "metadata": body.metadata,
                 },
             )
         )
@@ -150,6 +152,7 @@ def put_attention_preferences(
         rules=body.rules,
         quiet_hours=body.quiet_hours,
         show_no_action_history=body.show_no_action_history,
+        metadata=body.metadata,
         now_ms=now_ms,
     )
     db.commit()

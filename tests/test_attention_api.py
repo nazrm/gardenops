@@ -973,6 +973,92 @@ class TestAttentionTodayApi(BaseApiTest):
         self.assertIn("24 mm rain", no_action["body"])
         self.assertEqual(no_action["metadata"]["due_on"], "2026-07-05")
 
+    def test_today_watering_rain_preference_can_show_rain_handled_task(self) -> None:
+        from gardenops.services.attention import AttentionService
+        from gardenops.services.attention.outcomes import upsert_attention_outcome
+
+        conn = db.get_db()
+        try:
+            garden_id = int(
+                conn.execute("SELECT id FROM gardens WHERE slug = 'default'").fetchone()["id"]
+            )
+            user_id = int(
+                conn.execute("SELECT id FROM auth_users WHERE username = 'test_admin'").fetchone()[
+                    "id"
+                ]
+            )
+            conn.execute(
+                """
+                INSERT INTO plots
+                    (plot_id, garden_id, zone_code, zone_name, plot_number,
+                     grid_row, grid_col, sub_zone, notes)
+                VALUES ('OUT-RAIN-PREF', %s, 'B', 'Bed', 98, 8, 9, '', '')
+                """,
+                (garden_id,),
+            )
+            task = conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (public_id, garden_id, task_type, title, description, status, severity,
+                     due_on, snoozed_until, rule_source, metadata_json,
+                     created_at_ms, updated_at_ms)
+                VALUES ('task_rain_pref_visible', %s, 'water', 'Water outdoor basil', '',
+                        'pending', 'normal', '2026-07-05', NULL,
+                        'water:RAINPREF:2026-07-05', '{}', 1, 1)
+                RETURNING id
+                """,
+                (garden_id,),
+            ).fetchone()
+            assert task is not None
+            conn.execute(
+                "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'OUT-RAIN-PREF')",
+                (int(task["id"]),),
+            )
+            upsert_attention_outcome(
+                conn,
+                garden_id=garden_id,
+                provider="weather",
+                outcome_type="watering_covered_by_rain",
+                source_type="task_generator",
+                source_id="1",
+                source_public_id="water:RAINPREF:2026-07-05",
+                target_type="plant",
+                target_id="RAINPREF",
+                title="Watering covered by rain",
+                explanation="18 mm rain covers this watering.",
+                reason="Rain surplus covers the watering date",
+                plant_ids=("RAINPREF",),
+                plot_ids=(),
+                metadata={"due_on": "2026-07-05", "rain_mm": 18},
+                occurred_at_ms=1783180800000,
+                expires_at_ms=1785772800000,
+            )
+            conn.execute(
+                """
+                INSERT INTO user_attention_preferences
+                    (user_id, preset, rules_json, quiet_hours_json, show_no_action_history,
+                     metadata_json, created_at_ms, updated_at_ms)
+                VALUES (%s, 'balanced', '{}', '{}', 1, %s, 1, 1)
+                """,
+                (
+                    user_id,
+                    json.dumps({"weather_aware_watering_suppression": False}),
+                ),
+            )
+            conn.commit()
+
+            response = AttentionService(frozen_date="2026-07-05").today(
+                conn,
+                garden_id=garden_id,
+                user_id=user_id,
+                now_ms=1783180800000,
+            )
+        finally:
+            db.return_db(conn)
+
+        item_ids = {item["id"] for section in response["sections"] for item in section["items"]}
+        self.assertIn("attn:task:task_rain_pref_visible", item_ids)
+
     def test_today_force_degraded_weather_keeps_task_items_in_tests(self) -> None:
         self._seed_due_task("task_weather_degrade")
         conn = db.get_db()
@@ -1215,6 +1301,51 @@ class TestAttentionTodayApi(BaseApiTest):
         finally:
             db.return_db(conn)
         self.assertEqual(after, before)
+
+    def test_authenticated_custom_preferences_round_trip_full_customization(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+            },
+        ):
+            _, csrf_token = self._login_session("test_admin", "testadminpass")
+            headers = self._session_headers(csrf_token)
+            payload = {
+                "preset": "custom",
+                "rules": {
+                    "calendar_event_due": {
+                        "panel": False,
+                        "inbox": True,
+                        "digest": False,
+                        "min_severity": "high",
+                    }
+                },
+                "quiet_hours": {"digest": {"enabled": True, "start": "21:30", "end": "06:15"}},
+                "show_no_action_history": False,
+                "metadata": {"weather_aware_watering_suppression": False},
+            }
+
+            saved = self.client.put(
+                "/api/attention/preferences",
+                json=payload,
+                headers=headers,
+            )
+            self.assertEqual(saved.status_code, 200, saved.text)
+
+            loaded = self.client.get("/api/attention/preferences", headers=headers)
+            self.assertEqual(loaded.status_code, 200, loaded.text)
+
+        body = loaded.json()
+        self.assertEqual(body["preset"], "custom")
+        self.assertFalse(body["rules"]["calendar_event_due"]["panel"])
+        self.assertEqual(body["rules"]["calendar_event_due"]["min_severity"], "high")
+        self.assertTrue(body["quiet_hours"]["digest"]["enabled"])
+        self.assertEqual(body["quiet_hours"]["digest"]["start"], "21:30")
+        self.assertFalse(body["show_no_action_history"])
+        self.assertFalse(body["metadata"]["weather_aware_watering_suppression"])
 
 
 class TestAttentionTaskProvider(BaseApiTest):

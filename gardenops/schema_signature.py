@@ -165,6 +165,7 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "rules_json",
         "quiet_hours_json",
         "show_no_action_history",
+        "metadata_json",
         "created_at_ms",
         "updated_at_ms",
     ),

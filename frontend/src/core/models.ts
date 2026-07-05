@@ -265,6 +265,7 @@ export interface AttentionPreferencesUpdate {
   rules: Record<string, AttentionPreferenceRule>;
   quiet_hours: Record<string, unknown>;
   show_no_action_history: boolean;
+  metadata: Record<string, unknown>;
 }
 
 export interface AttentionTodayResponse {

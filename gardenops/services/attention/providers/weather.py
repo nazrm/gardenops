@@ -102,6 +102,10 @@ class WeatherAttentionProvider:
                     audience_user_id=user_id,
                     valid_from=str(row["valid_from"]),
                     valid_until=str(row["valid_until"]),
+                    delivery_eligibility=self._delivery_eligibility(
+                        item_type,
+                        str(row["severity"] or "normal"),
+                    ),
                     source_label="Weather",
                     updated_at_ms=int(row["created_at_ms"] or 0),
                     metadata={
@@ -180,3 +184,9 @@ class WeatherAttentionProvider:
         if alert_type == "frost_warning":
             return "Frost risk"
         return "Active weather alert"
+
+    @staticmethod
+    def _delivery_eligibility(item_type: str, _severity: str) -> tuple[str, ...]:
+        if item_type.startswith("watering_"):
+            return ("panel_only",)
+        return ("panel_only", "inbox", "digest")

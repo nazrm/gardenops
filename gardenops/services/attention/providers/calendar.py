@@ -178,6 +178,7 @@ class CalendarAttentionProvider:
             plant_ids=plant_ids,
             plot_ids=plot_ids,
             due_on=event_on,
+            delivery_eligibility=("panel_only", "inbox", "digest"),
             rank=350 if due_today else 450,
             source_label="Calendar",
             updated_at_ms=int(row["updated_at_ms"] or row["created_at_ms"] or 0),

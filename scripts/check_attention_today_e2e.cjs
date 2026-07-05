@@ -194,6 +194,7 @@ async function checkDesktop(browser) {
 
   await waitVisible(todayRegion.getByText("Water indoor basil", { exact: true }), "seeded indoor basil task");
   await waitVisible(todayRegion.getByText("Check mildew on cucumber", { exact: true }), "seeded issue follow-up");
+  await waitVisible(todayRegion.getByText("Community seed swap", { exact: true }), "seeded calendar event");
   await waitVisible(todayRegion.getByText("18 mm rain expected", { exact: true }), "seeded rain warning");
   await waitVisible(
     todayRegion.getByText("Backup status needs review", { exact: true }),
@@ -277,9 +278,32 @@ async function checkDesktop(browser) {
     await settingsAfterCancel.getByLabel("Balanced", { exact: true }).isChecked(),
     "Cancel should preserve the saved Balanced preset",
   );
-  await settingsAfterCancel.getByLabel("Detailed", { exact: true }).check();
-  await settingsAfterCancel.getByRole("button", { name: /^Save$/i }).click();
+  await waitVisible(
+    settingsAfterCancel.getByTestId("attention-preferences-rule-upcoming-work"),
+    "upcoming work preference row",
+  );
+  await settingsAfterCancel.getByTestId("attention-preferences-rule-upcoming-work-panel").uncheck();
+  await settingsAfterCancel.getByTestId("attention-preferences-quiet-digest-enabled").check();
+  await settingsAfterCancel.getByTestId("attention-preferences-quiet-digest-start").fill("21:30");
+  await settingsAfterCancel.getByTestId("attention-preferences-quiet-digest-end").fill("06:15");
+  await settingsAfterCancel.getByTestId("attention-preferences-weather-watering").uncheck();
+  assert(
+    await settingsAfterCancel.getByLabel("Custom", { exact: true }).isChecked(),
+    "Editing advanced controls should switch to Custom",
+  );
+  await settingsAfterCancel.getByTestId("attention-preferences-save").click();
   await settingsAfterCancel.waitFor({ state: "detached", timeout: 10000 });
+
+  await settingsButton.click();
+  const settingsAfterCustom = page.getByRole("dialog", { name: /attention settings/i });
+  await waitVisible(settingsAfterCustom, "attention settings dialog after advanced save");
+  await waitVisible(
+    settingsAfterCustom.getByTestId("attention-preferences-rule-weather-warnings"),
+    "weather warning preference row after advanced save",
+  );
+  await settingsAfterCustom.getByLabel("Detailed", { exact: true }).check();
+  await settingsAfterCustom.getByTestId("attention-preferences-save").click();
+  await settingsAfterCustom.waitFor({ state: "detached", timeout: 10000 });
   await waitVisible(todayRegion.getByText("Shown because", { exact: false }), "preference guardrail copy");
 
   await page.evaluate(() => {
@@ -379,6 +403,14 @@ async function checkMobile(browser) {
     `Mobile Today sheet must stay near the 60vh cap, got ${Math.round(sheetBox.height)}px`,
   );
   await waitVisible(sheet.getByText("Water indoor basil", { exact: true }), "mobile indoor basil task");
+
+  await sheet.getByTestId("attention-today-settings").click();
+  const settings = page.getByRole("dialog", { name: /attention settings/i });
+  await waitVisible(settings, "mobile attention settings dialog");
+  await page.keyboard.press("Escape");
+  await settings.waitFor({ state: "detached", timeout: 10000 });
+  await expectAttribute(handle, "aria-expanded", "true", "mobile Today handle while settings closes");
+  await waitVisible(sheet, "mobile Today sheet after settings Escape");
 
   await page.keyboard.press("Escape");
   await expectAttribute(handle, "aria-expanded", "false", "mobile Today handle after Escape");

@@ -95,6 +95,11 @@ preferences, user item state, and persisted automation explanations. Later
 phases can make notification inbox and email digest consume the same attention
 model, then migrate notification mutation ownership intentionally.
 
+The full customization slice keeps that ownership boundary: notification inbox
+and email digest delivery may consult Attention preference eligibility, but the
+existing notification tables remain the durable inbox/log source and filtered
+delivery must not clear, supersede, rewrite, or delete notification rows.
+
 ## Attention Item Contract
 
 Each provider returns bounded attention candidates using a shared contract:
@@ -745,6 +750,12 @@ task generation should remain part of the safety net.
 7. Add Playwright seeded E2E coverage for the Morning Garden Check journey.
 8. Gradually migrate notification inbox and email digest to consume attention
    output where it reduces duplication.
+
+In the first delivery-filtering pass, "consume attention" means using Attention
+preference rules and provider delivery eligibility to decide inbox/digest
+visibility while preserving existing notification lifecycle storage. Moving
+notification creation, read state, or log ownership fully into Attention remains
+a later migration.
 
 Phase gates:
 
