@@ -1059,6 +1059,102 @@ class TestAttentionTodayApi(BaseApiTest):
         item_ids = {item["id"] for section in response["sections"] for item in section["items"]}
         self.assertIn("attn:task:task_rain_pref_visible", item_ids)
 
+    def test_today_hides_stale_generated_watering_but_keeps_manual_overdue(self) -> None:
+        from gardenops.services.attention import AttentionService
+
+        conn = db.get_db()
+        try:
+            garden_id = int(
+                conn.execute("SELECT id FROM gardens WHERE slug = 'default'").fetchone()["id"]
+            )
+            user_id = int(
+                conn.execute("SELECT id FROM auth_users WHERE username = 'test_admin'").fetchone()[
+                    "id"
+                ]
+            )
+            conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (public_id, garden_id, task_type, title, description, status, severity,
+                     due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+                VALUES
+                    ('task_attention_stale_generated_water', %s, 'water',
+                     'Generated old water', '', 'pending', 'normal',
+                     '2026-07-04', 'water:ATTN-STALE:2026-07-04', '{}', 1, 1),
+                    ('task_attention_stale_generated_dry_water', %s, 'water',
+                     'Generated old dry water', '', 'pending', 'normal',
+                     '2026-07-04', 'auto:dry_water:456:ATTN-STALE', '{}', 1, 1),
+                    ('task_attention_manual_old_water', %s, 'water',
+                     'Manual old water', '', 'pending', 'normal',
+                     '2026-07-04', '', '{}', 1, 1)
+                """,
+                (garden_id, garden_id, garden_id),
+            )
+            conn.commit()
+
+            response = AttentionService(frozen_date="2026-07-05").today(
+                conn,
+                garden_id=garden_id,
+                user_id=user_id,
+                now_ms=1783180800000,
+            )
+        finally:
+            db.return_db(conn)
+
+        item_ids = {item["id"] for section in response["sections"] for item in section["items"]}
+        self.assertIn("attn:task:task_attention_manual_old_water", item_ids)
+        self.assertNotIn("attn:task:task_attention_stale_generated_water", item_ids)
+        self.assertNotIn("attn:task:task_attention_stale_generated_dry_water", item_ids)
+
+    def test_today_shows_recently_expired_generated_watering_as_no_action_history(self) -> None:
+        from gardenops.services.attention import AttentionService, TaskAttentionProvider
+
+        conn = db.get_db()
+        try:
+            garden_id = int(
+                conn.execute("SELECT id FROM gardens WHERE slug = 'default'").fetchone()["id"]
+            )
+            user_id = int(
+                conn.execute("SELECT id FROM auth_users WHERE username = 'test_admin'").fetchone()[
+                    "id"
+                ]
+            )
+            conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (public_id, garden_id, task_type, title, description, status, severity,
+                     due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+                VALUES
+                    ('task_attention_expired_generated_water', %s, 'water',
+                     'Generated expired water', '', 'expired', 'normal',
+                     '2026-07-04', 'water:ATTN-EXPIRED:2026-07-04',
+                     '{"lifecycle":{"status":"expired","reason":"stale_generated_watering"}}',
+                     1, 1783180800000)
+                """,
+                (garden_id,),
+            )
+            conn.commit()
+
+            response = AttentionService(
+                providers=[TaskAttentionProvider(frozen_date="2026-07-05")]
+            ).today(
+                conn,
+                garden_id=garden_id,
+                user_id=user_id,
+                now_ms=1783180800000,
+            )
+        finally:
+            db.return_db(conn)
+
+        sections = {section["key"]: section for section in response["sections"]}
+        no_action_items = {item["id"]: item for item in sections["no_action_needed"]["items"]}
+        item = no_action_items["attn:task:task_attention_expired_generated_water"]
+        self.assertEqual(item["type"], "task_expired")
+        self.assertEqual(item["domain_state"], "expired")
+        self.assertEqual(item["category"], "no_action_needed")
+        self.assertEqual(item["reason"], "Expired")
+        self.assertIsNone(item["primary_action"])
+
     def test_today_force_degraded_weather_keeps_task_items_in_tests(self) -> None:
         self._seed_due_task("task_weather_degrade")
         conn = db.get_db()

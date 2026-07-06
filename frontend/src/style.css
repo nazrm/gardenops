@@ -8591,6 +8591,10 @@ td.inventory-qty-zero {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent);
 }
+.task-status-chip.status-expired {
+  background: color-mix(in srgb, var(--text-3) 14%, transparent);
+  color: var(--text-3);
+}
 .task-card-tags {
   display: flex;
   flex-wrap: wrap;
@@ -15404,12 +15408,14 @@ td.inventory-qty-zero {
 }
 
 .calendar-root .calendar-status-completed,
-.calendar-root .calendar-status-skipped {
+.calendar-root .calendar-status-skipped,
+.calendar-root .calendar-status-expired {
   opacity: 0.62;
 }
 
 .calendar-root .fc-list-event.calendar-status-completed .calendar-event-agenda-title,
-.calendar-root .fc-list-event.calendar-status-skipped .calendar-event-agenda-title {
+.calendar-root .fc-list-event.calendar-status-skipped .calendar-event-agenda-title,
+.calendar-root .fc-list-event.calendar-status-expired .calendar-event-agenda-title {
   text-decoration: line-through;
 }
 

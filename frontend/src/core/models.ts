@@ -125,7 +125,7 @@ export type TaskType =
   | "harvest"
   | "inspect_issue";
 
-export type TaskStatus = "pending" | "completed" | "skipped" | "snoozed";
+export type TaskStatus = "pending" | "completed" | "skipped" | "snoozed" | "expired";
 
 export type TaskSeverity = "low" | "normal" | "high";
 

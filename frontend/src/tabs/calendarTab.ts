@@ -218,6 +218,8 @@ function taskStatusLabel(status: string): string {
       return t("tasks.status_skipped");
     case "snoozed":
       return t("tasks.status_snoozed");
+    case "expired":
+      return t("tasks.status_expired");
     case "pending":
     default:
       return t("tasks.status_pending");

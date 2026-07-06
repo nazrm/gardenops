@@ -740,6 +740,7 @@ export function getAppShellMarkup(): string {
                   <option value="completed">${t("tasks.status_completed")}</option>
                   <option value="skipped">${t("tasks.status_skipped")}</option>
                   <option value="snoozed">${t("tasks.status_snoozed")}</option>
+                  <option value="expired">${t("tasks.status_expired")}</option>
                 </select>
               </div>
             </div>

@@ -33,6 +33,10 @@ from gardenops.services.automation import (
     on_heat_alert,
     on_rain_alert,
 )
+from gardenops.services.generated_task_lifecycle import (
+    GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
+    expire_stale_generated_tasks,
+)
 from gardenops.services.task_generator import generate_tasks
 from gardenops.services.weather_service import check_weather_and_generate_alerts
 from gardenops.sql_dates import offset_days_iso
@@ -783,14 +787,17 @@ def _clear_active_task_notifications_for_targets(
     return cur.rowcount
 
 
-def _stale_weather_task_public_ids(
+def _stale_generated_task_public_ids(
     db: DbConn,
     *,
     garden_id: int,
     today_iso: str,
 ) -> set[str]:
-    pattern_clauses = " OR ".join(
+    weather_pattern_clauses = " OR ".join(
         ["t.rule_source LIKE %s"] * len(_WEATHER_TASK_RULE_SOURCE_PATTERNS),
+    )
+    weekly_watering_pattern_clauses = " OR ".join(
+        ["t.rule_source LIKE %s"] * len(GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS),
     )
     rows = db.execute(
         f"""
@@ -812,14 +819,30 @@ def _stale_weather_task_public_ids(
                 AND t.snoozed_until <= %s
             )
           )
-          AND ({pattern_clauses})
           AND (
-            COALESCE(t.snoozed_until, t.due_on) < %s
-            OR wa.id IS NULL
-            OR wa.valid_until < %s
+            (
+              ({weekly_watering_pattern_clauses})
+              AND COALESCE(t.snoozed_until, t.due_on) < %s
+            )
+            OR (
+              ({weather_pattern_clauses})
+              AND (
+                COALESCE(t.snoozed_until, t.due_on) < %s
+                OR wa.id IS NULL
+                OR wa.valid_until < %s
+              )
+            )
           )
         """,  # noqa: S608
-        [garden_id, today_iso, *_WEATHER_TASK_RULE_SOURCE_PATTERNS, today_iso, today_iso],
+        [
+            garden_id,
+            today_iso,
+            *GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
+            today_iso,
+            *_WEATHER_TASK_RULE_SOURCE_PATTERNS,
+            today_iso,
+            today_iso,
+        ],
     ).fetchall()
     return {str(row["public_id"]) for row in rows}
 
@@ -937,15 +960,15 @@ def create_task_due_notifications(
     if not member_ids:
         return {"created": 0, "skipped": 0}
 
-    stale_weather_task_ids = _stale_weather_task_public_ids(
+    stale_generated_task_ids = _stale_generated_task_public_ids(
         db,
         garden_id=garden_id,
         today_iso=today_iso,
     )
-    cleared_stale_weather_tasks = _clear_active_task_notifications_for_targets(
+    cleared_stale_generated_tasks = _clear_active_task_notifications_for_targets(
         db,
         garden_id=garden_id,
-        target_ids=stale_weather_task_ids,
+        target_ids=stale_generated_task_ids,
         reason="expired",
     )
 
@@ -973,8 +996,8 @@ def create_task_due_notifications(
         """,
         (garden_id, today_iso, today_iso, task_scan_limit),
     ).fetchall()
-    if stale_weather_task_ids:
-        tasks = [row for row in tasks if str(row["public_id"]) not in stale_weather_task_ids]
+    if stale_generated_task_ids:
+        tasks = [row for row in tasks if str(row["public_id"]) not in stale_generated_task_ids]
 
     upcoming_tasks = db.execute(
         f"""
@@ -990,13 +1013,13 @@ def create_task_due_notifications(
         """,
         (garden_id, today_iso, today_iso, upcoming_end_iso, task_scan_limit),
     ).fetchall()
-    if stale_weather_task_ids:
+    if stale_generated_task_ids:
         upcoming_tasks = [
-            row for row in upcoming_tasks if str(row["public_id"]) not in stale_weather_task_ids
+            row for row in upcoming_tasks if str(row["public_id"]) not in stale_generated_task_ids
         ]
 
     if not tasks and not upcoming_tasks:
-        if cleared_stale_weather_tasks:
+        if cleared_stale_generated_tasks:
             db.commit()
         return {"created": 0, "skipped": 0}
 
@@ -1150,7 +1173,7 @@ def create_task_due_notifications(
             existing_keys.add(notification_key)
             created += 1
 
-    if created or cleared_stale_weather_tasks:
+    if created or cleared_stale_generated_tasks:
         db.commit()
     return {"created": created, "skipped": skipped}
 
@@ -1372,9 +1395,16 @@ def clear_stale_task_notifications(
     weather_pattern_clauses = " OR ".join(
         ["t.rule_source LIKE %s"] * len(_WEATHER_TASK_RULE_SOURCE_PATTERNS),
     )
-    stale_weather_clause = (
+    weekly_watering_pattern_clauses = " OR ".join(
+        ["t.rule_source LIKE %s"] * len(GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS),
+    )
+    stale_generated_clause = (
+        "("
+        f"(({weekly_watering_pattern_clauses}) AND COALESCE(t.snoozed_until, t.due_on) < %s)"
+        " OR "
         f"(({weather_pattern_clauses}) AND "
         "(COALESCE(t.snoozed_until, t.due_on) < %s OR wa.valid_until < %s OR wa.id IS NULL))"
+        ")"
     )
     conditions = [
         "n.dismissed = 0",
@@ -1397,7 +1427,7 @@ def clear_stale_task_notifications(
             "(t.status = 'snoozed' AND (t.snoozed_until IS NULL OR t.snoozed_until > %s))",
             "t.status NOT IN ('pending', 'snoozed')",
             "COALESCE(t.snoozed_until, t.due_on) IS NULL",
-            stale_weather_clause,
+            stale_generated_clause,
             "(n.notification_type = 'task_due' AND COALESCE(t.snoozed_until, t.due_on) <> %s)",
             "(n.notification_type = 'task_upcoming' AND COALESCE(t.snoozed_until, t.due_on) <= %s)",
             "(n.notification_type = 'task_overdue' AND COALESCE(t.snoozed_until, t.due_on) >= %s)",
@@ -1413,7 +1443,7 @@ def clear_stale_task_notifications(
                 AND (t.snoozed_until IS NULL OR t.snoozed_until > %s) THEN 'snoozed'
             WHEN t.status NOT IN ('pending', 'snoozed') THEN 'expired'
             WHEN COALESCE(t.snoozed_until, t.due_on) IS NULL THEN 'expired'
-            WHEN {stale_weather_clause} THEN 'expired'
+            WHEN {stale_generated_clause} THEN 'expired'
             WHEN n.notification_type = 'task_due'
                 AND COALESCE(t.snoozed_until, t.due_on) <> %s THEN 'expired'
             WHEN n.notification_type = 'task_upcoming'
@@ -1454,6 +1484,8 @@ def clear_stale_task_notifications(
         [
             now_value,
             today,
+            *GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
+            today,
             *_WEATHER_TASK_RULE_SOURCE_PATTERNS,
             today,
             today,
@@ -1462,6 +1494,8 @@ def clear_stale_task_notifications(
             today,
             today_start_ms,
             *filter_params,
+            today,
+            *GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
             today,
             *_WEATHER_TASK_RULE_SOURCE_PATTERNS,
             today,
@@ -2233,6 +2267,7 @@ def _empty_maintenance_summary() -> dict[str, int | bool]:
         "notifications_created": 0,
         "notifications_skipped": 0,
         "tasks_auto_created": 0,
+        "tasks_expired": 0,
         "weather_checks": 0,
         "weather_alerts_created": 0,
         "issues_escalated": 0,
@@ -2256,6 +2291,13 @@ def _run_notification_maintenance_for_gardens(
     for garden_id in garden_ids:
         summary["gardens_processed"] = int(summary["gardens_processed"]) + 1
 
+        tasks_expired = expire_stale_generated_tasks(
+            db,
+            garden_id=garden_id,
+            now_ms=now_value,
+        )
+        summary["tasks_expired"] = int(summary["tasks_expired"]) + tasks_expired
+
         generated = create_task_due_notifications(db, garden_id)
         summary["notifications_created"] = int(summary["notifications_created"]) + int(
             generated["created"]
@@ -2278,7 +2320,7 @@ def _run_notification_maintenance_for_gardens(
             now_ms=now_value,
         )
         summary["notifications_marked"] = int(summary["notifications_marked"]) + stale_info
-        if expired or stale_tasks or stale_info:
+        if tasks_expired or expired or stale_tasks or stale_info:
             db.commit()
 
         gen_result = _auto_generate_monthly_tasks(db, garden_id, now_value)

@@ -16,8 +16,6 @@ from gardenops.services.ai_provider import (
     generate_task_descriptions_with_ai,
     is_ai_provider_configured,
 )
-from gardenops.services.attention.outcomes import upsert_attention_outcome
-from gardenops.services.attention.types import NO_ACTION_RETENTION_DAYS
 from gardenops.services.task_windows import derive_recommended_window_strings
 
 _logger = logging.getLogger(__name__)
@@ -472,6 +470,9 @@ def _write_watering_covered_by_rain_outcome(
     plot_ids: tuple[str, ...],
     now_ms: int,
 ) -> None:
+    from gardenops.services.attention.outcomes import upsert_attention_outcome
+    from gardenops.services.attention.types import NO_ACTION_RETENTION_DAYS
+
     plant_id = str(plant_ctx.get("plt_id") or "")
     plant_name = str(plant_ctx.get("name") or plant_id or "plant")
     alert_metadata = _parse_mapping_json(alert["metadata_json"])
