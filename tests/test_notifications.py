@@ -1139,9 +1139,7 @@ class TestNotifications(BaseApiTest):
         finally:
             db.return_db(conn)
         self.assertGreaterEqual(len(rows), 1)
-        joined = " ".join(
-            f"{row['title']} {json.dumps(row['metadata_json'])}" for row in rows
-        )
+        joined = " ".join(f"{row['title']} {json.dumps(row['metadata_json'])}" for row in rows)
         self.assertNotIn("Test Plant", joined)
         self.assertIn("Rose", joined)
 

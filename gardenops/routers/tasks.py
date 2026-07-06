@@ -737,7 +737,7 @@ def _apply_task_action(
         if not body.snooze_until:
             raise HTTPException(
                 status_code=422, detail="snooze_until is required for snooze action"
-        )
+            )
         _validate_date(body.snooze_until)
         reopen_metadata_json = _reopened_completion_metadata_json(task_row, current_status)
         if str(task_row.get("task_type") or "") == "observe_bloom":
