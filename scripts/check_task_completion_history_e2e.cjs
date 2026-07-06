@@ -150,19 +150,15 @@ async function setupPage(browser) {
   await page.addInitScript((frozenNowIso) => {
     const RealDate = Date;
     const frozenMs = new RealDate(frozenNowIso).getTime();
-    class FrozenDate extends RealDate {
-      constructor(...args) {
-        if (args.length === 0) {
-          super(frozenMs);
-        } else {
-          super(...args);
-        }
+    function FrozenDate(...args) {
+      if (new.target) {
+        return args.length === 0 ? new RealDate(frozenMs) : new RealDate(...args);
       }
-
-      static now() {
-        return frozenMs;
-      }
+      return new RealDate(frozenMs).toString();
     }
+    Object.setPrototypeOf(FrozenDate, RealDate);
+    FrozenDate.prototype = RealDate.prototype;
+    FrozenDate.now = () => frozenMs;
     FrozenDate.parse = RealDate.parse;
     FrozenDate.UTC = RealDate.UTC;
     globalThis.Date = FrozenDate;
