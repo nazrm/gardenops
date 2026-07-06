@@ -1145,6 +1145,71 @@ class TestNotifications(BaseApiTest):
         self.assertNotIn("Test Plant", joined)
         self.assertIn("Rose", joined)
 
+    def test_partial_completion_notification_refresh_is_scoped_to_task(self) -> None:
+        from gardenops.services.notification_service import (
+            clear_task_notifications,
+            create_task_due_notifications,
+        )
+
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "fertilize",
+                "title": "Fertilize 2 plants",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-TEST", "PLT-002"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        partial_task_id = response.json()["id"]
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "water",
+                "title": "Unrelated due task",
+                "due_on": "2026-06-01",
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        unrelated_task_id = response.json()["id"]
+        garden_id = self._get_default_garden_id()
+
+        conn = db.get_db()
+        try:
+            create_task_due_notifications(conn, garden_id)
+            clear_task_notifications(
+                conn,
+                garden_id=garden_id,
+                task_public_id=unrelated_task_id,
+                reason="superseded",
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        response = self.client.post(
+            f"/api/tasks/{partial_task_id}/action",
+            json={"action": "complete", "completed_plant_ids": ["PLT-TEST"]},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        conn = db.get_db()
+        try:
+            active_unrelated = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND target_type = 'task'
+                  AND target_id = %s
+                  AND cleared_at_ms IS NULL
+                """,
+                (garden_id, unrelated_task_id),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertEqual(int(active_unrelated["count"]), 0)
+
     def test_dismissed_task_notification_does_not_regenerate(self) -> None:
         from gardenops.services.notification_service import (
             create_task_due_notifications,

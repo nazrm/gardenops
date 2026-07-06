@@ -939,6 +939,8 @@ def _clear_active_notifications_for_target(
 def create_task_due_notifications_in_transaction(
     db: DbConn,
     garden_id: int,
+    *,
+    task_public_ids: set[str] | None = None,
 ) -> dict[str, int]:
     """Check garden_tasks for tasks due today or overdue, create notifications.
 
@@ -951,6 +953,19 @@ def create_task_due_notifications_in_transaction(
     today_iso = offset_days_iso(0)
     upcoming_end_iso = offset_days_iso(3)
     task_scan_limit = _env_int("NOTIFICATION_TASK_SCAN_LIMIT", 500)
+    target_filter = (
+        {str(task_id).strip() for task_id in task_public_ids if str(task_id).strip()}
+        if task_public_ids is not None
+        else None
+    )
+    if target_filter is not None and not target_filter:
+        return {"created": 0, "skipped": 0, "cleared": 0}
+    target_filter_clause = ""
+    target_filter_params: list[str] = []
+    if target_filter is not None:
+        target_filter_params = sorted(target_filter)
+        target_placeholders = ",".join(["%s"] * len(target_filter_params))
+        target_filter_clause = f" AND public_id IN ({target_placeholders})"
 
     members = db.execute(
         "SELECT user_id FROM garden_memberships WHERE garden_id = %s",
@@ -965,6 +980,10 @@ def create_task_due_notifications_in_transaction(
         garden_id=garden_id,
         today_iso=today_iso,
     )
+    if target_filter is not None:
+        stale_generated_task_ids = [
+            task_id for task_id in stale_generated_task_ids if task_id in target_filter
+        ]
     cleared_stale_generated_tasks = _clear_active_task_notifications_for_targets(
         db,
         garden_id=garden_id,
@@ -991,10 +1010,11 @@ def create_task_due_notifications_in_transaction(
         WHERE garden_id = %s
           AND {actionable_status_clause}
           AND COALESCE(snoozed_until, due_on) <= %s
+          {target_filter_clause}
         ORDER BY COALESCE(snoozed_until, due_on) ASC, updated_at_ms DESC, id ASC
         LIMIT %s
         """,
-        (garden_id, today_iso, today_iso, task_scan_limit),
+        [garden_id, today_iso, today_iso, *target_filter_params, task_scan_limit],
     ).fetchall()
     if stale_generated_task_ids:
         tasks = [row for row in tasks if str(row["public_id"]) not in stale_generated_task_ids]
@@ -1008,10 +1028,18 @@ def create_task_due_notifications_in_transaction(
           AND {actionable_status_clause}
           AND COALESCE(snoozed_until, due_on) > %s
           AND COALESCE(snoozed_until, due_on) <= %s
+          {target_filter_clause}
         ORDER BY COALESCE(snoozed_until, due_on) ASC, updated_at_ms DESC, id ASC
         LIMIT %s
         """,
-        (garden_id, today_iso, today_iso, upcoming_end_iso, task_scan_limit),
+        [
+            garden_id,
+            today_iso,
+            today_iso,
+            upcoming_end_iso,
+            *target_filter_params,
+            task_scan_limit,
+        ],
     ).fetchall()
     if stale_generated_task_ids:
         upcoming_tasks = [
@@ -1608,7 +1636,11 @@ def refresh_task_notifications_for_task(
         reason="superseded",
         now_ms=now_value,
     )
-    result = create_task_due_notifications_in_transaction(db, garden_id)
+    result = create_task_due_notifications_in_transaction(
+        db,
+        garden_id,
+        task_public_ids={task_public_id},
+    )
     return {
         "cleared": cleared,
         "created": int(result.get("created", 0)),
