@@ -16,3 +16,9 @@ for (const taskType of ["observe_bloom", "prune", "fertilize"]) {
 if (!source.includes("window_end_on")) {
   throw new Error("Snooze policy must account for window_end_on");
 }
+if (!source.includes("formatLocalDate")) {
+  throw new Error("Snooze policy must format local calendar dates");
+}
+if (source.includes("toISOString()")) {
+  throw new Error("Snooze policy must not derive dates with toISOString()");
+}

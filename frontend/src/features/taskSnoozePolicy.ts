@@ -17,7 +17,14 @@ const ONE_WEEK_TASK_TYPES = new Set<TaskType>([
 function addDays(base: Date, days: number): string {
   const next = new Date(base);
   next.setDate(next.getDate() + days);
-  return next.toISOString().slice(0, 10);
+  return formatLocalDate(next);
+}
+
+function formatLocalDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export function taskSnoozePolicy(
