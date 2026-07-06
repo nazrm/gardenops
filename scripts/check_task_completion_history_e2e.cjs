@@ -9,6 +9,8 @@ const BASE_URL = process.env.BASE_URL || "http://127.0.0.1:5173";
 const ROOT_DIR = path.resolve(__dirname, "..");
 const CHROMIUM_EXECUTABLE = process.env.CHROMIUM_EXECUTABLE
   || (fs.existsSync("/usr/bin/chromium-browser") ? "/usr/bin/chromium-browser" : "/usr/bin/chromium");
+const FROZEN_NOW_ISO = process.env.GARDENOPS_TASK_HISTORY_E2E_FROZEN_NOW_ISO
+  || "2026-07-05T12:00:00.000Z";
 
 function formatLocalDate(date) {
   const year = date.getFullYear();
@@ -23,7 +25,7 @@ function addDays(baseDate, days) {
   return formatLocalDate(next);
 }
 
-const EXPECTED_SNOOZE_DATE = addDays(new Date(), 7);
+const EXPECTED_SNOOZE_DATE = addDays(new Date(FROZEN_NOW_ISO), 7);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -122,7 +124,10 @@ async function isFocused(locator) {
 }
 
 async function setupPage(browser) {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
+  const page = await browser.newPage({
+    locale: "en-GB",
+    viewport: { width: 1440, height: 980 },
+  });
   const browserErrors = [];
   const resourceLoadFailures = [];
   page.on("console", (msg) => {
@@ -142,6 +147,26 @@ async function setupPage(browser) {
       resourceLoadFailures.push(`Resource ${response.status()} ${url.pathname}`);
     }
   });
+  await page.addInitScript((frozenNowIso) => {
+    const RealDate = Date;
+    const frozenMs = new RealDate(frozenNowIso).getTime();
+    class FrozenDate extends RealDate {
+      constructor(...args) {
+        if (args.length === 0) {
+          super(frozenMs);
+        } else {
+          super(...args);
+        }
+      }
+
+      static now() {
+        return frozenMs;
+      }
+    }
+    FrozenDate.parse = RealDate.parse;
+    FrozenDate.UTC = RealDate.UTC;
+    globalThis.Date = FrozenDate;
+  }, FROZEN_NOW_ISO);
   await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
   return { page, browserErrors, resourceLoadFailures };
 }
