@@ -511,6 +511,10 @@ function completeTask(task: GardenTask): void {
     void handleTaskAction(task.id, "complete");
     return;
   }
+  if (!ctx.isOnline()) {
+    ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
+    return;
+  }
   openTaskCompletionDialog(
     task,
     buildPlantNameMap(ctx.getPlants()),
