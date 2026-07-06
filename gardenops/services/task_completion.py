@@ -37,6 +37,13 @@ def parse_task_metadata(task_row: dict[str, Any]) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def clear_completion_capture_metadata(task_row: dict[str, Any]) -> dict[str, Any]:
+    metadata = parse_task_metadata(task_row)
+    metadata.pop("completion_journal_entries", None)
+    metadata.pop("completion_journal_entry_id", None)
+    return metadata
+
+
 def append_bloom_not_yet_event(
     *,
     task_row: dict[str, Any],

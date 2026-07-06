@@ -20,7 +20,7 @@ import { confirmDialog, createModal } from "../components/dialogCore";
 import { selectPlot } from "../components/plotInteractions";
 import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
 import {
-  needsCompletionSelection,
+  needsCompletionDialog,
   openTaskCompletionDialog,
 } from "../features/taskCompletionFlow";
 
@@ -507,7 +507,7 @@ async function handleBatchTaskAction(
 }
 
 function completeTask(task: GardenTask): void {
-  if (!needsCompletionSelection(task)) {
+  if (!needsCompletionDialog(task)) {
     void handleTaskAction(task.id, "complete");
     return;
   }
@@ -534,9 +534,9 @@ async function handleBatchComplete(): Promise<void> {
     ctx.showToast(t("tasks.batch_none_selected"), "error");
     return;
   }
-  const directTasks = selectedTasks.filter((task) => !needsCompletionSelection(task));
-  const groupedTasks = selectedTasks.filter(needsCompletionSelection);
-  if (groupedTasks.length > 0) {
+  const directTasks = selectedTasks.filter((task) => !needsCompletionDialog(task));
+  const detailTasks = selectedTasks.filter(needsCompletionDialog);
+  if (detailTasks.length > 0) {
     ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
   }
   if (directTasks.length === 0) return;
@@ -545,7 +545,7 @@ async function handleBatchComplete(): Promise<void> {
     undefined,
     directTasks.map((task) => task.id),
   );
-  for (const task of groupedTasks) {
+  for (const task of detailTasks) {
     selectedTaskIds.add(task.id);
   }
   renderTasksView();

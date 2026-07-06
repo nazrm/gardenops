@@ -15,9 +15,13 @@ export function needsCompletionSelection(task: CompletionTask): boolean {
   return CAPTURE_TASK_TYPES.has(task.task_type) && (task.plant_ids?.length ?? 0) > 1;
 }
 
+export function needsCompletionDialog(task: CompletionTask): boolean {
+  return task.task_type === "observe_bloom" || needsCompletionSelection(task);
+}
+
 export function defaultSelectedPlantIds(task: CompletionTask): Set<string> {
   const ids = task.plant_ids ?? [];
-  return new Set(ids.slice(0, 5));
+  return new Set(ids.length <= 5 ? ids : []);
 }
 
 export function openTaskCompletionDialog(
@@ -34,6 +38,7 @@ export function openTaskCompletionDialog(
       <div class="button-row">
         <button type="button" class="task-completion-select-all"></button>
         <button type="button" class="task-completion-clear"></button>
+        <button type="button" class="task-completion-not-seen"></button>
         <button type="button" class="confirm-yes"></button>
         <button type="button" class="confirm-no"></button>
       </div>
@@ -87,6 +92,26 @@ export function openTaskCompletionDialog(
 
   dialog.querySelector<HTMLButtonElement>(".confirm-no")!.textContent = String(t("common.cancel"));
   dialog.querySelector<HTMLButtonElement>(".confirm-no")!.addEventListener("click", close);
+  const notSeen = dialog.querySelector<HTMLButtonElement>(".task-completion-not-seen")!;
+  if (task.task_type === "observe_bloom") {
+    notSeen.textContent = String(t("tasks.action_not_seen_blooming"));
+    notSeen.addEventListener("click", () => {
+      const completed_plant_ids = [...selected];
+      if (completed_plant_ids.length === 0) {
+        syncState();
+        checkboxes[0]?.focus();
+        return;
+      }
+      onConfirm({
+        action: "complete",
+        completed_plant_ids,
+        completion_outcome: "not_seen_blooming_this_season",
+      });
+      close();
+    });
+  } else {
+    notSeen.remove();
+  }
   confirm.textContent = String(t("tasks.action_complete"));
   confirm.addEventListener("click", () => {
     const completed_plant_ids = [...selected];

@@ -46,7 +46,7 @@ import { dismissPopover, showPopover } from "./popover";
 import { renderSearchResults } from "./sidebar";
 import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
 import {
-  needsCompletionSelection,
+  needsCompletionDialog,
   openTaskCompletionDialog,
 } from "../features/taskCompletionFlow";
 
@@ -489,7 +489,7 @@ async function completeTaskInline(
   cbs: PlotCallbacks,
   body: TaskActionRequest = { action: "complete" },
 ): Promise<void> {
-  if (needsCompletionSelection(task) && !body.completed_plant_ids?.length) {
+  if (needsCompletionDialog(task) && !body.completed_plant_ids?.length) {
     if (!isOnline()) {
       showToast(t("tasks.complete_grouped_one_by_one"), "error");
       return;
@@ -520,22 +520,29 @@ async function snoozeTaskInline(
   card: HTMLElement,
 ): Promise<void> {
   const policy = taskSnoozePolicy(task);
+  const snoozeUntil = policy.immediate
+    ? policy.defaultDate
+    : window.prompt(
+      policy.warning ? `${policy.warning}\n\n${t("tasks.snooze_prompt")}` : t("tasks.snooze_prompt"),
+      policy.defaultDate,
+    );
+  if (!snoozeUntil) return;
   try {
     if (!isOnline()) {
       await enqueuePlotOfflineTaskAction(task.id, {
         action: "snooze",
-        snooze_until: policy.defaultDate,
+        snooze_until: snoozeUntil,
       });
       showToast(t("offline.draft_saved"), "success");
       return;
     }
     await taskActionApi(task.id, {
       action: "snooze",
-      snooze_until: policy.defaultDate,
+      snooze_until: snoozeUntil,
     });
     card.classList.add("task-fading");
     setTimeout(() => card.remove(), 300);
-    showToast(t("plot_drawer.task_snoozed_toast", { date: policy.defaultDate }) as string);
+    showToast(t("plot_drawer.task_snoozed_toast", { date: snoozeUntil }) as string);
   } catch (err) {
     showToast(getApiErrorMessage(err), "error");
   }

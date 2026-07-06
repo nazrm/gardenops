@@ -632,6 +632,35 @@ class TestTasks(BaseApiTest):
         self.assertEqual(reopened["window_start_on"], "2026-05-11")
         self.assertEqual(reopened["window_end_on"], "2026-06-15")
 
+    def test_reopened_completion_capture_task_records_new_history(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "prune",
+                "title": "Prune rose twice",
+                "due_on": "2026-05-01",
+                "plant_ids": ["PLT-002"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        first = self.client.post(f"/api/tasks/{task_id}/action", json={"action": "complete"})
+        self.assertEqual(first.status_code, 200, first.text)
+        first_journal = self.client.get("/api/journal?event_type=pruned&plant_id=PLT-002").json()
+        self.assertEqual(first_journal["total"], 1)
+
+        reschedule = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            json={"action": "reschedule", "reschedule_to": "2026-06-01"},
+        )
+        self.assertEqual(reschedule.status_code, 200, reschedule.text)
+
+        second = self.client.post(f"/api/tasks/{task_id}/action", json={"action": "complete"})
+        self.assertEqual(second.status_code, 200, second.text)
+        second_journal = self.client.get("/api/journal?event_type=pruned&plant_id=PLT-002").json()
+        self.assertEqual(second_journal["total"], 2)
+
     def test_completing_skipped_task_is_rejected(self) -> None:
         response = self.client.post(
             "/api/tasks",

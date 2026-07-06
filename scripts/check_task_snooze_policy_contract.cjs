@@ -22,3 +22,21 @@ if (!source.includes("formatLocalDate")) {
 if (source.includes("toISOString()")) {
   throw new Error("Snooze policy must not derive dates with toISOString()");
 }
+
+const completionHelper = path.join(root, "frontend/src/features/taskCompletionFlow.ts");
+if (!fs.existsSync(completionHelper)) {
+  throw new Error("Missing taskCompletionFlow.ts");
+}
+const completionSource = fs.readFileSync(completionHelper, "utf8");
+if (!completionSource.includes("needsCompletionDialog")) {
+  throw new Error("Completion flow must expose a dialog decision helper");
+}
+if (!completionSource.includes('task.task_type === "observe_bloom"')) {
+  throw new Error("Observe-bloom completion must open the completion dialog");
+}
+if (!completionSource.includes("not_seen_blooming_this_season")) {
+  throw new Error("Completion flow must expose the not-seen bloom outcome");
+}
+if (completionSource.includes("ids.slice(0, 5)")) {
+  throw new Error("Large grouped completion must not silently preselect only five plants");
+}

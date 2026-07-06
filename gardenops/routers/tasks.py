@@ -48,6 +48,7 @@ from gardenops.services.notification_service import (
 from gardenops.services.task_completion import (
     CompletionOutcome,
     append_bloom_not_yet_event,
+    clear_completion_capture_metadata,
     completion_capture_already_recorded,
     is_completion_capture_task,
     plant_names_for_ids,
@@ -85,6 +86,22 @@ _ALLOWED_TASK_ACTIONS_BY_STATUS: dict[str, set[str]] = {
     "completed": {"complete", "skip", "snooze", "reschedule"},
     "skipped": {"snooze", "reschedule"},
 }
+
+
+def _reopened_completion_metadata_json(
+    task_row: dict,
+    current_status: str,
+) -> str | None:
+    if current_status != "completed":
+        return None
+    task_type = str(task_row.get("task_type") or "")
+    if not is_completion_capture_task(task_type):
+        return None
+    return json.dumps(
+        clear_completion_capture_metadata(task_row),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 class CreateTaskBody(StrictBaseModel):
@@ -688,27 +705,48 @@ def _apply_task_action(
                 ),
             )
     elif body.action == "skip":
-        db.execute(
-            """
-            UPDATE garden_tasks
-            SET status = 'skipped',
-                snoozed_until = NULL,
-                completed_by_user_id = NULL,
-                completed_at_ms = NULL,
-                updated_at_ms = %s
-            WHERE id = %s
-            """,
-            (now_ms, task_id),
-        )
+        reopen_metadata_json = _reopened_completion_metadata_json(task_row, current_status)
+        if reopen_metadata_json is not None:
+            db.execute(
+                """
+                UPDATE garden_tasks
+                SET status = 'skipped',
+                    snoozed_until = NULL,
+                    completed_by_user_id = NULL,
+                    completed_at_ms = NULL,
+                    metadata_json = %s,
+                    updated_at_ms = %s
+                WHERE id = %s
+                """,
+                (reopen_metadata_json, now_ms, task_id),
+            )
+        else:
+            db.execute(
+                """
+                UPDATE garden_tasks
+                SET status = 'skipped',
+                    snoozed_until = NULL,
+                    completed_by_user_id = NULL,
+                    completed_at_ms = NULL,
+                    updated_at_ms = %s
+                WHERE id = %s
+                """,
+                (now_ms, task_id),
+            )
     elif body.action == "snooze":
         if not body.snooze_until:
             raise HTTPException(
                 status_code=422, detail="snooze_until is required for snooze action"
         )
         _validate_date(body.snooze_until)
+        reopen_metadata_json = _reopened_completion_metadata_json(task_row, current_status)
         if str(task_row.get("task_type") or "") == "observe_bloom":
+            metadata_task_row = task_row
+            if reopen_metadata_json is not None:
+                metadata_task_row = dict(task_row)
+                metadata_task_row["metadata_json"] = reopen_metadata_json
             next_metadata = append_bloom_not_yet_event(
-                task_row=task_row,
+                task_row=metadata_task_row,
                 snooze_until=body.snooze_until,
                 actor_user_id=context.user_id,
                 now_ms=now_ms,
@@ -730,6 +768,20 @@ def _apply_task_action(
                     now_ms,
                     task_id,
                 ),
+            )
+        elif reopen_metadata_json is not None:
+            db.execute(
+                """
+                UPDATE garden_tasks
+                SET status = 'snoozed',
+                    snoozed_until = %s,
+                    completed_by_user_id = NULL,
+                    completed_at_ms = NULL,
+                    metadata_json = %s,
+                    updated_at_ms = %s
+                WHERE id = %s
+                """,
+                (body.snooze_until, reopen_metadata_json, now_ms, task_id),
             )
         else:
             db.execute(
@@ -755,22 +807,50 @@ def _apply_task_action(
             task_row,
             body.reschedule_to,
         )
-        db.execute(
-            """
-            UPDATE garden_tasks
-            SET due_on = %s,
-                status = 'pending',
-                snoozed_until = NULL,
-                completed_by_user_id = NULL,
-                completed_at_ms = NULL,
-                window_start_on = %s,
-                window_end_on = %s,
-                window_kind = %s,
-                updated_at_ms = %s
-            WHERE id = %s
-            """,
-            (body.reschedule_to, window_start_on, window_end_on, window_kind, now_ms, task_id),
-        )
+        reopen_metadata_json = _reopened_completion_metadata_json(task_row, current_status)
+        if reopen_metadata_json is not None:
+            db.execute(
+                """
+                UPDATE garden_tasks
+                SET due_on = %s,
+                    status = 'pending',
+                    snoozed_until = NULL,
+                    completed_by_user_id = NULL,
+                    completed_at_ms = NULL,
+                    metadata_json = %s,
+                    window_start_on = %s,
+                    window_end_on = %s,
+                    window_kind = %s,
+                    updated_at_ms = %s
+                WHERE id = %s
+                """,
+                (
+                    body.reschedule_to,
+                    reopen_metadata_json,
+                    window_start_on,
+                    window_end_on,
+                    window_kind,
+                    now_ms,
+                    task_id,
+                ),
+            )
+        else:
+            db.execute(
+                """
+                UPDATE garden_tasks
+                SET due_on = %s,
+                    status = 'pending',
+                    snoozed_until = NULL,
+                    completed_by_user_id = NULL,
+                    completed_at_ms = NULL,
+                    window_start_on = %s,
+                    window_end_on = %s,
+                    window_kind = %s,
+                    updated_at_ms = %s
+                WHERE id = %s
+                """,
+                (body.reschedule_to, window_start_on, window_end_on, window_kind, now_ms, task_id),
+            )
     else:
         raise HTTPException(status_code=422, detail=f"Unknown action: {body.action}")
 

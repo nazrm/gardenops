@@ -17,7 +17,7 @@ import {
 } from "../services/offlineQueue";
 import { taskSnoozePolicy } from "./taskSnoozePolicy";
 import {
-  needsCompletionSelection,
+  needsCompletionDialog,
   openTaskCompletionDialog,
 } from "./taskCompletionFlow";
 
@@ -186,7 +186,7 @@ async function showTaskQuickComplete(): Promise<void> {
       })),
       async (taskId) => {
         const task = pendingById.get(taskId);
-        if (task && needsCompletionSelection(task)) {
+        if (task && needsCompletionDialog(task)) {
           if (!isOnline()) {
             ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
             return;
@@ -289,7 +289,15 @@ async function showTaskQuickSnooze(): Promise<void> {
         const task = pendingById.get(taskId);
         if (!task) return;
         const policy = taskSnoozePolicy(task);
-        const snoozeDate = policy.defaultDate;
+        const snoozeDate = policy.immediate
+          ? policy.defaultDate
+          : window.prompt(
+            policy.warning
+              ? `${policy.warning}\n\n${t("tasks.snooze_prompt")}`
+              : t("tasks.snooze_prompt"),
+            policy.defaultDate,
+          );
+        if (!snoozeDate) return;
         if (!isOnline()) {
           await enqueueDraft("task_snooze", {
             task_id: taskId,

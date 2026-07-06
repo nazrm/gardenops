@@ -43,7 +43,7 @@ import {
 } from "../services/api";
 import { taskSnoozePolicy } from "../features/taskSnoozePolicy";
 import {
-  needsCompletionSelection,
+  needsCompletionDialog,
   openTaskCompletionDialog,
 } from "../features/taskCompletionFlow";
 
@@ -1136,7 +1136,7 @@ async function enqueueOfflineCalendarTaskAction(
 
 function completeCalendarTask(event: CalendarEvent): void {
   const task = calendarTaskForCompletion(event);
-  if (!needsCompletionSelection(task)) {
+  if (!needsCompletionDialog(task)) {
     void runTaskAction(event, { action: "complete" });
     return;
   }
