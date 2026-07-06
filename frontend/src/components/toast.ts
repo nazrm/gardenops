@@ -43,9 +43,35 @@ export function showToast(
 
   requestAnimationFrame(() => toast.classList.add("toast-visible"));
 
-  const timeout = window.setTimeout(() => removeToast(toast), options.durationMs ?? TOAST_DURATION);
-  toast.addEventListener("mouseenter", () => window.clearTimeout(timeout), { once: true });
-  toast.addEventListener("focusin", () => window.clearTimeout(timeout), { once: true });
+  let remainingMs = options.durationMs ?? TOAST_DURATION;
+  let startedAt = Date.now();
+  let timeout = window.setTimeout(() => removeToast(toast), remainingMs);
+  let paused = false;
+
+  const schedule = (): void => {
+    startedAt = Date.now();
+    timeout = window.setTimeout(() => removeToast(toast), remainingMs);
+  };
+  const pause = (): void => {
+    if (paused || !toast.isConnected) return;
+    paused = true;
+    window.clearTimeout(timeout);
+    remainingMs = Math.max(0, remainingMs - (Date.now() - startedAt));
+  };
+  const resume = (): void => {
+    if (!paused || !toast.isConnected) return;
+    paused = false;
+    schedule();
+  };
+
+  toast.addEventListener("mouseenter", pause);
+  toast.addEventListener("mouseleave", resume);
+  toast.addEventListener("focusin", pause);
+  toast.addEventListener("focusout", () => {
+    if (!toast.contains(document.activeElement)) {
+      resume();
+    }
+  });
 }
 
 function getOrCreateContainer(): HTMLElement {
