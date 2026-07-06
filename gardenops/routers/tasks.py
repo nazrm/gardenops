@@ -66,6 +66,7 @@ TaskType = Literal[
 
 TaskStatus = Literal["pending", "completed", "skipped", "snoozed", "expired"]
 TaskSeverity = Literal["low", "normal", "high"]
+CompletionOutcome = Literal["done", "not_seen_blooming_this_season"]
 
 _ALLOWED_TASK_ACTIONS_BY_STATUS: dict[str, set[str]] = {
     "pending": {"complete", "skip", "snooze", "reschedule"},
@@ -104,6 +105,8 @@ class ActionTaskBody(StrictBaseModel):
     snooze_until: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     reschedule_to: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     notes: str | None = Field(default=None, max_length=2000)
+    completed_plant_ids: list[str] | None = None
+    completion_outcome: CompletionOutcome = "done"
 
 
 class BatchActionTaskBody(ActionTaskBody):
@@ -645,6 +648,26 @@ def _apply_task_action(
     if current_status == "completed" and body.action == "complete":
         return
     if body.action == "complete":
+        task_type = str(task_row.get("task_type") or "")
+        linked_plant_ids = _task_linked_plant_ids(db, task_id)
+        if body.completed_plant_ids and task_type not in {"observe_bloom", "prune", "fertilize"}:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "completed_plant_ids is only supported for task types "
+                    "with completion capture"
+                ),
+            )
+        if task_type in {"observe_bloom", "prune", "fertilize"} and len(linked_plant_ids) > 1:
+            selected = body.completed_plant_ids or []
+            if not selected:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "completed_plant_ids is required for grouped "
+                        "horticultural completion"
+                    ),
+                )
         db.execute(
             """
             UPDATE garden_tasks

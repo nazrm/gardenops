@@ -414,6 +414,45 @@ class TestTasks(BaseApiTest):
         self.assertNotIn("Expired generated water", active_titles)
         self.assertIn("Pending manual water", active_titles)
 
+    def test_grouped_horticultural_completion_requires_selected_plants(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "fertilize",
+                "title": "Fertilize two plants",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-TEST", "PLT-002"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        response = self.client.post(f"/api/tasks/{task_id}/action", json={"action": "complete"})
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("completed_plant_ids", response.text)
+
+    def test_non_horticultural_completion_rejects_selected_plants(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "inspect_issue",
+                "title": "Inspect aphids",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-TEST"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        response = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            json={"action": "complete", "completed_plant_ids": ["PLT-TEST"]},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("completion capture", response.text)
+
     def test_task_actions(self) -> None:
         """Complete, snooze, skip, and reschedule actions work."""
         r = self.client.post(
