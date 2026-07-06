@@ -453,6 +453,30 @@ class TestTasks(BaseApiTest):
         self.assertEqual(response.status_code, 422)
         self.assertIn("completion capture", response.text)
 
+    def test_completed_non_horticultural_task_rejects_selected_plants(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "inspect_issue",
+                "title": "Inspect aphids",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-TEST"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        response = self.client.post(f"/api/tasks/{task_id}/action", json={"action": "complete"})
+        self.assertEqual(response.status_code, 200, response.text)
+
+        response = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            json={"action": "complete", "completed_plant_ids": ["PLT-TEST"]},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("completion capture", response.text)
+
     def test_task_actions(self) -> None:
         """Complete, snooze, skip, and reschedule actions work."""
         r = self.client.post(
@@ -1006,6 +1030,31 @@ class TestTasks(BaseApiTest):
         task = self.client.get(f"/api/tasks/{created_ids[2]}").json()
         self.assertEqual(task["status"], "pending")
         self.assertEqual(task["due_on"], "2026-06-10")
+
+    def test_batch_non_horticultural_completion_rejects_selected_plants(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "inspect_issue",
+                "title": "Inspect aphids",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-TEST"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        response = self.client.post(
+            "/api/tasks/batch-action",
+            json={
+                "task_ids": [task_id],
+                "action": "complete",
+                "completed_plant_ids": ["PLT-TEST"],
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("completion capture", response.text)
 
     def test_task_generate_idempotent(self) -> None:
         """Generate creates tasks, second run skips duplicates."""

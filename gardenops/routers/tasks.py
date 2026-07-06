@@ -645,8 +645,6 @@ def _apply_task_action(
             status_code=409,
             detail=f"Action {body.action} is not valid for {current_status} tasks",
         )
-    if current_status == "completed" and body.action == "complete":
-        return
     if body.action == "complete":
         task_type = str(task_row.get("task_type") or "")
         linked_plant_ids = _task_linked_plant_ids(db, task_id)
@@ -668,6 +666,8 @@ def _apply_task_action(
                         "horticultural completion"
                     ),
                 )
+        if current_status == "completed":
+            return
         db.execute(
             """
             UPDATE garden_tasks
@@ -1104,6 +1104,8 @@ def batch_task_action(
         snooze_until=body.snooze_until,
         reschedule_to=body.reschedule_to,
         notes=body.notes,
+        completed_plant_ids=body.completed_plant_ids,
+        completion_outcome=body.completion_outcome,
     )
     for task_id in task_ids:
         task_row = task_rows.get(task_id)
