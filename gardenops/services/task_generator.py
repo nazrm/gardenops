@@ -69,6 +69,23 @@ def _bloom_months(raw: str) -> set[int]:
     return set(months)
 
 
+def _local_bloom_months(db: DbConn, garden_id: int) -> dict[str, set[int]]:
+    rows = db.execute(
+        """
+        SELECT jep.plt_id, EXTRACT(MONTH FROM je.occurred_on::date)::int AS month
+        FROM garden_journal_entries je
+        JOIN garden_journal_entry_plants jep ON jep.entry_id = je.id
+        WHERE je.garden_id = %s
+          AND je.event_type = 'bloomed'
+        """,
+        (garden_id,),
+    ).fetchall()
+    months_by_plant: dict[str, set[int]] = {}
+    for row in rows:
+        months_by_plant.setdefault(str(row["plt_id"]), set()).add(int(row["month"]))
+    return months_by_plant
+
+
 _HARVEST_OFFSETS: dict[str, int] = {
     "baerbusker": 2,  # berry bushes: ~2 months after bloom
     "frø": 3,  # planted from seed: ~3 months after sow
@@ -896,6 +913,7 @@ def generate_tasks(
     ).fetchall()
 
     plant_contexts = [_plant_context_from_row(plant) for plant in plants]
+    local_bloom_months = _local_bloom_months(db, garden_id)
     _delete_pending_rule_tasks(
         db,
         garden_id=garden_id,
@@ -918,7 +936,9 @@ def generate_tasks(
         care_maintenance = plant_ctx["care_maintenance"].lower()
 
         # Rule 1: Bloom observation
-        if target_month in _bloom_months(bloom_raw):
+        local_months = local_bloom_months.get(plt_id)
+        bloom_months = local_months if local_months else _bloom_months(bloom_raw)
+        if target_month in bloom_months:
             rule = f"bloom_observe:{plt_id}:{target_year}-{target_month:02d}"
             if _rule_exists(db, garden_id, rule):
                 skipped += 1

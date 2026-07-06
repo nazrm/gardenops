@@ -37,6 +37,35 @@ def parse_task_metadata(task_row: dict[str, Any]) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def append_bloom_not_yet_event(
+    *,
+    task_row: dict[str, Any],
+    snooze_until: str,
+    actor_user_id: int | None,
+    now_ms: int,
+) -> dict[str, Any]:
+    metadata = parse_task_metadata(task_row)
+    bloom_raw = metadata.setdefault("bloom_observation", {})
+    if not isinstance(bloom_raw, dict):
+        bloom_raw = {}
+        metadata["bloom_observation"] = bloom_raw
+    events_raw = bloom_raw.setdefault("not_yet_events", [])
+    if not isinstance(events_raw, list):
+        events_raw = []
+        bloom_raw["not_yet_events"] = events_raw
+    previous_action_date = str(task_row.get("snoozed_until") or task_row.get("due_on") or "")
+    events_raw.append(
+        {
+            "action_at_ms": now_ms,
+            "previous_action_date": previous_action_date,
+            "new_snooze_date": snooze_until,
+            "actor_user_id": actor_user_id,
+            "source": "task_snooze_policy",
+        }
+    )
+    return metadata
+
+
 def completion_capture_key(
     *,
     task_public_id: str,

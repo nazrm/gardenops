@@ -47,6 +47,7 @@ from gardenops.services.notification_service import (
 )
 from gardenops.services.task_completion import (
     CompletionOutcome,
+    append_bloom_not_yet_event,
     completion_capture_already_recorded,
     is_completion_capture_task,
     plant_names_for_ids,
@@ -703,20 +704,46 @@ def _apply_task_action(
         if not body.snooze_until:
             raise HTTPException(
                 status_code=422, detail="snooze_until is required for snooze action"
-            )
-        _validate_date(body.snooze_until)
-        db.execute(
-            """
-            UPDATE garden_tasks
-            SET status = 'snoozed',
-                snoozed_until = %s,
-                completed_by_user_id = NULL,
-                completed_at_ms = NULL,
-                updated_at_ms = %s
-            WHERE id = %s
-            """,
-            (body.snooze_until, now_ms, task_id),
         )
+        _validate_date(body.snooze_until)
+        if str(task_row.get("task_type") or "") == "observe_bloom":
+            next_metadata = append_bloom_not_yet_event(
+                task_row=task_row,
+                snooze_until=body.snooze_until,
+                actor_user_id=context.user_id,
+                now_ms=now_ms,
+            )
+            db.execute(
+                """
+                UPDATE garden_tasks
+                SET status = 'snoozed',
+                    snoozed_until = %s,
+                    completed_by_user_id = NULL,
+                    completed_at_ms = NULL,
+                    metadata_json = %s,
+                    updated_at_ms = %s
+                WHERE id = %s
+                """,
+                (
+                    body.snooze_until,
+                    json.dumps(next_metadata, sort_keys=True, separators=(",", ":")),
+                    now_ms,
+                    task_id,
+                ),
+            )
+        else:
+            db.execute(
+                """
+                UPDATE garden_tasks
+                SET status = 'snoozed',
+                    snoozed_until = %s,
+                    completed_by_user_id = NULL,
+                    completed_at_ms = NULL,
+                    updated_at_ms = %s
+                WHERE id = %s
+                """,
+                (body.snooze_until, now_ms, task_id),
+            )
     elif body.action == "reschedule":
         if not body.reschedule_to:
             raise HTTPException(
