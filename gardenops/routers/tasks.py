@@ -24,9 +24,6 @@ from gardenops.router_helpers import (
     dedupe_ids as _dedupe_ids,
 )
 from gardenops.router_helpers import (
-    generate_public_id as _generate_public_id,
-)
-from gardenops.router_helpers import (
     is_local_admin_fallback as _is_local_admin_fallback,
 )
 from gardenops.router_helpers import (
@@ -45,7 +42,11 @@ from gardenops.services.generated_task_lifecycle import (
     stale_generated_watering_sql,
 )
 from gardenops.services.notification_service import clear_task_notifications
-from gardenops.services.observation_updates import mark_seen_growing_from_observation
+from gardenops.services.task_completion import (
+    CompletionOutcome,
+    record_completion_journal_entry,
+    validate_completed_plant_ids,
+)
 from gardenops.services.task_windows import derive_recommended_window_strings
 
 router = APIRouter()
@@ -66,7 +67,6 @@ TaskType = Literal[
 
 TaskStatus = Literal["pending", "completed", "skipped", "snoozed", "expired"]
 TaskSeverity = Literal["low", "normal", "high"]
-CompletionOutcome = Literal["done", "not_seen_blooming_this_season"]
 
 _ALLOWED_TASK_ACTIONS_BY_STATUS: dict[str, set[str]] = {
     "pending": {"complete", "skip", "snooze", "reschedule"},
@@ -494,84 +494,6 @@ def _task_linked_plot_ids(
     return [str(row["plot_id"]) for row in rows]
 
 
-def _mark_seen_growing_for_completed_bloom_task(
-    db: DbConn,
-    context: AuthContext,
-    task_row: dict,
-) -> None:
-    if str(task_row.get("task_type") or "") != "observe_bloom":
-        return
-
-    task_id = int(task_row["id"])
-    garden_id = int(task_row["garden_id"])
-    plant_ids = _task_linked_plant_ids(db, task_id)
-    if not plant_ids:
-        return
-
-    _require_observation_plant_access(db, context, plant_ids)
-    task_plot_ids = _task_linked_plot_ids(db, task_id)
-    mark_seen_growing_from_observation(
-        db,
-        garden_id=garden_id,
-        plant_ids=plant_ids,
-        seen_date=date.today().isoformat(),
-        plot_ids=task_plot_ids,
-    )
-
-
-def _record_completed_bloom_observation(
-    db: DbConn,
-    context: AuthContext,
-    task_row: dict,
-    now_ms: int,
-) -> None:
-    if str(task_row.get("task_type") or "") != "observe_bloom":
-        return
-    task_metadata = _parse_task_metadata(task_row)
-    if task_metadata.get("completion_journal_entry_id"):
-        return
-
-    task_id = int(task_row["id"])
-    plant_ids = _task_linked_plant_ids(db, task_id)
-    if not plant_ids:
-        return
-
-    _require_observation_plant_access(db, context, plant_ids)
-    metadata = {
-        "source": "task_completion",
-        "source_task_id": str(task_row["public_id"]),
-        "source_task_type": "observe_bloom",
-    }
-    entry_row = db.execute(
-        """
-        INSERT INTO garden_journal_entries
-            (public_id, garden_id, event_type, occurred_on, title, notes,
-             metadata_json, actor_user_id, created_at_ms, updated_at_ms)
-        VALUES (%s, %s, 'bloomed', %s, '', '', %s, %s, %s, %s)
-        RETURNING id, public_id
-        """,
-        (
-            _generate_public_id("jrn"),
-            int(task_row["garden_id"]),
-            date.today().isoformat(),
-            json.dumps(metadata, sort_keys=True, separators=(",", ":")),
-            context.user_id,
-            now_ms,
-            now_ms,
-        ),
-    ).fetchone()
-    assert entry_row is not None
-    entry_id = int(entry_row["id"])
-    entry_public_id = str(entry_row["public_id"])
-    executemany(
-        db,
-        "INSERT INTO garden_journal_entry_plants (entry_id, plt_id) VALUES (%s, %s)",
-        [(entry_id, plant_id) for plant_id in plant_ids],
-    )
-    task_metadata["completion_journal_entry_id"] = entry_public_id
-    _update_task_metadata(db, task_id, task_metadata, updated_at_ms=now_ms)
-
-
 def _dedupe_task_ids(task_ids: list[str]) -> list[str]:
     seen: set[str] = set()
     normalized: list[str] = []
@@ -646,26 +568,15 @@ def _apply_task_action(
             detail=f"Action {body.action} is not valid for {current_status} tasks",
         )
     if body.action == "complete":
-        task_type = str(task_row.get("task_type") or "")
         linked_plant_ids = _task_linked_plant_ids(db, task_id)
-        if body.completed_plant_ids and task_type not in {"observe_bloom", "prune", "fertilize"}:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "completed_plant_ids is only supported for task types "
-                    "with completion capture"
-                ),
-            )
-        if task_type in {"observe_bloom", "prune", "fertilize"} and len(linked_plant_ids) > 1:
-            selected = body.completed_plant_ids or []
-            if not selected:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        "completed_plant_ids is required for grouped "
-                        "horticultural completion"
-                    ),
-                )
+        selected_plant_ids = validate_completed_plant_ids(
+            task_type=str(task_row.get("task_type") or ""),
+            linked_plant_ids=linked_plant_ids,
+            requested_plant_ids=body.completed_plant_ids,
+        )
+        if str(task_row.get("task_type") or "") == "observe_bloom":
+            _require_observation_plant_access(db, context, selected_plant_ids)
+        linked_plot_ids = _task_linked_plot_ids(db, task_id)
         if current_status == "completed":
             return
         db.execute(
@@ -680,8 +591,21 @@ def _apply_task_action(
             """,
             (context.user_id, now_ms, now_ms, task_id),
         )
-        _record_completed_bloom_observation(db, context, task_row, now_ms)
-        _mark_seen_growing_for_completed_bloom_task(db, context, task_row)
+        journal_id, next_metadata = record_completion_journal_entry(
+            db,
+            context=context,
+            task_row=task_row,
+            selected_plant_ids=selected_plant_ids,
+            selected_plot_ids=linked_plot_ids,
+            outcome=body.completion_outcome,
+            notes=body.notes,
+            now_ms=now_ms,
+        )
+        if journal_id is not None:
+            db.execute(
+                "UPDATE garden_tasks SET metadata_json = %s WHERE id = %s",
+                (json.dumps(next_metadata, sort_keys=True, separators=(",", ":")), task_id),
+            )
     elif body.action == "skip":
         db.execute(
             """

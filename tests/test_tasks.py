@@ -651,6 +651,55 @@ class TestTasks(BaseApiTest):
         repeated = self.client.post(f"/api/tasks/{task_id}/action", json={"action": "complete"})
         self.assertEqual(repeated.status_code, 409)
 
+    def test_prune_completion_creates_selected_plant_journal_entry(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "prune",
+                "title": "Prune rose",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-002"],
+                "plot_ids": ["B2"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        response = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            json={"action": "complete", "notes": "Removed dead stems"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        journal = self.client.get("/api/journal?event_type=pruned&plant_id=PLT-002").json()
+        self.assertEqual(journal["total"], 1)
+        entry = journal["entries"][0]
+        self.assertEqual(entry["plant_ids"], ["PLT-002"])
+        self.assertEqual(entry["metadata"]["source"], "task_completion")
+        self.assertEqual(entry["metadata"]["source_task_id"], task_id)
+        self.assertEqual(entry["metadata"]["source_task_type"], "prune")
+        self.assertIn("Removed dead stems", entry["notes"])
+
+    def test_fertilize_completion_creates_selected_plant_journal_entry(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "fertilize",
+                "title": "Feed rose",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-002"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        response = self.client.post(f"/api/tasks/{task_id}/action", json={"action": "complete"})
+        self.assertEqual(response.status_code, 200, response.text)
+
+        journal = self.client.get("/api/journal?event_type=fertilized&plant_id=PLT-002").json()
+        self.assertEqual(journal["total"], 1)
+        self.assertEqual(journal["entries"][0]["metadata"]["source_task_type"], "fertilize")
+
     def test_observe_bloom_completion_creates_plant_level_journal_entry(self) -> None:
         assign = self.client.post("/api/plots/B1/plants/PLT-TEST", json={"quantity": 1})
         self.assertEqual(assign.status_code, 201)
