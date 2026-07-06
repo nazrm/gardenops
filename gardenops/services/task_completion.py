@@ -61,10 +61,6 @@ def validate_completed_plant_ids(
         )
     if not is_completion_capture_task(task_type):
         return []
-    if not linked_plant_ids:
-        return []
-    if len(linked_plant_ids) == 1 and requested_plant_ids is None:
-        return linked_plant_ids
     requested = []
     seen = set()
     for raw in requested_plant_ids or []:
@@ -72,17 +68,21 @@ def validate_completed_plant_ids(
         if value and value not in seen:
             requested.append(value)
             seen.add(value)
-    if not requested:
-        raise HTTPException(
-            status_code=422,
-            detail="completed_plant_ids is required for grouped horticultural completion",
-        )
     linked = set(linked_plant_ids)
     invalid = [plant_id for plant_id in requested if plant_id not in linked]
     if invalid:
         raise HTTPException(
             status_code=422,
             detail=f"completed_plant_ids must be linked to the task: {', '.join(invalid[:5])}",
+        )
+    if not linked_plant_ids:
+        return []
+    if len(linked_plant_ids) == 1 and requested_plant_ids is None:
+        return linked_plant_ids
+    if not requested:
+        raise HTTPException(
+            status_code=422,
+            detail="completed_plant_ids is required for grouped horticultural completion",
         )
     return requested
 
