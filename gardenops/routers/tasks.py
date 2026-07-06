@@ -41,10 +41,19 @@ from gardenops.services.generated_task_lifecycle import (
     GENERATED_WATERING_RULE_SOURCE_PATTERNS,
     stale_generated_watering_sql,
 )
-from gardenops.services.notification_service import clear_task_notifications
+from gardenops.services.notification_service import (
+    clear_task_notifications,
+    refresh_task_notifications_for_task,
+)
 from gardenops.services.task_completion import (
     CompletionOutcome,
+    completion_capture_already_recorded,
+    is_completion_capture_task,
+    plant_names_for_ids,
     record_completion_journal_entry,
+    refreshed_group_title,
+    remaining_plant_ids_after_completion,
+    update_task_plant_links,
     validate_completed_plant_ids,
     validate_completion_outcome,
 )
@@ -568,10 +577,30 @@ def _apply_task_action(
             status_code=409,
             detail=f"Action {body.action} is not valid for {current_status} tasks",
         )
+    notification_refreshed = False
     if body.action == "complete":
         task_type = str(task_row.get("task_type") or "")
         validate_completion_outcome(task_type=task_type, outcome=body.completion_outcome)
         linked_plant_ids = _task_linked_plant_ids(db, task_id)
+        requested_plant_ids: list[str] = []
+        seen_requested_plant_ids: set[str] = set()
+        for raw_plant_id in body.completed_plant_ids or []:
+            plant_id = str(raw_plant_id).strip()
+            if plant_id and plant_id not in seen_requested_plant_ids:
+                requested_plant_ids.append(plant_id)
+                seen_requested_plant_ids.add(plant_id)
+        if (
+            is_completion_capture_task(task_type)
+            and requested_plant_ids
+            and any(plant_id not in linked_plant_ids for plant_id in requested_plant_ids)
+            and completion_capture_already_recorded(
+                task_row=task_row,
+                task_type=task_type,
+                selected_plant_ids=requested_plant_ids,
+                outcome=body.completion_outcome,
+            )
+        ):
+            return
         selected_plant_ids = validate_completed_plant_ids(
             task_type=task_type,
             linked_plant_ids=linked_plant_ids,
@@ -582,18 +611,6 @@ def _apply_task_action(
         linked_plot_ids = _task_linked_plot_ids(db, task_id)
         if current_status == "completed":
             return
-        db.execute(
-            """
-            UPDATE garden_tasks
-            SET status = 'completed',
-                completed_by_user_id = %s,
-                completed_at_ms = %s,
-                snoozed_until = NULL,
-                updated_at_ms = %s
-            WHERE id = %s
-            """,
-            (context.user_id, now_ms, now_ms, task_id),
-        )
         journal_id, next_metadata = record_completion_journal_entry(
             db,
             context=context,
@@ -604,10 +621,70 @@ def _apply_task_action(
             notes=body.notes,
             now_ms=now_ms,
         )
-        if journal_id is not None:
+        remaining_plant_ids = remaining_plant_ids_after_completion(
+            linked_plant_ids=linked_plant_ids,
+            completed_plant_ids=selected_plant_ids,
+        )
+        is_partial_completion = (
+            is_completion_capture_task(task_type)
+            and bool(selected_plant_ids)
+            and bool(remaining_plant_ids)
+        )
+        if is_partial_completion:
+            update_task_plant_links(
+                db,
+                task_id=task_id,
+                remaining_plant_ids=remaining_plant_ids,
+            )
+            remaining_names = plant_names_for_ids(db, remaining_plant_ids)
+            next_title = str(task_row.get("title") or "")
+            if task_type in {"prune", "fertilize"} and remaining_names:
+                next_title = refreshed_group_title(task_type, remaining_names)
             db.execute(
-                "UPDATE garden_tasks SET metadata_json = %s WHERE id = %s",
-                (json.dumps(next_metadata, sort_keys=True, separators=(",", ":")), task_id),
+                """
+                UPDATE garden_tasks
+                SET title = %s,
+                    status = 'pending',
+                    completed_by_user_id = NULL,
+                    completed_at_ms = NULL,
+                    snoozed_until = NULL,
+                    metadata_json = %s,
+                    updated_at_ms = %s
+                WHERE id = %s
+                """,
+                (
+                    next_title,
+                    json.dumps(next_metadata, sort_keys=True, separators=(",", ":")),
+                    now_ms,
+                    task_id,
+                ),
+            )
+            refresh_task_notifications_for_task(
+                db,
+                garden_id=int(task_row["garden_id"]),
+                task_public_id=str(task_row["public_id"]),
+                now_ms=now_ms,
+            )
+            notification_refreshed = True
+        else:
+            db.execute(
+                """
+                UPDATE garden_tasks
+                SET status = 'completed',
+                    completed_by_user_id = %s,
+                    completed_at_ms = %s,
+                    snoozed_until = NULL,
+                    metadata_json = %s,
+                    updated_at_ms = %s
+                WHERE id = %s
+                """,
+                (
+                    context.user_id,
+                    now_ms,
+                    json.dumps(next_metadata, sort_keys=True, separators=(",", ":")),
+                    now_ms,
+                    task_id,
+                ),
             )
     elif body.action == "skip":
         db.execute(
@@ -676,13 +753,14 @@ def _apply_task_action(
         "snooze": "snoozed",
         "reschedule": "rescheduled",
     }
-    clear_task_notifications(
-        db,
-        garden_id=int(task_row["garden_id"]),
-        task_public_id=str(task_row["public_id"]),
-        reason=clear_reason_by_action[body.action],
-        now_ms=now_ms,
-    )
+    if not notification_refreshed:
+        clear_task_notifications(
+            db,
+            garden_id=int(task_row["garden_id"]),
+            task_public_id=str(task_row["public_id"]),
+            reason=clear_reason_by_action[body.action],
+            now_ms=now_ms,
+        )
 
     if body.notes and body.notes.strip():
         row = db.execute(

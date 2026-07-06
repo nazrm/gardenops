@@ -1093,6 +1093,58 @@ class TestNotifications(BaseApiTest):
         finally:
             db.return_db(conn)
 
+    def test_partial_completion_refreshes_task_notification_plant_names(self) -> None:
+        from gardenops.services.notification_service import create_task_due_notifications
+
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "fertilize",
+                "title": "Fertilize 2 plants",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-TEST", "PLT-002"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+        garden_id = self._get_default_garden_id()
+
+        conn = db.get_db()
+        try:
+            create_task_due_notifications(conn, garden_id)
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        response = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            json={"action": "complete", "completed_plant_ids": ["PLT-TEST"]},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        conn = db.get_db()
+        try:
+            rows = conn.execute(
+                """
+                SELECT title, metadata_json
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND target_type = 'task'
+                  AND target_id = %s
+                  AND cleared_at_ms IS NULL
+                ORDER BY id ASC
+                """,
+                (garden_id, task_id),
+            ).fetchall()
+        finally:
+            db.return_db(conn)
+        self.assertGreaterEqual(len(rows), 1)
+        joined = " ".join(
+            f"{row['title']} {json.dumps(row['metadata_json'])}" for row in rows
+        )
+        self.assertNotIn("Test Plant", joined)
+        self.assertIn("Rose", joined)
+
     def test_dismissed_task_notification_does_not_regenerate(self) -> None:
         from gardenops.services.notification_service import (
             create_task_due_notifications,

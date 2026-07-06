@@ -48,6 +48,75 @@ def completion_capture_key(
     return f"{task_public_id}:{event_type}:{outcome}:{plants_key}"
 
 
+def completion_capture_already_recorded(
+    *,
+    task_row: dict[str, Any],
+    task_type: str,
+    selected_plant_ids: list[str],
+    outcome: CompletionOutcome,
+) -> bool:
+    if not selected_plant_ids or not is_completion_capture_task(task_type):
+        return False
+    event_type = COMPLETION_EVENT_BY_TASK_TYPE[task_type]
+    if task_type == "observe_bloom" and outcome == "not_seen_blooming_this_season":
+        event_type = "observed"
+    metadata = parse_task_metadata(task_row)
+    completion_records = metadata.get("completion_journal_entries")
+    if not isinstance(completion_records, dict):
+        return False
+    key = completion_capture_key(
+        task_public_id=str(task_row["public_id"]),
+        event_type=event_type,
+        outcome=outcome,
+        plant_ids=selected_plant_ids,
+    )
+    existing = completion_records.get(key)
+    return isinstance(existing, str) and bool(existing)
+
+
+def remaining_plant_ids_after_completion(
+    *,
+    linked_plant_ids: list[str],
+    completed_plant_ids: list[str],
+) -> list[str]:
+    completed = set(completed_plant_ids)
+    return [plant_id for plant_id in linked_plant_ids if plant_id not in completed]
+
+
+def update_task_plant_links(
+    db: DbConn,
+    *,
+    task_id: int,
+    remaining_plant_ids: list[str],
+) -> None:
+    db.execute("DELETE FROM garden_task_plants WHERE task_id = %s", (task_id,))
+    executemany(
+        db,
+        "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
+        [(task_id, plant_id) for plant_id in remaining_plant_ids],
+    )
+
+
+def plant_names_for_ids(db: DbConn, plant_ids: list[str]) -> list[str]:
+    if not plant_ids:
+        return []
+    placeholders = ",".join(["%s"] * len(plant_ids))
+    rows = db.execute(
+        f"SELECT plt_id, name FROM plants WHERE plt_id IN ({placeholders})",  # noqa: S608
+        plant_ids,
+    ).fetchall()
+    names_by_id = {str(row["plt_id"]): str(row["name"]) for row in rows}
+    return [names_by_id[plant_id] for plant_id in plant_ids if plant_id in names_by_id]
+
+
+def refreshed_group_title(task_type: str, remaining_names: list[str]) -> str:
+    count = len(remaining_names)
+    prefix = "Prune" if task_type == "prune" else "Fertilize"
+    if count == 1:
+        return f"{prefix}: {remaining_names[0]}"
+    return f"{prefix} {count} plants"
+
+
 def validate_completed_plant_ids(
     *,
     task_type: str,
