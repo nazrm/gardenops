@@ -504,7 +504,7 @@ async function snoozeTaskInline(
     });
     card.classList.add("task-fading");
     setTimeout(() => card.remove(), 300);
-    showToast(t("tasks.snoozed_until_toast", { date: policy.defaultDate }) as string);
+    showToast(t("plot_drawer.task_snoozed_toast", { date: policy.defaultDate }) as string);
   } catch (err) {
     showToast(getApiErrorMessage(err), "error");
   }
