@@ -31,6 +31,9 @@ const completionSource = fs.readFileSync(completionHelper, "utf8");
 if (!completionSource.includes("needsCompletionDialog")) {
   throw new Error("Completion flow must expose a dialog decision helper");
 }
+if (!completionSource.includes("canQueueDefaultCompletionOffline")) {
+  throw new Error("Completion flow must preserve offline default completion for simple bloom tasks");
+}
 if (!completionSource.includes('task.task_type === "observe_bloom"')) {
   throw new Error("Observe-bloom completion must open the completion dialog");
 }
@@ -39,4 +42,16 @@ if (!completionSource.includes("not_seen_blooming_this_season")) {
 }
 if (completionSource.includes("ids.slice(0, 5)")) {
   throw new Error("Large grouped completion must not silently preselect only five plants");
+}
+
+for (const relativePath of [
+  "frontend/src/tabs/tasksTab.ts",
+  "frontend/src/tabs/calendarTab.ts",
+  "frontend/src/components/plotInteractions.ts",
+  "frontend/src/features/quickActionsFeature.ts",
+]) {
+  const surfaceSource = fs.readFileSync(path.join(root, relativePath), "utf8");
+  if (!surfaceSource.includes("canQueueDefaultCompletionOffline")) {
+    throw new Error(`${relativePath} must preserve offline default completion for simple bloom tasks`);
+  }
 }

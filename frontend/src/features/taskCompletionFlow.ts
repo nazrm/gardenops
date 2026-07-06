@@ -19,6 +19,10 @@ export function needsCompletionDialog(task: CompletionTask): boolean {
   return task.task_type === "observe_bloom" || needsCompletionSelection(task);
 }
 
+export function canQueueDefaultCompletionOffline(task: CompletionTask): boolean {
+  return task.task_type === "observe_bloom" && (task.plant_ids?.length ?? 0) <= 1;
+}
+
 export function defaultSelectedPlantIds(task: CompletionTask): Set<string> {
   const ids = task.plant_ids ?? [];
   return new Set(ids.length <= 5 ? ids : []);

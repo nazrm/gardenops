@@ -43,6 +43,7 @@ import {
 } from "../services/api";
 import { taskSnoozePolicy } from "../features/taskSnoozePolicy";
 import {
+  canQueueDefaultCompletionOffline,
   needsCompletionDialog,
   openTaskCompletionDialog,
 } from "../features/taskCompletionFlow";
@@ -1141,6 +1142,10 @@ function completeCalendarTask(event: CalendarEvent): void {
     return;
   }
   if (!ctx.isOnline()) {
+    if (canQueueDefaultCompletionOffline(task)) {
+      void runTaskAction(event, { action: "complete" });
+      return;
+    }
     ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
     return;
   }

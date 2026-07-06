@@ -20,6 +20,7 @@ import { confirmDialog, createModal } from "../components/dialogCore";
 import { selectPlot } from "../components/plotInteractions";
 import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
 import {
+  canQueueDefaultCompletionOffline,
   needsCompletionDialog,
   openTaskCompletionDialog,
 } from "../features/taskCompletionFlow";
@@ -512,6 +513,10 @@ function completeTask(task: GardenTask): void {
     return;
   }
   if (!ctx.isOnline()) {
+    if (canQueueDefaultCompletionOffline(task)) {
+      void handleTaskAction(task.id, "complete");
+      return;
+    }
     ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
     return;
   }

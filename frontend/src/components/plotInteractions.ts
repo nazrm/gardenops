@@ -46,6 +46,7 @@ import { dismissPopover, showPopover } from "./popover";
 import { renderSearchResults } from "./sidebar";
 import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
 import {
+  canQueueDefaultCompletionOffline,
   needsCompletionDialog,
   openTaskCompletionDialog,
 } from "../features/taskCompletionFlow";
@@ -491,14 +492,17 @@ async function completeTaskInline(
 ): Promise<void> {
   if (needsCompletionDialog(task) && !body.completed_plant_ids?.length) {
     if (!isOnline()) {
-      showToast(t("tasks.complete_grouped_one_by_one"), "error");
+      if (!canQueueDefaultCompletionOffline(task)) {
+        showToast(t("tasks.complete_grouped_one_by_one"), "error");
+        return;
+      }
+    } else {
+      const plantNames = new Map(state.plantsCache.map((plant) => [plant.plt_id, plant.name]));
+      openTaskCompletionDialog(task, plantNames, (body) => {
+        void completeTaskInline(task, card, state, plotId, cbs, body);
+      });
       return;
     }
-    const plantNames = new Map(state.plantsCache.map((plant) => [plant.plt_id, plant.name]));
-    openTaskCompletionDialog(task, plantNames, (body) => {
-      void completeTaskInline(task, card, state, plotId, cbs, body);
-    });
-    return;
   }
   try {
     if (!isOnline()) {

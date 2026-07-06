@@ -17,6 +17,7 @@ import {
 } from "../services/offlineQueue";
 import { taskSnoozePolicy } from "./taskSnoozePolicy";
 import {
+  canQueueDefaultCompletionOffline,
   needsCompletionDialog,
   openTaskCompletionDialog,
 } from "./taskCompletionFlow";
@@ -188,31 +189,34 @@ async function showTaskQuickComplete(): Promise<void> {
         const task = pendingById.get(taskId);
         if (task && needsCompletionDialog(task)) {
           if (!isOnline()) {
-            ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
+            if (!canQueueDefaultCompletionOffline(task)) {
+              ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
+              return;
+            }
+          } else {
+            const plantNames = new Map(ctx.getPlants().map((plant) => [plant.plt_id, plant.name]));
+            openTaskCompletionDialog(task, plantNames, (body) => {
+              void (async () => {
+                try {
+                  await taskActionApi(taskId, body);
+                  ctx.showToast(
+                    t("tasks.action_success", {
+                      action: "complete",
+                    }),
+                    "success",
+                  );
+                  void ctx.refreshBadgeCounts();
+                  await showTaskQuickComplete();
+                } catch (err) {
+                  ctx.showToast(
+                    getApiErrorMessage(err),
+                    "error",
+                  );
+                }
+              })();
+            });
             return;
           }
-          const plantNames = new Map(ctx.getPlants().map((plant) => [plant.plt_id, plant.name]));
-          openTaskCompletionDialog(task, plantNames, (body) => {
-            void (async () => {
-              try {
-                await taskActionApi(taskId, body);
-                ctx.showToast(
-                  t("tasks.action_success", {
-                    action: "complete",
-                  }),
-                  "success",
-                );
-                void ctx.refreshBadgeCounts();
-                await showTaskQuickComplete();
-              } catch (err) {
-                ctx.showToast(
-                  getApiErrorMessage(err),
-                  "error",
-                );
-              }
-            })();
-          });
-          return;
         }
         if (!isOnline()) {
           await enqueueDraft("task_complete", {
