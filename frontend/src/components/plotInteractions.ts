@@ -44,7 +44,7 @@ import { renderPlotJournalPreviewLazy } from "./journalPreviewLoader";
 import { confirmDialog } from "./dialogCore";
 import { dismissPopover, showPopover } from "./popover";
 import { renderSearchResults } from "./sidebar";
-import { taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
 import {
   needsCompletionSelection,
   openTaskCompletionDialog,
@@ -304,10 +304,10 @@ function cancelPendingPlantSearch(): void {
 function formatTaskDue(
   task: GardenTask,
 ): { text: string; overdue: boolean } {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = formatLocalDate(new Date());
   if (task.status === "completed") {
     const doneDate = task.completed_at_ms
-      ? new Date(task.completed_at_ms).toISOString().slice(0, 10)
+      ? formatLocalDate(new Date(task.completed_at_ms))
       : today;
     return {
       text: t("plot_drawer.completed_on", { date: doneDate }) as string,
@@ -439,7 +439,7 @@ async function loadPlotTasksPreview(
         const card = renderTaskCard(
           task,
           cbs.canWrite()
-            ? () => void completeTaskInline(task, card, state)
+            ? () => void completeTaskInline(task, card, state, plotId, cbs)
             : undefined,
           cbs.canWrite()
             ? () => void snoozeTaskInline(task, card)
@@ -460,33 +460,56 @@ async function loadPlotTasksPreview(
   }
 }
 
+async function enqueuePlotOfflineTaskAction(
+  taskId: string,
+  body: TaskActionRequest,
+): Promise<void> {
+  if (body.action === "complete" && body.completed_plant_ids?.length) {
+    throw new Error("Grouped task completion cannot be queued offline.");
+  }
+  if (body.action === "complete") {
+    await enqueueDraft("task_complete", { task_id: taskId });
+    return;
+  }
+  if (body.action === "snooze") {
+    await enqueueDraft("task_snooze", {
+      task_id: taskId,
+      snooze_until: body.snooze_until,
+    });
+    return;
+  }
+  throw new Error(`Unsupported plot task action: ${body.action}`);
+}
+
 async function completeTaskInline(
   task: GardenTask,
   card: HTMLElement,
   state: AppState,
+  plotId: string,
+  cbs: PlotCallbacks,
   body: TaskActionRequest = { action: "complete" },
 ): Promise<void> {
   if (needsCompletionSelection(task) && !body.completed_plant_ids?.length) {
+    if (!isOnline()) {
+      showToast(t("tasks.complete_grouped_one_by_one"), "error");
+      return;
+    }
     const plantNames = new Map(state.plantsCache.map((plant) => [plant.plt_id, plant.name]));
     openTaskCompletionDialog(task, plantNames, (body) => {
-      void completeTaskInline(task, card, state, body);
+      void completeTaskInline(task, card, state, plotId, cbs, body);
     });
     return;
   }
   try {
-    await taskActionApi(task.id, body);
-    card.classList.add("task-completed");
-    const actions = card.querySelector(".drawer-task-actions");
-    if (actions) actions.remove();
-    const dueEl = card.querySelector(".drawer-task-due");
-    if (dueEl) {
-      const today = new Date().toISOString().slice(0, 10);
-      dueEl.textContent = t("plot_drawer.completed_on", {
-        date: today,
-      }) as string;
-      dueEl.classList.remove("overdue");
+    if (!isOnline()) {
+      await enqueuePlotOfflineTaskAction(task.id, body);
+      showToast(t("offline.draft_saved"), "success");
+      return;
     }
+    await taskActionApi(task.id, body);
+    card.classList.add("task-fading");
     showToast(t("plot_drawer.task_completed_toast") as string);
+    await loadPlotTasksPreview(state, plotId, cbs);
   } catch (err) {
     showToast(getApiErrorMessage(err), "error");
   }
@@ -498,6 +521,14 @@ async function snoozeTaskInline(
 ): Promise<void> {
   const policy = taskSnoozePolicy(task);
   try {
+    if (!isOnline()) {
+      await enqueuePlotOfflineTaskAction(task.id, {
+        action: "snooze",
+        snooze_until: policy.defaultDate,
+      });
+      showToast(t("offline.draft_saved"), "success");
+      return;
+    }
     await taskActionApi(task.id, {
       action: "snooze",
       snooze_until: policy.defaultDate,

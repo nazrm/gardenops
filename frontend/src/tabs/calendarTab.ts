@@ -1081,6 +1081,16 @@ async function runTaskAction(
   body: TaskActionRequest,
   options: { showSuccessToast?: boolean } = {},
 ): Promise<boolean> {
+  if (!ctx.isOnline()) {
+    if (body.action === "complete" && body.completed_plant_ids?.length) {
+      ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
+      return false;
+    }
+    await enqueueOfflineCalendarTaskAction(event.target_id, body);
+    ctx.showToast(t("offline.draft_saved"), "success");
+    void ctx.refreshOfflineIndicator();
+    return true;
+  }
   try {
     await taskActionApi(event.target_id, body);
     if (options.showSuccessToast !== false) {
@@ -1095,10 +1105,43 @@ async function runTaskAction(
   }
 }
 
+async function enqueueOfflineCalendarTaskAction(
+  taskId: string,
+  body: TaskActionRequest,
+): Promise<void> {
+  if (body.action === "complete") {
+    await ctx.enqueueDraft("task_complete", { task_id: taskId });
+    return;
+  }
+  if (body.action === "skip") {
+    await ctx.enqueueDraft("task_skip", { task_id: taskId });
+    return;
+  }
+  if (body.action === "snooze") {
+    await ctx.enqueueDraft("task_snooze", {
+      task_id: taskId,
+      snooze_until: body.snooze_until,
+    });
+    return;
+  }
+  if (body.action === "reschedule") {
+    await ctx.enqueueDraft("task_reschedule", {
+      task_id: taskId,
+      reschedule_to: body.reschedule_to,
+    });
+    return;
+  }
+  throw new Error(`Unsupported calendar task action: ${body.action}`);
+}
+
 function completeCalendarTask(event: CalendarEvent): void {
   const task = calendarTaskForCompletion(event);
   if (!needsCompletionSelection(task)) {
     void runTaskAction(event, { action: "complete" });
+    return;
+  }
+  if (!ctx.isOnline()) {
+    ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
     return;
   }
   const plantNames = new Map(ctx.getPlants().map((plant) => [plant.plt_id, plant.name]));
@@ -1114,12 +1157,13 @@ async function snoozeCalendarTask(event: CalendarEvent): Promise<void> {
     await promptTaskAction(event, "snooze", policy.defaultDate, policy.warning);
     return;
   }
+  const online = ctx.isOnline();
   const ok = await runTaskAction(
     event,
     { action: "snooze", snooze_until: policy.defaultDate },
     { showSuccessToast: false },
   );
-  if (!ok) return;
+  if (!ok || !online) return;
   ctx.showToast(
     t("tasks.snoozed_until_toast", { date: policy.defaultDate }),
     "success",

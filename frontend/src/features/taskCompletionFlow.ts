@@ -17,7 +17,7 @@ export function needsCompletionSelection(task: CompletionTask): boolean {
 
 export function defaultSelectedPlantIds(task: CompletionTask): Set<string> {
   const ids = task.plant_ids ?? [];
-  return new Set(ids.length <= 5 ? ids : []);
+  return new Set(ids.slice(0, 5));
 }
 
 export function openTaskCompletionDialog(

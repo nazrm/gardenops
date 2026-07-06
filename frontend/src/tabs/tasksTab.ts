@@ -18,7 +18,7 @@ import { buildPlantNameMap } from "../core/plantNames";
 import { renderTaskList, createTaskForm } from "../components/tasks";
 import { confirmDialog, createModal } from "../components/dialogCore";
 import { selectPlot } from "../components/plotInteractions";
-import { taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
 import {
   needsCompletionSelection,
   openTaskCompletionDialog,
@@ -378,7 +378,7 @@ function renderTaskBatchBar(): void {
       const policy = firstSelected ? taskSnoozePolicy(firstSelected) : undefined;
       openDateDialog(
         t("tasks.snooze_prompt") as string,
-        policy?.defaultDate ?? new Date().toISOString().slice(0, 10),
+        policy?.defaultDate ?? formatLocalDate(new Date()),
         (date) => void handleBatchTaskAction("snooze", { snooze_until: date }),
         policy?.warning,
       );
@@ -393,7 +393,7 @@ function renderTaskBatchBar(): void {
       const firstSelected = taskItems.find((task) => selectedTaskIds.has(task.id));
       openDateDialog(
         t("tasks.reschedule_prompt") as string,
-        firstSelected?.due_on ?? new Date().toISOString().slice(0, 10),
+        firstSelected?.due_on ?? formatLocalDate(new Date()),
         (date) => void handleBatchTaskAction("reschedule", { reschedule_to: date }),
       );
     });
@@ -599,7 +599,7 @@ function openDateDialog(
   }
   const input = dialog.querySelector<HTMLInputElement>("input[type='date']")!;
   input.value = defaultDate;
-  input.min = new Date().toISOString().slice(0, 10);
+  input.min = formatLocalDate(new Date());
   const cancelBtn = dialog.querySelector<HTMLButtonElement>(".confirm-no")!;
   cancelBtn.textContent = t("common.cancel") as string;
   cancelBtn.addEventListener("click", close);
