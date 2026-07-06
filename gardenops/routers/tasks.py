@@ -46,6 +46,7 @@ from gardenops.services.task_completion import (
     CompletionOutcome,
     record_completion_journal_entry,
     validate_completed_plant_ids,
+    validate_completion_outcome,
 )
 from gardenops.services.task_windows import derive_recommended_window_strings
 
@@ -568,13 +569,15 @@ def _apply_task_action(
             detail=f"Action {body.action} is not valid for {current_status} tasks",
         )
     if body.action == "complete":
+        task_type = str(task_row.get("task_type") or "")
+        validate_completion_outcome(task_type=task_type, outcome=body.completion_outcome)
         linked_plant_ids = _task_linked_plant_ids(db, task_id)
         selected_plant_ids = validate_completed_plant_ids(
-            task_type=str(task_row.get("task_type") or ""),
+            task_type=task_type,
             linked_plant_ids=linked_plant_ids,
             requested_plant_ids=body.completed_plant_ids,
         )
-        if str(task_row.get("task_type") or "") == "observe_bloom":
+        if task_type == "observe_bloom":
             _require_observation_plant_access(db, context, selected_plant_ids)
         linked_plot_ids = _task_linked_plot_ids(db, task_id)
         if current_status == "completed":

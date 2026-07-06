@@ -720,6 +720,30 @@ class TestTasks(BaseApiTest):
         self.assertEqual(response.status_code, 422)
         self.assertIn("linked to the task", response.text)
 
+    def test_non_bloom_completion_rejects_not_seen_bloom_outcome(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "fertilize",
+                "title": "Feed rose",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-002"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        response = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            json={
+                "action": "complete",
+                "completion_outcome": "not_seen_blooming_this_season",
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("observe_bloom", response.text)
+
     def test_observe_bloom_completion_creates_plant_level_journal_entry(self) -> None:
         assign = self.client.post("/api/plots/B1/plants/PLT-TEST", json={"quantity": 1})
         self.assertEqual(assign.status_code, 201)
