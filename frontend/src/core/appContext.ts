@@ -10,6 +10,7 @@ import type {
 } from "./models";
 import type { AuthUserProfile, GardenSummary, MediaAsset } from "../services/api";
 import type { PlotCallbacks } from "../components/plotInteractions";
+import type { ToastOptions } from "../components/toast";
 
 export type GardenSubMode =
   | "plants"
@@ -84,6 +85,7 @@ export interface AppContext {
   showToast(
     msg: string,
     level?: "success" | "error",
+    options?: ToastOptions,
   ): void;
   showFetchError(err: unknown): void;
 
