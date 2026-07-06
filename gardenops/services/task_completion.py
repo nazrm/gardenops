@@ -196,7 +196,10 @@ def validate_completion_outcome(*, task_type: str, outcome: CompletionOutcome) -
     if outcome == "not_seen_blooming_this_season" and task_type != "observe_bloom":
         raise HTTPException(
             status_code=422,
-            detail="completion_outcome not_seen_blooming_this_season is only valid for observe_bloom tasks",
+            detail=(
+                "completion_outcome not_seen_blooming_this_season is only valid for "
+                "observe_bloom tasks"
+            ),
         )
 
 
