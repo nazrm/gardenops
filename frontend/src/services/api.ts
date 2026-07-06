@@ -69,6 +69,8 @@ export interface TaskActionRequest {
   snooze_until?: string;
   reschedule_to?: string;
   notes?: string;
+  completed_plant_ids?: string[];
+  completion_outcome?: "done" | "not_seen_blooming_this_season";
 }
 
 function normalizeApiPath(input: RequestInfo | URL): string {

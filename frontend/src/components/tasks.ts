@@ -1,6 +1,7 @@
 import type { GardenTask, TaskType } from "../core/models";
 import { getLocale, t } from "../core/i18n";
 import { renderEmptyState } from "./emptyState";
+import { taskSnoozePolicy } from "../features/taskSnoozePolicy";
 
 const TASK_TYPE_ICONS: Record<TaskType, string> = {
   water: "\u{1F4A7}",
@@ -205,7 +206,7 @@ function createTaskCard(
     const snoozeBtn = document.createElement("button");
     snoozeBtn.type = "button";
     snoozeBtn.className = "task-action-btn";
-    snoozeBtn.textContent = t("tasks.action_snooze");
+    snoozeBtn.textContent = taskSnoozePolicy(task).label;
     snoozeBtn.addEventListener("click", () => cbs.onSnooze(task));
     actions.appendChild(snoozeBtn);
 

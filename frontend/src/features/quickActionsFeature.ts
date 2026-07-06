@@ -15,6 +15,11 @@ import {
   isOnline,
   enqueueDraft,
 } from "../services/offlineQueue";
+import { taskSnoozePolicy } from "./taskSnoozePolicy";
+import {
+  needsCompletionSelection,
+  openTaskCompletionDialog,
+} from "./taskCompletionFlow";
 
 let ctx: AppContext;
 let quickActionSheetOpen = false;
@@ -171,6 +176,7 @@ async function showTaskQuickComplete(): Promise<void> {
     const pending = result.tasks.filter(
       (tk) => tk.status === "pending",
     );
+    const pendingById = new Map(pending.map((task) => [task.id, task]));
     renderTaskQuickComplete(
       content,
       pending.map((tk) => ({
@@ -179,6 +185,35 @@ async function showTaskQuickComplete(): Promise<void> {
         task_type: tk.task_type,
       })),
       async (taskId) => {
+        const task = pendingById.get(taskId);
+        if (task && needsCompletionSelection(task)) {
+          if (!isOnline()) {
+            ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
+            return;
+          }
+          const plantNames = new Map(ctx.getPlants().map((plant) => [plant.plt_id, plant.name]));
+          openTaskCompletionDialog(task, plantNames, (body) => {
+            void (async () => {
+              try {
+                await taskActionApi(taskId, body);
+                ctx.showToast(
+                  t("tasks.action_success", {
+                    action: "complete",
+                  }),
+                  "success",
+                );
+                void ctx.refreshBadgeCounts();
+                await showTaskQuickComplete();
+              } catch (err) {
+                ctx.showToast(
+                  getApiErrorMessage(err),
+                  "error",
+                );
+              }
+            })();
+          });
+          return;
+        }
         if (!isOnline()) {
           await enqueueDraft("task_complete", {
             task_id: taskId,
@@ -242,6 +277,7 @@ async function showTaskQuickSnooze(): Promise<void> {
     const pending = result.tasks.filter(
       (tk) => tk.status === "pending",
     );
+    const pendingById = new Map(pending.map((task) => [task.id, task]));
     renderTaskQuickSnooze(
       content,
       pending.map((tk) => ({
@@ -250,11 +286,10 @@ async function showTaskQuickSnooze(): Promise<void> {
         task_type: tk.task_type,
       })),
       async (taskId) => {
-        const tomorrow = new Date();
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        const snoozeDate = tomorrow
-          .toISOString()
-          .slice(0, 10);
+        const task = pendingById.get(taskId);
+        if (!task) return;
+        const policy = taskSnoozePolicy(task);
+        const snoozeDate = policy.defaultDate;
         if (!isOnline()) {
           await enqueueDraft("task_snooze", {
             task_id: taskId,

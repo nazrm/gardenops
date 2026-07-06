@@ -22,6 +22,7 @@ import type {
   CalendarSourceKey,
   CalendarSubscription,
   CalendarViewMode,
+  GardenTask,
   Plant,
   Plot,
 } from "../core/models";
@@ -40,6 +41,11 @@ import {
   updateCalendarManualEventApi,
   updateCalendarPreferencesApi,
 } from "../services/api";
+import { taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import {
+  needsCompletionSelection,
+  openTaskCompletionDialog,
+} from "../features/taskCompletionFlow";
 
 let ctx: AppContext;
 let calendar: Calendar | null = null;
@@ -720,6 +726,39 @@ function plantLabel(pltId: string): string {
   return ctx.getPlants().find((plant) => plant.plt_id === pltId)?.name || pltId;
 }
 
+function calendarTaskForCompletion(event: CalendarEvent) {
+  return {
+    task_type: event.source_key as GardenTask["task_type"],
+    plant_ids: event.plant_ids,
+  };
+}
+
+function calendarTaskForSnooze(event: CalendarEvent): GardenTask {
+  return {
+    id: event.target_id,
+    garden_id: 0,
+    task_type: event.source_key as GardenTask["task_type"],
+    title: event.title,
+    description: event.description,
+    status: event.status as GardenTask["status"],
+    severity: event.severity as GardenTask["severity"],
+    due_on: event.due_on ?? event.start_on,
+    snoozed_until: event.snoozed_until ?? null,
+    window_start_on: event.window_start_on ?? null,
+    window_end_on: event.window_end_on ?? null,
+    window_kind: null,
+    rule_source: "",
+    metadata: {},
+    created_by_user_id: null,
+    completed_by_user_id: null,
+    completed_at_ms: event.completed_at_ms ?? null,
+    created_at_ms: event.created_at_ms,
+    updated_at_ms: event.updated_at_ms,
+    plant_ids: event.plant_ids,
+    plot_ids: event.plot_ids,
+  };
+}
+
 function plotLabel(plotId: string): string {
   const plot = ctx.getPlots().find((candidate) => candidate.plot_id === plotId);
   return plot ? `${plot.plot_id} · ${plot.zone_name}` : plotId;
@@ -1015,7 +1054,7 @@ function renderDetail(event?: CalendarEvent): void {
     actions.className = "calendar-detail-actions";
     actions.appendChild(
       actionButton(t("tasks.action_complete"), () => {
-        void runTaskAction(event, { action: "complete" });
+        completeCalendarTask(event);
       }),
     );
     actions.appendChild(
@@ -1025,7 +1064,7 @@ function renderDetail(event?: CalendarEvent): void {
     );
     actions.appendChild(
       actionButton(t("tasks.action_snooze"), () => {
-        void promptTaskAction(event, "snooze");
+        void snoozeCalendarTask(event);
       }),
     );
     actions.appendChild(
@@ -1040,23 +1079,72 @@ function renderDetail(event?: CalendarEvent): void {
 async function runTaskAction(
   event: CalendarEvent,
   body: TaskActionRequest,
-): Promise<void> {
+  options: { showSuccessToast?: boolean } = {},
+): Promise<boolean> {
   try {
     await taskActionApi(event.target_id, body);
-    ctx.showToast(t("tasks.action_success", { action: body.action }), "success");
+    if (options.showSuccessToast !== false) {
+      ctx.showToast(t("tasks.action_success", { action: body.action }), "success");
+    }
     void ctx.refreshBadgeCounts();
     await loadCalendar();
+    return true;
   } catch (err) {
     ctx.showToast(getApiErrorMessage(err), "error");
+    return false;
   }
+}
+
+function completeCalendarTask(event: CalendarEvent): void {
+  const task = calendarTaskForCompletion(event);
+  if (!needsCompletionSelection(task)) {
+    void runTaskAction(event, { action: "complete" });
+    return;
+  }
+  const plantNames = new Map(ctx.getPlants().map((plant) => [plant.plt_id, plant.name]));
+  openTaskCompletionDialog(task, plantNames, (body) => {
+    void runTaskAction(event, body);
+  });
+}
+
+async function snoozeCalendarTask(event: CalendarEvent): Promise<void> {
+  const task = calendarTaskForSnooze(event);
+  const policy = taskSnoozePolicy(task);
+  if (!policy.immediate) {
+    await promptTaskAction(event, "snooze", policy.defaultDate, policy.warning);
+    return;
+  }
+  const ok = await runTaskAction(
+    event,
+    { action: "snooze", snooze_until: policy.defaultDate },
+    { showSuccessToast: false },
+  );
+  if (!ok) return;
+  ctx.showToast(
+    t("tasks.snoozed_until_toast", { date: policy.defaultDate }),
+    "success",
+    {
+      actions: [
+        {
+          label: t("tasks.snooze_change_date"),
+          onClick: () => {
+            void promptTaskAction(event, "snooze", policy.defaultDate);
+          },
+        },
+      ],
+      durationMs: 5000,
+    },
+  );
 }
 
 async function promptTaskAction(
   event: CalendarEvent,
   action: "snooze" | "reschedule",
+  defaultDate = event.due_on || event.start_on,
+  warning?: string,
 ): Promise<void> {
   const promptText = action === "snooze" ? t("tasks.snooze_prompt") : t("tasks.reschedule_prompt");
-  const value = window.prompt(promptText, event.due_on || event.start_on);
+  const value = window.prompt(warning ? `${warning}\n\n${promptText}` : promptText, defaultDate);
   if (!value) return;
   const body: TaskActionRequest = action === "snooze"
     ? { action: "snooze", snooze_until: value }

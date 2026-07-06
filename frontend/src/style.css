@@ -10921,6 +10921,56 @@ td.inventory-qty-zero {
   }
 }
 
+/* ── Task completion dialog ─────────────────────────────── */
+
+.task-completion-dialog {
+  width: min(480px, 94vw);
+}
+
+.task-completion-dialog h3 {
+  margin: 0 0 var(--sp-3);
+}
+
+.task-completion-list {
+  display: grid;
+  gap: var(--sp-2);
+  max-height: min(320px, 55vh);
+  overflow: auto;
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.task-completion-list label {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 34px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.task-completion-list input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.task-completion-feedback {
+  min-height: 1.25rem;
+  margin-top: var(--sp-2);
+  color: var(--danger);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.task-date-dialog-warning {
+  margin: 0 0 var(--sp-3);
+  color: var(--warning, #8a5a00);
+  font-weight: 600;
+}
+
 /* ── Toast notifications ────────────────────────────────── */
 
 #toast-container {
@@ -10936,6 +10986,10 @@ td.inventory-qty-zero {
 }
 
 .toast {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
   padding: 10px 22px;
   border-radius: var(--r-md);
   color: #fff;
@@ -10948,6 +11002,23 @@ td.inventory-qty-zero {
   max-width: 400px;
   text-align: center;
   box-shadow: var(--shadow-md);
+}
+
+.toast-action {
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.toast-action:hover,
+.toast-action:focus-visible {
+  background: rgba(255, 255, 255, 0.24);
+  outline: none;
 }
 
 .toast-visible {

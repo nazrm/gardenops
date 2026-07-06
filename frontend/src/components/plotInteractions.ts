@@ -16,7 +16,7 @@ import {
   taskActionApi,
   uploadMediaApi,
 } from "../services/api";
-import type { MediaAsset, MediaLinkRef } from "../services/api";
+import type { MediaAsset, MediaLinkRef, TaskActionRequest } from "../services/api";
 import type { PlantAlertType } from "./plantCard";
 import { enqueueDraft, isOnline } from "../services/offlineQueue";
 import { renderMediaGalleryLazy } from "./mediaGalleryLoader";
@@ -44,6 +44,11 @@ import { renderPlotJournalPreviewLazy } from "./journalPreviewLoader";
 import { confirmDialog } from "./dialogCore";
 import { dismissPopover, showPopover } from "./popover";
 import { renderSearchResults } from "./sidebar";
+import { taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import {
+  needsCompletionSelection,
+  openTaskCompletionDialog,
+} from "../features/taskCompletionFlow";
 
 export interface PlotCallbacks {
   fetchPlots: () => Promise<void>;
@@ -388,6 +393,7 @@ function renderTaskCard(
 }
 
 async function loadPlotTasksPreview(
+  state: AppState,
   plotId: string,
   cbs: PlotCallbacks,
 ): Promise<void> {
@@ -433,7 +439,7 @@ async function loadPlotTasksPreview(
         const card = renderTaskCard(
           task,
           cbs.canWrite()
-            ? () => void completeTaskInline(task, card)
+            ? () => void completeTaskInline(task, card, state)
             : undefined,
           cbs.canWrite()
             ? () => void snoozeTaskInline(task, card)
@@ -457,9 +463,18 @@ async function loadPlotTasksPreview(
 async function completeTaskInline(
   task: GardenTask,
   card: HTMLElement,
+  state: AppState,
+  body: TaskActionRequest = { action: "complete" },
 ): Promise<void> {
+  if (needsCompletionSelection(task) && !body.completed_plant_ids?.length) {
+    const plantNames = new Map(state.plantsCache.map((plant) => [plant.plt_id, plant.name]));
+    openTaskCompletionDialog(task, plantNames, (body) => {
+      void completeTaskInline(task, card, state, body);
+    });
+    return;
+  }
   try {
-    await taskActionApi(task.id, { action: "complete" });
+    await taskActionApi(task.id, body);
     card.classList.add("task-completed");
     const actions = card.querySelector(".drawer-task-actions");
     if (actions) actions.remove();
@@ -481,17 +496,15 @@ async function snoozeTaskInline(
   task: GardenTask,
   card: HTMLElement,
 ): Promise<void> {
-  const target = new Date();
-  target.setDate(target.getDate() + 7);
-  const snoozeUntil = target.toISOString().slice(0, 10);
+  const policy = taskSnoozePolicy(task);
   try {
     await taskActionApi(task.id, {
       action: "snooze",
-      snooze_until: snoozeUntil,
+      snooze_until: policy.defaultDate,
     });
     card.classList.add("task-fading");
     setTimeout(() => card.remove(), 300);
-    showToast(t("plot_drawer.task_snoozed_toast") as string);
+    showToast(t("tasks.snoozed_until_toast", { date: policy.defaultDate }) as string);
   } catch (err) {
     showToast(getApiErrorMessage(err), "error");
   }
@@ -760,7 +773,7 @@ export async function selectPlot(
         : {}),
     });
     void hydrateActivePlotPanel(state, plotId, topPlants, cbs, seq);
-    void loadPlotTasksPreview(plotId, cbs);
+    void loadPlotTasksPreview(state, plotId, cbs);
     void loadPlotJournalPreview(plotId, cbs);
     void loadPlotMediaPreview(plotId, cbs);
     return;
@@ -830,7 +843,7 @@ export async function openDrawerForPlot(
       : {}),
   });
   void hydrateActivePlotPanel(state, plotId, plants, cbs, seq);
-  void loadPlotTasksPreview(plotId, cbs);
+  void loadPlotTasksPreview(state, plotId, cbs);
   void loadPlotJournalPreview(plotId, cbs);
   void loadPlotMediaPreview(plotId, cbs);
 }
