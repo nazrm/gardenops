@@ -130,6 +130,13 @@ toast/snackbar after the action succeeds:
 - Timeout: long enough for accessibility, and paused on hover/focus where the
   toast system supports it.
 
+If the task has a `window_end_on` and the default `+7 days` would move prune or
+fertilize work beyond the recommended window, the UI should not silently apply
+the default. It should open the date picker with the proposed date and a short
+window warning. This keeps the default fast for ordinary deferrals without
+teaching the app to push time-sensitive horticultural work outside its care
+window.
+
 ### 2. Completion As History
 
 Introduce an explicit completion-capture layer for horticultural task types.
@@ -166,9 +173,16 @@ Journal entries created from task completion should include metadata:
 - selected plot IDs where known
 - actor user ID through the existing journal actor fields
 - completion timestamp/date
+- task completion notes when supplied
 
 The event date should default to the action date. A future enhancement can allow
 the user to override the occurred date in the completion sheet.
+
+Completion capture must be idempotent. Retrying the same completion request must
+not create duplicate journal entries for the same task, event type, outcome, and
+selected plant set. Task metadata should store enough completion-capture records
+to distinguish full completion, partial completion batches, and the existing
+single bloom completion journal entry.
 
 ### 3. Grouped Completion Plant Selection
 
@@ -196,6 +210,12 @@ Single-plant tasks may remain one-tap because the target is unambiguous. If the
 single plant task has missing plant linkage, completion should fall back to the
 existing plain task completion behavior and not create plant-level history.
 
+Batch completion must not blindly complete grouped horticultural tasks that need
+plant selection. If a batch contains a multi-plant `observe_bloom`, `prune`, or
+`fertilize` task, the frontend should open the completion sheet for that task or
+exclude it from the batch with a clear message. The backend should reject
+multi-plant completion requests that omit `completed_plant_ids`.
+
 ### 4. Partial Completion
 
 Do not add `partially_completed` as a public task status. It makes active views,
@@ -213,6 +233,11 @@ Instead:
   metadata change to describe the remaining work.
 - The task title and metadata should be refreshed so counts and plant names match
   the remaining targets.
+- Existing task notifications should be cleared or superseded when the linked
+  plant set changes, then regenerated for the remaining task if it is still
+  currently actionable. The user should not be left with a stale notification
+  that names completed plants, and the remaining task should not go quiet until
+  the next maintenance run if it is still due.
 
 ### 5. Bloom Timing Feedback
 
@@ -242,8 +267,12 @@ First-slice expiry rule:
   user's garden can run about one month later than catalog data.
 - After that window, show an explicit `Not seen this season` path that records
   an `observed` journal entry with metadata
-  `outcome = "not_seen_this_season"` and removes the active task by marking it
-  `skipped`.
+  `outcome = "not_seen_blooming_this_season"` and resolves the active task as
+  `completed`.
+- `Not seen this season` for a bloom task means "not observed blooming", not
+  "the plant was not seen growing." It must not set plant or plot
+  `seen_growing = false`, must not mark the plant gone, and must not erase a
+  current-year seen-growing observation from another workflow.
 
 The exact local-history prediction algorithm can remain simple in the first
 implementation. The important boundary is data capture: snoozes and completed
@@ -283,7 +312,8 @@ completion endpoint:
 ```json
 {
   "action": "complete",
-  "completed_plant_ids": ["PLT-001", "PLT-002"]
+  "completed_plant_ids": ["PLT-001", "PLT-002"],
+  "completion_outcome": "done"
 }
 ```
 
@@ -292,10 +322,16 @@ Rules:
 - `completed_plant_ids` is optional for single-plant tasks.
 - For multi-plant horticultural tasks, `completed_plant_ids` is required and
   must be a non-empty subset of the linked task plants.
+- `completion_outcome` defaults to `done`.
+- `observe_bloom` also accepts `completion_outcome =
+  "not_seen_blooming_this_season"` when the UI uses the `Not seen this season`
+  path.
 - Empty selection is a client-side cancel/no-op, not a backend completion.
 - Unknown or unauthorized plant IDs return a validation error.
 - Completion history creation and task status/link updates happen in one DB
   transaction.
+- Backend validation must reject `completed_plant_ids` on non-horticultural task
+  types until those task types have an explicit completion-capture mapping.
 
 The existing snooze request remains:
 
@@ -333,11 +369,14 @@ Backend tests:
 - Multi-plant completion with all plants completes the task.
 - Multi-plant completion with a subset logs selected plants and leaves only the
   remaining plants linked to active work.
+- Retried completion requests do not duplicate journal entries.
 - Invalid selected plant IDs are rejected.
 - Repeated bloom snoozes are recorded as "not yet observed" timing evidence.
 - Generated bloom checks can transition to `Not seen this season` after the
-  local grace window.
+  local grace window without changing seen-growing presence state.
 - Notification cleanup respects snoozed/completed/partially completed tasks.
+- Batch completion rejects or separates grouped horticultural tasks that require
+  plant selection.
 
 Frontend tests:
 
@@ -345,9 +384,13 @@ Frontend tests:
   snooze default for mapped task types.
 - `observe_bloom`, `prune`, and `fertilize` show a `+1 week` path.
 - `Change date` opens the manual date picker.
+- Prune/fertilize default snooze opens the date picker with a warning when the
+  default date exceeds `window_end_on`.
 - Grouped completion opens the plant-selection sheet.
 - Default checkbox selection is all for 1-5 plants and none for 6+ plants.
 - Partial completion updates the visible task targets.
+- Batch completion routes grouped horticultural tasks through selection instead
+  of silently completing every linked plant.
 
 Playwright end-to-end tests:
 
