@@ -12,6 +12,7 @@ import {
   markAllNotificationsReadApi,
   dismissNotificationApi,
   fetchNotificationPreferencesApi,
+  getActiveGardenContext,
   updateNotificationPreferencesApi,
   getApiErrorMessage,
 } from "../services/api";
@@ -27,6 +28,10 @@ let notificationItems: NotificationEvent[] = [];
 let notificationUnreadCount = 0;
 let notificationPanelOpen = false;
 let notificationPanelView: "inbox" | "log" = "inbox";
+let notificationGardenId: number | null = null;
+let notificationRequestVersion = 0;
+let notificationCountLoadVersion = 0;
+let notificationItemsLoadVersion = 0;
 const NOTIFICATION_POLL_INTERVAL = 60_000;
 let pollTimerId: ReturnType<typeof setInterval> | null = null;
 let notificationTriggerDelegationBound = false;
@@ -34,6 +39,64 @@ const NOTIFICATION_FEATURE_READY_ATTR =
   "data-notification-feature-ready";
 const NOTIFICATION_TRIGGER_BOUND_ATTR =
   "data-notification-trigger-bound";
+
+interface NotificationRequestContext {
+  gardenId: number;
+  version: number;
+}
+
+function notificationRequestContext(): NotificationRequestContext | null {
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null || notificationGardenId !== gardenId) return null;
+  return { gardenId, version: notificationRequestVersion };
+}
+
+function isCurrentNotificationRequest(
+  request: NotificationRequestContext,
+): boolean {
+  return (
+    request.version === notificationRequestVersion
+    && request.gardenId === notificationGardenId
+    && request.gardenId === getActiveGardenContext()
+  );
+}
+
+function clearNotificationState(): void {
+  notificationItems = [];
+  notificationUnreadCount = 0;
+  document.getElementById("notification-panel")?.replaceChildren();
+  updateNotificationBadge();
+  updateTabBadge("activity", 0);
+  updateTabBadge("insights", 0);
+}
+
+export function resetNotificationsForCurrentGarden(): void {
+  notificationGardenId = getActiveGardenContext();
+  notificationRequestVersion += 1;
+  notificationCountLoadVersion += 1;
+  notificationItemsLoadVersion += 1;
+  notificationPanelView = "inbox";
+  closeNotificationPanel();
+  clearNotificationState();
+
+  const request = notificationRequestContext();
+  if (notificationsInitialized && request) {
+    void loadNotificationCount(request);
+  }
+}
+
+export function syncNotificationsForCurrentGarden(): void {
+  if (notificationGardenId === getActiveGardenContext()) return;
+  resetNotificationsForCurrentGarden();
+}
+
+function ensureNotificationPoller(): void {
+  if (pollTimerId !== null) return;
+  pollTimerId = setInterval(
+    () => void loadNotificationCount(),
+    NOTIFICATION_POLL_INTERVAL,
+  );
+}
 
 function notificationsForView(
   notifications: NotificationEvent[],
@@ -95,7 +158,10 @@ function renderCurrentNotificationPanel(): void {
     notificationUnreadCount,
     {
       onRead: async (n) => {
+        const request = notificationRequestContext();
+        if (!request) return;
         await markNotificationReadApi(n.id);
+        if (!isCurrentNotificationRequest(request)) return;
         if (!n.read_at_ms) {
           n.read_at_ms = Date.now();
           notificationUnreadCount = Math.max(
@@ -107,7 +173,10 @@ function renderCurrentNotificationPanel(): void {
         }
       },
       onDismiss: async (n) => {
+        const request = notificationRequestContext();
+        if (!request) return;
         await dismissNotificationApi(n.id);
+        if (!isCurrentNotificationRequest(request)) return;
         notificationItems = notificationItems.filter(
           (item) => item.id !== n.id,
         );
@@ -121,6 +190,8 @@ function renderCurrentNotificationPanel(): void {
         renderCurrentNotificationPanel();
       },
       onNavigate: async (n) => {
+        const request = notificationRequestContext();
+        if (!request) return;
         closeNotificationPanel();
         if (n.target_type === "task") {
           ctx.navigateToSubMode("tasks");
@@ -128,6 +199,7 @@ function renderCurrentNotificationPanel(): void {
           if (n.target_id) {
             try {
               const task = await fetchTaskApi(n.target_id);
+              if (!isCurrentNotificationRequest(request)) return;
               await ctx.openTaskForm(task);
             } catch {
               // fall back to the tasks list already opened above
@@ -138,6 +210,7 @@ function renderCurrentNotificationPanel(): void {
           if (n.target_id) {
             try {
               const issue = await fetchIssueApi(n.target_id);
+              if (!isCurrentNotificationRequest(request)) return;
               await ctx.openIssueForm(issue);
             } catch {
               void ctx.loadIssues();
@@ -146,20 +219,24 @@ function renderCurrentNotificationPanel(): void {
             void ctx.loadIssues();
           }
         } else if (n.target_type === "plant") {
+          if (!isCurrentNotificationRequest(request)) return;
           if (n.target_id) {
             ctx.focusPlantsInPlantsView([n.target_id]);
           } else {
             ctx.navigateToSubMode("plants");
           }
         } else if (n.target_type === "plot") {
+          if (!isCurrentNotificationRequest(request)) return;
           ctx.setActiveTab("map");
           if (n.target_id) {
             void ctx.selectPlot(n.target_id);
           }
         } else if (n.target_type === "weather_alert") {
+          if (!isCurrentNotificationRequest(request)) return;
           ctx.navigateToSubMode("care");
           void ctx.loadWeather();
         }
+        if (!isCurrentNotificationRequest(request)) return;
         if (!n.read_at_ms) {
           n.read_at_ms = Date.now();
           notificationUnreadCount = Math.max(
@@ -173,7 +250,10 @@ function renderCurrentNotificationPanel(): void {
         }
       },
       onMarkAllRead: async () => {
+        const request = notificationRequestContext();
+        if (!request) return;
         await markAllNotificationsReadApi();
+        if (!isCurrentNotificationRequest(request)) return;
         let unreadChanged = false;
         for (const notification of notificationItems) {
           if (notification.read_at_ms) continue;
@@ -193,8 +273,11 @@ function renderCurrentNotificationPanel(): void {
         void loadNotifications();
       },
       onMuteType: async (n) => {
+        const request = notificationRequestContext();
+        if (!request) return;
         try {
           const prefs = await fetchNotificationPreferencesApi();
+          if (!isCurrentNotificationRequest(request)) return;
           const key = n.notification_subtype
             ? `${n.notification_type}:${n.notification_subtype}`
             : n.notification_type;
@@ -209,6 +292,7 @@ function renderCurrentNotificationPanel(): void {
               },
             },
           });
+          if (!isCurrentNotificationRequest(request)) return;
           notificationItems = notificationItems.filter(
             (item) =>
               (item.notification_subtype
@@ -222,6 +306,7 @@ function renderCurrentNotificationPanel(): void {
             "success",
           );
         } catch (err) {
+          if (!isCurrentNotificationRequest(request)) return;
           ctx.showToast(getApiErrorMessage(err), "error");
         }
       },
@@ -236,12 +321,9 @@ export function initNotificationsFeature(
   ctx = appCtx;
   bindNotificationTriggers();
   if (notificationsInitialized) {
-    if (pollTimerId === null) {
-      void loadNotificationCount();
-      pollTimerId = setInterval(
-        () => void loadNotificationCount(),
-        NOTIFICATION_POLL_INTERVAL,
-      );
+    ensureNotificationPoller();
+    if (notificationGardenId !== getActiveGardenContext()) {
+      resetNotificationsForCurrentGarden();
     }
     return;
   }
@@ -272,20 +354,32 @@ export function initNotificationsFeature(
     }
   });
 
-  void loadNotificationCount();
-  pollTimerId = setInterval(
-    () => void loadNotificationCount(),
-    NOTIFICATION_POLL_INTERVAL,
-  );
+  resetNotificationsForCurrentGarden();
+  ensureNotificationPoller();
 }
 
-export async function loadNotificationCount(): Promise<void> {
+export async function loadNotificationCount(
+  request: NotificationRequestContext | null = notificationRequestContext(),
+): Promise<void> {
+  if (!request) return;
+  const loadVersion = ++notificationCountLoadVersion;
   try {
-    applyBadgeCounts(await fetchBadgeCountsApi({ force: true }));
+    const counts = await fetchBadgeCountsApi({ force: true });
+    if (
+      loadVersion !== notificationCountLoadVersion
+      || !isCurrentNotificationRequest(request)
+    ) {
+      return;
+    }
+    applyBadgeCounts(counts);
   } catch (err) {
     // Stop polling on auth failure — the global onAuthExpired handler
     // already shows a "session expired" banner via checked() in api.ts.
-    if (err instanceof ApiError && err.status === 401) {
+    if (
+      err instanceof ApiError
+      && err.status === 401
+      && isCurrentNotificationRequest(request)
+    ) {
       if (pollTimerId !== null) {
         clearInterval(pollTimerId);
         pollTimerId = null;
@@ -345,6 +439,7 @@ function updateNotificationBadge(): void {
 }
 
 async function toggleNotificationPanel(): Promise<void> {
+  syncNotificationsForCurrentGarden();
   const panel = document.getElementById(
     "notification-panel",
   );
@@ -352,24 +447,40 @@ async function toggleNotificationPanel(): Promise<void> {
   notificationPanelOpen = !notificationPanelOpen;
   panel.hidden = !notificationPanelOpen;
   if (notificationPanelOpen) {
+    panel.tabIndex = -1;
+    panel.focus();
     notificationPanelView = "inbox";
     await loadNotifications();
+  } else {
+    panel.removeAttribute("tabindex");
   }
 }
 
 async function loadNotifications(): Promise<void> {
+  const request = notificationRequestContext();
+  if (!request) return;
+  const view = notificationPanelView;
+  const loadVersion = ++notificationItemsLoadVersion;
   try {
     const result = await fetchNotificationsApi({
-      scope: notificationPanelView,
+      scope: view,
       limit: 30,
       offset: 0,
     });
+    if (
+      loadVersion !== notificationItemsLoadVersion
+      || notificationPanelView !== view
+      || !isCurrentNotificationRequest(request)
+    ) {
+      return;
+    }
     notificationItems = notificationsForView(
       result.notifications,
-      notificationPanelView,
+      view,
     );
     renderCurrentNotificationPanel();
   } catch (err) {
+    if (!isCurrentNotificationRequest(request)) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
@@ -387,14 +498,18 @@ async function showNotificationPreferences(): Promise<void> {
     "notification-panel",
   );
   if (!panel) return;
+  const request = notificationRequestContext();
+  if (!request) return;
   try {
     const prefs = await fetchNotificationPreferencesApi();
+    if (!isCurrentNotificationRequest(request)) return;
     renderNotificationPreferencesForm(
       panel,
       prefs,
       async (updated) => {
         try {
           await updateNotificationPreferencesApi(updated);
+          if (!isCurrentNotificationRequest(request)) return;
           ctx.showToast(
             t("notifications.prefs_saved"),
             "success",
@@ -403,6 +518,7 @@ async function showNotificationPreferences(): Promise<void> {
           await loadNotificationCount();
           await loadNotifications();
         } catch (err) {
+          if (!isCurrentNotificationRequest(request)) return;
           ctx.showToast(
             getApiErrorMessage(err),
             "error",
@@ -411,6 +527,7 @@ async function showNotificationPreferences(): Promise<void> {
       },
     );
   } catch (err) {
+    if (!isCurrentNotificationRequest(request)) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }

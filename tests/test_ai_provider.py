@@ -28,6 +28,14 @@ class TestAIProviderConfig(unittest.TestCase):
             with self.assertRaises(AIProviderNotConfigured):
                 configured_provider()
 
+    def test_explicit_disabled_provider_reports_not_configured(self) -> None:
+        with patch.dict(os.environ, {"AI_PROVIDER": "disabled"}, clear=False):
+            with self.assertRaisesRegex(
+                AIProviderNotConfigured,
+                "^AI provider not configured$",
+            ):
+                configured_provider()
+
     def test_invalid_provider_raises_configuration_error(self) -> None:
         with patch.dict(os.environ, {"AI_PROVIDER": "bogus"}, clear=False):
             with self.assertRaises(AIProviderNotConfigured):

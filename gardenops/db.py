@@ -165,9 +165,11 @@ def run_migrations() -> None:
                 diagnostics = _migration_bootstrap_diagnostics(conn)
                 if diagnostics["mode"] == "incomplete-existing-schema":
                     _raise_incomplete_bootstrap_schema(diagnostics)
-                if diagnostics["mode"] == "verified-baseline":
+                if diagnostics["mode"] in {"verified-baseline", "verified-upgrade-baseline"}:
                     all_versions = [int(f.stem.split("_")[0]) for f in all_sql_files]
-                    for ver in all_versions:
+                    stamp_through = int(diagnostics.get("stamp_through", max(all_versions)))
+                    stamped_versions = [ver for ver in all_versions if ver <= stamp_through]
+                    for ver in stamped_versions:
                         conn.execute(
                             "INSERT INTO schema_migrations (version)"
                             " VALUES (%s)"
@@ -175,11 +177,15 @@ def run_migrations() -> None:
                             (ver,),
                         )
                     conn.commit()
+                    applied.update(stamped_versions)
                     _logger.info(
-                        "Stamped %d existing migration(s) on verified bootstrapped database",
-                        len(all_versions),
+                        "Stamped %d existing migration(s) through version %04d "
+                        "on verified bootstrapped database",
+                        len(stamped_versions),
+                        stamp_through,
                     )
-                    return
+                    if stamp_through == max(all_versions):
+                        return
             for sql_file in all_sql_files:
                 version = int(sql_file.stem.split("_")[0])
                 if version in applied:

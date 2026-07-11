@@ -711,6 +711,7 @@ export interface OfflineDraft {
   id: number;
   type: string;
   payload: Record<string, unknown>;
+  operation_id: string;
   garden_id?: number | null;
   created_at_ms: number;
   status: "pending" | "syncing" | "failed";

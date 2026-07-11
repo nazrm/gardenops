@@ -3,7 +3,7 @@ import { getActiveGardenContext } from "./api";
 
 const DB_NAME = "gardenops-offline";
 const STORE_NAME = "drafts";
-const DB_VERSION = 2;
+const DB_VERSION = 4;
 const MAX_RETRIES = 5;
 const QUEUE_CHANGED_EVENT = "gardenops:offline-queue-changed";
 
@@ -11,6 +11,7 @@ export interface SerializedFile {
   name: string;
   type: string;
   buffer: ArrayBuffer;
+  operation_id: string;
 }
 
 export async function serializeFiles(
@@ -21,6 +22,7 @@ export async function serializeFiles(
       name: f.name,
       type: f.type,
       buffer: await f.arrayBuffer(),
+      operation_id: generateOperationId(),
     })),
   );
 }
@@ -53,6 +55,62 @@ export interface SyncResult {
 
 let db: IDBDatabase | null = null;
 
+function generateOperationId(): string {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === "function") {
+    return cryptoApi.randomUUID();
+  }
+  if (!cryptoApi) {
+    throw new Error("Secure operation ID generation is unavailable");
+  }
+  const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const value = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return value.replace(
+    /^(.{8})(.{4})(.{4})(.{4})(.{12})$/,
+    "$1-$2-$3-$4-$5",
+  );
+}
+
+function backfillDraftOperationIds(store: IDBObjectStore): void {
+  const cursorRequest = store.openCursor();
+  cursorRequest.onsuccess = () => {
+    const cursor = cursorRequest.result;
+    if (!cursor) return;
+    const draft = cursor.value as Partial<OfflineDraft>;
+    let operationId = draft.operation_id;
+    let changed = false;
+    if (typeof operationId !== "string" || !operationId) {
+      operationId = generateOperationId();
+      changed = true;
+    }
+    const payload = draft.payload;
+    if (payload && Array.isArray(payload["_serialized_media"])) {
+      const serializedMedia = payload["_serialized_media"] as Array<
+        Partial<SerializedFile>
+      >;
+      const nextSerializedMedia = serializedMedia.map((item) => {
+        if (typeof item.operation_id === "string" && item.operation_id) {
+          return item;
+        }
+        changed = true;
+        return { ...item, operation_id: generateOperationId() };
+      });
+      if (changed) {
+        cursor.update({
+          ...draft,
+          operation_id: operationId,
+          payload: { ...payload, _serialized_media: nextSerializedMedia },
+        });
+      }
+    } else if (changed) {
+      cursor.update({ ...draft, operation_id: operationId });
+    }
+    cursor.continue();
+  };
+}
+
 function emitQueueChanged(): void {
   window.dispatchEvent(new CustomEvent(QUEUE_CHANGED_EVENT));
 }
@@ -74,6 +132,7 @@ export async function initOfflineQueue(): Promise<void> {
       if (!store.indexNames.contains("garden_id")) {
         store.createIndex("garden_id", "garden_id", { unique: false });
       }
+      backfillDraftOperationIds(store);
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () =>
@@ -117,6 +176,7 @@ export async function enqueueDraft(
   const draft: Omit<OfflineDraft, "id"> = {
     type,
     payload,
+    operation_id: generateOperationId(),
     garden_id: getActiveGardenContext(),
     created_at_ms: Date.now(),
     status: "pending",

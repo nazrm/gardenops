@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 from typing import Any, Literal, cast
 
 from anthropic import Anthropic
@@ -12,13 +13,21 @@ from anthropic import APITimeoutError as AnthropicAPITimeoutError
 from openai import APITimeoutError as OpenAIAPITimeoutError
 from openai import OpenAI
 
-from gardenops.provider_settings import env_ai_provider_value, get_ai_runtime_config
+from gardenops.provider_settings import (
+    SUPPORTED_AI_PROVIDERS,
+    env_ai_provider_value,
+    get_ai_runtime_config,
+)
 from gardenops.rate_limit import env_int, env_nonneg_int
 
 _logger = logging.getLogger(__name__)
 
-AIProvider = Literal["anthropic", "openai"]
+AIProvider = Literal["anthropic", "openai", "deterministic"]
+VendorAIProvider = Literal["anthropic", "openai"]
 _SUPPORTED_PROVIDERS = frozenset({"anthropic", "openai"})
+_DETERMINISTIC_PROVIDER = "deterministic"
+_DETERMINISTIC_AI_PROVIDER_ENV = "GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER"
+_DETERMINISTIC_MODEL = "gardenops-deterministic-e2e"
 
 
 class AIProviderNotConfigured(Exception):
@@ -56,11 +65,21 @@ class AIProviderTimeout(AIProviderError):
         super().__init__(detail, provider=provider)
 
 
+def _deterministic_ai_provider_enabled() -> bool:
+    """Allow the local fixture provider only in an explicitly marked test process."""
+    return (
+        os.environ.get("APP_ENV") == "test"
+        and os.environ.get(_DETERMINISTIC_AI_PROVIDER_ENV) == "1"
+    )
+
+
 def configured_provider() -> AIProvider:
+    if _deterministic_ai_provider_enabled():
+        return _DETERMINISTIC_PROVIDER
     provider = get_ai_runtime_config().provider
     if provider == "disabled":
         raw_env_provider = env_ai_provider_value()
-        if raw_env_provider and raw_env_provider not in _SUPPORTED_PROVIDERS:
+        if raw_env_provider and raw_env_provider not in SUPPORTED_AI_PROVIDERS:
             raise AIProviderNotConfigured(
                 "AI provider must be one of: anthropic, openai",
                 provider=raw_env_provider,
@@ -74,22 +93,33 @@ def configured_provider() -> AIProvider:
             "AI provider must be one of: anthropic, openai",
             provider=provider,
         )
-    return cast(AIProvider, provider)
+    return cast(VendorAIProvider, provider)
 
 
 def anthropic_model() -> str:
+    if _deterministic_ai_provider_enabled():
+        return _DETERMINISTIC_MODEL
     return get_ai_runtime_config().anthropic_model
 
 
 def openai_model() -> str:
+    if _deterministic_ai_provider_enabled():
+        return _DETERMINISTIC_MODEL
     return get_ai_runtime_config().openai_model
 
 
 def openai_fast_model() -> str:
+    if _deterministic_ai_provider_enabled():
+        return _DETERMINISTIC_MODEL
     return get_ai_runtime_config().openai_fast_model
 
 
 def _provider_api_key(provider: AIProvider) -> str:
+    if provider == _DETERMINISTIC_PROVIDER:
+        raise AIProviderNotConfigured(
+            "Deterministic test provider does not use API keys",
+            provider=provider,
+        )
     config = get_ai_runtime_config()
     if provider == "anthropic":
         key_name = "ANTHROPIC_API_KEY"
@@ -104,7 +134,8 @@ def _provider_api_key(provider: AIProvider) -> str:
 
 def require_ai_provider_configured() -> AIProvider:
     provider = configured_provider()
-    _provider_api_key(provider)
+    if provider != _DETERMINISTIC_PROVIDER:
+        _provider_api_key(provider)
     return provider
 
 
@@ -650,8 +681,90 @@ def _normalize_diagnoses(raw: object, *, provider: str) -> list[dict[str, Any]]:
     return result
 
 
+def _deterministic_plant_lookup(query: str) -> dict[str, Any]:
+    name = " ".join(query.strip().split())[:200] or "Deterministic test plant"
+    return {
+        "name": name,
+        "latin": "Testus e2e",
+        "category": "stauder",
+        "bloom_month": "juni-august",
+        "color": "green",
+        "hardiness": "H5",
+        "height_cm": 45,
+        "light": "sol",
+        "link": "",
+    }
+
+
+def _deterministic_care_batch(plants: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+    return {
+        str(plant["plt_id"]): {
+            "care_watering": "Water when the topsoil is dry.",
+            "care_soil": "Use well-drained garden soil.",
+            "care_planting": "Plant at the same depth as the root ball.",
+            "care_maintenance": "Remove damaged growth and check weekly.",
+            "care_notes": "Deterministic E2E fixture.",
+        }
+        for plant in plants
+    }
+
+
+def _deterministic_identify_candidates() -> list[dict[str, Any]]:
+    return _normalize_identify_candidates(
+        [
+            {
+                "name": "Test rose",
+                "latin": "Rosa canina",
+                "scientific_name": "Rosa canina",
+                "family": "Rosaceae",
+                "confidence": 0.9,
+                "reasoning": "Deterministic E2E fixture.",
+            },
+        ],
+        source=_DETERMINISTIC_PROVIDER,
+    )
+
+
+def _deterministic_diagnoses() -> list[dict[str, Any]]:
+    return _normalize_diagnoses(
+        [
+            {
+                "issue_type": "environmental",
+                "likely_cause": "Dry soil",
+                "confidence": "low",
+                "description": "The plant may be mildly drought stressed.",
+                "suggested_treatment": "Water deeply, then monitor soil moisture.",
+                "reasoning": "Deterministic E2E fixture.",
+                "related_history": "",
+            },
+        ],
+        provider=_DETERMINISTIC_PROVIDER,
+    )
+
+
+def _deterministic_task_descriptions(
+    prompt_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "task_key": task_key,
+            "description_en": (
+                "Complete this garden task in the planned window. Why: it keeps the garden healthy."
+            ),
+            "description_no": (
+                "Fullfør denne hageoppgaven i det planlagte tidsvinduet. "
+                "Hvorfor: det holder hagen sunn."
+            ),
+        }
+        for item in prompt_items
+        if isinstance((task_key := item.get("task_key")), str) and task_key
+    ]
+
+
 def lookup_plant_with_ai(query: str) -> dict[str, Any]:
     provider = configured_provider()
+    if provider == _DETERMINISTIC_PROVIDER:
+        return _deterministic_plant_lookup(query)
     api_key = _provider_api_key(provider)
     try:
         if provider == "anthropic":
@@ -681,6 +794,8 @@ def lookup_plant_with_ai(query: str) -> dict[str, Any]:
 
 def generate_care_batch_with_ai(plants: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
     provider = configured_provider()
+    if provider == _DETERMINISTIC_PROVIDER:
+        return _deterministic_care_batch(plants)
     api_key = _provider_api_key(provider)
     expected_ids = {str(plant["plt_id"]) for plant in plants}
     prompt = (
@@ -728,6 +843,8 @@ def chat_with_ai(
     timeout_seconds: float | None = None,
 ) -> str:
     provider = configured_provider()
+    if provider == _DETERMINISTIC_PROVIDER:
+        return "Deterministic test reply: Check soil moisture before watering."
     api_key = _provider_api_key(provider)
     try:
         if provider == "anthropic":
@@ -759,6 +876,8 @@ def chat_with_ai(
 
 def identify_plant_with_ai(image_bytes: bytes, organ: str) -> list[dict[str, Any]]:
     provider = configured_provider()
+    if provider == _DETERMINISTIC_PROVIDER:
+        return _deterministic_identify_candidates()
     api_key = _provider_api_key(provider)
     try:
         if provider == "anthropic":
@@ -807,6 +926,8 @@ def identify_plant_with_ai(image_bytes: bytes, organ: str) -> list[dict[str, Any
 
 def diagnose_plant_with_ai(image_bytes: bytes, prompt_text: str) -> list[dict[str, Any]]:
     provider = configured_provider()
+    if provider == _DETERMINISTIC_PROVIDER:
+        return _deterministic_diagnoses()
     api_key = _provider_api_key(provider)
     try:
         if provider == "anthropic":
@@ -853,6 +974,8 @@ def generate_task_descriptions_with_ai(
     preferred_locale: str,
 ) -> list[dict[str, Any]]:
     provider = configured_provider()
+    if provider == _DETERMINISTIC_PROVIDER:
+        return _deterministic_task_descriptions(prompt_items)
     api_key = _provider_api_key(provider)
     prompt = (
         "Generate localized task descriptions for these garden tasks. "

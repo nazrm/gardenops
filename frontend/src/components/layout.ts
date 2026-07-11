@@ -206,9 +206,18 @@ export function getAppShellMarkup(): string {
           </div>
         </div>
         <div id="view-stack" class="view-stack">
+        <div
+          id="garden-switch-status"
+          class="garden-switch-status"
+          role="status"
+          aria-live="polite"
+          hidden
+        >
+          <span>${t("common.loading")}</span>
+        </div>
         <section id="map-view" class="view view-map active" role="tabpanel" aria-labelledby="top-tab-map">
           <div class="map-shell">
-            <aside id="map-layers-panel" class="map-layers-panel" aria-labelledby="map-layers-title">
+            <aside id="map-layers-panel" class="map-layers-panel" aria-labelledby="map-layers-title" inert>
               <div class="map-layers-header">
                 <div>
                   <p class="map-layers-kicker" data-i18n="map.map_controls">${t("map.map_controls")}</p>
@@ -223,7 +232,7 @@ export function getAppShellMarkup(): string {
                   aria-controls="map-layers-panel"
                   aria-expanded="true"
                 >&#8249;</button>
-                <button id="mobile-map-layers-close-btn" class="map-layers-close close-btn" type="button" aria-label="${t("map.close_layers")}" data-i18n-aria-label="map.close_layers">&times;</button>
+                <button id="mobile-map-layers-close-btn" class="map-layers-close close-btn" type="button" aria-label="${t("map.close_layers")}" data-i18n-aria-label="map.close_layers" data-mobile-map-sheet-initial-focus>&times;</button>
               </div>
 
               <details id="map-layer-zones-section" class="map-layer-section map-layer-disclosure">
@@ -296,6 +305,24 @@ export function getAppShellMarkup(): string {
                 >
                   <span data-i18n="map.shade">${t("map.shade")}</span>
                 </button>
+                <button
+                  id="mobile-map-layouts-btn"
+                  class="mobile-map-action"
+                  type="button"
+                  aria-controls="mobile-map-layouts-sheet"
+                  aria-expanded="false"
+                >
+                  <span data-i18n="map.layouts_short">${t("map.layouts_short")}</span>
+                </button>
+                <button
+                  id="mobile-map-tools-btn"
+                  class="mobile-map-action"
+                  type="button"
+                  aria-controls="mobile-map-tools-sheet"
+                  aria-expanded="false"
+                >
+                  <span data-i18n="map.tools_short">${t("map.tools_short")}</span>
+                </button>
               </div>
 
               <div id="map-status-slot" class="map-status-slot" aria-live="polite"></div>
@@ -337,13 +364,13 @@ export function getAppShellMarkup(): string {
               aria-labelledby="attention-today-mobile-title"
               aria-hidden="true"
             ></aside>
-            <aside class="shade-panel" id="shade-panel" data-state="loading">
+            <aside class="shade-panel" id="shade-panel" data-state="loading" inert>
               <div class="shade-panel-header">
                 <div>
                   <p class="shade-kicker" data-i18n="shade.kicker">${t("shade.kicker")}</p>
                   <h3 data-i18n="shade.title">${t("shade.title")}</h3>
                 </div>
-                <button id="mobile-map-shade-close-btn" class="shade-panel-close close-btn" type="button" aria-label="${t("map.close_shade")}" data-i18n-aria-label="map.close_shade">&times;</button>
+                <button id="mobile-map-shade-close-btn" class="shade-panel-close close-btn" type="button" aria-label="${t("map.close_shade")}" data-i18n-aria-label="map.close_shade" data-mobile-map-sheet-initial-focus>&times;</button>
               </div>
               <div class="shade-overview-card">
                 <div class="shade-overview-copy">
@@ -584,7 +611,7 @@ export function getAppShellMarkup(): string {
             </div>
             <div id="plants-export-bar"></div>
             <div class="filter-row">
-              <input id="plants-search" type="text" placeholder="${t("plants.search_placeholder")}" data-i18n-placeholder="plants.search_placeholder" />
+              <input id="plants-search" type="text" placeholder="${t("plants.search_placeholder")}" data-i18n-placeholder="plants.search_placeholder" aria-label="${t("plants.search_placeholder")}" data-i18n-aria-label="plants.search_placeholder" />
               <select id="plants-category">
                 <option value="" data-i18n="category.all">${t("category.all")}</option>
                 <option value="løk" data-i18n="category.lok">${t("category.lok")}</option>
@@ -647,8 +674,8 @@ export function getAppShellMarkup(): string {
                   <option value="died" data-i18n="journal.event.died">${t("journal.event.died")}</option>
                   <option value="observed" data-i18n="journal.event.observed">${t("journal.event.observed")}</option>
                 </select>
-                <input id="journal-filter-search" type="text" placeholder="${t("journal.search_placeholder")}" data-i18n-placeholder="journal.search_placeholder" />
-                <input id="journal-filter-actor" type="text" placeholder="${t("journal.actor_placeholder")}" data-i18n-placeholder="journal.actor_placeholder" />
+                <input id="journal-filter-search" type="text" placeholder="${t("journal.search_placeholder")}" data-i18n-placeholder="journal.search_placeholder" aria-label="${t("journal.search_placeholder")}" data-i18n-aria-label="journal.search_placeholder" />
+                <input id="journal-filter-actor" type="text" placeholder="${t("journal.actor_placeholder")}" data-i18n-placeholder="journal.actor_placeholder" aria-label="${t("journal.actor_placeholder")}" data-i18n-aria-label="journal.actor_placeholder" />
                 <input id="journal-filter-from" type="date" aria-label="${t("journal.filter_from")}" data-i18n-aria-label="journal.filter_from" />
                 <input id="journal-filter-to" type="date" aria-label="${t("journal.filter_to")}" data-i18n-aria-label="journal.filter_to" />
               </div>
@@ -669,7 +696,7 @@ export function getAppShellMarkup(): string {
                 </div>
               </div>
               <div class="filter-row">
-                <input id="inventory-search" type="text" placeholder="${t("inventory.search_placeholder")}" data-i18n-placeholder="inventory.search_placeholder" />
+                <input id="inventory-search" type="text" placeholder="${t("inventory.search_placeholder")}" data-i18n-placeholder="inventory.search_placeholder" aria-label="${t("inventory.search_placeholder")}" data-i18n-aria-label="inventory.search_placeholder" />
                 <select id="inventory-type-filter" aria-label="${t("inventory.filter_type")}" data-i18n-aria-label="inventory.filter_type">
                   <option value="" data-i18n="inventory.type.all">${t("inventory.type.all")}</option>
                   <option value="seed" data-i18n="inventory.type.seed">${t("inventory.type.seed")}</option>
@@ -865,8 +892,8 @@ export function getAppShellMarkup(): string {
                   <option value="fair">${t("harvest.quality_fair")}</option>
                   <option value="poor">${t("harvest.quality_poor")}</option>
                 </select>
-                <input type="date" id="harvest-filter-from" class="input-sm" />
-                <input type="date" id="harvest-filter-to" class="input-sm" />
+                <input type="date" id="harvest-filter-from" class="input-sm" aria-label="${t("harvest.filter_from")}" data-i18n-aria-label="harvest.filter_from" />
+                <input type="date" id="harvest-filter-to" class="input-sm" aria-label="${t("harvest.filter_to")}" data-i18n-aria-label="harvest.filter_to" />
               </div>
             </div>
             <div id="harvest-export-bar"></div>
@@ -942,7 +969,7 @@ export function getAppShellMarkup(): string {
               <progress id="care-generation-bar" max="1" value="0"></progress>
             </div>
             <div class="filter-row">
-              <input id="care-search" type="text" placeholder="${t("care.search_placeholder")}" data-i18n-placeholder="care.search_placeholder" />
+              <input id="care-search" type="text" placeholder="${t("care.search_placeholder")}" data-i18n-placeholder="care.search_placeholder" aria-label="${t("care.search_placeholder")}" data-i18n-aria-label="care.search_placeholder" />
               <select id="care-category">
                 <option value="" data-i18n="category.all">${t("category.all")}</option>
                 <option value="løk" data-i18n="category.lok">${t("category.lok")}</option>
@@ -1016,13 +1043,13 @@ export function getAppShellMarkup(): string {
       </main>
 
       <div id="mobile-utility-backdrop" class="mobile-utility-backdrop" aria-hidden="true"></div>
-      <aside id="mobile-utility-sheet" class="mobile-utility-sheet" aria-hidden="true" aria-labelledby="mobile-utility-title">
+      <aside id="mobile-utility-sheet" class="mobile-utility-sheet" aria-hidden="true" aria-labelledby="mobile-utility-title" inert>
         <div class="mobile-utility-sheet-header">
           <div>
             <p class="mobile-utility-kicker" data-i18n="nav.garden_controls">${t("nav.garden_controls")}</p>
             <h2 id="mobile-utility-title" data-i18n="nav.quick_actions">${t("nav.quick_actions")}</h2>
           </div>
-          <button id="mobile-utility-close-btn" class="close-btn" type="button" aria-label="${t("nav.close_controls")}" data-i18n-aria-label="nav.close_controls">&times;</button>
+          <button id="mobile-utility-close-btn" class="close-btn" type="button" aria-label="${t("nav.close_controls")}" data-i18n-aria-label="nav.close_controls" data-mobile-utility-initial-focus>&times;</button>
         </div>
 
         <div class="mobile-utility-section global-search-shell">
@@ -1074,13 +1101,13 @@ export function getAppShellMarkup(): string {
 
       <div id="mobile-map-sheet-backdrop" class="mobile-map-sheet-backdrop" aria-hidden="true"></div>
 
-      <aside id="mobile-map-layouts-sheet" class="mobile-map-sheet" aria-hidden="true" aria-labelledby="mobile-map-layouts-title">
+      <aside id="mobile-map-layouts-sheet" class="mobile-map-sheet" aria-hidden="true" aria-labelledby="mobile-map-layouts-title" inert>
         <div class="mobile-map-sheet-header">
           <div>
             <p class="mobile-map-sheet-kicker" data-i18n="map.saved_layouts">${t("map.saved_layouts")}</p>
             <h2 id="mobile-map-layouts-title" data-i18n="map.garden_layouts">${t("map.garden_layouts")}</h2>
           </div>
-          <button id="mobile-map-layouts-close-btn" class="close-btn" type="button" aria-label="${t("map.close_layouts")}" data-i18n-aria-label="map.close_layouts">&times;</button>
+          <button id="mobile-map-layouts-close-btn" class="close-btn" type="button" aria-label="${t("map.close_layouts")}" data-i18n-aria-label="map.close_layouts" data-mobile-map-sheet-initial-focus>&times;</button>
         </div>
         <div class="mobile-map-sheet-actions">
           <button id="mobile-map-layouts-save-btn" class="mobile-map-sheet-btn mobile-map-sheet-btn--primary" type="button" data-i18n="map.save_current_layout">${t("map.save_current_layout")}</button>
@@ -1088,13 +1115,13 @@ export function getAppShellMarkup(): string {
         <div id="mobile-snapshots-list" class="mobile-snapshots-list" aria-live="polite"></div>
       </aside>
 
-      <aside id="mobile-map-tools-sheet" class="mobile-map-sheet" aria-hidden="true" aria-labelledby="mobile-map-tools-title">
+      <aside id="mobile-map-tools-sheet" class="mobile-map-sheet" aria-hidden="true" aria-labelledby="mobile-map-tools-title" inert>
         <div class="mobile-map-sheet-header">
           <div>
             <p class="mobile-map-sheet-kicker" data-i18n="map.map_controls">${t("map.map_controls")}</p>
             <h2 id="mobile-map-tools-title" data-i18n="map.map_tools">${t("map.map_tools")}</h2>
           </div>
-          <button id="mobile-map-tools-close-btn" class="close-btn" type="button" aria-label="${t("map.close_map_tools")}" data-i18n-aria-label="map.close_map_tools">&times;</button>
+          <button id="mobile-map-tools-close-btn" class="close-btn" type="button" aria-label="${t("map.close_map_tools")}" data-i18n-aria-label="map.close_map_tools" data-mobile-map-sheet-initial-focus>&times;</button>
         </div>
 
         <div class="mobile-map-tool-card">

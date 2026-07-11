@@ -26,8 +26,32 @@ RUNUSER = Path("/usr/sbin/runuser")
 DEFAULT_POSTGRES_OS_USER = "postgres"
 TEST_DB = "gardenops_test"
 TEST_ROLE = "gardenops_test_runner"
+COMMAND_DATABASES = (
+    TEST_DB,
+    "gardenops_attention_e2e_test",
+    "gardenops_task_history_e2e_test",
+)
+COMMAND_E2E_ENV = {
+    "gardenops_attention_e2e_test": (
+        "GARDENOPS_ATTENTION_E2E_TEST_URL",
+        "GARDENOPS_ATTENTION_E2E_BACKEND_PORT",
+        "GARDENOPS_ATTENTION_E2E_FRONTEND_PORT",
+    ),
+    "gardenops_task_history_e2e_test": (
+        "GARDENOPS_TASK_HISTORY_E2E_TEST_URL",
+        "GARDENOPS_TASK_HISTORY_E2E_BACKEND_PORT",
+        "GARDENOPS_TASK_HISTORY_E2E_FRONTEND_PORT",
+    ),
+}
 APP_POOL_MAX_SIZE = 10
 SETUP_CONNECTION_MARGIN = 40
+INHERITED_ENV_ALLOWLIST = (
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+)
+TEST_SUBPROCESS_PATH = "/usr/local/bin:/usr/bin:/bin"
 
 
 @dataclass
@@ -90,9 +114,12 @@ def _write_log(cluster: Cluster, message: str) -> None:
 
 
 def _pick_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = int(sock.getsockname()[1])
+        if port != 5432:
+            return port
 
 
 def _postgres_os_user() -> str | None:
@@ -213,6 +240,7 @@ def _psql(
     *,
     admin: bool = False,
     capture: bool = False,
+    tuples_only: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     command = [
@@ -231,18 +259,17 @@ def _psql(
         "-c",
         sql,
     ]
+    if tuples_only:
+        command[2:2] = ["-A", "-t"]
     if not admin:
         env["PGPASSWORD"] = cluster.test_password
     return _run(command, env=env, capture=capture)
 
 
 def _psql_scalar(cluster: Cluster, database: str, sql: str, *, admin: bool = False) -> str:
-    result = _psql(cluster, database, sql, admin=admin, capture=True)
+    result = _psql(cluster, database, sql, admin=admin, capture=True, tuples_only=True)
     lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
-    for line in lines:
-        if not line.startswith(("(", "-")) and "|" not in line and line != "system_identifier":
-            return line
-    return lines[-1] if lines else ""
+    return lines[0] if lines else ""
 
 
 def _sql_literal(raw: str) -> str:
@@ -300,7 +327,12 @@ def _validate_url(cluster: Cluster, url: str, database: str) -> None:
 
 
 def _test_env(cluster: Cluster, database: str) -> dict[str, str]:
-    env = os.environ.copy()
+    env = {
+        name: value
+        for name in INHERITED_ENV_ALLOWLIST
+        if (value := os.environ.get(name))
+    }
+    env["PATH"] = TEST_SUBPROCESS_PATH
     env["APP_ENV"] = "test"
     env["AUTH_PASSWORD_HASH_FAST_FOR_TESTS"] = "true"
     env["AUTH_REQUIRED"] = "false"
@@ -314,6 +346,27 @@ def _test_env(cluster: Cluster, database: str) -> dict[str, str]:
     env["GARDENOPS_TEST_POSTGRES_URL"] = url
     env["TAILLIGHT_URL"] = ""
     env["TAILLIGHT_API_KEY"] = ""
+    return env
+
+
+def _command_env(cluster: Cluster, database: str) -> dict[str, str]:
+    env = _test_env(cluster, database)
+    if os.environ.get("GARDENOPS_ALLOW_DESTRUCTIVE_E2E") == "1":
+        env["GARDENOPS_ALLOW_DESTRUCTIVE_E2E"] = "1"
+    command_log_dir = cluster.log_dir / "command-app"
+    command_log_dir.mkdir(parents=True, exist_ok=True)
+    env["GARDENOPS_LOGS_DIR"] = str(command_log_dir)
+
+    e2e_vars = COMMAND_E2E_ENV.get(database)
+    if e2e_vars:
+        url_var, backend_port_var, frontend_port_var = e2e_vars
+        backend_port = _pick_port()
+        frontend_port = _pick_port()
+        while frontend_port == backend_port:
+            frontend_port = _pick_port()
+        env[url_var] = cluster.url_for(database)
+        env[backend_port_var] = str(backend_port)
+        env[frontend_port_var] = str(frontend_port)
     return env
 
 
@@ -336,6 +389,31 @@ def _run_migrations(cluster: Cluster, database: str, *, print_failure: bool = Tr
             print(output, file=sys.stderr)
         raise
     return time.perf_counter() - start
+
+
+def _issue_disposable_marker(cluster: Cluster, database: str) -> str:
+    """Bind command-mode destructive work to this temporary cluster and database."""
+    if database not in COMMAND_DATABASES:
+        raise RuntimeError(f"unsupported disposable command database: {database}")
+    if not cluster.system_identifier:
+        raise RuntimeError("disposable cluster system identifier is unavailable")
+
+    marker = f"{cluster.system_identifier}.{secrets.token_urlsafe(24)}"
+    _psql(
+        cluster,
+        "postgres",
+        f"ALTER DATABASE {database} SET gardenops.disposable_marker TO {_sql_literal(marker)};",
+        admin=True,
+        capture=True,
+    )
+    observed_marker = _psql_scalar(
+        cluster,
+        database,
+        "SELECT current_setting('gardenops.disposable_marker', true);",
+    )
+    if observed_marker != marker:
+        raise RuntimeError("disposable database marker could not be verified")
+    return marker
 
 
 def _proof_reset(cluster: Cluster, iterations: int) -> int:
@@ -414,6 +492,37 @@ def _run_full_suite(cluster: Cluster, shards: int) -> int:
     ]
     result = subprocess.run(command, cwd=ROOT, env=env, check=False)
     _print_shard_summaries(cluster)
+    return int(result.returncode)
+
+
+def _run_command(
+    cluster: Cluster,
+    command: list[str],
+    *,
+    database: str = TEST_DB,
+) -> int:
+    if database not in COMMAND_DATABASES:
+        raise RuntimeError(f"unsupported disposable command database: {database}")
+    _create_databases(cluster, 0)
+    if database != TEST_DB:
+        _psql(
+            cluster,
+            "postgres",
+            f"CREATE DATABASE {database} OWNER {TEST_ROLE};",
+            admin=True,
+            capture=True,
+        )
+    _validate_url(cluster, cluster.url_for(database), database)
+    migration_time = _run_migrations(cluster, database)
+    _write_log(cluster, f"migration_time={migration_time:.3f}s")
+    marker = _issue_disposable_marker(cluster, database)
+    env = _command_env(cluster, database)
+    env["GARDENOPS_DISPOSABLE_POSTGRES_URL"] = cluster.url_for(database)
+    env["GARDENOPS_DISPOSABLE_POSTGRES_MARKER"] = marker
+    env["GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER"] = str(cluster.system_identifier)
+    result = subprocess.run(command, cwd=ROOT, env=env, check=False)
+    print(f"command_exit_code={result.returncode}")
+    print(f"migration_time={migration_time:.3f}s")
     return int(result.returncode)
 
 
@@ -506,10 +615,28 @@ def _cleanup_cluster(
         cluster.preserve_logs = True
         _write_log(cluster, f"port still open after cleanup: {cluster.port}")
     if cleanup_ok:
-        shutil.rmtree(cluster.work_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(cluster.work_dir)
+        except Exception as exc:
+            cleanup_ok = False
+            cluster.preserve_logs = True
+            _write_log(cluster, f"failed to remove disposable cluster data: {exc}")
+        if cluster.work_dir.exists():
+            cleanup_ok = False
+            cluster.preserve_logs = True
+            _write_log(cluster, f"disposable cluster data still exists: {cluster.work_dir}")
     if (success or discard_logs) and cleanup_ok and not cluster.preserve_logs:
-        shutil.rmtree(cluster.log_dir, ignore_errors=True)
-    else:
+        try:
+            shutil.rmtree(cluster.log_dir)
+        except Exception as exc:
+            cleanup_ok = False
+            cluster.preserve_logs = True
+            _write_log(cluster, f"failed to remove disposable runner logs: {exc}")
+        if cluster.log_dir.exists():
+            cleanup_ok = False
+            cluster.preserve_logs = True
+            _write_log(cluster, f"disposable runner logs still exist: {cluster.log_dir}")
+    if not cleanup_ok or not (success or discard_logs) or cluster.preserve_logs:
         print(f"preserved logs: {cluster.log_dir}", file=sys.stderr)
     return cleanup_ok
 
@@ -524,18 +651,43 @@ def main() -> int:
     mode.add_argument("--proof-reset", action="store_true", help="benchmark table reset only")
     mode.add_argument("--full-suite", action="store_true", help="run the sharded backend suite")
     mode.add_argument(
+        "--command",
+        action="store_true",
+        help="run a command against one migrated disposable database",
+    )
+    mode.add_argument(
         "--cleanup-smoke",
         choices=("after-start", "during-migration", "during-pytest"),
         help="inject a failure and verify cleanup of the disposable cluster",
     )
     parser.add_argument("--iterations", type=int, default=20, help="proof-reset iterations")
     parser.add_argument("--shards", type=int, default=4, help="number of shard databases")
+    parser.add_argument(
+        "--command-database",
+        choices=COMMAND_DATABASES,
+        default=TEST_DB,
+        help="allowlisted disposable database name for --command",
+    )
+    parser.add_argument(
+        "command_args",
+        nargs=argparse.REMAINDER,
+        help="command and arguments after --command --",
+    )
     args = parser.parse_args()
 
     if args.iterations < 1:
         parser.error("--iterations must be at least 1")
     if args.shards < 1:
         parser.error("--shards must be at least 1")
+    command_args = list(args.command_args)
+    if command_args[:1] == ["--"]:
+        command_args = command_args[1:]
+    if args.command and not command_args:
+        parser.error("--command requires a command after --")
+    if not args.command and command_args:
+        parser.error("command arguments require --command")
+    if not args.command and args.command_database != TEST_DB:
+        parser.error("--command-database requires --command")
 
     max_connections = _max_connections(args.shards)
     cluster: Cluster | None = None
@@ -567,6 +719,12 @@ def main() -> int:
         elif args.proof_reset:
             _create_databases(cluster, 0)
             return_code = _proof_reset(cluster, args.iterations)
+        elif args.command:
+            return_code = _run_command(
+                cluster,
+                command_args,
+                database=args.command_database,
+            )
         else:
             _create_databases(cluster, args.shards)
             return_code = _run_full_suite(cluster, args.shards)
@@ -593,6 +751,9 @@ def main() -> int:
         print(f"cleanup_smoke={args.cleanup_smoke}: passed")
         print(f"total_time={time.perf_counter() - started:.3f}s")
         return 0
+    if not cleanup_ok:
+        print("disposable Postgres cleanup failed", file=sys.stderr)
+        return return_code if return_code != 0 else 1
     return return_code
 
 

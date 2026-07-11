@@ -2227,6 +2227,9 @@ def restore_snapshot_data(
             (garden_id,),
         ).fetchall()
     ]
+    target_plot_ids = set(seen)
+    removed_plot_ids = sorted(set(existing_plot_ids) - target_plot_ids)
+    retained_plot_ids = sorted(set(existing_plot_ids) & target_plot_ids)
 
     if manage_transaction:
         db.commit()
@@ -2234,13 +2237,22 @@ def restore_snapshot_data(
     try:
         db.execute("SET CONSTRAINTS ALL DEFERRED")
         lock_garden_layout(db, garden_id)
-        if existing_plot_ids:
+        if removed_plot_ids:
             replacement_result = delete_plots_for_replacement(
                 db,
                 garden_id=garden_id,
-                plot_ids=existing_plot_ids,
+                plot_ids=removed_plot_ids,
             )
             media_storage_pairs.extend(replacement_result.media_storage_pairs)
+        if retained_plot_ids:
+            db.execute(
+                """
+                UPDATE plots
+                SET grid_row = NULL, grid_col = NULL
+                WHERE garden_id = %s AND plot_id = ANY(%s)
+                """,
+                (garden_id, retained_plot_ids),
+            )
         for p in plots:
             db.execute(
                 "INSERT INTO plots"

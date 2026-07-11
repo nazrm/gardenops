@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date
 from typing import Any
 
@@ -127,6 +127,7 @@ _TASK_DESCRIPTION_BATCH_SIZE = 12
 _AI_TASK_DESCRIPTION_TYPES = {"prune"}
 _WORK_ORDER_SOURCE_PREFIX = "work_order"
 _WORK_ORDER_GROUP_TYPES = {"prune", "fertilize"}
+_TASK_GENERATION_LOCK_SEED = 0x474F505441534B53
 
 
 def _generated_description_metadata(
@@ -357,6 +358,77 @@ def _rule_exists(
     return row is not None
 
 
+def _monthly_task_generation_lock_name(
+    garden_id: int,
+    target_month: int,
+    target_year: int,
+) -> str:
+    return f"gardenops:task-generation:{garden_id}:{target_year:04d}-{target_month:02d}"
+
+
+def _lock_monthly_task_generation(
+    db: DbConn,
+    garden_id: int,
+    target_month: int,
+    target_year: int,
+) -> None:
+    """Serialize one garden's monthly generation until the transaction ends."""
+    db.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, %s))",
+        (
+            _monthly_task_generation_lock_name(garden_id, target_month, target_year),
+            _TASK_GENERATION_LOCK_SEED,
+        ),
+    )
+
+
+def _generation_candidate_rule_sources(
+    plant_ids: list[str],
+    target_month: int,
+    target_year: int,
+) -> set[str]:
+    month_key = f"{target_year}-{target_month:02d}"
+    day_keys = tuple(f"{month_key}-{day:02d}" for day in (1, 8, 15, 22))
+    candidates: set[str] = set()
+    for plant_id in plant_ids:
+        candidates.update(
+            {
+                f"bloom_observe:{plant_id}:{month_key}",
+                f"seasonal_prune:{plant_id}:{month_key}",
+                f"plant_out:{plant_id}:{month_key}",
+                f"harvest_check:{plant_id}:{month_key}-15",
+                f"fertilize:{plant_id}:{month_key}-01",
+                f"fertilize:{plant_id}:{month_key}-15",
+                *(f"water:{plant_id}:{day_key}" for day_key in day_keys),
+            }
+        )
+    candidates.add(_work_order_rule_source("prune", _iso_week_key(day_keys[0])))
+    candidates.update(
+        _work_order_rule_source("fertilize", _iso_week_key(day_key))
+        for day_key in (day_keys[0], day_keys[2])
+    )
+    return candidates
+
+
+def _existing_rule_sources(
+    db: DbConn,
+    garden_id: int,
+    candidates: set[str],
+) -> set[str]:
+    if not candidates:
+        return set()
+    rows = db.execute(
+        """
+        SELECT rule_source
+        FROM garden_tasks
+        WHERE garden_id = %s
+          AND rule_source = ANY(%s)
+        """,
+        (garden_id, sorted(candidates)),
+    ).fetchall()
+    return {str(row["rule_source"]) for row in rows}
+
+
 def _delete_pending_rule_tasks(
     db: DbConn,
     *,
@@ -438,6 +510,68 @@ def _outdoor_plot_ids_for_plant(db: DbConn, garden_id: int, plt_id: str) -> tupl
         (plt_id, garden_id),
     ).fetchall()
     return tuple(str(row["plot_id"]) for row in rows)
+
+
+def _outdoor_plot_ids_by_plant(
+    db: DbConn,
+    garden_id: int,
+    plant_ids: Sequence[str],
+) -> dict[str, tuple[str, ...]]:
+    """Return outdoor plot links for all supplied plants in one query."""
+    if not plant_ids:
+        return {}
+    rows = db.execute(
+        """
+        SELECT DISTINCT pp.plt_id, pp.plot_id
+        FROM plot_plants pp
+        JOIN plots p ON p.plot_id = pp.plot_id
+        WHERE p.garden_id = %s
+          AND p.grid_row IS NOT NULL
+          AND pp.plt_id = ANY(%s)
+        ORDER BY pp.plt_id, pp.plot_id
+        """,
+        (garden_id, list(plant_ids)),
+    ).fetchall()
+    plot_ids_by_plant: dict[str, list[str]] = {}
+    for row in rows:
+        plot_ids_by_plant.setdefault(str(row["plt_id"]), []).append(str(row["plot_id"]))
+    return {plant_id: tuple(plot_ids) for plant_id, plot_ids in plot_ids_by_plant.items()}
+
+
+def _rain_alerts_overlapping_dates(
+    db: DbConn,
+    garden_id: int,
+    first_date: str,
+    last_date: str,
+) -> list[DbRow]:
+    """Return rain alerts in the same order used by per-date lookup."""
+    return db.execute(
+        """
+        SELECT id, title, description, valid_from, valid_until, metadata_json
+        FROM weather_alerts
+        WHERE garden_id = %s
+          AND alert_type = 'rain_surplus'
+          AND dismissed = 0
+          AND valid_from <= %s
+          AND valid_until >= %s
+        ORDER BY valid_from ASC, created_at_ms DESC, id ASC
+        """,
+        (garden_id, last_date, first_date),
+    ).fetchall()
+
+
+def _rain_alerts_by_date(
+    alerts: Sequence[DbRow],
+    dates: Sequence[str],
+) -> dict[str, DbRow]:
+    """Choose the existing SQL-order winner for each requested watering date."""
+    winners: dict[str, DbRow] = {}
+    for date_str in dates:
+        for alert in alerts:
+            if str(alert["valid_from"]) <= date_str <= str(alert["valid_until"]):
+                winners[date_str] = alert
+                break
+    return winners
 
 
 def _parse_mapping_json(value: Any) -> dict[str, Any]:
@@ -892,6 +1026,7 @@ def generate_tasks(
 
     Returns ``{"created": N, "skipped": N}``.
     """
+    _lock_monthly_task_generation(db, garden_id, target_month, target_year)
     now_ms = current_timestamp_ms()
     due_on = f"{target_year}-{target_month:02d}-01"
     created = 0
@@ -926,6 +1061,25 @@ def generate_tasks(
         target_month=target_month,
         target_year=target_year,
     )
+    plant_ids = [plant["plt_id"] for plant in plant_contexts]
+    existing_rule_sources = _existing_rule_sources(
+        db,
+        garden_id,
+        _generation_candidate_rule_sources(plant_ids, target_month, target_year),
+    )
+    outdoor_plot_ids_by_plant = _outdoor_plot_ids_by_plant(db, garden_id, plant_ids)
+    water_dates = tuple(f"{target_year}-{target_month:02d}-{day:02d}" for day in (1, 8, 15, 22))
+    rain_alert_by_date: dict[str, DbRow] = {}
+    if target_month in (6, 7, 8):
+        rain_alert_by_date = _rain_alerts_by_date(
+            _rain_alerts_overlapping_dates(
+                db,
+                garden_id,
+                water_dates[0],
+                water_dates[-1],
+            ),
+            water_dates,
+        )
 
     for plant_ctx in plant_contexts:
         plt_id = plant_ctx["plt_id"]
@@ -940,7 +1094,7 @@ def generate_tasks(
         bloom_months = local_months if local_months else _bloom_months(bloom_raw)
         if target_month in bloom_months:
             rule = f"bloom_observe:{plt_id}:{target_year}-{target_month:02d}"
-            if _rule_exists(db, garden_id, rule):
+            if rule in existing_rule_sources:
                 skipped += 1
             else:
                 desc_en, desc_no = _infer_descriptions_for_rule(
@@ -972,6 +1126,7 @@ def generate_tasks(
                         "fallback_no": desc_no,
                     }
                 )
+                existing_rule_sources.add(rule)
                 created += 1
 
         # Rule 2: Seasonal pruning (March/October)
@@ -979,7 +1134,7 @@ def generate_tasks(
             rule = f"seasonal_prune:{plt_id}:{target_year}-{target_month:02d}"
             week_key = _iso_week_key(due_on)
             group_rule = _work_order_rule_source("prune", week_key)
-            if _rule_exists(db, garden_id, group_rule) or _rule_exists(db, garden_id, rule):
+            if group_rule in existing_rule_sources or rule in existing_rule_sources:
                 skipped += 1
             else:
                 bucket = work_order_candidates.setdefault(
@@ -1002,7 +1157,7 @@ def generate_tasks(
                 rule = f"fertilize:{plt_id}:{fert_date}"
                 week_key = _iso_week_key(fert_date)
                 group_rule = _work_order_rule_source("fertilize", week_key)
-                if _rule_exists(db, garden_id, group_rule) or _rule_exists(db, garden_id, rule):
+                if group_rule in existing_rule_sources or rule in existing_rule_sources:
                     skipped += 1
                 else:
                     bucket = work_order_candidates.setdefault(
@@ -1023,15 +1178,13 @@ def generate_tasks(
         if target_month in (6, 7, 8) and any(
             kw in care_watering for kw in ("regular", "often", "jevnlig", "ofte", "mye")
         ):
-            outdoor_plot_ids = _outdoor_plot_ids_for_plant(db, garden_id, plt_id)
+            outdoor_plot_ids = outdoor_plot_ids_by_plant.get(plt_id, ())
             for day in (1, 8, 15, 22):
                 water_date = f"{target_year}-{target_month:02d}-{day:02d}"
                 rule = f"water:{plt_id}:{water_date}"
-                if _rule_exists(db, garden_id, rule):
+                if rule in existing_rule_sources:
                     skipped += 1
-                elif outdoor_plot_ids and (
-                    rain_alert := _rain_alert_covering_date(db, garden_id, water_date)
-                ):
+                elif outdoor_plot_ids and (rain_alert := rain_alert_by_date.get(water_date)):
                     _logger.info(
                         "Skipped watering task for %s on %s — rain alert active",
                         plt_id,
@@ -1078,12 +1231,13 @@ def generate_tasks(
                             "fallback_no": desc_no,
                         }
                     )
+                    existing_rule_sources.add(rule)
                     created += 1
 
         # Rule 5: Planting out bulbs (September-October)
         if category == "l\u00f8k" and target_month in (9, 10):
             rule = f"plant_out:{plt_id}:{target_year}-{target_month:02d}"
-            if _rule_exists(db, garden_id, rule):
+            if rule in existing_rule_sources:
                 skipped += 1
             else:
                 desc_en, desc_no = _infer_descriptions_for_rule(
@@ -1115,6 +1269,7 @@ def generate_tasks(
                         "fallback_no": desc_no,
                     }
                 )
+                existing_rule_sources.add(rule)
                 created += 1
 
         # Rule 6: Harvest window check
@@ -1127,7 +1282,7 @@ def generate_tasks(
                 if harvest_month == target_month:
                     h_date = date(target_year, target_month, 15).isoformat()
                     rule = f"harvest_check:{plt_id}:{h_date}"
-                    if _rule_exists(db, garden_id, rule):
+                    if rule in existing_rule_sources:
                         skipped += 1
                     else:
                         desc_en, desc_no = _infer_descriptions_for_rule(
@@ -1160,6 +1315,7 @@ def generate_tasks(
                                 "fallback_no": desc_no,
                             }
                         )
+                        existing_rule_sources.add(rule)
                         created += 1
                     break
 
@@ -1172,7 +1328,7 @@ def generate_tasks(
             continue
         week_key = str(bucket["week_key"])
         group_rule = _work_order_rule_source(task_type, week_key)
-        if _rule_exists(db, garden_id, group_rule):
+        if group_rule in existing_rule_sources:
             skipped += len(bucket["plant_contexts"])
             continue
         plant_contexts = sorted(
@@ -1200,6 +1356,7 @@ def generate_tasks(
                 plant_ids=plant_ids,
             ),
         )
+        existing_rule_sources.add(group_rule)
         created += 1
 
     overrides = generate_task_description_overrides(
@@ -1231,6 +1388,22 @@ def generate_tasks(
     return {"created": created, "skipped": skipped}
 
 
+def _empty_plant_context(plt_id: str) -> dict[str, str]:
+    return {
+        "plt_id": plt_id,
+        "name": plt_id,
+        "category": "",
+        "bloom_month": "",
+        "light": "",
+        "hardiness": "",
+        "care_watering": "",
+        "care_soil": "",
+        "care_planting": "",
+        "care_maintenance": "",
+        "care_notes": "",
+    }
+
+
 def _lookup_plant_context(db: DbConn, plt_id: str) -> dict[str, str]:
     row = db.execute(
         """
@@ -1242,19 +1415,7 @@ def _lookup_plant_context(db: DbConn, plt_id: str) -> dict[str, str]:
         (plt_id,),
     ).fetchone()
     if row is None:
-        return {
-            "plt_id": plt_id,
-            "name": plt_id,
-            "category": "",
-            "bloom_month": "",
-            "light": "",
-            "hardiness": "",
-            "care_watering": "",
-            "care_soil": "",
-            "care_planting": "",
-            "care_maintenance": "",
-            "care_notes": "",
-        }
+        return _empty_plant_context(plt_id)
     return _plant_context_from_row(row)
 
 
@@ -1272,6 +1433,98 @@ def _lookup_task_plant_contexts(db: DbConn, task_id: int) -> list[dict[str, str]
         (task_id,),
     ).fetchall()
     return [_plant_context_from_row(row) for row in rows]
+
+
+def _description_rule_plant_id(task_row: Mapping[str, object]) -> str:
+    """Return the plant identifier used by description inference, if any."""
+    rule = str(task_row.get("rule_source") or "")
+    if not rule:
+        return ""
+    parts = rule.split(":")
+    if rule.startswith("auto:issue_followup:") or rule.startswith("auto:escalation:"):
+        return ""
+    if len(parts) >= 4 and parts[0] == "auto":
+        return parts[3]
+    if parts[0] in {"workflow", _WORK_ORDER_SOURCE_PREFIX} or len(parts) < 3:
+        return ""
+    return parts[1]
+
+
+def prefetch_task_description_contexts(
+    db: DbConn,
+    task_rows: Sequence[Mapping[str, object]],
+) -> tuple[
+    dict[int, str],
+    dict[str, dict[str, str]],
+    dict[int, list[dict[str, str]]],
+]:
+    """Load task links and plant contexts needed to refresh a batch of descriptions."""
+    task_ids = [int(task["id"]) for task in task_rows]
+    if not task_ids:
+        return {}, {}, {}
+
+    linked_rows = db.execute(
+        """
+        SELECT gtp.task_id,
+               gtp.plt_id AS linked_plt_id,
+               p.plt_id,
+               p.name,
+               p.category,
+               p.bloom_month,
+               p.light,
+               p.hardiness,
+               p.care_watering,
+               p.care_soil,
+               p.care_planting,
+               p.care_maintenance,
+               p.care_notes,
+               ROW_NUMBER() OVER (
+                   PARTITION BY gtp.task_id
+                   ORDER BY gtp.plt_id
+               ) AS link_rank
+        FROM garden_task_plants gtp
+        LEFT JOIN plants p ON p.plt_id = gtp.plt_id
+        WHERE gtp.task_id = ANY(%s)
+        ORDER BY gtp.task_id, p.name, p.plt_id
+        """,
+        (task_ids,),
+    ).fetchall()
+
+    first_linked_plant_ids: dict[int, str] = {}
+    plant_contexts: dict[str, dict[str, str]] = {}
+    work_order_plant_contexts: dict[int, list[dict[str, str]]] = {}
+    for row in linked_rows:
+        task_id = int(row["task_id"])
+        linked_plant_id = str(row["linked_plt_id"])
+        if int(row["link_rank"]) == 1:
+            first_linked_plant_ids[task_id] = linked_plant_id
+        if row["plt_id"] is None:
+            plant_contexts.setdefault(linked_plant_id, _empty_plant_context(linked_plant_id))
+            continue
+        plant_context = _plant_context_from_row(row)
+        plant_contexts[linked_plant_id] = plant_context
+        work_order_plant_contexts.setdefault(task_id, []).append(plant_context)
+
+    rule_plant_ids = {
+        plant_id for task in task_rows if (plant_id := _description_rule_plant_id(task))
+    }
+    missing_plant_ids = sorted(rule_plant_ids.difference(plant_contexts))
+    if missing_plant_ids:
+        rows = db.execute(
+            """
+            SELECT plt_id, name, category, bloom_month, light, hardiness,
+                   care_watering, care_soil, care_planting, care_maintenance, care_notes
+            FROM plants
+            WHERE plt_id = ANY(%s)
+            """,
+            (missing_plant_ids,),
+        ).fetchall()
+        for row in rows:
+            plant_contexts[str(row["plt_id"])] = _plant_context_from_row(row)
+        for plant_id in missing_plant_ids:
+            plant_contexts.setdefault(plant_id, _empty_plant_context(plant_id))
+
+    return first_linked_plant_ids, plant_contexts, work_order_plant_contexts
 
 
 def _infer_bloom(plant: dict[str, str], month: int) -> tuple[str, str]:
@@ -1479,6 +1732,9 @@ def _parse_month_from_date(date_str: str) -> int:
 def infer_task_description(
     db: DbConn,
     task_row: dict,
+    *,
+    plant_contexts: Mapping[str, dict[str, str]] | None = None,
+    work_order_plant_contexts: Mapping[int, list[dict[str, str]]] | None = None,
 ) -> tuple[str, str]:
     """Infer bilingual descriptions for a task from its rule_source.
 
@@ -1496,6 +1752,13 @@ def infer_task_description(
 
     parts = rule.split(":")
 
+    def plant_context(plt_id: str) -> dict[str, str]:
+        if plant_contexts is not None:
+            prefetched = plant_contexts.get(plt_id)
+            if prefetched is not None:
+                return prefetched
+        return _lookup_plant_context(db, plt_id)
+
     # auto:issue_followup:{id}
     if rule.startswith("auto:issue_followup:"):
         return (
@@ -1507,7 +1770,7 @@ def infer_task_description(
     if len(parts) >= 4 and parts[0] == "auto":
         auto_type = parts[1]
         plt_id = parts[3]
-        plant = _lookup_plant_context(db, plt_id)
+        plant = plant_context(plt_id)
         if auto_type == "frost_protect":
             return _infer_auto_frost_protect(plant)
         if auto_type == "heat_protect":
@@ -1533,10 +1796,13 @@ def infer_task_description(
         task_type = parts[1]
         if task_type not in _WORK_ORDER_GROUP_TYPES or "id" not in task_row:
             return ("", "")
-        plant_contexts = _lookup_task_plant_contexts(db, int(task_row["id"]))
-        if not plant_contexts:
+        if work_order_plant_contexts is None:
+            linked_plant_contexts = _lookup_task_plant_contexts(db, int(task_row["id"]))
+        else:
+            linked_plant_contexts = work_order_plant_contexts.get(int(task_row["id"]), [])
+        if not linked_plant_contexts:
             return ("", "")
-        _, description_en, description_no = _work_order_text(task_type, plant_contexts)
+        _, description_en, description_no = _work_order_text(task_type, linked_plant_contexts)
         return description_en, description_no
 
     # Plant-based rules: type:{plt_id}:{date}
@@ -1547,5 +1813,5 @@ def infer_task_description(
     plt_id = parts[1]
     date_str = parts[2]
     month = _parse_month_from_date(date_str)
-    plant = _lookup_plant_context(db, plt_id)
+    plant = plant_context(plt_id)
     return _infer_descriptions_for_rule(plant, rule_type, month)

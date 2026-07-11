@@ -8,6 +8,13 @@ from pydantic import Field
 
 from gardenops.db import DB, DbConn, current_timestamp_ms, executemany
 from gardenops.models import StrictBaseModel
+from gardenops.offline_idempotency import (
+    JOURNAL_ENDPOINT,
+    JOURNAL_TARGET,
+    prepare_operation,
+    raise_operation_target_gone,
+    reserve_operation,
+)
 from gardenops.router_helpers import (
     active_garden_id as _active_garden_id,
 )
@@ -305,6 +312,25 @@ def _apply_bloom_side_effects(
     )
 
 
+def _journal_create_response(
+    db: DbConn,
+    *,
+    garden_id: int,
+    target_id: str,
+) -> dict:
+    row = db.execute(
+        """
+        SELECT public_id
+        FROM garden_journal_entries
+        WHERE public_id = %s AND garden_id = %s
+        """,
+        (target_id, garden_id),
+    ).fetchone()
+    if not row:
+        raise_operation_target_gone()
+    return {"status": "ok", "id": str(row["public_id"])}
+
+
 @router.get("/journal")
 def list_journal_entries(
     request: Request,
@@ -452,6 +478,20 @@ def create_journal_entry(
     context = _auth_context(request)
     _require_write(context)
     garden_id = _active_garden_id(context)
+    prepared_operation = prepare_operation(
+        db,
+        request=request,
+        garden_id=garden_id,
+        endpoint=JOURNAL_ENDPOINT,
+        request_payload=body.model_dump(mode="json"),
+        now_ms=current_timestamp_ms(),
+    )
+    if prepared_operation.replay_target_id is not None:
+        return _journal_create_response(
+            db,
+            garden_id=garden_id,
+            target_id=prepared_operation.replay_target_id,
+        )
     _validate_date(body.occurred_on)
     valid_plant_ids = _validate_plant_ids(db, context, body.plant_ids)
     valid_plot_ids = _validate_plot_ids(db, context, body.plot_ids)
@@ -460,6 +500,21 @@ def create_journal_entry(
 
     now_ms = current_timestamp_ms()
     metadata_str = json.dumps(body.metadata, sort_keys=True, separators=(",", ":"))
+    entry_public_id = _generate_public_id("jrn")
+    if prepared_operation.operation is not None:
+        reservation = reserve_operation(
+            db,
+            operation=prepared_operation.operation,
+            target_type=JOURNAL_TARGET,
+            target_id=entry_public_id,
+            created_at_ms=now_ms,
+        )
+        if not reservation.is_owner:
+            return _journal_create_response(
+                db,
+                garden_id=garden_id,
+                target_id=reservation.result_id,
+            )
 
     row = db.execute(
         """
@@ -469,7 +524,7 @@ def create_journal_entry(
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, public_id
         """,
         (
-            _generate_public_id("jrn"),
+            entry_public_id,
             garden_id,
             body.event_type,
             body.occurred_on,

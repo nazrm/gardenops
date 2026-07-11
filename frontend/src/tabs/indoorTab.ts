@@ -2,6 +2,7 @@ import { t } from "../core/i18n.js";
 import type { IndoorPlant } from "../core/models.js";
 import { renderPlantCard } from "../components/plantCard.js";
 import {
+  getActiveGardenContext,
   getPlotPlants,
   getApiErrorMessage,
   removePlantFromPlotApi,
@@ -11,13 +12,26 @@ import { showToast } from "../components/toast.js";
 
 // ── Module state ──────────────────────────────────
 let indoorPlotId = "";
+let indoorGardenId: number | null = null;
 let indoorPlants: IndoorPlant[] = [];
 let roomLabels: string[] = [];
 let sortBy: "name" | "room" | "category" | "quantity" = "name";
 let searchQuery = "";
+let indoorRequestVersion = 0;
 
 // ── Public API ────────────────────────────────────
-export function setIndoorPlotId(plotId: string): void {
+export function setIndoorPlotId(
+  plotId: string,
+  gardenId: number | null = getActiveGardenContext(),
+): void {
+  const contextChanged = indoorGardenId !== gardenId || indoorPlotId !== plotId;
+  if (contextChanged) {
+    indoorRequestVersion += 1;
+    indoorPlants = [];
+    roomLabels = [];
+    searchQuery = "";
+  }
+  indoorGardenId = gardenId;
   indoorPlotId = plotId;
 }
 
@@ -27,6 +41,38 @@ export function getIndoorPlotId(): string {
 
 export function getRoomLabelsList(): string[] {
   return roomLabels;
+}
+
+export function resetIndoorState(): void {
+  indoorRequestVersion += 1;
+  indoorGardenId = null;
+  indoorPlotId = "";
+  indoorPlants = [];
+  roomLabels = [];
+  searchQuery = "";
+}
+
+function isCurrentIndoorContext(
+  gardenId: number | null,
+  plotId: string,
+): boolean {
+  return (
+    gardenId !== null
+    && gardenId === indoorGardenId
+    && plotId === indoorPlotId
+    && gardenId === getActiveGardenContext()
+  );
+}
+
+function isCurrentIndoorRequest(
+  gardenId: number | null,
+  plotId: string,
+  requestVersion: number,
+): boolean {
+  return (
+    requestVersion === indoorRequestVersion
+    && isCurrentIndoorContext(gardenId, plotId)
+  );
 }
 
 function deriveRoomLabels(plants: IndoorPlant[]): string[] {
@@ -39,13 +85,22 @@ function deriveRoomLabels(plants: IndoorPlant[]): string[] {
   ).sort((a, b) => a.localeCompare(b));
 }
 
-export async function loadIndoorPlants(): Promise<void> {
-  if (!indoorPlotId) return;
-  const plants = await (getPlotPlants(indoorPlotId) as Promise<
+export async function loadIndoorPlants(): Promise<boolean> {
+  const requestGardenId = indoorGardenId;
+  const requestPlotId = indoorPlotId;
+  const requestVersion = ++indoorRequestVersion;
+  if (!requestPlotId || !isCurrentIndoorContext(requestGardenId, requestPlotId)) {
+    return false;
+  }
+  const plants = await (getPlotPlants(requestPlotId) as Promise<
     IndoorPlant[]
   >);
+  if (!isCurrentIndoorRequest(requestGardenId, requestPlotId, requestVersion)) {
+    return false;
+  }
   indoorPlants = plants;
   roomLabels = deriveRoomLabels(plants);
+  return true;
 }
 
 // ── Sorting & filtering ──────────────────────────
@@ -89,6 +144,10 @@ function groupByRoom(plants: IndoorPlant[]): Map<string, IndoorPlant[]> {
 let onAddPlant: ((container: HTMLElement) => void) | null = null;
 let onEditPlant: ((plant: IndoorPlant) => void) | null = null;
 
+export interface IndoorRenderOptions {
+  canWrite?: boolean;
+}
+
 export function setOnAddPlant(cb: (container: HTMLElement) => void): void {
   onAddPlant = cb;
 }
@@ -99,19 +158,28 @@ export function setOnEditPlant(cb: (plant: IndoorPlant) => void): void {
 
 // ── Render ────────────────────────────────────────
 
-export function renderIndoorPlants(container: HTMLElement): void {
+export function renderIndoorPlants(
+  container: HTMLElement,
+  { canWrite = false }: IndoorRenderOptions = {},
+): void {
+  const renderGardenId = indoorGardenId;
+  const renderPlotId = indoorPlotId;
   container.textContent = "";
 
-  // Add plant button
-  const addBtn = document.createElement("button");
-  addBtn.type = "button";
-  addBtn.className = "btn btn-primary";
-  addBtn.textContent = t("indoor.add_plant");
-  addBtn.style.marginBottom = "var(--sp-3)";
-  addBtn.addEventListener("click", () => {
-    if (onAddPlant) onAddPlant(container);
-  });
-  container.appendChild(addBtn);
+  if (canWrite) {
+    // Add plant button
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "btn btn-primary";
+    addBtn.textContent = t("indoor.add_plant");
+    addBtn.style.marginBottom = "var(--sp-3)";
+    addBtn.addEventListener("click", () => {
+      if (!canWrite || !onAddPlant) return;
+      if (!isCurrentIndoorContext(renderGardenId, renderPlotId)) return;
+      onAddPlant(container);
+    });
+    container.appendChild(addBtn);
+  }
 
   // Header: search + sort (created once, not re-rendered on filter)
   const header = document.createElement("div");
@@ -120,6 +188,9 @@ export function renderIndoorPlants(container: HTMLElement): void {
   const searchInput = document.createElement("input");
   searchInput.type = "search";
   searchInput.placeholder = t("indoor.search_placeholder");
+  searchInput.dataset["i18nPlaceholder"] = "indoor.search_placeholder";
+  searchInput.setAttribute("aria-label", t("indoor.search_placeholder"));
+  searchInput.dataset["i18nAriaLabel"] = "indoor.search_placeholder";
   searchInput.className = "indoor-search";
   searchInput.value = searchQuery;
 
@@ -146,19 +217,28 @@ export function renderIndoorPlants(container: HTMLElement): void {
   container.appendChild(resultsDiv);
 
   searchInput.addEventListener("input", () => {
+    if (!isCurrentIndoorContext(renderGardenId, renderPlotId)) return;
     searchQuery = searchInput.value;
-    renderResultsArea(resultsDiv, container);
+    renderResultsArea(resultsDiv, container, canWrite);
   });
   sortSelect.addEventListener("change", () => {
+    if (!isCurrentIndoorContext(renderGardenId, renderPlotId)) return;
     sortBy = sortSelect.value as typeof sortBy;
-    renderResultsArea(resultsDiv, container);
+    renderResultsArea(resultsDiv, container, canWrite);
   });
 
-  renderResultsArea(resultsDiv, container);
+  renderResultsArea(resultsDiv, container, canWrite);
 }
 
-function renderResultsArea(resultsDiv: HTMLElement, parentContainer: HTMLElement): void {
+function renderResultsArea(
+  resultsDiv: HTMLElement,
+  parentContainer: HTMLElement,
+  canWrite: boolean,
+): void {
+  const renderGardenId = indoorGardenId;
+  const renderPlotId = indoorPlotId;
   resultsDiv.textContent = "";
+  if (!isCurrentIndoorContext(renderGardenId, renderPlotId)) return;
 
   const filtered = filteredAndSorted();
   if (filtered.length === 0) {
@@ -189,7 +269,7 @@ function renderResultsArea(resultsDiv: HTMLElement, parentContainer: HTMLElement
       wrapper.className = "indoor-card-wrapper";
 
       // Reuse the standard plant card
-      const card = renderPlantCard(plant, indoorPlotId);
+      const card = renderPlantCard(plant, indoorPlotId, { canWrite });
       wrapper.appendChild(card);
 
       // Room label row below the card
@@ -200,16 +280,26 @@ function renderResultsArea(resultsDiv: HTMLElement, parentContainer: HTMLElement
       roomLabel.textContent = plant.room_label
         ? `${t("indoor.room_label")}: ${plant.room_label}`
         : t("indoor.room_label");
-      const roomEditBtn = document.createElement("button");
-      roomEditBtn.type = "button";
-      roomEditBtn.className = "btn-sm btn-outline";
-      roomEditBtn.textContent = plant.room_label
-        ? "\u270E"
-        : `+ ${t("indoor.room_label")}`;
-      roomEditBtn.addEventListener("click", () => {
-        showRoomLabelEditor(wrapper, plant, resultsDiv, parentContainer);
-      });
-      roomRow.append(roomLabel, roomEditBtn);
+      roomRow.appendChild(roomLabel);
+      if (canWrite) {
+        const roomEditBtn = document.createElement("button");
+        roomEditBtn.type = "button";
+        roomEditBtn.className = "btn-sm btn-outline";
+        roomEditBtn.textContent = plant.room_label
+          ? "\u270E"
+          : `+ ${t("indoor.room_label")}`;
+        roomEditBtn.addEventListener("click", () => {
+          if (!canWrite || !isCurrentIndoorContext(renderGardenId, renderPlotId)) return;
+          showRoomLabelEditor(
+            wrapper,
+            plant,
+            resultsDiv,
+            parentContainer,
+            canWrite,
+          );
+        });
+        roomRow.appendChild(roomEditBtn);
+      }
       wrapper.appendChild(roomRow);
 
       list.appendChild(wrapper);
@@ -222,13 +312,19 @@ function renderResultsArea(resultsDiv: HTMLElement, parentContainer: HTMLElement
         "button[data-remove]",
       );
       if (removeBtn) {
+        if (!canWrite) return;
+        if (!isCurrentIndoorContext(renderGardenId, renderPlotId)) return;
         const pltId = removeBtn.dataset["remove"];
         if (pltId) {
           void (async () => {
+            if (!canWrite) return;
+            if (!isCurrentIndoorContext(renderGardenId, renderPlotId)) return;
             try {
-              await removePlantFromPlotApi(indoorPlotId, pltId);
-              await loadIndoorPlants();
-              renderResultsArea(resultsDiv, parentContainer);
+              await removePlantFromPlotApi(renderPlotId, pltId);
+              if (!isCurrentIndoorContext(renderGardenId, renderPlotId)) return;
+              const loaded = await loadIndoorPlants();
+              if (!loaded || !isCurrentIndoorContext(renderGardenId, renderPlotId)) return;
+              renderResultsArea(resultsDiv, parentContainer, canWrite);
             } catch (err) {
               showToast(getApiErrorMessage(err), "error");
             }
@@ -240,6 +336,8 @@ function renderResultsArea(resultsDiv: HTMLElement, parentContainer: HTMLElement
         "button[data-edit]",
       );
       if (editBtn) {
+        if (!canWrite) return;
+        if (!isCurrentIndoorContext(renderGardenId, renderPlotId)) return;
         const pltId = editBtn.dataset["edit"];
         const plant = indoorPlants.find((p) => p.plt_id === pltId);
         if (plant && onEditPlant) onEditPlant(plant);
@@ -256,7 +354,13 @@ function showRoomLabelEditor(
   plant: IndoorPlant,
   resultsDiv: HTMLElement,
   parentContainer: HTMLElement,
+  canWrite: boolean,
 ): void {
+  if (!canWrite) return;
+  const requestGardenId = indoorGardenId;
+  const requestPlotId = indoorPlotId;
+  if (!isCurrentIndoorContext(requestGardenId, requestPlotId)) return;
+
   // Replace room row with an inline edit form
   const existing = wrapper.querySelector(".indoor-room-row");
   if (!existing) return;
@@ -284,16 +388,20 @@ function showRoomLabelEditor(
   saveBtn.className = "btn-sm btn-primary";
   saveBtn.textContent = t("common.ok");
   saveBtn.addEventListener("click", async () => {
+    if (!canWrite) return;
+    if (!isCurrentIndoorContext(requestGardenId, requestPlotId)) return;
     const newRoom = input.value.trim() || null;
     try {
       await updatePlotPlant(
-        indoorPlotId,
+        requestPlotId,
         plant.plt_id,
         plant.quantity,
         newRoom,
       );
-      await loadIndoorPlants();
-      renderResultsArea(resultsDiv, parentContainer);
+      if (!isCurrentIndoorContext(requestGardenId, requestPlotId)) return;
+      const loaded = await loadIndoorPlants();
+      if (!loaded || !isCurrentIndoorContext(requestGardenId, requestPlotId)) return;
+      renderResultsArea(resultsDiv, parentContainer, canWrite);
     } catch (err) {
       showToast(getApiErrorMessage(err), "error");
     }

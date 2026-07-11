@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -11,6 +11,13 @@ from pydantic import Field
 from gardenops.audit import write_audit_event
 from gardenops.db import DB, DbConn, current_timestamp_ms, get_db, return_db
 from gardenops.models import StrictBaseModel
+from gardenops.offline_idempotency import (
+    MEDIA_UPLOAD_ENDPOINT,
+    media_request_fingerprint,
+    prepare_operation,
+    raise_operation_target_gone,
+    reserve_operation,
+)
 from gardenops.rate_limit import enforce_rate_limit, env_int
 from gardenops.request_body import read_body_limited
 from gardenops.router_helpers import (
@@ -363,6 +370,40 @@ def _fetch_asset_row(
     if not row:
         raise HTTPException(status_code=404, detail="Media asset not found")
     return row
+
+
+def _media_upload_replay_response(
+    db: DbConn,
+    *,
+    context: AuthContext,
+    garden_id: int,
+    target_type: TargetType,
+    target_id: str,
+    asset_id: str,
+) -> dict[str, object]:
+    try:
+        canonical_target_id = _validate_media_target(
+            db,
+            context=context,
+            target_type=target_type,
+            target_id=target_id,
+        )
+        row = _fetch_asset_row(db, garden_id=garden_id, asset_id=asset_id)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise_operation_target_gone()
+        raise
+    link = db.execute(
+        """
+        SELECT 1
+        FROM media_links
+        WHERE asset_id = %s AND target_type = %s AND target_id = %s
+        """,
+        (asset_id, target_type, canonical_target_id),
+    ).fetchone()
+    if not link:
+        raise_operation_target_gone()
+    return _serialize_asset_row(db, row, context=context, garden_id=garden_id)
 
 
 def _plant_cover_asset_map(
@@ -1045,7 +1086,6 @@ async def upload_media_asset(
     context = _auth_context(request)
     _require_write(context)
     garden_id = _active_garden_id(context)
-    _validate_media_target(db, context=context, target_type=target_type, target_id=target_id)
     enforce_rate_limit(
         request,
         bucket="media_uploads",
@@ -1063,6 +1103,38 @@ async def upload_media_asset(
     payload = await read_body_limited(request, media_upload_max_bytes())
     declared_content_type = request.headers.get("content-type", "").strip().lower()
     original_filename = request.headers.get("x-upload-filename", "").strip()
+    canonical_target_id = _canonical_target_id(target_type, target_id)
+    prepared_operation = prepare_operation(
+        db,
+        request=request,
+        garden_id=garden_id,
+        endpoint=MEDIA_UPLOAD_ENDPOINT,
+        request_payload={
+            "media_fingerprint": media_request_fingerprint(
+                target_type=target_type,
+                target_id=canonical_target_id,
+                original_filename=original_filename,
+                content_type=declared_content_type,
+                payload=payload,
+            )
+        },
+        now_ms=current_timestamp_ms(),
+    )
+    if prepared_operation.replay is not None:
+        return _media_upload_replay_response(
+            db,
+            context=context,
+            garden_id=garden_id,
+            target_type=cast(TargetType, prepared_operation.replay.target_type),
+            target_id=prepared_operation.replay.target_id,
+            asset_id=prepared_operation.replay.result_id,
+        )
+    canonical_target_id = _validate_media_target(
+        db,
+        context=context,
+        target_type=target_type,
+        target_id=canonical_target_id,
+    )
     try:
         prepared = prepare_media_asset(
             payload=payload,
@@ -1073,9 +1145,26 @@ async def upload_media_asset(
         record_security_event("media_upload_rejections")
         raise exc
     _enforce_media_quota(db, garden_id=garden_id, incoming_asset=prepared)
-    persist_prepared_media(prepared)
-    canonical_target_id = _canonical_target_id(target_type, target_id)
+    if prepared_operation.operation is not None:
+        reservation = reserve_operation(
+            db,
+            operation=prepared_operation.operation,
+            target_type=target_type,
+            target_id=canonical_target_id,
+            result_id=prepared.asset_id,
+            created_at_ms=current_timestamp_ms(),
+        )
+        if not reservation.is_owner:
+            return _media_upload_replay_response(
+                db,
+                context=context,
+                garden_id=garden_id,
+                target_type=cast(TargetType, reservation.target_type),
+                target_id=reservation.target_id,
+                asset_id=reservation.result_id,
+            )
     try:
+        persist_prepared_media(prepared)
         _insert_prepared_asset_link(
             db,
             garden_id=garden_id,

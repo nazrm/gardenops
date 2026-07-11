@@ -43,6 +43,7 @@ import type {
 const AUTH_CSRF_STORAGE_KEY = "gardenops-csrf-token";
 const ACTIVE_GARDEN_STORAGE_KEY = "gardenops-active-garden-id";
 const DEFAULT_CSRF_COOKIE_NAMES = ["gardenops_csrf", "XSRF-TOKEN"];
+export const OFFLINE_OPERATION_ID_HEADER = "X-Offline-Operation-Id";
 
 export class ApiError extends Error {
   status: number;
@@ -199,6 +200,8 @@ type ApiRequestOptions = {
   timeoutMs?: number;
   timeoutMessage?: string;
   gardenId?: number | null;
+  operationId?: string;
+  suppressAuthExpiry?: boolean;
 };
 
 export function getActiveGardenContext(): number | null {
@@ -296,6 +299,7 @@ async function apiFetch(
     timeoutMs: requestedTimeoutMs,
     timeoutMessage: requestedTimeoutMessage,
     gardenId,
+    operationId,
     ...fetchInit
   } = init ?? {};
   const headers = new Headers(authHeaders(gardenId));
@@ -303,6 +307,9 @@ async function apiFetch(
   requestHeaders.forEach((value, key) => {
     headers.set(key, value);
   });
+  if (operationId) {
+    headers.set(OFFLINE_OPERATION_ID_HEADER, operationId);
+  }
   const method = (fetchInit.method ?? "GET").toUpperCase();
   if (
     (method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE")
@@ -341,9 +348,13 @@ async function apiFetch(
   }
 }
 
-async function checked(res: Response, path: string): Promise<Response> {
+async function checked(
+  res: Response,
+  path: string,
+  options: Pick<ApiRequestOptions, "suppressAuthExpiry"> = {},
+): Promise<Response> {
   if (!res.ok) {
-    if (res.status === 401 && _onAuthExpired) {
+    if (res.status === 401 && !options.suppressAuthExpiry && _onAuthExpired) {
       _onAuthExpired();
     }
     const fallback = `Request failed (${res.status})`;
@@ -390,7 +401,14 @@ async function apiPost<T>(
   if (options?.gardenId !== undefined) {
     request.gardenId = options.gardenId;
   }
-  const response = await checked(await apiFetch(path, request), path);
+  if (options?.operationId !== undefined) {
+    request.operationId = options.operationId;
+  }
+  const response = await checked(
+    await apiFetch(path, request),
+    path,
+    options ?? {},
+  );
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
@@ -450,7 +468,11 @@ function uploadBinary<T>(
   path: string,
   payload: Blob,
   headers: Record<string, string>,
-  options?: { onProgress?: (pct: number) => void; gardenId?: number | null },
+  options?: {
+    onProgress?: (pct: number) => void;
+    gardenId?: number | null;
+    operationId?: string;
+  },
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -459,6 +481,9 @@ function uploadBinary<T>(
     const mergedHeaders = new Headers(authHeaders(options?.gardenId));
     for (const [key, value] of Object.entries(headers)) {
       if (value) mergedHeaders.set(key, value);
+    }
+    if (options?.operationId) {
+      mergedHeaders.set(OFFLINE_OPERATION_ID_HEADER, options.operationId);
     }
     if (!mergedHeaders.has("x-csrf-token")) {
       const csrfToken = getStoredCsrfToken();
@@ -1018,7 +1043,7 @@ export async function loginApi(
     password,
     mfa_code: options.mfaCode ?? "",
     recovery_code: options.recoveryCode ?? "",
-  });
+  }, { suppressAuthExpiry: true });
 }
 
 export async function getPasskeysApi(): Promise<PasskeySummary[]> {
@@ -1095,6 +1120,7 @@ export async function finishPasskeyLoginApi(
       challenge_token: challengeToken,
       credential,
     },
+    { suppressAuthExpiry: true },
   );
 }
 
@@ -1121,10 +1147,14 @@ export async function finishPasskeyReauthenticationApi(
     reauthenticated_at_ms: number;
     reauthenticated_until_ms: number;
     mfa_authenticated_at_ms: number;
-  }>("/api/auth/reauthenticate/passkey/verify", {
-    challenge_token: challengeToken,
-    credential,
-  });
+  }>(
+    "/api/auth/reauthenticate/passkey/verify",
+    {
+      challenge_token: challengeToken,
+      credential,
+    },
+    { suppressAuthExpiry: true },
+  );
 }
 
 export async function changePasswordApi(
@@ -1619,7 +1649,7 @@ export async function reauthenticateApi(
     current_password: currentPassword,
     mfa_code: options.mfaCode ?? "",
     recovery_code: options.recoveryCode ?? "",
-  });
+  }, { suppressAuthExpiry: true });
 }
 
 export async function revokeUserSessionsApi(
@@ -2470,7 +2500,7 @@ export async function createJournalEntryApi(data: {
   metadata?: Record<string, unknown>;
   plant_ids?: string[];
   plot_ids?: string[];
-}, options?: Pick<ApiRequestOptions, "gardenId">): Promise<{ status: string; id: string }> {
+}, options?: Pick<ApiRequestOptions, "gardenId" | "operationId">): Promise<{ status: string; id: string }> {
   return apiPost<{ status: string; id: string }>("/api/journal", data, options);
 }
 
@@ -2524,6 +2554,7 @@ export async function uploadMediaApi(options: {
   file: File;
   onProgress?: (pct: number) => void;
   gardenId?: number | null;
+  operationId?: string;
 }): Promise<MediaAsset> {
   const qs = new URLSearchParams({
     target_type: options.targetType,
@@ -2532,12 +2563,16 @@ export async function uploadMediaApi(options: {
   const uploadOptions: {
     onProgress?: (pct: number) => void;
     gardenId?: number | null;
+    operationId?: string;
   } = {};
   if (options.onProgress) {
     uploadOptions.onProgress = options.onProgress;
   }
   if ("gardenId" in options) {
     uploadOptions.gardenId = options.gardenId ?? null;
+  }
+  if (options.operationId) {
+    uploadOptions.operationId = options.operationId;
   }
   return uploadBinary<MediaAsset>(
     `/api/media/upload?${qs.toString()}`,
@@ -3187,7 +3222,7 @@ export async function updateTaskApi(
 export async function taskActionApi(
   taskId: string,
   body: TaskActionRequest,
-  options?: Pick<ApiRequestOptions, "gardenId">,
+  options?: Pick<ApiRequestOptions, "gardenId" | "operationId">,
 ): Promise<{ status: string }> {
   return apiPost<{ status: string }>(`/api/tasks/${taskId}/action`, body, options);
 }
@@ -3358,7 +3393,7 @@ export async function createIssueApi(body: {
   follow_up_on?: string;
   plant_ids?: string[];
   plot_ids?: string[];
-}, options?: Pick<ApiRequestOptions, "gardenId">): Promise<{ status: string; id: string }> {
+}, options?: Pick<ApiRequestOptions, "gardenId" | "operationId">): Promise<{ status: string; id: string }> {
   return apiPost<{ status: string; id: string }>("/api/issues", body, options);
 }
 
@@ -3558,7 +3593,7 @@ export async function createHarvestApi(body: {
   notes?: string;
   plant_ids?: string[];
   plot_ids?: string[];
-}, options?: Pick<ApiRequestOptions, "gardenId">): Promise<{ status: string; id: string; journal_entry_id?: string | null }> {
+}, options?: Pick<ApiRequestOptions, "gardenId" | "operationId">): Promise<{ status: string; id: string; journal_entry_id?: string | null }> {
   return apiPost<{ status: string; id: string; journal_entry_id?: string | null }>(
     "/api/harvest",
     body,

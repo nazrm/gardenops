@@ -32,6 +32,33 @@ def test_map_standby_uses_content_visibility_not_hidden_display_none() -> None:
     assert ".view-map--standby[inert]" in styles
 
 
+def test_mobile_fab_map_state_is_scoped_without_a_body_tab_selector() -> None:
+    app = _read_frontend("app.ts")
+    styles = _read_frontend("style.css")
+    navigation_body = app.split("function applyNavigationState", 1)[1].split(
+        "function setActiveTab",
+        1,
+    )[0]
+
+    assert "map-tab-active" not in app
+    assert "body.map-tab-active" not in styles
+    assert 'const mobileFab = document.getElementById("mobile-fab")' in navigation_body
+    assert 'mobileFab?.classList.toggle("mobile-fab--map-active"' in navigation_body
+    assert 'activeTab === "map"' in navigation_body
+    assert 'mobileFab?.classList.toggle("mobile-fab--admin-active"' in navigation_body
+    assert 'activeTab === "admin"' in navigation_body
+    assert ".mobile-fab.mobile-fab--map-active" in styles
+    assert "body.mobile-map-sheet-open .mobile-fab.mobile-fab--map-active" in styles
+    assert ".mobile-fab.mobile-fab--admin-active" in styles
+
+
+def test_mobile_notification_trigger_closes_utility_sheet() -> None:
+    app = _read_frontend("app.ts")
+
+    assert 'getElementById("mobile-notification-btn")?.addEventListener("click"' in app
+    assert "setMobileUtilityOpen(false);" in app
+
+
 def test_tab_switch_performance_script_reports_phase_metrics() -> None:
     script = (ROOT / "scripts" / "check_page_performance.cjs").read_text()
 
@@ -75,21 +102,57 @@ def test_plant_media_previews_are_deferred_off_the_render_path() -> None:
     assert "plantMediaPreviewScheduleSeq += 1" in navigation_body
 
 
-def test_plants_cache_is_prefetched_after_initial_map_load() -> None:
+def test_initial_map_does_not_prefetch_full_plant_catalogue() -> None:
     app = _read_frontend("app.ts")
     bootstrap_body = app.split("async function bootstrapApp", 1)[1].split(
         "async function checkOnboardingNeeded",
         1,
     )[0]
+    quick_actions = _read_frontend("features/quickActionsFeature.ts")
+    plot_interactions = _read_frontend("components/plotInteractions.ts")
 
-    assert "requestPlantsCachePrefetchAfterPaint" in app
-    assert "PLANTS_CACHE_PREFETCH_DELAY_MS" in app
-    assert "requestPlantsCachePrefetchAfterPaint();" in bootstrap_body
-    prefetch_body = app.split("function requestPlantsCachePrefetchAfterPaint", 1)[1].split(
-        "async function fetchPlantDetails",
+    assert "requestPlantsCachePrefetchAfterPaint" not in app
+    assert "ensurePlantsCacheLoaded()" not in bootstrap_body
+    assert "setPlantsViewLoading(true);" in app
+    assert 't("common.loading")' in app
+    assert "await ctx.ensurePlantsCacheLoaded();" in quick_actions
+    assert "await cbs.ensurePlantsCacheLoaded();" in plot_interactions
+
+
+def test_map_state_refresh_renders_plots_before_optional_map_state() -> None:
+    app = _read_frontend("app.ts")
+    refresh_body = app.split("async function refreshMapState", 1)[1].split(
+        "async function createMapObjectFromSelection",
         1,
     )[0]
-    assert "renderPlantsTable();" in prefetch_body
+
+    assert "const plotsPromise = fetchPlots(2, fetchOptions);" in refresh_body
+    assert "const optionalStatePromise = Promise.all([" in refresh_body
+    assert "fetchLayoutState(fetchOptions)" in refresh_body
+    assert "fetchMapObjects(fetchOptions)" in refresh_body
+    assert "await plotsPromise;" in refresh_body
+    assert "void optionalStatePromise.then(() => {" in refresh_body
+    assert "if (options.coherent) {" in refresh_body
+    assert "await Promise.all([plotsPromise, optionalStatePromise]);" in refresh_body
+
+
+def test_garden_switch_hides_old_garden_until_refresh_completes() -> None:
+    app = _read_frontend("app.ts")
+    layout = _read_frontend("components/layout.ts")
+    styles = _read_frontend("style.css")
+    switch_body = app.split("async function switchGarden", 1)[1].split(
+        "async function refreshGardenDataForCurrentContext",
+        1,
+    )[0]
+
+    assert 'id="garden-switch-status"' in layout
+    assert 'role="status"' in layout
+    assert ".garden-switch-status" in styles
+    assert "setGardenSwitchPending(true);" in switch_body
+    assert "clearGardenScopedStateForSwitch();" in switch_body
+    assert "expectedGardenId: nextGardenId" in switch_body
+    assert "await refreshGardenDataForCurrentContext();" in switch_body
+    assert "setGardenSwitchPending(false);" in switch_body
 
 
 def test_weather_summary_is_deferred_off_insights_switch_path() -> None:

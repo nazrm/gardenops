@@ -194,6 +194,28 @@ cd ..
 Targeted validation is acceptable for low-risk PRs, but the final merge decision
 must say which full checks were skipped and why.
 
+For broad shell, navigation, responsive-layout, role-affordance, or
+cross-feature frontend changes, also run the authenticated real-backend UI map
+against the disposable runner:
+
+```bash
+.venv/bin/python scripts/run_fast_postgres_tests.py \
+  --command -- scripts/run_ui_flow_map_e2e.sh
+```
+
+This is navigation/read and selected role-boundary evidence, not full mutation
+coverage. Use the dedicated Attention and task-history journeys documented in
+`docs/development.md` when those write paths are in scope.
+
+Run the focused optimization journey when a PR changes Map-first loading,
+snapshot restore, garden switching, scoped notifications, offline create,
+media or task-action replay, disabled-provider recovery, mobile Map focus, or
+destructive garden behavior. The journey includes duplicate-delivery and
+database postconditions; it is not a visual-regression suite. Run the
+deterministic-provider journey for AI adapter or budget changes, and the TOTP
+journey for MFA or sensitive reauthentication changes. Exact commands and
+evidence boundaries are documented in `docs/development.md`.
+
 ## Agent-Assisted Review
 
 When using a local coding agent, start it inside the PR worktree and give it a

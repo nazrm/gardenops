@@ -57,6 +57,17 @@ class MigrationGuardTests(unittest.TestCase):
             },
         )
 
+    @staticmethod
+    def _remove_offline_operation_schema(snapshot: SchemaSnapshot) -> None:
+        snapshot.tables.remove("offline_create_operations")
+        snapshot.columns.pop("offline_create_operations", None)
+        snapshot.indexes.difference_update(
+            {name for name in snapshot.indexes if "offline_create_operations" in name}
+        )
+        snapshot.constraints.difference_update(
+            {name for name in snapshot.constraints if "offline_create_operations" in name}
+        )
+
     def test_run_migrations_idempotent(self) -> None:
         """Re-running run_migrations must not crash."""
         db.run_migrations()
@@ -84,6 +95,59 @@ class MigrationGuardTests(unittest.TestCase):
         self.assertEqual(diagnostics["mode"], "verified-baseline")
         self.assertTrue(diagnostics["can_stamp_migrations"])
         self.assertEqual(diagnostics["missing"], [])
+
+    def test_pre_0021_bootstrap_signature_stamps_only_through_0020(self) -> None:
+        snapshot = self._complete_schema_snapshot()
+        snapshot.indexes.remove("ux_weather_alerts_identity")
+        snapshot.index_definitions.pop("ux_weather_alerts_identity", None)
+        self._remove_offline_operation_schema(snapshot)
+
+        diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+        self.assertEqual(diagnostics["mode"], "verified-upgrade-baseline")
+        self.assertTrue(diagnostics["can_stamp_migrations"])
+        self.assertEqual(diagnostics["stamp_through"], 20)
+
+    def test_pre_0022_bootstrap_signature_stamps_only_through_0021(self) -> None:
+        snapshot = self._complete_schema_snapshot()
+        self._remove_offline_operation_schema(snapshot)
+
+        diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+        self.assertEqual(diagnostics["mode"], "verified-upgrade-baseline")
+        self.assertTrue(diagnostics["can_stamp_migrations"])
+        self.assertEqual(diagnostics["stamp_through"], 21)
+
+    def test_untracked_pre_0021_database_is_upgraded_to_current(self) -> None:
+        conn = db.get_db()
+        try:
+            conn.execute("DROP TABLE IF EXISTS offline_create_operations CASCADE")
+            conn.execute("DROP INDEX IF EXISTS ux_weather_alerts_identity")
+            conn.execute("DELETE FROM schema_migrations")
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        db.run_migrations()
+
+        conn = db.get_db()
+        try:
+            versions = {
+                int(row["version"])
+                for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+            }
+            table = conn.execute(
+                "SELECT to_regclass('public.offline_create_operations') AS name"
+            ).fetchone()
+            index = conn.execute(
+                "SELECT to_regclass('public.ux_weather_alerts_identity') AS name"
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+
+        self.assertEqual(versions, set(range(1, 23)))
+        self.assertEqual(table["name"], "offline_create_operations")
+        self.assertEqual(index["name"], "ux_weather_alerts_identity")
 
     def test_passkey_schema_signature_covers_migration_surface(self) -> None:
         self.assertTrue(
@@ -211,6 +275,58 @@ class MigrationGuardTests(unittest.TestCase):
                 "attention_outcomes_public_id_key",
                 "fk_attention_outcomes_garden",
             }.issubset(set(REQUIRED_CONSTRAINTS))
+        )
+
+    def test_weather_identity_schema_signature_rejects_pre_migration_schema(self) -> None:
+        self.assertIn("ux_weather_alerts_identity", REQUIRED_INDEXES)
+        self.assertIn(
+            "ux_weather_alerts_identity",
+            REQUIRED_INDEX_DEFINITION_FRAGMENTS,
+        )
+        snapshot = self._complete_schema_snapshot()
+        snapshot.indexes.remove("ux_weather_alerts_identity")
+        snapshot.index_definitions.pop("ux_weather_alerts_identity", None)
+
+        diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+        self.assertEqual(diagnostics["mode"], "incomplete-existing-schema")
+        self.assertFalse(diagnostics["can_stamp_migrations"])
+        self.assertIn(
+            {"kind": "index", "object": "ux_weather_alerts_identity"},
+            diagnostics["missing"],
+        )
+
+    def test_offline_operation_schema_signature_rejects_pre_migration_schema(self) -> None:
+        self.assertIn("offline_create_operations", REQUIRED_TABLES)
+        self.assertTrue(
+            {
+                "garden_id",
+                "endpoint",
+                "operation_id",
+                "request_fingerprint",
+                "target_type",
+                "target_id",
+                "result_id",
+                "expires_at_ms",
+            }.issubset(set(REQUIRED_COLUMNS["offline_create_operations"]))
+        )
+        self.assertIn("idx_offline_create_operations_expiry", REQUIRED_INDEXES)
+        self.assertIn(
+            "ux_offline_create_operations_garden_endpoint_operation",
+            REQUIRED_CONSTRAINTS,
+        )
+        self.assertIn("fk_offline_create_operations_garden", REQUIRED_CONSTRAINTS)
+        snapshot = self._complete_schema_snapshot()
+        snapshot.tables.remove("offline_create_operations")
+        snapshot.columns.pop("offline_create_operations", None)
+
+        diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+        self.assertEqual(diagnostics["mode"], "incomplete-existing-schema")
+        self.assertFalse(diagnostics["can_stamp_migrations"])
+        self.assertIn(
+            {"kind": "table", "object": "offline_create_operations"},
+            diagnostics["missing"],
         )
 
     def test_schema_signature_validates_critical_definitions(self) -> None:

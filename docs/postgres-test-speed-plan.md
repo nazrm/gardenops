@@ -38,6 +38,19 @@ Validated on May 19, 2026:
 - `gardenops.service` remained active and `/api/health` returned
   `{"status":"ok"}` after the disposable runs
 
+Extended and revalidated on July 10, 2026:
+
+- `--command -- command [args...]` runs a database-backed command against the
+  migrated disposable base database
+- `--command-database` supports an allowlist of dedicated E2E database names and
+  exports matching seeder URLs, free app ports, and isolated logs
+- final cleanup verification failure now makes an otherwise successful command
+  or suite return nonzero
+- all three injected cleanup stages, the dedicated Attention/task-history
+  journeys, the broad authenticated UI map, and the full four-shard suite passed
+- the expanded four-shard suite completed in 68.90 seconds of shard execution
+  and 71.61 seconds total on the same host
+
 ## Recommendation
 
 Implement a disposable test-only Postgres runner as an optional local fast path,

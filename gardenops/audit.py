@@ -7,6 +7,155 @@ from gardenops.security_telemetry import enqueue_security_telemetry
 
 _logger = logging.getLogger(__name__)
 
+_AUDIT_EVENT_INSERT_SQL = """
+    INSERT INTO audit_events (
+        occurred_at_ms, actor_user_id, actor_username, actor_role, actor_auth_type,
+        garden_id, method, path, status_code, remote_host, detail
+    )
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+"""
+
+type AuditEventValues = tuple[
+    int,
+    int | None,
+    str,
+    str,
+    str,
+    int | None,
+    str,
+    str,
+    int,
+    str,
+    str,
+]
+
+
+def _audit_event_values(
+    *,
+    method: str,
+    path: str,
+    status_code: int,
+    remote_host: str,
+    detail: str,
+    auth_context: AuthContext | None,
+    garden_id: int | None,
+    use_auth_context_garden: bool,
+) -> AuditEventValues:
+    occurred_at_ms = current_timestamp_ms()
+    actor_user_id: int | None = None
+    actor_username = "anonymous"
+    actor_role = "anonymous"
+    actor_auth_type = "none"
+    resolved_garden_id = garden_id
+    if auth_context:
+        actor_user_id = auth_context.user_id
+        actor_username = auth_context.username
+        actor_role = auth_context.role
+        actor_auth_type = auth_context.auth_type
+        if (
+            use_auth_context_garden
+            and resolved_garden_id is None
+            and auth_context.garden_id is not None
+        ):
+            resolved_garden_id = int(auth_context.garden_id)
+
+    return (
+        occurred_at_ms,
+        actor_user_id,
+        actor_username,
+        actor_role,
+        actor_auth_type,
+        resolved_garden_id,
+        method,
+        path,
+        int(status_code),
+        remote_host,
+        detail.strip(),
+    )
+
+
+def _insert_audit_event_row(
+    conn: DbConn,
+    values: tuple[object, ...],
+) -> None:
+    conn.execute(_AUDIT_EVENT_INSERT_SQL, values)
+
+
+def write_required_audit_event(
+    *,
+    method: str,
+    path: str,
+    status_code: int,
+    remote_host: str,
+    detail: str = "",
+    auth_context: AuthContext | None = None,
+    garden_id: int | None = None,
+    use_auth_context_garden: bool = True,
+    db: DbConn,
+) -> AuditEventValues:
+    """Insert an audit event in the caller-owned transaction.
+
+    This deliberately does not commit, roll back, enqueue telemetry, or handle
+    insertion errors. Callers that require audit durability must commit or roll
+    back their business operation and this audit row together.
+    """
+    values = _audit_event_values(
+        method=method,
+        path=path,
+        status_code=status_code,
+        remote_host=remote_host,
+        detail=detail,
+        auth_context=auth_context,
+        garden_id=garden_id,
+        use_auth_context_garden=use_auth_context_garden,
+    )
+    _insert_audit_event_row(db, values)
+    return values
+
+
+def enqueue_audit_event_telemetry(
+    values: AuditEventValues,
+    *,
+    db: DbConn,
+) -> None:
+    """Best-effort telemetry export after the durable audit transaction commits."""
+    (
+        occurred_at_ms,
+        actor_user_id,
+        actor_username,
+        actor_role,
+        actor_auth_type,
+        resolved_garden_id,
+        method,
+        path,
+        status_code,
+        remote_host,
+        detail,
+    ) = values
+    try:
+        enqueue_security_telemetry(
+            "audit_event",
+            {
+                "occurred_at_ms": occurred_at_ms,
+                "actor_user_id": actor_user_id,
+                "actor_username": actor_username,
+                "actor_role": actor_role,
+                "actor_auth_type": actor_auth_type,
+                "garden_id": resolved_garden_id,
+                "method": method,
+                "path": path,
+                "status_code": int(status_code),
+                "remote_host": remote_host,
+                "detail": detail,
+            },
+            created_at_ms=occurred_at_ms,
+            db=db,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        _logger.warning("security telemetry enqueue failed after audit write", exc_info=True)
+
 
 def write_audit_event(
     *,
@@ -19,70 +168,23 @@ def write_audit_event(
     garden_id: int | None = None,
     db: DbConn | None = None,
 ) -> None:
-    occurred_at_ms = current_timestamp_ms()
-    actor_user_id: int | None = None
-    actor_username = "anonymous"
-    actor_role = "anonymous"
-    actor_auth_type = "none"
-    resolved_garden_id = garden_id
-    if auth_context:
-        actor_user_id = auth_context.user_id
-        actor_username = auth_context.username
-        actor_role = auth_context.role
-        actor_auth_type = auth_context.auth_type
-        if resolved_garden_id is None and auth_context.garden_id is not None:
-            resolved_garden_id = int(auth_context.garden_id)
-
     owns_conn = db is None
     conn = get_db() if owns_conn else db
     assert conn is not None
+    values = _audit_event_values(
+        method=method,
+        path=path,
+        status_code=status_code,
+        remote_host=remote_host,
+        detail=detail,
+        auth_context=auth_context,
+        garden_id=garden_id,
+        use_auth_context_garden=True,
+    )
     try:
-        conn.execute(
-            """
-            INSERT INTO audit_events (
-                occurred_at_ms, actor_user_id, actor_username, actor_role, actor_auth_type,
-                garden_id, method, path, status_code, remote_host, detail
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                occurred_at_ms,
-                actor_user_id,
-                actor_username,
-                actor_role,
-                actor_auth_type,
-                resolved_garden_id,
-                method,
-                path,
-                int(status_code),
-                remote_host,
-                detail.strip(),
-            ),
-        )
+        _insert_audit_event_row(conn, values)
         conn.commit()
-        try:
-            enqueue_security_telemetry(
-                "audit_event",
-                {
-                    "occurred_at_ms": occurred_at_ms,
-                    "actor_user_id": actor_user_id,
-                    "actor_username": actor_username,
-                    "actor_role": actor_role,
-                    "actor_auth_type": actor_auth_type,
-                    "garden_id": resolved_garden_id,
-                    "method": method,
-                    "path": path,
-                    "status_code": int(status_code),
-                    "remote_host": remote_host,
-                    "detail": detail.strip(),
-                },
-                created_at_ms=occurred_at_ms,
-                db=conn,
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            _logger.warning("security telemetry enqueue failed after audit write", exc_info=True)
+        enqueue_audit_event_telemetry(values, db=conn)
     except Exception:
         _logger.warning("audit write failed", exc_info=True)
         return

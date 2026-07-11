@@ -105,10 +105,11 @@ remain fallback values.
 | Weather | `WEATHER_API_KEY` |
 | ShadeMap | `SHADEMAP`, `SHADEMAP_PUBLIC_API_KEY`, `SHADEMAP_TILE_SIGNING_SECRET` |
 
-`AI_PROVIDER` accepts `anthropic` or `openai`. Leave it unset to disable
-LLM-backed AI features. Plant identification still tries PlantNet first when
-`PLANTNET_API_KEY` is configured; the configured AI provider is used only as
-fallback for identification, and directly for diagnosis and other AI features.
+`AI_PROVIDER` accepts `disabled`, `anthropic`, or `openai`. Leave it unset or
+set it explicitly to `disabled` to disable LLM-backed AI features. Plant
+identification still tries PlantNet first when `PLANTNET_API_KEY` is configured;
+the configured AI provider is used only as fallback for identification, and
+directly for diagnosis and other AI features.
 Garden chat uses the configured OpenAI fast model when OpenAI is active, caps
 chat output with `AI_CHAT_MAX_OUTPUT_TOKENS` (default `1024`), and gives the
 upstream provider `AI_CHAT_PROVIDER_TIMEOUT_SECONDS` (default `60`) before

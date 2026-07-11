@@ -502,7 +502,10 @@ async function authorizeSensitiveAdminAction(
         if (!state.me.mfa_enabled && err instanceof DOMException && err.name === "NotAllowedError") {
           return null;
         }
-        if (!state.me.mfa_enabled) throw err;
+        if (!state.me.mfa_enabled) {
+          showToast(getApiErrorMessage(err), "error");
+          return null;
+        }
       }
     }
     const currentPassword = await promptPasswordDialog(
@@ -525,7 +528,12 @@ async function authorizeSensitiveAdminAction(
         reauthOptions = { recoveryCode };
       }
     }
-    await reauthenticateApi(currentPassword, reauthOptions);
+    try {
+      await reauthenticateApi(currentPassword, reauthOptions);
+    } catch (err) {
+      showToast(getApiErrorMessage(err), "error");
+      return null;
+    }
   }
   return actionReason;
 }
@@ -599,8 +607,8 @@ function renderProviderSettingsCard(): string {
                 <tr>
                   <td>${t(labelKey)}</td>
                   <td>${renderProviderSecretStatus(key)}</td>
-                  <td><input type="password" id="adm-provider-secret-${key}" class="adm-input" autocomplete="off" ${encryptionReady ? "" : "disabled"} /></td>
-                  <td><input type="checkbox" id="adm-provider-clear-${key}" ${clearDisabled ? "disabled" : ""} /></td>
+                  <td><input type="password" id="adm-provider-secret-${key}" class="adm-input" autocomplete="off" aria-label="${esc(t("admin.provider_keys.replace_secret", { provider: t(labelKey) }))}" ${encryptionReady ? "" : "disabled"} /></td>
+                  <td><input type="checkbox" id="adm-provider-clear-${key}" aria-label="${esc(t("admin.provider_keys.clear_secret", { provider: t(labelKey) }))}" ${clearDisabled ? "disabled" : ""} /></td>
                 </tr>
               `;
             }).join("")}
@@ -1116,12 +1124,12 @@ function renderUsersSection(): string {
         <h3 class="adm-card-title">${t("admin_panel.invite_editor_or_admin")}</h3>
         <p class="adm-section-desc">${t("admin_panel.invite_editor_desc")}</p>
         <form id="adm-create-user-inv-form" class="adm-form-row">
-          <input type="text" id="adm-user-inv-username" placeholder="${t("admin_panel.placeholder_username")}" required class="adm-input" />
+          <input type="text" id="adm-user-inv-username" placeholder="${t("admin_panel.placeholder_username")}" aria-label="${t("admin_panel.placeholder_username")}" data-i18n-aria-label="admin_panel.placeholder_username" required class="adm-input" />
           <select id="adm-user-inv-role" class="adm-select">
             <option value="editor">${t("admin_panel.option_editor_own_garden")}</option>
             <option value="admin">${t("admin_panel.option_admin")}</option>
           </select>
-          <input type="number" id="adm-user-inv-ttl" placeholder="${t("admin_panel.placeholder_ttl")}" min="5" class="adm-input adm-input--sm" />
+          <input type="number" id="adm-user-inv-ttl" placeholder="${t("admin_panel.placeholder_ttl")}" aria-label="${t("admin_panel.placeholder_ttl")}" data-i18n-aria-label="admin_panel.placeholder_ttl" min="5" class="adm-input adm-input--sm" />
           <button type="submit" class="adm-btn adm-btn--primary">${t("admin_panel.btn_create_invite")}</button>
         </form>
         <div id="adm-user-inv-link-box" class="adm-inv-link-box"${state.lastInviteLink ? "" : " hidden"}>
@@ -1163,8 +1171,8 @@ function renderUsersSection(): string {
     <div class="adm-card adm-card--form">
       <h3 class="adm-card-title">${t("admin_panel.create_user")}</h3>
       <form id="adm-create-user-form" class="adm-form-row">
-        <input type="text" id="adm-new-username" placeholder="${t("admin_panel.placeholder_username")}" required class="adm-input" />
-        <input type="password" id="adm-new-password" placeholder="${t("admin_panel.placeholder_password")}" required class="adm-input" />
+        <input type="text" id="adm-new-username" placeholder="${t("admin_panel.placeholder_username")}" aria-label="${t("admin_panel.placeholder_username")}" data-i18n-aria-label="admin_panel.placeholder_username" required class="adm-input" />
+        <input type="password" id="adm-new-password" placeholder="${t("admin_panel.placeholder_password")}" aria-label="${t("admin_panel.placeholder_password")}" data-i18n-aria-label="admin_panel.placeholder_password" required class="adm-input" />
         <select id="adm-new-role" class="adm-select">
           <option value="viewer">viewer</option>
           <option value="editor">editor</option>
@@ -1359,16 +1367,16 @@ function renderAuditSection(): string {
     </div>
     <div class="adm-card adm-card--form">
       <form id="adm-audit-filter" class="adm-form-row">
-        <input type="number" id="adm-audit-garden" placeholder="${t("admin_panel.placeholder_garden_id")}" min="1" class="adm-input adm-input--xs" />
-        <input type="text" id="adm-audit-actor" placeholder="${t("admin_panel.placeholder_actor")}" class="adm-input adm-input--sm" />
-        <input type="text" id="adm-audit-path" placeholder="${t("admin_panel.placeholder_path_prefix")}" class="adm-input adm-input--sm" />
+        <input type="number" id="adm-audit-garden" placeholder="${t("admin_panel.placeholder_garden_id")}" aria-label="${t("admin_panel.placeholder_garden_id")}" data-i18n-aria-label="admin_panel.placeholder_garden_id" min="1" class="adm-input adm-input--xs" />
+        <input type="text" id="adm-audit-actor" placeholder="${t("admin_panel.placeholder_actor")}" aria-label="${t("admin_panel.placeholder_actor")}" data-i18n-aria-label="admin_panel.placeholder_actor" class="adm-input adm-input--sm" />
+        <input type="text" id="adm-audit-path" placeholder="${t("admin_panel.placeholder_path_prefix")}" aria-label="${t("admin_panel.placeholder_path_prefix")}" data-i18n-aria-label="admin_panel.placeholder_path_prefix" class="adm-input adm-input--sm" />
         <select id="adm-audit-method" class="adm-select adm-select--sm">
           <option value="">${t("admin_panel.option_any_method")}</option>
           <option value="POST">POST</option>
           <option value="PATCH">PATCH</option>
           <option value="DELETE">DELETE</option>
         </select>
-        <input type="number" id="adm-audit-status" placeholder="${t("common.status")}" min="100" max="599" class="adm-input adm-input--xs" />
+        <input type="number" id="adm-audit-status" placeholder="${t("common.status")}" aria-label="${t("common.status")}" data-i18n-aria-label="common.status" min="100" max="599" class="adm-input adm-input--xs" />
         <button type="submit" class="adm-btn">${t("admin_panel.btn_filter")}</button>
       </form>
     </div>
@@ -1466,11 +1474,11 @@ function renderInvitationsSection(): string {
       <h3 class="adm-card-title">${t("admin_panel.invite_viewer_title")}</h3>
       <p class="adm-section-desc">${t("admin_panel.invite_viewer_desc")}</p>
       <form id="adm-create-inv-form" class="adm-form-row">
-        <input type="text" id="adm-inv-username" placeholder="${t("admin_panel.placeholder_username")}" required class="adm-input" />
+        <input type="text" id="adm-inv-username" placeholder="${t("admin_panel.placeholder_username")}" aria-label="${t("admin_panel.placeholder_username")}" data-i18n-aria-label="admin_panel.placeholder_username" required class="adm-input" />
         <select id="adm-inv-role" class="adm-select" hidden>
           <option value="viewer">viewer</option>
         </select>
-        <input type="number" id="adm-inv-ttl" placeholder="${t("admin_panel.placeholder_ttl")}" min="5" class="adm-input adm-input--sm" />
+        <input type="number" id="adm-inv-ttl" placeholder="${t("admin_panel.placeholder_ttl")}" aria-label="${t("admin_panel.placeholder_ttl")}" data-i18n-aria-label="admin_panel.placeholder_ttl" min="5" class="adm-input adm-input--sm" />
         <button type="submit" class="adm-btn adm-btn--primary">${t("admin_panel.btn_create")}</button>
       </form>
       <div id="adm-inv-link-box" class="adm-inv-link-box"${state.lastInviteLink ? "" : " hidden"}>

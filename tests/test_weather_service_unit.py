@@ -1,12 +1,17 @@
 """Unit tests for gardenops.services.weather_service."""
 
 import json
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 import gardenops.db as db
+from gardenops.routers.weather import _load_active_alerts
 from gardenops.services.weather_service import (
     _aggregate_met_timeseries,
     _min_temp_for_hardiness,
@@ -17,7 +22,34 @@ from gardenops.services.weather_service import (
     find_frost_vulnerable_plants,
     save_weather_alerts,
 )
-from tests.base import strong_password
+from tests.base import DbTestBase, strong_password
+
+
+class _ReadCountingConnection:
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+        self.read_query_count = 0
+        self.read_queries: list[tuple[str, Any]] = []
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        if str(query).lstrip().upper().startswith("SELECT"):
+            self.read_query_count += 1
+            self.read_queries.append((str(query), params))
+        return self._connection.execute(query, params)
+
+
+class _InsertBarrierConnection:
+    def __init__(self, connection: Any, barrier: threading.Barrier) -> None:
+        self._connection = connection
+        self._barrier = barrier
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        if "INSERT INTO weather_alerts" in str(query):
+            self._barrier.wait(timeout=10)
+        return self._connection.execute(query, params)
+
+    def commit(self) -> None:
+        self._connection.commit()
 
 
 class TestParseHardiness:
@@ -450,6 +482,95 @@ class TestFindFrostVulnerablePlants(_WeatherDbTestBase):
         assert len(result) == 0
 
 
+class TestLoadActiveAlerts(_WeatherDbTestBase):
+    def _insert_active_alert(
+        self,
+        alert_type: str,
+        valid_from_offset: int,
+        plant_ids: list[str],
+    ) -> int:
+        row = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (
+                %s, %s, 'normal', %s, '',
+                (CURRENT_DATE + %s::integer)::text,
+                (CURRENT_DATE + %s::integer)::text,
+                '{}', %s
+            )
+            RETURNING id
+            """,
+            (
+                self.garden_id,
+                alert_type,
+                alert_type,
+                valid_from_offset,
+                valid_from_offset + 10,
+                db.current_timestamp_ms(),
+            ),
+        ).fetchone()
+        assert row is not None
+        alert_id = int(row["id"])
+
+        for plant_id in plant_ids:
+            self.conn.execute(
+                """
+                INSERT INTO plants
+                    (plt_id, name, latin, category, bloom_month, color,
+                     hardiness, height_cm, light, link)
+                VALUES (%s, %s, '', 'busker', '', '', '', NULL, '', '')
+                """,
+                (plant_id, plant_id),
+            )
+            self.conn.execute(
+                "INSERT INTO weather_alert_plants (alert_id, plt_id) VALUES (%s, %s)",
+                (alert_id, plant_id),
+            )
+        self.conn.commit()
+        return alert_id
+
+    def test_load_active_alerts_batches_link_reads_and_orders_plant_ids(self) -> None:
+        first_alert_id = self._insert_active_alert(
+            "weather-query-count-one",
+            0,
+            ["WALERT-ONE-Z", "WALERT-ONE-A"],
+        )
+
+        one_connection = _ReadCountingConnection(self.conn)
+        one_alerts = _load_active_alerts(one_connection, self.garden_id)
+
+        assert [int(alert["id"]) for alert in one_alerts] == [first_alert_id]
+        assert one_alerts[0]["plant_ids"] == ["WALERT-ONE-A", "WALERT-ONE-Z"]
+        assert one_connection.read_query_count == 2
+        plant_query = next(
+            query
+            for query, _ in one_connection.read_queries
+            if "FROM weather_alert_plants" in query
+        )
+        assert "alert_id = ANY(%s)" in plant_query
+
+        additional_alert_ids = [
+            self._insert_active_alert(
+                f"weather-query-count-{number}",
+                number,
+                [f"WALERT-{number}-Z", f"WALERT-{number}-A"],
+            )
+            for number in range(1, 6)
+        ]
+
+        many_connection = _ReadCountingConnection(self.conn)
+        many_alerts = _load_active_alerts(many_connection, self.garden_id)
+
+        assert [int(alert["id"]) for alert in many_alerts] == [
+            first_alert_id,
+            *additional_alert_ids,
+        ]
+        assert many_connection.read_query_count == one_connection.read_query_count == 2
+        assert all(alert["plant_ids"] == sorted(alert["plant_ids"]) for alert in many_alerts)
+
+
 class TestSaveWeatherAlerts(_WeatherDbTestBase):
     def test_creates_alerts(self) -> None:
         alerts = [
@@ -525,6 +646,346 @@ class TestSaveWeatherAlerts(_WeatherDbTestBase):
         ).fetchone()
         assert row is not None
         assert int(row["c"]) == 1
+
+
+class TestWeatherAlertIdentityMigration(_WeatherDbTestBase):
+    def test_migration_normalizes_valid_non_object_metadata(self) -> None:
+        migration_sql = (
+            Path(__file__).resolve().parents[1] / "migrations" / "0021_weather_alert_identity.sql"
+        ).read_text(encoding="utf-8")
+        try:
+            self.conn.execute("DROP INDEX IF EXISTS public.ux_weather_alerts_identity")
+            for index, metadata in enumerate(("[]", "null", '"legacy"', "not-json")):
+                self.conn.execute(
+                    """
+                    INSERT INTO weather_alerts (
+                        garden_id, alert_type, severity, title, description,
+                        valid_from, valid_until, metadata_json, created_at_ms
+                    )
+                    VALUES (%s, 'dry_spell', 'normal', 'Legacy', '',
+                            %s, %s, %s, %s)
+                    """,
+                    (
+                        self.garden_id,
+                        f"2040-01-{index + 1:02d}",
+                        f"2040-01-{index + 2:02d}",
+                        metadata,
+                        db.current_timestamp_ms() + index,
+                    ),
+                )
+            self.conn.execute(migration_sql)
+            self.conn.commit()
+
+            rows = self.conn.execute(
+                """
+                SELECT metadata_json
+                FROM weather_alerts
+                WHERE garden_id = %s AND title = 'Legacy'
+                ORDER BY valid_from
+                """,
+                (self.garden_id,),
+            ).fetchall()
+            assert [row["metadata_json"] for row in rows] == ["{}", "{}", "{}", "{}"]
+        finally:
+            self.conn.rollback()
+
+    def test_migration_consolidates_state_and_rehomes_dependents(self) -> None:
+        from gardenops.security import create_user
+
+        user = create_user(
+            self.conn,
+            username="weather_migration_user",
+            password=strong_password("weather-migration-password"),
+            role="admin",
+        )
+        self.conn.commit()
+        migration_sql = (
+            Path(__file__).resolve().parents[1] / "migrations" / "0021_weather_alert_identity.sql"
+        ).read_text(encoding="utf-8")
+
+        try:
+            self.conn.execute("DROP INDEX IF EXISTS public.ux_weather_alerts_identity")
+            for plant_id in ("MIG-KEEP", "MIG-SHARED", "MIG-MOVE"):
+                self.conn.execute(
+                    """
+                    INSERT INTO plants
+                        (plt_id, name, latin, category, bloom_month, color,
+                         hardiness, height_cm, light, link)
+                    VALUES (%s, %s, '', 'busker', '', '', '', NULL, '', '')
+                    """,
+                    (plant_id, plant_id),
+                )
+
+            first = self.conn.execute(
+                """
+                INSERT INTO weather_alerts
+                    (garden_id, alert_type, severity, title, description,
+                     valid_from, valid_until, metadata_json, created_at_ms)
+                VALUES (%s, 'frost_warning', 'low', 'First', '',
+                        '2035-01-01', '2035-01-02',
+                        '{"old":"kept","shared":"first",'
+                        '"plant_advice":[{"plt_id":"MIG-KEEP"}]}', %s)
+                RETURNING id
+                """,
+                (self.garden_id, db.current_timestamp_ms()),
+            ).fetchone()
+            second = self.conn.execute(
+                """
+                INSERT INTO weather_alerts
+                    (garden_id, alert_type, severity, title, description,
+                     valid_from, valid_until, metadata_json, created_at_ms)
+                VALUES (%s, 'frost_warning', 'high', 'Second', '',
+                        '2035-01-01', '2035-01-04',
+                        '{"new":"kept","shared":"second",'
+                        '"plant_advice":[{"plt_id":"MIG-MOVE"}]}', %s)
+                RETURNING id
+                """,
+                (self.garden_id, db.current_timestamp_ms()),
+            ).fetchone()
+            assert first is not None
+            assert second is not None
+            first_id = int(first["id"])
+            second_id = int(second["id"])
+            self.conn.execute(
+                "UPDATE weather_alerts SET dismissed = 1 WHERE id = %s",
+                (first_id,),
+            )
+
+            for alert_id, plant_id in (
+                (first_id, "MIG-KEEP"),
+                (first_id, "MIG-SHARED"),
+                (second_id, "MIG-SHARED"),
+                (second_id, "MIG-MOVE"),
+            ):
+                self.conn.execute(
+                    "INSERT INTO weather_alert_plants (alert_id, plt_id) VALUES (%s, %s)",
+                    (alert_id, plant_id),
+                )
+
+            task = self.conn.execute(
+                """
+                INSERT INTO garden_tasks (
+                    garden_id, task_type, title, description, status, severity,
+                    due_on, rule_source, metadata_json, created_at_ms, updated_at_ms
+                )
+                VALUES (%s, 'protect', 'Protect', '', 'pending', 'high',
+                        '2035-01-01', %s, '{}', %s, %s)
+                RETURNING id
+                """,
+                (
+                    self.garden_id,
+                    f"auto:frost_protect:{first_id}:MIG-KEEP",
+                    db.current_timestamp_ms(),
+                    db.current_timestamp_ms(),
+                ),
+            ).fetchone()
+            assert task is not None
+
+            outcome = self.conn.execute(
+                """
+                INSERT INTO attention_outcomes (
+                    public_id, garden_id, provider, outcome_type, source_type,
+                    source_id, source_public_id, title, explanation, target_type,
+                    target_id, metadata_json, occurred_at_ms, expires_at_ms,
+                    created_at_ms, updated_at_ms
+                )
+                VALUES (
+                    'attnout_migration_weather', %s, 'weather',
+                    'watering_covered_by_rain', 'task_generator', %s,
+                    'water:MIG-KEEP:2035-01-01', 'Covered', 'Covered by rain',
+                    'plant', 'MIG-KEEP', %s, %s, %s, %s, %s
+                )
+                RETURNING id
+                """,
+                (
+                    self.garden_id,
+                    str(first_id),
+                    json.dumps({"weather_alert_id": str(first_id)}),
+                    db.current_timestamp_ms(),
+                    db.current_timestamp_ms() + 86_400_000,
+                    db.current_timestamp_ms(),
+                    db.current_timestamp_ms(),
+                ),
+            ).fetchone()
+            assert outcome is not None
+
+            self.conn.execute(
+                """
+                INSERT INTO user_attention_item_state (
+                    user_id, garden_id, item_id, user_state, reason,
+                    metadata_json, created_at_ms, updated_at_ms
+                )
+                VALUES (%s, %s, %s, 'dismissed', 'reviewed', '{}', %s, %s)
+                """,
+                (
+                    int(user["id"]),
+                    self.garden_id,
+                    f"attn:weather:alert:{first_id}",
+                    db.current_timestamp_ms(),
+                    db.current_timestamp_ms(),
+                ),
+            )
+
+            self.conn.execute(migration_sql)
+
+            alert_rows = self.conn.execute(
+                """
+                SELECT id, severity, valid_until, dismissed, metadata_json
+                FROM weather_alerts
+                WHERE garden_id = %s
+                  AND alert_type = 'frost_warning'
+                  AND valid_from = '2035-01-01'
+                """,
+                (self.garden_id,),
+            ).fetchall()
+            assert [int(row["id"]) for row in alert_rows] == [second_id]
+            alert_row = alert_rows[0]
+            assert str(alert_row["severity"]) == "high"
+            assert str(alert_row["valid_until"]) == "2035-01-04"
+            assert int(alert_row["dismissed"]) == 0
+            alert_metadata = json.loads(str(alert_row["metadata_json"]))
+            assert alert_metadata["old"] == "kept"
+            assert alert_metadata["new"] == "kept"
+            assert alert_metadata["shared"] == "second"
+            assert {item["plt_id"] for item in alert_metadata["plant_advice"]} == {
+                "MIG-KEEP",
+                "MIG-MOVE",
+            }
+
+            plant_rows = self.conn.execute(
+                "SELECT plt_id FROM weather_alert_plants WHERE alert_id = %s ORDER BY plt_id",
+                (second_id,),
+            ).fetchall()
+            assert [str(row["plt_id"]) for row in plant_rows] == [
+                "MIG-KEEP",
+                "MIG-MOVE",
+                "MIG-SHARED",
+            ]
+
+            task_row = self.conn.execute(
+                "SELECT rule_source FROM garden_tasks WHERE id = %s",
+                (int(task["id"]),),
+            ).fetchone()
+            assert task_row is not None
+            assert str(task_row["rule_source"]) == (
+                f"auto:frost_protect:{second_id}:MIG-KEEP"
+            )
+
+            outcome_row = self.conn.execute(
+                "SELECT source_id, metadata_json FROM attention_outcomes WHERE id = %s",
+                (int(outcome["id"]),),
+            ).fetchone()
+            assert outcome_row is not None
+            assert str(outcome_row["source_id"]) == str(second_id)
+            assert json.loads(str(outcome_row["metadata_json"]))["weather_alert_id"] == str(
+                second_id
+            )
+
+            attention_state = self.conn.execute(
+                """
+                SELECT item_id, user_state
+                FROM user_attention_item_state
+                WHERE user_id = %s AND garden_id = %s
+                """,
+                (int(user["id"]), self.garden_id),
+            ).fetchone()
+            assert attention_state is not None
+            assert str(attention_state["item_id"]) == f"attn:weather:alert:{second_id}"
+            assert str(attention_state["user_state"]) == "dismissed"
+
+            conflict = self.conn.execute(
+                """
+                INSERT INTO weather_alerts
+                    (garden_id, alert_type, severity, title, description,
+                     valid_from, valid_until, metadata_json, created_at_ms)
+                VALUES (%s, 'frost_warning', 'normal', 'Duplicate', '',
+                        '2035-01-01', '2035-01-02', '{}', %s)
+                ON CONFLICT (garden_id, alert_type, valid_from) DO NOTHING
+                RETURNING id
+                """,
+                (self.garden_id, db.current_timestamp_ms()),
+            ).fetchone()
+            assert conflict is None
+        finally:
+            self.conn.rollback()
+
+
+class TestWeatherAlertIdentityConcurrency(DbTestBase):
+    def test_concurrent_creators_share_one_alert_and_its_links(self) -> None:
+        self._insert_plant("RACE-PLANT-A", "Race plant A", hardiness="H2")
+        self._insert_plant("RACE-PLANT-B", "Race plant B", hardiness="H2")
+        alert = {
+            "alert_type": "frost_warning",
+            "severity": "high",
+            "title": "Frost",
+            "description": "Cold snap",
+            "valid_from": "2035-02-03",
+            "valid_until": "2035-02-04",
+            "metadata": {"coldest": -8.0},
+        }
+        insert_barrier = threading.Barrier(2)
+
+        def save_once(index: int) -> tuple[dict[str, int], int]:
+            conn = db.get_db()
+            try:
+                suffix = "A" if index == 0 else "B"
+                frost_plants = [
+                    {
+                        "plt_id": f"RACE-PLANT-{suffix}",
+                        "name": f"Race plant {suffix}",
+                        "hardiness": "H2",
+                        "min_safe_temp": 1.0,
+                    },
+                ]
+                result = save_weather_alerts(
+                    _InsertBarrierConnection(conn, insert_barrier),
+                    self.garden_id,
+                    [alert],
+                    frost_plants=frost_plants,
+                )
+                return result, conn.info.backend_pid
+            finally:
+                db.return_db(conn)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(save_once, range(2)))
+
+        results = [result for result, _ in outcomes]
+        backend_pids = {backend_pid for _, backend_pid in outcomes}
+        assert len(backend_pids) == 2
+        assert sorted(result["created"] for result in results) == [0, 1]
+        assert sorted(result["skipped"] for result in results) == [0, 1]
+
+        alert_rows = self.conn.execute(
+            """
+            SELECT id
+            FROM weather_alerts
+            WHERE garden_id = %s
+              AND alert_type = 'frost_warning'
+              AND valid_from = '2035-02-03'
+            """,
+            (self.garden_id,),
+        ).fetchall()
+        assert len(alert_rows) == 1
+        alert_id = int(alert_rows[0]["id"])
+        plant_rows = self.conn.execute(
+            "SELECT plt_id FROM weather_alert_plants WHERE alert_id = %s ORDER BY plt_id",
+            (alert_id,),
+        ).fetchall()
+        assert [str(row["plt_id"]) for row in plant_rows] == [
+            "RACE-PLANT-A",
+            "RACE-PLANT-B",
+        ]
+        metadata_row = self.conn.execute(
+            "SELECT metadata_json FROM weather_alerts WHERE id = %s",
+            (alert_id,),
+        ).fetchone()
+        assert metadata_row is not None
+        metadata = json.loads(str(metadata_row["metadata_json"]))
+        assert {item["plt_id"] for item in metadata["plant_advice"]} == {
+            "RACE-PLANT-A",
+            "RACE-PLANT-B",
+        }
 
 
 class TestSaveWeatherAlertsPlantAdvice(_WeatherDbTestBase):

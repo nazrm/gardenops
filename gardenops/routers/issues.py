@@ -9,6 +9,13 @@ from pydantic import Field
 
 from gardenops.db import DB, DbConn, current_timestamp_ms, executemany
 from gardenops.models import StrictBaseModel
+from gardenops.offline_idempotency import (
+    ISSUE_TARGET,
+    ISSUES_ENDPOINT,
+    prepare_operation,
+    raise_operation_target_gone,
+    reserve_operation,
+)
 from gardenops.router_helpers import (
     active_garden_id as _active_garden_id,
 )
@@ -627,6 +634,25 @@ def _fetch_issue(db: DbConn, issue_id: str, garden_id: int) -> dict:
     return dict(row)
 
 
+def _issue_create_response(
+    db: DbConn,
+    *,
+    garden_id: int,
+    target_id: str,
+) -> dict:
+    row = db.execute(
+        """
+        SELECT public_id
+        FROM garden_issues
+        WHERE public_id = %s AND garden_id = %s
+        """,
+        (target_id, garden_id),
+    ).fetchone()
+    if not row:
+        raise_operation_target_gone()
+    return {"status": "ok", "id": str(row["public_id"])}
+
+
 # ── Endpoints ─────────────────────────────────────────────────────
 
 
@@ -809,11 +835,40 @@ def create_issue(
     context = _auth_context(request)
     _require_write(context)
     garden_id = _active_garden_id(context)
+    prepared_operation = prepare_operation(
+        db,
+        request=request,
+        garden_id=garden_id,
+        endpoint=ISSUES_ENDPOINT,
+        request_payload=body.model_dump(mode="json"),
+        now_ms=current_timestamp_ms(),
+    )
+    if prepared_operation.replay_target_id is not None:
+        return _issue_create_response(
+            db,
+            garden_id=garden_id,
+            target_id=prepared_operation.replay_target_id,
+        )
 
     if body.follow_up_on:
         _validate_date(body.follow_up_on)
 
     now_ms = current_timestamp_ms()
+    issue_public_id = _generate_public_id("iss")
+    if prepared_operation.operation is not None:
+        reservation = reserve_operation(
+            db,
+            operation=prepared_operation.operation,
+            target_type=ISSUE_TARGET,
+            target_id=issue_public_id,
+            created_at_ms=now_ms,
+        )
+        if not reservation.is_owner:
+            return _issue_create_response(
+                db,
+                garden_id=garden_id,
+                target_id=reservation.result_id,
+            )
 
     row = db.execute(
         """
@@ -826,7 +881,7 @@ def create_issue(
         RETURNING id, public_id
         """,
         (
-            _generate_public_id("iss"),
+            issue_public_id,
             garden_id,
             body.issue_type,
             body.title,

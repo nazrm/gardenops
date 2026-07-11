@@ -13,7 +13,11 @@ import psycopg
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import Field
 
-from gardenops.audit import write_audit_event
+from gardenops.audit import (
+    enqueue_audit_event_telemetry,
+    write_audit_event,
+    write_required_audit_event,
+)
 from gardenops.branding import app_user_agent
 from gardenops.constants import GRID_COLS, GRID_ROWS
 from gardenops.db import DB, DbConn, current_timestamp_ms, ensure_indoor_plot
@@ -513,7 +517,22 @@ def _clear_garden_plot_state(db: DbConn, *, garden_id: int) -> list[tuple[str, s
     return media_storage_pairs
 
 
-def _delete_garden_related_state(db: DbConn, *, garden_id: int) -> dict[str, int]:
+def _delete_garden_related_state(
+    db: DbConn,
+    *,
+    garden_id: int,
+) -> tuple[dict[str, int], list[tuple[str, str]]]:
+    media_storage_pairs = {
+        (str(row["storage_key"]), str(row["preview_storage_key"]))
+        for row in db.execute(
+            """
+            SELECT storage_key, preview_storage_key
+            FROM media_assets
+            WHERE garden_id = %s
+            """,
+            (garden_id,),
+        ).fetchall()
+    }
     plant_ids = [
         str(row["plt_id"])
         for row in db.execute(
@@ -529,7 +548,7 @@ def _delete_garden_related_state(db: DbConn, *, garden_id: int) -> dict[str, int
         "SELECT COUNT(*) AS cnt FROM layout_snapshots WHERE garden_id = %s",
         (garden_id,),
     ).fetchone()
-    _clear_garden_plot_state(db, garden_id=garden_id)
+    media_storage_pairs.update(_clear_garden_plot_state(db, garden_id=garden_id))
     db.execute("DELETE FROM plot_elevations WHERE garden_id = %s", (garden_id,))
     db.execute("DELETE FROM plot_elevation_overrides WHERE garden_id = %s", (garden_id,))
     db.execute("DELETE FROM layout_snapshots WHERE garden_id = %s", (garden_id,))
@@ -554,12 +573,20 @@ def _delete_garden_related_state(db: DbConn, *, garden_id: int) -> dict[str, int
         db.execute(f"DELETE FROM plot_plants WHERE plt_id IN ({ph})", orphan_ids)
         db.execute(f"DELETE FROM plants WHERE plt_id IN ({ph})", orphan_ids)
     deleted_plants = len(orphan_ids)
-    db.execute("DELETE FROM gardens WHERE id = %s", (garden_id,))
-    return {
-        "plots_deleted": int(plot_count_row["cnt"]) if plot_count_row else 0,
-        "snapshots_deleted": int(snapshot_count_row["cnt"]) if snapshot_count_row else 0,
-        "plants_deleted": deleted_plants,
-    }
+    deleted = db.execute(
+        "DELETE FROM gardens WHERE id = %s RETURNING id",
+        (garden_id,),
+    ).fetchone()
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="Garden not found")
+    return (
+        {
+            "plots_deleted": int(plot_count_row["cnt"]) if plot_count_row else 0,
+            "snapshots_deleted": int(snapshot_count_row["cnt"]) if snapshot_count_row else 0,
+            "plants_deleted": deleted_plants,
+        },
+        sorted(media_storage_pairs),
+    )
 
 
 def _next_zone_plot_number(
@@ -903,7 +930,7 @@ def delete_garden(
         SELECT id, slug, name
         FROM gardens
         WHERE id = %s
-        LIMIT 1
+        FOR UPDATE
         """,
         (garden_id,),
     ).fetchone()
@@ -913,25 +940,37 @@ def delete_garden(
     name = str(garden["name"])
     if slug == "default":
         raise HTTPException(status_code=409, detail="Default garden cannot be deleted")
-    stats = _delete_garden_related_state(db, garden_id=garden_id)
-    db.commit()
+    try:
+        stats, media_storage_pairs = _delete_garden_related_state(db, garden_id=garden_id)
+        request.state.audited_by_handler = True
+        audit_values = write_required_audit_event(
+            method=request.method,
+            path=request.url.path,
+            status_code=200,
+            remote_host=_remote_host(request),
+            detail=_lifecycle_detail(
+                "garden.delete",
+                garden_id=garden_id,
+                garden_name=name,
+                slug=slug,
+                action_reason=action_reason,
+                **stats,
+            ),
+            auth_context=context,
+            garden_id=None,
+            use_auth_context_garden=False,
+            db=db,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    enqueue_audit_event_telemetry(audit_values, db=db)
+    for storage_key, preview_storage_key in media_storage_pairs:
+        unlink_storage_keys(storage_key, preview_storage_key)
     notify_garden_modified()
     record_security_event("destructive_admin_actions")
     record_security_event("destructive_admin_actions_delete_garden")
-    _audit_membership_change(
-        request,
-        context,
-        _lifecycle_detail(
-            "garden.delete",
-            garden_id=garden_id,
-            garden_name=name,
-            slug=slug,
-            action_reason=action_reason,
-            **stats,
-        ),
-        garden_id=None,
-        db=db,
-    )
     return {
         "status": "ok",
         "garden_id": garden_id,

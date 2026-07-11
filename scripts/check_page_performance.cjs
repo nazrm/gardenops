@@ -4,7 +4,8 @@
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { createHash } = require("node:crypto");
+const { execFileSync, spawn } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -18,12 +19,37 @@ const PLAYWRIGHT_PATH = path.join(
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 5177;
 const DEFAULT_TIMEOUT_MS = 15_000;
+const MOBILE_LAYOUT_BREAKPOINT_PX = 960;
+const MANAGED_CHILD_STOP_TIMEOUT_MS = 1_500;
 const SCENARIOS = new Set(["app-unauth", "app-auth", "app-auth-large-tabs"]);
+const LARGE_TAB_TRANSITIONS = [
+  { name: "mapToGarden", tab: "garden", readiness: "large-garden" },
+  { name: "gardenToInsights", tab: "insights", readiness: "large-care" },
+  { name: "insightsToMap", tab: "map", readiness: "large-map" },
+  { name: "warmMapToGarden", tab: "garden", readiness: "large-garden" },
+  { name: "warmGardenToInsights", tab: "insights", readiness: "large-care" },
+  { name: "warmInsightsToMap", tab: "map", readiness: "large-map" },
+];
+const LARGE_TAB_BROWSER_TIMING_METRICS = LARGE_TAB_TRANSITIONS.flatMap(({ name }) => [
+  `${name}BrowserReadyMs`,
+  `${name}BrowserPostFrameMs`,
+]);
+const LARGE_TAB_LEGACY_NODE_TIMING_METRICS = LARGE_TAB_TRANSITIONS.flatMap(({ name }) => [
+  `${name}LegacyNodeReadyObservedMs`,
+  `${name}LegacyNodePostFrameObservedMs`,
+]);
+const LARGE_TAB_PLAYWRIGHT_TIMING_METRICS = LARGE_TAB_TRANSITIONS.map(
+  ({ name }) => `${name}PlaywrightActionMs`,
+);
 const SCENARIO_METRICS = {
   "app-auth": [
     "appShellReadyMs",
     "appReadyMs",
-    "tabSwitchMs",
+    "tabSwitchBrowserReadyMs",
+    "tabSwitchBrowserPostFrameMs",
+    "tabSwitchLegacyNodeReadyObservedMs",
+    "tabSwitchLegacyNodePostFrameObservedMs",
+    "tabSwitchPlaywrightActionMs",
     "domContentLoadedMs",
     "loadEventMs",
     "firstContentfulPaintMs",
@@ -32,13 +58,14 @@ const SCENARIO_METRICS = {
   "app-auth-large-tabs": [
     "appShellReadyMs",
     "appReadyMs",
-    "mapToGardenMs",
-    "gardenToInsightsMs",
-    "insightsToMapMs",
-    "warmMapToGardenMs",
-    "warmGardenToInsightsMs",
-    "warmInsightsToMapMs",
-    "maxTabSwitchMs",
+    ...LARGE_TAB_BROWSER_TIMING_METRICS,
+    ...LARGE_TAB_LEGACY_NODE_TIMING_METRICS,
+    ...LARGE_TAB_PLAYWRIGHT_TIMING_METRICS,
+    "maxTabSwitchBrowserReadyMs",
+    "maxTabSwitchBrowserPostFrameMs",
+    "maxTabSwitchLegacyNodeReadyObservedMs",
+    "maxTabSwitchLegacyNodePostFrameObservedMs",
+    "maxPlaywrightActionMs",
     "maxLongTaskMs",
     "longTaskCount",
     "mountedCareCards",
@@ -52,7 +79,11 @@ const SCENARIO_METRICS = {
   ],
   "app-unauth": [
     "authGateReadyMs",
-    "usernameEnterMs",
+    "usernameEnterBrowserReadyMs",
+    "usernameEnterBrowserPostFrameMs",
+    "usernameEnterLegacyNodeReadyObservedMs",
+    "usernameEnterLegacyNodePostFrameObservedMs",
+    "usernameEnterPlaywrightActionMs",
     "domContentLoadedMs",
     "loadEventMs",
     "firstContentfulPaintMs",
@@ -233,7 +264,28 @@ function parseArgs(argv) {
   if (options.serve && !options.url) {
     options.url = `http://${options.host}:${options.port}/`;
   }
+  validateOptionCompatibility(options);
   return options;
+}
+
+function validateOptionCompatibility(options) {
+  if (options.tabSwitchBudgetMs !== null) {
+    if (!new Set(["app-auth", "app-auth-large-tabs"]).has(options.scenario)) {
+      throw new Error(
+        "--tab-switch-budget-ms requires an app-auth or app-auth-large-tabs scenario",
+      );
+    }
+    if (options.skipInteraction) {
+      throw new Error(
+        "--tab-switch-budget-ms requires measured tab transitions; remove --skip-interaction",
+      );
+    }
+  }
+  if (options.interactionBudgetMs !== null && options.skipInteraction) {
+    throw new Error(
+      "--interaction-budget-ms requires a measured interaction; remove --skip-interaction",
+    );
+  }
 }
 
 function roundMs(value) {
@@ -259,6 +311,7 @@ function metricStats(runs, metricName) {
     .map((run) => run.timings[metricName])
     .filter((value) => Number.isFinite(value));
   return {
+    n: values.length,
     min: percentile(values, 0),
     median: percentile(values, 0.5),
     p75: percentile(values, 0.75),
@@ -326,12 +379,327 @@ function summarizeCdpDelta(before, after) {
   };
 }
 
-async function afterPaint(page) {
-  await page.evaluate(() => new Promise((resolve) => {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => window.setTimeout(resolve, 0));
+async function installBrowserInteractionTiming(page, {
+  readiness,
+  targetSelector,
+  timeoutMs,
+}) {
+  return page.evaluate(({
+    readiness: readinessConfig,
+    targetSelector: selector,
+    timeoutMs: browserTimeoutMs,
+  }) => {
+    const target = document.querySelector(selector);
+    if (!(target instanceof HTMLElement)) {
+      throw new Error(`Could not instrument interaction target ${selector}`);
+    }
+    const state = window.__gardenopsPerfInteractionTiming ??= {
+      entries: {},
+      nextId: 0,
+    };
+    const id = String(++state.nextId);
+    state.entries[id] = {
+      intentAtMs: null,
+      intentEvent: null,
+      postFrameAtMs: null,
+      preparedAtMs: performance.now(),
+      readyAtMs: null,
+      readiness: readinessConfig.name,
+      status: "armed",
+    };
+    const entry = state.entries[id];
+    let mutationObserver = null;
+    let pollFrame = null;
+    let timeoutId = null;
+
+    const cleanup = () => {
+      target.removeEventListener("pointerdown", recordIntent, true);
+      target.removeEventListener("click", recordIntent, true);
+      mutationObserver?.disconnect();
+      if (pollFrame !== null) cancelAnimationFrame(pollFrame);
+      if (timeoutId !== null) clearTimeout(timeoutId);
+    };
+
+    const matchesReadiness = () => {
+      const args = readinessConfig.args ?? {};
+      if (readinessConfig.name === "auth-password-step") {
+        const passwordInput = document.querySelector(args.passwordSelector);
+        const submitButton = document.querySelector(args.submitSelector);
+        const label = passwordInput?.closest("label");
+        return (
+          passwordInput instanceof HTMLInputElement
+          && label instanceof HTMLElement
+          && !label.hidden
+          && submitButton?.textContent?.trim() === "Login"
+          && document.activeElement === passwordInput
+        );
+      }
+      if (readinessConfig.name === "app-garden-tab") {
+        const plantsView = document.querySelector("#plants-view");
+        const gardenTab = document.querySelector(
+          args.selectedTabSelector ?? "#top-tab-garden",
+        );
+        const gardenTabSelected = gardenTab?.getAttribute("aria-selected") === "true"
+          || gardenTab?.getAttribute("aria-current") === "page";
+        const tableBody = document.querySelector("#plants-table-body");
+        const mobileList = document.querySelector("#plants-mobile-list");
+        const isMobile = window.innerWidth <= args.mobileLayoutBreakpointPx;
+        const tableReady = tableBody?.querySelectorAll("tr").length === 1;
+        const mobileReady = mobileList?.querySelectorAll(".mobile-data-card").length === 1;
+        return (
+          plantsView instanceof HTMLElement
+          && !plantsView.hidden
+          && gardenTabSelected
+          && (isMobile ? mobileReady : tableReady)
+        );
+      }
+      if (readinessConfig.name === "large-map") {
+        const grid = document.querySelector("#map-grid");
+        const activeMapTab = document.querySelector("#top-tab-map");
+        const mapView = document.querySelector("#map-view");
+        return (
+          grid instanceof HTMLElement
+          && mapView instanceof HTMLElement
+          && !mapView.hidden
+          && !grid.querySelector(".map-grid-loading")
+          && grid.querySelectorAll(".plot").length >= 600
+          && activeMapTab?.getAttribute("aria-selected") === "true"
+        );
+      }
+      if (readinessConfig.name === "large-garden") {
+        const plantsView = document.querySelector("#plants-view");
+        const gardenTab = document.querySelector("#top-tab-garden");
+        const tableBody = document.querySelector("#plants-table-body");
+        const mobileList = document.querySelector("#plants-mobile-list");
+        const isMobile = window.innerWidth <= args.mobileLayoutBreakpointPx;
+        const tableReady = tableBody instanceof HTMLElement
+          && tableBody.dataset.renderReady === "true"
+          && (
+            tableBody.dataset.renderMode === "virtual"
+              ? tableBody.querySelectorAll("tr[data-virtual-row]").length > 0
+              : tableBody.querySelectorAll("tr").length >= 80
+          );
+        const mobileReady = mobileList instanceof HTMLElement
+          && mobileList.dataset.renderReady === "true"
+          && (
+            mobileList.dataset.renderMode === "virtual"
+              ? mobileList.querySelectorAll("[data-virtual-item]").length > 0
+              : mobileList.querySelectorAll(".mobile-data-card").length >= 80
+          );
+        return (
+          plantsView instanceof HTMLElement
+          && !plantsView.hidden
+          && gardenTab?.getAttribute("aria-selected") === "true"
+          && (isMobile ? mobileReady : tableReady)
+        );
+      }
+      if (readinessConfig.name === "large-care") {
+        const careView = document.querySelector("#care-view");
+        const insightsTab = document.querySelector("#top-tab-insights");
+        const tableBody = document.querySelector("#care-table-body");
+        const mobileList = document.querySelector("#care-mobile-list");
+        const isMobile = window.innerWidth <= args.mobileLayoutBreakpointPx;
+        const tableReady = tableBody instanceof HTMLElement
+          && tableBody.dataset.renderReady === "true"
+          && (
+            tableBody.dataset.renderMode === "virtual"
+              ? tableBody.querySelectorAll("tr[data-virtual-row]").length > 0
+              : tableBody.querySelectorAll("tr").length >= 80
+          );
+        const mobileReady = mobileList instanceof HTMLElement
+          && mobileList.dataset.renderReady === "true"
+          && (
+            mobileList.dataset.renderMode === "virtual"
+              ? mobileList.querySelectorAll("[data-virtual-item]").length > 0
+              : mobileList.querySelectorAll(".care-mobile-card").length >= 80
+          );
+        return (
+          careView instanceof HTMLElement
+          && !careView.hidden
+          && insightsTab?.getAttribute("aria-selected") === "true"
+          && (isMobile ? mobileReady : tableReady)
+        );
+      }
+      throw new Error(`Unknown browser readiness predicate ${readinessConfig.name}`);
+    };
+
+    const finishWithError = (message) => {
+      if (entry.status === "complete" || entry.status === "timed-out") return;
+      entry.error = message;
+      entry.status = "error";
+      cleanup();
+    };
+
+    const stampPostFrameProxy = () => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (entry.status !== "ready") return;
+          entry.postFrameAtMs = performance.now();
+          entry.status = "complete";
+          cleanup();
+        });
+      });
+    };
+
+    const checkReadiness = () => {
+      if (entry.status !== "armed" || !Number.isFinite(entry.intentAtMs)) return;
+      try {
+        if (!matchesReadiness()) return;
+      } catch (err) {
+        finishWithError(`Browser readiness predicate failed: ${err.message}`);
+        return;
+      }
+      entry.readyAtMs = performance.now();
+      entry.status = "ready";
+      mutationObserver?.disconnect();
+      if (pollFrame !== null) cancelAnimationFrame(pollFrame);
+      stampPostFrameProxy();
+    };
+
+    const pollReadiness = () => {
+      checkReadiness();
+      if (entry.status === "armed") {
+        pollFrame = requestAnimationFrame(pollReadiness);
+      }
+    };
+
+    const recordIntent = (event) => {
+      if (entry.status !== "armed" || Number.isFinite(entry.intentAtMs)) return;
+      entry.intentAtMs = performance.now();
+      entry.intentEvent = event.type;
+      checkReadiness();
+    };
+
+    target.addEventListener("pointerdown", recordIntent, true);
+    target.addEventListener("click", recordIntent, true);
+    mutationObserver = new MutationObserver(checkReadiness);
+    mutationObserver.observe(document.documentElement, {
+      attributes: true,
+      characterData: true,
+      childList: true,
+      subtree: true,
     });
-  }));
+    pollFrame = requestAnimationFrame(pollReadiness);
+    timeoutId = window.setTimeout(() => {
+      if (entry.status === "complete") return;
+      entry.error = `Timed out waiting for browser readiness predicate ${readinessConfig.name}`;
+      entry.status = "timed-out";
+      cleanup();
+    }, browserTimeoutMs);
+    return id;
+  }, { readiness, targetSelector, timeoutMs });
+}
+
+async function waitForBrowserInteractionState(
+  page,
+  interactionId,
+  state,
+  timeoutMs,
+) {
+  const timingHandle = await page.waitForFunction(
+    ({ id, desiredState }) => {
+      const entry = window.__gardenopsPerfInteractionTiming?.entries?.[id];
+      if (!entry) {
+        return { error: `Missing browser interaction timing ${id}`, status: "missing" };
+      }
+      const reachedState = desiredState === "ready"
+        ? Number.isFinite(entry.readyAtMs)
+        : entry.status === "complete";
+      if (
+        !reachedState
+        && entry.status !== "error"
+        && entry.status !== "timed-out"
+      ) {
+        return false;
+      }
+      return {
+        error: entry.error ?? null,
+        intentAtMs: entry.intentAtMs,
+        intentEvent: entry.intentEvent,
+        postFrameAtMs: entry.postFrameAtMs,
+        preparedAtMs: entry.preparedAtMs,
+        readyAtMs: entry.readyAtMs,
+        readiness: entry.readiness,
+        status: entry.status,
+      };
+    },
+    { desiredState: state, id: interactionId },
+    { timeout: timeoutMs + 1_000 },
+  );
+  try {
+    const timing = await timingHandle.jsonValue();
+    if (timing.status === "missing" || timing.status === "error" || timing.status === "timed-out") {
+      throw new Error(timing.error ?? `Browser interaction timing did not reach ${state}`);
+    }
+    return timing;
+  } finally {
+    await timingHandle.dispose();
+  }
+}
+
+async function discardBrowserInteractionTiming(page, interactionId) {
+  try {
+    await page.evaluate((id) => {
+      const state = window.__gardenopsPerfInteractionTiming;
+      if (state?.entries) delete state.entries[id];
+    }, interactionId);
+  } catch {
+    // The page can already be closed after an interaction failure.
+  }
+}
+
+function summarizeBrowserInteractionTiming(timing) {
+  const intentAtMs = timing?.intentAtMs;
+  const readyAtMs = timing?.readyAtMs;
+  const postFrameAtMs = timing?.postFrameAtMs;
+  return {
+    browserIntentEvent: typeof timing?.intentEvent === "string"
+      ? timing.intentEvent
+      : null,
+    browserIntentToPostFrameMs: Number.isFinite(intentAtMs)
+      && Number.isFinite(postFrameAtMs)
+      ? roundMs(postFrameAtMs - intentAtMs)
+    : null,
+    browserIntentToReadyMs: Number.isFinite(intentAtMs)
+      && Number.isFinite(readyAtMs)
+      ? roundMs(readyAtMs - intentAtMs)
+      : null,
+  };
+}
+
+async function clickAndMeasureInteraction(page, targetSelector, readiness, timeoutMs) {
+  const interactionId = await installBrowserInteractionTiming(page, {
+    readiness,
+    targetSelector,
+    timeoutMs,
+  });
+  const legacyStartedAt = performance.now();
+  let completed = false;
+  try {
+    const clickStartedAt = performance.now();
+    await page.click(targetSelector, { timeout: timeoutMs });
+    const playwrightActionMs = performance.now() - clickStartedAt;
+    await waitForBrowserInteractionState(page, interactionId, "ready", timeoutMs);
+    const legacyNodeReadyObservedMs = performance.now() - legacyStartedAt;
+    const browserTiming = await waitForBrowserInteractionState(
+      page,
+      interactionId,
+      "complete",
+      timeoutMs,
+    );
+    const legacyNodePostFrameObservedMs = performance.now() - legacyStartedAt;
+    await discardBrowserInteractionTiming(page, interactionId);
+    completed = true;
+    return {
+      browserTiming,
+      browserTimingSummary: summarizeBrowserInteractionTiming(browserTiming),
+      legacyNodePostFrameObservedMs,
+      legacyNodeReadyObservedMs,
+      playwrightActionMs,
+    };
+  } finally {
+    if (!completed) await discardBrowserInteractionTiming(page, interactionId);
+  }
 }
 
 async function collectDomSnapshot(page) {
@@ -373,9 +741,173 @@ function summarizeRuns(runs, scenario) {
   };
 }
 
-function fail(message) {
-  console.error(`Page performance check failed: ${message}`);
-  process.exit(1);
+function createBrowserContextOptions(options) {
+  return {
+    deviceScaleFactor: 1,
+    hasTouch: false,
+    isMobile: false,
+    viewport: {
+      height: options.viewportHeight,
+      width: options.viewportWidth,
+    },
+  };
+}
+
+function buildViewportProfile(options) {
+  const responsiveMobileBreakpoint = options.viewportWidth <= MOBILE_LAYOUT_BREAKPOINT_PX;
+  return {
+    label: responsiveMobileBreakpoint
+      ? "responsive mobile-breakpoint desktop Chromium"
+      : "desktop-breakpoint desktop Chromium",
+    mobileDeviceEmulation: false,
+    responsiveLayout: responsiveMobileBreakpoint
+      ? "mobile-breakpoint"
+      : "desktop-breakpoint",
+    strategy: "viewport-only",
+    viewport: {
+      height: options.viewportHeight,
+      width: options.viewportWidth,
+    },
+  };
+}
+
+function tabSelectorForViewport(options, tab) {
+  return options.viewportWidth <= MOBILE_LAYOUT_BREAKPOINT_PX
+    ? `#mobile-tab-${tab}`
+    : `#top-tab-${tab}`;
+}
+
+function buildMeasurementMetadata(options) {
+  const viewportProfile = buildViewportProfile(options);
+  return {
+    browserContext: {
+      ...createBrowserContextOptions(options),
+      mobileEmulation: {
+        enabled: false,
+        responsiveBreakpointPx: MOBILE_LAYOUT_BREAKPOINT_PX,
+        responsiveLayout: viewportProfile.responsiveLayout,
+        strategy: "viewport-only",
+      },
+      userAgentOverride: null,
+      viewportProfile,
+    },
+    interactionTiming: {
+      browserPostFrameFields: {
+        end: "Browser performance clock after readiness and a browser-scheduled double requestAnimationFrame.",
+        interpretation: "Post-frame proxy only; it is not a guaranteed first presentation timestamp.",
+        start: "Target pointerdown; target click is a fallback when pointerdown is unavailable.",
+      },
+      legacyNodeFields: {
+        deprecatedDetailAliases: "tabSwitchDetails.presentedMs, readyMs, and wallMs are retained legacy Node diagnostic aliases; use the explicitly named *LegacyNode*Ms fields for new consumers.",
+        description: "*LegacyNode*Ms fields are Node wall-clock observations from immediately before Playwright click through browser readiness or post-frame completion. They include protocol delay and actionability overhead and are diagnostic-only.",
+      },
+      playwrightActionFields: {
+        description: "*PlaywrightActionMs is the Playwright click call duration, including locator/actionability overhead. It is diagnostic-only and not browser render time.",
+      },
+    },
+    schemaVersion: 3,
+  };
+}
+
+function readGitBuffer(args) {
+  try {
+    return execFileSync("git", args, {
+      cwd: ROOT,
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return null;
+  }
+}
+
+function readGitOutput(args) {
+  const output = readGitBuffer(args);
+  return output === null ? null : output.toString("utf8").trim();
+}
+
+function collectDirtyTreeContentHash() {
+  const diff = readGitBuffer(["diff", "--no-ext-diff", "--binary", "HEAD", "--"]);
+  const untracked = readGitBuffer(["ls-files", "--others", "--exclude-standard", "-z"]);
+  if (diff === null || untracked === null) return null;
+
+  const hash = createHash("sha256");
+  hash.update("git-diff-head\0");
+  hash.update(diff);
+  hash.update("untracked-files\0");
+  for (const relativePath of untracked.toString("utf8").split("\u0000")) {
+    if (!relativePath) continue;
+    const filePath = path.resolve(ROOT, relativePath);
+    if (!filePath.startsWith(`${ROOT}${path.sep}`)) return null;
+    try {
+      hash.update(relativePath);
+      hash.update("\0");
+      hash.update(fs.readFileSync(filePath));
+      hash.update("\0");
+    } catch {
+      return null;
+    }
+  }
+  return hash.digest("hex");
+}
+
+function collectGitProvenance() {
+  const status = readGitOutput(["status", "--porcelain=v1", "--untracked-files=all"]);
+  const dirty = status === null ? null : status.length > 0;
+  return {
+    contentHash: dirty ? collectDirtyTreeContentHash() : null,
+    dirty,
+    revision: readGitOutput(["rev-parse", "HEAD"]),
+  };
+}
+
+function buildComparisonProvenance({ browserPath, browserVersion, options }) {
+  return {
+    apiMode: options.stubApi ? "stub" : "live",
+    browser: {
+      engine: "chromium",
+      path: browserPath,
+      version: browserVersion,
+    },
+    options: {
+      headful: options.headful,
+      interactionMode: options.skipInteraction ? "load-only" : "measured",
+      serveMode: options.serve ? options.serveMode : "external",
+      targetUrl: options.url,
+    },
+    scenario: options.scenario,
+    viewportProfile: buildViewportProfile(options),
+  };
+}
+
+function buildReproducibilityProvenance({
+  argv,
+  browserPath,
+  browserVersion,
+  options,
+}) {
+  return {
+    browser: {
+      path: browserPath,
+      version: browserVersion,
+    },
+    comparison: buildComparisonProvenance({
+      browserPath,
+      browserVersion,
+      options,
+    }),
+    evidence: {
+      durableCiEvidence: false,
+      note: "This JSON is local diagnostic evidence, not durable CI evidence unless a CI job produces and retains it.",
+    },
+    git: collectGitProvenance(),
+    invocation: {
+      argv: [...argv],
+      effectiveOptions: { ...options },
+    },
+    runCount: options.runs,
+    viewportProfile: buildViewportProfile(options),
+  };
 }
 
 function findBrowserPath(explicitPath) {
@@ -393,11 +925,18 @@ function findBrowserPath(explicitPath) {
   return "";
 }
 
+function isReadyStatus(status) {
+  return Number.isInteger(status) && status >= 200 && status < 400;
+}
+
 function request(url) {
   return new Promise((resolve) => {
     const req = http.get(url, (res) => {
       res.resume();
-      res.on("end", () => resolve({ ok: res.statusCode < 500, status: res.statusCode }));
+      res.on("end", () => resolve({
+        ok: isReadyStatus(res.statusCode),
+        status: res.statusCode,
+      }));
     });
     req.on("error", (err) => resolve({ ok: false, error: err.message }));
     req.setTimeout(1_000, () => {
@@ -407,10 +946,110 @@ function request(url) {
   });
 }
 
-async function waitForServer(url, timeoutMs, child, readServerLog) {
+function hasChildExited(child) {
+  return Boolean(child) && (
+    (child.exitCode !== null && child.exitCode !== undefined)
+    || (child.signalCode !== null && child.signalCode !== undefined)
+  );
+}
+
+function waitForChildExit(child, timeoutMs) {
+  if (hasChildExited(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      child.removeListener("error", onError);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const onError = () => finish(true);
+    const timer = setTimeout(() => finish(hasChildExited(child)), timeoutMs);
+    child.once("exit", onExit);
+    child.once("error", onError);
+    if (hasChildExited(child)) finish(true);
+  });
+}
+
+function processGroupExists(pid) {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (err) {
+    if (err.code === "ESRCH") return false;
+    throw err;
+  }
+}
+
+async function waitForProcessGroupExit(pid, timeoutMs) {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    if (!processGroupExists(pid)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return !processGroupExists(pid);
+}
+
+function signalManagedChild(child, signal) {
+  if (!child) return false;
+  const pid = child.pid;
+  if (Number.isInteger(pid) && process.platform !== "win32") {
+    try {
+      process.kill(-pid, signal);
+      return true;
+    } catch (err) {
+      if (err.code === "ESRCH") return false;
+      throw err;
+    }
+  }
+  if (hasChildExited(child)) return false;
+  try {
+    const delivered = child.kill(signal);
+    if (delivered || hasChildExited(child)) return true;
+  } catch (err) {
+    throw new Error(`Could not send ${signal} to managed server process: ${err.message}`);
+  }
+  throw new Error(`Could not send ${signal} to managed server process`);
+}
+
+async function stopManagedChild(child) {
+  if (!child) return;
+  const pid = child.pid;
+  if (Number.isInteger(pid) && process.platform !== "win32") {
+    if (!processGroupExists(pid)) return;
+    signalManagedChild(child, "SIGTERM");
+    if (await waitForProcessGroupExit(pid, MANAGED_CHILD_STOP_TIMEOUT_MS)) return;
+    signalManagedChild(child, "SIGKILL");
+    if (await waitForProcessGroupExit(pid, MANAGED_CHILD_STOP_TIMEOUT_MS)) return;
+    throw new Error("Managed server process group did not exit after SIGKILL");
+  }
+  if (hasChildExited(child)) return;
+  signalManagedChild(child, "SIGTERM");
+  if (await waitForChildExit(child, MANAGED_CHILD_STOP_TIMEOUT_MS)) return;
+  signalManagedChild(child, "SIGKILL");
+  if (await waitForChildExit(child, MANAGED_CHILD_STOP_TIMEOUT_MS)) return;
+  throw new Error("Managed server process did not exit after SIGKILL");
+}
+
+async function waitForServer(
+  url,
+  timeoutMs,
+  child,
+  readServerLog,
+  readChildError = () => null,
+) {
   const startedAt = performance.now();
   while (performance.now() - startedAt < timeoutMs) {
-    if (child.exitCode !== null) {
+    const childError = readChildError();
+    if (childError) {
+      throw new Error(
+        `Vite server failed before becoming ready: ${childError.message}.\n${readServerLog()}`,
+      );
+    }
+    if (hasChildExited(child)) {
       throw new Error(
         `Vite server exited before becoming ready.\n${readServerLog()}`,
       );
@@ -424,6 +1063,7 @@ async function waitForServer(url, timeoutMs, child, readServerLog) {
 
 async function startServer(options) {
   let serverLog = "";
+  let childError = null;
   const command = options.serveMode === "preview" ? "preview" : "dev";
   const child = spawn(
     "npm",
@@ -439,6 +1079,7 @@ async function startServer(options) {
     ],
     {
       cwd: FRONTEND_DIR,
+      detached: process.platform !== "win32",
       env: { ...process.env, BROWSER: "none" },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -451,24 +1092,31 @@ async function startServer(options) {
   };
   child.stdout.on("data", appendLog);
   child.stderr.on("data", appendLog);
-  await waitForServer(options.url, options.timeoutMs, child, () => serverLog);
-  return {
+  child.on("error", (err) => {
+    childError = err;
+    appendLog(`${err.message}\n`);
+  });
+  const server = {
     child,
-    async stop() {
-      if (child.exitCode !== null) return;
-      child.kill("SIGTERM");
-      await new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          if (child.exitCode === null) child.kill("SIGKILL");
-          resolve();
-        }, 1_500);
-        child.once("exit", () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
-    },
+    stop: () => stopManagedChild(child),
   };
+  try {
+    await waitForServer(
+      options.url,
+      options.timeoutMs,
+      child,
+      () => serverLog,
+      () => childError,
+    );
+    return server;
+  } catch (err) {
+    try {
+      await server.stop();
+    } catch (cleanupErr) {
+      err.message = `${err.message}\nFailed to clean up managed server: ${cleanupErr.message}`;
+    }
+    throw err;
+  }
 }
 
 function apiJson(status, body) {
@@ -617,6 +1265,7 @@ function buildAuthPerformanceData(large) {
         grid_rows: 6,
         grid_cols: 8,
       },
+      mapObjects: [],
       plants: [makePlant(0, ["A1"])],
       plots,
       profile,
@@ -690,6 +1339,7 @@ function buildAuthPerformanceData(large) {
       grid_rows: rows,
       grid_cols: cols,
     },
+    mapObjects: [],
     plants,
     plots,
     profile,
@@ -739,6 +1389,7 @@ async function installScenarioRoutes(context, scenario) {
     const responses = new Map([
       ["/api/auth/me", fixture.profile],
       ["/api/gardens", [fixture.garden]],
+      ["/api/gardens/1/map-objects", { objects: fixture.mapObjects }],
       ["/api/version", {
         version: "perf",
         base_version: "perf",
@@ -776,6 +1427,62 @@ async function installScenarioRoutes(context, scenario) {
     }
     route.fulfill(apiJson(200, response));
   });
+}
+
+function apiResponseErrorDetails(response) {
+  const status = response.status();
+  if (!Number.isFinite(status) || status < 400) return null;
+  let url;
+  try {
+    url = new URL(response.url());
+  } catch {
+    return null;
+  }
+  if (!url.pathname.startsWith("/api/")) return null;
+  let method = "UNKNOWN";
+  try {
+    method = response.request().method();
+  } catch {
+    // Keep a usable error diagnostic if a nonstandard response lacks a request.
+  }
+  return {
+    method,
+    path: `${url.pathname}${url.search}`,
+    pathname: url.pathname,
+    status,
+  };
+}
+
+function isExpectedApiErrorResponse(scenario, details) {
+  return scenario === "app-unauth"
+    && details.method === "GET"
+    && details.pathname === "/api/auth/me"
+    && details.status === 401;
+}
+
+function createApiResponseTracker(page, scenario) {
+  const unexpectedResponses = [];
+  const onResponse = (response) => {
+    const details = apiResponseErrorDetails(response);
+    if (details && !isExpectedApiErrorResponse(scenario, details)) {
+      unexpectedResponses.push(details);
+    }
+  };
+  page.on("response", onResponse);
+  return {
+    assertNoUnexpectedResponses() {
+      if (unexpectedResponses.length === 0) return;
+      throw new Error(
+        `Unexpected API response errors in ${scenario}: ${unexpectedResponses
+          .map((details) => `${details.method} ${details.path} -> ${details.status}`)
+          .join(", ")}`,
+      );
+    },
+    detach() {
+      page.off?.("response", onResponse);
+    },
+    unexpectedResponses,
+  };
 }
 
 function byEncodedSizeDesc(left, right) {
@@ -939,31 +1646,25 @@ async function runAppUnauthScenario(page, options) {
         resourceEncodedBytes: browserMetrics.resources.totals.encodedBodySize,
         resourceTransferBytes: browserMetrics.resources.totals.transferSize,
         responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
-        usernameEnterMs: null,
+        usernameEnterBrowserPostFrameMs: null,
+        usernameEnterBrowserReadyMs: null,
+        usernameEnterLegacyNodePostFrameObservedMs: null,
+        usernameEnterLegacyNodeReadyObservedMs: null,
+        usernameEnterPlaywrightActionMs: null,
       },
     };
   }
 
   await page.fill(usernameSelector, "perf_probe");
-  const interactionStartedAt = performance.now();
-  await page.click(submitSelector);
-  await page.waitForFunction(
-    ({ passwordSelector, submitSelector }) => {
-      const passwordInput = document.querySelector(passwordSelector);
-      const submitButton = document.querySelector(submitSelector);
-      const label = passwordInput?.closest("label");
-      return (
-        passwordInput instanceof HTMLInputElement
-        && label instanceof HTMLElement
-        && !label.hidden
-        && submitButton?.textContent?.trim() === "Login"
-        && document.activeElement === passwordInput
-      );
+  const interaction = await clickAndMeasureInteraction(
+    page,
+    submitSelector,
+    {
+      args: { passwordSelector, submitSelector },
+      name: "auth-password-step",
     },
-    { passwordSelector, submitSelector },
-    { timeout: timeoutMs },
+    timeoutMs,
   );
-  const usernameEnterMs = performance.now() - interactionStartedAt;
   const finalFlow = await page.evaluate(
     ({ passwordSelector, submitSelector, usernameSelector }) => {
       const usernameInput = document.querySelector(usernameSelector);
@@ -1001,7 +1702,15 @@ async function runAppUnauthScenario(page, options) {
       resourceEncodedBytes: browserMetrics.resources.totals.encodedBodySize,
       resourceTransferBytes: browserMetrics.resources.totals.transferSize,
       responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
-      usernameEnterMs: roundMs(usernameEnterMs),
+      usernameEnterBrowserPostFrameMs:
+        interaction.browserTimingSummary.browserIntentToPostFrameMs,
+      usernameEnterBrowserReadyMs:
+        interaction.browserTimingSummary.browserIntentToReadyMs,
+      usernameEnterLegacyNodePostFrameObservedMs:
+        roundMs(interaction.legacyNodePostFrameObservedMs),
+      usernameEnterLegacyNodeReadyObservedMs:
+        roundMs(interaction.legacyNodeReadyObservedMs),
+      usernameEnterPlaywrightActionMs: roundMs(interaction.playwrightActionMs),
     },
   };
 }
@@ -1071,29 +1780,28 @@ async function runAppAuthScenario(page, options) {
         resourceEncodedBytes: browserMetrics.resources.totals.encodedBodySize,
         resourceTransferBytes: browserMetrics.resources.totals.transferSize,
         responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
-        tabSwitchMs: null,
+        tabSwitchBrowserPostFrameMs: null,
+        tabSwitchBrowserReadyMs: null,
+        tabSwitchLegacyNodePostFrameObservedMs: null,
+        tabSwitchLegacyNodeReadyObservedMs: null,
+        tabSwitchPlaywrightActionMs: null,
       },
     };
   }
 
-  const interactionStartedAt = performance.now();
-  await page.click("#top-tab-garden");
-  await page.waitForFunction(
-    () => {
-      const plantsView = document.querySelector("#plants-view");
-      const gardenTab = document.querySelector("#top-tab-garden");
-      const tableBody = document.querySelector("#plants-table-body");
-      return (
-        plantsView instanceof HTMLElement
-        && !plantsView.hidden
-        && gardenTab?.getAttribute("aria-selected") === "true"
-        && tableBody?.querySelectorAll("tr").length === 1
-      );
+  const gardenTabSelector = tabSelectorForViewport(options, "garden");
+  const interaction = await clickAndMeasureInteraction(
+    page,
+    gardenTabSelector,
+    {
+      args: {
+        mobileLayoutBreakpointPx: MOBILE_LAYOUT_BREAKPOINT_PX,
+        selectedTabSelector: gardenTabSelector,
+      },
+      name: "app-garden-tab",
     },
-    undefined,
-    { timeout: timeoutMs },
+    timeoutMs,
   );
-  const tabSwitchMs = performance.now() - interactionStartedAt;
   const finalFlow = await page.evaluate(() => {
     const tableBody = document.querySelector("#plants-table-body");
     return {
@@ -1121,13 +1829,33 @@ async function runAppAuthScenario(page, options) {
       resourceEncodedBytes: browserMetrics.resources.totals.encodedBodySize,
       resourceTransferBytes: browserMetrics.resources.totals.transferSize,
       responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
-      tabSwitchMs: roundMs(tabSwitchMs),
+      tabSwitchBrowserPostFrameMs:
+        interaction.browserTimingSummary.browserIntentToPostFrameMs,
+      tabSwitchBrowserReadyMs:
+        interaction.browserTimingSummary.browserIntentToReadyMs,
+      tabSwitchLegacyNodePostFrameObservedMs:
+        roundMs(interaction.legacyNodePostFrameObservedMs),
+      tabSwitchLegacyNodeReadyObservedMs:
+        roundMs(interaction.legacyNodeReadyObservedMs),
+      tabSwitchPlaywrightActionMs: roundMs(interaction.playwrightActionMs),
     },
   };
 }
 
 async function runAppAuthLargeTabsScenario(page, options) {
   const { timeoutMs, url } = options;
+  const initialApiRequests = [];
+  const onInitialRequest = (request) => {
+    try {
+      const requestUrl = new URL(request.url());
+      if (requestUrl.pathname.startsWith("/api/")) {
+        initialApiRequests.push(`${request.method()} ${requestUrl.pathname}${requestUrl.search}`);
+      }
+    } catch {
+      // Keep performance collection running if Chromium reports a nonstandard URL.
+    }
+  };
+  page.on("request", onInitialRequest);
   await page.addInitScript(() => {
     window.__gardenopsPerfLongTasks = [];
     try {
@@ -1174,6 +1902,11 @@ async function runAppAuthLargeTabsScenario(page, options) {
   };
   await page.waitForFunction(mapReady, undefined, { timeout: timeoutMs });
   const appReadyMs = performance.now() - startedAt;
+  await page.waitForTimeout(50);
+  page.off?.("request", onInitialRequest);
+  if (initialApiRequests.some((request) => request === "GET /api/plants")) {
+    throw new Error("Map-first startup fetched the full /api/plants catalogue");
+  }
 
   const gardenReady = () => {
     const plantsView = document.querySelector("#plants-view");
@@ -1229,23 +1962,24 @@ async function runAppAuthLargeTabsScenario(page, options) {
       && (isMobile ? mobileReady : tableReady)
     );
   };
-  const tabSelector = (tab) => (
-    options.viewportWidth <= 960 ? `#mobile-tab-${tab}` : `#top-tab-${tab}`
-  );
+  const tabSelector = (tab) => tabSelectorForViewport(options, tab);
   const cdpSession = await createCdpMetricsSession(page);
-  const measureSwitch = async (name, tab, readyFn) => {
-    const interactionStartedAt = performance.now();
-    const browserStartedAt = await page.evaluate(() => performance.now());
+  const measureSwitch = async (name, tab, readiness) => {
     const beforeCdp = await collectCdpMetrics(cdpSession);
     const domBefore = await collectDomSnapshot(page);
-    const clickStartedAt = performance.now();
-    await page.click(tabSelector(tab));
-    const playwrightActionMs = performance.now() - clickStartedAt;
-    await page.waitForFunction(readyFn, undefined, { timeout: timeoutMs });
-    const readyMs = performance.now() - interactionStartedAt;
-    await afterPaint(page);
-    const presentedMs = performance.now() - interactionStartedAt;
-    const browserEndedAt = await page.evaluate(() => performance.now());
+    const target = tabSelector(tab);
+    const interaction = await clickAndMeasureInteraction(
+      page,
+      target,
+      {
+        args: { mobileLayoutBreakpointPx: MOBILE_LAYOUT_BREAKPOINT_PX },
+        name: readiness,
+      },
+      timeoutMs,
+    );
+    const browserStartedAt = interaction.browserTiming.intentAtMs
+      ?? interaction.browserTiming.preparedAtMs;
+    const browserEndedAt = interaction.browserTiming.postFrameAtMs;
     const afterCdp = await collectCdpMetrics(cdpSession);
     const domAfter = await collectDomSnapshot(page);
     const longTasks = await page.evaluate(
@@ -1278,14 +2012,24 @@ async function runAppAuthLargeTabsScenario(page, options) {
         before: domBefore,
         totalNodesDelta: domAfter.totalNodes - domBefore.totalNodes,
       },
+      browserIntentEvent: interaction.browserTimingSummary.browserIntentEvent,
+      browserPostFrameMs:
+        interaction.browserTimingSummary.browserIntentToPostFrameMs,
+      browserReadyMs:
+        interaction.browserTimingSummary.browserIntentToReadyMs,
+      legacyNodeDiagnostics: {
+        postFrameObservedMs: roundMs(interaction.legacyNodePostFrameObservedMs),
+        readyObservedMs: roundMs(interaction.legacyNodeReadyObservedMs),
+      },
       longTasks,
       name,
       networkDuringSwitch,
-      playwrightActionMs: roundMs(playwrightActionMs),
-      presentedMs: roundMs(presentedMs),
-      readyMs: roundMs(readyMs),
-      target: tabSelector(tab),
-      wallMs: roundMs(presentedMs),
+      playwrightActionMs: roundMs(interaction.playwrightActionMs),
+      // Deprecated legacy aliases retained for detailed diagnostic consumers.
+      presentedMs: roundMs(interaction.legacyNodePostFrameObservedMs),
+      readyMs: roundMs(interaction.legacyNodeReadyObservedMs),
+      target,
+      wallMs: roundMs(interaction.legacyNodePostFrameObservedMs),
     };
   };
 
@@ -1300,6 +2044,7 @@ async function runAppAuthLargeTabsScenario(page, options) {
       plotCount: grid?.querySelectorAll(".plot").length ?? 0,
     };
   });
+  initialFlow.apiRequests = initialApiRequests;
 
   if (options.skipInteraction) {
     const browserMetrics = await collectBrowserMetrics(page);
@@ -1317,6 +2062,11 @@ async function runAppAuthLargeTabsScenario(page, options) {
         firstPaintMs: roundMs(browserMetrics.paints.firstPaintMs ?? NaN),
         gotoMs: roundMs(gotoMs),
         loadEventMs: roundMs(browserMetrics.navigation?.loadEventMs ?? NaN),
+        maxTabSwitchBrowserPostFrameMs: null,
+        maxTabSwitchBrowserReadyMs: null,
+        maxTabSwitchLegacyNodePostFrameObservedMs: null,
+        maxTabSwitchLegacyNodeReadyObservedMs: null,
+        maxPlaywrightActionMs: null,
         resourceEncodedBytes: browserMetrics.resources.totals.encodedBodySize,
         resourceTransferBytes: browserMetrics.resources.totals.transferSize,
         responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
@@ -1324,32 +2074,17 @@ async function runAppAuthLargeTabsScenario(page, options) {
     };
   }
 
-  const tabSwitchDetails = [
-    await measureSwitch("mapToGarden", "garden", gardenReady),
-    await measureSwitch("gardenToInsights", "insights", careReady),
-    await measureSwitch("insightsToMap", "map", mapReady),
-    await measureSwitch("warmMapToGarden", "garden", gardenReady),
-    await measureSwitch("warmGardenToInsights", "insights", careReady),
-    await measureSwitch("warmInsightsToMap", "map", mapReady),
-  ];
+  const tabSwitchDetails = [];
+  for (const transition of LARGE_TAB_TRANSITIONS) {
+    tabSwitchDetails.push(await measureSwitch(
+      transition.name,
+      transition.tab,
+      transition.readiness,
+    ));
+  }
   const switchByName = Object.fromEntries(
     tabSwitchDetails.map((entry) => [entry.name, entry]),
   );
-  const mapToGardenMs = switchByName.mapToGarden.presentedMs;
-  const gardenToInsightsMs = switchByName.gardenToInsights.presentedMs;
-  const insightsToMapMs = switchByName.insightsToMap.presentedMs;
-  const warmMapToGardenMs = switchByName.warmMapToGarden.presentedMs;
-  const warmGardenToInsightsMs = switchByName.warmGardenToInsights.presentedMs;
-  const warmInsightsToMapMs = switchByName.warmInsightsToMap.presentedMs;
-
-  const switchTimings = [
-    mapToGardenMs,
-    gardenToInsightsMs,
-    insightsToMapMs,
-    warmMapToGardenMs,
-    warmGardenToInsightsMs,
-    warmInsightsToMapMs,
-  ];
   const longTasks = await page.evaluate(() => window.__gardenopsPerfLongTasks ?? []);
   const maxLongTaskMs = longTasks.reduce(
     (max, entry) => Math.max(max, Number(entry.duration) || 0),
@@ -1441,6 +2176,12 @@ async function runAppAuthLargeTabsScenario(page, options) {
       .filter((value) => Number.isFinite(value));
     return values.length > 0 ? roundMs(Math.max(...values)) : null;
   };
+  const transitionTimingFields = (suffix, readValue) => Object.fromEntries(
+    LARGE_TAB_TRANSITIONS.map(({ name }) => [
+      `${name}${suffix}`,
+      roundMs(readValue(switchByName[name])),
+    ]),
+  );
   const browserMetrics = await collectBrowserMetrics(page);
   return {
     flow: {
@@ -1455,18 +2196,32 @@ async function runAppAuthLargeTabsScenario(page, options) {
       domContentLoadedMs: roundMs(browserMetrics.navigation?.domContentLoadedMs ?? NaN),
       firstContentfulPaintMs: roundMs(browserMetrics.paints.firstContentfulPaintMs ?? NaN),
       firstPaintMs: roundMs(browserMetrics.paints.firstPaintMs ?? NaN),
-      gardenToInsightsMs: roundMs(gardenToInsightsMs),
       gotoMs: roundMs(gotoMs),
-      insightsToMapMs: roundMs(insightsToMapMs),
       loadEventMs: roundMs(browserMetrics.navigation?.loadEventMs ?? NaN),
       longTaskCount: longTasks.length,
-      mapToGardenMs: roundMs(mapToGardenMs),
+      ...transitionTimingFields("BrowserReadyMs", (entry) => entry.browserReadyMs),
+      ...transitionTimingFields("BrowserPostFrameMs", (entry) => entry.browserPostFrameMs),
+      ...transitionTimingFields(
+        "LegacyNodeReadyObservedMs",
+        (entry) => entry.legacyNodeDiagnostics.readyObservedMs,
+      ),
+      ...transitionTimingFields(
+        "LegacyNodePostFrameObservedMs",
+        (entry) => entry.legacyNodeDiagnostics.postFrameObservedMs,
+      ),
+      ...transitionTimingFields("PlaywrightActionMs", (entry) => entry.playwrightActionMs),
+      maxTabSwitchBrowserPostFrameMs:
+        maxPhaseValue((entry) => entry.browserPostFrameMs),
+      maxTabSwitchBrowserReadyMs:
+        maxPhaseValue((entry) => entry.browserReadyMs),
+      maxTabSwitchLegacyNodePostFrameObservedMs:
+        maxPhaseValue((entry) => entry.legacyNodeDiagnostics.postFrameObservedMs),
+      maxTabSwitchLegacyNodeReadyObservedMs:
+        maxPhaseValue((entry) => entry.legacyNodeDiagnostics.readyObservedMs),
       maxPlaywrightActionMs: maxPhaseValue((entry) => entry.playwrightActionMs),
       maxScriptDurationMs: maxPhaseValue((entry) => entry.cdpDelta.scriptDurationMs),
       maxStyleLayoutDurationMs: maxPhaseValue((entry) => entry.cdpDelta.styleLayoutDurationMs),
       maxLongTaskMs: roundMs(maxLongTaskMs),
-      maxTabSwitchReadyMs: maxPhaseValue((entry) => entry.readyMs),
-      maxTabSwitchMs: roundMs(Math.max(...switchTimings)),
       mountedCareCards: finalFlow.careCards,
       mountedCareRows: finalFlow.careRows,
       mountedPlantCards: finalFlow.plantCards,
@@ -1474,50 +2229,107 @@ async function runAppAuthLargeTabsScenario(page, options) {
       resourceEncodedBytes: browserMetrics.resources.totals.encodedBodySize,
       resourceTransferBytes: browserMetrics.resources.totals.transferSize,
       responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
-      warmGardenToInsightsMs: roundMs(warmGardenToInsightsMs),
-      warmInsightsToMapMs: roundMs(warmInsightsToMapMs),
       warmInsightsToMapScriptDurationMs: switchByName.warmInsightsToMap.cdpDelta.scriptDurationMs,
       warmInsightsToMapStyleLayoutDurationMs: switchByName.warmInsightsToMap.cdpDelta.styleLayoutDurationMs,
-      warmMapToGardenMs: roundMs(warmMapToGardenMs),
     },
   };
 }
 
 async function runMeasuredScenario(browser, options, runIndex) {
-  const context = await browser.newContext({
-    viewport: { height: options.viewportHeight, width: options.viewportWidth },
-  });
-  if (options.stubApi) {
-    await installScenarioRoutes(context, options.scenario);
-  }
-  const page = await context.newPage();
-  const consoleMessages = [];
-  const pageErrors = [];
-  page.on("console", (message) => {
-    if (message.type() === "error") {
-      consoleMessages.push(message.text());
-    }
-  });
-  page.on("pageerror", (err) => pageErrors.push(err.message));
-
+  const context = await browser.newContext(createBrowserContextOptions(options));
   try {
-    const result = options.scenario === "app-auth-large-tabs"
-      ? await runAppAuthLargeTabsScenario(page, options)
-      : options.scenario === "app-auth"
-        ? await runAppAuthScenario(page, options)
-        : await runAppUnauthScenario(page, options);
-    return {
-      ...result,
-      consoleErrors: consoleMessages,
-      pageErrors,
-      run: runIndex,
-    };
+    if (options.stubApi) {
+      await installScenarioRoutes(context, options.scenario);
+    }
+    const page = await context.newPage();
+    const apiResponseTracker = createApiResponseTracker(page, options.scenario);
+    const consoleMessages = [];
+    const pageErrors = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        consoleMessages.push(message.text());
+      }
+    });
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+    try {
+      const result = options.scenario === "app-auth-large-tabs"
+        ? await runAppAuthLargeTabsScenario(page, options)
+        : options.scenario === "app-auth"
+          ? await runAppAuthScenario(page, options)
+          : await runAppUnauthScenario(page, options);
+      apiResponseTracker.assertNoUnexpectedResponses();
+      return {
+        ...result,
+        consoleErrors: consoleMessages,
+        pageErrors,
+        run: runIndex,
+      };
+    } finally {
+      apiResponseTracker.detach();
+    }
   } finally {
     await context.close();
   }
 }
 
+function comparisonValue(value) {
+  return JSON.stringify(value);
+}
+
+function assertComparableProvenance(current, previous) {
+  const currentComparison = current?.provenance?.comparison;
+  const previousComparison = previous?.provenance?.comparison;
+  const failures = [];
+  if (!currentComparison || !previousComparison) {
+    failures.push("both results must include provenance.comparison");
+  } else {
+    for (const field of [
+      "scenario",
+      "apiMode",
+      "viewportProfile",
+      "browser",
+      "options",
+    ]) {
+      if (!(field in currentComparison) || !(field in previousComparison)) {
+        failures.push(`both results must include provenance.comparison.${field}`);
+      } else if (comparisonValue(currentComparison[field]) !== comparisonValue(previousComparison[field])) {
+        failures.push(`provenance.comparison.${field} differs`);
+      }
+    }
+  }
+
+  for (const [label, git] of [
+    ["current", current?.provenance?.git],
+    ["baseline", previous?.provenance?.git],
+  ]) {
+    if (!git || typeof git.revision !== "string" || typeof git.dirty !== "boolean") {
+      failures.push(`${label} result has incomplete git provenance`);
+    } else if (git.dirty && (typeof git.contentHash !== "string" || !git.contentHash)) {
+      failures.push(
+        `${label} dirty working tree is missing a content hash; refusing ambiguous dirty comparison`,
+      );
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new Error(`Incompatible performance baseline: ${failures.join("; ")}`);
+  }
+}
+
+function isComparisonGatedMetric(metric) {
+  return metric === "authGateReadyMs"
+    || metric === "appShellReadyMs"
+    || metric === "appReadyMs"
+    || metric === "domContentLoadedMs"
+    || metric === "loadEventMs"
+    || metric === "firstContentfulPaintMs"
+    || metric === "resourceEncodedBytes"
+    || metric.endsWith("BrowserReadyMs")
+    || metric.endsWith("BrowserPostFrameMs");
+}
+
 function compareSummaries(current, previous, options) {
+  assertComparableProvenance(current, previous);
   const coreMetrics = Object.keys(current.summary.metrics);
   return coreMetrics.map((metric) => {
     const currentValue = current.summary.metrics[metric]?.median;
@@ -1529,6 +2341,7 @@ function compareSummaries(current, previous, options) {
       ? ((currentValue - previousValue) / previousValue) * 100
       : null;
     const isTimingMetric = metric !== "resourceEncodedBytes";
+    const comparisonGated = isComparisonGatedMetric(metric);
     const exceedsTimingJitter = !isTimingMetric
       || delta === null
       || delta > options.maxRegressionMs;
@@ -1538,7 +2351,9 @@ function compareSummaries(current, previous, options) {
       delta: delta === null ? null : roundMs(delta),
       metric,
       previous: previousValue ?? null,
-      regressed: changePct !== null
+      comparisonGated,
+      regressed: comparisonGated
+        && changePct !== null
         && changePct > options.maxRegressionPct
         && exceedsTimingJitter,
     };
@@ -1547,44 +2362,71 @@ function compareSummaries(current, previous, options) {
 
 function enforceBudgets(result, options) {
   const failures = [];
+  const expectedSamples = result.runs.length;
   const navigationMetric = result.scenario === "app-unauth" ? "authGateReadyMs" : "appReadyMs";
-  const interactionMetric = result.scenario === "app-auth-large-tabs"
-    ? "maxTabSwitchMs"
-    : result.scenario === "app-auth"
-      ? "tabSwitchMs"
-      : "usernameEnterMs";
-  const navigationP75 = result.summary.metrics[navigationMetric]?.p75;
-  const interactionP75 = result.summary.metrics[interactionMetric]?.p75;
-  if (
-    options.navigationBudgetMs !== null
-    && Number.isFinite(navigationP75)
-    && navigationP75 > options.navigationBudgetMs
-  ) {
-    failures.push(`${navigationMetric} p75 ${navigationP75}ms exceeds ${options.navigationBudgetMs}ms`);
+  const navigationStats = result.summary.metrics[navigationMetric];
+  if (options.navigationBudgetMs !== null) {
+    if (navigationStats?.n !== expectedSamples) {
+      failures.push(
+        `${navigationMetric} has ${navigationStats?.n ?? 0}/${expectedSamples} measured samples (navigation budget)`,
+      );
+    } else if (!Number.isFinite(navigationStats.p75)) {
+      failures.push(`${navigationMetric} has no measured p75 (navigation budget)`);
+    } else if (navigationStats.p75 > options.navigationBudgetMs) {
+      failures.push(
+        `${navigationMetric} p75 ${navigationStats.p75}ms exceeds ${options.navigationBudgetMs}ms`,
+      );
+    }
   }
-  if (
-    options.interactionBudgetMs !== null
-    && Number.isFinite(interactionP75)
-    && interactionP75 > options.interactionBudgetMs
-  ) {
-    failures.push(`${interactionMetric} p75 ${interactionP75}ms exceeds ${options.interactionBudgetMs}ms`);
-  }
-  if (
-    options.tabSwitchBudgetMs !== null
-    && result.scenario === "app-auth-large-tabs"
-  ) {
-    for (const metric of [
-      "mapToGardenMs",
-      "gardenToInsightsMs",
-      "insightsToMapMs",
-      "warmMapToGardenMs",
-      "warmGardenToInsightsMs",
-      "warmInsightsToMapMs",
-    ]) {
-      const p75 = result.summary.metrics[metric]?.p75;
-      if (Number.isFinite(p75) && p75 > options.tabSwitchBudgetMs) {
-        failures.push(`${metric} p75 ${p75}ms exceeds ${options.tabSwitchBudgetMs}ms`);
+
+  const enforceInteractionBudget = (metric, budgetMs, budgetLabel) => {
+    const stats = result.summary.metrics[metric];
+    if (stats?.n !== expectedSamples) {
+      failures.push(
+        `${metric} has ${stats?.n ?? 0}/${expectedSamples} measured samples (${budgetLabel})`,
+      );
+    } else if (!Number.isFinite(stats.p75)) {
+      failures.push(`${metric} has no measured p75 (${budgetLabel})`);
+    } else if (stats.p75 > budgetMs) {
+      failures.push(`${metric} p75 ${stats.p75}ms exceeds ${budgetMs}ms (${budgetLabel})`);
+    }
+  };
+  const isLargeTabs = result.scenario === "app-auth-large-tabs";
+  if (options.interactionBudgetMs !== null) {
+    if (isLargeTabs) {
+      for (const { name } of LARGE_TAB_TRANSITIONS) {
+        enforceInteractionBudget(
+          `${name}BrowserPostFrameMs`,
+          options.interactionBudgetMs,
+          "interaction budget",
+        );
       }
+    } else {
+      const metric = result.scenario === "app-auth"
+        ? "tabSwitchBrowserPostFrameMs"
+        : "usernameEnterBrowserPostFrameMs";
+      enforceInteractionBudget(metric, options.interactionBudgetMs, "interaction budget");
+    }
+  }
+  if (options.tabSwitchBudgetMs !== null) {
+    if (result.scenario === "app-auth") {
+      enforceInteractionBudget(
+        "tabSwitchBrowserPostFrameMs",
+        options.tabSwitchBudgetMs,
+        "tab-switch budget",
+      );
+    } else if (isLargeTabs) {
+      for (const { name } of LARGE_TAB_TRANSITIONS) {
+        enforceInteractionBudget(
+          `${name}BrowserPostFrameMs`,
+          options.tabSwitchBudgetMs,
+          "tab-switch budget",
+        );
+      }
+    } else {
+      failures.push(
+        "--tab-switch-budget-ms requires an app-auth or app-auth-large-tabs scenario",
+      );
     }
   }
   if (
@@ -1634,6 +2476,17 @@ function enforceBudgets(result, options) {
   }
 }
 
+function enforceComparison(result, options) {
+  const regressions = result.compare?.filter((row) => row.regressed) ?? [];
+  if (regressions.length > 0) {
+    throw new Error(
+      `Performance regression versus ${options.comparePath}: ${regressions
+        .map((row) => `${row.metric} +${row.changePct}%`)
+        .join(", ")}`,
+    );
+  }
+}
+
 function writeOutput(outputPath, result) {
   if (!outputPath) return;
   const resolved = path.resolve(process.cwd(), outputPath);
@@ -1641,62 +2494,100 @@ function writeOutput(outputPath, result) {
   fs.writeFileSync(resolved, `${JSON.stringify(result, null, 2)}\n`);
 }
 
+function persistAndValidateResult(result, options) {
+  writeOutput(options.outputPath, result);
+  enforceComparison(result, options);
+  enforceBudgets(result, options);
+}
+
 function printHuman(result, outputPath) {
   const metrics = result.summary.metrics;
-  const fmtMs = (value) => (value === null ? "n/a" : `${value}ms`);
-  console.log("Page performance check passed.");
+  const fmtMs = (value) => (Number.isFinite(value) ? `${value}ms` : "n/a");
+  const metricSummary = (name) => {
+    const metric = metrics[name] ?? {};
+    return `median ${fmtMs(metric.median)}, p75 ${fmtMs(metric.p75)}, n ${metric.n ?? 0}`;
+  };
+  const resourceSummary = () => {
+    const metric = metrics.resourceEncodedBytes ?? {};
+    const fmtBytes = (value) => (Number.isFinite(value) ? value : "n/a");
+    return `median ${fmtBytes(metric.median)}, p75 ${fmtBytes(metric.p75)}, n ${metric.n ?? 0}`;
+  };
+  const transitionSummary = (transition) => (
+    `${transition} ${metricSummary(`${transition}BrowserPostFrameMs`)}`
+  );
   console.log(`Scenario: ${result.scenario}`);
   console.log(`Serve mode: ${result.serveMode ?? "external"}`);
   console.log(`URL: ${result.url}`);
   console.log(`Runs: ${result.runs.length}`);
+  console.log(
+    `Viewport profile: ${result.provenance?.viewportProfile?.label ?? result.measurement?.browserContext?.viewportProfile?.label ?? "unknown"}`,
+  );
   if (result.scenario === "app-auth-large-tabs") {
     console.log(
-      `App shell ready: median ${fmtMs(metrics.appShellReadyMs.median)}, p75 ${fmtMs(metrics.appShellReadyMs.p75)}`,
+      `App shell ready: ${metricSummary("appShellReadyMs")}`,
     );
     console.log(
-      `App ready: median ${fmtMs(metrics.appReadyMs.median)}, p75 ${fmtMs(metrics.appReadyMs.p75)}`,
+      `App ready: ${metricSummary("appReadyMs")}`,
     );
     console.log(
-      `Tab switches: map->garden ${fmtMs(metrics.mapToGardenMs.median)}, garden->insights ${fmtMs(metrics.gardenToInsightsMs.median)}, insights->map ${fmtMs(metrics.insightsToMapMs.median)}`,
+      `Browser post-frame proxy (budgeted; not guaranteed first presentation): ${transitionSummary("mapToGarden")}; ${transitionSummary("gardenToInsights")}; ${transitionSummary("insightsToMap")}`,
     );
     console.log(
-      `Warm switches: map->garden ${fmtMs(metrics.warmMapToGardenMs.median)}, garden->insights ${fmtMs(metrics.warmGardenToInsightsMs.median)}, insights->map ${fmtMs(metrics.warmInsightsToMapMs.median)}`,
+      `Warm browser post-frame proxy (budgeted): ${transitionSummary("warmMapToGarden")}; ${transitionSummary("warmGardenToInsights")}; ${transitionSummary("warmInsightsToMap")}`,
     );
     console.log(
-      `Max tab switch: median ${fmtMs(metrics.maxTabSwitchMs.median)}, p75 ${fmtMs(metrics.maxTabSwitchMs.p75)}; max long task median ${fmtMs(metrics.maxLongTaskMs.median)}`,
+      `Browser post-frame aggregate max: ${metricSummary("maxTabSwitchBrowserPostFrameMs")}; browser readiness aggregate max: ${metricSummary("maxTabSwitchBrowserReadyMs")}`,
     );
     console.log(
-      `Switch phases: ready median ${fmtMs(metrics.maxTabSwitchReadyMs.median)}, Playwright action median ${fmtMs(metrics.maxPlaywrightActionMs.median)}, JS median ${fmtMs(metrics.maxScriptDurationMs.median)}, style/layout median ${fmtMs(metrics.maxStyleLayoutDurationMs.median)}`,
+      `Playwright actionability overhead (diagnostic only): ${metricSummary("maxPlaywrightActionMs")}`,
     );
     console.log(
-      `Mounted rows: plants median ${metrics.mountedPlantRows.median}, care median ${metrics.mountedCareRows.median}`,
+      `Legacy Node observation (diagnostic only): ready ${metricSummary("maxTabSwitchLegacyNodeReadyObservedMs")}; post-frame ${metricSummary("maxTabSwitchLegacyNodePostFrameObservedMs")}`,
     );
     console.log(
-      `Mounted cards: plants median ${metrics.mountedPlantCards.median}, care median ${metrics.mountedCareCards.median}`,
+      `Switch work: max long task ${metricSummary("maxLongTaskMs")}; max JS ${metricSummary("maxScriptDurationMs")}; max style/layout ${metricSummary("maxStyleLayoutDurationMs")}`,
+    );
+    console.log(
+      `Mounted rows: plants median ${metrics.mountedPlantRows?.median ?? "n/a"}, care median ${metrics.mountedCareRows?.median ?? "n/a"}`,
+    );
+    console.log(
+      `Mounted cards: plants median ${metrics.mountedPlantCards?.median ?? "n/a"}, care median ${metrics.mountedCareCards?.median ?? "n/a"}`,
     );
   } else if (result.scenario === "app-auth") {
     console.log(
-      `App shell ready: median ${fmtMs(metrics.appShellReadyMs.median)}, p75 ${fmtMs(metrics.appShellReadyMs.p75)}`,
+      `App shell ready: ${metricSummary("appShellReadyMs")}`,
     );
     console.log(
-      `App ready: median ${fmtMs(metrics.appReadyMs.median)}, p75 ${fmtMs(metrics.appReadyMs.p75)}`,
+      `App ready: ${metricSummary("appReadyMs")}`,
     );
     console.log(
-      `Garden tab switch: median ${fmtMs(metrics.tabSwitchMs.median)}, p75 ${fmtMs(metrics.tabSwitchMs.p75)}`,
+      `Garden tab browser post-frame proxy (budgeted; not guaranteed first presentation): ${metricSummary("tabSwitchBrowserPostFrameMs")}`,
+    );
+    console.log(
+      `Browser readiness: ${metricSummary("tabSwitchBrowserReadyMs")}; Playwright actionability overhead (diagnostic only): ${metricSummary("tabSwitchPlaywrightActionMs")}`,
+    );
+    console.log(
+      `Legacy Node observation (diagnostic only): ready ${metricSummary("tabSwitchLegacyNodeReadyObservedMs")}; post-frame ${metricSummary("tabSwitchLegacyNodePostFrameObservedMs")}`,
     );
   } else {
     console.log(
-      `Auth gate ready: median ${fmtMs(metrics.authGateReadyMs.median)}, p75 ${fmtMs(metrics.authGateReadyMs.p75)}`,
+      `Auth gate ready: ${metricSummary("authGateReadyMs")}`,
     );
     console.log(
-      `Username Enter: median ${fmtMs(metrics.usernameEnterMs.median)}, p75 ${fmtMs(metrics.usernameEnterMs.p75)}`,
+      `Username Enter browser post-frame proxy (budgeted; not guaranteed first presentation): ${metricSummary("usernameEnterBrowserPostFrameMs")}`,
+    );
+    console.log(
+      `Browser readiness: ${metricSummary("usernameEnterBrowserReadyMs")}; Playwright actionability overhead (diagnostic only): ${metricSummary("usernameEnterPlaywrightActionMs")}`,
+    );
+    console.log(
+      `Legacy Node observation (diagnostic only): ready ${metricSummary("usernameEnterLegacyNodeReadyObservedMs")}; post-frame ${metricSummary("usernameEnterLegacyNodePostFrameObservedMs")}`,
     );
   }
   console.log(
-    `DOMContentLoaded: median ${fmtMs(metrics.domContentLoadedMs.median)}; load: median ${fmtMs(metrics.loadEventMs.median)}; FCP: median ${fmtMs(metrics.firstContentfulPaintMs.median)}`,
+    `DOMContentLoaded: ${metricSummary("domContentLoadedMs")}; load: ${metricSummary("loadEventMs")}; FCP: ${metricSummary("firstContentfulPaintMs")}`,
   );
   console.log(
-    `Resource encoded bytes: median ${metrics.resourceEncodedBytes.median}; last run resources: ${result.summary.lastRunResources?.totals.count ?? 0}`,
+    `Resource encoded bytes: ${resourceSummary()}; last run resources: ${result.summary.lastRunResources?.totals.count ?? 0}`,
   );
   if (result.compare) {
     console.log("Comparison against baseline:");
@@ -1709,93 +2600,159 @@ function printHuman(result, outputPath) {
   if (outputPath) console.log(`Wrote JSON: ${path.resolve(process.cwd(), outputPath)}`);
 }
 
+async function cleanupManagedResources(browser, server) {
+  const cleanupErrors = [];
+  if (browser) {
+    try {
+      await browser.close();
+    } catch (err) {
+      cleanupErrors.push(`browser: ${errorMessage(err)}`);
+    }
+  }
+  if (server) {
+    try {
+      await server.stop();
+    } catch (err) {
+      cleanupErrors.push(`server: ${errorMessage(err)}`);
+    }
+  }
+  if (cleanupErrors.length > 0) {
+    throw new Error(`Page performance cleanup failed: ${cleanupErrors.join("; ")}`);
+  }
+}
+
+async function emitSuccessAfterCleanup({ browser, emit, server }) {
+  await cleanupManagedResources(browser, server);
+  await emit();
+}
+
 async function main() {
-  let options;
+  let server = null;
+  let browser = null;
+  let primaryError = null;
+  let options = null;
+  let result = null;
   try {
     options = parseArgs(process.argv.slice(2));
-  } catch (err) {
-    fail(err.message);
-  }
+    if (options.help) {
+      usage();
+      return;
+    }
 
-  if (options.help) {
-    usage();
-    return;
-  }
+    const browserPath = findBrowserPath(options.browserPath);
+    if (!browserPath) {
+      throw new Error("No Chromium executable found. Set PERF_CHROMIUM or pass --browser.");
+    }
+    if (!fs.existsSync(PLAYWRIGHT_PATH)) {
+      throw new Error("Missing frontend/node_modules/playwright-core. Run npm install in frontend.");
+    }
 
-  const browserPath = findBrowserPath(options.browserPath);
-  if (!browserPath) {
-    fail("No Chromium executable found. Set PERF_CHROMIUM or pass --browser.");
-  }
-  if (!fs.existsSync(PLAYWRIGHT_PATH)) {
-    fail("Missing frontend/node_modules/playwright-core. Run npm install in frontend.");
-  }
-
-  let server = null;
-  let chromium;
-  try {
+    let chromium;
     ({ chromium } = require(PLAYWRIGHT_PATH));
     if (options.serve) {
       server = await startServer(options);
     }
 
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
       executablePath: browserPath,
       headless: !options.headful,
     });
-    try {
-      const runs = [];
-      for (let i = 1; i <= options.runs; i += 1) {
-        runs.push(await runMeasuredScenario(browser, options, i));
-      }
-      const result = {
+    const browserVersion = browser.version();
+    const runs = [];
+    for (let i = 1; i <= options.runs; i += 1) {
+      runs.push(await runMeasuredScenario(browser, options, i));
+    }
+    result = {
+      browserPath,
+      compare: null,
+      createdAt: new Date().toISOString(),
+      measurement: buildMeasurementMetadata(options),
+      provenance: buildReproducibilityProvenance({
+        argv: process.argv.slice(2),
         browserPath,
-        compare: null,
-        createdAt: new Date().toISOString(),
-        scenario: options.scenario,
-        serveMode: options.serve ? options.serveMode : "external",
-        skipInteraction: options.skipInteraction,
-        stubApi: options.stubApi,
-        summary: summarizeRuns(runs, options.scenario),
-        url: options.url,
-        runs,
-      };
+        browserVersion,
+        options,
+      }),
+      scenario: options.scenario,
+      serveMode: options.serve ? options.serveMode : "external",
+      skipInteraction: options.skipInteraction,
+      stubApi: options.stubApi,
+      summary: summarizeRuns(runs, options.scenario),
+      url: options.url,
+      runs,
+    };
 
-      if (options.comparePath) {
-        const previous = JSON.parse(
-          fs.readFileSync(path.resolve(process.cwd(), options.comparePath), "utf8"),
-        );
-        result.compare = compareSummaries(
-          result,
-          previous,
-          options,
-        );
-        const regressions = result.compare.filter((row) => row.regressed);
-        if (regressions.length > 0) {
-          throw new Error(
-            `Performance regression versus ${options.comparePath}: ${regressions
-              .map((row) => `${row.metric} +${row.changePct}%`)
-              .join(", ")}`,
-          );
-        }
-      }
+    // Keep completed-run evidence even if baseline loading or validation fails.
+    writeOutput(options.outputPath, result);
 
-      enforceBudgets(result, options);
-      writeOutput(options.outputPath, result);
+    if (options.comparePath) {
+      const previous = JSON.parse(
+        fs.readFileSync(path.resolve(process.cwd(), options.comparePath), "utf8"),
+      );
+      result.compare = compareSummaries(
+        result,
+        previous,
+        options,
+      );
+    }
+
+    persistAndValidateResult(result, options);
+  } catch (err) {
+    primaryError = err;
+  }
+
+  if (primaryError) {
+    try {
+      await cleanupManagedResources(browser, server);
+    } catch (cleanupError) {
+      throw new Error(`${errorMessage(primaryError)}\n${errorMessage(cleanupError)}`);
+    }
+    throw primaryError;
+  }
+
+  await emitSuccessAfterCleanup({
+    browser,
+    server,
+    emit: async () => {
       if (options.json) {
         console.log(JSON.stringify(result, null, 2));
       } else {
+        console.log("Page performance check passed.");
         printHuman(result, options.outputPath);
       }
-    } finally {
-      await browser.close();
-    }
-  } catch (err) {
-    fail(err.message);
-  } finally {
-    if (server) {
-      await server.stop();
-    }
-  }
+    },
+  });
 }
 
-main();
+function errorMessage(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+module.exports = {
+  assertComparableProvenance,
+  buildAuthPerformanceData,
+  buildComparisonProvenance,
+  buildReproducibilityProvenance,
+  buildMeasurementMetadata,
+  cleanupManagedResources,
+  compareSummaries,
+  createApiResponseTracker,
+  emitSuccessAfterCleanup,
+  enforceBudgets,
+  installScenarioRoutes,
+  isReadyStatus,
+  metricStats,
+  parseArgs,
+  persistAndValidateResult,
+  request,
+  startServer,
+  tabSelectorForViewport,
+  waitForServer,
+};
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`Page performance check failed: ${errorMessage(err)}`);
+    process.exitCode = 1;
+  });
+}

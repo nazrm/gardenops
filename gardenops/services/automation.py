@@ -230,6 +230,7 @@ def sync_issue_followup_task(
 
 
 _WATERING_KEYWORDS = ("regular", "often", "jevnlig", "ofte", "mye", "frequently")
+_WEATHER_TASK_LOCK_SEED = 0x47415244454E4F50
 
 _HARDINESS_SQL = """
     SELECT p.plt_id, p.name, p.hardiness
@@ -258,6 +259,14 @@ def _needs_extra_watering(plant: dict[str, Any]) -> bool:
     return any(kw in watering for kw in _WATERING_KEYWORDS)
 
 
+def _lock_weather_task_generation(db: DbConn, garden_id: int, alert_id: int) -> None:
+    """Serialize deduplication for one weather alert until its transaction ends."""
+    db.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, %s))",
+        (f"gardenops:weather-task:{garden_id}:{alert_id}", _WEATHER_TASK_LOCK_SEED),
+    )
+
+
 def _create_weather_tasks(
     db: DbConn,
     garden_id: int,
@@ -281,34 +290,56 @@ def _create_weather_tasks(
     if not alert:
         return 0
 
+    _lock_weather_task_generation(db, garden_id, alert_id)
     due_on = str(alert["valid_from"])[:10]
     now_ms = current_timestamp_ms()
     created = 0
 
-    for plant in db.execute(plant_sql, (garden_id,)).fetchall():
-        if not plant_filter(plant):
-            continue
+    matching_plants = [
+        plant for plant in db.execute(plant_sql, (garden_id,)).fetchall() if plant_filter(plant)
+    ]
+    if not matching_plants:
+        return 0
 
+    existing_rule_sources = {
+        str(row["rule_source"])
+        for row in db.execute(
+            """
+            SELECT rule_source
+            FROM garden_tasks
+            WHERE garden_id = %s AND rule_source LIKE %s
+            """,
+            (garden_id, f"{rule_prefix}:{alert_id}:%"),
+        ).fetchall()
+    }
+    pending_plants: list[tuple[dict[str, Any], str, str]] = []
+    for plant in matching_plants:
         plt_id = str(plant["plt_id"])
         rule_source = f"{rule_prefix}:{alert_id}:{plt_id}"
-        if db.execute(
-            "SELECT 1 FROM garden_tasks WHERE garden_id = %s AND rule_source = %s",
-            (garden_id, rule_source),
-        ).fetchone():
+        if rule_source in existing_rule_sources:
             continue
+        existing_rule_sources.add(rule_source)
+        pending_plants.append((plant, plt_id, rule_source))
+    if not pending_plants:
+        return 0
 
+    plot_ids_by_plant: dict[str, list[str]] = {}
+    for row in db.execute(
+        """
+        SELECT pp.plt_id, pp.plot_id
+        FROM plot_plants pp
+        JOIN plot_ownership po ON pp.plot_id = po.plot_id
+        WHERE po.garden_id = %s
+          AND pp.plt_id = ANY(%s)
+        ORDER BY pp.plt_id, pp.plot_id
+        """,
+        (garden_id, [plt_id for _, plt_id, _ in pending_plants]),
+    ).fetchall():
+        plot_ids_by_plant.setdefault(str(row["plt_id"]), []).append(str(row["plot_id"]))
+
+    for plant, plt_id, rule_source in pending_plants:
         pname = plant["name"]
-
-        # Find plots this plant is assigned to in this garden
-        plot_rows = db.execute(
-            """
-            SELECT pp.plot_id FROM plot_plants pp
-            JOIN plot_ownership po ON pp.plot_id = po.plot_id
-            WHERE pp.plt_id = %s AND po.garden_id = %s
-            """,
-            (plt_id, garden_id),
-        ).fetchall()
-        plot_ids = [str(r["plot_id"]) for r in plot_rows]
+        plot_ids = plot_ids_by_plant.get(plt_id, [])
 
         # Include first plot in title for location context
         if len(plot_ids) == 1:
