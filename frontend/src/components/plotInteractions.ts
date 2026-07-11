@@ -16,7 +16,7 @@ import {
   taskActionApi,
   uploadMediaApi,
 } from "../services/api";
-import type { MediaAsset, MediaLinkRef } from "../services/api";
+import type { MediaAsset, MediaLinkRef, TaskActionRequest } from "../services/api";
 import type { PlantAlertType } from "./plantCard";
 import { enqueueDraft, isOnline } from "../services/offlineQueue";
 import { renderMediaGalleryLazy } from "./mediaGalleryLoader";
@@ -44,6 +44,12 @@ import { renderPlotJournalPreviewLazy } from "./journalPreviewLoader";
 import { confirmDialog } from "./dialogCore";
 import { dismissPopover, showPopover } from "./popover";
 import { renderSearchResults } from "./sidebar";
+import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import {
+  canQueueDefaultCompletionOffline,
+  needsCompletionDialog,
+  openTaskCompletionDialog,
+} from "../features/taskCompletionFlow";
 
 export interface PlotCallbacks {
   fetchPlots: () => Promise<void>;
@@ -299,10 +305,10 @@ function cancelPendingPlantSearch(): void {
 function formatTaskDue(
   task: GardenTask,
 ): { text: string; overdue: boolean } {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = formatLocalDate(new Date());
   if (task.status === "completed") {
     const doneDate = task.completed_at_ms
-      ? new Date(task.completed_at_ms).toISOString().slice(0, 10)
+      ? formatLocalDate(new Date(task.completed_at_ms))
       : today;
     return {
       text: t("plot_drawer.completed_on", { date: doneDate }) as string,
@@ -388,6 +394,7 @@ function renderTaskCard(
 }
 
 async function loadPlotTasksPreview(
+  state: AppState,
   plotId: string,
   cbs: PlotCallbacks,
 ): Promise<void> {
@@ -433,7 +440,7 @@ async function loadPlotTasksPreview(
         const card = renderTaskCard(
           task,
           cbs.canWrite()
-            ? () => void completeTaskInline(task, card)
+            ? () => void completeTaskInline(task, card, state, plotId, cbs)
             : undefined,
           cbs.canWrite()
             ? () => void snoozeTaskInline(task, card)
@@ -454,24 +461,59 @@ async function loadPlotTasksPreview(
   }
 }
 
+async function enqueuePlotOfflineTaskAction(
+  taskId: string,
+  body: TaskActionRequest,
+): Promise<void> {
+  if (body.action === "complete" && body.completed_plant_ids?.length) {
+    throw new Error("Grouped task completion cannot be queued offline.");
+  }
+  if (body.action === "complete") {
+    await enqueueDraft("task_complete", { task_id: taskId });
+    return;
+  }
+  if (body.action === "snooze") {
+    await enqueueDraft("task_snooze", {
+      task_id: taskId,
+      snooze_until: body.snooze_until,
+    });
+    return;
+  }
+  throw new Error(`Unsupported plot task action: ${body.action}`);
+}
+
 async function completeTaskInline(
   task: GardenTask,
   card: HTMLElement,
+  state: AppState,
+  plotId: string,
+  cbs: PlotCallbacks,
+  body: TaskActionRequest = { action: "complete" },
 ): Promise<void> {
-  try {
-    await taskActionApi(task.id, { action: "complete" });
-    card.classList.add("task-completed");
-    const actions = card.querySelector(".drawer-task-actions");
-    if (actions) actions.remove();
-    const dueEl = card.querySelector(".drawer-task-due");
-    if (dueEl) {
-      const today = new Date().toISOString().slice(0, 10);
-      dueEl.textContent = t("plot_drawer.completed_on", {
-        date: today,
-      }) as string;
-      dueEl.classList.remove("overdue");
+  if (needsCompletionDialog(task) && !body.completed_plant_ids?.length) {
+    if (!isOnline()) {
+      if (!canQueueDefaultCompletionOffline(task)) {
+        showToast(t("tasks.complete_grouped_one_by_one"), "error");
+        return;
+      }
+    } else {
+      const plantNames = new Map(state.plantsCache.map((plant) => [plant.plt_id, plant.name]));
+      openTaskCompletionDialog(task, plantNames, (body) => {
+        void completeTaskInline(task, card, state, plotId, cbs, body);
+      });
+      return;
     }
+  }
+  try {
+    if (!isOnline()) {
+      await enqueuePlotOfflineTaskAction(task.id, body);
+      showToast(t("offline.draft_saved"), "success");
+      return;
+    }
+    await taskActionApi(task.id, body);
+    card.classList.add("task-fading");
     showToast(t("plot_drawer.task_completed_toast") as string);
+    await loadPlotTasksPreview(state, plotId, cbs);
   } catch (err) {
     showToast(getApiErrorMessage(err), "error");
   }
@@ -481,17 +523,30 @@ async function snoozeTaskInline(
   task: GardenTask,
   card: HTMLElement,
 ): Promise<void> {
-  const target = new Date();
-  target.setDate(target.getDate() + 7);
-  const snoozeUntil = target.toISOString().slice(0, 10);
+  const policy = taskSnoozePolicy(task);
+  const snoozeUntil = policy.immediate
+    ? policy.defaultDate
+    : window.prompt(
+      policy.warning ? `${policy.warning}\n\n${t("tasks.snooze_prompt")}` : t("tasks.snooze_prompt"),
+      policy.defaultDate,
+    );
+  if (!snoozeUntil) return;
   try {
+    if (!isOnline()) {
+      await enqueuePlotOfflineTaskAction(task.id, {
+        action: "snooze",
+        snooze_until: snoozeUntil,
+      });
+      showToast(t("offline.draft_saved"), "success");
+      return;
+    }
     await taskActionApi(task.id, {
       action: "snooze",
       snooze_until: snoozeUntil,
     });
     card.classList.add("task-fading");
     setTimeout(() => card.remove(), 300);
-    showToast(t("plot_drawer.task_snoozed_toast") as string);
+    showToast(t("plot_drawer.task_snoozed_toast", { date: snoozeUntil }) as string);
   } catch (err) {
     showToast(getApiErrorMessage(err), "error");
   }
@@ -760,7 +815,7 @@ export async function selectPlot(
         : {}),
     });
     void hydrateActivePlotPanel(state, plotId, topPlants, cbs, seq);
-    void loadPlotTasksPreview(plotId, cbs);
+    void loadPlotTasksPreview(state, plotId, cbs);
     void loadPlotJournalPreview(plotId, cbs);
     void loadPlotMediaPreview(plotId, cbs);
     return;
@@ -830,7 +885,7 @@ export async function openDrawerForPlot(
       : {}),
   });
   void hydrateActivePlotPanel(state, plotId, plants, cbs, seq);
-  void loadPlotTasksPreview(plotId, cbs);
+  void loadPlotTasksPreview(state, plotId, cbs);
   void loadPlotJournalPreview(plotId, cbs);
   void loadPlotMediaPreview(plotId, cbs);
 }

@@ -1078,7 +1078,7 @@ const appContext: AppContext = {
   isMobile,
   canWrite: () => canWriteInGarden,
   ensureWriteAccess,
-  showToast: (msg, level) => showToast(msg, level),
+  showToast: (msg, level, options) => showToast(msg, level, options),
   showFetchError,
   getPlantMediaPreviewById: () => plantMediaPreviewById,
   refreshPlantMediaPreviews,

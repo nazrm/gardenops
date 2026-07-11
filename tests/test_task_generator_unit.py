@@ -95,6 +95,38 @@ class TestGenerateTasksBloomObservation(DbTestBase):
         ).fetchone()
         assert task is None
 
+    def test_bloom_generation_prefers_local_observed_month(self) -> None:
+        self._insert_plant("BL-LOCAL", "Local Bloomer", bloom_month="juni")
+        now_ms = 1_783_180_800_000
+        entry = self.conn.execute(
+            """
+            INSERT INTO garden_journal_entries
+                (public_id, garden_id, event_type, occurred_on, title, notes,
+                 metadata_json, actor_user_id, created_at_ms, updated_at_ms)
+            VALUES ('jrn_local_bloom', %s, 'bloomed', '2025-07-15', '', '',
+                    '{}', %s, %s, %s)
+            RETURNING id
+            """,
+            (self.garden_id, self._owner_id, now_ms, now_ms),
+        ).fetchone()
+        self.conn.execute(
+            "INSERT INTO garden_journal_entry_plants (entry_id, plt_id) VALUES (%s, %s)",
+            (int(entry["id"]), "BL-LOCAL"),
+        )
+        self.conn.commit()
+
+        generate_tasks(self.conn, self.garden_id, 6, 2026, None)
+        june_task = self.conn.execute(
+            "SELECT * FROM garden_tasks WHERE rule_source = 'bloom_observe:BL-LOCAL:2026-06'",
+        ).fetchone()
+        assert june_task is None
+
+        generate_tasks(self.conn, self.garden_id, 7, 2026, None)
+        july_task = self.conn.execute(
+            "SELECT * FROM garden_tasks WHERE rule_source = 'bloom_observe:BL-LOCAL:2026-07'",
+        ).fetchone()
+        assert july_task is not None
+
 
 class TestGenerateTasksPruning(DbTestBase):
     def test_creates_prune_task_march(self) -> None:

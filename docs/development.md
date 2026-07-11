@@ -153,6 +153,30 @@ The runner refuses to seed unless `APP_ENV=test`, `AUTH_REQUIRED=false`,
 allowed local E2E database name. It truncates that database, starts FastAPI and
 Vite, then runs Playwright against real API routes.
 
+For task completion history and task-specific snooze changes, run the matching
+real-backend browser journey against a disposable local database only:
+
+```bash
+cd frontend
+GARDENOPS_TASK_HISTORY_E2E_TEST_URL="postgresql://localhost/gardenops_task_history_e2e_test" npm run test:task-completion-history-e2e
+```
+
+This runner uses a disposable local database only, truncates it after a
+task-history-specific safety guard passes, and exercises real API routes
+through FastAPI and Vite.
+If local TCP PostgreSQL authentication rejects the `localhost` URL, use the
+local socket path and run database commands as the `postgres` user instead.
+Override the E2E ports when the defaults are already occupied:
+
+```bash
+cd frontend
+GARDENOPS_TASK_HISTORY_E2E_RUN_DB_AS_POSTGRES=1 \
+GARDENOPS_TASK_HISTORY_E2E_BACKEND_PORT=8010 \
+GARDENOPS_TASK_HISTORY_E2E_FRONTEND_PORT=5174 \
+GARDENOPS_TASK_HISTORY_E2E_TEST_URL="postgresql:///gardenops_task_history_e2e_test?host=/var/run/postgresql" \
+npm run test:task-completion-history-e2e
+```
+
 ## Test Database
 
 Create `.env.test.local` from `.env.test.example` and use it for test and PR

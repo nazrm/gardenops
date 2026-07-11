@@ -936,13 +936,15 @@ def _clear_active_notifications_for_target(
     return cur.rowcount
 
 
-def create_task_due_notifications(
+def create_task_due_notifications_in_transaction(
     db: DbConn,
     garden_id: int,
+    *,
+    task_public_ids: set[str] | None = None,
 ) -> dict[str, int]:
     """Check garden_tasks for tasks due today or overdue, create notifications.
 
-    Returns {"created": N, "skipped": N}.
+    Returns {"created": N, "skipped": N, "cleared": N}.
     Deduplicates by (garden_id, user_id, notification_type, target_type, target_id)
     among non-dismissed notifications.
     """
@@ -951,6 +953,19 @@ def create_task_due_notifications(
     today_iso = offset_days_iso(0)
     upcoming_end_iso = offset_days_iso(3)
     task_scan_limit = _env_int("NOTIFICATION_TASK_SCAN_LIMIT", 500)
+    target_filter = (
+        {str(task_id).strip() for task_id in task_public_ids if str(task_id).strip()}
+        if task_public_ids is not None
+        else None
+    )
+    if target_filter is not None and not target_filter:
+        return {"created": 0, "skipped": 0, "cleared": 0}
+    target_filter_clause = ""
+    target_filter_params: list[str] = []
+    if target_filter is not None:
+        target_filter_params = sorted(target_filter)
+        target_placeholders = ",".join(["%s"] * len(target_filter_params))
+        target_filter_clause = f" AND public_id IN ({target_placeholders})"
 
     members = db.execute(
         "SELECT user_id FROM garden_memberships WHERE garden_id = %s",
@@ -958,13 +973,17 @@ def create_task_due_notifications(
     ).fetchall()
     member_ids = [int(row["user_id"]) for row in members]
     if not member_ids:
-        return {"created": 0, "skipped": 0}
+        return {"created": 0, "skipped": 0, "cleared": 0}
 
     stale_generated_task_ids = _stale_generated_task_public_ids(
         db,
         garden_id=garden_id,
         today_iso=today_iso,
     )
+    if target_filter is not None:
+        stale_generated_task_ids = [
+            task_id for task_id in stale_generated_task_ids if task_id in target_filter
+        ]
     cleared_stale_generated_tasks = _clear_active_task_notifications_for_targets(
         db,
         garden_id=garden_id,
@@ -991,10 +1010,11 @@ def create_task_due_notifications(
         WHERE garden_id = %s
           AND {actionable_status_clause}
           AND COALESCE(snoozed_until, due_on) <= %s
+          {target_filter_clause}
         ORDER BY COALESCE(snoozed_until, due_on) ASC, updated_at_ms DESC, id ASC
         LIMIT %s
         """,
-        (garden_id, today_iso, today_iso, task_scan_limit),
+        [garden_id, today_iso, today_iso, *target_filter_params, task_scan_limit],
     ).fetchall()
     if stale_generated_task_ids:
         tasks = [row for row in tasks if str(row["public_id"]) not in stale_generated_task_ids]
@@ -1008,10 +1028,18 @@ def create_task_due_notifications(
           AND {actionable_status_clause}
           AND COALESCE(snoozed_until, due_on) > %s
           AND COALESCE(snoozed_until, due_on) <= %s
+          {target_filter_clause}
         ORDER BY COALESCE(snoozed_until, due_on) ASC, updated_at_ms DESC, id ASC
         LIMIT %s
         """,
-        (garden_id, today_iso, today_iso, upcoming_end_iso, task_scan_limit),
+        [
+            garden_id,
+            today_iso,
+            today_iso,
+            upcoming_end_iso,
+            *target_filter_params,
+            task_scan_limit,
+        ],
     ).fetchall()
     if stale_generated_task_ids:
         upcoming_tasks = [
@@ -1019,9 +1047,7 @@ def create_task_due_notifications(
         ]
 
     if not tasks and not upcoming_tasks:
-        if cleared_stale_generated_tasks:
-            db.commit()
-        return {"created": 0, "skipped": 0}
+        return {"created": 0, "skipped": 0, "cleared": cleared_stale_generated_tasks}
 
     today = today_iso
     pref_rows_by_user = _load_pref_rows_for_users(db, member_ids)
@@ -1045,7 +1071,7 @@ def create_task_due_notifications(
               AND (
                 cleared_at_ms IS NULL
                 OR dismissed = 1
-                OR COALESCE(clear_reason, '') <> 'preference_hidden'
+                OR COALESCE(clear_reason, '') NOT IN ('preference_hidden', 'superseded')
               )
             """,  # noqa: S608
             [garden_id, *target_ids],
@@ -1173,9 +1199,30 @@ def create_task_due_notifications(
             existing_keys.add(notification_key)
             created += 1
 
-    if created or cleared_stale_generated_tasks:
+    return {
+        "created": created,
+        "skipped": skipped,
+        "cleared": cleared_stale_generated_tasks,
+    }
+
+
+def create_task_due_notifications(
+    db: DbConn,
+    garden_id: int,
+) -> dict[str, int]:
+    """Check garden_tasks for tasks due today or overdue, create notifications.
+
+    Returns {"created": N, "skipped": N}.
+    Deduplicates by (garden_id, user_id, notification_type, target_type, target_id)
+    among non-dismissed notifications.
+    """
+    result = create_task_due_notifications_in_transaction(db, garden_id)
+    if int(result.get("created", 0)) or int(result.get("cleared", 0)):
         db.commit()
-    return {"created": created, "skipped": skipped}
+    return {
+        "created": int(result.get("created", 0)),
+        "skipped": int(result.get("skipped", 0)),
+    }
 
 
 def get_unread_count(
@@ -1572,6 +1619,33 @@ def clear_task_notifications(
         (now_value, reason, garden_id, task_public_id),
     )
     return cur.rowcount
+
+
+def refresh_task_notifications_for_task(
+    db: DbConn,
+    *,
+    garden_id: int,
+    task_public_id: str,
+    now_ms: int | None = None,
+) -> dict[str, int]:
+    now_value = now_ms if now_ms is not None else current_timestamp_ms()
+    cleared = clear_task_notifications(
+        db,
+        garden_id=garden_id,
+        task_public_id=task_public_id,
+        reason="superseded",
+        now_ms=now_value,
+    )
+    result = create_task_due_notifications_in_transaction(
+        db,
+        garden_id,
+        task_public_ids={task_public_id},
+    )
+    return {
+        "cleared": cleared,
+        "created": int(result.get("created", 0)),
+        "skipped": int(result.get("skipped", 0)),
+    }
 
 
 def clear_issue_notifications(

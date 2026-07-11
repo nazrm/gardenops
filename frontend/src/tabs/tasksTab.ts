@@ -18,6 +18,12 @@ import { buildPlantNameMap } from "../core/plantNames";
 import { renderTaskList, createTaskForm } from "../components/tasks";
 import { confirmDialog, createModal } from "../components/dialogCore";
 import { selectPlot } from "../components/plotInteractions";
+import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import {
+  canQueueDefaultCompletionOffline,
+  needsCompletionDialog,
+  openTaskCompletionDialog,
+} from "../features/taskCompletionFlow";
 
 let ctx: AppContext;
 
@@ -28,6 +34,7 @@ let tasksView = "today";
 let selectedTaskIds = new Set<string>();
 let taskOperation: "idle" | "generate" | "regenerate" = "idle";
 const TASKS_PAGE_SIZE = 50;
+type TaskActionExtra = Omit<TaskActionRequest, "action">;
 
 function isBatchActionable(task: GardenTask): boolean {
   return task.status === "pending" || task.status === "snoozed";
@@ -225,8 +232,7 @@ function renderTasksView(): void {
   const plantNames = buildPlantNameMap(ctx.getPlants());
   const canWrite = ctx.canWrite();
   renderTaskList(container, taskItems, {
-    onComplete: (task) =>
-      void handleTaskAction(task.id, "complete"),
+    onComplete: (task) => completeTask(task),
     onSnooze: (task) => void openSnoozeDialog(task),
     onSkip: (task) => void handleTaskAction(task.id, "skip"),
     onReschedule: (task) => void openRescheduleDialog(task),
@@ -351,7 +357,7 @@ function renderTaskBatchBar(): void {
     completeBtn.className = "task-action-btn task-action-complete";
     completeBtn.textContent = t("tasks.action_complete");
     completeBtn.addEventListener("click", () => {
-      void handleBatchTaskAction("complete");
+      void handleBatchComplete();
     });
     bar.appendChild(completeBtn);
 
@@ -369,10 +375,13 @@ function renderTaskBatchBar(): void {
     snoozeBtn.className = "task-action-btn";
     snoozeBtn.textContent = t("tasks.action_snooze");
     snoozeBtn.addEventListener("click", () => {
+      const firstSelected = taskItems.find((task) => selectedTaskIds.has(task.id));
+      const policy = firstSelected ? taskSnoozePolicy(firstSelected) : undefined;
       openDateDialog(
         t("tasks.snooze_prompt") as string,
-        new Date(Date.now() + 86_400_000).toISOString().slice(0, 10),
+        policy?.defaultDate ?? formatLocalDate(new Date()),
         (date) => void handleBatchTaskAction("snooze", { snooze_until: date }),
+        policy?.warning,
       );
     });
     bar.appendChild(snoozeBtn);
@@ -385,7 +394,7 @@ function renderTaskBatchBar(): void {
       const firstSelected = taskItems.find((task) => selectedTaskIds.has(task.id));
       openDateDialog(
         t("tasks.reschedule_prompt") as string,
-        firstSelected?.due_on ?? new Date().toISOString().slice(0, 10),
+        firstSelected?.due_on ?? formatLocalDate(new Date()),
         (date) => void handleBatchTaskAction("reschedule", { reschedule_to: date }),
       );
     });
@@ -398,8 +407,11 @@ function renderTaskBatchBar(): void {
 async function enqueueOfflineTaskAction(
   taskId: string,
   action: TaskActionRequest["action"],
-  extra?: Record<string, string>,
+  extra?: TaskActionExtra,
 ): Promise<void> {
+  if (action === "complete" && extra?.completed_plant_ids?.length) {
+    throw new Error("Grouped task completion cannot be queued offline.");
+  }
   const payload: Record<string, unknown> = {
     task_id: taskId,
     ...extra,
@@ -426,34 +438,44 @@ async function enqueueOfflineTaskAction(
 async function handleTaskAction(
   taskId: string,
   action: TaskActionRequest["action"],
-  extra?: Record<string, string>,
-): Promise<void> {
-  if (!ctx.ensureWriteAccess()) return;
+  extra?: TaskActionExtra,
+  options: { showSuccessToast?: boolean } = {},
+): Promise<boolean> {
+  if (!ctx.ensureWriteAccess()) return false;
   if (!ctx.isOnline()) {
+    if (action === "complete" && extra?.completed_plant_ids?.length) {
+      ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
+      return false;
+    }
     await enqueueOfflineTaskAction(taskId, action, extra);
     ctx.showToast(t("offline.draft_saved"), "success");
     void ctx.refreshOfflineIndicator();
-    return;
+    return true;
   }
   try {
     await taskActionApi(taskId, { action, ...extra });
-    ctx.showToast(
-      t("tasks.action_success", { action }),
-      "success",
-    );
+    if (options.showSuccessToast !== false) {
+      ctx.showToast(
+        t("tasks.action_success", { action }),
+        "success",
+      );
+    }
     void ctx.refreshBadgeCounts();
     void loadTasks();
+    return true;
   } catch (err) {
     ctx.showToast(getApiErrorMessage(err), "error");
+    return false;
   }
 }
 
 async function handleBatchTaskAction(
   action: TaskActionRequest["action"],
-  extra?: Record<string, string>,
+  extra?: TaskActionExtra,
+  taskIdOverride?: string[],
 ): Promise<void> {
   if (!ctx.ensureWriteAccess()) return;
-  const taskIds = getSelectedVisibleTaskIds();
+  const taskIds = taskIdOverride ?? getSelectedVisibleTaskIds();
   if (taskIds.length === 0) {
     ctx.showToast(t("tasks.batch_none_selected"), "error");
     return;
@@ -485,14 +507,91 @@ async function handleBatchTaskAction(
   }
 }
 
+function completeTask(task: GardenTask): void {
+  if (!needsCompletionDialog(task)) {
+    void handleTaskAction(task.id, "complete");
+    return;
+  }
+  if (!ctx.isOnline()) {
+    if (canQueueDefaultCompletionOffline(task)) {
+      void handleTaskAction(task.id, "complete");
+      return;
+    }
+    ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
+    return;
+  }
+  openTaskCompletionDialog(
+    task,
+    buildPlantNameMap(ctx.getPlants()),
+    (body) => {
+      const { action: _action, ...extra } = body;
+      void handleTaskAction(task.id, "complete", extra);
+    },
+  );
+}
+
+async function handleBatchComplete(): Promise<void> {
+  if (!ctx.ensureWriteAccess()) return;
+  const selectedTasks = taskItems.filter(
+    (task) => isBatchActionable(task) && selectedTaskIds.has(task.id),
+  );
+  if (selectedTasks.length === 0) {
+    ctx.showToast(t("tasks.batch_none_selected"), "error");
+    return;
+  }
+  const directTasks = selectedTasks.filter((task) => !needsCompletionDialog(task));
+  const detailTasks = selectedTasks.filter(needsCompletionDialog);
+  if (detailTasks.length > 0) {
+    ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
+  }
+  if (directTasks.length === 0) return;
+  await handleBatchTaskAction(
+    "complete",
+    undefined,
+    directTasks.map((task) => task.id),
+  );
+  for (const task of detailTasks) {
+    selectedTaskIds.add(task.id);
+  }
+  renderTasksView();
+}
+
+async function snoozeTaskWithPolicy(task: GardenTask, snoozeUntil: string): Promise<void> {
+  const online = ctx.isOnline();
+  const ok = await handleTaskAction(
+    task.id,
+    "snooze",
+    { snooze_until: snoozeUntil },
+    online ? { showSuccessToast: false } : {},
+  );
+  if (!ok || !online) return;
+  ctx.showToast(
+    t("tasks.snoozed_until_toast", { date: snoozeUntil }),
+    "success",
+    {
+      actions: [
+        {
+          label: t("tasks.snooze_change_date"),
+          onClick: () => {
+            openSnoozeDateDialog(task, snoozeUntil);
+          },
+        },
+      ],
+      durationMs: 5000,
+    },
+  );
+}
+
 function openDateDialog(
   title: string,
   defaultDate: string,
   onConfirm: (date: string) => void,
+  warning?: string,
 ): void {
   const { dialog, close } = createModal(title, `
     <div class="modal-content confirm-dialog">
       <h3></h3>
+      <p class="task-date-dialog-warning" hidden></p>
       <input type="date" class="prompt-dialog-input" />
       <div class="button-row">
         <button type="button" class="confirm-yes"></button>
@@ -502,9 +601,14 @@ function openDateDialog(
   `);
   const heading = dialog.querySelector("h3")!;
   heading.textContent = title;
+  const warningEl = dialog.querySelector<HTMLElement>(".task-date-dialog-warning")!;
+  if (warning) {
+    warningEl.hidden = false;
+    warningEl.textContent = warning;
+  }
   const input = dialog.querySelector<HTMLInputElement>("input[type='date']")!;
   input.value = defaultDate;
-  input.min = new Date().toISOString().slice(0, 10);
+  input.min = formatLocalDate(new Date());
   const cancelBtn = dialog.querySelector<HTMLButtonElement>(".confirm-no")!;
   cancelBtn.textContent = t("common.cancel") as string;
   cancelBtn.addEventListener("click", close);
@@ -525,17 +629,23 @@ function openDateDialog(
   input.focus();
 }
 
-function openSnoozeDialog(task: GardenTask): void {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
+function openSnoozeDateDialog(task: GardenTask, defaultDate: string, warning?: string): void {
   openDateDialog(
     t("tasks.snooze_prompt") as string,
-    tomorrow.toISOString().slice(0, 10),
+    defaultDate,
     (date) =>
-      void handleTaskAction(task.id, "snooze", {
-        snooze_until: date,
-      }),
+      void snoozeTaskWithPolicy(task, date),
+    warning,
   );
+}
+
+function openSnoozeDialog(task: GardenTask): void {
+  const policy = taskSnoozePolicy(task);
+  if (policy.immediate) {
+    void snoozeTaskWithPolicy(task, policy.defaultDate);
+    return;
+  }
+  openSnoozeDateDialog(task, policy.defaultDate, policy.warning);
 }
 
 function openRescheduleDialog(task: GardenTask): void {

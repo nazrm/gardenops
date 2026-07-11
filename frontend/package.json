@@ -15,13 +15,16 @@
     "check:ai-chat-client": "node ../scripts/check_ai_chat_client_contract.cjs",
     "check:map-object-editor": "node ../scripts/check_map_object_editor_contract.cjs",
     "check:attention-today": "node ../scripts/check_attention_today_contract.cjs",
+    "check:task-snooze-policy": "node ../scripts/check_task_snooze_policy_contract.cjs",
     "check:attention-today-e2e": "node ../scripts/check_attention_today_e2e.cjs",
+    "check:task-completion-history-e2e": "node ../scripts/check_task_completion_history_e2e.cjs",
     "test:attention-today-e2e": "cd .. && scripts/run_attention_today_e2e.sh",
+    "test:task-completion-history-e2e": "cd .. && scripts/run_task_completion_history_e2e.sh",
     "perf:page": "node ../scripts/check_page_performance.cjs",
     "check:no-sourcemaps": "node ../scripts/check_no_sourcemaps.cjs dist",
     "check:dist-assets": "node ../scripts/check_frontend_dist_assets.cjs dist",
     "typecheck": "tsc --noEmit",
-    "build": "npm run check:xss-sinks && npm run check:invite-token && npm run check:auth-gate-status && npm run check:ai-chat-client && npm run check:map-object-editor && npm run check:attention-today && tsc --noEmit && vite build && npm run check:no-sourcemaps && npm run check:dist-assets",
+    "build": "npm run check:xss-sinks && npm run check:invite-token && npm run check:auth-gate-status && npm run check:ai-chat-client && npm run check:map-object-editor && npm run check:attention-today && npm run check:task-snooze-policy && tsc --noEmit && vite build && npm run check:no-sourcemaps && npm run check:dist-assets",
     "preview": "vite preview"
   },
   "devDependencies": {
