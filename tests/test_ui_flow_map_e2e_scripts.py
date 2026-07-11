@@ -802,6 +802,7 @@ def test_ui_flow_runner_rejects_unsafe_artifact_paths_before_startup(
     tmp_path: Path,
 ) -> None:
     script = ROOT / "scripts" / "run_ui_flow_map_e2e.sh"
+    (ROOT / "research").mkdir(exist_ok=True)
     outside = tmp_path / "outside-artifacts"
     outside.mkdir()
     sentinel = outside / "keep.txt"
