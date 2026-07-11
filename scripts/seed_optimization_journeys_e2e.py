@@ -39,6 +39,8 @@ RESTORE_SNAPSHOT_ID = "snap_optimization_journeys_restore"
 OFFLINE_REPLAY_TITLE = "Optimization Offline Journal Replay"
 GARDEN_A_NOTIFICATION = "Optimization Garden A notice"
 GARDEN_B_NOTIFICATION = "Optimization Garden B notice"
+GARDEN_A_WEATHER_ALERT = "Frost warning: -1°C expected"
+GARDEN_B_WEATHER_ALERT = "Frost warning: -9°C expected"
 
 _GARDEN_SPECS = (
     {
@@ -451,6 +453,43 @@ def _seed_notification(conn, *, garden_id: int, admin_id: int, spec: dict[str, s
     )
 
 
+def _seed_weather_alert(conn, *, garden_id: int, spec: dict[str, str]) -> None:
+    if spec["key"] not in {"a", "b"}:
+        return
+    title = GARDEN_A_WEATHER_ALERT if spec["key"] == "a" else GARDEN_B_WEATHER_ALERT
+    coldest = -1 if spec["key"] == "a" else -9
+    row = conn.execute(
+        """
+        INSERT INTO weather_alerts (
+            garden_id, alert_type, severity, title, description, valid_from,
+            valid_until, metadata_json, created_at_ms
+        )
+        VALUES (%s, 'frost_warning', 'normal', %s, 'Garden-scoped weather fixture.',
+                '2026-07-10', '2026-07-12', %s, %s)
+        RETURNING id
+        """,
+        (
+            garden_id,
+            title,
+            json.dumps(
+                {
+                    "coldest": coldest,
+                    "coldest_date": "2026-07-11",
+                    "frost_days": [["2026-07-11", coldest]],
+                },
+                sort_keys=True,
+            ),
+            _now_ms(),
+        ),
+    ).fetchone()
+    if not row:
+        raise RuntimeError(f"Failed to seed weather alert for {spec['slug']}")
+    conn.execute(
+        "INSERT INTO weather_alert_plants (alert_id, plt_id) VALUES (%s, %s)",
+        (int(row["id"]), spec["plant_id"]),
+    )
+
+
 def _seed_delete_target_extra_state(
     conn,
     *,
@@ -604,6 +643,7 @@ def seed(conn) -> None:
         _seed_task(conn, garden_id=garden_id, admin_id=admin_id, spec=spec)
         _seed_journal(conn, garden_id=garden_id, admin_id=admin_id, spec=spec)
         _seed_notification(conn, garden_id=garden_id, admin_id=admin_id, spec=spec)
+        _seed_weather_alert(conn, garden_id=garden_id, spec=spec)
         if spec["key"] == "delete_target":
             _seed_delete_target_extra_state(
                 conn,

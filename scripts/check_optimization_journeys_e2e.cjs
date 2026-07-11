@@ -16,6 +16,8 @@ const RESTORE_SNAPSHOT_NAME = "Optimization restore layout";
 const OFFLINE_REPLAY_TITLE = "Optimization Offline Journal Replay";
 const GARDEN_A_NOTIFICATION = "Optimization Garden A notice";
 const GARDEN_B_NOTIFICATION = "Optimization Garden B notice";
+const GARDEN_A_WEATHER_ALERT = "Frost warning: -1°C expected";
+const GARDEN_B_WEATHER_ALERT = "Frost warning: -9°C expected";
 const GARDEN_A_PLOT_ID = "OPT-JOURNEY-A-PLOT";
 const GARDEN_A_EXTRA_PLOT_ID = "OPT-JOURNEY-A-EXTRA";
 const GARDEN_A_PLANT_ID = "OPT-JOURNEY-A-PLANT";
@@ -622,7 +624,20 @@ async function openNotificationPanelAndAssert(page, expectedTitle, rejectedTitle
   );
 }
 
+async function openWeatherAndAssert(page, expectedTitle, rejectedTitle) {
+  await openPrimaryTab(page, "insights");
+  await openSubMode(page, "care", "#care-view");
+  const dashboard = page.locator("#weather-dashboard");
+  await visible(dashboard.getByText(expectedTitle, { exact: true }), `${expectedTitle} alert`);
+  assert(
+    await dashboard.getByText(rejectedTitle, { exact: true }).count() === 0,
+    `Weather dashboard leaked ${rejectedTitle}`,
+  );
+}
+
 async function runGardenSwitching(page, recorder, manifest, ids) {
+  await openWeatherAndAssert(page, GARDEN_A_WEATHER_ALERT, GARDEN_B_WEATHER_ALERT);
+  await openPrimaryTab(page, "map");
   await openNotificationPanelAndAssert(page, GARDEN_A_NOTIFICATION, GARDEN_B_NOTIFICATION);
   const toBRequests = await switchGardenAndAssert(
     page,
@@ -636,6 +651,8 @@ async function runGardenSwitching(page, recorder, manifest, ids) {
   assert(await page.locator("#notification-panel").isHidden(), "Garden switch did not close the old notification panel");
   await openNotificationPanelAndAssert(page, GARDEN_B_NOTIFICATION, GARDEN_A_NOTIFICATION);
   await page.locator("#notification-bell").click();
+  await openWeatherAndAssert(page, GARDEN_B_WEATHER_ALERT, GARDEN_A_WEATHER_ALERT);
+  await openPrimaryTab(page, "map");
   const backToARequests = await switchGardenAndAssert(
     page,
     recorder,
@@ -660,6 +677,7 @@ async function runGardenSwitching(page, recorder, manifest, ids) {
   await waitFor(() => recorder.since(rapidMarker).filter(isScopedGardenRequest).length >= 3, "rapid switch scoped requests");
   manifest.checks.garden_switching = true;
   manifest.checks.garden_scoped_notifications = true;
+  manifest.checks.garden_scoped_weather = true;
   manifest.timings_ms.garden_switch = {
     rapid_request_count: recorder.since(rapidMarker).filter(isScopedGardenRequest).length,
     switch_a_to_b_scoped_requests: toBRequests,

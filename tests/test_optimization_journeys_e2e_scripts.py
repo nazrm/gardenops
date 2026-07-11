@@ -151,6 +151,9 @@ def test_optimization_browser_checker_uses_real_backend_contracts() -> None:
     assert "x-garden-id" in source
     assert "Rapid A/B/A" in source
     assert "garden_scoped_notifications" in source
+    assert "garden_scoped_weather" in source
+    assert "GARDEN_A_WEATHER_ALERT" in source
+    assert "GARDEN_B_WEATHER_ALERT" in source
     assert "mobile_focus_and_scoped_state" in source
     assert "context.setOffline(true)" in source
     assert 'indexedDB.open("gardenops-offline")' in source

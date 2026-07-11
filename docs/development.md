@@ -209,8 +209,8 @@ checks that Map startup does not fetch the full plant catalogue; restores a
 genuinely divergent layout while preserving retained plot assignments and
 invalidating stale plant UI state; proves one render after three overlapping
 snapshot-refresh reads; and verifies rapid garden switching plus garden-scoped
-notifications. It also replays a journal create, its media upload, and a task
-action with stable operation IDs, including duplicate delivery; checks the
+notifications and weather state. It also replays a journal create, its media
+upload, and a task action with stable operation IDs, including duplicate delivery; checks the
 disabled-provider recovery state; exercises mobile sheet focus/inert behavior;
 and deletes only an explicitly named disposable target. The destructive flag
 is required because the final database assertions dynamically cover every

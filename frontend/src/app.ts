@@ -69,6 +69,7 @@ import type { AdminMapSetupAction } from "./components/adminPanel";
 import {
   initWeatherFeature,
   loadWeather,
+  resetWeatherForCurrentGarden,
 } from "./features/weatherFeature";
 import {
   initQuickActionsFeature,
@@ -257,12 +258,14 @@ const PLOT_ALERTS_CACHE_MS = 60_000;
 let plotAlertsLoadedAt = 0;
 let plotAlertsLoadPromise: Promise<void> | null = null;
 let plotAlertsScheduleSeq = 0;
+let plotAlertsRequestVersion = 0;
 const PASSKEY_PROMPT_SESSION_KEY = "gardenops-passkey-prompt-shown";
 const WEATHER_SUMMARY_CACHE_MS = 60_000;
 const WEATHER_SUMMARY_IDLE_DELAY_MS = 250;
 let weatherLoadedAt = 0;
 let weatherLoadPromise: Promise<void> | null = null;
 let weatherScheduleSeq = 0;
+let weatherCacheRequestVersion = 0;
 let passkeyPromptInFlight = false;
 
 const gatedFeatureInitState = {
@@ -2559,6 +2562,8 @@ function loadActiveNavigationContent(): void {
 }
 
 async function loadWeatherCached(): Promise<void> {
+  const requestGardenId = getActiveGardenContext();
+  const requestVersion = weatherCacheRequestVersion;
   if (Date.now() - weatherLoadedAt < WEATHER_SUMMARY_CACHE_MS) {
     return;
   }
@@ -2566,14 +2571,22 @@ async function loadWeatherCached(): Promise<void> {
     await weatherLoadPromise;
     return;
   }
-  weatherLoadPromise = loadWeather()
+  const loadPromise = loadWeather()
     .then(() => {
-      weatherLoadedAt = Date.now();
+      if (
+        isCurrentGardenRequest(requestGardenId)
+        && requestVersion === weatherCacheRequestVersion
+      ) {
+        weatherLoadedAt = Date.now();
+      }
     })
     .finally(() => {
-      weatherLoadPromise = null;
+      if (weatherLoadPromise === loadPromise) {
+        weatherLoadPromise = null;
+      }
     });
-  await weatherLoadPromise;
+  weatherLoadPromise = loadPromise;
+  await loadPromise;
 }
 
 function requestWeatherAfterPaint(): void {
@@ -4815,6 +4828,8 @@ function showDropGhosts(targetRow: number, targetCol: number): void {
 }
 
 async function loadPlotAlerts(): Promise<void> {
+  const requestGardenId = getActiveGardenContext();
+  const requestVersion = plotAlertsRequestVersion;
   const now = Date.now();
   if (
     state.plotAlerts
@@ -4825,24 +4840,35 @@ async function loadPlotAlerts(): Promise<void> {
   if (plotAlertsLoadPromise) {
     return plotAlertsLoadPromise;
   }
-  plotAlertsLoadPromise = (async () => {
-  try {
-    const data = await fetchPlotAlertsApi();
-    state.plotAlerts = {
-      task_plots: new Set(data.task_plots),
-      issue_plots: new Set(data.issue_plots),
-      frost_plots: new Set(data.frost_plots),
-    };
-    plotAlertsLoadedAt = Date.now();
-    const grid = document.getElementById("map-grid");
-    if (grid) applyPlotIndicators(grid, state.plotAlerts);
-  } catch {
-    // Non-critical — degrade silently
-  } finally {
-    plotAlertsLoadPromise = null;
-  }
+  const loadPromise = (async () => {
+    try {
+      const data = await fetchPlotAlertsApi();
+      if (
+        !isCurrentGardenRequest(requestGardenId)
+        || requestVersion !== plotAlertsRequestVersion
+      ) {
+        return;
+      }
+      state.plotAlerts = {
+        task_plots: new Set(data.task_plots),
+        issue_plots: new Set(data.issue_plots),
+        frost_plots: new Set(data.frost_plots),
+      };
+      plotAlertsLoadedAt = Date.now();
+      const grid = document.getElementById("map-grid");
+      if (grid) applyPlotIndicators(grid, state.plotAlerts);
+    } catch {
+      // Non-critical — degrade silently
+    }
   })();
-  return plotAlertsLoadPromise;
+  plotAlertsLoadPromise = loadPromise;
+  try {
+    await loadPromise;
+  } finally {
+    if (plotAlertsLoadPromise === loadPromise) {
+      plotAlertsLoadPromise = null;
+    }
+  }
 }
 
 function requestPlotAlertsAfterPaint(): void {
@@ -6658,6 +6684,11 @@ function resetMapLayoutForGardenSwitch(): void {
 
 function clearGardenScopedStateForSwitch(): void {
   mapRefreshVersion += 1;
+  weatherCacheRequestVersion += 1;
+  weatherLoadedAt = 0;
+  weatherLoadPromise = null;
+  weatherScheduleSeq += 1;
+  resetWeatherForCurrentGarden();
   invalidatePlantsCache();
   resetIndoorState();
   clearFocusedPlantIds();
@@ -6676,6 +6707,7 @@ function clearGardenScopedStateForSwitch(): void {
   mapInteraction.hiddenZones.clear();
   mapInteraction.activeCatFilter = null;
   plotAlertsScheduleSeq += 1;
+  plotAlertsRequestVersion += 1;
   plotAlertsLoadPromise = null;
   plotAlertsLoadedAt = 0;
   document.getElementById("map-layouts-dialog")?.remove();

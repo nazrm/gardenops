@@ -85,6 +85,31 @@ def test_notifications_sync_after_initial_garden_resolution_and_before_open() ->
     assert "syncNotificationsForCurrentGarden();" in toggle_body
 
 
+def test_weather_and_plot_alert_requests_cannot_apply_to_a_new_garden() -> None:
+    app = _read("frontend/src/app.ts")
+    weather = _read("frontend/src/features/weatherFeature.ts")
+    clear_body = _function_body(
+        app,
+        "function clearGardenScopedStateForSwitch",
+        "async function switchGarden",
+    )
+    plot_alert_body = _function_body(
+        app,
+        "async function loadPlotAlerts",
+        "function requestPlotAlertsAfterPaint",
+    )
+
+    assert "export function resetWeatherForCurrentGarden(): void" in weather
+    assert "request.gardenId === getActiveGardenContext()" in weather
+    assert "if (!isCurrentWeatherRequest(request)) return;" in weather
+    assert "weatherCacheRequestVersion += 1;" in clear_body
+    assert "resetWeatherForCurrentGarden();" in clear_body
+    assert "plotAlertsRequestVersion += 1;" in clear_body
+    assert "requestVersion !== plotAlertsRequestVersion" in plot_alert_body
+    assert "!isCurrentGardenRequest(requestGardenId)" in plot_alert_body
+    assert "plotAlertsLoadPromise === loadPromise" in plot_alert_body
+
+
 def test_mobile_map_sheets_are_inert_when_closed_and_manage_focus() -> None:
     app = _read("frontend/src/app.ts")
     layout = _read("frontend/src/components/layout.ts")
