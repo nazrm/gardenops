@@ -740,6 +740,9 @@ def test_ui_flow_runner_uses_authenticated_relative_frozen_fixture() -> None:
     assert '"GARDENOPS_UI_FLOW_E2E_VIEWER_PASSWORD=$E2E_VIEWER_PASSWORD"' in source  # noqa: E501  # push-sanitizer: allow SECRET_ASSIGNMENT
     assert "--command --command-database gardenops_test" in source
     assert "require_disposable_parent" in source
+    assert source.index("  require_disposable_parent") < source.index(
+        'ARTIFACT_DIR="$(validate_artifact_dir'
+    )
     assert "GARDENOPS_UI_FLOW_MAP_E2E_CHILD=1" in source
     assert "scrub_inherited_environment" in source
     assert "env -i" in source

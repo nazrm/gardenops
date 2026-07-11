@@ -87,8 +87,19 @@ validate_viewport() {
   esac
 }
 
+require_disposable_parent() {
+  local parent_command=""
+  [[ -r "/proc/${PPID}/cmdline" ]] || die "cannot verify disposable command runner"
+  parent_command="$(tr '\0' ' ' < "/proc/${PPID}/cmdline")"
+  [[ "$parent_command" == *"scripts/run_fast_postgres_tests.py"* ]] \
+    || die "must run through run_fast_postgres_tests.py --command"
+  [[ "$parent_command" == *"--command"* ]] \
+    || die "must run through run_fast_postgres_tests.py --command"
+}
+
 if [[ "${1:-}" == "--child" ]]; then
   [[ "$#" -eq 4 ]] || die "usage: scripts/run_ui_flow_map_e2e.sh --child ARTIFACT_DIR E2E_DATE VIEWPORT"
+  require_disposable_parent
   ARTIFACT_DIR_INPUT="$2"
   E2E_DATE_INPUT="$3"
   VIEWPORT_INPUT="$4"
@@ -112,16 +123,6 @@ if [[ "${1:-}" != "--child" ]]; then
     --command --command-database gardenops_test -- \
     bash "$ROOT_DIR/scripts/run_ui_flow_map_e2e.sh" --child "$ARTIFACT_DIR" "$E2E_DATE" "$VIEWPORT"
 fi
-
-require_disposable_parent() {
-  local parent_command=""
-  [[ -r "/proc/${PPID}/cmdline" ]] || die "cannot verify disposable command runner"
-  parent_command="$(tr '\0' ' ' < "/proc/${PPID}/cmdline")"
-  [[ "$parent_command" == *"scripts/run_fast_postgres_tests.py"* ]] \
-    || die "must run through run_fast_postgres_tests.py --command"
-  [[ "$parent_command" == *"--command"* ]] \
-    || die "must run through run_fast_postgres_tests.py --command"
-}
 
 require_disposable_runner_environment() {
   [[ "${APP_ENV:-}" == "test" ]] || die "runner must provide APP_ENV=test"
@@ -161,7 +162,6 @@ while True:
 '
 }
 
-require_disposable_parent
 require_disposable_runner_environment
 scrub_inherited_environment
 
