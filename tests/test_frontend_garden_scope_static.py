@@ -93,7 +93,7 @@ def test_mobile_map_sheets_are_inert_when_closed_and_manage_focus() -> None:
     assert 'id="mobile-map-layouts-sheet"' in layout
     assert 'id="mobile-map-tools-sheet"' in layout
     assert "inert>" in layout
-    assert "sheet.toggleAttribute(\"inert\", !isOpen);" in app
+    assert 'sheet.toggleAttribute("inert", !isOpen);' in app
     assert "function focusMobileMapSheet" in app
     assert "function restoreMobileMapSheetFocus" in app
     assert "function trapMobileMapSheetFocus" in app
@@ -129,7 +129,7 @@ def test_garden_switch_blocks_old_controls_before_async_refresh() -> None:
     assert "applyWriteAccessUi();" in switch_body
     assert "setMobileMapSheetOpen(null);" in switch_body
     assert "setGardenSwitchPending(true);" in switch_body
-    assert "root.toggleAttribute(\"inert\", pending);" in app
+    assert 'root.toggleAttribute("inert", pending);' in app
     assert "if (gardenSwitchPending) {" in app
 
 

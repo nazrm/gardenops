@@ -158,9 +158,7 @@ def require_ui_flow_map_e2e_database(database_url: str) -> None:
 
 def verify_ui_flow_map_e2e_database_marker(conn) -> None:
     expected_marker = _required_env("GARDENOPS_DISPOSABLE_POSTGRES_MARKER")
-    expected_system_identifier = _required_env(
-        "GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER"
-    )
+    expected_system_identifier = _required_env("GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER")
     marker_row = conn.execute(
         "SELECT current_setting(%s, true) AS disposable_marker",
         (_DISPOSABLE_MARKER_SETTING,),
@@ -173,13 +171,9 @@ def verify_ui_flow_map_e2e_database_marker(conn) -> None:
     system_row = conn.execute(
         "SELECT system_identifier FROM pg_control_system()",
     ).fetchone()
-    actual_system_identifier = (
-        str(system_row["system_identifier"] or "") if system_row else ""
-    )
+    actual_system_identifier = str(system_row["system_identifier"] or "") if system_row else ""
     if actual_system_identifier != expected_system_identifier:
-        raise RuntimeError(
-            "UI-flow map E2E database system identifier does not match the runner"
-        )
+        raise RuntimeError("UI-flow map E2E database system identifier does not match the runner")
 
 
 def truncate_public_tables(conn) -> None:

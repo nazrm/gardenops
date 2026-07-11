@@ -58,9 +58,7 @@ def test_seed_guard_requires_exact_disposable_url_marker_and_system_identifier(
 ) -> None:
     _set_safe_seed_environment(monkeypatch)
 
-    seed_deterministic_provider_e2e.require_deterministic_provider_e2e_database(
-        DISPOSABLE_URL
-    )
+    seed_deterministic_provider_e2e.require_deterministic_provider_e2e_database(DISPOSABLE_URL)
     seed_deterministic_provider_e2e.verify_deterministic_provider_e2e_database_marker(
         _MarkerConnection(
             marker=DISPOSABLE_MARKER,
@@ -95,9 +93,7 @@ def test_seed_guard_rejects_missing_truncate_flag_and_nonloopback_url(
     _set_safe_seed_environment(monkeypatch)
     monkeypatch.delenv("GARDENOPS_DETERMINISTIC_PROVIDER_E2E_ALLOW_TRUNCATE")
     with pytest.raises(RuntimeError, match="ALLOW_TRUNCATE"):
-        seed_deterministic_provider_e2e.require_deterministic_provider_e2e_database(
-            DISPOSABLE_URL
-        )
+        seed_deterministic_provider_e2e.require_deterministic_provider_e2e_database(DISPOSABLE_URL)
 
     _set_safe_seed_environment(monkeypatch)
     remote_url = "postgresql://gardenops@db.example.test:55432/gardenops_test"

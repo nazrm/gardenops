@@ -63,9 +63,7 @@ def require_deterministic_provider_e2e_database(database_url: str) -> None:
         )
 
     marker = _require_nonempty_env("GARDENOPS_DISPOSABLE_POSTGRES_MARKER")
-    system_identifier = _require_nonempty_env(
-        "GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER"
-    )
+    system_identifier = _require_nonempty_env("GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER")
     if not system_identifier.isdecimal():
         raise RuntimeError("Deterministic-provider E2E system identifier must be numeric")
     if not marker.startswith(f"{system_identifier}."):
@@ -122,9 +120,7 @@ def verify_deterministic_provider_e2e_database_marker(conn) -> None:
             "Deterministic-provider E2E database marker does not match the runner-issued marker"
         )
 
-    identifier_row = conn.execute(
-        "SELECT system_identifier FROM pg_control_system()"
-    ).fetchone()
+    identifier_row = conn.execute("SELECT system_identifier FROM pg_control_system()").fetchone()
     actual_system_identifier = (
         str(identifier_row["system_identifier"] or "") if identifier_row else ""
     )

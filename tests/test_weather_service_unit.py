@@ -867,9 +867,7 @@ class TestWeatherAlertIdentityMigration(_WeatherDbTestBase):
                 (int(task["id"]),),
             ).fetchone()
             assert task_row is not None
-            assert str(task_row["rule_source"]) == (
-                f"auto:frost_protect:{second_id}:MIG-KEEP"
-            )
+            assert str(task_row["rule_source"]) == (f"auto:frost_protect:{second_id}:MIG-KEEP")
 
             outcome_row = self.conn.execute(
                 "SELECT source_id, metadata_json FROM attention_outcomes WHERE id = %s",

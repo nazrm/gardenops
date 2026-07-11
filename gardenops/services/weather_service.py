@@ -496,7 +496,7 @@ def save_weather_alerts(
             try:
                 parsed_meta = json.loads(str(existing["metadata_json"] or "{}"))
                 existing_meta = parsed_meta if isinstance(parsed_meta, dict) else {}
-            except (TypeError, ValueError, json.JSONDecodeError):
+            except TypeError, ValueError, json.JSONDecodeError:
                 existing_meta = {}
             merged_meta: dict[str, object] = {**existing_meta, **alert_meta}
             existing_advice = existing_meta.get("plant_advice")

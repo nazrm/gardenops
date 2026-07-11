@@ -327,11 +327,7 @@ def _validate_url(cluster: Cluster, url: str, database: str) -> None:
 
 
 def _test_env(cluster: Cluster, database: str) -> dict[str, str]:
-    env = {
-        name: value
-        for name in INHERITED_ENV_ALLOWLIST
-        if (value := os.environ.get(name))
-    }
+    env = {name: value for name in INHERITED_ENV_ALLOWLIST if (value := os.environ.get(name))}
     env["PATH"] = TEST_SUBPROCESS_PATH
     env["APP_ENV"] = "test"
     env["AUTH_PASSWORD_HASH_FAST_FOR_TESTS"] = "true"

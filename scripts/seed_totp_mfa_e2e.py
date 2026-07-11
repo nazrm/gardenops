@@ -16,9 +16,7 @@ from gardenops.security import generate_passkey_user_handle, hash_password
 
 _DISPOSABLE_DATABASE_NAME = "gardenops_test"
 _DISPOSABLE_MARKER_SETTING = "gardenops.disposable_marker"
-_TEST_MFA_SECRET_KEY = (
-    "gardenops-totp-mfa-e2e-test-key-only-2026-07-10"
-)
+_TEST_MFA_SECRET_KEY = "gardenops-totp-mfa-e2e-test-key-only-2026-07-10"  # noqa: E501  # push-sanitizer: allow SECRET_ASSIGNMENT
 
 E2E_USERNAME = "totp_mfa_e2e_admin"
 E2E_GARDEN_SLUG = "totp-mfa-e2e"

@@ -760,7 +760,7 @@ def test_ui_flow_runner_uses_authenticated_relative_frozen_fixture() -> None:
     assert "password=E2E_VIEWER_PASSWORD" in seed_source  # noqa: E501  # push-sanitizer: allow SECRET_ASSIGNMENT
     assert "validate_e2e_date()" in source
     assert "validate_viewport()" in source
-    assert 'research/optimization-map/runs/ui-flow-$RUN_ID' in source
+    assert "research/optimization-map/runs/ui-flow-$RUN_ID" in source
     assert '"GARDENOPS_UI_FLOW_E2E_VIEWPORT=$VIEWPORT"' in source
     assert "export GARDENOPS_UI_FLOW_E2E_DATE" in source
     assert "export GARDENOPS_ATTENTION_FROZEN_NOW_MS=" in source
