@@ -69,6 +69,7 @@ import type { AdminMapSetupAction } from "./components/adminPanel";
 import {
   initWeatherFeature,
   loadWeather,
+  resetWeatherForCurrentGarden,
 } from "./features/weatherFeature";
 import {
   initQuickActionsFeature,
@@ -216,11 +217,14 @@ import {
 import {
   initNotificationsFeature,
   loadNotificationCount,
+  resetNotificationsForCurrentGarden,
+  syncNotificationsForCurrentGarden,
 } from "./features/notificationsFeature";
 import {
   initSavedViewsFeature,
 } from "./features/savedViewsFeature";
 import {
+  resetIndoorState,
   setIndoorPlotId,
   setOnAddPlant,
   setOnEditPlant,
@@ -254,12 +258,14 @@ const PLOT_ALERTS_CACHE_MS = 60_000;
 let plotAlertsLoadedAt = 0;
 let plotAlertsLoadPromise: Promise<void> | null = null;
 let plotAlertsScheduleSeq = 0;
+let plotAlertsRequestVersion = 0;
 const PASSKEY_PROMPT_SESSION_KEY = "gardenops-passkey-prompt-shown";
 const WEATHER_SUMMARY_CACHE_MS = 60_000;
 const WEATHER_SUMMARY_IDLE_DELAY_MS = 250;
 let weatherLoadedAt = 0;
 let weatherLoadPromise: Promise<void> | null = null;
 let weatherScheduleSeq = 0;
+let weatherCacheRequestVersion = 0;
 let passkeyPromptInFlight = false;
 
 const gatedFeatureInitState = {
@@ -768,6 +774,8 @@ const MOBILE_MAP_SHEET_TRIGGERS: Array<{ triggerId: string; sheetId: MobileMapSh
   { triggerId: "mobile-map-layouts-btn", sheetId: "mobile-map-layouts-sheet" },
   { triggerId: "mobile-map-tools-btn", sheetId: "mobile-map-tools-sheet" },
 ];
+let mobileMapSheetFocusReturnTarget: HTMLElement | null = null;
+let mobileUtilityFocusReturnTarget: HTMLElement | null = null;
 
 function getTopLevelShadeDisclosures(): HTMLDetailsElement[] {
   return Array.from(document.querySelectorAll<HTMLDetailsElement>("#shade-panel > .shade-disclosure"));
@@ -822,12 +830,16 @@ function maybeCenterFocusedMobileField(target: EventTarget | null): void {
   }, 140);
 }
 
-function setMobileUtilityOpen(open: boolean): void {
+function setMobileUtilityOpen(open: boolean, restoreFocus = true): void {
   const sheet = document.getElementById("mobile-utility-sheet");
   const backdrop = document.getElementById("mobile-utility-backdrop");
   const trigger = queryButton("mobile-utility-btn");
   if (!sheet || !backdrop || !trigger) return;
   if (open) {
+    const activeElement = document.activeElement;
+    mobileUtilityFocusReturnTarget = activeElement instanceof HTMLElement
+      ? activeElement
+      : trigger;
     setMobileMapSheetOpen(null);
     closeMobileShadeDisclosures();
   }
@@ -835,14 +847,149 @@ function setMobileUtilityOpen(open: boolean): void {
   sheet.classList.toggle("mobile-utility-sheet--open", open);
   backdrop.classList.toggle("mobile-utility-backdrop--visible", open);
   sheet.setAttribute("aria-hidden", open ? "false" : "true");
+  sheet.toggleAttribute("inert", !open);
+  if (open) {
+    sheet.setAttribute("role", "dialog");
+    sheet.setAttribute("aria-modal", "true");
+    sheet.tabIndex = -1;
+  } else {
+    sheet.removeAttribute("role");
+    sheet.removeAttribute("aria-modal");
+    sheet.removeAttribute("tabindex");
+  }
   backdrop.setAttribute("aria-hidden", open ? "false" : "true");
   trigger.setAttribute("aria-expanded", String(open));
   document.body.classList.toggle("mobile-utility-open", open);
+  if (open) {
+    window.requestAnimationFrame(() => {
+      if (!sheet.classList.contains("mobile-utility-sheet--open")) return;
+      const initialFocus = sheet.querySelector<HTMLElement>(
+        "[data-mobile-utility-initial-focus]",
+      );
+      (initialFocus ?? sheet).focus();
+    });
+  } else {
+    const returnTarget = mobileUtilityFocusReturnTarget;
+    mobileUtilityFocusReturnTarget = null;
+    if (
+      restoreFocus
+      && isMobile()
+      && returnTarget?.isConnected
+      && !returnTarget.matches(":disabled")
+    ) {
+      window.requestAnimationFrame(() => returnTarget.focus());
+    }
+  }
+}
+
+function trapFocusWithin(event: KeyboardEvent, container: HTMLElement): boolean {
+  if (event.key !== "Tab") return false;
+  const focusable = Array.from(
+    container.querySelectorAll<HTMLElement>(
+      "button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])",
+    ),
+  ).filter((element) => element.getClientRects().length > 0);
+  if (focusable.length === 0) {
+    event.preventDefault();
+    container.focus();
+    return true;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!first || !last) return false;
+  if (document.activeElement === container) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+    return true;
+  }
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+    return true;
+  }
+  if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+    return true;
+  }
+  return false;
+}
+
+function trapMobileUtilityFocus(event: KeyboardEvent): boolean {
+  const sheet = document.getElementById("mobile-utility-sheet");
+  if (
+    !(sheet instanceof HTMLElement)
+    || !sheet.classList.contains("mobile-utility-sheet--open")
+  ) {
+    return false;
+  }
+  return trapFocusWithin(event, sheet);
 }
 
 function isMobileMapSheetOpen(sheetId: MobileMapSheetId): boolean {
   const sheet = document.getElementById(sheetId);
   return sheet?.classList.contains("mobile-map-sheet--open") ?? false;
+}
+
+function getOpenMobileMapSheetId(): MobileMapSheetId | null {
+  return MOBILE_MAP_SHEET_IDS.find((id) => isMobileMapSheetOpen(id)) ?? null;
+}
+
+function mobileMapSheetTriggerFor(
+  sheetId: MobileMapSheetId,
+): HTMLButtonElement | null {
+  const trigger = MOBILE_MAP_SHEET_TRIGGERS.find(
+    (entry) => entry.sheetId === sheetId,
+  );
+  return trigger ? queryButton(trigger.triggerId) : null;
+}
+
+function isMobileMapSheetTrigger(
+  element: HTMLElement,
+  sheetId: MobileMapSheetId,
+): boolean {
+  return MOBILE_MAP_SHEET_TRIGGERS.some(
+    (entry) => entry.sheetId === sheetId && entry.triggerId === element.id,
+  );
+}
+
+function focusMobileMapSheet(sheetId: MobileMapSheetId): void {
+  window.requestAnimationFrame(() => {
+    if (!isMobileMapSheetOpen(sheetId)) return;
+    const sheet = document.getElementById(sheetId);
+    if (!(sheet instanceof HTMLElement) || sheet.hasAttribute("inert")) return;
+    const initialFocus = sheet.querySelector<HTMLElement>(
+      "[data-mobile-map-sheet-initial-focus]",
+    );
+    if (initialFocus && !initialFocus.matches(":disabled")) {
+      initialFocus.focus();
+      return;
+    }
+    sheet.focus();
+  });
+}
+
+function restoreMobileMapSheetFocus(): void {
+  const target = mobileMapSheetFocusReturnTarget;
+  mobileMapSheetFocusReturnTarget = null;
+  if (!target || !isMobile() || activeTab !== "map") return;
+  window.requestAnimationFrame(() => {
+    if (
+      target.isConnected
+      && !target.matches(":disabled")
+      && !target.closest("[inert]")
+    ) {
+      target.focus();
+    }
+  });
+}
+
+function trapMobileMapSheetFocus(event: KeyboardEvent): boolean {
+  const sheetId = getOpenMobileMapSheetId();
+  if (!sheetId) return false;
+  const sheet = document.getElementById(sheetId);
+  if (!(sheet instanceof HTMLElement)) return false;
+  return trapFocusWithin(event, sheet);
 }
 
 function shouldLoadShadeMapPanelNow(): boolean {
@@ -854,10 +1001,25 @@ function syncMobileMapSheetAccessibility(): void {
     const sheet = document.getElementById(id);
     if (!(sheet instanceof HTMLElement)) return;
     if (isMobile()) {
-      sheet.setAttribute("aria-hidden", sheet.classList.contains("mobile-map-sheet--open") ? "false" : "true");
+      const isOpen = sheet.classList.contains("mobile-map-sheet--open");
+      sheet.setAttribute("aria-hidden", isOpen ? "false" : "true");
+      sheet.toggleAttribute("inert", !isOpen);
+      if (isOpen) {
+        sheet.setAttribute("role", "dialog");
+        sheet.setAttribute("aria-modal", "true");
+        sheet.tabIndex = -1;
+      } else {
+        sheet.removeAttribute("aria-modal");
+        sheet.removeAttribute("role");
+        sheet.removeAttribute("tabindex");
+      }
     } else {
       sheet.classList.remove("mobile-map-sheet--open");
       sheet.removeAttribute("aria-hidden");
+      sheet.removeAttribute("aria-modal");
+      sheet.removeAttribute("role");
+      sheet.removeAttribute("tabindex");
+      sheet.removeAttribute("inert");
     }
   });
 }
@@ -866,6 +1028,7 @@ function setMobileMapSheetOpen(sheetId: MobileMapSheetId | null): void {
   const backdrop = document.getElementById("mobile-map-sheet-backdrop");
   if (!backdrop) return;
 
+  const previouslyOpen = getOpenMobileMapSheetId();
   let nextOpen = sheetId && isMobile() && activeTab === "map" ? sheetId : null;
   if (nextOpen === "shade-panel") {
     const shadePanelEl = document.getElementById("shade-panel");
@@ -874,7 +1037,16 @@ function setMobileMapSheetOpen(sheetId: MobileMapSheetId | null): void {
     }
   }
   if (nextOpen) {
-    setMobileUtilityOpen(false);
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof HTMLElement
+      && isMobileMapSheetTrigger(activeElement, nextOpen)
+    ) {
+      mobileMapSheetFocusReturnTarget = activeElement;
+    } else if (!previouslyOpen) {
+      mobileMapSheetFocusReturnTarget = mobileMapSheetTriggerFor(nextOpen);
+    }
+    setMobileUtilityOpen(false, false);
     closeMobileShadeDisclosures();
     const dropdown = document.getElementById("snapshots-dropdown");
     if (dropdown instanceof HTMLElement) dropdown.hidden = true;
@@ -885,12 +1057,8 @@ function setMobileMapSheetOpen(sheetId: MobileMapSheetId | null): void {
     if (!(sheet instanceof HTMLElement)) return;
     const isOpen = id === nextOpen;
     sheet.classList.toggle("mobile-map-sheet--open", isOpen);
-    if (isMobile()) {
-      sheet.setAttribute("aria-hidden", isOpen ? "false" : "true");
-    } else {
-      sheet.removeAttribute("aria-hidden");
-    }
   });
+  syncMobileMapSheetAccessibility();
 
   backdrop.classList.toggle("mobile-map-sheet-backdrop--visible", nextOpen !== null);
   backdrop.setAttribute("aria-hidden", nextOpen ? "false" : "true");
@@ -901,6 +1069,11 @@ function setMobileMapSheetOpen(sheetId: MobileMapSheetId | null): void {
   document.body.classList.toggle("mobile-map-sheet-open", nextOpen !== null);
   if (nextOpen === "shade-panel") {
     void ensureShadeMapPanelLoaded();
+  }
+  if (nextOpen) {
+    focusMobileMapSheet(nextOpen);
+  } else if (previouslyOpen) {
+    restoreMobileMapSheetFocus();
   }
   requestAnimationFrame(() => cameraCtrl?.fitAll());
 }
@@ -960,6 +1133,7 @@ const editCbs: EditCallbacks = {
 
 const plotCbs: PlotCallbacks = {
   fetchPlots,
+  ensurePlantsCacheLoaded,
   isMobile,
   canWrite: () => canWriteInGarden,
   deletePlot,
@@ -1026,6 +1200,7 @@ const WRITE_CONTROL_IDS = [
   "mobile-map-save-btn",
   "mobile-map-layouts-save-btn",
   "mobile-create-zone-btn",
+  "mobile-fab",
   "mobile-import-map-btn",
   "mobile-map-direction-input",
   "mobile-map-direction-dec-btn",
@@ -1981,6 +2156,9 @@ function setupLayout(): void {
   });
   mobileUtilityCloseBtn?.addEventListener("click", () => setMobileUtilityOpen(false));
   mobileUtilityBackdrop?.addEventListener("click", () => setMobileUtilityOpen(false));
+  document.getElementById("mobile-notification-btn")?.addEventListener("click", () => {
+    setMobileUtilityOpen(false, false);
+  });
   document.getElementById("mobile-admin-btn")?.addEventListener("click", () => {
     setActiveTab("admin");
   });
@@ -2117,9 +2295,9 @@ function setupLayout(): void {
     showFetchError,
     confirmDialog,
     authorizeSensitiveAdminAction: confirmSensitiveAdminAction,
-    fetchPlots,
-    fetchLayoutState,
-    fetchMapObjects,
+    getActiveGardenId: getActiveGardenContext,
+    isCurrentGarden: isCurrentGardenRequest,
+    refreshRestoredSnapshotState,
     setMobileMapSheetOpen,
   });
   getAuthButtons().forEach((btn) => {
@@ -2348,9 +2526,20 @@ async function refreshActiveNavigationContent(): Promise<void> {
     } else if (subMode === "procurement") {
       await loadProcurement();
     } else if (subMode === "indoor") {
-      await loadIndoorPlants();
+      const requestGardenId = getActiveGardenContext();
+      const loaded = await loadIndoorPlants();
+      if (
+        !loaded
+        || !isCurrentGardenRequest(requestGardenId)
+        || activeTab !== "garden"
+        || subMode !== "indoor"
+      ) {
+        return;
+      }
       const container = document.getElementById("indoor-tab-content");
-      if (container) renderIndoorPlants(container);
+      if (container) {
+        renderIndoorPlants(container, { canWrite: canWriteInGarden });
+      }
     }
     return;
   }
@@ -2373,6 +2562,8 @@ function loadActiveNavigationContent(): void {
 }
 
 async function loadWeatherCached(): Promise<void> {
+  const requestGardenId = getActiveGardenContext();
+  const requestVersion = weatherCacheRequestVersion;
   if (Date.now() - weatherLoadedAt < WEATHER_SUMMARY_CACHE_MS) {
     return;
   }
@@ -2380,14 +2571,22 @@ async function loadWeatherCached(): Promise<void> {
     await weatherLoadPromise;
     return;
   }
-  weatherLoadPromise = loadWeather()
+  const loadPromise = loadWeather()
     .then(() => {
-      weatherLoadedAt = Date.now();
+      if (
+        isCurrentGardenRequest(requestGardenId)
+        && requestVersion === weatherCacheRequestVersion
+      ) {
+        weatherLoadedAt = Date.now();
+      }
     })
     .finally(() => {
-      weatherLoadPromise = null;
+      if (weatherLoadPromise === loadPromise) {
+        weatherLoadPromise = null;
+      }
     });
-  await weatherLoadPromise;
+  weatherLoadPromise = loadPromise;
+  await loadPromise;
 }
 
 function requestWeatherAfterPaint(): void {
@@ -2525,7 +2724,9 @@ function applyNavigationState(opts: { triggerLoads?: boolean } = {}): void {
   if (!(showSharedDataView && subMode === "plants")) {
     plantMediaPreviewScheduleSeq += 1;
   }
-  document.body.classList.toggle("map-tab-active", activeTab === "map");
+  const mobileFab = document.getElementById("mobile-fab");
+  mobileFab?.classList.toggle("mobile-fab--map-active", activeTab === "map");
+  mobileFab?.classList.toggle("mobile-fab--admin-active", activeTab === "admin");
   syncPrimaryViewVisibility({
     adminView,
     analysisView,
@@ -2596,8 +2797,42 @@ function isCurrentGardenRequest(gardenId: number | null): boolean {
   return getActiveGardenContext() === gardenId;
 }
 
-async function fetchPlots(retries = 2): Promise<void> {
+interface MapFetchOptions {
+  render?: boolean;
+  requestVersion?: number;
+}
+
+interface MapRefreshOptions {
+  coherent?: boolean;
+}
+
+let mapRefreshVersion = 0;
+
+function isCurrentMapRequest(
+  gardenId: number | null,
+  requestVersion: number | undefined,
+): boolean {
+  return (
+    isCurrentGardenRequest(gardenId)
+    && (requestVersion === undefined || requestVersion === mapRefreshVersion)
+  );
+}
+
+function renderFetchedMapState(): void {
+  renderPlots();
+  initZoneToggles();
+  if ((activeTab === "garden" || activeTab === "activity") && plantsCacheLoaded) {
+    renderPlantsTable();
+  }
+}
+
+async function fetchPlots(
+  retries = 2,
+  options: MapFetchOptions = {},
+): Promise<void> {
   const requestGardenId = getActiveGardenContext();
+  const requestVersion = options.requestVersion ?? ++mapRefreshVersion;
+  const requestOptions: MapFetchOptions = { ...options, requestVersion };
   const grid = document.getElementById("map-grid");
   if (grid && state.plots.length === 0 && retries === 2) {
     const loader = document.createElement("div");
@@ -2606,14 +2841,21 @@ async function fetchPlots(retries = 2): Promise<void> {
   }
   try {
     const plots = await getPlots();
-    if (!isCurrentGardenRequest(requestGardenId)) return;
+    if (!isCurrentMapRequest(requestGardenId, requestVersion)) return;
     state.plots = plots;
     refreshZoneToggles();
     const indoorPlot = state.plots.find(p => p.zone_code === "I");
     if (indoorPlot) {
-      setIndoorPlotId(indoorPlot.plot_id);
+      setIndoorPlotId(indoorPlot.plot_id, requestGardenId);
       setOnEditPlant((plant) => openEditPlantDialog(plant));
       setOnAddPlant((container) => {
+        const reloadIndoorPlantsForCurrentGarden = async (): Promise<void> => {
+          const loaded = await loadIndoorPlants();
+          if (!loaded || !isCurrentGardenRequest(requestGardenId) || !container.isConnected) {
+            return;
+          }
+          renderIndoorPlants(container, { canWrite: canWriteInGarden });
+        };
         const params = buildPlantSearchParams(indoorPlot.plot_id);
         // Include the INDOOR plot in the available plots list
         const origGetPlots = params.getPlotOptions;
@@ -2636,32 +2878,32 @@ async function fetchPlots(retries = 2): Promise<void> {
             plotIds.push(indoorPlot.plot_id);
           }
           await origOnCreate(data, plotIds);
-          await loadIndoorPlants();
-          renderIndoorPlants(container);
+          if (!isCurrentGardenRequest(requestGardenId)) return;
+          await reloadIndoorPlantsForCurrentGarden();
         };
         // Wrap onPlantAssigned to also refresh indoor list
         const origOnAssigned = params.onPlantAssigned;
         params.onPlantAssigned = () => {
           origOnAssigned();
-          void loadIndoorPlants().then(() => renderIndoorPlants(container));
+          void reloadIndoorPlantsForCurrentGarden();
         };
         showPlantSearchDialogLazy(params);
       });
+    } else {
+      resetIndoorState();
     }
     clearAppStatus();
   } catch (err) {
-    if (!isCurrentGardenRequest(requestGardenId)) return;
+    if (!isCurrentMapRequest(requestGardenId, requestVersion)) return;
     if (retries > 0) {
       await new Promise((r) => setTimeout(r, 500));
-      if (!isCurrentGardenRequest(requestGardenId)) return;
-      return fetchPlots(retries - 1);
+      if (!isCurrentMapRequest(requestGardenId, requestVersion)) return;
+      return fetchPlots(retries - 1, requestOptions);
     }
     showFetchError(err);
   }
-  renderPlots();
-  initZoneToggles();
-  if ((activeTab === "garden" || activeTab === "activity") && plantsCacheLoaded) {
-    renderPlantsTable();
+  if (isCurrentMapRequest(requestGardenId, requestVersion) && options.render !== false) {
+    renderFetchedMapState();
   }
 }
 
@@ -2684,15 +2926,16 @@ function applyHouseState(house: HouseLayoutState): void {
   renderDirectionLabels();
 }
 
-async function fetchLayoutState(): Promise<void> {
+async function fetchLayoutState(options: MapFetchOptions = {}): Promise<void> {
   const requestGardenId = getActiveGardenContext();
+  const requestVersion = options.requestVersion ?? ++mapRefreshVersion;
   try {
     const house = await getLayoutStateApi();
-    if (!isCurrentGardenRequest(requestGardenId)) return;
+    if (!isCurrentMapRequest(requestGardenId, requestVersion)) return;
     applyHouseState(house);
-    renderPlots();
+    if (options.render !== false) renderPlots();
   } catch (err) {
-    if (!isCurrentGardenRequest(requestGardenId)) return;
+    if (!isCurrentMapRequest(requestGardenId, requestVersion)) return;
     showFetchError(err);
   }
 }
@@ -2823,17 +3066,18 @@ function renderMapObjectsPanelView(): void {
   });
 }
 
-async function fetchMapObjects(): Promise<void> {
+async function fetchMapObjects(options: MapFetchOptions = {}): Promise<void> {
   const requestGardenId = getActiveGardenContext();
+  const requestVersion = options.requestVersion ?? ++mapRefreshVersion;
   if (requestGardenId === null) {
     state.mapObjects = [];
     state.selectedMapObjectId = null;
-    renderPlots();
+    if (options.render !== false) renderPlots();
     return;
   }
   try {
     const objects = await listMapObjectsApi(requestGardenId);
-    if (!isCurrentGardenRequest(requestGardenId)) return;
+    if (!isCurrentMapRequest(requestGardenId, requestVersion)) return;
     state.mapObjects = objects;
     if (
       state.selectedMapObjectId
@@ -2841,11 +3085,37 @@ async function fetchMapObjects(): Promise<void> {
     ) {
       state.selectedMapObjectId = null;
     }
-    renderPlots();
+    if (options.render !== false) renderPlots();
   } catch (err) {
-    if (!isCurrentGardenRequest(requestGardenId)) return;
+    if (!isCurrentMapRequest(requestGardenId, requestVersion)) return;
     showFetchError(err);
   }
+}
+
+async function refreshMapState(options: MapRefreshOptions = {}): Promise<void> {
+  const requestGardenId = getActiveGardenContext();
+  const requestVersion = ++mapRefreshVersion;
+  const fetchOptions: MapFetchOptions = { render: false, requestVersion };
+  const plotsPromise = fetchPlots(2, fetchOptions);
+  const optionalStatePromise = Promise.all([
+    fetchLayoutState(fetchOptions),
+    fetchMapObjects(fetchOptions),
+  ]);
+
+  if (options.coherent) {
+    await Promise.all([plotsPromise, optionalStatePromise]);
+    if (!isCurrentMapRequest(requestGardenId, requestVersion)) return;
+    renderFetchedMapState();
+    return;
+  }
+
+  await plotsPromise;
+  if (!isCurrentMapRequest(requestGardenId, requestVersion)) return;
+  renderFetchedMapState();
+  void optionalStatePromise.then(() => {
+    if (!isCurrentMapRequest(requestGardenId, requestVersion)) return;
+    renderFetchedMapState();
+  });
 }
 
 async function createMapObjectFromSelection(type: MapObjectType): Promise<void> {
@@ -3131,7 +3401,8 @@ async function ensureShadeMapPanelLoaded(): Promise<void> {
 
   const loadEpoch = shadeMapPanelLoadEpoch;
   shadeMapPanelLoadingGardenId = gardenId;
-  const loadPromise = (async () => {
+  let loadPromise: Promise<void>;
+  loadPromise = (async () => {
     try {
       const [config, persistedState, calibration, obstacles] = await Promise.all([
         getShadeMapConfigApi(),
@@ -3316,12 +3587,11 @@ function renderDirectionLabels(): void {
 
 let plantsCacheLoaded = false;
 let plantsCacheLoadPromise: Promise<void> | null = null;
-let plantsCachePrefetchSeq = 0;
+let plantsCacheRequestVersion = 0;
 let plantsCacheRevision = 0;
 let plantsTableHeadSignature = "";
 let plantsRenderSignature = "";
 let plantMediaPreviewRevision = 0;
-const PLANTS_CACHE_PREFETCH_DELAY_MS = 0;
 
 type PlantPresenceFilter = "all" | "current" | "gone" | "unobserved";
 
@@ -3361,10 +3631,10 @@ function removeCachedPlant(pltId: string): void {
 }
 
 function invalidatePlantsCache(): void {
+  plantsCacheRequestVersion += 1;
   state.plantsCache = [];
   plantsCacheLoaded = false;
   plantsCacheLoadPromise = null;
-  plantsCachePrefetchSeq += 1;
   plantsCacheRevision += 1;
   plantMediaPreviewRevision += 1;
   plantMediaPreviewSeq += 1;
@@ -3374,46 +3644,99 @@ function invalidatePlantsCache(): void {
 
 async function ensurePlantsCacheLoaded(): Promise<void> {
   const requestGardenId = getActiveGardenContext();
+  const requestVersion = plantsCacheRequestVersion;
   if (plantsCacheLoaded) return;
   if (plantsCacheLoadPromise) {
     await plantsCacheLoadPromise;
     return;
   }
-  plantsCacheLoadPromise = (async () => {
+  const loadPromise = (async () => {
     try {
       const plants = await getPlants();
-      if (!isCurrentGardenRequest(requestGardenId)) return;
+      if (
+        !isCurrentGardenRequest(requestGardenId)
+        || requestVersion !== plantsCacheRequestVersion
+      ) {
+        return;
+      }
       setPlantsCache(plants);
       clearAppStatus();
     } catch (err) {
-      if (!isCurrentGardenRequest(requestGardenId)) return;
+      if (
+        !isCurrentGardenRequest(requestGardenId)
+        || requestVersion !== plantsCacheRequestVersion
+      ) {
+        return;
+      }
       showFetchError(err);
-    } finally {
-      plantsCacheLoadPromise = null;
     }
   })();
-  await plantsCacheLoadPromise;
+  plantsCacheLoadPromise = loadPromise;
+  try {
+    await loadPromise;
+  } finally {
+    if (plantsCacheLoadPromise === loadPromise) {
+      plantsCacheLoadPromise = null;
+    }
+  }
+}
+
+function setPlantsViewLoading(loading: boolean): void {
+  const tableBody = document.getElementById("plants-table-body");
+  const mobileList = document.getElementById("plants-mobile-list");
+  const summary = document.getElementById("plants-summary");
+  if (tableBody instanceof HTMLElement) {
+    if (loading) clearPlantsTableBody(tableBody);
+    tableBody.toggleAttribute("aria-busy", loading);
+  }
+  if (mobileList instanceof HTMLElement) {
+    if (loading) clearPlantsMobileCards(mobileList);
+    mobileList.toggleAttribute("aria-busy", loading);
+  }
+  if (loading && summary) summary.textContent = t("common.loading");
 }
 
 async function ensurePlantsLoaded(): Promise<void> {
   const requestGardenId = getActiveGardenContext();
-  await ensurePlantsCacheLoaded();
+  const showLoading = !plantsCacheLoaded;
+  if (showLoading) setPlantsViewLoading(true);
+  try {
+    await ensurePlantsCacheLoaded();
+  } finally {
+    if (showLoading && isCurrentGardenRequest(requestGardenId)) {
+      setPlantsViewLoading(false);
+    }
+  }
   if (!isCurrentGardenRequest(requestGardenId)) return;
   renderPlantsTable();
 }
 
-function requestPlantsCachePrefetchAfterPaint(): void {
-  if (plantsCacheLoaded || plantsCacheLoadPromise) return;
-  const seq = ++plantsCachePrefetchSeq;
-  void (async () => {
-    await ensurePlantsCacheLoaded();
-    window.setTimeout(() => {
-      if (seq !== plantsCachePrefetchSeq || activeTab !== "map" || !plantsCacheLoaded) {
-        return;
-      }
-      renderPlantsTable();
-    }, PLANTS_CACHE_PREFETCH_DELAY_MS);
-  })();
+async function refreshRestoredSnapshotState(): Promise<void> {
+  const requestGardenId = getActiveGardenContext();
+  if (requestGardenId === null) return;
+
+  clearFocusedPlantIds();
+  clearPlantSelection();
+  state.selectedPlotId = null;
+  state.selectedPlotIds.clear();
+  state.selectedMapObjectId = null;
+  invalidatePlantsCache();
+  const plantsLoadPromise = ensurePlantsCacheLoaded();
+
+  await refreshMapState({ coherent: true });
+  if (!isCurrentGardenRequest(requestGardenId)) return;
+  await plantsLoadPromise;
+  if (!isCurrentGardenRequest(requestGardenId)) return;
+
+  renderPlantsTable();
+  if (activeTab === "garden" && subMode === "indoor") {
+    const loaded = await loadIndoorPlants();
+    if (!loaded || !isCurrentGardenRequest(requestGardenId)) return;
+    const container = document.getElementById("indoor-tab-content");
+    if (container instanceof HTMLElement) {
+      renderIndoorPlants(container, { canWrite: canWriteInGarden });
+    }
+  }
 }
 
 async function fetchPlantDetails(pltId: string): Promise<Plant | null> {
@@ -3545,6 +3868,7 @@ function renderPlantsTable(): void {
 
   if (thead) {
     const nextHeadSignature = JSON.stringify({
+      canWrite: canWriteInGarden,
       columns: plantTableState.columns.map((column) => [column.key, column.label]),
       visibleColumns: [...plantTableState.visibleColumns],
     });
@@ -3553,7 +3877,8 @@ function renderPlantsTable(): void {
         thead,
         plantTableState.columns,
         plantTableState.visibleColumns,
-        () => toggleSelectAllPlants(),
+        canWriteInGarden ? () => toggleSelectAllPlants() : undefined,
+        canWriteInGarden,
       );
       thead.querySelectorAll("th.sortable").forEach((th) => {
         th.addEventListener("click", handleSortClick);
@@ -3572,6 +3897,7 @@ function renderPlantsTable(): void {
   }
 
   const tableCbs = {
+    canWrite: canWriteInGarden,
     knownPlotIds: view.knownPlotIds,
     plotAssignmentMeanings: authProfile?.plot_assignment_meanings ?? [],
     mediaPreviewByPlantId: plantMediaPreviewById,
@@ -3630,6 +3956,7 @@ function updateSortIndicators(): void {
 // ── Batch selection ────────────────────────────────────────
 
 function togglePlantSelection(pltId: string): void {
+  if (!canWriteInGarden) return;
   if (selectedPlantIds.has(pltId)) {
     selectedPlantIds.delete(pltId);
   } else {
@@ -3640,6 +3967,7 @@ function togglePlantSelection(pltId: string): void {
 }
 
 function toggleSelectAllPlants(): void {
+  if (!canWriteInGarden) return;
   const { filtered } = getPlantsViewState();
   const allSelected = filtered.every((plant) => selectedPlantIds.has(plant.plt_id));
   if (allSelected) {
@@ -3661,7 +3989,7 @@ function updateBatchBar(): void {
   const bar = document.getElementById("batch-bar");
   const count = document.getElementById("batch-count");
   if (!bar) return;
-  bar.hidden = selectedPlantIds.size === 0;
+  bar.hidden = !canWriteInGarden || selectedPlantIds.size === 0;
   if (count) {
     count.textContent = t("plants.batch_selected", { count: selectedPlantIds.size });
   }
@@ -3753,9 +4081,13 @@ async function uploadTargetMediaFiles(
   options: {
     setUploadProgress?: (pct: number | null) => void;
     gardenId?: number | null;
+    operationIds?: string[];
   } = {},
 ): Promise<void> {
   if (files.length === 0) return;
+  if (options.operationIds && options.operationIds.length !== files.length) {
+    throw new Error("Media upload operation metadata is incomplete");
+  }
   for (let i = 0; i < files.length; i += 1) {
     const file = files[i]!;
     const uploadOptions: Parameters<typeof uploadMediaApi>[0] = {
@@ -3770,6 +4102,9 @@ async function uploadTargetMediaFiles(
     };
     if (options.gardenId !== undefined) {
       uploadOptions.gardenId = options.gardenId;
+    }
+    if (options.operationIds) {
+      uploadOptions.operationId = options.operationIds[i]!;
     }
     await uploadMediaApi(uploadOptions);
   }
@@ -4493,6 +4828,8 @@ function showDropGhosts(targetRow: number, targetCol: number): void {
 }
 
 async function loadPlotAlerts(): Promise<void> {
+  const requestGardenId = getActiveGardenContext();
+  const requestVersion = plotAlertsRequestVersion;
   const now = Date.now();
   if (
     state.plotAlerts
@@ -4503,24 +4840,35 @@ async function loadPlotAlerts(): Promise<void> {
   if (plotAlertsLoadPromise) {
     return plotAlertsLoadPromise;
   }
-  plotAlertsLoadPromise = (async () => {
-  try {
-    const data = await fetchPlotAlertsApi();
-    state.plotAlerts = {
-      task_plots: new Set(data.task_plots),
-      issue_plots: new Set(data.issue_plots),
-      frost_plots: new Set(data.frost_plots),
-    };
-    plotAlertsLoadedAt = Date.now();
-    const grid = document.getElementById("map-grid");
-    if (grid) applyPlotIndicators(grid, state.plotAlerts);
-  } catch {
-    // Non-critical — degrade silently
-  } finally {
-    plotAlertsLoadPromise = null;
-  }
+  const loadPromise = (async () => {
+    try {
+      const data = await fetchPlotAlertsApi();
+      if (
+        !isCurrentGardenRequest(requestGardenId)
+        || requestVersion !== plotAlertsRequestVersion
+      ) {
+        return;
+      }
+      state.plotAlerts = {
+        task_plots: new Set(data.task_plots),
+        issue_plots: new Set(data.issue_plots),
+        frost_plots: new Set(data.frost_plots),
+      };
+      plotAlertsLoadedAt = Date.now();
+      const grid = document.getElementById("map-grid");
+      if (grid) applyPlotIndicators(grid, state.plotAlerts);
+    } catch {
+      // Non-critical — degrade silently
+    }
   })();
-  return plotAlertsLoadPromise;
+  plotAlertsLoadPromise = loadPromise;
+  try {
+    await loadPromise;
+  } finally {
+    if (plotAlertsLoadPromise === loadPromise) {
+      plotAlertsLoadPromise = null;
+    }
+  }
 }
 
 function requestPlotAlertsAfterPaint(): void {
@@ -4545,9 +4893,11 @@ function requestPlotAlertsAfterPaint(): void {
 function showIndoorPanel(): void {
   const indoorPlot = state.plots.find(p => p.zone_code === "I");
   if (!indoorPlot) return;
-  setIndoorPlotId(indoorPlot.plot_id);
+  const requestGardenId = getActiveGardenContext();
+  setIndoorPlotId(indoorPlot.plot_id, requestGardenId);
 
   const overlay = document.createElement("div");
+  overlay.dataset["indoorPanel"] = "true";
   overlay.className = "modal";
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
@@ -4577,9 +4927,18 @@ function showIndoorPanel(): void {
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
 
-  void loadIndoorPlants().then(() => {
-    renderIndoorPlants(content);
-  });
+  void loadIndoorPlants()
+    .then((loaded) => {
+      if (
+        !loaded
+        || !isCurrentGardenRequest(requestGardenId)
+        || !overlay.isConnected
+      ) {
+        return;
+      }
+      renderIndoorPlants(content, { canWrite: canWriteInGarden });
+    })
+    .catch(showFetchError);
 
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
@@ -5658,7 +6017,10 @@ async function confirmSensitiveAdminAction(
         if (!authProfile.mfa_enabled && err instanceof DOMException && err.name === "NotAllowedError") {
           return null;
         }
-        if (!authProfile.mfa_enabled) throw err;
+        if (!authProfile.mfa_enabled) {
+          showToast(getApiErrorMessage(err), "error");
+          return null;
+        }
       }
     }
     const currentPassword = (await promptPasswordDialog(
@@ -5681,7 +6043,12 @@ async function confirmSensitiveAdminAction(
         reauthOptions = { recoveryCode: recoveryCode.trim() };
       }
     }
-    await reauthenticateApi(currentPassword, reauthOptions);
+    try {
+      await reauthenticateApi(currentPassword, reauthOptions);
+    } catch (err) {
+      showToast(getApiErrorMessage(err), "error");
+      return null;
+    }
   }
   return actionReason;
 }
@@ -5712,9 +6079,7 @@ async function importMap(): Promise<void> {
     if (!actionReason) return;
     await importMapApi(layout, { actionReason });
     clearElevationAvailability();
-    await fetchPlots();
-    await fetchLayoutState();
-    await fetchMapObjects();
+    await refreshMapState();
     await refreshElevationAvailability();
   } catch (err) {
     showToast(t("map.import_failed", { error: getApiErrorMessage(err) }), "error");
@@ -5914,6 +6279,10 @@ function applyWriteAccessUi(): void {
       && gardenContextAvailable
     : false;
   document.body.classList.toggle("garden-read-only", !canWriteInGarden);
+  if (!canWriteInGarden && selectedPlantIds.size > 0) {
+    selectedPlantIds.clear();
+    updateBatchBar();
+  }
   for (const id of WRITE_CONTROL_IDS) {
     const el = document.getElementById(id);
     if (
@@ -6067,7 +6436,10 @@ async function showPasskeyPrompt(): Promise<void> {
   });
 }
 
-async function refreshGardenContext(options?: { profile?: AuthUserProfile | null }): Promise<void> {
+async function refreshGardenContext(options?: {
+  profile?: AuthUserProfile | null;
+  expectedGardenId?: number | null;
+}): Promise<void> {
   const selects = getGardenSelects();
   const roleChips = getGardenRoleChips();
   if (selects.length === 0 || roleChips.length === 0) return;
@@ -6078,6 +6450,10 @@ async function refreshGardenContext(options?: { profile?: AuthUserProfile | null
   try {
     me ??= await getAuthMeApi();
   } catch {
+    if (
+      options?.expectedGardenId !== undefined
+      && !isCurrentGardenRequest(options.expectedGardenId)
+    ) return;
     setActiveGardenContext(null);
     try {
       me = await getAuthMeApi();
@@ -6103,6 +6479,11 @@ async function refreshGardenContext(options?: { profile?: AuthUserProfile | null
     }
   }
 
+  if (
+    options?.expectedGardenId !== undefined
+    && !isCurrentGardenRequest(options.expectedGardenId)
+  ) return;
+
   authProfile = me;
   setFeatureGates(me.subscription_tier ?? "home", me.allowed_features ?? []);
   applyFeatureGateUi();
@@ -6127,6 +6508,10 @@ async function refreshGardenContext(options?: { profile?: AuthUserProfile | null
     gardens = [];
     showToast(getApiErrorMessage(err), "error");
   }
+  if (
+    options?.expectedGardenId !== undefined
+    && !isCurrentGardenRequest(options.expectedGardenId)
+  ) return;
   if (gardens.length === 0 && me.garden_visible && me.garden_id !== null) {
     gardens = [
       {
@@ -6194,6 +6579,7 @@ async function refreshGardenContext(options?: { profile?: AuthUserProfile | null
   syncAdminTabLabels();
   updateMobileHeader();
   ensureAttentionTodayPanel();
+  syncNotificationsForCurrentGarden();
 }
 
 function updateShadeMapAvailabilityUi(): void {
@@ -6251,10 +6637,111 @@ function applyFeatureGateUi(): void {
   applyNavigationState({ triggerLoads: false });
 }
 
+let gardenSwitchSequence = 0;
+let gardenSwitchPending = false;
+
+const GARDEN_SWITCH_INTERACTION_SELECTOR = [
+  ".mobile-header",
+  ".top-nav",
+  "#notification-panel",
+  "#app-status",
+  "#view-stack > .view",
+  "#mobile-utility-sheet",
+  "#mobile-map-layouts-sheet",
+  "#mobile-map-tools-sheet",
+  "#mobile-fab",
+  "#mobile-quick-actions",
+  ".mobile-tabbar",
+].join(", ");
+
+function setGardenSwitchPending(pending: boolean): void {
+  gardenSwitchPending = pending;
+  const status = document.getElementById("garden-switch-status");
+  const viewStack = document.getElementById("view-stack");
+  if (status) status.hidden = !pending;
+  if (viewStack) {
+    if (pending) viewStack.setAttribute("aria-busy", "true");
+    else viewStack.removeAttribute("aria-busy");
+  }
+  document.body.classList.toggle("garden-switch-pending", pending);
+  document.querySelectorAll<HTMLElement>(GARDEN_SWITCH_INTERACTION_SELECTOR).forEach((root) => {
+    root.toggleAttribute("inert", pending);
+  });
+  if (!pending) syncMobileMapSheetAccessibility();
+}
+
+function resetMapLayoutForGardenSwitch(): void {
+  state.gridRows = GRID_ROWS;
+  state.gridCols = GRID_COLS;
+  state.housePosition = { row: 9, col: 6 };
+  state.houseSize = { width: 12, height: 8 };
+  state.northDegrees = 0;
+  cameraCtrl?.setGridDims(state.gridRows, state.gridCols);
+  syncDirectionControls();
+  syncGridDimensionInputs();
+  renderDirectionLabels();
+}
+
+function clearGardenScopedStateForSwitch(): void {
+  mapRefreshVersion += 1;
+  weatherCacheRequestVersion += 1;
+  weatherLoadedAt = 0;
+  weatherLoadPromise = null;
+  weatherScheduleSeq += 1;
+  resetWeatherForCurrentGarden();
+  invalidatePlantsCache();
+  resetIndoorState();
+  clearFocusedPlantIds();
+  clearPlantSelection();
+  clearJournalMediaPreviewCache();
+  clearElevationAvailability(false);
+  resetMapLayoutForGardenSwitch();
+  state.plots = [];
+  state.mapObjects = [];
+  state.selectedMapObjectId = null;
+  state.selectedPlotId = null;
+  state.selectedPlotIds.clear();
+  state.highlightedPlotIds.clear();
+  state.sunlitPlotIds.clear();
+  state.plotAlerts = null;
+  mapInteraction.hiddenZones.clear();
+  mapInteraction.activeCatFilter = null;
+  plotAlertsScheduleSeq += 1;
+  plotAlertsRequestVersion += 1;
+  plotAlertsLoadPromise = null;
+  plotAlertsLoadedAt = 0;
+  document.getElementById("map-layouts-dialog")?.remove();
+  document.querySelectorAll<HTMLElement>("[data-indoor-panel]").forEach((panel) => panel.remove());
+  renderFetchedMapState();
+  renderPlantsTable();
+  const indoorContainer = document.getElementById("indoor-tab-content");
+  if (indoorContainer instanceof HTMLElement) {
+    renderIndoorPlants(indoorContainer, { canWrite: false });
+  }
+}
+
 async function switchGarden(nextGardenId: number): Promise<void> {
+  if (getActiveGardenContext() === nextGardenId) return;
+  const sequence = ++gardenSwitchSequence;
   setActiveGardenContext(nextGardenId);
-  await refreshGardenContext();
-  refreshDataAfterAuthChange();
+  gardenContextAvailable = false;
+  applyWriteAccessUi();
+  resetNotificationsForCurrentGarden();
+  setMobileMapSheetOpen(null);
+  setMobileUtilityOpen(false);
+  closeMobileShadeDisclosures();
+  if (isQuickActionSheetOpen()) closeQuickActionSheet();
+  setGardenSwitchPending(true);
+  clearGardenScopedStateForSwitch();
+  try {
+    await refreshGardenContext({ expectedGardenId: nextGardenId });
+    if (sequence !== gardenSwitchSequence || !isCurrentGardenRequest(nextGardenId)) return;
+    await refreshGardenDataForCurrentContext();
+  } catch (err) {
+    if (sequence === gardenSwitchSequence) showFetchError(err);
+  } finally {
+    if (sequence === gardenSwitchSequence) setGardenSwitchPending(false);
+  }
 }
 
 async function refreshGardenDataForCurrentContext(): Promise<void> {
@@ -6263,6 +6750,7 @@ async function refreshGardenDataForCurrentContext(): Promise<void> {
   clearFocusedPlantIds();
   clearPlantSelection();
   resetStatisticsState();
+  invalidatePlantsCache();
   clearJournalMediaPreviewCache();
   state.highlightedPlotIds.clear();
   if (isAdminMfaSetupRequired()) {
@@ -6271,14 +6759,10 @@ async function refreshGardenDataForCurrentContext(): Promise<void> {
     return;
   }
   await Promise.all([
-    fetchPlots(),
-    fetchLayoutState(),
-    fetchMapObjects(),
+    refreshMapState(),
     refreshElevationAvailability(),
   ]);
   if (!isCurrentGardenRequest(requestGardenId)) return;
-  invalidatePlantsCache();
-  if (activeTab === "map") requestPlantsCachePrefetchAfterPaint();
   if (activeTab === "map" && shouldLoadShadeMapPanelNow()) await ensureShadeMapPanelLoaded();
   if (!isCurrentGardenRequest(requestGardenId)) return;
   await refreshActiveNavigationContent();
@@ -6368,6 +6852,12 @@ function isInInput(): boolean {
 }
 
 window.addEventListener("keydown", (e) => {
+  if (gardenSwitchPending) {
+    e.preventDefault();
+    return;
+  }
+  if (trapMobileUtilityFocus(e)) return;
+  if (trapMobileMapSheetFocus(e)) return;
   const mobileUtilitySheet = document.getElementById("mobile-utility-sheet");
   if (e.key === "Escape" && mobileUtilitySheet?.classList.contains("mobile-utility-sheet--open")) {
     setMobileUtilityOpen(false);
@@ -6519,12 +7009,9 @@ async function bootstrapApp(): Promise<void> {
   if (needsOnboarding) return;
 
   await Promise.all([
-    fetchPlots(),
-    fetchLayoutState(),
-    fetchMapObjects(),
+    refreshMapState(),
     refreshElevationAvailability(),
   ]);
-  requestPlantsCachePrefetchAfterPaint();
   if (activeTab === "map" && shouldLoadShadeMapPanelNow()) {
     await ensureShadeMapPanelLoaded();
   }
@@ -6546,12 +7033,9 @@ async function checkOnboardingNeeded(): Promise<boolean> {
       void (async () => {
         await refreshGardenContext();
         await Promise.all([
-          fetchPlots(),
-          fetchLayoutState(),
-          fetchMapObjects(),
+          refreshMapState(),
           refreshElevationAvailability(),
         ]);
-        requestPlantsCachePrefetchAfterPaint();
         if (activeTab === "map" && shouldLoadShadeMapPanelNow()) {
           await ensureShadeMapPanelLoaded();
         }

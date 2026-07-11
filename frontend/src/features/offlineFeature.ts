@@ -18,6 +18,8 @@ import {
   taskActionApi,
   createIssueApi,
   createHarvestApi,
+  addMediaLinkApi,
+  uploadMediaApi,
 } from "../services/api";
 import type { OfflineDraft } from "../core/models";
 
@@ -32,7 +34,7 @@ export interface OfflineMediaHelpers {
     targetType: string,
     targetId: number | string,
     files: File[],
-    options?: { gardenId?: number | null },
+    options?: { gardenId?: number | null; operationIds?: string[] },
   ): Promise<void>;
   uploadJournalMediaFiles(
     journalEntryId: string | number,
@@ -52,15 +54,16 @@ export function initOfflineFeature(
 
 function restoreSerializedMedia(
   payload: Record<string, unknown>,
-): void {
+): SerializedFile[] {
   if (Array.isArray(payload["_serialized_media"])) {
+    const serializedMedia = payload["_serialized_media"] as SerializedFile[];
     payload["media_files"] = deserializeFiles(
-      payload[
-        "_serialized_media"
-      ] as SerializedFile[],
+      serializedMedia,
     );
     delete payload["_serialized_media"];
+    return serializedMedia;
   }
+  return [];
 }
 
 function getDraftGardenId(draft: OfflineDraft): number | null {
@@ -69,11 +72,83 @@ function getDraftGardenId(draft: OfflineDraft): number | null {
     : null;
 }
 
+function attachmentOperationIds(
+  serializedMedia: SerializedFile[],
+  files: File[],
+): string[] {
+  if (serializedMedia.length !== files.length) {
+    throw new Error("Offline attachment metadata is incomplete");
+  }
+  const operationIds = serializedMedia.map((item) => item.operation_id);
+  if (operationIds.some((operationId) => !operationId)) {
+    throw new Error("Offline attachment replay ID is missing");
+  }
+  return operationIds;
+}
+
+function taskActionBody(
+  payload: Record<string, unknown>,
+  action: Parameters<typeof taskActionApi>[1]["action"],
+): Parameters<typeof taskActionApi>[1] {
+  const body: Parameters<typeof taskActionApi>[1] = { action };
+  if (typeof payload["snooze_until"] === "string") {
+    body.snooze_until = payload["snooze_until"];
+  }
+  if (typeof payload["reschedule_to"] === "string") {
+    body.reschedule_to = payload["reschedule_to"];
+  }
+  if (typeof payload["notes"] === "string") {
+    body.notes = payload["notes"];
+  }
+  if (Array.isArray(payload["completed_plant_ids"])) {
+    body.completed_plant_ids = payload["completed_plant_ids"].filter(
+      (plantId): plantId is string => typeof plantId === "string",
+    );
+  }
+  if (
+    payload["completion_outcome"] === "done"
+    || payload["completion_outcome"] === "not_seen_blooming_this_season"
+  ) {
+    body.completion_outcome = payload["completion_outcome"];
+  }
+  return body;
+}
+
+async function uploadOfflineAttachments(
+  targetType: "journal_entry" | "issue" | "harvest_entry",
+  targetId: string | number,
+  files: File[],
+  operationIds: string[],
+  gardenId: number | null,
+  linkedTargets: Array<{ targetType: "plant" | "plot"; targetId: string }> = [],
+): Promise<void> {
+  if (files.length !== operationIds.length) {
+    throw new Error("Offline attachment replay IDs do not match selected files");
+  }
+  for (let index = 0; index < files.length; index += 1) {
+    const uploaded = await uploadMediaApi({
+      targetType,
+      targetId,
+      file: files[index]!,
+      gardenId,
+      operationId: operationIds[index]!,
+    });
+    for (const linkedTarget of linkedTargets) {
+      await addMediaLinkApi({
+        assetId: uploaded.asset_id,
+        targetType: linkedTarget.targetType,
+        targetId: linkedTarget.targetId,
+        gardenId,
+      });
+    }
+  }
+}
+
 function getOfflineSyncCallbacks(): SyncCallbacks {
   return {
     journal: async (payload, draft) => {
       const gardenId = getDraftGardenId(draft);
-      restoreSerializedMedia(payload);
+      const serializedMedia = restoreSerializedMedia(payload);
       const mediaFiles =
         mediaHelpers.extractPendingMediaFiles(
           payload,
@@ -84,23 +159,23 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
         ) as Parameters<
           typeof createJournalEntryApi
         >[0],
-        { gardenId },
+        { gardenId, operationId: draft.operation_id },
       );
       if (mediaFiles.length > 0) {
-        await mediaHelpers.uploadJournalMediaFiles(
+        await uploadOfflineAttachments(
+          "journal_entry",
           created.id,
           mediaFiles,
-          {
-            plantIds:
-              (payload["plant_ids"] as
-                | string[]
-                | undefined) ?? [],
-            plotIds:
-              (payload["plot_ids"] as
-                | string[]
-                | undefined) ?? [],
-            gardenId,
-          },
+          attachmentOperationIds(serializedMedia, mediaFiles),
+          gardenId,
+          [
+            ...((payload["plant_ids"] as string[] | undefined) ?? []).map(
+              (targetId) => ({ targetType: "plant" as const, targetId }),
+            ),
+            ...((payload["plot_ids"] as string[] | undefined) ?? []).map(
+              (targetId) => ({ targetType: "plot" as const, targetId }),
+            ),
+          ],
         );
       }
     },
@@ -108,47 +183,37 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
       const gardenId = getDraftGardenId(draft);
       await taskActionApi(
         String(payload["task_id"] ?? ""),
-        { action: "complete" },
-        { gardenId },
+        taskActionBody(payload, "complete"),
+        { gardenId, operationId: draft.operation_id },
       );
     },
     task_skip: async (payload, draft) => {
       const gardenId = getDraftGardenId(draft);
       await taskActionApi(
         String(payload["task_id"] ?? ""),
-        { action: "skip" },
-        { gardenId },
+        taskActionBody(payload, "skip"),
+        { gardenId, operationId: draft.operation_id },
       );
     },
     task_snooze: async (payload, draft) => {
       const gardenId = getDraftGardenId(draft);
       await taskActionApi(
         String(payload["task_id"] ?? ""),
-        {
-          action: "snooze",
-          snooze_until: payload[
-            "snooze_until"
-          ] as string,
-        },
-        { gardenId },
+        taskActionBody(payload, "snooze"),
+        { gardenId, operationId: draft.operation_id },
       );
     },
     task_reschedule: async (payload, draft) => {
       const gardenId = getDraftGardenId(draft);
       await taskActionApi(
         String(payload["task_id"] ?? ""),
-        {
-          action: "reschedule",
-          reschedule_to: payload[
-            "reschedule_to"
-          ] as string,
-        },
-        { gardenId },
+        taskActionBody(payload, "reschedule"),
+        { gardenId, operationId: draft.operation_id },
       );
     },
     issue_create: async (payload, draft) => {
       const gardenId = getDraftGardenId(draft);
-      restoreSerializedMedia(payload);
+      const serializedMedia = restoreSerializedMedia(payload);
       const mediaFiles =
         mediaHelpers.extractPendingMediaFiles(
           payload,
@@ -157,18 +222,19 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
         mediaHelpers.withoutPendingMediaFiles(
           payload,
         ) as Parameters<typeof createIssueApi>[0],
-        { gardenId },
+        { gardenId, operationId: draft.operation_id },
       );
-      await mediaHelpers.uploadTargetMediaFiles(
+      await uploadOfflineAttachments(
         "issue",
         created.id,
         mediaFiles,
-        { gardenId },
+        attachmentOperationIds(serializedMedia, mediaFiles),
+        gardenId,
       );
     },
     harvest_create: async (payload, draft) => {
       const gardenId = getDraftGardenId(draft);
-      restoreSerializedMedia(payload);
+      const serializedMedia = restoreSerializedMedia(payload);
       const mediaFiles =
         mediaHelpers.extractPendingMediaFiles(
           payload,
@@ -177,18 +243,19 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
         mediaHelpers.withoutPendingMediaFiles(
           payload,
         ) as Parameters<typeof createHarvestApi>[0],
-        { gardenId },
+        { gardenId, operationId: draft.operation_id },
       );
-      await mediaHelpers.uploadTargetMediaFiles(
+      await uploadOfflineAttachments(
         "harvest_entry",
         created.id,
         mediaFiles,
-        { gardenId },
+        attachmentOperationIds(serializedMedia, mediaFiles),
+        gardenId,
       );
     },
     plant_media_upload: async (payload, draft) => {
       const gardenId = getDraftGardenId(draft);
-      restoreSerializedMedia(payload);
+      const serializedMedia = restoreSerializedMedia(payload);
       const mediaFiles =
         mediaHelpers.extractPendingMediaFiles(
           payload,
@@ -204,12 +271,15 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
         "plant",
         targetId,
         mediaFiles,
-        { gardenId },
+        {
+          gardenId,
+          operationIds: attachmentOperationIds(serializedMedia, mediaFiles),
+        },
       );
     },
     plot_media_upload: async (payload, draft) => {
       const gardenId = getDraftGardenId(draft);
-      restoreSerializedMedia(payload);
+      const serializedMedia = restoreSerializedMedia(payload);
       const mediaFiles =
         mediaHelpers.extractPendingMediaFiles(
           payload,
@@ -225,7 +295,10 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
         "plot",
         targetId,
         mediaFiles,
-        { gardenId },
+        {
+          gardenId,
+          operationIds: attachmentOperationIds(serializedMedia, mediaFiles),
+        },
       );
     },
   };

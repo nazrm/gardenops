@@ -222,6 +222,60 @@ class TestInferTaskDescription(DbTestBase):
         assert "water:RNOPLOT:2026-07-01" not in outcome_sources
         assert "water:RINDOOR:2026-07-01" not in outcome_sources
 
+    def test_rain_suppression_preserves_alert_winner_order(self) -> None:
+        self._insert_plant("RORDER", "Ordered Hydrangea", care_watering="regular moisture")
+        self.conn.execute(
+            """
+            INSERT INTO plots
+                (plot_id, garden_id, zone_code, zone_name, plot_number,
+                 grid_row, grid_col, sub_zone, notes)
+            VALUES ('RW-ORDER', %s, 'R', 'Rain order', 1, 5, 5, '', '')
+            """,
+            (self.garden_id,),
+        )
+        self.conn.execute(
+            "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES ('RW-ORDER', 'RORDER', 1)",
+        )
+
+        def create_alert(
+            title: str,
+            valid_from: str,
+            valid_until: str,
+            created_at_ms: int,
+        ) -> int:
+            row = self.conn.execute(
+                """
+                INSERT INTO weather_alerts
+                    (garden_id, alert_type, severity, title, description,
+                     valid_from, valid_until, metadata_json, created_at_ms)
+                VALUES (%s, 'rain_surplus', 'normal', %s, '', %s, %s, '{}', %s)
+                RETURNING id
+                """,
+                (self.garden_id, title, valid_from, valid_until, created_at_ms),
+            ).fetchone()
+            assert row is not None
+            return int(row["id"])
+
+        earliest = create_alert("Earliest start", "2026-07-01", "2026-07-08", 1)
+        create_alert("Later start", "2026-07-07", "2026-07-08", 20)
+
+        generate_tasks(self.conn, self.garden_id, 7, 2026, self._owner_id)
+
+        outcomes = {
+            str(row["source_public_id"]): str(row["source_id"])
+            for row in self.conn.execute(
+                """
+                SELECT source_public_id, source_id
+                FROM attention_outcomes
+                WHERE garden_id = %s
+                  AND outcome_type = 'watering_covered_by_rain'
+                """,
+                (self.garden_id,),
+            ).fetchall()
+        }
+        assert outcomes["water:RORDER:2026-07-01"] == str(earliest)
+        assert outcomes["water:RORDER:2026-07-08"] == str(earliest)
+
     def test_harvest_check(self) -> None:
         self._insert_plant(
             "HA1",

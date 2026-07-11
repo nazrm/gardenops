@@ -9,6 +9,13 @@ from pydantic import Field
 
 from gardenops.db import DB, DbConn, current_timestamp_ms, executemany
 from gardenops.models import StrictBaseModel
+from gardenops.offline_idempotency import (
+    HARVEST_ENDPOINT,
+    HARVEST_TARGET,
+    prepare_operation,
+    raise_operation_target_gone,
+    reserve_operation,
+)
 from gardenops.router_helpers import (
     active_garden_id as _active_garden_id,
 )
@@ -237,6 +244,34 @@ def _fetch_entry(db: DbConn, entry_id: str, garden_id: int) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="Harvest entry not found")
     return dict(row)
+
+
+def _harvest_create_response(
+    db: DbConn,
+    *,
+    garden_id: int,
+    target_id: str,
+) -> dict:
+    row = db.execute(
+        """
+        SELECT public_id, metadata_json
+        FROM harvest_entries
+        WHERE public_id = %s AND garden_id = %s
+        """,
+        (target_id, garden_id),
+    ).fetchone()
+    if not row:
+        raise_operation_target_gone()
+    metadata = _parse_metadata(row["metadata_json"])
+    return {
+        "status": "ok",
+        "id": str(row["public_id"]),
+        "journal_entry_id": _resolve_linked_journal_public_id(
+            db,
+            garden_id=garden_id,
+            metadata=metadata,
+        ),
+    }
 
 
 def _build_linked_journal_title(quantity: float, unit: str, plant_ids: list[str]) -> str:
@@ -645,9 +680,38 @@ def create_harvest_entry(
     context = _auth_context(request)
     _require_write(context)
     garden_id = _active_garden_id(context)
+    prepared_operation = prepare_operation(
+        db,
+        request=request,
+        garden_id=garden_id,
+        endpoint=HARVEST_ENDPOINT,
+        request_payload=body.model_dump(mode="json"),
+        now_ms=current_timestamp_ms(),
+    )
+    if prepared_operation.replay_target_id is not None:
+        return _harvest_create_response(
+            db,
+            garden_id=garden_id,
+            target_id=prepared_operation.replay_target_id,
+        )
     _validate_date(body.occurred_on)
 
     now_ms = current_timestamp_ms()
+    entry_public_id = _generate_public_id("hrv")
+    if prepared_operation.operation is not None:
+        reservation = reserve_operation(
+            db,
+            operation=prepared_operation.operation,
+            target_type=HARVEST_TARGET,
+            target_id=entry_public_id,
+            created_at_ms=now_ms,
+        )
+        if not reservation.is_owner:
+            return _harvest_create_response(
+                db,
+                garden_id=garden_id,
+                target_id=reservation.result_id,
+            )
 
     row = db.execute(
         """
@@ -658,7 +722,7 @@ def create_harvest_entry(
         RETURNING id, public_id
         """,
         (
-            _generate_public_id("hrv"),
+            entry_public_id,
             garden_id,
             body.occurred_on,
             body.quantity,

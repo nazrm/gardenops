@@ -425,19 +425,6 @@ def save_weather_alerts(
     now = current_timestamp_ms()
 
     for alert in alerts:
-        # Dedup check
-        existing = db.execute(
-            """
-            SELECT id FROM weather_alerts
-            WHERE garden_id = %s AND alert_type = %s AND valid_from = %s
-            """,
-            (garden_id, alert["alert_type"], alert["valid_from"]),
-        ).fetchone()
-
-        if existing:
-            skipped += 1
-            continue
-
         # Build plant_advice based on alert type
         alert_meta = dict(alert.get("metadata", {}))
         plant_list: list[dict] = []
@@ -471,7 +458,9 @@ def save_weather_alerts(
             INSERT INTO weather_alerts
                 (garden_id, alert_type, severity, title, description,
                  valid_from, valid_until, metadata_json, created_at_ms)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (garden_id, alert_type, valid_from) DO NOTHING
+            RETURNING id
             """,
             (
                 garden_id,
@@ -485,9 +474,73 @@ def save_weather_alerts(
                 now,
             ),
         ).fetchone()
-        alert_id = wrow["id"] if wrow else None
+        if wrow:
+            alert_id = int(wrow["id"])
+            created += 1
+        else:
+            existing = db.execute(
+                """
+                SELECT id, severity, title, description, valid_until, metadata_json
+                FROM weather_alerts
+                WHERE garden_id = %s
+                  AND alert_type = %s
+                  AND valid_from = %s
+                FOR UPDATE
+                """,
+                (garden_id, alert["alert_type"], alert["valid_from"]),
+            ).fetchone()
+            if existing is None:
+                raise RuntimeError("Weather alert identity conflict could not be resolved")
+            alert_id = int(existing["id"])
+            existing_meta: dict[str, object]
+            try:
+                parsed_meta = json.loads(str(existing["metadata_json"] or "{}"))
+                existing_meta = parsed_meta if isinstance(parsed_meta, dict) else {}
+            except TypeError, ValueError, json.JSONDecodeError:
+                existing_meta = {}
+            merged_meta: dict[str, object] = {**existing_meta, **alert_meta}
+            existing_advice = existing_meta.get("plant_advice")
+            incoming_advice = alert_meta.get("plant_advice")
+            if isinstance(existing_advice, list) or isinstance(incoming_advice, list):
+                advice_by_value: dict[str, object] = {}
+                for advice in [
+                    *(existing_advice if isinstance(existing_advice, list) else []),
+                    *(incoming_advice if isinstance(incoming_advice, list) else []),
+                ]:
+                    key = json.dumps(advice, sort_keys=True, separators=(",", ":"), default=str)
+                    advice_by_value[key] = advice
+                merged_meta["plant_advice"] = [
+                    advice_by_value[key] for key in sorted(advice_by_value)
+                ]
+            severity_rank = {"low": 1, "normal": 2, "high": 3}
+            existing_severity = str(existing["severity"] or "normal")
+            incoming_severity = str(alert["severity"] or "normal")
+            merged_severity = max(
+                (existing_severity, incoming_severity),
+                key=lambda value: severity_rank.get(value, 0),
+            )
+            db.execute(
+                """
+                UPDATE weather_alerts
+                SET severity = %s,
+                    title = CASE WHEN title = '' THEN %s ELSE title END,
+                    description = CASE WHEN description = '' THEN %s ELSE description END,
+                    valid_until = GREATEST(valid_until, %s),
+                    metadata_json = %s
+                WHERE id = %s
+                """,
+                (
+                    merged_severity,
+                    alert["title"],
+                    alert["description"],
+                    alert["valid_until"],
+                    json.dumps(merged_meta, default=str),
+                    alert_id,
+                ),
+            )
+            skipped += 1
 
-        if plant_list and alert_id:
+        if plant_list:
             for plant in plant_list:
                 db.execute(
                     "INSERT INTO weather_alert_plants"
@@ -495,9 +548,6 @@ def save_weather_alerts(
                     " ON CONFLICT DO NOTHING",
                     (alert_id, plant["plt_id"]),
                 )
-
-        created += 1
-
     db.commit()
     return {"created": created, "skipped": skipped}
 

@@ -74,6 +74,36 @@ class TestExportImport(BaseApiTest):
         )
         self.assertEqual(save_res.status_code, 201)
 
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO plot_plants (plot_id, plt_id, quantity)
+                VALUES ('B1', 'PLT-TEST', 1)
+                ON CONFLICT (plot_id, plt_id) DO UPDATE SET quantity = excluded.quantity
+                """
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        extra_plot = self.client.post(
+            "/api/plots",
+            json={
+                "plot_id": "SNAP-EXTRA",
+                "zone_code": "S",
+                "zone_name": "Snapshot extra",
+                "plot_number": 99,
+                "grid_row": 29,
+                "grid_col": 22,
+            },
+        )
+        self.assertEqual(extra_plot.status_code, 201, extra_plot.text)
+        extra_assignment = self.client.post(
+            "/api/plots/SNAP-EXTRA/plants/PLT-TEST",
+            json={"quantity": 1},
+        )
+        self.assertEqual(extra_assignment.status_code, 201, extra_assignment.text)
+
         list_res = self.client.get("/api/snapshots")
         self.assertEqual(list_res.status_code, 200)
         snapshots = list_res.json()
@@ -92,6 +122,18 @@ class TestExportImport(BaseApiTest):
                 headers=admin_headers,
             )
         self.assertEqual(restore_res.status_code, 200)
+        conn = db.get_db()
+        try:
+            retained_assignment = conn.execute(
+                "SELECT 1 FROM plot_plants WHERE plot_id = 'B1' AND plt_id = 'PLT-TEST'"
+            ).fetchone()
+            removed_plot = conn.execute(
+                "SELECT 1 FROM plots WHERE plot_id = 'SNAP-EXTRA'"
+            ).fetchone()
+            self.assertIsNotNone(retained_assignment)
+            self.assertIsNone(removed_plot)
+        finally:
+            db.return_db(conn)
         house = self.client.get("/api/layout-state")
         self.assertEqual(house.status_code, 200)
         self.assertEqual(

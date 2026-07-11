@@ -80,6 +80,33 @@ The runner creates a temporary local Postgres cluster, generates test-only
 credentials and databases, runs the shard suite, and removes the cluster on
 success. It does not read `/etc/gardenops.env` or use the live database.
 
+Use `--command --` to run one database-backed command against the same
+disposable, migrated database:
+
+```bash
+.venv/bin/python scripts/run_fast_postgres_tests.py --command -- command [args...]
+```
+
+The child command receives `DATABASE_URL`, `GARDENOPS_TEST_POSTGRES_URL`, and
+`GARDENOPS_DISPOSABLE_POSTGRES_URL`. Cleanup runs after both successful and
+failed commands. The runner cleans up its database cluster; an arbitrary child
+command remains responsible for terminating any daemonized grandchildren it
+starts. The repository E2E runners install their own process-group traps for
+FastAPI and Vite.
+
+For focused seeders with a stricter database-name guard, select an allowlisted
+dedicated command database before `--command`:
+
+```bash
+.venv/bin/python scripts/run_fast_postgres_tests.py \
+  --command-database gardenops_task_history_e2e_test \
+  --command -- scripts/run_task_completion_history_e2e.sh
+```
+
+For the dedicated Attention and task-history databases, the runner exports the
+matching seeder URL, assigns free backend/frontend ports, and uses an isolated
+log directory inside the disposable run artifacts.
+
 To verify cleanup behavior after runner changes:
 
 ```bash
@@ -124,6 +151,87 @@ The guard detects `innerHTML`/`outerHTML` dot and bracket assignment,
 `insertAdjacentHTML`, and reviewed dynamic HTML helper calls including aliases.
 
 ## Targeted Frontend E2E Checks
+
+For broad shell, navigation, responsive-layout, or cross-feature changes, run
+the authenticated navigation/read map against a disposable database:
+
+```bash
+.venv/bin/python scripts/run_fast_postgres_tests.py \
+  --command -- scripts/run_ui_flow_map_e2e.sh
+```
+
+The command seeds a Pro admin plus editor and viewer memberships, signs in
+through the real session-auth UI, and exercises the real FastAPI routes in
+desktop Chromium and a touch-enabled Pixel mobile context. It proves seeded
+content renders across Map and Today, notifications, every Garden, Activity,
+and Insights subview, and all seven admin sections. It also checks editor/viewer
+identity, write affordances, and admin-section denial. Screenshots, complete
+surface captures, traces, the manifest, and the final database snapshot are
+written to a unique run directory below the gitignored
+`research/optimization-map/runs/` directory, so a later run does not erase
+earlier evidence. Trace archives contain disposable test-session data and are
+written with owner-only permissions; do not publish them.
+
+This is navigation/read and role-boundary evidence, not mutation coverage for
+every feature. Run the focused task-completion and Attention journeys below for
+their write-side database assertions, and add a focused real-backend journey
+when changing another feature's create/update/delete behavior.
+
+The seed refuses to run unless `APP_ENV=test`, `AUTH_REQUIRED=true`,
+`GARDENOPS_UI_FLOW_E2E_ALLOW_TRUNCATE=1`, the database URL exactly matches the
+disposable runner URL, the TCP port is not 5432, and a runner-issued marker is
+verified from the connected database. The shell script is intentionally usable
+only through `run_fast_postgres_tests.py --command`; never point it at a
+persistent or shared database. To isolate a responsive failure during
+development, set
+`GARDENOPS_UI_FLOW_E2E_VIEWPORT=desktop` or `mobile`; omit it for the required
+full matrix. Override occupied server ports with
+`GARDENOPS_UI_FLOW_E2E_BACKEND_PORT` and
+`GARDENOPS_UI_FLOW_E2E_FRONTEND_PORT`.
+
+For the high-risk optimization journeys around Map-first loading, layout
+restore, garden switching, offline replay, provider behavior, MFA, and
+destructive auditing, use these focused real-backend checks:
+
+```bash
+GARDENOPS_ALLOW_DESTRUCTIVE_E2E=1 \
+.venv/bin/python scripts/run_fast_postgres_tests.py \
+  --command -- scripts/run_optimization_journeys_e2e.sh
+
+.venv/bin/python scripts/run_fast_postgres_tests.py \
+  --command -- bash scripts/run_deterministic_provider_e2e.sh
+
+scripts/run_totp_mfa_e2e.sh
+```
+
+The combined optimization journey uses session auth on desktop and Pixel 7. It
+checks that Map startup does not fetch the full plant catalogue; restores a
+genuinely divergent layout while preserving retained plot assignments and
+invalidating stale plant UI state; proves one render after three overlapping
+snapshot-refresh reads; and verifies rapid garden switching plus garden-scoped
+notifications and weather state. It also replays a journal create, its media
+upload, and a task action with stable operation IDs, including duplicate delivery; checks the
+disabled-provider recovery state; exercises mobile sheet focus/inert behavior;
+and deletes only an explicitly named disposable target. The destructive flag
+is required because the final database assertions dynamically cover every
+garden-owned table, retained offline operation rows, media counts, and the
+exactly-once durable delete audit.
+
+The deterministic-provider journey is available only with the runner's exact
+`APP_ENV=test` fixture flag. It scrubs inherited provider credentials and proxy
+settings, uses the local deterministic adapter, blocks non-loopback browser
+traffic before transmission, scans backend logs for vendor credential material,
+and checks budget accounting after desktop and mobile chat requests. The TOTP
+journey creates its own disposable runner child and exercises desktop enrollment
+followed by mobile
+MFA login, rejected and successful step-up, recovery-code regeneration, and
+redacted database counts. These security journeys do not capture screenshots,
+video, traces, TOTP seeds, passwords, or recovery-code values.
+
+The optimization, deterministic-provider, TOTP, and broad UI-flow browser
+contexts actively abort non-loopback HTTP(S) and WebSocket requests before they
+can leave the test browser. They continue real loopback product routes and
+never fulfill or mock API responses.
 
 For map-object direct manipulation changes, build or start the frontend and run
 the mocked browser flow:

@@ -3,10 +3,12 @@
 import json
 import unittest
 from datetime import date, timedelta
+from typing import Any
 
 import gardenops.db as db
 from gardenops.router_helpers import generate_public_id
 from gardenops.services.automation import (
+    _WEATHER_TASK_LOCK_SEED,
     escalate_overdue_follow_ups,
     on_frost_alert,
     on_harvest_logged,
@@ -15,6 +17,19 @@ from gardenops.services.automation import (
     on_rain_alert,
 )
 from tests.base import DbTestBase
+
+
+class _ReadCountingConnection:
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+        self.read_query_count = 0
+        self.read_queries: list[tuple[str, Any]] = []
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        if str(query).lstrip().upper().startswith("SELECT"):
+            self.read_query_count += 1
+            self.read_queries.append((str(query), params))
+        return self._connection.execute(query, params)
 
 
 class TestOnIssueCreated(DbTestBase):
@@ -170,6 +185,24 @@ class TestOnFrostAlert(DbTestBase):
         self.conn.commit()
         return alert_id
 
+    def _create_owned_plot(self, plot_id: str, garden_id: int) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO plots
+                (plot_id, garden_id, zone_code, zone_name, plot_number,
+                 grid_row, grid_col, sub_zone, notes)
+            VALUES (%s, %s, 'F', 'Frost bed', 1, 5, 5, '', '')
+            """,
+            (plot_id, garden_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id)
+            VALUES (%s, %s, %s)
+            """,
+            (plot_id, self._owner_id, garden_id),
+        )
+
     def test_creates_protection_tasks(self) -> None:
         self._insert_plant("FP1", "Tender rose", hardiness="H3")
         alert_id = self._create_frost_alert()
@@ -235,6 +268,112 @@ class TestOnFrostAlert(DbTestBase):
         )
         assert first == 1
         assert second == 0
+
+    def test_weather_task_generation_locks_alert_deduplication_until_commit(self) -> None:
+        self._insert_plant("FP-LOCK", "Locked tender", hardiness="H3")
+        alert_id = self._create_frost_alert()
+
+        assert on_frost_alert(self.conn, self.garden_id, alert_id, self._owner_id) == 1
+        probe = db.get_db()
+        try:
+            row = probe.execute(
+                "SELECT pg_try_advisory_xact_lock(hashtextextended(%s, %s)) AS acquired",
+                (
+                    f"gardenops:weather-task:{self.garden_id}:{alert_id}",
+                    _WEATHER_TASK_LOCK_SEED,
+                ),
+            ).fetchone()
+            assert row is not None
+            assert not bool(row["acquired"])
+        finally:
+            db.return_db(probe)
+
+        self.conn.commit()
+        assert on_frost_alert(self.conn, self.garden_id, alert_id, self._owner_id) == 0
+
+    def test_batched_reads_preserve_dedup_and_garden_scoped_plot_links(self) -> None:
+        self._insert_plant("FPB1", "Existing tender", hardiness="H3")
+        alert_id = self._create_frost_alert()
+        assert on_frost_alert(self.conn, self.garden_id, alert_id, self._owner_id) == 1
+
+        self._insert_plant("FPB2", "New tender", hardiness="H3")
+        self._insert_plant("FPB3", "Unrelated hardy", hardiness="H7")
+        other_garden = self.conn.execute(
+            """
+            INSERT INTO gardens (slug, name)
+            VALUES ('weather-batch-other', 'Weather batch other')
+            RETURNING id
+            """,
+        ).fetchone()
+        assert other_garden is not None
+        other_garden_id = int(other_garden["id"])
+        self._create_owned_plot("FPB-OWN", self.garden_id)
+        self._create_owned_plot("FPB-OTHER", other_garden_id)
+        self.conn.execute(
+            "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES ('FPB-OWN', 'FPB2', 1)",
+        )
+        self.conn.execute(
+            "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES ('FPB-OTHER', 'FPB2', 1)",
+        )
+        self.conn.execute(
+            "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES ('FPB-OWN', 'FPB3', 1)",
+        )
+        self.conn.commit()
+
+        recording_connection = _ReadCountingConnection(self.conn)
+        created = on_frost_alert(recording_connection, self.garden_id, alert_id, self._owner_id)
+
+        assert created == 1
+        task = self.conn.execute(
+            """
+            SELECT id, title
+            FROM garden_tasks
+            WHERE garden_id = %s AND rule_source = %s
+            """,
+            (self.garden_id, f"auto:frost_protect:{alert_id}:FPB2"),
+        ).fetchone()
+        assert task is not None
+        assert task["title"] == "Protect from frost: New tender (FPB-OWN)"
+        task_plot_rows = self.conn.execute(
+            "SELECT plot_id FROM garden_task_plots WHERE task_id = %s ORDER BY plot_id",
+            (int(task["id"]),),
+        ).fetchall()
+        assert [str(row["plot_id"]) for row in task_plot_rows] == ["FPB-OWN"]
+        plot_query, plot_params = next(
+            (query, params)
+            for query, params in recording_connection.read_queries
+            if "FROM plot_plants pp" in query
+        )
+        assert "pp.plt_id = ANY(%s)" in plot_query
+        assert plot_params == (self.garden_id, ["FPB2"])
+
+    def test_weather_task_read_queries_stay_constant_as_matching_plants_grow(self) -> None:
+        self._create_owned_plot("FP-SCALE", self.garden_id)
+        self._insert_plant("FPS1", "First tender", hardiness="H3")
+        self.conn.execute(
+            "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES ('FP-SCALE', 'FPS1', 1)",
+        )
+        self.conn.commit()
+        first_alert_id = self._create_frost_alert()
+
+        first_connection = _ReadCountingConnection(self.conn)
+        assert on_frost_alert(first_connection, self.garden_id, first_alert_id, self._owner_id) == 1
+
+        for number in range(2, 10):
+            plant_id = f"FPS{number}"
+            self._insert_plant(plant_id, f"Tender {number}", hardiness="H3")
+            self.conn.execute(
+                "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES (%s, %s, 1)",
+                ("FP-SCALE", plant_id),
+            )
+        self.conn.commit()
+        second_alert_id = self._create_frost_alert("2026-01-16")
+
+        many_connection = _ReadCountingConnection(self.conn)
+        assert on_frost_alert(many_connection, self.garden_id, second_alert_id, self._owner_id) == 9
+
+        # The advisory lock adds one fixed query; matching plants never add reads.
+        assert first_connection.read_query_count == many_connection.read_query_count == 5
 
 
 class TestWeatherTaskTyping(DbTestBase):

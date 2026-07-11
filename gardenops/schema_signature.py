@@ -41,6 +41,7 @@ REQUIRED_TABLES = (
     "user_attention_preferences",
     "user_attention_item_state",
     "attention_outcomes",
+    "offline_create_operations",
 )
 
 REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
@@ -204,9 +205,23 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "created_at_ms",
         "updated_at_ms",
     ),
+    "offline_create_operations": (
+        "id",
+        "garden_id",
+        "endpoint",
+        "operation_id",
+        "request_fingerprint",
+        "target_type",
+        "target_id",
+        "result_id",
+        "created_at_ms",
+        "expires_at_ms",
+    ),
 }
 
 REQUIRED_INDEXES = (
+    "ux_weather_alerts_identity",
+    "idx_offline_create_operations_expiry",
     "ux_plots_garden_grid_cell",
     "idx_plots_garden",
     "idx_garden_map_objects_garden",
@@ -276,6 +291,15 @@ REQUIRED_CONSTRAINTS = (
     "fk_user_attention_item_state_garden",
     "attention_outcomes_public_id_key",
     "fk_attention_outcomes_garden",
+    "offline_create_operations_pkey",
+    "ux_offline_create_operations_garden_endpoint_operation",
+    "ck_offline_create_operations_endpoint_target",
+    "ck_offline_create_operations_operation_id_length",
+    "ck_offline_create_operations_target_id_length",
+    "ck_offline_create_operations_result_id_length",
+    "ck_offline_create_operations_request_fingerprint",
+    "ck_offline_create_operations_expiry",
+    "fk_offline_create_operations_garden",
 )
 
 REQUIRED_COLUMN_NULLABILITY: dict[str, bool] = {
@@ -288,6 +312,13 @@ REQUIRED_COLUMN_NULLABILITY: dict[str, bool] = {
 }
 
 REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
+    "ux_weather_alerts_identity": (
+        "unique index",
+        "weather_alerts",
+        "garden_id",
+        "alert_type",
+        "valid_from",
+    ),
     "idx_auth_passkey_challenges_invitation": (
         "auth_passkey_challenges",
         "invitation_token_hash",
@@ -445,6 +476,46 @@ def existing_public_schema_tables(snapshot: SchemaSnapshot) -> set[str]:
     return snapshot.tables - _IGNORED_BOOTSTRAP_TABLES
 
 
+_MIGRATION_0021_INDEX = "ux_weather_alerts_identity"
+_MIGRATION_0022_TABLE = "offline_create_operations"
+_MIGRATION_0022_INDEXES = {"idx_offline_create_operations_expiry"}
+_MIGRATION_0022_CONSTRAINTS = {
+    constraint
+    for constraint in REQUIRED_CONSTRAINTS
+    if constraint.startswith("offline_create_operations_")
+    or constraint.startswith("ux_offline_create_operations_")
+    or constraint.startswith("ck_offline_create_operations_")
+    or constraint.startswith("fk_offline_create_operations_")
+}
+
+
+def _is_migration_0021_part(part: Mapping[str, object]) -> bool:
+    return str(part.get("object", "")) == _MIGRATION_0021_INDEX
+
+
+def _is_migration_0022_part(part: Mapping[str, object]) -> bool:
+    kind = str(part.get("kind", ""))
+    obj = str(part.get("object", ""))
+    if kind == "table":
+        return obj == _MIGRATION_0022_TABLE
+    if kind == "column":
+        return obj.startswith(f"{_MIGRATION_0022_TABLE}.")
+    if kind == "index":
+        return obj in _MIGRATION_0022_INDEXES
+    if kind == "constraint":
+        return obj in _MIGRATION_0022_CONSTRAINTS
+    return False
+
+
+def _migration_0022_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
+    return (
+        _MIGRATION_0022_TABLE not in snapshot.tables
+        and _MIGRATION_0022_TABLE not in snapshot.columns
+        and not (_MIGRATION_0022_INDEXES & snapshot.indexes)
+        and not (_MIGRATION_0022_CONSTRAINTS & snapshot.constraints)
+    )
+
+
 def bootstrap_schema_diagnostics_from_snapshot(
     snapshot: SchemaSnapshot,
 ) -> dict[str, object]:
@@ -458,6 +529,20 @@ def bootstrap_schema_diagnostics_from_snapshot(
         }
 
     missing = missing_schema_parts(snapshot)
+    if missing and _migration_0022_schema_is_absent(snapshot):
+        missing_weather_identity = _MIGRATION_0021_INDEX not in snapshot.indexes
+        if all(
+            _is_migration_0022_part(part)
+            or (missing_weather_identity and _is_migration_0021_part(part))
+            for part in missing
+        ):
+            return {
+                "mode": "verified-upgrade-baseline",
+                "can_stamp_migrations": True,
+                "stamp_through": 20 if missing_weather_identity else 21,
+                "existing_tables": existing_tables,
+                "missing": missing,
+            }
     return {
         "mode": "verified-baseline" if not missing else "incomplete-existing-schema",
         "can_stamp_migrations": not missing,

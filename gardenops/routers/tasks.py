@@ -9,6 +9,13 @@ from pydantic import Field
 
 from gardenops.db import DB, DbConn, current_timestamp_ms, executemany
 from gardenops.models import StrictBaseModel
+from gardenops.offline_idempotency import (
+    TASK_ACTION_ENDPOINT,
+    TASK_TARGET,
+    prepare_operation,
+    raise_operation_target_gone,
+    reserve_operation,
+)
 from gardenops.rate_limit import (
     acquire_concurrency_slot,
     provider_limit_profile,
@@ -452,6 +459,21 @@ def _fetch_task(
     if not row:
         raise HTTPException(status_code=404, detail="Task not found")
     return dict(row)
+
+
+def _task_action_replay_response(
+    db: DbConn,
+    *,
+    garden_id: int,
+    target_id: str,
+) -> dict:
+    row = db.execute(
+        "SELECT 1 FROM garden_tasks WHERE public_id = %s AND garden_id = %s",
+        (target_id, garden_id),
+    ).fetchone()
+    if not row:
+        raise_operation_target_gone()
+    return {"status": "ok"}
 
 
 def _parse_task_metadata(task_row: dict) -> dict:
@@ -1189,10 +1211,38 @@ def task_action(
     context = _auth_context(request)
     _require_write(context)
     garden_id = _active_garden_id(context)
+    now_ms = current_timestamp_ms()
+    prepared_operation = prepare_operation(
+        db,
+        request=request,
+        garden_id=garden_id,
+        endpoint=TASK_ACTION_ENDPOINT,
+        request_payload={"task_id": task_id, **body.model_dump(mode="json")},
+        now_ms=now_ms,
+    )
+    if prepared_operation.replay is not None:
+        return _task_action_replay_response(
+            db,
+            garden_id=garden_id,
+            target_id=prepared_operation.replay.target_id,
+        )
+    if prepared_operation.operation is not None:
+        reservation = reserve_operation(
+            db,
+            operation=prepared_operation.operation,
+            target_type=TASK_TARGET,
+            target_id=task_id,
+            created_at_ms=now_ms,
+        )
+        if not reservation.is_owner:
+            return _task_action_replay_response(
+                db,
+                garden_id=garden_id,
+                target_id=reservation.target_id,
+            )
     row = _fetch_task(db, task_id, garden_id, for_update=True)
     internal_task_id = int(row["id"])
 
-    now_ms = current_timestamp_ms()
     _apply_task_action(db, context, internal_task_id, body, now_ms, task_row=row)
     db.commit()
     return {"status": "ok"}
@@ -1260,10 +1310,11 @@ def refresh_descriptions(
     force_all = bool(body.force_all) if body is not None else False
 
     from gardenops.services.task_generator import (
-        _lookup_plant_context,
+        _empty_plant_context,
         _uses_ai_task_description,
         generate_task_description_overrides,
         infer_task_description,
+        prefetch_task_description_contexts,
     )
 
     rows = db.execute(
@@ -1276,9 +1327,9 @@ def refresh_descriptions(
     updated = 0
     task_specs: list[dict[str, object]] = []
     row_map: dict[int, dict] = {}
+    eligible_tasks: list[dict] = []
     for row in rows:
         task = dict(row)
-        row_map[int(task["id"])] = task
         metadata = _parse_task_metadata(task)
         if (
             not force_all
@@ -1286,23 +1337,37 @@ def refresh_descriptions(
             and str(task.get("description") or "").strip()
         ):
             continue
-        desc_en, desc_no = infer_task_description(db, task)
+        task_id = int(task["id"])
+        row_map[task_id] = task
+        eligible_tasks.append(task)
+
+    (
+        first_linked_plant_ids,
+        plant_contexts,
+        work_order_plant_contexts,
+    ) = prefetch_task_description_contexts(db, eligible_tasks)
+
+    for task in eligible_tasks:
+        task_id = int(task["id"])
+        metadata = _parse_task_metadata(task)
+        desc_en, desc_no = infer_task_description(
+            db,
+            task,
+            plant_contexts=plant_contexts,
+            work_order_plant_contexts=work_order_plant_contexts,
+        )
         if not desc_en:
             continue
-        plant_ids = db.execute(
-            "SELECT plt_id FROM garden_task_plants WHERE task_id = %s ORDER BY plt_id LIMIT 1",
-            (task["id"],),
-        ).fetchall()
-        plant_id = str(plant_ids[0]["plt_id"]) if plant_ids else ""
+        plant_id = first_linked_plant_ids.get(task_id, "")
         task_specs.append(
             {
-                "task_key": str(task["id"]),
-                "task_id": int(task["id"]),
+                "task_key": str(task_id),
+                "task_id": task_id,
                 "task_type": str(task["task_type"]),
                 "work_order": bool(metadata.get("work_order")),
                 "due_on": str(task["due_on"]),
                 "plant": (
-                    _lookup_plant_context(db, plant_id)
+                    plant_contexts.get(plant_id, _empty_plant_context(plant_id))
                     if plant_id
                     else {
                         "name": task.get("title") or str(task["id"]),

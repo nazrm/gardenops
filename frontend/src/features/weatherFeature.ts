@@ -6,11 +6,43 @@ import {
   fetchWeatherSummaryApi,
   checkWeatherApi,
   dismissWeatherAlertApi,
+  getActiveGardenContext,
   getApiErrorMessage,
 } from "../services/api";
 
 let ctx: AppContext;
 let weatherSummary: WeatherSummary | null = null;
+let weatherGardenId: number | null = null;
+let weatherRequestVersion = 0;
+
+interface WeatherRequestContext {
+  gardenId: number;
+  version: number;
+}
+
+function weatherRequestContext(): WeatherRequestContext | null {
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return null;
+  if (weatherGardenId !== gardenId) {
+    resetWeatherForCurrentGarden();
+  }
+  return { gardenId, version: weatherRequestVersion };
+}
+
+function isCurrentWeatherRequest(request: WeatherRequestContext): boolean {
+  return (
+    request.version === weatherRequestVersion
+    && request.gardenId === weatherGardenId
+    && request.gardenId === getActiveGardenContext()
+  );
+}
+
+export function resetWeatherForCurrentGarden(): void {
+  weatherGardenId = getActiveGardenContext();
+  weatherRequestVersion += 1;
+  weatherSummary = null;
+  document.getElementById("weather-dashboard")?.replaceChildren();
+}
 
 export function initWeatherFeature(
   appCtx: AppContext,
@@ -23,8 +55,12 @@ export function getWeatherSummary(): WeatherSummary | null {
 }
 
 export async function loadWeather(): Promise<void> {
+  const request = weatherRequestContext();
+  if (!request) return;
   try {
-    weatherSummary = await fetchWeatherSummaryApi();
+    const summary = await fetchWeatherSummaryApi();
+    if (!isCurrentWeatherRequest(request)) return;
+    weatherSummary = summary;
     const container = document.getElementById(
       "weather-dashboard",
     );
@@ -36,8 +72,10 @@ export async function loadWeather(): Promise<void> {
           onDismissAlert: async (alert) => {
             try {
               await dismissWeatherAlertApi(alert.id);
+              if (!isCurrentWeatherRequest(request)) return;
               void loadWeather();
             } catch (err) {
+              if (!isCurrentWeatherRequest(request)) return;
               ctx.showToast(
                 getApiErrorMessage(err),
                 "error",
@@ -51,6 +89,7 @@ export async function loadWeather(): Promise<void> {
             try {
               const result =
                 await checkWeatherApi();
+              if (!isCurrentWeatherRequest(request)) return;
               ctx.showToast(
                 t("weather.check_result", {
                   created: String(
@@ -64,6 +103,7 @@ export async function loadWeather(): Promise<void> {
               );
               void loadWeather();
             } catch (err) {
+              if (!isCurrentWeatherRequest(request)) return;
               ctx.showToast(
                 getApiErrorMessage(err),
                 "error",

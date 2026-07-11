@@ -558,6 +558,7 @@ function renderPlantFilter(): void {
   container.replaceChildren();
   const chipInput = createChipInput({
     label: t("calendar.plant_filter_label"),
+    inputId: "calendar-plant-filter-input",
     placeholder: t("calendar.plant_filter_placeholder"),
     items: availableCalendarPlants(),
     getKey: (plant) => plant.plt_id,
@@ -582,6 +583,7 @@ function renderPlotFilter(): void {
   container.replaceChildren();
   const chipInput = createChipInput({
     label: t("calendar.plot_filter_label"),
+    inputId: "calendar-plot-filter-input",
     placeholder: t("calendar.plot_filter_placeholder"),
     items: availableCalendarPlots(),
     getKey: (plot) => plot.plot_id,
@@ -606,6 +608,7 @@ function renderZoneFilter(): void {
   container.replaceChildren();
   const chipInput = createChipInput({
     label: t("calendar.zone_filter_label"),
+    inputId: "calendar-zone-filter-input",
     placeholder: t("calendar.zone_filter_placeholder"),
     items: availableCalendarZones(),
     getKey: (zone) => zone.zone_code,

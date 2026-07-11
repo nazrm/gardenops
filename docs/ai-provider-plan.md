@@ -37,8 +37,10 @@ by admin-managed provider settings when `APP_SECRETS_ENCRYPTION_KEY` is set.
   configured `AI_PROVIDER`.
 - Provider-specific code lives behind a small adapter boundary. Router and
   service code should not directly instantiate Anthropic or OpenAI clients.
-- Provider calls in tests are mocked. Tests must not call real OpenAI,
-  Anthropic, PlantNet, or live databases.
+- Provider calls in unit tests are mocked. A separate browser journey may use
+  the local deterministic fixture provider, which is available only when
+  `APP_ENV=test` and its explicit E2E flag are both set. Tests must not call real
+  OpenAI, Anthropic, PlantNet, or live databases.
 
 ## Non-Goals
 
@@ -319,6 +321,11 @@ Non-vision AI:
 Regression:
 
 - No real provider SDK network calls occur in unit tests.
+- The deterministic-provider browser journey uses real GardenOps routes and
+  local budget accounting on desktop and mobile. Its isolated child process
+  scrubs inherited provider credentials and proxies, uses the deterministic
+  adapter, blocks non-loopback browser traffic before transmission, and scans
+  backend logs for vendor credential material.
 - Disposable Postgres test runner still completes.
 - `npm run build` still passes.
 - Environment variable documentation checker still passes.

@@ -91,14 +91,24 @@ def _load_active_alerts(db: DbConn, garden_id: int) -> list[dict]:
         """,
         (garden_id, today_iso),
     ).fetchall()
-    result = []
-    for row in rows:
+
+    plant_ids_by_alert: dict[int, list[str]] = {int(row["id"]): [] for row in rows}
+    if plant_ids_by_alert:
         plant_rows = db.execute(
-            "SELECT plt_id FROM weather_alert_plants WHERE alert_id = %s",
-            (row["id"],),
+            """
+            SELECT alert_id, plt_id
+            FROM weather_alert_plants
+            WHERE alert_id = ANY(%s)
+            ORDER BY alert_id ASC, plt_id ASC
+            """,
+            (list(plant_ids_by_alert),),
         ).fetchall()
-        plant_ids = [str(r["plt_id"]) for r in plant_rows]
-        result.append(_serialize_alert(row, plant_ids))
+        for plant_row in plant_rows:
+            plant_ids_by_alert[int(plant_row["alert_id"])].append(str(plant_row["plt_id"]))
+
+    result: list[dict] = []
+    for row in rows:
+        result.append(_serialize_alert(row, plant_ids_by_alert[int(row["id"])]))
     return result
 
 

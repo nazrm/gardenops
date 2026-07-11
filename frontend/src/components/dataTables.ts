@@ -144,6 +144,7 @@ export function filterPlants(
 }
 
 interface PlantsTableCallbacks {
+  canWrite: boolean;
   onOpenPlot: (plotId: string) => void;
   onEdit: (plant: Plant) => void;
   knownPlotIds: Set<string>;
@@ -372,9 +373,10 @@ export function renderPlantsTableHead(
   columns: ColumnDef[],
   visibleColumns: Set<string>,
   onSelectAll?: () => void,
+  canWrite = true,
 ): void {
   const row = document.createElement("tr");
-  if (onSelectAll) {
+  if (canWrite && onSelectAll) {
     const selectTh = document.createElement("th");
     selectTh.className = "col-select";
     const cb = document.createElement("input");
@@ -395,9 +397,11 @@ export function renderPlantsTableHead(
     th.textContent = col.label;
     row.appendChild(th);
   });
-  const action = document.createElement("th");
-  action.className = "col-action";
-  row.appendChild(action);
+  if (canWrite) {
+    const action = document.createElement("th");
+    action.className = "col-action";
+    row.appendChild(action);
+  }
   thead.replaceChildren(row);
 }
 
@@ -467,10 +471,10 @@ export function renderPlantsTableBody(
   callbacks: PlantsTableCallbacks,
 ): void {
   const {
-    onOpenPlot, onEdit, knownPlotIds, plotAssignmentMeanings, mediaPreviewByPlantId,
+    canWrite, onOpenPlot, onEdit, knownPlotIds, plotAssignmentMeanings, mediaPreviewByPlantId,
     onToggleSelect, selectedIds,
   } = callbacks;
-  const totalCols = columns.length + 1 + (onToggleSelect ? 1 : 0);
+  const totalCols = columns.length + (canWrite ? 1 : 0) + (canWrite && onToggleSelect ? 1 : 0);
 
   const emptyRow = (): HTMLTableRowElement => {
     const row = document.createElement("tr");
@@ -490,11 +494,11 @@ export function renderPlantsTableBody(
     const presenceStatus = plantPresenceStatus(plant);
     if (presenceStatus === "gone") row.classList.add("plant-gone");
     if (presenceStatus === "mixed") row.classList.add("plant-mixed");
-    if (onToggleSelect && selectedIds?.has(plant.plt_id)) {
+    if (canWrite && onToggleSelect && selectedIds?.has(plant.plt_id)) {
       row.classList.add("batch-selected");
     }
 
-    if (onToggleSelect) {
+    if (canWrite && onToggleSelect) {
       const selectCell = document.createElement("td");
       selectCell.className = "col-select";
       const cb = document.createElement("input");
@@ -525,19 +529,21 @@ export function renderPlantsTableBody(
       row.appendChild(cell);
     });
 
-    const actionCell = document.createElement("td");
-    actionCell.className = "col-action";
+    if (canWrite) {
+      const actionCell = document.createElement("td");
+      actionCell.className = "col-action";
 
-    const editButton = document.createElement("button");
-    editButton.className = "edit-plant-btn";
-    editButton.dataset["editPlt"] = plant.plt_id;
-    editButton.title = t("plants.edit_plant");
-    editButton.type = "button";
-    editButton.textContent = "\u270E";
-    editButton.addEventListener("click", () => onEdit(plant));
+      const editButton = document.createElement("button");
+      editButton.className = "edit-plant-btn";
+      editButton.dataset["editPlt"] = plant.plt_id;
+      editButton.title = t("plants.edit_plant");
+      editButton.type = "button";
+      editButton.textContent = "\u270E";
+      editButton.addEventListener("click", () => onEdit(plant));
 
-    actionCell.appendChild(editButton);
-    row.appendChild(actionCell);
+      actionCell.appendChild(editButton);
+      row.appendChild(actionCell);
+    }
     return row;
   };
 
@@ -562,7 +568,7 @@ export function renderPlantsMobileCards(
   callbacks: PlantsTableCallbacks,
 ): void {
   const {
-    onOpenPlot, onEdit, knownPlotIds, plotAssignmentMeanings, mediaPreviewByPlantId,
+    canWrite, onOpenPlot, onEdit, knownPlotIds, plotAssignmentMeanings, mediaPreviewByPlantId,
     onToggleSelect, selectedIds,
   } = callbacks;
 
@@ -582,14 +588,14 @@ export function renderPlantsMobileCards(
     const presenceStatus = plantPresenceStatus(plant);
     if (presenceStatus === "gone") article.classList.add("plant-gone");
     if (presenceStatus === "mixed") article.classList.add("plant-mixed");
-    if (onToggleSelect && selectedIds?.has(plant.plt_id)) {
+    if (canWrite && onToggleSelect && selectedIds?.has(plant.plt_id)) {
       article.classList.add("batch-selected");
     }
 
     const header = document.createElement("div");
     header.className = "mobile-data-card-header";
 
-    if (onToggleSelect) {
+    if (canWrite && onToggleSelect) {
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.className = "mobile-batch-cb";
@@ -638,13 +644,15 @@ export function renderPlantsMobileCards(
       actions.appendChild(link);
     }
 
-    const editBtn = document.createElement("button");
-    editBtn.className = "mobile-data-action-btn";
-    editBtn.type = "button";
-    editBtn.dataset["editPlt"] = plant.plt_id;
-    editBtn.textContent = t("plants.edit");
-    editBtn.addEventListener("click", () => onEdit(plant));
-    actions.appendChild(editBtn);
+    if (canWrite) {
+      const editBtn = document.createElement("button");
+      editBtn.className = "mobile-data-action-btn";
+      editBtn.type = "button";
+      editBtn.dataset["editPlt"] = plant.plt_id;
+      editBtn.textContent = t("plants.edit");
+      editBtn.addEventListener("click", () => onEdit(plant));
+      actions.appendChild(editBtn);
+    }
 
     header.append(copy, actions);
 

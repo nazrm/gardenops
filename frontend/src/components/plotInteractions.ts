@@ -53,6 +53,7 @@ import {
 
 export interface PlotCallbacks {
   fetchPlots: () => Promise<void>;
+  ensurePlantsCacheLoaded: () => Promise<void>;
   isMobile: () => boolean;
   canWrite: () => boolean;
   deletePlot: (plotId: string) => Promise<void>;
@@ -497,6 +498,7 @@ async function completeTaskInline(
         return;
       }
     } else {
+      await cbs.ensurePlantsCacheLoaded();
       const plantNames = new Map(state.plantsCache.map((plant) => [plant.plt_id, plant.name]));
       openTaskCompletionDialog(task, plantNames, (body) => {
         void completeTaskInline(task, card, state, plotId, cbs, body);

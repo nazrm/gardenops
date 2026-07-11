@@ -194,6 +194,7 @@ async function showTaskQuickComplete(): Promise<void> {
               return;
             }
           } else {
+            await ctx.ensurePlantsCacheLoaded();
             const plantNames = new Map(ctx.getPlants().map((plant) => [plant.plt_id, plant.name]));
             openTaskCompletionDialog(task, plantNames, (body) => {
               void (async () => {

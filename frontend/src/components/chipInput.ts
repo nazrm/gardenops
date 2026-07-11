@@ -2,6 +2,7 @@ import { clearChildren } from "../core/sanitize";
 
 export interface ChipInputOptions<T> {
   label: string;
+  inputId?: string;
   placeholder: string;
   items: T[];
   getKey: (item: T) => string;
@@ -16,6 +17,8 @@ export interface ChipInputResult {
   destroy: () => void;
 }
 
+let chipInputIdSequence = 0;
+
 export function createChipInput<T>(options: ChipInputOptions<T>): ChipInputResult {
   const {
     label,
@@ -26,6 +29,7 @@ export function createChipInput<T>(options: ChipInputOptions<T>): ChipInputResul
     selected: initialSelected,
   } = options;
   const getSearch = options.getSearchText ?? ((item: T) => getLabel(item).toLowerCase());
+  const inputId = options.inputId ?? `chip-input-${++chipInputIdSequence}`;
 
   const selectedKeys = new Set<string>(initialSelected);
 
@@ -36,6 +40,7 @@ export function createChipInput<T>(options: ChipInputOptions<T>): ChipInputResul
   // Label
   const labelEl = document.createElement("label");
   labelEl.className = "chip-input__label";
+  labelEl.htmlFor = inputId;
   labelEl.textContent = label;
   container.appendChild(labelEl);
 
@@ -51,6 +56,7 @@ export function createChipInput<T>(options: ChipInputOptions<T>): ChipInputResul
 
   const input = document.createElement("input");
   input.type = "text";
+  input.id = inputId;
   input.className = "chip-input__field";
   input.placeholder = placeholder;
   input.setAttribute("role", "combobox");

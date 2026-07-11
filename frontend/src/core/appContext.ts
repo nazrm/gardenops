@@ -104,7 +104,7 @@ export interface AppContext {
     targetType: string,
     targetId: number | string,
     files: File[],
-    options?: { gardenId?: number | null },
+    options?: { gardenId?: number | null; operationIds?: string[] },
   ): Promise<void>;
   attachReadonlyMediaSection(
     container: HTMLElement,

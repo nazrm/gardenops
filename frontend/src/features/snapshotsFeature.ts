@@ -22,9 +22,9 @@ export interface SnapshotsContext {
     actionLabel: string,
     defaultReason: string,
   ): Promise<string | null>;
-  fetchPlots(): Promise<void>;
-  fetchLayoutState(): Promise<void>;
-  fetchMapObjects(): Promise<void>;
+  getActiveGardenId(): number | null;
+  isCurrentGarden(gardenId: number | null): boolean;
+  refreshRestoredSnapshotState(): Promise<void>;
   setMobileMapSheetOpen(
     sheetId: string | null,
   ): void;
@@ -105,18 +105,23 @@ function renderSnapshotsList(
     deleteBtn.addEventListener("click", () => {
       void (async () => {
         if (!ctx.ensureWriteAccess()) return;
+        const requestGardenId = ctx.getActiveGardenId();
+        if (requestGardenId === null) return;
         const actionReason = await ctx.authorizeSensitiveAdminAction(
           t("common.delete"),
           `snapshot-delete:${snapshot.id}`,
         );
         if (!actionReason) return;
+        if (!ctx.isCurrentGarden(requestGardenId)) return;
         try {
           await deleteSnapshotApi(snapshot.id, actionReason);
+          if (!ctx.isCurrentGarden(requestGardenId)) return;
           await populateSnapshotsList(
             container,
             mode,
           );
         } catch (err) {
+          if (!ctx.isCurrentGarden(requestGardenId)) return;
           ctx.showFetchError(err);
         }
       })();
@@ -131,9 +136,13 @@ function renderSnapshotsList(
 async function populateSnapshotsList(
   container: HTMLElement,
   mode: SnapshotListMode,
-): Promise<void> {
+): Promise<boolean> {
+  const requestGardenId = ctx.getActiveGardenId();
+  if (requestGardenId === null) return false;
   const snapshots = await listSnapshotsApi();
+  if (!ctx.isCurrentGarden(requestGardenId)) return false;
   renderSnapshotsList(container, snapshots, mode);
+  return true;
 }
 
 export async function refreshOpenSnapshotViews(): Promise<void> {
@@ -184,10 +193,11 @@ export async function openMobileLayoutsSheet(): Promise<void> {
   );
   if (!(list instanceof HTMLElement)) return;
   try {
-    await populateSnapshotsList(list, "mobile");
-    ctx.setMobileMapSheetOpen(
-      "mobile-map-layouts-sheet",
-    );
+    if (await populateSnapshotsList(list, "mobile")) {
+      ctx.setMobileMapSheetOpen(
+        "mobile-map-layouts-sheet",
+      );
+    }
   } catch (err) {
     ctx.showFetchError(err);
   }
@@ -228,13 +238,18 @@ export async function openLayoutsDialog(): Promise<void> {
 
 export async function saveLayout(): Promise<boolean> {
   if (!ctx.ensureWriteAccess()) return false;
+  const requestGardenId = ctx.getActiveGardenId();
+  if (requestGardenId === null) return false;
   const name = prompt(t("map.layout_name_prompt"));
   if (!name) return false;
+  if (!ctx.isCurrentGarden(requestGardenId)) return false;
   try {
     await saveSnapshotApi(name);
+    if (!ctx.isCurrentGarden(requestGardenId)) return false;
     await refreshOpenSnapshotViews();
     return true;
   } catch (err) {
+    if (!ctx.isCurrentGarden(requestGardenId)) return false;
     ctx.showFetchError(err);
     return false;
   }
@@ -252,11 +267,11 @@ export async function toggleSnapshotsDropdown(): Promise<void> {
   }
 
   try {
-    await populateSnapshotsList(
+    const populated = await populateSnapshotsList(
       dropdown,
       "dropdown",
     );
-    dropdown.hidden = false;
+    if (populated) dropdown.hidden = false;
   } catch (err) {
     ctx.showFetchError(err);
   }
@@ -266,6 +281,8 @@ async function restoreLayout(
   id: string,
 ): Promise<boolean> {
   if (!ctx.ensureWriteAccess()) return false;
+  const requestGardenId = ctx.getActiveGardenId();
+  if (requestGardenId === null) return false;
   if (
     !(await ctx.confirmDialog(
       t("map.layout_restore_confirm"),
@@ -278,13 +295,14 @@ async function restoreLayout(
     `snapshot-restore:${id}`,
   );
   if (!actionReason) return false;
+  if (!ctx.isCurrentGarden(requestGardenId)) return false;
   try {
     await restoreSnapshotApi(id, actionReason);
-    await ctx.fetchPlots();
-    await ctx.fetchLayoutState();
-    await ctx.fetchMapObjects();
+    if (!ctx.isCurrentGarden(requestGardenId)) return false;
+    await ctx.refreshRestoredSnapshotState();
     return true;
   } catch (err) {
+    if (!ctx.isCurrentGarden(requestGardenId)) return false;
     ctx.showFetchError(err);
     return false;
   }

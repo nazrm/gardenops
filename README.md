@@ -96,6 +96,10 @@ control.
 
 - Journal entries for observations, treatments, batch notes, and plot-linked
   history.
+- Offline journal, issue, and harvest creates, task actions, and queued media
+  uploads retain their original garden and stable operation ID. Retries within
+  30 days return the original result; if its target was deleted, replay returns
+  `410 Gone` instead of recreating data.
 - Issue tracking for pests, disease, damage, treatments, severity, causes,
   resolution, and follow-up dates.
 - Media uploads and links for plants, plots, journal entries, issues, and
@@ -266,6 +270,34 @@ For the fastest local full backend run, use the disposable Postgres runner:
 The runner creates a temporary local Postgres cluster, generates test-only
 credentials and databases, runs the shard suite, and removes the cluster on
 success. It does not read `/etc/gardenops.env` or use the live database.
+
+Use the same disposable, migrated database for a database-backed script or
+targeted test command with `--command --`:
+
+```bash
+.venv/bin/python scripts/run_fast_postgres_tests.py --command -- command [args...]
+```
+
+The command receives `DATABASE_URL`, `GARDENOPS_TEST_POSTGRES_URL`, and
+`GARDENOPS_DISPOSABLE_POSTGRES_URL` for the temporary `gardenops_test`
+database. Cleanup runs when the command exits, and the runner returns failure if
+it cannot verify that its disposable cluster was removed.
+
+Focused E2E seeders that require their dedicated database name can select one
+of the runner's allowlisted names:
+
+```bash
+.venv/bin/python scripts/run_fast_postgres_tests.py \
+  --command-database gardenops_attention_e2e_test \
+  --command -- scripts/run_attention_today_e2e.sh
+```
+
+For the dedicated Attention and task-history databases, the runner also
+provides the seeder URL, unique app ports, and an isolated log directory.
+Focused real-backend journeys for offline replay, garden switching,
+provider-disabled and provider-enabled behavior, destructive audit durability,
+and TOTP MFA are listed in
+[docs/development.md](docs/development.md#targeted-frontend-e2e-checks).
 
 To verify the cleanup paths after runner changes:
 
