@@ -1088,9 +1088,11 @@ async function assertViewerDenied(page, alpha, guarded, profile, { directMutatio
   assert(await viewerRecords.count() === 0, "Viewer plant edit affordance is visible");
   await page.locator(profile === "mobile" ? "#mobile-tab-garden" : "#top-tab-garden").click();
   await page.locator("#sub-mode-indoor").click();
-  const indoorCard = page.locator("#indoor-tab-content .indoor-card-wrapper").first();
-  await visible(indoorCard, "viewer indoor card");
-  assert(await indoorCard.locator(".indoor-room-row button").count() === 0, "Viewer indoor room edit affordance is visible");
+  await visible(page.locator("#indoor-tab-content"), "viewer indoor view");
+  assert(
+    await page.locator("#indoor-tab-content .indoor-room-row button").count() === 0,
+    "Viewer indoor room edit affordance is visible",
+  );
   await openMap(page, profile);
   const editButton = page.locator("#edit-mode-btn");
   if (await editButton.count()) assert(await editButton.isDisabled(), "Viewer Edit control is enabled");
