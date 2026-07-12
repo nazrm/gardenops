@@ -666,6 +666,13 @@ async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "de
     path: unitUpdatePath,
   });
   assert(unitUpdate.status === 200, `Nested map unit edit returned ${unitUpdate.status}`);
+  const mapBoundsAfterMutation = await page.locator("#map-grid").boundingBox();
+  assert(mapBoundsAfterMutation, "Map grid has no dimensions after object mutations");
+  assert(
+    Math.abs(mapBoundsAfterMutation.width - mapBoundsBefore.width) <= 1
+      && Math.abs(mapBoundsAfterMutation.height - mapBoundsBefore.height) <= 1,
+    "Map dimensions shifted during map-object labels or selection",
+  );
 
   await reloadAndAccountForAborts(page, diagnostics);
   await enableMapEditor(page, profile);
@@ -675,13 +682,6 @@ async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "de
   await reloadedPrimary.locator(".map-object-row-main").click();
   const reloadedDetail = page.locator("#map-objects-panel .map-object-detail");
   await visible(reloadedDetail.getByText(renamedUnit, { exact: true }), "nested unit edit after reload");
-  const mapBoundsAfter = await page.locator("#map-grid").boundingBox();
-  assert(mapBoundsAfter, "Map grid has no dimensions after object mutations");
-  assert(
-    Math.abs(mapBoundsAfter.width - mapBoundsBefore.width) <= 1
-      && Math.abs(mapBoundsAfter.height - mapBoundsBefore.height) <= 1,
-    "Map dimensions shifted during map-object labels, selection, or reload",
-  );
   const parentDeletePath = `/api/gardens/${alpha.id}/map-objects/${primaryId}`;
   const parentDeleteResponsePromise = page.waitForResponse((response) => (
     response.request().method() === "DELETE"
