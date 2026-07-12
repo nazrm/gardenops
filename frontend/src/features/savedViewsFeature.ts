@@ -9,6 +9,7 @@ import {
   fetchSavedViewPresetsApi,
   createSavedViewApi,
   deleteSavedViewApi,
+  getActiveGardenContext,
   getApiErrorMessage,
 } from "../services/api";
 import {
@@ -20,8 +21,20 @@ let ctx: AppContext;
 
 let savedViews: SavedView[] = [];
 let savedViewPresets: SavedViewPreset[] = [];
+let savedViewsGardenId: number | null = null;
+let savedViewsGardenVersion = 0;
+let savedViewsLoadVersion = 0;
 
 const TRANSIENT_SAVED_VIEWS_STATUSES = new Set([0, 502, 503, 504]);
+
+interface SavedViewsRequestContext {
+  gardenId: number;
+  gardenVersion: number;
+}
+
+interface SavedViewsLoadRequestContext extends SavedViewsRequestContext {
+  loadVersion: number;
+}
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -32,18 +45,75 @@ function isTransientSavedViewsError(err: unknown): boolean {
     && TRANSIENT_SAVED_VIEWS_STATUSES.has(err.status);
 }
 
+function savedViewsRequestContext(): SavedViewsRequestContext | null {
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return null;
+  if (savedViewsGardenId !== gardenId) {
+    resetSavedViewsForCurrentGarden();
+  }
+  return { gardenId, gardenVersion: savedViewsGardenVersion };
+}
+
+function isCurrentSavedViewsRequest(
+  request: SavedViewsRequestContext,
+): boolean {
+  return (
+    request.gardenVersion === savedViewsGardenVersion
+    && request.gardenId === savedViewsGardenId
+    && request.gardenId === getActiveGardenContext()
+  );
+}
+
+function isCurrentSavedViewsLoadRequest(
+  request: SavedViewsLoadRequestContext,
+): boolean {
+  return (
+    request.loadVersion === savedViewsLoadVersion
+    && isCurrentSavedViewsRequest(request)
+  );
+}
+
+function clearSavedViewsState(): void {
+  savedViews = [];
+  savedViewPresets = [];
+  const dropdown = document.getElementById("saved-views-dropdown");
+  if (dropdown) {
+    dropdown.hidden = true;
+    dropdown.replaceChildren();
+  }
+}
+
+export function resetSavedViewsForCurrentGarden(): void {
+  savedViewsGardenId = getActiveGardenContext();
+  savedViewsGardenVersion += 1;
+  savedViewsLoadVersion += 1;
+  clearSavedViewsState();
+}
+
+export function syncSavedViewsForCurrentGarden(): void {
+  if (savedViewsGardenId === getActiveGardenContext()) return;
+  resetSavedViewsForCurrentGarden();
+}
+
 export function initSavedViewsFeature(
   appCtx: AppContext,
 ): void {
   ctx = appCtx;
+  syncSavedViewsForCurrentGarden();
 
   document
     .getElementById("saved-views-trigger")
     ?.addEventListener("click", () => {
-      void loadSavedViews().then(() =>
-        toggleSavedViewsDropdown(),
-      );
+      void openSavedViewsDropdown();
     });
+  document.addEventListener("change", (event) => {
+    if (
+      event.target instanceof HTMLSelectElement
+      && event.target.matches("[data-garden-select]")
+    ) {
+      resetSavedViewsForCurrentGarden();
+    }
+  });
   document.addEventListener("click", (e) => {
     const dropdown = document.getElementById(
       "saved-views-dropdown",
@@ -63,29 +133,50 @@ export function initSavedViewsFeature(
   });
 }
 
-export async function loadSavedViews(): Promise<void> {
+async function openSavedViewsDropdown(): Promise<void> {
+  const request = savedViewsRequestContext();
+  if (!request) return;
+  const loaded = await loadSavedViews();
+  if (!loaded || !isCurrentSavedViewsRequest(request)) return;
+  toggleSavedViewsDropdown();
+}
+
+export async function loadSavedViews(): Promise<boolean> {
+  const gardenRequest = savedViewsRequestContext();
+  if (!gardenRequest) return false;
+  const request: SavedViewsLoadRequestContext = {
+    ...gardenRequest,
+    loadVersion: ++savedViewsLoadVersion,
+  };
   const retryDelaysMs = [0, 300, 900];
   for (const [index, delayMs] of retryDelaysMs.entries()) {
     if (delayMs > 0) {
       await wait(delayMs);
     }
+    if (!isCurrentSavedViewsLoadRequest(request)) return false;
     try {
       const [viewsResult, presetsResult] =
         await Promise.all([
           fetchSavedViewsApi(),
           fetchSavedViewPresetsApi(),
         ]);
+      if (!isCurrentSavedViewsLoadRequest(request)) return false;
       savedViews = viewsResult.views;
       savedViewPresets = presetsResult.presets;
-      return;
+      return true;
     } catch (err) {
       const finalAttempt = index === retryDelaysMs.length - 1;
-      if (!isTransientSavedViewsError(err) || finalAttempt) {
+      if (
+        !isCurrentSavedViewsLoadRequest(request)
+        || !isTransientSavedViewsError(err)
+        || finalAttempt
+      ) {
         // Non-critical: keep the previously loaded state if the view service is unavailable.
-        return;
+        return isCurrentSavedViewsLoadRequest(request);
       }
     }
   }
+  return false;
 }
 
 function getSavedViewsCallbacks() {
@@ -102,6 +193,8 @@ function getSavedViewsCallbacks() {
       label: string,
       _filters: Record<string, unknown>,
     ) => {
+      const request = savedViewsRequestContext();
+      if (!request) return;
       try {
         const currentFilters =
           getCurrentFiltersForMode();
@@ -110,11 +203,13 @@ function getSavedViewsCallbacks() {
           label,
           filter_json: currentFilters,
         });
+        if (!isCurrentSavedViewsRequest(request)) return;
         ctx.showToast(
           t("saved_views.saved"),
           "success",
         );
         await loadSavedViews();
+        if (!isCurrentSavedViewsRequest(request)) return;
         const dropdown = document.getElementById(
           "saved-views-dropdown",
         );
@@ -128,6 +223,7 @@ function getSavedViewsCallbacks() {
           );
         }
       } catch (err) {
+        if (!isCurrentSavedViewsRequest(request)) return;
         ctx.showToast(
           getApiErrorMessage(err),
           "error",
@@ -135,13 +231,17 @@ function getSavedViewsCallbacks() {
       }
     },
     onDelete: async (view: SavedView) => {
+      const request = savedViewsRequestContext();
+      if (!request) return;
       try {
         await deleteSavedViewApi(view.id);
+        if (!isCurrentSavedViewsRequest(request)) return;
         ctx.showToast(
           t("saved_views.deleted"),
           "success",
         );
         await loadSavedViews();
+        if (!isCurrentSavedViewsRequest(request)) return;
         const dropdown = document.getElementById(
           "saved-views-dropdown",
         );
@@ -155,6 +255,7 @@ function getSavedViewsCallbacks() {
           );
         }
       } catch (err) {
+        if (!isCurrentSavedViewsRequest(request)) return;
         ctx.showToast(
           getApiErrorMessage(err),
           "error",

@@ -6,8 +6,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+from datetime import UTC, date, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +46,91 @@ PHASE_ONE_MAP_UNIT_ID = "mapunit_complete_phase_one_alpha_bench"
 PHASE_ONE_MAP_UNIT_NAME = "Complete Phase One Basil Bench"
 PHASE_ONE_SAVED_VIEW_LABEL = "Complete Phase One Basil View"
 PHASE_ONE_MOBILE_SNAPSHOT_NAME = "Complete Phase One Mobile Action Snapshot"
+PHASE_ONE_BROWSER_PLANT_ID = "PLT-001"
+PHASE_ONE_BROWSER_SAVED_VIEW_LABEL = "Phase 1 Browser Plant View"
+PHASE_ONE_DESKTOP_ONBOARDING_GARDEN_NAME = "Phase 1 Onboarding Garden"
+PHASE_ONE_MOBILE_ONBOARDING_GARDEN_NAME = "Phase 1 Mobile Onboarding Garden"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _frozen_attention_clock() -> dict[str, Any]:
+    frozen_date = os.environ.get("GARDENOPS_ATTENTION_FROZEN_DATE", "").strip()
+    frozen_now_ms = os.environ.get("GARDENOPS_ATTENTION_FROZEN_NOW_MS", "").strip()
+    if not frozen_date or not frozen_now_ms:
+        raise RuntimeError("Complete journey E2E requires a frozen attention clock")
+    try:
+        expected_date = date.fromisoformat(frozen_date)
+        now_ms = int(frozen_now_ms)
+        observed_date = datetime.fromtimestamp(now_ms / 1000, tz=UTC).date()
+    except (OSError, OverflowError, ValueError) as exc:
+        raise RuntimeError("Complete journey attention clock is invalid") from exc
+    if now_ms <= 0 or observed_date != expected_date:
+        raise RuntimeError("Complete journey attention clock date and timestamp must agree")
+    return {"attention_date": frozen_date, "attention_now_ms": now_ms}
+
+
+def _git_state() -> dict[str, Any]:
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        capture_output=True,
+        check=True,
+        cwd=REPOSITORY_ROOT,
+    ).stdout
+    index_diff = subprocess.run(
+        ["git", "diff", "--no-ext-diff", "--binary", "--cached", "HEAD"],
+        capture_output=True,
+        check=True,
+        cwd=REPOSITORY_ROOT,
+    ).stdout
+    worktree_diff = subprocess.run(
+        ["git", "diff", "--no-ext-diff", "--binary", "HEAD"],
+        capture_output=True,
+        check=True,
+        cwd=REPOSITORY_ROOT,
+    ).stdout
+    untracked_paths = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+        capture_output=True,
+        check=True,
+        cwd=REPOSITORY_ROOT,
+    ).stdout.split(b"\0")
+    fingerprint = sha256()
+    for value in (status, index_diff, worktree_diff):
+        fingerprint.update(value)
+        fingerprint.update(b"\0")
+    for relative_path in sorted(path for path in untracked_paths if path):
+        candidate = REPOSITORY_ROOT / os.fsdecode(relative_path)
+        fingerprint.update(relative_path)
+        fingerprint.update(b"\0")
+        try:
+            candidate_stat = candidate.lstat()
+            if stat.S_ISREG(candidate_stat.st_mode):
+                kind = b"file"
+                content = candidate.read_bytes()
+            elif stat.S_ISLNK(candidate_stat.st_mode):
+                kind = b"symlink"
+                content = os.fsencode(os.readlink(candidate))
+            else:
+                kind = b"other"
+                content = b""
+        except OSError:
+            kind = b"missing"
+            content = b""
+        fingerprint.update(kind)
+        fingerprint.update(b"\0")
+        fingerprint.update(content)
+        fingerprint.update(b"\0")
+    return {
+        "dirty": bool(status.strip()),
+        "sha": subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            check=True,
+            text=True,
+            cwd=REPOSITORY_ROOT,
+        ).stdout.strip(),
+        "worktree_fingerprint": fingerprint.hexdigest(),
+    }
 
 
 def _require_child_environment() -> None:
@@ -68,6 +156,7 @@ def _require_child_environment() -> None:
     marker = os.environ["GARDENOPS_DISPOSABLE_POSTGRES_MARKER"]
     if not system_identifier.isdecimal() or not marker.startswith(f"{system_identifier}."):
         raise RuntimeError("Complete journey disposable marker is not bound to the runner cluster")
+    _frozen_attention_clock()
 
 
 def _configure_reused_seed_guard() -> None:
@@ -251,6 +340,9 @@ def _seed_phase_one_fixtures(conn, optimization_seed: Any) -> None:
 
 
 def _phase_one_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
+    alpha = conn.execute(
+        "SELECT id FROM gardens WHERE slug = %s", (optimization_seed.GARDEN_A_SLUG,)
+    ).fetchone()
     large = conn.execute(
         "SELECT id, name FROM gardens WHERE slug = %s", (PHASE_ONE_LARGE_GARDEN_SLUG,)
     ).fetchone()
@@ -258,30 +350,48 @@ def _phase_one_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
         "SELECT COUNT(*) AS count FROM layout_snapshots WHERE name = %s",
         (PHASE_ONE_MOBILE_SNAPSHOT_NAME,),
     ).fetchone()
-    if not large:
-        raise RuntimeError("Complete journey Phase 1 large garden is missing")
+    if not alpha or not large:
+        raise RuntimeError("Complete journey Phase 1 base gardens are missing")
+    alpha_id = int(alpha["id"])
     return {
         "indoor": {
+            "garden_id": alpha_id,
             "plant_id": PHASE_ONE_INDOOR_PLANT_ID,
             "plant_name": PHASE_ONE_INDOOR_PLANT_NAME,
             "plot_id": PHASE_ONE_INDOOR_PLOT_ID,
+            "quantity": 3,
             "room_label": "Greenhouse shelf",
+            "seen_growing": True,
+            "seen_growing_date": "2026-07-01",
+            "owner_username": ADMIN_USERNAME,
         },
         "large_garden": {
             "id": int(large["id"]),
             "name": str(large["name"]),
             "slug": PHASE_ONE_LARGE_GARDEN_SLUG,
         },
-        "map_unit": {"name": PHASE_ONE_MAP_UNIT_NAME, "public_id": PHASE_ONE_MAP_UNIT_ID},
+        "map_unit": {
+            "garden_id": alpha_id,
+            "name": PHASE_ONE_MAP_UNIT_NAME,
+            "public_id": PHASE_ONE_MAP_UNIT_ID,
+        },
         "mobile_snapshot": {
             "count": int(snapshot["count"] if snapshot else 0),
+            "garden_id": alpha_id,
             "name": PHASE_ONE_MOBILE_SNAPSHOT_NAME,
         },
         "onboarding": {
+            "desktop_garden_name": PHASE_ONE_DESKTOP_ONBOARDING_GARDEN_NAME,
             "desktop_username": ONBOARDING_LOGIN[0],
+            "mobile_garden_name": PHASE_ONE_MOBILE_ONBOARDING_GARDEN_NAME,
             "mobile_username": MOBILE_ONBOARDING_LOGIN[0],
         },
-        "saved_view": {"label": PHASE_ONE_SAVED_VIEW_LABEL},
+        "saved_view": {
+            "garden_id": alpha_id,
+            "label": PHASE_ONE_SAVED_VIEW_LABEL,
+            "owner_username": ADMIN_USERNAME,
+            "view_type": "plants",
+        },
     }
 
 
@@ -297,13 +407,37 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         """,
         (ONBOARDING_LOGIN[0], MOBILE_ONBOARDING_LOGIN[0]),
     ).fetchall()
+    onboarding_target_rows = conn.execute(
+        """
+        SELECT
+            g.id,
+            g.name,
+            g.slug,
+            g.onboarding_complete,
+            owner.username AS owner_username,
+            member.username AS membership_username,
+            gm.role AS membership_role
+        FROM gardens g
+        LEFT JOIN auth_users owner ON owner.id = g.owner_user_id
+        LEFT JOIN garden_memberships gm ON gm.garden_id = g.id
+        LEFT JOIN auth_users member ON member.id = gm.user_id
+        WHERE g.name IN (%s, %s)
+        ORDER BY g.id, member.username, gm.role
+        """,
+        (PHASE_ONE_DESKTOP_ONBOARDING_GARDEN_NAME, PHASE_ONE_MOBILE_ONBOARDING_GARDEN_NAME),
+    ).fetchall()
     alpha = conn.execute(
         "SELECT id, address FROM gardens WHERE slug = %s",
         (optimization_seed.GARDEN_A_SLUG,),
     ).fetchone()
-    if not alpha:
-        raise RuntimeError("Complete journey Alpha garden is missing")
+    beta = conn.execute(
+        "SELECT id FROM gardens WHERE slug = %s",
+        (optimization_seed.GARDEN_B_SLUG,),
+    ).fetchone()
+    if not alpha or not beta:
+        raise RuntimeError("Complete journey Alpha/Beta gardens are missing")
     alpha_id = int(alpha["id"])
+    beta_id = int(beta["id"])
     map_object = conn.execute(
         """
         SELECT geometry_json, style_json
@@ -322,12 +456,65 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
     ).fetchone()
     indoor = conn.execute(
         """
-        SELECT room_label
-        FROM plot_plants
-        WHERE plot_id = %s AND plt_id = %s
+        SELECT
+            pp.plot_id,
+            pp.plt_id,
+            pp.quantity,
+            pp.seen_growing,
+            pp.seen_growing_date,
+            pp.room_label,
+            plot_ownership.garden_id AS plot_garden_id,
+            plant_ownership.garden_id AS plant_garden_id,
+            plot_owner.username AS plot_owner_username,
+            plant_owner.username AS plant_owner_username
+        FROM plot_plants pp
+        JOIN plot_ownership ON plot_ownership.plot_id = pp.plot_id
+        JOIN auth_users plot_owner ON plot_owner.id = plot_ownership.owner_user_id
+        JOIN plant_ownership
+          ON plant_ownership.plt_id = pp.plt_id
+         AND plant_ownership.garden_id = plot_ownership.garden_id
+        JOIN auth_users plant_owner ON plant_owner.id = plant_ownership.owner_user_id
+        WHERE pp.plot_id = %s AND pp.plt_id = %s
         """,
         (PHASE_ONE_INDOOR_PLOT_ID, PHASE_ONE_INDOOR_PLANT_ID),
     ).fetchone()
+    saved_view_rows = conn.execute(
+        """
+        SELECT sv.garden_id, sv.is_preset, sv.label, sv.view_type, user_value.username
+        FROM user_saved_views sv
+        LEFT JOIN auth_users user_value ON user_value.id = sv.user_id
+        WHERE sv.label = %s
+        ORDER BY sv.id
+        """,
+        (PHASE_ONE_SAVED_VIEW_LABEL,),
+    ).fetchall()
+    mobile_snapshot_rows = conn.execute(
+        """
+        SELECT garden_id, public_id
+        FROM layout_snapshots
+        WHERE name = %s
+        ORDER BY garden_id, public_id
+        """,
+        (PHASE_ONE_MOBILE_SNAPSHOT_NAME,),
+    ).fetchall()
+    mobile_harvest_rows = conn.execute(
+        """
+        SELECT harvest.garden_id, actor.username AS actor_username
+        FROM harvest_entries harvest
+        LEFT JOIN auth_users actor ON actor.id = harvest.actor_user_id
+        WHERE harvest.notes = 'Phase 1 mobile quick action'
+        ORDER BY harvest.id
+        """
+    ).fetchall()
+    mobile_journal_rows = conn.execute(
+        """
+        SELECT journal.garden_id, actor.username AS actor_username
+        FROM garden_journal_entries journal
+        LEFT JOIN auth_users actor ON actor.id = journal.actor_user_id
+        WHERE journal.notes = 'Phase 1 mobile quick action'
+        ORDER BY journal.id
+        """
+    ).fetchall()
     counts = conn.execute(
         """
         SELECT
@@ -340,13 +527,202 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             (SELECT COUNT(*) FROM harvest_entries
              WHERE notes = 'Phase 1 mobile quick action') AS harvests,
             (SELECT COUNT(*) FROM garden_journal_entries
-             WHERE notes = 'Phase 1 mobile quick action') AS journals
+             WHERE notes = 'Phase 1 mobile quick action') AS journals,
+            (SELECT COUNT(*) FROM garden_map_object_units
+             WHERE garden_id = %s) AS alpha_map_unit_count
         """,
-        (PHASE_ONE_MOBILE_SNAPSHOT_NAME,),
+        (PHASE_ONE_MOBILE_SNAPSHOT_NAME, alpha_id),
+    ).fetchone()
+    lifecycle = conn.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM plants WHERE plt_id = %s) AS plant_rows,
+            (SELECT COUNT(*) FROM plant_ownership WHERE plt_id = %s) AS plant_ownership_rows,
+            (SELECT COUNT(*) FROM plot_plants WHERE plt_id = %s) AS plant_assignment_rows,
+            (SELECT COUNT(*) FROM user_saved_views WHERE label = %s) AS saved_view_rows,
+            (SELECT COUNT(*) FROM user_saved_views
+             WHERE label = %s AND garden_id = %s) AS saved_view_alpha_rows
+        """,
+        (
+            PHASE_ONE_BROWSER_PLANT_ID,
+            PHASE_ONE_BROWSER_PLANT_ID,
+            PHASE_ONE_BROWSER_PLANT_ID,
+            PHASE_ONE_BROWSER_SAVED_VIEW_LABEL,
+            PHASE_ONE_BROWSER_SAVED_VIEW_LABEL,
+            alpha_id,
+        ),
+    ).fetchone()
+    cross_garden_links = conn.execute(
+        """
+        SELECT
+            (
+                SELECT COUNT(*)
+                FROM plot_plants pp
+                JOIN plot_ownership plot_owner ON plot_owner.plot_id = pp.plot_id
+                LEFT JOIN plant_ownership plant_owner
+                  ON plant_owner.plt_id = pp.plt_id
+                 AND plant_owner.garden_id = plot_owner.garden_id
+                WHERE plot_owner.garden_id IN (%s, %s)
+                  AND plant_owner.plt_id IS NULL
+            ) AS assignments_without_matching_ownership,
+            (
+                SELECT COUNT(*)
+                FROM plot_plants pp
+                JOIN plot_ownership plot_owner ON plot_owner.plot_id = pp.plot_id
+                JOIN plant_ownership plant_owner ON plant_owner.plt_id = pp.plt_id
+                WHERE plot_owner.garden_id IN (%s, %s)
+                  AND plant_owner.garden_id IN (%s, %s)
+                  AND plant_owner.garden_id <> plot_owner.garden_id
+            ) AS assignments_with_cross_garden_ownership,
+            (
+                SELECT COUNT(*)
+                FROM garden_map_object_units unit_value
+                JOIN garden_map_objects object_value ON object_value.id = unit_value.map_object_id
+                WHERE unit_value.garden_id IN (%s, %s)
+                  AND unit_value.garden_id <> object_value.garden_id
+            ) AS map_unit_parent_garden_mismatch,
+            (
+                SELECT COUNT(*)
+                FROM user_saved_views saved_view
+                LEFT JOIN garden_memberships membership
+                  ON membership.garden_id = saved_view.garden_id
+                 AND membership.user_id = saved_view.user_id
+                WHERE saved_view.garden_id IN (%s, %s)
+                  AND saved_view.user_id IS NOT NULL
+                  AND membership.user_id IS NULL
+            ) AS saved_views_without_membership,
+            (
+                SELECT COUNT(*)
+                FROM layout_snapshots
+                WHERE name = %s AND garden_id = %s
+            ) AS mobile_snapshot_in_beta,
+            (
+                SELECT COUNT(*)
+                FROM harvest_entries
+                WHERE notes = 'Phase 1 mobile quick action' AND garden_id = %s
+            ) AS mobile_harvest_in_beta,
+            (
+                SELECT COUNT(*)
+                FROM garden_journal_entries
+                WHERE notes = 'Phase 1 mobile quick action' AND garden_id = %s
+            ) AS mobile_journal_in_beta
+        """,
+        (
+            alpha_id,
+            beta_id,
+            alpha_id,
+            beta_id,
+            alpha_id,
+            beta_id,
+            alpha_id,
+            beta_id,
+            alpha_id,
+            beta_id,
+            PHASE_ONE_MOBILE_SNAPSHOT_NAME,
+            beta_id,
+            beta_id,
+            beta_id,
+        ),
+    ).fetchone()
+    lifecycle_audit = conn.execute(
+        """
+        SELECT
+            COUNT(*) FILTER (
+                WHERE method = 'POST' AND path = '/api/plants' AND status_code = 201
+                  AND actor_username = %s AND garden_id = %s
+            ) AS plant_create_count,
+            COUNT(*) FILTER (
+                WHERE method = 'PATCH' AND path LIKE '/api/plants/%%' AND status_code = 200
+                  AND actor_username = %s AND garden_id = %s
+            ) AS plant_update_count,
+            COUNT(*) FILTER (
+                WHERE method = 'DELETE' AND path LIKE '/api/plants/%%' AND status_code = 200
+                  AND actor_username = %s AND garden_id = %s
+            ) AS plant_delete_count,
+            COUNT(*) FILTER (
+                WHERE method = 'POST' AND path LIKE '/api/plots/%%/plants/%%' AND status_code = 201
+                  AND actor_username = %s AND garden_id = %s
+            ) AS assignment_create_count,
+            COUNT(*) FILTER (
+                WHERE method = 'DELETE' AND path LIKE '/api/plots/%%/plants/%%'
+                  AND status_code = 204
+                  AND actor_username = %s AND garden_id = %s
+            ) AS assignment_delete_count,
+            COUNT(*) FILTER (
+                WHERE method = 'POST' AND path = '/api/saved-views' AND status_code = 201
+                  AND actor_username = %s AND garden_id = %s
+            ) AS saved_view_create_count,
+            COUNT(*) FILTER (
+                WHERE method = 'DELETE' AND path LIKE '/api/saved-views/%%' AND status_code = 200
+                  AND actor_username = %s AND garden_id = %s
+            ) AS saved_view_delete_count,
+            COUNT(*) FILTER (
+                WHERE method = 'POST'
+                  AND path LIKE '/api/gardens/%%/map-objects/%%/units'
+                  AND status_code = 201 AND actor_username = %s AND garden_id = %s
+            ) AS nested_unit_create_count,
+            COUNT(*) FILTER (
+                WHERE method = 'PATCH'
+                  AND path LIKE '/api/gardens/%%/map-objects/%%/units/%%'
+                  AND status_code = 200 AND actor_username = %s AND garden_id = %s
+            ) AS nested_unit_update_count,
+            COUNT(*) FILTER (
+                WHERE method = 'DELETE'
+                  AND path LIKE '/api/gardens/%%/map-objects/%%/units/%%'
+                  AND status_code = 200 AND actor_username = %s AND garden_id = %s
+            ) AS nested_unit_direct_delete_count
+        FROM audit_events
+        """,
+        (
+            ADMIN_USERNAME,
+            alpha_id,
+            ADMIN_USERNAME,
+            alpha_id,
+            ADMIN_USERNAME,
+            alpha_id,
+            ADMIN_USERNAME,
+            alpha_id,
+            ADMIN_USERNAME,
+            alpha_id,
+            ADMIN_USERNAME,
+            alpha_id,
+            ADMIN_USERNAME,
+            alpha_id,
+            ADMIN_USERNAME,
+            alpha_id,
+            ADMIN_USERNAME,
+            alpha_id,
+            ADMIN_USERNAME,
+            alpha_id,
+        ),
     ).fetchone()
     app_setting_rows = conn.execute("SELECT key FROM app_settings ORDER BY key").fetchall()
+    onboarding_targets: dict[int, dict[str, Any]] = {}
+    for row in onboarding_target_rows:
+        garden_id = int(row["id"])
+        target = onboarding_targets.setdefault(
+            garden_id,
+            {
+                "id": garden_id,
+                "memberships": [],
+                "name": str(row["name"]),
+                "onboarding_complete": bool(row["onboarding_complete"]),
+                "owner_username": (
+                    str(row["owner_username"]) if row["owner_username"] is not None else None
+                ),
+                "slug": str(row["slug"]),
+            },
+        )
+        if row["membership_username"] is not None:
+            target["memberships"].append(
+                {
+                    "role": str(row["membership_role"]),
+                    "username": str(row["membership_username"]),
+                }
+            )
     return {
         "alpha_address": str(alpha["address"] or ""),
+        "alpha_id": alpha_id,
         "alpha_map_object": (
             {
                 "geometry": json.loads(str(map_object["geometry_json"])),
@@ -365,10 +741,86 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             else None
         ),
         "app_setting_keys": [str(row["key"]) for row in app_setting_rows],
+        "beta_id": beta_id,
+        "browser_lifecycle": {
+            key: int(lifecycle[key] if lifecycle else 0)
+            for key in (
+                "plant_assignment_rows",
+                "plant_ownership_rows",
+                "plant_rows",
+                "saved_view_alpha_rows",
+                "saved_view_rows",
+            )
+        },
+        "cross_garden_links": {
+            key: int(cross_garden_links[key] if cross_garden_links else 0)
+            for key in (
+                "assignments_without_matching_ownership",
+                "assignments_with_cross_garden_ownership",
+                "map_unit_parent_garden_mismatch",
+                "mobile_harvest_in_beta",
+                "mobile_journal_in_beta",
+                "mobile_snapshot_in_beta",
+                "saved_views_without_membership",
+            )
+        },
         "harvest_count": int(counts["harvests"]),
+        "indoor_assignment": (
+            {
+                "plant_garden_id": int(indoor["plant_garden_id"]),
+                "plant_id": str(indoor["plt_id"]),
+                "plant_owner_username": str(indoor["plant_owner_username"]),
+                "plot_garden_id": int(indoor["plot_garden_id"]),
+                "plot_id": str(indoor["plot_id"]),
+                "plot_owner_username": str(indoor["plot_owner_username"]),
+                "quantity": int(indoor["quantity"]),
+                "room_label": str(indoor["room_label"] or ""),
+                "seen_growing": bool(indoor["seen_growing"]),
+                "seen_growing_date": str(indoor["seen_growing_date"] or ""),
+            }
+            if indoor
+            else None
+        ),
         "indoor_room_label": str(indoor["room_label"] or "") if indoor else None,
         "journal_count": int(counts["journals"]),
+        "lifecycle_audit": {
+            key: int(lifecycle_audit[key] if lifecycle_audit else 0)
+            for key in (
+                "assignment_create_count",
+                "assignment_delete_count",
+                "nested_unit_create_count",
+                "nested_unit_direct_delete_count",
+                "nested_unit_update_count",
+                "plant_create_count",
+                "plant_delete_count",
+                "plant_update_count",
+                "saved_view_create_count",
+                "saved_view_delete_count",
+            )
+        },
+        "mobile_harvests": [
+            {
+                "actor_username": (
+                    str(row["actor_username"]) if row["actor_username"] is not None else None
+                ),
+                "garden_id": int(row["garden_id"]),
+            }
+            for row in mobile_harvest_rows
+        ],
+        "mobile_journals": [
+            {
+                "actor_username": (
+                    str(row["actor_username"]) if row["actor_username"] is not None else None
+                ),
+                "garden_id": int(row["garden_id"]),
+            }
+            for row in mobile_journal_rows
+        ],
         "mobile_snapshot_count": int(counts["mobile_snapshots"]),
+        "mobile_snapshots": [
+            {"garden_id": int(row["garden_id"]), "public_id": str(row["public_id"])}
+            for row in mobile_snapshot_rows
+        ],
         "onboarding_gardens": [
             {
                 "name": str(row["name"]),
@@ -379,6 +831,20 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             }
             for row in onboarding_gardens
         ],
+        "onboarding_target_gardens": sorted(
+            onboarding_targets.values(), key=lambda garden: (str(garden["name"]), int(garden["id"]))
+        ),
+        "seeded_saved_views": [
+            {
+                "garden_id": int(row["garden_id"]),
+                "is_preset": bool(row["is_preset"]),
+                "label": str(row["label"]),
+                "owner_username": str(row["username"]) if row["username"] is not None else None,
+                "view_type": str(row["view_type"]),
+            }
+            for row in saved_view_rows
+        ],
+        "alpha_map_unit_count": int(counts["alpha_map_unit_count"]),
         "temp_map_object_count": int(counts["temp_map_objects"]),
         "temp_plant_count": int(counts["temp_plants"]),
         "temp_saved_view_count": int(counts["temp_views"]),
@@ -623,10 +1089,6 @@ def _audit_state(conn) -> dict[str, Any]:
         "expected_phase_one_viewer_denial_count": int(
             row["expected_phase_one_viewer_denial_count"] if row else 0
         ),
-        "unexpected_count": total
-        - expected
-        - int(row["expected_phase_one_snapshot_count"] if row else 0)
-        - int(row["expected_phase_one_viewer_denial_count"] if row else 0),
     }
 
 
@@ -685,23 +1147,9 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
                 optimization_seed.GARDEN_B_NOTIFICATION,
             ),
         },
+        "clock": _frozen_attention_clock(),
+        "git": _git_state(),
         "phase_one": _phase_one_fixture_state(conn, optimization_seed),
-        "git": {
-            "dirty": bool(
-                subprocess.run(
-                    ["git", "status", "--porcelain"],
-                    capture_output=True,
-                    check=True,
-                    text=True,
-                ).stdout.strip()
-            ),
-            "sha": subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                capture_output=True,
-                check=True,
-                text=True,
-            ).stdout.strip(),
-        },
         "roles": {
             "admin": ADMIN_USERNAME,
             "editor": EDITOR_LOGIN[0],

@@ -20,6 +20,14 @@ journeys:
   - <<: *open_journey
     id: A3
     phase: 1
+    desktop: proven
+    mobile: proven
+    database: proven
+    evidence: &phase_one_evidence
+      - scripts/check_complete_journeys_e2e.cjs
+      - scripts/e2e/journeys/gardenMapPlants.cjs
+      - scripts/seed_complete_journeys_e2e.py
+      - tests/test_complete_journey_e2e_scripts.py
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
@@ -51,6 +59,10 @@ journeys:
   - <<: *open_journey
     id: CROSS-01
     phase: 1
+    desktop: proven
+    mobile: proven
+    database: proven
+    evidence: *phase_one_evidence
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
@@ -100,6 +112,10 @@ journeys:
   - <<: *open_journey
     id: M1
     phase: 1
+    desktop: proven
+    mobile: proven
+    database: proven
+    evidence: *phase_one_evidence
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
@@ -110,6 +126,11 @@ journeys:
   - <<: *open_journey
     id: M2
     phase: 1
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    evidence: *phase_one_evidence
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
@@ -120,6 +141,9 @@ journeys:
   - <<: *open_journey
     id: M3
     phase: 1
+    mobile: proven
+    database: proven
+    evidence: *phase_one_evidence
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
@@ -130,6 +154,11 @@ journeys:
   - <<: *open_journey
     id: M4
     phase: 1
+    desktop: proven
+    mobile: proven
+    database: proven
+    filesystem: proven
+    evidence: *phase_one_evidence
     offline: not_applicable
     provider: not_applicable
     notes:

@@ -48,6 +48,25 @@ def test_indoor_state_cannot_apply_an_old_garden_request() -> None:
     assert "setIndoorPlotId(indoorPlot.plot_id, requestGardenId);" in app
 
 
+def test_admin_garden_settings_preserve_drafts_and_reject_same_garden_stale_requests() -> None:
+    admin = _read("frontend/src/components/adminPanel.ts")
+    load_body = _function_body(
+        admin,
+        "async function loadGardenSettings",
+        "async function loadSystem",
+    )
+    repaint_body = _function_body(
+        admin,
+        "async function loadAndRepaintSection",
+        "function hasGardenSettingsDraft",
+    )
+
+    assert "requestVersion === gardenSettingsRequestVersion" in load_body
+    assert "gardenContextFn?.().activeGardenId === requestGardenId" in load_body
+    assert "!hasGardenSettingsDraft()" in repaint_body
+    assert "gardenSettingsRequestVersion += 1;" in admin
+
+
 def test_notifications_reset_and_reload_when_the_active_garden_changes() -> None:
     app = _read("frontend/src/app.ts")
     notifications = _read("frontend/src/features/notificationsFeature.ts")
@@ -120,7 +139,7 @@ def test_admin_garden_settings_cannot_apply_an_old_garden_request() -> None:
 
     assert "const requestGardenId = ctx.activeGardenId;" in body
     assert "gardenContextFn?.().activeGardenId === requestGardenId" in body
-    assert body.count("if (!isCurrentRequest()) return;") >= 6
+    assert body.count("if (!isCurrentRequest()) return false;") >= 6
     assert "getGardenSettingsApi(requestGardenId)" in body
     assert "getGardenMembershipsApi(requestGardenId)" in body
 

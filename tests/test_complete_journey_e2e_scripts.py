@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from scripts.seed_complete_journeys_e2e import (
+    _frozen_attention_clock,
     _require_child_environment,
     _write_json_exclusive,
 )
@@ -213,6 +214,8 @@ def test_seeder_rejects_marker_not_bound_to_system_identifier(
         "DATABASE_URL": "postgresql://127.0.0.1:55432/gardenops_test",
         "GARDENOPS_COMPLETE_JOURNEYS_E2E_ALLOW_TRUNCATE": "1",
         "GARDENOPS_COMPLETE_JOURNEYS_E2E_CHILD": "1",
+        "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-12",
+        "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1783857600000",
         "GARDENOPS_DISPOSABLE_POSTGRES_MARKER": "999.marker",
         "GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER": "123",
         "GARDENOPS_DISPOSABLE_POSTGRES_URL": ("postgresql://127.0.0.1:55432/gardenops_test"),
@@ -221,6 +224,26 @@ def test_seeder_rejects_marker_not_bound_to_system_identifier(
         monkeypatch.setenv(name, value)
     with pytest.raises(RuntimeError, match="not bound"):
         _require_child_environment()
+
+
+def test_seeder_requires_a_consistent_frozen_attention_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GARDENOPS_ATTENTION_FROZEN_DATE", raising=False)
+    monkeypatch.delenv("GARDENOPS_ATTENTION_FROZEN_NOW_MS", raising=False)
+    with pytest.raises(RuntimeError, match="requires a frozen attention clock"):
+        _frozen_attention_clock()
+
+    monkeypatch.setenv("GARDENOPS_ATTENTION_FROZEN_DATE", "2026-07-12")
+    monkeypatch.setenv("GARDENOPS_ATTENTION_FROZEN_NOW_MS", "1783857600000")
+    assert _frozen_attention_clock() == {
+        "attention_date": "2026-07-12",
+        "attention_now_ms": 1783857600000,
+    }
+
+    monkeypatch.setenv("GARDENOPS_ATTENTION_FROZEN_DATE", "2026-07-11")
+    with pytest.raises(RuntimeError, match="date and timestamp must agree"):
+        _frozen_attention_clock()
 
 
 def test_runner_source_contains_required_safety_boundaries() -> None:
@@ -241,6 +264,8 @@ def test_runner_source_contains_required_safety_boundaries() -> None:
         "5432",
         "seed_complete_journeys_e2e.py",
         "check_complete_journeys_e2e.cjs",
+        "GARDENOPS_ATTENTION_FROZEN_DATE",
+        "GARDENOPS_ATTENTION_FROZEN_NOW_MS",
     ):
         assert required in source
     for secret_family in (
@@ -276,8 +301,14 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "PHASE_ONE_MAP_UNIT_ID",
         "PHASE_ONE_SAVED_VIEW_LABEL",
         "PHASE_ONE_MOBILE_SNAPSHOT_NAME",
+        "PHASE_ONE_BROWSER_PLANT_ID",
+        "_frozen_attention_clock",
         "_seed_phase_one_fixtures",
         "_phase_one_fixture_state",
+        "onboarding_target_gardens",
+        "cross_garden_links",
+        "assignments_with_cross_garden_ownership",
+        "lifecycle_audit",
     ):
         assert marker in seeder_source
     for marker in (
@@ -286,10 +317,20 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "assertGlobalSearch",
         "exercisePlantAndSavedView",
         "mutateIndoorPlant",
+        "exercisePlotCreateAndEdit",
         "exerciseMapObjectEditor",
+        "exerciseEditorMapObjectWrite",
+        "exerciseMobileMapObject",
         "exerciseSnapshotsAndImport",
+        "exerciseMobileMapImport",
         "submitMobileQuickAction",
         "assertViewerDenied",
+        "assertEditorAffordances",
+        "assertMobileFocusReturn",
+        "assertRejectedMapImport",
+        "observeMapRenderChurn",
+        "issueBrowserRequest",
+        "import_rejection_render_churn",
         "saveMobileSnapshot",
     ):
         assert marker in journey_source
@@ -298,13 +339,23 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         ".onb-validation--error",
         "#create-plant-form",
         "#edit-plant-form",
+        "#plants-mobile-list",
         ".saved-views-save-btn",
         ".indoor-room-input",
+        "#create-plot-form",
+        "#edit-plot-form",
         ".map-object-type-select",
         ".map-object-interaction-surface",
         ".map-object-unit",
+        "deleted_units === 1",
+        'pointerType: "touch"',
         ".snapshot-restore",
         "#import-map-input",
+        "#mobile-import-map-btn",
+        "#mobile-map-tools-btn",
+        "structurally-incomplete-map.json",
+        "oversized-map.json",
+        "cross-garden map import",
         "[data-quick-action='log-harvest']",
         "admin-settings",
         "plot-alerts",
@@ -319,8 +370,23 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     assert journey_source.count("page.evaluate(async") == 1
     assert "route.fulfill" not in journey_source
     assert "assertions.skipped.push" not in journey_source
+    assert '{ profile: "desktop", role: "editor"' in journey_source
+    assert '{ profile: "mobile", role: "viewer"' in journey_source
     assert "runGardenMapPlants" in checker_source
     assert "THROUGH_PHASE >= 1" in checker_source
+    for marker in (
+        "assertExactPhaseOneOnboardingOwnership",
+        "assertNoCrossGardenLinks",
+        "assertNoLifecycleResidue",
+        "assertNoUnexpectedBackendErrors",
+        "assertPhaseOneAuditContract",
+        "assertPhaseOneProfileEvidence",
+        "assertSourceRevisionStable",
+        "sourceProvenance",
+        "nested_unit_direct_delete_count",
+        "nested_unit_update_count",
+    ):
+        assert marker in checker_source
 
 
 def test_seeder_refuses_direct_execution() -> None:
@@ -371,6 +437,243 @@ const result = sanitizeManifestEvidence({
 });
 if ('injected' in result) process.exit(3);
 if (result.profiles[0].requests[0].path !== '/api/saved-views') process.exit(4);
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_manifest_sanitizer_preserves_safe_nonboolean_checks_and_final_provenance() -> None:
+    script = """
+const {
+  sanitizeManifestEvidence,
+  sourceProvenance,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const result = sanitizeManifestEvidence({
+  backend_log: { backend_error_lines: 0, structured_error_entries: 0, unexpected_error_count: 0 },
+  browser: 'chromium', database: null, ended_at: '2026-07-12T00:00:00Z',
+  failure: null, filesystem: null,
+  git: {
+    clean: true, dirty: true, final_head: 'lying-head', sha: 'abc123',
+    worktree_fingerprint: 'a'.repeat(64),
+  },
+  journey_ids: ['M1'], phase: 1, profiles: [{
+    assertions: {}, browser_profile: {}, diagnostics: {}, profile: 'desktop',
+    checks: {
+      delayed_surfaces: ['plants', 'weather'],
+      phase_counts: { expected: 7, passed: 7 },
+      retry_count: 2,
+      boolean_check: true,
+    },
+    requests: [], role: 'admin', trace: 'x',
+  }], run_id: 'run', started_at: '2026-07-12T00:00:00Z', status: 'passed',
+  suite: 'complete-journeys-e2e', through_phase: 1,
+});
+const checks = result.profiles[0].checks;
+const expectedDelayedSurfaces = ['plants', 'weather'];
+if (
+  JSON.stringify(checks.delayed_surfaces) !== JSON.stringify(expectedDelayedSurfaces)
+) process.exit(3);
+if (checks.phase_counts.expected !== 7 || checks.phase_counts.passed !== 7) process.exit(4);
+if (checks.retry_count !== 2 || checks.boolean_check !== true) process.exit(5);
+if (
+  result.git.final_head !== 'abc123' || result.git.clean !== false || result.git.dirty !== true
+) process.exit(6);
+if (result.git.worktree_fingerprint !== 'a'.repeat(64)) process.exit(7);
+const provenance = sourceProvenance({
+  dirty: false,
+  sha: 'final-head',
+  worktree_fingerprint: 'b'.repeat(64),
+});
+if (provenance.clean !== true || provenance.final_head !== 'final-head') process.exit(8);
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_checker_rejects_source_changes_even_when_the_worktree_stays_dirty() -> None:
+    script = """
+const { assertSourceRevisionStable } = require('./scripts/check_complete_journeys_e2e.cjs');
+const initial = { sha: 'abc123', dirty: true, worktree_fingerprint: 'a'.repeat(64) };
+assertSourceRevisionStable(initial, { ...initial });
+try {
+  assertSourceRevisionStable(initial, { ...initial, worktree_fingerprint: 'b'.repeat(64) });
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('worktree changed')) process.exit(4);
+}
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_one_onboarding_contract_rejects_wrong_owner_or_membership() -> None:
+    script = """
+const {
+  assertExactPhaseOneOnboardingOwnership,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const expected = {
+  'Desktop garden': 'desktop-user',
+  'Mobile garden': 'mobile-user',
+};
+assertExactPhaseOneOnboardingOwnership([
+  {
+    name: 'Desktop garden', onboarding_complete: true, owner_username: 'desktop-user',
+    memberships: [{ role: 'admin', username: 'desktop-user' }],
+  },
+  {
+    name: 'Mobile garden', onboarding_complete: true, owner_username: 'mobile-user',
+    memberships: [{ role: 'admin', username: 'mobile-user' }],
+  },
+], expected);
+try {
+  assertExactPhaseOneOnboardingOwnership([
+    {
+      name: 'Desktop garden', onboarding_complete: true, owner_username: 'wrong-user',
+      memberships: [{ role: 'admin', username: 'desktop-user' }],
+    },
+    {
+      name: 'Mobile garden', onboarding_complete: true, owner_username: 'mobile-user',
+      memberships: [{ role: 'admin', username: 'mobile-user' }],
+    },
+  ], expected);
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('owner mismatch')) process.exit(4);
+}
+try {
+  assertExactPhaseOneOnboardingOwnership([
+    {
+      name: 'Desktop garden', onboarding_complete: true, owner_username: 'desktop-user',
+      memberships: [{ role: 'viewer', username: 'desktop-user' }],
+    },
+    {
+      name: 'Mobile garden', onboarding_complete: true, owner_username: 'mobile-user',
+      memberships: [{ role: 'admin', username: 'mobile-user' }],
+    },
+  ], expected);
+  process.exit(5);
+} catch (error) {
+  if (!String(error.message).includes('membership mismatch')) process.exit(6);
+}
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_one_profile_and_audit_contracts_require_complete_evidence() -> None:
+    script = """
+const {
+  assertNoCrossGardenLinks,
+  assertPhaseOneAuditContract,
+  assertPhaseOneProfileEvidence,
+  phaseOneAuditExpectedEvents,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const delayedDesktop = [
+  'admin-settings', 'indoor', 'layout', 'map-objects',
+  'notifications', 'plants', 'plot-alerts', 'weather',
+];
+const delayedMobile = [
+  'indoor', 'layout', 'map-objects', 'notifications',
+  'plants', 'plot-alerts', 'weather',
+];
+const profile = (role, name, checks) => ({
+  assertions: { failed: [], skipped: [] },
+  browser_profile: { is_mobile: name === 'mobile' },
+  checks: { browser_diagnostics: true, ...checks },
+  failure: null,
+  profile: name,
+  role,
+});
+const profiles = [
+  profile('onboarding', 'desktop', { onboarding_validation_recovery_complete: true }),
+  profile('onboarding', 'mobile', { onboarding_validation_recovery_complete: true }),
+  profile('admin', 'desktop', {
+    desktop_admin_mutation_workflows: true,
+    import_rejection_render_churn: {
+      cross_garden: {}, oversized: {}, structurally_incomplete: {}, unsupported_schema: {},
+    },
+    delayed_surfaces: delayedDesktop,
+    map_first_without_plants: true,
+  }),
+  profile('admin', 'mobile', {
+    delayed_surfaces: delayedMobile,
+    map_first_without_plants: true,
+    mobile_supported_writes_and_focus_return: true,
+  }),
+  profile('editor', 'desktop', {
+    delayed_surfaces: delayedDesktop,
+    editor_profile_write_affordances_and_admin_denial: true,
+    map_first_without_plants: true,
+  }),
+  profile('viewer', 'desktop', {
+    map_first_without_plants: true,
+    viewer_role_affordances_and_denials: true,
+  }),
+  profile('viewer', 'mobile', {
+    map_first_without_plants: true,
+    viewer_role_affordances_and_denials: true,
+  }),
+];
+assertPhaseOneProfileEvidence(profiles);
+assertNoCrossGardenLinks({
+  assignments_with_cross_garden_ownership: 0,
+  map_unit_parent_garden_mismatch: 0,
+}, 'fixture');
+try {
+  assertNoCrossGardenLinks({ assignments_with_cross_garden_ownership: 1 }, 'fixture');
+  process.exit(2);
+} catch (error) {
+  if (!String(error.message).includes('assignments_with_cross_garden_ownership')) process.exit(3);
+}
+const audit = { events: [
+  ...phaseOneAuditExpectedEvents(7),
+  { count: 4, method: 'POST', path: '/api/media/summaries', status_code: 200 },
+] };
+const evidence = assertPhaseOneAuditContract(audit, 7);
+if (evidence.unexpected_count !== 0 || evidence.flexible_read_event_types !== 1) process.exit(4);
+const incomplete = structuredClone(profiles);
+incomplete[3].checks.mobile_supported_writes_and_focus_return = false;
+try {
+  assertPhaseOneProfileEvidence(incomplete);
+  process.exit(5);
+} catch (error) {
+  if (!String(error.message).includes('browser check is missing')) process.exit(6);
+}
+audit.events.push({ count: 1, method: 'POST', path: '/api/unexpected', status_code: 200 });
+try {
+  assertPhaseOneAuditContract(audit, 7);
+  process.exit(7);
+} catch (error) {
+  if (!String(error.message).includes('Unexpected Phase 1 audit event')) process.exit(8);
+}
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_backend_error_evidence_surfaces_errors_without_log_contents(tmp_path: Path) -> None:
+    (tmp_path / "backend.log").write_text("INFO: backend ready\n", encoding="utf-8")
+    (tmp_path / "errors.jsonl").write_text('{"level":"WARNING"}\n', encoding="utf-8")
+    script = f"""
+const fs = require('node:fs');
+const {{
+  assertNoUnexpectedBackendErrors,
+  backendErrorEvidence,
+}} = require('./scripts/check_complete_journeys_e2e.cjs');
+const directory = {json.dumps(str(tmp_path))};
+assertNoUnexpectedBackendErrors(directory);
+fs.appendFileSync(`${{directory}}/backend.log`, 'ERROR: synthetic backend failure\\n');
+fs.appendFileSync(`${{directory}}/errors.jsonl`, '{{"level":"ERROR"}}\\n');
+const evidence = backendErrorEvidence(directory);
+if (evidence.backend_error_lines !== 1 || evidence.structured_error_entries !== 1) process.exit(3);
+try {{
+  assertNoUnexpectedBackendErrors(directory);
+  process.exit(4);
+}} catch (error) {{
+  if (String(error.message) !== (
+    'Unexpected backend ERROR log entries; inspect private runner logs'
+  )) process.exit(5);
+}}
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

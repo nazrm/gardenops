@@ -202,6 +202,7 @@ let gardenContextFn: (() => { gardens: GardenSummary[]; activeGardenId: number |
 let onMapSetupAction: ((action: AdminMapSetupAction) => Promise<void> | void) | null = null;
 let mapSetupStateFn: (() => AdminMapSetupState) | null = null;
 let adminPanelInitialized = false;
+let gardenSettingsRequestVersion = 0;
 
 export function setAdminCallbacks(cbs: {
   onSignOut: () => void;
@@ -1790,7 +1791,8 @@ async function loadSettings(): Promise<void> {
   }
 }
 
-async function loadGardenSettings(): Promise<void> {
+async function loadGardenSettings(): Promise<boolean> {
+  const requestVersion = ++gardenSettingsRequestVersion;
   const ctx = gardenContextFn?.();
   if (!ctx?.activeGardenId || !canEditActiveGarden()) {
     state.gardenSettings = null;
@@ -1798,20 +1800,23 @@ async function loadGardenSettings(): Promise<void> {
     state.gardenMemberships = [];
     state.missingPlantCovers = [];
     state.missingPlantCoversTotal = 0;
-    return;
+    return true;
   }
   const requestGardenId = ctx.activeGardenId;
-  const isCurrentRequest = (): boolean => gardenContextFn?.().activeGardenId === requestGardenId;
+  const isCurrentRequest = (): boolean => (
+    requestVersion === gardenSettingsRequestVersion
+    && gardenContextFn?.().activeGardenId === requestGardenId
+  );
   try {
     const [settings, lidarStatus] = await Promise.all([
       getGardenSettingsApi(requestGardenId),
       getGardenLidarApi(requestGardenId),
     ]);
-    if (!isCurrentRequest()) return;
+    if (!isCurrentRequest()) return false;
     state.gardenSettings = settings;
     state.gardenLidarStatus = lidarStatus;
   } catch (err) {
-    if (!isCurrentRequest()) return;
+    if (!isCurrentRequest()) return false;
     state.gardenSettings = null;
     state.gardenLidarStatus = null;
     showToast(getApiErrorMessage(err), "error");
@@ -1819,20 +1824,20 @@ async function loadGardenSettings(): Promise<void> {
   if (isPlatformAdmin()) {
     try {
       const memberships = await getGardenMembershipsApi(requestGardenId);
-      if (!isCurrentRequest()) return;
+      if (!isCurrentRequest()) return false;
       state.gardenMemberships = memberships;
     } catch (err) {
-      if (!isCurrentRequest()) return;
+      if (!isCurrentRequest()) return false;
       state.gardenMemberships = [];
       showToast(getApiErrorMessage(err), "error");
     }
     try {
       const report = await getMissingPlantCoversApi({ limit: 25, offset: 0 });
-      if (!isCurrentRequest()) return;
+      if (!isCurrentRequest()) return false;
       state.missingPlantCovers = report.items;
       state.missingPlantCoversTotal = report.total;
     } catch (err) {
-      if (!isCurrentRequest()) return;
+      if (!isCurrentRequest()) return false;
       state.missingPlantCovers = [];
       state.missingPlantCoversTotal = 0;
       showToast(getApiErrorMessage(err), "error");
@@ -1842,6 +1847,7 @@ async function loadGardenSettings(): Promise<void> {
     state.missingPlantCovers = [];
     state.missingPlantCoversTotal = 0;
   }
+  return isCurrentRequest();
 }
 
 async function loadSystem(): Promise<void> {
@@ -1887,6 +1893,7 @@ function repaintFull(): void {
 }
 
 export function resetAdminPanelSensitiveState(): void {
+  gardenSettingsRequestVersion += 1;
   state.users = [];
   state.sessions = [];
   state.audit = null;
@@ -1932,16 +1939,31 @@ function wireSidebar(): void {
 }
 
 async function loadAndRepaintSection(): Promise<void> {
+  const requestedSection = state.section;
+  let shouldRepaint = true;
   switch (state.section) {
     case "settings": await loadSettings(); break;
-    case "garden": await loadGardenSettings(); break;
+    case "garden": shouldRepaint = await loadGardenSettings(); break;
     case "users": await loadUsers(); break;
     case "sessions": await loadSessions(); break;
     case "audit": await loadAudit(); break;
     case "invitations": await loadInvitations(); break;
     case "system": await loadSystem(); break;
   }
-  repaint();
+  if (shouldRepaint && state.section === requestedSection && !hasGardenSettingsDraft()) repaint();
+}
+
+function hasGardenSettingsDraft(): boolean {
+  if (state.section !== "garden" || !state.gardenSettings) return false;
+  const name = queryInput("adm-garden-name");
+  const address = queryInput("adm-garden-address");
+  const latitude = queryInput("adm-garden-latitude");
+  const longitude = queryInput("adm-garden-longitude");
+  if (!name || !address || !latitude || !longitude) return false;
+  return name.value !== state.gardenSettings.name
+    || address.value !== (state.gardenSettings.address ?? "")
+    || latitude.value !== (state.gardenSettings.latitude == null ? "" : String(state.gardenSettings.latitude))
+    || longitude.value !== (state.gardenSettings.longitude == null ? "" : String(state.gardenSettings.longitude));
 }
 
 function readAuditFilters(): {

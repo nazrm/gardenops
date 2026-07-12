@@ -7,6 +7,7 @@ import yaml
 
 from scripts.check_journey_coverage import (
     DEFAULT_MANIFEST,
+    DIMENSIONS,
     EXPECTED_JOURNEY_IDS,
     EXPECTED_PHASES,
     CoverageManifestError,
@@ -45,6 +46,27 @@ def _complete_fixture() -> list[dict[str, object]]:
 def test_repository_journey_manifest_is_valid_with_open_dimensions() -> None:
     payload = validate_manifest(DEFAULT_MANIFEST, repo_root=ROOT)
     assert {journey["id"] for journey in payload["journeys"]} == EXPECTED_JOURNEY_IDS
+
+
+def test_phase_one_manifest_only_marks_enforced_dimensions_proven() -> None:
+    payload = validate_manifest(DEFAULT_MANIFEST, repo_root=ROOT)
+    journeys = {journey["id"]: journey for journey in payload["journeys"]}
+    expected_proven_dimensions = {
+        "A3": {"desktop", "mobile", "database"},
+        "CROSS-01": {"desktop", "mobile", "database"},
+        "M1": {"desktop", "mobile", "database"},
+        "M2": {"desktop", "mobile", "roles", "database"},
+        "M3": {"mobile", "database"},
+        "M4": {"desktop", "mobile", "database", "filesystem"},
+    }
+    for journey_id, expected in expected_proven_dimensions.items():
+        journey = journeys[journey_id]
+        actual = {dimension for dimension in DIMENSIONS if journey[dimension] == "proven"}
+        assert actual == expected
+        assert "scripts/check_complete_journeys_e2e.cjs" in journey["evidence"]
+        assert "tests/test_complete_journey_e2e_scripts.py" in journey["evidence"]
+        assert journey["accessibility"] == "required"
+        assert journey["performance"] == "required"
 
 
 def test_duplicate_journey_id_is_rejected(tmp_path: Path) -> None:
