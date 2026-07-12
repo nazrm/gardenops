@@ -908,7 +908,10 @@ async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "de
   ));
   await unitForm.locator("button[type='submit']").click();
   assert((await unitUpdateResponsePromise).ok(), "Nested map unit editor PATCH failed");
-  await visible(detail.getByText(renamedUnit, { exact: true }), "nested unit editor update");
+  await visible(
+    detail.locator(".map-object-unit").filter({ hasText: renamedUnit }),
+    "nested unit editor update",
+  );
   const mapBoundsAfterMutation = await page.locator("#map-grid").boundingBox();
   assert(mapBoundsAfterMutation, "Map grid has no dimensions after object mutations");
   assert(
@@ -924,7 +927,10 @@ async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "de
   const reloadedPrimary = page.locator("#map-objects-panel .map-object-row").filter({ hasText: primary.name });
   await reloadedPrimary.locator(".map-object-row-main").click();
   const reloadedDetail = page.locator("#map-objects-panel .map-object-detail");
-  await visible(reloadedDetail.getByText(renamedUnit, { exact: true }), "nested unit edit after reload");
+  await visible(
+    reloadedDetail.locator(".map-object-unit").filter({ hasText: renamedUnit }),
+    "nested unit edit after reload",
+  );
   const parentDeletePath = `/api/gardens/${alpha.id}/map-objects/${primaryId}`;
   const parentDeleteResponsePromise = page.waitForResponse((response) => (
     response.request().method() === "DELETE"
