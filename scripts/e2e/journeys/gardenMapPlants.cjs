@@ -445,10 +445,16 @@ async function mutateIndoorPlant(page, fixture, profile = "desktop") {
   await visible(card.getByText(fixture.phase_one.indoor.room_label, { exact: false }), "restored indoor room");
 }
 
-async function enableMapEditor(page) {
+async function enableMapEditor(page, profile = "desktop") {
   const edit = page.locator("#edit-mode-btn");
   if (await edit.count()) {
     if (await edit.getAttribute("aria-pressed") !== "true") await edit.click();
+  } else if (profile === "mobile") {
+    await openMobileUtility(page);
+    await page.locator("#mobile-admin-btn").click();
+    await closeMobileSurfaces(page);
+    await visible(page.locator("#adm-map-open-editor-btn"), "mobile admin map editor action");
+    await page.locator("#adm-map-open-editor-btn").click();
   } else {
     await page.locator("#top-tab-admin").click();
     await visible(page.locator("#adm-map-open-editor-btn"), "admin map editor action");
@@ -480,7 +486,7 @@ async function exercisePlotCreateAndEdit(page, profile) {
   const plotId = profile === "mobile" ? "P1MOBILEPLOT" : "P1EDITORPLOT";
   const renamedPlotId = `${plotId}EDITED`;
   await openMap(page, profile);
-  await enableMapEditor(page);
+  await enableMapEditor(page, profile);
   const emptyCell = page.locator("#map-grid .empty-cell").first();
   await visible(emptyCell, `${profile} empty map cell`);
   await emptyCell.click();
@@ -567,7 +573,7 @@ async function moveMapObjectWithTouch(page, surface, objectId, alpha) {
 }
 
 async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "desktop", useTouch = false } = {}) {
-  await enableMapEditor(page);
+  await enableMapEditor(page, profile);
   await visible(page.locator("#map-objects-panel .map-object-custom-form"), "map object category editor");
   const mapBoundsBefore = await page.locator("#map-grid").boundingBox();
   assert(mapBoundsBefore, "Map grid has no initial dimensions");
@@ -638,7 +644,7 @@ async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "de
   assert(unitUpdate.status === 200, `Nested map unit edit returned ${unitUpdate.status}`);
 
   await reloadAndAccountForAborts(page, diagnostics);
-  await enableMapEditor(page);
+  await enableMapEditor(page, profile);
   await visible(page.locator("#map-objects-panel .map-object-custom-form"), "map object editor after reload");
   await visible(page.getByText(primary.name, { exact: true }), "map object geometry after reload");
   const reloadedPrimary = page.locator("#map-objects-panel .map-object-row").filter({ hasText: primary.name });
@@ -669,7 +675,7 @@ async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "de
     await page.locator(`.map-object-label[data-object-id='${primaryId}']`).count() === 0,
     "Map object delete did not cascade its nested unit from the reloaded map",
   );
-  await enableMapEditor(page);
+  await enableMapEditor(page, profile);
   for (const item of created.slice(1)) {
     const row = page.locator("#map-objects-panel .map-object-row").filter({ hasText: item.name });
     await deleteMapObjectRow(page, row, item.name);
