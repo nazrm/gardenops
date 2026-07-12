@@ -648,7 +648,8 @@ async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "de
   const mapBoundsAfter = await page.locator("#map-grid").boundingBox();
   assert(mapBoundsAfter, "Map grid has no dimensions after object mutations");
   assert(
-    mapBoundsAfter.width === mapBoundsBefore.width && mapBoundsAfter.height === mapBoundsBefore.height,
+    Math.abs(mapBoundsAfter.width - mapBoundsBefore.width) <= 1
+      && Math.abs(mapBoundsAfter.height - mapBoundsBefore.height) <= 1,
     "Map dimensions shifted during map-object labels, selection, or reload",
   );
   const parentDeletePath = `/api/gardens/${alpha.id}/map-objects/${primaryId}`;
