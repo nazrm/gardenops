@@ -61,6 +61,11 @@ that as a legacy payload and preserves existing map objects. An explicit
 inside the garden grid, nested units must fit inside their parent internal
 layout, and imports are limited to 200 map objects and 500 nested units total.
 
+For plots already present in the target garden, import and snapshot restore
+retain the existing per-user owner; only newly imported plot IDs receive the
+operation's default owner. Persisted house dimensions are restored as stored,
+including valid layouts smaller than the interactive editor's resize minimum.
+
 ## Current Limits
 
 - Nested units do not yet accept plant assignments, tasks, journals, issues, or

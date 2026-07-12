@@ -67,8 +67,9 @@ control.
   sheds, ponds, paths, beds, and custom surfaces. The responsive map editor is
   available on desktop and mobile, including optional nested pots/planters.
 - Versioned map snapshots and JSON import/export preserve indoor or otherwise
-  unplaced plots with null coordinates and reject unsupported schema versions
-  without partial writes.
+  unplaced plots with null coordinates, retained plot ownership, and persisted
+  house dimensions while rejecting unsupported schema versions without partial
+  writes.
 - Multi-garden support with active garden context, memberships, invitations, and
   garden-specific settings.
 - Onboarding flows for defining the garden, location, main structure, map zones,
