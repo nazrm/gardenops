@@ -23,6 +23,19 @@ function fixtureGarden(fixture, key) {
   return garden;
 }
 
+function viewerFixtureGarden(fixture, key, garden) {
+  const viewer = fixture.phase_one?.viewer?.[key];
+  assert(
+    viewer
+      && viewer.garden_id === garden.id
+      && typeof viewer.plant_id === "string"
+      && typeof viewer.plant_name === "string"
+      && typeof viewer.plot_id === "string",
+    `Missing viewer-owned ${key} fixture content`,
+  );
+  return { ...garden, ...viewer };
+}
+
 function plantRecord(page, profile, name) {
   const selector = profile === "mobile"
     ? "#plants-mobile-list article[data-plt-id]"
@@ -1525,6 +1538,7 @@ async function assertViewerDenied(page, alpha, guarded, profile, { directMutatio
     "Viewer did not render the read-only state",
   );
   await openPlants(page, profile);
+  await visible(plantRecord(page, profile, alpha.plant_name), "viewer-owned plant record");
   const addPlant = page.locator("#add-plant-btn");
   await visible(addPlant, "viewer add plant affordance");
   assert(await addPlant.isDisabled(), "Viewer add plant control is enabled");
@@ -1541,6 +1555,10 @@ async function assertViewerDenied(page, alpha, guarded, profile, { directMutatio
   );
   await assertViewerSettingsWriteUnavailable(page, profile);
   await openMap(page, profile);
+  await visible(
+    page.locator(`.plot[data-plot-id='${alpha.plot_id}']`),
+    "viewer-owned read-only plot",
+  );
   const editButton = page.locator("#edit-mode-btn");
   if (await editButton.count()) assert(await editButton.isDisabled(), "Viewer Edit control is enabled");
   if (profile === "mobile") {
@@ -2302,6 +2320,8 @@ async function runOnboardingProfile(options, { password, profile, username }) {
 async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, password, profile, role, username }) {
   const alpha = fixtureGarden(fixture, "alpha");
   const beta = fixtureGarden(fixture, "beta");
+  const roleAlpha = role === "viewer" ? viewerFixtureGarden(fixture, "alpha", alpha) : alpha;
+  const roleBeta = role === "viewer" ? viewerFixtureGarden(fixture, "beta", beta) : beta;
   const guarded = await createGuardedContext(
     browser, devices, profile, artifactDir, `${profile}-${role}`,
   );
@@ -2335,7 +2355,7 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
     result.checks.map_first_without_plants = true;
 
     if (role === "viewer") {
-      await assertViewerDenied(page, alpha, guarded, profile, { directMutation: profile === "desktop" });
+      await assertViewerDenied(page, roleAlpha, guarded, profile, { directMutation: profile === "desktop" });
       result.checks.viewer_role_affordances_and_denials = true;
       result.checks.viewer_m1_m3_read_only_behavior = true;
       if (profile === "desktop") result.checks.viewer_a3_m4_write_denials = true;
@@ -2402,8 +2422,8 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
         guarded.diagnostics,
         fixture,
         profile,
-        alpha,
-        beta,
+        roleAlpha,
+        roleBeta,
         { surfaces: isAdmin ? GARDEN_RACE_SURFACES : ["plots"] },
       );
       if (isAdmin) {

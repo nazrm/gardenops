@@ -50,6 +50,20 @@ PHASE_ONE_INDOOR_PLANT_ID = "COMPLETE-PHASE-ONE-BASIL"
 PHASE_ONE_INDOOR_PLANT_NAME = "Complete Phase One Indoor Basil"
 PHASE_ONE_BETA_INDOOR_PLOT_ID = "COMPLETE-PHASE-ONE-BETA-INDOOR"
 PHASE_ONE_BETA_INDOOR_ROOM_LABEL = "Beta greenhouse shelf"
+PHASE_ONE_VIEWER_GARDENS = {
+    "alpha": {
+        "latin": "Mentha spicata",
+        "plant_id": "COMPLETE-P1-VIEWER-ALPHA-PLANT",
+        "plant_name": "Complete Phase One Viewer Alpha Mint",
+        "plot_id": "COMPLETE-P1-VIEWER-ALPHA-PLOT",
+    },
+    "beta": {
+        "latin": "Salvia officinalis",
+        "plant_id": "COMPLETE-P1-VIEWER-BETA-PLANT",
+        "plant_name": "Complete Phase One Viewer Beta Sage",
+        "plot_id": "COMPLETE-P1-VIEWER-BETA-PLOT",
+    },
+}
 PHASE_ONE_MAP_UNIT_ID = "mapunit_complete_phase_one_alpha_bench"
 PHASE_ONE_MAP_UNIT_NAME = "Complete Phase One Basil Bench"
 PHASE_ONE_SAVED_VIEW_LABEL = "Complete Phase One Basil View"
@@ -226,7 +240,64 @@ def _insert_user(
     return int(row["id"])
 
 
-def _add_role_fixtures(conn, *, garden_ids: list[int]) -> None:
+def _seed_viewer_owned_garden_content(
+    conn,
+    *,
+    garden_id: int,
+    key: str,
+    viewer_id: int,
+) -> None:
+    spec = PHASE_ONE_VIEWER_GARDENS[key]
+    conn.execute(
+        """
+        INSERT INTO plots (
+            plot_id, garden_id, zone_code, zone_name, plot_number,
+            grid_row, grid_col, sub_zone, notes, color
+        )
+        VALUES (%s, %s, 'V', 'Viewer verification', 1, 9, 10, %s,
+                'Disposable Phase 1 viewer-owned fixture', '#5f8c74')
+        """,
+        (spec["plot_id"], garden_id, spec["plant_name"]),
+    )
+    conn.execute(
+        "INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
+        (spec["plot_id"], viewer_id, garden_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO plants (
+            plt_id, name, latin, category, bloom_month, color, hardiness,
+            height_cm, light, link, care_watering, care_soil, care_planting,
+            care_maintenance, care_notes, year_planted, seen_growing, seen_growing_date
+        )
+        VALUES (%s, %s, %s, 'herb', 'July', '#75a16a', 'H5', 45,
+                'part sun', '', 'keep evenly moist', 'moist fertile soil',
+                'contain vigorous roots', 'harvest regularly',
+                'Disposable Phase 1 viewer-owned fixture', '2026', 1, '2026-07-01')
+        """,
+        (spec["plant_id"], spec["plant_name"], spec["latin"]),
+    )
+    conn.execute(
+        "INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
+        (spec["plant_id"], viewer_id, garden_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO plot_plants (
+            plot_id, plt_id, quantity, seen_growing, seen_growing_date, room_label
+        )
+        VALUES (%s, %s, 1, 1, '2026-07-01', '')
+        """,
+        (spec["plot_id"], spec["plant_id"]),
+    )
+
+
+def _add_role_fixtures(
+    conn,
+    *,
+    garden_ids: list[int],
+    viewer_garden_ids: dict[str, int],
+) -> None:
     editor_id = _insert_user(
         conn,
         username=EDITOR_LOGIN[0],
@@ -247,6 +318,15 @@ def _add_role_fixtures(conn, *, garden_ids: list[int]) -> None:
                 "INSERT INTO garden_memberships (garden_id, user_id, role) VALUES (%s, %s, %s)",
                 (garden_id, user_id, role),
             )
+    if set(viewer_garden_ids) != set(PHASE_ONE_VIEWER_GARDENS):
+        raise RuntimeError("Complete journey viewer garden fixtures are incomplete")
+    for key, garden_id in viewer_garden_ids.items():
+        _seed_viewer_owned_garden_content(
+            conn,
+            garden_id=garden_id,
+            key=key,
+            viewer_id=viewer_id,
+        )
 
 
 def _seed_phase_one_fixtures(conn, optimization_seed: Any) -> None:
@@ -420,6 +500,9 @@ def _phase_one_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
     alpha = conn.execute(
         "SELECT id FROM gardens WHERE slug = %s", (optimization_seed.GARDEN_A_SLUG,)
     ).fetchone()
+    beta = conn.execute(
+        "SELECT id FROM gardens WHERE slug = %s", (optimization_seed.GARDEN_B_SLUG,)
+    ).fetchone()
     large = conn.execute(
         "SELECT id, name FROM gardens WHERE slug = %s", (PHASE_ONE_LARGE_GARDEN_SLUG,)
     ).fetchone()
@@ -427,9 +510,43 @@ def _phase_one_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
         "SELECT COUNT(*) AS count FROM layout_snapshots WHERE name = %s",
         (PHASE_ONE_MOBILE_SNAPSHOT_NAME,),
     ).fetchone()
-    if not alpha or not large:
+    if not alpha or not beta or not large:
         raise RuntimeError("Complete journey Phase 1 base gardens are missing")
     alpha_id = int(alpha["id"])
+
+    def viewer_payload(key: str, garden_id: int) -> dict[str, Any]:
+        spec = PHASE_ONE_VIEWER_GARDENS[key]
+        row = conn.execute(
+            """
+            SELECT plot_value.plot_id, plant_value.plt_id, plant_value.name
+            FROM plots plot_value
+            JOIN plot_ownership plot_owner
+              ON plot_owner.plot_id = plot_value.plot_id
+             AND plot_owner.garden_id = plot_value.garden_id
+            JOIN auth_users owner ON owner.id = plot_owner.owner_user_id
+            JOIN plot_plants assignment ON assignment.plot_id = plot_value.plot_id
+            JOIN plants plant_value ON plant_value.plt_id = assignment.plt_id
+            JOIN plant_ownership plant_owner
+              ON plant_owner.plt_id = plant_value.plt_id
+             AND plant_owner.garden_id = plot_value.garden_id
+             AND plant_owner.owner_user_id = owner.id
+            WHERE plot_value.garden_id = %s
+              AND plot_value.plot_id = %s
+              AND plant_value.plt_id = %s
+              AND owner.username = %s
+            """,
+            (garden_id, spec["plot_id"], spec["plant_id"], VIEWER_LOGIN[0]),
+        ).fetchone()
+        if not row:
+            raise RuntimeError(f"Complete journey viewer {key} content is missing")
+        return {
+            "garden_id": garden_id,
+            "plant_id": str(row["plt_id"]),
+            "plant_name": str(row["name"]),
+            "plot_id": str(row["plot_id"]),
+            "owner_username": VIEWER_LOGIN[0],
+        }
+
     return {
         "indoor": {
             "garden_id": alpha_id,
@@ -477,6 +594,10 @@ def _phase_one_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
             "label": PHASE_ONE_SAVED_VIEW_LABEL,
             "owner_username": ADMIN_USERNAME,
             "view_type": "plants",
+        },
+        "viewer": {
+            "alpha": viewer_payload("alpha", alpha_id),
+            "beta": viewer_payload("beta", int(beta["id"])),
         },
     }
 
@@ -2054,7 +2175,7 @@ def main() -> None:
                 )
                 _seed_phase_one_fixtures(conn, optimization_seed)
                 garden_rows = conn.execute(
-                    "SELECT id FROM gardens WHERE slug = ANY(%s) ORDER BY id",
+                    "SELECT id, slug FROM gardens WHERE slug = ANY(%s) ORDER BY id",
                     (
                         [
                             optimization_seed.GARDEN_A_SLUG,
@@ -2063,7 +2184,15 @@ def main() -> None:
                         ],
                     ),
                 ).fetchall()
-                _add_role_fixtures(conn, garden_ids=[int(row["id"]) for row in garden_rows])
+                garden_ids_by_slug = {str(row["slug"]): int(row["id"]) for row in garden_rows}
+                _add_role_fixtures(
+                    conn,
+                    garden_ids=list(garden_ids_by_slug.values()),
+                    viewer_garden_ids={
+                        "alpha": garden_ids_by_slug[optimization_seed.GARDEN_A_SLUG],
+                        "beta": garden_ids_by_slug[optimization_seed.GARDEN_B_SLUG],
+                    },
+                )
                 conn.commit()
             result = _snapshot(conn, optimization_seed)
             if output_path is not None:
