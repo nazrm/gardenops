@@ -78,9 +78,17 @@ function clearSavedViewsState(): void {
   savedViewPresets = [];
   const dropdown = document.getElementById("saved-views-dropdown");
   if (dropdown) {
-    dropdown.hidden = true;
+    closeSavedViewsDropdown();
     dropdown.replaceChildren();
   }
+}
+
+function closeSavedViewsDropdown(restoreFocus = false): void {
+  const dropdown = document.getElementById("saved-views-dropdown");
+  const trigger = document.getElementById("saved-views-trigger");
+  if (dropdown) dropdown.hidden = true;
+  trigger?.setAttribute("aria-expanded", "false");
+  if (restoreFocus && trigger instanceof HTMLElement) trigger.focus();
 }
 
 export function resetSavedViewsForCurrentGarden(): void {
@@ -101,11 +109,14 @@ export function initSavedViewsFeature(
   ctx = appCtx;
   syncSavedViewsForCurrentGarden();
 
-  document
-    .getElementById("saved-views-trigger")
-    ?.addEventListener("click", () => {
-      void openSavedViewsDropdown();
-    });
+  document.getElementById("saved-views-trigger")?.addEventListener("click", () => {
+    const dropdown = document.getElementById("saved-views-dropdown");
+    if (dropdown && !dropdown.hidden) {
+      closeSavedViewsDropdown();
+      return;
+    }
+    void openSavedViewsDropdown();
+  });
   document.addEventListener("change", (event) => {
     if (
       event.target instanceof HTMLSelectElement
@@ -128,8 +139,15 @@ export function initSavedViewsFeature(
       !dropdown.contains(e.target as Node) &&
       !trigger.contains(e.target as Node)
     ) {
-      dropdown.hidden = true;
+      closeSavedViewsDropdown();
     }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const dropdown = document.getElementById("saved-views-dropdown");
+    if (!dropdown || dropdown.hidden) return;
+    event.preventDefault();
+    closeSavedViewsDropdown(true);
   });
 }
 
@@ -183,10 +201,7 @@ function getSavedViewsCallbacks() {
   return {
     onApply: (view: SavedView | SavedViewPreset) => {
       applySavedViewFilters(view);
-      const dropdown = document.getElementById(
-        "saved-views-dropdown",
-      );
-      if (dropdown) dropdown.hidden = true;
+      closeSavedViewsDropdown();
     },
     onSave: async (
       _viewType: string,
@@ -271,16 +286,21 @@ function toggleSavedViewsDropdown(): void {
   );
   if (!dropdown) return;
   const isHidden = dropdown.hidden;
-  dropdown.hidden = !isHidden;
-  if (isHidden) {
-    renderSavedViewsDropdown(
-      dropdown,
-      savedViews,
-      savedViewPresets,
-      ctx.getSubMode(),
-      getSavedViewsCallbacks(),
-    );
+  if (!isHidden) {
+    closeSavedViewsDropdown();
+    return;
   }
+  dropdown.hidden = false;
+  document
+    .getElementById("saved-views-trigger")
+    ?.setAttribute("aria-expanded", "true");
+  renderSavedViewsDropdown(
+    dropdown,
+    savedViews,
+    savedViewPresets,
+    ctx.getSubMode(),
+    getSavedViewsCallbacks(),
+  );
 }
 
 function currentTasksViewFromDom(): string {

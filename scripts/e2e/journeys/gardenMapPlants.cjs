@@ -231,6 +231,9 @@ async function reloadAndAccountForAborts(page, diagnostics) {
 }
 
 async function closeMobileSurfaces(page) {
+  if (await page.locator("#saved-views-dropdown:not([hidden])").count()) {
+    await page.keyboard.press("Escape");
+  }
   if (await page.locator("body.mobile-utility-open").count()) {
     await page.locator("#mobile-utility-close-btn").click().catch(() => {});
   }
@@ -254,6 +257,7 @@ async function closeMobileSurfaces(page) {
     !document.body.classList.contains("mobile-utility-open")
     && !document.body.classList.contains("mobile-map-sheet-open")
     && document.querySelector("#mobile-quick-actions")?.getAttribute("aria-hidden") !== "false"
+    && document.querySelector("#saved-views-dropdown")?.hasAttribute("hidden") !== false
   ));
 }
 

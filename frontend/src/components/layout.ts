@@ -576,7 +576,7 @@ export function getAppShellMarkup(): string {
               </div>
             </div>
             <div class="saved-views-shell">
-              <button type="button" id="saved-views-trigger" class="saved-views-btn" title="${t("saved_views.button")}" data-i18n-title="saved_views.button">${t("saved_views.button")}</button>
+              <button type="button" id="saved-views-trigger" class="saved-views-btn" title="${t("saved_views.button")}" data-i18n-title="saved_views.button" aria-controls="saved-views-dropdown" aria-expanded="false">${t("saved_views.button")}</button>
               <div id="saved-views-dropdown" class="saved-views-dropdown" hidden></div>
             </div>
           </div>

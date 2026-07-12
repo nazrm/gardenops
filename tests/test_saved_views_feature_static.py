@@ -38,3 +38,17 @@ def test_mobile_saved_view_actions_are_not_occluded_by_the_quick_action_button()
 
     assert ".app-shell:has(#saved-views-dropdown:not([hidden])) .mobile-fab" in styles
     assert "pointer-events: none;" in styles
+
+
+def test_saved_views_escape_closes_the_dropdown_and_restores_focus() -> None:
+    saved_views = (ROOT / "frontend/src/features/savedViewsFeature.ts").read_text(encoding="utf-8")
+    layout = (ROOT / "frontend/src/components/layout.ts").read_text(encoding="utf-8")
+    journey = (ROOT / "scripts/e2e/journeys/gardenMapPlants.cjs").read_text(encoding="utf-8")
+
+    assert 'aria-controls="saved-views-dropdown" aria-expanded="false"' in layout
+    assert 'document.addEventListener("keydown", (event)' in saved_views
+    assert 'if (event.key !== "Escape") return;' in saved_views
+    assert "closeSavedViewsDropdown(true);" in saved_views
+    assert 'trigger?.setAttribute("aria-expanded", "false");' in saved_views
+    assert '.setAttribute("aria-expanded", "true")' in saved_views
+    assert 'page.locator("#saved-views-dropdown:not([hidden])")' in journey
