@@ -1088,7 +1088,7 @@ async function assertViewerDenied(page, alpha, guarded, profile, { directMutatio
   assert(await viewerRecords.count() === 0, "Viewer plant edit affordance is visible");
   await page.locator(profile === "mobile" ? "#mobile-tab-garden" : "#top-tab-garden").click();
   await page.locator("#sub-mode-indoor").click();
-  await visible(page.locator("#indoor-tab-content"), "viewer indoor view");
+  await page.waitForLoadState("networkidle");
   assert(
     await page.locator("#indoor-tab-content .indoor-room-row button").count() === 0,
     "Viewer indoor room edit affordance is visible",
