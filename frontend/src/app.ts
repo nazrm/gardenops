@@ -2923,15 +2923,23 @@ function applyHouseState(house: HouseLayoutState): void {
     col: house.col,
   };
   state.northDegrees = normalizeDegrees(house.north_degrees);
-  state.houseSize = clampHouseSize(
-    state,
-    house.width,
-    house.height,
-  );
+  state.houseSize = fitPersistedHouseSizeToGrid(house);
   cameraCtrl?.setGridDims(state.gridRows, state.gridCols);
   syncDirectionControls();
   syncGridDimensionInputs();
   renderDirectionLabels();
+}
+
+function fitPersistedHouseSizeToGrid(
+  house: Pick<HouseLayoutState, "width" | "height">,
+): { width: number; height: number } {
+  // Persisted/imported layouts may be smaller than the interactive resize minimum.
+  const availableWidth = Math.max(1, state.gridCols - state.housePosition.col + 1);
+  const availableHeight = Math.max(1, state.gridRows - state.housePosition.row + 1);
+  return {
+    width: Math.max(1, Math.min(house.width, availableWidth)),
+    height: Math.max(1, Math.min(house.height, availableHeight)),
+  };
 }
 
 async function fetchLayoutState(options: MapFetchOptions = {}): Promise<void> {

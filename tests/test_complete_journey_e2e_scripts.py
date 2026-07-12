@@ -303,6 +303,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     journey_source = (ROOT / "scripts" / "e2e" / "journeys" / "gardenMapPlants.cjs").read_text(
         encoding="utf-8"
     )
+    app_source = (ROOT / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")
     checker_source = CHECKER.read_text(encoding="utf-8")
     for marker in (
         "PHASE_ONE_INDOOR_PLOT_ID",
@@ -433,6 +434,8 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     ):
         assert marker in desktop_admin_branch
     assert "runGardenMapPlants" in checker_source
+    assert "fitPersistedHouseSizeToGrid" in app_source
+    assert "state.houseSize = fitPersistedHouseSizeToGrid(house);" in app_source
     assert "THROUGH_PHASE >= 1" in checker_source
     assert "snapshotRestore.replace_children_calls === 1" in checker_source
     assert "beta_response_completion_count" in checker_source
