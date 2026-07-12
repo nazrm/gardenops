@@ -3508,6 +3508,10 @@ function applyNorthDirection(raw: string | number, persistImmediately = false): 
     return false;
   }
   state.northDegrees = normalizeDegrees(parsed);
+  const grid = document.getElementById("map-grid");
+  if (grid instanceof HTMLElement) {
+    grid.dataset["northDegrees"] = String(state.northDegrees);
+  }
   syncDirectionControls();
   renderDirectionLabels();
   syncShadePanelContext();

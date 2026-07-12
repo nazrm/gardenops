@@ -199,6 +199,19 @@ def test_mobile_map_editor_opens_an_operable_layers_sheet() -> None:
     assert 'showToast(t("map.desktop_only")' not in app
 
 
+def test_north_direction_keeps_rendered_map_metadata_in_sync() -> None:
+    app = _read("frontend/src/app.ts")
+    body = _function_body(
+        app,
+        "function applyNorthDirection",
+        "function syncDirectionControls",
+    )
+
+    assert 'const grid = document.getElementById("map-grid");' in body
+    assert 'grid.dataset["northDegrees"] = String(state.northDegrees);' in body
+    assert body.index('grid.dataset["northDegrees"]') < body.index("renderDirectionLabels();")
+
+
 def test_mobile_utility_sheet_is_inert_and_traps_focus() -> None:
     app = _read("frontend/src/app.ts")
     layout = _read("frontend/src/components/layout.ts")
