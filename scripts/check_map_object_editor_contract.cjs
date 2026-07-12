@@ -25,6 +25,7 @@ const apiSource = readSource("frontend/src/services/api.ts");
 const panelSource = readSource("frontend/src/components/mapObjects.ts");
 const mapViewSource = readSource("frontend/src/components/mapView.ts");
 const appSource = readSource("frontend/src/app.ts");
+const layoutSource = readSource("frontend/src/components/layout.ts");
 
 assertIncludes(apiSource, "export async function updateMapObjectApi", "missing update API");
 assertIncludes(apiSource, "apiPatch<MapObject>", "update API must use PATCH");
@@ -51,5 +52,6 @@ assertIncludes(appSource, "mapObjectManipulationSession", "missing object manipu
 assertIncludes(appSource, "startMapObjectManipulation", "missing object manipulation start flow");
 assertIncludes(appSource, "cancelMapObjectManipulation", "missing object manipulation cancel flow");
 assertIncludes(appSource, "commitMapObjectManipulation", "missing object manipulation commit flow");
+assertIncludes(layoutSource, 'id="edit-mode-btn"', "map writers need a shared edit-mode entry point");
 
 console.log("Map object editor contract checks passed.");

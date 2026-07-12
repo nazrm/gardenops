@@ -224,6 +224,13 @@ export function getAppShellMarkup(): string {
                   <h2 id="map-layers-title" data-i18n="map.layers">${t("map.layers")}</h2>
                 </div>
                 <button
+                  id="edit-mode-btn"
+                  class="map-object-toggle"
+                  type="button"
+                  aria-pressed="false"
+                  data-i18n="map.edit"
+                >${t("map.edit")}</button>
+                <button
                   id="map-layers-collapse-btn"
                   class="map-layers-collapse-btn"
                   type="button"
