@@ -487,6 +487,7 @@ async function exercisePlotCreateAndEdit(page, profile) {
   const renamedPlotId = `${plotId}EDITED`;
   await openMap(page, profile);
   await enableMapEditor(page, profile);
+  if (profile === "mobile") await closeMobileSurfaces(page);
   const emptyCell = page.locator("#map-grid .empty-cell").first();
   await visible(emptyCell, `${profile} empty map cell`);
   await emptyCell.click();
