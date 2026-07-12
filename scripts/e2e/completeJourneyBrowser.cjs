@@ -66,7 +66,7 @@ function browserProfile(devices, name) {
   throw new Error(`Unknown complete journey browser profile: ${name}`);
 }
 
-async function createGuardedContext(browser, devices, profileName, artifactDir) {
+async function createGuardedContext(browser, devices, profileName, artifactDir, artifactLabel = profileName) {
   const profile = browserProfile(devices, profileName);
   const context = await browser.newContext({
     ...profile,
@@ -146,7 +146,7 @@ async function createGuardedContext(browser, devices, profileName, artifactDir) 
       viewport: profile.viewport,
     },
     async close(status) {
-      const traceName = `${profileName}-${status}.zip`;
+      const traceName = `${artifactLabel}-${status}.zip`;
       const tracePath = path.join(artifactDir, traceName);
       const stagingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "gardenops-trace-"));
       fs.chmodSync(stagingDirectory, 0o700);

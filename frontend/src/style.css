@@ -1025,7 +1025,7 @@ textarea {
 }
 
 .garden-role-chip {
-  display: none !important;
+  display: inline-flex;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 999px;
   padding: 4px 9px;
@@ -7156,10 +7156,6 @@ th.sort-desc::after {
     display: none;
   }
 
-  .garden-role-chip {
-    display: none !important;
-  }
-
   .garden-select {
     min-width: 120px;
     max-width: 150px;
@@ -7295,10 +7291,6 @@ th.sort-desc::after {
     width: 44px;
     height: 44px;
     font-size: 20px;
-  }
-
-  .garden-role-chip {
-    display: none !important;
   }
 
   .auth-btn {

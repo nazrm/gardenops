@@ -110,6 +110,21 @@ def test_weather_and_plot_alert_requests_cannot_apply_to_a_new_garden() -> None:
     assert "plotAlertsLoadPromise === loadPromise" in plot_alert_body
 
 
+def test_admin_garden_settings_cannot_apply_an_old_garden_request() -> None:
+    admin = _read("frontend/src/components/adminPanel.ts")
+    body = _function_body(
+        admin,
+        "async function loadGardenSettings",
+        "async function loadSystem",
+    )
+
+    assert "const requestGardenId = ctx.activeGardenId;" in body
+    assert "gardenContextFn?.().activeGardenId === requestGardenId" in body
+    assert body.count("if (!isCurrentRequest()) return;") >= 6
+    assert "getGardenSettingsApi(requestGardenId)" in body
+    assert "getGardenMembershipsApi(requestGardenId)" in body
+
+
 def test_mobile_map_sheets_are_inert_when_closed_and_manage_focus() -> None:
     app = _read("frontend/src/app.ts")
     layout = _read("frontend/src/components/layout.ts")
@@ -123,6 +138,14 @@ def test_mobile_map_sheets_are_inert_when_closed_and_manage_focus() -> None:
     assert "function restoreMobileMapSheetFocus" in app
     assert "function trapMobileMapSheetFocus" in app
     assert "mobileMapSheetFocusReturnTarget" in app
+
+
+def test_mobile_map_editor_opens_an_operable_layers_sheet() -> None:
+    app = _read("frontend/src/app.ts")
+
+    assert "editorAvailable: true" in app
+    assert 'setMobileMapSheetOpen("map-layers-panel")' in app
+    assert 'showToast(t("map.desktop_only")' not in app
 
 
 def test_mobile_utility_sheet_is_inert_and_traps_focus() -> None:

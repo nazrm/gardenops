@@ -2159,6 +2159,7 @@ def snapshot_layout(
             (garden_id,),
         ).fetchall()
     payload = {
+        "schema_version": 1,
         "plots": [dict(r) for r in rows],
         "house": get_layout_state(db, garden_id),
         "shademap": get_shademap_state(db, garden_id=garden_id),
@@ -2193,15 +2194,18 @@ def restore_snapshot_data(
         if pid in seen:
             raise HTTPException(status_code=400, detail=f"Duplicate plot_id in import: {pid}")
         seen.add(pid)
-        row = _coerce_required_int(p["grid_row"])
-        col = _coerce_required_int(p["grid_col"])
-        cell = (row, col)
-        if cell in seen_cells:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Duplicate grid cell in import: ({row}, {col})",
-            )
-        seen_cells.add(cell)
+        raw_row = p.get("grid_row")
+        raw_col = p.get("grid_col")
+        if raw_row is not None and raw_col is not None:
+            row = _coerce_required_int(raw_row)
+            col = _coerce_required_int(raw_col)
+            cell = (row, col)
+            if cell in seen_cells:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Duplicate grid cell in import: ({row}, {col})",
+                )
+            seen_cells.add(cell)
 
     if seen:
         placeholders = ",".join("%s" for _ in seen)
@@ -2394,6 +2398,9 @@ def parse_layout_payload(
         return cast(list[dict[str, Any]], raw), None, None, None, None, None
     if isinstance(raw, dict):
         payload = cast(dict[str, object], raw)
+        schema_version = payload.get("schema_version", 1)
+        if schema_version != 1:
+            raise HTTPException(status_code=400, detail="Unsupported layout schema version")
         plots = payload.get("plots")
         house = payload.get("house")
         shademap = payload.get("shademap")
@@ -2652,6 +2659,7 @@ def import_plots(body: ImportBody, db: DB, request: Request) -> dict:
     notify_garden_modified()
     record_security_event("destructive_admin_actions")
     record_security_event("destructive_admin_actions_import_plots")
+    request.state.audited_by_handler = True
     write_audit_event(
         method=request.method,
         path=request.url.path,

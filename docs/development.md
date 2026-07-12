@@ -242,6 +242,7 @@ accessibility, and performance evidence. Run one phase or the cumulative set:
 ```bash
 scripts/run_complete_journeys_e2e.sh --phase 0
 scripts/run_complete_journeys_e2e.sh --through-phase 0
+scripts/run_complete_journeys_e2e.sh --phase 1
 ```
 
 The runner creates its own disposable PostgreSQL child through
@@ -253,6 +254,14 @@ manifests/traces under a unique directory below the gitignored
 `research/optimization-map/runs/complete-journeys/` tree. Successful runs remove
 temporary logs/media/terrain/download state while retaining the ignored evidence
 run; failed runs preserve private logs and artifacts for diagnosis.
+
+Phase 1 runs independent desktop and Pixel 7 onboarding accounts plus desktop
+admin, mobile admin, and desktop viewer profiles. It exercises real map-object
+creation and deletion on mobile, plant assignment lifecycle, indoor data,
+saved views, snapshots, versioned export/import, malformed-import rejection,
+delayed A/B/A garden switching, and exact database/audit/filesystem
+postconditions. The focused backend suite additionally injects a failure during
+restore and proves the transaction rolls back.
 
 The tracked coverage contract is `tests/journey_coverage.yaml`. Validate open
 phases during implementation and require complete closure only in the final

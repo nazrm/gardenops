@@ -179,9 +179,10 @@ class TestMapObjects(BaseApiTest):
 
     def test_editor_can_create_list_and_delete_patio_with_nested_unit(self) -> None:
         garden_id = self._default_garden()
+        create_path = f"/api/gardens/{garden_id}/map-objects"
 
         created = self.client.post(
-            f"/api/gardens/{garden_id}/map-objects",
+            create_path,
             json=self._patio_payload(),
         )
         self.assertEqual(created.status_code, 201, created.text)
@@ -192,6 +193,20 @@ class TestMapObjects(BaseApiTest):
         self.assertEqual(patio["style"], {"color": "#7d9f7a"})
         self.assertEqual(patio["internal_layout"], {"rows": 6, "cols": 8})
         self.assertEqual(patio["units"], [])
+
+        conn = db.get_db()
+        try:
+            audit_rows = conn.execute(
+                """
+                SELECT status_code
+                FROM audit_events
+                WHERE method = 'POST' AND path = %s
+                """,
+                (create_path,),
+            ).fetchall()
+        finally:
+            db.return_db(conn)
+        self.assertEqual([int(row["status_code"]) for row in audit_rows], [201])
 
         unit = self.client.post(
             f"/api/gardens/{garden_id}/map-objects/{patio['public_id']}/units",
@@ -212,6 +227,11 @@ class TestMapObjects(BaseApiTest):
         self.assertEqual(deleted.status_code, 200, deleted.text)
         self.assertEqual(deleted.json()["deleted_units"], 1)
         self.assertEqual(self._unit_count(garden_id, patio["public_id"]), 0)
+
+        deleted_again = self.client.delete(
+            f"/api/gardens/{garden_id}/map-objects/{patio['public_id']}"
+        )
+        self.assertEqual(deleted_again.status_code, 404, deleted_again.text)
 
         listed_after_delete = self.client.get(f"/api/gardens/{garden_id}/map-objects")
         self.assertEqual(listed_after_delete.status_code, 200, listed_after_delete.text)

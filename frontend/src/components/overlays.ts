@@ -899,15 +899,8 @@ export function showEditPlantDialog(
 
   dialog.querySelector<HTMLButtonElement>("#delete-edit-plant")
     ?.addEventListener("click", () => {
-      void (async () => {
-        const confirmed = await confirmDialog(
-          t("plants.confirm_delete", { name: plant.name }),
-          t("common.delete"),
-        );
-        if (!confirmed) return;
-        closeDialog();
-        onDelete(plant.plt_id);
-      })();
+      closeDialog();
+      onDelete(plant.plt_id);
     });
 
   const reportIssueBtn = dialog.querySelector<HTMLButtonElement>(

@@ -1800,30 +1800,39 @@ async function loadGardenSettings(): Promise<void> {
     state.missingPlantCoversTotal = 0;
     return;
   }
+  const requestGardenId = ctx.activeGardenId;
+  const isCurrentRequest = (): boolean => gardenContextFn?.().activeGardenId === requestGardenId;
   try {
     const [settings, lidarStatus] = await Promise.all([
-      getGardenSettingsApi(ctx.activeGardenId),
-      getGardenLidarApi(ctx.activeGardenId),
+      getGardenSettingsApi(requestGardenId),
+      getGardenLidarApi(requestGardenId),
     ]);
+    if (!isCurrentRequest()) return;
     state.gardenSettings = settings;
     state.gardenLidarStatus = lidarStatus;
   } catch (err) {
+    if (!isCurrentRequest()) return;
     state.gardenSettings = null;
     state.gardenLidarStatus = null;
     showToast(getApiErrorMessage(err), "error");
   }
   if (isPlatformAdmin()) {
     try {
-      state.gardenMemberships = await getGardenMembershipsApi(ctx.activeGardenId);
+      const memberships = await getGardenMembershipsApi(requestGardenId);
+      if (!isCurrentRequest()) return;
+      state.gardenMemberships = memberships;
     } catch (err) {
+      if (!isCurrentRequest()) return;
       state.gardenMemberships = [];
       showToast(getApiErrorMessage(err), "error");
     }
     try {
       const report = await getMissingPlantCoversApi({ limit: 25, offset: 0 });
+      if (!isCurrentRequest()) return;
       state.missingPlantCovers = report.items;
       state.missingPlantCoversTotal = report.total;
     } catch (err) {
+      if (!isCurrentRequest()) return;
       state.missingPlantCovers = [];
       state.missingPlantCoversTotal = 0;
       showToast(getApiErrorMessage(err), "error");

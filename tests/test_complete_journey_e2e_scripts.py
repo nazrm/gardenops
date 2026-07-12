@@ -40,6 +40,7 @@ def test_phase_zero_complete_journey_files_exist() -> None:
         ROOT / "scripts" / "e2e" / "completeJourneyAssertions.cjs",
         ROOT / "scripts" / "e2e" / "completeJourneyApi.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "foundation.cjs",
+        ROOT / "scripts" / "e2e" / "journeys" / "gardenMapPlants.cjs",
     )
     assert all(path.is_file() for path in expected)
 
@@ -97,10 +98,11 @@ def test_seeder_rejects_missing_disposable_environment(
         _require_child_environment()
 
 
-def test_runner_rejects_unimplemented_phase_before_starting_children() -> None:
-    result = _run_runner("--phase", "1")
+def test_runner_accepts_phase_one_selection_before_parent_validation() -> None:
+    result = _run_runner("--child", "1", "1", str(ROOT / "research" / "phase-one-child"))
     assert result.returncode == 2
-    assert "not implemented" in result.stderr.lower()
+    assert "not implemented" not in result.stderr.lower()
+    assert "run_fast_postgres_tests.py" in result.stderr
 
 
 def test_runner_rejects_preexisting_artifact_directory() -> None:
@@ -124,7 +126,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
     subprocess.run(["git", "init", "--quiet"], cwd=checkout, check=True, timeout=20)
     runner = checkout / "scripts" / "run_complete_journeys_e2e.sh"
     result = subprocess.run(
-        ["bash", str(runner), "--phase", "1"],
+        ["bash", str(runner), "--phase", "2"],
         cwd=checkout,
         capture_output=True,
         check=False,
@@ -262,6 +264,65 @@ def test_runner_source_contains_required_safety_boundaries() -> None:
     assert "verify_optimization_journeys_e2e_database_marker" in seeder_source
 
 
+def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
+    seeder_source = SEEDER.read_text(encoding="utf-8")
+    journey_source = (ROOT / "scripts" / "e2e" / "journeys" / "gardenMapPlants.cjs").read_text(
+        encoding="utf-8"
+    )
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    for marker in (
+        "PHASE_ONE_INDOOR_PLOT_ID",
+        "PHASE_ONE_INDOOR_PLANT_ID",
+        "PHASE_ONE_MAP_UNIT_ID",
+        "PHASE_ONE_SAVED_VIEW_LABEL",
+        "PHASE_ONE_MOBILE_SNAPSHOT_NAME",
+        "_seed_phase_one_fixtures",
+        "_phase_one_fixture_state",
+    ):
+        assert marker in seeder_source
+    for marker in (
+        "delayGardenSwitchResponses",
+        "runOnboardingProfile",
+        "assertGlobalSearch",
+        "exercisePlantAndSavedView",
+        "mutateIndoorPlant",
+        "exerciseMapObjectEditor",
+        "exerciseSnapshotsAndImport",
+        "submitMobileQuickAction",
+        "assertViewerDenied",
+        "saveMobileSnapshot",
+    ):
+        assert marker in journey_source
+    for substantive_marker in (
+        "#onb-garden-name",
+        ".onb-validation--error",
+        "#create-plant-form",
+        "#edit-plant-form",
+        ".saved-views-save-btn",
+        ".indoor-room-input",
+        ".map-object-type-select",
+        ".map-object-interaction-surface",
+        ".map-object-unit",
+        ".snapshot-restore",
+        "#import-map-input",
+        "[data-quick-action='log-harvest']",
+        "admin-settings",
+        "plot-alerts",
+    ):
+        assert substantive_marker in journey_source
+    for obsolete_skip in (
+        "onboarding-and-garden-lifecycle-mutation-not-yet-wired",
+        "map-object-and-snapshot-restore-mutations-require-existing-reauthorization-flow",
+        "offline-provider-and-file-import-dimensions-not-applicable-to-phase-one-browser-slice",
+    ):
+        assert obsolete_skip not in journey_source
+    assert journey_source.count("page.evaluate(async") == 1
+    assert "route.fulfill" not in journey_source
+    assert "assertions.skipped.push" not in journey_source
+    assert "runGardenMapPlants" in checker_source
+    assert "THROUGH_PHASE >= 1" in checker_source
+
+
 def test_seeder_refuses_direct_execution() -> None:
     env = os.environ.copy()
     for name in (
@@ -292,6 +353,26 @@ def test_browser_harness_has_no_response_mocking() -> None:
         check=False,
         text=True,
     )
+    assert result.returncode == 0, result.stderr
+
+
+def test_manifest_sanitizer_drops_unknown_root_fields_and_normalizes_requests() -> None:
+    script = """
+const { sanitizeManifestEvidence } = require('./scripts/check_complete_journeys_e2e.cjs');
+const result = sanitizeManifestEvidence({
+  browser: 'chromium', database: null, ended_at: '2026-07-12T00:00:00Z',
+  failure: null, filesystem: null, git: { dirty: false, sha: 'abc' },
+  journey_ids: ['M1'], phase: 1, profiles: [{
+    assertions: {}, browser_profile: {}, checks: {}, diagnostics: {}, profile: 'desktop',
+    requests: [{ gardenId: '1', method: 'GET', path: '/api/saved-views' }],
+    role: 'admin', trace: 'x',
+  }], run_id: 'run', started_at: '2026-07-12T00:00:00Z', status: 'passed',
+  suite: 'complete-journeys-e2e', through_phase: 1, injected: 'must-not-survive',
+});
+if ('injected' in result) process.exit(3);
+if (result.profiles[0].requests[0].path !== '/api/saved-views') process.exit(4);
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
 
@@ -462,7 +543,10 @@ def test_manifest_writer_is_atomic_and_private(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     manifest = tmp_path / "complete-journeys-manifest.json"
-    assert json.loads(manifest.read_text(encoding="utf-8")) == payload
+    written = json.loads(manifest.read_text(encoding="utf-8"))
+    assert written["status"] == payload["status"]
+    assert written["run_id"] == payload["run_id"]
+    assert written["profiles"] == payload["profiles"]
     assert manifest.stat().st_mode & 0o777 == 0o600
     assert not list(tmp_path.glob("*.tmp-*"))
 

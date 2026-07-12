@@ -31,6 +31,8 @@ assertIncludes(apiSource, "apiPatch<MapObject>", "update API must use PATCH");
 assertIncludes(panelSource, "onCreateCustomObject", "missing custom create callback");
 assertIncludes(panelSource, "onUpdateObject", "missing object update callback");
 assertIncludes(panelSource, "map-object-custom-form", "missing custom-object form");
+assertIncludes(panelSource, "map-object-type-select", "missing custom-object category selector");
+assertIncludes(panelSource, "object_type: typeSelect.value as MapObjectType", "custom category is not submitted");
 assertIncludes(panelSource, "map-object-geometry-form", "missing geometry editor form");
 assertIncludes(mapViewSource, "onMapObjectGeometryChange", "missing map geometry callback");
 assertIncludes(mapViewSource, "onMapObjectManipulationStart", "missing direct manipulation start callback");

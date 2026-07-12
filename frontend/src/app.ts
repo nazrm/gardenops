@@ -1370,7 +1370,7 @@ function ensureAdminPanelModule(): Promise<AdminPanelModule> {
         onMapSetupAction: handleAdminMapSetupAction,
         getMapSetupState: () => ({
           canWrite: canWriteInGarden,
-          editorAvailable: !isMobile(),
+          editorAvailable: true,
           northDegrees: normalizeDegrees(state.northDegrees),
           gridCols: state.gridCols,
           gridRows: state.gridRows,
@@ -1391,12 +1391,11 @@ async function handleAdminMapSetupAction(action: AdminMapSetupAction): Promise<v
       setActiveTab("map");
       setMobileMapSheetOpen(null);
       if (!ensureWriteAccess()) return;
-      if (isMobile()) {
-        showToast(t("map.desktop_only"), "error");
-        return;
-      }
       if (!state.editMode) {
         toggleEditMode(state, editCbs);
+      }
+      if (isMobile()) {
+        setMobileMapSheetOpen("map-layers-panel");
       }
       updateMapDirectionControlVisibility();
       break;
@@ -3153,7 +3152,7 @@ async function createCustomMapObjectFromSelection(draft: MapObjectCustomDraft): 
   }
   try {
     const object = await createMapObjectApi(gardenId, {
-      object_type: "other",
+      object_type: draft.object_type,
       name: draft.name,
       shape_type: draft.shape_type,
       geometry: clampMapObjectGeometry(selectedPlotBounds()),
@@ -6562,7 +6561,7 @@ async function refreshGardenContext(options?: {
     : t(me.write_access ? "role.write_access" : "role.read_only");
   roleChips.forEach((roleChip) => {
     roleChip.textContent = roleChipLabel;
-    roleChip.hidden = false;
+    roleChip.hidden = me.write_access;
   });
 
   // Only platform admins and editors without an existing non-default managed
@@ -6822,13 +6821,12 @@ function syncMobileCapabilities(): void {
   const editBtn = queryButton("edit-mode-btn");
   const editMenuDropdown = document.getElementById("edit-menu-dropdown") as HTMLElement | null;
   if (isMobile()) {
-    if (state.editMode) toggleEditMode(state, editCbs);
     if (editMenuDropdown) editMenuDropdown.hidden = true;
     if (editBtn) {
       editBtn.setAttribute("aria-expanded", "false");
-      editBtn.disabled = true;
-      editBtn.title = t("map.desktop_only");
-      editBtn.textContent = t("map.edit_desktop");
+      editBtn.disabled = !canWriteInGarden;
+      editBtn.title = canWriteInGarden ? "" : t("map.read_only");
+      editBtn.textContent = canWriteInGarden ? t("map.edit") : t("map.edit_read_only");
     }
   } else {
     if (editBtn) {

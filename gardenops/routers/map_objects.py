@@ -146,13 +146,14 @@ def _audit_map_object_change(
     garden_id: int,
     event: str,
     fields: dict[str, object],
+    status_code: int = 200,
 ) -> None:
     request.state.audited_by_handler = True
     detail = f"{event} {json.dumps(fields, sort_keys=True, separators=(',', ':'))}"
     write_audit_event(
         method=request.method,
         path=request.url.path,
-        status_code=200,
+        status_code=status_code,
         remote_host=_remote_host(request),
         detail=detail,
         auth_context=context,
@@ -649,6 +650,7 @@ def create_map_object(
         garden_id=garden_id,
         event="garden.map_object.create",
         fields={"garden_id": garden_id, "public_id": public_id},
+        status_code=201,
     )
     return _serialize_object(row_dict, [])
 
@@ -773,10 +775,17 @@ def delete_map_object(
         (garden_id, int(existing["id"])),
     ).fetchone()
     deleted_units = int(unit_count_row["c"] if unit_count_row else 0)
-    db.execute(
-        "DELETE FROM garden_map_objects WHERE garden_id = %s AND public_id = %s",
+    deleted = db.execute(
+        """
+        DELETE FROM garden_map_objects
+        WHERE garden_id = %s AND public_id = %s
+        RETURNING id
+        """,
         (garden_id, object_public_id),
-    )
+    ).fetchone()
+    if deleted is None:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Map object not found")
     db.commit()
     notify_garden_modified()
     _audit_map_object_change(
@@ -870,6 +879,7 @@ def create_map_object_unit(
             "object_public_id": object_public_id,
             "public_id": public_id,
         },
+        status_code=201,
     )
     return _serialize_unit(dict(row))
 

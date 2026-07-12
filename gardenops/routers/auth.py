@@ -1865,7 +1865,6 @@ def auth_passkey_reauthenticate_verify(
         expected_user_id=context.user_id,
     )
 
-    now_ms = current_timestamp_ms()
     db.execute(
         "DELETE FROM auth_sessions WHERE token_hash = %s",
         (context.session_token_hash,),
@@ -1876,6 +1875,7 @@ def auth_passkey_reauthenticate_verify(
         mfa_authenticated=True,
         mfa_setup_required=False,
     )
+    now_ms = current_timestamp_ms()
     new_token_hash = sha256(new_token.encode("utf-8")).hexdigest()
     db.execute(
         """
@@ -3118,7 +3118,6 @@ def auth_reauthenticate(
                 detail="Current multi-factor authentication code is incorrect",
             )
 
-    now_ms = current_timestamp_ms()
     # Rotate session token on reauthentication to prevent stolen-session elevation.
     # Delete old session and commit first, then create new session (which uses its
     # own DB connection internally).
@@ -3132,6 +3131,7 @@ def auth_reauthenticate(
         mfa_authenticated=bool(second_factor_method),
         mfa_setup_required=False,
     )
+    now_ms = current_timestamp_ms()
     new_token_hash = sha256(new_token.encode("utf-8")).hexdigest()
     db.execute(
         """

@@ -12,6 +12,7 @@ import { t } from "../core/i18n";
 const DEFAULT_CUSTOM_COLOR = "#8f9f7d";
 
 export interface MapObjectCustomDraft {
+  object_type: MapObjectType;
   name: string;
   shape_type: MapObjectShape;
   style: { color: string };
@@ -123,6 +124,22 @@ function makeShapeSelect(value: MapObjectShape, disabled: boolean): HTMLSelectEl
   return select;
 }
 
+function makeObjectTypeSelect(value: MapObjectType, disabled: boolean): HTMLSelectElement {
+  const select = document.createElement("select");
+  select.disabled = disabled;
+  select.className = "map-object-type-select";
+  for (const type of [
+    "patio", "terrace", "greenhouse", "shed", "pond", "path", "bed", "other",
+  ] as const) {
+    const option = document.createElement("option");
+    option.value = type;
+    option.textContent = objectTypeLabel(type);
+    select.appendChild(option);
+  }
+  select.value = value;
+  return select;
+}
+
 function positiveIntegerValue(input: HTMLInputElement, fallback: number): number {
   const value = Number.parseInt(input.value, 10);
   if (!Number.isFinite(value)) return fallback;
@@ -169,6 +186,7 @@ function buildCustomObjectForm(params: RenderMapObjectsPanelParams): HTMLFormEle
   fields.className = "map-object-form-grid map-object-identity-grid";
 
   const nameInput = makeTextInput(t("map.object_custom"), !params.canWrite);
+  const typeSelect = makeObjectTypeSelect("other", !params.canWrite);
   const shapeSelect = makeShapeSelect("rectangle", !params.canWrite);
   const colorInput = makeColorInput(DEFAULT_CUSTOM_COLOR, !params.canWrite);
   const layoutToggle = document.createElement("input");
@@ -183,6 +201,7 @@ function buildCustomObjectForm(params: RenderMapObjectsPanelParams): HTMLFormEle
 
   fields.append(
     makeField(t("map.object_name"), nameInput),
+    makeField(t("map.object_type"), typeSelect),
     makeField(t("map.object_shape"), shapeSelect),
     makeField(t("map.object_color"), colorInput),
     layoutLabel,
@@ -211,6 +230,7 @@ function buildCustomObjectForm(params: RenderMapObjectsPanelParams): HTMLFormEle
     if (!params.canWrite) return;
     const name = nameInput.value.trim() || t("map.object_custom");
     params.onCreateCustomObject({
+      object_type: typeSelect.value as MapObjectType,
       name,
       shape_type: shapeValue(shapeSelect),
       style: { color: colorInput.value },
