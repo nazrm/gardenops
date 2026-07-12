@@ -409,6 +409,47 @@ class TestExportImport(BaseApiTest):
         self.assertEqual(len(obstacles.json()), 1)
         self.assertEqual(obstacles.json()[0]["label"], "Cherry tree")
 
+    def test_import_plots_preserves_existing_plot_owner(self) -> None:
+        conn = db.get_db()
+        try:
+            viewer = create_user(
+                conn,
+                username="layout_viewer",
+                password=strong_password("layoutviewerpass"),
+                role="viewer",
+            )
+            viewer_id = int(viewer["id"])
+            conn.execute(
+                "UPDATE plot_ownership SET owner_user_id = %s WHERE plot_id = 'B1'",
+                (viewer_id,),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        exported = self.client.get("/api/plots/export").json()
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            response = self.client.post(
+                "/api/plots/import",
+                headers=self._destructive_admin_headers("preserve-retained-plot-owner"),
+                json=exported,
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        conn = db.get_db()
+        try:
+            owner = conn.execute(
+                "SELECT owner_user_id FROM plot_ownership WHERE plot_id = 'B1'",
+            ).fetchone()
+            self.assertIsNotNone(owner)
+            self.assertEqual(int(owner["owner_user_id"]), viewer_id)
+        finally:
+            db.return_db(conn)
+
     def test_import_plots_accepts_legacy_cardinal_direction(self) -> None:
         export_res = self.client.get("/api/plots/export")
         exported = json.loads(export_res.content)
