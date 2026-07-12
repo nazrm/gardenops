@@ -31,9 +31,12 @@ active manipulation or deselects the object. Viewers can see objects and nested
 layouts but cannot create or edit them.
 
 When internal layout is enabled, editors can add pots or planters inside that
-layout. Clicking an existing nested unit deletes it after the normal UI
-confirmation path. Custom objects may remain layout-only surfaces without nested
-units.
+layout. Selecting an existing nested unit opens controls for its name, type,
+shape, color, local row and column, width, and height. Saving keeps the unit
+inside its parent layout; deleting uses a separate labeled action and the normal
+confirmation path. Viewers can select and inspect nested units, but their edit
+and delete controls are disabled. Custom objects may remain layout-only surfaces
+without nested units.
 
 Map object labels can be selected directly on the map. Unselected overlays are
 visual only, so ordinary plot clicks still work unless the user clicks the
@@ -62,7 +65,6 @@ layout, and imports are limited to 200 map objects and 500 nested units total.
 
 - Nested units do not yet accept plant assignments, tasks, journals, issues, or
   harvest records.
-- Nested unit movement is not exposed yet.
 - Shrinking the garden grid is blocked while an existing map object would fall
   outside the new bounds.
 - Non-rectangular grouping beyond rectangle and ellipse remains a future map

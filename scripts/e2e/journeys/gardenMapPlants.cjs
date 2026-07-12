@@ -1,5 +1,6 @@
 "use strict";
 
+const fs = require("node:fs");
 const {
   assertDiagnosticsClean,
   authenticate,
@@ -102,6 +103,18 @@ async function captureMapRenderState(page) {
   }));
 }
 
+function mapRenderCounts(state) {
+  return {
+    children: state.children.length,
+    labels: state.labels.length,
+    plots: state.plots.length,
+  };
+}
+
+function totalRenderMutations(observation) {
+  return observation.attributes + observation.childLists + observation.added + observation.removed;
+}
+
 async function observeMapRenderChurn(page) {
   const grid = await page.locator("#map-grid").elementHandle();
   assert(grid, "Map grid is unavailable for render-churn observation");
@@ -128,6 +141,42 @@ async function observeMapRenderChurn(page) {
         active.observer.disconnect();
         delete element.__phaseOneRenderChurn;
         return active.observation;
+      });
+      await grid.dispose();
+      return observation;
+    },
+  };
+}
+
+async function observeMapReplaceChildren(page) {
+  const grid = await page.locator("#map-grid").elementHandle();
+  assert(grid, "Map grid is unavailable for coherent-render observation");
+  await grid.evaluate((element) => {
+    const descriptor = Object.getOwnPropertyDescriptor(element, "replaceChildren");
+    const original = element.replaceChildren;
+    const observation = { calls: 0, descriptor, original };
+    Object.defineProperty(element, "replaceChildren", {
+      configurable: true,
+      value(...nodes) {
+        observation.calls += 1;
+        return observation.original.apply(this, nodes);
+      },
+      writable: true,
+    });
+    element.__phaseOneReplaceChildren = observation;
+  });
+  return {
+    stop: async () => {
+      const observation = await grid.evaluate((element) => {
+        const active = element.__phaseOneReplaceChildren;
+        if (!active) throw new Error("Map replaceChildren observer was lost");
+        if (active.descriptor) {
+          Object.defineProperty(element, "replaceChildren", active.descriptor);
+        } else {
+          delete element.replaceChildren;
+        }
+        delete element.__phaseOneReplaceChildren;
+        return { replace_children_calls: active.calls };
       });
       await grid.dispose();
       return observation;
@@ -258,6 +307,7 @@ async function waitForMapObject(page, objectId, label) {
 }
 
 function delayedSurface(pathname) {
+  if (pathname === "/api/plots") return "plots";
   if (pathname === "/api/plants") return "plants";
   if (pathname === "/api/weather/summary" || pathname === "/api/weather/alerts") return "weather";
   if (pathname === "/api/plots/alerts") return "plot-alerts";
@@ -266,11 +316,28 @@ function delayedSurface(pathname) {
   if (pathname === "/api/layout-state") return "layout";
   if (/^\/api\/plots\/[^/]+\/plants$/.test(pathname)) return "indoor";
   if (/^\/api\/gardens\/\d+\/settings$/.test(pathname)) return "admin-settings";
+  if (pathname === "/api/saved-views") return "saved-views";
   return null;
 }
 
-async function delayGardenSwitchResponses(context, diagnostics, action) {
-  const delayed = new Set();
+function gardenIdFromRequest(request) {
+  const rawGardenId = request.headers()["x-garden-id"];
+  const gardenId = Number(rawGardenId);
+  return Number.isSafeInteger(gardenId) && gardenId > 0 ? gardenId : null;
+}
+
+async function delayGardenSwitchResponses(page, context, diagnostics, { alpha, beta }, surface, action) {
+  const betaResolvers = [];
+  const heldBetaRequests = new Set();
+  const completedBetaRequests = new Set();
+  const betaResponseCompletionFailures = [];
+  const timeline = [];
+  let sequence = 0;
+  let alphaTargetStarted = false;
+  let betaReleaseIssued = false;
+  let betaResponsesContinued = 0;
+  let betaTargetHeld = false;
+  let heldResponseCountWhenAlphaStarted = 0;
   const failureMark = diagnostics.requestFailures.length;
   const aborted = [];
   const failureListener = (request) => {
@@ -280,23 +347,97 @@ async function delayGardenSwitchResponses(context, diagnostics, action) {
     }
   };
   context.on("requestfailed", failureListener);
+  const responseListener = (response) => {
+    const request = response.request();
+    if (!heldBetaRequests.has(request)) return;
+    void response.finished()
+      .then((failure) => {
+        if (failure) {
+          betaResponseCompletionFailures.push(String(failure));
+          return;
+        }
+        completedBetaRequests.add(request);
+      })
+      .catch((error) => betaResponseCompletionFailures.push(String(error)));
+  };
+  page.on("response", responseListener);
   const handler = async (route) => {
     const request = route.request();
-    const surface = request.method() === "GET"
-      ? delayedSurface(new URL(request.url()).pathname)
-      : null;
-    if (surface) {
-      delayed.add(surface);
-      await new Promise((resolve) => setTimeout(resolve, 300));
+    const pathname = new URL(request.url()).pathname;
+    const requestSurface = request.method() === "GET" ? delayedSurface(pathname) : null;
+    const gardenId = gardenIdFromRequest(request);
+    const isBetaTarget = request.method() === "GET"
+      && gardenId === beta.id
+      && requestSurface === surface;
+    const isHeldBetaResponse = !betaReleaseIssued && isBetaTarget;
+    if (isBetaTarget) {
+      betaTargetHeld = true;
+      timeline.push({ event: "beta-target-held", sequence: ++sequence, surface });
+    }
+    if (
+      request.method() === "GET"
+      && gardenId === alpha.id
+      && requestSurface === surface
+      && !alphaTargetStarted
+    ) {
+      alphaTargetStarted = true;
+      heldResponseCountWhenAlphaStarted = betaResolvers.length;
+      timeline.push({ event: "alpha-target-started", sequence: ++sequence, surface });
+    }
+    if (isHeldBetaResponse) {
+      heldBetaRequests.add(request);
+      await new Promise((resolve) => betaResolvers.push(resolve));
     }
     await route.continue();
+    if (isHeldBetaResponse) betaResponsesContinued += 1;
   };
   await context.route("**/api/**", handler);
+  let routeInstalled = true;
+  const gate = {
+    async waitForAlphaTarget(label) {
+      await waitFor(() => alphaTargetStarted, label);
+    },
+    async waitForBetaTarget(label) {
+      await waitFor(() => betaTargetHeld, label);
+    },
+    releaseBetaResponses() {
+      assert(!betaReleaseIssued, "A/B/A race released Beta responses more than once");
+      assert(betaTargetHeld, `A/B/A race released Beta before holding ${surface}`);
+      assert(alphaTargetStarted, `A/B/A race released Beta before Alpha ${surface} began`);
+      assert(betaResolvers.length > 0, "A/B/A race had no held Beta responses to release");
+      betaReleaseIssued = true;
+      timeline.push({ event: "beta-released", sequence: ++sequence, held: betaResolvers.length, surface });
+      for (const resolve of betaResolvers) resolve();
+    },
+  };
   try {
-    await action();
-  } finally {
+    await action(gate);
+    assert(betaReleaseIssued, "A/B/A race action completed without releasing Beta responses");
+    await waitFor(
+      () => betaResponsesContinued === betaResolvers.length,
+      "released Beta responses to continue",
+    );
     await context.unroute("**/api/**", handler);
+    routeInstalled = false;
+    await waitFor(
+      () => (
+        betaResponseCompletionFailures.length > 0
+        || completedBetaRequests.size === heldBetaRequests.size
+      ),
+      `released Beta ${surface} responses to finish`,
+    );
+    assert(
+      betaResponseCompletionFailures.length === 0,
+      `released Beta ${surface} response failed: ${betaResponseCompletionFailures.join(", ")}`,
+    );
+  } finally {
+    if (!betaReleaseIssued) {
+      betaReleaseIssued = true;
+      for (const resolve of betaResolvers) resolve();
+    }
+    if (routeInstalled) await context.unroute("**/api/**", handler);
     context.off("requestfailed", failureListener);
+    page.off("response", responseListener);
   }
   const addedFailures = diagnostics.requestFailures.length - failureMark;
   assert(addedFailures === aborted.length, "Delayed A/B/A produced an unaccounted request failure");
@@ -305,7 +446,21 @@ async function delayGardenSwitchResponses(context, diagnostics, action) {
     "Delayed A/B/A aborted a non-GET or non-API request",
   );
   diagnostics.requestFailures.splice(failureMark, addedFailures);
-  return [...delayed].sort();
+  const betaTarget = timeline.find((entry) => entry.event === "beta-target-held");
+  const alphaTarget = timeline.find((entry) => entry.event === "alpha-target-started");
+  const betaRelease = timeline.find((entry) => entry.event === "beta-released");
+  assert(betaTarget && alphaTarget && betaRelease, `A/B/A ${surface} timeline is incomplete`);
+  assert(
+    betaTarget.sequence < alphaTarget.sequence
+      && alphaTarget.sequence < betaRelease.sequence
+      && heldResponseCountWhenAlphaStarted > 0,
+    `A/B/A ${surface} did not overlap held Beta responses with Alpha requests`,
+  );
+  return {
+    beta_held_response_count: heldBetaRequests.size,
+    beta_response_completion_count: completedBetaRequests.size,
+    surface,
+  };
 }
 
 async function assertGlobalSearch(page, profile, alpha) {
@@ -337,10 +492,18 @@ async function addPlotAssignment(dialog, plotId) {
   await visible(dialog.locator(`.plot-chip[data-plot='${plotId}']`), `plot assignment ${plotId}`);
 }
 
-async function exercisePlantAndSavedView(page, diagnostics, fixture, alpha, profile = "desktop") {
-  const plantName = "Phase 1 Browser Mint";
+async function exercisePlantAndSavedView(
+  page,
+  diagnostics,
+  fixture,
+  alpha,
+  profile = "desktop",
+  lifecycleLabel = profile,
+) {
+  const suffix = lifecycleLabel.replace(/[^a-z0-9]+/gi, " ").trim();
+  const plantName = `Phase 1 Browser Mint ${suffix}`;
   const renamed = `${plantName} Edited`;
-  const savedViewName = "Phase 1 Browser Plant View";
+  const savedViewName = `Phase 1 Browser Plant View ${suffix}`;
   await openPlants(page, profile);
 
   await page.locator("#add-plant-btn").click();
@@ -432,16 +595,17 @@ async function exercisePlantAndSavedView(page, diagnostics, fixture, alpha, prof
   return { plantName: renamed, savedViewName };
 }
 
-async function mutateIndoorPlant(page, fixture, profile = "desktop") {
+async function mutateIndoorPlant(page, fixture, profile = "desktop", lifecycleLabel = profile) {
   await page.locator(profile === "mobile" ? "#mobile-tab-garden" : "#top-tab-garden").click();
   await page.locator("#sub-mode-indoor").click();
   const card = page.locator("#indoor-tab-content .indoor-card-wrapper")
     .filter({ hasText: fixture.phase_one.indoor.plant_name });
   await visible(card, "seeded indoor plant");
   await card.locator(".indoor-room-row button").click();
-  await card.locator(".indoor-room-input").fill("Phase 1 Browser Shelf");
+  const shelf = `Phase 1 Browser Shelf ${lifecycleLabel.replace(/[^a-z0-9]+/gi, " ").trim()}`;
+  await card.locator(".indoor-room-input").fill(shelf);
   await card.locator(".indoor-room-edit .btn-primary").click();
-  await visible(card.getByText("Phase 1 Browser Shelf", { exact: false }), "mutated indoor room");
+  await visible(card.getByText(shelf, { exact: false }), "mutated indoor room");
   await card.locator(".indoor-room-row button").click();
   await card.locator(".indoor-room-input").fill(fixture.phase_one.indoor.room_label);
   await card.locator(".indoor-room-edit .btn-primary").click();
@@ -485,46 +649,53 @@ async function deleteMapObjectRow(page, row, name) {
   await waitFor(async () => await page.getByText(name, { exact: true }).count() === 0, `delete ${name}`);
 }
 
-async function exercisePlotCreateAndEdit(page, profile, diagnostics) {
-  const plotId = profile === "mobile" ? "P1MOBILEPLOT" : "P1EDITORPLOT";
-  const renamedPlotId = `${plotId}EDITED`;
-  await openMap(page, profile);
-  await enableMapEditor(page, profile);
-  if (profile === "mobile") await closeMobileSurfaces(page);
-  const emptyCell = page.locator("#map-grid .empty-cell").first();
-  await visible(emptyCell, `${profile} empty map cell`);
-  await emptyCell.click();
-  const createDialog = page.locator("#create-plot-form");
-  await visible(createDialog, `${profile} create plot dialog`);
-  await createDialog.locator("input[name='plot_id']").fill(plotId);
-  const createResponsePromise = page.waitForResponse((response) => (
-    response.request().method() === "POST"
-    && new URL(response.url()).pathname === "/api/plots"
-  ));
-  await createDialog.locator("button[type='submit']").click();
-  assert((await createResponsePromise).status() === 201, `${profile} plot create failed`);
-  const createdPlot = page.locator(`.plot[data-plot-id='${plotId}']`);
-  await visible(createdPlot, `${profile} created plot`);
+async function tapMapTarget(page, target, label) {
+  const box = await target.boundingBox();
+  assert(box, `${label} has no visible touch geometry`);
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  const hitTarget = await target.evaluate((element, coordinates) => {
+    const hit = document.elementFromPoint(coordinates.x, coordinates.y);
+    return hit !== null && (hit === element || element.contains(hit));
+  }, { x, y });
+  assert(hitTarget, `${label} is not at its browser hit-test point`);
+  await page.touchscreen.tap(x, y);
+}
 
-  await createdPlot.click({ button: "right" });
-  const menu = page.locator(".context-menu");
-  await visible(menu, `${profile} plot context menu`);
-  await menu.locator(".menu-item-edit").click();
+async function editMobilePlotThroughBottomSheet(page, fromPlotId, toPlotId) {
+  const plot = page.locator(`.plot[data-plot-id='${fromPlotId}']`);
+  await visible(plot, `mobile plot ${fromPlotId}`);
+  await tapMapTarget(page, plot, `mobile plot ${fromPlotId}`);
+  const editAction = page.locator(`.drawer-edit-plot-btn[data-edit-plot='${fromPlotId}']`);
+  await visible(editAction, `mobile edit action for ${fromPlotId}`);
+  assert(
+    await editAction.getAttribute("aria-label") === "Edit plot",
+    "Mobile plot edit action is not discoverable by its accessible name",
+  );
+  await editAction.click();
   const editDialog = page.locator("#edit-plot-form");
-  await visible(editDialog, `${profile} edit plot dialog`);
-  await editDialog.locator("input[name='plot_name']").fill(renamedPlotId);
+  await visible(editDialog, `mobile plot edit dialog for ${fromPlotId}`);
+  await editDialog.locator("input[name='plot_name']").fill(toPlotId);
   const updateResponsePromise = page.waitForResponse((response) => (
     response.request().method() === "PATCH"
-    && new URL(response.url()).pathname === `/api/plots/${plotId}`
+    && new URL(response.url()).pathname === `/api/plots/${fromPlotId}`
   ));
   await editDialog.locator("button[type='submit']").click();
-  assert((await updateResponsePromise).ok(), `${profile} plot edit failed`);
-  const renamedPlot = page.locator(`.plot[data-plot-id='${renamedPlotId}']`);
-  await visible(renamedPlot, `${profile} renamed plot`);
+  assert((await updateResponsePromise).ok(), `Mobile plot edit failed for ${fromPlotId}`);
+  await visible(page.locator(`.plot[data-plot-id='${toPlotId}']`), `mobile renamed plot ${toPlotId}`);
+}
 
-  await renamedPlot.click({ button: "right" });
-  await visible(menu, `${profile} renamed plot context menu`);
-  const deletePath = `/api/plots/${renamedPlotId}`;
+async function deleteMobilePlotThroughBottomSheet(page, diagnostics, plotId) {
+  const plot = page.locator(`.plot[data-plot-id='${plotId}']`);
+  await visible(plot, `mobile plot ${plotId} ready to delete`);
+  await tapMapTarget(page, plot, `mobile plot ${plotId} ready to delete`);
+  const deleteAction = page.locator(`.drawer-delete-plot-btn[data-delete-plot='${plotId}']`);
+  await visible(deleteAction, `mobile delete action for ${plotId}`);
+  assert(
+    await deleteAction.getAttribute("aria-label") === "Delete plot",
+    "Mobile plot delete action is not discoverable by its accessible name",
+  );
+  const deletePath = `/api/plots/${plotId}`;
   const failureMark = diagnostics.requestFailures.length;
   const expectedAborts = [];
   const failureListener = (request) => {
@@ -534,19 +705,55 @@ async function exercisePlotCreateAndEdit(page, profile, diagnostics) {
       && failure.includes("ERR_ABORTED")) expectedAborts.push(deletePath);
   };
   page.on("requestfailed", failureListener);
-  await menu.locator(".menu-item-delete").click();
-  const deleteResponsePromise = page.waitForResponse((response) => (
-    response.request().method() === "DELETE"
-    && new URL(response.url()).pathname === deletePath
-  ));
-  await acceptConfirm(page);
-  assert((await deleteResponsePromise).status() === 204, `${profile} plot cleanup failed`);
-  await page.waitForTimeout(100);
-  page.off("requestfailed", failureListener);
+  try {
+    const deleteResponsePromise = page.waitForResponse((response) => (
+      response.request().method() === "DELETE"
+      && new URL(response.url()).pathname === deletePath
+    ));
+    await deleteAction.click();
+    await acceptConfirm(page);
+    assert((await deleteResponsePromise).status() === 204, `Mobile plot delete failed for ${plotId}`);
+    await waitFor(async () => await plot.count() === 0, `mobile plot deletion ${plotId}`);
+  } finally {
+    await page.waitForTimeout(100);
+    page.off("requestfailed", failureListener);
+  }
   const failuresAdded = diagnostics.requestFailures.length - failureMark;
-  assert(failuresAdded === expectedAborts.length, `${profile} plot cleanup produced an unrelated request failure`);
+  assert(
+    failuresAdded === expectedAborts.length,
+    "Mobile plot delete produced an unrelated request failure",
+  );
   diagnostics.requestFailures.splice(failureMark, failuresAdded);
-  await waitFor(async () => await renamedPlot.count() === 0, `${profile} plot deletion cleanup`);
+}
+
+async function seedMobilePlotForEditor(page) {
+  const plotId = "P1MOBILEPLOT";
+  await openMap(page, "mobile");
+  await enableMapEditor(page, "mobile");
+  await closeMobileSurfaces(page);
+  const emptyCell = page.locator("#map-grid .empty-cell").first();
+  await visible(emptyCell, "mobile empty map cell for editor handoff");
+  await emptyCell.click();
+  const createDialog = page.locator("#create-plot-form");
+  await visible(createDialog, "mobile plot create dialog for editor handoff");
+  await createDialog.locator("input[name='plot_id']").fill(plotId);
+  const createResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/plots"
+  ));
+  await createDialog.locator("button[type='submit']").click();
+  assert((await createResponsePromise).status() === 201, "Mobile plot seed for editor failed");
+  await visible(page.locator(`.plot[data-plot-id='${plotId}']`), "mobile plot seeded for editor");
+}
+
+async function exerciseDiscoverableMobilePlotEdit(page, diagnostics) {
+  const plotId = "P1MOBILEPLOT";
+  const renamedPlotId = `${plotId}EDITED`;
+  await openMap(page, "mobile");
+  await enableMapEditor(page, "mobile");
+  await closeMobileSurfaces(page);
+  await editMobilePlotThroughBottomSheet(page, plotId, renamedPlotId);
+  await deleteMobilePlotThroughBottomSheet(page, diagnostics, renamedPlotId);
 }
 
 async function moveMapObjectWithTouch(page, surface, objectId, alpha) {
@@ -567,23 +774,41 @@ async function moveMapObjectWithTouch(page, surface, objectId, alpha) {
   const endX = Math.min(gridBox.x + gridBox.width - 2, startX + cellWidth);
   const positionedLabel = page.locator(`.map-object-label[data-object-id='${objectId}']`);
   const styleBeforeTouchMove = await positionedLabel.getAttribute("style");
+  const hitTest = await surface.evaluate((element, { x, y }) => {
+    const hit = document.elementFromPoint(x, y);
+    return hit !== null && (hit === element || element.contains(hit));
+  }, { x: startX, y: startY });
+  assert(hitTest, "Touch manipulation start point does not hit the map-object surface");
   const geometryPath = `/api/gardens/${alpha.id}/map-objects/${objectId}`;
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === "PATCH"
     && new URL(response.url()).pathname === geometryPath
   ));
-  const pointer = {
-    button: 0,
-    buttons: 1,
-    clientX: startX,
-    clientY: startY,
-    isPrimary: true,
-    pointerId: 41,
-    pointerType: "touch",
-  };
-  await surface.dispatchEvent("pointerdown", pointer);
-  await surface.dispatchEvent("pointermove", { ...pointer, clientX: endX });
-  await surface.dispatchEvent("pointerup", { ...pointer, buttons: 0, clientX: endX });
+  const protocol = await page.context().newCDPSession(page);
+  const touchPoint = (x, y) => ({
+    force: 1,
+    id: 41,
+    radiusX: 1,
+    radiusY: 1,
+    x,
+    y,
+  });
+  try {
+    await protocol.send("Input.dispatchTouchEvent", {
+      touchPoints: [touchPoint(startX, startY)],
+      type: "touchStart",
+    });
+    await protocol.send("Input.dispatchTouchEvent", {
+      touchPoints: [touchPoint(endX, startY)],
+      type: "touchMove",
+    });
+    await protocol.send("Input.dispatchTouchEvent", {
+      touchPoints: [],
+      type: "touchEnd",
+    });
+  } finally {
+    await protocol.detach().catch(() => {});
+  }
   assert((await responsePromise).ok(), "Touch map object move PATCH failed");
   await waitFor(
     async () => await positionedLabel.getAttribute("style") !== styleBeforeTouchMove,
@@ -662,12 +887,28 @@ async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "de
   assert(createdUnit && typeof createdUnit.public_id === "string", "Created nested map unit has no public ID");
   const renamedUnit = `Phase 1 ${profile} nested unit edited`;
   const unitUpdatePath = `${unitCreatePath}/${createdUnit.public_id}`;
-  const unitUpdate = await issueBrowserRequest(page, {
-    body: { name: renamedUnit },
-    method: "PATCH",
-    path: unitUpdatePath,
-  });
-  assert(unitUpdate.status === 200, `Nested map unit edit returned ${unitUpdate.status}`);
+  const unitTile = detail.locator(".map-object-unit").filter({ hasText: createdUnit.name }).first();
+  await visible(unitTile, "created nested map unit tile");
+  await unitTile.click();
+  const unitForm = detail.locator(".map-object-unit-form");
+  await visible(unitForm, "nested map unit editor");
+  const unitIdentity = unitForm.locator(".map-object-identity-grid");
+  await unitIdentity.locator("input[type='text']").fill(renamedUnit);
+  await unitIdentity.locator("select").nth(0).selectOption("shelf");
+  await unitIdentity.locator("select").nth(1).selectOption("ellipse");
+  await unitIdentity.locator("input[type='color']").fill("#4c7e99");
+  const unitPosition = unitForm.locator(".map-object-position-grid input");
+  await unitPosition.nth(0).fill("2");
+  await unitPosition.nth(1).fill("2");
+  await unitPosition.nth(2).fill("1");
+  await unitPosition.nth(3).fill("1");
+  const unitUpdateResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === "PATCH"
+    && new URL(response.url()).pathname === unitUpdatePath
+  ));
+  await unitForm.locator("button[type='submit']").click();
+  assert((await unitUpdateResponsePromise).ok(), "Nested map unit editor PATCH failed");
+  await visible(detail.getByText(renamedUnit, { exact: true }), "nested unit editor update");
   const mapBoundsAfterMutation = await page.locator("#map-grid").boundingBox();
   assert(mapBoundsAfterMutation, "Map grid has no dimensions after object mutations");
   assert(
@@ -709,23 +950,28 @@ async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "de
   await waitFor(async () => await page.getByText(primary.name, { exact: true }).count() === 0, "map object UI cascade");
 }
 
-async function updateGardenSettings(page, alpha, profile = "desktop") {
+async function updateGardenSettings(page, alpha, profile = "desktop", mutationLabel = profile) {
   await openAdminGarden(page, profile);
   const address = page.locator("#adm-garden-address");
   await visible(address, "Garden settings address");
   const original = await address.inputValue();
-  const changed = profile === "mobile"
-    ? "Phase 1 mobile browser settings mutation"
-    : "Phase 1 browser settings mutation";
-  await address.fill(changed);
-  await page.locator("#adm-garden-save").click();
-  await waitFor(() => address.inputValue().then((value) => value === changed), "garden settings update");
-  await address.fill(original);
-  await page.locator("#adm-garden-save").click();
-  await waitFor(() => address.inputValue().then((value) => value === original), `garden ${alpha.name} settings restore`);
+  const changed = `Phase 1 ${mutationLabel} settings mutation`;
+  const settingsPath = `/api/gardens/${alpha.id}/settings`;
+  const saveAddress = async (value, label) => {
+    await address.fill(value);
+    const responsePromise = page.waitForResponse((response) => (
+      response.request().method() === "PATCH"
+      && new URL(response.url()).pathname === settingsPath
+    ));
+    await page.locator("#adm-garden-save").click();
+    assert((await responsePromise).ok(), `${label} settings PATCH failed`);
+    await waitFor(() => address.inputValue().then((current) => current === value), label);
+  };
+  await saveAddress(changed, "garden settings update");
+  await saveAddress(original, `garden ${alpha.name} settings restore`);
 }
 
-async function openAdminGarden(page, profile = "desktop") {
+async function openAdminGardenSection(page, profile = "desktop") {
   if (profile === "mobile") {
     await openMobileUtility(page);
     await page.locator("#mobile-admin-btn").click();
@@ -736,7 +982,33 @@ async function openAdminGarden(page, profile = "desktop") {
   const gardenNav = page.locator(".adm-nav-btn[data-section='garden']");
   await visible(gardenNav, "Garden settings navigation");
   await gardenNav.click();
+}
+
+async function openAdminGarden(page, profile = "desktop") {
+  await openAdminGardenSection(page, profile);
   await visible(page.locator("#adm-map-save-layout-btn"), "Admin map setup controls");
+}
+
+async function exerciseEditorGardenSettingsAndLayoutWrite(page, alpha, profile = "desktop") {
+  await updateGardenSettings(page, alpha, profile, `${profile} editor`);
+  await openAdminGarden(page, profile);
+  const north = page.locator("#adm-map-north-input");
+  await visible(north, "editor north-direction layout control");
+  const original = Number(await north.inputValue());
+  assert(Number.isInteger(original), "Editor north-direction control has no integer value");
+  const changed = (original + 1) % 360;
+  const applyNorth = async (degrees, label) => {
+    await north.fill(String(degrees));
+    const responsePromise = page.waitForResponse((response) => (
+      response.request().method() === "PATCH"
+      && new URL(response.url()).pathname === "/api/layout-state"
+    ));
+    await page.locator("#adm-map-north-apply-btn").click();
+    assert((await responsePromise).ok(), `${label} layout PATCH failed`);
+    await waitFor(() => north.inputValue().then((value) => value === String(degrees)), label);
+  };
+  await applyNorth(changed, "editor layout update");
+  await applyNorth(original, "editor layout restore");
 }
 
 async function saveMobileSnapshot(page, fixture) {
@@ -940,6 +1212,41 @@ async function exerciseMobileMapImport(page, diagnostics, password) {
   await closeMobileSurfaces(page);
 }
 
+function divergentMapImportFile(exportedPath, plotId, targetCell) {
+  let layout;
+  try {
+    layout = JSON.parse(fs.readFileSync(exportedPath, "utf8"));
+  } catch {
+    throw new Error("Exported map did not contain readable JSON");
+  }
+  assert(
+    layout && typeof layout === "object" && Array.isArray(layout.plots),
+    "Exported map did not contain a plot layout",
+  );
+  const plot = layout.plots.find((candidate) => candidate.plot_id === plotId);
+  assert(plot, `Exported map did not contain ${plotId}`);
+  const original = { col: Number(plot.grid_col), row: Number(plot.grid_row) };
+  assert(
+    Number.isInteger(original.row) && Number.isInteger(original.col),
+    `${plotId} did not have a positioned exported map cell`,
+  );
+  assert(
+    original.row !== targetCell.row || original.col !== targetCell.col,
+    "Divergent map import selected the plot's existing cell",
+  );
+  plot.grid_row = targetCell.row;
+  plot.grid_col = targetCell.col;
+  return {
+    file: {
+      buffer: Buffer.from(JSON.stringify(layout)),
+      mimeType: "application/json",
+      name: "divergent-successful-map.json",
+    },
+    original,
+    target: targetCell,
+  };
+}
+
 async function exerciseSnapshotsAndImport(page, diagnostics, password, alpha, beta) {
   const snapshotName = "Phase 1 Restore Snapshot";
   const rejectedImportRenderChurn = {};
@@ -952,6 +1259,8 @@ async function exerciseSnapshotsAndImport(page, diagnostics, password, alpha, be
 
   await page.keyboard.press("Escape");
   await enableMapEditor(page);
+  const snapshotRenderState = await captureMapRenderState(page);
+  const snapshotRenderCounts = mapRenderCounts(snapshotRenderState);
   const label = page.locator(".map-object-label").first();
   const objectId = await label.getAttribute("data-object-id");
   assert(objectId, "Snapshot divergence object has no public ID");
@@ -960,7 +1269,6 @@ async function exerciseSnapshotsAndImport(page, diagnostics, password, alpha, be
   const positionedLabel = page.locator(`.map-object-label[data-object-id='${objectId}']`);
   await visible(surface, "snapshot divergence map object");
   const before = await positionedLabel.getAttribute("style");
-  const plotCountBefore = await page.locator("#map-grid .plot").count();
   await surface.focus();
   await surface.press("ArrowRight");
   await waitFor(async () => await positionedLabel.getAttribute("style") !== before, "snapshot visible divergence");
@@ -972,9 +1280,40 @@ async function exerciseSnapshotsAndImport(page, diagnostics, password, alpha, be
   await row.locator(".snapshot-restore").click();
   await page.locator("[role='alertdialog'] .confirm-no").click();
   assert(await positionedLabel.getAttribute("style") === diverged, "Cancelled restore changed visible state");
+  const restoreObserver = await observeMapRenderChurn(page);
+  const replaceChildrenObserver = await observeMapReplaceChildren(page);
+  let snapshotRestoreChurn;
+  let snapshotRestoreRender;
   await row.locator(".snapshot-restore").click();
-  await authorizeSensitiveAction(page, password, { confirmFirst: true, reason: "phase-one-snapshot-restore" });
-  await waitFor(async () => await positionedLabel.getAttribute("style") === before, "snapshot restore postcondition");
+  try {
+    const restoreResponsePromise = page.waitForResponse((response) => (
+      response.request().method() === "POST"
+      && /^\/api\/snapshots\/[^/]+\/restore$/.test(new URL(response.url()).pathname)
+    ));
+    await authorizeSensitiveAction(page, password, { confirmFirst: true, reason: "phase-one-snapshot-restore" });
+    assert((await restoreResponsePromise).ok(), "Snapshot restore returned an error");
+    await waitFor(
+      async () => JSON.stringify(await captureMapRenderState(page)) === JSON.stringify(snapshotRenderState),
+      "snapshot restore rendered state",
+    );
+  } finally {
+    snapshotRestoreChurn = await restoreObserver.stop();
+    snapshotRestoreRender = await replaceChildrenObserver.stop();
+  }
+  const restoredSnapshotState = await captureMapRenderState(page);
+  const restoredSnapshotCounts = mapRenderCounts(restoredSnapshotState);
+  assert(
+    JSON.stringify(restoredSnapshotCounts) === JSON.stringify(snapshotRenderCounts),
+    "Snapshot restore changed rendered map counts",
+  );
+  assert(
+    totalRenderMutations(snapshotRestoreChurn) > 0,
+    "Successful snapshot restore produced no observed map render mutations",
+  );
+  assert(
+    snapshotRestoreRender.replace_children_calls === 1,
+    `Snapshot restore rendered ${snapshotRestoreRender.replace_children_calls} map-grid cycles instead of one`,
+  );
 
   await openAdminGarden(page);
   const exportedPath = await downloadMapExport(
@@ -983,16 +1322,53 @@ async function exerciseSnapshotsAndImport(page, diagnostics, password, alpha, be
     page.locator("#adm-map-export-btn"),
     "desktop map export",
   );
+  await openMap(page, "desktop");
+  await enableMapEditor(page);
+  const emptyCell = page.locator("#map-grid .empty-cell").first();
+  await visible(emptyCell, "empty cell for divergent map import");
+  const divergentImport = divergentMapImportFile(exportedPath, alpha.plot_id, await emptyCell.evaluate((cell) => ({
+    col: Number(cell.getAttribute("data-col")),
+    row: Number(cell.getAttribute("data-row")),
+  })));
+  const importStateBefore = await captureMapRenderState(page);
   const importResponse = await submitMapImport(page, password, {
-    file: exportedPath,
-    reason: "phase-one-map-import",
+    file: divergentImport.file,
+    reason: "phase-one-divergent-map-import",
   });
-  assert(importResponse.ok(), `Exported map import failed with ${importResponse.status()}`);
-  await waitFor(async () => await page.locator("#map-grid .plot").count() === plotCountBefore, "exported map import postcondition");
+  assert(importResponse.ok(), `Divergent map import failed with ${importResponse.status()}`);
+  const importedPlot = page.locator(`.plot[data-plot-id='${alpha.plot_id}']`);
+  await waitFor(async () => (
+    await importedPlot.getAttribute("data-row") === String(divergentImport.target.row)
+      && await importedPlot.getAttribute("data-col") === String(divergentImport.target.col)
+  ), "divergent successful map import state");
+  const divergentImportState = await captureMapRenderState(page);
+  assert(
+    JSON.stringify(divergentImportState) !== JSON.stringify(importStateBefore),
+    "Successful map import did not render divergent state",
+  );
   await page.waitForLoadState("networkidle");
+
+  await openAdminGarden(page);
+  await page.locator("#adm-map-layouts-btn").click();
+  row = page.locator("#map-layouts-dialog .snapshot-row").filter({ hasText: snapshotName });
+  await visible(row, "snapshot available to restore divergent import");
+  const finalRestoreResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && /^\/api\/snapshots\/[^/]+\/restore$/.test(new URL(response.url()).pathname)
+  ));
+  await row.locator(".snapshot-restore").click();
+  await authorizeSensitiveAction(page, password, { confirmFirst: true, reason: "phase-one-restore-divergent-import" });
+  assert((await finalRestoreResponsePromise).ok(), "Final snapshot restore returned an error");
+  await waitFor(async () => (
+    await importedPlot.getAttribute("data-row") === String(divergentImport.original.row)
+      && await importedPlot.getAttribute("data-col") === String(divergentImport.original.col)
+  ), "snapshot restoration after divergent import");
+  await waitFor(
+    async () => JSON.stringify(await captureMapRenderState(page)) === JSON.stringify(snapshotRenderState),
+    "restored snapshot state after divergent import",
+  );
   await openMap(page, "desktop");
   await waitForMapObject(page, alpha.object_public_id, alpha.object_label);
-  await page.waitForTimeout(100);
 
   await openMap(page, "desktop");
   rejectedImportRenderChurn.unsupported_schema = await assertRejectedMapImport(page, diagnostics, password, {
@@ -1049,7 +1425,22 @@ async function exerciseSnapshotsAndImport(page, diagnostics, password, alpha, be
   await authorizeSensitiveAction(page, password, { reason: "phase-one-snapshot-delete" });
   await waitFor(async () => await page.getByText(snapshotName, { exact: true }).count() === 0, "snapshot deletion");
   await page.keyboard.press("Escape");
-  return rejectedImportRenderChurn;
+  return {
+    rejected_import_render_churn: rejectedImportRenderChurn,
+    successful_map_state_transitions: {
+      divergent_import: {
+        imported_cell: divergentImport.target,
+        original_cell: divergentImport.original,
+        target_plot_id: alpha.plot_id,
+      },
+      snapshot_restore: {
+        mutation_count: totalRenderMutations(snapshotRestoreChurn),
+        replace_children_calls: snapshotRestoreRender.replace_children_calls,
+        restored_render_counts: restoredSnapshotCounts,
+        snapshot_render_counts: snapshotRenderCounts,
+      },
+    },
+  };
 }
 
 async function assertEditorAffordances(page, guarded, profile) {
@@ -1063,6 +1454,7 @@ async function assertEditorAffordances(page, guarded, profile) {
   assert(!await addPlant.isDisabled(), "Editor add plant control is disabled");
   await openMap(page, profile);
   const editButton = page.locator("#edit-mode-btn");
+  if (profile === "mobile") await page.locator("#mobile-map-layers-btn").click();
   await visible(editButton, "editor map edit affordance");
   assert(!await editButton.isDisabled(), "Editor map edit control is disabled");
   await assertExpectedBrowserFailure(page, guarded.diagnostics, {
@@ -1070,6 +1462,29 @@ async function assertEditorAffordances(page, guarded, profile) {
     method: "GET",
     path: "/api/plots/export",
   });
+}
+
+async function assertViewerSettingsWriteUnavailable(page, profile) {
+  if (profile === "mobile") {
+    await openMobileUtility(page);
+    const admin = page.locator("#mobile-admin-btn");
+    await visible(admin, "viewer mobile admin entry");
+    await admin.click();
+    await closeMobileSurfaces(page);
+  } else {
+    const admin = page.locator("#top-tab-admin");
+    await visible(admin, "viewer desktop admin entry");
+    await admin.click();
+  }
+  await waitFor(
+    async () => await page.locator(".adm-layout").count() > 0,
+    "viewer admin panel",
+  );
+  const save = page.locator("#adm-garden-save");
+  assert(
+    await save.count() === 0 || await save.isDisabled(),
+    "Viewer garden-settings save control is writable",
+  );
 }
 
 async function assertViewerDenied(page, alpha, guarded, profile, { directMutation = false } = {}) {
@@ -1093,20 +1508,37 @@ async function assertViewerDenied(page, alpha, guarded, profile, { directMutatio
     await page.locator("#indoor-tab-content .indoor-room-row button").count() === 0,
     "Viewer indoor room edit affordance is visible",
   );
+  await assertViewerSettingsWriteUnavailable(page, profile);
   await openMap(page, profile);
   const editButton = page.locator("#edit-mode-btn");
   if (await editButton.count()) assert(await editButton.isDisabled(), "Viewer Edit control is enabled");
   if (profile === "mobile") {
     assert(await page.locator("#mobile-import-map-btn").isDisabled(), "Viewer mobile import control is enabled");
     assert(await page.locator("#mobile-fab").isDisabled(), "Viewer mobile quick action control is enabled");
+    await page.locator("#mobile-map-layers-btn").click();
+    await visible(page.locator("#map-layers-panel"), "viewer mobile map layers");
+  }
+  const mapObjectRow = page.locator("#map-objects-panel .map-object-row")
+    .filter({ hasText: alpha.object_label });
+  await visible(mapObjectRow, "viewer map-object inspection row");
+  await mapObjectRow.locator(".map-object-row-main").click();
+  const unitTile = page.locator("#map-objects-panel .map-object-unit").first();
+  await visible(unitTile, "viewer nested-unit inspection tile");
+  assert(!await unitTile.isDisabled(), "Viewer nested-unit inspection tile is disabled");
+  await unitTile.click();
+  const unitForm = page.locator("#map-objects-panel .map-object-unit-form");
+  await visible(unitForm, "viewer nested-unit inspection form");
+  const unitControls = unitForm.locator("input, select, button");
+  assert(await unitControls.count() > 0, "Viewer nested-unit inspection form has no controls");
+  for (let index = 0; index < await unitControls.count(); index += 1) {
+    assert(await unitControls.nth(index).isDisabled(), "Viewer nested-unit inspection mutation control is enabled");
   }
   const writeControls = page.locator(
     "#map-objects-panel .map-object-create-row button, "
     + "#map-objects-panel .map-object-submit-btn, "
     + "#map-objects-panel .map-object-icon-btn, "
     + "#map-objects-panel .map-object-geometry-form input, "
-    + "#map-objects-panel .map-object-geometry-form select, "
-    + "#map-objects-panel .map-object-unit",
+    + "#map-objects-panel .map-object-geometry-form select",
   );
   const count = await writeControls.count();
   for (let index = 0; index < count; index += 1) {
@@ -1128,55 +1560,607 @@ async function assertViewerDenied(page, alpha, guarded, profile, { directMutatio
       method: "POST",
       path: `/api/gardens/${alpha.id}/map-objects`,
     });
+    await assertExpectedBrowserFailure(page, guarded.diagnostics, {
+      body: { address: "Viewer denied settings mutation" },
+      label: "viewer garden-settings mutation denial",
+      method: "PATCH",
+      path: `/api/gardens/${alpha.id}/settings`,
+    });
+    await assertExpectedBrowserFailure(page, guarded.diagnostics, {
+      body: { name: "Viewer denied snapshot" },
+      headers: { "x-action-reason": "viewer-snapshot-denial" },
+      label: "viewer snapshot write denial",
+      method: "POST",
+      path: "/api/snapshots",
+    });
+    await assertExpectedBrowserFailure(page, guarded.diagnostics, {
+      body: { plots: [], schema_version: 1 },
+      headers: { "x-action-reason": "viewer-import-denial" },
+      label: "viewer map import denial",
+      method: "POST",
+      path: "/api/plots/import",
+    });
   }
 }
 
-async function exerciseDelayedGardenSwitch(page, context, diagnostics, fixture, profile, alpha, beta) {
-  await openMap(page, profile);
-  const delayed = await delayGardenSwitchResponses(context, diagnostics, async () => {
-    await selectGarden(page, profile, beta);
-    if (profile === "mobile") await closeMobileSurfaces(page);
-    await openPlants(page, profile);
-    await page.locator(profile === "mobile" ? "#mobile-tab-insights" : "#top-tab-insights").click();
-    const weatherResponsePromise = page.waitForResponse((response) => (
-      new URL(response.url()).pathname === "/api/weather/summary"
-    ));
-    await page.locator(".insights-mode-toggle [data-sub-mode='care']").first().click();
-    await weatherResponsePromise;
-    await page.locator(profile === "mobile" ? "#mobile-tab-map" : "#top-tab-map").click();
-    if (profile === "mobile") {
-      await openMobileUtility(page);
-      await page.locator("#mobile-notification-btn").click();
-      await closeMobileSurfaces(page);
-    } else {
-      await page.locator("#notification-bell").click();
-      await page.locator("#notification-bell").click().catch(() => {});
-    }
-    await page.locator(profile === "mobile" ? "#mobile-tab-garden" : "#top-tab-garden").click();
-    await page.locator("#sub-mode-indoor").click();
-    await selectGarden(page, profile, alpha);
-    if (profile === "mobile") await closeMobileSurfaces(page);
-    if (profile === "desktop") {
-      await page.locator("#top-tab-admin").click();
-      const gardenNav = page.locator(".adm-nav-btn[data-section='garden']");
-      if (await gardenNav.count()) await gardenNav.click();
-    }
-    await openMap(page, profile);
-    await waitForMapObject(page, alpha.object_public_id, alpha.object_label);
-    await page.waitForLoadState("networkidle");
-    await page.waitForTimeout(500);
-  });
-  const required = ["plants", "weather", "plot-alerts", "notifications", "map-objects", "layout", "indoor"];
-  if (profile === "desktop") required.push("admin-settings");
-  for (const surface of required) {
-    assert(delayed.includes(surface), `${profile} delayed A/B/A did not cover ${surface}`);
+async function ensureNotificationPanelOpen(page, profile) {
+  const panel = page.locator("#notification-panel");
+  if (await panel.isVisible().catch(() => false)) return panel;
+  if (profile === "mobile") {
+    await openMobileUtility(page);
+    await page.locator("#mobile-notification-btn").click();
+  } else {
+    await page.locator("#notification-bell").click();
   }
-  assert(
-    !await page.locator(`.map-object-label[data-object-id='${beta.object_public_id}']`).isVisible().catch(() => false),
-    `${profile} rendered stale Beta map object after delayed A/B/A`,
+  await visible(panel, "notification panel");
+  return panel;
+}
+
+const GARDEN_RACE_SURFACES = [
+  "plots",
+  "layout",
+  "map-objects",
+  "plants",
+  "saved-views",
+  "indoor",
+  "admin-settings",
+  "notifications",
+  "plot-alerts",
+  "weather",
+];
+
+function weatherRaceTitle(garden, alpha) {
+  return garden.id === alpha.id
+    ? "Frost warning: -1°C expected"
+    : "Frost warning: -9°C expected";
+}
+
+async function gardenSwitchIsPending(page) {
+  return page.locator("body").evaluate((body) => body.classList.contains("garden-switch-pending"));
+}
+
+async function waitForGardenSwitchSettled(page, label) {
+  await waitFor(
+    () => page.locator("body").evaluate((body) => !body.classList.contains("garden-switch-pending")),
+    label,
   );
-  await visible(page.locator(`.plot[data-plot-id='${alpha.plot_id}']`), "Alpha plot after delayed A/B/A");
-  return delayed;
+}
+
+async function dispatchGardenSelection(page, profile, garden) {
+  const selector = profile === "mobile" ? "#mobile-garden-select" : "#garden-select";
+  await page.evaluate(({ gardenId, selectSelector }) => {
+    const select = document.querySelector(selectSelector);
+    if (!(select instanceof HTMLSelectElement)) {
+      throw new Error(`Missing controlled garden selector ${selectSelector}`);
+    }
+    select.value = String(gardenId);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }, { gardenId: garden.id, selectSelector: selector });
+}
+
+async function selectGardenForRace(page, profile, garden) {
+  if (!await gardenSwitchIsPending(page)) {
+    await selectGarden(page, profile, garden);
+    return "physical";
+  }
+  await dispatchGardenSelection(page, profile, garden);
+  return "controlled";
+}
+
+async function triggerGardenRaceSurface(page, profile, surface) {
+  const selector = surface === "saved-views"
+    ? "#saved-views-trigger"
+    : (surface === "notifications"
+      ? (profile === "mobile" ? "#mobile-notification-btn" : "#notification-bell")
+      : null);
+  if (!selector) return "automatic";
+  const trigger = page.locator(selector);
+  if (!await gardenSwitchIsPending(page) && await trigger.isVisible().catch(() => false)) {
+    await trigger.click();
+    return "physical";
+  }
+  // Switching deliberately makes interactive roots inert. This invokes the existing UI
+  // handler only when a physical click is unavailable, so it still starts the real GET.
+  await page.evaluate((triggerSelector) => {
+    const trigger = document.querySelector(triggerSelector);
+    if (!(trigger instanceof HTMLElement)) {
+      throw new Error(`Missing pending race trigger ${triggerSelector}`);
+    }
+    trigger.click();
+  }, selector);
+  return "controlled";
+}
+
+async function openIndoor(page, profile) {
+  await page.locator(profile === "mobile" ? "#mobile-tab-garden" : "#top-tab-garden").click();
+  await page.locator("#sub-mode-indoor").click();
+}
+
+async function openCare(page, profile) {
+  await page.locator(profile === "mobile" ? "#mobile-tab-insights" : "#top-tab-insights").click();
+  const care = page.locator(".insights-mode-toggle [data-sub-mode='care']").first();
+  await visible(care, "care mode action");
+  await care.click();
+}
+
+async function captureLayoutDomState(page) {
+  return page.locator("#map-grid").evaluate((grid) => {
+    const house = grid.querySelector("#house");
+    const northLabels = ["map-edge-top", "map-edge-right", "map-edge-bottom", "map-edge-left"]
+      .map((id) => document.getElementById(id)?.textContent ?? "");
+    return {
+      grid_columns: grid.style.getPropertyValue("--grid-cols"),
+      grid_label: grid.dataset.gridLabel ?? null,
+      grid_rows: grid.style.getPropertyValue("--grid-rows"),
+      house: house instanceof HTMLElement ? {
+        grid_column: house.style.gridColumn,
+        grid_row: house.style.gridRow,
+      } : null,
+      north_degrees: grid.dataset.northDegrees ?? null,
+      north_labels: northLabels,
+    };
+  });
+}
+
+async function assertLayoutDomState(page, expected, label) {
+  const actual = await captureLayoutDomState(page);
+  assert(actual.house, `${label} has no rendered house`);
+  assert(
+    JSON.stringify(actual) === JSON.stringify(expected),
+    `${label} changed after delayed A/B/A: ${JSON.stringify(actual)}`,
+  );
+}
+
+async function applyAdminNorthDirection(page, profile, degrees, label) {
+  await openAdminGarden(page, profile);
+  const north = page.locator("#adm-map-north-input");
+  await visible(north, `${label} north-direction control`);
+  await north.fill(String(degrees));
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === "PATCH"
+    && new URL(response.url()).pathname === "/api/layout-state"
+  ));
+  await page.locator("#adm-map-north-apply-btn").click();
+  assert((await responsePromise).ok(), `${label} layout PATCH failed`);
+  await waitFor(() => north.inputValue().then((value) => value === String(degrees)), label);
+}
+
+async function stageAlphaLayoutRaceState(page, profile) {
+  await openAdminGarden(page, profile);
+  const north = page.locator("#adm-map-north-input");
+  await visible(north, "Alpha layout race north-direction control");
+  const originalNorth = Number(await north.inputValue());
+  assert(Number.isInteger(originalNorth), "Alpha layout race north direction is not an integer");
+  const raceNorth = (originalNorth + 17) % 360;
+  await applyAdminNorthDirection(page, profile, raceNorth, "Alpha layout race setup");
+  await openMap(page, profile);
+  return { original_north: originalNorth, race_north: raceNorth };
+}
+
+async function restoreAlphaLayoutRaceState(page, profile, state) {
+  await applyAdminNorthDirection(page, profile, state.original_north, "Alpha layout race cleanup");
+  await openMap(page, profile);
+}
+
+async function prepareGardenRaceSurface(page, fixture, profile, alpha, surface) {
+  switch (surface) {
+    case "plots":
+    case "layout":
+    case "map-objects":
+      await openMap(page, profile);
+      await visible(page.locator(`.plot[data-plot-id='${alpha.plot_id}']`), `${surface} Alpha map preparation`);
+      if (surface === "map-objects") {
+        await waitForMapObject(page, alpha.object_public_id, alpha.object_label);
+      }
+      return;
+    case "plants":
+      await openPlants(page, profile);
+      await visible(plantRecord(page, profile, alpha.plant_name), "Alpha plants race preparation");
+      return;
+    case "saved-views":
+      await openPlants(page, profile);
+      await page.locator("#saved-views-trigger").click();
+      await visible(
+        page.locator("#saved-views-dropdown .saved-views-item")
+          .filter({ hasText: fixture.phase_one.saved_view.label }),
+        "Alpha saved-view race preparation",
+      );
+      return;
+    case "indoor": {
+      await openIndoor(page, profile);
+      const indoor = page.locator("#indoor-tab-content .indoor-card-wrapper")
+        .filter({ hasText: fixture.phase_one.indoor.plant_name });
+      await visible(indoor, "Alpha indoor race preparation");
+      return;
+    }
+    case "admin-settings":
+      await openAdminGarden(page, profile);
+      await visible(page.locator("#adm-garden-name"), "Alpha settings race preparation");
+      return;
+    case "notifications":
+      await openMap(page, profile);
+      await ensureNotificationPanelOpen(page, profile);
+      await visible(page.getByText(alpha.notification_title, { exact: true }), "Alpha notifications race preparation");
+      return;
+    case "plot-alerts":
+      await openMap(page, profile);
+      await visible(
+        page.locator(`.plot[data-plot-id='${alpha.plot_id}'] .plot-indicators`),
+        "Alpha plot-alert race preparation",
+      );
+      return;
+    case "weather":
+      await openCare(page, profile);
+      await visible(page.getByText(weatherRaceTitle(alpha, alpha), { exact: true }), "Alpha weather race preparation");
+      return;
+    default:
+      throw new Error(`Unsupported delayed garden race surface ${surface}`);
+  }
+}
+
+async function waitForAlphaSurfaceContentBeforeRelease(
+  page,
+  fixture,
+  profile,
+  alpha,
+  surface,
+  { alphaLayoutState = null } = {},
+) {
+  switch (surface) {
+    case "plots":
+      await visible(page.locator(`.plot[data-plot-id='${alpha.plot_id}']`), "Alpha plots before Beta release");
+      return;
+    case "layout":
+      assert(alphaLayoutState, "Alpha layout state was not captured before release");
+      await waitFor(async () => {
+        const actual = await captureLayoutDomState(page);
+        return JSON.stringify(actual) === JSON.stringify(alphaLayoutState);
+      }, "Alpha layout state before Beta release");
+      return;
+    case "map-objects":
+      await waitForMapObject(page, alpha.object_public_id, `Alpha ${surface} before Beta release`);
+      return;
+    case "plants":
+      await visible(plantRecord(page, profile, alpha.plant_name), "Alpha plants before Beta release");
+      return;
+    case "saved-views":
+      await visible(
+        page.locator("#saved-views-dropdown .saved-views-item")
+          .filter({ hasText: fixture.phase_one.saved_view.label }),
+        "Alpha saved view before Beta release",
+      );
+      return;
+    case "indoor":
+      await visible(
+        page.locator("#indoor-tab-content .indoor-card-wrapper")
+          .filter({ hasText: fixture.phase_one.indoor.plant_name }),
+        "Alpha indoor content before Beta release",
+      );
+      return;
+    case "admin-settings":
+      await visible(page.locator("#adm-garden-name"), "Alpha settings before Beta release");
+      return;
+    case "notifications":
+      await visible(page.getByText(alpha.notification_title, { exact: true }), "Alpha notification before Beta release");
+      return;
+    case "plot-alerts":
+      await visible(
+        page.locator(`.plot[data-plot-id='${alpha.plot_id}'] .plot-indicators`),
+        "Alpha plot alert before Beta release",
+      );
+      return;
+    case "weather":
+      await visible(page.getByText(weatherRaceTitle(alpha, alpha), { exact: true }), "Alpha weather before Beta release");
+      return;
+    default:
+      throw new Error(`Unsupported Alpha pending assertion ${surface}`);
+  }
+}
+
+async function assertBetaSurfaceDidNotLandWhileHeld(page, profile, alpha, beta, surface) {
+  switch (surface) {
+    case "plots":
+      assert(
+        await page.locator(`.plot[data-plot-id='${beta.plot_id}']`).count() === 0,
+        "Held Beta plots content landed before release",
+      );
+      return;
+    case "map-objects":
+      assert(
+        await page.locator(`.map-object-label[data-object-id='${beta.object_public_id}']`).count() === 0,
+        "Held Beta map-object content landed before release",
+      );
+      return;
+    case "plants":
+      assert(await plantRecord(page, profile, beta.plant_name).count() === 0, "Held Beta plants content landed before release");
+      return;
+    case "indoor":
+      assert(
+        await page.locator("#indoor-tab-content").getByText(beta.plant_name, { exact: true }).count() === 0,
+        "Held Beta indoor content landed before release",
+      );
+      return;
+    case "notifications":
+      assert(
+        await page.getByText(beta.notification_title, { exact: true }).count() === 0,
+        "Held Beta notification content landed before release",
+      );
+      return;
+    case "plot-alerts":
+      assert(
+        await page.locator(`.plot[data-plot-id='${beta.plot_id}'] .plot-indicators`).count() === 0,
+        "Held Beta plot-alert content landed before release",
+      );
+      return;
+    case "weather":
+      assert(
+        await page.getByText(weatherRaceTitle(beta, alpha), { exact: true }).count() === 0,
+        "Held Beta weather content landed before release",
+      );
+      return;
+    case "layout":
+    case "saved-views":
+    case "admin-settings":
+      return;
+    default:
+      throw new Error(`Unsupported held Beta assertion ${surface}`);
+  }
+}
+
+async function assertAlphaSurfaceAfterGardenRace(
+  page,
+  fixture,
+  profile,
+  alpha,
+  beta,
+  surface,
+  { alphaLayoutState = null } = {},
+) {
+  switch (surface) {
+    case "plots":
+      await openMap(page, profile);
+      await visible(page.locator(`.plot[data-plot-id='${alpha.plot_id}']`), "Alpha plots after delayed A/B/A");
+      assert(
+        await page.locator(`.plot[data-plot-id='${beta.plot_id}']`).count() === 0,
+        `${profile} rendered stale Beta plots content after delayed A/B/A`,
+      );
+      return;
+    case "layout":
+      assert(alphaLayoutState, "Alpha layout state was not captured before delayed A/B/A");
+      await assertLayoutDomState(page, alphaLayoutState, "Alpha layout DOM state");
+      await visible(page.locator(`.plot[data-plot-id='${alpha.plot_id}']`), "Alpha layout plot after delayed A/B/A");
+      return;
+    case "map-objects":
+      await openMap(page, profile);
+      await waitForMapObject(page, alpha.object_public_id, alpha.object_label);
+      assert(
+        await page.locator(`.map-object-label[data-object-id='${beta.object_public_id}']`).count() === 0,
+        `${profile} rendered stale Beta map object after delayed A/B/A`,
+      );
+      return;
+    case "plants":
+      await openPlants(page, profile);
+      await visible(plantRecord(page, profile, alpha.plant_name), "Alpha plants after delayed A/B/A");
+      assert(await plantRecord(page, profile, beta.plant_name).count() === 0, `${profile} rendered stale Beta plants after delayed A/B/A`);
+      return;
+    case "saved-views":
+      await visible(
+        page.locator("#saved-views-dropdown .saved-views-item")
+          .filter({ hasText: fixture.phase_one.saved_view.label }),
+        "Alpha saved view retained after delayed A/B/A",
+      );
+      return;
+    case "indoor":
+      await openIndoor(page, profile);
+      await visible(
+        page.locator("#indoor-tab-content .indoor-card-wrapper")
+          .filter({ hasText: fixture.phase_one.indoor.plant_name }),
+        "Alpha indoor content after delayed A/B/A",
+      );
+      assert(
+        await page.locator("#indoor-tab-content").getByText(beta.plant_name, { exact: true }).count() === 0,
+        `${profile} rendered stale Beta indoor content after delayed A/B/A`,
+      );
+      return;
+    case "admin-settings": {
+      await openAdminGarden(page, profile);
+      const name = page.locator("#adm-garden-name");
+      await visible(name, "Alpha garden settings after delayed A/B/A");
+      assert(await name.inputValue() === alpha.name, `${profile} rendered Beta garden settings after delayed A/B/A`);
+      assert(await name.inputValue() !== beta.name, `${profile} retained Beta garden settings after delayed A/B/A`);
+      return;
+    }
+    case "notifications":
+      await openMap(page, profile);
+      await ensureNotificationPanelOpen(page, profile);
+      await visible(page.getByText(alpha.notification_title, { exact: true }), "Alpha notification after delayed A/B/A");
+      assert(
+        await page.getByText(beta.notification_title, { exact: true }).count() === 0,
+        `${profile} rendered stale Beta notifications after delayed A/B/A`,
+      );
+      return;
+    case "plot-alerts":
+      await openMap(page, profile);
+      await visible(
+        page.locator(`.plot[data-plot-id='${alpha.plot_id}'] .plot-indicators`),
+        "Alpha plot alerts after delayed A/B/A",
+      );
+      assert(
+        await page.locator(`.plot[data-plot-id='${beta.plot_id}'] .plot-indicators`).count() === 0,
+        `${profile} rendered stale Beta plot alerts after delayed A/B/A`,
+      );
+      return;
+    case "weather":
+      await openCare(page, profile);
+      await visible(page.getByText(weatherRaceTitle(alpha, alpha), { exact: true }), "Alpha weather after delayed A/B/A");
+      assert(
+        await page.getByText(weatherRaceTitle(beta, alpha), { exact: true }).count() === 0,
+        `${profile} rendered stale Beta weather after delayed A/B/A`,
+      );
+      return;
+    default:
+      throw new Error(`Unsupported delayed garden race surface ${surface}`);
+  }
+}
+
+async function stageDesktopAdminSettingsDraft(page) {
+  const form = page.locator("#adm-garden-settings-form");
+  const address = page.locator("#adm-garden-address");
+  await visible(form, "Alpha garden settings draft form");
+  await visible(address, "Alpha garden settings draft address");
+  const baselineAddress = await address.inputValue();
+  const draft = "Phase 1 desktop Alpha A/B/A unsaved settings draft";
+  await address.fill(draft);
+  assert(await address.inputValue() === draft, "Could not stage recognizable Alpha garden settings draft");
+  return { baselineAddress, draft };
+}
+
+async function assertDraftDoesNotBelongToBeta(page, beta, draft) {
+  const state = await page.evaluate(() => {
+    const form = document.querySelector("#adm-garden-settings-form");
+    const address = document.querySelector("#adm-garden-address");
+    return {
+      address: address instanceof HTMLInputElement ? address.value : null,
+      gardenId: form instanceof HTMLElement ? form.dataset.gardenId ?? null : null,
+    };
+  });
+  assert(
+    !(state.gardenId === String(beta.id) && state.address === draft),
+    "Beta garden settings received the Alpha unsaved draft",
+  );
+}
+
+async function assertAlphaDraftRestored(page, alpha, draft) {
+  await waitFor(async () => {
+    const form = page.locator("#adm-garden-settings-form");
+    const address = page.locator("#adm-garden-address");
+    return (
+      await form.getAttribute("data-garden-id") === String(alpha.id)
+      && await address.inputValue() === draft
+    );
+  }, "Alpha garden settings draft restoration");
+}
+
+async function restoreDesktopAdminSettingsDraftBaseline(page, profile, draftState) {
+  const address = page.locator("#adm-garden-address");
+  await address.fill(draftState.baselineAddress);
+  await openMap(page, profile);
+  await openAdminGarden(page, profile);
+  assert(
+    await page.locator("#adm-garden-address").inputValue() === draftState.baselineAddress,
+    "Alpha settings draft baseline did not return without persisting",
+  );
+}
+
+async function exerciseDelayedGardenSwitch(
+  page,
+  context,
+  diagnostics,
+  fixture,
+  profile,
+  alpha,
+  beta,
+  { surfaces = GARDEN_RACE_SURFACES } = {},
+) {
+  assert(Array.isArray(surfaces) && surfaces.length > 0, "Delayed garden race requires at least one surface");
+  assert(
+    surfaces.every((surface) => GARDEN_RACE_SURFACES.includes(surface)),
+    "Delayed garden race received an unsupported surface",
+  );
+  assert(new Set(surfaces).size === surfaces.length, "Delayed garden race repeated a surface");
+  const delayedEvidence = {
+    alpha_started_surfaces: [],
+    beta_held_response_count: 0,
+    beta_held_surfaces: [],
+    per_surface: {},
+  };
+  for (const surface of surfaces) {
+    const layoutRaceState = surface === "layout"
+      ? await stageAlphaLayoutRaceState(page, profile)
+      : null;
+    await prepareGardenRaceSurface(page, fixture, profile, alpha, surface);
+    const alphaLayoutState = surface === "layout" ? await captureLayoutDomState(page) : null;
+    const draftState = profile === "desktop" && surface === "admin-settings"
+      ? await stageDesktopAdminSettingsDraft(page)
+      : null;
+    const settingsPatches = [];
+    const settingsPatchListener = (request) => {
+      if (
+        request.method() === "PATCH"
+        && new URL(request.url()).pathname === `/api/gardens/${alpha.id}/settings`
+      ) settingsPatches.push(request.url());
+    };
+    if (draftState) page.on("request", settingsPatchListener);
+    try {
+      const surfaceRace = await delayGardenSwitchResponses(
+        page,
+        context,
+        diagnostics,
+        { alpha, beta },
+        surface,
+        async (gate) => {
+          await selectGarden(page, profile, beta);
+          const betaTriggerMode = await triggerGardenRaceSurface(page, profile, surface);
+          await gate.waitForBetaTarget(`${profile} held Beta ${surface}`);
+          if (draftState) await assertDraftDoesNotBelongToBeta(page, beta, draftState.draft);
+
+          // A held active-surface request retains the app's inert switch guard. Background
+          // requests may settle first, in which case the normal selector remains usable.
+          const alphaSelectionMode = await selectGardenForRace(page, profile, alpha);
+          const alphaTriggerMode = await triggerGardenRaceSurface(page, profile, surface);
+          await gate.waitForAlphaTarget(`${profile} started Alpha ${surface}`);
+          await waitForAlphaSurfaceContentBeforeRelease(
+            page, fixture, profile, alpha, surface, { alphaLayoutState },
+          );
+          if (draftState) await assertAlphaDraftRestored(page, alpha, draftState.draft);
+          await assertBetaSurfaceDidNotLandWhileHeld(page, profile, alpha, beta, surface);
+          gate.releaseBetaResponses();
+          delayedEvidence.per_surface[surface] = {
+            alpha_selection_mode: alphaSelectionMode,
+            alpha_target_started: true,
+            alpha_trigger_mode: alphaTriggerMode,
+            beta_content_never_landed: true,
+            beta_response_completion_count: 0,
+            beta_target_held: true,
+            beta_trigger_mode: betaTriggerMode,
+          };
+        },
+      );
+      await waitForGardenSwitchSettled(page, `${profile} ${surface} switch settlement`);
+      await assertAlphaSurfaceAfterGardenRace(
+        page, fixture, profile, alpha, beta, surface, { alphaLayoutState },
+      );
+      if (layoutRaceState) {
+        await restoreAlphaLayoutRaceState(page, profile, layoutRaceState);
+      }
+      if (draftState) {
+        await assertAlphaDraftRestored(page, alpha, draftState.draft);
+        await restoreDesktopAdminSettingsDraftBaseline(page, profile, draftState);
+        assert(settingsPatches.length === 0, "Unsaved Alpha settings draft cleanup persisted a PATCH");
+        delayedEvidence.admin_settings_draft_isolation = {
+          alpha_draft_restored_after_background_load: true,
+          baseline_restored_without_persisting: true,
+          beta_never_received_alpha_draft: true,
+        };
+      }
+      delayedEvidence.alpha_started_surfaces.push(surface);
+      delayedEvidence.beta_held_surfaces.push(surface);
+      delayedEvidence.beta_held_response_count += surfaceRace.beta_held_response_count;
+      assert(
+        surfaceRace.beta_response_completion_count === surfaceRace.beta_held_response_count,
+        `${profile} released Beta ${surface} response did not finish`,
+      );
+      delayedEvidence.per_surface[surface].beta_response_completion_count = (
+        surfaceRace.beta_response_completion_count
+      );
+      delayedEvidence.per_surface[surface].beta_response_arrived = true;
+    } finally {
+      if (draftState) page.off("request", settingsPatchListener);
+    }
+  }
+  delayedEvidence.alpha_started_surfaces.sort();
+  delayedEvidence.beta_held_surfaces.sort();
+  return delayedEvidence;
 }
 
 async function runOnboardingProfile(options, { password, profile, username }) {
@@ -1297,29 +2281,50 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
     if (role === "viewer") {
       await assertViewerDenied(page, alpha, guarded, profile, { directMutation: profile === "desktop" });
       result.checks.viewer_role_affordances_and_denials = true;
-      result.assertions.passed.push("A3-M2-viewer-ui-affordances-and-direct-denials");
+      result.checks.viewer_m1_m3_read_only_behavior = true;
+      if (profile === "desktop") result.checks.viewer_a3_m4_write_denials = true;
+      result.assertions.passed.push("A3-M1-M2-M3-M4-viewer-read-only-affordances-and-denials");
     } else {
       if (role !== "editor") await assertGlobalSearch(page, profile, alpha);
       if (role === "editor") {
         await assertEditorAffordances(page, guarded, profile);
-        await exerciseEditorMapObjectWrite(page);
+        if (profile === "mobile") {
+          await exerciseDiscoverableMobilePlotEdit(page, guarded.diagnostics);
+          result.checks.mobile_editor_plot_edit_workflow = true;
+        } else {
+          await exercisePlantAndSavedView(
+            page, guarded.diagnostics, fixture, alpha, profile, "editor desktop",
+          );
+          await mutateIndoorPlant(page, fixture, profile, "editor desktop");
+          await exerciseEditorGardenSettingsAndLayoutWrite(page, alpha, profile);
+          await exerciseEditorMapObjectWrite(page);
+          result.checks.editor_m1_m3_supported_writes = true;
+          result.checks.editor_a3_settings_and_m4_layout_write = true;
+        }
         result.checks.editor_profile_write_affordances_and_admin_denial = true;
-        result.assertions.passed.push("M1-M2-editor-profile-real-write-and-admin-denial");
+        result.assertions.passed.push("A3-M1-M2-M3-M4-editor-profile-real-write-and-admin-denial");
       } else if (profile === "desktop") {
+        await exercisePlantAndSavedView(
+          page, guarded.diagnostics, fixture, alpha, profile, "admin desktop",
+        );
+        await mutateIndoorPlant(page, fixture, profile, "admin desktop");
+        await openMap(page, profile);
         await exerciseMapObjectEditor(page, guarded.diagnostics, alpha, { profile });
         await openMap(page, profile);
-        result.checks.import_rejection_render_churn = await exerciseSnapshotsAndImport(
+        const mapStateTransitions = await exerciseSnapshotsAndImport(
           page, guarded.diagnostics, password, alpha, beta,
         );
+        result.checks.import_rejection_render_churn = mapStateTransitions;
         result.checks.desktop_admin_mutation_workflows = true;
         result.assertions.passed.push("M1-M2-M3-M4-desktop-admin-real-ui-mutations");
       } else {
         await openMap(page, profile);
         await assertMobileFocusReturn(page);
-        await exercisePlantAndSavedView(page, guarded.diagnostics, fixture, alpha, profile);
-        await mutateIndoorPlant(page, fixture, profile);
-        await exercisePlotCreateAndEdit(page, profile, guarded.diagnostics);
-        await updateGardenSettings(page, alpha, profile);
+        await exercisePlantAndSavedView(
+          page, guarded.diagnostics, fixture, alpha, profile, "admin mobile",
+        );
+        await mutateIndoorPlant(page, fixture, profile, "admin mobile");
+        await updateGardenSettings(page, alpha, profile, "mobile admin");
         await openMap(page, profile);
         await exerciseMapObjectEditor(page, guarded.diagnostics, alpha, {
           profile,
@@ -1328,21 +2333,36 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
         await saveMobileSnapshot(page, fixture);
         await exerciseMobileMapImport(page, guarded.diagnostics, password);
         await submitMobileQuickAction(page, fixture, alpha);
+        await seedMobilePlotForEditor(page);
         result.checks.mobile_supported_writes_and_focus_return = true;
         result.assertions.passed.push("M1-M2-M3-M4-mobile-real-ui-writes-and-focus-return");
       }
-      if (role === "editor") {
-        result.assertions.passed.push("map-first");
-      } else {
-        result.checks.delayed_surfaces = await exerciseDelayedGardenSwitch(
-          page, guarded.context, guarded.diagnostics, fixture, profile, alpha, beta,
-        );
+      if (role === "editor") result.assertions.passed.push("map-first");
+    }
+    if (["admin", "editor", "viewer"].includes(role)) {
+      const isAdmin = role === "admin";
+      const delayedGardenRace = await exerciseDelayedGardenSwitch(
+        page,
+        guarded.context,
+        guarded.diagnostics,
+        fixture,
+        profile,
+        alpha,
+        beta,
+        { surfaces: isAdmin ? GARDEN_RACE_SURFACES : ["plots"] },
+      );
+      if (isAdmin) {
+        result.checks.delayed_surfaces = delayedGardenRace;
         result.assertions.passed.push(
           "map-first",
           "global-search-context",
           "delayed-garden-a-b-a-all-surfaces",
         );
+      } else {
+        result.checks.role_delayed_surfaces = delayedGardenRace;
+        result.assertions.passed.push("role-delayed-garden-a-b-a-plots");
       }
+      result.checks.role_cross_garden_response_isolation = true;
     }
     result.structure = await assertPageStructure(page, `${profile} Phase 1 ${role}`, { enforceControlNames: false });
     result.assertions.passed.push("no-duplicate-ids", "no-horizontal-overflow");
@@ -1375,6 +2395,7 @@ async function runGardenMapPlants(options, profileRunner = runProfile) {
     { profile: "desktop", role: "admin", username: options.username, password: options.password },
     { profile: "mobile", role: "admin", username: options.username, password: options.password },
     { profile: "desktop", role: "editor", username: options.fixture.roles.editor, password: EDITOR_PASSWORD },
+    { profile: "mobile", role: "editor", username: options.fixture.roles.editor, password: EDITOR_PASSWORD },
     { profile: "desktop", role: "viewer", username: options.fixture.roles.viewer, password: VIEWER_PASSWORD },
     { profile: "mobile", role: "viewer", username: options.fixture.roles.viewer, password: VIEWER_PASSWORD },
   ];

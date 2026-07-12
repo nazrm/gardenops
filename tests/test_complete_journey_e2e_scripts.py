@@ -302,13 +302,23 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "PHASE_ONE_SAVED_VIEW_LABEL",
         "PHASE_ONE_MOBILE_SNAPSHOT_NAME",
         "PHASE_ONE_BROWSER_PLANT_ID",
+        "PHASE_ONE_ONBOARDING_HOUSE",
         "_frozen_attention_clock",
+        "_garden_graph",
         "_seed_phase_one_fixtures",
         "_phase_one_fixture_state",
+        "_snapshot_payload_projection",
+        "_phase_one_stable_domain_projection",
+        "_quick_action_records",
+        "alpha_snapshot_payload",
+        "onboarding_default_context",
         "onboarding_target_gardens",
+        "onboarding_target_graphs",
         "cross_garden_links",
         "assignments_with_cross_garden_ownership",
         "lifecycle_audit",
+        "restore_import_graphs",
+        "stable_domain_projection",
     ):
         assert marker in seeder_source
     for marker in (
@@ -317,7 +327,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "assertGlobalSearch",
         "exercisePlantAndSavedView",
         "mutateIndoorPlant",
-        "exercisePlotCreateAndEdit",
+        "exerciseDiscoverableMobilePlotEdit",
         "exerciseMapObjectEditor",
         "exerciseEditorMapObjectWrite",
         "exerciseMobileMapObject",
@@ -329,9 +339,18 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "assertMobileFocusReturn",
         "assertRejectedMapImport",
         "observeMapRenderChurn",
+        "observeMapReplaceChildren",
+        "captureLayoutDomState",
+        "exerciseEditorGardenSettingsAndLayoutWrite",
         "issueBrowserRequest",
         "import_rejection_render_churn",
+        "successful_map_state_transitions",
         "saveMobileSnapshot",
+        "editor_m1_m3_supported_writes",
+        "viewer_m1_m3_read_only_behavior",
+        "viewer_a3_m4_write_denials",
+        "role_cross_garden_response_isolation",
+        "role_delayed_surfaces",
     ):
         assert marker in journey_source
     for substantive_marker in (
@@ -342,13 +361,14 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "#plants-mobile-list",
         ".saved-views-save-btn",
         ".indoor-room-input",
-        "#create-plot-form",
+        ".drawer-edit-plot-btn",
         "#edit-plot-form",
         ".map-object-type-select",
         ".map-object-interaction-surface",
         ".map-object-unit",
+        ".map-object-unit-form",
         "deleted_units === 1",
-        'pointerType: "touch"',
+        "Input.dispatchTouchEvent",
         ".snapshot-restore",
         "#import-map-input",
         "#mobile-import-map-btn",
@@ -356,9 +376,17 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "structurally-incomplete-map.json",
         "oversized-map.json",
         "cross-garden map import",
+        "divergent-successful-map.json",
+        "replace_children_calls",
         "[data-quick-action='log-harvest']",
         "admin-settings",
+        "admin_settings_draft_isolation",
+        "beta_response_arrived",
+        "beta_response_completion_count",
+        "response.finished()",
         "plot-alerts",
+        "plots",
+        "beta_held_surfaces",
     ):
         assert substantive_marker in journey_source
     for obsolete_skip in (
@@ -368,20 +396,46 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     ):
         assert obsolete_skip not in journey_source
     assert journey_source.count("page.evaluate(async") == 1
+    assert "const unitUpdate = await issueBrowserRequest" not in journey_source
     assert "route.fulfill" not in journey_source
     assert "assertions.skipped.push" not in journey_source
     assert '{ profile: "desktop", role: "editor"' in journey_source
+    assert '{ profile: "mobile", role: "editor"' in journey_source
     assert '{ profile: "mobile", role: "viewer"' in journey_source
+    desktop_admin_start = journey_source.index('} else if (profile === "desktop") {')
+    desktop_admin_end = journey_source.index("      } else {", desktop_admin_start)
+    desktop_admin_branch = journey_source[desktop_admin_start:desktop_admin_end]
+    for marker in (
+        "exercisePlantAndSavedView(",
+        "mutateIndoorPlant(",
+        '"admin desktop"',
+        "desktop_admin_mutation_workflows = true",
+    ):
+        assert marker in desktop_admin_branch
     assert "runGardenMapPlants" in checker_source
     assert "THROUGH_PHASE >= 1" in checker_source
+    assert "snapshotRestore.replace_children_calls === 1" in checker_source
+    assert "beta_response_completion_count" in checker_source
+    assert "expected_phase_one_viewer_denial_count === 4" in checker_source
+    assert "expected_phase_one_viewer_denial_count <= 1" not in checker_source
+    assert "role_cross_garden_response_isolation" in checker_source
+    assert "role_delayed_surfaces" in checker_source
     for marker in (
         "assertExactPhaseOneOnboardingOwnership",
+        "assertExactPhaseOneOnboardingGraphs",
+        "assertExactPhaseOneOnboardingDefaultContext",
+        "assertExactPhaseOneQuickActionRecords",
+        "assertExactPhaseOneMobileSnapshot",
+        "assertExactPhaseOneRestoreImportGraphs",
+        "assertPhaseOneStableDomainProjection",
         "assertNoCrossGardenLinks",
         "assertNoLifecycleResidue",
         "assertNoUnexpectedBackendErrors",
         "assertPhaseOneAuditContract",
         "assertPhaseOneProfileEvidence",
+        "assertPhaseZeroProfileEvidence",
         "assertSourceRevisionStable",
+        "safeUtcTimestamp",
         "sourceProvenance",
         "nested_unit_direct_delete_count",
         "nested_unit_update_count",
@@ -437,6 +491,8 @@ const result = sanitizeManifestEvidence({
 });
 if ('injected' in result) process.exit(3);
 if (result.profiles[0].requests[0].path !== '/api/saved-views') process.exit(4);
+if (result.started_at !== '2026-07-12T00:00:00Z') process.exit(5);
+if (result.ended_at !== '2026-07-12T00:00:00Z') process.exit(6);
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -490,6 +546,28 @@ if (provenance.clean !== true || provenance.final_head !== 'final-head') process
     assert result.returncode == 0, result.stderr
 
 
+def test_manifest_sanitizer_preserves_valid_utc_timestamps_without_accepting_invalid_values() -> (
+    None
+):
+    script = """
+const {
+  safeUtcTimestamp,
+  sanitizeManifestEvidence,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const started = '2026-07-12T09:08:07.654Z';
+const ended = '2026-07-12T09:08:08Z';
+const result = sanitizeManifestEvidence({ started_at: started, ended_at: ended });
+if (result.started_at !== started || result.ended_at !== ended) process.exit(3);
+if (safeUtcTimestamp('2026-02-30T09:08:07Z') !== (
+  '[redacted diagnostic; inspect private runner logs]'
+)) {
+  process.exit(4);
+}
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_checker_rejects_source_changes_even_when_the_worktree_stays_dirty() -> None:
     script = """
 const { assertSourceRevisionStable } = require('./scripts/check_complete_journeys_e2e.cjs');
@@ -511,30 +589,30 @@ def test_phase_one_onboarding_contract_rejects_wrong_owner_or_membership() -> No
 const {
   assertExactPhaseOneOnboardingOwnership,
 } = require('./scripts/check_complete_journeys_e2e.cjs');
-const expected = {
-  'Desktop garden': 'desktop-user',
-  'Mobile garden': 'mobile-user',
+const config = {
+  address: 'Phase 1 onboarding address', grid_cols: 12, grid_rows: 12,
+  latitude: 59.91, longitude: 10.75,
+  layout: {
+    col: 2, grid_cols: 12, grid_rows: 12, height: 3,
+    north_degrees: 0, row: 2, width: 3,
+  },
 };
+const expected = {
+  'Desktop garden': { ...config, owner_username: 'desktop-user' },
+  'Mobile garden': { ...config, owner_username: 'mobile-user' },
+};
+const target = (name, username) => ({
+  ...config, name, onboarding_complete: true, owner_username: username,
+  memberships: [{ role: 'admin', username }],
+});
 assertExactPhaseOneOnboardingOwnership([
-  {
-    name: 'Desktop garden', onboarding_complete: true, owner_username: 'desktop-user',
-    memberships: [{ role: 'admin', username: 'desktop-user' }],
-  },
-  {
-    name: 'Mobile garden', onboarding_complete: true, owner_username: 'mobile-user',
-    memberships: [{ role: 'admin', username: 'mobile-user' }],
-  },
+  target('Desktop garden', 'desktop-user'),
+  target('Mobile garden', 'mobile-user'),
 ], expected);
 try {
   assertExactPhaseOneOnboardingOwnership([
-    {
-      name: 'Desktop garden', onboarding_complete: true, owner_username: 'wrong-user',
-      memberships: [{ role: 'admin', username: 'desktop-user' }],
-    },
-    {
-      name: 'Mobile garden', onboarding_complete: true, owner_username: 'mobile-user',
-      memberships: [{ role: 'admin', username: 'mobile-user' }],
-    },
+    { ...target('Desktop garden', 'desktop-user'), owner_username: 'wrong-user' },
+    target('Mobile garden', 'mobile-user'),
   ], expected);
   process.exit(3);
 } catch (error) {
@@ -543,17 +621,35 @@ try {
 try {
   assertExactPhaseOneOnboardingOwnership([
     {
-      name: 'Desktop garden', onboarding_complete: true, owner_username: 'desktop-user',
+      ...target('Desktop garden', 'desktop-user'),
       memberships: [{ role: 'viewer', username: 'desktop-user' }],
     },
-    {
-      name: 'Mobile garden', onboarding_complete: true, owner_username: 'mobile-user',
-      memberships: [{ role: 'admin', username: 'mobile-user' }],
-    },
+    target('Mobile garden', 'mobile-user'),
   ], expected);
   process.exit(5);
 } catch (error) {
   if (!String(error.message).includes('membership mismatch')) process.exit(6);
+}
+try {
+  assertExactPhaseOneOnboardingOwnership([
+    { ...target('Desktop garden', 'desktop-user'), grid_cols: 13 },
+    target('Mobile garden', 'mobile-user'),
+  ], expected);
+  process.exit(7);
+} catch (error) {
+  if (!String(error.message).includes('grid_cols mismatch')) process.exit(8);
+}
+try {
+  assertExactPhaseOneOnboardingOwnership([
+    {
+      ...target('Desktop garden', 'desktop-user'),
+      layout: { ...config.layout, north_degrees: 90 },
+    },
+    target('Mobile garden', 'mobile-user'),
+  ], expected);
+  process.exit(9);
+} catch (error) {
+  if (!String(error.message).includes('layout configuration mismatch')) process.exit(10);
 }
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
@@ -566,16 +662,36 @@ const {
   assertNoCrossGardenLinks,
   assertPhaseOneAuditContract,
   assertPhaseOneProfileEvidence,
+  assertPhaseZeroProfileEvidence,
   phaseOneAuditExpectedEvents,
 } = require('./scripts/check_complete_journeys_e2e.cjs');
-const delayedDesktop = [
+const delayedEvidence = (surfaces, desktop = false) => ({
+  alpha_started_surfaces: surfaces,
+  beta_held_response_count: surfaces.length,
+  beta_held_surfaces: surfaces,
+  per_surface: Object.fromEntries(surfaces.map((surface) => [surface, {
+    alpha_selection_mode: 'physical', alpha_target_started: true,
+    alpha_trigger_mode: 'automatic', beta_content_never_landed: true,
+    beta_response_arrived: true, beta_response_completion_count: 1,
+    beta_target_held: true, beta_trigger_mode: 'automatic',
+  }])),
+  ...(desktop ? {
+    admin_settings_draft_isolation: {
+      alpha_draft_restored_after_background_load: true,
+      baseline_restored_without_persisting: true,
+      beta_never_received_alpha_draft: true,
+    },
+  } : {}),
+});
+const delayedDesktop = delayedEvidence([
   'admin-settings', 'indoor', 'layout', 'map-objects',
-  'notifications', 'plants', 'plot-alerts', 'weather',
-];
-const delayedMobile = [
-  'indoor', 'layout', 'map-objects', 'notifications',
-  'plants', 'plot-alerts', 'weather',
-];
+  'notifications', 'plants', 'plot-alerts', 'plots', 'saved-views', 'weather',
+], true);
+const delayedMobile = delayedEvidence([
+  'admin-settings', 'indoor', 'layout', 'map-objects',
+  'notifications', 'plants', 'plot-alerts', 'plots', 'saved-views', 'weather',
+]);
+const delayedPlots = delayedEvidence(['plots']);
 const profile = (role, name, checks) => ({
   assertions: { failed: [], skipped: [] },
   browser_profile: { is_mobile: name === 'mobile' },
@@ -590,31 +706,72 @@ const profiles = [
   profile('admin', 'desktop', {
     desktop_admin_mutation_workflows: true,
     import_rejection_render_churn: {
-      cross_garden: {}, oversized: {}, structurally_incomplete: {}, unsupported_schema: {},
+      rejected_import_render_churn: {
+        cross_garden: {}, oversized: {}, structurally_incomplete: {}, unsupported_schema: {},
+      },
+      successful_map_state_transitions: {
+        divergent_import: {
+          imported_cell: { col: 2, row: 2 },
+          original_cell: { col: 1, row: 1 },
+          target_plot_id: 'OPT-JOURNEY-A-PLOT',
+        },
+        snapshot_restore: {
+          mutation_count: 1,
+          replace_children_calls: 1,
+          restored_render_counts: { children: 3, labels: 1, plots: 2 },
+          snapshot_render_counts: { children: 3, labels: 1, plots: 2 },
+        },
+      },
     },
     delayed_surfaces: delayedDesktop,
     map_first_without_plants: true,
+    role_cross_garden_response_isolation: true,
   }),
   profile('admin', 'mobile', {
     delayed_surfaces: delayedMobile,
     map_first_without_plants: true,
     mobile_supported_writes_and_focus_return: true,
+    role_cross_garden_response_isolation: true,
   }),
   profile('editor', 'desktop', {
-    delayed_surfaces: delayedDesktop,
+    editor_a3_settings_and_m4_layout_write: true,
+    editor_m1_m3_supported_writes: true,
     editor_profile_write_affordances_and_admin_denial: true,
     map_first_without_plants: true,
+    role_cross_garden_response_isolation: true,
+    role_delayed_surfaces: delayedPlots,
+  }),
+  profile('editor', 'mobile', {
+    editor_profile_write_affordances_and_admin_denial: true,
+    map_first_without_plants: true,
+    mobile_editor_plot_edit_workflow: true,
+    role_cross_garden_response_isolation: true,
+    role_delayed_surfaces: delayedPlots,
   }),
   profile('viewer', 'desktop', {
     map_first_without_plants: true,
+    viewer_a3_m4_write_denials: true,
+    viewer_m1_m3_read_only_behavior: true,
     viewer_role_affordances_and_denials: true,
+    role_cross_garden_response_isolation: true,
+    role_delayed_surfaces: delayedPlots,
   }),
   profile('viewer', 'mobile', {
     map_first_without_plants: true,
+    viewer_m1_m3_read_only_behavior: true,
     viewer_role_affordances_and_denials: true,
+    role_cross_garden_response_isolation: true,
+    role_delayed_surfaces: delayedPlots,
   }),
 ];
 assertPhaseOneProfileEvidence(profiles);
+const phaseZeroProfiles = ['desktop', 'mobile'].map((name) => profile('admin', name, {
+  auth_session: true,
+  garden_a_b_a: true,
+  garden_scoped_notifications: true,
+  map_first_without_plants: true,
+}));
+assertPhaseZeroProfileEvidence(phaseZeroProfiles);
 assertNoCrossGardenLinks({
   assignments_with_cross_garden_ownership: 0,
   map_unit_parent_garden_mismatch: 0,
@@ -626,10 +783,24 @@ try {
   if (!String(error.message).includes('assignments_with_cross_garden_ownership')) process.exit(3);
 }
 const audit = { events: [
-  ...phaseOneAuditExpectedEvents(7),
+  ...phaseOneAuditExpectedEvents(8),
   { count: 4, method: 'POST', path: '/api/media/summaries', status_code: 200 },
 ] };
-const evidence = assertPhaseOneAuditContract(audit, 7);
+const expectedViewerDenials = [
+  ['POST', '/api/gardens/{garden_id}/map-objects', 403],
+  ['PATCH', '/api/gardens/{garden_id}/settings', 403],
+  ['POST', '/api/snapshots', 403],
+  ['POST', '/api/plots/import', 403],
+];
+for (const [method, path, statusCode] of expectedViewerDenials) {
+  if (!phaseOneAuditExpectedEvents(8).some((event) => (
+    event.count === 1
+      && event.method === method
+      && event.path === path
+      && event.status_code === statusCode
+  ))) process.exit(15);
+}
+const evidence = assertPhaseOneAuditContract(audit, 8);
 if (evidence.unexpected_count !== 0 || evidence.flexible_read_event_types !== 1) process.exit(4);
 const incomplete = structuredClone(profiles);
 incomplete[3].checks.mobile_supported_writes_and_focus_return = false;
@@ -639,12 +810,233 @@ try {
 } catch (error) {
   if (!String(error.message).includes('browser check is missing')) process.exit(6);
 }
+const incompleteRoleIsolation = structuredClone(profiles);
+incompleteRoleIsolation[4].checks.role_cross_garden_response_isolation = false;
+try {
+  assertPhaseOneProfileEvidence(incompleteRoleIsolation);
+  process.exit(9);
+} catch (error) {
+  if (!String(error.message).includes('browser check is missing')) process.exit(10);
+}
+const incoherentSnapshot = structuredClone(profiles);
+incoherentSnapshot[2].checks.import_rejection_render_churn
+  .successful_map_state_transitions.snapshot_restore.replace_children_calls = 2;
+try {
+  assertPhaseOneProfileEvidence(incoherentSnapshot);
+  process.exit(11);
+} catch (error) {
+  if (!/snapshot restore/i.test(String(error.message))) process.exit(12);
+}
+const incompleteRace = structuredClone(profiles);
+incompleteRace[2].checks.delayed_surfaces.per_surface.plots.beta_response_completion_count = 0;
+try {
+  assertPhaseOneProfileEvidence(incompleteRace);
+  process.exit(13);
+} catch (error) {
+  if (!/delayed A\\/B\\/A/i.test(String(error.message))) process.exit(14);
+}
+const incompleteRoleRace = structuredClone(profiles);
+incompleteRoleRace[6].checks.role_delayed_surfaces
+  .per_surface.plots.beta_response_completion_count = 0;
+try {
+  assertPhaseOneProfileEvidence(incompleteRoleRace);
+  process.exit(15);
+} catch (error) {
+  if (!/delayed A\\/B\\/A/i.test(String(error.message))) process.exit(16);
+}
 audit.events.push({ count: 1, method: 'POST', path: '/api/unexpected', status_code: 200 });
 try {
-  assertPhaseOneAuditContract(audit, 7);
+  assertPhaseOneAuditContract(audit, 8);
+  process.exit(17);
+} catch (error) {
+  if (!String(error.message).includes('Unexpected Phase 1 audit event')) process.exit(18);
+}
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_one_snapshot_and_restore_import_graph_contracts_are_exact() -> None:
+    script = """
+const {
+  assertExactPhaseOneMobileSnapshot,
+  assertExactPhaseOneRestoreImportGraphs,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const payload = {
+  house: { col: 2, grid_cols: 12, grid_rows: 12, height: 3, north_degrees: 0, row: 2, width: 3 },
+  map_objects: [{
+    geometry: { height: 1, width: 2, x: 1, y: 1 }, has_internal_layout: true,
+    internal_layout: { cols: 2, rows: 1 }, name: 'Alpha greenhouse', object_type: 'greenhouse',
+    public_id: 'mapobj_alpha', shape_type: 'rectangle', style: { color: '#7d9f7a' },
+    units: [{
+      geometry: { height: 1, width: 1, x: 1, y: 1 }, name: 'Bench', public_id: 'mapunit_alpha',
+      shape_type: 'rectangle', sort_order: 1, style: { color: '#b7c98a' }, unit_type: 'planter',
+    }], z_index: 2,
+  }],
+  plots: [{
+    color: '#7d9f7a', grid_col: 1, grid_row: 1, notes: '', plot_id: 'OPT-JOURNEY-A-PLOT',
+    plot_number: 1, sub_zone: '', zone_code: 'A', zone_name: 'Alpha',
+  }],
+  schema_version: 1,
+  shademap: { analysis_timestamp_ms: 0, mode: 'off', preset: 'default', selected_plot_id: null },
+  shademap_calibration: null,
+  shademap_obstacles: [],
+};
+const snapshot = {
+  garden_id: 1, garden_owner_username: 'admin',
+  name: 'Mobile action snapshot', public_id: 'snap_alpha',
+  payload,
+};
+assertExactPhaseOneMobileSnapshot([snapshot], {
+  garden_id: 1, garden_owner_username: 'admin', name: 'Mobile action snapshot', payload,
+});
+const graphs = {
+  alpha: {
+    assignments: [{ plant_id: 'PLT-A', plot_id: 'OPT-JOURNEY-A-PLOT', quantity: 1 }],
+    garden: { id: 1, slug: 'alpha' }, layout: payload.house,
+    map_objects: payload.map_objects, plants: [{ plant_id: 'PLT-A' }], plots: payload.plots,
+  },
+  beta: {
+    assignments: [], garden: { id: 2, slug: 'beta' }, layout: payload.house,
+    map_objects: [], plants: [], plots: [],
+  },
+};
+assertExactPhaseOneRestoreImportGraphs(graphs, structuredClone(graphs));
+try {
+  const changed = structuredClone(graphs);
+  changed.alpha.assignments[0].quantity = 2;
+  assertExactPhaseOneRestoreImportGraphs(graphs, changed);
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('assignment graph')) process.exit(4);
+}
+try {
+  const changedSnapshot = structuredClone(snapshot);
+  changedSnapshot.payload.plots[0].grid_col = 3;
+  assertExactPhaseOneMobileSnapshot([changedSnapshot], {
+    garden_id: 1, garden_owner_username: 'admin', name: 'Mobile action snapshot', payload,
+  });
+  process.exit(5);
+} catch (error) {
+  if (!String(error.message).includes('payload did not match')) process.exit(6);
+}
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_one_persistent_delta_contracts_reject_same_table_mutations() -> None:
+    script = """
+const {
+  assertExactPhaseOneOnboardingDefaultContext,
+  assertExactPhaseOneOnboardingGraphs,
+  assertExactPhaseOneQuickActionRecords,
+  assertPhaseOneStableDomainProjection,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = {
+  clock: { attention_date: '2026-07-12' },
+  gardens: { alpha: { id: 7, plot_id: 'OPT-JOURNEY-A-PLOT' } },
+  phase_one: { indoor: { plant_id: 'COMPLETE-PHASE-ONE-BASIL' } },
+  roles: {
+    admin: 'admin', onboarding: 'onboarding-user', onboarding_mobile: 'mobile-user',
+  },
+};
+const house = {
+  col: 2, grid_cols: 12, grid_rows: 12, height: 3,
+  north_degrees: 0, row: 2, width: 3,
+};
+const graph = (name, slug, owner, id) => ({
+  assignments: [],
+  garden: {
+    address: 'Phase 1 onboarding address', grid_cols: 12, grid_rows: 12, id,
+    latitude: 59.91, longitude: 10.75, name, onboarding_complete: true,
+    owner_username: owner, slug,
+  },
+  layout: house,
+  map_objects: [],
+  plants: [],
+  plots: [{
+    color: '', garden_id: id, grid_col: null, grid_row: null, notes: '',
+    owner_username: owner, plot_id: `INDOOR-${id}`, plot_number: 0, sub_zone: '',
+    zone_code: 'I', zone_name: 'Innendors',
+  }],
+});
+const expectedGraphs = {
+  'Desktop garden': {
+    address: 'Phase 1 onboarding address', grid_cols: 12, grid_rows: 12,
+    latitude: 59.91, layout: house, longitude: 10.75, onboarding_complete: true,
+    owner_username: 'onboarding-user', slug: 'desktop-garden',
+  },
+  'Mobile garden': {
+    address: 'Phase 1 onboarding address', grid_cols: 12, grid_rows: 12,
+    latitude: 59.91, layout: house, longitude: 10.75, onboarding_complete: true,
+    owner_username: 'mobile-user', slug: 'mobile-garden',
+  },
+};
+const graphs = {
+  'Desktop garden': graph('Desktop garden', 'desktop-garden', 'onboarding-user', 11),
+  'Mobile garden': graph('Mobile garden', 'mobile-garden', 'mobile-user', 12),
+};
+assertExactPhaseOneOnboardingGraphs(graphs, expectedGraphs);
+const defaultContext = {
+  gardens: [{
+    address: '', grid_cols: 22, grid_rows: 30, id: 10, latitude: null, layout_count: 0,
+    longitude: null, map_object_count: 0, name: 'Default Garden', onboarding_complete: false,
+    owner_username: null, plot_count: 0, slug: 'default',
+  }],
+  memberships: [
+    { garden_id: 10, role: 'editor', username: 'mobile-user' },
+    { garden_id: 10, role: 'editor', username: 'onboarding-user' },
+  ],
+};
+assertExactPhaseOneOnboardingDefaultContext(defaultContext, fixture);
+const quickAction = {
+  harvest_rollups: [{
+    key: 'harvest_rollup:7:2026',
+    value: { by_unit: [{ entries: 1, total_qty: 1, unit: 'kg' }], garden_id: 7, year: 2026 },
+  }],
+  harvests: [{
+    actor_username: 'admin', garden_id: 7, metadata: { journal_entry_id: 'jrn_action' },
+    notes: 'Phase 1 mobile quick action', occurred_on: '2026-07-12',
+    plant_ids: ['COMPLETE-PHASE-ONE-BASIL'], plot_ids: ['OPT-JOURNEY-A-PLOT'],
+    public_id: 'hrv_action', quality: 'good', quantity: 1, unit: 'kg',
+  }],
+  journals: [{
+    actor_username: 'admin', event_type: 'harvested', garden_id: 7,
+    metadata: {
+      linked_harvest_entry_id: 'hrv_action', quantity: 1, source: 'auto:harvest', unit: 'kg',
+    },
+    notes: 'Phase 1 mobile quick action', occurred_on: '2026-07-12',
+    plant_ids: ['COMPLETE-PHASE-ONE-BASIL'], plot_ids: ['OPT-JOURNEY-A-PLOT'],
+    public_id: 'jrn_action', title: 'Harvested 1 kg from COMPLETE-PHASE-ONE-BASIL',
+  }],
+};
+assertExactPhaseOneQuickActionRecords(quickAction, fixture);
+const baseline = { app_settings: [], gardens: [{ id: 99, name: 'Unaffected' }] };
+assertPhaseOneStableDomainProjection(baseline, structuredClone(baseline));
+try {
+  const changed = structuredClone(baseline);
+  changed.gardens[0].name = 'Mutated in same table';
+  assertPhaseOneStableDomainProjection(baseline, changed);
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('non-retained semantic row')) process.exit(4);
+}
+try {
+  const changed = structuredClone(quickAction);
+  changed.harvest_rollups[0].value.by_unit[0].total_qty = 2;
+  assertExactPhaseOneQuickActionRecords(changed, fixture);
+  process.exit(5);
+} catch (error) {
+  if (!String(error.message).includes('rollup key or value')) process.exit(6);
+}
+try {
+  const changed = structuredClone(graphs);
+  changed['Desktop garden'].plots[0].owner_username = 'wrong-owner';
+  assertExactPhaseOneOnboardingGraphs(changed, expectedGraphs);
   process.exit(7);
 } catch (error) {
-  if (!String(error.message).includes('Unexpected Phase 1 audit event')) process.exit(8);
+  if (!String(error.message).includes('generated plot and ownership graph')) process.exit(8);
 }
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)

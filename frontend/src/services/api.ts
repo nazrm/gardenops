@@ -1975,6 +1975,18 @@ export async function createMapObjectUnitApi(
   );
 }
 
+export async function updateMapObjectUnitApi(
+  gardenId: number,
+  objectPublicId: string,
+  unitPublicId: string,
+  unit: Partial<MapObjectUnitInput>,
+): Promise<MapObjectUnit> {
+  return apiPatch<MapObjectUnit>(
+    `/api/gardens/${gardenId}/map-objects/${objectPublicId}/units/${unitPublicId}`,
+    unit,
+  );
+}
+
 export async function deleteMapObjectUnitApi(
   gardenId: number,
   objectPublicId: string,

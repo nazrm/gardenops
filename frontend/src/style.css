@@ -4308,6 +4308,26 @@ body.moving-house .house-placeholder {
   color: var(--text-inv);
 }
 
+.drawer-edit-plot-btn {
+  border: 1px solid color-mix(in srgb, var(--brand) 38%, var(--border));
+  border-radius: var(--r-sm);
+  background: var(--brand-muted);
+  color: var(--brand-text);
+  font-size: 12px;
+  font-weight: 600;
+  min-height: 34px;
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms var(--ease), color 120ms var(--ease), border-color 120ms var(--ease);
+}
+
+.drawer-edit-plot-btn:hover {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--text-inv);
+}
+
 .close-btn {
   border: 0;
   background: var(--bg-3);
@@ -6671,6 +6691,10 @@ th.sort-desc::after {
   font-size: 18px;
   font-weight: 400;
   color: var(--brand-text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sheet-body {

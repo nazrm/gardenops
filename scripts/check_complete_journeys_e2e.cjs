@@ -72,35 +72,39 @@ function databaseSnapshot() {
 function phaseOneAuditExpectedEvents(loginCount) {
   return [
     [10, "DELETE", "/api/gardens/{garden_id}/map-objects/{public_id}", 200],
-    [1, "DELETE", "/api/plants/{created_plant_id}", 200],
-    [1, "DELETE", "/api/plots/OPT-JOURNEY-A-PLOT/plants/{created_plant_id}", 204],
+    [3, "DELETE", "/api/plants/{created_plant_id}", 200],
+    [3, "DELETE", "/api/plots/OPT-JOURNEY-A-PLOT/plants/{created_plant_id}", 204],
     [1, "DELETE", "/api/plots/P1MOBILEPLOTEDITED", 204],
-    [1, "DELETE", "/api/saved-views/{saved_view_id}", 200],
+    [3, "DELETE", "/api/saved-views/{saved_view_id}", 200],
     [1, "DELETE", "/api/snapshots/{public_id}", 200],
     [7, "PATCH", "/api/gardens/{garden_id}/map-objects/{public_id}", 200],
     [1, "PATCH", "/api/gardens/{garden_id}/map-objects/obj_optimization_journeys_a", 200],
     [2, "PATCH", "/api/gardens/{garden_id}/map-objects/{public_id}/units/{public_id}", 200],
-    [2, "PATCH", "/api/gardens/{garden_id}/settings", 200],
-    [2, "PATCH", "/api/plants/{created_plant_id}", 200],
+    [4, "PATCH", "/api/gardens/{garden_id}/settings", 200],
+    [1, "PATCH", "/api/gardens/{garden_id}/settings", 403],
+    [6, "PATCH", "/api/layout-state", 200],
+    [6, "PATCH", "/api/plants/{created_plant_id}", 200],
     [1, "PATCH", "/api/plots/P1MOBILEPLOT", 200],
-    [2, "PATCH", "/api/plots/COMPLETE-PHASE-ONE-INDOOR/plants/COMPLETE-PHASE-ONE-BASIL", 200],
+    [6, "PATCH", "/api/plots/COMPLETE-PHASE-ONE-INDOOR/plants/COMPLETE-PHASE-ONE-BASIL", 200],
     [loginCount, "POST", "/api/auth/login", 200],
-    [8, "POST", "/api/auth/reauthenticate", 200],
+    [9, "POST", "/api/auth/reauthenticate", 200],
     [2, "POST", "/api/gardens/{garden_id}/complete-onboarding", 200],
     [1, "POST", "/api/gardens/{garden_id}/map-objects", 403],
     [10, "POST", "/api/gardens/{garden_id}/map-objects", 201],
     [2, "POST", "/api/gardens/{garden_id}/map-objects/{public_id}/units", 201],
     [2, "POST", "/api/gardens", 201],
     [1, "POST", "/api/harvest", 201],
-    [1, "POST", "/api/plants", 201],
+    [3, "POST", "/api/plants", 201],
     [1, "POST", "/api/plots", 201],
-    [2, "POST", "/api/plots/OPT-JOURNEY-A-PLOT/plants/{created_plant_id}", 201],
+    [6, "POST", "/api/plots/OPT-JOURNEY-A-PLOT/plants/{created_plant_id}", 201],
     [2, "POST", "/api/plots/import", 200],
+    [1, "POST", "/api/plots/import", 403],
     [1, "POST", "/api/plots/import", 409],
     [3, "POST", "/api/plots/import", 422],
-    [1, "POST", "/api/saved-views", 201],
+    [3, "POST", "/api/saved-views", 201],
+    [1, "POST", "/api/snapshots", 403],
     [2, "POST", "/api/snapshots", 201],
-    [1, "POST", "/api/snapshots/{public_id}/restore", 200],
+    [2, "POST", "/api/snapshots/{public_id}/restore", 200],
   ].map(([count, method, path, status_code]) => ({ count, method, path, status_code }));
 }
 
@@ -168,6 +172,27 @@ function safeFailure(error) {
 function safeIdentifier(value) {
   const text = String(value || "");
   return /^[A-Za-z0-9_.-]{1,100}$/.test(text) ? text : sanitizeDiagnostic(text);
+}
+
+function safeUtcTimestamp(value) {
+  const text = String(value || "");
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{3}))?Z$/.exec(text);
+  if (!match) return safeIdentifier(text);
+  const timestamp = Date.parse(text);
+  const canonical = `${match[1]}.${match[2] || "000"}Z`;
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === canonical
+    ? text
+    : safeIdentifier(text);
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${canonicalJson(value[key])}`
+    )).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function gitOutput(args) {
@@ -317,13 +342,23 @@ function assertExactPhaseOneOnboardingOwnership(targets, expectedByGarden) {
     JSON.stringify([...observedByName.keys()].sort()) === JSON.stringify(expectedNames),
     "Onboarding created an unexpected target garden",
   );
-  for (const [name, username] of Object.entries(expectedByGarden)) {
+  for (const [name, expected] of Object.entries(expectedByGarden)) {
+    assert(expected && typeof expected === "object", `Onboarding expectation is invalid for ${name}`);
     const target = observedByName.get(name);
     assert(target?.onboarding_complete === true, `Onboarding did not complete ${name}`);
-    assert(target.owner_username === username, `Onboarding owner mismatch for ${name}`);
+    assert(target.owner_username === expected.owner_username, `Onboarding owner mismatch for ${name}`);
     assert(
-      JSON.stringify(target.memberships) === JSON.stringify([{ role: "admin", username }]),
+      canonicalJson(target.memberships) === canonicalJson([
+        { role: "admin", username: expected.owner_username },
+      ]),
       `Onboarding membership mismatch for ${name}`,
+    );
+    for (const field of ["address", "grid_cols", "grid_rows", "latitude", "longitude"]) {
+      assert(target[field] === expected[field], `Onboarding ${field} mismatch for ${name}`);
+    }
+    assert(
+      canonicalJson(target.layout) === canonicalJson(expected.layout),
+      `Onboarding layout configuration mismatch for ${name}`,
     );
   }
 }
@@ -342,16 +377,102 @@ function assertNoLifecycleResidue(lifecycle, label) {
   }
 }
 
+function assertPhaseZeroProfileEvidence(profiles) {
+  assert(Array.isArray(profiles), "Phase 0 browser profile evidence is missing");
+  const expectedProfiles = ["desktop", "mobile"];
+  assert(profiles.length === expectedProfiles.length, "Phase 0 browser profile count was unexpected");
+  const byProfile = new Map();
+  for (const profile of profiles) {
+    assert(!byProfile.has(profile?.profile), `Phase 0 browser profile was duplicated: ${profile?.profile}`);
+    byProfile.set(profile?.profile, profile);
+  }
+  for (const profileName of expectedProfiles) {
+    const profile = byProfile.get(profileName);
+    assert(profile, `Phase 0 browser profile is missing: ${profileName}`);
+    assert(profile.role === "admin", `Phase 0 role was unexpected: ${profileName}`);
+    assert(profile.failure === null, `Phase 0 browser profile failed: ${profileName}`);
+    assert((profile.assertions?.failed || []).length === 0, `Phase 0 assertions failed: ${profileName}`);
+    assert(profile.checks?.auth_session === true, `Phase 0 session check is missing: ${profileName}`);
+    assert(
+      profile.checks?.garden_a_b_a === true,
+      `Phase 0 A/B/A check is missing: ${profileName}`,
+    );
+    assert(
+      profile.checks?.garden_scoped_notifications === true,
+      `Phase 0 notification scope check is missing: ${profileName}`,
+    );
+    assert(
+      profile.checks?.map_first_without_plants === true,
+      `Phase 0 map-first check is missing: ${profileName}`,
+    );
+    assert(
+      profile.checks?.browser_diagnostics === true,
+      `Phase 0 browser diagnostics missing: ${profileName}`,
+    );
+    assert(
+      profile.browser_profile?.is_mobile === (profileName === "mobile"),
+      `Phase 0 browser device evidence was unexpected: ${profileName}`,
+    );
+  }
+  return {
+    expected_profile_count: expectedProfiles.length,
+    profile_matrix_enforced: true,
+  };
+}
+
 function assertPhaseOneProfileEvidence(profiles) {
   assert(Array.isArray(profiles), "Phase 1 browser profile evidence is missing");
   const expectedProfiles = [
     { profile: "desktop", role: "onboarding", checks: ["onboarding_validation_recovery_complete"] },
     { profile: "mobile", role: "onboarding", checks: ["onboarding_validation_recovery_complete"] },
-    { profile: "desktop", role: "admin", checks: ["desktop_admin_mutation_workflows"] },
-    { profile: "mobile", role: "admin", checks: ["mobile_supported_writes_and_focus_return"] },
-    { profile: "desktop", role: "editor", checks: ["editor_profile_write_affordances_and_admin_denial"] },
-    { profile: "desktop", role: "viewer", checks: ["viewer_role_affordances_and_denials"] },
-    { profile: "mobile", role: "viewer", checks: ["viewer_role_affordances_and_denials"] },
+    {
+      profile: "desktop",
+      role: "admin",
+      checks: ["desktop_admin_mutation_workflows", "role_cross_garden_response_isolation"],
+    },
+    {
+      profile: "mobile",
+      role: "admin",
+      checks: ["mobile_supported_writes_and_focus_return", "role_cross_garden_response_isolation"],
+    },
+    {
+      profile: "desktop",
+      role: "editor",
+      checks: [
+        "editor_profile_write_affordances_and_admin_denial",
+        "editor_m1_m3_supported_writes",
+        "editor_a3_settings_and_m4_layout_write",
+        "role_cross_garden_response_isolation",
+      ],
+    },
+    {
+      profile: "mobile",
+      role: "editor",
+      checks: [
+        "editor_profile_write_affordances_and_admin_denial",
+        "mobile_editor_plot_edit_workflow",
+        "role_cross_garden_response_isolation",
+      ],
+    },
+    {
+      profile: "desktop",
+      role: "viewer",
+      checks: [
+        "viewer_role_affordances_and_denials",
+        "viewer_m1_m3_read_only_behavior",
+        "viewer_a3_m4_write_denials",
+        "role_cross_garden_response_isolation",
+      ],
+    },
+    {
+      profile: "mobile",
+      role: "viewer",
+      checks: [
+        "viewer_role_affordances_and_denials",
+        "viewer_m1_m3_read_only_behavior",
+        "role_cross_garden_response_isolation",
+      ],
+    },
   ];
   assert(profiles.length === expectedProfiles.length, "Phase 1 browser profile count was unexpected");
   const byKey = new Map();
@@ -380,27 +501,375 @@ function assertPhaseOneProfileEvidence(profiles) {
     }
   }
   const desktopAdmin = byKey.get("admin:desktop");
-  const rejectedImports = desktopAdmin.checks?.import_rejection_render_churn;
+  const importEvidence = desktopAdmin.checks?.import_rejection_render_churn;
+  const rejectedImports = importEvidence?.rejected_import_render_churn;
   assert(
     rejectedImports && typeof rejectedImports === "object"
       && ["cross_garden", "oversized", "structurally_incomplete", "unsupported_schema"]
         .every((key) => rejectedImports[key] && typeof rejectedImports[key] === "object"),
     "Phase 1 rejected-import render evidence is missing",
   );
+  const transitions = importEvidence?.successful_map_state_transitions;
+  const divergentImport = transitions?.divergent_import;
+  const snapshotRestore = transitions?.snapshot_restore;
+  assert(
+    divergentImport && typeof divergentImport === "object"
+      && typeof divergentImport.target_plot_id === "string"
+      && divergentImport.target_plot_id.length > 0
+      && [divergentImport.imported_cell, divergentImport.original_cell]
+        .every((cell) => cell && Number.isSafeInteger(cell.row) && Number.isSafeInteger(cell.col)),
+    "Phase 1 successful divergent-import evidence is missing",
+  );
+  assert(
+    divergentImport.imported_cell.row !== divergentImport.original_cell.row
+      || divergentImport.imported_cell.col !== divergentImport.original_cell.col,
+    "Phase 1 successful import did not change the target plot cell",
+  );
+  assert(
+    snapshotRestore && typeof snapshotRestore === "object"
+      && Number.isSafeInteger(snapshotRestore.mutation_count)
+      && snapshotRestore.mutation_count > 0
+      && snapshotRestore.replace_children_calls === 1
+      && canonicalJson(snapshotRestore.restored_render_counts)
+        === canonicalJson(snapshotRestore.snapshot_render_counts),
+    "Phase 1 snapshot restore render evidence is incomplete",
+  );
   for (const key of ["admin:desktop", "admin:mobile"]) {
     const profile = byKey.get(key);
     const delayed = profile.checks?.delayed_surfaces;
-    const required = ["indoor", "layout", "map-objects", "notifications", "plants", "plot-alerts", "weather"];
-    if (profile.profile === "desktop") required.push("admin-settings");
+    const alphaRequired = [
+      "admin-settings",
+      "indoor",
+      "layout",
+      "map-objects",
+      "notifications",
+      "plants",
+      "plot-alerts",
+      "plots",
+      "saved-views",
+      "weather",
+    ];
+    const betaRequired = alphaRequired;
+    const raceEvidence = delayed?.per_surface;
     assert(
-      Array.isArray(delayed) && required.every((surface) => delayed.includes(surface)),
+      delayed && typeof delayed === "object"
+        && Array.isArray(delayed.alpha_started_surfaces)
+        && Array.isArray(delayed.beta_held_surfaces)
+        && Number.isSafeInteger(delayed.beta_held_response_count)
+        && delayed.beta_held_response_count >= betaRequired.length
+        && alphaRequired.every((surface) => delayed.alpha_started_surfaces.includes(surface))
+        && betaRequired.every((surface) => delayed.beta_held_surfaces.includes(surface))
+        && raceEvidence && typeof raceEvidence === "object"
+        && canonicalJson(Object.keys(raceEvidence).sort()) === canonicalJson(betaRequired.slice().sort())
+        && betaRequired.every((surface) => {
+          const evidence = raceEvidence[surface];
+          return evidence && typeof evidence === "object"
+            && evidence.alpha_target_started === true
+            && evidence.beta_content_never_landed === true
+            && evidence.beta_response_arrived === true
+            && Number.isSafeInteger(evidence.beta_response_completion_count)
+            && evidence.beta_response_completion_count >= 1
+            && evidence.beta_target_held === true
+            && ["controlled", "physical"].includes(evidence.alpha_selection_mode)
+            && ["automatic", "controlled", "physical"].includes(evidence.alpha_trigger_mode)
+            && ["automatic", "controlled", "physical"].includes(evidence.beta_trigger_mode);
+        }),
       `Phase 1 delayed A/B/A evidence is incomplete: ${key}`,
+    );
+    if (profile.profile === "desktop") {
+      assert(
+        canonicalJson(delayed.admin_settings_draft_isolation) === canonicalJson({
+          alpha_draft_restored_after_background_load: true,
+          baseline_restored_without_persisting: true,
+          beta_never_received_alpha_draft: true,
+        }),
+        "Phase 1 desktop delayed settings-draft isolation evidence is incomplete",
+      );
+    } else {
+      assert(
+        delayed.admin_settings_draft_isolation === undefined,
+        "Phase 1 mobile race unexpectedly claimed desktop settings-draft evidence",
+      );
+    }
+  }
+  for (const key of ["editor:desktop", "editor:mobile", "viewer:desktop", "viewer:mobile"]) {
+    const profile = byKey.get(key);
+    const delayed = profile.checks?.role_delayed_surfaces;
+    const evidence = delayed?.per_surface?.plots;
+    assert(
+      profile.checks?.role_cross_garden_response_isolation === true
+        && canonicalJson(delayed?.alpha_started_surfaces) === canonicalJson(["plots"])
+        && canonicalJson(delayed?.beta_held_surfaces) === canonicalJson(["plots"])
+        && Number.isSafeInteger(delayed?.beta_held_response_count)
+        && delayed.beta_held_response_count >= 1
+        && evidence?.alpha_target_started === true
+        && evidence?.beta_content_never_landed === true
+        && evidence?.beta_response_arrived === true
+        && Number.isSafeInteger(evidence?.beta_response_completion_count)
+        && evidence.beta_response_completion_count >= 1
+        && evidence?.beta_target_held === true,
+      `Phase 1 role delayed A/B/A evidence is incomplete: ${key}`,
     );
   }
   return {
     expected_profile_count: expectedProfiles.length,
     profile_matrix_enforced: true,
   };
+}
+
+function assertExactPhaseOneMobileSnapshot(snapshots, expected) {
+  assert(Array.isArray(snapshots), "Phase 1 mobile snapshot evidence is missing");
+  assert(snapshots.length === 1, "Phase 1 did not retain exactly one mobile snapshot");
+  const snapshot = snapshots[0];
+  assert(snapshot?.garden_id === expected.garden_id, "Mobile snapshot was not owned by Alpha");
+  assert(
+    snapshot?.garden_owner_username === expected.garden_owner_username,
+    "Mobile snapshot garden owner was unexpected",
+  );
+  assert(snapshot?.name === expected.name, "Mobile snapshot name was unexpected");
+  assert(
+    typeof snapshot?.public_id === "string" && snapshot.public_id.startsWith("snap_"),
+    "Mobile snapshot has no public identifier",
+  );
+  const payload = snapshot?.payload;
+  assert(payload && typeof payload === "object" && !Array.isArray(payload), "Mobile snapshot payload is missing");
+  assert(
+    canonicalJson(Object.keys(payload).sort()) === canonicalJson([
+      "house",
+      "map_objects",
+      "plots",
+      "schema_version",
+      "shademap",
+      "shademap_calibration",
+      "shademap_obstacles",
+    ]),
+    "Mobile snapshot payload fields were unexpected",
+  );
+  assert(
+    canonicalJson(payload) === canonicalJson(expected.payload),
+    "Mobile snapshot payload did not match the final Alpha snapshot projection",
+  );
+}
+
+function assertExactPhaseOneRestoreImportGraphs(initialGraphs, finalGraphs) {
+  const expectedGardens = ["alpha", "beta"];
+  assert(initialGraphs && typeof initialGraphs === "object", "Fixture restore/import graph is missing");
+  assert(finalGraphs && typeof finalGraphs === "object", "Final restore/import graph is missing");
+  assert(
+    canonicalJson(Object.keys(initialGraphs).sort()) === canonicalJson(expectedGardens),
+    "Fixture restore/import graph has unexpected gardens",
+  );
+  assert(
+    canonicalJson(Object.keys(finalGraphs).sort()) === canonicalJson(expectedGardens),
+    "Final restore/import graph has unexpected gardens",
+  );
+  for (const garden of expectedGardens) {
+    assert(
+      canonicalJson(finalGraphs[garden]) === canonicalJson(initialGraphs[garden]),
+      `Restore/import changed the final ${garden} plot, layout, map-object, or assignment graph`,
+    );
+  }
+}
+
+function assertExactPhaseOneOnboardingGraphs(graphs, expectedByName) {
+  assert(graphs && typeof graphs === "object", "Phase 1 onboarding graphs are missing");
+  const expectedNames = Object.keys(expectedByName).sort();
+  assert(
+    canonicalJson(Object.keys(graphs).sort()) === canonicalJson(expectedNames),
+    "Onboarding graph names were unexpected",
+  );
+  for (const [name, expected] of Object.entries(expectedByName)) {
+    const graph = graphs[name];
+    assert(graph && typeof graph === "object", `Onboarding graph is missing: ${name}`);
+    const garden = graph.garden;
+    assert(garden && typeof garden === "object", `Onboarding garden is missing: ${name}`);
+    assert(Number.isSafeInteger(garden.id) && garden.id > 0, `Onboarding garden ID is invalid: ${name}`);
+    for (const field of [
+      "address",
+      "grid_cols",
+      "grid_rows",
+      "latitude",
+      "longitude",
+      "onboarding_complete",
+      "owner_username",
+      "slug",
+    ]) {
+      assert(garden[field] === expected[field], `Onboarding graph ${field} mismatch: ${name}`);
+    }
+    assert(garden.name === name, `Onboarding graph name mismatch: ${name}`);
+    assert(
+      canonicalJson(graph.layout) === canonicalJson(expected.layout),
+      `Onboarding layout graph mismatch: ${name}`,
+    );
+    const expectedPlot = [{
+      color: "",
+      garden_id: garden.id,
+      grid_col: null,
+      grid_row: null,
+      notes: "",
+      owner_username: expected.owner_username,
+      plot_id: `INDOOR-${garden.id}`,
+      plot_number: 0,
+      sub_zone: "",
+      zone_code: "I",
+      zone_name: "Innendors",
+    }];
+    assert(
+      canonicalJson(graph.plots) === canonicalJson(expectedPlot),
+      `Onboarding generated plot and ownership graph mismatch: ${name}`,
+    );
+    for (const field of ["assignments", "map_objects", "plants"]) {
+      assert(
+        Array.isArray(graph[field]) && graph[field].length === 0,
+        `Onboarding graph retained unexpected ${field}: ${name}`,
+      );
+    }
+  }
+}
+
+function assertExactPhaseOneOnboardingDefaultContext(context, fixture) {
+  assert(context && typeof context === "object", "Onboarding default context is missing");
+  assert(Array.isArray(context.gardens), "Onboarding default gardens are missing");
+  assert(Array.isArray(context.memberships), "Onboarding default memberships are missing");
+  assert(context.gardens.length === 1, "Onboarding did not create exactly one default garden");
+  const garden = context.gardens[0];
+  assert(Number.isSafeInteger(garden?.id) && garden.id > 0, "Onboarding default garden ID is invalid");
+  const expectedGarden = {
+    address: "",
+    grid_cols: 22,
+    grid_rows: 30,
+    latitude: null,
+    layout_count: 0,
+    longitude: null,
+    map_object_count: 0,
+    name: "Default Garden",
+    onboarding_complete: false,
+    owner_username: null,
+    plot_count: 0,
+    slug: "default",
+  };
+  for (const [field, value] of Object.entries(expectedGarden)) {
+    assert(garden[field] === value, `Onboarding default garden ${field} was unexpected`);
+  }
+  const expectedMemberships = [
+    { garden_id: garden.id, role: "editor", username: fixture.roles.onboarding },
+    { garden_id: garden.id, role: "editor", username: fixture.roles.onboarding_mobile },
+  ].sort((left, right) => left.username.localeCompare(right.username));
+  assert(
+    canonicalJson(context.memberships) === canonicalJson(expectedMemberships),
+    "Onboarding default memberships were unexpected",
+  );
+}
+
+function assertExactPhaseOneQuickActionRecords(records, fixture) {
+  assert(records && typeof records === "object", "Phase 1 quick-action records are missing");
+  for (const field of ["harvest_rollups", "harvests", "journals"]) {
+    assert(Array.isArray(records[field]), `Phase 1 quick-action ${field} are missing`);
+  }
+  assert(records.harvests.length === 1, "Phase 1 did not retain exactly one quick-action harvest");
+  assert(records.journals.length === 1, "Phase 1 did not retain exactly one quick-action journal");
+  assert(records.harvest_rollups.length === 1, "Phase 1 did not retain exactly one harvest rollup");
+  const harvest = records.harvests[0];
+  const journal = records.journals[0];
+  const alphaId = fixture.gardens.alpha.id;
+  const date = fixture.clock.attention_date;
+  assert(
+    typeof harvest.public_id === "string" && harvest.public_id.startsWith("hrv_"),
+    "Quick-action harvest public ID is invalid",
+  );
+  assert(
+    typeof journal.public_id === "string" && journal.public_id.startsWith("jrn_"),
+    "Quick-action journal public ID is invalid",
+  );
+  const expectedLinks = {
+    plant_ids: [fixture.phase_one.indoor.plant_id],
+    plot_ids: [fixture.gardens.alpha.plot_id],
+  };
+  assert(
+    canonicalJson({
+      actor_username: harvest.actor_username,
+      garden_id: harvest.garden_id,
+      notes: harvest.notes,
+      occurred_on: harvest.occurred_on,
+      plant_ids: harvest.plant_ids,
+      plot_ids: harvest.plot_ids,
+      quality: harvest.quality,
+      quantity: harvest.quantity,
+      unit: harvest.unit,
+    }) === canonicalJson({
+      actor_username: fixture.roles.admin,
+      garden_id: alphaId,
+      notes: "Phase 1 mobile quick action",
+      occurred_on: date,
+      ...expectedLinks,
+      quality: "good",
+      quantity: 1,
+      unit: "kg",
+    }),
+    "Quick-action harvest fields or links were unexpected",
+  );
+  assert(
+    canonicalJson(harvest.metadata) === canonicalJson({ journal_entry_id: journal.public_id }),
+    "Quick-action harvest did not link to its journal",
+  );
+  assert(
+    canonicalJson({
+      actor_username: journal.actor_username,
+      event_type: journal.event_type,
+      garden_id: journal.garden_id,
+      notes: journal.notes,
+      occurred_on: journal.occurred_on,
+      plant_ids: journal.plant_ids,
+      plot_ids: journal.plot_ids,
+      title: journal.title,
+    }) === canonicalJson({
+      actor_username: fixture.roles.admin,
+      event_type: "harvested",
+      garden_id: alphaId,
+      notes: "Phase 1 mobile quick action",
+      occurred_on: date,
+      ...expectedLinks,
+      title: `Harvested 1 kg from ${fixture.phase_one.indoor.plant_id}`,
+    }),
+    "Quick-action journal fields or links were unexpected",
+  );
+  assert(
+    canonicalJson(journal.metadata) === canonicalJson({
+      linked_harvest_entry_id: harvest.public_id,
+      quantity: 1,
+      source: "auto:harvest",
+      unit: "kg",
+    }),
+    "Quick-action journal did not link to its harvest",
+  );
+  const expectedYear = Number(date.slice(0, 4));
+  const rollup = records.harvest_rollups[0];
+  assert(
+    canonicalJson(rollup) === canonicalJson({
+      key: `harvest_rollup:${alphaId}:${expectedYear}`,
+      value: {
+        by_unit: [{ entries: 1, total_qty: 1, unit: "kg" }],
+        garden_id: alphaId,
+        year: expectedYear,
+      },
+    }),
+    "Quick-action harvest rollup key or value was unexpected",
+  );
+}
+
+function assertPhaseOneStableDomainProjection(initialProjection, finalProjection) {
+  assert(
+    initialProjection && typeof initialProjection === "object",
+    "Phase 1 initial stable-domain projection is missing",
+  );
+  assert(
+    finalProjection && typeof finalProjection === "object",
+    "Phase 1 final stable-domain projection is missing",
+  );
+  assert(
+    canonicalJson(finalProjection) === canonicalJson(initialProjection),
+    "Phase 1 changed a non-retained semantic row in a mutable domain table",
+  );
 }
 
 function assertFixtureAttentionClock(fixture) {
@@ -428,7 +897,7 @@ function sanitizeManifestEvidence(manifest) {
     database: manifest.database && typeof manifest.database === "object"
       ? structuredClone(manifest.database)
       : null,
-    ended_at: safeIdentifier(manifest.ended_at),
+    ended_at: safeUtcTimestamp(manifest.ended_at),
     failure: manifest.failure ? sanitizeDiagnostic(manifest.failure) : null,
     filesystem: manifest.filesystem && typeof manifest.filesystem === "object"
       ? structuredClone(manifest.filesystem)
@@ -444,7 +913,7 @@ function sanitizeManifestEvidence(manifest) {
     phase: Number(manifest.phase || 0),
     profiles: [],
     run_id: safeIdentifier(manifest.run_id),
-    started_at: safeIdentifier(manifest.started_at),
+    started_at: safeUtcTimestamp(manifest.started_at),
     status: safeIdentifier(manifest.status),
     suite: safeIdentifier(manifest.suite),
     through_phase: Number(manifest.through_phase || 0),
@@ -573,7 +1042,7 @@ async function main() {
     failure: null,
     git: sourceProvenance(fixture.git),
     journey_ids: [
-      ...(PHASE === 0 ? ["A1"] : []),
+      ...(THROUGH_PHASE >= 0 ? ["A1"] : []),
       ...(THROUGH_PHASE >= 1 ? ["A3", "M1", "M2", "M3", "M4", "CROSS-01"] : []),
     ],
     phase: PHASE,
@@ -585,6 +1054,8 @@ async function main() {
     through_phase: THROUGH_PHASE,
   };
   let browser;
+  let phaseZeroProfileEvidence = null;
+  let phaseZeroProfiles = [];
   let phaseOneAuditEvidence = null;
   let phaseOneProfileEvidence = null;
   let phaseOneProfiles = [];
@@ -602,7 +1073,8 @@ async function main() {
       executablePath: CHROMIUM_EXECUTABLE,
       headless: true,
     });
-    if (PHASE === 0) {
+    if (THROUGH_PHASE >= 0) {
+      const phaseZeroProfileStart = manifest.profiles.length;
       await runFoundation({
         artifactDir: ARTIFACT_DIR,
         baseUrl: BASE_URL,
@@ -613,6 +1085,8 @@ async function main() {
         password: PASSWORD,
         username: USERNAME,
       });
+      phaseZeroProfiles = manifest.profiles.slice(phaseZeroProfileStart);
+      phaseZeroProfileEvidence = assertPhaseZeroProfileEvidence(phaseZeroProfiles);
     }
     if (THROUGH_PHASE >= 1) {
       const phaseOneProfileStart = manifest.profiles.length;
@@ -646,7 +1120,7 @@ async function main() {
     );
     const phaseOneRan = THROUGH_PHASE >= 1;
     if (phaseOneRan) phaseOneProfileEvidence = assertPhaseOneProfileEvidence(phaseOneProfiles);
-    const allowedChangedTables = phaseOneRan ? new Set([
+    const phaseOneSemanticDeltaTables = phaseOneRan ? new Set([
       "app_settings",
       "garden_journal_entries",
       "garden_journal_entry_plants",
@@ -664,7 +1138,7 @@ async function main() {
       "plots",
     ]) : new Set();
     assert(
-      changedDomainTables.every((table) => allowedChangedTables.has(table)),
+      changedDomainTables.every((table) => phaseOneSemanticDeltaTables.has(table)),
       `Browser journey changed forbidden domain tables: ${changedDomainTables.join(", ")}`,
     );
     assert(
@@ -737,6 +1211,10 @@ async function main() {
           `Phase 1 ${table} count delta was not ${delta}`,
         );
       }
+      assertPhaseOneStableDomainProjection(
+        initialPhaseOne.stable_domain_projection,
+        finalPhaseOne.stable_domain_projection,
+      );
       assert(finalPhaseOne.alpha_address === initialPhaseOne.alpha_address, "Garden settings were not restored");
       assert(
         JSON.stringify(finalPhaseOne.alpha_map_object) === JSON.stringify(initialPhaseOne.alpha_map_object),
@@ -745,6 +1223,10 @@ async function main() {
       assert(
         JSON.stringify(finalPhaseOne.alpha_map_unit) === JSON.stringify(initialPhaseOne.alpha_map_unit),
         "Alpha nested map unit changed",
+      );
+      assertExactPhaseOneRestoreImportGraphs(
+        initialPhaseOne.restore_import_graphs,
+        finalPhaseOne.restore_import_graphs,
       );
       assert(finalPhaseOne.indoor_room_label === initialPhaseOne.indoor_room_label, "Indoor room was not restored");
       const expectedIndoorAssignment = {
@@ -796,39 +1278,35 @@ async function main() {
         "Mobile snapshot was not persisted",
       );
       assert(initialPhaseOne.mobile_snapshots.length === 0, "Fixture unexpectedly has a mobile snapshot");
+      assertExactPhaseOneMobileSnapshot(finalPhaseOne.mobile_snapshots, {
+        garden_id: fixture.phase_one.mobile_snapshot.garden_id,
+        garden_owner_username: fixture.phase_one.mobile_snapshot.owner_username,
+        name: fixture.phase_one.mobile_snapshot.name,
+        payload: finalPhaseOne.alpha_snapshot_payload,
+      });
       assert(
-        finalPhaseOne.mobile_snapshots.length === 1
-          && finalPhaseOne.mobile_snapshots[0].garden_id === fixture.phase_one.mobile_snapshot.garden_id,
-        "Mobile snapshot was not owned by the active Alpha garden",
+        canonicalJson(initialPhaseOne.quick_action_records) === canonicalJson({
+          harvest_rollups: [], harvests: [], journals: [],
+        }),
+        "Fixture unexpectedly has retained quick-action records",
       );
-      for (const [label, records] of Object.entries({
-        "mobile harvest": finalPhaseOne.mobile_harvests,
-        "mobile journal": finalPhaseOne.mobile_journals,
-      })) {
-        assert(
-          Array.isArray(records)
-            && records.length === 1
-            && records[0].garden_id === fixture.gardens.alpha.id
-            && records[0].actor_username === fixture.roles.admin,
-          `Phase 1 ${label} was not owned by the active Alpha garden`,
-        );
-      }
+      assertExactPhaseOneQuickActionRecords(finalPhaseOne.quick_action_records, fixture);
       assert(
         initialPhaseOne.alpha_map_unit_count >= 1
           && finalPhaseOne.alpha_map_unit_count === initialPhaseOne.alpha_map_unit_count,
         "Parent map-object deletion did not cascade its nested unit",
       );
       const expectedLifecycleAudit = {
-        assignment_create_count: 2,
-        assignment_delete_count: 1,
+        assignment_create_count: 4,
+        assignment_delete_count: 2,
         nested_unit_create_count: 2,
         nested_unit_direct_delete_count: 0,
         nested_unit_update_count: 2,
-        plant_create_count: 1,
-        plant_delete_count: 1,
-        plant_update_count: 2,
-        saved_view_create_count: 1,
-        saved_view_delete_count: 1,
+        plant_create_count: 2,
+        plant_delete_count: 2,
+        plant_update_count: 4,
+        saved_view_create_count: 2,
+        saved_view_delete_count: 2,
       };
       assert(
         JSON.stringify(finalPhaseOne.lifecycle_audit) === JSON.stringify(expectedLifecycleAudit),
@@ -847,10 +1325,64 @@ async function main() {
       );
       assert(onboardingGardens.length === 2, "Desktop/mobile onboarding gardens were not persisted exactly once");
       assert(initialPhaseOne.onboarding_target_gardens.length === 0, "Fixture unexpectedly has onboarding targets");
+      assert(
+        canonicalJson(initialPhaseOne.onboarding_target_graphs) === canonicalJson({}),
+        "Fixture unexpectedly has onboarding target graphs",
+      );
+      assert(
+        canonicalJson(initialPhaseOne.onboarding_default_context) === canonicalJson({
+          gardens: [], memberships: [],
+        }),
+        "Fixture unexpectedly has an onboarding default context",
+      );
       assertExactPhaseOneOnboardingOwnership(finalPhaseOne.onboarding_target_gardens, {
-        [fixture.phase_one.onboarding.desktop_garden_name]: fixture.phase_one.onboarding.desktop_username,
-        [fixture.phase_one.onboarding.mobile_garden_name]: fixture.phase_one.onboarding.mobile_username,
+        [fixture.phase_one.onboarding.desktop_garden_name]: {
+          address: fixture.phase_one.onboarding.address,
+          grid_cols: fixture.phase_one.onboarding.grid_cols,
+          grid_rows: fixture.phase_one.onboarding.grid_rows,
+          latitude: fixture.phase_one.onboarding.latitude,
+          layout: fixture.phase_one.onboarding.house,
+          longitude: fixture.phase_one.onboarding.longitude,
+          owner_username: fixture.phase_one.onboarding.desktop_username,
+        },
+        [fixture.phase_one.onboarding.mobile_garden_name]: {
+          address: fixture.phase_one.onboarding.address,
+          grid_cols: fixture.phase_one.onboarding.grid_cols,
+          grid_rows: fixture.phase_one.onboarding.grid_rows,
+          latitude: fixture.phase_one.onboarding.latitude,
+          layout: fixture.phase_one.onboarding.house,
+          longitude: fixture.phase_one.onboarding.longitude,
+          owner_username: fixture.phase_one.onboarding.mobile_username,
+        },
       });
+      assertExactPhaseOneOnboardingGraphs(finalPhaseOne.onboarding_target_graphs, {
+        [fixture.phase_one.onboarding.desktop_garden_name]: {
+          address: fixture.phase_one.onboarding.address,
+          grid_cols: fixture.phase_one.onboarding.grid_cols,
+          grid_rows: fixture.phase_one.onboarding.grid_rows,
+          latitude: fixture.phase_one.onboarding.latitude,
+          layout: fixture.phase_one.onboarding.house,
+          longitude: fixture.phase_one.onboarding.longitude,
+          onboarding_complete: true,
+          owner_username: fixture.phase_one.onboarding.desktop_username,
+          slug: fixture.phase_one.onboarding.desktop_garden_slug,
+        },
+        [fixture.phase_one.onboarding.mobile_garden_name]: {
+          address: fixture.phase_one.onboarding.address,
+          grid_cols: fixture.phase_one.onboarding.grid_cols,
+          grid_rows: fixture.phase_one.onboarding.grid_rows,
+          latitude: fixture.phase_one.onboarding.latitude,
+          layout: fixture.phase_one.onboarding.house,
+          longitude: fixture.phase_one.onboarding.longitude,
+          onboarding_complete: true,
+          owner_username: fixture.phase_one.onboarding.mobile_username,
+          slug: fixture.phase_one.onboarding.mobile_garden_slug,
+        },
+      });
+      assertExactPhaseOneOnboardingDefaultContext(
+        finalPhaseOne.onboarding_default_context,
+        fixture,
+      );
       assert(
         finalPhaseOne.onboarding_gardens.length === initialPhaseOne.onboarding_gardens.length + 4,
         "Onboarding did not create the expected visible gardens and legacy default contexts",
@@ -869,8 +1401,8 @@ async function main() {
         "Phase 1 desktop and mobile snapshots did not create exactly two expected audit events",
       );
       assert(
-        finalDatabase.audit_state.expected_phase_one_viewer_denial_count <= 1,
-        "Phase 1 viewer denial created more than one audit event",
+        finalDatabase.audit_state.expected_phase_one_viewer_denial_count === 4,
+        "Phase 1 viewer write denials did not create the four exact audit events",
       );
     }
     manifest.database = {
@@ -897,17 +1429,27 @@ async function main() {
           + process.env.GARDENOPS_DISPOSABLE_POSTGRES_MARKER,
         )
         .digest("hex"),
-      allowed_changed_tables: [...allowedChangedTables],
+      semantic_delta_tables: [...phaseOneSemanticDeltaTables].sort(),
       domain_counts_unchanged: !phaseOneRan,
       domain_digests_unchanged: !phaseOneRan,
+      phase_zero_enforcement: phaseZeroProfileEvidence ? {
+        browser_profile_matrix: phaseZeroProfileEvidence.profile_matrix_enforced === true,
+        cumulative_before_phase_one: true,
+      } : null,
       phase_one_enforcement: phaseOneRan ? {
         assignments_and_lifecycle: true,
         browser_profile_matrix: phaseOneProfileEvidence?.profile_matrix_enforced === true,
         cross_garden_links_absent: true,
         mobile_snapshot_garden_owned: true,
         nested_unit_parent_cascade: true,
-        onboarding_ownership_and_membership: true,
+        onboarding_default_context_exact: true,
+        onboarding_generated_plot_ownership_and_layout_graph: true,
+        onboarding_grid_location_and_ownership: true,
+        quick_action_harvest_journal_links_and_rollup_exact: true,
+        restore_import_graph_unchanged: true,
         seeded_plant_and_saved_view_ownership: true,
+        snapshot_payload_and_ownership_exact: true,
+        stable_mutable_domain_rows_unchanged: true,
         targeted_audit_contract: Boolean(phaseOneAuditEvidence),
       } : null,
       phase_one_mobile_snapshot_count: finalDatabase.phase_one_state.mobile_snapshot_count,
@@ -972,9 +1514,16 @@ if (require.main === module) {
 
 module.exports = {
   assertExactPhaseOneOnboardingOwnership,
+  assertExactPhaseOneOnboardingGraphs,
+  assertExactPhaseOneOnboardingDefaultContext,
+  assertExactPhaseOneQuickActionRecords,
+  assertExactPhaseOneMobileSnapshot,
+  assertExactPhaseOneRestoreImportGraphs,
+  assertPhaseOneStableDomainProjection,
   assertNoCrossGardenLinks,
   assertNoLifecycleResidue,
   assertNoUnexpectedBackendErrors,
+  assertPhaseZeroProfileEvidence,
   assertPhaseOneAuditContract,
   assertPhaseOneProfileEvidence,
   assertNoResponseMocks,
@@ -983,6 +1532,7 @@ module.exports = {
   backendErrorEvidence,
   gitState,
   phaseOneAuditExpectedEvents,
+  safeUtcTimestamp,
   safeFailure,
   sanitizeManifestEvidence,
   sourceProvenance,

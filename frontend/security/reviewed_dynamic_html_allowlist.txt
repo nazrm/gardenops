@@ -1,8 +1,8 @@
 # Reviewed allowlist for dynamic HTML helper calls.
 # Format: <sink>|review=<class>|reason=<note>
-components/adminPanel.ts:1882|setReviewedDynamicHtml(main, renderContent());|review=escaped-renderer|reason=admin panel renderer uses escaped dynamic fields and reviewed templates before writing dynamic HTML
-components/adminPanel.ts:1890|setReviewedDynamicHtml(container, renderAdmin());|review=escaped-renderer|reason=admin panel shell renderer uses escaped dynamic fields and reviewed templates before writing dynamic HTML
-components/adminPanel.ts:1920|setReviewedDynamicHtml(container, "");|review=empty-clear|reason=empty string clears sensitive admin panel markup
+components/adminPanel.ts:1982|setReviewedDynamicHtml(main, renderContent());|review=escaped-renderer|reason=admin panel renderer uses escaped dynamic fields and reviewed templates before writing dynamic HTML
+components/adminPanel.ts:1991|setReviewedDynamicHtml(container, renderAdmin());|review=escaped-renderer|reason=admin panel shell renderer uses escaped dynamic fields and reviewed templates before writing dynamic HTML
+components/adminPanel.ts:2042|setReviewedDynamicHtml(container, "");|review=empty-clear|reason=empty string clears sensitive admin panel markup
 components/dialogCore.ts:35|setReviewedDynamicHtml(dialog, innerMarkup);|review=reviewed-caller-template|reason=modal helper writes caller-provided reviewed markup after caller escaping
 components/onboarding.ts:300|setReviewedDynamicHtml(el, `|review=escaped-renderer|reason=onboarding renderer escapes dynamic fields before writing dynamic HTML
 components/overlays.ts:45|setReviewedDynamicHtml(dialog, innerMarkup);|review=reviewed-caller-template|reason=modal helper writes caller-provided reviewed markup after caller escaping

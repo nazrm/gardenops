@@ -55,15 +55,47 @@ def test_admin_garden_settings_preserve_drafts_and_reject_same_garden_stale_requ
         "async function loadGardenSettings",
         "async function loadSystem",
     )
-    repaint_body = _function_body(
+    render_body = _function_body(
         admin,
-        "async function loadAndRepaintSection",
-        "function hasGardenSettingsDraft",
+        "function renderGardenSection",
+        "// ── Section: Users",
+    )
+    reset_body = _function_body(
+        admin,
+        "export function resetAdminPanelSensitiveState",
+        "function wireSidebar",
+    )
+    activate_body = _function_body(
+        admin,
+        "export async function activateAdminPanel",
+        "export function refreshAdminPanelLocalization",
     )
 
     assert "requestVersion === gardenSettingsRequestVersion" in load_body
     assert "gardenContextFn?.().activeGardenId === requestGardenId" in load_body
-    assert "!hasGardenSettingsDraft()" in repaint_body
+    assert "captureGardenSettingsDraftFromDom();" in load_body
+    assert "applyGardenSettingsBaseline(settings);" in load_body
+    assert "const gardenSettingsBaselines = new Map<number, GardenSettings>();" in admin
+    assert "const gardenSettingsDrafts = new Map<number, GardenSettingsDraft>();" in admin
+    assert 'id="adm-garden-settings-form" data-garden-id="${activeGardenId}"' in render_body
+    assert "gardenSettingsDrafts.get(activeGardenId)" in render_body
+    assert "state.gardenSettings?.garden_id === activeGardenId" in render_body
+    assert "gardenSettingsBaselines.get(current.gardenId)" in admin
+    assert "gardenSettingsDrafts.set(current.gardenId, current.draft);" in admin
+    assert "replaceRenderedGardenSettingsValues(settings);" in admin
+    assert "gardenSettingsDrafts.delete(requestGardenId);" in admin
+    assert "const submittedDraft = draft ? { ...draft } : null;" in admin
+    assert "const hasNewerDraft = Boolean(" in admin
+    assert "!sameGardenSettingsDraft(latestDraft, submittedDraft)" in admin
+    assert "if (!hasNewerDraft)" in admin
+    assert "gardenSettingsBaselines.clear();" in reset_body
+    assert "gardenSettingsDrafts.clear();" in reset_body
+    assert "const needsFullRepaint = !adminShellMatchesState();" in activate_body
+    assert "if (needsFullRepaint) repaintFull();" in activate_body
+    assert "function adminShellMatchesState(): boolean" in admin
+    assert 'container.querySelectorAll<HTMLElement>(".adm-nav-btn[data-section]")' in admin
+    assert 'renderedSections.join(",") === expectedSections.join(",")' in admin
+    assert "renderedActiveSection === state.section" in admin
     assert "gardenSettingsRequestVersion += 1;" in admin
 
 

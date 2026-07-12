@@ -243,6 +243,7 @@ accessibility, and performance evidence. Run one phase or the cumulative set:
 scripts/run_complete_journeys_e2e.sh --phase 0
 scripts/run_complete_journeys_e2e.sh --through-phase 0
 scripts/run_complete_journeys_e2e.sh --phase 1
+scripts/run_complete_journeys_e2e.sh --through-phase 1
 ```
 
 The runner creates its own disposable PostgreSQL child through
@@ -255,13 +256,32 @@ manifests/traces under a unique directory below the gitignored
 temporary logs/media/terrain/download state while retaining the ignored evidence
 run; failed runs preserve private logs and artifacts for diagnosis.
 
-Phase 1 runs independent desktop and Pixel 7 onboarding accounts plus desktop
-admin, mobile admin, and desktop viewer profiles. It exercises real map-object
-creation and deletion on mobile, plant assignment lifecycle, indoor data,
-saved views, snapshots, versioned export/import, malformed-import rejection,
-delayed A/B/A garden switching, and exact database/audit/filesystem
-postconditions. The focused backend suite additionally injects a failure during
-restore and proves the transaction rolls back.
+Every Phase 1 invocation is cumulative: it first runs the Phase 0 desktop and
+Pixel 7 administrator foundation, then runs independent desktop and Pixel 7
+onboarding accounts plus desktop/mobile administrator, editor, and viewer
+profiles. The foundation proves session login, map-first startup, scoped
+notifications, and an ordinary A/B/A garden switch before the Phase 1 mutation
+work begins.
+
+Phase 1 exercises real mobile map-object and plot edits, plant-assignment
+lifecycle, indoor data, saved views, snapshots, versioned export/import, and
+malformed-import rejection. Its delayed A/B/A race holds real Beta GET requests
+for plots, plants, saved views, indoor data, layout, map objects, notifications,
+plot alerts, weather, and garden settings; it starts the matching Alpha request,
+then releases and observes the held Beta response. Administrators run every
+surface on desktop and mobile, while editor/viewer profiles run the core plot
+race on both devices. The browser routes only continue those requests; they
+never fulfill or mock a response.
+
+The checker verifies exact onboarding grid, location, house configuration,
+owner, and membership; the retained mobile snapshot's Alpha garden ownership
+and payload; and the complete Alpha/Beta plot, layout, map-object, nested-unit,
+plant-ownership, and assignment graphs after restore/import. It also enforces
+the exact quick-action records and every unchanged row in mutable Phase 1 domain
+tables, the profile/device/role matrix, targeted audit histogram, lifecycle
+cleanup, cross-garden absence, backend-error evidence, and empty temporary
+filesystem state. The focused backend suite additionally injects a failure
+during restore and proves the transaction rolls back.
 
 The tracked coverage contract is `tests/journey_coverage.yaml`. Validate open
 phases during implementation and require complete closure only in the final

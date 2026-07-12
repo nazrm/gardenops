@@ -17,6 +17,12 @@ from typing import Any
 from psycopg import sql
 
 from gardenops.db import close_pool, get_db, return_db
+from gardenops.routers.map_objects import snapshot_map_objects
+from gardenops.routers.shademap import (
+    get_shademap_calibration,
+    get_shademap_state,
+    list_shademap_obstacles,
+)
 from gardenops.security import generate_passkey_user_handle, hash_password
 
 ADMIN_USERNAME = os.environ.get(
@@ -48,8 +54,30 @@ PHASE_ONE_SAVED_VIEW_LABEL = "Complete Phase One Basil View"
 PHASE_ONE_MOBILE_SNAPSHOT_NAME = "Complete Phase One Mobile Action Snapshot"
 PHASE_ONE_BROWSER_PLANT_ID = "PLT-001"
 PHASE_ONE_BROWSER_SAVED_VIEW_LABEL = "Phase 1 Browser Plant View"
+PHASE_ONE_QUICK_ACTION_NOTE = "Phase 1 mobile quick action"
+PHASE_ONE_QUICK_ACTION_QUANTITY = 1.0
+PHASE_ONE_QUICK_ACTION_UNIT = "kg"
+PHASE_ONE_QUICK_ACTION_QUALITY = "good"
 PHASE_ONE_DESKTOP_ONBOARDING_GARDEN_NAME = "Phase 1 Onboarding Garden"
 PHASE_ONE_MOBILE_ONBOARDING_GARDEN_NAME = "Phase 1 Mobile Onboarding Garden"
+PHASE_ONE_DESKTOP_ONBOARDING_GARDEN_SLUG = "complete-journeys-e2e-onboarding-s-garden"
+PHASE_ONE_MOBILE_ONBOARDING_GARDEN_SLUG = "complete-journeys-e2e-onboarding-mobile-s-garden"
+PHASE_ONE_ONBOARDING_DEFAULT_GARDEN_NAME = "Default Garden"
+PHASE_ONE_ONBOARDING_DEFAULT_GARDEN_SLUG = "default"
+PHASE_ONE_ONBOARDING_ADDRESS = "Phase 1 onboarding address"
+PHASE_ONE_ONBOARDING_GRID_COLS = 12
+PHASE_ONE_ONBOARDING_GRID_ROWS = 12
+PHASE_ONE_ONBOARDING_HOUSE = {
+    "col": 2,
+    "grid_cols": PHASE_ONE_ONBOARDING_GRID_COLS,
+    "grid_rows": PHASE_ONE_ONBOARDING_GRID_ROWS,
+    "height": 3,
+    "north_degrees": 0,
+    "row": 2,
+    "width": 3,
+}
+PHASE_ONE_ONBOARDING_LATITUDE = 59.91
+PHASE_ONE_ONBOARDING_LONGITUDE = 10.75
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -379,10 +407,19 @@ def _phase_one_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
             "count": int(snapshot["count"] if snapshot else 0),
             "garden_id": alpha_id,
             "name": PHASE_ONE_MOBILE_SNAPSHOT_NAME,
+            "owner_username": ADMIN_USERNAME,
         },
         "onboarding": {
+            "address": PHASE_ONE_ONBOARDING_ADDRESS,
             "desktop_garden_name": PHASE_ONE_DESKTOP_ONBOARDING_GARDEN_NAME,
+            "desktop_garden_slug": PHASE_ONE_DESKTOP_ONBOARDING_GARDEN_SLUG,
             "desktop_username": ONBOARDING_LOGIN[0],
+            "grid_cols": PHASE_ONE_ONBOARDING_GRID_COLS,
+            "grid_rows": PHASE_ONE_ONBOARDING_GRID_ROWS,
+            "house": PHASE_ONE_ONBOARDING_HOUSE,
+            "latitude": PHASE_ONE_ONBOARDING_LATITUDE,
+            "longitude": PHASE_ONE_ONBOARDING_LONGITUDE,
+            "mobile_garden_slug": PHASE_ONE_MOBILE_ONBOARDING_GARDEN_SLUG,
             "mobile_garden_name": PHASE_ONE_MOBILE_ONBOARDING_GARDEN_NAME,
             "mobile_username": MOBILE_ONBOARDING_LOGIN[0],
         },
@@ -392,6 +429,664 @@ def _phase_one_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
             "owner_username": ADMIN_USERNAME,
             "view_type": "plants",
         },
+    }
+
+
+def _json_object(value: object, *, label: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Complete journey {label} is not valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"Complete journey {label} must be a JSON object")
+    return parsed
+
+
+def _garden_graph(conn, *, garden_id: int) -> dict[str, Any]:
+    """Return the semantic garden graph that restore/import must preserve exactly."""
+    garden = conn.execute(
+        """
+        SELECT
+            garden_value.id,
+            garden_value.slug,
+            garden_value.name,
+            garden_value.grid_rows,
+            garden_value.grid_cols,
+            garden_value.latitude,
+            garden_value.longitude,
+            garden_value.address,
+            garden_value.onboarding_complete,
+            owner.username AS owner_username
+        FROM gardens garden_value
+        LEFT JOIN auth_users owner ON owner.id = garden_value.owner_user_id
+        WHERE garden_value.id = %s
+        """,
+        (garden_id,),
+    ).fetchone()
+    layout = conn.execute(
+        """
+        SELECT house_row, house_col, house_width, house_height, north_degrees, grid_rows, grid_cols
+        FROM layout_state
+        WHERE garden_id = %s
+        """,
+        (garden_id,),
+    ).fetchone()
+    if not garden or not layout:
+        raise RuntimeError("Complete journey garden graph is missing its garden or layout")
+
+    plot_rows = conn.execute(
+        """
+        SELECT
+            plot_value.plot_id,
+            plot_value.garden_id,
+            plot_value.zone_code,
+            plot_value.zone_name,
+            plot_value.plot_number,
+            plot_value.grid_row,
+            plot_value.grid_col,
+            plot_value.sub_zone,
+            plot_value.notes,
+            plot_value.color,
+            owner.username AS owner_username
+        FROM plots plot_value
+        LEFT JOIN plot_ownership ownership
+          ON ownership.plot_id = plot_value.plot_id
+         AND ownership.garden_id = plot_value.garden_id
+        LEFT JOIN auth_users owner ON owner.id = ownership.owner_user_id
+        WHERE plot_value.garden_id = %s
+        ORDER BY plot_value.plot_id
+        """,
+        (garden_id,),
+    ).fetchall()
+    plant_rows = conn.execute(
+        """
+        SELECT
+            plant_value.plt_id,
+            plant_value.name,
+            plant_value.latin,
+            plant_value.category,
+            plant_value.bloom_month,
+            plant_value.color,
+            plant_value.hardiness,
+            plant_value.height_cm,
+            plant_value.light,
+            plant_value.link,
+            plant_value.year_planted,
+            plant_value.seen_growing,
+            plant_value.deer_resistant,
+            plant_value.care_watering,
+            plant_value.care_soil,
+            plant_value.care_planting,
+            plant_value.care_maintenance,
+            plant_value.care_notes,
+            plant_value.seen_growing_date,
+            ownership.garden_id,
+            owner.username AS owner_username
+        FROM plant_ownership ownership
+        JOIN plants plant_value ON plant_value.plt_id = ownership.plt_id
+        LEFT JOIN auth_users owner ON owner.id = ownership.owner_user_id
+        WHERE ownership.garden_id = %s
+        ORDER BY plant_value.plt_id
+        """,
+        (garden_id,),
+    ).fetchall()
+    assignment_rows = conn.execute(
+        """
+        SELECT
+            assignment.plot_id,
+            assignment.plt_id,
+            assignment.quantity,
+            assignment.seen_growing,
+            assignment.seen_growing_date,
+            assignment.room_label,
+            plot_value.garden_id AS plot_garden_id,
+            plot_owner.username AS plot_owner_username,
+            plant_ownership.garden_id AS plant_garden_id,
+            plant_owner.username AS plant_owner_username
+        FROM plot_plants assignment
+        JOIN plots plot_value ON plot_value.plot_id = assignment.plot_id
+        LEFT JOIN plot_ownership plot_ownership
+          ON plot_ownership.plot_id = assignment.plot_id
+         AND plot_ownership.garden_id = plot_value.garden_id
+        LEFT JOIN auth_users plot_owner ON plot_owner.id = plot_ownership.owner_user_id
+        LEFT JOIN plant_ownership plant_ownership
+          ON plant_ownership.plt_id = assignment.plt_id
+         AND plant_ownership.garden_id = plot_value.garden_id
+        LEFT JOIN auth_users plant_owner ON plant_owner.id = plant_ownership.owner_user_id
+        WHERE plot_value.garden_id = %s
+        ORDER BY assignment.plot_id, assignment.plt_id
+        """,
+        (garden_id,),
+    ).fetchall()
+    map_object_rows = conn.execute(
+        """
+        SELECT
+            object_value.id,
+            object_value.public_id,
+            object_value.object_type,
+            object_value.name,
+            object_value.shape_type,
+            object_value.geometry_json,
+            object_value.style_json,
+            object_value.z_index,
+            object_value.has_internal_layout,
+            object_value.internal_layout_json,
+            owner.username AS created_by_username
+        FROM garden_map_objects object_value
+        LEFT JOIN auth_users owner ON owner.id = object_value.created_by_user_id
+        WHERE object_value.garden_id = %s
+        ORDER BY object_value.z_index, object_value.id
+        """,
+        (garden_id,),
+    ).fetchall()
+    unit_rows = conn.execute(
+        """
+        SELECT
+            unit_value.map_object_id,
+            unit_value.public_id,
+            unit_value.unit_type,
+            unit_value.name,
+            unit_value.shape_type,
+            unit_value.geometry_json,
+            unit_value.style_json,
+            unit_value.sort_order
+        FROM garden_map_object_units unit_value
+        JOIN garden_map_objects object_value ON object_value.id = unit_value.map_object_id
+        WHERE unit_value.garden_id = %s AND object_value.garden_id = %s
+        ORDER BY object_value.z_index, object_value.id, unit_value.sort_order, unit_value.id
+        """,
+        (garden_id, garden_id),
+    ).fetchall()
+    units_by_object: dict[int, list[dict[str, Any]]] = {}
+    for row in unit_rows:
+        units_by_object.setdefault(int(row["map_object_id"]), []).append(
+            {
+                "geometry": _json_object(row["geometry_json"], label="map-unit geometry"),
+                "name": str(row["name"]),
+                "public_id": str(row["public_id"]),
+                "shape_type": str(row["shape_type"]),
+                "sort_order": int(row["sort_order"]),
+                "style": _json_object(row["style_json"], label="map-unit style"),
+                "unit_type": str(row["unit_type"]),
+            }
+        )
+
+    return {
+        "assignments": [
+            {
+                "plant_garden_id": (
+                    int(row["plant_garden_id"]) if row["plant_garden_id"] is not None else None
+                ),
+                "plant_owner_username": (
+                    str(row["plant_owner_username"])
+                    if row["plant_owner_username"] is not None
+                    else None
+                ),
+                "plot_garden_id": int(row["plot_garden_id"]),
+                "plot_id": str(row["plot_id"]),
+                "plot_owner_username": (
+                    str(row["plot_owner_username"])
+                    if row["plot_owner_username"] is not None
+                    else None
+                ),
+                "plant_id": str(row["plt_id"]),
+                "quantity": int(row["quantity"]),
+                "room_label": str(row["room_label"] or ""),
+                "seen_growing": bool(row["seen_growing"]),
+                "seen_growing_date": str(row["seen_growing_date"] or ""),
+            }
+            for row in assignment_rows
+        ],
+        "garden": {
+            "address": str(garden["address"] or ""),
+            "grid_cols": int(garden["grid_cols"]),
+            "grid_rows": int(garden["grid_rows"]),
+            "id": int(garden["id"]),
+            "latitude": float(garden["latitude"]) if garden["latitude"] is not None else None,
+            "longitude": float(garden["longitude"]) if garden["longitude"] is not None else None,
+            "name": str(garden["name"]),
+            "onboarding_complete": bool(garden["onboarding_complete"]),
+            "owner_username": (
+                str(garden["owner_username"]) if garden["owner_username"] is not None else None
+            ),
+            "slug": str(garden["slug"]),
+        },
+        "layout": {
+            "col": int(layout["house_col"]),
+            "grid_cols": int(layout["grid_cols"]),
+            "grid_rows": int(layout["grid_rows"]),
+            "height": int(layout["house_height"]),
+            "north_degrees": int(layout["north_degrees"]),
+            "row": int(layout["house_row"]),
+            "width": int(layout["house_width"]),
+        },
+        "map_objects": [
+            {
+                "created_by_username": (
+                    str(row["created_by_username"])
+                    if row["created_by_username"] is not None
+                    else None
+                ),
+                "geometry": _json_object(row["geometry_json"], label="map-object geometry"),
+                "has_internal_layout": bool(row["has_internal_layout"]),
+                "internal_layout": _json_object(
+                    row["internal_layout_json"], label="map-object internal layout"
+                ),
+                "name": str(row["name"]),
+                "object_type": str(row["object_type"]),
+                "public_id": str(row["public_id"]),
+                "shape_type": str(row["shape_type"]),
+                "style": _json_object(row["style_json"], label="map-object style"),
+                "units": units_by_object.get(int(row["id"]), []),
+                "z_index": int(row["z_index"]),
+            }
+            for row in map_object_rows
+        ],
+        "plants": [
+            {
+                "bloom_month": str(row["bloom_month"] or ""),
+                "care_maintenance": str(row["care_maintenance"] or ""),
+                "care_notes": str(row["care_notes"] or ""),
+                "care_planting": str(row["care_planting"] or ""),
+                "care_soil": str(row["care_soil"] or ""),
+                "care_watering": str(row["care_watering"] or ""),
+                "category": str(row["category"]),
+                "color": str(row["color"] or ""),
+                "deer_resistant": bool(row["deer_resistant"]),
+                "garden_id": int(row["garden_id"]),
+                "hardiness": str(row["hardiness"] or ""),
+                "height_cm": int(row["height_cm"]) if row["height_cm"] is not None else None,
+                "latin": str(row["latin"] or ""),
+                "light": str(row["light"] or ""),
+                "link": str(row["link"] or ""),
+                "name": str(row["name"]),
+                "owner_username": (
+                    str(row["owner_username"]) if row["owner_username"] is not None else None
+                ),
+                "plant_id": str(row["plt_id"]),
+                "seen_growing": bool(row["seen_growing"]),
+                "seen_growing_date": str(row["seen_growing_date"] or ""),
+                "year_planted": str(row["year_planted"] or ""),
+            }
+            for row in plant_rows
+        ],
+        "plots": [
+            {
+                "color": str(row["color"] or ""),
+                "garden_id": int(row["garden_id"]),
+                "grid_col": int(row["grid_col"]) if row["grid_col"] is not None else None,
+                "grid_row": int(row["grid_row"]) if row["grid_row"] is not None else None,
+                "notes": str(row["notes"] or ""),
+                "owner_username": (
+                    str(row["owner_username"]) if row["owner_username"] is not None else None
+                ),
+                "plot_id": str(row["plot_id"]),
+                "plot_number": int(row["plot_number"]),
+                "sub_zone": str(row["sub_zone"] or ""),
+                "zone_code": str(row["zone_code"]),
+                "zone_name": str(row["zone_name"]),
+            }
+            for row in plot_rows
+        ],
+    }
+
+
+def _snapshot_payload_projection(
+    conn: Any, *, garden_id: int, graph: dict[str, Any]
+) -> dict[str, Any]:
+    """Build the exact payload shape emitted by the snapshot endpoint."""
+    return {
+        "house": graph["layout"],
+        "map_objects": snapshot_map_objects(conn, garden_id),
+        "plots": [
+            {
+                "color": plot["color"],
+                "grid_col": plot["grid_col"],
+                "grid_row": plot["grid_row"],
+                "notes": plot["notes"],
+                "plot_id": plot["plot_id"],
+                "plot_number": plot["plot_number"],
+                "sub_zone": plot["sub_zone"],
+                "zone_code": plot["zone_code"],
+                "zone_name": plot["zone_name"],
+            }
+            for plot in graph["plots"]
+        ],
+        "schema_version": 1,
+        "shademap": get_shademap_state(conn, garden_id=garden_id),
+        "shademap_calibration": get_shademap_calibration(conn, garden_id=garden_id),
+        "shademap_obstacles": list_shademap_obstacles(conn, garden_id=garden_id),
+    }
+
+
+def _semantic_table_rows(
+    conn: Any,
+    *,
+    table: str,
+    where_sql: str = "TRUE",
+    params: tuple[Any, ...] = (),
+) -> list[dict[str, Any]]:
+    """Return a deterministic, complete semantic projection of selected table rows."""
+    rows = conn.execute(
+        sql.SQL(
+            """
+            SELECT to_jsonb(row_value)::text AS payload
+            FROM {} AS row_value
+            WHERE {}
+            ORDER BY to_jsonb(row_value)::text
+            """
+        ).format(sql.Identifier(table), sql.SQL(where_sql)),
+        params,
+    ).fetchall()
+    return [_json_object(row["payload"], label=f"{table} semantic row") for row in rows]
+
+
+def _phase_one_stable_domain_projection(
+    conn: Any, *, alpha_id: int, beta_id: int
+) -> dict[str, list[dict[str, Any]]]:
+    """Keep every non-retained Phase 1 row byte-for-byte semantic-equivalent."""
+    onboarding_scope = (
+        "garden_id NOT IN (SELECT id FROM gardens WHERE slug = %s OR name IN (%s, %s))"
+    )
+    onboarding_params = (
+        PHASE_ONE_ONBOARDING_DEFAULT_GARDEN_SLUG,
+        PHASE_ONE_DESKTOP_ONBOARDING_GARDEN_NAME,
+        PHASE_ONE_MOBILE_ONBOARDING_GARDEN_NAME,
+    )
+    restored_scope = f"garden_id NOT IN (%s, %s) AND {onboarding_scope}"
+    restored_params = (alpha_id, beta_id, *onboarding_params)
+    journal_scope = "entry_id NOT IN (SELECT id FROM garden_journal_entries WHERE notes = %s)"
+    harvest_scope = "entry_id NOT IN (SELECT id FROM harvest_entries WHERE notes = %s)"
+    return {
+        "app_settings": _semantic_table_rows(
+            conn,
+            table="app_settings",
+            where_sql="key NOT LIKE %s",
+            params=(f"harvest_rollup:{alpha_id}:%",),
+        ),
+        "garden_journal_entries": _semantic_table_rows(
+            conn,
+            table="garden_journal_entries",
+            where_sql="notes <> %s",
+            params=(PHASE_ONE_QUICK_ACTION_NOTE,),
+        ),
+        "garden_journal_entry_plants": _semantic_table_rows(
+            conn,
+            table="garden_journal_entry_plants",
+            where_sql=journal_scope,
+            params=(PHASE_ONE_QUICK_ACTION_NOTE,),
+        ),
+        "garden_journal_entry_plots": _semantic_table_rows(
+            conn,
+            table="garden_journal_entry_plots",
+            where_sql=journal_scope,
+            params=(PHASE_ONE_QUICK_ACTION_NOTE,),
+        ),
+        "garden_map_object_units": _semantic_table_rows(
+            conn,
+            table="garden_map_object_units",
+            where_sql="garden_id NOT IN (%s, %s)",
+            params=(alpha_id, beta_id),
+        ),
+        "garden_map_objects": _semantic_table_rows(
+            conn,
+            table="garden_map_objects",
+            where_sql="garden_id NOT IN (%s, %s)",
+            params=(alpha_id, beta_id),
+        ),
+        "garden_memberships": _semantic_table_rows(
+            conn,
+            table="garden_memberships",
+            where_sql=onboarding_scope,
+            params=onboarding_params,
+        ),
+        "gardens": _semantic_table_rows(
+            conn,
+            table="gardens",
+            where_sql="id NOT IN (%s, %s) AND slug <> %s AND name NOT IN (%s, %s)",
+            params=(alpha_id, beta_id, *onboarding_params),
+        ),
+        "harvest_entries": _semantic_table_rows(
+            conn,
+            table="harvest_entries",
+            where_sql="notes <> %s",
+            params=(PHASE_ONE_QUICK_ACTION_NOTE,),
+        ),
+        "harvest_entry_plants": _semantic_table_rows(
+            conn,
+            table="harvest_entry_plants",
+            where_sql=harvest_scope,
+            params=(PHASE_ONE_QUICK_ACTION_NOTE,),
+        ),
+        "harvest_entry_plots": _semantic_table_rows(
+            conn,
+            table="harvest_entry_plots",
+            where_sql=harvest_scope,
+            params=(PHASE_ONE_QUICK_ACTION_NOTE,),
+        ),
+        "layout_snapshots": _semantic_table_rows(
+            conn,
+            table="layout_snapshots",
+            where_sql="name <> %s",
+            params=(PHASE_ONE_MOBILE_SNAPSHOT_NAME,),
+        ),
+        "layout_state": _semantic_table_rows(
+            conn,
+            table="layout_state",
+            where_sql=restored_scope,
+            params=restored_params,
+        ),
+        "plot_ownership": _semantic_table_rows(
+            conn,
+            table="plot_ownership",
+            where_sql=restored_scope,
+            params=restored_params,
+        ),
+        "plots": _semantic_table_rows(
+            conn,
+            table="plots",
+            where_sql=restored_scope,
+            params=restored_params,
+        ),
+    }
+
+
+def _entry_link_ids(conn: Any, *, table: str, entry_id: int, column: str) -> list[str]:
+    rows = conn.execute(
+        sql.SQL("SELECT {} FROM {} WHERE entry_id = %s ORDER BY {}").format(
+            sql.Identifier(column), sql.Identifier(table), sql.Identifier(column)
+        ),
+        (entry_id,),
+    ).fetchall()
+    return [str(row[column]) for row in rows]
+
+
+def _quick_action_records(conn: Any, *, alpha_id: int) -> dict[str, Any]:
+    """Project the sole retained quick-action harvest, journal, links, and rollup."""
+    harvest_rows = conn.execute(
+        """
+        SELECT
+            harvest.id,
+            harvest.public_id,
+            harvest.garden_id,
+            harvest.occurred_on,
+            harvest.quantity,
+            harvest.unit,
+            harvest.quality,
+            harvest.notes,
+            harvest.metadata_json,
+            actor.username AS actor_username
+        FROM harvest_entries harvest
+        LEFT JOIN auth_users actor ON actor.id = harvest.actor_user_id
+        WHERE harvest.notes = %s
+        ORDER BY harvest.id
+        """,
+        (PHASE_ONE_QUICK_ACTION_NOTE,),
+    ).fetchall()
+    journal_rows = conn.execute(
+        """
+        SELECT
+            journal.id,
+            journal.public_id,
+            journal.garden_id,
+            journal.event_type,
+            journal.occurred_on,
+            journal.title,
+            journal.notes,
+            journal.metadata_json,
+            actor.username AS actor_username
+        FROM garden_journal_entries journal
+        LEFT JOIN auth_users actor ON actor.id = journal.actor_user_id
+        WHERE journal.notes = %s
+        ORDER BY journal.id
+        """,
+        (PHASE_ONE_QUICK_ACTION_NOTE,),
+    ).fetchall()
+    rollup_rows = conn.execute(
+        """
+        SELECT key, value
+        FROM app_settings
+        WHERE key LIKE %s
+        ORDER BY key
+        """,
+        (f"harvest_rollup:{alpha_id}:%",),
+    ).fetchall()
+    return {
+        "harvest_rollups": [
+            {
+                "key": str(row["key"]),
+                "value": _json_object(row["value"], label="quick-action harvest rollup"),
+            }
+            for row in rollup_rows
+        ],
+        "harvests": [
+            {
+                "actor_username": (
+                    str(row["actor_username"]) if row["actor_username"] is not None else None
+                ),
+                "garden_id": int(row["garden_id"]),
+                "metadata": _json_object(
+                    row["metadata_json"], label="quick-action harvest metadata"
+                ),
+                "notes": str(row["notes"] or ""),
+                "occurred_on": str(row["occurred_on"]),
+                "plant_ids": _entry_link_ids(
+                    conn,
+                    table="harvest_entry_plants",
+                    entry_id=int(row["id"]),
+                    column="plt_id",
+                ),
+                "plot_ids": _entry_link_ids(
+                    conn,
+                    table="harvest_entry_plots",
+                    entry_id=int(row["id"]),
+                    column="plot_id",
+                ),
+                "public_id": str(row["public_id"]),
+                "quality": str(row["quality"]),
+                "quantity": float(row["quantity"]),
+                "unit": str(row["unit"]),
+            }
+            for row in harvest_rows
+        ],
+        "journals": [
+            {
+                "actor_username": (
+                    str(row["actor_username"]) if row["actor_username"] is not None else None
+                ),
+                "event_type": str(row["event_type"]),
+                "garden_id": int(row["garden_id"]),
+                "metadata": _json_object(
+                    row["metadata_json"], label="quick-action journal metadata"
+                ),
+                "notes": str(row["notes"] or ""),
+                "occurred_on": str(row["occurred_on"]),
+                "plant_ids": _entry_link_ids(
+                    conn,
+                    table="garden_journal_entry_plants",
+                    entry_id=int(row["id"]),
+                    column="plt_id",
+                ),
+                "plot_ids": _entry_link_ids(
+                    conn,
+                    table="garden_journal_entry_plots",
+                    entry_id=int(row["id"]),
+                    column="plot_id",
+                ),
+                "public_id": str(row["public_id"]),
+                "title": str(row["title"] or ""),
+            }
+            for row in journal_rows
+        ],
+    }
+
+
+def _onboarding_default_context(conn: Any) -> dict[str, Any]:
+    """Capture the shared default context created for the two onboarding users."""
+    garden_rows = conn.execute(
+        """
+        SELECT
+            garden_value.id,
+            garden_value.slug,
+            garden_value.name,
+            garden_value.grid_rows,
+            garden_value.grid_cols,
+            garden_value.latitude,
+            garden_value.longitude,
+            garden_value.address,
+            garden_value.onboarding_complete,
+            owner.username AS owner_username,
+            (SELECT COUNT(*) FROM layout_state WHERE garden_id = garden_value.id) AS layout_count,
+            (SELECT COUNT(*) FROM garden_map_objects WHERE garden_id = garden_value.id)
+                AS map_object_count,
+            (SELECT COUNT(*) FROM plots WHERE garden_id = garden_value.id) AS plot_count
+        FROM gardens garden_value
+        LEFT JOIN auth_users owner ON owner.id = garden_value.owner_user_id
+        WHERE garden_value.slug = %s
+        ORDER BY garden_value.id
+        """,
+        (PHASE_ONE_ONBOARDING_DEFAULT_GARDEN_SLUG,),
+    ).fetchall()
+    membership_rows = conn.execute(
+        """
+        SELECT membership.garden_id, membership.role, users.username
+        FROM garden_memberships membership
+        JOIN gardens garden_value ON garden_value.id = membership.garden_id
+        JOIN auth_users users ON users.id = membership.user_id
+        WHERE garden_value.slug = %s
+        ORDER BY users.username
+        """,
+        (PHASE_ONE_ONBOARDING_DEFAULT_GARDEN_SLUG,),
+    ).fetchall()
+    return {
+        "gardens": [
+            {
+                "address": str(row["address"] or ""),
+                "grid_cols": int(row["grid_cols"]),
+                "grid_rows": int(row["grid_rows"]),
+                "id": int(row["id"]),
+                "latitude": float(row["latitude"]) if row["latitude"] is not None else None,
+                "layout_count": int(row["layout_count"]),
+                "longitude": (float(row["longitude"]) if row["longitude"] is not None else None),
+                "map_object_count": int(row["map_object_count"]),
+                "name": str(row["name"]),
+                "onboarding_complete": bool(row["onboarding_complete"]),
+                "owner_username": (
+                    str(row["owner_username"]) if row["owner_username"] is not None else None
+                ),
+                "plot_count": int(row["plot_count"]),
+                "slug": str(row["slug"]),
+            }
+            for row in garden_rows
+        ],
+        "memberships": [
+            {
+                "garden_id": int(row["garden_id"]),
+                "role": str(row["role"]),
+                "username": str(row["username"]),
+            }
+            for row in membership_rows
+        ],
     }
 
 
@@ -413,14 +1108,27 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             g.id,
             g.name,
             g.slug,
+            g.grid_rows,
+            g.grid_cols,
+            g.latitude,
+            g.longitude,
+            g.address,
             g.onboarding_complete,
             owner.username AS owner_username,
             member.username AS membership_username,
-            gm.role AS membership_role
+            gm.role AS membership_role,
+            layout.house_row AS layout_row,
+            layout.house_col AS layout_col,
+            layout.house_width AS layout_width,
+            layout.house_height AS layout_height,
+            layout.north_degrees AS layout_north_degrees,
+            layout.grid_rows AS layout_grid_rows,
+            layout.grid_cols AS layout_grid_cols
         FROM gardens g
         LEFT JOIN auth_users owner ON owner.id = g.owner_user_id
         LEFT JOIN garden_memberships gm ON gm.garden_id = g.id
         LEFT JOIN auth_users member ON member.id = gm.user_id
+        LEFT JOIN layout_state layout ON layout.garden_id = g.id
         WHERE g.name IN (%s, %s)
         ORDER BY g.id, member.username, gm.role
         """,
@@ -490,10 +1198,17 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
     ).fetchall()
     mobile_snapshot_rows = conn.execute(
         """
-        SELECT garden_id, public_id
-        FROM layout_snapshots
-        WHERE name = %s
-        ORDER BY garden_id, public_id
+        SELECT
+            snapshot.garden_id,
+            snapshot.public_id,
+            snapshot.name,
+            snapshot.data,
+            owner.username AS garden_owner_username
+        FROM layout_snapshots snapshot
+        JOIN gardens garden_value ON garden_value.id = snapshot.garden_id
+        LEFT JOIN auth_users owner ON owner.id = garden_value.owner_user_id
+        WHERE snapshot.name = %s
+        ORDER BY snapshot.garden_id, snapshot.public_id
         """,
         (PHASE_ONE_MOBILE_SNAPSHOT_NAME,),
     ).fetchall()
@@ -502,36 +1217,41 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         SELECT harvest.garden_id, actor.username AS actor_username
         FROM harvest_entries harvest
         LEFT JOIN auth_users actor ON actor.id = harvest.actor_user_id
-        WHERE harvest.notes = 'Phase 1 mobile quick action'
+        WHERE harvest.notes = %s
         ORDER BY harvest.id
-        """
+        """,
+        (PHASE_ONE_QUICK_ACTION_NOTE,),
     ).fetchall()
     mobile_journal_rows = conn.execute(
         """
         SELECT journal.garden_id, actor.username AS actor_username
         FROM garden_journal_entries journal
         LEFT JOIN auth_users actor ON actor.id = journal.actor_user_id
-        WHERE journal.notes = 'Phase 1 mobile quick action'
+        WHERE journal.notes = %s
         ORDER BY journal.id
-        """
+        """,
+        (PHASE_ONE_QUICK_ACTION_NOTE,),
     ).fetchall()
     counts = conn.execute(
         """
         SELECT
             (SELECT COUNT(*) FROM plants WHERE name LIKE 'Phase 1 Browser Mint%%') AS temp_plants,
             (SELECT COUNT(*) FROM user_saved_views
-             WHERE label = 'Phase 1 Browser Plant View') AS temp_views,
+             WHERE label LIKE 'Phase 1 Browser Plant View%%') AS temp_views,
             (SELECT COUNT(*) FROM garden_map_objects
              WHERE name LIKE 'Phase 1 %%') AS temp_map_objects,
             (SELECT COUNT(*) FROM layout_snapshots WHERE name = %s) AS mobile_snapshots,
-            (SELECT COUNT(*) FROM harvest_entries
-             WHERE notes = 'Phase 1 mobile quick action') AS harvests,
-            (SELECT COUNT(*) FROM garden_journal_entries
-             WHERE notes = 'Phase 1 mobile quick action') AS journals,
+            (SELECT COUNT(*) FROM harvest_entries WHERE notes = %s) AS harvests,
+            (SELECT COUNT(*) FROM garden_journal_entries WHERE notes = %s) AS journals,
             (SELECT COUNT(*) FROM garden_map_object_units
              WHERE garden_id = %s) AS alpha_map_unit_count
         """,
-        (PHASE_ONE_MOBILE_SNAPSHOT_NAME, alpha_id),
+        (
+            PHASE_ONE_MOBILE_SNAPSHOT_NAME,
+            PHASE_ONE_QUICK_ACTION_NOTE,
+            PHASE_ONE_QUICK_ACTION_NOTE,
+            alpha_id,
+        ),
     ).fetchone()
     lifecycle = conn.execute(
         """
@@ -539,16 +1259,16 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             (SELECT COUNT(*) FROM plants WHERE plt_id = %s) AS plant_rows,
             (SELECT COUNT(*) FROM plant_ownership WHERE plt_id = %s) AS plant_ownership_rows,
             (SELECT COUNT(*) FROM plot_plants WHERE plt_id = %s) AS plant_assignment_rows,
-            (SELECT COUNT(*) FROM user_saved_views WHERE label = %s) AS saved_view_rows,
+            (SELECT COUNT(*) FROM user_saved_views WHERE label LIKE %s) AS saved_view_rows,
             (SELECT COUNT(*) FROM user_saved_views
-             WHERE label = %s AND garden_id = %s) AS saved_view_alpha_rows
+             WHERE label LIKE %s AND garden_id = %s) AS saved_view_alpha_rows
         """,
         (
             PHASE_ONE_BROWSER_PLANT_ID,
             PHASE_ONE_BROWSER_PLANT_ID,
             PHASE_ONE_BROWSER_PLANT_ID,
-            PHASE_ONE_BROWSER_SAVED_VIEW_LABEL,
-            PHASE_ONE_BROWSER_SAVED_VIEW_LABEL,
+            f"{PHASE_ONE_BROWSER_SAVED_VIEW_LABEL}%",
+            f"{PHASE_ONE_BROWSER_SAVED_VIEW_LABEL}%",
             alpha_id,
         ),
     ).fetchone()
@@ -599,12 +1319,12 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             (
                 SELECT COUNT(*)
                 FROM harvest_entries
-                WHERE notes = 'Phase 1 mobile quick action' AND garden_id = %s
+                WHERE notes = %s AND garden_id = %s
             ) AS mobile_harvest_in_beta,
             (
                 SELECT COUNT(*)
                 FROM garden_journal_entries
-                WHERE notes = 'Phase 1 mobile quick action' AND garden_id = %s
+                WHERE notes = %s AND garden_id = %s
             ) AS mobile_journal_in_beta
         """,
         (
@@ -620,7 +1340,9 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             beta_id,
             PHASE_ONE_MOBILE_SNAPSHOT_NAME,
             beta_id,
+            PHASE_ONE_QUICK_ACTION_NOTE,
             beta_id,
+            PHASE_ONE_QUICK_ACTION_NOTE,
             beta_id,
         ),
     ).fetchone()
@@ -696,14 +1418,45 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             alpha_id,
         ),
     ).fetchone()
-    app_setting_rows = conn.execute("SELECT key FROM app_settings ORDER BY key").fetchall()
+    alpha_graph = _garden_graph(conn, garden_id=alpha_id)
+    beta_graph = _garden_graph(conn, garden_id=beta_id)
     onboarding_targets: dict[int, dict[str, Any]] = {}
     for row in onboarding_target_rows:
         garden_id = int(row["id"])
         target = onboarding_targets.setdefault(
             garden_id,
             {
+                "address": str(row["address"] or ""),
+                "grid_cols": int(row["grid_cols"]),
+                "grid_rows": int(row["grid_rows"]),
                 "id": garden_id,
+                "latitude": float(row["latitude"]) if row["latitude"] is not None else None,
+                "layout": {
+                    "col": (int(row["layout_col"]) if row["layout_col"] is not None else None),
+                    "grid_cols": (
+                        int(row["layout_grid_cols"])
+                        if row["layout_grid_cols"] is not None
+                        else None
+                    ),
+                    "grid_rows": (
+                        int(row["layout_grid_rows"])
+                        if row["layout_grid_rows"] is not None
+                        else None
+                    ),
+                    "height": (
+                        int(row["layout_height"]) if row["layout_height"] is not None else None
+                    ),
+                    "north_degrees": (
+                        int(row["layout_north_degrees"])
+                        if row["layout_north_degrees"] is not None
+                        else None
+                    ),
+                    "row": (int(row["layout_row"]) if row["layout_row"] is not None else None),
+                    "width": (
+                        int(row["layout_width"]) if row["layout_width"] is not None else None
+                    ),
+                },
+                "longitude": (float(row["longitude"]) if row["longitude"] is not None else None),
                 "memberships": [],
                 "name": str(row["name"]),
                 "onboarding_complete": bool(row["onboarding_complete"]),
@@ -720,9 +1473,29 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
                     "username": str(row["membership_username"]),
                 }
             )
+    onboarding_target_values = sorted(
+        onboarding_targets.values(), key=lambda garden: (str(garden["name"]), int(garden["id"]))
+    )
+    onboarding_target_graphs = {
+        str(garden["name"]): _garden_graph(conn, garden_id=int(garden["id"]))
+        for garden in onboarding_target_values
+    }
+    alpha_snapshot_payload = _snapshot_payload_projection(
+        conn,
+        garden_id=alpha_id,
+        graph=alpha_graph,
+    )
+    stable_domain_projection = _phase_one_stable_domain_projection(
+        conn,
+        alpha_id=alpha_id,
+        beta_id=beta_id,
+    )
+    quick_action_records = _quick_action_records(conn, alpha_id=alpha_id)
+    onboarding_default_context = _onboarding_default_context(conn)
     return {
         "alpha_address": str(alpha["address"] or ""),
         "alpha_id": alpha_id,
+        "alpha_snapshot_payload": alpha_snapshot_payload,
         "alpha_map_object": (
             {
                 "geometry": json.loads(str(map_object["geometry_json"])),
@@ -740,7 +1513,6 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             if map_unit
             else None
         ),
-        "app_setting_keys": [str(row["key"]) for row in app_setting_rows],
         "beta_id": beta_id,
         "browser_lifecycle": {
             key: int(lifecycle[key] if lifecycle else 0)
@@ -818,7 +1590,17 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         ],
         "mobile_snapshot_count": int(counts["mobile_snapshots"]),
         "mobile_snapshots": [
-            {"garden_id": int(row["garden_id"]), "public_id": str(row["public_id"])}
+            {
+                "garden_id": int(row["garden_id"]),
+                "garden_owner_username": (
+                    str(row["garden_owner_username"])
+                    if row["garden_owner_username"] is not None
+                    else None
+                ),
+                "name": str(row["name"]),
+                "payload": _json_object(row["data"], label="mobile snapshot payload"),
+                "public_id": str(row["public_id"]),
+            }
             for row in mobile_snapshot_rows
         ],
         "onboarding_gardens": [
@@ -831,9 +1613,10 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             }
             for row in onboarding_gardens
         ],
-        "onboarding_target_gardens": sorted(
-            onboarding_targets.values(), key=lambda garden: (str(garden["name"]), int(garden["id"]))
-        ),
+        "onboarding_default_context": onboarding_default_context,
+        "onboarding_target_gardens": onboarding_target_values,
+        "onboarding_target_graphs": onboarding_target_graphs,
+        "quick_action_records": quick_action_records,
         "seeded_saved_views": [
             {
                 "garden_id": int(row["garden_id"]),
@@ -844,6 +1627,11 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             }
             for row in saved_view_rows
         ],
+        "restore_import_graphs": {
+            "alpha": alpha_graph,
+            "beta": beta_graph,
+        },
+        "stable_domain_projection": stable_domain_projection,
         "alpha_map_unit_count": int(counts["alpha_map_unit_count"]),
         "temp_map_object_count": int(counts["temp_map_objects"]),
         "temp_plant_count": int(counts["temp_plants"]),
@@ -1040,10 +1828,14 @@ def _audit_state(conn) -> dict[str, Any]:
                   AND actor_username = %s
             ) AS expected_phase_one_snapshot_count,
             COUNT(*) FILTER (
-                WHERE method = 'POST'
-                  AND path LIKE '/api/gardens/%%/map-objects'
+                WHERE actor_username = %s
                   AND status_code = 403
-                  AND actor_username = %s
+                  AND (
+                    (method = 'POST' AND path LIKE '/api/gardens/%%/map-objects')
+                    OR (method = 'PATCH' AND path LIKE '/api/gardens/%%/settings')
+                    OR (method = 'POST' AND path = '/api/snapshots')
+                    OR (method = 'POST' AND path = '/api/plots/import')
+                  )
             ) AS expected_phase_one_viewer_denial_count
         FROM audit_events
         """,

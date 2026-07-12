@@ -810,7 +810,10 @@ export async function selectPlot(
       onSearch: (e) => void handlePlantSearch(state, e, cbs),
       ...panelCallbacks,
       ...(cbs.canWrite()
-        ? { onDeletePlot: () => void cbs.deletePlot(plotId) }
+        ? {
+            onEditPlot: () => cbs.onEditPlot(plotId),
+            onDeletePlot: () => void cbs.deletePlot(plotId),
+          }
         : {}),
       ...(cbs.canWrite() && cbs.onCreatePlant
         ? { onCreatePlant: cbs.onCreatePlant }

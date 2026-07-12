@@ -107,6 +107,7 @@ import type {
   MapObject,
   MapObjectInput,
   MapObjectType,
+  MapObjectUnitInput,
   MapObjectUnitType,
   Plant,
   Plot,
@@ -171,6 +172,7 @@ import {
   setOnAuthExpired,
   updateAuthMeSettingsApi,
   updateMapObjectApi,
+  updateMapObjectUnitApi,
   updateShadeMapStateApi,
   updatePlantApi,
   updateLayoutStateApi,
@@ -3066,6 +3068,9 @@ function renderMapObjectsPanelView(): void {
     onAddUnit: (objectPublicId, type) => {
       void createNestedMapUnit(objectPublicId, type);
     },
+    onUpdateUnit: (objectPublicId, unitPublicId, patch) => {
+      void updateNestedMapUnit(objectPublicId, unitPublicId, patch);
+    },
     onDeleteUnit: (objectPublicId, unitPublicId) => {
       void deleteNestedMapUnit(objectPublicId, unitPublicId);
     },
@@ -3349,6 +3354,24 @@ async function createNestedMapUnit(
     state.selectedMapObjectId = objectPublicId;
     await fetchMapObjects();
     showToast(t("map.unit_created"), "success");
+  } catch (err) {
+    showFetchError(err);
+  }
+}
+
+async function updateNestedMapUnit(
+  objectPublicId: string,
+  unitPublicId: string,
+  patch: Partial<MapObjectUnitInput>,
+): Promise<void> {
+  if (!ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
+  try {
+    await updateMapObjectUnitApi(gardenId, objectPublicId, unitPublicId, patch);
+    state.selectedMapObjectId = objectPublicId;
+    await fetchMapObjects();
+    showToast(t("map.unit_updated"), "success");
   } catch (err) {
     showFetchError(err);
   }
@@ -5067,6 +5090,9 @@ function renderPlots(): void {
           state.selectedPlotIds.add(plot.plot_id);
           updateSelectionCount(state);
           syncMapSelectedPlots();
+          if (isMobile()) {
+            void selectPlot(state, plot.plot_id, plotCbs);
+          }
         }
       } else {
         void selectPlot(state, plot.plot_id, plotCbs);
