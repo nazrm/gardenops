@@ -1794,7 +1794,10 @@ async function prepareGardenRaceSurface(page, fixture, profile, alpha, surface) 
     case "notifications":
       await openMap(page, profile);
       await ensureNotificationPanelOpen(page, profile);
-      await visible(page.getByText(alpha.notification_title, { exact: true }), "Alpha notifications race preparation");
+      await visible(
+        page.locator("#notification-panel").getByText(alpha.notification_title, { exact: true }),
+        "Alpha notifications race preparation",
+      );
       return;
     case "plot-alerts":
       await openMap(page, profile);
@@ -1855,7 +1858,10 @@ async function waitForAlphaSurfaceContentBeforeRelease(
       await visible(page.locator("#adm-garden-name"), "Alpha settings before Beta release");
       return;
     case "notifications":
-      await visible(page.getByText(alpha.notification_title, { exact: true }), "Alpha notification before Beta release");
+      await visible(
+        page.locator("#notification-panel").getByText(alpha.notification_title, { exact: true }),
+        "Alpha notification before Beta release",
+      );
       return;
     case "plot-alerts":
       await visible(
@@ -1896,7 +1902,8 @@ async function assertBetaSurfaceDidNotLandWhileHeld(page, profile, alpha, beta, 
       return;
     case "notifications":
       assert(
-        await page.getByText(beta.notification_title, { exact: true }).count() === 0,
+        await page.locator("#notification-panel")
+          .getByText(beta.notification_title, { exact: true }).count() === 0,
         "Held Beta notification content landed before release",
       );
       return;
@@ -1987,9 +1994,13 @@ async function assertAlphaSurfaceAfterGardenRace(
     case "notifications":
       await openMap(page, profile);
       await ensureNotificationPanelOpen(page, profile);
-      await visible(page.getByText(alpha.notification_title, { exact: true }), "Alpha notification after delayed A/B/A");
+      await visible(
+        page.locator("#notification-panel").getByText(alpha.notification_title, { exact: true }),
+        "Alpha notification after delayed A/B/A",
+      );
       assert(
-        await page.getByText(beta.notification_title, { exact: true }).count() === 0,
+        await page.locator("#notification-panel")
+          .getByText(beta.notification_title, { exact: true }).count() === 0,
         `${profile} rendered stale Beta notifications after delayed A/B/A`,
       );
       return;
