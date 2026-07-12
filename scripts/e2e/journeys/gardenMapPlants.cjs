@@ -485,7 +485,7 @@ async function deleteMapObjectRow(page, row, name) {
   await waitFor(async () => await page.getByText(name, { exact: true }).count() === 0, `delete ${name}`);
 }
 
-async function exercisePlotCreateAndEdit(page, profile) {
+async function exercisePlotCreateAndEdit(page, profile, diagnostics) {
   const plotId = profile === "mobile" ? "P1MOBILEPLOT" : "P1EDITORPLOT";
   const renamedPlotId = `${plotId}EDITED`;
   await openMap(page, profile);
@@ -524,13 +524,28 @@ async function exercisePlotCreateAndEdit(page, profile) {
 
   await renamedPlot.click({ button: "right" });
   await visible(menu, `${profile} renamed plot context menu`);
+  const deletePath = `/api/plots/${renamedPlotId}`;
+  const failureMark = diagnostics.requestFailures.length;
+  const expectedAborts = [];
+  const failureListener = (request) => {
+    const failure = request.failure()?.errorText || "";
+    if (request.method() === "DELETE"
+      && new URL(request.url()).pathname === deletePath
+      && failure.includes("ERR_ABORTED")) expectedAborts.push(deletePath);
+  };
+  page.on("requestfailed", failureListener);
   await menu.locator(".menu-item-delete").click();
   const deleteResponsePromise = page.waitForResponse((response) => (
     response.request().method() === "DELETE"
-    && new URL(response.url()).pathname === `/api/plots/${renamedPlotId}`
+    && new URL(response.url()).pathname === deletePath
   ));
   await acceptConfirm(page);
   assert((await deleteResponsePromise).status() === 204, `${profile} plot cleanup failed`);
+  await page.waitForTimeout(100);
+  page.off("requestfailed", failureListener);
+  const failuresAdded = diagnostics.requestFailures.length - failureMark;
+  assert(failuresAdded === expectedAborts.length, `${profile} plot cleanup produced an unrelated request failure`);
+  diagnostics.requestFailures.splice(failureMark, failuresAdded);
   await waitFor(async () => await renamedPlot.count() === 0, `${profile} plot deletion cleanup`);
 }
 
@@ -1301,7 +1316,7 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
         await assertMobileFocusReturn(page);
         await exercisePlantAndSavedView(page, guarded.diagnostics, fixture, alpha, profile);
         await mutateIndoorPlant(page, fixture, profile);
-        await exercisePlotCreateAndEdit(page, profile);
+        await exercisePlotCreateAndEdit(page, profile, guarded.diagnostics);
         await updateGardenSettings(page, alpha, profile);
         await openMap(page, profile);
         await exerciseMapObjectEditor(page, guarded.diagnostics, alpha, {
