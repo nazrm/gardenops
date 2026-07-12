@@ -1,0 +1,130 @@
+version: 1
+journeys:
+  - &open_journey
+    id: A2
+    phase: 5
+    desktop: required
+    mobile: required
+    roles: required
+    offline: required
+    provider: required
+    database: required
+    filesystem: required
+    accessibility: required
+    performance: required
+    evidence: []
+    notes: {}
+  - <<: *open_journey
+    id: A1
+    phase: 5
+  - <<: *open_journey
+    id: A3
+    phase: 1
+  - <<: *open_journey
+    id: A4
+    phase: 5
+  - <<: *open_journey
+    id: C1
+    phase: 5
+  - <<: *open_journey
+    id: C2
+    phase: 6
+  - <<: *open_journey
+    id: C3
+    phase: 5
+  - <<: *open_journey
+    id: C4
+    phase: 7
+  - <<: *open_journey
+    id: C5
+    phase: 5
+  - <<: *open_journey
+    id: C6
+    phase: 7
+  - <<: *open_journey
+    id: CROSS-01
+    phase: 1
+  - <<: *open_journey
+    id: CROSS-02
+    phase: 5
+  - <<: *open_journey
+    id: D1
+    phase: 2
+  - <<: *open_journey
+    id: D2
+    phase: 2
+  - <<: *open_journey
+    id: D3
+    phase: 2
+  - <<: *open_journey
+    id: D4
+    phase: 2
+  - <<: *open_journey
+    id: D5
+    phase: 2
+  - <<: *open_journey
+    id: I1
+    phase: 4
+  - <<: *open_journey
+    id: I2
+    phase: 3
+  - <<: *open_journey
+    id: I3
+    phase: 3
+  - <<: *open_journey
+    id: I4
+    phase: 7
+  - <<: *open_journey
+    id: INT-01
+    phase: 6
+  - <<: *open_journey
+    id: L1
+    phase: 4
+  - <<: *open_journey
+    id: L2
+    phase: 4
+  - <<: *open_journey
+    id: M1
+    phase: 1
+  - <<: *open_journey
+    id: M2
+    phase: 1
+  - <<: *open_journey
+    id: M3
+    phase: 1
+  - <<: *open_journey
+    id: M4
+    phase: 1
+  - <<: *open_journey
+    id: M5
+    phase: 7
+  - <<: *open_journey
+    id: OFF-01
+    phase: 6
+  - <<: *open_journey
+    id: P1
+    phase: 3
+  - <<: *open_journey
+    id: P2
+    phase: 3
+  - <<: *open_journey
+    id: P3
+    phase: 3
+  - <<: *open_journey
+    id: P4
+    phase: 4
+  - <<: *open_journey
+    id: P5
+    phase: 3
+  - <<: *open_journey
+    id: P6
+    phase: 4
+  - <<: *open_journey
+    id: R1
+    phase: 2
+  - <<: *open_journey
+    id: R2
+    phase: 4
+  - <<: *open_journey
+    id: R3
+    phase: 4

@@ -233,6 +233,39 @@ contexts actively abort non-loopback HTTP(S) and WebSocket requests before they
 can leave the test browser. They continue real loopback product routes and
 never fulfill or mock API responses.
 
+## Complete Journey Program
+
+The phased complete-journey program extends the broad read map with durable
+desktop/mobile mutation, role, offline, provider, database, filesystem,
+accessibility, and performance evidence. Run one phase or the cumulative set:
+
+```bash
+scripts/run_complete_journeys_e2e.sh --phase 0
+scripts/run_complete_journeys_e2e.sh --through-phase 0
+```
+
+The runner creates its own disposable PostgreSQL child through
+`run_fast_postgres_tests.py --command`, validates the runner-issued marker and
+PostgreSQL system identifier, uses dynamic non-5432 loopback ports, scrubs
+inherited credentials and proxy settings, and blocks non-loopback browser HTTP,
+HTTPS, and WebSocket traffic. It refuses unsafe artifact paths and writes private
+manifests/traces under a unique directory below the gitignored
+`research/optimization-map/runs/complete-journeys/` tree. Successful runs remove
+temporary logs/media/terrain/download state while retaining the ignored evidence
+run; failed runs preserve private logs and artifacts for diagnosis.
+
+The tracked coverage contract is `tests/journey_coverage.yaml`. Validate open
+phases during implementation and require complete closure only in the final
+phase:
+
+```bash
+.venv/bin/python scripts/check_journey_coverage.py --allow-open
+.venv/bin/python scripts/check_journey_coverage.py --require-closed
+```
+
+Never run the complete-journey child mode directly, point it at a persistent
+database, source the runtime environment, or publish its ignored artifacts.
+
 For map-object direct manipulation changes, build or start the frontend and run
 the mocked browser flow:
 
