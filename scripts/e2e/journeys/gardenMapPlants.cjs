@@ -958,6 +958,7 @@ async function exerciseSnapshotsAndImport(page, diagnostics, password, alpha, be
   assert(importResponse.ok(), `Exported map import failed with ${importResponse.status()}`);
   await waitFor(async () => await page.locator("#map-grid .plot").count() === plotCountBefore, "exported map import postcondition");
   await page.waitForLoadState("networkidle");
+  await openMap(page, "desktop");
   await waitForMapObject(page, alpha.object_public_id, alpha.object_label);
   await page.waitForTimeout(100);
 
