@@ -450,11 +450,13 @@ async function mutateIndoorPlant(page, fixture, profile = "desktop") {
 
 async function enableMapEditor(page, profile = "desktop") {
   const edit = page.locator("#edit-mode-btn");
-  if (await edit.isVisible()) {
-    if (await edit.getAttribute("aria-pressed") !== "true") await edit.click();
-  } else if (profile === "mobile") {
-    await page.locator("#mobile-map-layers-btn").click();
+  if (profile === "mobile") {
+    const layers = page.locator("#map-layers-panel.mobile-map-sheet--open");
+    if (!await layers.count()) await page.locator("#mobile-map-layers-btn").click();
+    await visible(layers, "mobile map layers");
     await visible(edit, "mobile map edit action");
+    if (await edit.getAttribute("aria-pressed") !== "true") await edit.click();
+  } else if (await edit.isVisible()) {
     if (await edit.getAttribute("aria-pressed") !== "true") await edit.click();
   } else {
     await page.locator("#top-tab-admin").click();
