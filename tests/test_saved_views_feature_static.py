@@ -33,11 +33,12 @@ def test_saved_views_reset_and_close_when_the_garden_selector_changes() -> None:
     assert "resetSavedViewsForCurrentGarden();" in change_listener
 
 
-def test_mobile_saved_view_actions_are_not_occluded_by_the_quick_action_button() -> None:
+def test_mobile_saved_view_actions_leave_navigation_and_quick_actions_operable() -> None:
     styles = (ROOT / "frontend/src/style.css").read_text(encoding="utf-8")
 
     assert ".app-shell:has(#saved-views-dropdown:not([hidden])) .mobile-fab" in styles
     assert "pointer-events: none;" in styles
+    assert "bottom: calc(78px + env(safe-area-inset-bottom, 0px));" in styles
 
 
 def test_saved_views_escape_closes_the_dropdown_and_restores_focus() -> None:
