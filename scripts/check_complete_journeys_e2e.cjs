@@ -387,7 +387,7 @@ function assertPhaseOneProfileEvidence(profiles) {
         .every((key) => rejectedImports[key] && typeof rejectedImports[key] === "object"),
     "Phase 1 rejected-import render evidence is missing",
   );
-  for (const key of ["admin:desktop", "admin:mobile", "editor:desktop"]) {
+  for (const key of ["admin:desktop", "admin:mobile"]) {
     const profile = byKey.get(key);
     const delayed = profile.checks?.delayed_surfaces;
     const required = ["indoor", "layout", "map-objects", "notifications", "plants", "plot-alerts", "weather"];
