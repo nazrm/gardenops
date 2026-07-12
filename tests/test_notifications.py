@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import gardenops.db as db
@@ -2495,9 +2496,10 @@ class TestRainSuppressedWateringNotificationLifecycle(BaseApiTest):
             assert user is not None
             garden_id = int(garden["id"])
             user_id = int(user["id"])
-            yesterday = offset_days_iso(-1)
-            tomorrow = offset_days_iso(1)
             now = db.current_timestamp_ms()
+            maintenance_today = datetime.fromtimestamp(now / 1000, UTC).date()
+            yesterday = offset_days_iso(-1, today=maintenance_today)
+            tomorrow = offset_days_iso(1, today=maintenance_today)
             rows = conn.execute(
                 """
                 INSERT INTO garden_tasks
