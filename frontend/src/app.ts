@@ -2180,6 +2180,7 @@ function setupLayout(): void {
   undoBtn?.addEventListener("click", () => void undo(state, editCbs));
 
   const mobileMapLayersBtn = queryButton("mobile-map-layers-btn");
+  const mapEditBtn = queryButton("edit-mode-btn");
   const mobileMapHighlightBtn = queryButton("mobile-map-highlight-btn");
   const mobileMapShadeBtn = queryButton("mobile-map-shade-btn");
   const mobileMapLayoutsBtn = queryButton("mobile-map-layouts-btn");
@@ -2192,6 +2193,12 @@ function setupLayout(): void {
   const mobileMapSheetBackdrop = document.getElementById("mobile-map-sheet-backdrop");
   const mobileMapLayoutsSaveBtn = queryButton("mobile-map-layouts-save-btn");
   const shadeMobileBackdrop = document.getElementById("shade-mobile-backdrop");
+
+  mapEditBtn?.addEventListener("click", () => {
+    if (!ensureWriteAccess()) return;
+    toggleEditMode(state, editCbs);
+    updateMapDirectionControlVisibility();
+  });
 
   const importMapInput = queryInput("import-map-input");
   const mobileMapDirectionInput = queryInput("mobile-map-direction-input");

@@ -52,6 +52,7 @@ assertIncludes(appSource, "mapObjectManipulationSession", "missing object manipu
 assertIncludes(appSource, "startMapObjectManipulation", "missing object manipulation start flow");
 assertIncludes(appSource, "cancelMapObjectManipulation", "missing object manipulation cancel flow");
 assertIncludes(appSource, "commitMapObjectManipulation", "missing object manipulation commit flow");
+assertIncludes(appSource, 'queryButton("edit-mode-btn")', "missing shared edit-mode control wiring");
 assertIncludes(layoutSource, 'id="edit-mode-btn"', "map writers need a shared edit-mode entry point");
 
 console.log("Map object editor contract checks passed.");
