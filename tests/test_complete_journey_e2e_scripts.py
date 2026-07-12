@@ -298,6 +298,8 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     for marker in (
         "PHASE_ONE_INDOOR_PLOT_ID",
         "PHASE_ONE_INDOOR_PLANT_ID",
+        "PHASE_ONE_BETA_INDOOR_PLOT_ID",
+        "PHASE_ONE_BETA_INDOOR_ROOM_LABEL",
         "PHASE_ONE_MAP_UNIT_ID",
         "PHASE_ONE_SAVED_VIEW_LABEL",
         "PHASE_ONE_MOBILE_SNAPSHOT_NAME",

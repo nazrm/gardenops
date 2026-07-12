@@ -48,6 +48,8 @@ PHASE_ONE_LARGE_GARDEN_NAME = "Complete Journeys Large Garden"
 PHASE_ONE_INDOOR_PLOT_ID = "COMPLETE-PHASE-ONE-INDOOR"
 PHASE_ONE_INDOOR_PLANT_ID = "COMPLETE-PHASE-ONE-BASIL"
 PHASE_ONE_INDOOR_PLANT_NAME = "Complete Phase One Indoor Basil"
+PHASE_ONE_BETA_INDOOR_PLOT_ID = "COMPLETE-PHASE-ONE-BETA-INDOOR"
+PHASE_ONE_BETA_INDOOR_ROOM_LABEL = "Beta greenhouse shelf"
 PHASE_ONE_MAP_UNIT_ID = "mapunit_complete_phase_one_alpha_bench"
 PHASE_ONE_MAP_UNIT_NAME = "Complete Phase One Basil Bench"
 PHASE_ONE_SAVED_VIEW_LABEL = "Complete Phase One Basil View"
@@ -240,10 +242,14 @@ def _seed_phase_one_fixtures(conn, optimization_seed: Any) -> None:
     alpha = conn.execute(
         "SELECT id FROM gardens WHERE slug = %s", (optimization_seed.GARDEN_A_SLUG,)
     ).fetchone()
-    if not admin or not alpha:
+    beta = conn.execute(
+        "SELECT id FROM gardens WHERE slug = %s", (optimization_seed.GARDEN_B_SLUG,)
+    ).fetchone()
+    if not admin or not alpha or not beta:
         raise RuntimeError("Complete journey Phase 1 base fixtures are missing")
     admin_id = int(admin["id"])
     alpha_id = int(alpha["id"])
+    beta_id = int(beta["id"])
 
     _insert_user(conn, username=ONBOARDING_LOGIN[0], password=ONBOARDING_LOGIN[1], role="editor")
     _insert_user(
@@ -294,6 +300,34 @@ def _seed_phase_one_fixtures(conn, optimization_seed: Any) -> None:
     conn.execute(
         "INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
         (PHASE_ONE_INDOOR_PLOT_ID, admin_id, alpha_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO plots (
+            plot_id, garden_id, zone_code, zone_name, plot_number,
+            grid_row, grid_col, sub_zone, notes, color
+        )
+        VALUES (%s, %s, 'I', 'Indoor growing', 1, NULL, NULL, %s,
+                'Disposable Phase 1 Beta indoor fixture', '#8796ad')
+        """,
+        (PHASE_ONE_BETA_INDOOR_PLOT_ID, beta_id, PHASE_ONE_BETA_INDOOR_ROOM_LABEL),
+    )
+    conn.execute(
+        "INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
+        (PHASE_ONE_BETA_INDOOR_PLOT_ID, admin_id, beta_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO plot_plants (
+            plot_id, plt_id, quantity, seen_growing, seen_growing_date, room_label
+        )
+        VALUES (%s, %s, 1, 1, '2026-07-01', %s)
+        """,
+        (
+            PHASE_ONE_BETA_INDOOR_PLOT_ID,
+            optimization_seed._GARDEN_SPECS[1]["plant_id"],
+            PHASE_ONE_BETA_INDOOR_ROOM_LABEL,
+        ),
     )
     conn.execute(
         """
