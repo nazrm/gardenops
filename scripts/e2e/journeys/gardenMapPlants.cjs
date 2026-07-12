@@ -503,6 +503,7 @@ async function exercisePlantAndSavedView(
   alpha,
   profile = "desktop",
   lifecycleLabel = profile,
+  { assignmentPlotId = alpha.plot_id } = {},
 ) {
   const suffix = lifecycleLabel.replace(/[^a-z0-9]+/gi, " ").trim();
   const plantName = `Phase 1 Browser Mint ${suffix}`;
@@ -518,7 +519,7 @@ async function exercisePlantAndSavedView(
   await dialog.locator("input[name='name']").fill(plantName);
   await dialog.locator("select[name='category']").selectOption("urter");
   await dialog.locator("input[name='link']").fill("https://example.com/phase-one-mint");
-  await addPlotAssignment(dialog, alpha.plot_id);
+  await addPlotAssignment(dialog, assignmentPlotId);
   await dialog.locator("button[type='submit']").click();
   const row = plantRecord(page, profile, plantName);
   await visible(row, "created plant row");
@@ -530,8 +531,8 @@ async function exercisePlantAndSavedView(
   await visible(dialog, "edit plant form");
   await dialog.locator("input[name='name']").fill(renamed);
   await dialog.locator("input[name='link']").fill("https://example.com/phase-one-mint-edited");
-  await dialog.locator(`.plot-chip[data-plot='${alpha.plot_id}'] .chip-remove`).click();
-  const unlinkPath = `/api/plots/${alpha.plot_id}/plants/${plantId}`;
+  await dialog.locator(`.plot-chip[data-plot='${assignmentPlotId}'] .chip-remove`).click();
+  const unlinkPath = `/api/plots/${assignmentPlotId}/plants/${plantId}`;
   const unlinkFailureMark = diagnostics.requestFailures.length;
   const unlinkAborts = [];
   const unlinkFailureListener = (request) => {
@@ -560,7 +561,7 @@ async function exercisePlantAndSavedView(
   await editedRow.locator("[data-edit-plt]").click();
   dialog = page.locator("#edit-plant-form");
   await visible(dialog, "unlinked plant edit form");
-  await addPlotAssignment(dialog, alpha.plot_id);
+  await addPlotAssignment(dialog, assignmentPlotId);
   await dialog.locator("button[type='submit']").click();
   await visible(editedRow, "relinked plant row");
 
@@ -730,29 +731,30 @@ async function deleteMobilePlotThroughBottomSheet(page, diagnostics, plotId) {
   diagnostics.requestFailures.splice(failureMark, failuresAdded);
 }
 
-async function seedMobilePlotForEditor(page) {
+async function createMobileEditorPlot(page) {
   const plotId = "P1MOBILEPLOT";
   await openMap(page, "mobile");
   await enableMapEditor(page, "mobile");
   await closeMobileSurfaces(page);
   const emptyCell = page.locator("#map-grid .empty-cell").first();
-  await visible(emptyCell, "mobile empty map cell for editor handoff");
+  await visible(emptyCell, "mobile empty map cell for editor plot lifecycle");
   await emptyCell.click();
   const createDialog = page.locator("#create-plot-form");
-  await visible(createDialog, "mobile plot create dialog for editor handoff");
+  await visible(createDialog, "mobile plot create dialog for editor lifecycle");
   await createDialog.locator("input[name='plot_id']").fill(plotId);
   const createResponsePromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
     && new URL(response.url()).pathname === "/api/plots"
   ));
   await createDialog.locator("button[type='submit']").click();
-  assert((await createResponsePromise).status() === 201, "Mobile plot seed for editor failed");
-  await visible(page.locator(`.plot[data-plot-id='${plotId}']`), "mobile plot seeded for editor");
+  assert((await createResponsePromise).status() === 201, "Mobile editor plot creation failed");
+  await visible(page.locator(`.plot[data-plot-id='${plotId}']`), "mobile editor-owned plot");
 }
 
 async function exerciseDiscoverableMobilePlotEdit(page, diagnostics) {
   const plotId = "P1MOBILEPLOT";
   const renamedPlotId = `${plotId}EDITED`;
+  await createMobileEditorPlot(page);
   await openMap(page, "mobile");
   await enableMapEditor(page, "mobile");
   await closeMobileSurfaces(page);
@@ -2337,6 +2339,7 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
         } else {
           await exercisePlantAndSavedView(
             page, guarded.diagnostics, fixture, alpha, profile, "editor desktop",
+            { assignmentPlotId: "P1EDITORASSIGN" },
           );
           await mutateIndoorPlant(page, fixture, profile, "editor desktop");
           await exerciseEditorGardenSettingsAndLayoutWrite(page, alpha, profile);
@@ -2376,7 +2379,6 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
         await saveMobileSnapshot(page, fixture);
         await exerciseMobileMapImport(page, guarded.diagnostics, password);
         await submitMobileQuickAction(page, fixture, alpha);
-        await seedMobilePlotForEditor(page);
         result.checks.mobile_supported_writes_and_focus_return = true;
         result.assertions.passed.push("M1-M2-M3-M4-mobile-real-ui-writes-and-focus-return");
       }
