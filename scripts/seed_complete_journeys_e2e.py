@@ -196,17 +196,30 @@ def _configure_reused_seed_guard() -> None:
     os.environ["GARDENOPS_OPTIMIZATION_JOURNEYS_E2E_PASSWORD"] = ADMIN_PASSWORD
 
 
-def _insert_user(conn, *, username: str, password: str, role: str) -> int:
+def _insert_user(
+    conn,
+    *,
+    username: str,
+    password: str,
+    role: str,
+    subscription_tier: str = "home",
+) -> int:
     row = conn.execute(
         """
         INSERT INTO auth_users (
             username, password_hash, password_auth_disabled, passkey_user_handle,
             role, is_active, must_change_password, subscription_tier
         )
-        VALUES (%s, %s, 0, %s, %s, 1, 0, 'home')
+        VALUES (%s, %s, 0, %s, %s, 1, 0, %s)
         RETURNING id
         """,
-        (username, hash_password(password), generate_passkey_user_handle(), role),
+        (
+            username,
+            hash_password(password),
+            generate_passkey_user_handle(),
+            role,
+            subscription_tier,
+        ),
     ).fetchone()
     if not row:
         raise RuntimeError(f"Complete journey E2E failed to create {role} user")
@@ -219,12 +232,14 @@ def _add_role_fixtures(conn, *, garden_ids: list[int]) -> None:
         username=EDITOR_LOGIN[0],
         password=EDITOR_LOGIN[1],
         role="editor",
+        subscription_tier="pro",
     )
     viewer_id = _insert_user(
         conn,
         username=VIEWER_LOGIN[0],
         password=VIEWER_LOGIN[1],
         role="viewer",
+        subscription_tier="pro",
     )
     for garden_id in garden_ids:
         for user_id, role in ((editor_id, "editor"), (viewer_id, "viewer")):

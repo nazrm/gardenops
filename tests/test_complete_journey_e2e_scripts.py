@@ -330,6 +330,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "lifecycle_audit",
         "restore_import_graphs",
         "stable_domain_projection",
+        'subscription_tier="pro"',
     ):
         assert marker in seeder_source
     for marker in (
