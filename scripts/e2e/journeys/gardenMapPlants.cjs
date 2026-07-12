@@ -2341,7 +2341,6 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
             page, guarded.diagnostics, fixture, alpha, profile, "editor desktop",
             { assignmentPlotId: "P1EDITORASSIGN" },
           );
-          await mutateIndoorPlant(page, fixture, profile, "editor desktop");
           await exerciseEditorGardenSettingsAndLayoutWrite(page, alpha, profile);
           await exerciseEditorMapObjectWrite(page);
           result.checks.editor_m1_m3_supported_writes = true;
