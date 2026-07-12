@@ -120,7 +120,7 @@ scripts/run_complete_journeys_e2e.sh --phase 0
 - [x] Document the command, safety model, artifact location, phase selection, and failure cleanup in `docs/development.md`.
 - [x] Initialize the validation ledger with a schema and Phase 0 row.
 - [x] Run all global gates.
-- [ ] Run the mandatory GPT-5.6 Sol Ultra gate for Phase 0, focusing on test honesty and destructive-runner safety.
+- [x] Run the mandatory GPT-5.6 Sol Ultra gate for Phase 0, focusing on test honesty and destructive-runner safety.
 
 **Phase 0 acceptance:** The manifest checker passes; the foundation journey passes desktop/mobile against a disposable database; all rejection tests pass; production behavior files are unchanged; Sol Ultra disposition is PASS or PASS WITH DOCUMENTED LIMITATIONS.
 
