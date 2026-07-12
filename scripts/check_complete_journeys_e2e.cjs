@@ -821,9 +821,9 @@ async function main() {
       const expectedLifecycleAudit = {
         assignment_create_count: 2,
         assignment_delete_count: 1,
-        nested_unit_create_count: 1,
+        nested_unit_create_count: 2,
         nested_unit_direct_delete_count: 0,
-        nested_unit_update_count: 1,
+        nested_unit_update_count: 2,
         plant_create_count: 1,
         plant_delete_count: 1,
         plant_update_count: 2,
