@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from scripts.seed_complete_journeys_e2e import (
     _require_child_environment,
     _write_json_exclusive,
 )
+from scripts.seed_optimization_journeys_e2e import _weather_alert_window
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run_complete_journeys_e2e.sh"
@@ -244,6 +246,13 @@ def test_seeder_requires_a_consistent_frozen_attention_clock(
     monkeypatch.setenv("GARDENOPS_ATTENTION_FROZEN_DATE", "2026-07-11")
     with pytest.raises(RuntimeError, match="date and timestamp must agree"):
         _frozen_attention_clock()
+
+
+def test_optimization_weather_fixture_survives_midnight_boundary() -> None:
+    assert _weather_alert_window(today=date(2026, 7, 12)) == (
+        "2026-07-10",
+        "2026-07-19",
+    )
 
 
 def test_runner_source_contains_required_safety_boundaries() -> None:

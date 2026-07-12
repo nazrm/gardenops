@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urlsplit
 
 from psycopg import sql
@@ -87,6 +87,14 @@ _GARDEN_SPECS = (
 
 def _now_ms() -> int:
     return int(datetime.now(UTC).timestamp() * 1000)
+
+
+def _weather_alert_window(*, today: date | None = None) -> tuple[str, str]:
+    anchor = today or date.today()
+    return (
+        (anchor - timedelta(days=2)).isoformat(),
+        (anchor + timedelta(days=7)).isoformat(),
+    )
 
 
 def require_optimization_journeys_e2e_database(database_url: str) -> None:
@@ -453,7 +461,14 @@ def _seed_notification(conn, *, garden_id: int, admin_id: int, spec: dict[str, s
     )
 
 
-def _seed_weather_alert(conn, *, garden_id: int, spec: dict[str, str]) -> None:
+def _seed_weather_alert(
+    conn,
+    *,
+    garden_id: int,
+    spec: dict[str, str],
+    valid_from: str,
+    valid_until: str,
+) -> None:
     if spec["key"] not in {"a", "b"}:
         return
     title = GARDEN_A_WEATHER_ALERT if spec["key"] == "a" else GARDEN_B_WEATHER_ALERT
@@ -465,12 +480,14 @@ def _seed_weather_alert(conn, *, garden_id: int, spec: dict[str, str]) -> None:
             valid_until, metadata_json, created_at_ms
         )
         VALUES (%s, 'frost_warning', 'normal', %s, 'Garden-scoped weather fixture.',
-                '2026-07-10', '2026-07-12', %s, %s)
+                %s, %s, %s, %s)
         RETURNING id
         """,
         (
             garden_id,
             title,
+            valid_from,
+            valid_until,
             json.dumps(
                 {
                     "coldest": coldest,
@@ -496,6 +513,8 @@ def _seed_delete_target_extra_state(
     garden_id: int,
     admin_id: int,
     spec: dict[str, str],
+    weather_valid_from: str,
+    weather_valid_until: str,
 ) -> None:
     now_ms = _now_ms()
     issue = conn.execute(
@@ -541,10 +560,10 @@ def _seed_delete_target_extra_state(
             valid_until, metadata_json, created_at_ms
         )
         VALUES (%s, 'rain_surplus', 'normal', 'Disposable rain', '',
-                '2026-07-10', '2026-07-12', '{}', %s)
+                %s, %s, '{}', %s)
         RETURNING id
         """,
-        (garden_id, now_ms),
+        (garden_id, weather_valid_from, weather_valid_until, now_ms),
     ).fetchone()
     if not issue or not harvest or not calendar or not alert:
         raise RuntimeError("Failed to seed disposable garden related state")
@@ -635,6 +654,7 @@ def _seed_snapshot(conn, *, garden_id: int, spec: dict[str, str]) -> None:
 def seed(conn) -> None:
     truncate_public_tables(conn)
     admin_id = _insert_admin(conn)
+    weather_valid_from, weather_valid_until = _weather_alert_window()
     for spec in _GARDEN_SPECS:
         garden_id = _insert_garden(conn, spec=spec, admin_id=admin_id)
         _seed_layout(conn, garden_id=garden_id)
@@ -643,13 +663,21 @@ def seed(conn) -> None:
         _seed_task(conn, garden_id=garden_id, admin_id=admin_id, spec=spec)
         _seed_journal(conn, garden_id=garden_id, admin_id=admin_id, spec=spec)
         _seed_notification(conn, garden_id=garden_id, admin_id=admin_id, spec=spec)
-        _seed_weather_alert(conn, garden_id=garden_id, spec=spec)
+        _seed_weather_alert(
+            conn,
+            garden_id=garden_id,
+            spec=spec,
+            valid_from=weather_valid_from,
+            valid_until=weather_valid_until,
+        )
         if spec["key"] == "delete_target":
             _seed_delete_target_extra_state(
                 conn,
                 garden_id=garden_id,
                 admin_id=admin_id,
                 spec=spec,
+                weather_valid_from=weather_valid_from,
+                weather_valid_until=weather_valid_until,
             )
         _seed_snapshot(conn, garden_id=garden_id, spec=spec)
 
