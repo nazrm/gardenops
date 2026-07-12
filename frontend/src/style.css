@@ -7346,17 +7346,9 @@ th.sort-desc::after {
     );
   }
 
-  /* #3 — Plot extend button: always visible on touch (no hover) */
+  /* Plot cells are too small to share a touch target with the extend action. */
   .plot-extend-btn {
-    opacity: 1;
-    pointer-events: auto;
-    width: clamp(18px, calc(var(--cell) * 0.6), 28px);
-    height: clamp(18px, calc(var(--cell) * 0.6), 28px);
-    font-size: clamp(10px, calc(var(--cell) * 0.4), 16px);
-  }
-
-  .plot:hover .plot-extend-btn {
-    opacity: 1;
+    display: none;
   }
 
   /* #4 — Input font size 16px to prevent iOS auto-zoom (phone) */

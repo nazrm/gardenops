@@ -52,3 +52,10 @@ def test_mobile_plot_note_matches_the_available_touch_actions() -> None:
 
     assert f'"map.mobile_note": "{english_note}"' in i18n
     assert f'"map.mobile_note": "{norwegian_note}"' in i18n
+
+
+def test_phone_plot_tiles_do_not_compete_with_inline_extend_touch_target() -> None:
+    styles = _read("frontend/src/style.css")
+
+    assert "Plot cells are too small to share a touch target with the extend action." in styles
+    assert ".plot-extend-btn {\n    display: none;\n  }" in styles
