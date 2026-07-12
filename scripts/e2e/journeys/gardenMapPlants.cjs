@@ -619,7 +619,13 @@ async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "de
   geometryResponsePromise = waitForGeometryPatch();
   await surface.press("Shift+ArrowDown");
   assert((await geometryResponsePromise).ok(), "Map object keyboard resize PATCH failed");
-  if (useTouch) await moveMapObjectWithTouch(page, surface, primaryId, alpha);
+  if (useTouch) {
+    await closeMobileSurfaces(page);
+    await visible(surface, "mobile touch manipulation surface");
+    await moveMapObjectWithTouch(page, surface, primaryId, alpha);
+    await page.locator("#mobile-map-layers-btn").click();
+    await visible(page.locator("#map-layers-panel"), "mobile map layers after touch manipulation");
+  }
 
   if (!await detail.isVisible()) {
     await page.locator("#map-objects-panel .map-object-row").filter({ hasText: primary.name })
