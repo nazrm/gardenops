@@ -195,7 +195,7 @@ export function getAppShellMarkup(): string {
         </div>
       </header>
 
-      <div id="notification-panel" class="notification-panel" hidden></div>
+      <div id="notification-panel" class="notification-panel" role="dialog" aria-label="${t("notifications.title")}" hidden></div>
 
       <main class="content-shell">
         <div id="app-status" class="app-status" hidden>

@@ -8945,6 +8945,24 @@ td.inventory-qty-zero {
   padding: var(--sp-1);
   line-height: 1;
 }
+.notification-panel-close {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-2);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.notification-panel-close:hover {
+  background: var(--bg-2);
+  color: var(--text-1);
+}
 .notification-settings-btn:hover {
   opacity: 0.7;
 }
@@ -9182,12 +9200,12 @@ td.inventory-qty-zero {
   .notification-panel {
     position: fixed;
     top: auto;
-    bottom: 0;
+    bottom: calc(78px + env(safe-area-inset-bottom, 0px));
     left: 0;
     right: 0;
     width: 100%;
     max-height: 70vh;
-    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    border-radius: var(--r-lg);
   }
   .notification-prefs-rule-row {
     grid-template-columns: 1fr;

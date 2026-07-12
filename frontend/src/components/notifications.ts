@@ -10,6 +10,7 @@ import type {
 import { t } from "../core/i18n";
 
 export interface NotificationListCallbacks {
+  onClose?: () => void;
   onRead: (notification: NotificationEvent) => void;
   onDismiss: (notification: NotificationEvent) => void;
   onNavigate: (notification: NotificationEvent) => void;
@@ -263,6 +264,17 @@ export function renderNotificationPanel(
     settingsBtn.title = t("notifications.prefs_title") as string;
     settingsBtn.addEventListener("click", () => cbs.onOpenSettings!());
     headerActions.append(settingsBtn);
+  }
+
+  if (cbs.onClose) {
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "notification-panel-close";
+    closeBtn.type = "button";
+    closeBtn.textContent = "\u00D7";
+    closeBtn.title = t("common.close") as string;
+    closeBtn.setAttribute("aria-label", t("common.close") as string);
+    closeBtn.addEventListener("click", () => cbs.onClose!());
+    headerActions.append(closeBtn);
   }
 
   header.append(title, headerActions);
