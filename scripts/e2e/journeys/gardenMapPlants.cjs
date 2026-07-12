@@ -655,16 +655,27 @@ async function deleteMapObjectRow(page, row, name) {
 }
 
 async function tapMapTarget(page, target, label) {
-  const box = await target.boundingBox();
-  assert(box, `${label} has no visible touch geometry`);
-  const x = box.x + box.width / 2;
-  const y = box.y + box.height / 2;
-  const hitTarget = await target.evaluate((element, coordinates) => {
-    const hit = document.elementFromPoint(coordinates.x, coordinates.y);
-    return hit !== null && (hit === element || element.contains(hit));
-  }, { x, y });
-  assert(hitTarget, `${label} is not at its browser hit-test point`);
-  await page.touchscreen.tap(x, y);
+  const point = await target.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const candidates = [
+      [0.2, 0.2], [0.5, 0.75], [0.75, 0.75], [0.25, 0.5], [0.75, 0.5],
+    ];
+    for (const [xRatio, yRatio] of candidates) {
+      const x = rect.left + rect.width * xRatio;
+      const y = rect.top + rect.height * yRatio;
+      const hit = document.elementFromPoint(x, y);
+      if (
+        hit
+        && (hit === element || element.contains(hit))
+        && !hit.closest("button, a, input, select, textarea, [role='button']")
+      ) {
+        return { x, y };
+      }
+    }
+    return null;
+  });
+  assert(point, `${label} has no non-interactive browser hit-test point`);
+  await page.touchscreen.tap(point.x, point.y);
 }
 
 async function editMobilePlotThroughBottomSheet(page, fromPlotId, toPlotId) {

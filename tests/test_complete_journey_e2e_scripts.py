@@ -383,6 +383,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         ".map-object-unit-form",
         "deleted_units === 1",
         "Input.dispatchTouchEvent",
+        "has no non-interactive browser hit-test point",
         ".snapshot-restore",
         "#import-map-input",
         "#mobile-import-map-btn",
