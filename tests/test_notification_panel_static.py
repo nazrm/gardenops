@@ -1,16 +1,11 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_notification_panel_has_direct_keyboard_and_touch_dismissal() -> None:
-    feature = (ROOT / "frontend/src/features/notificationsFeature.ts").read_text(
-        encoding="utf-8"
-    )
-    component = (ROOT / "frontend/src/components/notifications.ts").read_text(
-        encoding="utf-8"
-    )
+    feature = (ROOT / "frontend/src/features/notificationsFeature.ts").read_text(encoding="utf-8")
+    component = (ROOT / "frontend/src/components/notifications.ts").read_text(encoding="utf-8")
     layout = (ROOT / "frontend/src/components/layout.ts").read_text(encoding="utf-8")
 
     assert "onClose?: () => void;" in component
