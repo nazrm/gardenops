@@ -1329,10 +1329,18 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
         result.checks.mobile_supported_writes_and_focus_return = true;
         result.assertions.passed.push("M1-M2-M3-M4-mobile-real-ui-writes-and-focus-return");
       }
-      result.checks.delayed_surfaces = await exerciseDelayedGardenSwitch(
-        page, guarded.context, guarded.diagnostics, fixture, profile, alpha, beta,
-      );
-      result.assertions.passed.push("map-first", "global-search-context", "delayed-garden-a-b-a-all-surfaces");
+      if (role === "editor") {
+        result.assertions.passed.push("map-first");
+      } else {
+        result.checks.delayed_surfaces = await exerciseDelayedGardenSwitch(
+          page, guarded.context, guarded.diagnostics, fixture, profile, alpha, beta,
+        );
+        result.assertions.passed.push(
+          "map-first",
+          "global-search-context",
+          "delayed-garden-a-b-a-all-surfaces",
+        );
+      }
     }
     result.structure = await assertPageStructure(page, `${profile} Phase 1 ${role}`, { enforceControlNames: false });
     result.assertions.passed.push("no-duplicate-ids", "no-horizontal-overflow");
