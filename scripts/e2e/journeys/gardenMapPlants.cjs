@@ -557,8 +557,8 @@ async function moveMapObjectWithTouch(page, surface, objectId, alpha) {
     pointerType: "touch",
   };
   await surface.dispatchEvent("pointerdown", pointer);
-  await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: endX });
-  await page.locator("body").dispatchEvent("pointerup", { ...pointer, buttons: 0, clientX: endX });
+  await surface.dispatchEvent("pointermove", { ...pointer, clientX: endX });
+  await surface.dispatchEvent("pointerup", { ...pointer, buttons: 0, clientX: endX });
   assert((await responsePromise).ok(), "Touch map object move PATCH failed");
   await waitFor(
     async () => await positionedLabel.getAttribute("style") !== styleBeforeTouchMove,
@@ -1270,7 +1270,7 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
         result.checks.editor_profile_write_affordances_and_admin_denial = true;
         result.assertions.passed.push("M1-M2-editor-profile-real-write-and-admin-denial");
       } else if (profile === "desktop") {
-        await exerciseMapObjectEditor(page, guarded.diagnostics, alpha, { profile, useTouch: true });
+        await exerciseMapObjectEditor(page, guarded.diagnostics, alpha, { profile });
         await openMap(page, profile);
         result.checks.import_rejection_render_churn = await exerciseSnapshotsAndImport(
           page, guarded.diagnostics, password, alpha, beta,
@@ -1285,7 +1285,10 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
         await exercisePlotCreateAndEdit(page, profile);
         await updateGardenSettings(page, alpha, profile);
         await openMap(page, profile);
-        await exerciseMobileMapObject(page, alpha);
+        await exerciseMapObjectEditor(page, guarded.diagnostics, alpha, {
+          profile,
+          useTouch: true,
+        });
         await saveMobileSnapshot(page, fixture);
         await exerciseMobileMapImport(page, guarded.diagnostics, password);
         await submitMobileQuickAction(page, fixture, alpha);
