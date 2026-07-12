@@ -31,3 +31,10 @@ def test_saved_views_reset_and_close_when_the_garden_selector_changes() -> None:
     assert "event.target instanceof HTMLSelectElement" in change_listener
     assert 'event.target.matches("[data-garden-select]")' in change_listener
     assert "resetSavedViewsForCurrentGarden();" in change_listener
+
+
+def test_mobile_saved_view_actions_are_not_occluded_by_the_quick_action_button() -> None:
+    styles = (ROOT / "frontend/src/style.css").read_text(encoding="utf-8")
+
+    assert ".app-shell:has(#saved-views-dropdown:not([hidden])) .mobile-fab" in styles
+    assert "pointer-events: none;" in styles

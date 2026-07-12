@@ -13268,6 +13268,11 @@ td.inventory-qty-zero {
   display: none;
 }
 
+.app-shell:has(#saved-views-dropdown:not([hidden])) .mobile-fab {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 @media (max-width: 600px) {
   .mobile-fab {
     display: flex;
