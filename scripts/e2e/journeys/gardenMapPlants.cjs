@@ -587,7 +587,7 @@ async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "de
   const primary = created[0];
   const primaryId = await primary.row.getAttribute("data-object-id");
   assert(primaryId, "Created primary map object has no public ID");
-  const detail = page.locator("#map-objects-panel .map-object-detail");
+  const detail = page.locator("#map-objects-panel .map-object-detail").filter({ hasText: primary.name });
   if (!await detail.isVisible()) await primary.row.locator(".map-object-row-main").click();
   await visible(detail, "primary map object details");
   const positionInputs = detail.locator(".map-object-position-grid input");
