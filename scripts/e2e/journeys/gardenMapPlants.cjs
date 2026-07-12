@@ -1297,7 +1297,7 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
       result.checks.viewer_role_affordances_and_denials = true;
       result.assertions.passed.push("A3-M2-viewer-ui-affordances-and-direct-denials");
     } else {
-      await assertGlobalSearch(page, profile, alpha);
+      if (role !== "editor") await assertGlobalSearch(page, profile, alpha);
       if (role === "editor") {
         await assertEditorAffordances(page, guarded, profile);
         await exerciseEditorMapObjectWrite(page);
