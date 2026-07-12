@@ -210,6 +210,7 @@ let onMapSetupAction: ((action: AdminMapSetupAction) => Promise<void> | void) | 
 let mapSetupStateFn: (() => AdminMapSetupState) | null = null;
 let adminPanelInitialized = false;
 let gardenSettingsRequestVersion = 0;
+const adminBusyOperations = new Set<symbol>();
 const gardenSettingsBaselines = new Map<number, GardenSettings>();
 const gardenSettingsDrafts = new Map<number, GardenSettingsDraft>();
 
@@ -1975,6 +1976,20 @@ function getContainer(): HTMLElement | null {
   return document.getElementById("admin-view");
 }
 
+function beginAdminBusy(): symbol {
+  const operation = Symbol();
+  adminBusyOperations.add(operation);
+  getContainer()?.setAttribute("aria-busy", "true");
+  return operation;
+}
+
+function endAdminBusy(operation: symbol): void {
+  adminBusyOperations.delete(operation);
+  if (adminBusyOperations.size === 0) {
+    getContainer()?.removeAttribute("aria-busy");
+  }
+}
+
 function repaint(): void {
   captureGardenSettingsDraftFromDom();
   const main = document.getElementById("adm-main");
@@ -2037,8 +2052,10 @@ export function resetAdminPanelSensitiveState(): void {
   state.missingPlantCovers = [];
   state.missingPlantCoversTotal = 0;
   adminPanelInitialized = false;
+  adminBusyOperations.clear();
   const container = getContainer();
   if (container) {
+    container.removeAttribute("aria-busy");
     setReviewedDynamicHtml(container, "");
   }
 }
@@ -2061,19 +2078,24 @@ function wireSidebar(): void {
 }
 
 async function loadAndRepaintSection(): Promise<void> {
-  captureGardenSettingsDraftFromDom();
-  const requestedSection = state.section;
-  let shouldRepaint = true;
-  switch (state.section) {
-    case "settings": await loadSettings(); break;
-    case "garden": shouldRepaint = await loadGardenSettings(); break;
-    case "users": await loadUsers(); break;
-    case "sessions": await loadSessions(); break;
-    case "audit": await loadAudit(); break;
-    case "invitations": await loadInvitations(); break;
-    case "system": await loadSystem(); break;
+  const busyOperation = beginAdminBusy();
+  try {
+    captureGardenSettingsDraftFromDom();
+    const requestedSection = state.section;
+    let shouldRepaint = true;
+    switch (state.section) {
+      case "settings": await loadSettings(); break;
+      case "garden": shouldRepaint = await loadGardenSettings(); break;
+      case "users": await loadUsers(); break;
+      case "sessions": await loadSessions(); break;
+      case "audit": await loadAudit(); break;
+      case "invitations": await loadInvitations(); break;
+      case "system": await loadSystem(); break;
+    }
+    if (shouldRepaint && state.section === requestedSection) repaint();
+  } finally {
+    endAdminBusy(busyOperation);
   }
-  if (shouldRepaint && state.section === requestedSection) repaint();
 }
 
 function readAuditFilters(): {
@@ -3117,16 +3139,21 @@ function wireSection(): void {
 // ── Public API ─────────────────────────────────────────────
 
 export async function activateAdminPanel(): Promise<void> {
-  captureGardenSettingsDraftFromDom();
-  await loadSettings();
-  const visibleSections = getVisibleSections();
-  if (!adminPanelInitialized || !visibleSections.includes(state.section)) {
-    state.section = defaultSection();
+  const busyOperation = beginAdminBusy();
+  try {
+    captureGardenSettingsDraftFromDom();
+    await loadSettings();
+    const visibleSections = getVisibleSections();
+    if (!adminPanelInitialized || !visibleSections.includes(state.section)) {
+      state.section = defaultSection();
+    }
+    const needsFullRepaint = !adminShellMatchesState();
+    adminPanelInitialized = true;
+    await loadAndRepaintSection();
+    if (needsFullRepaint) repaintFull();
+  } finally {
+    endAdminBusy(busyOperation);
   }
-  const needsFullRepaint = !adminShellMatchesState();
-  adminPanelInitialized = true;
-  await loadAndRepaintSection();
-  if (needsFullRepaint) repaintFull();
 }
 
 export function refreshAdminPanelLocalization(): void {

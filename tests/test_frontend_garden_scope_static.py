@@ -99,6 +99,30 @@ def test_admin_garden_settings_preserve_drafts_and_reject_same_garden_stale_requ
     assert "gardenSettingsRequestVersion += 1;" in admin
 
 
+def test_admin_async_repaints_expose_an_accessible_busy_state() -> None:
+    admin = _read("frontend/src/components/adminPanel.ts")
+    journey = _read("scripts/e2e/journeys/gardenMapPlants.cjs")
+    activate_body = _function_body(
+        admin,
+        "export async function activateAdminPanel",
+        "export function refreshAdminPanelLocalization",
+    )
+    load_body = _function_body(
+        admin,
+        "async function loadAndRepaintSection",
+        "function readAuditFilters",
+    )
+
+    assert "const adminBusyOperations = new Set<symbol>();" in admin
+    assert 'getContainer()?.setAttribute("aria-busy", "true");' in admin
+    assert 'getContainer()?.removeAttribute("aria-busy");' in admin
+    assert "const busyOperation = beginAdminBusy();" in activate_body
+    assert "endAdminBusy(busyOperation);" in activate_body
+    assert "const busyOperation = beginAdminBusy();" in load_body
+    assert "endAdminBusy(busyOperation);" in load_body
+    assert 'getAttribute("aria-busy")' in journey
+
+
 def test_notifications_reset_and_reload_when_the_active_garden_changes() -> None:
     app = _read("frontend/src/app.ts")
     notifications = _read("frontend/src/features/notificationsFeature.ts")

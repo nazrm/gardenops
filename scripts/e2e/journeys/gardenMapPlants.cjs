@@ -988,6 +988,14 @@ async function openAdminGardenSection(page, profile = "desktop") {
   const gardenNav = page.locator(".adm-nav-btn[data-section='garden']");
   await visible(gardenNav, "Garden settings navigation");
   await gardenNav.click();
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+  await waitFor(
+    () => page.locator("#admin-view").getAttribute("aria-busy")
+      .then((value) => value !== "true"),
+    "Admin garden section load",
+  );
 }
 
 async function openAdminGarden(page, profile = "desktop") {
