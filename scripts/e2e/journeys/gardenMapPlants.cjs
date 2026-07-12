@@ -1808,7 +1808,11 @@ async function prepareGardenRaceSurface(page, fixture, profile, alpha, surface) 
       return;
     case "weather":
       await openCare(page, profile);
-      await visible(page.getByText(weatherRaceTitle(alpha, alpha), { exact: true }), "Alpha weather race preparation");
+      await visible(
+        page.locator("#weather-dashboard")
+          .getByText(weatherRaceTitle(alpha, alpha), { exact: true }),
+        "Alpha weather race preparation",
+      );
       return;
     default:
       throw new Error(`Unsupported delayed garden race surface ${surface}`);
@@ -1870,7 +1874,11 @@ async function waitForAlphaSurfaceContentBeforeRelease(
       );
       return;
     case "weather":
-      await visible(page.getByText(weatherRaceTitle(alpha, alpha), { exact: true }), "Alpha weather before Beta release");
+      await visible(
+        page.locator("#weather-dashboard")
+          .getByText(weatherRaceTitle(alpha, alpha), { exact: true }),
+        "Alpha weather before Beta release",
+      );
       return;
     default:
       throw new Error(`Unsupported Alpha pending assertion ${surface}`);
@@ -1915,7 +1923,8 @@ async function assertBetaSurfaceDidNotLandWhileHeld(page, profile, alpha, beta, 
       return;
     case "weather":
       assert(
-        await page.getByText(weatherRaceTitle(beta, alpha), { exact: true }).count() === 0,
+        await page.locator("#weather-dashboard")
+          .getByText(weatherRaceTitle(beta, alpha), { exact: true }).count() === 0,
         "Held Beta weather content landed before release",
       );
       return;
@@ -2017,9 +2026,14 @@ async function assertAlphaSurfaceAfterGardenRace(
       return;
     case "weather":
       await openCare(page, profile);
-      await visible(page.getByText(weatherRaceTitle(alpha, alpha), { exact: true }), "Alpha weather after delayed A/B/A");
+      await visible(
+        page.locator("#weather-dashboard")
+          .getByText(weatherRaceTitle(alpha, alpha), { exact: true }),
+        "Alpha weather after delayed A/B/A",
+      );
       assert(
-        await page.getByText(weatherRaceTitle(beta, alpha), { exact: true }).count() === 0,
+        await page.locator("#weather-dashboard")
+          .getByText(weatherRaceTitle(beta, alpha), { exact: true }).count() === 0,
         `${profile} rendered stale Beta weather after delayed A/B/A`,
       );
       return;
