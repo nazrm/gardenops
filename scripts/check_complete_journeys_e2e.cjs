@@ -1728,11 +1728,12 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     ...initialAdminPreference,
     attention_quiet_hours: {
       digest: { enabled: true, end: "07:15", start: "22:30" },
+      timezone: "UTC",
     },
     attention_rules: expectedPhaseTwoCanonicalAttentionRules(),
     digest_frequency: "weekly",
     email_enabled: true,
-    legacy_quiet_hours: { end: "07:15", start: "22:30" },
+    legacy_quiet_hours: { end: "07:15", start: "22:30", timezone: "UTC" },
     notification_rules: {
       issue_created: { email_enabled: true, in_app_enabled: false, min_severity: "normal" },
       system: { email_enabled: true, in_app_enabled: true, min_severity: "low" },
@@ -1740,18 +1741,6 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
       task_generated: { email_enabled: false, in_app_enabled: false, min_severity: "low" },
       task_overdue: { email_enabled: false, in_app_enabled: true, min_severity: "low" },
       task_upcoming: { email_enabled: false, in_app_enabled: false, min_severity: "high" },
-      "weather_alert:dry_spell": {
-        email_enabled: true, in_app_enabled: true, min_severity: "normal",
-      },
-      "weather_alert:frost_warning": {
-        email_enabled: true, in_app_enabled: true, min_severity: "normal",
-      },
-      "weather_alert:heat_wave": {
-        email_enabled: true, in_app_enabled: true, min_severity: "normal",
-      },
-      "weather_alert:rain_surplus": {
-        email_enabled: true, in_app_enabled: true, min_severity: "normal",
-      },
     },
     preset: "custom",
   }, "Phase 2 admin notification preferences were not normalized exactly");
@@ -1770,6 +1759,7 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   }, "Phase 2 muted issue-created legacy projection was not exact");
   exact(finalAdminPreference.attention_quiet_hours, {
     digest: { enabled: true, end: "07:15", start: "22:30" },
+    timezone: "UTC",
   }, "Phase 2 canonical quiet hours retained legacy top-level keys");
 
   assert(state.notifications.length === 43,
