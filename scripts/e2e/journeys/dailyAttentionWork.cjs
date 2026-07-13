@@ -197,6 +197,10 @@ async function exerciseGroupedCompletionRestrictions(page, fixture) {
   );
 
   await openCalendar(page, "desktop");
+  const agendaView = page.locator("[data-calendar-view='agenda']:visible").first();
+  await visible(agendaView, "calendar agenda view control");
+  await agendaView.click();
+  await page.locator("#calendar-loading").waitFor({ state: "hidden" });
   const calendarEvent = page.locator(".fc-event:visible").filter({ hasText: grouped.title }).first();
   await visible(calendarEvent, "grouped task on Calendar surface");
   await calendarEvent.click();

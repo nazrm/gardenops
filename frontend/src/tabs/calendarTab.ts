@@ -55,6 +55,7 @@ import {
 
 let ctx: AppContext;
 let calendar: Calendar | null = null;
+let calendarRendered = false;
 let currentEventsById = new Map<string, CalendarEvent>();
 let availableSources: CalendarSourceDefinition[] = [];
 let presets: CalendarPresetDefinition[] = [];
@@ -1788,10 +1789,16 @@ export async function loadCalendar(): Promise<void> {
     const instance = ensureCalendarInstance();
     await nextAnimationFrame();
     if (!isCurrentCalendarRequest(request)) return;
-    instance.render();
-    instance.changeView(fullCalendarView(currentViewMode));
+    const targetView = fullCalendarView(currentViewMode);
+    if (!calendarRendered) {
+      instance.render();
+      calendarRendered = true;
+    } else if (instance.view.type !== targetView) {
+      instance.changeView(targetView);
+    } else {
+      instance.refetchEvents();
+    }
     instance.updateSize();
-    instance.refetchEvents();
     await refreshSubscriptions(request);
   } catch (err) {
     if (!isCurrentCalendarRequest(request)) return;
