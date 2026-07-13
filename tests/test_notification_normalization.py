@@ -713,3 +713,228 @@ class TestNotificationNormalization(BaseApiTest):
                 [row["id"] for row in restored_inbox.json()["notifications"]],
                 [notification_id],
             )
+
+    def test_notification_settings_round_trip_preserves_distinct_grouped_attention_rules(
+        self,
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+            },
+            clear=False,
+        ):
+            conn = db.get_db()
+            try:
+                garden = conn.execute(
+                    "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1"
+                ).fetchone()
+                assert garden is not None
+                garden_id = int(garden["id"])
+                user_id, password = self._create_pro_member(conn, "grouped_rule_round_trip")
+                conn.execute(
+                    """
+                    INSERT INTO garden_memberships (garden_id, user_id, role)
+                    VALUES (%s, %s, 'editor')
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (garden_id, user_id),
+                )
+                self._save_legacy_preferences(
+                    conn,
+                    user_id=user_id,
+                    now_ms=_FROZEN_NOW_MS,
+                    rules={
+                        "issue_created": {
+                            "in_app_enabled": False,
+                            "email_enabled": False,
+                            "min_severity": "high",
+                        }
+                    },
+                )
+                self._save_attention_preferences(
+                    conn,
+                    user_id=user_id,
+                    now_ms=_FROZEN_NOW_MS,
+                    rules={
+                        "issue_follow_up_due": {
+                            "panel": True,
+                            "inbox": True,
+                            "digest": True,
+                            "min_severity": "low",
+                        },
+                        "issue_follow_up_overdue": {
+                            "panel": True,
+                            "inbox": False,
+                            "digest": False,
+                            "min_severity": "high",
+                        },
+                    },
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            client, headers = self._authenticated_client(
+                "grouped_rule_round_trip",
+                password,
+                garden_id=garden_id,
+            )
+            current = client.get("/api/notifications/preferences", headers=headers)
+            self.assertEqual(current.status_code, 200, current.text)
+            unchanged = current.json()
+            unchanged.pop("policy", None)
+            saved = client.put(
+                "/api/notifications/preferences",
+                headers=headers,
+                json=unchanged,
+            )
+            self.assertEqual(saved.status_code, 200, saved.text)
+
+            conn = db.get_db()
+            try:
+                after_round_trip = conn.execute(
+                    "SELECT rules_json FROM user_attention_preferences WHERE user_id = %s",
+                    (user_id,),
+                ).fetchone()
+            finally:
+                db.return_db(conn)
+            assert after_round_trip is not None
+            rules_after_round_trip = json.loads(str(after_round_trip["rules_json"]))
+            self.assertEqual(rules_after_round_trip["issue_follow_up_due"]["inbox"], True)
+            self.assertEqual(rules_after_round_trip["issue_follow_up_due"]["digest"], True)
+            self.assertEqual(rules_after_round_trip["issue_follow_up_due"]["min_severity"], "low")
+            self.assertEqual(rules_after_round_trip["issue_follow_up_overdue"]["inbox"], False)
+            self.assertEqual(rules_after_round_trip["issue_follow_up_overdue"]["digest"], False)
+            self.assertEqual(
+                rules_after_round_trip["issue_follow_up_overdue"]["min_severity"],
+                "high",
+            )
+
+            unchanged["notification_rules"]["issue_created"] = {
+                "in_app_enabled": False,
+                "email_enabled": False,
+                "min_severity": "critical",
+            }
+            changed = client.put(
+                "/api/notifications/preferences",
+                headers=headers,
+                json=unchanged,
+            )
+            self.assertEqual(changed.status_code, 200, changed.text)
+            conn = db.get_db()
+            try:
+                after_change = conn.execute(
+                    "SELECT rules_json FROM user_attention_preferences WHERE user_id = %s",
+                    (user_id,),
+                ).fetchone()
+            finally:
+                db.return_db(conn)
+            assert after_change is not None
+            rules_after_change = json.loads(str(after_change["rules_json"]))
+            for key in ("issue_follow_up_due", "issue_follow_up_overdue"):
+                self.assertFalse(rules_after_change[key]["inbox"])
+                self.assertFalse(rules_after_change[key]["digest"])
+                self.assertEqual(rules_after_change[key]["min_severity"], "critical")
+
+    def test_digest_cadence_is_scoped_to_the_garden_that_was_delivered(self) -> None:
+        from gardenops.services.notification_service import (
+            create_notification,
+            deliver_pending_email_digests,
+        )
+
+        conn = db.get_db()
+        try:
+            first_garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1"
+            ).fetchone()
+            assert first_garden is not None
+            first_garden_id = int(first_garden["id"])
+            second_garden = conn.execute(
+                """
+                INSERT INTO gardens (slug, name)
+                VALUES ('digest-second', 'Digest Second')
+                RETURNING id
+                """
+            ).fetchone()
+            assert second_garden is not None
+            second_garden_id = int(second_garden["id"])
+            user_id, _password = self._create_pro_member(conn, "digest_two_gardens")
+            for garden_id in (first_garden_id, second_garden_id):
+                conn.execute(
+                    """
+                    INSERT INTO garden_memberships (garden_id, user_id, role)
+                    VALUES (%s, %s, 'editor')
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (garden_id, user_id),
+                )
+            self._save_legacy_preferences(
+                conn,
+                user_id=user_id,
+                now_ms=_FROZEN_NOW_MS,
+                email_address="digest-two-gardens@example.test",
+            )
+            self._save_attention_preferences(
+                conn,
+                user_id=user_id,
+                now_ms=_FROZEN_NOW_MS,
+                rules={
+                    "task_due": {
+                        "panel": True,
+                        "inbox": True,
+                        "digest": True,
+                        "min_severity": "low",
+                    }
+                },
+            )
+            conn.commit()
+            create_notification(
+                conn,
+                first_garden_id,
+                user_id,
+                "task_due",
+                "First garden task",
+                "First garden needs attention.",
+                target_type="task",
+                target_id="first-garden-task",
+                now_ms=_FROZEN_NOW_MS,
+            )
+            create_notification(
+                conn,
+                second_garden_id,
+                user_id,
+                "task_due",
+                "Second garden task",
+                "Second garden needs attention.",
+                target_type="task",
+                target_id="second-garden-task",
+                now_ms=_FROZEN_NOW_MS,
+            )
+            sent: list[tuple[str, str, str]] = []
+            first_delivery = deliver_pending_email_digests(
+                conn,
+                first_garden_id,
+                email_sender=lambda recipient, subject, body: sent.append(
+                    (recipient, subject, body)
+                ),
+                now_ms=_FROZEN_NOW_MS,
+            )
+            second_delivery = deliver_pending_email_digests(
+                conn,
+                second_garden_id,
+                email_sender=lambda recipient, subject, body: sent.append(
+                    (recipient, subject, body)
+                ),
+                now_ms=_FROZEN_NOW_MS,
+            )
+        finally:
+            db.return_db(conn)
+
+        self.assertEqual(int(first_delivery["emailed_users"]), 1)
+        self.assertEqual(int(second_delivery["emailed_users"]), 1)
+        self.assertEqual(len(sent), 2)
+        self.assertIn("First garden task", sent[0][2])
+        self.assertIn("Second garden task", sent[1][2])

@@ -343,6 +343,7 @@ interface PlotTaskCardCallbacks {
   onComplete?: (() => void) | undefined;
   onSkip?: (() => void) | undefined;
   onSnooze?: (() => void) | undefined;
+  onSnoozeDate?: (() => void) | undefined;
   onReschedule?: (() => void) | undefined;
 }
 
@@ -414,6 +415,15 @@ function renderTaskCard(
         callbacks.onSnooze,
       );
     }
+    if (callbacks.onSnoozeDate) {
+      appendTaskCardAction(
+        actions,
+        "action-snooze-date",
+        t("tasks.snooze_change_date") as string,
+        "...",
+        callbacks.onSnoozeDate,
+      );
+    }
     if (callbacks.onReschedule) {
       appendTaskCardAction(
         actions,
@@ -449,8 +459,8 @@ async function loadPlotTasksPreview(
   if (!container) return;
 
   try {
-    const [pendingRes, completedRes] = await Promise.all([
-      fetchTasksApi({ plot_id: plotId, status: "pending" }),
+    const [actionableRes, completedRes] = await Promise.all([
+      fetchTasksApi({ plot_id: plotId, view: "today" }),
       fetchTasksApi({ plot_id: plotId, status: "completed" }),
     ]);
     if (seq !== plotTasksSeq) return;
@@ -463,7 +473,7 @@ async function loadPlotTasksPreview(
     );
 
     const allTasks = [
-      ...pendingRes.tasks.sort((a, b) =>
+      ...actionableRes.tasks.sort((a, b) =>
         a.due_on.localeCompare(b.due_on),
       ),
       ...recentlyCompleted.sort(
@@ -489,6 +499,18 @@ async function loadPlotTasksPreview(
                 onComplete: () => void completeTaskInline(task, card, state, plotId, cbs),
                 onSkip: () => void skipTaskInline(task, card, state, plotId, cbs),
                 onSnooze: () => void snoozeTaskInline(task, card, state, plotId, cbs),
+                onSnoozeDate: () => {
+                  const policy = taskSnoozePolicy(task);
+                  openPlotSnoozeDateDialog(
+                    task,
+                    card,
+                    state,
+                    plotId,
+                    cbs,
+                    policy.defaultDate,
+                    policy.warning,
+                  );
+                },
                 onReschedule: () =>
                   openPlotRescheduleDialog(task, card, state, plotId, cbs),
               }
@@ -500,7 +522,7 @@ async function loadPlotTasksPreview(
 
     const section = createCollapsibleSection(
       t("plot_drawer.tasks_section") as string,
-      pendingRes.tasks.length,
+      actionableRes.tasks.length,
       body,
     );
     container.replaceChildren(section);

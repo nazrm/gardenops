@@ -458,9 +458,18 @@ def build_calendar_ics(
     events: list[dict[str, Any]],
     generated_at: datetime | None = None,
 ) -> tuple[str, str, str | None]:
-    now = generated_at or datetime.now(UTC)
-    dtstamp = _ical_datetime(now)
-    latest_dt: datetime | None = None
+    content_timestamps = [
+        datetime.fromtimestamp(int(event["updated_at_ms"]) / 1000, tz=UTC)
+        for event in events
+        if int(event.get("updated_at_ms") or 0) > 0
+    ]
+    if generated_at is not None:
+        content_timestamps.append(generated_at.astimezone(UTC))
+    content_timestamp = max(
+        content_timestamps,
+        default=datetime(1970, 1, 1, tzinfo=UTC),
+    )
+    dtstamp = _ical_datetime(content_timestamp)
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
@@ -473,9 +482,9 @@ def build_calendar_ics(
         start = date.fromisoformat(str(event["start_on"]))
         end = date.fromisoformat(str(event["end_on"]))
         updated_ms = int(event.get("updated_at_ms") or 0)
-        event_dt = datetime.fromtimestamp(updated_ms / 1000, tz=UTC) if updated_ms else now
-        if latest_dt is None or event_dt > latest_dt:
-            latest_dt = event_dt
+        event_dt = (
+            datetime.fromtimestamp(updated_ms / 1000, tz=UTC) if updated_ms else content_timestamp
+        )
         lines.extend(
             [
                 "BEGIN:VEVENT",
@@ -493,11 +502,7 @@ def build_calendar_ics(
     lines.append("END:VCALENDAR")
     body = "\r\n".join(_fold_ical_line(line) for line in lines) + "\r\n"
     etag = '"' + hashlib.sha256(body.encode("utf-8")).hexdigest() + '"'
-    last_modified = (
-        format_datetime((latest_dt or now).astimezone(UTC), usegmt=True)
-        if latest_dt or now
-        else None
-    )
+    last_modified = format_datetime(content_timestamp.astimezone(UTC), usegmt=True)
     return body, etag, last_modified
 
 

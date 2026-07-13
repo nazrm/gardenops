@@ -7,6 +7,7 @@ export interface TaskDateDialogOptions {
   defaultDate: string;
   onConfirm: (date: string) => void;
   warning?: string | undefined;
+  requireManualDate?: boolean | undefined;
   onClose?: (() => void) | undefined;
 }
 
@@ -22,6 +23,7 @@ export function openTaskDateDialog({
   defaultDate,
   onConfirm,
   warning,
+  requireManualDate = false,
   onClose,
 }: TaskDateDialogOptions): void {
   const { dialog, close } = createModal(title, `
@@ -38,14 +40,18 @@ export function openTaskDateDialog({
   const heading = dialog.querySelector("h3")!;
   heading.textContent = title;
   const warningEl = dialog.querySelector<HTMLElement>(".task-date-dialog-warning")!;
+  warningEl.id = "task-date-dialog-warning";
+  warningEl.setAttribute("role", "alert");
   if (warning) {
     warningEl.hidden = false;
     warningEl.textContent = warning;
   }
   const input = dialog.querySelector<HTMLInputElement>("input[type='date']")!;
-  input.value = defaultDate;
+  input.value = requireManualDate ? "" : defaultDate;
   input.min = formatLocalDate(new Date());
+  input.required = requireManualDate;
   input.setAttribute("aria-label", title);
+  if (warning) input.setAttribute("aria-describedby", warningEl.id);
   const cancelBtn = dialog.querySelector<HTMLButtonElement>(".confirm-no")!;
   cancelBtn.textContent = t("common.cancel") as string;
   cancelBtn.addEventListener("click", close);

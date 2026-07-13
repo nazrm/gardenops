@@ -273,11 +273,37 @@ def _legacy_rules_and_metadata(
     return rules, metadata
 
 
+def _normalize_notification_rule(rule: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "in_app_enabled": bool(rule.get("in_app_enabled", True)),
+        "email_enabled": bool(rule.get("email_enabled", True)),
+        "min_severity": normalize_severity(str(rule.get("min_severity", "low"))),
+    }
+
+
+def _notification_rule_projection(
+    rules: dict[str, dict[str, Any]],
+    target_keys: tuple[str, ...],
+) -> dict[str, Any] | None:
+    grouped_rules = [rules[target_key] for target_key in target_keys if target_key in rules]
+    if not grouped_rules:
+        return None
+    severities = [
+        normalize_severity(str(rule.get("min_severity", "low"))) for rule in grouped_rules
+    ]
+    return {
+        "in_app_enabled": all(bool(rule.get("inbox", False)) for rule in grouped_rules),
+        "email_enabled": all(bool(rule.get("digest", False)) for rule in grouped_rules),
+        "min_severity": max(severities, key=lambda severity: SEVERITY_RANK[severity]),
+    }
+
+
 def merge_notification_preferences(
     preferences: AttentionPreferenceSet,
     *,
     notification_rules: dict[str, dict[str, Any]],
     quiet_hours: dict[str, Any],
+    notification_rule_keys: set[str] | None = None,
 ) -> AttentionPreferenceSet:
     """Project notification settings into the canonical Attention preference set.
 
@@ -289,15 +315,21 @@ def merge_notification_preferences(
         preferences.preset if preferences.preset in {"calm", "balanced", "detailed"} else "balanced"
     )
     for legacy_key, target_keys in _LEGACY_RULE_KEY_MAP.items():
+        if notification_rule_keys is not None and legacy_key not in notification_rule_keys:
+            continue
         legacy_rule = notification_rules.get(legacy_key)
         if not isinstance(legacy_rule, dict):
+            continue
+        projected_rule = _notification_rule_projection(rules, target_keys)
+        normalized_rule = _normalize_notification_rule(legacy_rule)
+        if projected_rule == normalized_rule:
             continue
         for target_key in target_keys:
             rule = _copy_rule(rules.get(target_key) or preset_rules.get(target_key) or {})
             rule.setdefault("panel", True)
-            rule["inbox"] = bool(legacy_rule.get("in_app_enabled", True))
-            rule["digest"] = bool(legacy_rule.get("email_enabled", True))
-            rule["min_severity"] = normalize_severity(str(legacy_rule.get("min_severity", "low")))
+            rule["inbox"] = normalized_rule["in_app_enabled"]
+            rule["digest"] = normalized_rule["email_enabled"]
+            rule["min_severity"] = normalized_rule["min_severity"]
             rules[target_key] = rule
 
     normalized_quiet_hours = dict(preferences.quiet_hours)
@@ -328,21 +360,10 @@ def notification_rules_from_attention(
     """Return the notification-rule fields represented by Attention rules."""
     projected: dict[str, dict[str, Any]] = {}
     for legacy_key, target_keys in _LEGACY_RULE_KEY_MAP.items():
-        rule = next(
-            (
-                preferences.rules[target_key]
-                for target_key in target_keys
-                if target_key in preferences.rules
-            ),
-            None,
-        )
+        rule = _notification_rule_projection(preferences.rules, target_keys)
         if rule is None:
             continue
-        projected[legacy_key] = {
-            "in_app_enabled": bool(rule.get("inbox", False)),
-            "email_enabled": bool(rule.get("digest", False)),
-            "min_severity": normalize_severity(str(rule.get("min_severity", "low"))),
-        }
+        projected[legacy_key] = rule
     return projected
 
 

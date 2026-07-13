@@ -7,7 +7,7 @@ import enGbLocale from "@fullcalendar/core/locales/en-gb";
 import nbLocale from "@fullcalendar/core/locales/nb";
 
 import { createChipInput, type ChipInputResult } from "../components/chipInput";
-import { createModal } from "../components/dialogCore";
+import { createModal, promptDialog } from "../components/dialogCore";
 import type { AppContext } from "../core/appContext";
 import { queryButton, querySelect } from "../core/dom";
 import { getLocale, t } from "../core/i18n";
@@ -34,6 +34,7 @@ import {
   deleteCalendarSubscriptionApi,
   fetchCalendarEventsApi,
   fetchCalendarPreferencesApi,
+  getActiveGardenContext,
   getApiErrorMessage,
   listCalendarSubscriptionsApi,
   type TaskActionRequest,
@@ -42,6 +43,10 @@ import {
   updateCalendarPreferencesApi,
 } from "../services/api";
 import { taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import {
+  getTaskSnoozeCorrectionNotice,
+  openTaskDateDialog,
+} from "../features/taskSnoozeFlow";
 import {
   canQueueDefaultCompletionOffline,
   needsCompletionDialog,
@@ -72,6 +77,48 @@ let initBound = false;
 let calendarPlantInput: ChipInputResult | null = null;
 let calendarPlotInput: ChipInputResult | null = null;
 let calendarZoneInput: ChipInputResult | null = null;
+let calendarRequestGeneration = 0;
+let calendarEventsRequestGeneration = 0;
+
+interface CalendarRequestContext {
+  gardenId: number | null;
+  generation: number;
+}
+
+interface CalendarEventsRequestContext extends CalendarRequestContext {
+  eventsGeneration: number;
+}
+
+function createCalendarRequest(): CalendarRequestContext {
+  return {
+    gardenId: getActiveGardenContext(),
+    generation: calendarRequestGeneration,
+  };
+}
+
+function isCurrentCalendarRequest(request: CalendarRequestContext): boolean {
+  return (
+    request.generation === calendarRequestGeneration
+    && request.gardenId !== null
+    && request.gardenId === getActiveGardenContext()
+  );
+}
+
+function createCalendarEventsRequest(): CalendarEventsRequestContext {
+  return {
+    ...createCalendarRequest(),
+    eventsGeneration: ++calendarEventsRequestGeneration,
+  };
+}
+
+function isCurrentCalendarEventsRequest(
+  request: CalendarEventsRequestContext,
+): boolean {
+  return (
+    isCurrentCalendarRequest(request)
+    && request.eventsGeneration === calendarEventsRequestGeneration
+  );
+}
 
 function dedupeOrdered(values: string[]): string[] {
   const seen = new Set<string>();
@@ -485,6 +532,45 @@ function syncViewButtons(): void {
     });
 }
 
+export function resetCalendarForGardenSwitch(): void {
+  calendarRequestGeneration += 1;
+  calendarEventsRequestGeneration += 1;
+  currentEventsById.clear();
+  availableSources = [];
+  presets = [];
+  capabilities = {
+    can_subscribe: false,
+    can_revoke_all: false,
+  };
+  subscriptions = [];
+  currentViewMode = defaultResponsiveView();
+  currentPreset = "essential";
+  visibleSources = new Set();
+  includeRecentHistory = false;
+  selectedPlantIds = new Set();
+  selectedPlotIds = new Set();
+  selectedZoneCodes = new Set();
+  selectedEventId = null;
+  currentSummaryCount = 0;
+  preferencesLoaded = false;
+  calendar?.removeAllEvents();
+  calendarPlantInput?.destroy();
+  calendarPlantInput = null;
+  calendarPlotInput?.destroy();
+  calendarPlotInput = null;
+  calendarZoneInput?.destroy();
+  calendarZoneInput = null;
+  if (!ctx) return;
+  renderPresetOptions();
+  syncControlsFromState();
+  renderFilterState();
+  renderSourceFilters();
+  renderHeaderActions();
+  renderSubscriptionsPanel();
+  updateSummary(0);
+  renderDetail();
+}
+
 function syncControlsFromState(): void {
   const presetSelect = querySelect("calendar-preset-select");
   if (presetSelect) presetSelect.value = currentPreset;
@@ -737,9 +823,14 @@ function calendarTaskForCompletion(event: CalendarEvent) {
   };
 }
 
+function isCurrentCalendarEvent(event: CalendarEvent): boolean {
+  return currentEventsById.get(event.id) === event;
+}
+
 function canMutateCalendarTask(event: CalendarEvent): boolean {
   return (
-    event.kind === "task"
+    isCurrentCalendarEvent(event)
+    && event.kind === "task"
     && !event.read_only
     && ctx.canWrite()
     && (event.status === "pending" || event.status === "snoozed")
@@ -803,7 +894,17 @@ async function openManualEventDialog(
   existing?: CalendarEvent,
   draft?: CalendarManualEventDraft,
 ): Promise<void> {
-  if (existing && existing.kind !== "manual_event") return;
+  const request = createCalendarRequest();
+  if (
+    !isCurrentCalendarRequest(request)
+    || !ctx.canWrite()
+    || (existing && (
+      !isCurrentCalendarEvent(existing)
+      || existing.kind !== "manual_event"
+    ))
+  ) {
+    return;
+  }
   const isEditing = existing?.kind === "manual_event";
   const headingText = isEditing ? t("calendar.manual_edit_title") : t("calendar.manual_create_title");
   const submitText = isEditing ? t("common.save") : t("common.create");
@@ -881,6 +982,10 @@ async function openManualEventDialog(
 
   form?.addEventListener("submit", async (submitEvent) => {
     submitEvent.preventDefault();
+    if (!isCurrentCalendarRequest(request) || !ctx.ensureWriteAccess()) {
+      closeDialog();
+      return;
+    }
     const payload: CalendarManualEventInput = {
       title: titleInput?.value.trim() ?? "",
       event_on: dateInput?.value ?? "",
@@ -897,6 +1002,7 @@ async function openManualEventDialog(
       const result = isEditing && existing
         ? await updateCalendarManualEventApi(existing.target_id, payload)
         : await createCalendarManualEventApi(payload);
+      if (!isCurrentCalendarRequest(request)) return;
       selectedEventId = result.event.id;
       closeDialog();
       ctx.showToast(
@@ -905,6 +1011,7 @@ async function openManualEventDialog(
       );
       await loadCalendar();
     } catch (err) {
+      if (!isCurrentCalendarRequest(request)) return;
       ctx.showToast(getApiErrorMessage(err), "error");
     } finally {
       if (submitButton) submitButton.disabled = false;
@@ -913,20 +1020,30 @@ async function openManualEventDialog(
 }
 
 async function deleteManualEvent(event: CalendarEvent): Promise<void> {
-  if (event.kind !== "manual_event") return;
+  const request = createCalendarRequest();
+  if (
+    event.kind !== "manual_event"
+    || !isCurrentCalendarEvent(event)
+    || !ctx.canWrite()
+    || !isCurrentCalendarRequest(request)
+  ) {
+    return;
+  }
   const confirmed = await ctx.confirmDialog(
     t("calendar.manual_delete_confirm", { title: event.title }),
     t("common.delete"),
   );
-  if (!confirmed) return;
+  if (!confirmed || !isCurrentCalendarRequest(request)) return;
   try {
     await deleteCalendarManualEventApi(event.target_id);
+    if (!isCurrentCalendarRequest(request)) return;
     if (selectedEventId === event.id) {
       selectedEventId = null;
     }
     ctx.showToast(t("calendar.manual_deleted"), "success");
     await loadCalendar();
   } catch (err) {
+    if (!isCurrentCalendarRequest(request)) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
@@ -934,6 +1051,7 @@ async function deleteManualEvent(event: CalendarEvent): Promise<void> {
 function renderDetail(event?: CalendarEvent): void {
   const panel = document.getElementById("calendar-detail-panel");
   if (!(panel instanceof HTMLElement)) return;
+  if (event && !isCurrentCalendarEvent(event)) event = undefined;
   delete panel.dataset["calendarSelectedEventId"];
   delete panel.dataset["calendarSelectedSource"];
   delete panel.dataset["calendarSelectedStatus"];
@@ -1065,6 +1183,15 @@ function renderDetail(event?: CalendarEvent): void {
   if (canMutateCalendarTask(event)) {
     const actions = document.createElement("div");
     actions.className = "calendar-detail-actions";
+    const onSnoozeDate = () => {
+      const policy = taskSnoozePolicy(calendarTaskForSnooze(event));
+      openCalendarTaskDateDialog(
+        event,
+        "snooze",
+        policy.defaultDate,
+        policy.warning,
+      );
+    };
     actions.appendChild(
       actionButton(t("tasks.action_complete"), () => {
         completeCalendarTask(event);
@@ -1081,8 +1208,11 @@ function renderDetail(event?: CalendarEvent): void {
       }),
     );
     actions.appendChild(
+      actionButton(t("tasks.snooze_change_date"), onSnoozeDate),
+    );
+    actions.appendChild(
       actionButton(t("tasks.action_reschedule"), () => {
-        void promptTaskAction(event, "reschedule");
+        openCalendarTaskDateDialog(event, "reschedule");
       }),
     );
     panel.appendChild(actions);
@@ -1094,19 +1224,23 @@ async function runTaskAction(
   body: TaskActionRequest,
   options: { showSuccessToast?: boolean } = {},
 ): Promise<boolean> {
+  const request = createCalendarRequest();
   if (!canMutateCalendarTask(event)) return false;
+  if (!isCurrentCalendarRequest(request)) return false;
   if (!ctx.isOnline()) {
     if (body.action === "complete" && body.completed_plant_ids?.length) {
       ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
       return false;
     }
     await enqueueOfflineCalendarTaskAction(event.target_id, body);
+    if (!isCurrentCalendarRequest(request)) return false;
     ctx.showToast(t("offline.draft_saved"), "success");
     void ctx.refreshOfflineIndicator();
     return true;
   }
   try {
     await taskActionApi(event.target_id, body);
+    if (!isCurrentCalendarRequest(request)) return false;
     if (options.showSuccessToast !== false) {
       ctx.showToast(t("tasks.action_success", { action: body.action }), "success");
     }
@@ -1114,6 +1248,7 @@ async function runTaskAction(
     await loadCalendar();
     return true;
   } catch (err) {
+    if (!isCurrentCalendarRequest(request)) return false;
     ctx.showToast(getApiErrorMessage(err), "error");
     return false;
   }
@@ -1174,51 +1309,64 @@ async function snoozeCalendarTask(event: CalendarEvent): Promise<void> {
   const task = calendarTaskForSnooze(event);
   const policy = taskSnoozePolicy(task);
   if (!policy.immediate) {
-    await promptTaskAction(event, "snooze", policy.defaultDate, policy.warning);
+    openCalendarTaskDateDialog(
+      event,
+      "snooze",
+      policy.defaultDate,
+      policy.warning,
+    );
     return;
   }
-  const online = ctx.isOnline();
   const ok = await runTaskAction(
     event,
     { action: "snooze", snooze_until: policy.defaultDate },
     { showSuccessToast: false },
   );
-  if (!ok || !online) return;
+  if (!ok) return;
+  const notice = getTaskSnoozeCorrectionNotice(policy.defaultDate, () => {
+    openCalendarTaskDateDialog(event, "snooze", policy.defaultDate);
+  });
   ctx.showToast(
-    t("tasks.snoozed_until_toast", { date: policy.defaultDate }),
+    notice.message,
     "success",
     {
       actions: [
         {
-          label: t("tasks.snooze_change_date"),
-          onClick: () => {
-            void promptTaskAction(event, "snooze", policy.defaultDate);
-          },
+          label: notice.actionLabel,
+          onClick: notice.onChangeDate,
         },
       ],
-      durationMs: 5000,
+      durationMs: notice.durationMs,
     },
   );
 }
 
-async function promptTaskAction(
+function openCalendarTaskDateDialog(
   event: CalendarEvent,
   action: "snooze" | "reschedule",
   defaultDate = event.due_on || event.start_on,
   warning?: string,
-): Promise<void> {
+): void {
   if (!canMutateCalendarTask(event)) return;
-  const promptText = action === "snooze" ? t("tasks.snooze_prompt") : t("tasks.reschedule_prompt");
-  const value = window.prompt(warning ? `${warning}\n\n${promptText}` : promptText, defaultDate);
-  if (!value) return;
-  const body: TaskActionRequest = action === "snooze"
-    ? { action: "snooze", snooze_until: value }
-    : { action: "reschedule", reschedule_to: value };
-  await runTaskAction(event, body);
+  const title = action === "snooze"
+    ? t("tasks.snooze_prompt") as string
+    : t("tasks.reschedule_prompt") as string;
+  openTaskDateDialog({
+    title,
+    defaultDate,
+    warning,
+    onConfirm: (date) => {
+      const body: TaskActionRequest = action === "snooze"
+        ? { action: "snooze", snooze_until: date }
+        : { action: "reschedule", reschedule_to: date };
+      void runTaskAction(event, body);
+    },
+  });
 }
 
 async function persistPreferences(): Promise<void> {
-  if (!preferencesLoaded) return;
+  const request = createCalendarRequest();
+  if (!preferencesLoaded || !isCurrentCalendarRequest(request)) return;
   try {
     await updateCalendarPreferencesApi({
       default_view: currentViewMode,
@@ -1230,12 +1378,17 @@ async function persistPreferences(): Promise<void> {
       selected_zone_codes: selectedZoneCodeList(),
     });
   } catch {
+    if (!isCurrentCalendarRequest(request)) return;
     // Non-critical. Keep local state responsive even if persistence fails.
   }
 }
 
-async function fetchPreferences(): Promise<void> {
+async function fetchPreferences(
+  request = createCalendarRequest(),
+): Promise<boolean> {
+  if (!isCurrentCalendarRequest(request)) return false;
   const result = await fetchCalendarPreferencesApi();
+  if (!isCurrentCalendarRequest(request)) return false;
   availableSources = result.available_sources;
   presets = result.presets;
   capabilities = result.capabilities;
@@ -1256,9 +1409,13 @@ async function fetchPreferences(): Promise<void> {
   renderSourceFilters();
   renderHeaderActions();
   renderSubscriptionsPanel();
+  return true;
 }
 
-async function refreshSubscriptions(): Promise<void> {
+async function refreshSubscriptions(
+  request = createCalendarRequest(),
+): Promise<void> {
+  if (!isCurrentCalendarRequest(request)) return;
   if (!capabilities.can_subscribe) {
     subscriptions = [];
     renderSubscriptionsPanel();
@@ -1266,31 +1423,39 @@ async function refreshSubscriptions(): Promise<void> {
   }
   try {
     const result = await listCalendarSubscriptionsApi();
+    if (!isCurrentCalendarRequest(request)) return;
     subscriptions = result.subscriptions;
     renderSubscriptionsPanel();
   } catch (err) {
+    if (!isCurrentCalendarRequest(request)) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
 
 async function revokeSubscription(subscription: CalendarSubscription): Promise<void> {
+  const request = createCalendarRequest();
+  if (!isCurrentCalendarRequest(request)) return;
   const confirmed = await ctx.confirmDialog(
     t("calendar.revoke_confirm", { label: subscription.label }),
     t("calendar.revoke_feed"),
   );
-  if (!confirmed) return;
+  if (!confirmed || !isCurrentCalendarRequest(request)) return;
   try {
     await deleteCalendarSubscriptionApi(subscription.id);
+    if (!isCurrentCalendarRequest(request)) return;
     ctx.showToast(t("calendar.feed_revoked"), "success");
-    await refreshSubscriptions();
+    await refreshSubscriptions(request);
   } catch (err) {
+    if (!isCurrentCalendarRequest(request)) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
 
 async function createSubscription(): Promise<void> {
-  const label = window.prompt(t("calendar.feed_label_prompt"), "");
-  if (label === null) return;
+  const request = createCalendarRequest();
+  if (!isCurrentCalendarRequest(request)) return;
+  const label = await promptDialog(t("calendar.feed_label_prompt"), "");
+  if (label === null || !isCurrentCalendarRequest(request)) return;
   try {
     const payload: {
       label?: string;
@@ -1305,15 +1470,19 @@ async function createSubscription(): Promise<void> {
       payload.label = trimmedLabel;
     }
     const result = await createCalendarSubscriptionApi(payload);
+    if (!isCurrentCalendarRequest(request)) return;
     const feedUrl = new URL(result.feed_path, window.location.origin).toString();
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(feedUrl);
+      if (!isCurrentCalendarRequest(request)) return;
       ctx.showToast(t("calendar.feed_copied"), "success");
     } else {
-      window.prompt(t("calendar.feed_copy_prompt"), feedUrl);
+      await promptDialog(t("calendar.feed_copy_prompt"), feedUrl);
     }
-    await refreshSubscriptions();
+    if (!isCurrentCalendarRequest(request)) return;
+    await refreshSubscriptions(request);
   } catch (err) {
+    if (!isCurrentCalendarRequest(request)) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
@@ -1367,6 +1536,11 @@ function ensureCalendarInstance(): Calendar {
     eventContent: renderCalendarEventContent,
     eventDidMount: handleCalendarEventMount,
     events: async (fetchInfo, successCallback, failureCallback) => {
+      const request = createCalendarEventsRequest();
+      if (!isCurrentCalendarEventsRequest(request)) {
+        successCallback([]);
+        return;
+      }
       try {
         setLoading(true);
         const result = await fetchCalendarEventsApi({
@@ -1379,6 +1553,10 @@ function ensureCalendarInstance(): Calendar {
           selected_plot_ids: selectedPlotIdList().join(","),
           selected_zone_codes: selectedZoneCodeList().join(","),
         });
+        if (!isCurrentCalendarEventsRequest(request)) {
+          successCallback([]);
+          return;
+        }
         const nextSelectedPlantIds = new Set(result.selected_plant_ids || []);
         const nextSelectedPlotIds = new Set(result.selected_plot_ids || []);
         const nextSelectedZoneCodes = new Set(result.selected_zone_codes || []);
@@ -1430,10 +1608,11 @@ function ensureCalendarInstance(): Calendar {
           })),
         );
       } catch (err) {
+        if (!isCurrentCalendarEventsRequest(request)) return;
         failureCallback(err as Error);
         ctx.showToast(getApiErrorMessage(err), "error");
       } finally {
-        setLoading(false);
+        if (isCurrentCalendarEventsRequest(request)) setLoading(false);
       }
     },
     datesSet: (arg) => {
@@ -1442,6 +1621,7 @@ function ensureCalendarInstance(): Calendar {
       renderRangeLabel(arg.view.title);
     },
     eventClick: (arg) => {
+      if (!currentEventsById.has(arg.event.id)) return;
       selectedEventId = arg.event.id;
       renderDetail(currentEventsById.get(arg.event.id));
     },
@@ -1452,10 +1632,13 @@ function ensureCalendarInstance(): Calendar {
 }
 
 async function changeView(mode: CalendarViewMode): Promise<void> {
+  const request = createCalendarRequest();
+  if (!isCurrentCalendarRequest(request)) return;
   currentViewMode = mode;
   syncViewButtons();
   const instance = ensureCalendarInstance();
   await nextAnimationFrame();
+  if (!isCurrentCalendarRequest(request)) return;
   instance.render();
   instance.changeView(fullCalendarView(mode));
   instance.updateSize();
@@ -1581,9 +1764,13 @@ export function openCalendarManualEventComposer(
 }
 
 export async function loadCalendar(): Promise<void> {
+  calendarRequestGeneration += 1;
+  const request = createCalendarRequest();
+  if (!isCurrentCalendarRequest(request)) return;
   try {
     if (!preferencesLoaded) {
-      await fetchPreferences();
+      const loaded = await fetchPreferences(request);
+      if (!loaded || !isCurrentCalendarRequest(request)) return;
     } else {
       renderPresetOptions();
       syncControlsFromState();
@@ -1593,15 +1780,18 @@ export async function loadCalendar(): Promise<void> {
       renderFilterState();
       renderSourceFilters();
     }
+    if (!isCurrentCalendarRequest(request)) return;
     renderHeaderActions();
     const instance = ensureCalendarInstance();
     await nextAnimationFrame();
+    if (!isCurrentCalendarRequest(request)) return;
     instance.render();
     instance.changeView(fullCalendarView(currentViewMode));
     instance.updateSize();
     instance.refetchEvents();
-    await refreshSubscriptions();
+    await refreshSubscriptions(request);
   } catch (err) {
+    if (!isCurrentCalendarRequest(request)) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }

@@ -561,8 +561,8 @@ def save_weather_alerts(
                 """
                 UPDATE weather_alerts
                 SET severity = %s,
-                    title = CASE WHEN title = '' THEN %s ELSE title END,
-                    description = CASE WHEN description = '' THEN %s ELSE description END,
+                    title = COALESCE(NULLIF(%s, ''), title),
+                    description = COALESCE(NULLIF(%s, ''), description),
                     valid_until = GREATEST(valid_until, %s),
                     metadata_json = %s
                 WHERE id = %s

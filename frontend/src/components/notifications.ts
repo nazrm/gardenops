@@ -481,17 +481,33 @@ export function renderNotificationPreferencesForm(
   quietInputs.style.marginTop = "var(--sp-1)";
   const qh = (prefs.quiet_hours_json ?? {}) as Record<string, string>;
   const quietStart = document.createElement("input");
+  quietStart.id = "notification-prefs-quiet-start";
   quietStart.type = "time";
   quietStart.value = qh["start"] ?? "";
   quietStart.style.padding = "var(--sp-1)";
   quietStart.style.fontSize = "0.85rem";
+  quietStart.setAttribute(
+    "aria-label",
+    `${quietLabel.textContent} ${t("attention.preferences.start")}`,
+  );
+  const quietStartLabel = document.createElement("label");
+  quietStartLabel.htmlFor = quietStart.id;
+  quietStartLabel.textContent = t("attention.preferences.start") as string;
   const quietSep = document.createElement("span");
   quietSep.textContent = "\u2013";
   const quietEnd = document.createElement("input");
+  quietEnd.id = "notification-prefs-quiet-end";
   quietEnd.type = "time";
   quietEnd.value = qh["end"] ?? "";
   quietEnd.style.padding = "var(--sp-1)";
   quietEnd.style.fontSize = "0.85rem";
+  quietEnd.setAttribute(
+    "aria-label",
+    `${quietLabel.textContent} ${t("attention.preferences.end")}`,
+  );
+  const quietEndLabel = document.createElement("label");
+  quietEndLabel.htmlFor = quietEnd.id;
+  quietEndLabel.textContent = t("attention.preferences.end") as string;
   function updateQuietHours(): void {
     if (quietStart.value && quietEnd.value) {
       state.quiet_hours_json = { start: quietStart.value, end: quietEnd.value };
@@ -501,7 +517,13 @@ export function renderNotificationPreferencesForm(
   }
   quietStart.addEventListener("change", updateQuietHours);
   quietEnd.addEventListener("change", updateQuietHours);
-  quietInputs.append(quietStart, quietSep, quietEnd);
+  quietInputs.append(
+    quietStartLabel,
+    quietStart,
+    quietSep,
+    quietEndLabel,
+    quietEnd,
+  );
   quietRow.append(quietLabel, quietInputs);
   form.append(quietRow);
 
@@ -585,6 +607,11 @@ export function renderNotificationPreferencesForm(
       if (policy.supports_severity) {
         const select = document.createElement("select");
         select.className = "notification-prefs-severity";
+        select.id = `notification-prefs-severity-${policy.key}`;
+        select.setAttribute(
+          "aria-label",
+          `${policyLabel(policy.key)}: ${t("notifications.prefs_min_severity")}`,
+        );
         for (const severity of ["low", "normal", "high", "critical"] as const) {
           const option = document.createElement("option");
           option.value = severity;

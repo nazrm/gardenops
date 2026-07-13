@@ -38,3 +38,42 @@ def test_preference_changes_refresh_attention_and_notification_surfaces() -> Non
         "onPrimaryAction:", 1
     )[0]
     assert "await refreshNotificationsForCurrentGarden();" in attention_options
+
+
+def test_notification_preference_time_and_severity_controls_have_accessible_names() -> None:
+    component = (ROOT / "frontend/src/components/notifications.ts").read_text(encoding="utf-8")
+
+    assert 'quietStart.id = "notification-prefs-quiet-start";' in component
+    assert 'quietEnd.id = "notification-prefs-quiet-end";' in component
+    assert "quietStart.setAttribute(" in component
+    assert "quietEnd.setAttribute(" in component
+    assert "select.setAttribute(" in component
+    assert '`${policyLabel(policy.key)}: ${t("notifications.prefs_min_severity")}`' in component
+
+
+def test_viewers_keep_today_and_weather_navigation_without_write_affordances() -> None:
+    attention = (ROOT / "frontend/src/components/attentionTodayPanel.ts").read_text(
+        encoding="utf-8"
+    )
+    weather = (ROOT / "frontend/src/components/weather.ts").read_text(encoding="utf-8")
+    app = (ROOT / "frontend/src/app.ts").read_text(encoding="utf-8")
+
+    assert "canWrite?: () => boolean;" in attention
+    assert "function isAttentionWriteAction" in attention
+    assert "if (options.canWrite?.() ?? true)" in attention
+    assert "canWrite: () => canWriteInGarden," in app
+    assert "function canWriteWeather" in weather
+    assert "canWriteWeather()" in weather
+    assert 'document.body.classList.toggle("garden-read-only", !canWriteInGarden);' in app
+
+
+def test_today_preferences_preserve_untouched_rules_within_grouped_rows() -> None:
+    attention = (ROOT / "frontend/src/components/attentionTodayPanel.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const dirtyRuleRows = new Set<string>();" in attention
+    assert "dirtyRuleRows.add(rowConfig.id);" in attention
+    assert "if (!dirtyRuleRows.has(rowConfig.id)) return;" in attention
+    assert "groupedRules.every((rule) => Boolean(rule.inbox))" in attention
+    assert "groupedRules.every((rule) => Boolean(rule.digest))" in attention

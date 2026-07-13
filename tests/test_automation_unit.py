@@ -468,6 +468,26 @@ class TestWeatherTaskTyping(DbTestBase):
 
     def test_rain_alert_creates_protect_tasks(self) -> None:
         self._insert_plant("RN1", "Rain test", care_watering="Water regularly in summer")
+        self.conn.execute(
+            """
+            INSERT INTO plots
+                (plot_id, garden_id, zone_code, zone_name, plot_number,
+                 grid_row, grid_col, sub_zone, notes)
+            VALUES ('RN1-OUT', %s, 'R', 'Rain bed', 1, 4, 4, '', '')
+            """,
+            (self.garden_id,),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id)
+            VALUES ('RN1-OUT', %s, %s)
+            """,
+            (self._owner_id, self.garden_id),
+        )
+        self.conn.execute(
+            "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES ('RN1-OUT', 'RN1', 1)",
+        )
+        self.conn.commit()
         alert_id = self._create_alert("rain_surplus")
 
         created = on_rain_alert(
@@ -484,6 +504,77 @@ class TestWeatherTaskTyping(DbTestBase):
         ).fetchone()
         assert task is not None
         assert task["task_type"] == "protect"
+
+    def test_rain_alert_creates_drainage_only_for_outdoor_placements(self) -> None:
+        for plant_id, name in (
+            ("RND-OUT", "Outdoor drainage"),
+            ("RND-IN", "Indoor drainage"),
+            ("RND-UNPLACED", "Unplaced drainage"),
+        ):
+            self._insert_plant(plant_id, name, care_watering="Water regularly in summer")
+        self.conn.execute(
+            """
+            INSERT INTO plots
+                (plot_id, garden_id, zone_code, zone_name, plot_number,
+                 grid_row, grid_col, sub_zone, notes)
+            VALUES
+                ('RND-OUT-PLOT', %s, 'R', 'Outdoor', 1, 5, 5, '', ''),
+                ('RND-IN-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+            """,
+            (self.garden_id, self.garden_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id)
+            VALUES
+                ('RND-OUT-PLOT', %s, %s),
+                ('RND-IN-PLOT', %s, %s)
+            """,
+            (self._owner_id, self.garden_id, self._owner_id, self.garden_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO plot_plants (plot_id, plt_id, quantity)
+            VALUES
+                ('RND-OUT-PLOT', 'RND-OUT', 1),
+                ('RND-IN-PLOT', 'RND-IN', 1)
+            """,
+        )
+        self.conn.commit()
+        alert_id = self._create_alert("rain_surplus")
+
+        created = on_rain_alert(self.conn, self.garden_id, alert_id, self._owner_id)
+
+        rows = self.conn.execute(
+            """
+            SELECT rule_source
+            FROM garden_tasks
+            WHERE garden_id = %s
+              AND rule_source LIKE %s
+            ORDER BY rule_source
+            """,
+            (self.garden_id, f"auto:rain_drainage:{alert_id}:%"),
+        ).fetchall()
+        task = self.conn.execute(
+            """
+            SELECT t.id
+            FROM garden_tasks t
+            WHERE t.garden_id = %s
+              AND t.rule_source = %s
+            """,
+            (self.garden_id, f"auto:rain_drainage:{alert_id}:RND-OUT"),
+        ).fetchone()
+        assert task is not None
+        plot_rows = self.conn.execute(
+            "SELECT plot_id FROM garden_task_plots WHERE task_id = %s ORDER BY plot_id",
+            (int(task["id"]),),
+        ).fetchall()
+
+        assert created == 1
+        assert [str(row["rule_source"]) for row in rows] == [
+            f"auto:rain_drainage:{alert_id}:RND-OUT"
+        ]
+        assert [str(row["plot_id"]) for row in plot_rows] == ["RND-OUT-PLOT"]
 
     def test_rain_alert_reschedules_watering_and_records_attention_outcome(self) -> None:
         self._insert_plant("RN2", "Rain restore", care_watering="Water regularly in summer")

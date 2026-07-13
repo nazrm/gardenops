@@ -132,6 +132,46 @@ def update_task_plant_links(
     )
 
 
+def task_plot_ids_for_plant_ids(
+    db: DbConn,
+    *,
+    task_id: int,
+    garden_id: int,
+    plant_ids: list[str],
+) -> list[str]:
+    """Return task-linked current placements for selected plants in one garden."""
+    if not plant_ids:
+        return []
+    rows = db.execute(
+        """
+        SELECT DISTINCT pp.plot_id
+        FROM garden_task_plots gtp
+        JOIN plot_plants pp ON pp.plot_id = gtp.plot_id
+        JOIN plots p ON p.plot_id = pp.plot_id
+        WHERE gtp.task_id = %s
+          AND p.garden_id = %s
+          AND pp.plt_id = ANY(%s)
+        ORDER BY pp.plot_id
+        """,
+        (task_id, garden_id, plant_ids),
+    ).fetchall()
+    return [str(row["plot_id"]) for row in rows]
+
+
+def update_task_plot_links(
+    db: DbConn,
+    *,
+    task_id: int,
+    remaining_plot_ids: list[str],
+) -> None:
+    db.execute("DELETE FROM garden_task_plots WHERE task_id = %s", (task_id,))
+    executemany(
+        db,
+        "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, %s)",
+        [(task_id, plot_id) for plot_id in sorted(set(remaining_plot_ids))],
+    )
+
+
 def plant_names_for_ids(db: DbConn, plant_ids: list[str]) -> list[str]:
     if not plant_ids:
         return []

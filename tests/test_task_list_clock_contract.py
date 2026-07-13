@@ -65,6 +65,16 @@ def test_task_list_requires_a_paired_frozen_clock(monkeypatch: pytest.MonkeyPatc
         _task_list_date_expressions()
 
 
+def test_today_task_navigation_is_scoped_to_the_active_garden() -> None:
+    app = (ROOT / "frontend/src/app.ts").read_text(encoding="utf-8")
+    tasks_tab = (ROOT / "frontend/src/tabs/tasksTab.ts").read_text(encoding="utf-8")
+
+    assert "const requestGardenId = getActiveGardenContext();" in app
+    assert "isCurrentGardenRequest(requestGardenId)" in app
+    assert "expectedGardenId" in tasks_tab
+    assert "getActiveGardenContext() !== expectedGardenId" in tasks_tab
+
+
 def test_task_history_runner_propagates_the_paired_attention_clock() -> None:
     runner = ROOT / "scripts" / "run_task_completion_history_e2e.sh"
     checker = ROOT / "scripts" / "check_task_completion_history_e2e.cjs"

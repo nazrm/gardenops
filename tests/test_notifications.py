@@ -2683,3 +2683,122 @@ class TestRainSuppressedWateringNotificationLifecycle(BaseApiTest):
             self.assertIsNotNone(row["cleared_at_ms"])
         finally:
             db.return_db(conn)
+
+    def test_non_pro_can_save_in_app_defaults_without_enabling_email(self) -> None:
+        self._create_test_user("prefs_nonpro_defaults", "prefsnonprodefaultspass", role="editor")
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE auth_users SET subscription_tier = 'enthusiast' WHERE username = %s",
+                ("prefs_nonpro_defaults",),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        os.environ["AUTH_API_KEY"] = ""
+        try:
+            client = self._new_client()
+            _, csrf = self._login_session(
+                "prefs_nonpro_defaults",
+                "prefsnonprodefaultspass",
+                client=client,
+            )
+            headers = self._session_headers(csrf)
+            current = client.get("/api/notifications/preferences", headers=headers)
+            self.assertEqual(current.status_code, 200, current.text)
+            ordinary_in_app_update = current.json()
+            ordinary_in_app_update.pop("policy", None)
+            ordinary_in_app_update["in_app_enabled"] = False
+            ordinary_in_app_update["email_enabled"] = False
+            saved = client.put(
+                "/api/notifications/preferences",
+                headers=headers,
+                json=ordinary_in_app_update,
+            )
+            self.assertEqual(saved.status_code, 200, saved.text)
+
+            ordinary_in_app_update["notification_rules"]["task_upcoming"][
+                "email_enabled"
+            ] = True
+            rule_rejected = client.put(
+                "/api/notifications/preferences",
+                headers=headers,
+                json=ordinary_in_app_update,
+            )
+            self.assertEqual(rule_rejected.status_code, 403, rule_rejected.text)
+
+            ordinary_in_app_update["notification_rules"]["task_upcoming"][
+                "email_enabled"
+            ] = False
+            ordinary_in_app_update["email_enabled"] = True
+            ordinary_in_app_update["email_address"] = "nonpro@example.test"
+            rejected = client.put(
+                "/api/notifications/preferences",
+                headers=headers,
+                json=ordinary_in_app_update,
+            )
+            self.assertEqual(rejected.status_code, 403, rejected.text)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_empty_rules_json_projects_legacy_task_flags(self) -> None:
+        conn = db.get_db()
+        try:
+            now = db.current_timestamp_ms()
+            conn.execute(
+                """
+                INSERT INTO user_notification_preferences
+                    (user_id, in_app_enabled, email_enabled, email_address,
+                     digest_frequency, quiet_hours_json, task_due_enabled,
+                     task_overdue_enabled, rules_json, created_at_ms, updated_at_ms)
+                VALUES (%s, 1, 0, '', 'daily', '{}', 0, 1, '{}', %s, %s)
+                """,
+                (self._owner_id, now, now),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        os.environ["AUTH_API_KEY"] = ""
+        try:
+            client = self._new_client()
+            _, csrf = self._login_session("test_admin", "testadminpass", client=client)
+            response = client.get(
+                "/api/notifications/preferences",
+                headers=self._session_headers(csrf),
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            rules = response.json()["notification_rules"]
+            self.assertFalse(rules["task_due"]["in_app_enabled"])
+            self.assertTrue(rules["task_overdue"]["in_app_enabled"])
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_monthly_task_generation_receives_maintenance_clock(self) -> None:
+        from gardenops.services.notification_service import _auto_generate_monthly_tasks
+
+        frozen_now_ms = 1_959_379_200_000
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            assert garden is not None
+            with patch(
+                "gardenops.services.notification_service.generate_tasks",
+                return_value={"created": 0, "skipped": 0},
+            ) as generate_tasks:
+                _auto_generate_monthly_tasks(
+                    conn,
+                    int(garden["id"]),
+                    frozen_now_ms,
+                    frozen_date="2032-02-03",
+                )
+            self.assertEqual(generate_tasks.call_args.kwargs["now_ms"], frozen_now_ms)
+        finally:
+            db.return_db(conn)

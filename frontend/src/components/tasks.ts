@@ -20,6 +20,7 @@ const TASK_TYPE_ICONS: Record<TaskType, string> = {
 export interface TaskListCallbacks {
   onComplete: (task: GardenTask) => void;
   onSnooze: (task: GardenTask) => void;
+  onSnoozeDate: (task: GardenTask) => void;
   onSkip: (task: GardenTask) => void;
   onReschedule: (task: GardenTask) => void;
   onEdit: (task: GardenTask) => void;
@@ -81,6 +82,7 @@ function createTaskCard(
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = `task-card${task.status === "completed" ? " task-completed" : ""}`;
+  card.dataset["taskId"] = task.id;
   if (cbs.selectedTaskIds?.has(task.id)) {
     card.classList.add("task-card-selected");
   }
@@ -209,6 +211,13 @@ function createTaskCard(
     snoozeBtn.textContent = taskSnoozePolicy(task).label;
     snoozeBtn.addEventListener("click", () => cbs.onSnooze(task));
     actions.appendChild(snoozeBtn);
+
+    const snoozeDateBtn = document.createElement("button");
+    snoozeDateBtn.type = "button";
+    snoozeDateBtn.className = "task-action-btn";
+    snoozeDateBtn.textContent = t("tasks.snooze_change_date");
+    snoozeDateBtn.addEventListener("click", () => cbs.onSnoozeDate(task));
+    actions.appendChild(snoozeDateBtn);
 
     const rescheduleBtn = document.createElement("button");
     rescheduleBtn.type = "button";

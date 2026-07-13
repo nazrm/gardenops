@@ -1853,6 +1853,125 @@ def create_issue_created_notifications(
     )
 
 
+def _weather_alert_target_id(alert_type: str, valid_from: str) -> str:
+    return f"{alert_type}:{valid_from}"
+
+
+def _weather_alert_identities(alerts: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    return sorted(
+        {
+            (str(alert.get("alert_type") or ""), str(alert.get("valid_from") or ""))
+            for alert in alerts
+            if alert.get("alert_type") and alert.get("valid_from")
+        }
+    )
+
+
+def _load_weather_alert_for_update(
+    db: DbConn,
+    *,
+    garden_id: int,
+    alert_type: str,
+    valid_from: str,
+) -> dict[str, Any] | None:
+    row = db.execute(
+        """
+        SELECT id, alert_type, severity, title, description, valid_from, valid_until
+        FROM weather_alerts
+        WHERE garden_id = %s
+          AND alert_type = %s
+          AND valid_from = %s
+          AND dismissed = 0
+        FOR UPDATE
+        """,
+        (garden_id, alert_type, valid_from),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def clear_weather_alert_notifications(
+    db: DbConn,
+    *,
+    garden_id: int,
+    user_id: int,
+    alert_type: str,
+    valid_from: str,
+    now_ms: int | None = None,
+) -> int:
+    now_value, _ = notification_request_clock(now_ms=now_ms)
+    cur = db.execute(
+        """
+        UPDATE notification_events
+        SET cleared_at_ms = %s,
+            clear_reason = 'weather_dismissed'
+        WHERE garden_id = %s
+          AND user_id = %s
+          AND notification_type = 'weather_alert'
+          AND target_type = 'weather_alert'
+          AND target_id = %s
+          AND dismissed = 0
+          AND cleared_at_ms IS NULL
+        """,
+        (
+            now_value,
+            garden_id,
+            user_id,
+            _weather_alert_target_id(alert_type, valid_from),
+        ),
+    )
+    return cur.rowcount
+
+
+def _refresh_weather_alert_notification(
+    db: DbConn,
+    *,
+    row: dict[str, Any],
+    notification_subtype: str,
+    severity: str,
+    title: str,
+    body: str,
+    metadata_json: str,
+    expires_at_ms: int | None,
+) -> bool:
+    content_changed = (
+        str(row["severity"] or "normal") != severity
+        or str(row["title"] or "") != title
+        or str(row["body"] or "") != body
+        or str(row["metadata_json"] or "") != metadata_json
+        or row["expires_at_ms"] != expires_at_ms
+        or row["cleared_at_ms"] is not None
+        or row["clear_reason"] is not None
+    )
+    if not content_changed:
+        return False
+    db.execute(
+        """
+        UPDATE notification_events
+        SET notification_subtype = %s,
+            severity = %s,
+            title = %s,
+            body = %s,
+            metadata_json = %s,
+            expires_at_ms = %s,
+            read_at_ms = NULL,
+            emailed_at_ms = NULL,
+            cleared_at_ms = NULL,
+            clear_reason = NULL
+        WHERE id = %s
+        """,
+        (
+            notification_subtype,
+            severity,
+            title,
+            body,
+            metadata_json,
+            expires_at_ms,
+            int(row["id"]),
+        ),
+    )
+    return True
+
+
 def create_weather_alert_notifications(
     db: DbConn,
     *,
@@ -1860,52 +1979,217 @@ def create_weather_alert_notifications(
     alerts: list[dict[str, Any]],
     now_ms: int | None = None,
 ) -> dict[str, int]:
+    """Reconcile per-user weather notifications while holding each alert row lock."""
     created = 0
     skipped = 0
-    for alert in alerts:
-        alert_type = str(alert.get("alert_type") or "")
-        valid_from = str(alert.get("valid_from") or "")
-        if not alert_type or not valid_from:
-            skipped += 1
-            continue
-        alert_row = db.execute(
-            """
-            SELECT id, valid_until
-            FROM weather_alerts
-            WHERE garden_id = %s
-              AND alert_type = %s
-              AND valid_from = %s
-              AND dismissed = 0
-            ORDER BY id DESC LIMIT 1
-            """,
-            (garden_id, alert_type, valid_from),
-        ).fetchone()
-        if not alert_row:
-            skipped += 1
-            continue
-        valid_until = str(alert.get("valid_until") or alert_row["valid_until"])
-        result = create_garden_member_notifications(
+    now_value, _ = notification_request_clock(now_ms=now_ms)
+    identities = _weather_alert_identities(alerts)
+    skipped += len(alerts) - len(identities)
+    for alert_type, valid_from in identities:
+        alert_row = _load_weather_alert_for_update(
             db,
             garden_id=garden_id,
-            notification_type="weather_alert",
-            notification_subtype=alert_type,
-            severity=str(alert.get("severity") or "normal"),
-            title=str(alert.get("title") or "Weather alert"),
-            body=str(alert.get("description") or ""),
-            target_type="weather_alert",
-            target_id=f"{alert_type}:{valid_from}",
-            expires_at_ms=_date_end_ms(valid_until),
-            metadata={
+            alert_type=alert_type,
+            valid_from=valid_from,
+        )
+        if alert_row is None:
+            skipped += 1
+            continue
+        members = db.execute(
+            "SELECT user_id FROM garden_memberships WHERE garden_id = %s",
+            (garden_id,),
+        ).fetchall()
+        member_ids = [int(member["user_id"]) for member in members]
+        if not member_ids:
+            continue
+
+        target_id = _weather_alert_target_id(alert_type, valid_from)
+        severity = _normalize_severity(str(alert_row["severity"] or "normal"))
+        title = str(alert_row["title"] or "Weather alert")
+        body = str(alert_row["description"] or "")
+        valid_until = str(alert_row["valid_until"])
+        expires_at_ms = _date_end_ms(valid_until)
+        metadata_json = json.dumps(
+            {
+                "alert_id": int(alert_row["id"]),
                 "alert_type": alert_type,
-                "severity": str(alert.get("severity") or "normal"),
+                "severity": severity,
                 "valid_from": valid_from,
                 "valid_until": valid_until,
             },
-            now_ms=now_ms,
+            separators=(",", ":"),
         )
-        created += result["created"]
-        skipped += result["skipped"]
+        existing_rows = db.execute(
+            """
+            SELECT user_id, id, notification_subtype, severity, title, body,
+                   metadata_json, expires_at_ms, read_at_ms, emailed_at_ms,
+                   dismissed, cleared_at_ms, clear_reason
+            FROM notification_events
+            WHERE garden_id = %s
+              AND user_id = ANY(%s)
+              AND notification_type = 'weather_alert'
+              AND target_type = 'weather_alert'
+              AND target_id = %s
+            ORDER BY user_id ASC, id DESC
+            FOR UPDATE
+            """,
+            (garden_id, member_ids, target_id),
+        ).fetchall()
+        rows_by_user: dict[int, list[dict[str, Any]]] = {}
+        for row in existing_rows:
+            rows_by_user.setdefault(int(row["user_id"]), []).append(dict(row))
+        dismissed_rows = db.execute(
+            """
+            SELECT user_id
+            FROM user_attention_item_state
+            WHERE garden_id = %s
+              AND user_id = ANY(%s)
+              AND item_id = %s
+              AND user_state = 'dismissed'
+            """,
+            (garden_id, member_ids, f"attn:weather:alert:{int(alert_row['id'])}"),
+        ).fetchall()
+        dismissed_user_ids = {int(row["user_id"]) for row in dismissed_rows}
+        pref_rows_by_user = _load_pref_rows_for_users(db, member_ids)
+        preferences_by_user: dict[int, AttentionPreferenceSet] = {}
+
+        for user_id in member_ids:
+            rows = rows_by_user.get(user_id, [])
+            if user_id in dismissed_user_ids:
+                clear_weather_alert_notifications(
+                    db,
+                    garden_id=garden_id,
+                    user_id=user_id,
+                    alert_type=alert_type,
+                    valid_from=valid_from,
+                    now_ms=now_value,
+                )
+                skipped += 1
+                continue
+
+            if any(bool(row["dismissed"]) for row in rows):
+                skipped += 1
+                continue
+
+            active_rows = [
+                row for row in rows if not bool(row["dismissed"]) and row["cleared_at_ms"] is None
+            ]
+            if active_rows:
+                active_row = active_rows[0]
+                _refresh_weather_alert_notification(
+                    db,
+                    row=active_row,
+                    notification_subtype=alert_type,
+                    severity=severity,
+                    title=title,
+                    body=body,
+                    metadata_json=metadata_json,
+                    expires_at_ms=expires_at_ms,
+                )
+                for duplicate in active_rows[1:]:
+                    db.execute(
+                        """
+                        UPDATE notification_events
+                        SET cleared_at_ms = %s,
+                            clear_reason = 'superseded'
+                        WHERE id = %s
+                        """,
+                        (now_value, int(duplicate["id"])),
+                    )
+                skipped += 1
+                continue
+
+            if not _inbox_allowed_for_user(
+                db,
+                pref_rows_by_user,
+                preferences_by_user,
+                garden_id=garden_id,
+                user_id=user_id,
+                notification_type="weather_alert",
+                notification_subtype=alert_type,
+                severity=severity,
+                title=title,
+                body=body,
+                target_type="weather_alert",
+                target_id=target_id,
+                metadata=json.loads(metadata_json),
+                now_ms=now_value,
+            ):
+                skipped += 1
+                continue
+
+            if rows:
+                _refresh_weather_alert_notification(
+                    db,
+                    row=rows[0],
+                    notification_subtype=alert_type,
+                    severity=severity,
+                    title=title,
+                    body=body,
+                    metadata_json=metadata_json,
+                    expires_at_ms=expires_at_ms,
+                )
+                skipped += 1
+                continue
+
+            _insert_notification(
+                db,
+                garden_id,
+                user_id,
+                "weather_alert",
+                title,
+                body,
+                target_type="weather_alert",
+                target_id=target_id,
+                metadata=json.loads(metadata_json),
+                notification_subtype=alert_type,
+                severity=severity,
+                expires_at_ms=expires_at_ms,
+                now_ms=now_value,
+            )
+            created += 1
     return {"created": created, "skipped": skipped}
+
+
+def reconcile_weather_alert_work(
+    db: DbConn,
+    *,
+    garden_id: int,
+    alerts: list[dict[str, Any]],
+    actor_user_id: int | None,
+    now_ms: int | None = None,
+) -> dict[str, int]:
+    """Reconcile weather alert notifications and generated tasks in one transaction."""
+    notifications = create_weather_alert_notifications(
+        db,
+        garden_id=garden_id,
+        alerts=alerts,
+        now_ms=now_ms,
+    )
+    task_handlers = {
+        "frost_warning": on_frost_alert,
+        "heat_wave": on_heat_alert,
+        "dry_spell": on_dry_spell_alert,
+        "rain_surplus": on_rain_alert,
+    }
+    tasks_created = 0
+    for alert_type, valid_from in _weather_alert_identities(alerts):
+        handler = task_handlers.get(alert_type)
+        if handler is None:
+            continue
+        alert_row = _load_weather_alert_for_update(
+            db,
+            garden_id=garden_id,
+            alert_type=alert_type,
+            valid_from=valid_from,
+        )
+        if alert_row is not None:
+            tasks_created += handler(db, garden_id, int(alert_row["id"]), actor_user_id)
+    return {
+        "notifications_created": int(notifications["created"]),
+        "notifications_skipped": int(notifications["skipped"]),
+        "tasks_created": tasks_created,
+    }
 
 
 def _smtp_settings() -> dict[str, object] | None:
@@ -2077,8 +2361,7 @@ def deliver_pending_email_digests(
         """
         SELECT p.user_id,
                p.email_address,
-               p.digest_frequency,
-               p.last_email_digest_at_ms
+               p.digest_frequency
         FROM user_notification_preferences p
         JOIN garden_memberships gm ON gm.user_id = p.user_id
         JOIN auth_users u ON u.id = p.user_id
@@ -2096,7 +2379,17 @@ def deliver_pending_email_digests(
         processed_users += 1
         digest_frequency = str(pref["digest_frequency"])
         interval_ms = _digest_interval_ms(digest_frequency)
-        last_sent = pref["last_email_digest_at_ms"]
+        last_sent_row = db.execute(
+            """
+            SELECT MAX(emailed_at_ms) AS last_sent
+            FROM notification_events
+            WHERE garden_id = %s
+              AND user_id = %s
+              AND emailed_at_ms IS NOT NULL
+            """,
+            (garden_id, int(pref["user_id"])),
+        ).fetchone()
+        last_sent = last_sent_row["last_sent"] if last_sent_row is not None else None
         if interval_ms is not None and last_sent and now_value - int(last_sent) < interval_ms:
             skipped_users += 1
             continue
@@ -2209,50 +2502,32 @@ def _run_weather_check_if_due(
 
     lat = float(garden["latitude"])
     lon = float(garden["longitude"])
-    result = check_weather_and_generate_alerts(db, garden_id, lat, lon)
-    notification_result = create_weather_alert_notifications(
-        db,
-        garden_id=garden_id,
-        alerts=list(result.get("alerts", [])),
-        now_ms=now_ms,
-    )
-
-    alert_type_handlers = {
-        "frost_warning": on_frost_alert,
-        "heat_wave": on_heat_alert,
-        "dry_spell": on_dry_spell_alert,
-        "rain_surplus": on_rain_alert,
-    }
-    for alert in result.get("alerts", []):
-        handler = alert_type_handlers.get(alert.get("alert_type", ""))
-        if not handler:
-            continue
-        alert_row = db.execute(
+    try:
+        result = check_weather_and_generate_alerts(db, garden_id, lat, lon)
+        downstream = reconcile_weather_alert_work(
+            db,
+            garden_id=garden_id,
+            alerts=list(result.get("alerts", [])),
+            actor_user_id=None,
+            now_ms=now_ms,
+        )
+        db.execute(
             """
-            SELECT id FROM weather_alerts
-            WHERE garden_id = %s AND alert_type = %s
-              AND valid_from = %s AND dismissed = 0
-            ORDER BY id DESC LIMIT 1
+            INSERT INTO app_settings (key, value)
+            VALUES (%s, %s)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """,
-            (garden_id, alert["alert_type"], alert["valid_from"]),
-        ).fetchone()
-        if alert_row:
-            handler(db, garden_id, int(alert_row["id"]), None)
-
-    db.execute(
-        """
-        INSERT INTO app_settings (key, value)
-        VALUES (%s, %s)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        """,
-        (settings_key, str(now_ms)),
-    )
-    db.commit()
+            (settings_key, str(now_ms)),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return {
         "weather_checks": 1,
         "weather_alerts_created": result.get("alerts_created", 0),
-        "weather_notifications_created": notification_result.get("created", 0),
-        "weather_notifications_skipped": notification_result.get("skipped", 0),
+        "weather_notifications_created": downstream["notifications_created"],
+        "weather_notifications_skipped": downstream["notifications_skipped"],
     }
 
 
@@ -2281,6 +2556,7 @@ def _auto_generate_monthly_tasks(
         today.month,
         today.year,
         actor_user_id=None,
+        now_ms=now_ms,
     )
 
     db.execute(

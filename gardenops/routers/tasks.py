@@ -63,7 +63,9 @@ from gardenops.services.task_completion import (
     record_completion_journal_entry,
     refreshed_group_title,
     remaining_plant_ids_after_completion,
+    task_plot_ids_for_plant_ids,
     update_task_plant_links,
+    update_task_plot_links,
     validate_completed_plant_ids,
     validate_completion_outcome,
 )
@@ -684,17 +686,6 @@ def _apply_task_action(
         linked_plot_ids = _task_linked_plot_ids(db, task_id)
         if current_status == "completed":
             return
-        journal_id, next_metadata = record_completion_journal_entry(
-            db,
-            context=context,
-            task_row=task_row,
-            selected_plant_ids=selected_plant_ids,
-            selected_plot_ids=linked_plot_ids,
-            outcome=body.completion_outcome,
-            notes=body.notes,
-            now_ms=now_ms,
-            occurred_on=action_on,
-        )
         remaining_plant_ids = remaining_plant_ids_after_completion(
             linked_plant_ids=linked_plant_ids,
             completed_plant_ids=selected_plant_ids,
@@ -704,11 +695,43 @@ def _apply_task_action(
             and bool(selected_plant_ids)
             and bool(remaining_plant_ids)
         )
+        selected_plot_ids = linked_plot_ids
+        remaining_plot_ids: list[str] = []
+        if is_partial_completion:
+            garden_id = int(task_row["garden_id"])
+            selected_plot_ids = task_plot_ids_for_plant_ids(
+                db,
+                task_id=task_id,
+                garden_id=garden_id,
+                plant_ids=selected_plant_ids,
+            )
+            remaining_plot_ids = task_plot_ids_for_plant_ids(
+                db,
+                task_id=task_id,
+                garden_id=garden_id,
+                plant_ids=remaining_plant_ids,
+            )
+        journal_id, next_metadata = record_completion_journal_entry(
+            db,
+            context=context,
+            task_row=task_row,
+            selected_plant_ids=selected_plant_ids,
+            selected_plot_ids=selected_plot_ids,
+            outcome=body.completion_outcome,
+            notes=body.notes,
+            now_ms=now_ms,
+            occurred_on=action_on,
+        )
         if is_partial_completion:
             update_task_plant_links(
                 db,
                 task_id=task_id,
                 remaining_plant_ids=remaining_plant_ids,
+            )
+            update_task_plot_links(
+                db,
+                task_id=task_id,
+                remaining_plot_ids=remaining_plot_ids,
             )
             remaining_names = plant_names_for_ids(db, remaining_plant_ids)
             next_title = str(task_row.get("title") or "")

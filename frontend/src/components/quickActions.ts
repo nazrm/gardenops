@@ -11,6 +11,15 @@ export interface QuickActionCallbacks {
 
 type QuickActionTask = { id: string; title: string; task_type: string };
 
+const QUICK_ACTION_ICONS = {
+  complete: "\u2713",
+  journal: "J",
+  issue: "!",
+  harvest: "+",
+  snooze: "\u21b7",
+  identify: "?",
+} as const;
+
 export interface QuickActionSnoozeNotice {
   message: string;
   actionLabel: string;
@@ -22,6 +31,10 @@ function appendTaskPicker(
   container: HTMLElement,
   tasks: ReadonlyArray<QuickActionTask>,
   onSelect: (taskId: string) => void,
+  secondaryAction?: {
+    label: string;
+    onSelect: (taskId: string) => void;
+  },
 ): void {
   const search = document.createElement("input");
   search.type = "search";
@@ -40,12 +53,22 @@ function appendTaskPicker(
       : tasks;
     list.replaceChildren();
     for (const task of matches) {
+      const taskLabel = task.title || `Task #${task.id}`;
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "quick-action-task-item";
-      btn.textContent = task.title || `Task #${task.id}`;
+      btn.textContent = taskLabel;
       btn.addEventListener("click", () => onSelect(task.id));
       list.appendChild(btn);
+      if (secondaryAction) {
+        const secondary = document.createElement("button");
+        secondary.type = "button";
+        secondary.className = "quick-action-task-item";
+        secondary.textContent = secondaryAction.label;
+        secondary.setAttribute("aria-label", `${taskLabel}: ${secondaryAction.label}`);
+        secondary.addEventListener("click", () => secondaryAction.onSelect(task.id));
+        list.appendChild(secondary);
+      }
     }
     if (matches.length === 0) {
       const empty = document.createElement("p");
@@ -141,12 +164,12 @@ export function renderQuickActionSheet(
     key: string;
     cb: () => void;
   }> = [
-    { icon: "\u2705", label: t("quick_actions.complete_task"), key: "complete-task", cb: cbs.onCompleteTask },
-    { icon: "\uD83D\uDCDD", label: t("quick_actions.log_journal"), key: "log-journal", cb: cbs.onLogJournal },
-    { icon: "\uD83D\uDC1B", label: t("quick_actions.report_issue"), key: "report-issue", cb: cbs.onReportIssue },
-    { icon: "\uD83E\uDDFA", label: t("quick_actions.log_harvest"), key: "log-harvest", cb: cbs.onLogHarvest },
-    { icon: "\u23F0", label: t("quick_actions.snooze_task"), key: "snooze-task", cb: cbs.onSnoozeTask },
-    { icon: "\uD83C\uDF3F", label: t("quick_actions.identify_plant"), key: "identify-plant", cb: cbs.onIdentifyPlant },
+    { icon: QUICK_ACTION_ICONS.complete, label: t("quick_actions.complete_task"), key: "complete-task", cb: cbs.onCompleteTask },
+    { icon: QUICK_ACTION_ICONS.journal, label: t("quick_actions.log_journal"), key: "log-journal", cb: cbs.onLogJournal },
+    { icon: QUICK_ACTION_ICONS.issue, label: t("quick_actions.report_issue"), key: "report-issue", cb: cbs.onReportIssue },
+    { icon: QUICK_ACTION_ICONS.harvest, label: t("quick_actions.log_harvest"), key: "log-harvest", cb: cbs.onLogHarvest },
+    { icon: QUICK_ACTION_ICONS.snooze, label: t("quick_actions.snooze_task"), key: "snooze-task", cb: cbs.onSnoozeTask },
+    { icon: QUICK_ACTION_ICONS.identify, label: t("quick_actions.identify_plant"), key: "identify-plant", cb: cbs.onIdentifyPlant },
   ];
 
   for (const action of actions) {
@@ -211,6 +234,7 @@ export function renderTaskQuickSnooze(
   container: HTMLElement,
   tasks: ReadonlyArray<{ id: string; title: string; task_type: string }>,
   onSnooze: (taskId: string) => void,
+  onSnoozeDate: (taskId: string) => void,
   onBack: () => void,
 ): void {
   container.replaceChildren();
@@ -240,5 +264,8 @@ export function renderTaskQuickSnooze(
     return;
   }
 
-  appendTaskPicker(container, tasks, onSnooze);
+  appendTaskPicker(container, tasks, onSnooze, {
+    label: t("tasks.snooze_change_date") as string,
+    onSelect: onSnoozeDate,
+  });
 }

@@ -81,9 +81,7 @@ journeys:
     phase: 2
     desktop: proven
     mobile: proven
-    roles: proven
     provider: proven
-    database: proven
     evidence: &phase_two_evidence
       - scripts/check_complete_journeys_e2e.cjs
       - scripts/e2e/journeys/dailyAttentionWork.cjs
@@ -95,6 +93,8 @@ journeys:
     notes:
       offline: Attention actions are online-only and have no supported offline queue.
       filesystem: Today and attention actions do not use a supported file workflow.
+      roles: Editor and viewer Today-specific role evidence remains open.
+      database: Phase 2 audit timestamps use the product wall clock; exact database closure needs a supported audit clock.
   - <<: *open_journey
     id: D2
     phase: 2
@@ -102,20 +102,19 @@ journeys:
     mobile: proven
     roles: proven
     offline: proven
-    database: proven
     evidence: *phase_two_evidence
     provider: not_applicable
     filesystem: not_applicable
     notes:
       provider: Core task actions do not require an external provider.
       filesystem: Task actions and completion history do not use a supported file workflow.
+      database: Phase 2 audit timestamps use the product wall clock; exact database closure needs a supported audit clock.
   - <<: *open_journey
     id: D3
     phase: 2
     desktop: proven
     mobile: proven
     roles: proven
-    database: proven
     filesystem: proven
     evidence: *phase_two_evidence
     offline: not_applicable
@@ -123,33 +122,34 @@ journeys:
     notes:
       offline: Calendar reads and manual-event mutations are online-only.
       provider: Calendar events, subscriptions, and ICS exports have no external provider dependency.
+      database: Phase 2 audit timestamps use the product wall clock; exact database closure needs a supported audit clock.
   - <<: *open_journey
     id: D4
     phase: 2
     desktop: proven
     mobile: proven
-    roles: proven
     provider: proven
-    database: proven
     evidence: *phase_two_evidence
     offline: not_applicable
     filesystem: not_applicable
     notes:
       offline: Notification inbox and preference mutations are online-only.
       filesystem: Notification preference and delivery workflows do not use a supported file workflow.
+      roles: Editor and viewer notification preference authorization evidence remains open.
+      database: Phase 2 audit timestamps use the product wall clock; exact database closure needs a supported audit clock.
   - <<: *open_journey
     id: D5
     phase: 2
     desktop: proven
     mobile: proven
     roles: proven
-    database: proven
     evidence: *phase_two_evidence
     offline: not_applicable
     filesystem: not_applicable
     notes:
       offline: Weather checks and alert actions are online-only.
       filesystem: Weather checks, tasks, alerts, and outcomes do not use a supported file workflow.
+      database: Phase 2 audit timestamps use the product wall clock; exact database closure needs a supported audit clock.
   - <<: *open_journey
     id: I1
     phase: 4
@@ -259,8 +259,6 @@ journeys:
     phase: 2
     desktop: proven
     mobile: proven
-    roles: proven
-    database: proven
     evidence: *phase_two_evidence
     offline: not_applicable
     provider: not_applicable
@@ -269,6 +267,8 @@ journeys:
       offline: Historical record review has no supported offline read workflow.
       provider: Durable garden history review has no external provider dependency.
       filesystem: History review does not use a supported file workflow.
+      roles: Editor and viewer history reload evidence remains open.
+      database: Phase 2 audit timestamps use the product wall clock; exact database closure needs a supported audit clock.
   - <<: *open_journey
     id: R2
     phase: 4

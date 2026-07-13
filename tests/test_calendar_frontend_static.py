@@ -36,6 +36,35 @@ def test_calendar_task_actions_require_a_writable_event() -> None:
     assert "if (!canMutateCalendarTask(event)) return false;" in action_body
 
 
+def test_calendar_state_is_scoped_to_the_active_garden_and_invalidated_on_switch() -> None:
+    app = _read("frontend/src/app.ts")
+    calendar_tab = _read("frontend/src/tabs/calendarTab.ts")
+
+    assert "calendarTabModule?.resetCalendarForGardenSwitch();" in app
+    assert "getActiveGardenContext" in calendar_tab
+    assert "let calendarRequestGeneration = 0;" in calendar_tab
+    assert "function isCurrentCalendarRequest" in calendar_tab
+    assert "function isCurrentCalendarEventsRequest" in calendar_tab
+    assert "function isCurrentCalendarEvent(" in calendar_tab
+    assert "export function resetCalendarForGardenSwitch" in calendar_tab
+    assert "currentEventsById.clear();" in calendar_tab
+    assert "preferencesLoaded = false;" in calendar_tab
+    assert "subscriptions = [];" in calendar_tab
+    assert "selectedEventId = null;" in calendar_tab
+    assert "fetchPreferences(" in calendar_tab
+    assert "refreshSubscriptions(" in calendar_tab
+
+
+def test_calendar_uses_the_shared_date_dialog_and_correction_notice() -> None:
+    calendar_tab = _read("frontend/src/tabs/calendarTab.ts")
+
+    assert "openTaskDateDialog" in calendar_tab
+    assert "getTaskSnoozeCorrectionNotice" in calendar_tab
+    assert "durationMs: notice.durationMs" in calendar_tab
+    assert 't("tasks.snooze_change_date")' in calendar_tab
+    assert "window.prompt" not in calendar_tab
+
+
 def test_calendar_export_url_carries_the_active_garden_context() -> None:
     api = _read("frontend/src/services/api.ts")
     export_url_builder = _function_body(

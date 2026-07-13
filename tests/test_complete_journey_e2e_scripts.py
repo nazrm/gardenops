@@ -371,13 +371,12 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "observeMapReplaceChildren",
         "captureLayoutDomState",
         "exerciseEditorGardenSettingsAndLayoutWrite",
-        "issueBrowserRequest",
         "import_rejection_render_churn",
         "successful_map_state_transitions",
         "saveMobileSnapshot",
         "editor_m1_m3_supported_writes",
         "viewer_m1_m3_read_only_behavior",
-        "viewer_a3_m4_write_denials",
+        "viewer_a3_m4_write_unavailable",
         "role_cross_garden_response_isolation",
         "role_delayed_surfaces",
     ):
@@ -426,7 +425,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "offline-provider-and-file-import-dimensions-not-applicable-to-phase-one-browser-slice",
     ):
         assert obsolete_skip not in journey_source
-    assert journey_source.count("page.evaluate(async") == 1
+    assert journey_source.count("page.evaluate(async") == 0
     assert "const unitUpdate = await issueBrowserRequest" not in journey_source
     assert "route.fulfill" not in journey_source
     delay_start = journey_source.index("async function delayGardenSwitchResponses")
@@ -456,8 +455,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     assert "phaseSelected(1)" in checker_source
     assert "snapshotRestore.replace_children_calls === 1" in checker_source
     assert "beta_response_completion_count" in checker_source
-    assert "expected_phase_one_viewer_denial_count === 4" in checker_source
-    assert "expected_phase_one_viewer_denial_count <= 1" not in checker_source
+    assert "expected_phase_one_viewer_denial_count" not in checker_source
     assert "role_cross_garden_response_isolation" in checker_source
     assert "role_delayed_surfaces" in checker_source
     for marker in (
@@ -533,7 +531,7 @@ def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None
         "exerciseCalendarSubscriptionFeed",
         "page.waitForResponse",
         "feed_path",
-        "page.context().request.get(feedUrl)",
+        "page-origin feed fetch",
         "page.waitForRequest",
         "exportRequest.url()",
         'searchParams.get("garden_id")',
@@ -548,7 +546,7 @@ def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None
         "**/api/notifications/preferences",
         "assertDeduplicatedWeatherCheck",
         "runConcurrentWeatherChecks",
-        "Concurrent weather checks created or failed to deduplicate a logical alert",
+        "Concurrent visible weather checks created or failed to deduplicate a logical alert",
         "exerciseEditorWeatherDeduplication",
         "Offline task actions reached the server before connectivity returned",
         "exerciseImmediateSnoozeCorrection",
@@ -566,7 +564,7 @@ def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None
         "New issues: Email",
         'selectOption("normal")',
         "completed desktop bloom journal card after reload",
-        "completed grouped fertilize journal card after reload",
+        "mobile grouped fertilize journal after reload",
         "Mobile Quick Actions did not expose dialog semantics",
         "Mobile Quick Actions did not inert the main background surface",
         "mobile Quick Actions FAB focus restoration",
@@ -624,12 +622,18 @@ def test_phase_two_subscription_probe_consumes_expected_diagnostics_and_is_wired
         helper_end : journey_source.index("async function openNotifications", helper_end)
     ]
 
-    assert "async function exerciseCalendarSubscriptionFeed(page, diagnostics)" in helper_source
-    assert "page.context().request.get(feedUrl)" in helper_source
+    assert (
+        "async function exerciseCalendarSubscriptionFeed(page, diagnostics, onCreated = null)"
+        in helper_source
+    )
+    assert "page-origin feed fetch" in helper_source
     assert "const revokedStatus = await page.evaluate" in helper_source
     assert "diagnostics.httpErrors.splice(httpMark, 1)" in helper_source
     assert "diagnostics.consoleErrors.splice(consoleMark, 1)" in helper_source
-    assert "exerciseCalendarSubscriptionFeed(page, diagnostics);" in lifecycle_source
+    assert (
+        "exerciseCalendarSubscriptionFeed(page, diagnostics, onSubscriptionCreated);"
+        in lifecycle_source
+    )
     assert "navigator.clipboard.readText" not in helper_source
 
     result = subprocess.run(
@@ -1064,7 +1068,7 @@ const profiles = [
   }),
   profile('viewer', 'desktop', {
     map_first_without_plants: true,
-    viewer_a3_m4_write_denials: true,
+    viewer_a3_m4_write_unavailable: true,
     viewer_m1_m3_read_only_behavior: true,
     viewer_role_affordances_and_denials: true,
     role_cross_garden_response_isolation: true,
@@ -1101,14 +1105,14 @@ const audit = { events: [
   ...phaseOneAuditExpectedEvents(8),
   { count: 4, method: 'POST', path: '/api/media/summaries', status_code: 200 },
 ] };
-const expectedViewerDenials = [
+const prohibitedDirectViewerDenials = [
   ['POST', '/api/gardens/{garden_id}/map-objects', 403],
   ['PATCH', '/api/gardens/{garden_id}/settings', 403],
   ['POST', '/api/snapshots', 403],
   ['POST', '/api/plots/import', 403],
 ];
-for (const [method, path, statusCode] of expectedViewerDenials) {
-  if (!phaseOneAuditExpectedEvents(8).some((event) => (
+for (const [method, path, statusCode] of prohibitedDirectViewerDenials) {
+  if (phaseOneAuditExpectedEvents(8).some((event) => (
     event.count === 1
       && event.method === method
       && event.path === path
@@ -1653,5 +1657,285 @@ if (!serialized.includes('[redacted diagnostic')) process.exit(3);
         capture_output=True,
         check=False,
         text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_complete_journey_browser_guard_uses_exact_contract_origins_and_pixel_7_runtime() -> None:
+    script = """
+const {
+  allowedBrowserOrigins,
+  assertBrowserProfileContract,
+  isAllowedUrl,
+} = require('./scripts/e2e/completeJourneyBrowser.cjs');
+const origins = allowedBrowserOrigins({
+  backendUrl: 'http://127.0.0.1:43102',
+  baseUrl: 'http://127.0.0.1:43101',
+  providerUrl: 'http://127.0.0.1:43103',
+});
+if (!isAllowedUrl('http://127.0.0.1:43101/api/tasks', origins)) process.exit(3);
+if (!isAllowedUrl('ws://127.0.0.1:43101/vite', origins)) process.exit(4);
+for (const url of [
+  'http://127.0.0.1:43104/api/tasks',
+  'http://127.0.0.2:43101/api/tasks',
+  'http://localhost:43101/api/tasks',
+]) {
+  if (isAllowedUrl(url, origins)) process.exit(5);
+}
+assertBrowserProfileContract('mobile', {
+  has_touch: true,
+  is_mobile: true,
+  max_touch_points: 5,
+  user_agent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36',
+  viewport: { width: 412, height: 839 },
+});
+try {
+  assertBrowserProfileContract('mobile', {
+    has_touch: true,
+    is_mobile: true,
+    max_touch_points: 1,
+    user_agent: 'Mozilla/5.0 (Android)',
+    viewport: { width: 390, height: 844 },
+  });
+  process.exit(6);
+} catch (error) {
+  if (!/Pixel 7/i.test(String(error.message))) process.exit(7);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_pixel_7_user_agent_contract_is_persisted_with_profile_evidence() -> None:
+    checker_source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+    assert "user_agent_contract === expectedUserAgentContract" in checker_source
+    script = """
+const {
+  assertBrowserProfileContract,
+} = require('./scripts/e2e/completeJourneyBrowser.cjs');
+const { sanitizeManifestEvidence } = require('./scripts/check_complete_journeys_e2e.cjs');
+const runtime = {
+  has_touch: true,
+  is_mobile: true,
+  max_touch_points: 5,
+  user_agent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36',
+  viewport: { width: 412, height: 839 },
+};
+const userAgentContract = assertBrowserProfileContract('mobile', runtime);
+if (userAgentContract !== 'pixel-7') process.exit(3);
+const manifest = sanitizeManifestEvidence({
+  profiles: [{
+    assertions: { failed: [], passed: [], skipped: [] },
+    browser_profile: { ...runtime, user_agent_contract: userAgentContract },
+    diagnostics: {}, requests: [], structure: {},
+  }],
+});
+if (manifest.profiles[0].browser_profile.user_agent_contract !== 'pixel-7') process.exit(4);
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_journey_forbids_node_request_clients_and_unscoped_notification_mutation() -> (
+    None
+):
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
+    assert "context().request" not in source
+    assert ".context().request" not in source
+    assert "page.context().request" not in source
+    assert 'const remaining = panel.locator(".notification-item").first()' not in source
+    assert "Phase 2 explicit notification fixture" in source
+    assert "page-origin feed fetch" in source
+
+
+def test_phase_two_evidence_contract_preserves_phase_one_and_sanitizes_trace_database_evidence(
+    tmp_path: Path,
+) -> None:
+    checker_source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+    for marker in (
+        '"alpha_snapshot_payload"',
+        '"lifecycle_audit"',
+        '"onboarding_target_graphs"',
+        '"temp_saved_view_count"',
+    ):
+        assert marker in checker_source
+    seed_source = (ROOT / "scripts/seed_complete_journeys_e2e.py").read_text(encoding="utf-8")
+    stable_projection = seed_source.split("def _phase_one_stable_domain_projection", 1)[1].split(
+        "def _entry_link_ids", 1
+    )[0]
+    assert "phase_two_task_ids" in stable_projection
+    assert "source_task_id" in stable_projection
+    script = """
+const {
+  assertPhaseOneStatePreservedAfterPhaseTwo,
+  sanitizeManifestEvidence,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const state = {
+  alpha_address: 'restored address',
+  alpha_map_object: { public_id: 'mapobj_alpha' },
+  alpha_map_unit: { public_id: 'mapunit_alpha' },
+  indoor_assignment: { plot_id: 'COMPLETE-PHASE-ONE-INDOOR' },
+  restore_import_graphs: { alpha: { plots: [] } },
+  saved_view: { label: 'Complete Phase One Basil View' },
+  stable_domain_projection: { gardens: [{ id: 1 }] },
+};
+assertPhaseOneStatePreservedAfterPhaseTwo(state, structuredClone(state));
+try {
+  const mutated = structuredClone(state);
+  mutated.alpha_address = 'Phase 2 changed Phase 1';
+  assertPhaseOneStatePreservedAfterPhaseTwo(state, mutated);
+  process.exit(3);
+} catch (error) {
+  if (!/Phase 1.*Phase 2/i.test(String(error.message))) process.exit(4);
+}
+const secret = ['postgresql://u:p', '@dummy.example/db'].join('');
+const result = sanitizeManifestEvidence({
+  database: {
+    phase_two_maintenance: {
+      nested: { detail: secret },
+      deliveries: [{ recipient: secret }],
+    },
+  },
+  profiles: [{
+    assertions: { failed: [], passed: [], skipped: [] },
+    browser_profile: {}, diagnostics: {}, requests: [], structure: {},
+    trace: { name: 'mobile-admin-passed.zip', sha256: 'a'.repeat(64) },
+  }],
+});
+const serialized = JSON.stringify(result);
+if (serialized.includes(secret)) process.exit(5);
+const trace = result.profiles[0].trace;
+if (trace.name !== 'mobile-admin-passed.zip' || trace.sha256 !== 'a'.repeat(64)) process.exit(6);
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_weather_checks() -> (
+    None
+):
+    source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+    for marker in (
+        "mobile_partial_grouped_task_work",
+        "mobile_snooze_manual_date",
+        "mobile_calendar_lifecycle",
+        "mobile_notification_preference_mutation",
+        "mobile_history_reload",
+        "viewer_today_weather_affordances",
+        "tasks_calendar_subscriptions_aba_race",
+        "stale_dom_assertions",
+    ):
+        assert marker in source
+
+
+def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evidence() -> None:
+    journey_source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
+        encoding="utf-8"
+    )
+    checker_source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+    seed_source = (ROOT / "scripts/seed_complete_journeys_e2e.py").read_text(encoding="utf-8")
+    for marker in (
+        "PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID",
+        "PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID",
+        "--phase-two-preference-delivery",
+        "_run_phase_two_preference_delivery",
+    ):
+        assert marker in seed_source
+    for marker in (
+        "onPreferencesSaved",
+        "eligible delivery notification in Today",
+        "ineligible delivery notification leaked into inbox",
+        "post-save preference delivery badge",
+    ):
+        assert marker in journey_source
+    for marker in (
+        "phase_two_preference_delivery",
+        "preference_delivery_exact",
+        "preference_delivery_rows",
+        "delivery_badge_count",
+    ):
+        assert marker in checker_source
+
+
+def test_phase_two_harness_forbids_direct_mutation_probes_and_verifies_trace_artifacts() -> None:
+    garden_map_source = (ROOT / "scripts/e2e/journeys/gardenMapPlants.cjs").read_text(
+        encoding="utf-8"
+    )
+    checker_source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+    assert "issueBrowserRequest" not in garden_map_source
+    assert "assertExpectedBrowserFailure" not in garden_map_source
+    assert "assertTraceArtifacts" in checker_source
+    assert "trace_artifacts" in checker_source
+    assert "sha256" in checker_source
+    assert "if (!manifest.trace_artifacts && manifest.profiles.length > 0)" in checker_source
+
+
+def test_phase_two_database_contract_covers_maintenance_and_audit_semantics() -> None:
+    checker_source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+    seed_source = (ROOT / "scripts/seed_complete_journeys_e2e.py").read_text(encoding="utf-8")
+    for marker in (
+        "assertExpectedMaintenanceMutations",
+        "maintenance_semantic_state",
+        "maintenance_created",
+        "phase_two_audit_events",
+        "assertPhaseOneStatePreservedAfterPhaseTwo",
+        "phase_one_scoped_state_preserved_after_phase_two",
+    ):
+        assert marker in checker_source or marker in seed_source
+    assert '"before": before_by_id[row_id]' in seed_source
+    assert '"after": after_by_id[row_id]' in seed_source
+    assert "summary counts alone" in checker_source
+
+
+def test_phase_two_maintenance_mutation_contract_rejects_unexpected_fields() -> None:
+    script = """
+const { assertExpectedMaintenanceMutations } = require('./scripts/check_complete_journeys_e2e.cjs');
+if (typeof assertExpectedMaintenanceMutations !== 'function') process.exit(2);
+const before = {
+  created_at_ms: 1783857600000,
+  garden_id: 1,
+  metadata: { fixture: 'complete_journeys_phase_2' },
+  public_id: 'tsk_complete_p2_stale_generated_water',
+  row_id: 10,
+  status: 'pending',
+  title: 'Water Phase 2 stale generated mint',
+  updated_at_ms: 1783857600000,
+};
+const after = {
+  ...before,
+  metadata: {
+    fixture: 'complete_journeys_phase_2',
+    lifecycle: { expired_at_ms: 1783857600000, status: 'expired' },
+  },
+  status: 'expired',
+};
+const evidence = {
+  notifications: { mutated_existing: [] },
+  tasks: { mutated_existing: [{ before, after }] },
+  weather_alerts: { mutated_existing: [] },
+};
+const fixture = {
+  clock: { attention_now_ms: 1783857600000 },
+  phase_two: { task_ids: { stale_generated_water: before.public_id } },
+};
+assertExpectedMaintenanceMutations(evidence, fixture);
+try {
+  assertExpectedMaintenanceMutations({
+    ...evidence,
+    tasks: { mutated_existing: [{ before, after: { ...after, title: 'unexpected' } }] },
+  }, fixture);
+  process.exit(3);
+} catch (error) {
+  if (!/unexpected stale generated task fields/i.test(String(error.message))) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
     )
     assert result.returncode == 0, result.stderr

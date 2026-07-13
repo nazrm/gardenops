@@ -539,6 +539,42 @@ def _outdoor_plot_ids_by_plant(
     return {plant_id: tuple(plot_ids) for plant_id, plot_ids in plot_ids_by_plant.items()}
 
 
+def _current_plot_ids_by_plant(
+    db: DbConn,
+    garden_id: int,
+    plant_ids: Sequence[str],
+) -> dict[str, tuple[str, ...]]:
+    """Return all current plot links for supplied plants within one garden."""
+    if not plant_ids:
+        return {}
+    rows = db.execute(
+        """
+        SELECT DISTINCT pp.plt_id, pp.plot_id
+        FROM plot_plants pp
+        JOIN plots p ON p.plot_id = pp.plot_id
+        WHERE p.garden_id = %s
+          AND pp.plt_id = ANY(%s)
+        ORDER BY pp.plt_id, pp.plot_id
+        """,
+        (garden_id, list(plant_ids)),
+    ).fetchall()
+    plot_ids_by_plant: dict[str, list[str]] = {}
+    for row in rows:
+        plot_ids_by_plant.setdefault(str(row["plt_id"]), []).append(str(row["plot_id"]))
+    return {plant_id: tuple(plot_ids) for plant_id, plot_ids in plot_ids_by_plant.items()}
+
+
+def _current_plot_ids_for_plants(
+    db: DbConn,
+    garden_id: int,
+    plant_ids: Sequence[str],
+) -> tuple[str, ...]:
+    plot_ids_by_plant = _current_plot_ids_by_plant(db, garden_id, plant_ids)
+    return tuple(
+        sorted({plot_id for plot_ids in plot_ids_by_plant.values() for plot_id in plot_ids})
+    )
+
+
 def _rain_alerts_overlapping_dates(
     db: DbConn,
     garden_id: int,
@@ -806,6 +842,7 @@ def _create_task(
     severity: str = "normal",
     description: str = "",
     metadata_json: str = "{}",
+    plot_ids: Sequence[str] | None = None,
 ) -> int:
     return _create_task_for_plants(
         db,
@@ -820,6 +857,7 @@ def _create_task(
         severity=severity,
         description=description,
         metadata_json=metadata_json,
+        plot_ids=plot_ids,
     )
 
 
@@ -836,6 +874,7 @@ def _create_task_for_plants(
     severity: str = "normal",
     description: str = "",
     metadata_json: str = "{}",
+    plot_ids: Sequence[str] | None = None,
 ) -> int:
     normalized_plant_ids = list(dict.fromkeys(plant_ids))
     if not normalized_plant_ids:
@@ -882,6 +921,17 @@ def _create_task_for_plants(
         db.execute(
             "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
             (task_id, plant_id),
+        )
+    if plot_ids is None:
+        plot_ids = _current_plot_ids_for_plants(db, garden_id, normalized_plant_ids)
+    for plot_id in sorted(set(plot_ids)):
+        db.execute(
+            """
+            INSERT INTO garden_task_plots (task_id, plot_id)
+            VALUES (%s, %s)
+            ON CONFLICT DO NOTHING
+            """,
+            (task_id, plot_id),
         )
     return task_id
 
@@ -1029,13 +1079,14 @@ def generate_tasks(
     target_year: int,
     actor_user_id: int | None,
     preferred_locale: str = "en",
+    now_ms: int | None = None,
 ) -> dict[str, int]:
     """Generate seasonal tasks for a given month.
 
     Returns ``{"created": N, "skipped": N}``.
     """
     _lock_monthly_task_generation(db, garden_id, target_month, target_year)
-    now_ms = current_timestamp_ms()
+    now_ms = current_timestamp_ms() if now_ms is None else now_ms
     due_on = f"{target_year}-{target_month:02d}-01"
     created = 0
     skipped = 0
@@ -1075,6 +1126,7 @@ def generate_tasks(
         garden_id,
         _generation_candidate_rule_sources(plant_ids, target_month, target_year),
     )
+    current_plot_ids_by_plant = _current_plot_ids_by_plant(db, garden_id, plant_ids)
     outdoor_plot_ids_by_plant = _outdoor_plot_ids_by_plant(db, garden_id, plant_ids)
     water_dates = tuple(f"{target_year}-{target_month:02d}-{day:02d}" for day in (1, 8, 15, 22))
     rain_alert_by_date: dict[str, DbRow] = {}
@@ -1122,6 +1174,7 @@ def generate_tasks(
                     now_ms,
                     description=desc_en,
                     metadata_json=_generated_description_metadata(desc_no),
+                    plot_ids=current_plot_ids_by_plant.get(plt_id, ()),
                 )
                 created_specs.append(
                     {
@@ -1227,6 +1280,7 @@ def generate_tasks(
                         now_ms,
                         description=desc_en,
                         metadata_json=_generated_description_metadata(desc_no),
+                        plot_ids=current_plot_ids_by_plant.get(plt_id, ()),
                     )
                     created_specs.append(
                         {
@@ -1265,6 +1319,7 @@ def generate_tasks(
                     now_ms,
                     description=desc_en,
                     metadata_json=_generated_description_metadata(desc_no),
+                    plot_ids=current_plot_ids_by_plant.get(plt_id, ()),
                 )
                 created_specs.append(
                     {
@@ -1311,6 +1366,7 @@ def generate_tasks(
                             severity="low",
                             description=desc_en,
                             metadata_json=_generated_description_metadata(desc_no),
+                            plot_ids=current_plot_ids_by_plant.get(plt_id, ()),
                         )
                         created_specs.append(
                             {
@@ -1344,6 +1400,15 @@ def generate_tasks(
             key=lambda plant: (plant["name"], plant["plt_id"]),
         )
         plant_ids = [plant["plt_id"] for plant in plant_contexts]
+        plot_ids = tuple(
+            sorted(
+                {
+                    plot_id
+                    for plant_id in plant_ids
+                    for plot_id in current_plot_ids_by_plant.get(plant_id, ())
+                }
+            )
+        )
         title, desc_en, desc_no = _work_order_text(task_type, plant_contexts)
         _create_task_for_plants(
             db,
@@ -1363,6 +1428,7 @@ def generate_tasks(
                 due_on=str(bucket["due_on"]),
                 plant_ids=plant_ids,
             ),
+            plot_ids=plot_ids,
         )
         existing_rule_sources.add(group_rule)
         created += 1

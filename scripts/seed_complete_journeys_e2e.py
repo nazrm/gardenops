@@ -107,6 +107,12 @@ PHASE_TWO_CALENDAR_PUBLIC_ID = "calevt_complete_p2_seeded"
 PHASE_TWO_CALENDAR_EVENT_ON = "2026-07-13"
 PHASE_TWO_CALENDAR_DESCRIPTION = "Escaped comma, semicolon; backslash \\ and line\nbreak."
 PHASE_TWO_NOTIFICATION_PUBLIC_ID = "note_complete_p2_admin"
+PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID = "note_complete_p2_delivery_eligible"
+PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID = "note_complete_p2_delivery_ineligible"
+PHASE_TWO_DELIVERY_ELIGIBLE_TITLE = "Phase 2 delivery eligible system notice"
+PHASE_TWO_DELIVERY_ELIGIBLE_BODY = "Phase 2 eligible system notice after saved preferences."
+PHASE_TWO_DELIVERY_INELIGIBLE_TITLE = "Phase 2 delivery ineligible system notice"
+PHASE_TWO_DELIVERY_INELIGIBLE_BODY = "Phase 2 low-severity system notice after saved preferences."
 PHASE_TWO_TASKS = {
     "bloom_desktop": "tsk_complete_p2_bloom_desktop",
     "fertilize_grouped": "tsk_complete_p2_fertilize_grouped",
@@ -947,7 +953,7 @@ def _seed_phase_two_fixtures(conn, optimization_seed: Any) -> None:
             """,
             (
                 user_id,
-                1 if username == ADMIN_USERNAME else 0,
+                0,
                 "complete-phase-2@example.invalid" if username == ADMIN_USERNAME else "",
                 json.dumps({"start": "22:15", "end": "07:45"}, sort_keys=True),
                 PHASE_TWO_NOW_MS,
@@ -1492,7 +1498,19 @@ def _phase_one_stable_domain_projection(
     )
     restored_scope = f"garden_id NOT IN (%s, %s) AND {onboarding_scope}"
     restored_params = (alpha_id, beta_id, *onboarding_params)
-    journal_scope = "entry_id NOT IN (SELECT id FROM garden_journal_entries WHERE notes = %s)"
+    phase_two_task_ids = list(PHASE_TWO_TASKS.values())
+    phase_two_journal_source_scope = (
+        "COALESCE(COALESCE(metadata_json, '{}')::jsonb ->> 'source_task_id', '') <> ALL(%s)"
+    )
+    journal_scope = (
+        "entry_id NOT IN ("
+        "SELECT entry.id FROM garden_journal_entries entry "
+        "WHERE entry.notes = %s "
+        "OR COALESCE(COALESCE(entry.metadata_json, '{}')::jsonb ->> 'source_task_id', '') "
+        "= ANY(%s)"
+        ")"
+    )
+    journal_params = (PHASE_ONE_QUICK_ACTION_NOTE, phase_two_task_ids)
     harvest_scope = "entry_id NOT IN (SELECT id FROM harvest_entries WHERE notes = %s)"
     return {
         "app_settings": _semantic_table_rows(
@@ -1504,20 +1522,20 @@ def _phase_one_stable_domain_projection(
         "garden_journal_entries": _semantic_table_rows(
             conn,
             table="garden_journal_entries",
-            where_sql="notes <> %s",
-            params=(PHASE_ONE_QUICK_ACTION_NOTE,),
+            where_sql=f"notes <> %s AND {phase_two_journal_source_scope}",
+            params=(PHASE_ONE_QUICK_ACTION_NOTE, phase_two_task_ids),
         ),
         "garden_journal_entry_plants": _semantic_table_rows(
             conn,
             table="garden_journal_entry_plants",
             where_sql=journal_scope,
-            params=(PHASE_ONE_QUICK_ACTION_NOTE,),
+            params=journal_params,
         ),
         "garden_journal_entry_plots": _semantic_table_rows(
             conn,
             table="garden_journal_entry_plots",
             where_sql=journal_scope,
-            params=(PHASE_ONE_QUICK_ACTION_NOTE,),
+            params=journal_params,
         ),
         "garden_map_object_units": _semantic_table_rows(
             conn,
@@ -2354,7 +2372,8 @@ def _phase_two_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             task_value.due_on, task_value.snoozed_until, task_value.rule_source,
             task_value.metadata_json, task_value.window_start_on,
             task_value.window_end_on, task_value.window_kind,
-            task_value.completed_at_ms, completed_by.username AS completed_by_username
+            task_value.completed_at_ms, task_value.created_at_ms, task_value.updated_at_ms,
+            completed_by.username AS completed_by_username
         FROM garden_tasks task_value
         LEFT JOIN auth_users completed_by ON completed_by.id = task_value.completed_by_user_id
         WHERE task_value.public_id = ANY(%s)
@@ -2521,7 +2540,8 @@ def _phase_two_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
                event.notification_type, event.notification_subtype, event.severity,
                event.title, event.target_type, event.target_id, event.dismissed,
                event.read_at_ms, event.emailed_at_ms, event.cleared_at_ms,
-               event.clear_reason, event.metadata_json
+               event.clear_reason, event.metadata_json, event.body,
+               event.created_at_ms, event.expires_at_ms
         FROM notification_events event
         LEFT JOIN auth_users users ON users.id = event.user_id
         WHERE event.public_id LIKE 'note_complete_p2%%'
@@ -2534,7 +2554,7 @@ def _phase_two_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         """
         SELECT alert.id, alert.garden_id, alert.alert_type, alert.severity,
                alert.title, alert.valid_from, alert.valid_until,
-               alert.metadata_json, alert.dismissed
+               alert.metadata_json, alert.dismissed, alert.created_at_ms
         FROM weather_alerts alert
         WHERE alert.garden_id IN (%s, %s)
         ORDER BY alert.garden_id, alert.alert_type, alert.valid_from, alert.id
@@ -2594,6 +2614,33 @@ def _phase_two_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         """,
         (list(PHASE_TWO_TASKS.values()),),
     ).fetchall()
+    maintenance_rows = _phase_two_maintenance_semantic_rows(conn, alpha_id)
+    explicit_notification_ids = {
+        PHASE_TWO_NOTIFICATION_PUBLIC_ID,
+        "note_complete_p2_beta_conflict",
+        "note_complete_p2_editor",
+        PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID,
+        PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID,
+    }
+    maintenance_created = {
+        "tasks": [
+            row
+            for row in maintenance_rows["tasks"]
+            if row["created_at_ms"] == PHASE_TWO_NOW_MS
+            and row["public_id"] not in set(PHASE_TWO_TASKS.values())
+        ],
+        "notifications": [
+            row
+            for row in maintenance_rows["notifications"]
+            if row["created_at_ms"] == PHASE_TWO_NOW_MS
+            and row["public_id"] not in explicit_notification_ids
+        ],
+        "weather_alerts": [
+            row
+            for row in maintenance_rows["weather_alerts"]
+            if row["created_at_ms"] == PHASE_TWO_NOW_MS
+        ],
+    }
 
     return {
         "calendar_events": [
@@ -2655,14 +2702,20 @@ def _phase_two_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             }
             for row in journal_rows
         ],
+        "maintenance_created": maintenance_created,
         "notifications": [
             {
+                "body": str(row["body"]),
                 "clear_reason": (
                     str(row["clear_reason"]) if row["clear_reason"] is not None else None
                 ),
                 "cleared": row["cleared_at_ms"] is not None,
+                "created_at_ms": int(row["created_at_ms"]),
                 "dismissed": bool(row["dismissed"]),
                 "emailed": row["emailed_at_ms"] is not None,
+                "expires_at_ms": (
+                    int(row["expires_at_ms"]) if row["expires_at_ms"] is not None else None
+                ),
                 "garden_id": int(row["garden_id"]),
                 "metadata": _json_object(
                     row["metadata_json"] or "{}", label="Phase 2 notification metadata"
@@ -2758,6 +2811,7 @@ def _phase_two_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
                     if row["completed_by_username"] is not None
                     else None
                 ),
+                "created_at_ms": int(row["created_at_ms"]),
                 "due_on": str(row["due_on"]),
                 "garden_id": int(row["garden_id"]),
                 "metadata": _json_object(row["metadata_json"], label="Phase 2 task metadata"),
@@ -2778,12 +2832,14 @@ def _phase_two_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
                 "window_start_on": (
                     str(row["window_start_on"]) if row["window_start_on"] is not None else None
                 ),
+                "updated_at_ms": int(row["updated_at_ms"]),
             }
             for row in task_rows
         ],
         "weather_alerts": [
             {
                 "alert_type": str(row["alert_type"]),
+                "created_at_ms": int(row["created_at_ms"]),
                 "dismissed": bool(row["dismissed"]),
                 "garden_id": int(row["garden_id"]),
                 "id": int(row["id"]),
@@ -2817,6 +2873,25 @@ def _phase_two_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
         "offline": {
             "reschedule_date": PHASE_TWO_OFFLINE_RESCHEDULE_DATE,
             "snooze_date": PHASE_TWO_OFFLINE_SNOOZE_DATE,
+        },
+        "notification_fixture": {
+            "body": "Alpha phase 2 scoped notification.",
+            "public_id": PHASE_TWO_NOTIFICATION_PUBLIC_ID,
+        },
+        "preference_delivery": {
+            "eligible": {
+                "body": PHASE_TWO_DELIVERY_ELIGIBLE_BODY,
+                "public_id": PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID,
+                "severity": "high",
+                "title": PHASE_TWO_DELIVERY_ELIGIBLE_TITLE,
+            },
+            "ineligible": {
+                "body": PHASE_TWO_DELIVERY_INELIGIBLE_BODY,
+                "public_id": PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID,
+                "severity": "low",
+                "title": PHASE_TWO_DELIVERY_INELIGIBLE_TITLE,
+            },
+            "occurred_at_ms": PHASE_TWO_NOW_MS,
         },
         "notification_public_id": PHASE_TWO_NOTIFICATION_PUBLIC_ID,
         "plant_ids": {key: value[0] for key, value in PHASE_TWO_PLANTS.items()},
@@ -3027,20 +3102,10 @@ def _audit_state(conn) -> dict[str, Any]:
                   AND path = '/api/snapshots'
                   AND status_code = 201
                   AND actor_username = %s
-            ) AS expected_phase_one_snapshot_count,
-            COUNT(*) FILTER (
-                WHERE actor_username = %s
-                  AND status_code = 403
-                  AND (
-                    (method = 'POST' AND path LIKE '/api/gardens/%%/map-objects')
-                    OR (method = 'PATCH' AND path LIKE '/api/gardens/%%/settings')
-                    OR (method = 'POST' AND path = '/api/snapshots')
-                    OR (method = 'POST' AND path = '/api/plots/import')
-                  )
-            ) AS expected_phase_one_viewer_denial_count
+            ) AS expected_phase_one_snapshot_count
         FROM audit_events
         """,
-        (ADMIN_USERNAME, VIEWER_LOGIN[0]),
+        (ADMIN_USERNAME,),
     ).fetchone()
     total = int(row["total_count"] if row else 0)
     expected = int(row["expected_login_count"] if row else 0)
@@ -3060,6 +3125,15 @@ def _audit_state(conn) -> dict[str, Any]:
         value = value.replace("/PLT-001", "/{created_plant_id}")
         return value
 
+    record_rows = conn.execute(
+        """
+        SELECT id, occurred_at_ms, actor_username, actor_role, actor_auth_type,
+               garden_id, method, path, status_code
+        FROM audit_events
+        ORDER BY id
+        """
+    ).fetchall()
+
     normalized_events: dict[tuple[str, str, int], int] = {}
     for event in event_rows:
         key = (
@@ -3075,12 +3149,23 @@ def _audit_state(conn) -> dict[str, Any]:
             for (method, path, status_code), count in sorted(normalized_events.items())
         ],
         "expected_login_count": expected,
+        "records": [
+            {
+                "actor_auth_type": str(record["actor_auth_type"]),
+                "actor_role": str(record["actor_role"]),
+                "actor_username": str(record["actor_username"]),
+                "garden_id": int(record["garden_id"]) if record["garden_id"] is not None else None,
+                "id": int(record["id"]),
+                "method": str(record["method"]),
+                "occurred_at_ms": int(record["occurred_at_ms"]),
+                "path": normalized_path(str(record["path"])),
+                "status_code": int(record["status_code"]),
+            }
+            for record in record_rows
+        ],
         "total_count": total,
         "expected_phase_one_snapshot_count": int(
             row["expected_phase_one_snapshot_count"] if row else 0
-        ),
-        "expected_phase_one_viewer_denial_count": int(
-            row["expected_phase_one_viewer_denial_count"] if row else 0
         ),
     }
 
@@ -3191,6 +3276,186 @@ def _write_json_exclusive(output_path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
+def _phase_two_maintenance_semantic_rows(conn, garden_id: int) -> dict[str, list[dict[str, Any]]]:
+    """Capture the full semantic rows maintenance may create or alter for one garden."""
+    task_rows = conn.execute(
+        """
+        SELECT id, public_id, garden_id, task_type, title, status, severity, due_on,
+               snoozed_until, rule_source, metadata_json, completed_at_ms,
+               created_at_ms, updated_at_ms
+        FROM garden_tasks
+        WHERE garden_id = %s
+        ORDER BY id
+        """,
+        (garden_id,),
+    ).fetchall()
+    task_ids = [int(row["id"]) for row in task_rows]
+    task_plants: dict[int, list[str]] = {task_id: [] for task_id in task_ids}
+    task_plots: dict[int, list[str]] = {task_id: [] for task_id in task_ids}
+    if task_ids:
+        for row in conn.execute(
+            """
+            SELECT task_id, plt_id
+            FROM garden_task_plants
+            WHERE task_id = ANY(%s)
+            ORDER BY task_id, plt_id
+            """,
+            (task_ids,),
+        ).fetchall():
+            task_plants[int(row["task_id"])].append(str(row["plt_id"]))
+        for row in conn.execute(
+            """
+            SELECT task_id, plot_id
+            FROM garden_task_plots
+            WHERE task_id = ANY(%s)
+            ORDER BY task_id, plot_id
+            """,
+            (task_ids,),
+        ).fetchall():
+            task_plots[int(row["task_id"])].append(str(row["plot_id"]))
+
+    notification_rows = conn.execute(
+        """
+        SELECT event.id, event.public_id, event.garden_id, users.username,
+               event.notification_type, event.notification_subtype, event.severity,
+               event.title, event.body, event.target_type, event.target_id,
+               event.metadata_json, event.dismissed, event.read_at_ms, event.emailed_at_ms,
+               event.cleared_at_ms, event.clear_reason, event.created_at_ms, event.expires_at_ms
+        FROM notification_events event
+        LEFT JOIN auth_users users ON users.id = event.user_id
+        WHERE event.garden_id = %s
+        ORDER BY event.id
+        """,
+        (garden_id,),
+    ).fetchall()
+    weather_rows = conn.execute(
+        """
+        SELECT id, garden_id, alert_type, severity, title, description, valid_from,
+               valid_until, metadata_json, dismissed, created_at_ms
+        FROM weather_alerts
+        WHERE garden_id = %s
+        ORDER BY id
+        """,
+        (garden_id,),
+    ).fetchall()
+    weather_ids = [int(row["id"]) for row in weather_rows]
+    weather_plants: dict[int, list[str]] = {alert_id: [] for alert_id in weather_ids}
+    if weather_ids:
+        for row in conn.execute(
+            """
+            SELECT alert_id, plt_id
+            FROM weather_alert_plants
+            WHERE alert_id = ANY(%s)
+            ORDER BY alert_id, plt_id
+            """,
+            (weather_ids,),
+        ).fetchall():
+            weather_plants[int(row["alert_id"])].append(str(row["plt_id"]))
+
+    return {
+        "tasks": [
+            {
+                "created_at_ms": int(row["created_at_ms"]),
+                "completed_at_ms": (
+                    int(row["completed_at_ms"]) if row["completed_at_ms"] is not None else None
+                ),
+                "due_on": str(row["due_on"]),
+                "garden_id": int(row["garden_id"]),
+                "metadata": _json_object(row["metadata_json"], label="maintenance task metadata"),
+                "plant_ids": task_plants[int(row["id"])],
+                "plot_ids": task_plots[int(row["id"])],
+                "public_id": str(row["public_id"]),
+                "row_id": int(row["id"]),
+                "rule_source": str(row["rule_source"] or ""),
+                "severity": str(row["severity"]),
+                "snoozed_until": str(row["snoozed_until"])
+                if row["snoozed_until"] is not None
+                else None,
+                "status": str(row["status"]),
+                "task_type": str(row["task_type"]),
+                "title": str(row["title"]),
+                "updated_at_ms": int(row["updated_at_ms"]),
+            }
+            for row in task_rows
+        ],
+        "notifications": [
+            {
+                "body": str(row["body"]),
+                "clear_reason": str(row["clear_reason"] or ""),
+                "cleared_at_ms": int(row["cleared_at_ms"])
+                if row["cleared_at_ms"] is not None
+                else None,
+                "created_at_ms": int(row["created_at_ms"]),
+                "dismissed": bool(row["dismissed"]),
+                "emailed_at_ms": int(row["emailed_at_ms"])
+                if row["emailed_at_ms"] is not None
+                else None,
+                "expires_at_ms": int(row["expires_at_ms"])
+                if row["expires_at_ms"] is not None
+                else None,
+                "garden_id": int(row["garden_id"]),
+                "metadata": _json_object(
+                    row["metadata_json"] or "{}", label="maintenance notification metadata"
+                ),
+                "notification_subtype": str(row["notification_subtype"] or ""),
+                "notification_type": str(row["notification_type"]),
+                "public_id": str(row["public_id"]),
+                "read_at_ms": int(row["read_at_ms"]) if row["read_at_ms"] is not None else None,
+                "row_id": int(row["id"]),
+                "severity": str(row["severity"] or "normal"),
+                "target_id": str(row["target_id"] or ""),
+                "target_type": str(row["target_type"] or ""),
+                "title": str(row["title"]),
+                "username": str(row["username"]) if row["username"] is not None else None,
+            }
+            for row in notification_rows
+        ],
+        "weather_alerts": [
+            {
+                "alert_type": str(row["alert_type"]),
+                "created_at_ms": int(row["created_at_ms"]),
+                "description": str(row["description"]),
+                "dismissed": bool(row["dismissed"]),
+                "garden_id": int(row["garden_id"]),
+                "metadata": _json_object(
+                    row["metadata_json"], label="maintenance weather metadata"
+                ),
+                "plant_ids": weather_plants[int(row["id"])],
+                "row_id": int(row["id"]),
+                "severity": str(row["severity"]),
+                "title": str(row["title"]),
+                "valid_from": str(row["valid_from"]),
+                "valid_until": str(row["valid_until"]),
+            }
+            for row in weather_rows
+        ],
+    }
+
+
+def _phase_two_maintenance_delta(
+    before: dict[str, list[dict[str, Any]]], after: dict[str, list[dict[str, Any]]]
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """Separate every maintenance-created row from every maintenance mutation."""
+    delta: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for table in ("tasks", "notifications", "weather_alerts"):
+        before_by_id = {int(row["row_id"]): row for row in before[table]}
+        after_by_id = {int(row["row_id"]): row for row in after[table]}
+        if not set(before_by_id).issubset(after_by_id):
+            raise RuntimeError(f"Phase 2 maintenance deleted existing {table}")
+        created = [after_by_id[row_id] for row_id in sorted(set(after_by_id) - set(before_by_id))]
+        mutated = [
+            {
+                "after": after_by_id[row_id],
+                "before": before_by_id[row_id],
+            }
+            for row_id in sorted(before_by_id)
+            if json.dumps(before_by_id[row_id], sort_keys=True, separators=(",", ":"))
+            != json.dumps(after_by_id[row_id], sort_keys=True, separators=(",", ":"))
+        ]
+        delta[table] = {"created": created, "mutated_existing": mutated}
+    return delta
+
+
 def _run_phase_two_maintenance(conn, optimization_seed: Any) -> dict[str, Any]:
     from gardenops.services.notification_service import run_notification_maintenance_for_garden
 
@@ -3211,18 +3476,197 @@ def _run_phase_two_maintenance(conn, optimization_seed: Any) -> dict[str, Any]:
             }
         )
 
+    before = _phase_two_maintenance_semantic_rows(conn, int(alpha["id"]))
     summary = run_notification_maintenance_for_garden(
         conn,
         garden_id=int(alpha["id"]),
         email_sender=record_delivery,
         now_ms=PHASE_TWO_NOW_MS,
     )
+    after = _phase_two_maintenance_semantic_rows(conn, int(alpha["id"]))
+    maintenance_created = _phase_two_maintenance_delta(before, after)
     conn.commit()
     return {
         "delivery_count": len(deliveries),
         "deliveries": deliveries,
         "garden_id": int(alpha["id"]),
+        "maintenance_semantic_state": {
+            "frozen_now_ms": PHASE_TWO_NOW_MS,
+            "maintenance_created": maintenance_created,
+        },
         "summary": summary,
+    }
+
+
+def _run_phase_two_preference_delivery(conn, optimization_seed: Any) -> dict[str, Any]:
+    """Create post-save fixtures and run the deterministic delivery boundary once."""
+    from gardenops.services.notification_service import (
+        get_unread_count,
+        run_notification_maintenance_for_garden,
+    )
+
+    target = conn.execute(
+        """
+        SELECT garden.id AS garden_id, users.id AS user_id,
+               legacy.email_enabled, legacy.digest_frequency,
+               legacy.rules_json AS notification_rules_json,
+               attention.rules_json AS attention_rules_json
+        FROM gardens garden
+        JOIN auth_users users ON users.username = %s
+        JOIN user_notification_preferences legacy ON legacy.user_id = users.id
+        JOIN user_attention_preferences attention ON attention.user_id = users.id
+        WHERE garden.slug = %s
+        """,
+        (ADMIN_USERNAME, optimization_seed.GARDEN_A_SLUG),
+    ).fetchone()
+    if not target:
+        raise RuntimeError("Complete journey Phase 2 preference delivery target is missing")
+    notification_rules = _json_object(
+        target["notification_rules_json"], label="Phase 2 saved notification rules"
+    )
+    attention_rules = _json_object(
+        target["attention_rules_json"], label="Phase 2 saved attention rules"
+    )
+    system_notification_rule = notification_rules.get("system")
+    system_attention_rule = attention_rules.get("system")
+    if (
+        not bool(target["email_enabled"])
+        or str(target["digest_frequency"]) != "weekly"
+        or not isinstance(system_notification_rule, dict)
+        or system_notification_rule
+        != {
+            "email_enabled": True,
+            "in_app_enabled": True,
+            "min_severity": "high",
+        }
+        or not isinstance(system_attention_rule, dict)
+        or system_attention_rule
+        != {
+            "digest": True,
+            "inbox": True,
+            "min_severity": "high",
+            "panel": True,
+        }
+    ):
+        raise RuntimeError("Phase 2 browser did not save the required delivery preferences")
+
+    existing = conn.execute(
+        "SELECT public_id FROM notification_events WHERE public_id = ANY(%s)",
+        (
+            [
+                PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID,
+                PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID,
+            ],
+        ),
+    ).fetchall()
+    if existing:
+        raise RuntimeError("Phase 2 preference delivery fixtures were created more than once")
+    created_at_ms = PHASE_TWO_NOW_MS
+    expires_at_ms = created_at_ms + 7 * 86_400_000
+    for public_id, severity, title, body in (
+        (
+            PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID,
+            "high",
+            PHASE_TWO_DELIVERY_ELIGIBLE_TITLE,
+            PHASE_TWO_DELIVERY_ELIGIBLE_BODY,
+        ),
+        (
+            PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID,
+            "low",
+            PHASE_TWO_DELIVERY_INELIGIBLE_TITLE,
+            PHASE_TWO_DELIVERY_INELIGIBLE_BODY,
+        ),
+    ):
+        conn.execute(
+            """
+            INSERT INTO notification_events (
+                public_id, garden_id, user_id, notification_type, notification_subtype,
+                severity, title, body, target_type, target_id, metadata_json,
+                dismissed, created_at_ms, expires_at_ms
+            )
+            VALUES (%s, %s, %s, 'system', NULL, %s, %s, %s, 'status', %s,
+                    %s, 0, %s, %s)
+            """,
+            (
+                public_id,
+                int(target["garden_id"]),
+                int(target["user_id"]),
+                severity,
+                title,
+                body,
+                public_id,
+                json.dumps(
+                    {"fixture": "complete_journeys_phase_2", "preference_delivery": True},
+                    sort_keys=True,
+                ),
+                created_at_ms,
+                expires_at_ms,
+            ),
+        )
+
+    deliveries: list[dict[str, int]] = []
+
+    def record_delivery(recipient: str, subject: str, body: str) -> None:
+        deliveries.append(
+            {
+                "body_length": len(body),
+                "recipient_length": len(recipient),
+                "subject_length": len(subject),
+            }
+        )
+
+    summary = run_notification_maintenance_for_garden(
+        conn,
+        garden_id=int(target["garden_id"]),
+        email_sender=record_delivery,
+        now_ms=PHASE_TWO_NOW_MS,
+    )
+    conn.commit()
+    delivery_rows = conn.execute(
+        """
+        SELECT public_id, notification_type, notification_subtype, severity,
+               target_type, target_id, created_at_ms, emailed_at_ms,
+               read_at_ms, dismissed, cleared_at_ms
+        FROM notification_events
+        WHERE garden_id = %s
+          AND user_id = %s
+          AND emailed_at_ms = %s
+        ORDER BY public_id
+        """,
+        (int(target["garden_id"]), int(target["user_id"]), PHASE_TWO_NOW_MS),
+    ).fetchall()
+    fixture_rows = conn.execute(
+        """
+        SELECT public_id, notification_type, notification_subtype, severity,
+               target_type, target_id, created_at_ms, emailed_at_ms,
+               read_at_ms, dismissed, cleared_at_ms
+        FROM notification_events
+        WHERE public_id = ANY(%s)
+        ORDER BY public_id
+        """,
+        (
+            [
+                PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID,
+                PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID,
+            ],
+        ),
+    ).fetchall()
+    if len(fixture_rows) != 2:
+        raise RuntimeError("Phase 2 preference delivery fixture rows are incomplete")
+    return {
+        "delivery_badge_count": get_unread_count(
+            conn,
+            int(target["garden_id"]),
+            int(target["user_id"]),
+            now_ms=PHASE_TWO_NOW_MS,
+        ),
+        "delivery_count": len(deliveries),
+        "deliveries": deliveries,
+        "delivery_notifications": [dict(row) for row in delivery_rows],
+        "garden_id": int(target["garden_id"]),
+        "preference_delivery_rows": [dict(row) for row in fixture_rows],
+        "summary": summary,
+        "triggered_at_ms": PHASE_TWO_NOW_MS,
     }
 
 
@@ -3255,17 +3699,20 @@ def main() -> None:
     snapshot_only = sys.argv[1:] == ["--snapshot"]
     prepare_phase_two = sys.argv[1:] == ["--prepare-phase-two"]
     phase_two_maintenance = sys.argv[1:] == ["--phase-two-maintenance"]
+    phase_two_preference_delivery = sys.argv[1:] == ["--phase-two-preference-delivery"]
     output_path = Path(sys.argv[2]) if len(sys.argv) == 3 and sys.argv[1] == "--output" else None
     if (
         sys.argv[1:]
         and not snapshot_only
         and not prepare_phase_two
         and not phase_two_maintenance
+        and not phase_two_preference_delivery
         and output_path is None
     ):
         raise SystemExit(
             "Usage: seed_complete_journeys_e2e.py "
-            "[--snapshot | --prepare-phase-two | --phase-two-maintenance | --output PATH]"
+            "[--snapshot | --prepare-phase-two | --phase-two-maintenance "
+            "| --phase-two-preference-delivery | --output PATH]"
         )
 
     conn = None
@@ -3286,6 +3733,15 @@ def main() -> None:
                 print(
                     json.dumps(
                         _run_phase_two_maintenance(conn, optimization_seed),
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+                return
+            if phase_two_preference_delivery:
+                print(
+                    json.dumps(
+                        _run_phase_two_preference_delivery(conn, optimization_seed),
                         separators=(",", ":"),
                         sort_keys=True,
                     )

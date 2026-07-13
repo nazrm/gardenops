@@ -11,6 +11,30 @@ from tests.base import BaseApiTest
 
 
 class TestCalendarApi(BaseApiTest):
+    def test_calendar_ics_uses_latest_stable_content_timestamp(self) -> None:
+        subscription_updated = datetime(2026, 6, 4, 12, 30, tzinfo=UTC)
+        ics, _etag, last_modified = build_calendar_ics(
+            garden_name="Main garden",
+            events=[
+                {
+                    "id": "manual-1",
+                    "kind": "manual_event",
+                    "source_key": "garden_event",
+                    "title": "Older event",
+                    "description": "",
+                    "start_on": "2026-06-05",
+                    "end_on": "2026-06-06",
+                    "updated_at_ms": int(datetime(2026, 6, 1, tzinfo=UTC).timestamp() * 1000),
+                    "plot_ids": [],
+                    "plant_ids": [],
+                },
+            ],
+            generated_at=subscription_updated,
+        )
+
+        self.assertIn("DTSTAMP:20260604T123000Z", ics)
+        self.assertEqual(last_modified, "Thu, 04 Jun 2026 12:30:00 GMT")
+
     def test_calendar_ics_escapes_lone_carriage_returns(self) -> None:
         ics, _etag, _last_modified = build_calendar_ics(
             garden_name="Main garden\rX-WR-RELCALID:evil",
@@ -1079,3 +1103,60 @@ class TestCalendarApi(BaseApiTest):
         self.assertEqual(int(subscription_row["created_at_ms"]), frozen_now_ms)
         self.assertEqual(int(subscription_row["updated_at_ms"]), frozen_now_ms)
         self.assertEqual(int(subscription_row["revoked_at_ms"]), frozen_now_ms)
+
+    def test_subscription_feed_etag_and_dtstamp_are_stable_for_unchanged_content(self) -> None:
+        try:
+            os.environ["AUTH_REQUIRED"] = "true"
+            client, headers = self._authenticated_client(
+                "test_admin",
+                "testadminpass",
+            )
+            event_response = client.post(
+                "/api/calendar/manual-events",
+                headers=headers,
+                json={
+                    "title": "Stable feed event",
+                    "event_on": date.today().isoformat(),
+                    "description": "The event content is unchanged.",
+                    "plant_ids": [],
+                    "plot_ids": [],
+                },
+            )
+            self.assertEqual(event_response.status_code, 201, event_response.text)
+            subscription_response = client.post(
+                "/api/calendar/subscriptions",
+                headers=headers,
+                json={"label": "Stable feed", "preset_key": "essential"},
+            )
+            self.assertEqual(subscription_response.status_code, 201, subscription_response.text)
+            feed_path = subscription_response.json()["feed_path"]
+            feed_date = date.today()
+            clocks = [
+                (0, feed_date, datetime(2032, 2, 3, tzinfo=UTC)),
+                (0, feed_date, datetime(2032, 2, 4, tzinfo=UTC)),
+                (0, feed_date, datetime(2032, 2, 5, tzinfo=UTC)),
+            ]
+            with patch(
+                "gardenops.routers.calendar._calendar_request_clock",
+                side_effect=clocks,
+            ):
+                first = self.client.get(feed_path)
+                second = self.client.get(
+                    feed_path,
+                    headers={"if-none-match": first.headers["etag"]},
+                )
+                third = self.client.get(feed_path)
+
+            self.assertEqual(first.status_code, 200, first.text)
+            self.assertEqual(second.status_code, 304, second.text)
+            self.assertEqual(third.status_code, 200, third.text)
+            self.assertEqual(first.headers["etag"], third.headers["etag"])
+            first_dtstamp = next(
+                line for line in first.text.splitlines() if line.startswith("DTSTAMP:")
+            )
+            third_dtstamp = next(
+                line for line in third.text.splitlines() if line.startswith("DTSTAMP:")
+            )
+            self.assertEqual(first_dtstamp, third_dtstamp)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"

@@ -53,6 +53,24 @@ class _InsertBarrierConnection:
         self._connection.commit()
 
 
+class _NotificationReadBarrierConnection:
+    """Make the old read-then-insert notification race deterministic."""
+
+    def __init__(self, connection: Any, barrier: threading.Barrier) -> None:
+        self._connection = connection
+        self._barrier = barrier
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        result = self._connection.execute(query, params)
+        normalized_query = " ".join(str(query).upper().split())
+        if "SELECT USER_ID" in normalized_query and "FROM NOTIFICATION_EVENTS" in normalized_query:
+            try:
+                self._barrier.wait(timeout=0.5)
+            except threading.BrokenBarrierError:
+                pass
+        return result
+
+
 class TestParseHardiness:
     @pytest.mark.parametrize(
         "input_val,expected",
@@ -1180,6 +1198,77 @@ class TestWeatherAlertIdentityConcurrency(DbTestBase):
             "RACE-PLANT-A",
             "RACE-PLANT-B",
         }
+
+
+class TestWeatherNotificationConcurrency(DbTestBase):
+    def test_concurrent_weather_delivery_creates_one_notification_per_user(self) -> None:
+        from gardenops.services.notification_service import create_weather_alert_notifications
+
+        today_row = self.conn.execute("SELECT CURRENT_DATE::text AS current_date").fetchone()
+        tomorrow_row = self.conn.execute(
+            "SELECT (CURRENT_DATE + INTERVAL '1 day')::date::text AS tomorrow"
+        ).fetchone()
+        assert today_row is not None
+        assert tomorrow_row is not None
+        today = str(today_row["current_date"])
+        alert = {
+            "alert_type": "frost_warning",
+            "severity": "high",
+            "title": "Concurrent frost warning",
+            "description": "Protect tender plants.",
+            "valid_from": today,
+            "valid_until": str(tomorrow_row["tomorrow"]),
+            "metadata": {"coldest": -8.0},
+        }
+        self.conn.execute(
+            """
+            INSERT INTO garden_memberships (garden_id, user_id, role)
+            VALUES (%s, %s, 'admin')
+            ON CONFLICT DO NOTHING
+            """,
+            (self.garden_id, self._owner_id),
+        )
+        self.conn.commit()
+        save_weather_alerts(self.conn, self.garden_id, [alert])
+        notification_read_barrier = threading.Barrier(2)
+
+        def deliver_once() -> tuple[dict[str, int], int]:
+            conn = db.get_db()
+            try:
+                result = create_weather_alert_notifications(
+                    _NotificationReadBarrierConnection(conn, notification_read_barrier),
+                    garden_id=self.garden_id,
+                    alerts=[alert],
+                )
+                backend_pid = int(conn.info.backend_pid)
+                conn.commit()
+                return result, backend_pid
+            finally:
+                db.return_db(conn)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(lambda _index: deliver_once(), range(2)))
+
+        results = [result for result, _backend_pid in outcomes]
+        backend_pids = {backend_pid for _result, backend_pid in outcomes}
+        self.assertEqual(len(backend_pids), 2)
+        self.assertEqual(sorted(int(result["created"]) for result in results), [0, 1])
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM notification_events
+            WHERE garden_id = %s
+              AND user_id = %s
+              AND notification_type = 'weather_alert'
+              AND target_type = 'weather_alert'
+              AND target_id = %s
+              AND dismissed = 0
+              AND cleared_at_ms IS NULL
+            """,
+            (self.garden_id, self._owner_id, f"frost_warning:{today}"),
+        ).fetchone()
+        assert row is not None
+        self.assertEqual(int(row["count"]), 1)
 
 
 class TestSaveWeatherAlertsPlantAdvice(_WeatherDbTestBase):

@@ -261,20 +261,20 @@ async function showTaskQuickComplete(): Promise<void> {
       limit: QUICK_ACTION_TASK_LIMIT,
       offset: 0,
     });
-    const pending = result.tasks.filter(
-      (tk) => tk.status === "pending",
+    const actionable = result.tasks.filter(
+      (tk) => tk.status === "pending" || tk.status === "snoozed",
     );
-    const pendingById = new Map(pending.map((task) => [task.id, task]));
+    const actionableById = new Map(actionable.map((task) => [task.id, task]));
     if (!quickActionSheetOpen) return;
     renderTaskQuickComplete(
       content,
-      pending.map((tk) => ({
+      actionable.map((tk) => ({
         id: tk.id,
         title: tk.title,
         task_type: tk.task_type,
       })),
       async (taskId) => {
-        const task = pendingById.get(taskId);
+        const task = actionableById.get(taskId);
         if (task && needsCompletionDialog(task)) {
           if (!isOnline()) {
             if (!canQueueDefaultCompletionOffline(task)) {
@@ -401,20 +401,26 @@ async function showTaskQuickSnooze(
       limit: QUICK_ACTION_TASK_LIMIT,
       offset: 0,
     });
-    const pending = result.tasks.filter(
-      (tk) => tk.status === "pending",
+    const actionable = result.tasks.filter(
+      (tk) => tk.status === "pending" || tk.status === "snoozed",
     );
-    const pendingById = new Map(pending.map((task) => [task.id, task]));
+    const actionableById = new Map(actionable.map((task) => [task.id, task]));
     if (!quickActionSheetOpen) return;
+    const onSnoozeDate = (taskId: string): void => {
+      const task = actionableById.get(taskId);
+      if (!task) return;
+      const policy = taskSnoozePolicy(task);
+      openQuickSnoozeDateDialog(task, policy.defaultDate, policy.warning);
+    };
     renderTaskQuickSnooze(
       content,
-      pending.map((tk) => ({
+      actionable.map((tk) => ({
         id: tk.id,
         title: tk.title,
         task_type: tk.task_type,
       })),
       async (taskId) => {
-        const task = pendingById.get(taskId);
+        const task = actionableById.get(taskId);
         if (!task) return;
         const policy = taskSnoozePolicy(task);
         if (!policy.immediate) {
@@ -427,6 +433,7 @@ async function showTaskQuickSnooze(
         }
         await snoozeQuickTask(task, policy.defaultDate);
       },
+      onSnoozeDate,
       () => {
         renderQuickActionHome(true);
       },

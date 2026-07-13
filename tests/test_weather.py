@@ -372,3 +372,341 @@ class TestWeather(BaseApiTest):
         self.assertEqual(h5_found[0]["name"], "Rose")
 
         db.return_db(conn)
+
+    def test_weather_check_retries_downstream_work_for_an_existing_alert(self) -> None:
+        """A retry must reconcile notifications and tasks after alert persistence succeeded."""
+        from gardenops.services.weather_service import save_weather_alerts
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            today_row = conn.execute("SELECT CURRENT_DATE::text AS current_date").fetchone()
+            tomorrow_row = conn.execute(
+                "SELECT (CURRENT_DATE + INTERVAL '1 day')::date::text AS tomorrow"
+            ).fetchone()
+            assert garden is not None
+            assert today_row is not None
+            assert tomorrow_row is not None
+            garden_id = int(garden["id"])
+            today = str(today_row["current_date"])
+            tomorrow = str(tomorrow_row["tomorrow"])
+            alert = {
+                "alert_type": "frost_warning",
+                "severity": "high",
+                "title": "Retry frost warning",
+                "description": "Protect vulnerable plants after retry.",
+                "valid_from": today,
+                "valid_until": tomorrow,
+                "metadata": {"coldest": -20.0},
+            }
+            conn.execute(
+                "UPDATE gardens SET latitude = 59.9, longitude = 10.7 WHERE id = %s",
+                (garden_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO garden_memberships (garden_id, user_id, role)
+                VALUES (%s, %s, 'admin')
+                ON CONFLICT DO NOTHING
+                """,
+                (garden_id, self._owner_id),
+            )
+            conn.commit()
+            save_weather_alerts(conn, garden_id, [alert])
+        finally:
+            db.return_db(conn)
+
+        with patch(
+            "gardenops.routers.weather.check_weather_and_generate_alerts",
+            return_value={
+                "forecast_available": True,
+                "alerts_created": 0,
+                "alerts_skipped": 1,
+                "alerts": [alert],
+                "frost_vulnerable_plants": [],
+                "watering_sensitive_plants": [],
+            },
+        ):
+            response = self.client.post("/api/weather/check")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        conn = db.get_db()
+        try:
+            notification = conn.execute(
+                """
+                SELECT 1
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND user_id = %s
+                  AND notification_type = 'weather_alert'
+                  AND target_type = 'weather_alert'
+                  AND target_id = %s
+                  AND cleared_at_ms IS NULL
+                """,
+                (garden_id, self._owner_id, f"frost_warning:{today}"),
+            ).fetchone()
+            task_count = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM garden_tasks
+                WHERE garden_id = %s
+                  AND rule_source LIKE 'auto:frost_protect:%%'
+                """,
+                (garden_id,),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+
+        self.assertIsNotNone(notification)
+        assert task_count is not None
+        self.assertEqual(int(task_count["count"]), 1)
+
+    def test_weather_dismissal_suppresses_notification_until_escalation_reopens_it(self) -> None:
+        from gardenops.services.notification_service import create_weather_alert_notifications
+        from gardenops.services.weather_service import save_weather_alerts
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            today_row = conn.execute("SELECT CURRENT_DATE::text AS current_date").fetchone()
+            tomorrow_row = conn.execute(
+                "SELECT (CURRENT_DATE + INTERVAL '1 day')::date::text AS tomorrow"
+            ).fetchone()
+            assert garden is not None
+            assert today_row is not None
+            assert tomorrow_row is not None
+            garden_id = int(garden["id"])
+            today = str(today_row["current_date"])
+            tomorrow = str(tomorrow_row["tomorrow"])
+            alert = {
+                "alert_type": "frost_warning",
+                "severity": "normal",
+                "title": "Initial frost warning",
+                "description": "Monitor the forecast.",
+                "valid_from": today,
+                "valid_until": tomorrow,
+                "metadata": {"coldest": -1.0},
+            }
+            conn.execute(
+                """
+                INSERT INTO garden_memberships (garden_id, user_id, role)
+                VALUES (%s, %s, 'admin')
+                ON CONFLICT DO NOTHING
+                """,
+                (garden_id, self._owner_id),
+            )
+            conn.commit()
+            save_weather_alerts(conn, garden_id, [alert])
+            created = create_weather_alert_notifications(
+                conn,
+                garden_id=garden_id,
+                alerts=[alert],
+            )
+            conn.execute(
+                """
+                UPDATE notification_events
+                SET emailed_at_ms = 123
+                WHERE garden_id = %s
+                  AND user_id = %s
+                  AND notification_type = 'weather_alert'
+                  AND target_id = %s
+                """,
+                (garden_id, self._owner_id, f"frost_warning:{today}"),
+            )
+            conn.commit()
+            self.assertEqual(created["created"], 1)
+            row = conn.execute(
+                """
+                SELECT id
+                FROM weather_alerts
+                WHERE garden_id = %s
+                  AND alert_type = 'frost_warning'
+                  AND valid_from = %s
+                """,
+                (garden_id, today),
+            ).fetchone()
+            assert row is not None
+            alert_id = int(row["id"])
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+            },
+        ):
+            client, headers = self._authenticated_client(
+                "test_admin",
+                "testadminpass",
+                garden_id=garden_id,
+            )
+            self.assertEqual(
+                client.get("/api/notifications/count", headers=headers).json()["count"],
+                1,
+            )
+            dismissed = client.post(
+                f"/api/weather/alerts/{alert_id}/dismiss",
+                headers=headers,
+            )
+            self.assertEqual(dismissed.status_code, 200, dismissed.text)
+            self.assertEqual(
+                client.get("/api/notifications/count", headers=headers).json()["count"],
+                0,
+            )
+
+            conn = db.get_db()
+            try:
+                suppressed = create_weather_alert_notifications(
+                    conn,
+                    garden_id=garden_id,
+                    alerts=[alert],
+                )
+                conn.commit()
+                self.assertEqual(suppressed["created"], 0)
+                active_after_regeneration = conn.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM notification_events
+                    WHERE garden_id = %s
+                      AND user_id = %s
+                      AND notification_type = 'weather_alert'
+                      AND target_id = %s
+                      AND cleared_at_ms IS NULL
+                    """,
+                    (garden_id, self._owner_id, f"frost_warning:{today}"),
+                ).fetchone()
+                assert active_after_regeneration is not None
+                self.assertEqual(int(active_after_regeneration["count"]), 0)
+
+                escalated = {
+                    **alert,
+                    "severity": "high",
+                    "title": "Escalated frost warning",
+                    "description": "Protect plants immediately.",
+                    "metadata": {"coldest": -8.0},
+                }
+                save_weather_alerts(conn, garden_id, [escalated])
+                create_weather_alert_notifications(
+                    conn,
+                    garden_id=garden_id,
+                    alerts=[escalated],
+                )
+                conn.commit()
+                notifications = conn.execute(
+                    """
+                    SELECT title, body, severity, cleared_at_ms, read_at_ms, emailed_at_ms
+                    FROM notification_events
+                    WHERE garden_id = %s
+                      AND user_id = %s
+                      AND notification_type = 'weather_alert'
+                      AND target_id = %s
+                    ORDER BY id
+                    """,
+                    (garden_id, self._owner_id, f"frost_warning:{today}"),
+                ).fetchall()
+            finally:
+                db.return_db(conn)
+
+            self.assertEqual(len(notifications), 1)
+            reopened = notifications[0]
+            self.assertEqual(reopened["title"], "Escalated frost warning")
+            self.assertEqual(reopened["body"], "Protect plants immediately.")
+            self.assertEqual(reopened["severity"], "high")
+            self.assertIsNone(reopened["cleared_at_ms"])
+            self.assertIsNone(reopened["read_at_ms"])
+            self.assertIsNone(reopened["emailed_at_ms"])
+
+    def test_dismissed_weather_notification_does_not_regenerate(self) -> None:
+        from gardenops.services.notification_service import (
+            create_weather_alert_notifications,
+            dismiss_notification,
+        )
+        from gardenops.services.weather_service import save_weather_alerts
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            today_row = conn.execute("SELECT CURRENT_DATE::text AS current_date").fetchone()
+            tomorrow_row = conn.execute(
+                "SELECT (CURRENT_DATE + INTERVAL '1 day')::date::text AS tomorrow"
+            ).fetchone()
+            assert garden is not None
+            assert today_row is not None
+            assert tomorrow_row is not None
+            garden_id = int(garden["id"])
+            today = str(today_row["current_date"])
+            alert = {
+                "alert_type": "rain_alert",
+                "severity": "normal",
+                "title": "Heavy rain",
+                "description": "Expect saturated soil.",
+                "valid_from": today,
+                "valid_until": str(tomorrow_row["tomorrow"]),
+                "metadata": {},
+            }
+            conn.execute(
+                """
+                INSERT INTO garden_memberships (garden_id, user_id, role)
+                VALUES (%s, %s, 'admin')
+                ON CONFLICT DO NOTHING
+                """,
+                (garden_id, self._owner_id),
+            )
+            conn.commit()
+            save_weather_alerts(conn, garden_id, [alert])
+            create_weather_alert_notifications(conn, garden_id=garden_id, alerts=[alert])
+            conn.commit()
+            notification = conn.execute(
+                """
+                SELECT public_id
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND user_id = %s
+                  AND notification_type = 'weather_alert'
+                  AND target_id = %s
+                """,
+                (garden_id, self._owner_id, f"rain_alert:{today}"),
+            ).fetchone()
+            assert notification is not None
+            self.assertTrue(
+                dismiss_notification(
+                    conn,
+                    str(notification["public_id"]),
+                    self._owner_id,
+                    garden_id,
+                )
+            )
+
+            retried = create_weather_alert_notifications(
+                conn,
+                garden_id=garden_id,
+                alerts=[alert],
+            )
+            conn.commit()
+            rows = conn.execute(
+                """
+                SELECT dismissed, cleared_at_ms
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND user_id = %s
+                  AND notification_type = 'weather_alert'
+                  AND target_id = %s
+                """,
+                (garden_id, self._owner_id, f"rain_alert:{today}"),
+            ).fetchall()
+        finally:
+            db.return_db(conn)
+
+        self.assertEqual(retried["created"], 0)
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(bool(rows[0]["dismissed"]))
+        self.assertIsNotNone(rows[0]["cleared_at_ms"])

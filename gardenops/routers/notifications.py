@@ -151,7 +151,7 @@ def _serialize_preferences(row: dict[str, Any] | None) -> dict:
     ):
         rules_payload = {}
     rules = normalize_notification_rules(rules_payload)
-    if not raw_rules:
+    if not rules_payload:
         rules["task_due"]["in_app_enabled"] = bool(row["task_due_enabled"])
         rules["task_overdue"]["in_app_enabled"] = bool(row["task_overdue_enabled"])
     return {
@@ -167,16 +167,27 @@ def _serialize_preferences(row: dict[str, Any] | None) -> dict:
     }
 
 
-def _explicit_email_rule_enabled(raw_rules: dict[str, dict[str, Any]]) -> bool:
-    for rule in raw_rules.values():
-        if isinstance(rule, dict) and bool(rule.get("email_enabled", False)):
-            return True
-    return False
-
-
 def _require_email_notifications_feature(context) -> None:
     if not feature_allowed(context.subscription_tier, "email_notifications"):
         raise HTTPException(status_code=403, detail="Email notifications require a Pro plan")
+
+
+def _enables_email_rule(
+    submitted_rules: dict[str, dict[str, Any]],
+    current_rules: dict[str, Any],
+) -> bool:
+    """Return whether an explicit rule change turns email delivery on."""
+    for key, submitted_rule in submitted_rules.items():
+        if not isinstance(submitted_rule, dict) or "email_enabled" not in submitted_rule:
+            continue
+        if not bool(submitted_rule["email_enabled"]):
+            continue
+        current_rule = current_rules.get(key)
+        if not isinstance(current_rule, dict) or not bool(
+            current_rule.get("email_enabled", False)
+        ):
+            return True
+    return False
 
 
 def _require_notification_delivery_admin(context) -> None:
@@ -433,14 +444,35 @@ def update_notification_preferences(
     if user_id is None:
         return {"status": "ok"}
 
+    existing_preference = db.execute(
+        "SELECT * FROM user_notification_preferences WHERE user_id = %s",
+        (user_id,),
+    ).fetchone()
+    saved_attention = db.execute(
+        "SELECT 1 FROM user_attention_preferences WHERE user_id = %s",
+        (user_id,),
+    ).fetchone()
+    existing_attention = load_attention_preferences(db, user_id)
+    current_rules = _serialize_preferences(existing_preference)["notification_rules"]
+    if saved_attention is not None:
+        for key, projection in notification_rules_from_attention(existing_attention).items():
+            if key in current_rules:
+                current_rules[key].update(projection)
+    if body.email_enabled or _enables_email_rule(body.notification_rules, current_rules):
+        _require_email_notifications_feature(context)
+
     now, _ = notification_request_clock()
     qh_json = json.dumps(body.quiet_hours_json) if body.quiet_hours_json else "{}"
-    if body.email_enabled or _explicit_email_rule_enabled(body.notification_rules):
-        _require_email_notifications_feature(context)
+    notification_rule_keys = {
+        str(key)
+        for key, rule in body.notification_rules.items()
+        if isinstance(rule, dict)
+    }
     rules = normalize_notification_rules(body.notification_rules)
     if not body.notification_rules:
         rules["task_due"]["in_app_enabled"] = bool(body.task_due_enabled)
         rules["task_overdue"]["in_app_enabled"] = bool(body.task_overdue_enabled)
+        notification_rule_keys = {"task_due", "task_overdue"}
     rules_json = notification_rules_json(rules)
     task_due_enabled = bool(rules["task_due"]["in_app_enabled"])
     task_overdue_enabled = bool(rules["task_overdue"]["in_app_enabled"])
@@ -478,11 +510,11 @@ def update_notification_preferences(
             now,
         ),
     )
-    existing_attention = load_attention_preferences(db, user_id)
     synchronized_attention = merge_notification_preferences(
         existing_attention,
         notification_rules=rules,
         quiet_hours=body.quiet_hours_json,
+        notification_rule_keys=notification_rule_keys,
     )
     save_attention_preferences(
         db,

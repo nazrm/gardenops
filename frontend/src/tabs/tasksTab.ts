@@ -5,6 +5,7 @@ import { t } from "../core/i18n";
 import {
   type TaskActionRequest,
   batchTaskActionApi,
+  fetchTaskApi,
   fetchTasksApi,
   createTaskApi,
   updateTaskApi,
@@ -12,6 +13,7 @@ import {
   deleteTaskApi,
   generateTasksApi,
   refreshTaskDescriptionsApi,
+  getActiveGardenContext,
   getApiErrorMessage,
 } from "../services/api";
 import { buildPlantNameMap } from "../core/plantNames";
@@ -37,8 +39,54 @@ let tasksOffset = 0;
 let tasksView = "today";
 let selectedTaskIds = new Set<string>();
 let taskOperation: "idle" | "generate" | "regenerate" = "idle";
+let tasksRequestGeneration = 0;
 const TASKS_PAGE_SIZE = 50;
 type TaskActionExtra = Omit<TaskActionRequest, "action">;
+
+interface TasksRequestContext {
+  gardenId: number | null;
+  generation: number;
+}
+
+interface LoadTasksOptions {
+  focusTaskId?: string | undefined;
+  expectedGardenId?: number | null | undefined;
+}
+
+function createTasksRequest(
+  expectedGardenId?: number | null,
+): TasksRequestContext | null {
+  if (
+    expectedGardenId !== undefined
+    && getActiveGardenContext() !== expectedGardenId
+  ) {
+    return null;
+  }
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return null;
+  return {
+    gardenId,
+    generation: ++tasksRequestGeneration,
+  };
+}
+
+function isCurrentTasksRequest(request: TasksRequestContext): boolean {
+  return (
+    request.generation === tasksRequestGeneration
+    && request.gardenId === getActiveGardenContext()
+  );
+}
+
+function isCurrentTask(
+  taskId: string,
+  gardenId = getActiveGardenContext(),
+): boolean {
+  return (
+    gardenId !== null
+    && gardenId === getActiveGardenContext()
+    && taskItems.some((task) => task.id === taskId && task.garden_id === gardenId)
+  );
+}
 
 function isBatchActionable(task: GardenTask): boolean {
   return task.status === "pending" || task.status === "snoozed";
@@ -139,6 +187,22 @@ export function syncTasksViewButtons(): void {
     });
 }
 
+export function resetTasksForGardenSwitch(): void {
+  tasksRequestGeneration += 1;
+  taskItems = [];
+  tasksTotal = 0;
+  tasksOffset = 0;
+  tasksView = "today";
+  selectedTaskIds.clear();
+  taskOperation = "idle";
+  const typeFilter = querySelect("tasks-filter-type");
+  if (typeFilter) typeFilter.value = "";
+  const statusFilter = querySelect("tasks-filter-status");
+  if (statusFilter) statusFilter.value = "";
+  syncTasksViewButtons();
+  if (ctx) renderTasksView();
+}
+
 export function initTasksTab(appCtx: AppContext): void {
   ctx = appCtx;
 
@@ -190,8 +254,36 @@ export function initTasksTab(appCtx: AppContext): void {
   renderTaskOperationProgress();
 }
 
-export async function loadTasks(): Promise<void> {
+export async function openTaskFromAttention(
+  targetTaskId: string,
+  expectedGardenId: number | null,
+): Promise<void> {
+  if (
+    !targetTaskId
+    || getActiveGardenContext() !== expectedGardenId
+  ) {
+    return;
+  }
+  tasksView = "today";
+  tasksOffset = 0;
+  selectedTaskIds.clear();
+  const typeFilter = querySelect("tasks-filter-type");
+  if (typeFilter) typeFilter.value = "";
+  const statusFilter = querySelect("tasks-filter-status");
+  if (statusFilter) statusFilter.value = "";
+  syncTasksViewButtons();
+  await loadTasks({
+    focusTaskId: targetTaskId,
+    expectedGardenId,
+  });
+}
+
+export async function loadTasks(
+  options: LoadTasksOptions = {},
+): Promise<void> {
   if (!ctx) return;
+  const request = createTasksRequest(options.expectedGardenId);
+  if (!request) return;
   try {
     const params: Record<string, string | number> = {
       limit: TASKS_PAGE_SIZE,
@@ -203,24 +295,69 @@ export async function loadTasks(): Promise<void> {
     const statusFilter = querySelect("tasks-filter-status")?.value;
     if (statusFilter) params["status"] = statusFilter;
     const result = await fetchTasksApi(params);
+    if (!isCurrentTasksRequest(request)) return;
     if (result.total > 0 && result.tasks.length === 0 && tasksOffset > 0) {
       tasksOffset = Math.max(
         0,
         Math.floor((result.total - 1) / TASKS_PAGE_SIZE) * TASKS_PAGE_SIZE,
       );
-      await loadTasks();
+      await loadTasks(options);
       return;
     }
-    taskItems = result.tasks;
-    tasksTotal = result.total;
+    let nextTasks = result.tasks;
+    let targetLoadError: unknown | null = null;
+    if (
+      options.focusTaskId
+      && !nextTasks.some((task) => task.id === options.focusTaskId)
+    ) {
+      try {
+        const focusedTask = await fetchTaskApi(options.focusTaskId);
+        if (!isCurrentTasksRequest(request)) return;
+        nextTasks = [
+          focusedTask,
+          ...nextTasks.filter((task) => task.id !== focusedTask.id),
+        ];
+      } catch (err) {
+        if (!isCurrentTasksRequest(request)) return;
+        targetLoadError = err;
+      }
+    }
+    if (!isCurrentTasksRequest(request)) return;
+    taskItems = nextTasks;
+    tasksTotal = Math.max(result.total, nextTasks.length);
     reconcileSelectionWithVisibleTasks();
-    renderTasksView();
+    renderTasksView(options.focusTaskId, request);
+    if (targetLoadError) {
+      ctx.showToast(getApiErrorMessage(targetLoadError), "error");
+    }
   } catch (err) {
+    if (!isCurrentTasksRequest(request)) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
 
-function renderTasksView(): void {
+function focusTaskCard(
+  taskId: string,
+  request?: TasksRequestContext,
+): void {
+  window.requestAnimationFrame(() => {
+    if (request && !isCurrentTasksRequest(request)) return;
+    const container = document.getElementById("tasks-list");
+    if (!(container instanceof HTMLElement)) return;
+    const card = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-task-id]"),
+    ).find((candidate) => candidate.dataset["taskId"] === taskId);
+    if (!card) return;
+    card.tabIndex = -1;
+    card.scrollIntoView({ block: "center" });
+    card.focus({ preventScroll: true });
+  });
+}
+
+function renderTasksView(
+  focusTaskId?: string,
+  request?: TasksRequestContext,
+): void {
   const container = document.getElementById("tasks-list");
   if (!container) return;
   const summary = document.getElementById("tasks-summary");
@@ -238,6 +375,10 @@ function renderTasksView(): void {
   renderTaskList(container, taskItems, {
     onComplete: (task) => completeTask(task),
     onSnooze: (task) => void openSnoozeDialog(task),
+    onSnoozeDate: (task) => {
+      const policy = taskSnoozePolicy(task);
+      openSnoozeDateDialog(task, policy.defaultDate, policy.warning);
+    },
     onSkip: (task) => void handleTaskAction(task.id, "skip"),
     onReschedule: (task) => void openRescheduleDialog(task),
     onEdit: (task) => void openTaskForm(task),
@@ -269,6 +410,7 @@ function renderTasksView(): void {
   }, plantNames);
   ctx.renderDataExportBars();
   renderTasksPagination();
+  if (focusTaskId) focusTaskCard(focusTaskId, request);
 }
 
 function renderTasksPagination(): void {
@@ -379,13 +521,16 @@ function renderTaskBatchBar(): void {
     snoozeBtn.className = "task-action-btn";
     snoozeBtn.textContent = t("tasks.action_snooze");
     snoozeBtn.addEventListener("click", () => {
-      const firstSelected = taskItems.find((task) => selectedTaskIds.has(task.id));
-      const policy = firstSelected ? taskSnoozePolicy(firstSelected) : undefined;
+      const selectedTasks = taskItems.filter(
+        (task) => isBatchActionable(task) && selectedTaskIds.has(task.id),
+      );
+      const policy = batchSnoozePolicy(selectedTasks);
       openTaskDateDialog({
         title: t("tasks.snooze_prompt") as string,
-        defaultDate: policy?.defaultDate ?? formatLocalDate(new Date()),
+        defaultDate: policy.defaultDate,
         onConfirm: (date) => void handleBatchTaskAction("snooze", { snooze_until: date }),
-        warning: policy?.warning,
+        warning: policy.warning,
+        requireManualDate: policy.requiresManualDate,
       });
     });
     bar.appendChild(snoozeBtn);
@@ -395,10 +540,10 @@ function renderTaskBatchBar(): void {
     rescheduleBtn.className = "task-action-btn";
     rescheduleBtn.textContent = t("tasks.action_reschedule");
     rescheduleBtn.addEventListener("click", () => {
-      const firstSelected = taskItems.find((task) => selectedTaskIds.has(task.id));
+      const firstSelectedTask = taskItems.find((task) => selectedTaskIds.has(task.id));
       openTaskDateDialog({
         title: t("tasks.reschedule_prompt") as string,
-        defaultDate: firstSelected?.due_on ?? formatLocalDate(new Date()),
+        defaultDate: firstSelectedTask?.due_on ?? formatLocalDate(new Date()),
         onConfirm: (date) =>
           void handleBatchTaskAction("reschedule", { reschedule_to: date }),
       });
@@ -407,6 +552,36 @@ function renderTaskBatchBar(): void {
   }
 
   container.appendChild(bar);
+}
+
+interface BatchSnoozePolicy {
+  defaultDate: string;
+  warning?: string | undefined;
+  requiresManualDate: boolean;
+}
+
+function batchSnoozePolicy(selectedTasks: GardenTask[]): BatchSnoozePolicy {
+  const policies = selectedTasks.map((task) => taskSnoozePolicy(task));
+  const first = policies[0];
+  if (!first) {
+    return {
+      defaultDate: formatLocalDate(new Date()),
+      requiresManualDate: false,
+    };
+  }
+  const homogeneous = policies.every((policy) => policy.defaultDate === first.defaultDate);
+  if (!homogeneous) {
+    return {
+      defaultDate: formatLocalDate(new Date()),
+      warning: t("tasks.batch_snooze_mixed_warning") as string,
+      requiresManualDate: true,
+    };
+  }
+  return {
+    defaultDate: first.defaultDate,
+    warning: policies.find((policy) => policy.warning)?.warning,
+    requiresManualDate: false,
+  };
 }
 
 async function enqueueOfflineTaskAction(
@@ -446,6 +621,8 @@ async function handleTaskAction(
   extra?: TaskActionExtra,
   options: { showSuccessToast?: boolean } = {},
 ): Promise<boolean> {
+  const requestGardenId = getActiveGardenContext();
+  if (!isCurrentTask(taskId, requestGardenId)) return false;
   if (!ctx.ensureWriteAccess()) return false;
   if (!ctx.isOnline()) {
     if (action === "complete" && extra?.completed_plant_ids?.length) {
@@ -453,6 +630,7 @@ async function handleTaskAction(
       return false;
     }
     await enqueueOfflineTaskAction(taskId, action, extra);
+    if (!isCurrentTask(taskId, requestGardenId)) return false;
     if (options.showSuccessToast !== false) {
       ctx.showToast(t("offline.draft_saved"), "success");
     }
@@ -461,6 +639,7 @@ async function handleTaskAction(
   }
   try {
     await taskActionApi(taskId, { action, ...extra });
+    if (!isCurrentTask(taskId, requestGardenId)) return false;
     if (options.showSuccessToast !== false) {
       ctx.showToast(
         t("tasks.action_success", { action }),
@@ -471,6 +650,7 @@ async function handleTaskAction(
     void loadTasks();
     return true;
   } catch (err) {
+    if (!isCurrentTask(taskId, requestGardenId)) return false;
     ctx.showToast(getApiErrorMessage(err), "error");
     return false;
   }
@@ -481,15 +661,18 @@ async function handleBatchTaskAction(
   extra?: TaskActionExtra,
   taskIdOverride?: string[],
 ): Promise<void> {
+  const requestGardenId = getActiveGardenContext();
   if (!ctx.ensureWriteAccess()) return;
   const taskIds = taskIdOverride ?? getSelectedVisibleTaskIds();
   if (taskIds.length === 0) {
     ctx.showToast(t("tasks.batch_none_selected"), "error");
     return;
   }
+  if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return;
   if (!ctx.isOnline()) {
     for (const taskId of taskIds) {
       await enqueueOfflineTaskAction(taskId, action, extra);
+      if (!isCurrentTask(taskId, requestGardenId)) return;
     }
     selectedTaskIds.clear();
     renderTasksView();
@@ -502,6 +685,7 @@ async function handleBatchTaskAction(
   }
   try {
     const result = await batchTaskActionApi(taskIds, { action, ...extra });
+    if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return;
     selectedTaskIds.clear();
     ctx.showToast(
       t("tasks.batch_result", { count: result.updated }),
@@ -510,6 +694,7 @@ async function handleBatchTaskAction(
     void ctx.refreshBadgeCounts();
     void loadTasks();
   } catch (err) {
+    if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }

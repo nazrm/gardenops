@@ -191,6 +191,60 @@ class TestGenerateTasksPruning(DbTestBase):
         ).fetchall()
         assert [row["plt_id"] for row in links] == ["PR6", "PR7"]
 
+    def test_grouped_prune_task_links_current_multi_plot_placements(self) -> None:
+        self._insert_plant("PRP-OUT-IN", "Currant", category="busker")
+        self._insert_plant("PRP-SHARED", "Apple", category="traer")
+        self._insert_plant("PRP-UNPLACED", "Gooseberry", category="busker")
+        self.conn.execute(
+            """
+            INSERT INTO plots
+                (plot_id, garden_id, zone_code, zone_name, plot_number,
+                 grid_row, grid_col, sub_zone, notes)
+            VALUES
+                ('PRP-OUT-A', %s, 'P', 'Prune bed', 1, 3, 1, '', ''),
+                ('PRP-OUT-B', %s, 'P', 'Prune bed', 2, 3, 2, '', ''),
+                ('PRP-IN', %s, 'I', 'Greenhouse', 1, NULL, NULL, '', '')
+            """,
+            (self.garden_id, self.garden_id, self.garden_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO plot_plants (plot_id, plt_id, quantity)
+            VALUES
+                ('PRP-OUT-A', 'PRP-OUT-IN', 1),
+                ('PRP-IN', 'PRP-OUT-IN', 1),
+                ('PRP-OUT-A', 'PRP-SHARED', 1),
+                ('PRP-OUT-B', 'PRP-SHARED', 1)
+            """,
+        )
+        self.conn.commit()
+
+        generate_tasks(self.conn, self.garden_id, 3, 2026, None)
+
+        task = self.conn.execute(
+            "SELECT id FROM garden_tasks WHERE task_type = 'prune'",
+        ).fetchone()
+        assert task is not None
+        plant_rows = self.conn.execute(
+            "SELECT plt_id FROM garden_task_plants WHERE task_id = %s ORDER BY plt_id",
+            (int(task["id"]),),
+        ).fetchall()
+        plot_rows = self.conn.execute(
+            "SELECT plot_id FROM garden_task_plots WHERE task_id = %s ORDER BY plot_id",
+            (int(task["id"]),),
+        ).fetchall()
+
+        assert [str(row["plt_id"]) for row in plant_rows] == [
+            "PRP-OUT-IN",
+            "PRP-SHARED",
+            "PRP-UNPLACED",
+        ]
+        assert [str(row["plot_id"]) for row in plot_rows] == [
+            "PRP-IN",
+            "PRP-OUT-A",
+            "PRP-OUT-B",
+        ]
+
 
 class TestGenerateTasksFertilize(DbTestBase):
     def test_creates_fertilize_task(self) -> None:
@@ -374,6 +428,74 @@ class TestGenerateTasksDedup(DbTestBase):
         assert r1["created"] >= 1
         assert r2["created"] == 0
         assert r2["skipped"] >= 1
+
+    def test_uses_supplied_timestamp_for_generated_rows(self) -> None:
+        self._insert_plant("CLOCK1", "Clock plant", care_watering="Water regularly")
+        self.conn.execute(
+            """
+            INSERT INTO plots
+                (plot_id, garden_id, zone_code, zone_name, plot_number,
+                 grid_row, grid_col, sub_zone, notes)
+            VALUES ('CLOCK-OUT', %s, 'C', 'Clock bed', 1, 2, 2, '', '')
+            """,
+            (self.garden_id,),
+        )
+        self.conn.execute(
+            "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES ('CLOCK-OUT', 'CLOCK1', 1)",
+        )
+        self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'rain_surplus', 'normal', 'Clock rain', '',
+                    '2026-07-01', '2026-07-01', '{}', 1)
+            """,
+            (self.garden_id,),
+        )
+        self.conn.commit()
+        now_ms = 1_777_000_000_123
+
+        result = generate_tasks(
+            self.conn,
+            self.garden_id,
+            7,
+            2026,
+            None,
+            now_ms=now_ms,
+        )
+
+        task_rows = self.conn.execute(
+            """
+            SELECT created_at_ms, updated_at_ms
+            FROM garden_tasks
+            WHERE garden_id = %s
+            ORDER BY rule_source
+            """,
+            (self.garden_id,),
+        ).fetchall()
+        outcome = self.conn.execute(
+            """
+            SELECT occurred_at_ms, created_at_ms, updated_at_ms
+            FROM attention_outcomes
+            WHERE garden_id = %s
+              AND outcome_type = 'watering_covered_by_rain'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+
+        assert result == {"created": 3, "skipped": 1}
+        assert [(int(row["created_at_ms"]), int(row["updated_at_ms"])) for row in task_rows] == [
+            (now_ms, now_ms),
+            (now_ms, now_ms),
+            (now_ms, now_ms),
+        ]
+        assert outcome is not None
+        assert (
+            int(outcome["occurred_at_ms"]),
+            int(outcome["created_at_ms"]),
+            int(outcome["updated_at_ms"]),
+        ) == (now_ms, now_ms, now_ms)
 
 
 if __name__ == "__main__":

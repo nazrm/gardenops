@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -7,6 +8,7 @@ const { assert, visible } = require("./completeJourneyAssertions.cjs");
 
 const NETWORK_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:"]);
 const LOCAL_PROTOCOLS = new Set(["about:", "blob:", "data:"]);
+const PIXEL_7_VIEWPORT = Object.freeze({ height: 839, width: 412 });
 
 function sanitizeDiagnostic(value) {
   return String(value) ? "[redacted diagnostic; inspect private runner logs]" : "";
@@ -21,14 +23,58 @@ function isLoopbackHostname(hostname) {
     && Number(octets[0]) === 127;
 }
 
-function isAllowedUrl(rawUrl) {
+function isDisposableLoopbackHostname(hostname) {
+  return hostname.replace(/^\[|\]$/g, "").toLowerCase() === "127.0.0.1";
+}
+
+function normalizedNetworkOrigin(parsed) {
+  const protocol = parsed.protocol === "ws:"
+    ? "http:"
+    : (parsed.protocol === "wss:" ? "https:" : parsed.protocol);
+  return `${protocol}//${parsed.host}`;
+}
+
+function disposableOrigin(rawUrl, label) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`${label} must be an absolute URL`);
+  }
+  assert(["http:", "https:"].includes(parsed.protocol), `${label} must use HTTP(S)`);
+  assert(isDisposableLoopbackHostname(parsed.hostname), `${label} must use 127.0.0.1`);
+  assert(parsed.port && /^\d+$/.test(parsed.port), `${label} must include an explicit port`);
+  assert(Number(parsed.port) !== 5432, `${label} must not use PostgreSQL port 5432`);
+  assert(!parsed.username && !parsed.password, `${label} must not include credentials`);
+  assert(!parsed.search && !parsed.hash, `${label} must not include query or fragment`);
+  return normalizedNetworkOrigin(parsed);
+}
+
+function allowedBrowserOrigins({
+  backendUrl = process.env.GARDENOPS_VITE_PROXY_TARGET || "",
+  baseUrl = process.env.BASE_URL || "",
+  providerUrl = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_PROVIDER_URL || "",
+} = {}) {
+  const origins = new Set();
+  if (baseUrl) origins.add(disposableOrigin(baseUrl, "BASE_URL"));
+  if (backendUrl) origins.add(disposableOrigin(backendUrl, "GARDENOPS_VITE_PROXY_TARGET"));
+  if (providerUrl) origins.add(disposableOrigin(
+    providerUrl,
+    "GARDENOPS_COMPLETE_JOURNEYS_E2E_PROVIDER_URL",
+  ));
+  return origins;
+}
+
+function isAllowedUrl(rawUrl, allowedOrigins = allowedBrowserOrigins()) {
   let parsed;
   try {
     parsed = new URL(rawUrl);
   } catch {
     return false;
   }
-  if (NETWORK_PROTOCOLS.has(parsed.protocol)) return isLoopbackHostname(parsed.hostname);
+  if (NETWORK_PROTOCOLS.has(parsed.protocol)) {
+    return allowedOrigins.has(normalizedNetworkOrigin(parsed));
+  }
   return LOCAL_PROTOCOLS.has(parsed.protocol);
 }
 
@@ -49,7 +95,9 @@ function assertLoopbackBaseUrl(baseUrl) {
     throw new Error("Complete journey BASE_URL must be an absolute URL");
   }
   assert(["http:", "https:"].includes(parsed.protocol), "BASE_URL must use HTTP(S)");
-  assert(isLoopbackHostname(parsed.hostname), "BASE_URL must use a literal loopback host");
+  assert(isDisposableLoopbackHostname(parsed.hostname), "BASE_URL must use literal 127.0.0.1");
+  assert(parsed.port && /^\d+$/.test(parsed.port), "BASE_URL must include an explicit port");
+  assert(Number(parsed.port) !== 5432, "BASE_URL must not use PostgreSQL port 5432");
   assert(!parsed.username && !parsed.password, "BASE_URL must not include credentials");
   assert(!parsed.search && !parsed.hash, "BASE_URL must not include query or fragment");
 }
@@ -66,8 +114,37 @@ function browserProfile(devices, name) {
   throw new Error(`Unknown complete journey browser profile: ${name}`);
 }
 
-async function createGuardedContext(browser, devices, profileName, artifactDir, artifactLabel = profileName) {
+function assertBrowserProfileContract(profileName, runtime) {
+  const viewport = runtime?.viewport || {};
+  if (profileName === "mobile") {
+    assert(runtime?.is_mobile === true, "Pixel 7 runtime must report mobile mode");
+    assert(runtime?.has_touch === true && runtime?.max_touch_points > 0,
+      "Pixel 7 runtime must expose touch input");
+    assert(viewport.width === PIXEL_7_VIEWPORT.width && viewport.height === PIXEL_7_VIEWPORT.height,
+      "Pixel 7 runtime viewport was unexpected");
+    assert(/\bPixel 7\b/i.test(String(runtime?.user_agent || "")),
+      "Pixel 7 runtime user agent was unexpected");
+    return "pixel-7";
+  }
+  assert(profileName === "desktop", `Unknown complete journey profile contract: ${profileName}`);
+  assert(runtime?.is_mobile === false, "Desktop runtime unexpectedly reports mobile mode");
+  assert(runtime?.has_touch === false && runtime?.max_touch_points === 0,
+    "Desktop runtime unexpectedly exposes touch input");
+  assert(viewport.width === 1440 && viewport.height === 900,
+    "Desktop runtime viewport was unexpected");
+  return "desktop-chromium";
+}
+
+async function createGuardedContext(
+  browser,
+  devices,
+  profileName,
+  artifactDir,
+  artifactLabel = profileName,
+  originContract = {},
+) {
   const profile = browserProfile(devices, profileName);
+  const allowedOrigins = allowedBrowserOrigins(originContract);
   const context = await browser.newContext({
     ...profile,
     locale: "en-US",
@@ -85,7 +162,7 @@ async function createGuardedContext(browser, devices, profileName, artifactDir, 
   let authenticated = false;
   await context.route("**/*", async (route) => {
     const requestUrl = route.request().url();
-    if (!isAllowedUrl(requestUrl)) {
+    if (!isAllowedUrl(requestUrl, allowedOrigins)) {
       diagnostics.blockedRequests.push(safeUrl(requestUrl));
       await route.abort("blockedbyclient");
       return;
@@ -94,10 +171,10 @@ async function createGuardedContext(browser, devices, profileName, artifactDir, 
   });
   if (typeof context.routeWebSocket === "function") {
     await context.routeWebSocket(
-      (url) => !isAllowedUrl(url.href),
+      (url) => !isAllowedUrl(url.href, allowedOrigins),
       (socket) => {
         diagnostics.blockedRequests.push(safeUrl(socket.url()));
-        socket.close({ code: 1008, reason: "Non-loopback E2E traffic is blocked" });
+        socket.close({ code: 1008, reason: "Out-of-contract E2E traffic is blocked" });
       },
     );
   }
@@ -140,6 +217,7 @@ async function createGuardedContext(browser, devices, profileName, artifactDir, 
       authenticated = true;
     },
     profile: {
+      device: profileName === "mobile" ? "Pixel 7" : "Desktop Chromium",
       has_touch: profileName === "mobile",
       is_mobile: profileName === "mobile",
       name: profileName,
@@ -158,11 +236,12 @@ async function createGuardedContext(browser, devices, profileName, artifactDir, 
         assert(traceStat.isFile() && !traceStat.isSymbolicLink() && traceStat.nlink === 1,
           "Trace output must be a regular, single-link file");
         fs.chmodSync(tracePath, 0o600);
+        const sha256 = crypto.createHash("sha256").update(fs.readFileSync(tracePath)).digest("hex");
         await context.close();
+        return { name: traceName, sha256 };
       } finally {
         fs.rmSync(stagingDirectory, { force: true, recursive: true });
       }
-      return traceName;
     },
   };
 }
@@ -237,7 +316,9 @@ function createApiRecorder(page) {
 }
 
 module.exports = {
+  allowedBrowserOrigins,
   assertDiagnosticsClean,
+  assertBrowserProfileContract,
   assertLoopbackBaseUrl,
   authenticate,
   createApiRecorder,

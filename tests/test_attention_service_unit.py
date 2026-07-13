@@ -13,6 +13,7 @@ from gardenops.services.attention import (
     attention_today_date,
     group_attention_items,
     is_generated_watering_task,
+    notification_rules_from_attention,
     rank_attention_items,
     require_attention_e2e_database,
     resolve_attention_preferences,
@@ -575,6 +576,35 @@ def test_legacy_notification_policy_keys_map_to_attention_rule_types():
         "legacy_notification_rules",
         {},
     )
+
+
+def test_grouped_notification_projection_does_not_choose_an_arbitrary_rule():
+    preferences = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={
+            "issue_follow_up_due": {
+                "panel": True,
+                "inbox": True,
+                "digest": True,
+                "min_severity": "low",
+            },
+            "issue_follow_up_overdue": {
+                "panel": True,
+                "inbox": False,
+                "digest": False,
+                "min_severity": "high",
+            },
+        },
+    )
+
+    projected = notification_rules_from_attention(preferences)
+
+    assert projected["issue_created"] == {
+        "in_app_enabled": False,
+        "email_enabled": False,
+        "min_severity": "high",
+    }
 
 
 def test_legacy_rule_without_email_channel_uses_type_enablement_for_digest():

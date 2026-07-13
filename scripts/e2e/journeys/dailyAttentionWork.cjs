@@ -1,6 +1,7 @@
 "use strict";
 
 const {
+  assertBrowserProfileContract,
   assertDiagnosticsClean,
   authenticate,
   createApiRecorder,
@@ -96,9 +97,16 @@ async function openTasks(page, profile) {
   await visible(page.locator("#tasks-list"), "task list");
 }
 
-async function openCalendar(page, profile) {
-  await openSubMode(page, profile, "activity", "calendar", "#calendar-tab-content");
+async function startCalendar(page, profile) {
+  await openPrimary(page, profile, "activity");
+  const button = page.locator("#sub-mode-calendar:visible, [data-sub-mode='calendar']:visible").first();
+  await visible(button, "calendar sub-mode");
+  await button.click();
   await visible(page.locator("#calendar-root"), "calendar root");
+}
+
+async function openCalendar(page, profile) {
+  await startCalendar(page, profile);
   await page.locator("#calendar-loading").waitFor({ state: "hidden" });
 }
 
@@ -438,7 +446,7 @@ function assertCalendarExportIcs(ics, fixture) {
     "Calendar export leaked a subscription feed URL");
 }
 
-async function exerciseCalendarSubscriptionFeed(page, diagnostics) {
+async function exerciseCalendarSubscriptionFeed(page, diagnostics, onCreated = null) {
   const label = "Phase 2 Admin Feed";
   const createResponse = page.waitForResponse((response) => (
     response.request().method() === "POST"
@@ -456,16 +464,22 @@ async function exerciseCalendarSubscriptionFeed(page, diagnostics) {
 
   const subscription = page.locator(".calendar-subscription-item").filter({ hasText: label });
   await visible(subscription, "created calendar subscription");
+  if (onCreated) await onCreated({ label, subscription });
 
-  // Keep the opaque feed URL in this function only. The successful context request shares browser
-  // cookies without entering page request recording; the expected browser-side revoke failure is
-  // explicitly consumed below before diagnostics can be retained.
-  const activeFeed = await page.context().request.get(feedUrl);
-  const activeCalendar = await activeFeed.text();
-  assert(activeFeed.status() === 200,
+  // Keep the opaque feed URL in this function only. This page-origin feed fetch is captured by
+  // the global browser route guard before the expected revoked-feed failure is consumed below.
+  const activeFeed = await page.evaluate(async (url) => {
+    const response = await fetch(url, { credentials: "include" });
+    return {
+      body: await response.text(),
+      contentType: response.headers.get("content-type") || "",
+      status: response.status,
+    };
+  }, feedUrl);
+  assert(activeFeed.status === 200,
     "New calendar feed URL was not a successful subscription request");
-  assert(/text\/calendar/i.test(activeFeed.headers()["content-type"] || "")
-    && activeCalendar.includes("BEGIN:VCALENDAR") && activeCalendar.includes("END:VCALENDAR"),
+  assert(/text\/calendar/i.test(activeFeed.contentType)
+    && activeFeed.body.includes("BEGIN:VCALENDAR") && activeFeed.body.includes("END:VCALENDAR"),
     "New calendar feed did not return a calendar document");
 
   await subscription.getByRole("button").click();
@@ -502,8 +516,17 @@ async function exerciseCalendarSubscriptionFeed(page, diagnostics) {
   diagnostics.consoleErrors.splice(consoleMark, 1);
 }
 
-async function exerciseCalendarLifecycle(page, fixture, diagnostics) {
-  await openCalendar(page, "desktop");
+async function exerciseCalendarLifecycle(
+  page,
+  profile,
+  fixture,
+  diagnostics,
+  {
+    includeExportAndSubscription = profile === "desktop",
+    onSubscriptionCreated = null,
+  } = {},
+) {
+  await openCalendar(page, profile);
   for (const mode of ["week", "agenda", "month"]) {
     const button = page.locator(`[data-calendar-view='${mode}']`);
     await button.click();
@@ -519,51 +542,53 @@ async function exerciseCalendarLifecycle(page, fixture, diagnostics) {
   await visible(detail.getByText(fixture.phase_two.plot_ids.alpha, { exact: false }),
     "calendar plot link");
 
-  const failureMark = diagnostics.requestFailures.length;
-  const expectedDownloadAborts = [];
-  const downloadFailureListener = (request) => {
-    const failure = request.failure()?.errorText || "";
-    const parsed = new URL(request.url());
-    if (
-      request.method() === "GET"
-      && parsed.pathname === "/api/calendar/export.ics"
-      && failure.includes("ERR_ABORTED")
-    ) {
-      expectedDownloadAborts.push({ failure, path: parsed.pathname });
+  if (includeExportAndSubscription) {
+    const failureMark = diagnostics.requestFailures.length;
+    const expectedDownloadAborts = [];
+    const downloadFailureListener = (request) => {
+      const failure = request.failure()?.errorText || "";
+      const parsed = new URL(request.url());
+      if (
+        request.method() === "GET"
+        && parsed.pathname === "/api/calendar/export.ics"
+        && failure.includes("ERR_ABORTED")
+      ) {
+        expectedDownloadAborts.push({ failure, path: parsed.pathname });
+      }
+    };
+    page.on("requestfailed", downloadFailureListener);
+    try {
+      const downloadPromise = page.waitForEvent("download");
+      const exportRequestPromise = page.waitForRequest((request) => (
+        request.method() === "GET"
+          && new URL(request.url()).pathname === "/api/calendar/export.ics"
+      ));
+      await page.locator("#calendar-export-btn").click();
+      const [download, exportRequest] = await Promise.all([
+        downloadPromise,
+        exportRequestPromise,
+      ]);
+      const downloadUrl = new URL(exportRequest.url());
+      assert(downloadUrl.pathname === "/api/calendar/export.ics",
+        "Calendar export download did not use the calendar export endpoint");
+      assert(downloadUrl.searchParams.get("garden_id") === String(fixture.gardens.alpha.id),
+        "Calendar export download did not retain the selected Alpha garden");
+      const ics = await readDownload(download);
+      assertCalendarExportIcs(ics, fixture);
+      await download.delete();
+    } finally {
+      page.off("requestfailed", downloadFailureListener);
     }
-  };
-  page.on("requestfailed", downloadFailureListener);
-  try {
-    const downloadPromise = page.waitForEvent("download");
-    const exportRequestPromise = page.waitForRequest((request) => (
-      request.method() === "GET"
-        && new URL(request.url()).pathname === "/api/calendar/export.ics"
-    ));
-    await page.locator("#calendar-export-btn").click();
-    const [download, exportRequest] = await Promise.all([
-      downloadPromise,
-      exportRequestPromise,
-    ]);
-    const downloadUrl = new URL(exportRequest.url());
-    assert(downloadUrl.pathname === "/api/calendar/export.ics",
-      "Calendar export download did not use the calendar export endpoint");
-    assert(downloadUrl.searchParams.get("garden_id") === String(fixture.gardens.alpha.id),
-      "Calendar export download did not retain the selected Alpha garden");
-    const ics = await readDownload(download);
-    assertCalendarExportIcs(ics, fixture);
-    await download.delete();
-  } finally {
-    page.off("requestfailed", downloadFailureListener);
+    const failuresAdded = diagnostics.requestFailures.length - failureMark;
+    assert(failuresAdded === expectedDownloadAborts.length,
+      "Calendar export produced an unaccounted request failure");
+    assert(expectedDownloadAborts.length <= 1,
+      "Calendar export produced duplicate browser download aborts");
+    diagnostics.requestFailures.splice(failureMark, failuresAdded);
   }
-  const failuresAdded = diagnostics.requestFailures.length - failureMark;
-  assert(failuresAdded === expectedDownloadAborts.length,
-    "Calendar export produced an unaccounted request failure");
-  assert(expectedDownloadAborts.length <= 1,
-    "Calendar export produced duplicate browser download aborts");
-  diagnostics.requestFailures.splice(failureMark, failuresAdded);
 
-  const title = "Phase 2 Browser Calendar Event";
-  const editedTitle = "Phase 2 Browser Calendar Event Edited";
+  const title = `Phase 2 Browser ${profile === "mobile" ? "Mobile" : "Desktop"} Calendar Event`;
+  const editedTitle = `${title} Edited`;
   await page.locator("#calendar-new-event-btn").click();
   let dialog = page.locator("#calendar-manual-event-form").last();
   await visible(dialog, "calendar create form");
@@ -590,7 +615,9 @@ async function exerciseCalendarLifecycle(page, fixture, diagnostics) {
   await confirm.locator(".confirm-yes").click();
   await edited.waitFor({ state: "hidden" });
 
-  await exerciseCalendarSubscriptionFeed(page, diagnostics);
+  if (includeExportAndSubscription) {
+    await exerciseCalendarSubscriptionFeed(page, diagnostics, onSubscriptionCreated);
+  }
 }
 
 async function openNotifications(page, profile) {
@@ -621,6 +648,18 @@ async function issueCreatedRuleControls(prefs) {
   return { digest, inbox, severity };
 }
 
+async function systemRuleControls(prefs) {
+  const row = prefs.locator(".notification-prefs-rule-row").filter({ hasText: /^System$/ }).first();
+  await visible(row, "system notification preference");
+  const inbox = row.getByRole("button", { name: "System: App", exact: true });
+  const digest = row.getByRole("button", { name: "System: Email", exact: true });
+  const severity = row.locator(".notification-prefs-severity");
+  await visible(inbox, "system inbox notification preference");
+  await visible(digest, "system digest notification preference");
+  await visible(severity, "system notification severity preference");
+  return { digest, inbox, severity };
+}
+
 async function notificationBadgeState(page, profile) {
   const badge = page.locator(profile === "mobile" ? "#mobile-notification-badge" : "#notification-badge");
   return badge.evaluate((element) => ({
@@ -635,6 +674,38 @@ function assertSaneNotificationBadge(badge, label) {
     badge.hidden || /^(?:[1-9]\d*|99\+)$/.test(badge.text),
     `${label} notification badge did not expose a valid unread count`,
   );
+}
+
+async function assertPostSavePreferenceDelivery(page, fixture, evidence) {
+  const delivery = fixture.phase_two.preference_delivery;
+  assert(evidence && typeof evidence === "object", "Post-save preference delivery evidence was missing");
+  assert(evidence.triggered_at_ms === delivery.occurred_at_ms,
+    "Post-save preference delivery did not use the frozen fixture timestamp");
+  assert(Number.isSafeInteger(evidence.delivery_badge_count) && evidence.delivery_badge_count > 0,
+    "Post-save preference delivery did not retain an eligible inbox badge");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openPrimary(page, "desktop", "map");
+  await visible(page.locator("#map-grid"), "map after post-save preference delivery");
+  await selectGarden(page, "desktop", fixture.gardens.alpha.id);
+
+  const today = await openToday(page, "desktop");
+  await visible(today.getByText(delivery.eligible.title, { exact: true }),
+    "eligible delivery notification in Today");
+  assert(await today.getByText(delivery.ineligible.title, { exact: true }).count() === 0,
+    "ineligible delivery notification leaked into Today");
+
+  const badge = await notificationBadgeState(page, "desktop");
+  assertSaneNotificationBadge(badge, "post-save preference delivery");
+  assert(!badge.hidden && Number(badge.text) >= 1,
+    "post-save preference delivery badge did not expose eligible inbox work");
+
+  const notification = await openNotifications(page, "desktop");
+  await visible(notification.panel.getByText(delivery.eligible.body, { exact: true }),
+    "eligible delivery notification in inbox");
+  assert(await notification.panel.getByText(delivery.ineligible.body, { exact: true }).count() === 0,
+    "ineligible delivery notification leaked into inbox");
+  await page.keyboard.press("Escape");
+  await notification.panel.waitFor({ state: "hidden" });
 }
 
 async function exerciseNotificationSettingsRace(page, context, fixture) {
@@ -689,7 +760,109 @@ async function exerciseNotificationSettingsRace(page, context, fixture) {
   await panel.waitFor({ state: "hidden" });
 }
 
-async function exerciseNotifications(page) {
+async function exerciseDelayedGardenRequestRace(page, context, fixture, {
+  assertAlphaDom,
+  alphaStart,
+  betaStart,
+  endpointPattern,
+  label,
+}) {
+  const betaGardenId = fixture.gardens.beta.id;
+  let betaRequestHeld = false;
+  let betaResponseReleased = false;
+  let releaseBetaResponse;
+  const heldResponse = new Promise((resolve) => {
+    releaseBetaResponse = resolve;
+  });
+  const handler = async (route) => {
+    const request = route.request();
+    const gardenId = Number(request.headers()["x-garden-id"]);
+    if (request.method() === "GET" && gardenId === betaGardenId) {
+      betaRequestHeld = true;
+      await heldResponse;
+      betaResponseReleased = true;
+    }
+    await route.fallback();
+  };
+  await context.route(endpointPattern, handler);
+  try {
+    await betaStart();
+    await waitFor(() => betaRequestHeld, `held Beta ${label} response`);
+    await selectGarden(page, "desktop", fixture.gardens.alpha.id);
+    if (alphaStart) await alphaStart();
+    await assertAlphaDom();
+    releaseBetaResponse();
+    await waitFor(() => betaResponseReleased, `released Beta ${label} response`);
+    await assertAlphaDom();
+  } finally {
+    if (!betaResponseReleased) releaseBetaResponse();
+    await context.unroute(endpointPattern, handler);
+  }
+}
+
+async function exerciseTasksCalendarRace(page, context, fixture) {
+  const alphaTask = taskTitle(fixture, "viewer_read_only");
+  const betaTask = taskTitle(fixture, "rain_outdoor");
+  await selectGarden(page, "desktop", fixture.gardens.alpha.id);
+  await openTasks(page, "desktop");
+  await visible(taskCard(page, alphaTask.title), "Alpha task before Tasks A/B/A race");
+  await exerciseDelayedGardenRequestRace(page, context, fixture, {
+    alphaStart: async () => openTasks(page, "desktop"),
+    assertAlphaDom: async () => {
+      await visible(taskCard(page, alphaTask.title), "Alpha task after held Beta Tasks response");
+      assert(await taskCard(page, betaTask.title).count() === 0,
+        "Stale Beta task DOM replaced Alpha after Tasks A/B/A race");
+    },
+    betaStart: async () => {
+      await selectGarden(page, "desktop", fixture.gardens.beta.id);
+      await openTasks(page, "desktop");
+    },
+    endpointPattern: "**/api/tasks**",
+    label: "Tasks",
+  });
+
+  await selectGarden(page, "desktop", fixture.gardens.alpha.id);
+  await openCalendar(page, "desktop");
+  await visible(page.locator(".fc-event").filter({
+    hasText: fixture.phase_two.calendar.seeded_title,
+  }).first(), "Alpha calendar event before Calendar A/B/A race");
+  await exerciseDelayedGardenRequestRace(page, context, fixture, {
+    alphaStart: async () => openCalendar(page, "desktop"),
+    assertAlphaDom: async () => {
+      await visible(page.locator(".fc-event").filter({
+        hasText: fixture.phase_two.calendar.seeded_title,
+      }).first(), "Alpha calendar event after held Beta Calendar response");
+      assert(await page.locator(".fc-event").filter({ hasText: betaTask.title }).count() === 0,
+        "Stale Beta calendar DOM replaced Alpha after Calendar A/B/A race");
+    },
+    betaStart: async () => {
+      await selectGarden(page, "desktop", fixture.gardens.beta.id);
+      await startCalendar(page, "desktop");
+    },
+    endpointPattern: "**/api/calendar/events**",
+    label: "Calendar",
+  });
+}
+
+async function exerciseCalendarSubscriptionRace(page, context, fixture, label) {
+  await exerciseDelayedGardenRequestRace(page, context, fixture, {
+    alphaStart: async () => openCalendar(page, "desktop"),
+    assertAlphaDom: async () => {
+      const alphaSubscription = page.locator(".calendar-subscription-item").filter({ hasText: label });
+      await visible(alphaSubscription, "Alpha calendar subscription after held Beta response");
+      assert(await alphaSubscription.count() === 1,
+        "Stale subscription DOM duplicated or removed the Alpha subscription after A/B/A race");
+    },
+    betaStart: async () => {
+      await selectGarden(page, "desktop", fixture.gardens.beta.id);
+      await startCalendar(page, "desktop");
+    },
+    endpointPattern: "**/api/calendar/subscriptions**",
+    label: "Calendar subscriptions",
+  });
+}
+
+async function exerciseNotifications(page, fixture, onPreferencesSaved) {
   let { panel, trigger } = await openNotifications(page, "desktop");
   await visible(panel.getByText("Alpha phase 2 scoped notification.", { exact: true }),
     "Alpha scoped notification");
@@ -714,6 +887,14 @@ async function exerciseNotifications(page) {
   await visible(prefs, "notification preferences");
   assert(await prefs.locator("#notification-prefs-email-address").inputValue()
     === "complete-phase-2@example.invalid", "Notification email preference was lost");
+  const globalToggles = prefs.locator(".notification-prefs-toggle");
+  assert(await globalToggles.count() === 2, "Notification capability toggles were incomplete");
+  const emailCapability = globalToggles.nth(1);
+  assert(await emailCapability.getAttribute("aria-pressed") === "false",
+    "Email delivery unexpectedly started enabled before the UI save");
+  await emailCapability.click();
+  assert(await emailCapability.getAttribute("aria-pressed") === "true",
+    "Email delivery toggle did not change before preference save");
   const issue = await issueCreatedRuleControls(prefs);
   assert(await issue.inbox.getAttribute("aria-pressed") === "true",
     "Initial canonical issue-created attention rule was not projected into notification settings");
@@ -727,24 +908,39 @@ async function exerciseNotifications(page) {
   await issue.severity.selectOption("normal");
   assert(await issue.severity.inputValue() === "normal",
     "Issue-created severity did not change before preference save");
+  const system = await systemRuleControls(prefs);
+  assert(await system.inbox.getAttribute("aria-pressed") === "true"
+    && await system.digest.getAttribute("aria-pressed") === "true"
+    && await system.severity.inputValue() === "low",
+  "Initial system delivery rule was not projected into notification settings");
+  await system.severity.selectOption("high");
+  assert(await system.severity.inputValue() === "high",
+    "System delivery severity did not change before preference save");
   await prefs.locator("#notification-prefs-digest-frequency").selectOption("weekly");
   const quietInputs = prefs.locator("input[type='time']");
   assert(await quietInputs.nth(0).inputValue() === "22:15", "Quiet start minute was not preserved");
   assert(await quietInputs.nth(1).inputValue() === "07:45", "Quiet end minute was not preserved");
   await quietInputs.nth(0).fill("22:30");
   await quietInputs.nth(1).fill("07:15");
+  const preferenceSave = page.waitForResponse((response) => (
+    response.request().method() === "PUT"
+      && new URL(response.url()).pathname === "/api/notifications/preferences"
+  ));
   await prefs.locator(".btn-primary").click();
+  const saved = await preferenceSave;
+  assert(saved.status() === 200, `Notification preference save returned ${saved.status()}`);
   await visible(panel.locator("#notification-tab-inbox"), "notification inbox after preference save");
+  if (onPreferencesSaved) {
+    await assertPostSavePreferenceDelivery(page, fixture, await onPreferencesSaved());
+    ({ panel } = await openNotifications(page, "desktop"));
+  }
+  // Phase 2 explicit notification fixture only; preexisting inbox rows must remain untouched.
   const scopedItem = panel.locator(".notification-item").filter({
-    hasText: "Alpha phase 2 scoped notification.",
+    hasText: fixture.phase_two.notification_fixture.body,
   });
-  await visible(scopedItem, "scoped notification before mute");
+  await visible(scopedItem, "Phase 2 explicit notification fixture before mute");
   await scopedItem.locator(".notification-item-mute").click();
   await scopedItem.waitFor({ state: "hidden" });
-  const remaining = panel.locator(".notification-item").first();
-  if (await remaining.count()) {
-    await remaining.locator(".notification-item-dismiss").click();
-  }
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "hidden" });
 }
@@ -765,13 +961,6 @@ async function exercisePostMutationReload(page, fixture) {
   await visible(completedBloomJournal, "completed desktop bloom journal card after reload");
   await visible(completedBloomJournal.locator(".journal-card-type").filter({ hasText: "Bloomed" }),
     "completed desktop bloom journal type after reload");
-  const completedFertilizeJournal = journal.locator(".journal-card").filter({
-    hasText: fixture.phase_two.plant_names.fertilize_a,
-  }).first();
-  await visible(completedFertilizeJournal, "completed grouped fertilize journal card after reload");
-  await visible(completedFertilizeJournal.locator(".journal-card-type").filter({ hasText: "Fertilized" }),
-    "completed grouped fertilize journal type after reload");
-
   const today = await openToday(page, "desktop");
   const completedBloom = taskTitle(fixture, "bloom_desktop");
   const active = today.locator('[data-testid="attention-today-section-needs_attention"]');
@@ -868,6 +1057,79 @@ async function exerciseMobileCalendarAndNotifications(page, fixture) {
   await closeMobileUtility(page);
 }
 
+async function exerciseMobilePartialGroupedAndSnooze(page, fixture) {
+  await openTasks(page, "mobile");
+  await completeGroupedFertilize(page, fixture);
+  await exerciseImmediateSnoozeCorrection(page, fixture);
+}
+
+async function exerciseMobileNotificationPreferenceMutation(page) {
+  let { panel } = await openNotifications(page, "mobile");
+  await panel.locator(".notification-settings-btn").click();
+  let prefs = panel.locator(".notification-prefs-form");
+  await visible(prefs, "mobile notification preferences");
+  let system = await systemRuleControls(prefs);
+  assert(await system.severity.inputValue() === "high",
+    "Mobile notification preferences did not receive the saved system severity");
+
+  const save = async (expectedSeverity, label) => {
+    const responsePromise = page.waitForResponse((response) => (
+      response.request().method() === "PUT"
+        && new URL(response.url()).pathname === "/api/notifications/preferences"
+    ));
+    await prefs.locator(".btn-primary").click();
+    const response = await responsePromise;
+    assert(response.status() === 200, `${label} notification preference save failed`);
+    await waitFor(async () => await system.severity.inputValue() === expectedSeverity,
+      `${label} notification preference projection`);
+  };
+
+  await system.severity.selectOption("low");
+  await save("low", "mobile low-severity");
+  await page.keyboard.press("Escape");
+  await panel.waitFor({ state: "hidden" });
+
+  ({ panel } = await openNotifications(page, "mobile"));
+  await panel.locator(".notification-settings-btn").click();
+  prefs = panel.locator(".notification-prefs-form");
+  await visible(prefs, "reopened mobile notification preferences");
+  system = await systemRuleControls(prefs);
+  assert(await system.severity.inputValue() === "low",
+    "Mobile low-severity preference mutation did not persist before restoration");
+  await system.severity.selectOption("high");
+  await save("high", "mobile restored high-severity");
+  await page.keyboard.press("Escape");
+  await panel.waitFor({ state: "hidden" });
+  await closeMobileUtility(page);
+}
+
+async function exerciseMobileHistoryReload(page, fixture) {
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openPrimary(page, "mobile", "map");
+  await visible(page.locator("#map-grid"), "mobile map after history reload");
+  await selectGarden(page, "mobile", fixture.gardens.alpha.id);
+  await openSubMode(page, "mobile", "activity", "journal", "#journal-tab-content");
+  const journal = page.locator("#journal-list");
+  await waitFor(async () => await journal.locator(".journal-card").count() > 0,
+    "mobile journal entries after reload");
+  await visible(journal.locator(".journal-card").filter({
+    hasText: fixture.phase_two.plant_names.fertilize_a,
+  }).first(), "mobile grouped fertilize journal after reload");
+  await visible(journal.locator(".journal-card").filter({
+    hasText: fixture.phase_two.plant_names.bloom_mobile,
+  }).first(), "mobile bloom journal after reload");
+
+  const today = await openToday(page, "mobile");
+  const noAction = today.locator('[data-testid="attention-today-section-no_action_needed"]');
+  const completedBloom = taskTitle(fixture, "bloom_mobile");
+  assert(await noAction.getByText(completedBloom.title, { exact: true }).count() === 1,
+    "Mobile history reload omitted the completed bloom task");
+  await noAction.locator("summary").click();
+  await visible(noAction.getByText(completedBloom.title, { exact: true }),
+    "mobile expanded no-action history after reload");
+  await page.locator("[data-testid='attention-today-mobile-close']").click();
+}
+
 async function exerciseToday(page, profile, fixture) {
   const surface = await openToday(page, profile);
   const manual = taskTitle(fixture, "stale_manual_water");
@@ -909,32 +1171,35 @@ function assertDeduplicatedWeatherCheck(result, label) {
     `${label} created or failed to deduplicate a logical weather alert`);
 }
 
-async function runConcurrentWeatherChecks(page, gardenId) {
-  const results = await page.evaluate(async (selectedGardenId) => {
-    const csrf = document.cookie.split("; ")
-      .find((part) => part.startsWith("gardenops_csrf="))?.slice("gardenops_csrf=".length) || "";
-    const headers = {
-      "x-garden-id": String(selectedGardenId),
-      ...(csrf ? { "x-csrf-token": decodeURIComponent(csrf) } : {}),
-    };
-    const check = async () => {
-      const response = await fetch("/api/weather/check", {
-        credentials: "include",
-        headers,
-        method: "POST",
-      });
-      const body = await response.json();
-      return {
-        alerts_created: body?.alerts_created,
-        alerts_skipped: body?.alerts_skipped,
-        status: response.status,
-      };
-    };
-    return Promise.all([check(), check()]);
-  }, gardenId);
-  assert(results.length === 2 && results.every((result) => (
-    result.status === 200 && result.alerts_created === 0 && result.alerts_skipped >= 1
-  )), "Concurrent weather checks created or failed to deduplicate a logical alert");
+async function runConcurrentWeatherChecks(page, profile, garden) {
+  const peer = await page.context().newPage();
+  try {
+    await peer.goto(page.url(), { waitUntil: "domcontentloaded" });
+    await visible(peer.locator("#map-grid"), "concurrent weather peer map surface");
+    await selectGarden(peer, profile, garden.id);
+    await openCare(peer, profile);
+    const weatherPath = "/api/weather/check";
+    const waitForCheck = (browserPage) => browserPage.waitForResponse((response) => (
+      response.request().method() === "POST"
+        && new URL(response.url()).pathname === weatherPath
+    ));
+    const currentResponse = waitForCheck(page);
+    const peerResponse = waitForCheck(peer);
+    await Promise.all([
+      page.locator("#weather-dashboard .weather-check-btn").click(),
+      peer.locator("#weather-dashboard .weather-check-btn").click(),
+    ]);
+    const responses = await Promise.all([currentResponse, peerResponse]);
+    const results = await Promise.all(responses.map(async (response) => ({
+      ...(await response.json()),
+      status: response.status(),
+    })));
+    assert(results.length === 2 && results.every((result) => (
+      result.status === 200 && result.alerts_created === 0 && result.alerts_skipped >= 1
+    )), "Concurrent visible weather checks created or failed to deduplicate a logical alert");
+  } finally {
+    await peer.close();
+  }
 }
 
 async function exerciseWeather(page, profile, fixture) {
@@ -992,7 +1257,7 @@ async function exerciseWeather(page, profile, fixture) {
   assertDeduplicatedWeatherCheck(repeatedCheck, "Repeated weather check");
   assert(await page.locator(".weather-alert-card").filter({ hasText: /Heavy rain/i }).count() === 0,
     "Repeated weather check resurrected a dismissed rain alert");
-  await runConcurrentWeatherChecks(page, fixture.gardens.beta.id);
+  await runConcurrentWeatherChecks(page, profile, fixture.gardens.beta);
   await selectGarden(page, profile, fixture.gardens.alpha.id);
 }
 
@@ -1175,32 +1440,7 @@ async function exerciseOfflineTask(page, fixture) {
   }
 }
 
-async function issueExpectedViewerDenial(page, diagnostics, fixture) {
-  const task = taskTitle(fixture, "viewer_read_only");
-  const httpMark = diagnostics.httpErrors.length;
-  const consoleMark = diagnostics.consoleErrors.length;
-  const status = await page.evaluate(async (taskId) => {
-    const csrf = document.cookie.split("; ")
-      .find((part) => part.startsWith("gardenops_csrf="))?.slice("gardenops_csrf=".length) || "";
-    const response = await fetch(`/api/tasks/${taskId}/action`, {
-      body: JSON.stringify({ action: "skip" }),
-      credentials: "include",
-      headers: {
-        "content-type": "application/json",
-        ...(csrf ? { "x-csrf-token": decodeURIComponent(csrf) } : {}),
-      },
-      method: "POST",
-    });
-    return response.status;
-  }, task.id);
-  assert(status === 403, `Viewer task mutation returned ${status}`);
-  await waitFor(() => diagnostics.httpErrors.length === httpMark + 1, "viewer 403 HTTP diagnostic");
-  diagnostics.httpErrors.splice(httpMark, 1);
-  await waitFor(() => diagnostics.consoleErrors.length === consoleMark + 1, "viewer 403 console diagnostic");
-  diagnostics.consoleErrors.splice(consoleMark, 1);
-}
-
-async function exerciseViewer(page, profile, fixture, diagnostics) {
+async function exerciseViewer(page, profile, fixture) {
   await openTasks(page, profile);
   const task = taskTitle(fixture, "viewer_read_only");
   const card = taskCard(page, task.title);
@@ -1213,7 +1453,19 @@ async function exerciseViewer(page, profile, fixture, diagnostics) {
   await event.click();
   assert(await page.locator("#calendar-detail-panel .calendar-detail-actions").count() === 0,
     `${profile} viewer received calendar task actions`);
-  await issueExpectedViewerDenial(page, diagnostics, fixture);
+  const today = await openToday(page, profile);
+  await visible(today.locator('[data-testid="attention-today-section-needs_attention"]'),
+    `${profile} viewer Today affordance`);
+  assert(await today.locator(".attention-today-actions button").count() === 0,
+    `${profile} viewer Today received write controls`);
+  if (profile === "mobile") {
+    await page.locator("[data-testid='attention-today-mobile-close']").click();
+  }
+  await selectGarden(page, profile, fixture.gardens.beta.id);
+  await openCare(page, profile);
+  await visible(page.locator("#weather-dashboard"), `${profile} viewer Weather affordance`);
+  assert(await page.locator("#weather-dashboard .weather-check-btn").count() === 0,
+    `${profile} viewer Weather received write controls`);
 }
 
 async function runProfile(options) {
@@ -1225,6 +1477,7 @@ async function runProfile(options) {
     run.profile,
     artifactDir,
     `phase-two-${run.profile}-${run.role}`,
+    { baseUrl },
   );
   await freezeBrowserClock(guarded.context, fixture.clock.attention_now_ms);
   await guarded.context.grantPermissions(["clipboard-write"], { origin: baseUrl });
@@ -1250,6 +1503,10 @@ async function runProfile(options) {
     result.browser_profile.max_touch_points = await page.evaluate(() => navigator.maxTouchPoints);
     result.browser_profile.has_touch = result.browser_profile.max_touch_points > 0;
     result.browser_profile.viewport = page.viewportSize();
+    result.browser_profile.user_agent_contract = assertBrowserProfileContract(
+      run.profile,
+      result.browser_profile,
+    );
     await visible(page.locator("#map-grid"), "Phase 2 map-first surface");
     await selectGarden(page, run.profile, fixture.gardens.alpha.id);
     result.checks.last_completed_step = "profile-setup";
@@ -1266,27 +1523,28 @@ async function runProfile(options) {
         false,
       );
       result.checks.last_completed_step = "bloom-completion";
-      await completeGroupedFertilize(page, fixture);
-      result.checks.last_completed_step = "grouped-completion";
-      await exerciseImmediateSnoozeCorrection(page, fixture);
-      result.checks.last_completed_step = "immediate-snooze-correction";
       await snoozePruneWithManualDate(page, fixture);
       result.checks.last_completed_step = "manual-snooze";
       await completeBatch(page, fixture);
       result.checks.last_completed_step = "batch-completion";
       await completePlotDrawerTask(page, fixture);
       result.checks.last_completed_step = "plot-drawer-task";
-      await exerciseCalendarLifecycle(page, fixture, guarded.diagnostics);
+      await exerciseTasksCalendarRace(page, guarded.context, fixture);
+      result.checks.last_completed_step = "tasks-calendar-race";
+      await exerciseCalendarLifecycle(page, run.profile, fixture, guarded.diagnostics, {
+        onSubscriptionCreated: async ({ label }) => {
+          await exerciseCalendarSubscriptionRace(page, guarded.context, fixture, label);
+        },
+      });
       result.checks.last_completed_step = "calendar-lifecycle";
       await exerciseNotificationSettingsRace(page, guarded.context, fixture);
       result.checks.last_completed_step = "notification-settings-race";
-      await exerciseNotifications(page);
+      await exerciseNotifications(page, fixture, options.onPreferencesSaved);
       result.checks.last_completed_step = "notification-preferences";
       await exercisePostMutationReload(page, fixture);
       result.checks.last_completed_step = "post-mutation-reload";
       result.checks.admin_daily_attention_workflow = true;
       result.checks.task_surface_parity = true;
-      result.checks.immediate_snooze_correction_action = true;
       result.checks.calendar_lifecycle_export_subscription = true;
       result.checks.calendar_export_selected_garden_scope = true;
       result.checks.calendar_feed_token_revocation = true;
@@ -1294,6 +1552,8 @@ async function runProfile(options) {
       result.checks.notification_preferences_and_accessibility = true;
       result.checks.notification_attention_projection_after_refresh = true;
       result.checks.notification_settings_aba_race = true;
+      result.checks.tasks_calendar_subscriptions_aba_race = true;
+      result.checks.stale_dom_assertions = true;
       result.checks.post_mutation_reload_surfaces = true;
       result.checks.post_mutation_reload_journal_records = true;
     } else if (run.role === "admin" && run.profile === "mobile") {
@@ -1301,6 +1561,16 @@ async function runProfile(options) {
       result.checks.last_completed_step = "mobile-today";
       await completeMobileQuickActions(page, fixture);
       result.checks.last_completed_step = "mobile-quick-actions";
+      await exerciseMobilePartialGroupedAndSnooze(page, fixture);
+      result.checks.last_completed_step = "mobile-partial-grouped-snooze";
+      await exerciseCalendarLifecycle(page, run.profile, fixture, guarded.diagnostics, {
+        includeExportAndSubscription: false,
+      });
+      result.checks.last_completed_step = "mobile-calendar-lifecycle";
+      await exerciseMobileNotificationPreferenceMutation(page);
+      result.checks.last_completed_step = "mobile-notification-preferences";
+      await exerciseMobileHistoryReload(page, fixture);
+      result.checks.last_completed_step = "mobile-history-reload";
       await exerciseWeather(page, run.profile, fixture);
       result.checks.last_completed_step = "mobile-weather";
       await exerciseMobileCalendarAndNotifications(page, fixture);
@@ -1311,6 +1581,12 @@ async function runProfile(options) {
       result.checks.weather_concurrent_identity_deduplication = true;
       result.checks.mobile_calendar_notification_focus_inert = true;
       result.checks.mobile_calendar_month_week_list_navigation = true;
+      result.checks.mobile_partial_grouped_task_work = true;
+      result.checks.mobile_snooze_manual_date = true;
+      result.checks.immediate_snooze_correction_action = true;
+      result.checks.mobile_calendar_lifecycle = true;
+      result.checks.mobile_notification_preference_mutation = true;
+      result.checks.mobile_history_reload = true;
     } else if (run.role === "editor" && run.profile === "desktop") {
       await exerciseEditorCalendar(page, fixture);
       result.checks.last_completed_step = "editor-calendar";
@@ -1324,9 +1600,10 @@ async function runProfile(options) {
       result.checks.editor_offline_task_replay = true;
       result.checks.editor_offline_task_actions_replay = true;
     } else {
-      await exerciseViewer(page, run.profile, fixture, guarded.diagnostics);
+      await exerciseViewer(page, run.profile, fixture);
       result.checks.last_completed_step = "viewer-read-only";
       result.checks.viewer_read_only_and_denial = true;
+      result.checks.viewer_today_weather_affordances = true;
     }
 
     result.structure = await assertPageStructure(

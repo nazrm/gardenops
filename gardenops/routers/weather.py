@@ -19,13 +19,10 @@ from gardenops.router_helpers import (
 )
 from gardenops.services.attention import set_user_attention_state
 from gardenops.services.attention.types import attention_request_clock
-from gardenops.services.automation import (
-    on_dry_spell_alert,
-    on_frost_alert,
-    on_heat_alert,
-    on_rain_alert,
+from gardenops.services.notification_service import (
+    clear_weather_alert_notifications,
+    reconcile_weather_alert_work,
 )
-from gardenops.services.notification_service import create_weather_alert_notifications
 from gardenops.services.weather_service import (
     check_weather_and_generate_alerts,
     find_frost_vulnerable_plants,
@@ -179,67 +176,21 @@ def check_weather(request: Request, db: DB) -> dict:
     garden_id = _active_garden_id(context)
     _require_write(context)
     lat, lng = _get_garden_location(db, garden_id)
+    now_ms, _ = _weather_request_clock()
 
     result = check_weather_and_generate_alerts(db, garden_id, lat, lng)
-
-    # Create per-recipient notifications for new active alerts.
-    if result["alerts_created"] > 0:
-        notification_result = create_weather_alert_notifications(
+    try:
+        reconcile_weather_alert_work(
             db,
             garden_id=garden_id,
             alerts=list(result.get("alerts", [])),
+            actor_user_id=context.user_id,
+            now_ms=now_ms,
         )
-        if notification_result.get("created", 0) > 0:
-            db.commit()
-
-    # Generate frost protection tasks for new frost alerts
-    frost_tasks = 0
-    for alert in result.get("alerts", []):
-        if alert.get("alert_type") == "frost_warning":
-            row = db.execute(
-                "SELECT id FROM weather_alerts"
-                " WHERE garden_id = %s AND alert_type = 'frost_warning'"
-                " AND valid_from = %s AND dismissed = 0"
-                " ORDER BY id DESC LIMIT 1",
-                (garden_id, alert["valid_from"]),
-            ).fetchone()
-            if row:
-                frost_tasks += on_frost_alert(
-                    db,
-                    garden_id,
-                    int(row["id"]),
-                    context.user_id,
-                )
-    if frost_tasks > 0:
         db.commit()
-
-    # Generate tasks for other alert types
-    other_tasks = 0
-    alert_type_handlers = {
-        "heat_wave": on_heat_alert,
-        "dry_spell": on_dry_spell_alert,
-        "rain_surplus": on_rain_alert,
-    }
-    for alert in result.get("alerts", []):
-        handler = alert_type_handlers.get(alert.get("alert_type", ""))
-        if not handler:
-            continue
-        row = db.execute(
-            "SELECT id FROM weather_alerts"
-            " WHERE garden_id = %s AND alert_type = %s"
-            " AND valid_from = %s AND dismissed = 0"
-            " ORDER BY id DESC LIMIT 1",
-            (garden_id, alert["alert_type"], alert["valid_from"]),
-        ).fetchone()
-        if row:
-            other_tasks += handler(
-                db,
-                garden_id,
-                int(row["id"]),
-                context.user_id,
-            )
-    if other_tasks > 0:
-        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return {
         "forecast_available": result["forecast_available"],
@@ -257,22 +208,40 @@ def dismiss_alert(alert_id: int, request: Request, db: DB) -> dict:
     if context.user_id is None:
         raise HTTPException(status_code=403, detail="Authentication required")
 
-    row = db.execute(
-        "SELECT id FROM weather_alerts WHERE id = %s AND garden_id = %s FOR UPDATE",
-        (alert_id, garden_id),
-    ).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Alert not found")
+    now_ms, _ = _weather_request_clock()
+    try:
+        row = db.execute(
+            """
+            SELECT id, alert_type, valid_from
+            FROM weather_alerts
+            WHERE id = %s AND garden_id = %s
+            FOR UPDATE
+            """,
+            (alert_id, garden_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Alert not found")
 
-    set_user_attention_state(
-        db,
-        garden_id=garden_id,
-        user_id=int(context.user_id),
-        item_id=f"attn:weather:alert:{alert_id}",
-        user_state="dismissed",
-        now_ms=_weather_request_clock()[0],
-    )
-    db.commit()
+        set_user_attention_state(
+            db,
+            garden_id=garden_id,
+            user_id=int(context.user_id),
+            item_id=f"attn:weather:alert:{alert_id}",
+            user_state="dismissed",
+            now_ms=now_ms,
+        )
+        clear_weather_alert_notifications(
+            db,
+            garden_id=garden_id,
+            user_id=int(context.user_id),
+            alert_type=str(row["alert_type"]),
+            valid_from=str(row["valid_from"]),
+            now_ms=now_ms,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return {"status": "dismissed", "id": alert_id}
 
 

@@ -16,6 +16,7 @@ export interface AttentionTodayPanelOptions {
   fetchPreferences: () => Promise<AttentionPreferences>;
   updatePreferences: (preferences: AttentionPreferencesUpdate) => Promise<AttentionPreferences>;
   getRequestScope?: () => AttentionTodayRequestScope;
+  canWrite?: () => boolean;
   onPrimaryAction?: (
     item: AttentionItem,
     action: AttentionAction,
@@ -167,6 +168,10 @@ function actionLabel(action: AttentionAction): string {
   return t("attention.open");
 }
 
+function isAttentionWriteAction(action: AttentionAction): boolean {
+  return action.kind === "restore_attention_outcome";
+}
+
 function itemCount(feed: AttentionTodayResponse | null): number {
   if (!feed) return 0;
   return MOBILE_COUNT_KEYS.reduce((total, key) => total + (feed.counts[key] ?? 0), 0);
@@ -204,11 +209,27 @@ function ruleForRow(
   row: PreferenceRuleRow,
   rules: Record<string, AttentionPreferenceRule>,
 ): AttentionPreferenceRule {
-  for (const key of row.ruleKeys) {
-    const rule = rules[key];
-    if (rule) return { ...rule };
+  const groupedRules = row.ruleKeys
+    .map((key) => rules[key])
+    .filter((rule): rule is AttentionPreferenceRule => Boolean(rule));
+  if (groupedRules.length === 0) {
+    return { panel: true, inbox: false, digest: false, min_severity: "low" };
   }
-  return { panel: true, inbox: false, digest: false, min_severity: "low" };
+  const minSeverity = groupedRules.reduce<AttentionItem["severity"]>(
+    (highest, rule) => {
+      const candidate = rule.min_severity ?? "low";
+      return SEVERITY_OPTIONS.indexOf(candidate) > SEVERITY_OPTIONS.indexOf(highest)
+        ? candidate
+        : highest;
+    },
+    "low",
+  );
+  return {
+    panel: groupedRules.every((rule) => Boolean(rule.panel)),
+    inbox: groupedRules.every((rule) => Boolean(rule.inbox)),
+    digest: groupedRules.every((rule) => Boolean(rule.digest)),
+    min_severity: minSeverity,
+  };
 }
 
 function assignRuleToRow(
@@ -504,6 +525,7 @@ export function initAttentionTodayPanel(
     const customRadio = fieldset.querySelector<HTMLInputElement>(
       "input[value='custom']",
     );
+    const dirtyRuleRows = new Set<string>();
     const selectCustomPreset = (): void => {
       if (customRadio) customRadio.checked = true;
     };
@@ -544,6 +566,10 @@ export function initAttentionTodayPanel(
 
     PREFERENCE_RULE_ROWS.forEach((rowConfig) => {
       const rule = ruleForRow(rowConfig, preferences.rules);
+      const selectCustomRule = (): void => {
+        dirtyRuleRows.add(rowConfig.id);
+        selectCustomPreset();
+      };
       const row = document.createElement("div");
       row.className = "attention-preferences-rule-row";
       row.setAttribute("data-testid", `attention-preferences-rule-${rowConfig.id}`);
@@ -577,7 +603,7 @@ export function initAttentionTodayPanel(
           "data-testid",
           `attention-preferences-rule-${rowConfig.id}-${surface}`,
         );
-        toggle.addEventListener("change", selectCustomPreset);
+        toggle.addEventListener("change", selectCustomRule);
         surfaceToggle.appendChild(toggle);
         appendTextElement(
           surfaceToggle,
@@ -605,7 +631,7 @@ export function initAttentionTodayPanel(
         if ((rule.min_severity ?? "low") === optionValue) option.selected = true;
         severity.appendChild(option);
       });
-      severity.addEventListener("change", selectCustomPreset);
+      severity.addEventListener("change", selectCustomRule);
       row.appendChild(severity);
       matrix.appendChild(row);
     });
@@ -723,6 +749,7 @@ export function initAttentionTodayPanel(
     function collectCustomRules(): Record<string, AttentionPreferenceRule> {
       const rules = clonePreferenceRules(preferences.rules);
       PREFERENCE_RULE_ROWS.forEach((rowConfig) => {
+        if (!dirtyRuleRows.has(rowConfig.id)) return;
         const rule: AttentionPreferenceRule = {};
         MATRIX_SURFACES.forEach((surface) => {
           rule[surface] = form.querySelector<HTMLInputElement>(
@@ -768,6 +795,10 @@ export function initAttentionTodayPanel(
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
+      if (!(options.canWrite?.() ?? true)) {
+        closePreferencesDialog(true);
+        return;
+      }
       const selected = form.querySelector<HTMLInputElement>(
         "input[name='attention-preference-preset']:checked",
       );
@@ -817,6 +848,7 @@ export function initAttentionTodayPanel(
   }
 
   async function openPreferencesDialog(button: HTMLButtonElement): Promise<void> {
+    if (!(options.canWrite?.() ?? true)) return;
     const requestScope = options.getRequestScope?.();
     if (requestScope?.gardenId === null) return;
     button.disabled = true;
@@ -887,6 +919,7 @@ export function initAttentionTodayPanel(
     button: HTMLButtonElement,
   ): Promise<void> {
     if (!handler) return;
+    if (isAttentionWriteAction(action) && !(options.canWrite?.() ?? true)) return;
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
     try {
@@ -981,11 +1014,22 @@ export function initAttentionTodayPanel(
 
     const actions = document.createElement("div");
     actions.className = "attention-today-actions";
-    if (item.primary_action && item.primary_action.kind !== "open_attention_detail") {
+    const canRenderAttentionAction = (action: AttentionAction): boolean => {
+      if (!isAttentionWriteAction(action)) return true;
+      if (options.canWrite?.() ?? true) return true;
+      return false;
+    };
+    if (
+      item.primary_action
+      && item.primary_action.kind !== "open_attention_detail"
+      && canRenderAttentionAction(item.primary_action)
+    ) {
       actions.appendChild(createActionButton(item, item.primary_action, "primary"));
     }
     item.secondary_actions.forEach((action) => {
-      actions.appendChild(createActionButton(item, action, "secondary"));
+      if (canRenderAttentionAction(action)) {
+        actions.appendChild(createActionButton(item, action, "secondary"));
+      }
     });
     if (actions.childElementCount > 0) {
       article.appendChild(actions);
@@ -1060,17 +1104,19 @@ export function initAttentionTodayPanel(
 
     const actions = document.createElement("div");
     actions.className = "attention-today-header-actions";
-    const settings = document.createElement("button");
-    settings.type = "button";
-    settings.className = "attention-today-icon-btn";
-    settings.textContent = t("attention.settings_short");
-    settings.setAttribute("aria-label", t("attention.settings"));
-    settings.title = t("attention.settings");
-    settings.setAttribute("data-testid", "attention-today-settings");
-    settings.addEventListener("click", () => {
-      void openPreferencesDialog(settings);
-    });
-    actions.appendChild(settings);
+    if (options.canWrite?.() ?? true) {
+      const settings = document.createElement("button");
+      settings.type = "button";
+      settings.className = "attention-today-icon-btn";
+      settings.textContent = t("attention.settings_short");
+      settings.setAttribute("aria-label", t("attention.settings"));
+      settings.title = t("attention.settings");
+      settings.setAttribute("data-testid", "attention-today-settings");
+      settings.addEventListener("click", () => {
+        void openPreferencesDialog(settings);
+      });
+      actions.appendChild(settings);
+    }
 
     if (includeClose) {
       const close = document.createElement("button");

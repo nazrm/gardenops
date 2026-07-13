@@ -1577,6 +1577,16 @@ async function loadTasksTab(): Promise<void> {
   await mod.loadTasks();
 }
 
+async function openTaskFromAttention(
+  taskId: string,
+  expectedGardenId: number | null,
+): Promise<void> {
+  if (!taskId || !isCurrentGardenRequest(expectedGardenId)) return;
+  const mod = await ensureTasksTabInitialized();
+  if (!isCurrentGardenRequest(expectedGardenId)) return;
+  await mod.openTaskFromAttention(taskId, expectedGardenId);
+}
+
 function ensureHarvestTabInitialized(): Promise<HarvestTabModule> {
   harvestTabModulePromise ??= import("./tabs/harvestTab")
     .then((mod) => {
@@ -2055,45 +2065,61 @@ async function handleAttentionTodayAction(
   item: AttentionItem,
   action: AttentionAction,
 ): Promise<void> {
+  const requestGardenId = getActiveGardenContext();
+  if (requestGardenId === null) return;
   if (action.kind === "restore_attention_outcome") {
+    if (!ensureWriteAccess()) return;
     await restoreAttentionOutcomeApi(action.target_id);
+    if (!isCurrentGardenRequest(requestGardenId)) return;
     attentionTodayPanel?.refresh();
     return;
   }
   if (action.kind === "open_attention_detail") {
+    if (!isCurrentGardenRequest(requestGardenId)) return;
     attentionTodayPanel?.refresh();
     return;
   }
   const firstPlotId = item.plot_ids[0];
   if (firstPlotId) {
     await appContext.selectPlot(firstPlotId);
+    if (!isCurrentGardenRequest(requestGardenId)) return;
   }
   if (action.kind === "open_issue" || action.target_type === "issue" || item.target_type === "issue") {
     navigateToSubMode("issues");
     await loadIssues();
+    if (!isCurrentGardenRequest(requestGardenId)) return;
     attentionTodayPanel?.refresh();
     return;
   }
   if (action.kind === "open_task" || action.target_type === "task" || item.target_type === "task") {
+    const targetTaskId = action.target_id || item.target_id || "";
     navigateToSubMode("tasks");
-    await loadTasksTab();
+    if (targetTaskId) {
+      await openTaskFromAttention(targetTaskId, requestGardenId);
+    } else {
+      await loadTasksTab();
+    }
+    if (!isCurrentGardenRequest(requestGardenId)) return;
     attentionTodayPanel?.refresh();
     return;
   }
   if (action.kind === "open_weather" || action.target_type === "weather_alert") {
     navigateToSubMode("care");
     await loadWeather();
+    if (!isCurrentGardenRequest(requestGardenId)) return;
     attentionTodayPanel?.refresh();
     return;
   }
   if (action.kind === "select_plot" && action.target_id) {
     await appContext.selectPlot(action.target_id);
+    if (!isCurrentGardenRequest(requestGardenId)) return;
     setActiveTab("map");
     attentionTodayPanel?.refresh();
     return;
   }
   navigateToSubMode("tasks");
   await loadTasksTab();
+  if (!isCurrentGardenRequest(requestGardenId)) return;
   attentionTodayPanel?.refresh();
 }
 
@@ -2150,6 +2176,7 @@ function ensureAttentionTodayPanel(): void {
         return updated;
       },
       getRequestScope: attentionTodayRequestScope,
+      canWrite: () => canWriteInGarden,
       onPrimaryAction: handleAttentionTodayAction,
       onSecondaryAction: handleAttentionTodayAction,
       onViewSection: handleAttentionTodayViewSection,
@@ -6817,6 +6844,8 @@ function clearGardenScopedStateForSwitch(): void {
   weatherCacheRequestVersion += 1;
   weatherMutationRefreshVersion += 1;
   invalidateAttentionTodayForCurrentGarden();
+  tasksTabModule?.resetTasksForGardenSwitch();
+  calendarTabModule?.resetCalendarForGardenSwitch();
   weatherLoadedAt = 0;
   weatherLoadPromise = null;
   weatherScheduleSeq += 1;

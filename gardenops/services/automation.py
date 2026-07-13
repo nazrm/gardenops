@@ -249,6 +249,22 @@ _CARE_WATERING_SQL = """
       AND p.care_watering IS NOT NULL AND p.care_watering != ''
 """
 
+_OUTDOOR_CARE_WATERING_SQL = """
+    SELECT p.plt_id, p.name, p.care_watering
+    FROM plants p
+    JOIN plant_ownership po ON po.plt_id = p.plt_id
+    WHERE po.garden_id = %s
+      AND p.care_watering IS NOT NULL AND p.care_watering != ''
+      AND EXISTS (
+          SELECT 1
+          FROM plot_plants pp
+          JOIN plots outdoor_plot ON outdoor_plot.plot_id = pp.plot_id
+          WHERE pp.plt_id = p.plt_id
+            AND outdoor_plot.garden_id = po.garden_id
+            AND outdoor_plot.grid_row IS NOT NULL
+      )
+"""
+
 
 def _frost_min_temp_from_alert(alert: Any) -> float | None:
     try:
@@ -298,6 +314,7 @@ def _create_weather_tasks(
     title_tpl: str,
     desc_en_tpl: str,
     desc_no_tpl: str,
+    outdoor_plot_links_only: bool = False,
 ) -> int:
     """Create weather-alert tasks for matching plants. Returns count created."""
     alert = db.execute(
@@ -342,18 +359,34 @@ def _create_weather_tasks(
     if not pending_plants:
         return 0
 
+    pending_plant_ids = [plt_id for _, plt_id, _ in pending_plants]
+    if outdoor_plot_links_only:
+        plot_rows = db.execute(
+            """
+            SELECT pp.plt_id, pp.plot_id
+            FROM plot_plants pp
+            JOIN plots p ON p.plot_id = pp.plot_id
+            WHERE p.garden_id = %s
+              AND p.grid_row IS NOT NULL
+              AND pp.plt_id = ANY(%s)
+            ORDER BY pp.plt_id, pp.plot_id
+            """,
+            (garden_id, pending_plant_ids),
+        ).fetchall()
+    else:
+        plot_rows = db.execute(
+            """
+            SELECT pp.plt_id, pp.plot_id
+            FROM plot_plants pp
+            JOIN plot_ownership po ON pp.plot_id = po.plot_id
+            WHERE po.garden_id = %s
+              AND pp.plt_id = ANY(%s)
+            ORDER BY pp.plt_id, pp.plot_id
+            """,
+            (garden_id, pending_plant_ids),
+        ).fetchall()
     plot_ids_by_plant: dict[str, list[str]] = {}
-    for row in db.execute(
-        """
-        SELECT pp.plt_id, pp.plot_id
-        FROM plot_plants pp
-        JOIN plot_ownership po ON pp.plot_id = po.plot_id
-        WHERE po.garden_id = %s
-          AND pp.plt_id = ANY(%s)
-        ORDER BY pp.plt_id, pp.plot_id
-        """,
-        (garden_id, [plt_id for _, plt_id, _ in pending_plants]),
-    ).fetchall():
+    for row in plot_rows:
         plot_ids_by_plant.setdefault(str(row["plt_id"]), []).append(str(row["plot_id"]))
 
     for plant, plt_id, rule_source in pending_plants:
@@ -489,7 +522,7 @@ def on_rain_alert(
         garden_id,
         alert_id,
         actor_user_id,
-        plant_sql=_CARE_WATERING_SQL,
+        plant_sql=_OUTDOOR_CARE_WATERING_SQL,
         plant_filter=_needs_extra_watering,
         task_type="protect",
         rule_prefix="auto:rain_drainage",
@@ -497,6 +530,7 @@ def on_rain_alert(
         title_tpl="Check drainage: {name}",
         desc_en_tpl="Heavy rain \u2014 check drainage around {name}, avoid waterlogging",
         desc_no_tpl="Kraftig regn \u2014 sjekk drenering rundt {name}, unng\u00e5 vannmetning",
+        outdoor_plot_links_only=True,
     )
     _reschedule_watering_during_rain(db, garden_id, alert_id)
     return created

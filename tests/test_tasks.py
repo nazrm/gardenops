@@ -798,6 +798,73 @@ class TestTasks(BaseApiTest):
         self.assertEqual(done_journal["total"], 1)
         self.assertEqual(remaining_journal["total"], 0)
 
+    def test_grouped_partial_completion_splits_plot_links_by_selected_plants(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "fertilize",
+                "title": "Fertilize shared beds",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-TEST", "PLT-002"],
+                "plot_ids": ["B1", "B2"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        conn = db.get_db()
+        try:
+            task = conn.execute(
+                "SELECT id FROM garden_tasks WHERE public_id = %s",
+                (task_id,),
+            ).fetchone()
+            self.assertIsNotNone(task)
+            foreign_garden = conn.execute(
+                "INSERT INTO gardens (slug, name) "
+                "VALUES ('plot-split-foreign', 'Foreign') RETURNING id",
+            ).fetchone()
+            self.assertIsNotNone(foreign_garden)
+            conn.execute(
+                """
+                INSERT INTO plots
+                    (plot_id, garden_id, zone_code, zone_name, plot_number,
+                     grid_row, grid_col, sub_zone, notes)
+                VALUES ('FOREIGN-PLOT', %s, 'F', 'Foreign', 1, 1, 1, '', '')
+                """,
+                (int(foreign_garden["id"]),),
+            )
+            conn.execute(
+                """
+                INSERT INTO plot_plants (plot_id, plt_id, quantity)
+                VALUES
+                    ('B1', 'PLT-TEST', 1),
+                    ('B2', 'PLT-TEST', 1),
+                    ('B2', 'PLT-002', 1),
+                    ('FOREIGN-PLOT', 'PLT-TEST', 1)
+                """,
+            )
+            conn.execute(
+                "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'FOREIGN-PLOT')",
+                (int(task["id"]),),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        response = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            json={"action": "complete", "completed_plant_ids": ["PLT-TEST"]},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        task = self.client.get(f"/api/tasks/{task_id}").json()
+        journal = self.client.get("/api/journal?event_type=fertilized&plant_id=PLT-TEST").json()
+        self.assertEqual(task["status"], "pending")
+        self.assertEqual(task["plant_ids"], ["PLT-002"])
+        self.assertEqual(task["plot_ids"], ["B2"])
+        self.assertEqual(journal["total"], 1)
+        self.assertEqual(sorted(journal["entries"][0]["plot_ids"]), ["B1", "B2"])
+
     def test_task_completion_capture_is_idempotent_for_same_selected_plants(self) -> None:
         response = self.client.post(
             "/api/tasks",

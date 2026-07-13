@@ -823,7 +823,7 @@ def get_calendar_subscription_feed(
         scope = {}
     preset_key = normalize_calendar_preset(str(row["preset_key"] or "essential"))
     source_keys = normalize_visible_sources(scope.get("visible_sources"), preset_key=preset_key)
-    _now_ms, today, generated_at = _calendar_request_clock()
+    _now_ms, today, _generated_at = _calendar_request_clock()
     start_date, end_date = subscription_window(today)
     payload = build_calendar_payload(
         conn,
@@ -836,10 +836,16 @@ def get_calendar_subscription_feed(
         selected_plot_ids=[],
         selected_zone_codes=[],
     )
+    subscription_updated_at_ms = int(row["updated_at_ms"] or row["created_at_ms"] or 0)
+    subscription_timestamp = (
+        datetime.fromtimestamp(subscription_updated_at_ms / 1000, tz=UTC)
+        if subscription_updated_at_ms
+        else None
+    )
     ics, etag, last_modified = build_calendar_ics(
         garden_name=_garden_name(conn, int(row["garden_id"])),
         events=payload["events"],
-        generated_at=generated_at,
+        generated_at=subscription_timestamp,
     )
     if request.headers.get("if-none-match", "").strip() == etag:
         headers = {

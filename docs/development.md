@@ -287,14 +287,32 @@ filesystem state. The focused backend suite additionally injects a failure
 during restore and proves the transaction rolls back.
 
 Phase 2 runs six independent administrator, editor, and viewer profiles across
-desktop Chromium and a true Pixel 7 context. It exercises Today, every supported
-task action surface, partial grouped completion, task-specific snooze policy,
-offline task replay, durable completion history, Calendar CRUD and ICS download,
-subscription revocation, notification preference normalization and delivery
-eligibility, weather checks, rain no-action outcomes, stale generated-watering
-expiry, and repeated/concurrent weather deduplication. The checker reloads linked
-surfaces and then compares exact task, journal, attention, notification,
-calendar, weather, and offline-operation state in PostgreSQL.
+desktop Chromium and a true Pixel 7 context. The browser guard permits only the
+configured disposable frontend, backend, and optional provider origins on literal
+`127.0.0.1` ports; user mutations use visible controls, while the few page-origin
+fetches remain behind that same guard. Pixel 7 evidence enforces its viewport,
+user-agent contract, and touch capability, and the persisted private manifest
+records a hashed trace for every profile.
+
+The completed Phase 2 browser coverage exercises Today, task actions, mobile
+partial grouped completion and manual-date snoozing, Calendar lifecycle, mobile
+preference mutation and history reload, selected editor actions, viewer Today and
+Weather affordances, notification preference saving, weather checks, and delayed
+A/B/A stale-DOM checks for Tasks, Calendar, and subscriptions. After the desktop
+preference save, the disposable fixture creates one eligible and one ineligible
+system event, runs deterministic maintenance, and checks Today, inbox, badge,
+delivery, and the two persisted rows. The checker also preserves the scoped Phase
+1 final state during cumulative runs and compares semantic maintenance-created
+tasks, notifications, and alerts rather than accepting summary counts alone.
+
+Phase 2 database coverage remains required in `tests/journey_coverage.yaml`:
+the audit writer records wall-clock timestamps, so the harness can validate the
+new audit rows and report whether they are frozen but cannot honestly claim an
+exact frozen database postcondition without a supported product audit-clock
+injection. The same manifest keeps unsupported editor/viewer role dimensions
+required. Phase 8 accessibility and Phase 9 performance remain explicitly open;
+the current structural and focus assertions are not a substitute for those phase
+audits.
 
 When Phase 2 follows Phase 1 in a cumulative run, Phase 1's intentional garden
 address update invalidates cached forecasts. The guarded Phase 2 preparation

@@ -9,6 +9,8 @@ const path = require("node:path");
 const { assert, assertPageStructure } = require("./e2e/completeJourneyAssertions.cjs");
 const {
   assertLoopbackBaseUrl,
+  assertBrowserProfileContract,
+  allowedBrowserOrigins,
   isAllowedUrl,
   sanitizeDiagnostic,
 } = require("./e2e/completeJourneyBrowser.cjs");
@@ -56,7 +58,18 @@ function assertRunnerEnvironment() {
     "Invalid through-phase selection",
   );
   assertLoopbackBaseUrl(BASE_URL);
-  assert(isAllowedUrl(BASE_URL), "Complete journey BASE_URL is not loopback");
+  assert(
+    process.env.GARDENOPS_VITE_PROXY_TARGET,
+    "Complete journey browser contract requires a disposable backend origin",
+  );
+  const browserOrigins = allowedBrowserOrigins({
+    backendUrl: process.env.GARDENOPS_VITE_PROXY_TARGET || "",
+    baseUrl: BASE_URL,
+    providerUrl: process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_PROVIDER_URL || "",
+  });
+  assert(browserOrigins.size >= 2,
+    "Complete journey browser contract must include distinct frontend and backend origins");
+  assert(isAllowedUrl(BASE_URL, browserOrigins), "Complete journey BASE_URL is not in its browser contract");
   assert(fs.existsSync(CHROMIUM_EXECUTABLE), "System Chromium is required");
   assert(process.env.GARDENOPS_LOGS_DIR, "Complete journey backend log directory is required");
   assert(PHASE <= 2 && THROUGH_PHASE <= 2, "Requested phase is not implemented");
@@ -102,6 +115,15 @@ function runPhaseTwoMaintenance() {
   return JSON.parse(output.trim());
 }
 
+function runPhaseTwoPreferenceDelivery() {
+  const output = execFileSync(
+    path.join(ROOT, ".venv", "bin", "python"),
+    [path.join(ROOT, "scripts", "seed_complete_journeys_e2e.py"), "--phase-two-preference-delivery"],
+    { cwd: ROOT, encoding: "utf8", env: process.env },
+  );
+  return JSON.parse(output.trim());
+}
+
 function phaseOneAuditExpectedEvents(loginCount) {
   return [
     [10, "DELETE", "/api/gardens/{garden_id}/map-objects/{public_id}", 200],
@@ -116,7 +138,6 @@ function phaseOneAuditExpectedEvents(loginCount) {
     [1, "PATCH", "/api/gardens/{garden_id}/map-objects/obj_optimization_journeys_a", 200],
     [2, "PATCH", "/api/gardens/{garden_id}/map-objects/{public_id}/units/{public_id}", 200],
     [4, "PATCH", "/api/gardens/{garden_id}/settings", 200],
-    [1, "PATCH", "/api/gardens/{garden_id}/settings", 403],
     [6, "PATCH", "/api/layout-state", 200],
     [6, "PATCH", "/api/plants/{created_plant_id}", 200],
     [1, "PATCH", "/api/plots/P1MOBILEPLOT", 200],
@@ -124,7 +145,6 @@ function phaseOneAuditExpectedEvents(loginCount) {
     [loginCount, "POST", "/api/auth/login", 200],
     [9, "POST", "/api/auth/reauthenticate", 200],
     [2, "POST", "/api/gardens/{garden_id}/complete-onboarding", 200],
-    [1, "POST", "/api/gardens/{garden_id}/map-objects", 403],
     [10, "POST", "/api/gardens/{garden_id}/map-objects", 201],
     [4, "POST", "/api/gardens/{garden_id}/map-objects/{public_id}/units", 201],
     [2, "POST", "/api/gardens", 201],
@@ -134,11 +154,9 @@ function phaseOneAuditExpectedEvents(loginCount) {
     [4, "POST", "/api/plots/OPT-JOURNEY-A-PLOT/plants/{created_plant_id}", 201],
     [2, "POST", "/api/plots/P1EDITORASSIGN/plants/{created_plant_id}", 201],
     [2, "POST", "/api/plots/import", 200],
-    [1, "POST", "/api/plots/import", 403],
     [1, "POST", "/api/plots/import", 409],
     [3, "POST", "/api/plots/import", 422],
     [3, "POST", "/api/saved-views", 201],
-    [1, "POST", "/api/snapshots", 403],
     [2, "POST", "/api/snapshots", 201],
     [2, "POST", "/api/snapshots/{public_id}/restore", 200],
   ].map(([count, method, path, status_code]) => ({ count, method, path, status_code }));
@@ -358,6 +376,58 @@ function sanitizeCheckValue(value, depth = 0) {
     }));
 }
 
+function sanitizeDatabaseEvidence(value, depth = 0) {
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : sanitizeDiagnostic(value);
+  if (typeof value === "string") {
+    return /^[A-Za-z0-9_.:-]{1,160}$/.test(value) ? value : sanitizeDiagnostic(value);
+  }
+  if (depth >= 8 || !value || typeof value !== "object") return sanitizeDiagnostic("invalid database evidence");
+  if (Array.isArray(value)) {
+    return value.slice(0, 500).map((item) => sanitizeDatabaseEvidence(item, depth + 1));
+  }
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => /^[a-z0-9_-]{1,100}$/i.test(key))
+    .map(([key, item]) => [key, sanitizeDatabaseEvidence(item, depth + 1)]));
+}
+
+function sanitizeTraceEvidence(value) {
+  if (typeof value === "string") {
+    return { name: safeIdentifier(value), sha256: null };
+  }
+  const name = safeIdentifier(value?.name);
+  const sha256 = String(value?.sha256 || "");
+  return {
+    name,
+    sha256: /^[a-f0-9]{64}$/.test(sha256) ? sha256 : null,
+  };
+}
+
+function assertTraceArtifacts(profiles, artifactDirectory = ARTIFACT_DIR) {
+  assert(Array.isArray(profiles), "Trace evidence profiles are missing");
+  const artifactRoot = fs.realpathSync.native(artifactDirectory);
+  return profiles.map((profile) => {
+    const trace = profile?.trace;
+    assert(trace && typeof trace === "object", "Browser profile has no hashed trace evidence");
+    const name = String(trace.name || "");
+    const sha256 = String(trace.sha256 || "");
+    assert(
+      /^[a-z0-9-]{1,160}-(?:passed|failed)\.zip$/.test(name),
+      "Trace artifact name is invalid",
+    );
+    assert(/^[a-f0-9]{64}$/.test(sha256), "Trace artifact SHA-256 is invalid");
+    const tracePath = path.join(artifactRoot, name);
+    const relative = path.relative(artifactRoot, tracePath);
+    assert(relative && !relative.startsWith("..") && !path.isAbsolute(relative), "Trace artifact escaped run directory");
+    const stat = fs.lstatSync(tracePath);
+    assert(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1,
+      "Trace artifact must be a regular, single-link file");
+    const observed = crypto.createHash("sha256").update(fs.readFileSync(tracePath)).digest("hex");
+    assert(observed === sha256, `Trace artifact hash mismatch: ${name}`);
+    return { name, sha256 };
+  });
+}
+
 function backendErrorEvidence(logDirectory = process.env.GARDENOPS_LOGS_DIR || "") {
   assert(logDirectory, "Complete journey backend log directory is required");
   const backendLogPath = path.join(logDirectory, "backend.log");
@@ -536,7 +606,7 @@ function assertPhaseOneProfileEvidence(profiles) {
       checks: [
         "viewer_role_affordances_and_denials",
         "viewer_m1_m3_read_only_behavior",
-        "viewer_a3_m4_write_denials",
+        "viewer_a3_m4_write_unavailable",
         "role_cross_garden_response_isolation",
       ],
     },
@@ -727,10 +797,11 @@ function assertPhaseTwoProfileEvidence(profiles) {
         "calendar_export_selected_garden_scope",
         "calendar_feed_token_revocation",
         "ics_export_integrity_scope_redaction",
-        "immediate_snooze_correction_action",
         "notification_preferences_and_accessibility",
         "notification_attention_projection_after_refresh",
         "notification_settings_aba_race",
+        "tasks_calendar_subscriptions_aba_race",
+        "stale_dom_assertions",
         "post_mutation_reload_surfaces",
         "post_mutation_reload_journal_records",
       ],
@@ -745,6 +816,12 @@ function assertPhaseTwoProfileEvidence(profiles) {
         "weather_concurrent_identity_deduplication",
         "mobile_calendar_notification_focus_inert",
         "mobile_calendar_month_week_list_navigation",
+        "mobile_partial_grouped_task_work",
+        "mobile_snooze_manual_date",
+        "immediate_snooze_correction_action",
+        "mobile_calendar_lifecycle",
+        "mobile_notification_preference_mutation",
+        "mobile_history_reload",
       ],
     },
     {
@@ -760,12 +837,12 @@ function assertPhaseTwoProfileEvidence(profiles) {
     {
       profile: "desktop",
       role: "viewer",
-      checks: ["viewer_read_only_and_denial"],
+      checks: ["viewer_read_only_and_denial", "viewer_today_weather_affordances"],
     },
     {
       profile: "mobile",
       role: "viewer",
-      checks: ["viewer_read_only_and_denial"],
+      checks: ["viewer_read_only_and_denial", "viewer_today_weather_affordances"],
     },
   ];
   assert(profiles.length === expectedProfiles.length, "Phase 2 browser profile count was unexpected");
@@ -796,6 +873,12 @@ function assertPhaseTwoProfileEvidence(profiles) {
           : profile.browser_profile?.max_touch_points === 0),
       `Phase 2 runtime touch evidence was unexpected: ${key}`,
     );
+    const expectedUserAgentContract = assertBrowserProfileContract(
+      expected.profile,
+      profile.browser_profile,
+    );
+    assert(profile.browser_profile?.user_agent_contract === expectedUserAgentContract,
+      `Phase 2 user-agent contract evidence was unexpected: ${key}`);
     for (const check of expected.checks) {
       assert(profile.checks?.[check] === true, `Phase 2 browser check is missing: ${key}:${check}`);
     }
@@ -803,6 +886,73 @@ function assertPhaseTwoProfileEvidence(profiles) {
   return {
     expected_profile_count: expectedProfiles.length,
     profile_matrix_enforced: true,
+  };
+}
+
+function isPhaseTwoAuditPath(pathname) {
+  return [
+    /^\/api\/auth\/login$/,
+    /^\/api\/calendar\/(?:manual-events(?:\/[^/]+)?|subscriptions(?:\/[^/]+)?)$/,
+    /^\/api\/notifications(?:\/(?:preferences|[^/]+(?:\/(?:dismiss|read))?))?$/,
+    /^\/api\/tasks(?:\/(?:batch-action|[^/]+\/action))?$/,
+    /^\/api\/weather\/(?:check|alerts\/\d+\/dismiss)$/,
+  ].some((pattern) => pattern.test(pathname));
+}
+
+function assertPhaseTwoAuditEvents(beforeAudit, finalAudit, profiles, fixture) {
+  assert(Array.isArray(beforeAudit?.records), "Phase 2 audit boundary records are missing");
+  assert(Array.isArray(finalAudit?.records), "Final Phase 2 audit records are missing");
+  const beforeById = new Map();
+  for (const record of beforeAudit.records) {
+    assert(Number.isSafeInteger(record?.id) && record.id > 0, "Phase 2 audit boundary has an invalid ID");
+    assert(!beforeById.has(record.id), `Phase 2 audit boundary duplicated ID: ${record.id}`);
+    beforeById.set(record.id, record);
+  }
+  const finalById = new Map();
+  for (const record of finalAudit.records) {
+    assert(Number.isSafeInteger(record?.id) && record.id > 0, "Final Phase 2 audit record has an invalid ID");
+    assert(!finalById.has(record.id), `Final Phase 2 audit record was duplicated: ${record.id}`);
+    finalById.set(record.id, record);
+  }
+  for (const [id, record] of beforeById) {
+    assert(finalById.has(id), `Phase 2 unexpectedly deleted audit record: ${id}`);
+    assert(canonicalJson(finalById.get(id)) === canonicalJson(record),
+      `Phase 2 unexpectedly mutated audit record: ${id}`);
+  }
+  const phaseTwoAuditEvents = [...finalById.values()]
+    .filter((record) => !beforeById.has(record.id))
+    .sort((left, right) => left.id - right.id);
+  assert(phaseTwoAuditEvents.length > 0, "Phase 2 did not persist any audit events");
+  const observedMutations = (profiles || []).flatMap((profile) => (
+    (profile?.requests || []).filter((request) => ["DELETE", "PATCH", "POST", "PUT"].includes(request.method))
+  ));
+  for (const event of phaseTwoAuditEvents) {
+    assert(
+      Number.isSafeInteger(event.occurred_at_ms) && event.occurred_at_ms > 0,
+      `Phase 2 audit event timestamp was invalid: ${event.id}`,
+    );
+    assert(
+      typeof event.path === "string" && isPhaseTwoAuditPath(event.path),
+      `Unexpected Phase 2 audit event path: ${event.method} ${event.path}`,
+    );
+    assert(["DELETE", "PATCH", "POST", "PUT"].includes(event.method),
+      `Phase 2 audit event used a non-mutation method: ${event.method} ${event.path}`);
+    assert(Number.isSafeInteger(event.status_code) && event.status_code >= 200 && event.status_code < 300,
+      `Phase 2 audit event was not a successful visible mutation: ${event.method} ${event.path}`);
+    assert(
+      observedMutations.some((request) => (
+        request.method === event.method && request.path === event.path
+      )),
+      `Phase 2 audit event was not observed through a browser UI request: ${event.method} ${event.path}`,
+    );
+  }
+  const auditTimestampsFrozen = phaseTwoAuditEvents.every(
+    (event) => event.occurred_at_ms === fixture.clock.attention_now_ms,
+  );
+  return {
+    phase_two_audit_event_count: phaseTwoAuditEvents.length,
+    phase_two_audit_events_exact: true,
+    phase_two_audit_timestamps_frozen: auditTimestampsFrozen,
   };
 }
 
@@ -822,7 +972,7 @@ function expectedPhaseTwoCanonicalAttentionRules() {
     needs_action: { ...needsAction },
     no_action_needed: { digest: false, inbox: false, panel: true },
     rain_alert: { ...warning },
-    system: { ...needsAction },
+    system: { digest: true, inbox: true, min_severity: "high", panel: true },
     task_completed: { ...panelFirst },
     task_due: { ...needsAction },
     task_expired: { ...panelFirst },
@@ -839,7 +989,193 @@ function expectedPhaseTwoCanonicalAttentionRules() {
   };
 }
 
-function assertPhaseTwoDatabaseState(state, fixture, maintenance) {
+function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture) {
+  const semantic = maintenance?.maintenance_semantic_state;
+  assert(semantic && typeof semantic === "object", "Phase 2 maintenance semantic state is missing");
+  assert(semantic.frozen_now_ms === fixture.clock.attention_now_ms,
+    "Phase 2 maintenance semantic state did not use the frozen timestamp");
+  const createdByTable = semantic.maintenance_created;
+  assert(createdByTable && typeof createdByTable === "object",
+    "Phase 2 maintenance created-row evidence is missing");
+  const expectedTables = ["tasks", "notifications", "weather_alerts"];
+  const createdCounts = {};
+  for (const table of expectedTables) {
+    const evidence = createdByTable[table];
+    assert(evidence && typeof evidence === "object", `Phase 2 maintenance ${table} evidence is missing`);
+    assert(Array.isArray(evidence.created) && Array.isArray(evidence.mutated_existing),
+      `Phase 2 maintenance ${table} semantic rows are missing`);
+    const rowIds = new Set();
+    for (const section of ["created", "mutated_existing"]) {
+      for (const entry of evidence[section]) {
+        const row = section === "mutated_existing"
+          ? assertMaintenanceMutationPair(entry, table)
+          : entry;
+        assert(Number.isSafeInteger(row?.row_id) && row.row_id > 0,
+          `Phase 2 maintenance ${table} row has an invalid identity`);
+        assert(!rowIds.has(row.row_id),
+          `Phase 2 maintenance ${table} row was duplicated across semantic evidence`);
+        rowIds.add(row.row_id);
+        assert(row.garden_id === fixture.gardens.alpha.id,
+          `Phase 2 maintenance ${table} changed the wrong garden`);
+      }
+    }
+    createdCounts[table] = evidence.created.length;
+  }
+  assertExpectedMaintenanceMutations(createdByTable, fixture);
+
+  const tasks = createdByTable.tasks.created;
+  const taskPublicIds = new Set();
+  for (const task of tasks) {
+    assert(typeof task.public_id === "string" && task.public_id.length > 0,
+      "Phase 2 maintenance task has no public ID");
+    assert(!taskPublicIds.has(task.public_id),
+      `Phase 2 maintenance created duplicate task: ${task.public_id}`);
+    taskPublicIds.add(task.public_id);
+    assert(task.created_at_ms === fixture.clock.attention_now_ms
+      && task.updated_at_ms === fixture.clock.attention_now_ms,
+    `Phase 2 maintenance task timestamp was not frozen: ${task.public_id}`);
+    assert(typeof task.task_type === "string" && task.task_type.length > 0
+      && typeof task.rule_source === "string" && task.rule_source.length > 0
+      && typeof task.status === "string" && task.status.length > 0,
+    `Phase 2 maintenance task semantics were incomplete: ${task.public_id}`);
+    assert(Array.isArray(task.plant_ids) && Array.isArray(task.plot_ids),
+      `Phase 2 maintenance task links were missing: ${task.public_id}`);
+  }
+
+  const notifications = createdByTable.notifications.created;
+  const notificationPublicIds = new Set();
+  for (const notification of notifications) {
+    assert(typeof notification.public_id === "string" && notification.public_id.length > 0,
+      "Phase 2 maintenance notification has no public ID");
+    assert(!notificationPublicIds.has(notification.public_id),
+      `Phase 2 maintenance created duplicate notification: ${notification.public_id}`);
+    notificationPublicIds.add(notification.public_id);
+    assert(notification.created_at_ms === fixture.clock.attention_now_ms,
+      `Phase 2 maintenance notification timestamp was not frozen: ${notification.public_id}`);
+    assert(typeof notification.notification_type === "string" && notification.notification_type.length > 0
+      && typeof notification.target_type === "string" && notification.target_type.length > 0
+      && typeof notification.target_id === "string" && notification.target_id.length > 0,
+    `Phase 2 maintenance notification semantics were incomplete: ${notification.public_id}`);
+  }
+
+  const weatherAlerts = createdByTable.weather_alerts.created;
+  const weatherKeys = new Set();
+  for (const alert of weatherAlerts) {
+    const key = `${alert.alert_type}:${alert.valid_from}:${alert.valid_until}:${alert.row_id}`;
+    assert(!weatherKeys.has(key), `Phase 2 maintenance created duplicate weather alert: ${key}`);
+    weatherKeys.add(key);
+    assert(alert.created_at_ms === fixture.clock.attention_now_ms,
+      `Phase 2 maintenance weather alert timestamp was not frozen: ${alert.row_id}`);
+    assert(typeof alert.alert_type === "string" && alert.alert_type.length > 0
+      && typeof alert.severity === "string" && alert.severity.length > 0
+      && Array.isArray(alert.plant_ids),
+    `Phase 2 maintenance weather alert semantics were incomplete: ${alert.row_id}`);
+  }
+
+  // summary counts alone are never accepted as Phase 2 maintenance evidence.
+  assert(maintenance.summary?.tasks_auto_created === createdCounts.tasks,
+    "Phase 2 maintenance task summary disagreed with semantic rows");
+  assert(maintenance.summary?.notifications_created === createdCounts.notifications,
+    "Phase 2 maintenance notification summary disagreed with semantic rows");
+  assert(maintenance.summary?.weather_alerts_created === createdCounts.weather_alerts,
+    "Phase 2 maintenance weather summary disagreed with semantic rows");
+  const finalCreated = state?.maintenance_created;
+  assert(finalCreated && typeof finalCreated === "object",
+    "Final Phase 2 maintenance-created projection is missing");
+  for (const table of expectedTables) {
+    assert(Array.isArray(finalCreated[table]),
+      `Final Phase 2 maintenance ${table} projection is missing`);
+    const expectedRows = createdByTable[table].created;
+    assert(finalCreated[table].length === expectedRows.length,
+      `Phase 2 created unexpected maintenance ${table} rows after the deterministic pass`);
+    const finalByRowId = new Map(finalCreated[table].map((row) => [row.row_id, row]));
+    assert(finalByRowId.size === finalCreated[table].length,
+      `Final Phase 2 maintenance ${table} projection duplicated a row`);
+    for (const expected of expectedRows) {
+      const finalRow = finalByRowId.get(expected.row_id);
+      assert(finalRow, `Phase 2 maintenance ${table} row disappeared: ${expected.row_id}`);
+      if (table === "notifications") {
+        exactMaintenanceNotification(finalRow, expected);
+      } else {
+        assert(canonicalJson(finalRow) === canonicalJson(expected),
+          `Phase 2 unexpectedly mutated maintenance ${table} row: ${expected.row_id}`);
+      }
+    }
+  }
+  return true;
+}
+
+function assertMaintenanceMutationPair(pair, table) {
+  assert(pair && typeof pair === "object", `Phase 2 maintenance ${table} mutation is missing`);
+  const before = pair.before;
+  const after = pair.after;
+  assert(before && typeof before === "object" && after && typeof after === "object",
+    `Phase 2 maintenance ${table} mutation lacks before/after evidence`);
+  assert(Number.isSafeInteger(before.row_id) && before.row_id > 0 && before.row_id === after.row_id,
+    `Phase 2 maintenance ${table} mutation changed row identity`);
+  assert(before.garden_id === after.garden_id,
+    `Phase 2 maintenance ${table} mutation changed garden ownership`);
+  assert(canonicalJson(before) !== canonicalJson(after),
+    `Phase 2 maintenance ${table} mutation did not contain a change`);
+  return after;
+}
+
+function assertExpectedMaintenanceMutations(createdByTable, fixture) {
+  const taskMutations = createdByTable.tasks.mutated_existing;
+  assert(taskMutations.length === 1,
+    "Phase 2 maintenance mutated an unexpected number of existing tasks");
+  const taskMutation = taskMutations[0];
+  const beforeTask = taskMutation.before;
+  const afterTask = taskMutation.after;
+  assert(
+    beforeTask.public_id === fixture.phase_two.task_ids.stale_generated_water
+      && afterTask.public_id === fixture.phase_two.task_ids.stale_generated_water,
+    "Phase 2 maintenance mutated an unexpected existing task",
+  );
+  assert(beforeTask.status === "pending" && afterTask.status === "expired",
+    "Phase 2 maintenance stale generated task expiration was unexpected");
+  assert(afterTask.updated_at_ms === fixture.clock.attention_now_ms,
+    "Phase 2 maintenance stale generated task mutation was not frozen");
+  const changedTaskFields = Object.keys(afterTask).filter(
+    (field) => canonicalJson(beforeTask[field]) !== canonicalJson(afterTask[field]),
+  ).sort();
+  assert(canonicalJson(changedTaskFields) === canonicalJson(["metadata", "status"]),
+    "Phase 2 maintenance changed unexpected stale generated task fields");
+  assert(afterTask.metadata?.lifecycle?.status === "expired"
+    && afterTask.metadata?.lifecycle?.expired_at_ms === fixture.clock.attention_now_ms,
+  "Phase 2 maintenance stale generated task lifecycle was unexpected");
+
+  for (const table of ["notifications", "weather_alerts"]) {
+    assert(createdByTable[table].mutated_existing.length === 0,
+      `Phase 2 maintenance unexpectedly mutated an existing ${table} row`);
+  }
+  return true;
+}
+
+function exactMaintenanceNotification(actual, expected) {
+  const immutable = [
+    "body",
+    "created_at_ms",
+    "expires_at_ms",
+    "garden_id",
+    "metadata",
+    "notification_subtype",
+    "notification_type",
+    "public_id",
+    "row_id",
+    "severity",
+    "target_id",
+    "target_type",
+    "title",
+    "username",
+  ];
+  for (const field of immutable) {
+    assert(canonicalJson(actual[field]) === canonicalJson(expected[field]),
+      `Phase 2 unexpectedly mutated maintenance notification ${field}: ${expected.public_id}`);
+  }
+}
+
+function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDelivery) {
   assert(state && typeof state === "object", "Phase 2 database state is missing");
   const phase = fixture?.phase_two;
   assert(phase && typeof phase === "object", "Phase 2 fixture state is missing");
@@ -893,6 +1229,9 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance) {
         `Phase 2 task ${field} changed unexpectedly: ${finalTask.public_id}`,
       );
     }
+    assert(finalTask.created_at_ms === fixture.clock.attention_now_ms
+      && finalTask.updated_at_ms === fixture.clock.attention_now_ms,
+    `Phase 2 task timestamps were not frozen: ${finalTask.public_id}`);
   }
 
   const completedByKey = {
@@ -1180,10 +1519,11 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance) {
     },
     attention_rules: expectedPhaseTwoCanonicalAttentionRules(),
     digest_frequency: "weekly",
+    email_enabled: true,
     legacy_quiet_hours: { end: "07:15", start: "22:30" },
     notification_rules: {
       issue_created: { email_enabled: true, in_app_enabled: false, min_severity: "normal" },
-      system: { email_enabled: true, in_app_enabled: true, min_severity: "low" },
+      system: { email_enabled: true, in_app_enabled: true, min_severity: "high" },
       task_due: { email_enabled: false, in_app_enabled: true, min_severity: "low" },
       task_generated: { email_enabled: false, in_app_enabled: false, min_severity: "low" },
       task_overdue: { email_enabled: false, in_app_enabled: true, min_severity: "low" },
@@ -1220,7 +1560,7 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance) {
     digest: { enabled: true, end: "07:15", start: "22:30" },
   }, "Phase 2 canonical quiet hours retained legacy top-level keys");
 
-  assert(state.notifications.length === 41,
+  assert(state.notifications.length === 43,
     "Phase 2 task and seeded notification projection count was unexpected");
   const notificationIds = state.notifications.map((notification) => notification.public_id);
   assert(new Set(notificationIds).size === notificationIds.length,
@@ -1232,6 +1572,81 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance) {
     exact(finalNotificationById.get(initialNotification.public_id), initialNotification,
       `Phase 2 durable notification changed: ${initialNotification.public_id}`);
   }
+  const preferenceDeliveryFixture = phase.preference_delivery;
+  assert(preferenceDeliveryFixture && typeof preferenceDeliveryFixture === "object",
+    "Phase 2 preference delivery fixture is missing");
+  assert(preferenceDelivery && typeof preferenceDelivery === "object",
+    "Phase 2 preference delivery evidence is missing");
+  assert(preferenceDelivery.triggered_at_ms === preferenceDeliveryFixture.occurred_at_ms,
+    "Phase 2 preference delivery did not use the frozen timestamp");
+  assert(preferenceDelivery.garden_id === fixture.gardens.alpha.id,
+    "Phase 2 preference delivery ran for the wrong garden");
+  assert(Number.isSafeInteger(preferenceDelivery.delivery_badge_count)
+    && preferenceDelivery.delivery_badge_count > 0,
+  "Phase 2 preference delivery did not retain an eligible unread badge");
+  const expectedPreferenceDeliveryRows = [
+    {
+      body: preferenceDeliveryFixture.eligible.body,
+      clear_reason: null,
+      cleared: false,
+      created_at_ms: preferenceDeliveryFixture.occurred_at_ms,
+      dismissed: false,
+      emailed: true,
+      expires_at_ms: preferenceDeliveryFixture.occurred_at_ms + 7 * 86_400_000,
+      garden_id: fixture.gardens.alpha.id,
+      metadata: { fixture: "complete_journeys_phase_2", preference_delivery: true },
+      notification_subtype: "",
+      notification_type: "system",
+      public_id: preferenceDeliveryFixture.eligible.public_id,
+      read: false,
+      severity: preferenceDeliveryFixture.eligible.severity,
+      target_id: preferenceDeliveryFixture.eligible.public_id,
+      target_type: "status",
+      title: preferenceDeliveryFixture.eligible.title,
+      username: fixture.roles.admin,
+    },
+    {
+      body: preferenceDeliveryFixture.ineligible.body,
+      clear_reason: null,
+      cleared: false,
+      created_at_ms: preferenceDeliveryFixture.occurred_at_ms,
+      dismissed: false,
+      emailed: false,
+      expires_at_ms: preferenceDeliveryFixture.occurred_at_ms + 7 * 86_400_000,
+      garden_id: fixture.gardens.alpha.id,
+      metadata: { fixture: "complete_journeys_phase_2", preference_delivery: true },
+      notification_subtype: "",
+      notification_type: "system",
+      public_id: preferenceDeliveryFixture.ineligible.public_id,
+      read: false,
+      severity: preferenceDeliveryFixture.ineligible.severity,
+      target_id: preferenceDeliveryFixture.ineligible.public_id,
+      target_type: "status",
+      title: preferenceDeliveryFixture.ineligible.title,
+      username: fixture.roles.admin,
+    },
+  ];
+  const actualPreferenceDeliveryRows = expectedPreferenceDeliveryRows.map((expected) => (
+    finalNotificationById.get(expected.public_id)
+  ));
+  exact(actualPreferenceDeliveryRows, expectedPreferenceDeliveryRows,
+    "Phase 2 post-save preference delivery rows were not exact");
+  const persistedDeliveryRows = preferenceDelivery.preference_delivery_rows || [];
+  assert(persistedDeliveryRows.length === 2,
+    "Phase 2 preference delivery evidence did not retain both explicit rows");
+  const persistedById = new Map(persistedDeliveryRows.map((row) => [row.public_id, row]));
+  assert(
+    persistedById.get(preferenceDeliveryFixture.eligible.public_id)?.emailed_at_ms
+      === preferenceDeliveryFixture.occurred_at_ms
+      && persistedById.get(preferenceDeliveryFixture.ineligible.public_id)?.emailed_at_ms === null,
+    "Phase 2 preference delivery evidence did not distinguish eligible and ineligible rows",
+  );
+  const deliveredNotificationIds = (preferenceDelivery.delivery_notifications || []).map(
+    (notification) => notification.public_id,
+  );
+  assert(deliveredNotificationIds.includes(preferenceDeliveryFixture.eligible.public_id)
+    && !deliveredNotificationIds.includes(preferenceDeliveryFixture.ineligible.public_id),
+  "Phase 2 post-save delivery did not apply the saved system eligibility rule");
 
   assert(state.weather_alerts.length === phase.seeded_state.weather_alerts.length + 4,
     "Phase 2 generated weather alert count was unexpected");
@@ -1248,6 +1663,8 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance) {
   );
   assert(rainAlerts.length === 1, "Phase 2 rain alert count was unexpected");
   const rainAlert = rainAlerts[0];
+  assert(rainAlert.created_at_ms === fixture.clock.attention_now_ms,
+    "Phase 2 rain alert timestamp was not frozen");
   exact({
     dismissed: rainAlert.dismissed,
     plant_ids: rainAlert.plant_ids,
@@ -1371,8 +1788,9 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance) {
 
   assert(maintenance && typeof maintenance === "object",
     "Phase 2 maintenance evidence is missing");
-  assert(maintenance.delivery_count === 1 && maintenance.deliveries?.length === 1,
-    "Phase 2 digest delivery count was unexpected");
+  const maintenanceSemanticExact = assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture);
+  assert(maintenance.delivery_count === 0 && maintenance.deliveries?.length === 0,
+    "Phase 2 pre-save maintenance unexpectedly delivered email");
   assert(maintenance.garden_id === fixture.gardens.alpha.id,
     "Phase 2 maintenance ran for the wrong garden");
   exact({
@@ -1398,12 +1816,24 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance) {
     )),
     "Phase 2 digest delivery evidence was invalid",
   );
+  assert(preferenceDelivery.delivery_count === preferenceDelivery.deliveries?.length
+    && preferenceDelivery.delivery_count >= 1,
+  "Phase 2 post-save preference delivery did not produce deterministic delivery evidence");
+  assert(
+    preferenceDelivery.deliveries.every((delivery) => (
+      Number.isSafeInteger(delivery.body_length) && delivery.body_length > 0
+      && Number.isSafeInteger(delivery.recipient_length) && delivery.recipient_length > 0
+      && Number.isSafeInteger(delivery.subject_length) && delivery.subject_length > 0
+    )),
+  "Phase 2 post-save preference delivery evidence was invalid");
 
   return {
     calendar_lifecycle_exact: true,
     completion_history_exact: true,
     maintenance_exact: true,
+    maintenance_semantic_state_exact: maintenanceSemanticExact,
     notification_preferences_exact: true,
+    preference_delivery_exact: true,
     offline_replay_exact: true,
     rain_automation_exact: true,
     task_lifecycle_exact: true,
@@ -1666,6 +2096,61 @@ function assertPhaseOneStableDomainProjection(initialProjection, finalProjection
   );
 }
 
+function assertPhaseOneStatePreservedAfterPhaseTwo(phaseOneBoundary, finalState) {
+  assert(
+    phaseOneBoundary && typeof phaseOneBoundary === "object",
+    "Phase 1 boundary state is missing before Phase 2",
+  );
+  assert(
+    finalState && typeof finalState === "object",
+    "Phase 1 final state is missing after Phase 2",
+  );
+  const scopedFields = [
+    "alpha_address",
+    "alpha_id",
+    "alpha_map_object",
+    "alpha_map_unit",
+    "alpha_map_unit_count",
+    "alpha_snapshot_payload",
+    "beta_id",
+    "browser_lifecycle",
+    "cross_garden_links",
+    "harvest_count",
+    "indoor_assignment",
+    "indoor_room_label",
+    "journal_count",
+    "lifecycle_audit",
+    "mobile_harvests",
+    "mobile_journals",
+    "mobile_snapshot_count",
+    "mobile_snapshots",
+    "onboarding_default_context",
+    "onboarding_gardens",
+    "onboarding_target_gardens",
+    "onboarding_target_graphs",
+    "quick_action_records",
+    "restore_import_graphs",
+    "saved_view",
+    "seeded_saved_views",
+    "stable_domain_projection",
+    "temp_map_object_count",
+    "temp_plant_count",
+    "temp_saved_view_count",
+    "viewer",
+  ];
+  let compared = 0;
+  for (const field of scopedFields) {
+    if (!Object.hasOwn(phaseOneBoundary, field)) continue;
+    assert(Object.hasOwn(finalState, field), `Phase 1 ${field} disappeared during Phase 2`);
+    assert(
+      canonicalJson(finalState[field]) === canonicalJson(phaseOneBoundary[field]),
+      `Phase 1 scoped ${field} changed during Phase 2`,
+    );
+    compared += 1;
+  }
+  assert(compared > 0, "Phase 1 boundary contained no scoped state to preserve through Phase 2");
+}
+
 function assertFixtureAttentionClock(fixture) {
   const clock = fixture?.clock;
   assert(clock && typeof clock === "object", "Fixture has no frozen attention clock");
@@ -1712,7 +2197,7 @@ function sanitizeManifestEvidence(manifest) {
     },
     browser: safeIdentifier(manifest.browser),
     database: manifest.database && typeof manifest.database === "object"
-      ? structuredClone(manifest.database)
+      ? sanitizeDatabaseEvidence(manifest.database)
       : null,
     ended_at: safeUtcTimestamp(manifest.ended_at),
     failure: manifest.failure ? sanitizeDiagnostic(manifest.failure) : null,
@@ -1734,6 +2219,7 @@ function sanitizeManifestEvidence(manifest) {
     started_at: safeUtcTimestamp(manifest.started_at),
     status: safeIdentifier(manifest.status),
     suite: safeIdentifier(manifest.suite),
+    trace_artifacts: (manifest.trace_artifacts || []).map(sanitizeTraceEvidence),
     through_phase: Number(manifest.through_phase || 0),
   };
   output.profiles = (manifest.profiles || []).map((rawProfile) => {
@@ -1748,6 +2234,10 @@ function sanitizeManifestEvidence(manifest) {
         is_mobile: Boolean(rawProfile.browser_profile?.is_mobile),
         max_touch_points: Number(rawProfile.browser_profile?.max_touch_points || 0),
         name: safeIdentifier(rawProfile.browser_profile?.name),
+        user_agent_contract: new Set(["desktop-chromium", "pixel-7"])
+          .has(rawProfile.browser_profile?.user_agent_contract)
+          ? rawProfile.browser_profile.user_agent_contract
+          : null,
         viewport: {
           height: Number(rawProfile.browser_profile?.viewport?.height || 0),
           width: Number(rawProfile.browser_profile?.viewport?.width || 0),
@@ -1777,7 +2267,7 @@ function sanitizeManifestEvidence(manifest) {
         overflow: Number(rawProfile.structure?.overflow || 0),
         unnamedControls: structuredClone(rawProfile.structure?.unnamedControls || []),
       },
-      trace: safeIdentifier(rawProfile.trace),
+      trace: sanitizeTraceEvidence(rawProfile.trace),
     };
     for (const [key, values] of Object.entries(profile.diagnostics || {})) {
       if (Array.isArray(values)) profile.diagnostics[key] = values.map(sanitizeDiagnostic);
@@ -1847,10 +2337,26 @@ function assertNoResponseMocks() {
   }
 }
 
+function assertNoNodeRequestClients() {
+  const sources = [
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/completeJourneyBrowser.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/gardenMapPlants.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/dailyAttentionWork.cjs"), "utf8"),
+  ].join("\n");
+  for (const forbidden of [
+    "context.request",
+    "page.context().request",
+    "request.newContext",
+  ]) {
+    assert(!sources.includes(forbidden), `Complete journey browser proof must not use ${forbidden}`);
+  }
+}
+
 async function main() {
   assertRunnerEnvironment();
   assertPrivateFiles();
   assertNoResponseMocks();
+  assertNoNodeRequestClients();
   const fixture = readJson(FIXTURE_PATH);
   assertFixtureAttentionClock(fixture);
   let manifest = {
@@ -1879,11 +2385,15 @@ async function main() {
   let phaseZeroProfiles = [];
   let phaseOneAuditEvidence = null;
   let phaseOneDatabase = null;
+  let phaseOneStatePreservedAfterPhaseTwo = false;
   let phaseOneProfileEvidence = null;
   let phaseOneProfiles = [];
   let phaseTwoDatabaseEvidence = null;
+  let phaseTwoAuditEvidence = null;
+  let phaseTwoAuditBaseline = null;
   let phaseTwoPreparation = null;
   let phaseTwoMaintenance = null;
+  let phaseTwoPreferenceDelivery = null;
   let phaseTwoProfileEvidence = null;
   let phaseTwoProfiles = [];
   let thrownError = null;
@@ -1947,6 +2457,7 @@ async function main() {
       );
       currentStage = "phase-two-maintenance";
       phaseTwoMaintenance = runPhaseTwoMaintenance();
+      phaseTwoAuditBaseline = databaseSnapshot().audit_state;
       currentStage = "phase-two-browser";
       const phaseTwoProfileStart = manifest.profiles.length;
       await runDailyAttentionWork({
@@ -1956,9 +2467,17 @@ async function main() {
         devices,
         fixture,
         onProfile: (profile) => manifest.profiles.push(profile),
+        onPreferencesSaved: () => {
+          assert(!phaseTwoPreferenceDelivery,
+            "Phase 2 preference delivery fixture ran more than once");
+          phaseTwoPreferenceDelivery = runPhaseTwoPreferenceDelivery();
+          return phaseTwoPreferenceDelivery;
+        },
         password: PASSWORD,
         username: USERNAME,
       });
+      assert(phaseTwoPreferenceDelivery,
+        "Phase 2 browser did not run post-save preference delivery maintenance");
       phaseTwoProfiles = manifest.profiles.slice(phaseTwoProfileStart);
     }
     currentStage = "final-database-snapshot";
@@ -1971,7 +2490,9 @@ async function main() {
       observed_domain_tables: finalDatabase.domain_tables,
       observed_phase_one_state: finalDatabase.phase_one_state,
       observed_phase_two_state: finalDatabase.phase_two_state,
+      phase_two_audit_events: phaseTwoAuditEvidence,
       phase_two_maintenance: phaseTwoMaintenance,
+      phase_two_preference_delivery: phaseTwoPreferenceDelivery,
       phase_two_preparation: phaseTwoPreparation,
     };
     const domainTableNames = new Set([
@@ -1991,7 +2512,22 @@ async function main() {
         finalDatabase.phase_two_state,
         fixture,
         phaseTwoMaintenance,
+        phaseTwoPreferenceDelivery,
       );
+      phaseTwoAuditEvidence = assertPhaseTwoAuditEvents(
+        phaseTwoAuditBaseline,
+        finalDatabase.audit_state,
+        phaseTwoProfiles,
+        fixture,
+      );
+      if (phaseOneRan) {
+        assert(phaseOneDatabase, "Phase 1 database boundary snapshot is missing before Phase 2");
+        assertPhaseOneStatePreservedAfterPhaseTwo(
+          phaseOneDatabase.phase_one_state,
+          finalDatabase.phase_one_state,
+        );
+        phaseOneStatePreservedAfterPhaseTwo = true;
+      }
     }
     const phaseOneSemanticDeltaTables = phaseOneRan ? new Set([
       "app_settings",
@@ -2316,10 +2852,6 @@ async function main() {
         phaseOneDatabase.audit_state.expected_phase_one_snapshot_count === 2,
         "Phase 1 desktop and mobile snapshots did not create exactly two expected audit events",
       );
-      assert(
-        phaseOneDatabase.audit_state.expected_phase_one_viewer_denial_count === 4,
-        "Phase 1 viewer write denials did not create the four exact audit events",
-      );
     }
     manifest.database = {
       auth_expected_writes: {
@@ -2335,7 +2867,10 @@ async function main() {
         phase_one_contract_enforced: Boolean(phaseOneAuditEvidence),
         login_success_count: finalDatabase.audit_state.expected_login_count,
         phase_one_snapshot_count: finalDatabase.audit_state.expected_phase_one_snapshot_count,
-        phase_one_viewer_denial_count: finalDatabase.audit_state.expected_phase_one_viewer_denial_count,
+        phase_two_audit_event_count: phaseTwoAuditEvidence?.phase_two_audit_event_count ?? 0,
+        phase_two_audit_events_exact: phaseTwoAuditEvidence?.phase_two_audit_events_exact ?? null,
+        phase_two_audit_timestamps_frozen:
+          phaseTwoAuditEvidence?.phase_two_audit_timestamps_frozen ?? null,
         unexpected_count: phaseOneAuditEvidence?.unexpected_count ?? null,
       },
       cluster_fingerprint: crypto
@@ -2365,6 +2900,9 @@ async function main() {
         restore_import_graph_unchanged: true,
         seeded_plant_and_saved_view_ownership: true,
         snapshot_payload_and_ownership_exact: true,
+        phase_one_scoped_state_preserved_after_phase_two: phaseTwoRan
+          ? phaseOneStatePreservedAfterPhaseTwo
+          : null,
         stable_mutable_domain_rows_unchanged: true,
         targeted_audit_contract: Boolean(phaseOneAuditEvidence),
       } : null,
@@ -2372,8 +2910,10 @@ async function main() {
         ?? finalDatabase.phase_one_state.mobile_snapshot_count,
       phase_two_enforcement: phaseTwoRan ? {
         ...phaseTwoDatabaseEvidence,
+        ...phaseTwoAuditEvidence,
         browser_profile_matrix: phaseTwoProfileEvidence?.profile_matrix_enforced === true,
         maintenance: phaseTwoMaintenance,
+        preference_delivery: phaseTwoPreferenceDelivery,
         preparation: phaseTwoPreparation,
       } : null,
       phase_boundaries: {
@@ -2390,6 +2930,7 @@ async function main() {
     assert(manifest.filesystem.downloads.empty, "Browser journey wrote download files");
     assert(manifest.filesystem.media.empty, "Browser journey wrote media files");
     assert(manifest.filesystem.terrain.empty, "Browser journey wrote terrain files");
+    manifest.trace_artifacts = assertTraceArtifacts(manifest.profiles);
     manifest.backend_log = backendErrorEvidence();
     assertNoUnexpectedBackendErrors(undefined, manifest.backend_log);
     await browser.close();
@@ -2432,6 +2973,18 @@ async function main() {
         manifest.filesystem = { error: safeFailure(error) };
       }
     }
+    if (!manifest.trace_artifacts && manifest.profiles.length > 0) {
+      try {
+        manifest.trace_artifacts = assertTraceArtifacts(manifest.profiles);
+      } catch (error) {
+        manifest.trace_artifacts = [];
+        if (!thrownError) {
+          thrownError = error;
+          manifest.status = "failed";
+          manifest.failure = safeFailure(error);
+        }
+      }
+    }
     manifest = writeManifestAtomic(manifest);
   }
   if (thrownError) throw thrownError;
@@ -2452,6 +3005,7 @@ module.exports = {
   assertExactPhaseOneQuickActionRecords,
   assertExactPhaseOneMobileSnapshot,
   assertExactPhaseOneRestoreImportGraphs,
+  assertPhaseOneStatePreservedAfterPhaseTwo,
   assertPhaseOneStableDomainProjection,
   assertNoCrossGardenLinks,
   assertNoLifecycleResidue,
@@ -2460,8 +3014,11 @@ module.exports = {
   assertPhaseOneAuditContract,
   assertPhaseOneProfileEvidence,
   assertPhaseTwoDatabaseState,
+  assertExpectedMaintenanceMutations,
   assertPhaseTwoProfileEvidence,
   assertNoResponseMocks,
+  assertNoNodeRequestClients,
+  assertTraceArtifacts,
   assertPageStructure,
   assertSourceRevisionStable,
   backendErrorEvidence,
@@ -2473,6 +3030,7 @@ module.exports = {
   safeUtcTimestamp,
   safeFailure,
   sanitizeManifestEvidence,
+  sanitizeDatabaseEvidence,
   sourceProvenance,
   writeManifestAtomic,
 };
