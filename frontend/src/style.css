@@ -11082,6 +11082,12 @@ td.inventory-qty-zero {
   background: var(--danger);
 }
 
+@media (max-width: 600px) {
+  #toast-container {
+    bottom: calc(78px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
 /* ── Elevation editor ──────────────────────────────────── */
 
 .elevation-editor {

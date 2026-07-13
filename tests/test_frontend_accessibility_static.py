@@ -116,3 +116,14 @@ def test_calendar_filter_chip_inputs_bind_their_visible_labels() -> None:
     assert "input.id = inputId;" in chip_input
     for label_key, input_id in CALENDAR_FILTER_INPUTS:
         assert f'label: t("{label_key}"),\n    inputId: "{input_id}",' in calendar_tab
+
+
+def test_mobile_toasts_clear_the_primary_navigation() -> None:
+    styles = _read_frontend("style.css")
+    mobile_toast_rule = re.search(
+        r"@media \(max-width: 600px\) \{\s*#toast-container \{\s*"
+        r"bottom: calc\(78px \+ env\(safe-area-inset-bottom, 0px\)\);",
+        styles,
+    )
+
+    assert mobile_toast_rule
