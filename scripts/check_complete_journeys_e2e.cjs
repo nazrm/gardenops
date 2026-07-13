@@ -505,9 +505,17 @@ function assertPhaseOneProfileEvidence(profiles) {
     assert((profile.assertions?.failed || []).length === 0, `Phase 1 assertions failed: ${key}`);
     assert((profile.assertions?.skipped || []).length === 0, `Phase 1 assertions were skipped: ${key}`);
     assert(profile.checks?.browser_diagnostics === true, `Phase 1 browser diagnostics missing: ${key}`);
+    const expectedMobile = expected.profile === "mobile";
     assert(
-      profile.browser_profile?.is_mobile === (expected.profile === "mobile"),
+      profile.browser_profile?.is_mobile === expectedMobile,
       `Phase 1 browser device evidence was unexpected: ${key}`,
+    );
+    assert(
+      profile.browser_profile?.has_touch === expectedMobile
+        && (expectedMobile
+          ? profile.browser_profile?.max_touch_points > 0
+          : profile.browser_profile?.max_touch_points === 0),
+      `Phase 1 runtime touch evidence was unexpected: ${key}`,
     );
     for (const check of expected.checks) {
       assert(profile.checks?.[check] === true, `Phase 1 browser check is missing: ${key}:${check}`);
@@ -521,9 +529,20 @@ function assertPhaseOneProfileEvidence(profiles) {
   const rejectedImports = importEvidence?.rejected_import_render_churn;
   assert(
     rejectedImports && typeof rejectedImports === "object"
-      && ["cross_garden", "oversized", "structurally_incomplete", "unsupported_schema"]
+      && ["cross_garden", "malformed_json", "oversized", "structurally_incomplete", "unsupported_schema"]
         .every((key) => rejectedImports[key] && typeof rejectedImports[key] === "object"),
     "Phase 1 rejected-import render evidence is missing",
+  );
+  const malformedImport = rejectedImports.malformed_json;
+  assert(
+    malformedImport.client_error_visible === true
+      && malformedImport.import_request_count === 0
+      && malformedImport.input_cleared === true
+      && malformedImport.render_churn?.attributes === 0
+      && malformedImport.render_churn?.childLists === 0
+      && malformedImport.render_churn?.added === 0
+      && malformedImport.render_churn?.removed === 0,
+    "Phase 1 malformed JSON import was not rejected cleanly before the network boundary",
   );
   const transitions = importEvidence?.successful_map_state_transitions;
   const divergentImport = transitions?.divergent_import;

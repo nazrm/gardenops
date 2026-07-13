@@ -1289,6 +1289,59 @@ async function assertRejectedMapImport(page, diagnostics, password, {
   return churn;
 }
 
+async function assertMalformedMapImportRejectedClientSide(page, diagnostics, { file, label }) {
+  const before = await captureMapRenderState(page);
+  const observer = await observeMapRenderChurn(page);
+  const input = page.locator("#import-map-input");
+  const errorToasts = page.locator(".toast-error, .toast.error");
+  const diagnosticMarks = {
+    console: diagnostics.consoleErrors.length,
+    http: diagnostics.httpErrors.length,
+    request: diagnostics.requestFailures.length,
+  };
+  let importRequestCount = 0;
+  let churn;
+  const importRequestListener = (request) => {
+    if (
+      request.method() === "POST"
+      && new URL(request.url()).pathname === "/api/plots/import"
+    ) importRequestCount += 1;
+  };
+  page.on("request", importRequestListener);
+  try {
+    await waitFor(async () => await errorToasts.count() === 0, `${label} prior error toasts`);
+    await input.setInputFiles(file);
+    await visible(errorToasts.last(), `${label} client error`);
+    await page.waitForTimeout(100);
+    assert(importRequestCount === 0, `${label} sent an import request`);
+    assert(await page.locator("[role='alertdialog']").count() === 0, `${label} opened confirmation`);
+    assert(
+      diagnostics.httpErrors.length === diagnosticMarks.http
+        && diagnostics.consoleErrors.length === diagnosticMarks.console
+        && diagnostics.requestFailures.length === diagnosticMarks.request,
+      `${label} produced browser diagnostics`,
+    );
+    await waitFor(async () => await input.inputValue() === "", `${label} file input reset`);
+    assert(
+      JSON.stringify(await captureMapRenderState(page)) === JSON.stringify(before),
+      `${label} produced partial visible map state`,
+    );
+  } finally {
+    page.off("request", importRequestListener);
+    churn = await observer.stop();
+  }
+  assert(
+    churn.attributes === 0 && churn.childLists === 0 && churn.added === 0 && churn.removed === 0,
+    `${label} churned the rendered map after rejection: ${JSON.stringify(churn)}`,
+  );
+  return {
+    client_error_visible: true,
+    import_request_count: importRequestCount,
+    input_cleared: true,
+    render_churn: churn,
+  };
+}
+
 function oversizedMapImportFile() {
   return {
     buffer: Buffer.from(JSON.stringify({
@@ -1495,6 +1548,18 @@ async function exerciseSnapshotsAndImport(page, diagnostics, password, alpha, be
   await waitForMapObject(page, alpha.object_public_id, alpha.object_label);
 
   await openMap(page, "desktop");
+  rejectedImportRenderChurn.malformed_json = await assertMalformedMapImportRejectedClientSide(
+    page,
+    diagnostics,
+    {
+      file: {
+        buffer: Buffer.from('{"schema_version":1,"plots":['),
+        mimeType: "application/json",
+        name: "malformed-map.json",
+      },
+      label: "malformed JSON map import",
+    },
+  );
   rejectedImportRenderChurn.unsupported_schema = await assertRejectedMapImport(page, diagnostics, password, {
     expectedStatus: 422,
     file: {
@@ -2334,6 +2399,10 @@ async function runOnboardingProfile(options, { password, profile, username }) {
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await authenticate(page, username, password);
     guarded.markAuthenticated();
+    result.browser_profile.user_agent = await page.evaluate(() => navigator.userAgent);
+    result.browser_profile.max_touch_points = await page.evaluate(() => navigator.maxTouchPoints);
+    result.browser_profile.has_touch = result.browser_profile.max_touch_points > 0;
+    result.browser_profile.viewport = page.viewportSize();
     const overlay = page.locator(".onboarding-overlay");
     await visible(overlay, "real onboarding overlay");
     await overlay.locator(".onb-next").click();
@@ -2428,6 +2497,7 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
     assert(profileData.role === role, `Fixture role mismatch: expected ${role}`);
     result.browser_profile.user_agent = await page.evaluate(() => navigator.userAgent);
     result.browser_profile.max_touch_points = await page.evaluate(() => navigator.maxTouchPoints);
+    result.browser_profile.has_touch = result.browser_profile.max_touch_points > 0;
     result.browser_profile.viewport = page.viewportSize();
     await visible(page.locator("#map-grid"), `${profile} Map grid`);
     await waitForMapObject(page, alpha.object_public_id, alpha.object_label);

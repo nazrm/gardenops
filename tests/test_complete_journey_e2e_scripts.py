@@ -358,6 +358,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         'assignmentPlotId: "P1EDITORASSIGN"',
         "assertMobileFocusReturn",
         "assertRejectedMapImport",
+        "assertMalformedMapImportRejectedClientSide",
         "observeMapRenderChurn",
         "observeMapReplaceChildren",
         "captureLayoutDomState",
@@ -395,6 +396,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "#mobile-import-map-btn",
         "#mobile-map-tools-btn",
         "structurally-incomplete-map.json",
+        "malformed-map.json",
         "oversized-map.json",
         "cross-garden map import",
         "divergent-successful-map.json",
@@ -466,6 +468,8 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "indoor_reload_persistence",
         "garden_settings_reload_persistence",
         "editor_settings_layout_reload_persistence",
+        "malformed_json",
+        "runtime touch evidence",
     ):
         assert marker in checker_source
 
@@ -721,7 +725,11 @@ const delayedMobile = delayedEvidence([
 const delayedPlots = delayedEvidence(['plots']);
 const profile = (role, name, checks) => ({
   assertions: { failed: [], skipped: [] },
-  browser_profile: { is_mobile: name === 'mobile' },
+  browser_profile: {
+    has_touch: name === 'mobile',
+    is_mobile: name === 'mobile',
+    max_touch_points: name === 'mobile' ? 1 : 0,
+  },
   checks: { browser_diagnostics: true, ...checks },
   failure: null,
   profile: name,
@@ -735,7 +743,14 @@ const profiles = [
     indoor_reload_persistence: true,
     import_rejection_render_churn: {
       rejected_import_render_churn: {
-        cross_garden: {}, oversized: {}, structurally_incomplete: {}, unsupported_schema: {},
+        cross_garden: {},
+        malformed_json: {
+          client_error_visible: true,
+          import_request_count: 0,
+          input_cleared: true,
+          render_churn: { added: 0, attributes: 0, childLists: 0, removed: 0 },
+        },
+        oversized: {}, structurally_incomplete: {}, unsupported_schema: {},
       },
       successful_map_state_transitions: {
         divergent_import: {
