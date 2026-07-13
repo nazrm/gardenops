@@ -1793,6 +1793,7 @@ def test_phase_two_evidence_contract_preserves_phase_one_and_sanitizes_trace_dat
     script = """
 const {
   assertPhaseOneStatePreservedAfterPhaseTwo,
+  expectedPhaseOneRestoreGraphsAfterPhaseTwo,
   sanitizeManifestEvidence,
 } = require('./scripts/check_complete_journeys_e2e.cjs');
 const state = {
@@ -1805,6 +1806,35 @@ const state = {
   stable_domain_projection: { gardens: [{ id: 1 }] },
 };
 assertPhaseOneStatePreservedAfterPhaseTwo(state, structuredClone(state));
+const fixture = {
+  phase_two: { date: '2026-07-12', plant_ids: { bloom_desktop: 'P2-BLOOM' } },
+};
+const bloomBoundary = {
+  restore_import_graphs: {
+    alpha: {
+      assignments: [{ plant_id: 'P2-BLOOM', seen_growing: true, seen_growing_date: '2026-07-01' }],
+      plants: [{ plant_id: 'P2-BLOOM', seen_growing: true, seen_growing_date: '2026-07-01' }],
+    },
+  },
+};
+const bloomFinal = structuredClone(bloomBoundary);
+for (const collection of ['assignments', 'plants']) {
+  bloomFinal.restore_import_graphs.alpha[collection][0].seen_growing_date = '2026-07-12';
+}
+assertPhaseOneStatePreservedAfterPhaseTwo(bloomBoundary, bloomFinal, fixture);
+const expectedBloom = expectedPhaseOneRestoreGraphsAfterPhaseTwo(
+  bloomBoundary.restore_import_graphs,
+  fixture,
+);
+if (expectedBloom.alpha.plants[0].seen_growing_date !== '2026-07-12') process.exit(7);
+try {
+  const unrelatedBloomMutation = structuredClone(bloomFinal);
+  unrelatedBloomMutation.restore_import_graphs.alpha.plants[0].name = 'changed';
+  assertPhaseOneStatePreservedAfterPhaseTwo(bloomBoundary, unrelatedBloomMutation, fixture);
+  process.exit(8);
+} catch (error) {
+  if (!/restore_import_graphs/.test(String(error.message))) process.exit(9);
+}
 try {
   const mutated = structuredClone(state);
   mutated.alpha_address = 'Phase 2 changed Phase 1';

@@ -2137,7 +2137,24 @@ function assertPhaseOneStableDomainProjection(initialProjection, finalProjection
   );
 }
 
-function assertPhaseOneStatePreservedAfterPhaseTwo(phaseOneBoundary, finalState) {
+function expectedPhaseOneRestoreGraphsAfterPhaseTwo(phaseOneGraphs, fixture) {
+  const expected = structuredClone(phaseOneGraphs);
+  const plantId = fixture?.phase_two?.plant_ids?.bloom_desktop;
+  const observedOn = fixture?.phase_two?.date;
+  if (!plantId || !observedOn) return expected;
+  const alpha = expected?.alpha;
+  assert(alpha && typeof alpha === "object", "Phase 1 Alpha restore graph is missing");
+  for (const collection of ["plants", "assignments"]) {
+    const matches = (alpha[collection] || []).filter((row) => row.plant_id === plantId);
+    assert(matches.length === 1,
+      `Phase 2 bloom observation has unexpected Phase 1 ${collection} linkage`);
+    matches[0].seen_growing = true;
+    matches[0].seen_growing_date = observedOn;
+  }
+  return expected;
+}
+
+function assertPhaseOneStatePreservedAfterPhaseTwo(phaseOneBoundary, finalState, fixture = null) {
   assert(
     phaseOneBoundary && typeof phaseOneBoundary === "object",
     "Phase 1 boundary state is missing before Phase 2",
@@ -2183,8 +2200,11 @@ function assertPhaseOneStatePreservedAfterPhaseTwo(phaseOneBoundary, finalState)
   for (const field of scopedFields) {
     if (!Object.hasOwn(phaseOneBoundary, field)) continue;
     assert(Object.hasOwn(finalState, field), `Phase 1 ${field} disappeared during Phase 2`);
+    const expected = field === "restore_import_graphs"
+      ? expectedPhaseOneRestoreGraphsAfterPhaseTwo(phaseOneBoundary[field], fixture)
+      : phaseOneBoundary[field];
     assert(
-      canonicalJson(finalState[field]) === canonicalJson(phaseOneBoundary[field]),
+      canonicalJson(finalState[field]) === canonicalJson(expected),
       `Phase 1 scoped ${field} changed during Phase 2`,
     );
     compared += 1;
@@ -2529,6 +2549,7 @@ async function main() {
       observed_auth_state: finalDatabase.auth_state,
       observed_domain_counts: finalDatabase.domain_counts,
       observed_domain_tables: finalDatabase.domain_tables,
+      observed_phase_one_boundary_state: phaseOneDatabase?.phase_one_state ?? null,
       observed_phase_one_state: finalDatabase.phase_one_state,
       observed_phase_two_state: finalDatabase.phase_two_state,
       phase_two_audit_events: phaseTwoAuditEvidence,
@@ -2566,6 +2587,7 @@ async function main() {
         assertPhaseOneStatePreservedAfterPhaseTwo(
           phaseOneDatabase.phase_one_state,
           finalDatabase.phase_one_state,
+          fixture,
         );
         phaseOneStatePreservedAfterPhaseTwo = true;
       }
@@ -3064,6 +3086,7 @@ module.exports = {
   assertPageStructure,
   assertSourceRevisionStable,
   backendErrorEvidence,
+  expectedPhaseOneRestoreGraphsAfterPhaseTwo,
   expectedSessionUserCounts,
   gitState,
   isSafeManifestRequestPath,
