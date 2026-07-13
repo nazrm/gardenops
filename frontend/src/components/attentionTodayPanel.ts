@@ -939,6 +939,8 @@ export function initAttentionTodayPanel(
     button.type = "button";
     button.className = `attention-today-action attention-today-action--${kind}`;
     button.textContent = actionLabel(action);
+    button.dataset["attentionActionKind"] = action.kind;
+    button.dataset["attentionActionTargetId"] = action.target_id;
     button.setAttribute("data-testid", `attention-today-${kind}-action-${safeTestId(item.id)}`);
     button.addEventListener("click", () => {
       const handler = kind === "primary" ? options.onPrimaryAction : options.onSecondaryAction;

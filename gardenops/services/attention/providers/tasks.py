@@ -352,6 +352,7 @@ class TaskAttentionProvider:
                 else None
             ),
             source_label="Tasks",
+            rank=self._rank(item_type),
             updated_at_ms=int(row["updated_at_ms"] or 0),
             metadata={
                 "status": status,
@@ -399,6 +400,14 @@ class TaskAttentionProvider:
             "task_expired": "Expired",
             "task_skipped": "Skipped",
         }[item_type]
+
+    @staticmethod
+    def _rank(item_type: str) -> int:
+        return {
+            "task_completed": 500,
+            "task_skipped": 520,
+            "task_expired": 600,
+        }.get(item_type, 500)
 
     @staticmethod
     def _domain_state(status: str) -> AttentionDomainState:

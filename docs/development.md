@@ -300,10 +300,12 @@ preference mutation and history reload, selected editor actions, viewer Today an
 Weather affordances, notification preference saving, weather checks, and delayed
 A/B/A stale-DOM checks for Tasks, Calendar, and subscriptions. After the desktop
 preference save, the disposable fixture creates one eligible and one ineligible
-system event, runs deterministic maintenance, and checks Today, inbox, badge,
-delivery, and the two persisted rows. The checker also preserves the scoped Phase
-1 final state during cumulative runs and compares semantic maintenance-created
-tasks, notifications, and alerts rather than accepting summary counts alone.
+issue plus notification, invokes the digest-delivery boundary without rerunning
+scheduler maintenance, and checks Today, inbox, badge, delivery, and the persisted
+rows. The checker also preserves the scoped Phase 1 final state during cumulative
+runs, reconciles monthly and weather-created task counts, and follows the exact
+maintenance-created task, notification, and alert row identities through the final
+snapshot rather than accepting summary counts or frozen timestamps alone.
 
 Phase 2 database coverage remains required in `tests/journey_coverage.yaml`:
 the audit writer records wall-clock timestamps, so the harness can validate the

@@ -26,6 +26,9 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         calendar = frontend_source("tabs/calendarTab.ts")
 
         self.assertIn("durationMs: 2_000", helper)
+        self.assertIn("allowMissingTask: true", tasks_tab)
+        self.assertIn("expectedGardenId: task.garden_id", tasks_tab)
+        self.assertIn("function isCurrentTaskAction", tasks_tab)
         for surface in (tasks_tab, quick_actions, plot, calendar):
             self.assertIn("getTaskSnoozeCorrectionNotice", surface)
         for surface in (quick_actions, plot, calendar):

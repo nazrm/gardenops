@@ -892,7 +892,8 @@ function assertPhaseTwoProfileEvidence(profiles) {
 function isPhaseTwoAuditPath(pathname) {
   return [
     /^\/api\/auth\/login$/,
-    /^\/api\/calendar\/(?:manual-events(?:\/[^/]+)?|subscriptions(?:\/[^/]+)?)$/,
+    /^\/api\/calendar\/(?:preferences|manual-events(?:\/[^/]+)?|subscriptions(?:\/[^/]+)?)$/,
+    /^\/api\/media\/summaries$/,
     /^\/api\/notifications(?:\/(?:preferences|[^/]+(?:\/(?:dismiss|read))?))?$/,
     /^\/api\/tasks(?:\/(?:batch-action|[^/]+\/action))?$/,
     /^\/api\/weather\/(?:check|alerts\/\d+\/dismiss)$/,
@@ -1073,23 +1074,23 @@ function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture) {
   }
 
   // summary counts alone are never accepted as Phase 2 maintenance evidence.
-  assert(maintenance.summary?.tasks_auto_created === createdCounts.tasks,
+  assert(
+    maintenance.summary?.tasks_auto_created + maintenance.summary?.weather_tasks_created
+      === createdCounts.tasks,
     "Phase 2 maintenance task summary disagreed with semantic rows");
   assert(maintenance.summary?.notifications_created === createdCounts.notifications,
     "Phase 2 maintenance notification summary disagreed with semantic rows");
   assert(maintenance.summary?.weather_alerts_created === createdCounts.weather_alerts,
     "Phase 2 maintenance weather summary disagreed with semantic rows");
-  const finalCreated = state?.maintenance_created;
-  assert(finalCreated && typeof finalCreated === "object",
-    "Final Phase 2 maintenance-created projection is missing");
+  const finalRows = state?.maintenance_rows;
+  assert(finalRows && typeof finalRows === "object",
+    "Final Phase 2 maintenance-row projection is missing");
   for (const table of expectedTables) {
-    assert(Array.isArray(finalCreated[table]),
+    assert(Array.isArray(finalRows[table]),
       `Final Phase 2 maintenance ${table} projection is missing`);
     const expectedRows = createdByTable[table].created;
-    assert(finalCreated[table].length === expectedRows.length,
-      `Phase 2 created unexpected maintenance ${table} rows after the deterministic pass`);
-    const finalByRowId = new Map(finalCreated[table].map((row) => [row.row_id, row]));
-    assert(finalByRowId.size === finalCreated[table].length,
+    const finalByRowId = new Map(finalRows[table].map((row) => [row.row_id, row]));
+    assert(finalByRowId.size === finalRows[table].length,
       `Final Phase 2 maintenance ${table} projection duplicated a row`);
     for (const expected of expectedRows) {
       const finalRow = finalByRowId.get(expected.row_id);
@@ -1523,7 +1524,7 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     legacy_quiet_hours: { end: "07:15", start: "22:30" },
     notification_rules: {
       issue_created: { email_enabled: true, in_app_enabled: false, min_severity: "normal" },
-      system: { email_enabled: true, in_app_enabled: true, min_severity: "high" },
+      system: { email_enabled: true, in_app_enabled: true, min_severity: "low" },
       task_due: { email_enabled: false, in_app_enabled: true, min_severity: "low" },
       task_generated: { email_enabled: false, in_app_enabled: false, min_severity: "low" },
       task_overdue: { email_enabled: false, in_app_enabled: true, min_severity: "low" },
@@ -1569,7 +1570,10 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     state.notifications.map((notification) => [notification.public_id, notification]),
   );
   for (const initialNotification of phase.seeded_state.notifications) {
-    exact(finalNotificationById.get(initialNotification.public_id), initialNotification,
+    const expectedNotification = initialNotification.public_id === phase.notification_public_id
+      ? { ...initialNotification, emailed: true }
+      : initialNotification;
+    exact(finalNotificationById.get(initialNotification.public_id), expectedNotification,
       `Phase 2 durable notification changed: ${initialNotification.public_id}`);
   }
   const preferenceDeliveryFixture = phase.preference_delivery;
@@ -1584,6 +1588,40 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   assert(Number.isSafeInteger(preferenceDelivery.delivery_badge_count)
     && preferenceDelivery.delivery_badge_count > 0,
   "Phase 2 preference delivery did not retain an eligible unread badge");
+  const expectedPreferenceDeliveryIssues = [
+    {
+      created_at_ms: preferenceDeliveryFixture.occurred_at_ms,
+      creator_username: fixture.roles.admin,
+      description: preferenceDeliveryFixture.eligible.body,
+      follow_up_on: phase.date,
+      garden_id: fixture.gardens.alpha.id,
+      issue_type: "other",
+      metadata: { fixture: "complete_journeys_phase_2", preference_delivery: true },
+      public_id: preferenceDeliveryFixture.eligible.issue_public_id,
+      severity: preferenceDeliveryFixture.eligible.severity,
+      status: "open",
+      title: preferenceDeliveryFixture.eligible.title,
+      updated_at_ms: preferenceDeliveryFixture.occurred_at_ms,
+    },
+    {
+      created_at_ms: preferenceDeliveryFixture.occurred_at_ms,
+      creator_username: fixture.roles.admin,
+      description: preferenceDeliveryFixture.ineligible.body,
+      follow_up_on: phase.date,
+      garden_id: fixture.gardens.alpha.id,
+      issue_type: "other",
+      metadata: { fixture: "complete_journeys_phase_2", preference_delivery: true },
+      public_id: preferenceDeliveryFixture.ineligible.issue_public_id,
+      severity: preferenceDeliveryFixture.ineligible.severity,
+      status: "open",
+      title: preferenceDeliveryFixture.ineligible.title,
+      updated_at_ms: preferenceDeliveryFixture.occurred_at_ms,
+    },
+  ];
+  exact(state.preference_delivery_issues, expectedPreferenceDeliveryIssues,
+    "Phase 2 post-save preference delivery issue rows were not exact");
+  exact(preferenceDelivery.preference_delivery_issues, expectedPreferenceDeliveryIssues,
+    "Phase 2 delivery trigger did not retain exact issue evidence");
   const expectedPreferenceDeliveryRows = [
     {
       body: preferenceDeliveryFixture.eligible.body,
@@ -1600,7 +1638,7 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
       public_id: preferenceDeliveryFixture.eligible.public_id,
       read: false,
       severity: preferenceDeliveryFixture.eligible.severity,
-      target_id: preferenceDeliveryFixture.eligible.public_id,
+      target_id: preferenceDeliveryFixture.eligible.issue_public_id,
       target_type: "issue",
       title: preferenceDeliveryFixture.eligible.title,
       username: fixture.roles.admin,
@@ -1620,7 +1658,7 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
       public_id: preferenceDeliveryFixture.ineligible.public_id,
       read: false,
       severity: preferenceDeliveryFixture.ineligible.severity,
-      target_id: preferenceDeliveryFixture.ineligible.public_id,
+      target_id: preferenceDeliveryFixture.ineligible.issue_public_id,
       target_type: "issue",
       title: preferenceDeliveryFixture.ineligible.title,
       username: fixture.roles.admin,
@@ -1644,7 +1682,8 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   const deliveredNotificationIds = (preferenceDelivery.delivery_notifications || []).map(
     (notification) => notification.public_id,
   );
-  assert(deliveredNotificationIds.includes(preferenceDeliveryFixture.eligible.public_id)
+  assert(deliveredNotificationIds.includes(phase.notification_public_id)
+    && deliveredNotificationIds.includes(preferenceDeliveryFixture.eligible.public_id)
     && !deliveredNotificationIds.includes(preferenceDeliveryFixture.ineligible.public_id),
   "Phase 2 post-save delivery did not apply the saved issue-created eligibility rule");
 
@@ -1800,6 +1839,7 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     tasks_auto_created: maintenance.summary?.tasks_auto_created,
     tasks_expired: maintenance.summary?.tasks_expired,
     weather_alerts_created: maintenance.summary?.weather_alerts_created,
+    weather_tasks_created: maintenance.summary?.weather_tasks_created,
   }, {
     configured: true,
     gardens_processed: 1,
@@ -1807,6 +1847,7 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     tasks_auto_created: 60,
     tasks_expired: 1,
     weather_alerts_created: 3,
+    weather_tasks_created: 31,
   }, "Phase 2 maintenance summary was unexpected");
   assert(
     maintenance.deliveries.every((delivery) => (
@@ -2477,7 +2518,7 @@ async function main() {
         username: USERNAME,
       });
       assert(phaseTwoPreferenceDelivery,
-        "Phase 2 browser did not run post-save preference delivery maintenance");
+        "Phase 2 browser did not run the post-save preference delivery boundary");
       phaseTwoProfiles = manifest.profiles.slice(phaseTwoProfileStart);
     }
     currentStage = "final-database-snapshot";
@@ -2569,6 +2610,7 @@ async function main() {
       "garden_calendar_event_plants",
       "garden_calendar_event_plots",
       "garden_calendar_events",
+      "garden_issues",
       "garden_journal_entries",
       "garden_journal_entry_plants",
       "garden_journal_entry_plots",
@@ -3025,6 +3067,7 @@ module.exports = {
   expectedSessionUserCounts,
   gitState,
   isSafeManifestRequestPath,
+  isPhaseTwoAuditPath,
   phaseOneAuditExpectedEvents,
   phaseSelected,
   safeUtcTimestamp,

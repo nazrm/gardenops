@@ -613,17 +613,19 @@ class TestWeatherTaskTyping(DbTestBase):
             (int(task["id"]),),
         )
         alert_id = self._create_alert("rain_surplus", valid_from="2026-07-15")
+        frozen_now_ms = 1_783_857_600_000
 
         on_rain_alert(
             self.conn,
             self.garden_id,
             alert_id,
             self._owner_id,
+            now_ms=frozen_now_ms,
         )
 
         task_after = self.conn.execute(
             """
-            SELECT due_on, metadata_json
+            SELECT due_on, metadata_json, updated_at_ms
             FROM garden_tasks
             WHERE garden_id = %s
               AND rule_source = 'water:RN2:2026-07-15'
@@ -633,7 +635,8 @@ class TestWeatherTaskTyping(DbTestBase):
         outcome = self.conn.execute(
             """
             SELECT outcome_type, source_type, source_public_id, target_type, target_id,
-                   plant_ids_json, plot_ids_json, metadata_json, recovery_action_json
+                   plant_ids_json, plot_ids_json, metadata_json, recovery_action_json,
+                   occurred_at_ms, created_at_ms, updated_at_ms
             FROM attention_outcomes
             WHERE garden_id = %s
               AND outcome_type = 'watering_rescheduled_by_rain'
@@ -647,6 +650,7 @@ class TestWeatherTaskTyping(DbTestBase):
         assert str(task_after["due_on"]) == "2026-07-16"
         assert task_metadata["rescheduled_from"] == "2026-07-15"
         assert task_metadata["rescheduled_reason"] == "rain_alert"
+        assert int(task_after["updated_at_ms"]) == frozen_now_ms
         assert outcome is not None
         assert str(outcome["source_type"]) == "task_generator"
         assert str(outcome["target_type"]) == "plant"
@@ -659,6 +663,9 @@ class TestWeatherTaskTyping(DbTestBase):
         assert outcome_metadata["new_due_on"] == "2026-07-16"
         assert recovery_action["due_on"] == "2026-07-15"
         assert recovery_action["target_id"] == "RN2"
+        assert int(outcome["occurred_at_ms"]) == frozen_now_ms
+        assert int(outcome["created_at_ms"]) == frozen_now_ms
+        assert int(outcome["updated_at_ms"]) == frozen_now_ms
 
     def test_rain_alert_only_reschedules_watering_for_outdoor_target_plants(self) -> None:
         for plant_id, name in (
@@ -907,6 +914,48 @@ class TestEscalateOverdueFollowUps(DbTestBase):
         esc_meta = json.loads(task["metadata_json"])
         assert "description_no" in esc_meta, "Escalation task should have NO description"
         assert issue["public_id"] in esc_meta["description_no"]
+
+    def test_uses_supplied_maintenance_clock(self) -> None:
+        today = date(2040, 6, 10)
+        overdue_id = self._create_issue(
+            title="Overdue on supplied clock",
+            severity="normal",
+            follow_up_on=(today - timedelta(days=1)).isoformat(),
+        )
+        due_today_id = self._create_issue(
+            title="Due today on supplied clock",
+            severity="low",
+            follow_up_on=today.isoformat(),
+        )
+        frozen_now_ms = 2_223_028_800_000
+
+        result = escalate_overdue_follow_ups(
+            self.conn,
+            self.garden_id,
+            today_iso=today.isoformat(),
+            now_ms=frozen_now_ms,
+        )
+
+        assert result == {"escalated": 1}
+        issues = {
+            int(row["id"]): row
+            for row in self.conn.execute(
+                "SELECT id, severity, updated_at_ms FROM garden_issues WHERE id = ANY(%s)",
+                ([overdue_id, due_today_id],),
+            ).fetchall()
+        }
+        assert issues[overdue_id]["severity"] == "high"
+        assert issues[overdue_id]["updated_at_ms"] == frozen_now_ms
+        assert issues[due_today_id]["severity"] == "low"
+
+        task = self.conn.execute(
+            "SELECT due_on, created_at_ms, updated_at_ms FROM garden_tasks "
+            "WHERE title = 'Overdue follow-up: Overdue on supplied clock'",
+        ).fetchone()
+        assert task is not None
+        assert task["due_on"] == (today + timedelta(days=3)).isoformat()
+        assert task["created_at_ms"] == frozen_now_ms
+        assert task["updated_at_ms"] == frozen_now_ms
 
     def test_skips_resolved_issues(self) -> None:
         yesterday = (date.today() - timedelta(days=1)).isoformat()

@@ -60,6 +60,8 @@ def test_viewers_keep_today_and_weather_navigation_without_write_affordances() -
 
     assert "canWrite?: () => boolean;" in attention
     assert "function isAttentionWriteAction" in attention
+    assert 'button.dataset["attentionActionKind"] = action.kind;' in attention
+    assert 'button.dataset["attentionActionTargetId"] = action.target_id;' in attention
     assert "if (options.canWrite?.() ?? true)" in attention
     assert "canWrite: () => canWriteInGarden," in app
     assert "function canWriteWeather" in weather

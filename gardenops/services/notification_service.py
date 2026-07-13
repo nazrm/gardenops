@@ -2160,11 +2160,12 @@ def reconcile_weather_alert_work(
     now_ms: int | None = None,
 ) -> dict[str, int]:
     """Reconcile weather alert notifications and generated tasks in one transaction."""
+    now_value, _ = notification_request_clock(now_ms=now_ms)
     notifications = create_weather_alert_notifications(
         db,
         garden_id=garden_id,
         alerts=alerts,
-        now_ms=now_ms,
+        now_ms=now_value,
     )
     task_handlers = {
         "frost_warning": on_frost_alert,
@@ -2184,7 +2185,13 @@ def reconcile_weather_alert_work(
             valid_from=valid_from,
         )
         if alert_row is not None:
-            tasks_created += handler(db, garden_id, int(alert_row["id"]), actor_user_id)
+            tasks_created += handler(
+                db,
+                garden_id,
+                int(alert_row["id"]),
+                actor_user_id,
+                now_ms=now_value,
+            )
     return {
         "notifications_created": int(notifications["created"]),
         "notifications_skipped": int(notifications["skipped"]),
@@ -2526,6 +2533,7 @@ def _run_weather_check_if_due(
     return {
         "weather_checks": 1,
         "weather_alerts_created": result.get("alerts_created", 0),
+        "weather_tasks_created": downstream["tasks_created"],
         "weather_notifications_created": downstream["notifications_created"],
         "weather_notifications_skipped": downstream["notifications_skipped"],
     }
@@ -2605,6 +2613,7 @@ def _empty_maintenance_summary() -> dict[str, int | bool]:
         "tasks_expired": 0,
         "weather_checks": 0,
         "weather_alerts_created": 0,
+        "weather_tasks_created": 0,
         "issues_escalated": 0,
         "processed_users": 0,
         "emailed_users": 0,
@@ -2686,6 +2695,9 @@ def _run_notification_maintenance_for_gardens(
         summary["weather_alerts_created"] = int(summary["weather_alerts_created"]) + int(
             weather_result.get("weather_alerts_created", 0)
         )
+        summary["weather_tasks_created"] = int(summary["weather_tasks_created"]) + int(
+            weather_result.get("weather_tasks_created", 0)
+        )
         summary["notifications_created"] = int(summary["notifications_created"]) + int(
             weather_result.get("weather_notifications_created", 0)
         )
@@ -2693,7 +2705,12 @@ def _run_notification_maintenance_for_gardens(
             weather_result.get("weather_notifications_skipped", 0)
         )
 
-        escalation_result = escalate_overdue_follow_ups(db, garden_id)
+        escalation_result = escalate_overdue_follow_ups(
+            db,
+            garden_id,
+            today_iso=_notification_today_iso(frozen_date=frozen_date),
+            now_ms=now_value,
+        )
         summary["issues_escalated"] = int(summary.get("issues_escalated", 0)) + int(
             escalation_result.get("escalated", 0)
         )

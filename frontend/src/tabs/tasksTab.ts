@@ -43,6 +43,16 @@ let tasksRequestGeneration = 0;
 const TASKS_PAGE_SIZE = 50;
 type TaskActionExtra = Omit<TaskActionRequest, "action">;
 
+interface TaskActionOptions {
+  allowMissingTask?: boolean;
+  expectedGardenId?: number | null;
+  showSuccessToast?: boolean;
+}
+
+interface SnoozeTaskOptions {
+  allowMissingTask?: boolean;
+}
+
 interface TasksRequestContext {
   gardenId: number | null;
   generation: number;
@@ -85,6 +95,18 @@ function isCurrentTask(
     gardenId !== null
     && gardenId === getActiveGardenContext()
     && taskItems.some((task) => task.id === taskId && task.garden_id === gardenId)
+  );
+}
+
+function isCurrentTaskAction(
+  taskId: string,
+  gardenId: number | null,
+  allowMissingTask = false,
+): boolean {
+  return (
+    gardenId !== null
+    && gardenId === getActiveGardenContext()
+    && (allowMissingTask || isCurrentTask(taskId, gardenId))
   );
 }
 
@@ -619,10 +641,15 @@ async function handleTaskAction(
   taskId: string,
   action: TaskActionRequest["action"],
   extra?: TaskActionExtra,
-  options: { showSuccessToast?: boolean } = {},
+  options: TaskActionOptions = {},
 ): Promise<boolean> {
-  const requestGardenId = getActiveGardenContext();
-  if (!isCurrentTask(taskId, requestGardenId)) return false;
+  const requestGardenId = options.expectedGardenId ?? getActiveGardenContext();
+  const actionIsCurrent = (): boolean => isCurrentTaskAction(
+    taskId,
+    requestGardenId,
+    options.allowMissingTask,
+  );
+  if (!actionIsCurrent()) return false;
   if (!ctx.ensureWriteAccess()) return false;
   if (!ctx.isOnline()) {
     if (action === "complete" && extra?.completed_plant_ids?.length) {
@@ -630,7 +657,7 @@ async function handleTaskAction(
       return false;
     }
     await enqueueOfflineTaskAction(taskId, action, extra);
-    if (!isCurrentTask(taskId, requestGardenId)) return false;
+    if (!actionIsCurrent()) return false;
     if (options.showSuccessToast !== false) {
       ctx.showToast(t("offline.draft_saved"), "success");
     }
@@ -639,7 +666,7 @@ async function handleTaskAction(
   }
   try {
     await taskActionApi(taskId, { action, ...extra });
-    if (!isCurrentTask(taskId, requestGardenId)) return false;
+    if (!actionIsCurrent()) return false;
     if (options.showSuccessToast !== false) {
       ctx.showToast(
         t("tasks.action_success", { action }),
@@ -650,7 +677,7 @@ async function handleTaskAction(
     void loadTasks();
     return true;
   } catch (err) {
-    if (!isCurrentTask(taskId, requestGardenId)) return false;
+    if (!actionIsCurrent()) return false;
     ctx.showToast(getApiErrorMessage(err), "error");
     return false;
   }
@@ -748,20 +775,28 @@ async function handleBatchComplete(): Promise<void> {
   renderTasksView();
 }
 
-async function snoozeTaskWithPolicy(task: GardenTask, snoozeUntil: string): Promise<void> {
+async function snoozeTaskWithPolicy(
+  task: GardenTask,
+  snoozeUntil: string,
+  options: SnoozeTaskOptions = {},
+): Promise<void> {
   const online = ctx.isOnline();
   const ok = await handleTaskAction(
     task.id,
     "snooze",
     { snooze_until: snoozeUntil },
-    { showSuccessToast: false },
+    {
+      ...(options.allowMissingTask ? { allowMissingTask: true } : {}),
+      expectedGardenId: task.garden_id,
+      showSuccessToast: false,
+    },
   );
   if (!ok) return;
   if (!online) {
     ctx.showToast(t("offline.draft_saved"), "success");
   }
   const notice = getTaskSnoozeCorrectionNotice(snoozeUntil, () => {
-    openSnoozeDateDialog(task, snoozeUntil);
+    openSnoozeDateDialog(task, snoozeUntil, undefined, { allowMissingTask: true });
   });
   ctx.showToast(
     notice.message,
@@ -778,11 +813,16 @@ async function snoozeTaskWithPolicy(task: GardenTask, snoozeUntil: string): Prom
   );
 }
 
-function openSnoozeDateDialog(task: GardenTask, defaultDate: string, warning?: string): void {
+function openSnoozeDateDialog(
+  task: GardenTask,
+  defaultDate: string,
+  warning?: string,
+  options: SnoozeTaskOptions = {},
+): void {
   openTaskDateDialog({
     title: t("tasks.snooze_prompt") as string,
     defaultDate,
-    onConfirm: (date) => void snoozeTaskWithPolicy(task, date),
+    onConfirm: (date) => void snoozeTaskWithPolicy(task, date, options),
     warning,
   });
 }

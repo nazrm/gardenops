@@ -109,6 +109,8 @@ PHASE_TWO_CALENDAR_DESCRIPTION = "Escaped comma, semicolon; backslash \\ and lin
 PHASE_TWO_NOTIFICATION_PUBLIC_ID = "note_complete_p2_admin"
 PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID = "note_complete_p2_delivery_eligible"
 PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID = "note_complete_p2_delivery_ineligible"
+PHASE_TWO_DELIVERY_ELIGIBLE_ISSUE_PUBLIC_ID = "issue_complete_p2_delivery_eligible"
+PHASE_TWO_DELIVERY_INELIGIBLE_ISSUE_PUBLIC_ID = "issue_complete_p2_delivery_ineligible"
 PHASE_TWO_DELIVERY_ELIGIBLE_TITLE = "Phase 2 delivery eligible issue notice"
 PHASE_TWO_DELIVERY_ELIGIBLE_BODY = "Phase 2 eligible issue notice after saved preferences."
 PHASE_TWO_DELIVERY_INELIGIBLE_TITLE = "Phase 2 delivery ineligible issue notice"
@@ -2354,6 +2356,46 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
     }
 
 
+def _phase_two_delivery_issue_rows(conn) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT issue.public_id, issue.garden_id, issue.issue_type, issue.title,
+               issue.description, issue.severity, issue.status, issue.follow_up_on,
+               issue.metadata_json, issue.created_at_ms, issue.updated_at_ms,
+               creator.username AS creator_username
+        FROM garden_issues issue
+        JOIN auth_users creator ON creator.id = issue.created_by_user_id
+        WHERE issue.public_id = ANY(%s)
+        ORDER BY issue.public_id
+        """,
+        (
+            [
+                PHASE_TWO_DELIVERY_ELIGIBLE_ISSUE_PUBLIC_ID,
+                PHASE_TWO_DELIVERY_INELIGIBLE_ISSUE_PUBLIC_ID,
+            ],
+        ),
+    ).fetchall()
+    return [
+        {
+            "created_at_ms": int(row["created_at_ms"]),
+            "creator_username": str(row["creator_username"]),
+            "description": str(row["description"]),
+            "follow_up_on": str(row["follow_up_on"]),
+            "garden_id": int(row["garden_id"]),
+            "issue_type": str(row["issue_type"]),
+            "metadata": _json_object(
+                row["metadata_json"] or "{}", label="Phase 2 preference delivery issue metadata"
+            ),
+            "public_id": str(row["public_id"]),
+            "severity": str(row["severity"]),
+            "status": str(row["status"]),
+            "title": str(row["title"]),
+            "updated_at_ms": int(row["updated_at_ms"]),
+        }
+        for row in rows
+    ]
+
+
 def _phase_two_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
     gardens = {
         str(row["slug"]): int(row["id"])
@@ -2615,32 +2657,6 @@ def _phase_two_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         (list(PHASE_TWO_TASKS.values()),),
     ).fetchall()
     maintenance_rows = _phase_two_maintenance_semantic_rows(conn, alpha_id)
-    explicit_notification_ids = {
-        PHASE_TWO_NOTIFICATION_PUBLIC_ID,
-        "note_complete_p2_beta_conflict",
-        "note_complete_p2_editor",
-        PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID,
-        PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID,
-    }
-    maintenance_created = {
-        "tasks": [
-            row
-            for row in maintenance_rows["tasks"]
-            if row["created_at_ms"] == PHASE_TWO_NOW_MS
-            and row["public_id"] not in set(PHASE_TWO_TASKS.values())
-        ],
-        "notifications": [
-            row
-            for row in maintenance_rows["notifications"]
-            if row["created_at_ms"] == PHASE_TWO_NOW_MS
-            and row["public_id"] not in explicit_notification_ids
-        ],
-        "weather_alerts": [
-            row
-            for row in maintenance_rows["weather_alerts"]
-            if row["created_at_ms"] == PHASE_TWO_NOW_MS
-        ],
-    }
 
     return {
         "calendar_events": [
@@ -2702,7 +2718,7 @@ def _phase_two_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             }
             for row in journal_rows
         ],
-        "maintenance_created": maintenance_created,
+        "maintenance_rows": maintenance_rows,
         "notifications": [
             {
                 "body": str(row["body"]),
@@ -2732,6 +2748,7 @@ def _phase_two_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             }
             for row in notification_rows
         ],
+        "preference_delivery_issues": _phase_two_delivery_issue_rows(conn),
         "offline_operations": [dict(row) for row in operation_rows],
         "outcomes": [
             {
@@ -2881,12 +2898,14 @@ def _phase_two_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
         "preference_delivery": {
             "eligible": {
                 "body": PHASE_TWO_DELIVERY_ELIGIBLE_BODY,
+                "issue_public_id": PHASE_TWO_DELIVERY_ELIGIBLE_ISSUE_PUBLIC_ID,
                 "public_id": PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID,
                 "severity": "high",
                 "title": PHASE_TWO_DELIVERY_ELIGIBLE_TITLE,
             },
             "ineligible": {
                 "body": PHASE_TWO_DELIVERY_INELIGIBLE_BODY,
+                "issue_public_id": PHASE_TWO_DELIVERY_INELIGIBLE_ISSUE_PUBLIC_ID,
                 "public_id": PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID,
                 "severity": "low",
                 "title": PHASE_TWO_DELIVERY_INELIGIBLE_TITLE,
@@ -3501,8 +3520,8 @@ def _run_phase_two_maintenance(conn, optimization_seed: Any) -> dict[str, Any]:
 def _run_phase_two_preference_delivery(conn, optimization_seed: Any) -> dict[str, Any]:
     """Create post-save fixtures and run the deterministic delivery boundary once."""
     from gardenops.services.notification_service import (
+        deliver_pending_email_digests,
         get_unread_count,
-        run_notification_maintenance_for_garden,
     )
 
     target = conn.execute(
@@ -3551,7 +3570,7 @@ def _run_phase_two_preference_delivery(conn, optimization_seed: Any) -> dict[str
     ):
         raise RuntimeError("Phase 2 browser did not save the required delivery preferences")
 
-    existing = conn.execute(
+    existing_notifications = conn.execute(
         "SELECT public_id FROM notification_events WHERE public_id = ANY(%s)",
         (
             [
@@ -3560,19 +3579,69 @@ def _run_phase_two_preference_delivery(conn, optimization_seed: Any) -> dict[str
             ],
         ),
     ).fetchall()
-    if existing:
+    existing_issues = conn.execute(
+        "SELECT public_id FROM garden_issues WHERE public_id = ANY(%s)",
+        (
+            [
+                PHASE_TWO_DELIVERY_ELIGIBLE_ISSUE_PUBLIC_ID,
+                PHASE_TWO_DELIVERY_INELIGIBLE_ISSUE_PUBLIC_ID,
+            ],
+        ),
+    ).fetchall()
+    if existing_notifications or existing_issues:
         raise RuntimeError("Phase 2 preference delivery fixtures were created more than once")
     created_at_ms = PHASE_TWO_NOW_MS
     expires_at_ms = created_at_ms + 7 * 86_400_000
-    for public_id, severity, title, body in (
+    for public_id, severity, title, description in (
+        (
+            PHASE_TWO_DELIVERY_ELIGIBLE_ISSUE_PUBLIC_ID,
+            "high",
+            PHASE_TWO_DELIVERY_ELIGIBLE_TITLE,
+            PHASE_TWO_DELIVERY_ELIGIBLE_BODY,
+        ),
+        (
+            PHASE_TWO_DELIVERY_INELIGIBLE_ISSUE_PUBLIC_ID,
+            "low",
+            PHASE_TWO_DELIVERY_INELIGIBLE_TITLE,
+            PHASE_TWO_DELIVERY_INELIGIBLE_BODY,
+        ),
+    ):
+        conn.execute(
+            """
+            INSERT INTO garden_issues (
+                public_id, garden_id, issue_type, title, description, severity, status,
+                suspected_cause, treatment_plan, follow_up_on, metadata_json,
+                created_by_user_id, created_at_ms, updated_at_ms
+            )
+            VALUES (%s, %s, 'other', %s, %s, %s, 'open', '', '', %s, %s, %s, %s, %s)
+            """,
+            (
+                public_id,
+                int(target["garden_id"]),
+                title,
+                description,
+                severity,
+                PHASE_TWO_DATE,
+                json.dumps(
+                    {"fixture": "complete_journeys_phase_2", "preference_delivery": True},
+                    sort_keys=True,
+                ),
+                int(target["user_id"]),
+                created_at_ms,
+                created_at_ms,
+            ),
+        )
+    for public_id, issue_public_id, severity, title, body in (
         (
             PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID,
+            PHASE_TWO_DELIVERY_ELIGIBLE_ISSUE_PUBLIC_ID,
             "high",
             PHASE_TWO_DELIVERY_ELIGIBLE_TITLE,
             PHASE_TWO_DELIVERY_ELIGIBLE_BODY,
         ),
         (
             PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID,
+            PHASE_TWO_DELIVERY_INELIGIBLE_ISSUE_PUBLIC_ID,
             "low",
             PHASE_TWO_DELIVERY_INELIGIBLE_TITLE,
             PHASE_TWO_DELIVERY_INELIGIBLE_BODY,
@@ -3595,7 +3664,7 @@ def _run_phase_two_preference_delivery(conn, optimization_seed: Any) -> dict[str
                 severity,
                 title,
                 body,
-                public_id,
+                issue_public_id,
                 json.dumps(
                     {"fixture": "complete_journeys_phase_2", "preference_delivery": True},
                     sort_keys=True,
@@ -3616,7 +3685,7 @@ def _run_phase_two_preference_delivery(conn, optimization_seed: Any) -> dict[str
             }
         )
 
-    summary = run_notification_maintenance_for_garden(
+    summary = deliver_pending_email_digests(
         conn,
         garden_id=int(target["garden_id"]),
         email_sender=record_delivery,
@@ -3665,6 +3734,7 @@ def _run_phase_two_preference_delivery(conn, optimization_seed: Any) -> dict[str
         "deliveries": deliveries,
         "delivery_notifications": [dict(row) for row in delivery_rows],
         "garden_id": int(target["garden_id"]),
+        "preference_delivery_issues": _phase_two_delivery_issue_rows(conn),
         "preference_delivery_rows": [dict(row) for row in fixture_rows],
         "summary": summary,
         "triggered_at_ms": PHASE_TWO_NOW_MS,

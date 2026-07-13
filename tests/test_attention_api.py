@@ -1508,9 +1508,12 @@ class TestAttentionTaskProvider(BaseApiTest):
                 ('task_snoozed_future', %s, 'harvest', 'Harvest cabbage', '', 'snoozed',
                  'normal', '2026-07-05', '2026-07-07', '', '{}', NULL, 1, 1),
                 ('task_completed', %s, 'water', 'Water parsley', '', 'completed', 'normal',
-                 '2026-07-05', NULL, '', '{}', 1783180800000, 1, 1783180800000)
+                 '2026-07-05', NULL, '', '{}', 1783180800000, 1, 1783180800000),
+                ('task_expired', %s, 'water', 'Expired generated watering', '', 'expired',
+                 'low', '2026-06-01', NULL, 'water:ATTN-BASIL:2026-06-01', '{}', NULL,
+                 1, 1783180800000)
                 """,
-                (garden_id, garden_id, garden_id, garden_id, garden_id),
+                (garden_id, garden_id, garden_id, garden_id, garden_id, garden_id),
             )
             due_id = int(
                 conn.execute("SELECT id FROM garden_tasks WHERE public_id = 'task_due'").fetchone()[
@@ -1545,6 +1548,7 @@ class TestAttentionTaskProvider(BaseApiTest):
         assert "attn:task:task_snoozed_future" not in by_id
         assert by_id["attn:task:task_completed"].category == "no_action_needed"
         assert by_id["attn:task:task_completed"].reason == "Completed"
+        assert by_id["attn:task:task_completed"].rank < by_id["attn:task:task_expired"].rank
 
     def test_task_provider_uses_terminal_transition_time_for_no_action_history(self) -> None:
         from gardenops.services.attention import TaskAttentionProvider
@@ -1587,6 +1591,10 @@ class TestAttentionTaskProvider(BaseApiTest):
         assert "attn:task:task_completed_old_edited" not in by_id
         assert by_id["attn:task:task_skipped_recent"].reason == "Skipped"
         assert by_id["attn:task:task_skipped_recent"].primary_action is None
+        assert (
+            by_id["attn:task:task_completed_recent"].rank
+            < by_id["attn:task:task_skipped_recent"].rank
+        )
         assert "attn:task:task_skipped_old" not in by_id
         assert by_id["attn:task:task_snoozed_overdue"].reason == "Snooze expired"
 

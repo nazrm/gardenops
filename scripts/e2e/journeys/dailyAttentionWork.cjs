@@ -630,7 +630,9 @@ async function exerciseCalendarLifecycle(
 async function openNotifications(page, profile) {
   let trigger;
   if (profile === "mobile") {
-    await page.locator("#mobile-utility-btn").click();
+    if (!await page.locator("body.mobile-utility-open").count()) {
+      await page.locator("#mobile-utility-btn").click();
+    }
     await visible(page.locator("#mobile-utility-sheet"), "mobile utility for notifications");
     trigger = page.locator("#mobile-notification-btn");
   } else {
@@ -1052,9 +1054,9 @@ async function exerciseMobileNotificationPreferenceMutation(page) {
   await panel.locator(".notification-settings-btn").click();
   let prefs = panel.locator(".notification-prefs-form");
   await visible(prefs, "mobile notification preferences");
-  let system = await systemRuleControls(prefs);
-  assert(await system.severity.inputValue() === "high",
-    "Mobile notification preferences did not receive the saved system severity");
+  let issue = await issueCreatedRuleControls(prefs);
+  assert(await issue.severity.inputValue() === "normal",
+    "Mobile notification preferences did not receive the saved issue-created severity");
 
   const save = async (expectedSeverity, label) => {
     const responsePromise = page.waitForResponse((response) => (
@@ -1064,11 +1066,11 @@ async function exerciseMobileNotificationPreferenceMutation(page) {
     await prefs.locator(".btn-primary").click();
     const response = await responsePromise;
     assert(response.status() === 200, `${label} notification preference save failed`);
-    await waitFor(async () => await system.severity.inputValue() === expectedSeverity,
+    await waitFor(async () => await issue.severity.inputValue() === expectedSeverity,
       `${label} notification preference projection`);
   };
 
-  await system.severity.selectOption("low");
+  await issue.severity.selectOption("low");
   await save("low", "mobile low-severity");
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "hidden" });
@@ -1077,11 +1079,11 @@ async function exerciseMobileNotificationPreferenceMutation(page) {
   await panel.locator(".notification-settings-btn").click();
   prefs = panel.locator(".notification-prefs-form");
   await visible(prefs, "reopened mobile notification preferences");
-  system = await systemRuleControls(prefs);
-  assert(await system.severity.inputValue() === "low",
+  issue = await issueCreatedRuleControls(prefs);
+  assert(await issue.severity.inputValue() === "low",
     "Mobile low-severity preference mutation did not persist before restoration");
-  await system.severity.selectOption("high");
-  await save("high", "mobile restored high-severity");
+  await issue.severity.selectOption("normal");
+  await save("normal", "mobile restored normal severity");
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "hidden" });
   await closeMobileUtility(page);
@@ -1159,6 +1161,7 @@ async function runConcurrentWeatherChecks(page, profile, garden) {
   const peer = await page.context().newPage();
   try {
     await peer.goto(page.url(), { waitUntil: "domcontentloaded" });
+    await openPrimary(peer, profile, "map");
     await visible(peer.locator("#map-grid"), "concurrent weather peer map surface");
     await selectGarden(peer, profile, garden.id);
     await openCare(peer, profile);
@@ -1440,16 +1443,31 @@ async function exerciseViewer(page, profile, fixture) {
   const today = await openToday(page, profile);
   await visible(today.locator('[data-testid="attention-today-section-needs_attention"]'),
     `${profile} viewer Today affordance`);
-  assert(await today.locator(".attention-today-actions button").count() === 0,
-    `${profile} viewer Today received write controls`);
+  assert(await today.locator('[data-testid="attention-today-settings"]').count() === 0,
+    `${profile} viewer Today received preference controls`);
+  assert(await today.locator('[data-attention-action-kind="restore_attention_outcome"]').count() === 0,
+    `${profile} viewer Today received restore controls`);
+  const openTask = today.locator('[data-attention-action-kind="open_task"]').first();
+  await visible(openTask, `${profile} viewer Today task navigation`);
+  if (profile === "desktop") {
+    const targetTaskId = await openTask.getAttribute("data-attention-action-target-id");
+    assert(targetTaskId, `${profile} viewer Today task navigation omitted its target`);
+    await openTask.click();
+    const navigatedCard = page.locator(`.task-card[data-task-id="${targetTaskId}"]`);
+    await visible(navigatedCard, `${profile} viewer task after Today navigation`);
+    assert(await navigatedCard.locator(".task-card-actions button").count() === 0,
+      `${profile} viewer Today navigation exposed task write controls`);
+  }
   if (profile === "mobile") {
     await page.locator("[data-testid='attention-today-mobile-close']").click();
   }
   await selectGarden(page, profile, fixture.gardens.beta.id);
   await openCare(page, profile);
   await visible(page.locator("#weather-dashboard"), `${profile} viewer Weather affordance`);
-  assert(await page.locator("#weather-dashboard .weather-check-btn").count() === 0,
+  assert(await page.locator("#weather-dashboard .weather-check-btn:visible").count() === 0,
     `${profile} viewer Weather received write controls`);
+  assert(await page.locator("#weather-dashboard .weather-alert-dismiss:visible").count() === 0,
+    `${profile} viewer Weather received alert dismissal controls`);
 }
 
 async function runProfile(options) {

@@ -42,8 +42,9 @@ class TestWeatherCheckNoLocation(DbTestBase):
 
 
 class TestWeatherCheckRunsAfterCooldown(DbTestBase):
+    @patch("gardenops.services.notification_service.reconcile_weather_alert_work")
     @patch("gardenops.services.notification_service.check_weather_and_generate_alerts")
-    def test_weather_check_runs_when_cooldown_expired(self, mock_check) -> None:
+    def test_weather_check_runs_when_cooldown_expired(self, mock_check, mock_reconcile) -> None:
         mock_check.return_value = {
             "forecast_available": True,
             "alerts_created": 1,
@@ -61,6 +62,11 @@ class TestWeatherCheckRunsAfterCooldown(DbTestBase):
             ],
             "frost_vulnerable_plants": [],
             "watering_sensitive_plants": [],
+        }
+        mock_reconcile.return_value = {
+            "notifications_created": 2,
+            "notifications_skipped": 1,
+            "tasks_created": 3,
         }
 
         self.conn.execute(
@@ -80,6 +86,7 @@ class TestWeatherCheckRunsAfterCooldown(DbTestBase):
         result = _run_weather_check_if_due(self.conn, self.garden_id, now_ms)
         assert result.get("weather_checks") == 1
         assert result.get("weather_alerts_created") == 1
+        assert result.get("weather_tasks_created") == 3
         mock_check.assert_called_once_with(self.conn, self.garden_id, 59.9, 10.7)
 
 
@@ -177,6 +184,7 @@ class TestRunMaintenanceIncludes(DbTestBase):
         assert "tasks_expired" in result
         assert "weather_checks" in result
         assert "weather_alerts_created" in result
+        assert "weather_tasks_created" in result
         assert "issues_escalated" in result
 
 

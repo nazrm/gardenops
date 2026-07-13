@@ -1769,8 +1769,8 @@ def test_phase_two_delayed_races_do_not_wait_for_the_intentionally_held_beta_sur
         )
         == 3
     )
-    assert 'waitForSettle: false });\n      await openTasks' not in source
-    assert 'waitForSettle: false });\n      await startCalendar' not in source
+    assert "waitForSettle: false });\n      await openTasks" not in source
+    assert "waitForSettle: false });\n      await startCalendar" not in source
 
 
 def test_phase_two_evidence_contract_preserves_phase_one_and_sanitizes_trace_database_evidence(
@@ -1838,6 +1838,31 @@ if (trace.name !== 'mobile-admin-passed.zip' || trace.sha256 !== 'a'.repeat(64))
     assert result.returncode == 0, result.stderr
 
 
+def test_phase_two_audit_paths_include_visible_reads_and_preference_writes_only() -> None:
+    script = """
+const { isPhaseTwoAuditPath } = require('./scripts/check_complete_journeys_e2e.cjs');
+for (const expected of [
+  '/api/calendar/preferences',
+  '/api/media/summaries',
+  '/api/notifications/preferences',
+  '/api/tasks/tsk_example/action',
+]) {
+  if (!isPhaseTwoAuditPath(expected)) process.exit(3);
+}
+for (const unexpected of [
+  '/api/media',
+  '/api/media/summaries/private',
+  '/api/not-a-phase-two-route',
+]) {
+  if (isPhaseTwoAuditPath(unexpected)) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_weather_checks() -> (
     None
 ):
@@ -1864,7 +1889,11 @@ def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evi
     for marker in (
         "PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID",
         "PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID",
+        "PHASE_TWO_DELIVERY_ELIGIBLE_ISSUE_PUBLIC_ID",
+        "PHASE_TWO_DELIVERY_INELIGIBLE_ISSUE_PUBLIC_ID",
         "--phase-two-preference-delivery",
+        "deliver_pending_email_digests",
+        "preference_delivery_issues",
         "_run_phase_two_preference_delivery",
     ):
         assert marker in seed_source
@@ -1878,6 +1907,8 @@ def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evi
     for marker in (
         "phase_two_preference_delivery",
         "preference_delivery_exact",
+        "expectedPreferenceDeliveryIssues",
+        '"garden_issues"',
         "preference_delivery_rows",
         "delivery_badge_count",
     ):
@@ -1904,6 +1935,7 @@ def test_phase_two_database_contract_covers_maintenance_and_audit_semantics() ->
         "assertExpectedMaintenanceMutations",
         "maintenance_semantic_state",
         "maintenance_created",
+        "maintenance_rows",
         "phase_two_audit_events",
         "assertPhaseOneStatePreservedAfterPhaseTwo",
         "phase_one_scoped_state_preserved_after_phase_two",
