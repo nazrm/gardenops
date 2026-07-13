@@ -1390,7 +1390,18 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   const phase = fixture?.phase_two;
   assert(phase && typeof phase === "object", "Phase 2 fixture state is missing");
   const exact = (actual, expected, message) => {
-    assert(canonicalJson(actual) === canonicalJson(expected), message);
+    if (canonicalJson(actual) === canonicalJson(expected)) return;
+    const actualRecord = actual && typeof actual === "object" && !Array.isArray(actual) ? actual : {};
+    const expectedRecord = expected && typeof expected === "object" && !Array.isArray(expected)
+      ? expected
+      : {};
+    const differingFields = [...new Set([
+      ...Object.keys(actualRecord),
+      ...Object.keys(expectedRecord),
+    ])]
+      .filter((field) => canonicalJson(actualRecord[field]) !== canonicalJson(expectedRecord[field]))
+      .sort();
+    assert(false, `${message}; differing fields: ${differingFields.join(", ") || "root"}`);
   };
   for (const field of [
     "calendar_events",
