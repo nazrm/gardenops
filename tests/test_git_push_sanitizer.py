@@ -66,7 +66,6 @@ STRIPE_API_KEY = "{synthetic_value}"
             ],
         )
 
-
     def test_secret_assignment_detects_secret_after_earlier_separator(self) -> None:
         synthetic_value = "ZP6i7Pz4_" + "aN3KqQpt" + "9VxLm2s" + "R0bYfE8c"
         text = f"""
