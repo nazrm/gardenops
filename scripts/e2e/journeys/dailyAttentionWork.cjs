@@ -247,7 +247,14 @@ async function exerciseImmediateSnoozeCorrection(page, fixture) {
   const week = page.locator("[data-calendar-view='week']:visible").first();
   await visible(week, "calendar week view for immediate snooze correction");
   if (!await week.evaluate((element) => element.classList.contains("active"))) {
+    const weekEvents = page.waitForResponse((response) => (
+      response.request().method() === "GET"
+        && new URL(response.url()).pathname === "/api/calendar/events"
+    ));
     await week.click();
+    const weekResponse = await weekEvents;
+    assert(weekResponse.status() === 200,
+      `Calendar week events returned ${weekResponse.status()}`);
     await waitFor(async () => await week.evaluate((element) => element.classList.contains("active")),
       "calendar week view for immediate snooze correction");
   }

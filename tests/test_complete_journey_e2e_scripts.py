@@ -2163,6 +2163,19 @@ def test_phase_two_mobile_quick_action_keeps_manual_date_completion_actionable()
     assert '.fill(fixture.phase_two.manual_date);' not in quick_actions
 
 
+def test_phase_two_snooze_correction_waits_for_week_events() -> None:
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
+        encoding="utf-8"
+    )
+    correction = source.split("async function exerciseImmediateSnoozeCorrection", 1)[1].split(
+        "async function snoozePruneWithManualDate", 1
+    )[0]
+
+    assert 'new URL(response.url()).pathname === "/api/calendar/events"' in correction
+    assert "const weekResponse = await weekEvents;" in correction
+    assert "weekResponse.status() === 200" in correction
+
+
 def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evidence() -> None:
     journey_source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
         encoding="utf-8"
