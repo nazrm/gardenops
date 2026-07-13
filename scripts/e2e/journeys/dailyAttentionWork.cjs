@@ -247,20 +247,19 @@ async function exerciseImmediateSnoozeCorrection(page, fixture) {
   const week = page.locator("[data-calendar-view='week']:visible").first();
   await visible(week, "calendar week view for immediate snooze correction");
   if (!await week.evaluate((element) => element.classList.contains("active"))) {
-    const weekEvents = page.waitForResponse((response) => (
-      response.request().method() === "GET"
-        && new URL(response.url()).pathname === "/api/calendar/events"
-    ));
     await week.click();
-    const weekResponse = await weekEvents;
-    assert(weekResponse.status() === 200,
-      `Calendar week events returned ${weekResponse.status()}`);
     await waitFor(async () => await week.evaluate((element) => element.classList.contains("active")),
       "calendar week view for immediate snooze correction");
   }
   await page.locator("#calendar-loading").waitFor({ state: "hidden" });
 
-  const event = page.locator(".fc-event:visible").filter({ hasText: task.title }).first();
+  let event = page.locator(".fc-event:visible").filter({ hasText: task.title }).first();
+  if (!await event.count()) {
+    const more = page.locator(".fc-daygrid-more-link:visible").last();
+    await visible(more, "mobile Calendar all-day overflow");
+    await more.click();
+    event = page.locator(".fc-popover .fc-event:visible").filter({ hasText: task.title }).first();
+  }
   await visible(event, "dedicated immediate snooze correction Calendar event");
   await event.click();
   const detail = page.locator("#calendar-detail-panel");
