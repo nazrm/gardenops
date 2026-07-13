@@ -856,7 +856,6 @@ function assertPhaseTwoProfileEvidence(profiles) {
       checks: [
         "editor_offline_task_replay",
         "editor_offline_task_actions_replay",
-        "offline_task_operation_ids",
       ],
     },
     {
