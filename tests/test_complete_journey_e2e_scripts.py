@@ -2226,6 +2226,9 @@ def test_phase_two_weather_projection_uses_exact_identities_not_magic_count() ->
     assert "phase.seeded_state.weather_alerts.length + 4" not in source
     assert "Phase 2 generated weather alert identities were unexpected" in source
     assert "expectedWeatherIds" in source
+    assert 'reason: "absent_from_current_forecast"' in source
+    assert 'source: "forecast_reconciliation"' in source
+    assert "resolved_at_ms: fixture.clock.attention_now_ms" in source
 
 
 def test_phase_two_maintenance_summary_is_derived_from_semantic_rows() -> None:

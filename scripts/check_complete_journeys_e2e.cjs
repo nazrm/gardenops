@@ -2120,19 +2120,40 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   )));
   for (const initialAlert of phase.seeded_state.weather_alerts) {
     const mutated = mutatedWeatherById.get(initialAlert.id);
-    const expectedAlert = mutated ? {
-      alert_type: mutated.alert_type,
-      created_at_ms: mutated.created_at_ms,
-      dismissed: mutated.dismissed,
-      garden_id: mutated.garden_id,
-      id: mutated.row_id,
-      metadata: mutated.metadata,
-      plant_ids: mutated.plant_ids,
-      severity: mutated.severity,
-      title: mutated.title,
-      valid_from: mutated.valid_from,
-      valid_until: mutated.valid_until,
-    } : initialAlert;
+    let expectedAlert = initialAlert;
+    if (mutated) {
+      expectedAlert = {
+        alert_type: mutated.alert_type,
+        created_at_ms: mutated.created_at_ms,
+        dismissed: mutated.dismissed,
+        garden_id: mutated.garden_id,
+        id: mutated.row_id,
+        metadata: mutated.metadata,
+        plant_ids: mutated.plant_ids,
+        severity: mutated.severity,
+        title: mutated.title,
+        valid_from: mutated.valid_from,
+        valid_until: mutated.valid_until,
+      };
+    }
+    if (
+      initialAlert.garden_id === fixture.gardens.beta.id
+      && initialAlert.alert_type === "frost_warning"
+    ) {
+      expectedAlert = {
+        ...initialAlert,
+        dismissed: true,
+        metadata: {
+          ...initialAlert.metadata,
+          lifecycle: {
+            reason: "absent_from_current_forecast",
+            resolved_at_ms: fixture.clock.attention_now_ms,
+            source: "forecast_reconciliation",
+            status: "resolved",
+          },
+        },
+      };
+    }
     exact(finalWeatherById.get(initialAlert.id), expectedAlert,
       `Phase 2 seeded weather alert changed: ${initialAlert.id}`);
   }
