@@ -2316,14 +2316,47 @@ const after = {
   },
   status: 'expired',
 };
+const weatherBefore = {
+  alert_type: 'frost_warning', created_at_ms: 1783983645512,
+  description: 'Earlier frost forecast', dismissed: false, garden_id: 1,
+  metadata: { coldest: -1, coldest_date: '2026-07-12', frost_days: [['2026-07-12', -1]] },
+  plant_ids: ['OPT-JOURNEY-A-PLANT'], row_id: 1, severity: 'normal',
+  title: 'Frost warning: -1\u00b0C expected', valid_from: '2026-07-12', valid_until: '2026-07-21',
+};
+const weatherAfter = {
+  ...weatherBefore,
+  description: 'Frost expected on 1 day(s). Coldest: -3.0\u00b0C on 2026-07-12. '
+    + 'Protect tender plants.',
+  metadata: {
+    coldest: -3, coldest_date: '2026-07-12', frost_days: [['2026-07-12', -3]],
+    plant_advice: [{
+      hardiness: 'H1', min_safe_temp: 15, name: 'Phase 2 Mobile Tomato',
+      plt_id: 'COMPLETE-P2-FERT-MOBILE',
+    }],
+  },
+  plant_ids: ['COMPLETE-P2-FERT-MOBILE', 'OPT-JOURNEY-A-PLANT'],
+  title: 'Frost warning: -3\u00b0C expected',
+};
 const evidence = {
   notifications: { mutated_existing: [] },
   tasks: { mutated_existing: [{ before, after }] },
-  weather_alerts: { mutated_existing: [] },
+  weather_alerts: { mutated_existing: [{ before: weatherBefore, after: weatherAfter }] },
 };
 const fixture = {
   clock: { attention_now_ms: 1783857600000 },
-  phase_two: { task_ids: { stale_generated_water: before.public_id } },
+  gardens: { alpha: { id: 1 } },
+  phase_two: {
+    plant_ids: { fertilize_mobile: 'COMPLETE-P2-FERT-MOBILE' },
+    plant_names: { fertilize_mobile: 'Phase 2 Mobile Tomato' },
+    seeded_state: { weather_alerts: [{
+      alert_type: weatherBefore.alert_type, created_at_ms: weatherBefore.created_at_ms,
+      dismissed: false, garden_id: 1, id: 1, metadata: weatherBefore.metadata,
+      plant_ids: weatherBefore.plant_ids, severity: weatherBefore.severity,
+      title: weatherBefore.title, valid_from: weatherBefore.valid_from,
+      valid_until: weatherBefore.valid_until,
+    }] },
+    task_ids: { stale_generated_water: before.public_id },
+  },
 };
 assertExpectedMaintenanceMutations(evidence, fixture);
 try {

@@ -1436,6 +1436,37 @@ function assertMaintenanceMutationPair(pair, table) {
   return after;
 }
 
+function expectedPhaseTwoFrostMaintenanceRow(fixture) {
+  const initial = fixture.phase_two.seeded_state.weather_alerts.find((alert) => (
+    alert.garden_id === fixture.gardens.alpha.id && alert.alert_type === "frost_warning"
+  ));
+  assert(initial, "Phase 2 seeded alpha frost alert is missing");
+  return {
+    alert_type: "frost_warning",
+    created_at_ms: initial.created_at_ms,
+    description: `Frost expected on 1 day(s). Coldest: -3.0\u00b0C on ${initial.valid_from}. Protect tender plants.`,
+    dismissed: false,
+    garden_id: fixture.gardens.alpha.id,
+    metadata: {
+      coldest: -3,
+      coldest_date: initial.valid_from,
+      frost_days: [[initial.valid_from, -3]],
+      plant_advice: [{
+        hardiness: "H1",
+        min_safe_temp: 15,
+        name: fixture.phase_two.plant_names.fertilize_mobile,
+        plt_id: fixture.phase_two.plant_ids.fertilize_mobile,
+      }],
+    },
+    plant_ids: [...initial.plant_ids, fixture.phase_two.plant_ids.fertilize_mobile].sort(),
+    row_id: initial.id,
+    severity: "normal",
+    title: "Frost warning: -3\u00b0C expected",
+    valid_from: initial.valid_from,
+    valid_until: initial.valid_until,
+  };
+}
+
 function assertExpectedMaintenanceMutations(createdByTable, fixture) {
   const taskMutations = createdByTable.tasks.mutated_existing;
   assert(taskMutations.length === 1,
@@ -1461,10 +1492,21 @@ function assertExpectedMaintenanceMutations(createdByTable, fixture) {
     && afterTask.metadata?.lifecycle?.expired_at_ms === fixture.clock.attention_now_ms,
   "Phase 2 maintenance stale generated task lifecycle was unexpected");
 
-  for (const table of ["notifications", "weather_alerts"]) {
-    assert(createdByTable[table].mutated_existing.length === 0,
-      `Phase 2 maintenance unexpectedly mutated an existing ${table} row`);
-  }
+  assert(createdByTable.notifications.mutated_existing.length === 0,
+    "Phase 2 maintenance unexpectedly mutated an existing notification row");
+  const weatherMutations = createdByTable.weather_alerts.mutated_existing;
+  assert(weatherMutations.length === 1,
+    "Phase 2 maintenance mutated an unexpected number of existing weather alerts");
+  const weatherMutation = weatherMutations[0];
+  const afterWeather = assertMaintenanceMutationPair(weatherMutation, "weather_alerts");
+  assert(canonicalJson(afterWeather) === canonicalJson(expectedPhaseTwoFrostMaintenanceRow(fixture)),
+    "Phase 2 maintenance frost alert refresh was unexpected");
+  const changedWeatherFields = Object.keys(afterWeather).filter(
+    (field) => canonicalJson(weatherMutation.before[field]) !== canonicalJson(afterWeather[field]),
+  ).sort();
+  assert(canonicalJson(changedWeatherFields) === canonicalJson([
+    "description", "metadata", "plant_ids", "title",
+  ]), "Phase 2 maintenance changed unexpected frost alert fields");
   return true;
 }
 
@@ -2071,8 +2113,27 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   assert(new Set(weatherIds).size === weatherIds.length,
     "Phase 2 weather alert IDs were duplicated");
   const finalWeatherById = new Map(state.weather_alerts.map((alert) => [alert.id, alert]));
+  const weatherMutations = maintenance.maintenance_semantic_state.maintenance_created
+    .weather_alerts.mutated_existing;
+  const mutatedWeatherById = new Map(weatherMutations.map((mutation) => (
+    [mutation.after.row_id, mutation.after]
+  )));
   for (const initialAlert of phase.seeded_state.weather_alerts) {
-    exact(finalWeatherById.get(initialAlert.id), initialAlert,
+    const mutated = mutatedWeatherById.get(initialAlert.id);
+    const expectedAlert = mutated ? {
+      alert_type: mutated.alert_type,
+      created_at_ms: mutated.created_at_ms,
+      dismissed: mutated.dismissed,
+      garden_id: mutated.garden_id,
+      id: mutated.row_id,
+      metadata: mutated.metadata,
+      plant_ids: mutated.plant_ids,
+      severity: mutated.severity,
+      title: mutated.title,
+      valid_from: mutated.valid_from,
+      valid_until: mutated.valid_until,
+    } : initialAlert;
+    exact(finalWeatherById.get(initialAlert.id), expectedAlert,
       `Phase 2 seeded weather alert changed: ${initialAlert.id}`);
   }
   const rainAlerts = state.weather_alerts.filter(
