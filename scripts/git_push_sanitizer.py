@@ -95,7 +95,6 @@ SECRET_NAME_RE = re.compile(
     r"(?:api[_-]?key|secret|token|password|session[_-]?cookie|cookie|bearer)",
     re.IGNORECASE,
 )
-ASSIGNMENT_NAME_RE = re.compile(r"(?P<name>[A-Za-z0-9_$-]+)\s*$")
 SECRET_ASSIGNMENT_SUPPRESSION_RE = re.compile(
     r"push-sanitizer:\s*allow\s+SECRET_ASSIGNMENT\b",
     re.IGNORECASE,
@@ -250,16 +249,31 @@ def looks_like_secret_literal(value: str, *, quoted: bool) -> bool:
     return len(normalized) >= 20 and classes >= 3 and entropy >= 4.0
 
 
+def assignment_name_before_separator(line: str, separator_index: int) -> str | None:
+    end = separator_index
+    while end > 0 and line[end - 1].isspace():
+        end -= 1
+    start = end
+    while start > 0 and (line[start - 1].isalnum() or line[start - 1] in {"_", "$", "-"}):
+        start -= 1
+    if start == end:
+        return None
+    return line[start:end]
+
+
+def secret_assignment_values(line: str) -> Iterable[str]:
+    separator_indexes = [index for index, char in enumerate(line) if char in {":", "="}]
+    for separator_index in separator_indexes:
+        name = assignment_name_before_separator(line, separator_index)
+        if not name or not SECRET_NAME_RE.search(name):
+            continue
+        value = line[separator_index + 1 :].lstrip()
+        if value:
+            yield value
+
+
 def secret_assignment_value(line: str) -> str | None:
-    separators = [index for index in (line.find(":"), line.find("=")) if index != -1]
-    if not separators:
-        return None
-    separator_index = min(separators)
-    name_match = ASSIGNMENT_NAME_RE.search(line[:separator_index])
-    if not name_match or not SECRET_NAME_RE.search(name_match.group("name")):
-        return None
-    value = line[separator_index + 1 :].lstrip()
-    return value or None
+    return next(iter(secret_assignment_values(line)), None)
 
 
 def secret_pattern_details_for_line(line: str) -> list[str]:
@@ -269,11 +283,11 @@ def secret_pattern_details_for_line(line: str) -> list[str]:
             details.append(name)
             break
     if not assignment_suppressed(line) and not SAFE_EXAMPLE_RE.search(line):
-        assignment_value = secret_assignment_value(line)
-        if assignment_value is not None:
+        for assignment_value in secret_assignment_values(line):
             value, quoted = extract_assignment_value(assignment_value)
             if looks_like_secret_literal(value, quoted=quoted):
                 details.append("SECRET_ASSIGNMENT")
+                break
     return details
 
 

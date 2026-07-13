@@ -66,6 +66,23 @@ STRIPE_API_KEY = "{synthetic_value}"
             ],
         )
 
+    def test_secret_assignment_detects_secret_after_earlier_separator(self) -> None:
+        synthetic_value = "ZP6i7Pz4_" + "aN3KqQpt" + "9VxLm2s" + "R0bYfE8c"
+        text = f"""
+noop = 0; JWT_SECRET = "{synthetic_value}"
+config = {{JWT_SECRET: "{synthetic_value}"}}
+not_secret = "short"; STRIPE_API_KEY = "{synthetic_value}"
+"""
+
+        self.assertEqual(
+            self._finding_details(text),
+            [
+                "SECRET_ASSIGNMENT at line 2",
+                "SECRET_ASSIGNMENT at line 3",
+                "SECRET_ASSIGNMENT at line 4",
+            ],
+        )
+
     def test_secret_assignment_suppression_does_not_disable_hard_detectors(self) -> None:
         synthetic_openai_key = "sk-proj-" + ("A" * 24)
         synthetic_value = "ZP6i7Pz4_" + "aN3KqQpt" + "9VxLm2s" + "R0bYfE8c"
