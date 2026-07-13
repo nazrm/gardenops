@@ -1187,6 +1187,25 @@ function assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture) {
       for (const publicId of expectedDeliveryNotifications) {
         expectedIdentities.add(`public:${publicId}`);
       }
+      const browserCreated = finalRows.notifications.filter((row) => (
+        !expectedIdentities.has(`public:${row.public_id}`)
+        && row.garden_id === fixture.gardens.alpha.id
+        && row.target_id === fixture.phase_two.task_ids.fertilize_grouped
+        && row.target_type === "task"
+        && row.notification_type === "task_due"
+        && row.created_at_ms === fixture.clock.attention_now_ms
+        && row.cleared_at_ms === fixture.clock.attention_now_ms
+      ));
+      const browserCreatedByUser = new Map(browserCreated.map((row) => [row.username, row]));
+      assert(browserCreated.length === 2 && browserCreatedByUser.size === 2,
+        "Phase 2 browser created an unexpected grouped-task notification set");
+      assert(browserCreatedByUser.get(fixture.roles.editor)?.clear_reason === "expired",
+        "Phase 2 editor grouped-task notification did not retain its expected clear reason");
+      assert(browserCreatedByUser.get(fixture.roles.viewer)?.clear_reason === "rescheduled",
+        "Phase 2 viewer grouped-task notification did not retain its expected clear reason");
+      for (const row of browserCreated) {
+        expectedIdentities.add(`public:${row.public_id}`);
+      }
     }
     assert(
       canonicalJson(finalProjection.map((row) => row.identity).sort())
