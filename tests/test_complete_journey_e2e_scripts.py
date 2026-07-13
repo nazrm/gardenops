@@ -2189,6 +2189,19 @@ def test_phase_two_offline_calendar_is_loaded_before_connectivity_is_lost() -> N
     assert 'await openTasks(page, "mobile");' in offline[warmup:disconnect]
 
 
+def test_attention_preferences_strip_legacy_quiet_hours_before_save() -> None:
+    source = (ROOT / "frontend/src/components/attentionTodayPanel.ts").read_text(
+        encoding="utf-8"
+    )
+    collector = source.split("function collectQuietHours", 1)[1].split(
+        "function collectMetadata", 1
+    )[0]
+
+    for field in ("active", "end", "end_hour", "from", "start", "start_hour", "to"):
+        assert f'"{field}"' in collector
+    assert "delete quietHours[field]" in collector
+
+
 def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evidence() -> None:
     journey_source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
         encoding="utf-8"

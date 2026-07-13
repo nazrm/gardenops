@@ -797,6 +797,9 @@ export function initAttentionTodayPanel(
 
     function collectQuietHours(): Record<string, unknown> {
       const quietHours = cloneRecord(preferences.quiet_hours);
+      ["active", "end", "end_hour", "from", "start", "start_hour", "to"].forEach(
+        (field) => delete quietHours[field],
+      );
       const timeZone = browserTimeZone();
       if (timeZone) quietHours["timezone"] = timeZone;
       (["digest"] as const).forEach((channel) => {
