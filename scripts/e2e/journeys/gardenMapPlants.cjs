@@ -597,7 +597,29 @@ async function exercisePlantAndSavedView(
   await page.locator("#saved-views-trigger").click();
   const reloadedView = page.locator("#saved-views-dropdown .saved-views-item").filter({ hasText: savedViewName });
   await visible(reloadedView, "saved view after reload");
+  let savedViewDeleteRequests = 0;
+  const savedViewDeleteListener = (request) => {
+    if (
+      request.method() === "DELETE"
+      && new URL(request.url()).pathname.startsWith("/api/saved-views/")
+    ) savedViewDeleteRequests += 1;
+  };
+  page.on("request", savedViewDeleteListener);
   await reloadedView.locator(".saved-views-item-delete").click();
+  await visible(page.locator("[role='alertdialog']"), "saved view delete confirmation");
+  await page.locator("[role='alertdialog'] .confirm-no").click();
+  await page.waitForTimeout(100);
+  assert(savedViewDeleteRequests === 0, "Cancelled saved view deletion sent a request");
+  await visible(reloadedView, "saved view retained after cancelled deletion");
+  const savedViewDeleteResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === "DELETE"
+    && new URL(response.url()).pathname.startsWith("/api/saved-views/")
+  ));
+  await reloadedView.locator(".saved-views-item-delete").click();
+  await acceptConfirm(page);
+  assert((await savedViewDeleteResponsePromise).ok(), "Confirmed saved view deletion failed");
+  page.off("request", savedViewDeleteListener);
+  assert(savedViewDeleteRequests === 1, "Confirmed saved view deletion sent an unexpected request count");
   await waitFor(async () => await page.getByText(savedViewName, { exact: true }).count() === 0, "saved view deletion");
   if (await page.locator("#saved-views-dropdown").isVisible()) {
     await page.locator("#saved-views-trigger").click();
@@ -613,7 +635,13 @@ async function exercisePlantAndSavedView(
   return { plantName: renamed, savedViewName };
 }
 
-async function mutateIndoorPlant(page, fixture, profile = "desktop", lifecycleLabel = profile) {
+async function mutateIndoorPlant(
+  page,
+  diagnostics,
+  fixture,
+  profile = "desktop",
+  lifecycleLabel = profile,
+) {
   await page.locator(profile === "mobile" ? "#mobile-tab-garden" : "#top-tab-garden").click();
   await page.locator("#sub-mode-indoor").click();
   const card = page.locator("#indoor-tab-content .indoor-card-wrapper")
@@ -624,6 +652,9 @@ async function mutateIndoorPlant(page, fixture, profile = "desktop", lifecycleLa
   await card.locator(".indoor-room-input").fill(shelf);
   await card.locator(".indoor-room-edit .btn-primary").click();
   await visible(card.getByText(shelf, { exact: false }), "mutated indoor room");
+  await reloadAndAccountForAborts(page, diagnostics);
+  await openIndoor(page, profile);
+  await visible(card.getByText(shelf, { exact: false }), "persisted indoor room after reload");
   await card.locator(".indoor-room-row button").click();
   await card.locator(".indoor-room-input").fill(fixture.phase_one.indoor.room_label);
   await card.locator(".indoor-room-edit .btn-primary").click();
@@ -957,9 +988,31 @@ async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "de
   const reloadedPrimary = page.locator("#map-objects-panel .map-object-row").filter({ hasText: primary.name });
   await reloadedPrimary.locator(".map-object-row-main").click();
   const reloadedDetail = page.locator("#map-objects-panel .map-object-detail");
+  const reloadedUnit = reloadedDetail.locator(".map-object-unit").filter({ hasText: renamedUnit });
+  await visible(reloadedUnit, "nested unit edit after reload");
+  await reloadedUnit.click();
+  const reloadedUnitForm = reloadedDetail.locator(".map-object-unit-form");
+  await visible(reloadedUnitForm, "reloaded nested unit editor for direct delete");
+  const directUnitDeleteResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === "DELETE"
+    && new URL(response.url()).pathname === unitUpdatePath
+  ));
+  await reloadedUnitForm.locator(".map-object-create-row button").filter({ hasText: "Delete" }).click();
+  await acceptConfirm(page);
+  assert((await directUnitDeleteResponsePromise).ok(), "Direct nested unit delete failed");
+  await waitFor(async () => await reloadedUnit.count() === 0, "direct nested unit removal");
+
+  const cascadeUnitCreateResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === unitCreatePath
+  ));
+  await reloadedDetail.locator(".map-object-create-row button").first().click();
+  const cascadeUnitCreateResponse = await cascadeUnitCreateResponsePromise;
+  assert(cascadeUnitCreateResponse.status() === 201, "Cascade nested unit create failed");
+  const cascadeUnit = await cascadeUnitCreateResponse.json();
   await visible(
-    reloadedDetail.locator(".map-object-unit").filter({ hasText: renamedUnit }),
-    "nested unit edit after reload",
+    reloadedDetail.locator(".map-object-unit").filter({ hasText: cascadeUnit.name }),
+    "nested unit retained for parent cascade",
   );
   const parentDeletePath = `/api/gardens/${alpha.id}/map-objects/${primaryId}`;
   const parentDeleteResponsePromise = page.waitForResponse((response) => (
@@ -986,7 +1039,13 @@ async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "de
   await waitFor(async () => await page.getByText(primary.name, { exact: true }).count() === 0, "map object UI cascade");
 }
 
-async function updateGardenSettings(page, alpha, profile = "desktop", mutationLabel = profile) {
+async function updateGardenSettings(
+  page,
+  diagnostics,
+  alpha,
+  profile = "desktop",
+  mutationLabel = profile,
+) {
   await openAdminGarden(page, profile);
   const address = page.locator("#adm-garden-address");
   await visible(address, "Garden settings address");
@@ -1004,6 +1063,10 @@ async function updateGardenSettings(page, alpha, profile = "desktop", mutationLa
     await waitFor(() => address.inputValue().then((current) => current === value), label);
   };
   await saveAddress(changed, "garden settings update");
+  await reloadAndAccountForAborts(page, diagnostics);
+  await openAdminGarden(page, profile);
+  await visible(address, "garden settings after mutation reload");
+  assert(await address.inputValue() === changed, "Garden settings mutation was not durable after reload");
   await saveAddress(original, `garden ${alpha.name} settings restore`);
 }
 
@@ -1033,8 +1096,13 @@ async function openAdminGarden(page, profile = "desktop") {
   await visible(page.locator("#adm-map-save-layout-btn"), "Admin map setup controls");
 }
 
-async function exerciseEditorGardenSettingsAndLayoutWrite(page, alpha, profile = "desktop") {
-  await updateGardenSettings(page, alpha, profile, `${profile} editor`);
+async function exerciseEditorGardenSettingsAndLayoutWrite(
+  page,
+  diagnostics,
+  alpha,
+  profile = "desktop",
+) {
+  await updateGardenSettings(page, diagnostics, alpha, profile, `${profile} editor`);
   await openAdminGarden(page, profile);
   const north = page.locator("#adm-map-north-input");
   await visible(north, "editor north-direction layout control");
@@ -1052,6 +1120,10 @@ async function exerciseEditorGardenSettingsAndLayoutWrite(page, alpha, profile =
     await waitFor(() => north.inputValue().then((value) => value === String(degrees)), label);
   };
   await applyNorth(changed, "editor layout update");
+  await reloadAndAccountForAborts(page, diagnostics);
+  await openAdminGarden(page, profile);
+  await visible(north, "editor north direction after mutation reload");
+  assert(await north.inputValue() === String(changed), "Editor layout mutation was not durable after reload");
   await applyNorth(original, "editor layout restore");
 }
 
@@ -2372,7 +2444,11 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
             page, guarded.diagnostics, fixture, alpha, profile, "editor desktop",
             { assignmentPlotId: "P1EDITORASSIGN" },
           );
-          await exerciseEditorGardenSettingsAndLayoutWrite(page, alpha, profile);
+          result.checks.saved_view_delete_confirmation = true;
+          await exerciseEditorGardenSettingsAndLayoutWrite(
+            page, guarded.diagnostics, alpha, profile,
+          );
+          result.checks.editor_settings_layout_reload_persistence = true;
           await exerciseEditorMapObjectWrite(page);
           result.checks.editor_m1_m3_supported_writes = true;
           result.checks.editor_a3_settings_and_m4_layout_write = true;
@@ -2383,7 +2459,9 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
         await exercisePlantAndSavedView(
           page, guarded.diagnostics, fixture, alpha, profile, "admin desktop",
         );
-        await mutateIndoorPlant(page, fixture, profile, "admin desktop");
+        result.checks.saved_view_delete_confirmation = true;
+        await mutateIndoorPlant(page, guarded.diagnostics, fixture, profile, "admin desktop");
+        result.checks.indoor_reload_persistence = true;
         await openMap(page, profile);
         await exerciseMapObjectEditor(page, guarded.diagnostics, alpha, { profile });
         await openMap(page, profile);
@@ -2399,8 +2477,13 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
         await exercisePlantAndSavedView(
           page, guarded.diagnostics, fixture, alpha, profile, "admin mobile",
         );
-        await mutateIndoorPlant(page, fixture, profile, "admin mobile");
-        await updateGardenSettings(page, alpha, profile, "mobile admin");
+        result.checks.saved_view_delete_confirmation = true;
+        await mutateIndoorPlant(page, guarded.diagnostics, fixture, profile, "admin mobile");
+        result.checks.indoor_reload_persistence = true;
+        await updateGardenSettings(
+          page, guarded.diagnostics, alpha, profile, "mobile admin",
+        );
+        result.checks.garden_settings_reload_persistence = true;
         await openMap(page, profile);
         await exerciseMapObjectEditor(page, guarded.diagnostics, alpha, {
           profile,

@@ -248,6 +248,11 @@ function getSavedViewsCallbacks() {
     onDelete: async (view: SavedView) => {
       const request = savedViewsRequestContext();
       if (!request) return;
+      const confirmed = await ctx.confirmDialog(
+        t("saved_views.confirm_delete", { label: view.label }),
+        t("common.delete"),
+      );
+      if (!confirmed || !isCurrentSavedViewsRequest(request)) return;
       try {
         await deleteSavedViewApi(view.id);
         if (!isCurrentSavedViewsRequest(request)) return;

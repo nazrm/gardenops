@@ -53,3 +53,14 @@ def test_saved_views_escape_closes_the_dropdown_and_restores_focus() -> None:
     assert 'trigger?.setAttribute("aria-expanded", "false");' in saved_views
     assert '.setAttribute("aria-expanded", "true")' in saved_views
     assert 'page.locator("#saved-views-dropdown:not([hidden])")' in journey
+
+
+def test_saved_view_delete_requires_confirmation_and_preserves_garden_scope() -> None:
+    saved_views = (ROOT / "frontend/src/features/savedViewsFeature.ts").read_text(encoding="utf-8")
+    journey = (ROOT / "scripts/e2e/journeys/gardenMapPlants.cjs").read_text(encoding="utf-8")
+
+    assert 't("saved_views.confirm_delete", { label: view.label })' in saved_views
+    assert "await ctx.confirmDialog(" in saved_views
+    assert "if (!confirmed || !isCurrentSavedViewsRequest(request)) return;" in saved_views
+    assert '"saved view retained after cancelled deletion"' in journey
+    assert '"Confirmed saved view deletion failed"' in journey

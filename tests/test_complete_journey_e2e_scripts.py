@@ -462,6 +462,10 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "sourceProvenance",
         "nested_unit_direct_delete_count",
         "nested_unit_update_count",
+        "saved_view_delete_confirmation",
+        "indoor_reload_persistence",
+        "garden_settings_reload_persistence",
+        "editor_settings_layout_reload_persistence",
     ):
         assert marker in checker_source
 
@@ -728,6 +732,7 @@ const profiles = [
   profile('onboarding', 'mobile', { onboarding_validation_recovery_complete: true }),
   profile('admin', 'desktop', {
     desktop_admin_mutation_workflows: true,
+    indoor_reload_persistence: true,
     import_rejection_render_churn: {
       rejected_import_render_churn: {
         cross_garden: {}, oversized: {}, structurally_incomplete: {}, unsupported_schema: {},
@@ -749,20 +754,26 @@ const profiles = [
     delayed_surfaces: delayedDesktop,
     map_first_without_plants: true,
     role_cross_garden_response_isolation: true,
+    saved_view_delete_confirmation: true,
   }),
   profile('admin', 'mobile', {
     delayed_surfaces: delayedMobile,
+    garden_settings_reload_persistence: true,
+    indoor_reload_persistence: true,
     map_first_without_plants: true,
     mobile_supported_writes_and_focus_return: true,
     role_cross_garden_response_isolation: true,
+    saved_view_delete_confirmation: true,
   }),
   profile('editor', 'desktop', {
     editor_a3_settings_and_m4_layout_write: true,
     editor_m1_m3_supported_writes: true,
     editor_profile_write_affordances_and_admin_denial: true,
+    editor_settings_layout_reload_persistence: true,
     map_first_without_plants: true,
     role_cross_garden_response_isolation: true,
     role_delayed_surfaces: delayedPlots,
+    saved_view_delete_confirmation: true,
   }),
   profile('editor', 'mobile', {
     editor_profile_write_affordances_and_admin_denial: true,

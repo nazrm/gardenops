@@ -430,12 +430,23 @@ function assertPhaseOneProfileEvidence(profiles) {
     {
       profile: "desktop",
       role: "admin",
-      checks: ["desktop_admin_mutation_workflows", "role_cross_garden_response_isolation"],
+      checks: [
+        "desktop_admin_mutation_workflows",
+        "indoor_reload_persistence",
+        "saved_view_delete_confirmation",
+        "role_cross_garden_response_isolation",
+      ],
     },
     {
       profile: "mobile",
       role: "admin",
-      checks: ["mobile_supported_writes_and_focus_return", "role_cross_garden_response_isolation"],
+      checks: [
+        "garden_settings_reload_persistence",
+        "indoor_reload_persistence",
+        "mobile_supported_writes_and_focus_return",
+        "saved_view_delete_confirmation",
+        "role_cross_garden_response_isolation",
+      ],
     },
     {
       profile: "desktop",
@@ -444,6 +455,8 @@ function assertPhaseOneProfileEvidence(profiles) {
         "editor_profile_write_affordances_and_admin_denial",
         "editor_m1_m3_supported_writes",
         "editor_a3_settings_and_m4_layout_write",
+        "editor_settings_layout_reload_persistence",
+        "saved_view_delete_confirmation",
         "role_cross_garden_response_isolation",
       ],
     },
@@ -1301,8 +1314,8 @@ async function main() {
       const expectedLifecycleAudit = {
         assignment_create_count: 4,
         assignment_delete_count: 2,
-        nested_unit_create_count: 2,
-        nested_unit_direct_delete_count: 0,
+        nested_unit_create_count: 4,
+        nested_unit_direct_delete_count: 2,
         nested_unit_update_count: 2,
         plant_create_count: 2,
         plant_delete_count: 2,
@@ -1315,8 +1328,8 @@ async function main() {
         `Phase 1 plant, saved-view, or nested-unit lifecycle was unexpected: ${JSON.stringify(finalPhaseOne.lifecycle_audit)}`,
       );
       assert(
-        finalPhaseOne.lifecycle_audit.nested_unit_direct_delete_count === 0,
-        "Nested unit must be deleted by its parent cascade rather than a direct delete",
+        finalPhaseOne.lifecycle_audit.nested_unit_direct_delete_count === 2,
+        "Nested unit direct deletion was not exercised once per administrator device",
       );
       const onboardingGardens = finalPhaseOne.onboarding_gardens.filter(
         (garden) => [
