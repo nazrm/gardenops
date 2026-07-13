@@ -1794,6 +1794,7 @@ def test_phase_two_evidence_contract_preserves_phase_one_and_sanitizes_trace_dat
 const {
   assertPhaseOneStatePreservedAfterPhaseTwo,
   expectedPhaseOneRestoreGraphsAfterPhaseTwo,
+  expectedPhaseOneStableDomainProjectionAfterPhaseTwo,
   sanitizeManifestEvidence,
 } = require('./scripts/check_complete_journeys_e2e.cjs');
 const state = {
@@ -1827,6 +1828,48 @@ const expectedBloom = expectedPhaseOneRestoreGraphsAfterPhaseTwo(
   fixture,
 );
 if (expectedBloom.alpha.plants[0].seen_growing_date !== '2026-07-12') process.exit(7);
+const maintenanceBoundary = {
+  alpha_id: 17,
+  stable_domain_projection: {
+    app_settings: [{ key: 'unrelated', value: 'preserved' }],
+    gardens: [{ id: 23 }],
+  },
+};
+const maintenanceFixture = {
+  clock: { attention_now_ms: 1783857600000 },
+  phase_two: { date: '2026-07-12' },
+};
+const maintenanceFinal = structuredClone(maintenanceBoundary);
+maintenanceFinal.stable_domain_projection.app_settings.push(
+  { key: 'last_task_gen_month:17', value: '2026-07' },
+  { key: 'last_weather_check_ms:17', value: '1783857600000' },
+);
+maintenanceFinal.stable_domain_projection.app_settings.sort((left, right) =>
+  JSON.stringify(left).localeCompare(JSON.stringify(right)),
+);
+assertPhaseOneStatePreservedAfterPhaseTwo(
+  maintenanceBoundary,
+  maintenanceFinal,
+  maintenanceFixture,
+);
+const expectedMaintenance = expectedPhaseOneStableDomainProjectionAfterPhaseTwo(
+  maintenanceBoundary.stable_domain_projection,
+  maintenanceFixture,
+  maintenanceBoundary.alpha_id,
+);
+if (expectedMaintenance.app_settings.length !== 3) process.exit(10);
+try {
+  const unrelatedSetting = structuredClone(maintenanceFinal);
+  unrelatedSetting.stable_domain_projection.app_settings.push({ key: 'unexpected', value: '1' });
+  assertPhaseOneStatePreservedAfterPhaseTwo(
+    maintenanceBoundary,
+    unrelatedSetting,
+    maintenanceFixture,
+  );
+  process.exit(11);
+} catch (error) {
+  if (!/stable_domain_projection/.test(String(error.message))) process.exit(12);
+}
 try {
   const unrelatedBloomMutation = structuredClone(bloomFinal);
   unrelatedBloomMutation.restore_import_graphs.alpha.plants[0].name = 'changed';

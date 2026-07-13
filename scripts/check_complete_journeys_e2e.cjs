@@ -2154,6 +2154,33 @@ function expectedPhaseOneRestoreGraphsAfterPhaseTwo(phaseOneGraphs, fixture) {
   return expected;
 }
 
+function expectedPhaseOneStableDomainProjectionAfterPhaseTwo(
+  phaseOneProjection,
+  fixture,
+  gardenId,
+) {
+  const expected = structuredClone(phaseOneProjection);
+  if (!fixture || gardenId == null) return expected;
+  const attentionDate = fixture?.phase_two?.date;
+  const attentionNowMs = fixture?.clock?.attention_now_ms;
+  assert(/^\d{4}-\d{2}-\d{2}$/.test(attentionDate || ""),
+    "Phase 2 fixture date is missing for scheduler checkpoints");
+  assert(Number.isSafeInteger(attentionNowMs),
+    "Phase 2 fixture timestamp is missing for scheduler checkpoints");
+  assert(Array.isArray(expected.app_settings),
+    "Phase 1 stable-domain app settings projection is missing");
+  const checkpointRows = [
+    { key: `last_task_gen_month:${gardenId}`, value: attentionDate.slice(0, 7) },
+    { key: `last_weather_check_ms:${gardenId}`, value: String(attentionNowMs) },
+  ];
+  const checkpointKeys = new Set(checkpointRows.map((row) => row.key));
+  expected.app_settings = expected.app_settings
+    .filter((row) => !checkpointKeys.has(row.key))
+    .concat(checkpointRows)
+    .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  return expected;
+}
+
 function assertPhaseOneStatePreservedAfterPhaseTwo(phaseOneBoundary, finalState, fixture = null) {
   assert(
     phaseOneBoundary && typeof phaseOneBoundary === "object",
@@ -2200,9 +2227,16 @@ function assertPhaseOneStatePreservedAfterPhaseTwo(phaseOneBoundary, finalState,
   for (const field of scopedFields) {
     if (!Object.hasOwn(phaseOneBoundary, field)) continue;
     assert(Object.hasOwn(finalState, field), `Phase 1 ${field} disappeared during Phase 2`);
-    const expected = field === "restore_import_graphs"
-      ? expectedPhaseOneRestoreGraphsAfterPhaseTwo(phaseOneBoundary[field], fixture)
-      : phaseOneBoundary[field];
+    let expected = phaseOneBoundary[field];
+    if (field === "restore_import_graphs") {
+      expected = expectedPhaseOneRestoreGraphsAfterPhaseTwo(expected, fixture);
+    } else if (field === "stable_domain_projection") {
+      expected = expectedPhaseOneStableDomainProjectionAfterPhaseTwo(
+        expected,
+        fixture,
+        phaseOneBoundary.alpha_id,
+      );
+    }
     assert(
       canonicalJson(finalState[field]) === canonicalJson(expected),
       `Phase 1 scoped ${field} changed during Phase 2`,
@@ -3087,6 +3121,7 @@ module.exports = {
   assertSourceRevisionStable,
   backendErrorEvidence,
   expectedPhaseOneRestoreGraphsAfterPhaseTwo,
+  expectedPhaseOneStableDomainProjectionAfterPhaseTwo,
   expectedSessionUserCounts,
   gitState,
   isSafeManifestRequestPath,
