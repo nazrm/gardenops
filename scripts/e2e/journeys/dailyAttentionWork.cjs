@@ -1576,6 +1576,7 @@ async function exerciseOfflineTask(page, fixture) {
 
 async function attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixture, task) {
   const beforeHttpErrors = diagnostics.httpErrors.length;
+  const beforeConsoleErrors = diagnostics.consoleErrors.length;
   const response = await page.evaluate(async ({ gardenId, taskId }) => {
     const result = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/action`, {
       body: JSON.stringify({ action: "complete" }),
@@ -1595,6 +1596,11 @@ async function attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixtu
   const directErrors = diagnostics.httpErrors.splice(beforeHttpErrors);
   assert(JSON.stringify(directErrors) === JSON.stringify([expectedError]),
     `${profile} viewer direct write did not produce the expected forbidden response`);
+  await waitFor(
+    () => diagnostics.consoleErrors.length === beforeConsoleErrors + 1,
+    `${profile} viewer direct forbidden write console response`,
+  );
+  diagnostics.consoleErrors.splice(beforeConsoleErrors, 1);
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await openPrimary(page, profile, "map");
