@@ -72,6 +72,7 @@ function databaseSnapshot() {
 function phaseOneAuditExpectedEvents(loginCount) {
   return [
     [10, "DELETE", "/api/gardens/{garden_id}/map-objects/{public_id}", 200],
+    [2, "DELETE", "/api/gardens/{garden_id}/map-objects/{public_id}/units/{public_id}", 200],
     [3, "DELETE", "/api/plants/{created_plant_id}", 200],
     [2, "DELETE", "/api/plots/OPT-JOURNEY-A-PLOT/plants/{created_plant_id}", 204],
     [1, "DELETE", "/api/plots/P1EDITORASSIGN/plants/{created_plant_id}", 204],
@@ -92,7 +93,7 @@ function phaseOneAuditExpectedEvents(loginCount) {
     [2, "POST", "/api/gardens/{garden_id}/complete-onboarding", 200],
     [1, "POST", "/api/gardens/{garden_id}/map-objects", 403],
     [10, "POST", "/api/gardens/{garden_id}/map-objects", 201],
-    [2, "POST", "/api/gardens/{garden_id}/map-objects/{public_id}/units", 201],
+    [4, "POST", "/api/gardens/{garden_id}/map-objects/{public_id}/units", 201],
     [2, "POST", "/api/gardens", 201],
     [1, "POST", "/api/harvest", 201],
     [3, "POST", "/api/plants", 201],
