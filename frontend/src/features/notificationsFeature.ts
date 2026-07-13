@@ -32,6 +32,7 @@ let notificationGardenId: number | null = null;
 let notificationRequestVersion = 0;
 let notificationCountLoadVersion = 0;
 let notificationItemsLoadVersion = 0;
+let notificationFocusReturnTarget: HTMLElement | null = null;
 const NOTIFICATION_POLL_INTERVAL = 60_000;
 let pollTimerId: ReturnType<typeof setInterval> | null = null;
 let notificationTriggerDelegationBound = false;
@@ -135,6 +136,10 @@ function bindNotificationTriggers(): void {
     document.addEventListener("click", (event) => {
       if (!isNotificationTriggerTarget(event.target)) return;
       event.stopPropagation();
+      const trigger = (event.target as Element).closest<HTMLElement>(
+        "#notification-bell, #mobile-notification-btn",
+      );
+      if (trigger) notificationFocusReturnTarget = trigger;
       void toggleNotificationPanel();
     });
     notificationTriggerDelegationBound = true;
@@ -157,6 +162,7 @@ function renderCurrentNotificationPanel(): void {
     notificationItems,
     notificationUnreadCount,
     {
+      onClose: () => closeNotificationPanel(true),
       onRead: async (n) => {
         const request = notificationRequestContext();
         if (!request) return;
@@ -349,9 +355,13 @@ export function initNotificationsFeature(
       !(wrapper?.contains(e.target as Node) ?? false) &&
       !(mobileButton?.contains(e.target as Node) ?? false)
     ) {
-      notificationPanelOpen = false;
-      panel.hidden = true;
+      closeNotificationPanel();
     }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !notificationPanelOpen) return;
+    event.preventDefault();
+    closeNotificationPanel(true);
   });
 
   resetNotificationsForCurrentGarden();
@@ -485,12 +495,16 @@ async function loadNotifications(): Promise<void> {
   }
 }
 
-function closeNotificationPanel(): void {
+function closeNotificationPanel(restoreFocus = false): void {
   notificationPanelOpen = false;
   const panel = document.getElementById(
     "notification-panel",
   );
-  if (panel) panel.hidden = true;
+  if (panel) {
+    panel.hidden = true;
+    panel.removeAttribute("tabindex");
+  }
+  if (restoreFocus) notificationFocusReturnTarget?.focus();
 }
 
 async function showNotificationPreferences(): Promise<void> {

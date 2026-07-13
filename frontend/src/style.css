@@ -1025,7 +1025,7 @@ textarea {
 }
 
 .garden-role-chip {
-  display: none !important;
+  display: inline-flex;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 999px;
   padding: 4px 9px;
@@ -4308,6 +4308,26 @@ body.moving-house .house-placeholder {
   color: var(--text-inv);
 }
 
+.drawer-edit-plot-btn {
+  border: 1px solid color-mix(in srgb, var(--brand) 38%, var(--border));
+  border-radius: var(--r-sm);
+  background: var(--brand-muted);
+  color: var(--brand-text);
+  font-size: 12px;
+  font-weight: 600;
+  min-height: 34px;
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms var(--ease), color 120ms var(--ease), border-color 120ms var(--ease);
+}
+
+.drawer-edit-plot-btn:hover {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--text-inv);
+}
+
 .close-btn {
   border: 0;
   background: var(--bg-3);
@@ -6671,6 +6691,10 @@ th.sort-desc::after {
   font-size: 18px;
   font-weight: 400;
   color: var(--brand-text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sheet-body {
@@ -7156,10 +7180,6 @@ th.sort-desc::after {
     display: none;
   }
 
-  .garden-role-chip {
-    display: none !important;
-  }
-
   .garden-select {
     min-width: 120px;
     max-width: 150px;
@@ -7297,10 +7317,6 @@ th.sort-desc::after {
     font-size: 20px;
   }
 
-  .garden-role-chip {
-    display: none !important;
-  }
-
   .auth-btn {
     min-height: 44px;
     padding: 10px 14px;
@@ -7330,17 +7346,9 @@ th.sort-desc::after {
     );
   }
 
-  /* #3 — Plot extend button: always visible on touch (no hover) */
+  /* Plot cells are too small to share a touch target with the extend action. */
   .plot-extend-btn {
-    opacity: 1;
-    pointer-events: auto;
-    width: clamp(18px, calc(var(--cell) * 0.6), 28px);
-    height: clamp(18px, calc(var(--cell) * 0.6), 28px);
-    font-size: clamp(10px, calc(var(--cell) * 0.4), 16px);
-  }
-
-  .plot:hover .plot-extend-btn {
-    opacity: 1;
+    display: none;
   }
 
   /* #4 — Input font size 16px to prevent iOS auto-zoom (phone) */
@@ -8929,6 +8937,24 @@ td.inventory-qty-zero {
   padding: var(--sp-1);
   line-height: 1;
 }
+.notification-panel-close {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-2);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.notification-panel-close:hover {
+  background: var(--bg-2);
+  color: var(--text-1);
+}
 .notification-settings-btn:hover {
   opacity: 0.7;
 }
@@ -9166,12 +9192,12 @@ td.inventory-qty-zero {
   .notification-panel {
     position: fixed;
     top: auto;
-    bottom: 0;
+    bottom: calc(78px + env(safe-area-inset-bottom, 0px));
     left: 0;
     right: 0;
     width: 100%;
     max-height: 70vh;
-    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    border-radius: var(--r-lg);
   }
   .notification-prefs-rule-row {
     grid-template-columns: 1fr;
@@ -13261,12 +13287,12 @@ td.inventory-qty-zero {
   .saved-views-dropdown {
     position: fixed;
     top: auto;
-    bottom: 0;
+    bottom: calc(78px + env(safe-area-inset-bottom, 0px));
     left: 0;
     right: 0;
     width: 100%;
     max-height: 60vh;
-    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    border-radius: var(--r-lg);
   }
 }
 
@@ -13274,6 +13300,11 @@ td.inventory-qty-zero {
 
 .mobile-fab {
   display: none;
+}
+
+.app-shell:has(#saved-views-dropdown:not([hidden])) .mobile-fab {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 @media (max-width: 600px) {

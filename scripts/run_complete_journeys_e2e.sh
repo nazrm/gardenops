@@ -9,7 +9,7 @@ fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT_DIR"
-MAX_IMPLEMENTED_PHASE=0
+MAX_IMPLEMENTED_PHASE=1
 
 die() {
   printf 'Complete journey E2E: %s\n' "$1" >&2
@@ -280,6 +280,8 @@ export AUTH_PASSWORD_HASH_FAST_FOR_TESTS=true
 export AUTH_CSRF_SECRET="complete-journeys-e2e-csrf-only" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 export AI_PROVIDER=disabled
 export GARDENOPS_NOTIFICATION_SCHEDULER_ENABLED=false
+export GARDENOPS_ATTENTION_FROZEN_NOW_MS=1783857600000
+export GARDENOPS_ATTENTION_FROZEN_DATE=2026-07-12
 export SECURITY_TELEMETRY_BACKGROUND_EXPORT=false
 export INTERNET_EXPOSED=false
 export RATE_LIMIT_BACKEND=memory

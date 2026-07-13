@@ -26,3 +26,15 @@ def test_app_passes_active_garden_write_access_and_clears_stale_selection() -> N
     assert '"mobile-fab",' in source
     assert source.count("renderIndoorPlants(container, { canWrite: canWriteInGarden })") == 3
     assert "renderIndoorPlants(content, { canWrite: canWriteInGarden })" in source
+
+
+def test_read_only_role_indicator_is_visible_in_desktop_and_mobile_shells() -> None:
+    app = _read("frontend/src/app.ts")
+    layout = _read("frontend/src/components/layout.ts")
+    styles = _read("frontend/src/style.css")
+
+    assert layout.count("data-garden-role hidden") == 2
+    assert "roleChip.hidden = me.write_access;" in app
+    role_rule = styles.split(".garden-role-chip {", 1)[1].split("}", 1)[0]
+    assert "display: inline-flex;" in role_rule
+    assert styles.count(".garden-role-chip {") == 1

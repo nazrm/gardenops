@@ -107,6 +107,7 @@ import type {
   MapObject,
   MapObjectInput,
   MapObjectType,
+  MapObjectUnitInput,
   MapObjectUnitType,
   Plant,
   Plot,
@@ -171,6 +172,7 @@ import {
   setOnAuthExpired,
   updateAuthMeSettingsApi,
   updateMapObjectApi,
+  updateMapObjectUnitApi,
   updateShadeMapStateApi,
   updatePlantApi,
   updateLayoutStateApi,
@@ -1370,7 +1372,7 @@ function ensureAdminPanelModule(): Promise<AdminPanelModule> {
         onMapSetupAction: handleAdminMapSetupAction,
         getMapSetupState: () => ({
           canWrite: canWriteInGarden,
-          editorAvailable: !isMobile(),
+          editorAvailable: true,
           northDegrees: normalizeDegrees(state.northDegrees),
           gridCols: state.gridCols,
           gridRows: state.gridRows,
@@ -1391,12 +1393,11 @@ async function handleAdminMapSetupAction(action: AdminMapSetupAction): Promise<v
       setActiveTab("map");
       setMobileMapSheetOpen(null);
       if (!ensureWriteAccess()) return;
-      if (isMobile()) {
-        showToast(t("map.desktop_only"), "error");
-        return;
-      }
       if (!state.editMode) {
         toggleEditMode(state, editCbs);
+      }
+      if (isMobile()) {
+        setMobileMapSheetOpen("map-layers-panel");
       }
       updateMapDirectionControlVisibility();
       break;
@@ -2181,6 +2182,7 @@ function setupLayout(): void {
   undoBtn?.addEventListener("click", () => void undo(state, editCbs));
 
   const mobileMapLayersBtn = queryButton("mobile-map-layers-btn");
+  const mapEditBtn = queryButton("edit-mode-btn");
   const mobileMapHighlightBtn = queryButton("mobile-map-highlight-btn");
   const mobileMapShadeBtn = queryButton("mobile-map-shade-btn");
   const mobileMapLayoutsBtn = queryButton("mobile-map-layouts-btn");
@@ -2193,6 +2195,12 @@ function setupLayout(): void {
   const mobileMapSheetBackdrop = document.getElementById("mobile-map-sheet-backdrop");
   const mobileMapLayoutsSaveBtn = queryButton("mobile-map-layouts-save-btn");
   const shadeMobileBackdrop = document.getElementById("shade-mobile-backdrop");
+
+  mapEditBtn?.addEventListener("click", () => {
+    if (!ensureWriteAccess()) return;
+    toggleEditMode(state, editCbs);
+    updateMapDirectionControlVisibility();
+  });
 
   const importMapInput = queryInput("import-map-input");
   const mobileMapDirectionInput = queryInput("mobile-map-direction-input");
@@ -2915,15 +2923,23 @@ function applyHouseState(house: HouseLayoutState): void {
     col: house.col,
   };
   state.northDegrees = normalizeDegrees(house.north_degrees);
-  state.houseSize = clampHouseSize(
-    state,
-    house.width,
-    house.height,
-  );
+  state.houseSize = fitPersistedHouseSizeToGrid(house);
   cameraCtrl?.setGridDims(state.gridRows, state.gridCols);
   syncDirectionControls();
   syncGridDimensionInputs();
   renderDirectionLabels();
+}
+
+function fitPersistedHouseSizeToGrid(
+  house: Pick<HouseLayoutState, "width" | "height">,
+): { width: number; height: number } {
+  // Persisted/imported layouts may be smaller than the interactive resize minimum.
+  const availableWidth = Math.max(1, state.gridCols - state.housePosition.col + 1);
+  const availableHeight = Math.max(1, state.gridRows - state.housePosition.row + 1);
+  return {
+    width: Math.max(1, Math.min(house.width, availableWidth)),
+    height: Math.max(1, Math.min(house.height, availableHeight)),
+  };
 }
 
 async function fetchLayoutState(options: MapFetchOptions = {}): Promise<void> {
@@ -3060,6 +3076,9 @@ function renderMapObjectsPanelView(): void {
     onAddUnit: (objectPublicId, type) => {
       void createNestedMapUnit(objectPublicId, type);
     },
+    onUpdateUnit: (objectPublicId, unitPublicId, patch) => {
+      void updateNestedMapUnit(objectPublicId, unitPublicId, patch);
+    },
     onDeleteUnit: (objectPublicId, unitPublicId) => {
       void deleteNestedMapUnit(objectPublicId, unitPublicId);
     },
@@ -3153,7 +3172,7 @@ async function createCustomMapObjectFromSelection(draft: MapObjectCustomDraft): 
   }
   try {
     const object = await createMapObjectApi(gardenId, {
-      object_type: "other",
+      object_type: draft.object_type,
       name: draft.name,
       shape_type: draft.shape_type,
       geometry: clampMapObjectGeometry(selectedPlotBounds()),
@@ -3348,6 +3367,24 @@ async function createNestedMapUnit(
   }
 }
 
+async function updateNestedMapUnit(
+  objectPublicId: string,
+  unitPublicId: string,
+  patch: Partial<MapObjectUnitInput>,
+): Promise<void> {
+  if (!ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
+  try {
+    await updateMapObjectUnitApi(gardenId, objectPublicId, unitPublicId, patch);
+    state.selectedMapObjectId = objectPublicId;
+    await fetchMapObjects();
+    showToast(t("map.unit_updated"), "success");
+  } catch (err) {
+    showFetchError(err);
+  }
+}
+
 async function deleteNestedMapUnit(objectPublicId: string, unitPublicId: string): Promise<void> {
   if (!ensureWriteAccess()) return;
   const gardenId = getActiveGardenContext();
@@ -3479,6 +3516,10 @@ function applyNorthDirection(raw: string | number, persistImmediately = false): 
     return false;
   }
   state.northDegrees = normalizeDegrees(parsed);
+  const grid = document.getElementById("map-grid");
+  if (grid instanceof HTMLElement) {
+    grid.dataset["northDegrees"] = String(state.northDegrees);
+  }
   syncDirectionControls();
   renderDirectionLabels();
   syncShadePanelContext();
@@ -5061,6 +5102,9 @@ function renderPlots(): void {
           state.selectedPlotIds.add(plot.plot_id);
           updateSelectionCount(state);
           syncMapSelectedPlots();
+          if (isMobile()) {
+            void selectPlot(state, plot.plot_id, plotCbs);
+          }
         }
       } else {
         void selectPlot(state, plot.plot_id, plotCbs);
@@ -6562,7 +6606,7 @@ async function refreshGardenContext(options?: {
     : t(me.write_access ? "role.write_access" : "role.read_only");
   roleChips.forEach((roleChip) => {
     roleChip.textContent = roleChipLabel;
-    roleChip.hidden = false;
+    roleChip.hidden = me.write_access;
   });
 
   // Only platform admins and editors without an existing non-default managed
@@ -6822,13 +6866,12 @@ function syncMobileCapabilities(): void {
   const editBtn = queryButton("edit-mode-btn");
   const editMenuDropdown = document.getElementById("edit-menu-dropdown") as HTMLElement | null;
   if (isMobile()) {
-    if (state.editMode) toggleEditMode(state, editCbs);
     if (editMenuDropdown) editMenuDropdown.hidden = true;
     if (editBtn) {
       editBtn.setAttribute("aria-expanded", "false");
-      editBtn.disabled = true;
-      editBtn.title = t("map.desktop_only");
-      editBtn.textContent = t("map.edit_desktop");
+      editBtn.disabled = !canWriteInGarden;
+      editBtn.title = canWriteInGarden ? "" : t("map.read_only");
+      editBtn.textContent = canWriteInGarden ? t("map.edit") : t("map.edit_read_only");
     }
   } else {
     if (editBtn) {

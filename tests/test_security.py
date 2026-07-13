@@ -3274,6 +3274,27 @@ class TestSecurity(BaseApiTest):
                 admin_headers,
                 password=strong_password("adminpass123"),
             )
+            rotated_token = admin_client.cookies.get("gardenops_session", "")
+            assert rotated_token is not None
+            rotated_hash = hashlib.sha256(rotated_token.encode("utf-8")).hexdigest()
+            conn = db.get_db()
+            try:
+                rotated_session = conn.execute(
+                    """
+                    SELECT created_at_ms, reauthenticated_at_ms
+                    FROM auth_sessions
+                    WHERE token_hash = %s
+                    """,
+                    (rotated_hash,),
+                ).fetchone()
+                self.assertIsNotNone(rotated_session)
+                assert rotated_session is not None
+                self.assertGreaterEqual(
+                    int(rotated_session["reauthenticated_at_ms"]),
+                    int(rotated_session["created_at_ms"]),
+                )
+            finally:
+                db.return_db(conn)
 
             missing_reason = admin_client.post(
                 "/api/auth/revoke-user-sessions",

@@ -52,6 +52,18 @@ class TestGardenSettings(BaseApiTest):
         )
         self.assertEqual(resp.status_code, 201, resp.text)
         garden_id = resp.json()["id"]
+        conn = db.get_db()
+        try:
+            audit_rows = conn.execute(
+                """
+                SELECT status_code
+                FROM audit_events
+                WHERE method = 'POST' AND path = '/api/gardens'
+                """
+            ).fetchall()
+        finally:
+            db.return_db(conn)
+        self.assertEqual([int(row["status_code"]) for row in audit_rows], [201])
         return client, headers, garden_id
 
     def test_get_garden_settings(self) -> None:

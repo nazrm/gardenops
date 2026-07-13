@@ -20,6 +20,23 @@ journeys:
   - <<: *open_journey
     id: A3
     phase: 1
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    evidence: &phase_one_evidence
+      - scripts/check_complete_journeys_e2e.cjs
+      - scripts/e2e/journeys/foundation.cjs
+      - scripts/e2e/journeys/gardenMapPlants.cjs
+      - scripts/seed_complete_journeys_e2e.py
+      - tests/test_complete_journey_e2e_scripts.py
+    offline: not_applicable
+    provider: not_applicable
+    filesystem: not_applicable
+    notes:
+      offline: Phase 1 does not exercise offline operations.
+      provider: Phase 1 uses no external provider contract.
+      filesystem: No supported A3 file workflow is exercised.
   - <<: *open_journey
     id: A4
     phase: 5
@@ -44,6 +61,18 @@ journeys:
   - <<: *open_journey
     id: CROSS-01
     phase: 1
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    evidence: *phase_one_evidence
+    offline: not_applicable
+    provider: not_applicable
+    filesystem: not_applicable
+    notes:
+      offline: Cross-garden response isolation is online-only.
+      provider: Cross-garden response isolation has no provider dependency.
+      filesystem: Cross-garden response isolation has no file operation.
   - <<: *open_journey
     id: CROSS-02
     phase: 5
@@ -86,15 +115,62 @@ journeys:
   - <<: *open_journey
     id: M1
     phase: 1
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    evidence: *phase_one_evidence
+    offline: not_applicable
+    provider: not_applicable
+    filesystem: not_applicable
+    notes:
+      offline: Map-first and plant interaction are online-only in Phase 1.
+      provider: M1 has no external provider contract.
+      filesystem: M1 does not use a supported file workflow.
   - <<: *open_journey
     id: M2
     phase: 1
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    evidence: *phase_one_evidence
+    offline: not_applicable
+    provider: not_applicable
+    filesystem: not_applicable
+    notes:
+      offline: Map-object editing is not an offline workflow.
+      provider: M2 has no external provider contract.
+      filesystem: M2 does not use a supported file workflow.
   - <<: *open_journey
     id: M3
     phase: 1
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    evidence: *phase_one_evidence
+    offline: not_applicable
+    provider: not_applicable
+    filesystem: not_applicable
+    notes:
+      offline: Indoor switching and saved views are online-only in Phase 1.
+      provider: M3 has no external provider contract.
+      filesystem: M3 does not use a supported file workflow.
   - <<: *open_journey
     id: M4
     phase: 1
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    filesystem: proven
+    evidence: *phase_one_evidence
+    offline: not_applicable
+    provider: not_applicable
+    notes:
+      offline: Snapshot behavior is exercised against the live disposable backend.
+      provider: M4 has no external provider contract.
   - <<: *open_journey
     id: M5
     phase: 7

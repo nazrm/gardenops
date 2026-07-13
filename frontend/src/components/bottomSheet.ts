@@ -23,6 +23,7 @@ export interface BottomSheetParams {
   onSearch: (event: Event) => void;
   onRemove: (pltId: string) => void;
   onEdit: (plant: Plant) => void;
+  onEditPlot?: (() => void) | undefined;
   onDeletePlot?: (() => void) | undefined;
   onCreatePlant?: ((plotId: string) => void) | undefined;
   onCreateCalendarEvent?:
@@ -152,11 +153,29 @@ export function showBottomSheet(params: BottomSheetParams): void {
   const headerActions = document.createElement("div");
   headerActions.className = "sheet-header-actions";
 
+  if (params.canWrite !== false && params.onEditPlot) {
+    const editPlotBtn = document.createElement("button");
+    editPlotBtn.type = "button";
+    editPlotBtn.className = "drawer-edit-plot-btn";
+    editPlotBtn.dataset["editPlot"] = plotId;
+    editPlotBtn.textContent = t("common.edit");
+    editPlotBtn.setAttribute("aria-label", t("popover.edit_plot"));
+    editPlotBtn.title = t("popover.edit_plot");
+    editPlotBtn.addEventListener("click", () => {
+      onClose();
+      params.onEditPlot?.();
+    });
+    headerActions.appendChild(editPlotBtn);
+  }
+
   if (params.canWrite !== false && params.onDeletePlot) {
     const deletePlotBtn = document.createElement("button");
     deletePlotBtn.type = "button";
     deletePlotBtn.className = "drawer-delete-plot-btn";
-    deletePlotBtn.textContent = t("popover.delete_plot");
+    deletePlotBtn.dataset["deletePlot"] = plotId;
+    deletePlotBtn.textContent = t("common.delete");
+    deletePlotBtn.setAttribute("aria-label", t("popover.delete_plot"));
+    deletePlotBtn.title = t("popover.delete_plot");
     deletePlotBtn.addEventListener("click", () => {
       params.onDeletePlot?.();
     });

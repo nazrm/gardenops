@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from gardenops.public_ids import normalize_public_id
 
@@ -92,8 +92,8 @@ class PlotImportItem(StrictBaseModel):
     zone_code: str = Field(min_length=1, max_length=20)
     zone_name: str = Field(min_length=1, max_length=120)
     plot_number: int
-    grid_row: int = Field(ge=1, le=100)
-    grid_col: int = Field(ge=1, le=100)
+    grid_row: int | None = Field(default=None, ge=1, le=100)
+    grid_col: int | None = Field(default=None, ge=1, le=100)
     sub_zone: str | None = Field(default="", max_length=120)
     notes: str | None = Field(default="", max_length=4000)
     color: str | None = None
@@ -102,6 +102,12 @@ class PlotImportItem(StrictBaseModel):
     @classmethod
     def validate_plot_id(cls, value: str) -> str:
         return normalize_public_id(value, field_name="plot_id")
+
+    @model_validator(mode="after")
+    def validate_grid_position(self) -> PlotImportItem:
+        if (self.grid_row is None) != (self.grid_col is None):
+            raise ValueError("grid_row and grid_col must both be set or both be null")
+        return self
 
 
 MapObjectType = Literal["patio", "terrace", "greenhouse", "shed", "pond", "path", "bed", "other"]
@@ -181,6 +187,7 @@ class LayoutExportBody(StrictBaseModel):
 
 
 class ImportBody(StrictBaseModel):
+    schema_version: Literal[1] = 1
     plots: list[PlotImportItem] = Field(min_length=1, max_length=1000)
     house: ImportedLayoutStateBody | None = None
     shademap: ShadeMapStateBody | None = None

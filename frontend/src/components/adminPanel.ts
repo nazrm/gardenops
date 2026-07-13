@@ -153,6 +153,13 @@ interface AdminState {
   missingPlantCoversTotal: number;
 }
 
+interface GardenSettingsDraft {
+  name: string;
+  address: string;
+  latitude: string;
+  longitude: string;
+}
+
 const AUDIT_PAGE_SIZE = 40;
 
 const state: AdminState = {
@@ -202,6 +209,10 @@ let gardenContextFn: (() => { gardens: GardenSummary[]; activeGardenId: number |
 let onMapSetupAction: ((action: AdminMapSetupAction) => Promise<void> | void) | null = null;
 let mapSetupStateFn: (() => AdminMapSetupState) | null = null;
 let adminPanelInitialized = false;
+let gardenSettingsRequestVersion = 0;
+const adminBusyOperations = new Set<symbol>();
+const gardenSettingsBaselines = new Map<number, GardenSettings>();
+const gardenSettingsDrafts = new Map<number, GardenSettingsDraft>();
 
 export function setAdminCallbacks(cbs: {
   onSignOut: () => void;
@@ -715,11 +726,98 @@ function renderSettingsSection(): string {
   `;
 }
 
+function gardenSettingsDraftFromSettings(settings: GardenSettings): GardenSettingsDraft {
+  return {
+    name: settings.name,
+    address: settings.address ?? "",
+    latitude: settings.latitude == null ? "" : String(settings.latitude),
+    longitude: settings.longitude == null ? "" : String(settings.longitude),
+  };
+}
+
+function gardenSettingsDraftMatchesSettings(
+  draft: GardenSettingsDraft,
+  settings: GardenSettings,
+): boolean {
+  const baseline = gardenSettingsDraftFromSettings(settings);
+  return sameGardenSettingsDraft(draft, baseline);
+}
+
+function sameGardenSettingsDraft(
+  left: GardenSettingsDraft,
+  right: GardenSettingsDraft,
+): boolean {
+  return left.name === right.name
+    && left.address === right.address
+    && left.latitude === right.latitude
+    && left.longitude === right.longitude;
+}
+
+function readGardenSettingsDraftFromDom(): { gardenId: number; draft: GardenSettingsDraft } | null {
+  const form = document.getElementById("adm-garden-settings-form");
+  if (!(form instanceof HTMLElement)) return null;
+  const gardenId = Number.parseInt(form.dataset["gardenId"] ?? "", 10);
+  const name = queryInput("adm-garden-name");
+  const address = queryInput("adm-garden-address");
+  const latitude = queryInput("adm-garden-latitude");
+  const longitude = queryInput("adm-garden-longitude");
+  if (!Number.isFinite(gardenId) || !name || !address || !latitude || !longitude) return null;
+  return {
+    gardenId,
+    draft: {
+      name: name.value,
+      address: address.value,
+      latitude: latitude.value,
+      longitude: longitude.value,
+    },
+  };
+}
+
+function captureGardenSettingsDraftFromDom(): void {
+  const current = readGardenSettingsDraftFromDom();
+  if (!current) return;
+  const baseline = gardenSettingsBaselines.get(current.gardenId);
+  if (baseline && gardenSettingsDraftMatchesSettings(current.draft, baseline)) {
+    gardenSettingsDrafts.delete(current.gardenId);
+    return;
+  }
+  gardenSettingsDrafts.set(current.gardenId, current.draft);
+}
+
+function applyGardenSettingsBaseline(settings: GardenSettings): void {
+  gardenSettingsBaselines.set(settings.garden_id, settings);
+  const draft = gardenSettingsDrafts.get(settings.garden_id);
+  if (draft && gardenSettingsDraftMatchesSettings(draft, settings)) {
+    gardenSettingsDrafts.delete(settings.garden_id);
+  }
+  if (gardenContextFn?.().activeGardenId === settings.garden_id) {
+    state.gardenSettings = settings;
+  }
+}
+
+function replaceRenderedGardenSettingsValues(settings: GardenSettings): void {
+  const form = document.getElementById("adm-garden-settings-form");
+  if (!(form instanceof HTMLElement)) return;
+  const gardenId = Number.parseInt(form.dataset["gardenId"] ?? "", 10);
+  if (gardenId !== settings.garden_id) return;
+  const values = gardenSettingsDraftFromSettings(settings);
+  const name = queryInput("adm-garden-name");
+  const address = queryInput("adm-garden-address");
+  const latitude = queryInput("adm-garden-latitude");
+  const longitude = queryInput("adm-garden-longitude");
+  if (name) name.value = values.name;
+  if (address) address.value = values.address;
+  if (latitude) latitude.value = values.latitude;
+  if (longitude) longitude.value = values.longitude;
+}
+
 function renderGardenSection(): string {
   const ctx = gardenContextFn?.();
   const activeGardenId = ctx?.activeGardenId ?? null;
   const activeGarden = ctx?.gardens.find((garden) => garden.id === activeGardenId) ?? null;
-  const settings = state.gardenSettings;
+  const settings = state.gardenSettings?.garden_id === activeGardenId
+    ? state.gardenSettings
+    : null;
   if (!activeGardenId || !settings) {
     return `
       <div class="adm-section-header">
@@ -733,6 +831,8 @@ function renderGardenSection(): string {
       </div>
     `;
   }
+  const formValues = gardenSettingsDrafts.get(activeGardenId)
+    ?? gardenSettingsDraftFromSettings(settings);
   const onboardingStatus = settings.onboarding_complete
     ? badge(t("admin.garden.status_complete"), "green")
     : badge(t("admin.garden.status_pending"), "amber");
@@ -969,24 +1069,24 @@ function renderGardenSection(): string {
         <p class="adm-section-desc">${esc(t("admin.garden.shared_desc", { name: settings.name, scope: formatGardenScope(activeGardenId) }))}</p>
       </div>
     </div>
-    <div class="adm-card adm-card--form">
+    <div class="adm-card adm-card--form" id="adm-garden-settings-form" data-garden-id="${activeGardenId}">
       <h3 class="adm-card-title">${t("admin.garden.settings_title")}</h3>
       <div class="adm-form-stack">
         <label>${t("admin.garden.name_label")}
-          <input type="text" id="adm-garden-name" class="adm-input" maxlength="120" value="${esc(settings.name)}" />
+          <input type="text" id="adm-garden-name" class="adm-input" maxlength="120" value="${esc(formValues.name)}" />
         </label>
         <label>${t("admin.garden.address_label")}
-          <input type="text" id="adm-garden-address" class="adm-input" maxlength="500" value="${esc(settings.address)}" />
+          <input type="text" id="adm-garden-address" class="adm-input" maxlength="500" value="${esc(formValues.address)}" />
         </label>
         <div class="adm-btn-group">
           <button type="button" id="adm-garden-geocode" class="adm-btn adm-btn--ghost">${t("admin.garden.find_coordinates")}</button>
         </div>
         <div class="adm-form-row">
           <label>${t("onboarding.latitude")}
-            <input type="number" id="adm-garden-latitude" class="adm-input" min="-90" max="90" step="0.0001" value="${settings.latitude ?? ""}" />
+            <input type="number" id="adm-garden-latitude" class="adm-input" min="-90" max="90" step="0.0001" value="${esc(formValues.latitude)}" />
           </label>
           <label>${t("onboarding.longitude")}
-            <input type="number" id="adm-garden-longitude" class="adm-input" min="-180" max="180" step="0.0001" value="${settings.longitude ?? ""}" />
+            <input type="number" id="adm-garden-longitude" class="adm-input" min="-180" max="180" step="0.0001" value="${esc(formValues.longitude)}" />
           </label>
         </div>
       </div>
@@ -1790,7 +1890,9 @@ async function loadSettings(): Promise<void> {
   }
 }
 
-async function loadGardenSettings(): Promise<void> {
+async function loadGardenSettings(): Promise<boolean> {
+  captureGardenSettingsDraftFromDom();
+  const requestVersion = ++gardenSettingsRequestVersion;
   const ctx = gardenContextFn?.();
   if (!ctx?.activeGardenId || !canEditActiveGarden()) {
     state.gardenSettings = null;
@@ -1798,32 +1900,44 @@ async function loadGardenSettings(): Promise<void> {
     state.gardenMemberships = [];
     state.missingPlantCovers = [];
     state.missingPlantCoversTotal = 0;
-    return;
+    return true;
   }
+  const requestGardenId = ctx.activeGardenId;
+  const isCurrentRequest = (): boolean => (
+    requestVersion === gardenSettingsRequestVersion
+    && gardenContextFn?.().activeGardenId === requestGardenId
+  );
   try {
     const [settings, lidarStatus] = await Promise.all([
-      getGardenSettingsApi(ctx.activeGardenId),
-      getGardenLidarApi(ctx.activeGardenId),
+      getGardenSettingsApi(requestGardenId),
+      getGardenLidarApi(requestGardenId),
     ]);
-    state.gardenSettings = settings;
+    if (!isCurrentRequest()) return false;
+    applyGardenSettingsBaseline(settings);
     state.gardenLidarStatus = lidarStatus;
   } catch (err) {
+    if (!isCurrentRequest()) return false;
     state.gardenSettings = null;
     state.gardenLidarStatus = null;
     showToast(getApiErrorMessage(err), "error");
   }
   if (isPlatformAdmin()) {
     try {
-      state.gardenMemberships = await getGardenMembershipsApi(ctx.activeGardenId);
+      const memberships = await getGardenMembershipsApi(requestGardenId);
+      if (!isCurrentRequest()) return false;
+      state.gardenMemberships = memberships;
     } catch (err) {
+      if (!isCurrentRequest()) return false;
       state.gardenMemberships = [];
       showToast(getApiErrorMessage(err), "error");
     }
     try {
       const report = await getMissingPlantCoversApi({ limit: 25, offset: 0 });
+      if (!isCurrentRequest()) return false;
       state.missingPlantCovers = report.items;
       state.missingPlantCoversTotal = report.total;
     } catch (err) {
+      if (!isCurrentRequest()) return false;
       state.missingPlantCovers = [];
       state.missingPlantCoversTotal = 0;
       showToast(getApiErrorMessage(err), "error");
@@ -1833,6 +1947,7 @@ async function loadGardenSettings(): Promise<void> {
     state.missingPlantCovers = [];
     state.missingPlantCoversTotal = 0;
   }
+  return isCurrentRequest();
 }
 
 async function loadSystem(): Promise<void> {
@@ -1861,7 +1976,22 @@ function getContainer(): HTMLElement | null {
   return document.getElementById("admin-view");
 }
 
+function beginAdminBusy(): symbol {
+  const operation = Symbol();
+  adminBusyOperations.add(operation);
+  getContainer()?.setAttribute("aria-busy", "true");
+  return operation;
+}
+
+function endAdminBusy(operation: symbol): void {
+  adminBusyOperations.delete(operation);
+  if (adminBusyOperations.size === 0) {
+    getContainer()?.removeAttribute("aria-busy");
+  }
+}
+
 function repaint(): void {
+  captureGardenSettingsDraftFromDom();
   const main = document.getElementById("adm-main");
   if (main) {
     setReviewedDynamicHtml(main, renderContent());
@@ -1870,6 +2000,7 @@ function repaint(): void {
 }
 
 function repaintFull(): void {
+  captureGardenSettingsDraftFromDom();
   const container = getContainer();
   if (!container) return;
   setReviewedDynamicHtml(container, renderAdmin());
@@ -1877,7 +2008,29 @@ function repaintFull(): void {
   wireSection();
 }
 
+function adminShellMatchesState(): boolean {
+  const container = getContainer();
+  if (!container?.querySelector(".adm-layout")) return false;
+  const renderedSections = Array.from(
+    container.querySelectorAll<HTMLElement>(".adm-nav-btn[data-section]"),
+    (button) => button.dataset["section"] ?? "",
+  );
+  const expectedSections = getVisibleSections();
+  const expectedTitle = isPlatformAdmin()
+    ? t("admin.console_title_admin")
+    : t("admin.console_title_user");
+  const renderedActiveSection = container
+    .querySelector<HTMLElement>(".adm-nav-btn--active[data-section]")
+    ?.dataset["section"];
+  return renderedSections.join(",") === expectedSections.join(",")
+    && renderedActiveSection === state.section
+    && container.querySelector(".adm-sidebar-title")?.textContent === expectedTitle;
+}
+
 export function resetAdminPanelSensitiveState(): void {
+  gardenSettingsRequestVersion += 1;
+  gardenSettingsBaselines.clear();
+  gardenSettingsDrafts.clear();
   state.users = [];
   state.sessions = [];
   state.audit = null;
@@ -1899,8 +2052,10 @@ export function resetAdminPanelSensitiveState(): void {
   state.missingPlantCovers = [];
   state.missingPlantCoversTotal = 0;
   adminPanelInitialized = false;
+  adminBusyOperations.clear();
   const container = getContainer();
   if (container) {
+    container.removeAttribute("aria-busy");
     setReviewedDynamicHtml(container, "");
   }
 }
@@ -1923,16 +2078,24 @@ function wireSidebar(): void {
 }
 
 async function loadAndRepaintSection(): Promise<void> {
-  switch (state.section) {
-    case "settings": await loadSettings(); break;
-    case "garden": await loadGardenSettings(); break;
-    case "users": await loadUsers(); break;
-    case "sessions": await loadSessions(); break;
-    case "audit": await loadAudit(); break;
-    case "invitations": await loadInvitations(); break;
-    case "system": await loadSystem(); break;
+  const busyOperation = beginAdminBusy();
+  try {
+    captureGardenSettingsDraftFromDom();
+    const requestedSection = state.section;
+    let shouldRepaint = true;
+    switch (state.section) {
+      case "settings": await loadSettings(); break;
+      case "garden": shouldRepaint = await loadGardenSettings(); break;
+      case "users": await loadUsers(); break;
+      case "sessions": await loadSessions(); break;
+      case "audit": await loadAudit(); break;
+      case "invitations": await loadInvitations(); break;
+      case "system": await loadSystem(); break;
+    }
+    if (shouldRepaint && state.section === requestedSection) repaint();
+  } finally {
+    endAdminBusy(busyOperation);
   }
-  repaint();
 }
 
 function readAuditFilters(): {
@@ -2013,10 +2176,18 @@ function wireSection(): void {
       showToast(t("admin.toast.no_active_garden"), "error");
       return;
     }
-    const name = queryInput("adm-garden-name")?.value.trim() ?? "";
-    const address = queryInput("adm-garden-address")?.value ?? "";
-    const latRaw = queryInput("adm-garden-latitude")?.value.trim() ?? "";
-    const lonRaw = queryInput("adm-garden-longitude")?.value.trim() ?? "";
+    captureGardenSettingsDraftFromDom();
+    const requestGardenId = ctx.activeGardenId;
+    const currentSettings = state.gardenSettings?.garden_id === requestGardenId
+      ? state.gardenSettings
+      : null;
+    const draft = gardenSettingsDrafts.get(requestGardenId)
+      ?? (currentSettings ? gardenSettingsDraftFromSettings(currentSettings) : null);
+    const submittedDraft = draft ? { ...draft } : null;
+    const name = draft?.name.trim() ?? "";
+    const address = draft?.address ?? "";
+    const latRaw = draft?.latitude.trim() ?? "";
+    const lonRaw = draft?.longitude.trim() ?? "";
     const latitude = latRaw ? Number(latRaw) : null;
     const longitude = lonRaw ? Number(lonRaw) : null;
     if (!name) {
@@ -2032,13 +2203,27 @@ function wireSection(): void {
       return;
     }
     try {
-      state.gardenSettings = await updateGardenSettingsApi(ctx.activeGardenId, {
+      const settings = await updateGardenSettingsApi(requestGardenId, {
         name,
         address,
         latitude,
         longitude,
       });
+      captureGardenSettingsDraftFromDom();
+      const latestDraft = gardenSettingsDrafts.get(requestGardenId);
+      const hasNewerDraft = Boolean(
+        submittedDraft
+        && latestDraft
+        && !sameGardenSettingsDraft(latestDraft, submittedDraft),
+      );
+      applyGardenSettingsBaseline(settings);
+      if (!hasNewerDraft) {
+        replaceRenderedGardenSettingsValues(settings);
+        gardenSettingsDrafts.delete(requestGardenId);
+      }
+      if (gardenContextFn?.().activeGardenId !== requestGardenId) return;
       await onGardenStateChanged?.();
+      if (gardenContextFn?.().activeGardenId !== requestGardenId) return;
       await loadGardenSettings();
       showToast(t("admin.toast.garden_saved"), "success");
       repaint();
@@ -2069,6 +2254,7 @@ function wireSection(): void {
       const longitudeInput = queryInput("adm-garden-longitude");
       if (latitudeInput) latitudeInput.value = String(first.latitude);
       if (longitudeInput) longitudeInput.value = String(first.longitude);
+      captureGardenSettingsDraftFromDom();
       showToast(t("admin.garden.geocode_applied"), "success");
     } catch (err) {
       showToast(getApiErrorMessage(err), "error");
@@ -2173,9 +2359,10 @@ function wireSection(): void {
       return;
     }
     try {
-      state.gardenSettings = await updateGardenSettingsApi(ctx.activeGardenId, {
+      const settings = await updateGardenSettingsApi(ctx.activeGardenId, {
         onboarding_complete: false,
       });
+      applyGardenSettingsBaseline(settings);
       showToast(t("admin.toast.onboarding_reopened"), "success");
       repaint();
       await onRestartOnboarding?.();
@@ -2210,6 +2397,8 @@ function wireSection(): void {
     try {
       const result = await deleteGardenApi(ctx.activeGardenId, actionReason);
       showToast(t("admin.toast.deleted_garden", { name: result.garden_name }), "success");
+      gardenSettingsBaselines.delete(ctx.activeGardenId);
+      gardenSettingsDrafts.delete(ctx.activeGardenId);
       state.gardenSettings = null;
       await onGardenStateChanged?.();
       await loadGardenSettings();
@@ -2950,14 +3139,21 @@ function wireSection(): void {
 // ── Public API ─────────────────────────────────────────────
 
 export async function activateAdminPanel(): Promise<void> {
-  await loadSettings();
-  const visibleSections = getVisibleSections();
-  if (!adminPanelInitialized || !visibleSections.includes(state.section)) {
-    state.section = defaultSection();
+  const busyOperation = beginAdminBusy();
+  try {
+    captureGardenSettingsDraftFromDom();
+    await loadSettings();
+    const visibleSections = getVisibleSections();
+    if (!adminPanelInitialized || !visibleSections.includes(state.section)) {
+      state.section = defaultSection();
+    }
+    const needsFullRepaint = !adminShellMatchesState();
+    adminPanelInitialized = true;
+    await loadAndRepaintSection();
+    if (needsFullRepaint) repaintFull();
+  } finally {
+    endAdminBusy(busyOperation);
   }
-  adminPanelInitialized = true;
-  await loadAndRepaintSection();
-  repaintFull();
 }
 
 export function refreshAdminPanelLocalization(): void {

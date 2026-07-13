@@ -129,12 +129,13 @@ def _audit_membership_change(
     *,
     garden_id: int | None = None,
     db: DbConn | None = None,
+    status_code: int = 200,
 ) -> None:
     request.state.audited_by_handler = True
     write_audit_event(
         method=request.method,
         path=request.url.path,
-        status_code=200,
+        status_code=status_code,
         remote_host=_remote_host(request),
         detail=detail,
         auth_context=context,
@@ -908,6 +909,7 @@ def create_garden(
         f"garden.create garden_id={garden_id} slug={slug}",
         garden_id=garden_id,
         db=db,
+        status_code=201,
     )
     return {
         "id": garden_id,

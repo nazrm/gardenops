@@ -48,6 +48,81 @@ def test_indoor_state_cannot_apply_an_old_garden_request() -> None:
     assert "setIndoorPlotId(indoorPlot.plot_id, requestGardenId);" in app
 
 
+def test_admin_garden_settings_preserve_drafts_and_reject_same_garden_stale_requests() -> None:
+    admin = _read("frontend/src/components/adminPanel.ts")
+    load_body = _function_body(
+        admin,
+        "async function loadGardenSettings",
+        "async function loadSystem",
+    )
+    render_body = _function_body(
+        admin,
+        "function renderGardenSection",
+        "// ── Section: Users",
+    )
+    reset_body = _function_body(
+        admin,
+        "export function resetAdminPanelSensitiveState",
+        "function wireSidebar",
+    )
+    activate_body = _function_body(
+        admin,
+        "export async function activateAdminPanel",
+        "export function refreshAdminPanelLocalization",
+    )
+
+    assert "requestVersion === gardenSettingsRequestVersion" in load_body
+    assert "gardenContextFn?.().activeGardenId === requestGardenId" in load_body
+    assert "captureGardenSettingsDraftFromDom();" in load_body
+    assert "applyGardenSettingsBaseline(settings);" in load_body
+    assert "const gardenSettingsBaselines = new Map<number, GardenSettings>();" in admin
+    assert "const gardenSettingsDrafts = new Map<number, GardenSettingsDraft>();" in admin
+    assert 'id="adm-garden-settings-form" data-garden-id="${activeGardenId}"' in render_body
+    assert "gardenSettingsDrafts.get(activeGardenId)" in render_body
+    assert "state.gardenSettings?.garden_id === activeGardenId" in render_body
+    assert "gardenSettingsBaselines.get(current.gardenId)" in admin
+    assert "gardenSettingsDrafts.set(current.gardenId, current.draft);" in admin
+    assert "replaceRenderedGardenSettingsValues(settings);" in admin
+    assert "gardenSettingsDrafts.delete(requestGardenId);" in admin
+    assert "const submittedDraft = draft ? { ...draft } : null;" in admin
+    assert "const hasNewerDraft = Boolean(" in admin
+    assert "!sameGardenSettingsDraft(latestDraft, submittedDraft)" in admin
+    assert "if (!hasNewerDraft)" in admin
+    assert "gardenSettingsBaselines.clear();" in reset_body
+    assert "gardenSettingsDrafts.clear();" in reset_body
+    assert "const needsFullRepaint = !adminShellMatchesState();" in activate_body
+    assert "if (needsFullRepaint) repaintFull();" in activate_body
+    assert "function adminShellMatchesState(): boolean" in admin
+    assert 'container.querySelectorAll<HTMLElement>(".adm-nav-btn[data-section]")' in admin
+    assert 'renderedSections.join(",") === expectedSections.join(",")' in admin
+    assert "renderedActiveSection === state.section" in admin
+    assert "gardenSettingsRequestVersion += 1;" in admin
+
+
+def test_admin_async_repaints_expose_an_accessible_busy_state() -> None:
+    admin = _read("frontend/src/components/adminPanel.ts")
+    journey = _read("scripts/e2e/journeys/gardenMapPlants.cjs")
+    activate_body = _function_body(
+        admin,
+        "export async function activateAdminPanel",
+        "export function refreshAdminPanelLocalization",
+    )
+    load_body = _function_body(
+        admin,
+        "async function loadAndRepaintSection",
+        "function readAuditFilters",
+    )
+
+    assert "const adminBusyOperations = new Set<symbol>();" in admin
+    assert 'getContainer()?.setAttribute("aria-busy", "true");' in admin
+    assert 'getContainer()?.removeAttribute("aria-busy");' in admin
+    assert "const busyOperation = beginAdminBusy();" in activate_body
+    assert "endAdminBusy(busyOperation);" in activate_body
+    assert "const busyOperation = beginAdminBusy();" in load_body
+    assert "endAdminBusy(busyOperation);" in load_body
+    assert 'getAttribute("aria-busy")' in journey
+
+
 def test_notifications_reset_and_reload_when_the_active_garden_changes() -> None:
     app = _read("frontend/src/app.ts")
     notifications = _read("frontend/src/features/notificationsFeature.ts")
@@ -110,6 +185,21 @@ def test_weather_and_plot_alert_requests_cannot_apply_to_a_new_garden() -> None:
     assert "plotAlertsLoadPromise === loadPromise" in plot_alert_body
 
 
+def test_admin_garden_settings_cannot_apply_an_old_garden_request() -> None:
+    admin = _read("frontend/src/components/adminPanel.ts")
+    body = _function_body(
+        admin,
+        "async function loadGardenSettings",
+        "async function loadSystem",
+    )
+
+    assert "const requestGardenId = ctx.activeGardenId;" in body
+    assert "gardenContextFn?.().activeGardenId === requestGardenId" in body
+    assert body.count("if (!isCurrentRequest()) return false;") >= 6
+    assert "getGardenSettingsApi(requestGardenId)" in body
+    assert "getGardenMembershipsApi(requestGardenId)" in body
+
+
 def test_mobile_map_sheets_are_inert_when_closed_and_manage_focus() -> None:
     app = _read("frontend/src/app.ts")
     layout = _read("frontend/src/components/layout.ts")
@@ -123,6 +213,27 @@ def test_mobile_map_sheets_are_inert_when_closed_and_manage_focus() -> None:
     assert "function restoreMobileMapSheetFocus" in app
     assert "function trapMobileMapSheetFocus" in app
     assert "mobileMapSheetFocusReturnTarget" in app
+
+
+def test_mobile_map_editor_opens_an_operable_layers_sheet() -> None:
+    app = _read("frontend/src/app.ts")
+
+    assert "editorAvailable: true" in app
+    assert 'setMobileMapSheetOpen("map-layers-panel")' in app
+    assert 'showToast(t("map.desktop_only")' not in app
+
+
+def test_north_direction_keeps_rendered_map_metadata_in_sync() -> None:
+    app = _read("frontend/src/app.ts")
+    body = _function_body(
+        app,
+        "function applyNorthDirection",
+        "function syncDirectionControls",
+    )
+
+    assert 'const grid = document.getElementById("map-grid");' in body
+    assert 'grid.dataset["northDegrees"] = String(state.northDegrees);' in body
+    assert body.index('grid.dataset["northDegrees"]') < body.index("renderDirectionLabels();")
 
 
 def test_mobile_utility_sheet_is_inert_and_traps_focus() -> None:

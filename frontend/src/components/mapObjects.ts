@@ -5,13 +5,17 @@ import type {
   MapObjectInternalLayout,
   MapObjectShape,
   MapObjectType,
+  MapObjectUnit,
+  MapObjectUnitInput,
   MapObjectUnitType,
 } from "../core/models";
 import { t } from "../core/i18n";
 
 const DEFAULT_CUSTOM_COLOR = "#8f9f7d";
+let selectedNestedUnit: { objectPublicId: string; unitPublicId: string } | null = null;
 
 export interface MapObjectCustomDraft {
+  object_type: MapObjectType;
   name: string;
   shape_type: MapObjectShape;
   style: { color: string };
@@ -33,6 +37,11 @@ interface RenderMapObjectsPanelParams {
   onSelectObject: (publicId: string | null) => void;
   onDeleteObject: (publicId: string) => void;
   onAddUnit: (objectPublicId: string, type: MapObjectUnitType) => void;
+  onUpdateUnit?: (
+    objectPublicId: string,
+    unitPublicId: string,
+    patch: Partial<MapObjectUnitInput>,
+  ) => void;
   onDeleteUnit: (objectPublicId: string, unitPublicId: string) => void;
 }
 
@@ -123,6 +132,35 @@ function makeShapeSelect(value: MapObjectShape, disabled: boolean): HTMLSelectEl
   return select;
 }
 
+function makeObjectTypeSelect(value: MapObjectType, disabled: boolean): HTMLSelectElement {
+  const select = document.createElement("select");
+  select.disabled = disabled;
+  select.className = "map-object-type-select";
+  for (const type of [
+    "patio", "terrace", "greenhouse", "shed", "pond", "path", "bed", "other",
+  ] as const) {
+    const option = document.createElement("option");
+    option.value = type;
+    option.textContent = objectTypeLabel(type);
+    select.appendChild(option);
+  }
+  select.value = value;
+  return select;
+}
+
+function makeUnitTypeSelect(value: MapObjectUnitType, disabled: boolean): HTMLSelectElement {
+  const select = document.createElement("select");
+  select.disabled = disabled;
+  for (const type of ["pot", "planter", "raised_bed", "shelf", "other"] as const) {
+    const option = document.createElement("option");
+    option.value = type;
+    option.textContent = unitTypeLabel(type);
+    select.appendChild(option);
+  }
+  select.value = value;
+  return select;
+}
+
 function positiveIntegerValue(input: HTMLInputElement, fallback: number): number {
   const value = Number.parseInt(input.value, 10);
   if (!Number.isFinite(value)) return fallback;
@@ -131,6 +169,38 @@ function positiveIntegerValue(input: HTMLInputElement, fallback: number): number
 
 function shapeValue(select: HTMLSelectElement): MapObjectShape {
   return select.value === "ellipse" ? "ellipse" : "rectangle";
+}
+
+function clampUnitGeometry(
+  geometry: MapObjectGeometry,
+  layout: MapObjectInternalLayout,
+): MapObjectGeometry {
+  const width = Math.min(Math.max(1, geometry.width), layout.cols);
+  const height = Math.min(Math.max(1, geometry.height), layout.rows);
+  return {
+    width,
+    height,
+    x: Math.min(Math.max(1, geometry.x), layout.cols - width + 1),
+    y: Math.min(Math.max(1, geometry.y), layout.rows - height + 1),
+  };
+}
+
+function selectedUnitForObject(object: MapObject): MapObjectUnit | null {
+  if (selectedNestedUnit?.objectPublicId !== object.public_id) return null;
+  const unit = object.units.find((item) => item.public_id === selectedNestedUnit?.unitPublicId);
+  if (!unit) selectedNestedUnit = null;
+  return unit ?? null;
+}
+
+function selectNestedUnit(
+  objectPublicId: string,
+  unitPublicId: string,
+  params: RenderMapObjectsPanelParams,
+): void {
+  const alreadySelected = selectedNestedUnit?.objectPublicId === objectPublicId
+    && selectedNestedUnit.unitPublicId === unitPublicId;
+  selectedNestedUnit = alreadySelected ? null : { objectPublicId, unitPublicId };
+  renderMapObjectsPanel(params);
 }
 
 function buildCreateRow(params: RenderMapObjectsPanelParams): HTMLElement {
@@ -169,6 +239,7 @@ function buildCustomObjectForm(params: RenderMapObjectsPanelParams): HTMLFormEle
   fields.className = "map-object-form-grid map-object-identity-grid";
 
   const nameInput = makeTextInput(t("map.object_custom"), !params.canWrite);
+  const typeSelect = makeObjectTypeSelect("other", !params.canWrite);
   const shapeSelect = makeShapeSelect("rectangle", !params.canWrite);
   const colorInput = makeColorInput(DEFAULT_CUSTOM_COLOR, !params.canWrite);
   const layoutToggle = document.createElement("input");
@@ -183,6 +254,7 @@ function buildCustomObjectForm(params: RenderMapObjectsPanelParams): HTMLFormEle
 
   fields.append(
     makeField(t("map.object_name"), nameInput),
+    makeField(t("map.object_type"), typeSelect),
     makeField(t("map.object_shape"), shapeSelect),
     makeField(t("map.object_color"), colorInput),
     layoutLabel,
@@ -211,6 +283,7 @@ function buildCustomObjectForm(params: RenderMapObjectsPanelParams): HTMLFormEle
     if (!params.canWrite) return;
     const name = nameInput.value.trim() || t("map.object_custom");
     params.onCreateCustomObject({
+      object_type: typeSelect.value as MapObjectType,
       name,
       shape_type: shapeValue(shapeSelect),
       style: { color: colorInput.value },
@@ -278,6 +351,7 @@ function buildObjectList(params: RenderMapObjectsPanelParams): HTMLElement {
 
 function buildUnitGrid(
   object: MapObject,
+  selectedUnitId: string | null,
   params: RenderMapObjectsPanelParams,
 ): HTMLElement {
   const grid = document.createElement("div");
@@ -294,15 +368,93 @@ function buildUnitGrid(
     cell.style.setProperty("--map-object-unit-color", unit.style.color);
     cell.textContent = unit.name;
     cell.title = `${unit.name} · ${unitTypeLabel(unit.unit_type)}`;
-    cell.setAttribute("aria-label", `${t("common.delete")} ${unit.name}`);
-    cell.disabled = !params.canWrite;
+    cell.setAttribute("aria-label", `${unit.name} · ${unitTypeLabel(unit.unit_type)}`);
+    cell.setAttribute("aria-pressed", String(unit.public_id === selectedUnitId));
+    cell.classList.toggle("active", unit.public_id === selectedUnitId);
     cell.addEventListener("click", () => {
-      params.onDeleteUnit(object.public_id, unit.public_id);
+      selectNestedUnit(object.public_id, unit.public_id, params);
     });
     grid.appendChild(cell);
   });
 
   return grid;
+}
+
+function buildUnitEditor(
+  object: MapObject,
+  unit: MapObjectUnit,
+  params: RenderMapObjectsPanelParams,
+): HTMLFormElement {
+  const form = document.createElement("form");
+  form.className = "map-object-geometry-form map-object-unit-form";
+
+  const onUpdateUnit = params.onUpdateUnit;
+  const canEditUnit = params.canWrite && onUpdateUnit !== undefined;
+  const nameInput = makeTextInput(unit.name, !canEditUnit);
+  const typeSelect = makeUnitTypeSelect(unit.unit_type, !canEditUnit);
+  const shapeSelect = makeShapeSelect(unit.shape_type, !canEditUnit);
+  const colorInput = makeColorInput(unit.style.color, !canEditUnit);
+  const rowInput = makeNumberInput(unit.geometry.y, 1, object.internal_layout.rows, !canEditUnit);
+  const colInput = makeNumberInput(unit.geometry.x, 1, object.internal_layout.cols, !canEditUnit);
+  const widthInput = makeNumberInput(unit.geometry.width, 1, object.internal_layout.cols, !canEditUnit);
+  const heightInput = makeNumberInput(unit.geometry.height, 1, object.internal_layout.rows, !canEditUnit);
+
+  const title = document.createElement("strong");
+  title.className = "map-object-form-title";
+  title.textContent = unit.name;
+
+  const identity = document.createElement("div");
+  identity.className = "map-object-form-grid map-object-identity-grid";
+  identity.append(
+    makeField(t("map.object_name"), nameInput),
+    makeField(t("map.object_type"), typeSelect),
+    makeField(t("map.object_shape"), shapeSelect),
+    makeField(t("map.object_color"), colorInput),
+  );
+
+  const geometry = document.createElement("div");
+  geometry.className = "map-object-form-grid map-object-position-grid";
+  geometry.append(
+    makeField(t("map.object_row"), rowInput),
+    makeField(t("map.object_col"), colInput),
+    makeField(t("map.object_width"), widthInput),
+    makeField(t("map.object_height"), heightInput),
+  );
+
+  const actions = document.createElement("div");
+  actions.className = "map-object-create-row";
+  const save = makeButton("cat-filter-btn map-object-submit-btn", t("map.object_save"));
+  save.type = "submit";
+  save.disabled = !canEditUnit;
+  const deleteUnit = makeButton("cat-filter-btn", t("common.delete"));
+  deleteUnit.disabled = !params.canWrite;
+  deleteUnit.setAttribute("aria-label", `${t("common.delete")} ${unit.name}`);
+  deleteUnit.title = `${t("common.delete")} ${unit.name}`;
+  deleteUnit.addEventListener("click", () => {
+    params.onDeleteUnit(object.public_id, unit.public_id);
+  });
+  actions.append(save, deleteUnit);
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canEditUnit || !onUpdateUnit) return;
+    const nextGeometry = clampUnitGeometry({
+      x: positiveIntegerValue(colInput, unit.geometry.x),
+      y: positiveIntegerValue(rowInput, unit.geometry.y),
+      width: positiveIntegerValue(widthInput, unit.geometry.width),
+      height: positiveIntegerValue(heightInput, unit.geometry.height),
+    }, object.internal_layout);
+    onUpdateUnit(object.public_id, unit.public_id, {
+      unit_type: typeSelect.value as MapObjectUnitType,
+      name: nameInput.value.trim() || unit.name,
+      shape_type: shapeValue(shapeSelect),
+      geometry: nextGeometry,
+      style: { color: colorInput.value },
+    });
+  });
+
+  form.append(title, identity, geometry, actions);
+  return form;
 }
 
 function buildGeometryForm(
@@ -431,7 +583,11 @@ function buildSelectedObject(params: RenderMapObjectsPanelParams): HTMLElement |
   planter.addEventListener("click", () => params.onAddUnit(selected.public_id, "planter"));
   actions.append(pot, planter);
 
-  panel.append(actions, buildUnitGrid(selected, params));
+  const selectedUnit = selectedUnitForObject(selected);
+  panel.append(actions, buildUnitGrid(selected, selectedUnit?.public_id ?? null, params));
+  if (selectedUnit) {
+    panel.appendChild(buildUnitEditor(selected, selectedUnit, params));
+  }
   return panel;
 }
 

@@ -28,6 +28,12 @@ class TestExportImport(BaseApiTest):
 
     def test_snapshot_lifecycle(self) -> None:
         """Save, list, restore, and delete a snapshot."""
+        conn = db.get_db()
+        try:
+            conn.execute("UPDATE plots SET grid_row = NULL, grid_col = NULL WHERE plot_id = 'B1'")
+            conn.commit()
+        finally:
+            db.return_db(conn)
         self.client.patch(
             "/api/layout-state",
             json={"row": 3, "col": 4, "width": 9, "height": 6, "north_degrees": 181},
@@ -76,6 +82,7 @@ class TestExportImport(BaseApiTest):
 
         conn = db.get_db()
         try:
+            conn.execute("UPDATE plots SET grid_row = 1, grid_col = 1 WHERE plot_id = 'B1'")
             conn.execute(
                 """
                 INSERT INTO plot_plants (plot_id, plt_id, quantity)
@@ -130,8 +137,14 @@ class TestExportImport(BaseApiTest):
             removed_plot = conn.execute(
                 "SELECT 1 FROM plots WHERE plot_id = 'SNAP-EXTRA'"
             ).fetchone()
+            restored_position = conn.execute(
+                "SELECT grid_row, grid_col FROM plots WHERE plot_id = 'B1'"
+            ).fetchone()
             self.assertIsNotNone(retained_assignment)
             self.assertIsNone(removed_plot)
+            self.assertEqual(
+                (restored_position["grid_row"], restored_position["grid_col"]), (None, None)
+            )
         finally:
             db.return_db(conn)
         house = self.client.get("/api/layout-state")
@@ -236,6 +249,7 @@ class TestExportImport(BaseApiTest):
         self.assertEqual(response.status_code, 200)
         data = json.loads(response.content)
         self.assertIsInstance(data, dict)
+        self.assertEqual(data["schema_version"], 1)
         self.assertIsInstance(data["plots"], list)
         self.assertGreater(len(data["plots"]), 0)
         self.assertEqual(
@@ -262,6 +276,57 @@ class TestExportImport(BaseApiTest):
         self.assertEqual(data["shademap_calibration"]["enabled"], True)
         self.assertEqual(len(data["shademap_obstacles"]), 1)
         self.assertEqual(data["shademap_obstacles"][0]["label"], "Apple tree")
+
+    def test_import_rejects_unsupported_schema_version_without_writes(self) -> None:
+        before = self.client.get("/api/plots").json()
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            response = self.client.post(
+                "/api/plots/import",
+                headers=self._destructive_admin_headers("unsupported-layout-version"),
+                json={
+                    "schema_version": 2,
+                    "plots": [
+                        {
+                            "plot_id": "VERSION-PROBE",
+                            "zone_code": "A",
+                            "zone_name": "Version probe",
+                            "plot_number": 99,
+                            "grid_row": 1,
+                            "grid_col": 1,
+                            "sub_zone": "",
+                            "notes": "",
+                            "color": "#7d9f7a",
+                        }
+                    ],
+                },
+            )
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(self.client.get("/api/plots").json(), before)
+
+    def test_import_rolls_back_plot_and_layout_when_map_object_replace_fails(self) -> None:
+        before_plots = self.client.get("/api/plots").json()
+        before_layout = self.client.get("/api/layout-state").json()
+        payload = self.client.get("/api/plots/export").json()
+        target = next(plot for plot in payload["plots"] if plot["plot_id"] == "B1")
+        target["notes"] = "must roll back"
+        payload["house"]["north_degrees"] = (before_layout["north_degrees"] + 45) % 360
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            headers = self._destructive_admin_headers("mid-restore-failure")
+            with patch("gardenops.main.replace_map_objects", side_effect=RuntimeError("boom")):
+                with self.assertRaises(RuntimeError):
+                    self.client.post("/api/plots/import", headers=headers, json=payload)
+
+        self.assertEqual(self.client.get("/api/plots").json(), before_plots)
+        self.assertEqual(self.client.get("/api/layout-state").json(), before_layout)
 
     def test_import_plots(self) -> None:
         self.client.patch(
@@ -343,6 +408,47 @@ class TestExportImport(BaseApiTest):
         self.assertEqual(obstacles.status_code, 200)
         self.assertEqual(len(obstacles.json()), 1)
         self.assertEqual(obstacles.json()[0]["label"], "Cherry tree")
+
+    def test_import_plots_preserves_existing_plot_owner(self) -> None:
+        conn = db.get_db()
+        try:
+            viewer = create_user(
+                conn,
+                username="layout_viewer",
+                password=strong_password("layoutviewerpass"),
+                role="viewer",
+            )
+            viewer_id = int(viewer["id"])
+            conn.execute(
+                "UPDATE plot_ownership SET owner_user_id = %s WHERE plot_id = 'B1'",
+                (viewer_id,),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        exported = self.client.get("/api/plots/export").json()
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            response = self.client.post(
+                "/api/plots/import",
+                headers=self._destructive_admin_headers("preserve-retained-plot-owner"),
+                json=exported,
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        conn = db.get_db()
+        try:
+            owner = conn.execute(
+                "SELECT owner_user_id FROM plot_ownership WHERE plot_id = 'B1'",
+            ).fetchone()
+            self.assertIsNotNone(owner)
+            self.assertEqual(int(owner["owner_user_id"]), viewer_id)
+        finally:
+            db.return_db(conn)
 
     def test_import_plots_accepts_legacy_cardinal_direction(self) -> None:
         export_res = self.client.get("/api/plots/export")

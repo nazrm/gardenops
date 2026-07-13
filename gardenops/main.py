@@ -2159,6 +2159,7 @@ def snapshot_layout(
             (garden_id,),
         ).fetchall()
     payload = {
+        "schema_version": 1,
         "plots": [dict(r) for r in rows],
         "house": get_layout_state(db, garden_id),
         "shademap": get_shademap_state(db, garden_id=garden_id),
@@ -2193,15 +2194,18 @@ def restore_snapshot_data(
         if pid in seen:
             raise HTTPException(status_code=400, detail=f"Duplicate plot_id in import: {pid}")
         seen.add(pid)
-        row = _coerce_required_int(p["grid_row"])
-        col = _coerce_required_int(p["grid_col"])
-        cell = (row, col)
-        if cell in seen_cells:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Duplicate grid cell in import: ({row}, {col})",
-            )
-        seen_cells.add(cell)
+        raw_row = p.get("grid_row")
+        raw_col = p.get("grid_col")
+        if raw_row is not None and raw_col is not None:
+            row = _coerce_required_int(raw_row)
+            col = _coerce_required_int(raw_col)
+            cell = (row, col)
+            if cell in seen_cells:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Duplicate grid cell in import: ({row}, {col})",
+                )
+            seen_cells.add(cell)
 
     if seen:
         placeholders = ",".join("%s" for _ in seen)
@@ -2220,23 +2224,24 @@ def restore_snapshot_data(
                 detail=f"Plot ID {foreign['plot_id']} is already owned by another garden",
             )
 
-    existing_plot_ids = [
-        str(row["plot_id"])
-        for row in db.execute(
-            "SELECT plot_id FROM plot_ownership WHERE garden_id = %s",
-            (garden_id,),
-        ).fetchall()
-    ]
-    target_plot_ids = set(seen)
-    removed_plot_ids = sorted(set(existing_plot_ids) - target_plot_ids)
-    retained_plot_ids = sorted(set(existing_plot_ids) & target_plot_ids)
-
     if manage_transaction:
         db.commit()
     media_storage_pairs: list[tuple[str, str]] = []
     try:
         db.execute("SET CONSTRAINTS ALL DEFERRED")
         lock_garden_layout(db, garden_id)
+        existing_owner_rows = db.execute(
+            "SELECT plot_id, owner_user_id FROM plot_ownership WHERE garden_id = %s",
+            (garden_id,),
+        ).fetchall()
+        existing_owner_by_plot_id = {
+            str(row["plot_id"]): _coerce_required_int(row["owner_user_id"])
+            for row in existing_owner_rows
+        }
+        target_plot_ids = set(seen)
+        existing_plot_ids = set(existing_owner_by_plot_id)
+        removed_plot_ids = sorted(existing_plot_ids - target_plot_ids)
+        retained_plot_ids = sorted(existing_plot_ids & target_plot_ids)
         if removed_plot_ids:
             replacement_result = delete_plots_for_replacement(
                 db,
@@ -2254,6 +2259,7 @@ def restore_snapshot_data(
                 (garden_id, retained_plot_ids),
             )
         for p in plots:
+            plot_id = str(p["plot_id"])
             db.execute(
                 "INSERT INTO plots"
                 " (plot_id,garden_id,zone_code,zone_name,plot_number,"
@@ -2270,7 +2276,7 @@ def restore_snapshot_data(
                 " notes=EXCLUDED.notes,"
                 " color=EXCLUDED.color",
                 (
-                    p["plot_id"],
+                    plot_id,
                     garden_id,
                     p["zone_code"],
                     p["zone_name"],
@@ -2290,7 +2296,11 @@ def restore_snapshot_data(
                     owner_user_id = excluded.owner_user_id,
                     garden_id = excluded.garden_id
                 """,
-                (p["plot_id"], owner_user_id, garden_id),
+                (
+                    plot_id,
+                    existing_owner_by_plot_id.get(plot_id, owner_user_id),
+                    garden_id,
+                ),
             )
         if house is None:
             garden = db.execute(
@@ -2394,6 +2404,9 @@ def parse_layout_payload(
         return cast(list[dict[str, Any]], raw), None, None, None, None, None
     if isinstance(raw, dict):
         payload = cast(dict[str, object], raw)
+        schema_version = payload.get("schema_version", 1)
+        if schema_version != 1:
+            raise HTTPException(status_code=400, detail="Unsupported layout schema version")
         plots = payload.get("plots")
         house = payload.get("house")
         shademap = payload.get("shademap")
@@ -2652,6 +2665,7 @@ def import_plots(body: ImportBody, db: DB, request: Request) -> dict:
     notify_garden_modified()
     record_security_event("destructive_admin_actions")
     record_security_event("destructive_admin_actions_import_plots")
+    request.state.audited_by_handler = True
     write_audit_event(
         method=request.method,
         path=request.url.path,

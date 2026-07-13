@@ -195,7 +195,7 @@ export function getAppShellMarkup(): string {
         </div>
       </header>
 
-      <div id="notification-panel" class="notification-panel" hidden></div>
+      <div id="notification-panel" class="notification-panel" role="dialog" aria-label="${t("notifications.title")}" hidden></div>
 
       <main class="content-shell">
         <div id="app-status" class="app-status" hidden>
@@ -223,6 +223,13 @@ export function getAppShellMarkup(): string {
                   <p class="map-layers-kicker" data-i18n="map.map_controls">${t("map.map_controls")}</p>
                   <h2 id="map-layers-title" data-i18n="map.layers">${t("map.layers")}</h2>
                 </div>
+                <button
+                  id="edit-mode-btn"
+                  class="map-object-toggle"
+                  type="button"
+                  aria-pressed="false"
+                  data-i18n="map.edit"
+                >${t("map.edit")}</button>
                 <button
                   id="map-layers-collapse-btn"
                   class="map-layers-collapse-btn"
@@ -569,7 +576,7 @@ export function getAppShellMarkup(): string {
               </div>
             </div>
             <div class="saved-views-shell">
-              <button type="button" id="saved-views-trigger" class="saved-views-btn" title="${t("saved_views.button")}" data-i18n-title="saved_views.button">${t("saved_views.button")}</button>
+              <button type="button" id="saved-views-trigger" class="saved-views-btn" title="${t("saved_views.button")}" data-i18n-title="saved_views.button" aria-controls="saved-views-dropdown" aria-expanded="false">${t("saved_views.button")}</button>
               <div id="saved-views-dropdown" class="saved-views-dropdown" hidden></div>
             </div>
           </div>
