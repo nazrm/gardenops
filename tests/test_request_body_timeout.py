@@ -72,6 +72,7 @@ class RequestBodyTimeoutTests(unittest.TestCase):
             with (
                 patch("gardenops.main._request_timeout_seconds", return_value=1),
                 patch("gardenops.main.is_emergency_read_only", return_value=False),
+                patch("gardenops.main.reserve_mutation_audit_event"),
                 patch("gardenops.main.write_audit_event"),
             ):
                 response = await auth_guard(request, call_next)

@@ -988,6 +988,7 @@ function assertPhaseTwoProfileEvidence(profiles) {
 function isPhaseTwoAuditPath(pathname) {
   return [
     /^\/api\/auth\/login$/,
+    /^\/api\/attention\/(?:preferences|items\/[^/]+\/(?:read|dismiss|snooze|restore)|outcomes\/[^/]+\/restore)$/,
     /^\/api\/calendar\/(?:preferences|manual-events(?:\/[^/]+)?|subscriptions(?:\/[^/]+)?)$/,
     /^\/api\/media\/summaries$/,
     /^\/api\/notifications(?:\/(?:preferences|[^/]+(?:\/(?:dismiss|read))?))?$/,

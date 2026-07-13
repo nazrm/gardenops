@@ -338,7 +338,14 @@ class TestGenerateTasksFertilize(DbTestBase):
 class TestGenerateTasksWatering(DbTestBase):
     def test_creates_water_task(self) -> None:
         self._insert_plant("WT1", "Thirsty", care_watering="Water regularly")
-        generate_tasks(self.conn, self.garden_id, 7, 2026, None)
+        generate_tasks(
+            self.conn,
+            self.garden_id,
+            7,
+            2026,
+            None,
+            now_ms=1_782_864_000_000,
+        )
         task = self.conn.execute(
             "SELECT * FROM garden_tasks WHERE rule_source LIKE 'water:WT1%'",
         ).fetchone()
@@ -347,7 +354,14 @@ class TestGenerateTasksWatering(DbTestBase):
 
     def test_norwegian_keyword(self) -> None:
         self._insert_plant("WT2", "Plante", care_watering="Vannes jevnlig")
-        generate_tasks(self.conn, self.garden_id, 6, 2026, None)
+        generate_tasks(
+            self.conn,
+            self.garden_id,
+            6,
+            2026,
+            None,
+            now_ms=1_780_272_000_000,
+        )
         task = self.conn.execute(
             "SELECT * FROM garden_tasks WHERE rule_source LIKE 'water:WT2%'",
         ).fetchone()
@@ -364,7 +378,14 @@ class TestGenerateTasksWatering(DbTestBase):
     def test_watering_stays_ungrouped(self) -> None:
         self._insert_plant("WT4", "Hydrangea", care_watering="Water regularly")
         self._insert_plant("WT5", "Astilbe", care_watering="Water often")
-        generate_tasks(self.conn, self.garden_id, 7, 2026, None)
+        generate_tasks(
+            self.conn,
+            self.garden_id,
+            7,
+            2026,
+            None,
+            now_ms=1_782_864_000_000,
+        )
         tasks = self.conn.execute(
             "SELECT id, rule_source FROM garden_tasks WHERE task_type = 'water'",
         ).fetchall()

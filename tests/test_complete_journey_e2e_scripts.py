@@ -1958,6 +1958,9 @@ def test_phase_two_audit_paths_include_visible_reads_and_preference_writes_only(
     script = """
 const { isPhaseTwoAuditPath } = require('./scripts/check_complete_journeys_e2e.cjs');
 for (const expected of [
+  '/api/attention/preferences',
+  '/api/attention/items/attn:task:task-1/snooze',
+  '/api/attention/outcomes/outcome-1/restore',
   '/api/calendar/preferences',
   '/api/media/summaries',
   '/api/notifications/preferences',
@@ -1968,6 +1971,7 @@ for (const expected of [
 for (const unexpected of [
   '/api/media',
   '/api/media/summaries/private',
+  '/api/attention/items/attn:task:task-1/delete',
   '/api/not-a-phase-two-route',
 ]) {
   if (isPhaseTwoAuditPath(unexpected)) process.exit(4);

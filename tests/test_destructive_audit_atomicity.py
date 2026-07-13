@@ -7,6 +7,7 @@ from unittest.mock import call, patch
 from fastapi.testclient import TestClient
 
 import gardenops.db as db
+from gardenops import audit as audit_service
 from gardenops.main import app
 from gardenops.router_helpers import generate_public_id
 from gardenops.security import create_user
@@ -404,7 +405,17 @@ class TestGardenDeleteAuditAtomicity(BaseApiTest):
         garden = self._create_deletable_garden()
         garden_id = int(garden["garden_id"])
 
-        def fail_audit_insert(conn: db.DbConn, values: tuple[object, ...]) -> None:
+        original_audit_insert = audit_service._insert_audit_event_row
+
+        def fail_audit_insert(
+            conn: db.DbConn,
+            values: tuple[object, ...],
+            *,
+            reserve: bool = False,
+        ) -> None:
+            if reserve:
+                original_audit_insert(conn, values, reserve=True)
+                return
             conn.execute("SELECT 1 / 0")
 
         with patch.dict(
@@ -429,7 +440,7 @@ class TestGardenDeleteAuditAtomicity(BaseApiTest):
                 )
 
         self.assertEqual(response.status_code, 500)
-        audit_insert.assert_called_once()
+        self.assertEqual(audit_insert.call_count, 2)
         notify.assert_not_called()
         record_security.assert_not_called()
         self._assert_related_state_exists(garden)
@@ -437,11 +448,13 @@ class TestGardenDeleteAuditAtomicity(BaseApiTest):
         conn = db.get_db()
         try:
             row = conn.execute(
-                "SELECT COUNT(*) AS count FROM audit_events WHERE path = %s",
+                "SELECT COUNT(*) AS count, MAX(status_code) AS status_code "
+                "FROM audit_events WHERE path = %s",
                 (f"/api/gardens/{garden_id}",),
             ).fetchone()
             self.assertIsNotNone(row)
             assert row is not None
-            self.assertEqual(int(row["count"]), 0)
+            self.assertEqual(int(row["count"]), 1)
+            self.assertEqual(int(row["status_code"]), 102)
         finally:
             db.return_db(conn)
