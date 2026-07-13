@@ -1305,7 +1305,7 @@ function assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture) {
   return { scoped_mutable_row_projections_exact: true };
 }
 
-function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture) {
+function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture, preferenceDelivery) {
   const semantic = maintenance?.maintenance_semantic_state;
   assert(semantic && typeof semantic === "object", "Phase 2 maintenance semantic state is missing");
   assert(semantic.frozen_now_ms === fixture.clock.attention_now_ms,
@@ -1400,6 +1400,11 @@ function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture) {
   const finalRows = state?.maintenance_rows;
   assert(finalRows && typeof finalRows === "object",
     "Final Phase 2 maintenance-row projection is missing");
+  assert(Array.isArray(preferenceDelivery?.delivery_notifications),
+    "Phase 2 maintenance notification delivery boundary is missing");
+  const deliveredIds = new Set(
+    preferenceDelivery.delivery_notifications.map((notification) => notification.public_id),
+  );
   for (const table of expectedTables) {
     assert(Array.isArray(finalRows[table]),
       `Final Phase 2 maintenance ${table} projection is missing`);
@@ -1411,7 +1416,10 @@ function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture) {
       const finalRow = finalByRowId.get(expected.row_id);
       assert(finalRow, `Phase 2 maintenance ${table} row disappeared: ${expected.row_id}`);
       if (table === "notifications") {
-        exactMaintenanceNotification(finalRow, expected);
+        exactMaintenanceNotification(
+          finalRow,
+          expectedPhaseTwoMaintenanceNotification(expected, fixture, deliveredIds),
+        );
       } else {
         assert(canonicalJson(finalRow) === canonicalJson(expected),
           `Phase 2 unexpectedly mutated maintenance ${table} row: ${expected.row_id}`);
@@ -1536,6 +1544,42 @@ function exactMaintenanceNotification(actual, expected) {
     assert(canonicalJson(actual[field]) === canonicalJson(expected[field]),
       `Phase 2 unexpectedly mutated maintenance notification ${field}: ${expected.public_id}`);
   }
+}
+
+function expectedPhaseTwoMaintenanceNotification(notification, fixture, deliveredIds) {
+  const expected = { ...notification };
+  if (deliveredIds.has(notification.public_id)) {
+    expected.emailed_at_ms = fixture.clock.attention_now_ms;
+  }
+  if (!["task_due", "task_overdue", "task_upcoming"].includes(notification.notification_type)) {
+    return expected;
+  }
+  const roleStage = new Map([
+    [fixture.roles.admin, 0],
+    [fixture.roles.editor, 1],
+    [fixture.roles.viewer, 2],
+  ]);
+  const actionByTask = new Map([
+    [fixture.phase_two.task_ids.bloom_desktop, { reason: "completed", stage: 0 }],
+    [fixture.phase_two.task_ids.fertilize_grouped, { reason: "superseded", stage: 0 }],
+    [fixture.phase_two.task_ids.prune_desktop, { reason: "snoozed", stage: 0 }],
+    [fixture.phase_two.task_ids.batch_a, { reason: "completed", stage: 0 }],
+    [fixture.phase_two.task_ids.batch_b, { reason: "completed", stage: 0 }],
+    [fixture.phase_two.task_ids.bloom_mobile, { reason: "completed", stage: 0 }],
+    [fixture.phase_two.task_ids.fertilize_mobile, { reason: "snoozed", stage: 0 }],
+    [fixture.phase_two.task_ids.plot_drawer, { reason: "completed", stage: 0 }],
+    [fixture.phase_two.task_ids.snooze_correction, { reason: "snoozed", stage: 0 }],
+    [fixture.phase_two.task_ids.editor_prune, { reason: "completed", stage: 1 }],
+    [fixture.phase_two.task_ids.editor_offline, { reason: "completed", stage: 1 }],
+    [fixture.phase_two.task_ids.stale_manual_water, { reason: "snoozed", stage: 1 }],
+  ]);
+  const notificationStage = roleStage.get(notification.username);
+  assert(Number.isSafeInteger(notificationStage),
+    `Phase 2 task notification had an unexpected user: ${notification.public_id}`);
+  const action = actionByTask.get(notification.target_id);
+  expected.cleared_at_ms = fixture.clock.attention_now_ms;
+  expected.clear_reason = !action || notificationStage <= action.stage ? "expired" : action.reason;
+  return expected;
 }
 
 function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDelivery) {
@@ -2295,7 +2339,12 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
 
   assert(maintenance && typeof maintenance === "object",
     "Phase 2 maintenance evidence is missing");
-  const maintenanceSemanticEvidence = assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture);
+  const maintenanceSemanticEvidence = assertPhaseTwoMaintenanceSemanticState(
+    maintenance,
+    state,
+    fixture,
+    preferenceDelivery,
+  );
   assert(maintenance.delivery_count === 0 && maintenance.deliveries?.length === 0,
     "Phase 2 pre-save maintenance unexpectedly delivered email");
   assert(maintenance.garden_id === fixture.gardens.alpha.id,

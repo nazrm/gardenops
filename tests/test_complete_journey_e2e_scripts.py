@@ -2242,6 +2242,16 @@ def test_phase_two_maintenance_summary_is_derived_from_semantic_rows() -> None:
     assert "expiredTasks" in source
 
 
+def test_phase_two_maintenance_notifications_have_exact_post_journey_lifecycle() -> None:
+    source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+
+    assert "expectedPhaseTwoMaintenanceNotification" in source
+    assert 'reason: "superseded", stage: 0' in source
+    assert 'reason: "snoozed", stage: 1' in source
+    assert 'notificationStage <= action.stage ? "expired" : action.reason' in source
+    assert "preferenceDelivery?.delivery_notifications" in source
+
+
 def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evidence() -> None:
     journey_source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
         encoding="utf-8"
