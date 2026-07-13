@@ -1930,7 +1930,8 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   const groupedTaskNotificationUsers = new Set();
   for (const notification of state.notifications) {
     if (
-      notification.target_id === phase.task_ids.fertilize_grouped
+      !expectedNotificationIds.has(notification.public_id)
+      && notification.target_id === phase.task_ids.fertilize_grouped
       && notification.notification_type === "task_due"
       && ["expired", "rescheduled"].includes(notification.clear_reason)
     ) {
