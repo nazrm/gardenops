@@ -1927,10 +1927,16 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   }
   expectedNotificationIds.add(phase.preference_delivery.eligible.public_id);
   expectedNotificationIds.add(phase.preference_delivery.ineligible.public_id);
+  const afterMaintenanceNotifications = maintenance?.maintenance_semantic_state?.rows_after?.notifications;
+  assert(Array.isArray(afterMaintenanceNotifications),
+    "Phase 2 after-maintenance notification boundary is missing");
+  const afterMaintenanceNotificationIds = new Set(
+    afterMaintenanceNotifications.map((notification) => notification.public_id),
+  );
   const groupedTaskNotificationUsers = new Set();
   for (const notification of state.notifications) {
     if (
-      !expectedNotificationIds.has(notification.public_id)
+      !afterMaintenanceNotificationIds.has(notification.public_id)
       && notification.target_id === phase.task_ids.fertilize_grouped
       && notification.notification_type === "task_due"
       && ["expired", "rescheduled"].includes(notification.clear_reason)

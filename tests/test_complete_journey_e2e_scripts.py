@@ -2217,7 +2217,7 @@ def test_phase_two_notification_projection_uses_exact_identities_not_magic_count
     assert "Phase 2 task and seeded notification projection identities were unexpected" in source
     assert "expectedNotificationIds" in source
     assert "groupedTaskNotificationUsers" in source
-    assert "!expectedNotificationIds.has(notification.public_id)" in source
+    assert "!afterMaintenanceNotificationIds.has(notification.public_id)" in source
 
 
 def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evidence() -> None:
