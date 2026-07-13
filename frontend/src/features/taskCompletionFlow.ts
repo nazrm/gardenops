@@ -5,6 +5,10 @@ import type { TaskActionRequest } from "../services/api";
 
 type CompletionTask = Pick<GardenTask, "task_type" | "plant_ids">;
 
+interface TaskCompletionDialogOptions {
+  modalParent?: HTMLElement | null | undefined;
+}
+
 const CAPTURE_TASK_TYPES = new Set<TaskType>([
   "observe_bloom",
   "prune",
@@ -32,6 +36,7 @@ export function openTaskCompletionDialog(
   task: CompletionTask,
   plantNames: Map<string, string>,
   onConfirm: (body: TaskActionRequest) => void,
+  options: TaskCompletionDialogOptions = {},
 ): void {
   const selected = defaultSelectedPlantIds(task);
   const { dialog, close } = createModal(String(t("tasks.complete_select_plants_title")), `
@@ -47,7 +52,7 @@ export function openTaskCompletionDialog(
         <button type="button" class="confirm-no"></button>
       </div>
     </div>
-  `);
+  `, { modalParent: options.modalParent });
   dialog.querySelector("h3")!.textContent = String(t("tasks.complete_select_plants_title"));
   const list = dialog.querySelector<HTMLElement>(".task-completion-list")!;
   const feedback = dialog.querySelector<HTMLElement>(".task-completion-feedback")!;

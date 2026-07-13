@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from fastapi import HTTPException
@@ -731,11 +731,13 @@ def restore_generated_watering_task_from_attention_outcome(
             _ATTENTION_RESTORE_LOCK_SEED,
         ),
     )
-    due_on = str(
+    original_due_on = str(
         recovery_action.get("due_on")
         or metadata.get("due_on")
         or source_public_id.rsplit(":", 1)[-1]
     )
+    today_iso = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
+    due_on = max(original_due_on, today_iso)
     plant_ids = [
         str(plant_id) for plant_id in recovery_action.get("plant_ids", [target_id]) if str(plant_id)
     ]
@@ -762,6 +764,8 @@ def restore_generated_watering_task_from_attention_outcome(
             task_metadata = _parse_mapping_json(existing["metadata_json"])
             previous_due_on = str(existing["due_on"] or "")
             task_metadata["restored_from_attention_outcome"] = outcome_public_id
+            if due_on != original_due_on:
+                task_metadata["restored_original_due_on"] = original_due_on
             if previous_due_on and previous_due_on != due_on:
                 task_metadata["restored_due_on_from"] = previous_due_on
             db.execute(
@@ -788,6 +792,12 @@ def restore_generated_watering_task_from_attention_outcome(
             )
     else:
         plant_name = str(metadata.get("plant_name") or target_id or "plant")
+        restore_metadata: dict[str, Any] = {
+            "description_source": "attention_restore",
+            "restored_from_attention_outcome": outcome_public_id,
+        }
+        if due_on != original_due_on:
+            restore_metadata["restored_original_due_on"] = original_due_on
         task_id = _create_task_for_plants(
             db,
             garden_id,
@@ -801,10 +811,7 @@ def restore_generated_watering_task_from_attention_outcome(
             description="Watering restored from a rain-covered attention outcome.",
             metadata_json=_generated_description_metadata(
                 "Vanning gjenopprettet fra et regndekket oppfolgingsutfall.",
-                {
-                    "description_source": "attention_restore",
-                    "restored_from_attention_outcome": outcome_public_id,
-                },
+                restore_metadata,
             ),
         )
         for plot_id in plot_ids:
@@ -1094,6 +1101,7 @@ def generate_tasks(
     """
     _lock_monthly_task_generation(db, garden_id, target_month, target_year)
     now_ms = current_timestamp_ms() if now_ms is None else now_ms
+    today_iso = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
     due_on = f"{target_year}-{target_month:02d}-01"
     created = 0
     skipped = 0
@@ -1250,9 +1258,17 @@ def generate_tasks(
             for day in (1, 8, 15, 22):
                 water_date = f"{target_year}-{target_month:02d}-{day:02d}"
                 rule = f"water:{plt_id}:{water_date}"
-                if rule in existing_rule_sources:
+                if water_date < today_iso:
+                    # Generated watering is short-lived advice. Do not recreate
+                    # already-stale pending work after lifecycle maintenance ran.
                     skipped += 1
-                elif outdoor_plot_ids and (rain_alert := rain_alert_by_date.get(water_date)):
+                elif rule in existing_rule_sources:
+                    skipped += 1
+                elif (
+                    outdoor_plot_ids
+                    and set(current_plot_ids_by_plant.get(plt_id, ())) == set(outdoor_plot_ids)
+                    and (rain_alert := rain_alert_by_date.get(water_date))
+                ):
                     _logger.info(
                         "Skipped watering task for %s on %s — rain alert active",
                         plt_id,

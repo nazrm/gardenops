@@ -243,52 +243,23 @@ async function exerciseGroupedCompletionRestrictions(page, fixture) {
 
 async function exerciseImmediateSnoozeCorrection(page, fixture) {
   const task = taskTitle(fixture, "snooze_correction");
-  const week = page.locator("[data-tasks-view='week']").first();
-  await visible(week, "tasks week view for immediate snooze correction");
-  await week.click();
-  await waitFor(async () => await week.evaluate((element) => element.classList.contains("active")),
-    "tasks week view for immediate snooze correction");
-
-  const pagination = page.locator("#tasks-pagination");
-  const pageInfo = pagination.locator("span").first();
-  const card = taskCard(page, task.title);
-  await waitFor(async () => await pageInfo.isVisible() || await card.isVisible(),
-    "week task page or pagination after view change");
-  let targetPage = 1;
-  if (await pageInfo.isVisible()) {
-    const pageOneMatch = /^Page 1 of ([1-9]\d*)$/.exec((await pageInfo.textContent() || "").trim());
-    assert(pageOneMatch && Number(pageOneMatch[1]) >= 2,
-      "High-volume task journey did not expose at least two pages");
-    const totalPages = Number(pageOneMatch[1]);
-    await visible(pageInfo, "first high-volume tasks page");
-    if (await card.count() === 0) {
-      targetPage = 0;
-      for (let pageNumber = 2; pageNumber <= totalPages; pageNumber += 1) {
-        await pagination.getByRole("button", { name: /^Next$/i }).click();
-        await visible(
-          pagination.getByText(`Page ${pageNumber} of ${totalPages}`, { exact: true }),
-          pageNumber === 2 ? "second high-volume tasks page" : `high-volume tasks page ${pageNumber}`,
-        );
-        if (await card.count() > 0) {
-          targetPage = pageNumber;
-          break;
-        }
-      }
-      assert(targetPage > 1, "Immediate snooze correction task was missing from paginated week tasks");
-    } else {
-      await pagination.getByRole("button", { name: /^Next$/i }).click();
-      await visible(
-        pagination.getByText(`Page 2 of ${totalPages}`, { exact: true }),
-        "second high-volume tasks page",
-      );
-      await pagination.getByRole("button", { name: /^Previous$/i }).click();
-      await visible(
-        pagination.getByText(`Page 1 of ${totalPages}`, { exact: true }),
-        "restored first high-volume tasks page",
-      );
-    }
+  await openCalendar(page, "mobile");
+  const week = page.locator("[data-calendar-view='week']:visible").first();
+  await visible(week, "calendar week view for immediate snooze correction");
+  if (!await week.evaluate((element) => element.classList.contains("active"))) {
+    await week.click();
+    await waitFor(async () => await week.evaluate((element) => element.classList.contains("active")),
+      "calendar week view for immediate snooze correction");
   }
-  await visible(card, "dedicated immediate snooze correction task");
+  await page.locator("#calendar-loading").waitFor({ state: "hidden" });
+
+  const event = page.locator(".fc-event:visible").filter({ hasText: task.title }).first();
+  await visible(event, "dedicated immediate snooze correction Calendar event");
+  await event.click();
+  const detail = page.locator("#calendar-detail-panel");
+  await visible(detail.getByText(task.title, { exact: true }), "immediate snooze correction Calendar detail");
+  const snoozeButton = detail.getByRole("button", { name: /snooze 1 week/i });
+  await visible(snoozeButton, "Calendar one-week snooze action");
   const snoozeDates = [];
   const requestListener = (request) => {
     if (request.method() !== "POST"
@@ -304,7 +275,7 @@ async function exerciseImmediateSnoozeCorrection(page, fixture) {
   };
   page.on("request", requestListener);
   try {
-    await card.getByRole("button", { name: /1 week/i }).click();
+    await snoozeButton.click();
     const correctionToast = page.locator("#toast-container .toast").filter({
       hasText: fixture.phase_two.snooze_correction.default_date,
     }).last();
@@ -312,6 +283,12 @@ async function exerciseImmediateSnoozeCorrection(page, fixture) {
     await visible(correctionAction, "2s Change date correction action after immediate snooze");
     await waitFor(() => snoozeDates.includes(fixture.phase_two.snooze_correction.default_date),
       "immediate one-week snooze mutation");
+
+    await event.waitFor({ state: "hidden" });
+    assert(
+      await page.locator(".fc-event:visible").filter({ hasText: task.title }).count() === 0,
+      "Calendar correction task remained in the visible week after its +1 week snooze",
+    );
 
     await correctionAction.click();
     const dialog = page.locator(".confirm-dialog").filter({
@@ -328,20 +305,6 @@ async function exerciseImmediateSnoozeCorrection(page, fixture) {
     await dialog.waitFor({ state: "hidden" });
     await waitFor(() => snoozeDates.includes(fixture.phase_two.manual_date),
       "manual snooze correction mutation");
-    await card.waitFor({ state: "hidden" });
-    if (targetPage > 1) {
-      for (let pageNumber = targetPage - 1; pageNumber >= 1; pageNumber -= 1) {
-        await pagination.getByRole("button", { name: /^Previous$/i }).click();
-        await visible(
-          pagination.getByText(new RegExp(`^Page ${pageNumber} of \\d+$`)),
-          pageNumber === 1 ? "restored first high-volume tasks page" : `restored tasks page ${pageNumber}`,
-        );
-      }
-      await visible(
-        pagination.getByText(/^Page 1 of \d+$/),
-        "restored first high-volume tasks page",
-      );
-    }
   } finally {
     page.off("request", requestListener);
   }
@@ -1362,6 +1325,44 @@ async function completeMobileQuickActions(page, fixture) {
     "Quick Actions",
   );
   const fertilize = taskTitle(fixture, "fertilize_mobile");
+  await sheet.locator(".quick-action-back").click();
+  await sheet.locator("[data-quick-action='snooze-task']").click();
+  await sheet.locator(".quick-action-task-search").fill(fertilize.title);
+  const changeFertilizeDate = sheet.getByRole("button", {
+    name: new RegExp(`${fertilize.title}: Change date`, "i"),
+  });
+  await visible(changeFertilizeDate, "mobile fertilize Quick Action manual date");
+  await changeFertilizeDate.click();
+  let dateDialog = page.locator(".confirm-dialog").filter({
+    has: page.locator("input[type='date']"),
+  }).last();
+  await visible(dateDialog, "mobile Quick Actions date dialog");
+  assert(await sheet.getAttribute("aria-hidden") === "true"
+    && await sheet.evaluate((element) => element.hasAttribute("inert")),
+  "Quick Actions sheet remained exposed behind its date dialog");
+  await dateDialog.locator(".confirm-no").click();
+  await dateDialog.waitFor({ state: "hidden" });
+  await waitFor(async () => (
+    await sheet.getAttribute("aria-hidden") === "false"
+      && !await sheet.evaluate((element) => element.hasAttribute("inert"))
+  ), "Quick Actions date-dialog parent restoration after cancel");
+  await assertFocusInside(sheet, "Quick Actions after date-dialog cancel");
+
+  await changeFertilizeDate.click();
+  dateDialog = page.locator(".confirm-dialog").filter({
+    has: page.locator("input[type='date']"),
+  }).last();
+  await visible(dateDialog, "mobile Quick Actions date dialog before submit");
+  await dateDialog.locator("input[type='date']").fill(fixture.phase_two.manual_date);
+  await dateDialog.locator(".confirm-yes").click();
+  await dateDialog.waitFor({ state: "hidden" });
+  await waitFor(async () => (
+    await sheet.getAttribute("aria-hidden") === "false"
+      && !await sheet.evaluate((element) => element.hasAttribute("inert"))
+  ), "Quick Actions date-dialog parent restoration after submit");
+  await assertFocusInside(sheet, "Quick Actions after date-dialog submit");
+  await sheet.locator(".quick-action-back").click();
+  await sheet.locator("[data-quick-action='complete-task']").click();
   await sheet.locator(".quick-action-task-search").fill(fertilize.title);
   const fertilizeAction = sheet.locator(".quick-action-task-item").filter({ hasText: fertilize.title });
   await visible(fertilizeAction, "mobile fertilize Quick Action");
@@ -1371,10 +1372,29 @@ async function completeMobileQuickActions(page, fixture) {
   await sheet.locator("[data-quick-action='complete-task']").click();
   const bloom = taskTitle(fixture, "bloom_mobile");
   await sheet.locator(".quick-action-task-search").fill(bloom.title);
-  await sheet.locator(".quick-action-task-item").filter({ hasText: bloom.title }).click();
-  const dialog = page.locator(".task-completion-dialog").last();
+  const bloomAction = sheet.locator(".quick-action-task-item").filter({ hasText: bloom.title });
+  await bloomAction.click();
+  let dialog = page.locator(".task-completion-dialog").last();
   await visible(dialog, "mobile bloom Quick Action dialog");
+  assert(await sheet.getAttribute("aria-hidden") === "true"
+    && await sheet.evaluate((element) => element.hasAttribute("inert")),
+  "Quick Actions sheet remained exposed behind its completion dialog");
+  await dialog.locator(".confirm-no").click();
+  await dialog.waitFor({ state: "hidden" });
+  await waitFor(async () => (
+    await sheet.getAttribute("aria-hidden") === "false"
+      && !await sheet.evaluate((element) => element.hasAttribute("inert"))
+  ), "Quick Actions completion-dialog parent restoration after cancel");
+  await assertFocusInside(sheet, "Quick Actions after completion-dialog cancel");
+
+  await bloomAction.click();
+  dialog = page.locator(".task-completion-dialog").last();
+  await visible(dialog, "mobile bloom Quick Action dialog before submit");
   await dialog.locator(".task-completion-not-seen").click();
+  await waitFor(async () => (
+    await sheet.getAttribute("aria-hidden") === "false"
+      && !await sheet.evaluate((element) => element.hasAttribute("inert"))
+  ), "Quick Actions completion-dialog parent restoration after submit");
   await waitFor(
     async () => await sheet.locator(".quick-action-task-item").filter({ hasText: bloom.title }).count() === 0,
     "mobile bloom Quick Action refresh",
@@ -1488,10 +1508,7 @@ async function exerciseOfflineTask(page, fixture) {
   };
   page.on("request", replayListener);
   try {
-    await page.evaluate(() => {
-      Object.defineProperty(navigator, "onLine", { configurable: true, get: () => false });
-      window.dispatchEvent(new Event("offline"));
-    });
+    await page.context().setOffline(true);
     await completionCard.getByRole("button", { name: /^Complete$/i }).click();
     await staleManualCard.getByRole("button", { name: /^Snooze$/i }).click();
     await groupedCard.getByRole("button", { name: /^Reschedule$/i }).click();
@@ -1535,10 +1552,7 @@ async function exerciseOfflineTask(page, fixture) {
     assert(new Set(queuedOperations.map((operation) => operation.operation_id)).size === queuedOperations.length,
       "Offline task queue reused an operation ID before replay");
 
-    await page.evaluate(() => {
-      Object.defineProperty(navigator, "onLine", { configurable: true, get: () => true });
-      window.dispatchEvent(new Event("online"));
-    });
+    await page.context().setOffline(false);
     const expectedActions = [
       { action: "complete", task_id: fixture.phase_two.task_ids.editor_offline },
       { action: "skip", task_id: fixture.phase_two.task_ids.prune_desktop },
@@ -1633,8 +1647,14 @@ async function exerciseViewer(page, diagnostics, profile, fixture) {
   const today = await openToday(page, profile);
   await visible(today.locator('[data-testid="attention-today-section-needs_attention"]'),
     `${profile} viewer Today affordance`);
-  assert(await today.locator('[data-testid="attention-today-settings"]').count() === 0,
-    `${profile} viewer Today received preference controls`);
+  const settings = today.locator('[data-testid="attention-today-settings"]');
+  assert(await settings.count() === 1,
+    `${profile} viewer Today did not receive personal preference controls`);
+  await settings.click();
+  const preferences = page.getByRole("dialog", { name: /attention settings/i });
+  await visible(preferences, `${profile} viewer personal attention preferences`);
+  await preferences.getByTestId("attention-preferences-save").click();
+  await preferences.waitFor({ state: "detached", timeout: 10000 });
   assert(await today.locator('[data-attention-action-kind="restore_attention_outcome"]').count() === 0,
     `${profile} viewer Today received restore controls`);
   const openTask = today.locator('[data-attention-action-kind="open_task"]').first();

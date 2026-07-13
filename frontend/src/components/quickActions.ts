@@ -9,7 +9,12 @@ export interface QuickActionCallbacks {
   onIdentifyPlant: () => void;
 }
 
-type QuickActionTask = { id: string; title: string; task_type: string };
+type QuickActionTask = {
+  id: string;
+  title: string;
+  task_type: string;
+  snooze_label?: string;
+};
 
 const QUICK_ACTION_ICONS = {
   complete: "\u2713",
@@ -57,7 +62,11 @@ function appendTaskPicker(
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "quick-action-task-item";
-      btn.textContent = taskLabel;
+      const primaryLabel = task.snooze_label
+        ? `${taskLabel}: ${task.snooze_label}`
+        : taskLabel;
+      btn.textContent = primaryLabel;
+      btn.setAttribute("aria-label", primaryLabel);
       btn.addEventListener("click", () => onSelect(task.id));
       list.appendChild(btn);
       if (secondaryAction) {
@@ -232,7 +241,7 @@ export function renderTaskQuickComplete(
 
 export function renderTaskQuickSnooze(
   container: HTMLElement,
-  tasks: ReadonlyArray<{ id: string; title: string; task_type: string }>,
+  tasks: ReadonlyArray<QuickActionTask>,
   onSnooze: (taskId: string) => void,
   onSnoozeDate: (taskId: string) => void,
   onBack: () => void,

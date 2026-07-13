@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 from gardenops.db import DbConn, current_timestamp_ms, get_db, return_db
+from gardenops.observability import get_request_id
 from gardenops.security import AuthContext
 from gardenops.security_telemetry import enqueue_security_telemetry
 
@@ -9,14 +10,41 @@ _logger = logging.getLogger(__name__)
 
 _AUDIT_EVENT_INSERT_SQL = """
     INSERT INTO audit_events (
-        occurred_at_ms, actor_user_id, actor_username, actor_role, actor_auth_type,
+        occurred_at_ms, request_id, actor_user_id, actor_username, actor_role, actor_auth_type,
         garden_id, method, path, status_code, remote_host, detail
     )
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (request_id) WHERE request_id != ''
+    DO UPDATE SET
+        occurred_at_ms = EXCLUDED.occurred_at_ms,
+        actor_user_id = EXCLUDED.actor_user_id,
+        actor_username = EXCLUDED.actor_username,
+        actor_role = EXCLUDED.actor_role,
+        actor_auth_type = EXCLUDED.actor_auth_type,
+        garden_id = EXCLUDED.garden_id,
+        method = EXCLUDED.method,
+        path = EXCLUDED.path,
+        status_code = EXCLUDED.status_code,
+        remote_host = EXCLUDED.remote_host,
+        detail = EXCLUDED.detail
+    WHERE audit_events.status_code = 102
+      AND audit_events.detail = 'mutation_started'
+    RETURNING id
+"""
+
+_AUDIT_EVENT_RESERVE_SQL = """
+    INSERT INTO audit_events (
+        occurred_at_ms, request_id, actor_user_id, actor_username, actor_role, actor_auth_type,
+        garden_id, method, path, status_code, remote_host, detail
+    )
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (request_id) WHERE request_id != '' DO NOTHING
+    RETURNING id
 """
 
 type AuditEventValues = tuple[
     int,
+    str,
     int | None,
     str,
     str,
@@ -61,6 +89,7 @@ def _audit_event_values(
 
     return (
         occurred_at_ms,
+        get_request_id(),
         actor_user_id,
         actor_username,
         actor_role,
@@ -77,8 +106,12 @@ def _audit_event_values(
 def _insert_audit_event_row(
     conn: DbConn,
     values: tuple[object, ...],
+    *,
+    reserve: bool = False,
 ) -> None:
-    conn.execute(_AUDIT_EVENT_INSERT_SQL, values)
+    sql = _AUDIT_EVENT_RESERVE_SQL if reserve else _AUDIT_EVENT_INSERT_SQL
+    if conn.execute(sql, values).fetchone() is None:
+        raise RuntimeError("Audit request ID is already finalized or reserved")
 
 
 def write_required_audit_event(
@@ -121,6 +154,7 @@ def enqueue_audit_event_telemetry(
     """Best-effort telemetry export after the durable audit transaction commits."""
     (
         occurred_at_ms,
+        request_id,
         actor_user_id,
         actor_username,
         actor_role,
@@ -137,6 +171,7 @@ def enqueue_audit_event_telemetry(
             "audit_event",
             {
                 "occurred_at_ms": occurred_at_ms,
+                "request_id": request_id,
                 "actor_user_id": actor_user_id,
                 "actor_username": actor_username,
                 "actor_role": actor_role,
@@ -191,6 +226,43 @@ def write_audit_event(
     finally:
         if owns_conn:
             return_db(conn)
+
+
+def reserve_mutation_audit_event(
+    *,
+    method: str,
+    path: str,
+    remote_host: str,
+    auth_context: AuthContext | None = None,
+    garden_id: int | None = None,
+) -> None:
+    """Persist a fail-closed mutation intent before application code runs.
+
+    The normal audit write later upserts this row by request ID with the final
+    status. A process failure can therefore leave an explicit 102 intent, but
+    never a successful mutation with no durable request-correlated audit row.
+    """
+    conn = get_db()
+    try:
+        values = _audit_event_values(
+            method=method,
+            path=path,
+            status_code=102,
+            remote_host=remote_host,
+            detail="mutation_started",
+            auth_context=auth_context,
+            garden_id=garden_id,
+            use_auth_context_garden=True,
+        )
+        if not values[1]:
+            raise RuntimeError("Mutation audit reservation requires a request ID")
+        _insert_audit_event_row(conn, values, reserve=True)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        return_db(conn)
 
 
 def list_audit_events(
@@ -248,7 +320,8 @@ def list_audit_events(
     total = int(total_row["c"] if total_row else 0)
 
     rows_sql = f"""
-        SELECT id, occurred_at_ms, actor_user_id, actor_username, actor_role, actor_auth_type,
+        SELECT id, occurred_at_ms, request_id, actor_user_id, actor_username,
+               actor_role, actor_auth_type,
                garden_id, method, path, status_code, remote_host, detail
         FROM audit_events
         {where_clause}

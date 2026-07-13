@@ -286,9 +286,15 @@ class TestAttentionMutations(BaseApiTest):
         finally:
             db.return_db(conn)
 
-    def _create_tier_user(self, username: str, tier: str) -> tuple[int, str]:
+    def _create_tier_user(
+        self,
+        username: str,
+        tier: str,
+        *,
+        role: str = "editor",
+    ) -> tuple[int, str]:
         password = f"{username}-pass"
-        user = self._create_test_user(username, password)
+        user = self._create_test_user(username, password, role=role)
         conn = db.get_db()
         try:
             conn.execute(
@@ -391,6 +397,95 @@ class TestAttentionMutations(BaseApiTest):
             [(int(row["user_id"]), str(row["user_state"])) for row in rows],
             [(admin_id, "dismissed"), (other_id, "snoozed")],
         )
+
+    def test_viewer_can_save_personal_attention_state_and_preferences_without_task_write_access(
+        self,
+    ) -> None:
+        garden_id, _admin_id = self._garden_user_and_task("task_attention_viewer_personal")
+        viewer_id, viewer_password = self._create_tier_user(
+            "attention_viewer_personal",
+            "pro",
+            role="viewer",
+        )
+        item_id = "attn:task:task_attention_viewer_personal"
+
+        with patch.dict(
+            "os.environ",
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1783180800000",
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-05",
+            },
+        ):
+            viewer_client, viewer_headers = self._authenticated_client(
+                "attention_viewer_personal",
+                viewer_password,
+                garden_id=garden_id,
+            )
+            preferences = viewer_client.put(
+                "/api/attention/preferences",
+                headers=viewer_headers,
+                json={
+                    "preset": "calm",
+                    "rules": {},
+                    "quiet_hours": {},
+                    "metadata": {"viewer_personal": True},
+                },
+            )
+            self.assertEqual(preferences.status_code, 200, preferences.text)
+            self.assertEqual(preferences.json()["metadata"]["viewer_personal"], True)
+            self.assertEqual(
+                viewer_client.post(
+                    f"/api/attention/items/{item_id}/read",
+                    headers=viewer_headers,
+                ).status_code,
+                200,
+            )
+            self.assertEqual(
+                viewer_client.post(
+                    f"/api/attention/items/{item_id}/dismiss",
+                    headers=viewer_headers,
+                ).status_code,
+                200,
+            )
+            self.assertEqual(
+                viewer_client.post(
+                    f"/api/attention/items/{item_id}/snooze",
+                    headers=viewer_headers,
+                    json={"snoozed_until_ms": 1783267200000},
+                ).status_code,
+                200,
+            )
+            task_write = viewer_client.post(
+                "/api/tasks/task_attention_viewer_personal/action",
+                headers=viewer_headers,
+                json={"action": "snooze", "snooze_until": "2026-07-06"},
+            )
+            self.assertEqual(task_write.status_code, 403, task_write.text)
+
+        conn = db.get_db()
+        try:
+            saved = conn.execute(
+                "SELECT preset, metadata_json FROM user_attention_preferences WHERE user_id = %s",
+                (viewer_id,),
+            ).fetchone()
+            state = conn.execute(
+                """
+                SELECT user_state FROM user_attention_item_state
+                WHERE garden_id = %s AND user_id = %s AND item_id = %s
+                """,
+                (garden_id, viewer_id, item_id),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+
+        assert saved is not None
+        assert state is not None
+        self.assertEqual(str(saved["preset"]), "calm")
+        self.assertIn("viewer_personal", str(saved["metadata_json"]))
+        self.assertEqual(str(state["user_state"]), "snoozed")
 
     def test_home_tier_is_forbidden_and_paid_tiers_reach_real_attention_behavior(self) -> None:
         garden_id, _user_id = self._garden_user_and_task("task_attention_tier")

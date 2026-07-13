@@ -258,7 +258,12 @@ HTTPS, and WebSocket traffic. It refuses unsafe artifact paths and writes privat
 manifests/traces under a unique directory below the gitignored
 `research/optimization-map/runs/complete-journeys/` tree. Successful runs remove
 temporary logs/media/terrain/download state while retaining the ignored evidence
-run; failed runs preserve private logs and artifacts for diagnosis.
+run; failed runs preserve private logs and artifacts for diagnosis. Raw Playwright
+traces are private, sensitive evidence: they can contain request and response
+payloads, page state, and identifiers. The public manifest is a
+sanitized projection only; it binds the fixture, runtime/browser, and lockfiles
+by hash and size and includes recomputable canonical projection digests, but it
+does not sanitize or replace the raw trace archive.
 
 The cumulative Phase 1 invocation first runs the Phase 0 desktop and Pixel 7
 administrator foundation, then runs independent desktop and Pixel 7 onboarding
@@ -295,10 +300,13 @@ user-agent contract, and touch capability, and the persisted private manifest
 records a hashed trace for every profile.
 
 The completed Phase 2 browser coverage exercises Today, task actions, mobile
-partial grouped completion and manual-date snoozing, Calendar lifecycle, mobile
-preference mutation and history reload, selected editor actions, viewer Today and
-Weather affordances, notification preference saving, weather checks, and delayed
-A/B/A stale-DOM checks for Tasks, Calendar, and subscriptions. After the desktop
+partial grouped completion and manual-date snoozing, Calendar lifecycle and
+out-of-range snooze correction, mobile preference mutation and history reload,
+selected editor actions, viewer-owned Attention preferences and item state,
+viewer Today and Weather affordances, notification preference saving, true
+network-offline task replay, nested-modal focus/inert behavior, weather checks,
+and delayed A/B/A stale-DOM checks for Tasks, Calendar, and subscriptions. After
+the desktop
 preference save, the disposable fixture creates one eligible and one ineligible
 issue plus notification, invokes the digest-delivery boundary without rerunning
 scheduler maintenance, and checks Today, inbox, badge, delivery, and the persisted
@@ -310,9 +318,10 @@ snapshot rather than accepting summary counts or frozen timestamps alone.
 Phase 2 database coverage remains required in `tests/journey_coverage.yaml`:
 the harness correlates every `POST`, `PUT`, `PATCH`, and `DELETE` browser
 mutation one-to-one with method, path, response status, actor, authentication
-type, and garden-scoped audit fields. The audit writer records wall-clock
-timestamps, so those timestamps remain an explicit nondeterministic field and
-cannot prove browser-to-audit ordering. The same manifest keeps unsupported
+type, garden scope, and the response `X-Request-ID` persisted on the audit row.
+Unknown successful mutation paths fail the evidence check. The audit writer
+records wall-clock timestamps, so those timestamps remain an explicit
+nondeterministic field and are not used as ordering proof. The same manifest keeps unsupported
 editor/viewer role dimensions required. Phase 8 accessibility and Phase 9
 performance remain explicitly open; the current structural and focus assertions
 are not a substitute for those phase audits.

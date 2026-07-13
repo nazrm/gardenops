@@ -81,6 +81,18 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         self.assertIn("openQuickSnoozeDateDialog", quick_feature)
         self.assertIn("openPlotSnoozeDateDialog", plot)
 
+    def test_snooze_policy_label_is_exposed_on_calendar_plot_and_quick_actions(self) -> None:
+        calendar = frontend_source("tabs/calendarTab.ts")
+        plot = frontend_source("components/plotInteractions.ts")
+        quick_actions = frontend_source("components/quickActions.ts")
+        quick_feature = frontend_source("features/quickActionsFeature.ts")
+
+        self.assertIn("actionButton(snoozePolicy.label", calendar)
+        self.assertIn('"action-snooze",\n        taskSnoozePolicy(task).label', plot)
+        self.assertIn("snooze_label: taskSnoozePolicy(tk).label", quick_feature)
+        self.assertIn("task.snooze_label", quick_actions)
+        self.assertIn('btn.setAttribute("aria-label", primaryLabel)', quick_actions)
+
     def test_quick_and_plot_task_pickers_include_today_actionable_snoozed_tasks(self) -> None:
         quick_actions = frontend_source("features/quickActionsFeature.ts")
         plot = frontend_source("components/plotInteractions.ts")

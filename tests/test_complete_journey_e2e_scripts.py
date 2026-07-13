@@ -550,11 +550,12 @@ def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None
         "exerciseEditorWeatherDeduplication",
         "Offline task actions reached the server before connectivity returned",
         "exerciseImmediateSnoozeCorrection",
-        "first high-volume tasks page",
-        "second high-volume tasks page",
-        "restored first high-volume tasks page",
+        "calendar week view for immediate snooze correction",
+        "Calendar correction task remained in the visible week after its +1 week snooze",
         "2s Change date correction action after immediate snooze",
         "immediate one-week snooze mutation",
+        "Quick Actions date-dialog parent restoration after submit",
+        "Quick Actions completion-dialog parent restoration after submit",
         'action: "complete"',
         'action: "skip"',
         'action: "snooze"',
@@ -1987,12 +1988,13 @@ const fixture = {
 };
 const request = {
   actorAuthType: 'session', actorRole: 'viewer', actorUsername: 'viewer',
-  gardenId: '7', method: 'POST', path: '/api/tasks/tsk_example/action', statusCode: 403,
+  gardenId: '7', method: 'POST', path: '/api/tasks/tsk_example/action',
+  requestId: 'viewer-task-denial-1', statusCode: 403,
 };
 const event = {
   actor_auth_type: 'session', actor_role: 'viewer', actor_username: 'viewer',
   garden_id: 7, id: 41, method: 'POST', occurred_at_ms: 1783857600001,
-  path: '/api/tasks/tsk_example/action', status_code: 403,
+  path: '/api/tasks/tsk_example/action', request_id: 'viewer-task-denial-1', status_code: 403,
 };
 const profiles = [{ profile: 'mobile', role: 'viewer', requests: [request] }];
 const evidence = assertPhaseTwoAuditEvents(
@@ -2024,12 +2026,13 @@ try {
 }
 const putRequest = {
   actorAuthType: 'session', actorRole: 'admin', actorUsername: 'admin',
-  gardenId: '7', method: 'PUT', path: '/api/notifications/preferences', statusCode: 200,
+  gardenId: '7', method: 'PUT', path: '/api/notifications/preferences',
+  requestId: 'admin-preferences-put-1', statusCode: 200,
 };
 const putEvent = {
   actor_auth_type: 'session', actor_role: 'admin', actor_username: 'admin',
   garden_id: 7, id: 43, method: 'PUT', occurred_at_ms: 1783857600002,
-  path: '/api/notifications/preferences', status_code: 200,
+  path: '/api/notifications/preferences', request_id: 'admin-preferences-put-1', status_code: 200,
 };
 assertPhaseTwoAuditEvents(
   { records: [] },
@@ -2269,11 +2272,13 @@ const profile = {
   profile: 'desktop', role: 'admin', requests: [
     {
       actorAuthType: 'none', actorRole: 'anonymous', actorUsername: 'anonymous',
-      gardenId: null, method: 'POST', path: '/api/auth/login', statusCode: 200,
+      gardenId: null, method: 'POST', path: '/api/auth/login',
+      requestId: 'admin-login-request-1', statusCode: 200,
     },
     {
       actorAuthType: 'session', actorRole: 'admin', actorUsername: 'admin-user',
-      gardenId: 7, method: 'POST', path: '/api/tasks/task-1/action', statusCode: 200,
+      gardenId: 7, method: 'POST', path: '/api/tasks/task-1/action',
+      requestId: 'admin-task-action-1', statusCode: 200,
     },
   ],
 };
@@ -2281,12 +2286,12 @@ const records = [
   {
     actor_auth_type: 'none', actor_role: 'anonymous', actor_username: 'anonymous',
     garden_id: null, id: 1, method: 'POST', occurred_at_ms: 1783857600001,
-    path: '/api/auth/login', status_code: 200,
+    path: '/api/auth/login', request_id: 'admin-login-request-1', status_code: 200,
   },
   {
     actor_auth_type: 'session', actor_role: 'admin', actor_username: 'admin-user',
     garden_id: 7, id: 2, method: 'POST', occurred_at_ms: 1783857600002,
-    path: '/api/tasks/task-1/action', status_code: 200,
+    path: '/api/tasks/task-1/action', request_id: 'admin-task-action-1', status_code: 200,
   },
 ];
 assertPhaseTwoAuditEvents({ records: [] }, { records }, [profile], fixture);
@@ -2439,6 +2444,173 @@ try {
 } catch (error) {
   if (!/extra or missing mutable row/i.test(String(error.message))) process.exit(4);
 }
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_rejects_unknown_successful_browser_mutations_before_audit_filtering() -> None:
+    script = r"""
+const { phaseTwoBrowserMutationRecords } = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = { roles: { admin: 'admin' } };
+const profiles = [{
+  profile: 'desktop', role: 'admin', requests: [{
+    actorAuthType: 'session', actorRole: 'admin', actorUsername: 'admin', gardenId: 7,
+    method: 'POST', path: '/api/journal', requestId: 'unexpected-journal-post-1', statusCode: 201,
+  }],
+}];
+try {
+  phaseTwoBrowserMutationRecords(profiles, fixture);
+  process.exit(3);
+} catch (error) {
+  const expected = /Unknown successful Phase 2 browser mutation path.*POST \/api\/journal/;
+  if (!expected.test(String(error.message))) {
+    process.exit(4);
+  }
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_audit_correlation_rejects_request_id_tampering_from_peer_pages() -> None:
+    script = """
+const { assertPhaseTwoAuditEvents } = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = { clock: { attention_now_ms: 1783857600000 }, roles: { admin: 'admin' } };
+const request = (requestId) => ({
+  actorAuthType: 'session', actorRole: 'admin', actorUsername: 'admin', gardenId: 7,
+  method: 'POST', path: '/api/weather/check', requestId, statusCode: 200,
+});
+const event = (id, request_id) => ({
+  actor_auth_type: 'session', actor_role: 'admin', actor_username: 'admin', garden_id: 7,
+  id, method: 'POST', occurred_at_ms: 1783857600000, path: '/api/weather/check',
+  request_id, status_code: 200,
+});
+const profiles = [
+  { profile: 'desktop', role: 'admin', requests: [request('desktop-weather-request-1')] },
+  { profile: 'desktop-peer', role: 'admin', requests: [request('peer-weather-request-1')] },
+];
+assertPhaseTwoAuditEvents(
+  { records: [] },
+  { records: [event(1, 'desktop-weather-request-1'), event(2, 'peer-weather-request-1')] },
+  profiles,
+  fixture,
+);
+try {
+  assertPhaseTwoAuditEvents(
+    { records: [] },
+    { records: [event(1, 'desktop-weather-request-1'), event(2, 'desktop-weather-request-1')] },
+    profiles,
+    fixture,
+  );
+  process.exit(3);
+} catch (error) {
+  if (!/exact browser mutation/.test(String(error.message))) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_browser_api_recorder_persists_response_request_ids_for_primary_and_peer_pages() -> None:
+    script = """
+const { createApiRecorder } = require('./scripts/e2e/completeJourneyBrowser.cjs');
+const page = () => {
+  const handlers = new Map();
+  return {
+    emit(event, value) { for (const handler of handlers.get(event) || []) handler(value); },
+    on(event, handler) { handlers.set(event, [...(handlers.get(event) || []), handler]); },
+  };
+};
+const request = (path) => ({
+  headers: () => ({ 'x-garden-id': '7' }), method: () => 'POST', url: () => `http://127.0.0.1${path}`,
+});
+const response = (value, requestId) => ({
+  headers: () => ({ 'x-request-id': requestId }), request: () => value, status: () => 200,
+});
+const primary = page();
+const peer = page();
+const recorder = createApiRecorder(primary, {
+  authType: 'session', role: 'admin', username: 'admin',
+});
+recorder.attachPage(peer);
+const primaryRequest = request('/api/weather/check');
+const peerRequest = request('/api/weather/check');
+primary.emit('request', primaryRequest);
+peer.emit('request', peerRequest);
+primary.emit('response', response(primaryRequest, 'primary-request-id-1'));
+peer.emit('response', response(peerRequest, 'peer-request-id-1'));
+if (recorder.records.length !== 2) process.exit(3);
+if (recorder.records[0].requestId !== 'primary-request-id-1') process.exit(4);
+if (recorder.records[1].requestId !== 'peer-request-id-1') process.exit(5);
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_maintenance_notification_reconciliation_rejects_lifecycle_field_tampering() -> None:
+    script = """
+const { exactMaintenanceNotification } = require('./scripts/check_complete_journeys_e2e.cjs');
+const expected = {
+  body: 'body', cleared_at_ms: 4, clear_reason: 'expired', created_at_ms: 1, dismissed: true,
+  emailed_at_ms: 3, expires_at_ms: null, garden_id: 7, metadata: {}, notification_subtype: '',
+  notification_type: 'task_due', public_id: 'note-1', read_at_ms: 2, row_id: 1, severity: 'normal',
+  target_id: 'task-1', target_type: 'task', title: 'title', username: 'admin',
+};
+exactMaintenanceNotification({ ...expected }, expected);
+for (const field of ['dismissed', 'read_at_ms', 'emailed_at_ms', 'cleared_at_ms', 'clear_reason']) {
+  const actual = { ...expected, [field]: field === 'dismissed' ? false : 'tampered' };
+  try {
+    exactMaintenanceNotification(actual, expected);
+    process.exit(3);
+  } catch (error) {
+    if (!String(error.message).includes(field)) process.exit(4);
+  }
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_public_manifest_binds_fixture_runtime_lockfiles_and_recomputable_digests() -> None:
+    script = """
+const {
+  canonicalProjectionDigests,
+  sanitizeManifestEvidence,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const binding = {
+  fixture: { sha256: 'a'.repeat(64), size_bytes: 11 },
+  lockfiles: {
+    frontend_package_lock: { format_version: 3, sha256: 'b'.repeat(64), size_bytes: 12 },
+    uv_lock: { format_version: '1', sha256: 'c'.repeat(64), size_bytes: 13 },
+  },
+  runtime: {
+    architecture: 'x64', chromium_executable: { sha256: 'd'.repeat(64), size_bytes: 14 },
+    chromium_version: '140.0.0.0', frontend_package_version: '0.1.1', node_version: 'v24.0.0',
+    platform: 'linux', playwright_core_version: '1.61.0',
+  },
+};
+const manifest = sanitizeManifestEvidence({
+  evidence_binding: binding, profiles: [], database: { safe: true },
+});
+if (!manifest.evidence_binding
+    || manifest.evidence_binding.fixture.sha256 !== binding.fixture.sha256) process.exit(3);
+if (JSON.stringify(manifest.canonical_projection_digests)
+    !== JSON.stringify(canonicalProjectionDigests(manifest))) process.exit(4);
+const tampered = structuredClone(manifest);
+tampered.database.safe = false;
+if (tampered.canonical_projection_digests.final_database
+    === canonicalProjectionDigests(tampered).final_database) process.exit(5);
 """
     result = subprocess.run(
         ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True

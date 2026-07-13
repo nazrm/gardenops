@@ -24,3 +24,11 @@ the deletion and its attributed audit row commit in one transaction, so an
 audit insert failure rolls the deletion back. Referenced media files are
 unlinked only after that commit; cleanup failures cannot roll back the durable
 database decision and must remain observable for operational follow-up.
+
+API mutations reserve a durable audit row, keyed by the server-bound request
+ID, before application code runs. The final audit write may update only that
+incomplete reservation; a reused client request ID cannot overwrite a finalized
+row. If reservation fails, the mutation is rejected. Routes with stricter audit
+requirements finalize the reservation in the same transaction as their domain
+change; an interrupted ordinary route leaves an explicit incomplete reservation
+instead of an unaudited successful request.

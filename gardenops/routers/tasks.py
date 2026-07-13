@@ -59,6 +59,7 @@ from gardenops.services.task_completion import (
     clear_completion_capture_metadata,
     completion_capture_already_recorded,
     current_plot_ids_for_plant_ids,
+    grouped_completion_history_started,
     is_completion_capture_task,
     plant_names_for_ids,
     record_completion_journal_entry,
@@ -1229,12 +1230,23 @@ def update_task(
     context = _auth_context(request)
     _require_write(context)
     garden_id = _active_garden_id(context)
-    existing_task = _fetch_task(db, task_id, garden_id)
+    existing_task = _fetch_task(db, task_id, garden_id, for_update=True)
     internal_task_id = int(existing_task["id"])
 
     updates = body.model_dump(exclude_unset=True)
     if not updates:
         return {"status": "ok"}
+
+    protected_scope_fields = {"task_type", "plant_ids", "plot_ids"}
+    if protected_scope_fields.intersection(updates) and grouped_completion_history_started(
+        existing_task
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Task type and scope cannot be changed after grouped completion history begins"
+            ),
+        )
 
     if "due_on" in updates and updates["due_on"] is not None:
         _validate_date(updates["due_on"])
@@ -1589,5 +1601,6 @@ def generate_tasks_endpoint(request: Request, db: DB) -> dict:
         target_year=now.year,
         actor_user_id=context.user_id,
         preferred_locale=preferred_locale,
+        now_ms=int(now.timestamp() * 1000),
     )
     return result

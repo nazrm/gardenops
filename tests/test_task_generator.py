@@ -1,5 +1,6 @@
 """Tests for C7 recurring care schedules and C8 harvest window alerts."""
 
+import json
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -121,7 +122,14 @@ class TestInferTaskDescription(DbTestBase):
 
     def test_water(self) -> None:
         self._insert_plant("WA1", "Hydrangea", care_watering="regular")
-        generate_tasks(self.conn, self.garden_id, 7, 2026, self._owner_id)
+        generate_tasks(
+            self.conn,
+            self.garden_id,
+            7,
+            2026,
+            self._owner_id,
+            now_ms=1_782_864_000_000,
+        )
         task = self.conn.execute(
             "SELECT * FROM garden_tasks WHERE garden_id = %s AND task_type = 'water'",
             (self.garden_id,),
@@ -165,7 +173,14 @@ class TestInferTaskDescription(DbTestBase):
         ).fetchone()
         assert alert is not None
 
-        generate_tasks(self.conn, self.garden_id, 7, 2026, self._owner_id)
+        generate_tasks(
+            self.conn,
+            self.garden_id,
+            7,
+            2026,
+            self._owner_id,
+            now_ms=1_782_864_000_000,
+        )
 
         skipped_task = self.conn.execute(
             """
@@ -225,7 +240,14 @@ class TestInferTaskDescription(DbTestBase):
             (self.garden_id,),
         )
 
-        generate_tasks(self.conn, self.garden_id, 7, 2026, self._owner_id)
+        generate_tasks(
+            self.conn,
+            self.garden_id,
+            7,
+            2026,
+            self._owner_id,
+            now_ms=1_782_864_000_000,
+        )
 
         task_sources = {
             str(row["rule_source"])
@@ -256,6 +278,79 @@ class TestInferTaskDescription(DbTestBase):
         assert "water:RINDOOR:2026-07-01" in task_sources
         assert "water:RNOPLOT:2026-07-01" not in outcome_sources
         assert "water:RINDOOR:2026-07-01" not in outcome_sources
+
+    def test_rain_suppression_keeps_mixed_indoor_outdoor_watering_task(self) -> None:
+        self._insert_plant("RMIX", "Mixed placement hydrangea", care_watering="regular moisture")
+        self.conn.execute(
+            """
+            INSERT INTO plots
+                (plot_id, garden_id, zone_code, zone_name, plot_number,
+                 grid_row, grid_col, sub_zone, notes)
+            VALUES
+                ('RMIX-OUT', %s, 'R', 'Outdoor', 1, 1, 1, '', ''),
+                ('RMIX-IN', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+            """,
+            (self.garden_id, self.garden_id),
+        )
+        self.conn.execute(
+            "INSERT INTO plot_plants (plot_id, plt_id, quantity) "
+            "VALUES ('RMIX-OUT', 'RMIX', 1), ('RMIX-IN', 'RMIX', 1)",
+        )
+        self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'rain_surplus', 'normal', 'Rain outside', '',
+                    '2026-07-01', '2026-07-01', '{}', 1)
+            """,
+            (self.garden_id,),
+        )
+
+        generate_tasks(
+            self.conn,
+            self.garden_id,
+            7,
+            2026,
+            self._owner_id,
+            now_ms=1_782_864_000_000,
+        )
+
+        task = self.conn.execute(
+            """
+            SELECT 1
+            FROM garden_tasks
+            WHERE garden_id = %s AND rule_source = 'water:RMIX:2026-07-01'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert task is not None
+
+    def test_monthly_generation_does_not_create_stale_pending_watering(self) -> None:
+        self._insert_plant("RSTALE", "Stale watering", care_watering="regular moisture")
+
+        result = generate_tasks(
+            self.conn,
+            self.garden_id,
+            6,
+            2026,
+            self._owner_id,
+            now_ms=1_783_872_000_000,
+        )
+
+        row = self.conn.execute(
+            """
+            SELECT 1
+            FROM garden_tasks
+            WHERE garden_id = %s
+              AND task_type = 'water'
+              AND rule_source LIKE 'water:RSTALE:%%'
+              AND status IN ('pending', 'snoozed')
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert result["skipped"] >= 4
+        assert row is None
 
     def test_rain_suppression_preserves_alert_winner_order(self) -> None:
         self._insert_plant("RORDER", "Ordered Hydrangea", care_watering="regular moisture")
@@ -294,7 +389,14 @@ class TestInferTaskDescription(DbTestBase):
         earliest = create_alert("Earliest start", "2026-07-01", "2026-07-08", 1)
         create_alert("Later start", "2026-07-07", "2026-07-08", 20)
 
-        generate_tasks(self.conn, self.garden_id, 7, 2026, self._owner_id)
+        generate_tasks(
+            self.conn,
+            self.garden_id,
+            7,
+            2026,
+            self._owner_id,
+            now_ms=1_782_864_000_000,
+        )
 
         outcomes = {
             str(row["source_public_id"]): str(row["source_id"])
@@ -377,6 +479,60 @@ class TestInferTaskDescription(DbTestBase):
 
 
 class TestRainAttentionOutcomeRestoreConcurrency(DbTestBase):
+    def test_late_restore_moves_pending_watering_to_today(self) -> None:
+        self._insert_plant("RESTORE-LATE", "Late restore", care_watering="regular moisture")
+        now_ms = 1_783_958_400_000
+        source_public_id = "water:RESTORE-LATE:2026-07-05"
+        outcome_id = upsert_attention_outcome(
+            self.conn,
+            garden_id=self.garden_id,
+            provider="weather",
+            outcome_type="watering_covered_by_rain",
+            source_type="task_generator",
+            source_id="rain-late",
+            source_public_id=source_public_id,
+            target_type="plant",
+            target_id="RESTORE-LATE",
+            title="Watering covered by rain",
+            explanation="Rain covers this watering.",
+            reason="Rain covers watering",
+            plant_ids=("RESTORE-LATE",),
+            metadata={"due_on": "2026-07-05", "plant_name": "Late restore"},
+            recovery_action={
+                "kind": "restore_generated_watering_task",
+                "source_public_id": source_public_id,
+                "target_type": "plant",
+                "target_id": "RESTORE-LATE",
+                "due_on": "2026-07-05",
+                "plant_ids": ["RESTORE-LATE"],
+            },
+            occurred_at_ms=now_ms,
+            expires_at_ms=now_ms + 86_400_000,
+        )
+        self.conn.commit()
+
+        restored = restore_attention_outcome(
+            self.conn,
+            garden_id=self.garden_id,
+            outcome_id=outcome_id,
+            user_id=self._owner_id,
+            now_ms=now_ms,
+        )
+
+        task = self.conn.execute(
+            """
+            SELECT due_on, status, metadata_json
+            FROM garden_tasks
+            WHERE garden_id = %s AND rule_source = %s
+            """,
+            (self.garden_id, source_public_id),
+        ).fetchone()
+        assert restored == "restored"
+        assert task is not None
+        assert str(task["due_on"]) == "2026-07-13"
+        assert str(task["status"]) == "pending"
+        assert json.loads(str(task["metadata_json"]))["restored_original_due_on"] == "2026-07-05"
+
     def test_expired_task_does_not_consume_rain_recovery_outcome(self) -> None:
         now_ms = 1783180800000
         expires_at_ms = now_ms + 86_400_000

@@ -277,7 +277,71 @@ function canonicalJson(value) {
       `${JSON.stringify(key)}:${canonicalJson(value[key])}`
     )).join(",")}}`;
   }
-  return JSON.stringify(value);
+  return JSON.stringify(value) ?? "null";
+}
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function fileBinding(filePath) {
+  const stat = fs.statSync(filePath);
+  assert(stat.isFile(), `Evidence binding is not a file: ${path.basename(filePath)}`);
+  return {
+    sha256: sha256(fs.readFileSync(filePath)),
+    size_bytes: stat.size,
+  };
+}
+
+function evidenceBinding() {
+  const packageJson = readJson(path.join(ROOT, "frontend", "package.json"));
+  const packageLockPath = path.join(ROOT, "frontend", "package-lock.json");
+  const packageLock = readJson(packageLockPath);
+  const uvLockPath = path.join(ROOT, "uv.lock");
+  const uvLock = fs.readFileSync(uvLockPath, "utf8");
+  const uvLockVersionMatch = /^version\s*=\s*(?:"([^"]+)"|([0-9]+))/m.exec(uvLock);
+  const uvLockVersion = uvLockVersionMatch?.[1] || uvLockVersionMatch?.[2] || "";
+  return {
+    fixture: fileBinding(FIXTURE_PATH),
+    lockfiles: {
+      frontend_package_lock: {
+        ...fileBinding(packageLockPath),
+        format_version: packageLock.lockfileVersion,
+      },
+      uv_lock: {
+        ...fileBinding(uvLockPath),
+        format_version: uvLockVersion,
+      },
+    },
+    runtime: {
+      node_version: process.version,
+      platform: process.platform,
+      architecture: process.arch,
+      frontend_package_version: String(packageJson.version || ""),
+      playwright_core_version: String(packageJson.devDependencies?.["playwright-core"] || ""),
+      chromium_executable: fileBinding(CHROMIUM_EXECUTABLE),
+      chromium_version: null,
+    },
+  };
+}
+
+function isSafeRequestId(value) {
+  return /^[A-Za-z0-9._-]{1,64}$/.test(String(value || ""));
+}
+
+function canonicalProjectionDigests(manifest) {
+  const projection = {
+    database: manifest.database,
+    evidence_binding: manifest.evidence_binding,
+    profiles: manifest.profiles,
+    trace_artifacts: manifest.trace_artifacts,
+  };
+  return {
+    audit_snapshot: sha256(canonicalJson(projection.database?.observed_audit_state)),
+    final_database: sha256(canonicalJson(projection.database)),
+    final_projection: sha256(canonicalJson(projection)),
+    profiles: sha256(canonicalJson(projection.profiles)),
+  };
 }
 
 function gitOutput(args) {
@@ -934,16 +998,22 @@ function isPhaseTwoAuditPath(pathname) {
 
 function phaseTwoBrowserMutationRecords(profiles, fixture) {
   const auditMutationMethods = new Set(["DELETE", "PATCH", "POST", "PUT"]);
-  return (profiles || []).flatMap((profile) => (
+  const mutations = (profiles || []).flatMap((profile) => (
     (profile?.requests || []).flatMap((request) => {
-      if (!auditMutationMethods.has(request?.method) || !isPhaseTwoAuditPath(request?.path)) return [];
+      if (!auditMutationMethods.has(request?.method)) return [];
       assert(Number.isSafeInteger(request.statusCode),
         `Phase 2 mutation response status is missing: ${request.method} ${request.path}`);
       const isViewerDenial = request.statusCode === 403 && profile.role === "viewer";
       assert(
         isViewerDenial || (request.statusCode >= 200 && request.statusCode < 300),
-        `Phase 2 audited mutation did not have an expected response: ${request.method} ${request.path}`,
+        `Phase 2 browser mutation did not have an expected response: ${request.method} ${request.path}`,
       );
+      if (request.statusCode >= 200 && request.statusCode < 300) {
+        assert(isPhaseTwoAuditPath(request.path),
+          `Unknown successful Phase 2 browser mutation path: ${request.method} ${request.path}`);
+      }
+      assert(isPhaseTwoAuditPath(request.path),
+        `Unknown Phase 2 browser mutation path: ${request.method} ${request.path}`);
       const isLogin = request.path === "/api/auth/login";
       const gardenId = isLogin ? null : (request.gardenId === null ? null : Number(request.gardenId));
       assert(gardenId === null || (Number.isSafeInteger(gardenId) && gardenId > 0),
@@ -959,6 +1029,8 @@ function phaseTwoBrowserMutationRecords(profiles, fixture) {
           && request.actorUsername === expectedActor.username,
         `Phase 2 browser mutation actor was incomplete: ${request.method} ${request.path}`,
       );
+      assert(isSafeRequestId(request.requestId),
+        `Phase 2 browser mutation lacks a request ID: ${request.method} ${request.path}`);
       return [{
         actor_auth_type: request.actorAuthType,
         actor_role: request.actorRole,
@@ -966,10 +1038,12 @@ function phaseTwoBrowserMutationRecords(profiles, fixture) {
         garden_id: gardenId,
         method: request.method,
         path: request.path,
+        request_id: request.requestId,
         status_code: request.statusCode,
       }];
     })
   ));
+  return mutations;
 }
 
 function auditRecordMatchesBrowserMutation(event, request) {
@@ -979,7 +1053,8 @@ function auditRecordMatchesBrowserMutation(event, request) {
     && event.actor_username === request.actor_username
     && event.actor_role === request.actor_role
     && event.actor_auth_type === request.actor_auth_type
-    && event.garden_id === request.garden_id;
+    && event.garden_id === request.garden_id
+    && event.request_id === request.request_id;
 }
 
 function assertPhaseTwoAuditEvents(beforeAudit, finalAudit, profiles, fixture) {
@@ -1021,6 +1096,8 @@ function assertPhaseTwoAuditEvents(beforeAudit, finalAudit, profiles, fixture) {
     assert(Number.isSafeInteger(event.status_code) && (
       (event.status_code >= 200 && event.status_code < 300) || event.status_code === 403
     ), `Phase 2 audit event had an unexpected response: ${event.method} ${event.path}`);
+    assert(isSafeRequestId(event.request_id),
+      `Phase 2 audit event lacks a request ID: ${event.id}`);
     const requestIndex = unmatchedBrowserMutations.findIndex((request) => (
       auditRecordMatchesBrowserMutation(event, request)
     ));
@@ -1042,6 +1119,7 @@ function assertPhaseTwoAuditEvents(beforeAudit, finalAudit, profiles, fixture) {
     phase_two_audit_event_count: phaseTwoAuditEvents.length,
     phase_two_audit_events_exact: true,
     phase_two_audit_mutations_one_to_one: true,
+    phase_two_audit_request_ids_one_to_one: true,
     phase_two_audit_timestamps_frozen: auditTimestampsFrozen,
     phase_two_audit_wall_clock_uncontrolled: true,
     phase_two_unlogged_put_mutation_count: unloggedPutMutations,
@@ -1390,23 +1468,28 @@ function assertExpectedMaintenanceMutations(createdByTable, fixture) {
 }
 
 function exactMaintenanceNotification(actual, expected) {
-  const immutable = [
+  const fields = [
     "body",
     "created_at_ms",
+    "dismissed",
+    "emailed_at_ms",
     "expires_at_ms",
     "garden_id",
     "metadata",
     "notification_subtype",
     "notification_type",
     "public_id",
+    "read_at_ms",
     "row_id",
     "severity",
     "target_id",
     "target_type",
     "title",
     "username",
+    "cleared_at_ms",
+    "clear_reason",
   ];
-  for (const field of immutable) {
+  for (const field of fields) {
     assert(canonicalJson(actual[field]) === canonicalJson(expected[field]),
       `Phase 2 unexpectedly mutated maintenance notification ${field}: ${expected.public_id}`);
   }
@@ -2534,6 +2617,19 @@ function isSafeManifestRequestPath(value) {
   ].some((pattern) => pattern.test(requestPath));
 }
 
+function sanitizeFileBinding(value) {
+  return {
+    format_version: (
+      (typeof value?.format_version === "string" && /^[A-Za-z0-9_.-]{1,40}$/.test(value.format_version))
+      || Number.isSafeInteger(value?.format_version)
+    ) ? value.format_version : null,
+    sha256: /^[a-f0-9]{64}$/.test(String(value?.sha256 || "")) ? value.sha256 : null,
+    size_bytes: Number.isSafeInteger(value?.size_bytes) && value.size_bytes >= 0
+      ? value.size_bytes
+      : null,
+  };
+}
+
 function sanitizeManifestEvidence(manifest) {
   const dirty = Boolean(manifest.git?.dirty);
   const output = {
@@ -2551,6 +2647,32 @@ function sanitizeManifestEvidence(manifest) {
     browser: safeIdentifier(manifest.browser),
     database: manifest.database && typeof manifest.database === "object"
       ? sanitizeDatabaseEvidence(manifest.database)
+      : null,
+    evidence_binding: manifest.evidence_binding && typeof manifest.evidence_binding === "object"
+      ? {
+        fixture: sanitizeFileBinding(manifest.evidence_binding.fixture),
+        lockfiles: {
+          frontend_package_lock: sanitizeFileBinding(
+            manifest.evidence_binding.lockfiles?.frontend_package_lock,
+          ),
+          uv_lock: sanitizeFileBinding(manifest.evidence_binding.lockfiles?.uv_lock),
+        },
+        runtime: {
+          architecture: safeIdentifier(manifest.evidence_binding.runtime?.architecture),
+          chromium_executable: sanitizeFileBinding(
+            manifest.evidence_binding.runtime?.chromium_executable,
+          ),
+          chromium_version: safeIdentifier(manifest.evidence_binding.runtime?.chromium_version),
+          frontend_package_version: safeIdentifier(
+            manifest.evidence_binding.runtime?.frontend_package_version,
+          ),
+          node_version: safeIdentifier(manifest.evidence_binding.runtime?.node_version),
+          platform: safeIdentifier(manifest.evidence_binding.runtime?.platform),
+          playwright_core_version: safeIdentifier(
+            manifest.evidence_binding.runtime?.playwright_core_version,
+          ),
+        },
+      }
       : null,
     ended_at: safeUtcTimestamp(manifest.ended_at),
     failure: manifest.failure ? sanitizeDiagnostic(manifest.failure) : null,
@@ -2649,6 +2771,7 @@ function sanitizeManifestEvidence(manifest) {
         path: isSafeManifestRequestPath(request.path)
           ? String(request.path)
           : sanitizeDiagnostic(request.path),
+        requestId: isSafeRequestId(request.requestId) ? String(request.requestId) : null,
         statusCode: Number.isSafeInteger(request.statusCode) && request.statusCode >= 100
           && request.statusCode <= 599 ? request.statusCode : null,
       }));
@@ -2663,6 +2786,7 @@ function sanitizeManifestEvidence(manifest) {
       output.filesystem[key].entries = output.filesystem[key].entries.map(safeIdentifier);
     }
   }
+  output.canonical_projection_digests = canonicalProjectionDigests(output);
   return output;
 }
 
@@ -2725,6 +2849,7 @@ async function main() {
     backend_log: null,
     browser: "chromium",
     database: null,
+    evidence_binding: evidenceBinding(),
     ended_at: null,
     failure: null,
     failure_stage: null,
@@ -2773,6 +2898,7 @@ async function main() {
       executablePath: CHROMIUM_EXECUTABLE,
       headless: true,
     });
+    manifest.evidence_binding.runtime.chromium_version = await browser.version();
     if (phaseSelected(0)) {
       currentStage = "phase-zero-browser";
       const phaseZeroProfileStart = manifest.profiles.length;
@@ -3386,6 +3512,7 @@ module.exports = {
   assertPhaseTwoOfflineOperationReplay,
   assertPhaseTwoScopedMutableRows,
   assertExpectedMaintenanceMutations,
+  exactMaintenanceNotification,
   assertPhaseTwoProfileEvidence,
   assertNoResponseMocks,
   assertNoNodeRequestClients,
@@ -3398,6 +3525,7 @@ module.exports = {
   expectedSessionUserCounts,
   gitState,
   isSafeManifestRequestPath,
+  isSafeRequestId,
   isPhaseTwoAuditPath,
   phaseTwoBrowserMutationRecords,
   phaseOneAuditExpectedEvents,
@@ -3406,6 +3534,8 @@ module.exports = {
   safeFailure,
   sanitizeManifestEvidence,
   sanitizeDatabaseEvidence,
+  canonicalProjectionDigests,
+  evidenceBinding,
   sourceProvenance,
   writeManifestAtomic,
 };

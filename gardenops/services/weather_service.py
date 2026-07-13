@@ -252,7 +252,6 @@ def save_forecast_cache(
         """,
         (garden_id, now, json.dumps(forecast), latitude, longitude),
     )
-    db.commit()
 
 
 def get_or_fetch_forecast(
@@ -631,6 +630,7 @@ def save_weather_alerts(
                 SET severity = %s,
                     title = COALESCE(NULLIF(%s, ''), title),
                     description = COALESCE(NULLIF(%s, ''), description),
+                    dismissed = 0,
                     valid_until = CASE
                         WHEN alert_type = 'rain_surplus' THEN %s
                         ELSE GREATEST(valid_until, %s)

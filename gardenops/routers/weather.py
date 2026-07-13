@@ -154,7 +154,13 @@ def get_forecast(request: Request, db: DB) -> dict:
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
     lat, lng = _get_garden_location(db, garden_id)
-    forecast = get_or_fetch_forecast(db, garden_id, lat, lng)
+    try:
+        forecast = get_or_fetch_forecast(db, garden_id, lat, lng)
+        # Cache writes are intentionally committed at the request boundary.
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     if not forecast or "daily" not in forecast:
         return {"forecast_available": False, "daily": {}}
     return {"forecast_available": True, **forecast}
@@ -186,6 +192,7 @@ def check_weather(request: Request, db: DB) -> dict:
             alerts=list(result.get("alerts", [])),
             actor_user_id=context.user_id,
             now_ms=now_ms,
+            replace_forecast_alerts=bool(result.get("forecast_available")),
         )
         db.commit()
     except Exception:

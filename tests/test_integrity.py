@@ -145,7 +145,7 @@ class MigrationGuardTests(unittest.TestCase):
         finally:
             db.return_db(conn)
 
-        self.assertEqual(versions, set(range(1, 23)))
+        self.assertEqual(versions, set(range(1, 24)))
         self.assertEqual(table["name"], "offline_create_operations")
         self.assertEqual(index["name"], "ux_weather_alerts_identity")
 
@@ -328,6 +328,25 @@ class MigrationGuardTests(unittest.TestCase):
             {"kind": "table", "object": "offline_create_operations"},
             diagnostics["missing"],
         )
+
+    def test_audit_schema_signature_requires_request_correlation(self) -> None:
+        self.assertIn("request_id", REQUIRED_COLUMNS["audit_events"])
+        self.assertIn("ux_audit_events_request_id", REQUIRED_INDEXES)
+        self.assertIn(
+            "ux_audit_events_request_id",
+            REQUIRED_INDEX_DEFINITION_FRAGMENTS,
+        )
+
+        snapshot = self._complete_schema_snapshot()
+        snapshot.columns["audit_events"].remove("request_id")
+        snapshot.indexes.remove("ux_audit_events_request_id")
+        snapshot.index_definitions.pop("ux_audit_events_request_id", None)
+
+        diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+        self.assertEqual(diagnostics["mode"], "verified-upgrade-baseline")
+        self.assertTrue(diagnostics["can_stamp_migrations"])
+        self.assertEqual(diagnostics["stamp_through"], 22)
 
     def test_schema_signature_validates_critical_definitions(self) -> None:
         snapshot = self._complete_schema_snapshot()

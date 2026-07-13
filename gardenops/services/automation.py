@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from gardenops.db import DbConn, current_timestamp_ms
@@ -326,8 +326,10 @@ def _create_weather_tasks(
         return 0
 
     _lock_weather_task_generation(db, garden_id, alert_id)
-    due_on = str(alert["valid_from"])[:10]
+    original_due_on = str(alert["valid_from"])[:10]
     effective_now_ms = now_ms if now_ms is not None else current_timestamp_ms()
+    today_iso = datetime.fromtimestamp(effective_now_ms / 1000, UTC).date().isoformat()
+    due_on = max(original_due_on, today_iso) if task_type == "water" else original_due_on
     created = 0
 
     matching_plants = [
@@ -402,7 +404,10 @@ def _create_weather_tasks(
         else:
             title = title_tpl.format(name=pname)
 
-        meta = json.dumps({"description_no": desc_no_tpl.format(name=pname)})
+        metadata = {"description_no": desc_no_tpl.format(name=pname)}
+        if due_on != original_due_on:
+            metadata["generated_original_due_on"] = original_due_on
+        meta = json.dumps(metadata)
         brow = db.execute(
             """INSERT INTO garden_tasks
                (garden_id, task_type, title, description, status,
@@ -708,11 +713,13 @@ def _reschedule_watering_during_rain(
     # not auto-generated drainage tasks ('auto:rain_drainage:').
     rows = db.execute(
         """
-        SELECT id, public_id, title, due_on, rule_source, metadata_json
+        SELECT id, public_id, title, due_on, snoozed_until, status, rule_source, metadata_json,
+               COALESCE(snoozed_until, due_on) AS action_on
         FROM garden_tasks
-        WHERE garden_id = %s AND task_type = 'water' AND status = 'pending'
+        WHERE garden_id = %s AND task_type = 'water' AND status IN ('pending', 'snoozed')
           AND rule_source LIKE 'water:%%'
-          AND due_on >= %s AND due_on <= %s
+          AND COALESCE(snoozed_until, due_on) >= %s
+          AND COALESCE(snoozed_until, due_on) <= %s
           AND EXISTS (
               SELECT 1
               FROM garden_task_plants gtp
@@ -723,8 +730,19 @@ def _reschedule_watering_during_rain(
                 AND p.garden_id = %s
                 AND p.grid_row IS NOT NULL
           )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM garden_task_plants gtp
+              JOIN plot_plants pp ON pp.plt_id = gtp.plt_id
+              JOIN plots p ON p.plot_id = pp.plot_id
+              WHERE gtp.task_id = garden_tasks.id
+                AND gtp.plt_id = split_part(garden_tasks.rule_source, ':', 2)
+                AND p.garden_id = %s
+                AND p.grid_row IS NULL
+          )
+        FOR UPDATE SKIP LOCKED
         """,
-        (garden_id, valid_from, valid_until, garden_id),
+        (garden_id, valid_from, valid_until, garden_id, garden_id),
     ).fetchall()
     if not rows:
         return
@@ -734,30 +752,50 @@ def _reschedule_watering_during_rain(
     for row in rows:
         old_meta = row["metadata_json"] if "metadata_json" in row.keys() else "{}"
         meta = _parse_mapping_json(old_meta)
-        old_due_on = str(row["due_on"])
-        meta["rescheduled_from"] = old_due_on
+        old_action_on = str(row["action_on"])
+        meta["rescheduled_from"] = old_action_on
         meta["rescheduled_reason"] = "rain_alert"
         plant_ids = _plant_ids_for_task(db, int(row["id"]))
         plot_ids = _plot_ids_for_task(db, int(row["id"]))
-        db.execute(
+        update = db.execute(
             """
             UPDATE garden_tasks
-            SET due_on = %s, metadata_json = %s, updated_at_ms = %s
+            SET due_on = CASE WHEN status = 'snoozed' THEN due_on ELSE %s END,
+                snoozed_until = CASE WHEN status = 'snoozed' THEN %s ELSE NULL END,
+                metadata_json = %s,
+                updated_at_ms = %s
             WHERE id = %s
+              AND status = %s
+              AND COALESCE(snoozed_until, due_on) = %s
             """,
             (
+                new_due,
                 new_due,
                 json.dumps(meta, separators=(",", ":")),
                 effective_now_ms,
                 row["id"],
+                row["status"],
+                old_action_on,
             ),
+        )
+        if update.rowcount != 1:
+            continue
+        # Keep task attention consistent in the same transaction as the
+        # weather-driven move. Import locally to avoid the service cycle.
+        from gardenops.services.notification_service import refresh_task_notifications_for_task
+
+        refresh_task_notifications_for_task(
+            db,
+            garden_id=garden_id,
+            task_public_id=str(row["public_id"]),
+            now_ms=effective_now_ms,
         )
         _write_watering_rescheduled_by_rain_outcome(
             db,
             garden_id=garden_id,
             alert=alert,
             task=row,
-            old_due_on=old_due_on,
+            old_due_on=old_action_on,
             new_due_on=new_due,
             plant_ids=plant_ids,
             plot_ids=plot_ids,

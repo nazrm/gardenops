@@ -21,6 +21,7 @@ from gardenops.services.weather_service import (
     fetch_forecast,
     find_frost_vulnerable_plants,
     get_or_fetch_forecast,
+    save_forecast_cache,
     save_weather_alerts,
 )
 from tests.base import DbTestBase, strong_password
@@ -731,6 +732,26 @@ class TestLoadActiveAlerts(_WeatherDbTestBase):
 
 
 class TestSaveWeatherAlerts(_WeatherDbTestBase):
+    def test_forecast_cache_write_rolls_back_with_caller_transaction(self) -> None:
+        save_forecast_cache(
+            self.conn,
+            self.garden_id,
+            59.9,
+            10.7,
+            {"daily": {"time": ["2026-07-15"]}},
+        )
+        self.conn.rollback()
+
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM weather_cache WHERE garden_id = %s",
+                (self.garden_id,),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        assert row is None
+
     def test_creates_alerts(self) -> None:
         alerts = [
             {

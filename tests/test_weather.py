@@ -20,6 +20,122 @@ class TestWeather(BaseApiTest):
         r = self.client.post("/api/weather/check")
         self.assertEqual(r.status_code, 422)
 
+    def test_weather_check_resolves_absent_forecast_owned_work(self) -> None:
+        from gardenops.services.attention.service import set_user_attention_state
+        from gardenops.services.notification_service import create_notification
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1"
+            ).fetchone()
+            user = conn.execute(
+                "SELECT id FROM auth_users WHERE username = 'test_admin'"
+            ).fetchone()
+            assert garden is not None
+            assert user is not None
+            garden_id = int(garden["id"])
+            user_id = int(user["id"])
+            conn.execute(
+                "UPDATE gardens SET latitude = 59.9, longitude = 10.7 WHERE id = %s",
+                (garden_id,),
+            )
+            alert = conn.execute(
+                """
+                INSERT INTO weather_alerts
+                    (garden_id, alert_type, severity, title, description,
+                     valid_from, valid_until, metadata_json, created_at_ms)
+                VALUES (%s, 'dry_spell', 'normal', 'Dry spell', 'Water regularly.',
+                        '2032-02-03', '2032-02-06', '{}', 1)
+                RETURNING id
+                """,
+                (garden_id,),
+            ).fetchone()
+            assert alert is not None
+            task = conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (public_id, garden_id, task_type, title, status, severity,
+                     due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+                VALUES ('task_forecast_resolve', %s, 'water', 'Water forecast plant',
+                        'pending', 'normal', '2032-02-03', %s, '{}', 1, 1)
+                RETURNING public_id
+                """,
+                (garden_id, f"auto:dry_water:{int(alert['id'])}:PLT-TEST"),
+            ).fetchone()
+            assert task is not None
+            conn.commit()
+            create_notification(
+                conn,
+                garden_id,
+                user_id,
+                "weather_alert",
+                "Dry spell",
+                "Water regularly.",
+                target_type="weather_alert",
+                target_id="dry_spell:2032-02-03",
+            )
+            set_user_attention_state(
+                conn,
+                garden_id=garden_id,
+                user_id=user_id,
+                item_id=f"attn:weather:alert:{int(alert['id'])}",
+                user_state="dismissed",
+                now_ms=db.current_timestamp_ms(),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch(
+            "gardenops.routers.weather.check_weather_and_generate_alerts",
+            return_value={
+                "forecast_available": True,
+                "alerts_created": 0,
+                "alerts_skipped": 0,
+                "alerts": [],
+            },
+        ):
+            response = self.client.post("/api/weather/check")
+        self.assertEqual(response.status_code, 200, response.text)
+
+        conn = db.get_db()
+        try:
+            alert_row = conn.execute(
+                "SELECT dismissed FROM weather_alerts WHERE id = %s",
+                (int(alert["id"]),),
+            ).fetchone()
+            task_row = conn.execute(
+                "SELECT status FROM garden_tasks WHERE public_id = 'task_forecast_resolve'"
+            ).fetchone()
+            notification = conn.execute(
+                """
+                SELECT clear_reason
+                FROM notification_events
+                WHERE target_id = 'dry_spell:2032-02-03'
+                """
+            ).fetchone()
+            state = conn.execute(
+                """
+                SELECT user_state
+                FROM user_attention_item_state
+                WHERE garden_id = %s
+                  AND user_id = %s
+                  AND item_id = %s
+                """,
+                (garden_id, user_id, f"attn:weather:alert:{int(alert['id'])}"),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        assert alert_row is not None
+        assert task_row is not None
+        assert notification is not None
+        assert state is not None
+        self.assertTrue(bool(alert_row["dismissed"]))
+        self.assertEqual(str(task_row["status"]), "skipped")
+        self.assertEqual(str(notification["clear_reason"]), "forecast_resolved")
+        self.assertEqual(str(state["user_state"]), "dismissed")
+
     def test_weather_check_rolls_back_alerts_when_reconciliation_fails(self) -> None:
         conn = db.get_db()
         try:

@@ -10,6 +10,7 @@ from gardenops.router_helpers import generate_public_id
 from gardenops.services.automation import (
     _WEATHER_TASK_LOCK_SEED,
     escalate_overdue_follow_ups,
+    on_dry_spell_alert,
     on_frost_alert,
     on_harvest_logged,
     on_heat_alert,
@@ -770,6 +771,92 @@ class TestWeatherTaskTyping(DbTestBase):
         assert due_dates["water:RG-INDOOR-PLOT:2026-07-15"] == "2026-07-15"
         assert due_dates["water:RG-UNPLACED:2026-07-15"] == "2026-07-15"
         assert outcome_sources == {"water:RG-OUT:2026-07-15"}
+
+    def test_rain_reschedule_uses_snoozed_effective_date_and_keeps_mixed_placement(self) -> None:
+        for plant_id, name in (("RSNOOZE", "Snoozed outdoor"), ("RMIX", "Mixed placement")):
+            self._insert_plant(plant_id, name, care_watering="Water regularly in summer")
+        self.conn.execute(
+            """
+            INSERT INTO plots
+                (plot_id, garden_id, zone_code, zone_name, plot_number,
+                 grid_row, grid_col, sub_zone, notes)
+            VALUES
+                ('RS-OUT', %s, 'R', 'Outdoor', 1, 1, 1, '', ''),
+                ('RM-OUT', %s, 'R', 'Outdoor', 2, 1, 2, '', ''),
+                ('RM-IN', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+            """,
+            (self.garden_id, self.garden_id, self.garden_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO plot_plants (plot_id, plt_id, quantity)
+            VALUES ('RS-OUT', 'RSNOOZE', 1), ('RM-OUT', 'RMIX', 1), ('RM-IN', 'RMIX', 1)
+            """,
+        )
+        rows = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, description, status,
+                 severity, due_on, snoozed_until, rule_source, metadata_json,
+                 created_at_ms, updated_at_ms)
+            VALUES
+                ('task_rain_snoozed', %s, 'water', 'Water later', '', 'snoozed',
+                 'normal', '2026-07-10', '2026-07-15', 'water:RSNOOZE:2026-07-10', '{}', 1, 1),
+                ('task_rain_mixed', %s, 'water', 'Water mixed', '', 'pending',
+                 'normal', '2026-07-15', NULL, 'water:RMIX:2026-07-15', '{}', 1, 1)
+            RETURNING id, public_id
+            """,
+            (self.garden_id, self.garden_id),
+        ).fetchall()
+        task_ids = {str(row["public_id"]): int(row["id"]) for row in rows}
+        self.conn.execute(
+            """
+            INSERT INTO garden_task_plants (task_id, plt_id)
+            VALUES (%s, 'RSNOOZE'), (%s, 'RMIX')
+            """,
+            (task_ids["task_rain_snoozed"], task_ids["task_rain_mixed"]),
+        )
+        alert_id = self._create_alert("rain_surplus", valid_from="2026-07-15")
+
+        on_rain_alert(self.conn, self.garden_id, alert_id, self._owner_id, now_ms=1_783_857_600_000)
+
+        tasks = self.conn.execute(
+            """
+            SELECT public_id, due_on, snoozed_until
+            FROM garden_tasks
+            WHERE public_id IN ('task_rain_snoozed', 'task_rain_mixed')
+            ORDER BY public_id
+            """,
+        ).fetchall()
+        by_id = {str(row["public_id"]): row for row in tasks}
+        assert str(by_id["task_rain_snoozed"]["due_on"]) == "2026-07-10"
+        assert str(by_id["task_rain_snoozed"]["snoozed_until"]) == "2026-07-16"
+        assert str(by_id["task_rain_mixed"]["due_on"]) == "2026-07-15"
+
+    def test_late_dry_spell_generation_uses_today_not_a_stale_due_date(self) -> None:
+        self._insert_plant("RDRY", "Late dry spell", care_watering="Water regularly")
+        alert_id = self._create_alert("dry_spell", valid_from="2026-07-05")
+
+        on_dry_spell_alert(
+            self.conn,
+            self.garden_id,
+            alert_id,
+            self._owner_id,
+            now_ms=1_783_958_400_000,
+        )
+
+        task = self.conn.execute(
+            """
+            SELECT due_on, status, metadata_json
+            FROM garden_tasks
+            WHERE garden_id = %s AND rule_source = %s
+            """,
+            (self.garden_id, f"auto:dry_water:{alert_id}:RDRY"),
+        ).fetchone()
+        assert task is not None
+        assert str(task["due_on"]) == "2026-07-13"
+        assert str(task["status"]) == "pending"
+        assert json.loads(str(task["metadata_json"]))["generated_original_due_on"] == "2026-07-05"
 
 
 class TestOnHarvestLogged(DbTestBase):

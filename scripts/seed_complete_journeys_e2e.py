@@ -97,7 +97,7 @@ PHASE_ONE_ONBOARDING_LONGITUDE = 10.75
 PHASE_TWO_NOW_MS = 1_783_857_600_000
 PHASE_TWO_DATE = "2026-07-12"
 PHASE_TWO_MANUAL_DATE = "2026-07-18"
-PHASE_TWO_SNOOZE_CORRECTION_DUE_DATE = "2026-07-16"
+PHASE_TWO_SNOOZE_CORRECTION_DUE_DATE = "2026-07-12"
 PHASE_TWO_SNOOZE_CORRECTION_DEFAULT_DATE = "2026-07-19"
 PHASE_TWO_OFFLINE_SNOOZE_DATE = "2026-07-13"
 PHASE_TWO_OFFLINE_RESCHEDULE_DATE = "2026-07-20"
@@ -3147,7 +3147,7 @@ def _audit_state(conn) -> dict[str, Any]:
     record_rows = conn.execute(
         """
         SELECT id, occurred_at_ms, actor_username, actor_role, actor_auth_type,
-               garden_id, method, path, status_code
+               garden_id, method, path, status_code, request_id
         FROM audit_events
         ORDER BY id
         """
@@ -3178,6 +3178,7 @@ def _audit_state(conn) -> dict[str, Any]:
                 "method": str(record["method"]),
                 "occurred_at_ms": int(record["occurred_at_ms"]),
                 "path": normalized_path(str(record["path"])),
+                "request_id": str(record["request_id"]),
                 "status_code": int(record["status_code"]),
             }
             for record in record_rows

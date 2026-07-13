@@ -83,6 +83,19 @@ def test_calendar_uses_the_shared_date_dialog_and_correction_notice() -> None:
     assert "window.prompt" not in calendar_tab
 
 
+def test_calendar_snooze_correction_keeps_a_stable_task_target_after_refresh() -> None:
+    calendar_tab = _read("frontend/src/tabs/calendarTab.ts")
+    correction_body = _function_body(
+        calendar_tab,
+        "async function snoozeCalendarTask",
+        "function openCalendarTaskDateDialog",
+    )
+
+    assert "calendarTaskActionTarget(event)" in correction_body
+    assert "openCalendarTaskDateDialogForTarget(target" in correction_body
+    assert "currentEventsById.get(event.id)" not in correction_body
+
+
 def test_calendar_export_url_carries_the_active_garden_context() -> None:
     api = _read("frontend/src/services/api.ts")
     export_url_builder = _function_body(

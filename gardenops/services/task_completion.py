@@ -44,6 +44,13 @@ def clear_completion_capture_metadata(task_row: dict[str, Any]) -> dict[str, Any
     return metadata
 
 
+def grouped_completion_history_started(task_row: dict[str, Any]) -> bool:
+    """Whether a grouped task's durable history fixes its original scope."""
+    metadata = parse_task_metadata(task_row)
+    original_plant_ids = metadata.get("completion_capture_original_plant_ids")
+    return isinstance(original_plant_ids, list) and len(original_plant_ids) > 1
+
+
 def append_bloom_not_yet_event(
     *,
     task_row: dict[str, Any],

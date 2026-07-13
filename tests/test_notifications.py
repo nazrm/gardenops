@@ -1,11 +1,96 @@
 import json
 import os
-from datetime import UTC, datetime
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, date, datetime
+from typing import Any
 from unittest.mock import patch
 
 import gardenops.db as db
 from gardenops.security import create_user
-from tests.base import BaseApiTest, strong_password
+from tests.base import BaseApiTest, DbTestBase, strong_password
+
+
+class _TaskNotificationReadBarrierConnection:
+    """Make the old task notification read-then-insert race deterministic."""
+
+    def __init__(self, connection: Any, barrier: threading.Barrier) -> None:
+        self._connection = connection
+        self._barrier = barrier
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        result = self._connection.execute(query, params)
+        normalized_query = " ".join(str(query).upper().split())
+        if "FROM NOTIFICATION_EVENTS" in normalized_query and "TASK_DUE" in normalized_query:
+            try:
+                self._barrier.wait(timeout=0.5)
+            except threading.BrokenBarrierError:
+                pass
+        return result
+
+    def commit(self) -> None:
+        self._connection.commit()
+
+
+class TestTaskNotificationConcurrency(DbTestBase):
+    def test_concurrent_due_notification_checks_create_one_active_row(self) -> None:
+        from gardenops.services.notification_service import create_task_due_notifications
+
+        self.conn.execute(
+            """
+            INSERT INTO garden_memberships (garden_id, user_id, role)
+            VALUES (%s, %s, 'admin')
+            ON CONFLICT DO NOTHING
+            """,
+            (self.garden_id, self._owner_id),
+        )
+        task = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, status, severity,
+                 due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+            VALUES ('task_notification_race', %s, 'water', 'Water race', 'pending',
+                    'normal', %s, '', '{}', 1, 1)
+            RETURNING public_id
+            """,
+            (self.garden_id, date.today().isoformat()),
+        ).fetchone()
+        assert task is not None
+        self.conn.commit()
+        barrier = threading.Barrier(2)
+
+        def create_once() -> dict[str, int]:
+            conn = db.get_db()
+            try:
+                result = create_task_due_notifications(
+                    _TaskNotificationReadBarrierConnection(conn, barrier),
+                    self.garden_id,
+                )
+                conn.commit()
+                return result
+            finally:
+                db.return_db(conn)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _index: create_once(), range(2)))
+
+        self.assertEqual(sum(int(result["created"]) for result in results), 1)
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM notification_events
+            WHERE garden_id = %s
+              AND user_id = %s
+              AND notification_type = 'task_due'
+              AND target_type = 'task'
+              AND target_id = 'task_notification_race'
+              AND dismissed = 0
+              AND cleared_at_ms IS NULL
+            """,
+            (self.garden_id, self._owner_id),
+        ).fetchone()
+        assert row is not None
+        self.assertEqual(int(row["count"]), 1)
 
 
 class TestNotifications(BaseApiTest):

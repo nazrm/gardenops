@@ -50,7 +50,15 @@ class AttentionSnoozeBody(StrictBaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-def _require_user_id(request: Request) -> tuple[int, int]:
+def _require_personal_state_user_id(request: Request) -> tuple[int, int]:
+    context = _auth_context(request)
+    garden_id = _active_garden_id(context)
+    if context.user_id is None:
+        raise HTTPException(status_code=403, detail="Authentication required")
+    return garden_id, int(context.user_id)
+
+
+def _require_write_user_id(request: Request) -> tuple[int, int]:
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
     _require_write(context)
@@ -126,7 +134,6 @@ def put_attention_preferences(
 ) -> dict[str, Any]:
     context = _auth_context(request)
     _active_garden_id(context)
-    _require_write(context)
     try:
         (
             preset,
@@ -178,7 +185,7 @@ def put_attention_preferences(
 
 @router.post("/attention/items/{item_id}/read")
 def read_attention_item(item_id: str, request: Request, db: DB) -> dict[str, str]:
-    garden_id, user_id = _require_user_id(request)
+    garden_id, user_id = _require_personal_state_user_id(request)
     service, now_ms = _clocked_service()
     _require_existing_item(
         db,
@@ -202,7 +209,7 @@ def read_attention_item(item_id: str, request: Request, db: DB) -> dict[str, str
 
 @router.post("/attention/items/{item_id}/dismiss")
 def dismiss_attention_item(item_id: str, request: Request, db: DB) -> dict[str, str]:
-    garden_id, user_id = _require_user_id(request)
+    garden_id, user_id = _require_personal_state_user_id(request)
     service, now_ms = _clocked_service()
     _require_existing_item(
         db,
@@ -231,7 +238,7 @@ def snooze_attention_item(
     request: Request,
     db: DB,
 ) -> dict[str, str]:
-    garden_id, user_id = _require_user_id(request)
+    garden_id, user_id = _require_personal_state_user_id(request)
     service, now_ms = _clocked_service()
     _require_existing_item(
         db,
@@ -262,7 +269,7 @@ def restore_attention_outcome_item(
     request: Request,
     db: DB,
 ) -> dict[str, str]:
-    garden_id, user_id = _require_user_id(request)
+    garden_id, user_id = _require_write_user_id(request)
     _service, now_ms = _clocked_service()
     status = restore_attention_outcome(
         db,
@@ -277,7 +284,7 @@ def restore_attention_outcome_item(
 
 @router.post("/attention/items/{item_id}/restore")
 def restore_attention_item(item_id: str, request: Request, db: DB) -> dict[str, str]:
-    garden_id, user_id = _require_user_id(request)
+    garden_id, user_id = _require_personal_state_user_id(request)
     service, now_ms = _clocked_service()
     _require_existing_item(
         db,

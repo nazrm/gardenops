@@ -841,7 +841,7 @@ function canMutateCalendarTask(event: CalendarEvent): boolean {
 function calendarTaskForSnooze(event: CalendarEvent): GardenTask {
   return {
     id: event.target_id,
-    garden_id: 0,
+    garden_id: getActiveGardenContext() ?? 0,
     task_type: event.source_key as GardenTask["task_type"],
     title: event.title,
     description: event.description,
@@ -862,6 +862,21 @@ function calendarTaskForSnooze(event: CalendarEvent): GardenTask {
     plant_ids: event.plant_ids,
     plot_ids: event.plot_ids,
   };
+}
+
+interface CalendarTaskActionTarget {
+  gardenId: number;
+  taskId: string;
+}
+
+function calendarTaskActionTarget(event: CalendarEvent): CalendarTaskActionTarget | null {
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null || !event.target_id) return null;
+  return { gardenId, taskId: event.target_id };
+}
+
+function canMutateCalendarTaskTarget(target: CalendarTaskActionTarget): boolean {
+  return target.gardenId === getActiveGardenContext() && ctx.canWrite();
 }
 
 function plotLabel(plotId: string): string {
@@ -1184,13 +1199,13 @@ function renderDetail(event?: CalendarEvent): void {
   if (canMutateCalendarTask(event)) {
     const actions = document.createElement("div");
     actions.className = "calendar-detail-actions";
+    const snoozePolicy = taskSnoozePolicy(calendarTaskForSnooze(event));
     const onSnoozeDate = () => {
-      const policy = taskSnoozePolicy(calendarTaskForSnooze(event));
       openCalendarTaskDateDialog(
         event,
         "snooze",
-        policy.defaultDate,
-        policy.warning,
+        snoozePolicy.defaultDate,
+        snoozePolicy.warning,
       );
     };
     actions.appendChild(
@@ -1204,7 +1219,7 @@ function renderDetail(event?: CalendarEvent): void {
       }),
     );
     actions.appendChild(
-      actionButton(t("tasks.action_snooze"), () => {
+      actionButton(snoozePolicy.label, () => {
         void snoozeCalendarTask(event);
       }),
     );
@@ -1228,19 +1243,32 @@ async function runTaskAction(
   const request = createCalendarRequest();
   if (!canMutateCalendarTask(event)) return false;
   if (!isCurrentCalendarRequest(request)) return false;
+  const target = calendarTaskActionTarget(event);
+  if (!target) return false;
+  return runCalendarTaskActionForTarget(target, body, options);
+}
+
+async function runCalendarTaskActionForTarget(
+  target: CalendarTaskActionTarget,
+  body: TaskActionRequest,
+  options: { showSuccessToast?: boolean } = {},
+): Promise<boolean> {
+  const request = createCalendarRequest();
+  if (!canMutateCalendarTaskTarget(target)) return false;
+  if (!isCurrentCalendarRequest(request)) return false;
   if (!ctx.isOnline()) {
     if (body.action === "complete" && body.completed_plant_ids?.length) {
       ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
       return false;
     }
-    await enqueueOfflineCalendarTaskAction(event.target_id, body);
+    await enqueueOfflineCalendarTaskAction(target.taskId, body);
     if (!isCurrentCalendarRequest(request)) return false;
     ctx.showToast(t("offline.draft_saved"), "success");
     void ctx.refreshOfflineIndicator();
     return true;
   }
   try {
-    await taskActionApi(event.target_id, body);
+    await taskActionApi(target.taskId, body, { gardenId: target.gardenId });
     if (!isCurrentCalendarRequest(request)) return false;
     if (options.showSuccessToast !== false) {
       ctx.showToast(t("tasks.action_success", { action: body.action }), "success");
@@ -1324,11 +1352,10 @@ async function snoozeCalendarTask(event: CalendarEvent): Promise<void> {
     { showSuccessToast: false },
   );
   if (!ok) return;
+  const target = calendarTaskActionTarget(event);
+  if (!target) return;
   const notice = getTaskSnoozeCorrectionNotice(policy.defaultDate, () => {
-    const refreshedEvent = currentEventsById.get(event.id);
-    if (refreshedEvent) {
-      openCalendarTaskDateDialog(refreshedEvent, "snooze", policy.defaultDate);
-    }
+    openCalendarTaskDateDialogForTarget(target, "snooze", policy.defaultDate);
   });
   ctx.showToast(
     notice.message,
@@ -1352,6 +1379,18 @@ function openCalendarTaskDateDialog(
   warning?: string,
 ): void {
   if (!canMutateCalendarTask(event)) return;
+  const target = calendarTaskActionTarget(event);
+  if (!target) return;
+  openCalendarTaskDateDialogForTarget(target, action, defaultDate, warning);
+}
+
+function openCalendarTaskDateDialogForTarget(
+  target: CalendarTaskActionTarget,
+  action: "snooze" | "reschedule",
+  defaultDate: string,
+  warning?: string,
+): void {
+  if (!canMutateCalendarTaskTarget(target)) return;
   const title = action === "snooze"
     ? t("tasks.snooze_prompt") as string
     : t("tasks.reschedule_prompt") as string;
@@ -1363,7 +1402,7 @@ function openCalendarTaskDateDialog(
       const body: TaskActionRequest = action === "snooze"
         ? { action: "snooze", snooze_until: date }
         : { action: "reschedule", reschedule_to: date };
-      void runTaskAction(event, body);
+      void runCalendarTaskActionForTarget(target, body);
     },
   });
 }

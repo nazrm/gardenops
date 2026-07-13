@@ -411,7 +411,7 @@ function renderTaskCard(
       appendTaskCardAction(
         actions,
         "action-snooze",
-        t("tasks.action_snooze") as string,
+        taskSnoozePolicy(task).label,
         "\u{1F552}",
         callbacks.onSnooze,
       );

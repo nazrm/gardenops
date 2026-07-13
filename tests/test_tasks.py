@@ -909,6 +909,34 @@ class TestTasks(BaseApiTest):
         self.assertEqual(task["title"], "Prune 2 plants")
         self.assertNotIn("completion_capture_original_plant_ids", task["metadata"])
 
+    def test_grouped_completion_history_rejects_scope_and_type_edits(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "fertilize",
+                "title": "Fertilize grouped plants",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-TEST", "PLT-002"],
+                "plot_ids": ["B1", "B2"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+        partial = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            json={"action": "complete", "completed_plant_ids": ["PLT-TEST"]},
+        )
+        self.assertEqual(partial.status_code, 200, partial.text)
+
+        for payload in (
+            {"plant_ids": ["PLT-002"]},
+            {"plot_ids": ["B2"]},
+            {"task_type": "prune"},
+        ):
+            changed = self.client.patch(f"/api/tasks/{task_id}", json=payload)
+            self.assertEqual(changed.status_code, 409, changed.text)
+            self.assertIn("completion history", changed.text)
+
     def test_completion_history_uses_current_plant_placement(self) -> None:
         response = self.client.post(
             "/api/tasks",

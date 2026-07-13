@@ -318,7 +318,7 @@ async function showTaskQuickComplete(): Promise<void> {
                   );
                 }
               })();
-            });
+            }, { modalParent: quickActionSheet() });
             return;
           }
         }
@@ -375,6 +375,7 @@ function openQuickSnoozeDateDialog(
     defaultDate,
     onConfirm: (date) => void snoozeQuickTask(task, date),
     warning,
+    modalParent: quickActionSheet(),
     onClose: () => focusQuickActionSheet(true),
   });
 }
@@ -450,6 +451,7 @@ async function showTaskQuickSnooze(
         id: tk.id,
         title: tk.title,
         task_type: tk.task_type,
+        snooze_label: taskSnoozePolicy(tk).label,
       })),
       async (taskId) => {
         if (!isCurrentQuickTaskRequest(gardenId, loadVersion)) return;

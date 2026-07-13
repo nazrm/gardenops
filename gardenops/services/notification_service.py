@@ -46,6 +46,7 @@ from gardenops.sql_dates import offset_days_iso
 EmailSender = Callable[[str, str, str], None]
 logger = logging.getLogger(__name__)
 _SCHEDULER_LEASE_KEY = "notification_scheduler_lease"
+_TASK_NOTIFICATION_LOCK_SEED = 0x474F504E4F544946
 
 NotificationRule = dict[str, bool | str]
 
@@ -1019,6 +1020,13 @@ def create_task_due_notifications_in_transaction(
     Deduplicates by (garden_id, user_id, notification_type, target_type, target_id)
     among non-dismissed notifications.
     """
+    # Serialize the check/insert sequence per garden. The notification schema
+    # intentionally keeps delivery history, so a unique active-row constraint
+    # cannot express this lifecycle safely.
+    db.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, %s))",
+        (f"gardenops:task-notifications:{garden_id}", _TASK_NOTIFICATION_LOCK_SEED),
+    )
     created = 0
     skipped = 0
     now_value, frozen_date = notification_request_clock(now_ms=now_ms)
@@ -1987,6 +1995,107 @@ def clear_weather_alert_notifications(
     return cur.rowcount
 
 
+def _resolve_missing_forecast_alert_work(
+    db: DbConn,
+    *,
+    garden_id: int,
+    alerts: list[dict[str, Any]],
+    now_ms: int,
+) -> dict[str, int]:
+    """Retire active forecast-owned work absent from a complete forecast run."""
+    current_identities = set(_weather_alert_identities(alerts))
+    rows = db.execute(
+        """
+        SELECT id, alert_type, valid_from, metadata_json
+        FROM weather_alerts
+        WHERE garden_id = %s
+          AND dismissed = 0
+          AND alert_type IN ('frost_warning', 'heat_wave', 'dry_spell', 'rain_surplus')
+        FOR UPDATE
+        """,
+        (garden_id,),
+    ).fetchall()
+    resolved_alerts = 0
+    resolved_tasks = 0
+    resolved_notifications = 0
+    for row in rows:
+        alert_type = str(row["alert_type"])
+        valid_from = str(row["valid_from"])
+        if (alert_type, valid_from) in current_identities:
+            continue
+        try:
+            metadata = json.loads(str(row["metadata_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["lifecycle"] = {
+            "status": "resolved",
+            "reason": "absent_from_current_forecast",
+            "resolved_at_ms": now_ms,
+            "source": "forecast_reconciliation",
+        }
+        db.execute(
+            "UPDATE weather_alerts SET dismissed = 1, metadata_json = %s WHERE id = %s",
+            (json.dumps(metadata, sort_keys=True, separators=(",", ":")), int(row["id"])),
+        )
+        resolved_alerts += 1
+        notification = db.execute(
+            """
+            UPDATE notification_events
+            SET cleared_at_ms = %s, clear_reason = 'forecast_resolved'
+            WHERE garden_id = %s
+              AND notification_type = 'weather_alert'
+              AND target_type = 'weather_alert'
+              AND target_id = %s
+              AND dismissed = 0
+              AND cleared_at_ms IS NULL
+            """,
+            (now_ms, garden_id, _weather_alert_target_id(alert_type, valid_from)),
+        )
+        resolved_notifications += notification.rowcount
+        task_rows = db.execute(
+            """
+            SELECT id, public_id
+            FROM garden_tasks
+            WHERE garden_id = %s
+              AND status IN ('pending', 'snoozed')
+              AND rule_source LIKE ANY(%s)
+              AND split_part(rule_source, ':', 3) = %s
+            FOR UPDATE
+            """,
+            (garden_id, list(_WEATHER_TASK_RULE_SOURCE_PATTERNS), str(row["id"])),
+        ).fetchall()
+        for task_row in task_rows:
+            task_update = db.execute(
+                """
+                UPDATE garden_tasks
+                SET status = 'skipped',
+                    snoozed_until = NULL,
+                    completed_by_user_id = NULL,
+                    completed_at_ms = NULL,
+                    updated_at_ms = %s
+                WHERE id = %s AND status IN ('pending', 'snoozed')
+                """,
+                (now_ms, int(task_row["id"])),
+            )
+            if task_update.rowcount != 1:
+                continue
+            resolved_tasks += 1
+            resolved_notifications += clear_task_notifications(
+                db,
+                garden_id=garden_id,
+                task_public_id=str(task_row["public_id"]),
+                reason="forecast_resolved",
+                now_ms=now_ms,
+            )
+    return {
+        "alerts_resolved": resolved_alerts,
+        "tasks_resolved": resolved_tasks,
+        "notifications_resolved": resolved_notifications,
+    }
+
+
 def _refresh_weather_alert_notification(
     db: DbConn,
     *,
@@ -2239,9 +2348,22 @@ def reconcile_weather_alert_work(
     alerts: list[dict[str, Any]],
     actor_user_id: int | None,
     now_ms: int | None = None,
+    replace_forecast_alerts: bool = False,
 ) -> dict[str, int]:
     """Reconcile weather alert notifications and generated tasks in one transaction."""
     now_value, _ = notification_request_clock(now_ms=now_ms)
+    resolution = {
+        "alerts_resolved": 0,
+        "tasks_resolved": 0,
+        "notifications_resolved": 0,
+    }
+    if replace_forecast_alerts:
+        resolution = _resolve_missing_forecast_alert_work(
+            db,
+            garden_id=garden_id,
+            alerts=alerts,
+            now_ms=now_value,
+        )
     notifications = create_weather_alert_notifications(
         db,
         garden_id=garden_id,
@@ -2277,6 +2399,7 @@ def reconcile_weather_alert_work(
         "notifications_created": int(notifications["created"]),
         "notifications_skipped": int(notifications["skipped"]),
         "tasks_created": tasks_created,
+        **resolution,
     }
 
 
@@ -2598,6 +2721,7 @@ def _run_weather_check_if_due(
             alerts=list(result.get("alerts", [])),
             actor_user_id=None,
             now_ms=now_ms,
+            replace_forecast_alerts=bool(result.get("forecast_available")),
         )
         db.execute(
             """

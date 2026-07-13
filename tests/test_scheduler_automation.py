@@ -8,6 +8,7 @@ from gardenops.services.notification_service import (
     _auto_generate_monthly_tasks,
     _run_weather_check_if_due,
     notification_rules_json,
+    run_notification_maintenance_for_garden,
     run_notification_maintenance_once,
 )
 from tests.base import DbTestBase
@@ -88,6 +89,14 @@ class TestWeatherCheckRunsAfterCooldown(DbTestBase):
         assert result.get("weather_alerts_created") == 1
         assert result.get("weather_tasks_created") == 3
         mock_check.assert_called_once_with(self.conn, self.garden_id, 59.9, 10.7)
+        mock_reconcile.assert_called_once_with(
+            self.conn,
+            garden_id=self.garden_id,
+            alerts=mock_check.return_value["alerts"],
+            actor_user_id=None,
+            now_ms=now_ms,
+            replace_forecast_alerts=True,
+        )
 
     @patch("gardenops.services.notification_service.reconcile_weather_alert_work")
     @patch("gardenops.services.notification_service.check_weather_and_generate_alerts")
@@ -142,6 +151,46 @@ class TestWeatherCheckRunsAfterCooldown(DbTestBase):
 
 
 class TestMonthlyTaskGen(DbTestBase):
+    def test_maintenance_leaves_no_stale_pending_generated_watering_after_monthly_generation(
+        self,
+    ) -> None:
+        self._insert_plant("WMAINT", "Maintenance watering", care_watering="regular")
+        now_ms = 1_784_116_800_000  # 2026-07-15 12:00:00 UTC
+        self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, status, severity,
+                 due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+            VALUES ('task_monthly_stale_water', %s, 'water', 'Old generated watering',
+                    'pending', 'normal', '2026-07-01', 'water:WMAINT:2026-07-01',
+                    '{}', %s, %s)
+            """,
+            (self.garden_id, now_ms, now_ms),
+        )
+        self.conn.commit()
+
+        result = run_notification_maintenance_for_garden(
+            self.conn,
+            garden_id=self.garden_id,
+            now_ms=now_ms,
+        )
+
+        stale_open = self.conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM garden_tasks
+            WHERE garden_id = %s
+              AND task_type = 'water'
+              AND (rule_source LIKE 'water:%%' OR rule_source LIKE 'auto:dry_water:%%')
+              AND status IN ('pending', 'snoozed')
+              AND COALESCE(snoozed_until, due_on) < '2026-07-15'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert stale_open is not None
+        self.assertGreaterEqual(int(result["tasks_expired"]), 1)
+        self.assertEqual(int(stale_open["count"]), 0)
+
     def test_monthly_task_gen_runs_once_per_month(self) -> None:
         self._insert_plant(
             "WP1",

@@ -109,7 +109,13 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "metadata",
         "purpose",
     ),
-    "audit_events": ("id", "actor_user_id", "actor_username", "garden_id"),
+    "audit_events": (
+        "id",
+        "request_id",
+        "actor_user_id",
+        "actor_username",
+        "garden_id",
+    ),
     "gardens": ("id", "slug", "name", "owner_user_id"),
     "plots": ("plot_id", "garden_id", "zone_code", "zone_name", "grid_row", "grid_col"),
     "garden_map_objects": (
@@ -220,6 +226,7 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
 }
 
 REQUIRED_INDEXES = (
+    "ux_audit_events_request_id",
     "ux_weather_alerts_identity",
     "idx_offline_create_operations_expiry",
     "ux_plots_garden_grid_cell",
@@ -312,6 +319,13 @@ REQUIRED_COLUMN_NULLABILITY: dict[str, bool] = {
 }
 
 REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
+    "ux_audit_events_request_id": (
+        "unique index",
+        "audit_events",
+        "request_id",
+        "where",
+        "request_id <> ''",
+    ),
     "ux_weather_alerts_identity": (
         "unique index",
         "weather_alerts",
@@ -479,6 +493,8 @@ def existing_public_schema_tables(snapshot: SchemaSnapshot) -> set[str]:
 _MIGRATION_0021_INDEX = "ux_weather_alerts_identity"
 _MIGRATION_0022_TABLE = "offline_create_operations"
 _MIGRATION_0022_INDEXES = {"idx_offline_create_operations_expiry"}
+_MIGRATION_0023_COLUMN = "audit_events.request_id"
+_MIGRATION_0023_INDEX = "ux_audit_events_request_id"
 _MIGRATION_0022_CONSTRAINTS = {
     constraint
     for constraint in REQUIRED_CONSTRAINTS
@@ -516,6 +532,20 @@ def _migration_0022_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
     )
 
 
+def _is_migration_0023_part(part: Mapping[str, object]) -> bool:
+    return str(part.get("object", "")) in {
+        _MIGRATION_0023_COLUMN,
+        _MIGRATION_0023_INDEX,
+    }
+
+
+def _migration_0023_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
+    return (
+        "request_id" not in snapshot.columns.get("audit_events", set())
+        and _MIGRATION_0023_INDEX not in snapshot.indexes
+    )
+
+
 def bootstrap_schema_diagnostics_from_snapshot(
     snapshot: SchemaSnapshot,
 ) -> dict[str, object]:
@@ -529,17 +559,25 @@ def bootstrap_schema_diagnostics_from_snapshot(
         }
 
     missing = missing_schema_parts(snapshot)
-    if missing and _migration_0022_schema_is_absent(snapshot):
+    if missing:
         missing_weather_identity = _MIGRATION_0021_INDEX not in snapshot.indexes
-        if all(
-            _is_migration_0022_part(part)
+        missing_offline_operations = _migration_0022_schema_is_absent(snapshot)
+        missing_audit_request_id = _migration_0023_schema_is_absent(snapshot)
+        if (missing_offline_operations or missing_audit_request_id) and all(
+            (missing_offline_operations and _is_migration_0022_part(part))
+            or (missing_audit_request_id and _is_migration_0023_part(part))
             or (missing_weather_identity and _is_migration_0021_part(part))
             for part in missing
         ):
+            stamp_through = 22
+            if missing_offline_operations:
+                stamp_through = 21
+            if missing_weather_identity:
+                stamp_through = 20
             return {
                 "mode": "verified-upgrade-baseline",
                 "can_stamp_migrations": True,
-                "stamp_through": 20 if missing_weather_identity else 21,
+                "stamp_through": stamp_through,
                 "existing_tables": existing_tables,
                 "missing": missing,
             }

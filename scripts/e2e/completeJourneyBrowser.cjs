@@ -334,6 +334,7 @@ function createApiRecorder(page, actor = {}) {
         method: request.method(),
         operationId: headers["x-offline-operation-id"] || null,
         path: parsed.pathname,
+        requestId: null,
         statusCode: null,
       };
       records.push(record);
@@ -341,7 +342,10 @@ function createApiRecorder(page, actor = {}) {
     });
     targetPage.on("response", (response) => {
       const record = recordsByRequest.get(response.request());
-      if (record) record.statusCode = response.status();
+      if (record) {
+        record.requestId = response.headers()["x-request-id"] || null;
+        record.statusCode = response.status();
+      }
     });
     targetPage.on("requestfailed", (request) => {
       const record = recordsByRequest.get(request);

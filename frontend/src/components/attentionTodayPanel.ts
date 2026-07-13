@@ -308,6 +308,7 @@ export function initAttentionTodayPanel(
   let preferencesDialog: HTMLElement | null = null;
   let preferencesDialogKeydownBound = false;
   let preferencesReturnFocus: HTMLButtonElement | null = null;
+  let preferencesParentSheet: HTMLElement | null = null;
 
   function isCurrentRequestScope(
     requestScope: AttentionTodayRequestScope | undefined,
@@ -404,12 +405,22 @@ export function initAttentionTodayPanel(
   function closePreferencesDialog(focusReturn = true): void {
     const dialog = preferencesDialog;
     if (!(dialog instanceof HTMLElement)) return;
+    const parentSheet = preferencesParentSheet;
     preferencesDialog = null;
+    preferencesParentSheet = null;
     if (preferencesDialogKeydownBound) {
       document.removeEventListener("keydown", trapPreferencesDialogFocus, true);
       preferencesDialogKeydownBound = false;
     }
     dialog.remove();
+    if (
+      parentSheet instanceof HTMLElement
+      && parentSheet === mobileSheet
+      && mobileSheetOpen()
+    ) {
+      parentSheet.setAttribute("aria-hidden", "false");
+      parentSheet.removeAttribute("inert");
+    }
     if (focusReturn) {
       preferencesReturnFocus?.focus();
     }
@@ -481,6 +492,15 @@ export function initAttentionTodayPanel(
   ): void {
     closePreferencesDialog(false);
     preferencesReturnFocus = returnFocus;
+    if (
+      mobileSheet instanceof HTMLElement
+      && mobileSheetOpen()
+      && mobileSheet.contains(returnFocus)
+    ) {
+      preferencesParentSheet = mobileSheet;
+      mobileSheet.setAttribute("aria-hidden", "true");
+      mobileSheet.setAttribute("inert", "");
+    }
     const overlay = document.createElement("div");
     overlay.className = "attention-preferences-backdrop";
 
@@ -806,10 +826,6 @@ export function initAttentionTodayPanel(
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      if (!(options.canWrite?.() ?? true)) {
-        closePreferencesDialog(true);
-        return;
-      }
       const selected = form.querySelector<HTMLInputElement>(
         "input[name='attention-preference-preset']:checked",
       );
@@ -829,8 +845,8 @@ export function initAttentionTodayPanel(
       })
         .then(() => {
           if (!isCurrentRequestScope(requestScope)) return;
-          closePreferencesDialog(true);
-          refresh();
+          closePreferencesDialog(false);
+          refresh(true);
         })
         .catch((err: unknown) => {
           if (!isCurrentRequestScope(requestScope)) return;
@@ -859,7 +875,6 @@ export function initAttentionTodayPanel(
   }
 
   async function openPreferencesDialog(button: HTMLButtonElement): Promise<void> {
-    if (!(options.canWrite?.() ?? true)) return;
     const requestScope = options.getRequestScope?.();
     if (requestScope?.gardenId === null) return;
     button.disabled = true;
@@ -1117,19 +1132,17 @@ export function initAttentionTodayPanel(
 
     const actions = document.createElement("div");
     actions.className = "attention-today-header-actions";
-    if (options.canWrite?.() ?? true) {
-      const settings = document.createElement("button");
-      settings.type = "button";
-      settings.className = "attention-today-icon-btn";
-      settings.textContent = t("attention.settings_short");
-      settings.setAttribute("aria-label", t("attention.settings"));
-      settings.title = t("attention.settings");
-      settings.setAttribute("data-testid", "attention-today-settings");
-      settings.addEventListener("click", () => {
-        void openPreferencesDialog(settings);
-      });
-      actions.appendChild(settings);
-    }
+    const settings = document.createElement("button");
+    settings.type = "button";
+    settings.className = "attention-today-icon-btn";
+    settings.textContent = t("attention.settings_short");
+    settings.setAttribute("aria-label", t("attention.settings"));
+    settings.title = t("attention.settings");
+    settings.setAttribute("data-testid", "attention-today-settings");
+    settings.addEventListener("click", () => {
+      void openPreferencesDialog(settings);
+    });
+    actions.appendChild(settings);
 
     if (includeClose) {
       const close = document.createElement("button");
@@ -1225,13 +1238,19 @@ export function initAttentionTodayPanel(
     }
   }
 
-  function refresh(): void {
+  function focusAttentionSettings(): void {
+    const surface = mobileSheetOpen() ? mobileSheet : desktop;
+    surface?.querySelector<HTMLButtonElement>("[data-testid='attention-today-settings']")?.focus();
+  }
+
+  function refresh(restoreSettingsFocus = false): void {
     if (destroyed) return;
     const requestScope = options.getRequestScope?.();
     const requestId = ++refreshSequence;
     setLoading();
     if (requestScope?.gardenId === null) {
       render(null);
+      if (restoreSettingsFocus) focusAttentionSettings();
       return;
     }
     void options.fetchToday()
@@ -1245,6 +1264,7 @@ export function initAttentionTodayPanel(
           return;
         }
         render(feed);
+        if (restoreSettingsFocus) focusAttentionSettings();
       })
       .catch((err: unknown) => {
         if (
@@ -1256,6 +1276,7 @@ export function initAttentionTodayPanel(
         }
         const message = err instanceof Error ? err.message : t("attention.load_failed");
         setError(message);
+        if (restoreSettingsFocus) focusAttentionSettings();
         options.onError?.(message);
       });
   }

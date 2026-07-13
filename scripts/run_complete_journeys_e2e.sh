@@ -378,3 +378,4 @@ wait_for_url "http://127.0.0.1:${FRONTEND_PORT}/" "$FRONTEND_PID" "Vite"
 BASE_URL="http://127.0.0.1:${FRONTEND_PORT}" \
   node scripts/check_complete_journeys_e2e.cjs
 chmod 600 "$ARTIFACT_DIR/complete-journeys-manifest.json"
+find "$ARTIFACT_DIR" -maxdepth 1 -type f -name '*.zip' -exec chmod 600 {} +

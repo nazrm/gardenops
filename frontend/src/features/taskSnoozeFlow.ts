@@ -8,6 +8,7 @@ export interface TaskDateDialogOptions {
   onConfirm: (date: string) => void;
   warning?: string | undefined;
   requireManualDate?: boolean | undefined;
+  modalParent?: HTMLElement | null | undefined;
   onClose?: (() => void) | undefined;
 }
 
@@ -24,6 +25,7 @@ export function openTaskDateDialog({
   onConfirm,
   warning,
   requireManualDate = false,
+  modalParent,
   onClose,
 }: TaskDateDialogOptions): void {
   const { dialog, close } = createModal(title, `
@@ -36,7 +38,7 @@ export function openTaskDateDialog({
         <button type="button" class="confirm-no"></button>
       </div>
     </div>
-  `, { onClose });
+  `, { modalParent, onClose });
   const heading = dialog.querySelector("h3")!;
   heading.textContent = title;
   const warningEl = dialog.querySelector<HTMLElement>(".task-date-dialog-warning")!;
