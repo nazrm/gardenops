@@ -11,6 +11,7 @@ import {
 import { trapFocus } from "../components/dialogCore";
 import {
   fetchTasksApi,
+  getActiveGardenContext,
   taskActionApi,
   getApiErrorMessage,
 } from "../services/api";
@@ -33,6 +34,7 @@ let ctx: AppContext;
 let quickActionSheetOpen = false;
 let escapeHandler: ((e: KeyboardEvent) => void) | null = null;
 let releaseFocusTrap: (() => void) | null = null;
+let quickTaskLoadVersion = 0;
 let inertBackgroundElements: Array<{
   element: HTMLElement;
   wasInert: boolean;
@@ -227,6 +229,7 @@ export function toggleQuickActionSheet(): void {
 export function closeQuickActionSheet(restoreFocus = true): void {
   const sheet = quickActionSheet();
   quickActionSheetOpen = false;
+  quickTaskLoadVersion += 1;
   releaseFocusTrap?.();
   releaseFocusTrap = null;
   if (escapeHandler) {
@@ -250,11 +253,22 @@ export function closeQuickActionSheet(restoreFocus = true): void {
   }
 }
 
+function isCurrentQuickTaskRequest(gardenId: number, version: number): boolean {
+  return (
+    quickActionSheetOpen
+    && quickTaskLoadVersion === version
+    && getActiveGardenContext() === gardenId
+  );
+}
+
 async function showTaskQuickComplete(): Promise<void> {
   const content = document.getElementById(
     "mobile-quick-actions-content",
   );
   if (!content) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
+  const loadVersion = ++quickTaskLoadVersion;
   try {
     const result = await fetchTasksApi({
       view: "today",
@@ -265,7 +279,7 @@ async function showTaskQuickComplete(): Promise<void> {
       (tk) => tk.status === "pending" || tk.status === "snoozed",
     );
     const actionableById = new Map(actionable.map((task) => [task.id, task]));
-    if (!quickActionSheetOpen) return;
+    if (!isCurrentQuickTaskRequest(gardenId, loadVersion)) return;
     renderTaskQuickComplete(
       content,
       actionable.map((tk) => ({
@@ -274,6 +288,7 @@ async function showTaskQuickComplete(): Promise<void> {
         task_type: tk.task_type,
       })),
       async (taskId) => {
+        if (!isCurrentQuickTaskRequest(gardenId, loadVersion)) return;
         const task = actionableById.get(taskId);
         if (task && needsCompletionDialog(task)) {
           if (!isOnline()) {
@@ -368,6 +383,8 @@ async function snoozeQuickTask(
   task: GardenTask,
   snoozeUntil: string,
 ): Promise<void> {
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null || gardenId !== task.garden_id || !ctx.ensureWriteAccess()) return;
   const online = isOnline();
   try {
     if (!online) {
@@ -377,6 +394,18 @@ async function snoozeQuickTask(
       });
       ctx.showToast(t("offline.draft_saved"), "success");
       void ctx.refreshOfflineIndicator();
+      const content = quickActionContent();
+      if (content && quickActionSheetOpen && getActiveGardenContext() === gardenId) {
+        appendQuickActionSnoozeNotice(
+          content,
+          getTaskSnoozeCorrectionNotice(
+            snoozeUntil,
+            () => openQuickSnoozeDateDialog(task, snoozeUntil),
+          ),
+        );
+        focusQuickActionSheet(true);
+      }
+      return;
     } else {
       await taskActionApi(task.id, {
         action: "snooze",
@@ -395,6 +424,9 @@ async function showTaskQuickSnooze(
 ): Promise<void> {
   const content = quickActionContent();
   if (!content) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
+  const loadVersion = ++quickTaskLoadVersion;
   try {
     const result = await fetchTasksApi({
       view: "today",
@@ -405,7 +437,7 @@ async function showTaskQuickSnooze(
       (tk) => tk.status === "pending" || tk.status === "snoozed",
     );
     const actionableById = new Map(actionable.map((task) => [task.id, task]));
-    if (!quickActionSheetOpen) return;
+    if (!isCurrentQuickTaskRequest(gardenId, loadVersion)) return;
     const onSnoozeDate = (taskId: string): void => {
       const task = actionableById.get(taskId);
       if (!task) return;
@@ -420,6 +452,7 @@ async function showTaskQuickSnooze(
         task_type: tk.task_type,
       })),
       async (taskId) => {
+        if (!isCurrentQuickTaskRequest(gardenId, loadVersion)) return;
         const task = actionableById.get(taskId);
         if (!task) return;
         const policy = taskSnoozePolicy(task);

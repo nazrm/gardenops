@@ -5,6 +5,7 @@ import {
   deleteMediaAssetApi,
   fetchJournalEntriesApi,
   fetchTasksApi,
+  getActiveGardenContext,
   getApiErrorMessage,
   getPlotPlantAlerts,
   getPlotPlants,
@@ -454,6 +455,8 @@ async function loadPlotTasksPreview(
   cbs: PlotCallbacks,
 ): Promise<void> {
   const seq = ++plotTasksSeq;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
   const container =
     getDrawerTasksPreview() ?? getSheetTasksPreview();
   if (!container) return;
@@ -463,7 +466,11 @@ async function loadPlotTasksPreview(
       fetchTasksApi({ plot_id: plotId, view: "today" }),
       fetchTasksApi({ plot_id: plotId, status: "completed" }),
     ]);
-    if (seq !== plotTasksSeq) return;
+    if (
+      seq !== plotTasksSeq
+      || state.selectedPlotId !== plotId
+      || getActiveGardenContext() !== gardenId
+    ) return;
 
     const oneWeekAgo = Date.now() - 7 * 86_400_000;
     const recentlyCompleted = completedRes.tasks.filter(
@@ -560,6 +567,16 @@ async function submitPlotTaskAction(
   body: TaskActionRequest,
   successMessage?: string,
 ): Promise<boolean> {
+  if (!cbs.canWrite()) {
+    showToast(t("error.write_access"), "error");
+    return false;
+  }
+  if (
+    state.selectedPlotId !== plotId
+    || getActiveGardenContext() !== task.garden_id
+  ) {
+    return false;
+  }
   try {
     if (!isOnline()) {
       await enqueuePlotOfflineTaskAction(task.id, body);

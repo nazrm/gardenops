@@ -3512,6 +3512,8 @@ def _run_phase_two_maintenance(conn, optimization_seed: Any) -> dict[str, Any]:
         "maintenance_semantic_state": {
             "frozen_now_ms": PHASE_TWO_NOW_MS,
             "maintenance_created": maintenance_created,
+            "rows_after": after,
+            "rows_before": before,
         },
         "summary": summary,
     }

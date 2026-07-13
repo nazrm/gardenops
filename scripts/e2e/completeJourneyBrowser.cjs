@@ -10,8 +10,25 @@ const NETWORK_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:"]);
 const LOCAL_PROTOCOLS = new Set(["about:", "blob:", "data:"]);
 const PIXEL_7_VIEWPORT = Object.freeze({ height: 839, width: 412 });
 
+function redactTokenShapedSecrets(value) {
+  return String(value)
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]{8,}/gi, "Bearer [redacted]")
+    .replace(/\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|token|password)\b\s*[=:]\s*)[^\s,;&]+/gi,
+      "$1[redacted]")
+    .replace(/([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password)=)[^&#\s]+/gi,
+      "$1[redacted]")
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[redacted]@")
+    .replace(/\b(?:sk|rk|pk)[_-][A-Za-z0-9_-]{16,}\b/g, "[redacted-token]")
+    .replace(/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g, "[redacted-token]")
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "[redacted-token]")
+    .replace(/\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{6,}\b/g, "[redacted-token]")
+    .replace(/\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, "[redacted-token]");
+}
+
 function sanitizeDiagnostic(value) {
-  return String(value) ? "[redacted diagnostic; inspect private runner logs]" : "";
+  return redactTokenShapedSecrets(value)
+    ? "[redacted diagnostic; inspect private runner logs]"
+    : "";
 }
 
 function isLoopbackHostname(hostname) {
@@ -295,8 +312,9 @@ async function authenticate(page, username, password) {
   return profile.body;
 }
 
-function createApiRecorder(page) {
+function createApiRecorder(page, actor = {}) {
   const records = [];
+  const recordsByRequest = new Map();
   page.on("request", (request) => {
     let parsed;
     try {
@@ -306,11 +324,27 @@ function createApiRecorder(page) {
     }
     if (!parsed.pathname.startsWith("/api/")) return;
     const headers = request.headers();
-    records.push({
+    const isLogin = parsed.pathname === "/api/auth/login";
+    const record = {
+      actorAuthType: isLogin ? "none" : (actor.authType || null),
+      actorRole: isLogin ? "anonymous" : (actor.role || null),
+      actorUsername: isLogin ? "anonymous" : (actor.username || null),
       gardenId: headers["x-garden-id"] || null,
       method: request.method(),
+      operationId: headers["x-offline-operation-id"] || null,
       path: parsed.pathname,
-    });
+      statusCode: null,
+    };
+    records.push(record);
+    recordsByRequest.set(request, record);
+  });
+  page.on("response", (response) => {
+    const record = recordsByRequest.get(response.request());
+    if (record) record.statusCode = response.status();
+  });
+  page.on("requestfailed", (request) => {
+    const record = recordsByRequest.get(request);
+    if (record) record.statusCode = null;
   });
   return { mark: () => records.length, records, since: (mark) => records.slice(mark) };
 }
@@ -324,5 +358,6 @@ module.exports = {
   createApiRecorder,
   createGuardedContext,
   isAllowedUrl,
+  redactTokenShapedSecrets,
   sanitizeDiagnostic,
 };

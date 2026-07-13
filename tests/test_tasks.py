@@ -865,6 +865,80 @@ class TestTasks(BaseApiTest):
         self.assertEqual(journal["total"], 1)
         self.assertEqual(sorted(journal["entries"][0]["plot_ids"]), ["B1", "B2"])
 
+    def test_grouped_completion_reopen_restores_full_plant_scope(self) -> None:
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO plot_plants (plot_id, plt_id, quantity) "
+                "VALUES ('B1', 'PLT-TEST', 1), ('B2', 'PLT-002', 1)"
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "prune",
+                "title": "Prune grouped plants",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-TEST", "PLT-002"],
+                "plot_ids": ["B1", "B2"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        partial = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            json={"action": "complete", "completed_plant_ids": ["PLT-TEST"]},
+        )
+        self.assertEqual(partial.status_code, 200, partial.text)
+        final = self.client.post(f"/api/tasks/{task_id}/action", json={"action": "complete"})
+        self.assertEqual(final.status_code, 200, final.text)
+
+        reopen = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            json={"action": "reschedule", "reschedule_to": "2026-07-01"},
+        )
+        self.assertEqual(reopen.status_code, 200, reopen.text)
+        task = self.client.get(f"/api/tasks/{task_id}").json()
+        self.assertEqual(task["status"], "pending")
+        self.assertEqual(task["plant_ids"], ["PLT-002", "PLT-TEST"])
+        self.assertEqual(task["plot_ids"], ["B1", "B2"])
+        self.assertEqual(task["title"], "Prune 2 plants")
+        self.assertNotIn("completion_capture_original_plant_ids", task["metadata"])
+
+    def test_completion_history_uses_current_plant_placement(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "prune",
+                "title": "Prune moved rose",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-002"],
+                "plot_ids": ["B2"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        conn = db.get_db()
+        try:
+            conn.execute("DELETE FROM plot_plants WHERE plt_id = 'PLT-002'")
+            conn.execute(
+                "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES ('B1', 'PLT-002', 1)"
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        complete = self.client.post(f"/api/tasks/{task_id}/action", json={"action": "complete"})
+        self.assertEqual(complete.status_code, 200, complete.text)
+        journal = self.client.get("/api/journal?event_type=pruned&plant_id=PLT-002").json()
+        self.assertEqual(journal["total"], 1)
+        self.assertEqual(journal["entries"][0]["plot_ids"], ["B1"])
+
     def test_task_completion_capture_is_idempotent_for_same_selected_plants(self) -> None:
         response = self.client.post(
             "/api/tasks",

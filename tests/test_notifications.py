@@ -186,6 +186,131 @@ class TestNotifications(BaseApiTest):
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 
+    def test_email_only_task_due_event_is_deliverable_but_hidden_from_inbox(self) -> None:
+        from gardenops.services.notification_service import (
+            create_task_due_notifications,
+            deliver_pending_email_digests,
+            get_unread_count,
+        )
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            assert garden is not None
+            garden_id = int(garden["id"])
+            user = create_user(
+                conn,
+                username=f"email_only_task_{self.__class__.__name__.lower()}",
+                password=strong_password("emailonlytaskpass"),
+                role="editor",
+            )
+            user_id = int(user["id"])
+            now = db.current_timestamp_ms()
+            today = str(conn.execute("SELECT CURRENT_DATE::text").fetchone()["current_date"])
+            conn.execute(
+                "UPDATE auth_users SET subscription_tier = 'pro' WHERE id = %s",
+                (user_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO garden_memberships (garden_id, user_id, role)
+                VALUES (%s, %s, 'editor')
+                ON CONFLICT DO NOTHING
+                """,
+                (garden_id, user_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_notification_preferences
+                    (user_id, in_app_enabled, email_enabled, email_address,
+                     digest_frequency, quiet_hours_json, task_due_enabled,
+                     task_overdue_enabled, rules_json, created_at_ms, updated_at_ms)
+                VALUES (%s, 0, 1, %s, 'daily', '{}', 0, 1, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    "email-only-task@example.test",
+                    json.dumps(
+                        {
+                            "task_due": {
+                                "in_app_enabled": False,
+                                "email_enabled": True,
+                                "min_severity": "low",
+                            }
+                        },
+                        separators=(",", ":"),
+                    ),
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (garden_id, task_type, title, status, severity,
+                     due_on, metadata_json, created_at_ms, updated_at_ms)
+                VALUES (%s, 'water', 'Email-only basil task', 'pending', 'normal',
+                        %s, '{}', %s, %s)
+                """,
+                (garden_id, today, now, now),
+            )
+            conn.commit()
+
+            create_task_due_notifications(conn, garden_id, now_ms=now)
+            event = conn.execute(
+                """
+                SELECT *
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND user_id = %s
+                  AND notification_type = 'task_due'
+                  AND title = 'Due today: Email-only basil task'
+                """,
+                (garden_id, user_id),
+            ).fetchone()
+            assert event is not None
+            self.assertEqual(get_unread_count(conn, garden_id, user_id, now_ms=now), 0)
+
+            sent: list[tuple[str, str, str]] = []
+            delivered = deliver_pending_email_digests(
+                conn,
+                garden_id,
+                email_sender=lambda recipient, subject, body: sent.append(
+                    (recipient, subject, body)
+                ),
+                now_ms=now + 1_000,
+            )
+
+            self.assertEqual(int(delivered["emailed_users"]), 1)
+            self.assertEqual(sent[0][0], "email-only-task@example.test")
+            self.assertIn("Email-only basil task", sent[0][2])
+        finally:
+            db.return_db(conn)
+
+    def test_notification_rule_validation_rejects_truthy_strings_and_system_overrides(self) -> None:
+        from gardenops.services.notification_service import validate_notification_rules
+
+        with self.assertRaisesRegex(ValueError, "must be a boolean"):
+            validate_notification_rules(
+                {"task_due": {"in_app_enabled": "false"}},
+            )
+        with self.assertRaisesRegex(ValueError, "not user configurable"):
+            validate_notification_rules(
+                {"system": {"in_app_enabled": False}},
+            )
+
+        validate_notification_rules(
+            {
+                "system": {
+                    "in_app_enabled": True,
+                    "email_enabled": True,
+                    "min_severity": "low",
+                }
+            },
+        )
+
     def test_notification_list_can_skip_total_count(self) -> None:
         from gardenops.services.notification_service import create_notification as _create_notif
 
@@ -2720,9 +2845,7 @@ class TestRainSuppressedWateringNotificationLifecycle(BaseApiTest):
             )
             self.assertEqual(saved.status_code, 200, saved.text)
 
-            ordinary_in_app_update["notification_rules"]["task_upcoming"][
-                "email_enabled"
-            ] = True
+            ordinary_in_app_update["notification_rules"]["task_upcoming"]["email_enabled"] = True
             rule_rejected = client.put(
                 "/api/notifications/preferences",
                 headers=headers,
@@ -2730,9 +2853,7 @@ class TestRainSuppressedWateringNotificationLifecycle(BaseApiTest):
             )
             self.assertEqual(rule_rejected.status_code, 403, rule_rejected.text)
 
-            ordinary_in_app_update["notification_rules"]["task_upcoming"][
-                "email_enabled"
-            ] = False
+            ordinary_in_app_update["notification_rules"]["task_upcoming"]["email_enabled"] = False
             ordinary_in_app_update["email_enabled"] = True
             ordinary_in_app_update["email_address"] = "nonpro@example.test"
             rejected = client.put(

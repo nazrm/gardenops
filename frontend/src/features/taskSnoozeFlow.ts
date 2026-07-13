@@ -76,7 +76,7 @@ export function getTaskSnoozeCorrectionNotice(
   return {
     message: t("tasks.snoozed_until_toast", { date: snoozeUntil }) as string,
     actionLabel: t("tasks.snooze_change_date") as string,
-    durationMs: 2_000,
+    durationMs: 10_000,
     onChangeDate,
   };
 }

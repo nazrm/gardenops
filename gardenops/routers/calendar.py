@@ -406,6 +406,7 @@ def get_calendar_events(
         if selected_zone_codes is not None
         else normalize_selected_zone_codes(preferences["selected_zone_codes"])
     )
+    _now_ms, today, _generated_at = _calendar_request_clock()
     payload = build_calendar_payload(
         conn,
         garden_id=garden_id,
@@ -416,6 +417,7 @@ def get_calendar_events(
         selected_plant_ids=selected_plant_id_list,
         selected_plot_ids=selected_plot_id_list,
         selected_zone_codes=selected_zone_code_list,
+        today=today,
     )
     payload.update(
         {
@@ -478,6 +480,7 @@ def export_calendar_ics(
         if include_recent_history is None
         else bool(include_recent_history)
     )
+    _now_ms, today, generated_at = _calendar_request_clock()
     payload = build_calendar_payload(
         conn,
         garden_id=garden_id,
@@ -488,8 +491,8 @@ def export_calendar_ics(
         selected_plant_ids=selected_plant_id_list,
         selected_plot_ids=selected_plot_id_list,
         selected_zone_codes=selected_zone_code_list,
+        today=today,
     )
-    _now_ms, _today, generated_at = _calendar_request_clock()
     ics, etag, last_modified = build_calendar_ics(
         garden_name=_garden_name(conn, garden_id),
         events=payload["events"],

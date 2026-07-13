@@ -89,6 +89,57 @@ class TestWeatherCheckRunsAfterCooldown(DbTestBase):
         assert result.get("weather_tasks_created") == 3
         mock_check.assert_called_once_with(self.conn, self.garden_id, 59.9, 10.7)
 
+    @patch("gardenops.services.notification_service.reconcile_weather_alert_work")
+    @patch("gardenops.services.notification_service.check_weather_and_generate_alerts")
+    def test_weather_check_rolls_back_alerts_when_downstream_reconciliation_fails(
+        self,
+        mock_check,
+        mock_reconcile,
+    ) -> None:
+        now_ms = db.current_timestamp_ms()
+        settings_key = f"last_weather_check_ms:{self.garden_id}"
+        self.conn.execute(
+            "UPDATE gardens SET latitude = 59.9, longitude = 10.7 WHERE id = %s",
+            (self.garden_id,),
+        )
+        self.conn.commit()
+
+        def insert_alert(*_args, **_kwargs):
+            self.conn.execute(
+                """
+                INSERT INTO weather_alerts
+                    (garden_id, alert_type, severity, title, description,
+                     valid_from, valid_until, metadata_json, dismissed, created_at_ms)
+                VALUES (%s, 'dry_spell', 'normal', 'Dry spell', 'No rain',
+                        '2026-07-13', '2026-07-18', '{}', 0, %s)
+                """,
+                (self.garden_id, now_ms),
+            )
+            return {
+                "forecast_available": True,
+                "alerts_created": 1,
+                "alerts_skipped": 0,
+                "alerts": [],
+            }
+
+        mock_check.side_effect = insert_alert
+        mock_reconcile.side_effect = RuntimeError("downstream failed")
+
+        with self.assertRaisesRegex(RuntimeError, "downstream failed"):
+            _run_weather_check_if_due(self.conn, self.garden_id, now_ms)
+
+        alert_count = self.conn.execute(
+            "SELECT COUNT(*) AS count FROM weather_alerts WHERE garden_id = %s",
+            (self.garden_id,),
+        ).fetchone()
+        checkpoint = self.conn.execute(
+            "SELECT value FROM app_settings WHERE key = %s",
+            (settings_key,),
+        ).fetchone()
+        assert alert_count is not None
+        self.assertEqual(int(alert_count["count"]), 0)
+        self.assertIsNone(checkpoint)
+
 
 class TestMonthlyTaskGen(DbTestBase):
     def test_monthly_task_gen_runs_once_per_month(self) -> None:

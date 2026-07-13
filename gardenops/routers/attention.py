@@ -4,7 +4,7 @@ import os
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import Field
+from pydantic import Field, StrictBool
 
 from gardenops.db import DB, current_timestamp_ms
 from gardenops.models import StrictBaseModel
@@ -31,6 +31,7 @@ from gardenops.services.attention import (
     serialize_attention_preferences,
     set_user_attention_state,
 )
+from gardenops.services.attention.preferences import normalize_attention_preference_payload
 
 router = APIRouter()
 
@@ -39,7 +40,7 @@ class AttentionPreferencesBody(StrictBaseModel):
     preset: Literal["calm", "balanced", "detailed", "custom"] = "balanced"
     rules: dict[str, dict[str, Any]] = Field(default_factory=dict)
     quiet_hours: dict[str, Any] = Field(default_factory=dict)
-    show_no_action_history: bool = True
+    show_no_action_history: StrictBool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -126,6 +127,22 @@ def put_attention_preferences(
     context = _auth_context(request)
     _active_garden_id(context)
     _require_write(context)
+    try:
+        (
+            preset,
+            rules,
+            quiet_hours,
+            show_no_action_history,
+            metadata,
+        ) = normalize_attention_preference_payload(
+            preset=body.preset,
+            rules=body.rules,
+            quiet_hours=body.quiet_hours,
+            show_no_action_history=body.show_no_action_history,
+            metadata=body.metadata,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if context.user_id is None:
         if not _is_local_admin_fallback(context):
             raise HTTPException(status_code=403, detail="Authentication required")
@@ -135,11 +152,11 @@ def put_attention_preferences(
                 legacy_preferences=None,
                 saved_attention_preferences={
                     "user_id": 0,
-                    "preset": body.preset,
-                    "rules": body.rules,
-                    "quiet_hours": body.quiet_hours,
-                    "show_no_action_history": body.show_no_action_history,
-                    "metadata": body.metadata,
+                    "preset": preset,
+                    "rules": rules,
+                    "quiet_hours": quiet_hours,
+                    "show_no_action_history": show_no_action_history,
+                    "metadata": metadata,
                 },
             )
         )
@@ -148,11 +165,11 @@ def put_attention_preferences(
     preferences = save_attention_preferences(
         db,
         user_id=user_id,
-        preset=body.preset,
-        rules=body.rules,
-        quiet_hours=body.quiet_hours,
-        show_no_action_history=body.show_no_action_history,
-        metadata=body.metadata,
+        preset=preset,
+        rules=rules,
+        quiet_hours=quiet_hours,
+        show_no_action_history=show_no_action_history,
+        metadata=metadata,
         now_ms=now_ms,
     )
     db.commit()

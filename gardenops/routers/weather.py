@@ -178,8 +178,8 @@ def check_weather(request: Request, db: DB) -> dict:
     lat, lng = _get_garden_location(db, garden_id)
     now_ms, _ = _weather_request_clock()
 
-    result = check_weather_and_generate_alerts(db, garden_id, lat, lng)
     try:
+        result = check_weather_and_generate_alerts(db, garden_id, lat, lng)
         reconcile_weather_alert_work(
             db,
             garden_id=garden_id,

@@ -6,6 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from fastapi import HTTPException
+
 import gardenops.db as db
 from gardenops.services.attention.outcomes import upsert_attention_outcome
 from gardenops.services.attention.service import restore_attention_outcome
@@ -375,6 +377,73 @@ class TestInferTaskDescription(DbTestBase):
 
 
 class TestRainAttentionOutcomeRestoreConcurrency(DbTestBase):
+    def test_expired_task_does_not_consume_rain_recovery_outcome(self) -> None:
+        now_ms = 1783180800000
+        expires_at_ms = now_ms + 86_400_000
+        source_public_id = "water:EXPIRED-RESTORE:2026-07-05"
+        task = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, description, status,
+                 severity, due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+            VALUES (%s, %s, 'water', 'Expired watering', '', 'expired', 'normal',
+                    '2026-07-05', %s, '{}', %s, %s)
+            RETURNING id
+            """,
+            ("task_expired_restore", self.garden_id, source_public_id, now_ms, now_ms),
+        ).fetchone()
+        assert task is not None
+        outcome_id = upsert_attention_outcome(
+            self.conn,
+            garden_id=self.garden_id,
+            provider="weather",
+            outcome_type="watering_rescheduled_by_rain",
+            source_type="task_generator",
+            source_id="rain-expired-restore",
+            source_public_id=source_public_id,
+            target_type="plant",
+            target_id="EXPIRED-RESTORE",
+            title="Watering rescheduled by rain",
+            explanation="Rain moved this watering.",
+            reason="Rain rescheduled watering",
+            plant_ids=("EXPIRED-RESTORE",),
+            metadata={"due_on": "2026-07-05", "new_due_on": "2026-07-08"},
+            recovery_action={
+                "kind": "restore_generated_watering_task",
+                "label": "Restore watering",
+                "source_public_id": source_public_id,
+                "target_type": "plant",
+                "target_id": "EXPIRED-RESTORE",
+                "due_on": "2026-07-05",
+                "plant_ids": ["EXPIRED-RESTORE"],
+                "plot_ids": [],
+            },
+            occurred_at_ms=now_ms,
+            expires_at_ms=expires_at_ms,
+        )
+        self.conn.commit()
+
+        with self.assertRaises(HTTPException) as raised:
+            restore_attention_outcome(
+                self.conn,
+                garden_id=self.garden_id,
+                outcome_id=outcome_id,
+                user_id=self._owner_id,
+                now_ms=now_ms,
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        outcome = self.conn.execute(
+            """
+            SELECT expires_at_ms
+            FROM attention_outcomes
+            WHERE garden_id = %s AND public_id = %s
+            """,
+            (self.garden_id, outcome_id),
+        ).fetchone()
+        assert outcome is not None
+        self.assertEqual(int(outcome["expires_at_ms"]), expires_at_ms)
+
     def test_concurrent_restores_create_one_generated_watering_task(self) -> None:
         self._insert_plant("RESTORE-RACE", "Restore race", care_watering="regular moisture")
         now_ms = 1783180800000

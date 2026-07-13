@@ -1443,6 +1443,27 @@ class TestAttentionTodayApi(BaseApiTest):
         self.assertFalse(body["show_no_action_history"])
         self.assertFalse(body["metadata"]["weather_aware_watering_suppression"])
 
+        conn = db.get_db()
+        try:
+            audit_row = conn.execute(
+                """
+                SELECT method, status_code, actor_username, actor_auth_type
+                FROM audit_events
+                WHERE path = '/api/attention/preferences'
+                  AND method = 'PUT'
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertIsNotNone(audit_row)
+        assert audit_row is not None
+        self.assertEqual(str(audit_row["method"]), "PUT")
+        self.assertEqual(int(audit_row["status_code"]), 200)
+        self.assertEqual(str(audit_row["actor_username"]), "test_admin")
+        self.assertEqual(str(audit_row["actor_auth_type"]), "session")
+
 
 class TestAttentionTaskProvider(BaseApiTest):
     def _garden_and_user(self) -> tuple[int, int]:

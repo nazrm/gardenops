@@ -169,6 +169,64 @@ async function completeGroupedFertilize(page, fixture) {
   );
 }
 
+async function assertGroupedCompletionSelectionRequired(dialog, fixture, surface) {
+  await visible(dialog, `${surface} grouped completion dialog`);
+  const first = dialog.getByLabel(fixture.phase_two.plant_names.fertilize_a, { exact: true });
+  const second = dialog.getByLabel(fixture.phase_two.plant_names.fertilize_b, { exact: true });
+  assert(await first.isChecked() && await second.isChecked(),
+    `${surface} grouped completion did not start with both plants selected`);
+  await dialog.locator(".task-completion-clear").click();
+  const confirm = dialog.locator(".confirm-yes");
+  assert(await confirm.isDisabled(), `${surface} allowed grouped completion without a plant`);
+  await visible(dialog.locator(".task-completion-feedback").filter({ hasText: /Select at least one plant/i }),
+    `${surface} grouped completion did not explain its selection restriction`);
+  await dialog.locator(".confirm-no").click();
+  await dialog.waitFor({ state: "hidden" });
+}
+
+async function exerciseGroupedCompletionRestrictions(page, fixture) {
+  const grouped = taskTitle(fixture, "fertilize_grouped");
+  await openTasks(page, "desktop");
+  const taskSurfaceCard = taskCard(page, grouped.title);
+  await visible(taskSurfaceCard, "grouped task on Tasks surface");
+  await taskSurfaceCard.getByRole("button", { name: /^Complete$/i }).click();
+  await assertGroupedCompletionSelectionRequired(
+    page.locator(".task-completion-dialog").last(),
+    fixture,
+    "Tasks",
+  );
+
+  await openCalendar(page, "desktop");
+  const calendarEvent = page.locator(".fc-event:visible").filter({ hasText: grouped.title }).first();
+  await visible(calendarEvent, "grouped task on Calendar surface");
+  await calendarEvent.click();
+  await page.locator("#calendar-detail-panel").getByRole("button", { name: /^Complete$/i }).click();
+  await assertGroupedCompletionSelectionRequired(
+    page.locator(".task-completion-dialog").last(),
+    fixture,
+    "Calendar",
+  );
+
+  await openPrimary(page, "desktop", "map");
+  const plot = page.locator(`.plot[data-plot-id='${fixture.phase_two.plot_ids.alpha}']`);
+  await visible(plot, "grouped task plot on map");
+  await plot.click();
+  const details = page.locator(`[data-view-plot-details='${fixture.phase_two.plot_ids.alpha}']`);
+  await visible(details, "grouped task plot details command");
+  await details.click();
+  const preview = page.locator(".drawer-tasks-preview:visible, .sheet-tasks-preview:visible");
+  const plotCard = preview.locator(".drawer-task-card").filter({ hasText: grouped.title });
+  await visible(plotCard, "grouped task on plot drawer surface");
+  await plotCard.locator(".action-complete").click();
+  await assertGroupedCompletionSelectionRequired(
+    page.locator(".task-completion-dialog").last(),
+    fixture,
+    "Plot drawer",
+  );
+  await page.locator(".drawer .close-btn").click();
+  await page.locator(".drawer").waitFor({ state: "hidden" });
+}
+
 async function exerciseImmediateSnoozeCorrection(page, fixture) {
   const task = taskTitle(fixture, "snooze_correction");
   const week = page.locator("[data-tasks-view='week']").first();
@@ -1279,6 +1337,14 @@ async function completeMobileQuickActions(page, fixture) {
   await fab.click();
   await visible(sheet, "reopened mobile Quick Actions");
   await sheet.locator("[data-quick-action='complete-task']").click();
+  const grouped = taskTitle(fixture, "fertilize_grouped");
+  await sheet.locator(".quick-action-task-search").fill(grouped.title);
+  await sheet.locator(".quick-action-task-item").filter({ hasText: grouped.title }).click();
+  await assertGroupedCompletionSelectionRequired(
+    page.locator(".task-completion-dialog").last(),
+    fixture,
+    "Quick Actions",
+  );
   const fertilize = taskTitle(fixture, "fertilize_mobile");
   await sheet.locator(".quick-action-task-search").fill(fertilize.title);
   const fertilizeAction = sheet.locator(".quick-action-task-item").filter({ hasText: fertilize.title });
@@ -1346,6 +1412,34 @@ async function exerciseEditorWeatherDeduplication(page, fixture) {
   await notification.panel.waitFor({ state: "hidden" });
 }
 
+async function queuedOfflineTaskOperations(page) {
+  return page.evaluate(async () => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("gardenops-offline");
+      request.onerror = () => reject(request.error || new Error("Offline queue could not open"));
+      request.onsuccess = () => resolve(request.result);
+    });
+    try {
+      const drafts = await new Promise((resolve, reject) => {
+        const transaction = database.transaction("drafts", "readonly");
+        const request = transaction.objectStore("drafts").getAll();
+        request.onerror = () => reject(request.error || new Error("Offline drafts could not load"));
+        request.onsuccess = () => resolve(request.result || []);
+      });
+      return drafts
+        .filter((draft) => typeof draft?.type === "string" && draft.type.startsWith("task_"))
+        .map((draft) => ({
+          operation_id: String(draft.operation_id || ""),
+          task_id: String(draft.payload?.task_id || ""),
+          type: String(draft.type),
+        }))
+        .sort((left, right) => `${left.type}:${left.task_id}`.localeCompare(`${right.type}:${right.task_id}`));
+    } finally {
+      database.close();
+    }
+  });
+}
+
 async function exerciseOfflineTask(page, fixture) {
   await openTasks(page, "mobile");
   const completion = taskTitle(fixture, "editor_offline");
@@ -1366,7 +1460,11 @@ async function exerciseOfflineTask(page, fixture) {
     try {
       const body = request.postDataJSON();
       if (typeof body?.action === "string") {
-        replayedActions.push({ action: body.action, task_id: match[1] });
+        replayedActions.push({
+          action: body.action,
+          operation_id: request.headers()["x-offline-operation-id"] || "",
+          task_id: match[1],
+        });
       }
     } catch {
       // The post body is only observational evidence; the durable operation check remains authoritative.
@@ -1399,6 +1497,27 @@ async function exerciseOfflineTask(page, fixture) {
     }, "four queued offline task drafts");
     assert(replayedActions.length === 0, "Offline task actions reached the server before connectivity returned");
     await visible(page.locator("#toast-container").filter({ hasText: /saved/i }), "offline draft toast");
+    const queuedOperations = await queuedOfflineTaskOperations(page);
+    const expectedQueuedOperations = [
+      { task_id: fixture.phase_two.task_ids.editor_offline, type: "task_complete" },
+      { task_id: fixture.phase_two.task_ids.prune_desktop, type: "task_skip" },
+      { task_id: fixture.phase_two.task_ids.stale_manual_water, type: "task_snooze" },
+      { task_id: fixture.phase_two.task_ids.fertilize_grouped, type: "task_reschedule" },
+    ].sort((left, right) => `${left.type}:${left.task_id}`.localeCompare(`${right.type}:${right.task_id}`));
+    assert(queuedOperations.length === expectedQueuedOperations.length,
+      "Offline task queue did not retain exactly four operation IDs before replay");
+    assert(
+      JSON.stringify(queuedOperations.map(({ operation_id: _operationId, ...operation }) => operation))
+        === JSON.stringify(expectedQueuedOperations),
+      "Offline task queue changed the expected action or target before replay",
+    );
+    assert(queuedOperations.every((operation) => (
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        operation.operation_id,
+      )
+    )), "Offline task queue did not assign UUIDv4 operation IDs");
+    assert(new Set(queuedOperations.map((operation) => operation.operation_id)).size === queuedOperations.length,
+      "Offline task queue reused an operation ID before replay");
 
     await page.evaluate(() => {
       Object.defineProperty(navigator, "onLine", { configurable: true, get: () => true });
@@ -1416,8 +1535,21 @@ async function exerciseOfflineTask(page, fixture) {
       .sort((left, right) => `${left.action}:${left.task_id}`.localeCompare(`${right.action}:${right.task_id}`));
     assert(JSON.stringify(observedActions) === JSON.stringify(expectedActions),
       "Offline task replay did not preserve complete, skip, snooze, and reschedule actions");
+    const queuedByTask = new Map(queuedOperations.map((operation) => [operation.task_id, operation]));
+    assert(replayedActions.every((action) => action.operation_id === queuedByTask.get(action.task_id)?.operation_id),
+      "Offline task replay did not preserve queued operation IDs");
     await waitFor(async () => await page.locator("#offline-indicator").evaluate((element) => element.hidden),
       "offline task queue to drain");
+    const remainingOperations = await queuedOfflineTaskOperations(page);
+    assert(remainingOperations.length === 0,
+      "Offline task replay retained operation IDs after the queue drained");
+    return {
+      queued_operations: queuedOperations,
+      remaining_operations: remainingOperations,
+      replayed_operations: replayedActions.sort((left, right) => (
+        `${left.action}:${left.task_id}`.localeCompare(`${right.action}:${right.task_id}`)
+      )),
+    };
   } finally {
     page.off("request", replayListener);
     await page.evaluate(() => {
@@ -1427,13 +1559,48 @@ async function exerciseOfflineTask(page, fixture) {
   }
 }
 
-async function exerciseViewer(page, profile, fixture) {
+async function attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixture, task) {
+  const beforeHttpErrors = diagnostics.httpErrors.length;
+  const response = await page.evaluate(async ({ gardenId, taskId }) => {
+    const result = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/action`, {
+      body: JSON.stringify({ action: "complete" }),
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        "x-garden-id": String(gardenId),
+      },
+      method: "POST",
+    });
+    return { status: result.status };
+  }, { gardenId: fixture.gardens.alpha.id, taskId: task.id });
+  assert(response.status === 403, `${profile} viewer direct task write was not forbidden`);
+  await waitFor(() => diagnostics.httpErrors.length === beforeHttpErrors + 1,
+    `${profile} viewer direct forbidden write response`);
+  const expectedError = `403 /api/tasks/${task.id}/action`;
+  const directErrors = diagnostics.httpErrors.splice(beforeHttpErrors);
+  assert(JSON.stringify(directErrors) === JSON.stringify([expectedError]),
+    `${profile} viewer direct write did not produce the expected forbidden response`);
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openPrimary(page, profile, "map");
+  await selectGarden(page, profile, fixture.gardens.alpha.id);
+  await openTasks(page, profile);
+  const reloaded = taskCard(page, task.title);
+  await visible(reloaded, `${profile} viewer task after forbidden direct write`);
+  assert(!await reloaded.evaluate((element) => element.classList.contains("task-completed")),
+    `${profile} viewer direct task write changed task state`);
+  assert(await reloaded.locator(".task-card-actions button").count() === 0,
+    `${profile} viewer task changed write affordances after forbidden direct write`);
+}
+
+async function exerciseViewer(page, diagnostics, profile, fixture) {
   await openTasks(page, profile);
   const task = taskTitle(fixture, "viewer_read_only");
   const card = taskCard(page, task.title);
   await visible(card, `${profile} viewer task`);
   assert(await card.locator(".task-card-actions button").count() === 0,
     `${profile} viewer received task write controls`);
+  await attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixture, task);
   await openCalendar(page, profile);
   const event = page.locator(".fc-event:visible").filter({ hasText: task.title }).first();
   await visible(event, `${profile} viewer calendar task`);
@@ -1484,7 +1651,11 @@ async function runProfile(options) {
   await freezeBrowserClock(guarded.context, fixture.clock.attention_now_ms);
   await guarded.context.grantPermissions(["clipboard-write"], { origin: baseUrl });
   const page = await guarded.context.newPage();
-  const recorder = createApiRecorder(page);
+  const recorder = createApiRecorder(page, {
+    authType: "session",
+    role: run.role,
+    username: run.username,
+  });
   const result = {
     assertions: { failed: [], passed: [], skipped: [] },
     browser_profile: guarded.profile,
@@ -1517,6 +1688,9 @@ async function runProfile(options) {
       await exerciseToday(page, run.profile, fixture);
       result.checks.last_completed_step = "today-attention";
       await openTasks(page, run.profile);
+      await exerciseGroupedCompletionRestrictions(page, fixture);
+      result.checks.last_completed_step = "grouped-completion-restrictions";
+      await openTasks(page, run.profile);
       const bloom = taskTitle(fixture, "bloom_desktop");
       await completeBloomTask(
         page,
@@ -1546,6 +1720,7 @@ async function runProfile(options) {
       await exercisePostMutationReload(page, fixture);
       result.checks.last_completed_step = "post-mutation-reload";
       result.checks.admin_daily_attention_workflow = true;
+      result.checks.grouped_completion_restrictions_across_surfaces = true;
       result.checks.task_surface_parity = true;
       result.checks.calendar_lifecycle_export_subscription = true;
       result.checks.calendar_export_selected_garden_scope = true;
@@ -1597,14 +1772,15 @@ async function runProfile(options) {
       result.checks.editor_calendar_action_and_weather_scope = true;
       result.checks.editor_weather_deduplicated_surfaces = true;
     } else if (run.role === "editor") {
-      await exerciseOfflineTask(page, fixture);
+      result.checks.offline_task_operation_ids = await exerciseOfflineTask(page, fixture);
       result.checks.last_completed_step = "editor-offline-replay";
       result.checks.editor_offline_task_replay = true;
       result.checks.editor_offline_task_actions_replay = true;
     } else {
-      await exerciseViewer(page, run.profile, fixture);
+      await exerciseViewer(page, guarded.diagnostics, run.profile, fixture);
       result.checks.last_completed_step = "viewer-read-only";
       result.checks.viewer_read_only_and_denial = true;
+      result.checks.viewer_direct_forbidden_task_write = true;
       result.checks.viewer_today_weather_affordances = true;
     }
 

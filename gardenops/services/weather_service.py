@@ -8,6 +8,7 @@ import os
 import urllib.error
 import urllib.request
 from collections import defaultdict
+from datetime import datetime, timedelta
 
 from gardenops.branding import app_user_agent
 from gardenops.db import DbConn, current_timestamp_ms
@@ -44,6 +45,11 @@ _HARDINESS_MIN_TEMP: dict[str, float] = {
 }
 
 CACHE_TTL_MS = 3 * 60 * 60 * 1000  # 3 hours
+_MET_PRECIPITATION_WINDOWS = (
+    ("next_1_hours", 1),
+    ("next_6_hours", 6),
+    ("next_12_hours", 12),
+)
 
 
 def _parse_hardiness(raw: str) -> str | None:
@@ -60,6 +66,30 @@ def _parse_hardiness(raw: str) -> str | None:
 def _min_temp_for_hardiness(code: str) -> float:
     """Return minimum safe temp for a hardiness code."""
     return _HARDINESS_MIN_TEMP.get(code, -20.0)
+
+
+def _met_precipitation_window(entry: dict) -> tuple[float, int] | None:
+    """Return the shortest available MET precipitation window for an entry."""
+    data = entry.get("data", {})
+    for field, hours in _MET_PRECIPITATION_WINDOWS:
+        raw_amount = data.get(field, {}).get("details", {}).get("precipitation_amount")
+        if raw_amount is None:
+            continue
+        try:
+            return float(raw_amount), hours
+        except TypeError, ValueError:
+            continue
+    return None
+
+
+def _met_entry_timestamp(entry: dict) -> datetime | None:
+    raw_timestamp = entry.get("time")
+    if not isinstance(raw_timestamp, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def is_frost_vulnerable_at_temperature(hardiness: str | None, min_temp: float) -> bool:
@@ -89,6 +119,42 @@ def _aggregate_met_timeseries(raw: dict) -> dict:
     precip_sum_list: list[float | None] = []
     wind_max_list: list[float | None] = []
 
+    precipitation_by_date = {date: 0.0 for date in dates}
+    precipitation_complete = {date: True for date in dates}
+    precipitation_covered_until: datetime | None = None
+    precipitation_entries = sorted(
+        (entry for date in dates for entry in by_date[date]),
+        key=lambda entry: str(entry.get("time", "")),
+    )
+    for entry in precipitation_entries:
+        date = str(entry.get("time", ""))[:10]
+        timestamp = _met_entry_timestamp(entry)
+        window = _met_precipitation_window(entry)
+        if timestamp is None or window is None:
+            if timestamp is None or (
+                precipitation_covered_until is None or timestamp >= precipitation_covered_until
+            ):
+                precipitation_complete[date] = False
+            continue
+        if precipitation_covered_until is not None and timestamp < precipitation_covered_until:
+            continue
+        amount, window_hours = window
+        window_end = timestamp + timedelta(hours=window_hours)
+        segment_start = timestamp
+        while segment_start < window_end:
+            next_midnight = datetime.combine(
+                segment_start.date() + timedelta(days=1),
+                datetime.min.time(),
+                tzinfo=segment_start.tzinfo,
+            )
+            segment_end = min(window_end, next_midnight)
+            segment_date = segment_start.date().isoformat()
+            if segment_date in precipitation_by_date:
+                segment_hours = (segment_end - segment_start).total_seconds() / 3600
+                precipitation_by_date[segment_date] += amount * segment_hours / window_hours
+            segment_start = segment_end
+        precipitation_covered_until = window_end
+
     for date in dates:
         entries = by_date[date]
         temps = [
@@ -99,15 +165,9 @@ def _aggregate_met_timeseries(raw: dict) -> dict:
         temp_min_list.append(min(temps) if temps else None)
         temp_max_list.append(max(temps) if temps else None)
 
-        precip = 0.0
-        precipitation_complete = True
-        for e in entries:
-            p1 = e["data"].get("next_1_hours", {}).get("details", {}).get("precipitation_amount")
-            if p1 is None:
-                precipitation_complete = False
-                break
-            precip += p1
-        precip_sum_list.append(precip if precipitation_complete else None)
+        precip_sum_list.append(
+            precipitation_by_date[date] if precipitation_complete[date] else None,
+        )
 
         winds = [
             e["data"]["instant"]["details"]["wind_speed"]
@@ -346,30 +406,37 @@ def analyze_forecast(forecast: dict) -> list[dict]:
             }
         )
 
-    # Rain surplus: 3+ days with significant rain (>10mm total)
-    rain_days = []
-    total_rain = 0.0
-    for i, d in enumerate(dates):
-        if i < len(precip) and precip[i] is not None and precip[i] >= 3.0:
-            rain_days.append((d, precip[i]))
-            total_rain += precip[i]
+    # Rain surplus: 3+ consecutive significant-rain days totaling at least 15mm.
+    # Separate intervals keep intervening dry dates available for watering tasks.
+    rain_interval: list[tuple[str, float]] = []
 
-    if len(rain_days) >= 3 and total_rain >= 15.0:
+    def add_rain_surplus_alert(interval: list[tuple[str, float]]) -> None:
+        total_rain = sum(amount for _date, amount in interval)
+        if len(interval) < 3 or total_rain < 15.0:
+            return
         alerts.append(
             {
                 "alert_type": "rain_surplus",
                 "severity": "normal" if total_rain < 30 else "high",
                 "title": f"Heavy rain expected: {total_rain:.0f}mm",
                 "description": (
-                    f"Significant rain on {len(rain_days)} days "
+                    f"Significant rain on {len(interval)} consecutive days "
                     f"(total {total_rain:.0f}mm). Skip watering. "
                     f"Check drainage for waterlogging-sensitive plants."
                 ),
-                "valid_from": rain_days[0][0],
-                "valid_until": rain_days[-1][0],
-                "metadata": {"rain_days": len(rain_days), "total_mm": total_rain},
+                "valid_from": interval[0][0],
+                "valid_until": interval[-1][0],
+                "metadata": {"rain_days": len(interval), "total_mm": total_rain},
             }
         )
+
+    for i, d in enumerate(dates):
+        if i < len(precip) and precip[i] is not None and precip[i] >= 3.0:
+            rain_interval.append((d, float(precip[i])))
+            continue
+        add_rain_surplus_alert(rain_interval)
+        rain_interval = []
+    add_rain_surplus_alert(rain_interval)
 
     return alerts
 
@@ -452,6 +519,7 @@ def save_weather_alerts(
     """Links relevant plants to alerts and builds plant_advice in metadata.
 
     Deduplicates by (garden_id, alert_type, valid_from).
+    Does not commit; the caller owns the transaction with downstream work.
     Returns {"created": N, "skipped": N}.
     """
     created = 0
@@ -563,7 +631,10 @@ def save_weather_alerts(
                 SET severity = %s,
                     title = COALESCE(NULLIF(%s, ''), title),
                     description = COALESCE(NULLIF(%s, ''), description),
-                    valid_until = GREATEST(valid_until, %s),
+                    valid_until = CASE
+                        WHEN alert_type = 'rain_surplus' THEN %s
+                        ELSE GREATEST(valid_until, %s)
+                    END,
                     metadata_json = %s
                 WHERE id = %s
                 """,
@@ -571,6 +642,7 @@ def save_weather_alerts(
                     merged_severity,
                     alert["title"],
                     alert["description"],
+                    alert["valid_until"],
                     alert["valid_until"],
                     json.dumps(merged_meta, default=str),
                     alert_id,
@@ -596,7 +668,6 @@ def save_weather_alerts(
                     " ON CONFLICT DO NOTHING",
                     (alert_id, plant["plt_id"]),
                 )
-    db.commit()
     return {"created": created, "skipped": skipped}
 
 

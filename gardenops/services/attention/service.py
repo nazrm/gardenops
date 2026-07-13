@@ -10,6 +10,8 @@ from fastapi import HTTPException
 from gardenops.services.attention.preferences import (
     AttentionPreferenceSet,
     apply_preferences,
+    normalize_attention_preference_payload,
+    normalize_attention_quiet_hours,
     resolve_attention_preferences,
 )
 from gardenops.services.attention.providers import (
@@ -151,7 +153,13 @@ def load_attention_preferences(conn: Any, user_id: int | None) -> AttentionPrefe
         },
         saved_attention_preferences=None,
     )
-    return replace(preferences, quiet_hours=_parse_mapping(legacy["quiet_hours_json"]))
+    return replace(
+        preferences,
+        quiet_hours=normalize_attention_quiet_hours(
+            _parse_mapping(legacy["quiet_hours_json"]),
+            strict=False,
+        ),
+    )
 
 
 def save_attention_preferences(
@@ -165,9 +173,22 @@ def save_attention_preferences(
     metadata: dict[str, Any] | None = None,
     now_ms: int,
 ) -> AttentionPreferenceSet:
-    normalized_preset = preset.strip().lower()
-    if normalized_preset not in _VALID_PRESETS:
-        raise HTTPException(status_code=422, detail="Invalid attention preference preset")
+    try:
+        (
+            normalized_preset,
+            normalized_rules,
+            normalized_quiet_hours,
+            normalized_show_no_action_history,
+            normalized_metadata,
+        ) = normalize_attention_preference_payload(
+            preset=preset,
+            rules=rules,
+            quiet_hours=quiet_hours,
+            show_no_action_history=show_no_action_history,
+            metadata=metadata or {},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     conn.execute(
         """
@@ -186,10 +207,10 @@ def save_attention_preferences(
         (
             user_id,
             normalized_preset,
-            _dump_json(cast(dict[str, Any], rules)),
-            _dump_json(quiet_hours),
-            int(show_no_action_history),
-            _dump_json(metadata),
+            _dump_json(cast(dict[str, Any], normalized_rules)),
+            _dump_json(normalized_quiet_hours),
+            int(normalized_show_no_action_history),
+            _dump_json(normalized_metadata),
             now_ms,
             now_ms,
         ),

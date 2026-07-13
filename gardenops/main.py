@@ -1399,7 +1399,7 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
     remote_host = request.client.host if request.client else ""
 
     def _audit_mutation(status_code: int, detail: str = "") -> None:
-        if request.method not in {"POST", "PATCH", "DELETE"}:
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
             return
         if not path.startswith("/api"):
             return

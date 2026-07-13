@@ -40,6 +40,7 @@ def clear_completion_capture_metadata(task_row: dict[str, Any]) -> dict[str, Any
     metadata = parse_task_metadata(task_row)
     metadata.pop("completion_journal_entries", None)
     metadata.pop("completion_journal_entry_id", None)
+    metadata.pop("completion_capture_original_plant_ids", None)
     return metadata
 
 
@@ -132,28 +133,25 @@ def update_task_plant_links(
     )
 
 
-def task_plot_ids_for_plant_ids(
+def current_plot_ids_for_plant_ids(
     db: DbConn,
     *,
-    task_id: int,
     garden_id: int,
     plant_ids: list[str],
 ) -> list[str]:
-    """Return task-linked current placements for selected plants in one garden."""
+    """Return current placements for selected plants in one garden."""
     if not plant_ids:
         return []
     rows = db.execute(
         """
         SELECT DISTINCT pp.plot_id
-        FROM garden_task_plots gtp
-        JOIN plot_plants pp ON pp.plot_id = gtp.plot_id
+        FROM plot_plants pp
         JOIN plots p ON p.plot_id = pp.plot_id
-        WHERE gtp.task_id = %s
-          AND p.garden_id = %s
+        WHERE p.garden_id = %s
           AND pp.plt_id = ANY(%s)
         ORDER BY pp.plot_id
         """,
-        (task_id, garden_id, plant_ids),
+        (garden_id, plant_ids),
     ).fetchall()
     return [str(row["plot_id"]) for row in rows]
 
@@ -329,7 +327,9 @@ def record_completion_journal_entry(
             garden_id=int(task_row["garden_id"]),
             plant_ids=selected_plant_ids,
             seen_date=occurred_on,
-            plot_ids=selected_plot_ids,
+            # Completion selects plants, not a particular assignment. The
+            # observation helper updates an assignment only when it is unique.
+            plot_ids=None,
         )
     completion_records[key] = entry_public_id
     if task_type == "observe_bloom" and outcome == "done":

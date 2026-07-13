@@ -7,7 +7,7 @@ import re
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import Field, field_validator
+from pydantic import Field, StrictBool, field_validator
 
 from gardenops.db import DB
 from gardenops.feature_gates import feature_allowed
@@ -51,6 +51,7 @@ from gardenops.services.notification_service import (
     notification_rows_allowed_for_user,
     notification_rules_json,
     run_notification_maintenance_for_garden,
+    validate_notification_rules,
 )
 
 router = APIRouter()
@@ -64,13 +65,13 @@ _EMAIL_RE = re.compile(
 
 
 class NotificationPreferencesBody(StrictBaseModel):
-    in_app_enabled: bool = True
-    email_enabled: bool = False
+    in_app_enabled: StrictBool = True
+    email_enabled: StrictBool = False
     email_address: str = Field(default="", max_length=320)
     digest_frequency: Literal["none", "daily", "weekly"] = "daily"
     quiet_hours_json: dict = Field(default_factory=dict)
-    task_due_enabled: bool = True
-    task_overdue_enabled: bool = True
+    task_due_enabled: StrictBool = True
+    task_overdue_enabled: StrictBool = True
     notification_rules: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
     @field_validator("email_address")
@@ -183,9 +184,7 @@ def _enables_email_rule(
         if not bool(submitted_rule["email_enabled"]):
             continue
         current_rule = current_rules.get(key)
-        if not isinstance(current_rule, dict) or not bool(
-            current_rule.get("email_enabled", False)
-        ):
+        if not isinstance(current_rule, dict) or not bool(current_rule.get("email_enabled", False)):
             return True
     return False
 
@@ -454,6 +453,10 @@ def update_notification_preferences(
     ).fetchone()
     existing_attention = load_attention_preferences(db, user_id)
     current_rules = _serialize_preferences(existing_preference)["notification_rules"]
+    try:
+        validate_notification_rules(body.notification_rules)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if saved_attention is not None:
         for key, projection in notification_rules_from_attention(existing_attention).items():
             if key in current_rules:
@@ -464,9 +467,7 @@ def update_notification_preferences(
     now, _ = notification_request_clock()
     qh_json = json.dumps(body.quiet_hours_json) if body.quiet_hours_json else "{}"
     notification_rule_keys = {
-        str(key)
-        for key, rule in body.notification_rules.items()
-        if isinstance(rule, dict)
+        str(key) for key, rule in body.notification_rules.items() if isinstance(rule, dict)
     }
     rules = normalize_notification_rules(body.notification_rules)
     if not body.notification_rules:
@@ -510,12 +511,15 @@ def update_notification_preferences(
             now,
         ),
     )
-    synchronized_attention = merge_notification_preferences(
-        existing_attention,
-        notification_rules=rules,
-        quiet_hours=body.quiet_hours_json,
-        notification_rule_keys=notification_rule_keys,
-    )
+    try:
+        synchronized_attention = merge_notification_preferences(
+            existing_attention,
+            notification_rules=rules,
+            quiet_hours=body.quiet_hours_json,
+            notification_rule_keys=notification_rule_keys,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     save_attention_preferences(
         db,
         user_id=user_id,

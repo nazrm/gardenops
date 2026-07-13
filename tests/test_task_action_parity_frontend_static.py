@@ -18,14 +18,14 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         self.assertIn('rescheduleBtn.textContent = t("tasks.action_reschedule")', source)
         self.assertIn("cbs.onReschedule(task)", source)
 
-    def test_snooze_correction_uses_one_shared_two_second_policy(self) -> None:
+    def test_snooze_correction_uses_one_shared_correction_window(self) -> None:
         helper = frontend_source("features/taskSnoozeFlow.ts")
         tasks_tab = frontend_source("tabs/tasksTab.ts")
         quick_actions = frontend_source("features/quickActionsFeature.ts")
         plot = frontend_source("components/plotInteractions.ts")
         calendar = frontend_source("tabs/calendarTab.ts")
 
-        self.assertIn("durationMs: 2_000", helper)
+        self.assertIn("durationMs: 10_000", helper)
         self.assertIn("allowMissingTask: true", tasks_tab)
         self.assertIn("expectedGardenId: task.garden_id", tasks_tab)
         self.assertIn("function isCurrentTaskAction", tasks_tab)
@@ -34,6 +34,24 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         for surface in (quick_actions, plot, calendar):
             self.assertIn("openTaskDateDialog", surface)
             self.assertNotIn("window.prompt", surface)
+
+    def test_secondary_task_surfaces_reject_stale_context_and_refresh_after_replay(self) -> None:
+        app = frontend_source("app.ts")
+        calendar = frontend_source("tabs/calendarTab.ts")
+        quick_actions = frontend_source("features/quickActionsFeature.ts")
+        plot = frontend_source("components/plotInteractions.ts")
+        notifications = frontend_source("features/notificationsFeature.ts")
+
+        self.assertIn("currentEventsById.get(event.id)", calendar)
+        self.assertIn("quickTaskLoadVersion", quick_actions)
+        self.assertIn("getActiveGardenContext() === gardenId", quick_actions)
+        self.assertIn("if (!online)", quick_actions)
+        self.assertIn("getActiveGardenContext() !== gardenId", plot)
+        self.assertIn("if (!cbs.canWrite())", plot)
+        self.assertIn('notificationPanelMode: "list" | "settings"', notifications)
+        self.assertIn("notificationItemsLoadVersion += 1", notifications)
+        self.assertIn('notificationPanelMode !== "settings"', notifications)
+        self.assertIn("await refreshNotificationsForCurrentGarden();", app)
 
     def test_mixed_batch_snooze_requires_a_manual_date_instead_of_first_task_policy(self) -> None:
         tasks_tab = frontend_source("tabs/tasksTab.ts")
@@ -128,6 +146,35 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         for action in ("task_complete", "task_skip", "task_snooze", "task_reschedule"):
             self.assertIn(f"{action}: async", replay)
         self.assertGreaterEqual(replay.count("operationId: draft.operation_id"), 4)
+
+    def test_grouped_completion_requires_a_selected_plant_on_every_write_surface(self) -> None:
+        tasks_tab = frontend_source("tabs/tasksTab.ts")
+        calendar = frontend_source("tabs/calendarTab.ts")
+        plot = frontend_source("components/plotInteractions.ts")
+        quick_actions = frontend_source("features/quickActionsFeature.ts")
+
+        for source in (tasks_tab, calendar, plot, quick_actions):
+            self.assertIn("needsCompletionDialog", source)
+            self.assertIn("canQueueDefaultCompletionOffline", source)
+            self.assertIn('t("tasks.complete_grouped_one_by_one")', source)
+        for source in (tasks_tab, calendar, plot):
+            self.assertIn("openTaskCompletionDialog", source)
+        self.assertIn("openTaskCompletionDialog(task, plantNames", quick_actions)
+
+    def test_grouped_completion_requires_explicit_plant_selection_on_every_surface(self) -> None:
+        completion = frontend_source("features/taskCompletionFlow.ts")
+        tasks_tab = frontend_source("tabs/tasksTab.ts")
+        calendar = frontend_source("tabs/calendarTab.ts")
+        plot = frontend_source("components/plotInteractions.ts")
+        quick_actions = frontend_source("features/quickActionsFeature.ts")
+
+        self.assertIn("confirm.disabled = selected.size === 0", completion)
+        self.assertIn('t("tasks.complete_select_one")', completion)
+        for source in (tasks_tab, calendar, plot, quick_actions):
+            self.assertIn("needsCompletionDialog", source)
+            self.assertIn("complete_grouped_one_by_one", source)
+        for source in (tasks_tab, calendar, plot, quick_actions):
+            self.assertIn("openTaskCompletionDialog", source)
 
     def test_plot_cards_expose_each_supported_task_action(self) -> None:
         source = frontend_source("components/plotInteractions.ts")

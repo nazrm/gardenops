@@ -563,6 +563,38 @@ class TestCalendarApi(BaseApiTest):
         self.assertEqual(history_export.status_code, 200)
         self.assertIn("Harvest spring rhubarb", history_export.text)
 
+    def test_recent_history_uses_frozen_request_date(self) -> None:
+        frozen_date = date(2020, 1, 10)
+        completed_on = frozen_date - timedelta(days=5)
+        completed_at_ms = int(
+            datetime.combine(completed_on, datetime.min.time(), UTC).timestamp() * 1000
+        )
+        self._insert_task(
+            title="Frozen recent completion",
+            task_type="prune",
+            status="completed",
+            due_on=completed_on,
+            completed_at_ms=completed_at_ms,
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": str(
+                    int(datetime(2020, 1, 10, tzinfo=UTC).timestamp() * 1000)
+                ),
+                "GARDENOPS_ATTENTION_FROZEN_DATE": frozen_date.isoformat(),
+            },
+        ):
+            response = self.client.get(
+                "/api/calendar/events?start=2019-12-01&end=2020-02-01&include_recent_history=true"
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn(
+            "Frozen recent completion",
+            {event["title"] for event in response.json()["events"]},
+        )
+
     def test_calendar_derives_upcoming_window_state_for_future_task(self) -> None:
         today = date.today()
         self._insert_task(

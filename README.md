@@ -88,15 +88,17 @@ control.
 
 - Task planning with generated work items, seasonal task windows, manual tasks,
   task-specific snooze defaults, journal-backed completion history, grouped
-  plant completion, and overdue/follow-up views.
+  plant completion, current-placement history, and overdue/follow-up views.
 - Map Today attention panel that keeps the map first while summarizing current
   tasks, issue follow-ups, weather risks, status notices, and rain-covered
   watering outcomes that need no action.
 - Calendar views, manual events, preferences, and subscription support for
   garden work and observations.
 - Notification controls for category, urgency, inbox and digest delivery, quiet
-  hours, and user-scoped mute/dismiss behavior, normalized with the Map Today
-  attention rules so the same event does not make contradictory promises.
+  hours in the browser's local timezone, and user-scoped mute/dismiss behavior,
+  normalized with the Map Today attention rules so the same event does not make
+  contradictory promises. A materially more severe weather warning resurfaces
+  after dismissal while unchanged warnings stay quiet.
 - Saved-view tooling for keeping recurring work, open issues, weather alerts,
   and high-priority garden states visible.
 

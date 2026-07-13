@@ -144,6 +144,7 @@ def update_admin_provider_settings(
     db.commit()
     record_security_event("destructive_admin_actions")
     record_security_event("destructive_admin_actions_provider_settings")
+    request.state.audited_by_handler = True
     write_audit_event(
         method=request.method,
         path=request.url.path,

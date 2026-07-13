@@ -113,6 +113,7 @@ def expire_stale_generated_tasks(
           AND t.status IN ('pending', 'snoozed')
           AND {stale_generated_watering}
         ORDER BY t.id ASC
+        FOR UPDATE OF t SKIP LOCKED
         """,  # noqa: S608
         [
             garden_id,

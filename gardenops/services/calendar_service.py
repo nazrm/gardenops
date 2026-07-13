@@ -343,6 +343,7 @@ def build_calendar_payload(
     selected_plant_ids: list[str],
     selected_plot_ids: list[str],
     selected_zone_codes: list[str],
+    today: date | None = None,
 ) -> dict[str, Any]:
     events, latest_ms = build_calendar_events(
         conn,
@@ -354,6 +355,7 @@ def build_calendar_payload(
         selected_plant_ids=selected_plant_ids,
         selected_plot_ids=selected_plot_ids,
         selected_zone_codes=selected_zone_codes,
+        today=today,
     )
     return {
         "events": events,
@@ -376,6 +378,7 @@ def build_calendar_events(
     selected_plant_ids: list[str],
     selected_plot_ids: list[str],
     selected_zone_codes: list[str],
+    today: date | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     visible_task_sources = [
         source for source in visible_sources if source not in {"weather_alert", "garden_event"}
@@ -411,6 +414,7 @@ def build_calendar_events(
             end=end,
             task_types=visible_task_sources,
             include_recent_history=include_recent_history,
+            today=today,
         )
         relations = _load_task_relations(
             conn,
@@ -522,6 +526,7 @@ def _load_calendar_tasks(
     end: date,
     task_types: list[str],
     include_recent_history: bool,
+    today: date | None = None,
 ) -> list[dict[str, Any]]:
     type_sql, type_params = _in_clause("t.task_type", task_types)
     params: list[Any] = [garden_id, *type_params, start.isoformat(), end.isoformat()]
@@ -531,7 +536,10 @@ def _load_calendar_tasks(
         " AND COALESCE(t.snoozed_until, t.due_on) < %s)"
     ]
     if include_recent_history:
-        recent_cutoff = max(start, date.today() - timedelta(days=DEFAULT_RECENT_HISTORY_DAYS))
+        recent_cutoff = max(
+            start,
+            (today or date.today()) - timedelta(days=DEFAULT_RECENT_HISTORY_DAYS),
+        )
         params.extend(
             [
                 recent_cutoff.isoformat(),

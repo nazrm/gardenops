@@ -49,6 +49,8 @@ def test_notification_preference_time_and_severity_controls_have_accessible_name
     assert "quietEnd.setAttribute(" in component
     assert "select.setAttribute(" in component
     assert '`${policyLabel(policy.key)}: ${t("notifications.prefs_min_severity")}`' in component
+    assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in component
+    assert "...(timeZone ? { timezone: timeZone } : {})" in component
 
 
 def test_viewers_keep_today_and_weather_navigation_without_write_affordances() -> None:

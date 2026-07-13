@@ -510,7 +510,12 @@ export function renderNotificationPreferencesForm(
   quietEndLabel.textContent = t("attention.preferences.end") as string;
   function updateQuietHours(): void {
     if (quietStart.value && quietEnd.value) {
-      state.quiet_hours_json = { start: quietStart.value, end: quietEnd.value };
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      state.quiet_hours_json = {
+        start: quietStart.value,
+        end: quietEnd.value,
+        ...(timeZone ? { timezone: timeZone } : {}),
+      };
     } else {
       state.quiet_hours_json = {};
     }

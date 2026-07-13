@@ -1324,7 +1324,10 @@ async function snoozeCalendarTask(event: CalendarEvent): Promise<void> {
   );
   if (!ok) return;
   const notice = getTaskSnoozeCorrectionNotice(policy.defaultDate, () => {
-    openCalendarTaskDateDialog(event, "snooze", policy.defaultDate);
+    const refreshedEvent = currentEventsById.get(event.id);
+    if (refreshedEvent) {
+      openCalendarTaskDateDialog(refreshedEvent, "snooze", policy.defaultDate);
+    }
   });
   ctx.showToast(
     notice.message,

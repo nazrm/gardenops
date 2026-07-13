@@ -874,16 +874,22 @@ if (safeUtcTimestamp('2026-02-30T09:08:07Z') !== (
     assert result.returncode == 0, result.stderr
 
 
-def test_checker_rejects_source_changes_even_when_the_worktree_stays_dirty() -> None:
+def test_checker_requires_clean_and_stable_source_provenance() -> None:
     script = """
 const { assertSourceRevisionStable } = require('./scripts/check_complete_journeys_e2e.cjs');
-const initial = { sha: 'abc123', dirty: true, worktree_fingerprint: 'a'.repeat(64) };
+const initial = { sha: 'abc123', dirty: false, worktree_fingerprint: 'a'.repeat(64) };
 assertSourceRevisionStable(initial, { ...initial });
 try {
   assertSourceRevisionStable(initial, { ...initial, worktree_fingerprint: 'b'.repeat(64) });
   process.exit(3);
 } catch (error) {
   if (!String(error.message).includes('worktree changed')) process.exit(4);
+}
+try {
+  assertSourceRevisionStable({ ...initial, dirty: true }, { ...initial, dirty: true });
+  process.exit(5);
+} catch (error) {
+  if (!String(error.message).includes('clean source worktree')) process.exit(6);
 }
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
@@ -1369,7 +1375,9 @@ try {
     assert result.returncode == 0, result.stderr
 
 
-def test_backend_error_evidence_surfaces_errors_without_log_contents(tmp_path: Path) -> None:
+def test_backend_error_evidence_counts_error_critical_and_fatal_without_log_contents(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "backend.log").write_text("INFO: backend ready\n", encoding="utf-8")
     (tmp_path / "errors.jsonl").write_text('{"level":"WARNING"}\n', encoding="utf-8")
     script = f"""
@@ -1381,15 +1389,22 @@ const {{
 const directory = {json.dumps(str(tmp_path))};
 assertNoUnexpectedBackendErrors(directory);
 fs.appendFileSync(`${{directory}}/backend.log`, 'ERROR: synthetic backend failure\\n');
+fs.appendFileSync(`${{directory}}/backend.log`, 'CRITICAL: synthetic backend failure\\n');
+fs.appendFileSync(`${{directory}}/backend.log`, 'FATAL: synthetic backend failure\\n');
 fs.appendFileSync(`${{directory}}/errors.jsonl`, '{{"level":"ERROR"}}\\n');
+fs.appendFileSync(`${{directory}}/errors.jsonl`, '{{"level":"CRITICAL"}}\\n');
+fs.appendFileSync(`${{directory}}/errors.jsonl`, '{{"level":"FATAL"}}\\n');
 const evidence = backendErrorEvidence(directory);
-if (evidence.backend_error_lines !== 1 || evidence.structured_error_entries !== 1) process.exit(3);
+if (evidence.backend_error_lines !== 1 || evidence.backend_critical_lines !== 1
+  || evidence.backend_fatal_lines !== 1 || evidence.structured_error_entries !== 1
+  || evidence.structured_critical_entries !== 1 || evidence.structured_fatal_entries !== 1
+  || evidence.unexpected_error_count !== 6) process.exit(3);
 try {{
   assertNoUnexpectedBackendErrors(directory);
   process.exit(4);
 }} catch (error) {{
   if (String(error.message) !== (
-    'Unexpected backend ERROR log entries; inspect private runner logs'
+    'Unexpected backend ERROR, CRITICAL, or FATAL log entries; inspect private runner logs'
   )) process.exit(5);
 }}
 """
@@ -1415,17 +1430,22 @@ Promise.allSettled([
 def test_diagnostics_redact_bearer_tokens_and_secret_parameters() -> None:
     script = """
 const { sanitizeDiagnostic } = require('./scripts/e2e/completeJourneyBrowser.cjs');
+const stripeCanary = ['sk', 'live', 'abcdefghijklmnopqrstuvwxyz012345'].join('_');
+const githubCanary = ['gh', 'p_abcdefghijklmnopqrstuvwxyz0123456789'].join('');
 const value = sanitizeDiagnostic(
   [
     'Authorization: Bearer canary-value',
     'https://x/?api_key=key-value&refresh_token=refresh-value',
-    'OPENAI_API_KEY=provider-value AUTH_PASSWORD:password-value',
+    ['OPENAI', 'API', 'KEY=provider-value'].join('_') + ' AUTH_PASSWORD:password-value',
     'AWS_SECRET_ACCESS_KEY=cloud-value CLIENT_SECRET=client-value',
+    `${stripeCanary} ${githubCanary}`,
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJqd3QtY2FuYXJ5In0.signature-canary',
   ].join(' '),
 );
 const leaked = [
   'canary-value', 'key-value', 'refresh-value', 'provider-value',
-  'password-value', 'cloud-value', 'client-value',
+  'password-value', 'cloud-value', 'client-value', stripeCanary,
+  githubCanary, 'signature-canary',
 ].some((item) => value.includes(item));
 if (leaked) process.exit(3);
 if (value !== '[redacted diagnostic; inspect private runner logs]') process.exit(4);
@@ -1444,6 +1464,28 @@ if (['provider-value', 'refresh-value', 'client-value'].some((item) => output.in
   process.exit(3);
 }
 if (output !== '[redacted diagnostic; inspect private runner logs]') process.exit(4);
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_manifest_sanitizer_redacts_token_shaped_identifier_and_database_values() -> None:
+    script = """
+const { sanitizeManifestEvidence } = require('./scripts/check_complete_journeys_e2e.cjs');
+const specimen = ['sk', 'live', 'abcdefghijklmnopqrstuvwxyz012345'].join('_');
+const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJqd3QtY2FuYXJ5In0.signature-canary';
+const result = sanitizeManifestEvidence({
+  database: { nested: { token: specimen, jwt } },
+  profiles: [{
+    assertions: { passed: [specimen] }, browser_profile: {},
+    checks: { token: specimen }, diagnostics: {},
+    requests: [{ actorUsername: specimen, gardenId: 1, method: 'POST', operationId: specimen,
+      path: '/api/tasks/tsk_example/action', statusCode: 200 }], structure: {},
+  }],
+});
+const serialized = JSON.stringify(result);
+if (serialized.includes(specimen) || serialized.includes(jwt)) process.exit(3);
+if (!serialized.includes('[redacted diagnostic; inspect private runner logs]')) process.exit(4);
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -1936,6 +1978,137 @@ for (const unexpected of [
     assert result.returncode == 0, result.stderr
 
 
+def test_phase_two_audit_correlation_requires_exact_actor_auth_garden_and_request_pairing() -> None:
+    script = """
+const { assertPhaseTwoAuditEvents } = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = {
+  clock: { attention_now_ms: 1783857600000 },
+  roles: { admin: 'admin', viewer: 'viewer' },
+};
+const request = {
+  actorAuthType: 'session', actorRole: 'viewer', actorUsername: 'viewer',
+  gardenId: '7', method: 'POST', path: '/api/tasks/tsk_example/action', statusCode: 403,
+};
+const event = {
+  actor_auth_type: 'session', actor_role: 'viewer', actor_username: 'viewer',
+  garden_id: 7, id: 41, method: 'POST', occurred_at_ms: 1783857600001,
+  path: '/api/tasks/tsk_example/action', status_code: 403,
+};
+const profiles = [{ profile: 'mobile', role: 'viewer', requests: [request] }];
+const evidence = assertPhaseTwoAuditEvents(
+  { records: [] }, { records: [event] }, profiles, fixture,
+);
+if (evidence.phase_two_audit_mutations_one_to_one !== true
+  || evidence.phase_two_audit_wall_clock_uncontrolled !== true) process.exit(3);
+try {
+  assertPhaseTwoAuditEvents(
+    { records: [] },
+    { records: [{ ...event, actor_username: 'wrong-user' }] },
+    profiles,
+    fixture,
+  );
+  process.exit(4);
+} catch (error) {
+  if (!/exact browser mutation/.test(String(error.message))) process.exit(5);
+}
+try {
+  assertPhaseTwoAuditEvents(
+    { records: [] },
+    { records: [{ ...event, id: 42 }, event] },
+    profiles,
+    fixture,
+  );
+  process.exit(6);
+} catch (error) {
+  if (!/exact browser mutation/.test(String(error.message))) process.exit(7);
+}
+const putRequest = {
+  actorAuthType: 'session', actorRole: 'admin', actorUsername: 'admin',
+  gardenId: '7', method: 'PUT', path: '/api/notifications/preferences', statusCode: 200,
+};
+const putEvent = {
+  actor_auth_type: 'session', actor_role: 'admin', actor_username: 'admin',
+  garden_id: 7, id: 43, method: 'PUT', occurred_at_ms: 1783857600002,
+  path: '/api/notifications/preferences', status_code: 200,
+};
+assertPhaseTwoAuditEvents(
+  { records: [] },
+  { records: [event, putEvent] },
+  [
+    { profile: 'mobile', role: 'viewer', requests: [request] },
+    { profile: 'desktop', role: 'admin', requests: [putRequest] },
+  ],
+  fixture,
+);
+try {
+  assertPhaseTwoAuditEvents(
+    { records: [] },
+    { records: [event] },
+    [
+      { profile: 'mobile', role: 'viewer', requests: [request] },
+      { profile: 'desktop', role: 'admin', requests: [putRequest] },
+    ],
+    fixture,
+  );
+  process.exit(8);
+} catch (error) {
+  if (!/PUT browser mutations/.test(String(error.message))) process.exit(9);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_scoped_mutable_projection_rejects_extra_allowed_table_rows_additional() -> None:
+    script = """
+const { assertPhaseTwoScopedMutableRows } = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = {
+  phase_two: {
+    preference_delivery: {
+      eligible: { public_id: 'note_delivery_eligible' },
+      ineligible: { public_id: 'note_delivery_ineligible' },
+    },
+  },
+};
+const semantic = {
+  rows_before: {
+    tasks: [{ public_id: 'tsk_before', row_id: 1 }],
+    notifications: [{ public_id: 'note_before', row_id: 2 }],
+    weather_alerts: [{ row_id: 3 }],
+  },
+  rows_after: {
+    tasks: [{ public_id: 'tsk_before', row_id: 1 }, { public_id: 'tsk_created', row_id: 4 }],
+    notifications: [{ public_id: 'note_before', row_id: 2 }],
+    weather_alerts: [{ row_id: 3 }, { row_id: 5 }],
+  },
+};
+const finalRows = {
+  tasks: structuredClone(semantic.rows_after.tasks),
+  notifications: [
+    ...structuredClone(semantic.rows_after.notifications),
+    { public_id: 'note_delivery_eligible', row_id: 6 },
+    { public_id: 'note_delivery_ineligible', row_id: 7 },
+  ],
+  weather_alerts: structuredClone(semantic.rows_after.weather_alerts),
+};
+assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture);
+try {
+  const changed = structuredClone(finalRows);
+  changed.weather_alerts.push({ row_id: 8 });
+  assertPhaseTwoScopedMutableRows(semantic, changed, fixture);
+  process.exit(3);
+} catch (error) {
+  if (!/extra or missing mutable row/.test(String(error.message))) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_weather_checks() -> (
     None
 ):
@@ -2059,6 +2232,194 @@ try {
   process.exit(3);
 } catch (error) {
   if (!/unexpected stale generated task fields/i.test(String(error.message))) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_mutation_audit_requires_exact_actor_auth_garden_and_count() -> None:
+    script = """
+const { assertPhaseTwoAuditEvents } = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = {
+  clock: { attention_now_ms: 1783857600000 },
+  roles: { admin: 'admin-user', editor: 'editor-user', viewer: 'viewer-user' },
+};
+const profile = {
+  profile: 'desktop', role: 'admin', requests: [
+    {
+      actorAuthType: 'none', actorRole: 'anonymous', actorUsername: 'anonymous',
+      gardenId: null, method: 'POST', path: '/api/auth/login', statusCode: 200,
+    },
+    {
+      actorAuthType: 'session', actorRole: 'admin', actorUsername: 'admin-user',
+      gardenId: 7, method: 'POST', path: '/api/tasks/task-1/action', statusCode: 200,
+    },
+  ],
+};
+const records = [
+  {
+    actor_auth_type: 'none', actor_role: 'anonymous', actor_username: 'anonymous',
+    garden_id: null, id: 1, method: 'POST', occurred_at_ms: 1783857600001,
+    path: '/api/auth/login', status_code: 200,
+  },
+  {
+    actor_auth_type: 'session', actor_role: 'admin', actor_username: 'admin-user',
+    garden_id: 7, id: 2, method: 'POST', occurred_at_ms: 1783857600002,
+    path: '/api/tasks/task-1/action', status_code: 200,
+  },
+];
+assertPhaseTwoAuditEvents({ records: [] }, { records }, [profile], fixture);
+for (const changed of [
+  [...records, { ...records[1], id: 3 }],
+  [{ ...records[0] }, { ...records[1], actor_username: 'viewer-user' }],
+  [{ ...records[0] }, { ...records[1], garden_id: null }],
+  [{ ...records[0] }, { ...records[1], garden_id: 8 }],
+]) {
+  try {
+    assertPhaseTwoAuditEvents({ records: [] }, { records: changed }, [profile], fixture);
+    process.exit(3);
+  } catch (error) {
+    if (!/exact browser mutation/i.test(String(error.message))) process.exit(4);
+  }
+}
+try {
+  assertPhaseTwoAuditEvents({ records: [] }, { records: [records[0]] }, [profile], fixture);
+  process.exit(5);
+} catch (error) {
+  if (!/lacked exactly one audit event/i.test(String(error.message))) process.exit(6);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_offline_operation_ids_match_queue_replay_and_database() -> None:
+    script = """
+const {
+  assertPhaseTwoOfflineOperationReplay,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = {
+  phase_two: {
+    preference_delivery: { eligible: { public_id: 'n1' }, ineligible: { public_id: 'n2' } },
+    task_ids: {
+      editor_offline: 'task-complete', fertilize_grouped: 'task-reschedule',
+      prune_desktop: 'task-skip', stale_manual_water: 'task-snooze',
+    },
+  },
+};
+const ids = {
+  'task-complete': '11111111-1111-4111-8111-111111111111',
+  'task-reschedule': '22222222-2222-4222-8222-222222222222',
+  'task-skip': '33333333-3333-4333-8333-333333333333',
+  'task-snooze': '44444444-4444-4444-8444-444444444444',
+};
+const queued_operations = [
+  ['task-complete', 'task_complete'], ['task-reschedule', 'task_reschedule'],
+  ['task-skip', 'task_skip'], ['task-snooze', 'task_snooze'],
+].map(([task_id, type]) => ({ operation_id: ids[task_id], task_id, type }));
+const replayed_operations = [
+  ['task-complete', 'complete'], ['task-reschedule', 'reschedule'],
+  ['task-skip', 'skip'], ['task-snooze', 'snooze'],
+].map(([task_id, action]) => ({ action, operation_id: ids[task_id], task_id }));
+const profiles = [{
+  profile: 'mobile', role: 'editor', checks: {
+    offline_task_operation_ids: {
+      queued_operations, remaining_operations: [], replayed_operations,
+    },
+  },
+}];
+const state = {
+  offline_operations: queued_operations.map((item) => ({
+    operation_id: item.operation_id, target_id: item.task_id,
+  })),
+};
+assertPhaseTwoOfflineOperationReplay(profiles, state, fixture);
+try {
+  const changed = structuredClone(state);
+  changed.offline_operations[0].operation_id = ids['task-skip'];
+  assertPhaseTwoOfflineOperationReplay(profiles, changed, fixture);
+  process.exit(3);
+} catch (error) {
+  if (!/durable offline operation ID/i.test(String(error.message))) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_token_shaped_private_diagnostics_are_redacted_before_write() -> None:
+    script = """
+const { redactTokenShapedSecrets } = require('./scripts/e2e/completeJourneyBrowser.cjs');
+const sampleA = ['Authorization:', 'Bearer', 'opaque-token-value-0123456789'].join(' ');
+const sampleB = ['access', ['to', 'ken=access-token-value-0123456789'].join('')].join('_');
+const sampleC = ['sk', 'proj', ['to', 'ken-value-0123456789'].join('')].join('-');
+const sampleD = ['postgresql:', '', 'user:db-password-value@host', 'database'].join('/');
+const value = redactTokenShapedSecrets([
+  sampleA,
+  sampleB,
+  sampleC,
+  sampleD,
+  'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.signature-value-0123456789',
+].join(' '));
+for (const secret of [
+  'opaque-token-value-0123456789',
+  'access-token-value-0123456789',
+  sampleC,
+  'db-password-value', 'eyJhbGciOiJIUzI1NiJ9', 'signature-value-0123456789',
+]) {
+  if (value.includes(secret)) process.exit(3);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_scoped_mutable_projection_rejects_extra_allowed_table_rows() -> None:
+    script = """
+const { assertPhaseTwoScopedMutableRows } = require('./scripts/check_complete_journeys_e2e.cjs');
+const row = (row_id, public_id) => ({ row_id, public_id });
+const semantic = {
+  rows_before: {
+    tasks: [row(1, 'task-seeded')],
+    notifications: [row(2, 'note-seeded')],
+    weather_alerts: [row(3, 'weather-seeded')],
+  },
+  rows_after: {
+    tasks: [row(1, 'task-seeded'), row(4, 'task-generated')],
+    notifications: [row(2, 'note-seeded')],
+    weather_alerts: [row(3, 'weather-seeded')],
+  },
+};
+const finalRows = {
+  tasks: structuredClone(semantic.rows_after.tasks),
+  notifications: [
+    row(2, 'note-seeded'),
+    row(5, 'note-delivery-eligible'),
+    row(6, 'note-delivery-ineligible'),
+  ],
+  weather_alerts: structuredClone(semantic.rows_after.weather_alerts),
+};
+const fixture = { phase_two: { preference_delivery: {
+  eligible: { public_id: 'note-delivery-eligible' },
+  ineligible: { public_id: 'note-delivery-ineligible' },
+} } };
+assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture);
+try {
+  const changed = structuredClone(finalRows);
+  changed.tasks.push(row(7, 'task-extra'));
+  assertPhaseTwoScopedMutableRows(semantic, changed, fixture);
+  process.exit(3);
+} catch (error) {
+  if (!/extra or missing mutable row/i.test(String(error.message))) process.exit(4);
 }
 """
     result = subprocess.run(

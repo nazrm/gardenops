@@ -308,13 +308,14 @@ maintenance-created task, notification, and alert row identities through the fin
 snapshot rather than accepting summary counts or frozen timestamps alone.
 
 Phase 2 database coverage remains required in `tests/journey_coverage.yaml`:
-the audit writer records wall-clock timestamps, so the harness can validate the
-new audit rows and report whether they are frozen but cannot honestly claim an
-exact frozen database postcondition without a supported product audit-clock
-injection. The same manifest keeps unsupported editor/viewer role dimensions
-required. Phase 8 accessibility and Phase 9 performance remain explicitly open;
-the current structural and focus assertions are not a substitute for those phase
-audits.
+the harness correlates every `POST`, `PUT`, `PATCH`, and `DELETE` browser
+mutation one-to-one with method, path, response status, actor, authentication
+type, and garden-scoped audit fields. The audit writer records wall-clock
+timestamps, so those timestamps remain an explicit nondeterministic field and
+cannot prove browser-to-audit ordering. The same manifest keeps unsupported
+editor/viewer role dimensions required. Phase 8 accessibility and Phase 9
+performance remain explicitly open; the current structural and focus assertions
+are not a substitute for those phase audits.
 
 When Phase 2 follows Phase 1 in a cumulative run, Phase 1's intentional garden
 address update invalidates cached forecasts. The guarded Phase 2 preparation

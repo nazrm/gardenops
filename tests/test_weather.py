@@ -20,6 +20,59 @@ class TestWeather(BaseApiTest):
         r = self.client.post("/api/weather/check")
         self.assertEqual(r.status_code, 422)
 
+    def test_weather_check_rolls_back_alerts_when_reconciliation_fails(self) -> None:
+        conn = db.get_db()
+        try:
+            garden_id = int(
+                conn.execute("SELECT id FROM gardens WHERE slug = 'default' LIMIT 1").fetchone()[
+                    "id"
+                ]
+            )
+            conn.execute(
+                "UPDATE gardens SET latitude = 59.9, longitude = 10.7 WHERE id = %s",
+                (garden_id,),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        forecast = {
+            "daily": {
+                "time": ["2032-02-03"],
+                "temperature_2m_min": [-4.0],
+                "temperature_2m_max": [2.0],
+                "precipitation_sum": [0.0],
+            },
+        }
+        with (
+            patch(
+                "gardenops.services.weather_service.get_or_fetch_forecast", return_value=forecast
+            ),
+            patch(
+                "gardenops.routers.weather.reconcile_weather_alert_work",
+                side_effect=RuntimeError("reconciliation failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "reconciliation failed"),
+        ):
+            self.client.post("/api/weather/check")
+
+        conn = db.get_db()
+        try:
+            alert = conn.execute(
+                """
+                SELECT 1
+                FROM weather_alerts
+                WHERE garden_id = %s
+                  AND alert_type = 'frost_warning'
+                  AND valid_from = '2032-02-03'
+                """,
+                (garden_id,),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+
+        self.assertIsNone(alert)
+
     @patch("gardenops.services.weather_service.urllib.request.urlopen")
     def test_weather_endpoints_degrade_without_external_egress(self, mock_urlopen) -> None:
         conn = db.get_db()
@@ -415,6 +468,7 @@ class TestWeather(BaseApiTest):
             )
             conn.commit()
             save_weather_alerts(conn, garden_id, [alert])
+            conn.commit()
         finally:
             db.return_db(conn)
 
@@ -694,7 +748,7 @@ class TestWeather(BaseApiTest):
             conn.commit()
             rows = conn.execute(
                 """
-                SELECT dismissed, cleared_at_ms
+                SELECT dismissed, cleared_at_ms, severity, read_at_ms, emailed_at_ms
                 FROM notification_events
                 WHERE garden_id = %s
                   AND user_id = %s
@@ -703,10 +757,41 @@ class TestWeather(BaseApiTest):
                 """,
                 (garden_id, self._owner_id, f"rain_alert:{today}"),
             ).fetchall()
+            self.assertEqual(retried["created"], 0)
+            self.assertEqual(len(rows), 1)
+            self.assertTrue(bool(rows[0]["dismissed"]))
+            self.assertIsNotNone(rows[0]["cleared_at_ms"])
+
+            escalated = {
+                **alert,
+                "severity": "high",
+                "title": "Severe rain",
+                "description": "Protect vulnerable beds now.",
+            }
+            save_weather_alerts(conn, garden_id, [escalated])
+            escalated_result = create_weather_alert_notifications(
+                conn,
+                garden_id=garden_id,
+                alerts=[escalated],
+            )
+            conn.commit()
+            reopened = conn.execute(
+                """
+                SELECT dismissed, cleared_at_ms, severity, read_at_ms, emailed_at_ms
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND user_id = %s
+                  AND notification_type = 'weather_alert'
+                  AND target_id = %s
+                """,
+                (garden_id, self._owner_id, f"rain_alert:{today}"),
+            ).fetchone()
+            assert reopened is not None
+            self.assertEqual(escalated_result["created"], 0)
+            self.assertFalse(bool(reopened["dismissed"]))
+            self.assertIsNone(reopened["cleared_at_ms"])
+            self.assertEqual(str(reopened["severity"]), "high")
+            self.assertIsNone(reopened["read_at_ms"])
+            self.assertIsNone(reopened["emailed_at_ms"])
         finally:
             db.return_db(conn)
-
-        self.assertEqual(retried["created"], 0)
-        self.assertEqual(len(rows), 1)
-        self.assertTrue(bool(rows[0]["dismissed"]))
-        self.assertIsNotNone(rows[0]["cleared_at_ms"])

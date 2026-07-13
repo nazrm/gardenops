@@ -22,6 +22,7 @@ from gardenops.services.attention.preferences import (
 )
 from gardenops.services.attention.service import load_attention_preferences
 from gardenops.services.attention.types import (
+    SEVERITY_RANK,
     AttentionCategory,
     AttentionItem,
     attention_request_clock,
@@ -199,15 +200,48 @@ def normalize_notification_rules(raw: dict[str, Any] | None) -> dict[str, Notifi
         if not bool(policy["user_configurable"]):
             continue
         rule = dict(rules[key])
-        if "in_app_enabled" in value:
-            rule["in_app_enabled"] = bool(value["in_app_enabled"])
-        if "email_enabled" in value:
-            rule["email_enabled"] = bool(value["email_enabled"])
+        if isinstance(value.get("in_app_enabled"), bool):
+            rule["in_app_enabled"] = value["in_app_enabled"]
+        if isinstance(value.get("email_enabled"), bool):
+            rule["email_enabled"] = value["email_enabled"]
         min_severity = value.get("min_severity")
-        if isinstance(min_severity, str):
+        if isinstance(min_severity, str) and min_severity.strip().lower() in SEVERITY_RANK:
             rule["min_severity"] = _normalize_severity(min_severity)
         rules[key] = rule
     return rules
+
+
+def validate_notification_rules(raw: dict[str, Any]) -> None:
+    """Reject malformed nested notification rules before they can be normalized."""
+    for key, rule in raw.items():
+        if not isinstance(key, str) or key not in _POLICIES_BY_KEY:
+            raise ValueError(f"Unsupported notification rule: {key}")
+        if not isinstance(rule, dict):
+            raise ValueError(f"notification_rules.{key} must be an object")
+        unknown_fields = set(rule) - {"in_app_enabled", "email_enabled", "min_severity"}
+        if unknown_fields:
+            invalid = ", ".join(sorted(str(field) for field in unknown_fields))
+            raise ValueError(f"notification_rules.{key} has unsupported fields: {invalid}")
+        for field in ("in_app_enabled", "email_enabled"):
+            if field in rule and not isinstance(rule[field], bool):
+                raise ValueError(f"notification_rules.{key}.{field} must be a boolean")
+        if "min_severity" in rule:
+            severity = rule["min_severity"]
+            if not isinstance(severity, str) or severity.strip().lower() not in SEVERITY_RANK:
+                raise ValueError(
+                    f"notification_rules.{key}.min_severity must be a supported severity"
+                )
+        if not bool(_POLICIES_BY_KEY[key]["user_configurable"]):
+            default_rule = default_notification_rules()[key]
+            normalized_rule = {
+                "in_app_enabled": rule.get("in_app_enabled", default_rule["in_app_enabled"]),
+                "email_enabled": rule.get("email_enabled", default_rule["email_enabled"]),
+                "min_severity": str(rule.get("min_severity", default_rule["min_severity"]))
+                .strip()
+                .lower(),
+            }
+            if normalized_rule != default_rule:
+                raise ValueError(f"Notification rule is not user configurable: {key}")
 
 
 def notification_rules_json(raw: dict[str, Any] | None) -> str:
@@ -335,7 +369,28 @@ def _notification_today_iso(*, frozen_date: str | None) -> str:
 
 
 def _legacy_in_app_enabled(pref_row: dict[str, Any] | None) -> bool:
-    return pref_row is None or bool(pref_row.get("in_app_enabled", True))
+    if pref_row is None:
+        return True
+    return _database_boolean(pref_row.get("in_app_enabled"), default=True)
+
+
+def _database_boolean(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return value == 1
+    return default
+
+
+def _legacy_email_delivery_enabled(pref_row: dict[str, Any] | None) -> bool:
+    if pref_row is None:
+        return False
+    return (
+        _database_boolean(pref_row.get("email_enabled"), default=False)
+        and bool(str(pref_row.get("email_address") or "").strip())
+        and pref_row.get("digest_frequency") in {"daily", "weekly"}
+        and pref_row.get("subscription_tier") == "pro"
+    )
 
 
 def _legacy_in_app_enabled_for_user(db: DbConn, user_id: int) -> bool:
@@ -837,16 +892,18 @@ def _load_pref_rows_for_users(
     placeholders = ",".join(["%s"] * len(user_ids))
     rows = db.execute(
         f"""
-        SELECT user_id, in_app_enabled
-        FROM user_notification_preferences
-        WHERE user_id IN ({placeholders})
+        SELECT p.user_id, p.in_app_enabled, p.email_enabled, p.email_address,
+               p.digest_frequency, u.subscription_tier
+        FROM user_notification_preferences p
+        JOIN auth_users u ON u.id = p.user_id
+        WHERE p.user_id IN ({placeholders})
         """,  # noqa: S608
         user_ids,
     ).fetchall()
     return {int(row["user_id"]): dict(row) for row in rows}
 
 
-def _inbox_allowed_for_user(
+def _delivery_allowed_for_user(
     db: DbConn,
     pref_rows_by_user: dict[int, dict[str, Any]],
     preferences_by_user: dict[int, AttentionPreferenceSet],
@@ -864,8 +921,6 @@ def _inbox_allowed_for_user(
     now_ms: int | None = None,
 ) -> bool:
     legacy_pref = pref_rows_by_user.get(user_id)
-    if not _legacy_in_app_enabled(legacy_pref):
-        return False
     preferences = preferences_by_user.get(user_id)
     if preferences is None:
         preferences = load_attention_preferences(db, user_id)
@@ -883,13 +938,23 @@ def _inbox_allowed_for_user(
         "metadata": metadata or {},
         "created_at_ms": now_ms if now_ms is not None else 0,
     }
-    return bool(
+    if _legacy_in_app_enabled(legacy_pref) and notification_rows_allowed_for_user(
+        db,
+        [candidate],
+        preferences=preferences,
+        legacy_in_app_enabled=True,
+        surface="inbox",
+        garden_id=garden_id,
+        user_id=user_id,
+        now_ms=now_ms,
+    ):
+        return True
+    return _legacy_email_delivery_enabled(legacy_pref) and bool(
         notification_rows_allowed_for_user(
             db,
             [candidate],
             preferences=preferences,
-            legacy_in_app_enabled=True,
-            surface="inbox",
+            surface="digest",
             garden_id=garden_id,
             user_id=user_id,
             now_ms=now_ms,
@@ -1117,7 +1182,7 @@ def create_task_due_notifications_in_transaction(
         meta = _task_metadata(task_title, plant_names, task_due)
 
         for uid in member_ids:
-            if not _inbox_allowed_for_user(
+            if not _delivery_allowed_for_user(
                 db,
                 pref_rows_by_user,
                 preferences_by_user,
@@ -1199,7 +1264,7 @@ def create_task_due_notifications_in_transaction(
         meta = _task_metadata(task_title, plant_names, task_due)
 
         for uid in member_ids:
-            if not _inbox_allowed_for_user(
+            if not _delivery_allowed_for_user(
                 db,
                 pref_rows_by_user,
                 preferences_by_user,
@@ -1789,7 +1854,7 @@ def create_garden_member_notifications(
         if uid in existing_user_ids:
             skipped += 1
             continue
-        if not _inbox_allowed_for_user(
+        if not _delivery_allowed_for_user(
             db,
             pref_rows_by_user,
             preferences_by_user,
@@ -1953,6 +2018,7 @@ def _refresh_weather_alert_notification(
             body = %s,
             metadata_json = %s,
             expires_at_ms = %s,
+            dismissed = 0,
             read_at_ms = NULL,
             emailed_at_ms = NULL,
             cleared_at_ms = NULL,
@@ -2067,10 +2133,6 @@ def create_weather_alert_notifications(
                 skipped += 1
                 continue
 
-            if any(bool(row["dismissed"]) for row in rows):
-                skipped += 1
-                continue
-
             active_rows = [
                 row for row in rows if not bool(row["dismissed"]) and row["cleared_at_ms"] is None
             ]
@@ -2099,7 +2161,26 @@ def create_weather_alert_notifications(
                 skipped += 1
                 continue
 
-            if not _inbox_allowed_for_user(
+            dismissed_row = next((row for row in rows if bool(row["dismissed"])), None)
+            if dismissed_row is not None:
+                dismissed_severity = _normalize_severity(str(dismissed_row["severity"] or "normal"))
+                if SEVERITY_RANK[severity] <= SEVERITY_RANK[dismissed_severity]:
+                    skipped += 1
+                    continue
+                _refresh_weather_alert_notification(
+                    db,
+                    row=dismissed_row,
+                    notification_subtype=alert_type,
+                    severity=severity,
+                    title=title,
+                    body=body,
+                    metadata_json=metadata_json,
+                    expires_at_ms=expires_at_ms,
+                )
+                skipped += 1
+                continue
+
+            if not _delivery_allowed_for_user(
                 db,
                 pref_rows_by_user,
                 preferences_by_user,

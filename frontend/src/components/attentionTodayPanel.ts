@@ -205,6 +205,15 @@ function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
   return { ...value };
 }
 
+function browserTimeZone(): string | null {
+  try {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return timeZone || null;
+  } catch {
+    return null;
+  }
+}
+
 function ruleForRow(
   row: PreferenceRuleRow,
   rules: Record<string, AttentionPreferenceRule>,
@@ -768,6 +777,8 @@ export function initAttentionTodayPanel(
 
     function collectQuietHours(): Record<string, unknown> {
       const quietHours = cloneRecord(preferences.quiet_hours);
+      const timeZone = browserTimeZone();
+      if (timeZone) quietHours["timezone"] = timeZone;
       (["digest"] as const).forEach((channel) => {
         quietHours[channel] = {
           enabled: form.querySelector<HTMLInputElement>(

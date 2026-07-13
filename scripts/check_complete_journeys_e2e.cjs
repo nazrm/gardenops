@@ -12,6 +12,7 @@ const {
   assertBrowserProfileContract,
   allowedBrowserOrigins,
   isAllowedUrl,
+  redactTokenShapedSecrets,
   sanitizeDiagnostic,
 } = require("./e2e/completeJourneyBrowser.cjs");
 const { runFoundation } = require("./e2e/journeys/foundation.cjs");
@@ -220,7 +221,7 @@ function safeFailure(error) {
   for (const value of redactions) {
     if (value) message = message.split(value).join("[redacted]");
   }
-  return sanitizeDiagnostic(message);
+  return sanitizeDiagnostic(redactTokenShapedSecrets(message));
 }
 
 function writePrivateFailure(error) {
@@ -237,6 +238,7 @@ function writePrivateFailure(error) {
   for (const value of redactions) {
     if (value) detail = detail.split(value).join("[redacted]");
   }
+  detail = redactTokenShapedSecrets(detail);
   try {
     const failureLog = path.join(logDirectory, "complete-journeys-browser-error.log");
     fs.appendFileSync(
@@ -252,7 +254,9 @@ function writePrivateFailure(error) {
 
 function safeIdentifier(value) {
   const text = String(value || "");
-  return /^[A-Za-z0-9_.-]{1,100}$/.test(text) ? text : sanitizeDiagnostic(text);
+  return redactTokenShapedSecrets(text) === text && /^[A-Za-z0-9_.-]{1,100}$/.test(text)
+    ? text
+    : sanitizeDiagnostic(text);
 }
 
 function safeUtcTimestamp(value) {
@@ -345,6 +349,8 @@ function assertSourceRevisionStable(initial, final) {
   assert(initial && typeof initial === "object", "Fixture has no initial source provenance");
   assert(final && typeof final === "object", "Run has no final source provenance");
   assert(initial.sha === final.sha, "Source revision changed during journey run");
+  assert(!initial.dirty && !final.dirty,
+    "Complete journey provenance requires a clean source worktree");
   assert(Boolean(initial.dirty) === Boolean(final.dirty), "Source cleanliness changed during journey run");
   assert(
     typeof initial.worktree_fingerprint === "string"
@@ -380,7 +386,9 @@ function sanitizeDatabaseEvidence(value, depth = 0) {
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : sanitizeDiagnostic(value);
   if (typeof value === "string") {
-    return /^[A-Za-z0-9_.:-]{1,160}$/.test(value) ? value : sanitizeDiagnostic(value);
+    return redactTokenShapedSecrets(value) === value && /^[A-Za-z0-9_.:-]{1,160}$/.test(value)
+      ? value
+      : sanitizeDiagnostic(value);
   }
   if (depth >= 8 || !value || typeof value !== "object") return sanitizeDiagnostic("invalid database evidence");
   if (Array.isArray(value)) {
@@ -434,30 +442,42 @@ function backendErrorEvidence(logDirectory = process.env.GARDENOPS_LOGS_DIR || "
   const structuredLogPath = path.join(logDirectory, "errors.jsonl");
   assert(fs.existsSync(backendLogPath), "Complete journey backend log is missing");
   assert(fs.existsSync(structuredLogPath), "Complete journey structured error log is missing");
-  const backendErrorLines = fs.readFileSync(backendLogPath, "utf8")
+  const backendLevels = fs.readFileSync(backendLogPath, "utf8")
     .split(/\r?\n/)
-    .filter((line) => /\bERROR\b/.test(line)).length;
-  const structuredErrorEntries = fs.readFileSync(structuredLogPath, "utf8")
+    .reduce((counts, line) => {
+      for (const level of ["ERROR", "CRITICAL", "FATAL"]) {
+        if (new RegExp(`\\b${level}\\b`).test(line)) counts[level] += 1;
+      }
+      return counts;
+    }, { CRITICAL: 0, ERROR: 0, FATAL: 0 });
+  const structuredLevels = fs.readFileSync(structuredLogPath, "utf8")
     .split(/\r?\n/)
     .filter(Boolean)
-    .filter((line) => {
+    .reduce((counts, line) => {
       try {
-        return JSON.parse(line).level === "ERROR";
+        const level = String(JSON.parse(line).level || "").toUpperCase();
+        if (["ERROR", "CRITICAL", "FATAL"].includes(level)) counts[level] += 1;
       } catch {
-        return true;
+        counts.ERROR += 1;
       }
-    }).length;
+      return counts;
+    }, { CRITICAL: 0, ERROR: 0, FATAL: 0 });
   return {
-    backend_error_lines: backendErrorLines,
-    structured_error_entries: structuredErrorEntries,
-    unexpected_error_count: backendErrorLines + structuredErrorEntries,
+    backend_critical_lines: backendLevels.CRITICAL,
+    backend_error_lines: backendLevels.ERROR,
+    backend_fatal_lines: backendLevels.FATAL,
+    structured_critical_entries: structuredLevels.CRITICAL,
+    structured_error_entries: structuredLevels.ERROR,
+    structured_fatal_entries: structuredLevels.FATAL,
+    unexpected_error_count: Object.values(backendLevels).reduce((sum, count) => sum + count, 0)
+      + Object.values(structuredLevels).reduce((sum, count) => sum + count, 0),
   };
 }
 
 function assertNoUnexpectedBackendErrors(logDirectory, evidence = backendErrorEvidence(logDirectory)) {
   assert(
     evidence.unexpected_error_count === 0,
-    "Unexpected backend ERROR log entries; inspect private runner logs",
+    "Unexpected backend ERROR, CRITICAL, or FATAL log entries; inspect private runner logs",
   );
   return evidence;
 }
@@ -792,6 +812,7 @@ function assertPhaseTwoProfileEvidence(profiles) {
       role: "admin",
       checks: [
         "admin_daily_attention_workflow",
+        "grouped_completion_restrictions_across_surfaces",
         "task_surface_parity",
         "calendar_lifecycle_export_subscription",
         "calendar_export_selected_garden_scope",
@@ -832,17 +853,29 @@ function assertPhaseTwoProfileEvidence(profiles) {
     {
       profile: "mobile",
       role: "editor",
-      checks: ["editor_offline_task_replay", "editor_offline_task_actions_replay"],
+      checks: [
+        "editor_offline_task_replay",
+        "editor_offline_task_actions_replay",
+        "offline_task_operation_ids",
+      ],
     },
     {
       profile: "desktop",
       role: "viewer",
-      checks: ["viewer_read_only_and_denial", "viewer_today_weather_affordances"],
+      checks: [
+        "viewer_read_only_and_denial",
+        "viewer_direct_forbidden_task_write",
+        "viewer_today_weather_affordances",
+      ],
     },
     {
       profile: "mobile",
       role: "viewer",
-      checks: ["viewer_read_only_and_denial", "viewer_today_weather_affordances"],
+      checks: [
+        "viewer_read_only_and_denial",
+        "viewer_direct_forbidden_task_write",
+        "viewer_today_weather_affordances",
+      ],
     },
   ];
   assert(profiles.length === expectedProfiles.length, "Phase 2 browser profile count was unexpected");
@@ -900,6 +933,56 @@ function isPhaseTwoAuditPath(pathname) {
   ].some((pattern) => pattern.test(pathname));
 }
 
+function phaseTwoBrowserMutationRecords(profiles, fixture) {
+  const auditMutationMethods = new Set(["DELETE", "PATCH", "POST", "PUT"]);
+  return (profiles || []).flatMap((profile) => (
+    (profile?.requests || []).flatMap((request) => {
+      if (!auditMutationMethods.has(request?.method) || !isPhaseTwoAuditPath(request?.path)) return [];
+      assert(Number.isSafeInteger(request.statusCode),
+        `Phase 2 mutation response status is missing: ${request.method} ${request.path}`);
+      const isViewerDenial = request.statusCode === 403 && profile.role === "viewer";
+      assert(
+        isViewerDenial || (request.statusCode >= 200 && request.statusCode < 300),
+        `Phase 2 audited mutation did not have an expected response: ${request.method} ${request.path}`,
+      );
+      const isLogin = request.path === "/api/auth/login";
+      const gardenId = isLogin ? null : (request.gardenId === null ? null : Number(request.gardenId));
+      assert(gardenId === null || (Number.isSafeInteger(gardenId) && gardenId > 0),
+        `Phase 2 mutation garden ID is invalid: ${request.method} ${request.path}`);
+      const expectedActor = isLogin ? {
+        authType: "none", role: "anonymous", username: "anonymous",
+      } : {
+        authType: "session", role: profile.role, username: fixture.roles[profile.role],
+      };
+      assert(
+        request.actorAuthType === expectedActor.authType
+          && request.actorRole === expectedActor.role
+          && request.actorUsername === expectedActor.username,
+        `Phase 2 browser mutation actor was incomplete: ${request.method} ${request.path}`,
+      );
+      return [{
+        actor_auth_type: request.actorAuthType,
+        actor_role: request.actorRole,
+        actor_username: request.actorUsername,
+        garden_id: gardenId,
+        method: request.method,
+        path: request.path,
+        status_code: request.statusCode,
+      }];
+    })
+  ));
+}
+
+function auditRecordMatchesBrowserMutation(event, request) {
+  return event.method === request.method
+    && event.path === request.path
+    && event.status_code === request.status_code
+    && event.actor_username === request.actor_username
+    && event.actor_role === request.actor_role
+    && event.actor_auth_type === request.actor_auth_type
+    && event.garden_id === request.garden_id;
+}
+
 function assertPhaseTwoAuditEvents(beforeAudit, finalAudit, profiles, fixture) {
   assert(Array.isArray(beforeAudit?.records), "Phase 2 audit boundary records are missing");
   assert(Array.isArray(finalAudit?.records), "Final Phase 2 audit records are missing");
@@ -924,9 +1007,7 @@ function assertPhaseTwoAuditEvents(beforeAudit, finalAudit, profiles, fixture) {
     .filter((record) => !beforeById.has(record.id))
     .sort((left, right) => left.id - right.id);
   assert(phaseTwoAuditEvents.length > 0, "Phase 2 did not persist any audit events");
-  const observedMutations = (profiles || []).flatMap((profile) => (
-    (profile?.requests || []).filter((request) => ["DELETE", "PATCH", "POST", "PUT"].includes(request.method))
-  ));
+  const unmatchedBrowserMutations = phaseTwoBrowserMutationRecords(profiles, fixture);
   for (const event of phaseTwoAuditEvents) {
     assert(
       Number.isSafeInteger(event.occurred_at_ms) && event.occurred_at_ms > 0,
@@ -938,23 +1019,99 @@ function assertPhaseTwoAuditEvents(beforeAudit, finalAudit, profiles, fixture) {
     );
     assert(["DELETE", "PATCH", "POST", "PUT"].includes(event.method),
       `Phase 2 audit event used a non-mutation method: ${event.method} ${event.path}`);
-    assert(Number.isSafeInteger(event.status_code) && event.status_code >= 200 && event.status_code < 300,
-      `Phase 2 audit event was not a successful visible mutation: ${event.method} ${event.path}`);
-    assert(
-      observedMutations.some((request) => (
-        request.method === event.method && request.path === event.path
-      )),
-      `Phase 2 audit event was not observed through a browser UI request: ${event.method} ${event.path}`,
-    );
+    assert(Number.isSafeInteger(event.status_code) && (
+      (event.status_code >= 200 && event.status_code < 300) || event.status_code === 403
+    ), `Phase 2 audit event had an unexpected response: ${event.method} ${event.path}`);
+    const requestIndex = unmatchedBrowserMutations.findIndex((request) => (
+      auditRecordMatchesBrowserMutation(event, request)
+    ));
+    assert(requestIndex >= 0,
+      `Phase 2 audit event lacks an exact browser mutation: ${event.method} ${event.path}`);
+    unmatchedBrowserMutations.splice(requestIndex, 1);
   }
+  const unloggedPutMutations = unmatchedBrowserMutations.filter(
+    (request) => request.method === "PUT",
+  ).length;
+  assert(unloggedPutMutations === 0,
+    "Phase 2 PUT browser mutations must have exactly one matching audit event");
+  assert(unmatchedBrowserMutations.length === 0,
+    "Phase 2 audited browser mutations lacked exactly one audit event");
   const auditTimestampsFrozen = phaseTwoAuditEvents.every(
     (event) => event.occurred_at_ms === fixture.clock.attention_now_ms,
   );
   return {
     phase_two_audit_event_count: phaseTwoAuditEvents.length,
     phase_two_audit_events_exact: true,
+    phase_two_audit_mutations_one_to_one: true,
     phase_two_audit_timestamps_frozen: auditTimestampsFrozen,
+    phase_two_audit_wall_clock_uncontrolled: true,
+    phase_two_unlogged_put_mutation_count: unloggedPutMutations,
   };
+}
+
+function assertPhaseTwoOfflineOperationReplay(profiles, state, fixture) {
+  const profile = (profiles || []).find(
+    (entry) => entry?.role === "editor" && entry?.profile === "mobile",
+  );
+  const replay = profile?.checks?.offline_task_operation_ids;
+  assert(replay && typeof replay === "object", "Phase 2 offline operation-ID evidence is missing");
+  const queued = replay.queued_operations;
+  const remaining = replay.remaining_operations;
+  const replayed = replay.replayed_operations;
+  assert(Array.isArray(queued) && Array.isArray(remaining) && Array.isArray(replayed),
+    "Phase 2 offline operation-ID evidence is incomplete");
+  assert(remaining.length === 0, "Phase 2 offline queue retained operation IDs after replay");
+  const expected = [
+    { action: "complete", key: "editor_offline", type: "task_complete" },
+    { action: "skip", key: "prune_desktop", type: "task_skip" },
+    { action: "snooze", key: "stale_manual_water", type: "task_snooze" },
+    { action: "reschedule", key: "fertilize_grouped", type: "task_reschedule" },
+  ].sort((left, right) => `${left.type}:${left.key}`.localeCompare(`${right.type}:${right.key}`));
+  assert(queued.length === expected.length && replayed.length === expected.length,
+    "Phase 2 offline operation-ID count was unexpected");
+  const queuedByTask = new Map();
+  for (const item of queued) {
+    assert(typeof item?.task_id === "string" && typeof item?.type === "string",
+      "Phase 2 queued offline operation identity was invalid");
+    assert(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      String(item.operation_id),
+    ), "Phase 2 queued offline operation ID was not UUIDv4");
+    assert(!queuedByTask.has(item.task_id), "Phase 2 queued offline operation target was duplicated");
+    queuedByTask.set(item.task_id, item);
+  }
+  assert(new Set([...queuedByTask.values()].map((item) => item.operation_id)).size === queuedByTask.size,
+    "Phase 2 queued offline operation ID was reused");
+  assert(
+    canonicalJson([...queuedByTask.values()].map((item) => ({ task_id: item.task_id, type: item.type }))
+      .sort((left, right) => `${left.type}:${left.task_id}`.localeCompare(`${right.type}:${right.task_id}`)))
+      === canonicalJson(expected.map((item) => ({
+        task_id: fixture.phase_two.task_ids[item.key], type: item.type,
+      }))),
+    "Phase 2 queued offline operation targets were unexpected",
+  );
+  const replayedByTask = new Map();
+  for (const item of replayed) {
+    assert(typeof item?.task_id === "string" && typeof item?.action === "string",
+      "Phase 2 replayed offline operation identity was invalid");
+    assert(item.operation_id === queuedByTask.get(item.task_id)?.operation_id,
+      "Phase 2 replayed offline operation ID changed");
+    assert(!replayedByTask.has(item.task_id), "Phase 2 replayed offline operation target was duplicated");
+    replayedByTask.set(item.task_id, item);
+  }
+  assert(
+    canonicalJson([...replayedByTask.values()].map((item) => ({ action: item.action, task_id: item.task_id }))
+      .sort((left, right) => `${left.action}:${left.task_id}`.localeCompare(`${right.action}:${right.task_id}`)))
+      === canonicalJson(expected.map((item) => ({
+        action: item.action, task_id: fixture.phase_two.task_ids[item.key],
+      })).sort((left, right) => `${left.action}:${left.task_id}`.localeCompare(`${right.action}:${right.task_id}`))),
+    "Phase 2 replayed offline operations were unexpected",
+  );
+  const durableByTask = new Map((state.offline_operations || []).map((item) => [item.target_id, item]));
+  for (const [taskId, queuedItem] of queuedByTask) {
+    assert(durableByTask.get(taskId)?.operation_id === queuedItem.operation_id,
+      "Phase 2 durable offline operation ID did not match the queued replay ID");
+  }
+  return { offline_operation_ids_preserved_before_after_replay: true };
 }
 
 function expectedPhaseTwoCanonicalAttentionRules() {
@@ -988,6 +1145,59 @@ function expectedPhaseTwoCanonicalAttentionRules() {
     watering_rescheduled_by_rain: { ...panelFirst },
     weather_alert: { ...warning },
   };
+}
+
+function assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture) {
+  assert(semantic && typeof semantic === "object", "Phase 2 scoped mutable-row evidence is missing");
+  const before = semantic.rows_before;
+  const after = semantic.rows_after;
+  assert(before && after && typeof before === "object" && typeof after === "object",
+    "Phase 2 scoped mutable-row boundaries are missing");
+  const expectedDeliveryNotifications = new Set([
+    fixture.phase_two.preference_delivery.eligible.public_id,
+    fixture.phase_two.preference_delivery.ineligible.public_id,
+  ]);
+  for (const table of ["tasks", "notifications", "weather_alerts"]) {
+    assert(Array.isArray(before[table]) && Array.isArray(after[table]) && Array.isArray(finalRows[table]),
+      `Phase 2 scoped ${table} projection is missing`);
+    const projection = (rows, label) => {
+      const values = rows.map((row) => ({
+        identity: table === "weather_alerts" ? `row:${row.row_id}` : `public:${row.public_id}`,
+        row_id: row.row_id,
+      }))
+        .sort((left, right) => left.row_id - right.row_id);
+      assert(values.every((row) => Number.isSafeInteger(row.row_id) && row.row_id > 0
+        && typeof row.identity === "string" && row.identity.length > 0),
+      `Phase 2 scoped ${table} ${label} projection has an invalid identity`);
+      assert(new Set(values.map((row) => row.row_id)).size === values.length,
+        `Phase 2 scoped ${table} ${label} projection duplicated a row ID`);
+      assert(new Set(values.map((row) => row.identity)).size === values.length,
+        `Phase 2 scoped ${table} ${label} projection duplicated an identity`);
+      return values;
+    };
+    const beforeProjection = projection(before[table], "before-maintenance");
+    const afterProjection = projection(after[table], "after-maintenance");
+    const finalProjection = projection(finalRows[table], "final");
+    const afterIdentities = new Set(afterProjection.map((row) => row.identity));
+    for (const row of beforeProjection) {
+      assert(afterIdentities.has(row.identity),
+        `Phase 2 maintenance deleted scoped ${table} row: ${row.identity}`);
+    }
+    const expectedIdentities = new Set(afterIdentities);
+    if (table === "notifications") {
+      for (const publicId of expectedDeliveryNotifications) {
+        expectedIdentities.add(`public:${publicId}`);
+      }
+    }
+    assert(
+      canonicalJson(finalProjection.map((row) => row.identity).sort())
+        === canonicalJson([...expectedIdentities].sort()),
+      `Phase 2 scoped ${table} projection contained an extra or missing mutable row`,
+    );
+    assert(finalProjection.length === expectedIdentities.size,
+      `Phase 2 scoped ${table} count did not match its exact projection`);
+  }
+  return { scoped_mutable_row_projections_exact: true };
 }
 
 function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture) {
@@ -1103,7 +1313,7 @@ function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture) {
       }
     }
   }
-  return true;
+  return assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture);
 }
 
 function assertMaintenanceMutationPair(pair, table) {
@@ -1331,6 +1541,8 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   const viewerTask = task("viewer_read_only");
   assert(viewerTask.status === "pending" && viewerTask.completed_at_ms === null,
     "Viewer changed a read-only Phase 2 task");
+  exact(viewerTask, initialTaskById.get(phase.task_ids.viewer_read_only),
+    "Viewer direct forbidden write changed the read-only Phase 2 task projection");
 
   const journalExpectations = {
     [phase.task_ids.bloom_desktop]: {
@@ -1827,7 +2039,7 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
 
   assert(maintenance && typeof maintenance === "object",
     "Phase 2 maintenance evidence is missing");
-  const maintenanceSemanticExact = assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture);
+  const maintenanceSemanticEvidence = assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture);
   assert(maintenance.delivery_count === 0 && maintenance.deliveries?.length === 0,
     "Phase 2 pre-save maintenance unexpectedly delivered email");
   assert(maintenance.garden_id === fixture.gardens.alpha.id,
@@ -1872,7 +2084,8 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     calendar_lifecycle_exact: true,
     completion_history_exact: true,
     maintenance_exact: true,
-    maintenance_semantic_state_exact: maintenanceSemanticExact,
+    maintenance_semantic_state_exact: true,
+    ...maintenanceSemanticEvidence,
     notification_preferences_exact: true,
     preference_delivery_exact: true,
     offline_replay_exact: true,
@@ -2286,8 +2499,14 @@ function sanitizeManifestEvidence(manifest) {
   const dirty = Boolean(manifest.git?.dirty);
   const output = {
     backend_log: {
+      backend_critical_lines: safeNonnegativeInteger(manifest.backend_log?.backend_critical_lines),
       backend_error_lines: safeNonnegativeInteger(manifest.backend_log?.backend_error_lines),
+      backend_fatal_lines: safeNonnegativeInteger(manifest.backend_log?.backend_fatal_lines),
+      structured_critical_entries: safeNonnegativeInteger(
+        manifest.backend_log?.structured_critical_entries,
+      ),
       structured_error_entries: safeNonnegativeInteger(manifest.backend_log?.structured_error_entries),
+      structured_fatal_entries: safeNonnegativeInteger(manifest.backend_log?.structured_fatal_entries),
       unexpected_error_count: safeNonnegativeInteger(manifest.backend_log?.unexpected_error_count),
     },
     browser: safeIdentifier(manifest.browser),
@@ -2376,14 +2595,23 @@ function sanitizeManifestEvidence(manifest) {
     }
     if (Array.isArray(profile.requests)) {
       profile.requests = profile.requests.map((request) => ({
+        actorAuthType: new Set(["none", "session"]).has(String(request.actorAuthType))
+          ? String(request.actorAuthType) : null,
+        actorRole: safeIdentifier(request.actorRole),
+        actorUsername: safeIdentifier(request.actorUsername),
         gardenId: request.gardenId === null || /^\d+$/.test(String(request.gardenId))
           ? request.gardenId
           : sanitizeDiagnostic(request.gardenId),
         method: new Set(["DELETE", "GET", "HEAD", "PATCH", "POST", "PUT"])
           .has(String(request.method)) ? String(request.method) : "UNKNOWN",
+        operationId: /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+          .test(String(request.operationId || ""))
+          ? String(request.operationId) : null,
         path: isSafeManifestRequestPath(request.path)
           ? String(request.path)
           : sanitizeDiagnostic(request.path),
+        statusCode: Number.isSafeInteger(request.statusCode) && request.statusCode >= 100
+          && request.statusCode <= 599 ? request.statusCode : null,
       }));
     }
     return profile;
@@ -2604,12 +2832,15 @@ async function main() {
     if (phaseOneRan) phaseOneProfileEvidence = assertPhaseOneProfileEvidence(phaseOneProfiles);
     if (phaseTwoRan) {
       phaseTwoProfileEvidence = assertPhaseTwoProfileEvidence(phaseTwoProfiles);
-      phaseTwoDatabaseEvidence = assertPhaseTwoDatabaseState(
-        finalDatabase.phase_two_state,
-        fixture,
-        phaseTwoMaintenance,
-        phaseTwoPreferenceDelivery,
-      );
+      phaseTwoDatabaseEvidence = {
+        ...assertPhaseTwoDatabaseState(
+          finalDatabase.phase_two_state,
+          fixture,
+          phaseTwoMaintenance,
+          phaseTwoPreferenceDelivery,
+        ),
+        ...assertPhaseTwoOfflineOperationReplay(phaseTwoProfiles, finalDatabase.phase_two_state, fixture),
+      };
       phaseTwoAuditEvidence = assertPhaseTwoAuditEvents(
         phaseTwoAuditBaseline,
         finalDatabase.audit_state,
@@ -3111,7 +3342,10 @@ module.exports = {
   assertPhaseZeroProfileEvidence,
   assertPhaseOneAuditContract,
   assertPhaseOneProfileEvidence,
+  assertPhaseTwoAuditEvents,
   assertPhaseTwoDatabaseState,
+  assertPhaseTwoOfflineOperationReplay,
+  assertPhaseTwoScopedMutableRows,
   assertExpectedMaintenanceMutations,
   assertPhaseTwoProfileEvidence,
   assertNoResponseMocks,
@@ -3126,6 +3360,7 @@ module.exports = {
   gitState,
   isSafeManifestRequestPath,
   isPhaseTwoAuditPath,
+  phaseTwoBrowserMutationRecords,
   phaseOneAuditExpectedEvents,
   phaseSelected,
   safeUtcTimestamp,

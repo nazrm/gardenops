@@ -31,6 +31,7 @@ let notificationItems: NotificationEvent[] = [];
 let notificationUnreadCount = 0;
 let notificationPanelOpen = false;
 let notificationPanelView: "inbox" | "log" = "inbox";
+let notificationPanelMode: "list" | "settings" = "list";
 let notificationGardenId: number | null = null;
 let notificationRequestVersion = 0;
 let notificationCountLoadVersion = 0;
@@ -82,6 +83,7 @@ export function resetNotificationsForCurrentGarden(): void {
   notificationCountLoadVersion += 1;
   notificationItemsLoadVersion += 1;
   notificationPanelView = "inbox";
+  notificationPanelMode = "list";
   closeNotificationPanel();
   clearNotificationState();
 
@@ -308,9 +310,13 @@ function fullNotificationPreferencesUpdate(
 
 function renderCurrentNotificationPanel(): void {
   const panel = notificationPanelElement();
-  if (!panel || !notificationPanelOpen) return;
+  if (!panel || !notificationPanelOpen || notificationPanelMode !== "list") return;
   const hadPanelFocus = document.activeElement instanceof HTMLElement
     && panel.contains(document.activeElement);
+  const focusedTabId = document.activeElement instanceof HTMLElement
+    && document.activeElement.getAttribute("role") === "tab"
+    ? document.activeElement.id
+    : null;
   renderNotificationPanel(
     panel,
     notificationItems,
@@ -468,7 +474,16 @@ function renderCurrentNotificationPanel(): void {
   );
   if (hadPanelFocus) {
     window.requestAnimationFrame(() => {
-      if (notificationPanelOpen && !panel.contains(document.activeElement)) {
+      if (!notificationPanelOpen || notificationPanelMode !== "list") return;
+      const selectedTabId = focusedTabId
+        ? `notification-tab-${notificationPanelView}`
+        : null;
+      const selectedTab = selectedTabId
+        ? document.getElementById(selectedTabId)
+        : null;
+      if (selectedTab instanceof HTMLElement) {
+        selectedTab.focus();
+      } else if (!panel.contains(document.activeElement)) {
         focusNotificationPanel();
       }
     });
@@ -618,6 +633,7 @@ async function toggleNotificationPanel(): Promise<void> {
 
   notificationPanelOpen = true;
   notificationPanelView = "inbox";
+  notificationPanelMode = "list";
   setNotificationPanelHidden(panel, false);
   renderCurrentNotificationPanel();
   focusNotificationPanel();
@@ -658,6 +674,7 @@ async function loadNotifications(): Promise<void> {
 
 function closeNotificationPanel(restoreFocus = false): void {
   notificationPanelOpen = false;
+  notificationPanelMode = "list";
   const panel = notificationPanelElement();
   if (panel) setNotificationPanelHidden(panel, true);
   if (restoreFocus) restoreNotificationPanelFocus();
@@ -671,9 +688,15 @@ async function showNotificationPreferences(): Promise<void> {
   if (!panel) return;
   const request = notificationRequestContext();
   if (!request) return;
+  notificationPanelMode = "settings";
+  notificationItemsLoadVersion += 1;
   try {
     const prefs = await fetchNotificationPreferencesApi();
-    if (!isCurrentNotificationRequest(request)) return;
+    if (
+      !isCurrentNotificationRequest(request)
+      || !notificationPanelOpen
+      || notificationPanelMode !== "settings"
+    ) return;
     renderNotificationPreferencesForm(
       panel,
       prefs,
@@ -686,6 +709,7 @@ async function showNotificationPreferences(): Promise<void> {
             "success",
           );
           notificationPanelView = "inbox";
+          notificationPanelMode = "list";
           await ctx.refreshBadgeCounts();
           await loadNotifications();
         } catch (err) {
@@ -700,6 +724,8 @@ async function showNotificationPreferences(): Promise<void> {
     focusNotificationPanel();
   } catch (err) {
     if (!isCurrentNotificationRequest(request)) return;
+    notificationPanelMode = "list";
+    renderCurrentNotificationPanel();
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }

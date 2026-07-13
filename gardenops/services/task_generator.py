@@ -9,6 +9,8 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 from typing import Any
 
+from fastapi import HTTPException
+
 from gardenops.db import DbConn, DbRow, current_timestamp_ms
 from gardenops.services.ai_provider import (
     AIProviderError,
@@ -778,6 +780,11 @@ def restore_generated_watering_task_from_attention_outcome(
                     now_ms,
                     int(existing["id"]),
                 ),
+            )
+        elif str(existing["status"]) == "expired":
+            raise HTTPException(
+                status_code=409,
+                detail="Generated watering task has expired and cannot be restored",
             )
     else:
         plant_name = str(metadata.get("plant_name") or target_id or "plant")

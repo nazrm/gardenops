@@ -1709,7 +1709,12 @@ async function refreshAfterOfflineSync(result: SyncResult): Promise<void> {
   const taskTypes = ["task_complete", "task_skip", "task_snooze", "task_reschedule"];
 
   if (taskTypes.some((type) => syncedTypes.has(type))) {
-    refreshes.push(loadTasksTab(), loadCalendar(), loadJournalEntries(), loadNotificationCount());
+    refreshes.push(
+      loadTasksTab(),
+      loadCalendar(),
+      loadJournalEntries(),
+      refreshNotificationsForCurrentGarden(),
+    );
     attentionTodayPanel?.refresh();
   }
   if (syncedTypes.has("journal")) refreshes.push(loadJournalEntries());

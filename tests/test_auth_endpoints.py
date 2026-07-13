@@ -227,15 +227,14 @@ class TestAdminProviderSettings(BaseApiTest):
                     provider_row = conn.execute(
                         "SELECT value FROM app_settings WHERE key = 'ai_provider'",
                     ).fetchone()
-                    audit_row = conn.execute(
+                    audit_rows = conn.execute(
                         """
                         SELECT detail
                         FROM audit_events
                         WHERE path = '/api/admin/provider-settings'
-                        ORDER BY id DESC
-                        LIMIT 1
+                          AND method = 'PUT'
                         """,
-                    ).fetchone()
+                    ).fetchall()
                 finally:
                     db.return_db(conn)
         finally:
@@ -258,9 +257,9 @@ class TestAdminProviderSettings(BaseApiTest):
             encrypted_bytes = bytes(encrypted_value)
         self.assertNotIn(secret_value.encode("utf-8"), encrypted_bytes)
         self.assertEqual(provider_row["value"], "openai")
-        self.assertIsNotNone(audit_row)
-        self.assertIn("openai_api_key", audit_row["detail"])
-        self.assertNotIn(secret_value, audit_row["detail"])
+        self.assertEqual(len(audit_rows), 1)
+        self.assertIn("openai_api_key", audit_rows[0]["detail"])
+        self.assertNotIn(secret_value, audit_rows[0]["detail"])
 
 
 class TestAuthUsersCrud(BaseApiTest):

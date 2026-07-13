@@ -750,7 +750,7 @@ def test_legacy_quiet_window_fallback_preserves_minute_precision():
     ] == ["attn:task:task_1"]
 
 
-def test_non_configurable_notification_rows_follow_attention_delivery_filter():
+def test_non_configurable_notification_rows_ignore_attention_delivery_rules():
     from gardenops.services.notification_service import notification_rows_allowed_by_attention
 
     prefs = AttentionPreferenceSet(
@@ -773,7 +773,7 @@ def test_non_configurable_notification_rows_follow_attention_delivery_filter():
         "garden_id": 1,
         "user_id": 2,
         "notification_type": "system",
-        "notification_subtype": None,
+        "notification_subtype": "backup",
         "severity": "low",
         "title": "System notice",
         "body": "Backup status changed",
@@ -782,16 +782,115 @@ def test_non_configurable_notification_rows_follow_attention_delivery_filter():
         "created_at_ms": 1,
     }
 
-    assert (
-        notification_rows_allowed_by_attention(
-            [row],
-            preferences=prefs,
-            surface="digest",
-            garden_id=1,
-            user_id=2,
-        )
-        == []
+    visible = notification_rows_allowed_by_attention(
+        [row],
+        preferences=prefs,
+        surface="digest",
+        garden_id=1,
+        user_id=2,
     )
+
+    assert visible == [row]
+
+
+def test_custom_attention_preferences_reject_truthy_rule_values_and_preset_conflicts():
+    from gardenops.services.attention.preferences import (
+        normalize_attention_preference_payload,
+    )
+
+    with pytest.raises(ValueError, match="Rules can only be supplied"):
+        normalize_attention_preference_payload(
+            preset="balanced",
+            rules={"task_due": {"inbox": False}},
+            quiet_hours={},
+            show_no_action_history=True,
+            metadata={},
+        )
+
+    with pytest.raises(ValueError, match="must be a boolean"):
+        normalize_attention_preference_payload(
+            preset="custom",
+            rules={"task_due": {"inbox": "false"}},
+            quiet_hours={},
+            show_no_action_history=True,
+            metadata={},
+        )
+
+    preset_payload = normalize_attention_preference_payload(
+        preset="balanced",
+        rules={},
+        quiet_hours={},
+        show_no_action_history=True,
+        metadata={},
+    )
+    assert preset_payload[1] == {}
+
+
+def test_quiet_hours_use_persisted_iana_timezone_across_dst():
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={
+            "task_due": {
+                "panel": True,
+                "inbox": True,
+                "digest": True,
+                "min_severity": "low",
+            }
+        },
+        quiet_hours={
+            "timezone": "Europe/Oslo",
+            "digest": {"enabled": True, "start": "22:00", "end": "07:00"},
+        },
+    )
+    item = make_item(delivery_eligibility=("digest",))
+    dst_quiet_ms = int(datetime(2026, 3, 29, 1, 30, tzinfo=UTC).timestamp() * 1000)
+    dst_end_ms = int(datetime(2026, 3, 29, 5, 0, tzinfo=UTC).timestamp() * 1000)
+
+    assert apply_preferences([item], prefs, surface="digest", now_ms=dst_quiet_ms) == []
+    assert [
+        result.id
+        for result in apply_preferences([item], prefs, surface="digest", now_ms=dst_end_ms)
+    ] == ["attn:task:task_1"]
+
+
+def test_legacy_notification_quiet_hours_persist_the_browser_timezone():
+    from gardenops.services.attention.preferences import merge_notification_preferences
+
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="balanced",
+        rules={},
+        quiet_hours={},
+    )
+
+    merged = merge_notification_preferences(
+        prefs,
+        notification_rules={},
+        quiet_hours={"start": "22:00", "end": "07:00", "timezone": "Europe/Oslo"},
+        notification_rule_keys=set(),
+    )
+
+    assert merged.quiet_hours == {
+        "digest": {"enabled": True, "start": "22:00", "end": "07:00"},
+        "timezone": "Europe/Oslo",
+    }
+
+
+def test_invalid_persisted_quiet_hour_timezone_falls_back_to_utc():
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={"task_due": {"digest": True, "min_severity": "low"}},
+        quiet_hours={
+            "timezone": "Invalid/Timezone",
+            "digest": {"enabled": True, "start": "21:30", "end": "06:15"},
+        },
+    )
+    item = make_item(delivery_eligibility=("digest",))
+    quiet_start_ms = int(datetime(2026, 7, 5, 21, 30, tzinfo=UTC).timestamp() * 1000)
+
+    assert apply_preferences([item], prefs, surface="digest", now_ms=quiet_start_ms) == []
 
 
 def test_active_provider_items_are_eligible_for_inbox_and_digest_surfaces():

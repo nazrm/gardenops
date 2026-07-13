@@ -1,0 +1,61 @@
+import gardenops.db as db
+from gardenops.db import current_timestamp_ms
+from gardenops.services.generated_task_lifecycle import expire_stale_generated_tasks
+from tests.base import DbTestBase
+
+
+class TestGeneratedTaskLifecycle(DbTestBase):
+    def test_expiry_skips_task_locked_by_concurrent_user_action(self) -> None:
+        now_ms = current_timestamp_ms()
+        task = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (garden_id, public_id, task_type, title, description, status,
+                 severity, due_on, rule_source, metadata_json,
+                 created_by_user_id, created_at_ms, updated_at_ms)
+            VALUES (%s, 'tsk_expiry_race', 'water', 'Water locked plant', '', 'pending',
+                    'normal', '2026-06-20', 'water:PLT-TEST:2026-06-20', '{}',
+                    %s, %s, %s)
+            RETURNING id
+            """,
+            (self.garden_id, self._owner_id, now_ms, now_ms),
+        ).fetchone()
+        assert task is not None
+        self.conn.commit()
+
+        action_conn = db.get_db()
+        maintenance_conn = db.get_db()
+        try:
+            action_conn.execute(
+                "SELECT id FROM garden_tasks WHERE id = %s FOR UPDATE",
+                (int(task["id"]),),
+            ).fetchone()
+            expired = expire_stale_generated_tasks(
+                maintenance_conn,
+                garden_id=self.garden_id,
+                today_iso="2026-07-12",
+                now_ms=1783857600000,
+            )
+            maintenance_conn.commit()
+            assert expired == 0
+
+            action_conn.execute(
+                """
+                UPDATE garden_tasks
+                SET status = 'completed', completed_at_ms = %s, updated_at_ms = %s
+                WHERE id = %s
+                """,
+                (1783857600000, 1783857600000, int(task["id"])),
+            )
+            action_conn.commit()
+        finally:
+            db.return_db(maintenance_conn)
+            db.return_db(action_conn)
+
+        row = self.conn.execute(
+            "SELECT status, completed_at_ms FROM garden_tasks WHERE id = %s",
+            (int(task["id"]),),
+        ).fetchone()
+        assert row is not None
+        assert row["status"] == "completed"
+        assert int(row["completed_at_ms"]) == 1783857600000

@@ -176,6 +176,54 @@ class TestAggregateMetTimeseries(unittest.TestCase):
 
         assert result["daily"]["precipitation_sum"] == [None]
 
+    def test_uses_medium_range_precipitation_fallbacks(self) -> None:
+        six_hour_entry = self._make_entry("2026-03-16T00:00:00Z", 2.0, 3.0, 0.0)
+        six_hour_entry["data"].pop("next_1_hours")
+        six_hour_entry["data"]["next_6_hours"] = {
+            "details": {"precipitation_amount": 6.0},
+        }
+        twelve_hour_entry = self._make_entry("2026-03-16T06:00:00Z", 4.0, 5.0, 0.0)
+        twelve_hour_entry["data"].pop("next_1_hours")
+        twelve_hour_entry["data"]["next_12_hours"] = {
+            "details": {"precipitation_amount": 12.0},
+        }
+
+        result = _aggregate_met_timeseries(
+            {"properties": {"timeseries": [six_hour_entry, twelve_hour_entry]}},
+        )
+
+        assert result["daily"]["precipitation_sum"] == [18.0]
+
+    def test_splits_medium_range_precipitation_across_midnight(self) -> None:
+        evening_entry = self._make_entry("2026-03-16T18:00:00Z", 2.0, 3.0, 0.0)
+        evening_entry["data"].pop("next_1_hours")
+        evening_entry["data"]["next_12_hours"] = {
+            "details": {"precipitation_amount": 12.0},
+        }
+        next_day_entry = self._make_entry("2026-03-17T06:00:00Z", 4.0, 5.0, 0.0)
+
+        result = _aggregate_met_timeseries(
+            {"properties": {"timeseries": [evening_entry, next_day_entry]}},
+        )
+
+        assert result["daily"]["precipitation_sum"] == [6.0, 6.0]
+
+    def test_hourly_precipitation_prevents_medium_range_double_counting(self) -> None:
+        first_entry = self._make_entry("2026-03-16T00:00:00Z", 2.0, 3.0, 1.0)
+        first_entry["data"]["next_6_hours"] = {
+            "details": {"precipitation_amount": 6.0},
+        }
+        first_entry["data"]["next_12_hours"] = {
+            "details": {"precipitation_amount": 12.0},
+        }
+        second_entry = self._make_entry("2026-03-16T01:00:00Z", 3.0, 4.0, 2.0)
+
+        result = _aggregate_met_timeseries(
+            {"properties": {"timeseries": [first_entry, second_entry]}},
+        )
+
+        assert result["daily"]["precipitation_sum"] == [3.0]
+
     def test_limits_to_seven_days(self) -> None:
         entries = []
         for day in range(1, 12):
@@ -427,6 +475,25 @@ class TestAnalyzeForecast(unittest.TestCase):
         rain = [a for a in alerts if a["alert_type"] == "rain_surplus"]
         assert len(rain) == 1
         assert rain[0]["severity"] == "high"
+
+    def test_rain_surplus_uses_separate_intervals_for_nonconsecutive_rain(self) -> None:
+        forecast = {
+            "daily": {
+                "time": [f"2026-06-{d:02d}" for d in range(1, 8)],
+                "temperature_2m_min": [10.0] * 7,
+                "temperature_2m_max": [20.0] * 7,
+                "precipitation_sum": [5.0, 6.0, 7.0, 0.0, 4.0, 5.0, 6.0],
+            },
+        }
+
+        rain = [
+            alert for alert in analyze_forecast(forecast) if alert["alert_type"] == "rain_surplus"
+        ]
+
+        assert [(alert["valid_from"], alert["valid_until"]) for alert in rain] == [
+            ("2026-06-01", "2026-06-03"),
+            ("2026-06-05", "2026-06-07"),
+        ]
 
     def test_empty_forecast(self) -> None:
         assert analyze_forecast({}) == []
@@ -717,6 +784,39 @@ class TestSaveWeatherAlerts(_WeatherDbTestBase):
         assert result == {"created": 1, "skipped": 0}
         assert row is not None
         assert int(row["created_at_ms"]) == frozen_now_ms
+
+    def test_rain_surplus_interval_can_shrink_after_forecast_split(self) -> None:
+        broad_alert = {
+            "alert_type": "rain_surplus",
+            "severity": "normal",
+            "title": "Heavy rain expected: 18mm",
+            "description": "Rain covers the week.",
+            "valid_from": "2026-07-01",
+            "valid_until": "2026-07-07",
+            "metadata": {"rain_days": 3, "total_mm": 18.0},
+        }
+        save_weather_alerts(self.conn, self.garden_id, [broad_alert])
+
+        first_interval = {
+            **broad_alert,
+            "description": "Rain covers the first interval.",
+            "valid_until": "2026-07-03",
+        }
+        result = save_weather_alerts(self.conn, self.garden_id, [first_interval])
+
+        row = self.conn.execute(
+            """
+            SELECT valid_until
+            FROM weather_alerts
+            WHERE garden_id = %s
+              AND alert_type = 'rain_surplus'
+              AND valid_from = '2026-07-01'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert result == {"created": 0, "skipped": 1}
+        assert row is not None
+        assert str(row["valid_until"]) == "2026-07-03"
 
     def test_deduplication(self) -> None:
         alerts = [
@@ -1155,6 +1255,7 @@ class TestWeatherAlertIdentityConcurrency(DbTestBase):
                     [alert],
                     frost_plants=frost_plants,
                 )
+                conn.commit()
                 return result, conn.info.backend_pid
             finally:
                 db.return_db(conn)
@@ -1230,6 +1331,7 @@ class TestWeatherNotificationConcurrency(DbTestBase):
         )
         self.conn.commit()
         save_weather_alerts(self.conn, self.garden_id, [alert])
+        self.conn.commit()
         notification_read_barrier = threading.Barrier(2)
 
         def deliver_once() -> tuple[dict[str, int], int]:
