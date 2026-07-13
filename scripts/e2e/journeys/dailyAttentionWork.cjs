@@ -112,6 +112,20 @@ async function openCalendar(page, profile) {
   await page.locator("#calendar-loading").waitFor({ state: "hidden" });
 }
 
+async function openCalendarAgenda(page, profile) {
+  await openCalendar(page, profile);
+  const agendaView = page.locator("[data-calendar-view='agenda']:visible").first();
+  await visible(agendaView, "calendar agenda view control");
+  if (!await agendaView.evaluate((element) => element.classList.contains("active"))) {
+    await agendaView.click();
+    await waitFor(
+      async () => await agendaView.evaluate((element) => element.classList.contains("active")),
+      "calendar agenda view",
+    );
+    await page.locator("#calendar-loading").waitFor({ state: "hidden" });
+  }
+}
+
 async function openCare(page, profile) {
   await openSubMode(page, profile, "insights", "care", "#care-view");
   await visible(page.locator("#weather-dashboard"), "weather dashboard");
@@ -196,11 +210,7 @@ async function exerciseGroupedCompletionRestrictions(page, fixture) {
     "Tasks",
   );
 
-  await openCalendar(page, "desktop");
-  const agendaView = page.locator("[data-calendar-view='agenda']:visible").first();
-  await visible(agendaView, "calendar agenda view control");
-  await agendaView.click();
-  await page.locator("#calendar-loading").waitFor({ state: "hidden" });
+  await openCalendarAgenda(page, "desktop");
   const calendarEvent = page.locator(".fc-event:visible").filter({ hasText: grouped.title }).first();
   await visible(calendarEvent, "grouped task on Calendar surface");
   await calendarEvent.click();
@@ -602,6 +612,7 @@ async function exerciseCalendarLifecycle(
     await waitFor(async () => await button.evaluate((element) => element.classList.contains("active")),
       `calendar ${mode} view`);
   }
+  await openCalendarAgenda(page, profile);
   const seededEvent = page.locator(".fc-event").filter({ hasText: fixture.phase_two.calendar.seeded_title }).first();
   await visible(seededEvent, "seeded calendar event");
   await seededEvent.click();
@@ -1275,7 +1286,7 @@ async function exerciseWeather(page, profile, fixture) {
     `${profile} tasks week view refresh`);
   await visible(taskCard(page, taskTitle(fixture, "rain_outdoor").title),
     `${profile} weather refresh in tasks`);
-  await openCalendar(page, profile);
+  await openCalendarAgenda(page, profile);
   await visible(page.locator(".fc-event").filter({ hasText: /Heavy rain/i }).first(),
     `${profile} weather refresh in calendar`);
   const badgeAfterWeather = await notificationBadgeState(page, profile);
@@ -1371,7 +1382,7 @@ async function completeMobileQuickActions(page, fixture) {
 }
 
 async function exerciseEditorCalendar(page, fixture) {
-  await openCalendar(page, "desktop");
+  await openCalendarAgenda(page, "desktop");
   const task = taskTitle(fixture, "editor_prune");
   const event = page.locator(".fc-event").filter({ hasText: task.title }).first();
   await visible(event, "editor calendar task");
@@ -1404,7 +1415,7 @@ async function exerciseEditorWeatherDeduplication(page, fixture) {
     "editor tasks week view refresh");
   await visible(taskCard(page, taskTitle(fixture, "rain_outdoor").title),
     "editor weather refresh in tasks");
-  await openCalendar(page, "desktop");
+  await openCalendarAgenda(page, "desktop");
   await visible(page.locator(".fc-event:visible").filter({ hasText: /Heavy rain/i }).first(),
     "editor weather refresh in calendar");
   const badge = await notificationBadgeState(page, "desktop");
@@ -1490,7 +1501,7 @@ async function exerciseOfflineTask(page, fixture) {
     await rescheduleDialog.locator("input[type='date']").fill(fixture.phase_two.offline.reschedule_date);
     await rescheduleDialog.locator(".confirm-yes").click();
 
-    await openCalendar(page, "mobile");
+    await openCalendarAgenda(page, "mobile");
     const pruneEvent = page.locator(".fc-event:visible").filter({ hasText: prune.title }).first();
     await visible(pruneEvent, "offline calendar skip task");
     await pruneEvent.click();
@@ -1605,7 +1616,7 @@ async function exerciseViewer(page, diagnostics, profile, fixture) {
   assert(await card.locator(".task-card-actions button").count() === 0,
     `${profile} viewer received task write controls`);
   await attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixture, task);
-  await openCalendar(page, profile);
+  await openCalendarAgenda(page, profile);
   const event = page.locator(".fc-event:visible").filter({ hasText: task.title }).first();
   await visible(event, `${profile} viewer calendar task`);
   await event.click();
