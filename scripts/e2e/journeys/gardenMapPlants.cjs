@@ -616,15 +616,21 @@ async function exercisePlantAndSavedView(
     response.request().method() === "DELETE"
     && new URL(response.url()).pathname.startsWith("/api/saved-views/")
   ));
+  const savedViewRefreshResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === "GET"
+    && new URL(response.url()).pathname === "/api/saved-views"
+  ));
   await reloadedView.locator(".saved-views-item-delete").click();
   await acceptConfirm(page);
   assert((await savedViewDeleteResponsePromise).ok(), "Confirmed saved view deletion failed");
+  assert((await savedViewRefreshResponsePromise).ok(), "Saved view list did not refresh after deletion");
   page.off("request", savedViewDeleteListener);
   assert(savedViewDeleteRequests === 1, "Confirmed saved view deletion sent an unexpected request count");
-  await waitFor(async () => await page.getByText(savedViewName, { exact: true }).count() === 0, "saved view deletion");
-  if (await page.locator("#saved-views-dropdown").isVisible()) {
+  if (!await page.locator("#saved-views-dropdown").isVisible()) {
     await page.locator("#saved-views-trigger").click();
   }
+  await waitFor(async () => await reloadedView.count() === 0, "saved view deletion");
+  await page.locator("#saved-views-trigger").click();
 
   await search.fill(renamed);
   const deleteRow = plantRecord(page, profile, renamed);
