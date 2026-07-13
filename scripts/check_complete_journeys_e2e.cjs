@@ -1905,14 +1905,43 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     timezone: "UTC",
   }, "Phase 2 canonical quiet hours retained legacy top-level keys");
 
-  assert(state.notifications.length === 43,
-    "Phase 2 task and seeded notification projection count was unexpected");
   const notificationIds = state.notifications.map((notification) => notification.public_id);
   assert(new Set(notificationIds).size === notificationIds.length,
     "Phase 2 notification public IDs were duplicated");
   const finalNotificationById = new Map(
     state.notifications.map((notification) => [notification.public_id, notification]),
   );
+  assert(state.maintenance_rows && Array.isArray(state.maintenance_rows.notifications),
+    "Phase 2 maintenance notification projection is missing");
+  const taskIds = new Set(Object.values(phase.task_ids));
+  const expectedNotificationIds = new Set(
+    state.maintenance_rows.notifications
+      .filter((notification) => (
+        notification.public_id.startsWith("note_complete_p2")
+        || taskIds.has(notification.target_id)
+      ))
+      .map((notification) => notification.public_id),
+  );
+  for (const notification of phase.seeded_state.notifications) {
+    expectedNotificationIds.add(notification.public_id);
+  }
+  expectedNotificationIds.add(phase.preference_delivery.eligible.public_id);
+  expectedNotificationIds.add(phase.preference_delivery.ineligible.public_id);
+  const groupedTaskNotificationUsers = new Set();
+  for (const notification of state.notifications) {
+    if (
+      notification.target_id === phase.task_ids.fertilize_grouped
+      && notification.notification_type === "task_due"
+      && ["expired", "rescheduled"].includes(notification.clear_reason)
+    ) {
+      expectedNotificationIds.add(notification.public_id);
+      groupedTaskNotificationUsers.add(notification.username);
+    }
+  }
+  exact([...groupedTaskNotificationUsers].sort(), [fixture.roles.editor, fixture.roles.viewer].sort(),
+    "Phase 2 grouped-task notification users were unexpected");
+  exact(notificationIds.slice().sort(), [...expectedNotificationIds].sort(),
+    "Phase 2 task and seeded notification projection identities were unexpected");
   for (const initialNotification of phase.seeded_state.notifications) {
     const expectedNotification = initialNotification.public_id === phase.notification_public_id
       ? { ...initialNotification, emailed: true }

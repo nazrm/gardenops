@@ -2210,6 +2210,15 @@ def test_phase_two_checker_allows_only_exact_viewer_personal_preference_changes(
     assert 'digest: { enabled: false, end: "07:00", start: "22:00" }' in source
 
 
+def test_phase_two_notification_projection_uses_exact_identities_not_magic_count() -> None:
+    source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+
+    assert "state.notifications.length === 43" not in source
+    assert "Phase 2 task and seeded notification projection identities were unexpected" in source
+    assert "expectedNotificationIds" in source
+    assert "groupedTaskNotificationUsers" in source
+
+
 def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evidence() -> None:
     journey_source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
         encoding="utf-8"
