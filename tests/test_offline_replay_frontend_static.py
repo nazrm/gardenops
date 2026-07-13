@@ -42,6 +42,31 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertNotIn("FOREIGN KEY (issue_id", migration)
         self.assertNotIn("FOREIGN KEY (harvest_entry_id", migration)
 
+    def test_cached_task_and_calendar_views_do_not_refetch_while_offline(self) -> None:
+        tasks = (ROOT / "frontend" / "src" / "tabs" / "tasksTab.ts").read_text(
+            encoding="utf-8"
+        )
+        calendar = (ROOT / "frontend" / "src" / "tabs" / "calendarTab.ts").read_text(
+            encoding="utf-8"
+        )
+
+        tasks_guard = tasks.index(
+            "if (!ctx.isOnline()) {", tasks.index("export async function loadTasks")
+        )
+        tasks_fetch = tasks.index("await fetchTasksApi(params)", tasks_guard)
+        self.assertLess(tasks_guard, tasks_fetch)
+        self.assertIn(
+            "renderTasksView(options.focusTaskId, request);",
+            tasks[tasks_guard:tasks_fetch],
+        )
+
+        calendar_guard = calendar.index(
+            "if (!ctx.isOnline()) {", calendar.index("export async function loadCalendar")
+        )
+        calendar_fetch = calendar.index("await fetchPreferences(request)", calendar_guard)
+        self.assertLess(calendar_guard, calendar_fetch)
+        self.assertIn("calendar?.updateSize();", calendar[calendar_guard:calendar_fetch])
+
 
 if __name__ == "__main__":
     unittest.main()

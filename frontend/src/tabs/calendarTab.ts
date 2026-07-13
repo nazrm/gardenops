@@ -1815,6 +1815,10 @@ export async function loadCalendar(): Promise<void> {
   calendarRequestGeneration += 1;
   const request = createCalendarRequest();
   if (!isCurrentCalendarRequest(request)) return;
+  if (!ctx.isOnline()) {
+    calendar?.updateSize();
+    return;
+  }
   try {
     if (!preferencesLoaded) {
       const loaded = await fetchPreferences(request);

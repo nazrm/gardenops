@@ -306,6 +306,11 @@ export async function loadTasks(
   if (!ctx) return;
   const request = createTasksRequest(options.expectedGardenId);
   if (!request) return;
+  if (!ctx.isOnline()) {
+    reconcileSelectionWithVisibleTasks();
+    renderTasksView(options.focusTaskId, request);
+    return;
+  }
   try {
     const params: Record<string, string | number> = {
       limit: TASKS_PAGE_SIZE,
