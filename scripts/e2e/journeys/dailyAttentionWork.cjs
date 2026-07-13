@@ -1494,6 +1494,12 @@ async function exerciseOfflineTask(page, fixture) {
   await visible(completionCard, "offline editor completion task");
   await visible(staleManualCard, "offline manual watering snooze task");
   await visible(groupedCard, "offline grouped fertilize reschedule task");
+  await openCalendarAgenda(page, "mobile");
+  await visible(
+    page.locator(".fc-event:visible").filter({ hasText: prune.title }).first(),
+    "calendar skip task before going offline",
+  );
+  await openTasks(page, "mobile");
 
   const replayedActions = [];
   const replayListener = (request) => {

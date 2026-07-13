@@ -2175,6 +2175,20 @@ def test_phase_two_snooze_correction_opens_mobile_week_overflow() -> None:
     assert 'page.locator(".fc-popover .fc-event:visible")' in correction
 
 
+def test_phase_two_offline_calendar_is_loaded_before_connectivity_is_lost() -> None:
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
+        encoding="utf-8"
+    )
+    offline = source.split("async function exerciseOfflineTask", 1)[1].split(
+        "async function exerciseViewer", 1
+    )[0]
+
+    warmup = offline.index('"calendar skip task before going offline"')
+    disconnect = offline.index("page.context().setOffline(true)")
+    assert warmup < disconnect
+    assert 'await openTasks(page, "mobile");' in offline[warmup:disconnect]
+
+
 def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evidence() -> None:
     journey_source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
         encoding="utf-8"
