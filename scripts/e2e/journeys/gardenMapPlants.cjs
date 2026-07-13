@@ -610,6 +610,7 @@ async function exercisePlantAndSavedView(
   await page.locator("[role='alertdialog'] .confirm-no").click();
   await page.waitForTimeout(100);
   assert(savedViewDeleteRequests === 0, "Cancelled saved view deletion sent a request");
+  if (!await reloadedView.isVisible()) await page.locator("#saved-views-trigger").click();
   await visible(reloadedView, "saved view retained after cancelled deletion");
   const savedViewDeleteResponsePromise = page.waitForResponse((response) => (
     response.request().method() === "DELETE"
