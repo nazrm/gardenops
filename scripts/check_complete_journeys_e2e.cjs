@@ -1839,10 +1839,19 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     state.preferences.map((preference) => [preference.username, preference]),
   );
   assert(finalPreferenceByUser.size === 3, "Phase 2 preference user count was unexpected");
-  for (const username of [fixture.roles.editor, fixture.roles.viewer]) {
-    exact(finalPreferenceByUser.get(username), initialPreferenceByUser.get(username),
-      `Phase 2 changed ${username} preferences`);
-  }
+  exact(finalPreferenceByUser.get(fixture.roles.editor), initialPreferenceByUser.get(fixture.roles.editor),
+    `Phase 2 changed ${fixture.roles.editor} preferences`);
+  const initialViewerPreference = initialPreferenceByUser.get(fixture.roles.viewer);
+  const finalViewerPreference = finalPreferenceByUser.get(fixture.roles.viewer);
+  assert(initialViewerPreference && finalViewerPreference, "Phase 2 viewer preferences are missing");
+  exact(finalViewerPreference, {
+    ...initialViewerPreference,
+    attention_metadata: { weather_aware_watering_suppression: true },
+    attention_quiet_hours: {
+      digest: { enabled: false, end: "07:00", start: "22:00" },
+      timezone: "UTC",
+    },
+  }, "Phase 2 viewer personal preference normalization was unexpected");
   const initialAdminPreference = initialPreferenceByUser.get(fixture.roles.admin);
   const finalAdminPreference = finalPreferenceByUser.get(fixture.roles.admin);
   assert(initialAdminPreference && finalAdminPreference, "Phase 2 admin preferences are missing");

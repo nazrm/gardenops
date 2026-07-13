@@ -2202,6 +2202,14 @@ def test_attention_preferences_strip_legacy_quiet_hours_before_save() -> None:
     assert "delete quietHours[field]" in collector
 
 
+def test_phase_two_checker_allows_only_exact_viewer_personal_preference_changes() -> None:
+    source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+
+    assert "Phase 2 viewer personal preference normalization was unexpected" in source
+    assert 'attention_metadata: { weather_aware_watering_suppression: true }' in source
+    assert 'digest: { enabled: false, end: "07:00", start: "22:00" }' in source
+
+
 def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evidence() -> None:
     journey_source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
         encoding="utf-8"
