@@ -283,7 +283,7 @@ function sanitizeCheckValue(value, depth = 0) {
   if (typeof value === "boolean") return value;
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") return safeIdentifier(value);
-  if (depth >= 3 || value === null || typeof value !== "object") return undefined;
+  if (depth >= 4 || value === null || typeof value !== "object") return undefined;
   if (Array.isArray(value)) {
     return value.slice(0, 100).flatMap((item) => {
       const sanitized = sanitizeCheckValue(item, depth + 1);
@@ -291,7 +291,7 @@ function sanitizeCheckValue(value, depth = 0) {
     });
   }
   return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => /^[a-z0-9_]{1,80}$/.test(key))
+    .filter(([key]) => /^[a-z0-9_-]{1,80}$/.test(key))
     .flatMap(([key, item]) => {
       const sanitized = sanitizeCheckValue(item, depth + 1);
       return sanitized === undefined ? [] : [[key, sanitized]];
@@ -539,7 +539,7 @@ function assertPhaseOneProfileEvidence(profiles) {
       && malformedImport.import_request_count === 0
       && malformedImport.input_cleared === true
       && malformedImport.render_churn?.attributes === 0
-      && malformedImport.render_churn?.childLists === 0
+      && malformedImport.render_churn?.child_lists === 0
       && malformedImport.render_churn?.added === 0
       && malformedImport.render_churn?.removed === 0,
     "Phase 1 malformed JSON import was not rejected cleanly before the network boundary",
@@ -605,6 +605,7 @@ function assertPhaseOneProfileEvidence(profiles) {
             && Number.isSafeInteger(evidence.beta_response_completion_count)
             && evidence.beta_response_completion_count >= 1
             && evidence.beta_target_held === true
+            && evidence.network_guard_reached === true
             && ["controlled", "physical"].includes(evidence.alpha_selection_mode)
             && ["automatic", "controlled", "physical"].includes(evidence.alpha_trigger_mode)
             && ["automatic", "controlled", "physical"].includes(evidence.beta_trigger_mode);
@@ -642,7 +643,8 @@ function assertPhaseOneProfileEvidence(profiles) {
         && evidence?.beta_response_arrived === true
         && Number.isSafeInteger(evidence?.beta_response_completion_count)
         && evidence.beta_response_completion_count >= 1
-        && evidence?.beta_target_held === true,
+        && evidence?.beta_target_held === true
+        && evidence?.network_guard_reached === true,
       `Phase 1 role delayed A/B/A evidence is incomplete: ${key}`,
     );
   }

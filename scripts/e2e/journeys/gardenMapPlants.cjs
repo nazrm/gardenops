@@ -16,6 +16,7 @@ const VIEWER_PASSWORD = "CompleteJourneysViewerE2E!Passphrase2026"; // push-sani
 const MAP_OBJECT_TYPES = [
   "patio", "terrace", "greenhouse", "shed", "pond", "path", "bed", "other",
 ];
+const ROUTE_GUARD_PROBE_URL = "http://192.0.2.1/api/complete-journey-route-guard";
 
 function fixtureGarden(fixture, key) {
   const garden = fixture.gardens?.[key];
@@ -343,6 +344,31 @@ function gardenIdFromRequest(request) {
   return Number.isSafeInteger(gardenId) && gardenId > 0 ? gardenId : null;
 }
 
+async function assertDelayedRouteFallsThroughToNetworkGuard(page, diagnostics) {
+  const blockedMark = diagnostics.blockedRequests.length;
+  const failureMark = diagnostics.requestFailures.length;
+  const outcome = await page.evaluate((url) => fetch(url, {
+    cache: "no-store",
+    method: "GET",
+    mode: "no-cors",
+  }).then(() => "resolved", () => "blocked"), ROUTE_GUARD_PROBE_URL);
+  assert(outcome === "blocked", "Delayed route guard probe unexpectedly resolved");
+  await waitFor(
+    () => diagnostics.blockedRequests.length === blockedMark + 1,
+    "delayed route fallthrough to the network guard",
+  );
+  assert(
+    diagnostics.blockedRequests[blockedMark] === ROUTE_GUARD_PROBE_URL,
+    "Delayed route guard probe was not recorded by the global guard",
+  );
+  assert(
+    diagnostics.requestFailures.length === failureMark,
+    "Delayed route guard probe leaked into browser failure diagnostics",
+  );
+  diagnostics.blockedRequests.splice(blockedMark, 1);
+  return true;
+}
+
 async function delayGardenSwitchResponses(page, context, diagnostics, { alpha, beta }, surface, action) {
   const betaResolvers = [];
   const heldBetaRequests = new Set();
@@ -358,6 +384,7 @@ async function delayGardenSwitchResponses(page, context, diagnostics, { alpha, b
   const failureMark = diagnostics.requestFailures.length;
   const aborted = [];
   const failureListener = (request) => {
+    if (request.url() === ROUTE_GUARD_PROBE_URL) return;
     const failure = request.failure()?.errorText || "";
     if (failure.includes("ERR_ABORTED")) {
       aborted.push({ method: request.method(), path: new URL(request.url()).pathname });
@@ -405,10 +432,11 @@ async function delayGardenSwitchResponses(page, context, diagnostics, { alpha, b
       heldBetaRequests.add(request);
       await new Promise((resolve) => betaResolvers.push(resolve));
     }
-    await route.continue();
+    await route.fallback();
     if (isHeldBetaResponse) betaResponsesContinued += 1;
   };
   await context.route("**/api/**", handler);
+  const networkGuardReached = await assertDelayedRouteFallsThroughToNetworkGuard(page, diagnostics);
   let routeInstalled = true;
   const gate = {
     async waitForAlphaTarget(label) {
@@ -476,6 +504,7 @@ async function delayGardenSwitchResponses(page, context, diagnostics, { alpha, b
   return {
     beta_held_response_count: heldBetaRequests.size,
     beta_response_completion_count: completedBetaRequests.size,
+    network_guard_reached: networkGuardReached,
     surface,
   };
 }
@@ -1338,7 +1367,12 @@ async function assertMalformedMapImportRejectedClientSide(page, diagnostics, { f
     client_error_visible: true,
     import_request_count: importRequestCount,
     input_cleared: true,
-    render_churn: churn,
+    render_churn: {
+      added: churn.added,
+      attributes: churn.attributes,
+      child_lists: churn.childLists,
+      removed: churn.removed,
+    },
   };
 }
 
@@ -2373,6 +2407,7 @@ async function exerciseDelayedGardenSwitch(
         surfaceRace.beta_response_completion_count
       );
       delayedEvidence.per_surface[surface].beta_response_arrived = true;
+      delayedEvidence.per_surface[surface].network_guard_reached = surfaceRace.network_guard_reached;
     } finally {
       if (draftState) page.off("request", settingsPatchListener);
     }

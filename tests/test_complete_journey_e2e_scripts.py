@@ -421,6 +421,13 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     assert journey_source.count("page.evaluate(async") == 1
     assert "const unitUpdate = await issueBrowserRequest" not in journey_source
     assert "route.fulfill" not in journey_source
+    delay_start = journey_source.index("async function delayGardenSwitchResponses")
+    delay_end = journey_source.index("async function assertGlobalSearch", delay_start)
+    delay_source = journey_source[delay_start:delay_end]
+    assert "await route.fallback()" in delay_source
+    assert "await route.continue()" not in delay_source
+    assert "assertDelayedRouteFallsThroughToNetworkGuard" in delay_source
+    assert "ROUTE_GUARD_PROBE_URL" in delay_source
     assert "assertions.skipped.push" not in journey_source
     assert '{ profile: "desktop", role: "editor"' in journey_source
     assert '{ profile: "mobile", role: "editor"' in journey_source
@@ -547,6 +554,13 @@ const result = sanitizeManifestEvidence({
     assertions: {}, browser_profile: {}, diagnostics: {}, profile: 'desktop',
     checks: {
       delayed_surfaces: ['plants', 'weather'],
+      import_rejection_render_churn: {
+        rejected_import_render_churn: {
+          malformed_json: {
+            render_churn: { added: 0, attributes: 0, child_lists: 0, removed: 0 },
+          },
+        },
+      },
       phase_counts: { expected: 7, passed: 7 },
       retry_count: 2,
       boolean_check: true,
@@ -562,6 +576,8 @@ if (
 ) process.exit(3);
 if (checks.phase_counts.expected !== 7 || checks.phase_counts.passed !== 7) process.exit(4);
 if (checks.retry_count !== 2 || checks.boolean_check !== true) process.exit(5);
+if (checks.import_rejection_render_churn.rejected_import_render_churn
+  .malformed_json.render_churn.child_lists !== 0) process.exit(9);
 if (
   result.git.final_head !== 'abc123' || result.git.clean !== false || result.git.dirty !== true
 ) process.exit(6);
@@ -695,6 +711,7 @@ const {
   assertPhaseOneProfileEvidence,
   assertPhaseZeroProfileEvidence,
   phaseOneAuditExpectedEvents,
+  sanitizeManifestEvidence,
 } = require('./scripts/check_complete_journeys_e2e.cjs');
 const delayedEvidence = (surfaces, desktop = false) => ({
   alpha_started_surfaces: surfaces,
@@ -704,7 +721,7 @@ const delayedEvidence = (surfaces, desktop = false) => ({
     alpha_selection_mode: 'physical', alpha_target_started: true,
     alpha_trigger_mode: 'automatic', beta_content_never_landed: true,
     beta_response_arrived: true, beta_response_completion_count: 1,
-    beta_target_held: true, beta_trigger_mode: 'automatic',
+    beta_target_held: true, beta_trigger_mode: 'automatic', network_guard_reached: true,
   }])),
   ...(desktop ? {
     admin_settings_draft_isolation: {
@@ -748,7 +765,7 @@ const profiles = [
           client_error_visible: true,
           import_request_count: 0,
           input_cleared: true,
-          render_churn: { added: 0, attributes: 0, childLists: 0, removed: 0 },
+          render_churn: { added: 0, attributes: 0, child_lists: 0, removed: 0 },
         },
         oversized: {}, structurally_incomplete: {}, unsupported_schema: {},
       },
@@ -814,6 +831,7 @@ const profiles = [
   }),
 ];
 assertPhaseOneProfileEvidence(profiles);
+assertPhaseOneProfileEvidence(sanitizeManifestEvidence({ profiles }).profiles);
 const phaseZeroProfiles = ['desktop', 'mobile'].map((name) => profile('admin', name, {
   auth_session: true,
   garden_a_b_a: true,
