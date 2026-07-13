@@ -1190,6 +1190,7 @@ async function submitMobileQuickAction(page, fixture, alpha) {
   await sheet.locator("[data-quick-action='log-harvest']").click();
   const form = page.locator(".modal-form");
   await visible(form, "quick action harvest form");
+  await form.locator("input[name='occurred_on']").fill(fixture.clock.attention_date);
   await form.locator("input[name='quantity']").fill("1");
   await form.locator("textarea[name='notes']").fill("Phase 1 mobile quick action");
   await form.locator("input[name='plant_ids']").fill(fixture.phase_one.indoor.plant_id);
