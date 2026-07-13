@@ -315,38 +315,46 @@ async function authenticate(page, username, password) {
 function createApiRecorder(page, actor = {}) {
   const records = [];
   const recordsByRequest = new Map();
-  page.on("request", (request) => {
-    let parsed;
-    try {
-      parsed = new URL(request.url());
-    } catch {
-      return;
-    }
-    if (!parsed.pathname.startsWith("/api/")) return;
-    const headers = request.headers();
-    const isLogin = parsed.pathname === "/api/auth/login";
-    const record = {
-      actorAuthType: isLogin ? "none" : (actor.authType || null),
-      actorRole: isLogin ? "anonymous" : (actor.role || null),
-      actorUsername: isLogin ? "anonymous" : (actor.username || null),
-      gardenId: headers["x-garden-id"] || null,
-      method: request.method(),
-      operationId: headers["x-offline-operation-id"] || null,
-      path: parsed.pathname,
-      statusCode: null,
-    };
-    records.push(record);
-    recordsByRequest.set(request, record);
-  });
-  page.on("response", (response) => {
-    const record = recordsByRequest.get(response.request());
-    if (record) record.statusCode = response.status();
-  });
-  page.on("requestfailed", (request) => {
-    const record = recordsByRequest.get(request);
-    if (record) record.statusCode = null;
-  });
-  return { mark: () => records.length, records, since: (mark) => records.slice(mark) };
+  const attachPage = (targetPage) => {
+    targetPage.on("request", (request) => {
+      let parsed;
+      try {
+        parsed = new URL(request.url());
+      } catch {
+        return;
+      }
+      if (!parsed.pathname.startsWith("/api/")) return;
+      const headers = request.headers();
+      const isLogin = parsed.pathname === "/api/auth/login";
+      const record = {
+        actorAuthType: isLogin ? "none" : (actor.authType || null),
+        actorRole: isLogin ? "anonymous" : (actor.role || null),
+        actorUsername: isLogin ? "anonymous" : (actor.username || null),
+        gardenId: headers["x-garden-id"] || null,
+        method: request.method(),
+        operationId: headers["x-offline-operation-id"] || null,
+        path: parsed.pathname,
+        statusCode: null,
+      };
+      records.push(record);
+      recordsByRequest.set(request, record);
+    });
+    targetPage.on("response", (response) => {
+      const record = recordsByRequest.get(response.request());
+      if (record) record.statusCode = response.status();
+    });
+    targetPage.on("requestfailed", (request) => {
+      const record = recordsByRequest.get(request);
+      if (record) record.statusCode = null;
+    });
+  };
+  attachPage(page);
+  return {
+    attachPage,
+    mark: () => records.length,
+    records,
+    since: (mark) => records.slice(mark),
+  };
 }
 
 module.exports = {

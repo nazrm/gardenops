@@ -1230,8 +1230,9 @@ function assertDeduplicatedWeatherCheck(result, label) {
     `${label} created or failed to deduplicate a logical weather alert`);
 }
 
-async function runConcurrentWeatherChecks(page, profile, garden) {
+async function runConcurrentWeatherChecks(page, profile, garden, recorder) {
   const peer = await page.context().newPage();
+  recorder.attachPage(peer);
   try {
     await peer.goto(page.url(), { waitUntil: "domcontentloaded" });
     await openPrimary(peer, profile, "map");
@@ -1262,7 +1263,7 @@ async function runConcurrentWeatherChecks(page, profile, garden) {
   }
 }
 
-async function exerciseWeather(page, profile, fixture) {
+async function exerciseWeather(page, profile, fixture, recorder) {
   await selectGarden(page, profile, fixture.gardens.beta.id);
   await openCare(page, profile);
   const firstCheck = await runWeatherCheck(page);
@@ -1317,7 +1318,7 @@ async function exerciseWeather(page, profile, fixture) {
   assertDeduplicatedWeatherCheck(repeatedCheck, "Repeated weather check");
   assert(await page.locator(".weather-alert-card").filter({ hasText: /Heavy rain/i }).count() === 0,
     "Repeated weather check resurrected a dismissed rain alert");
-  await runConcurrentWeatherChecks(page, profile, fixture.gardens.beta);
+  await runConcurrentWeatherChecks(page, profile, fixture.gardens.beta, recorder);
   await selectGarden(page, profile, fixture.gardens.alpha.id);
 }
 
@@ -1770,7 +1771,7 @@ async function runProfile(options) {
       result.checks.last_completed_step = "mobile-notification-preferences";
       await exerciseMobileHistoryReload(page, fixture);
       result.checks.last_completed_step = "mobile-history-reload";
-      await exerciseWeather(page, run.profile, fixture);
+      await exerciseWeather(page, run.profile, fixture, recorder);
       result.checks.last_completed_step = "mobile-weather";
       await exerciseMobileCalendarAndNotifications(page, fixture);
       result.checks.last_completed_step = "mobile-calendar-notifications";

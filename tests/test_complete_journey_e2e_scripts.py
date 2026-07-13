@@ -2065,12 +2065,16 @@ def test_phase_two_scoped_mutable_projection_rejects_extra_allowed_table_rows_ad
     script = """
 const { assertPhaseTwoScopedMutableRows } = require('./scripts/check_complete_journeys_e2e.cjs');
 const fixture = {
+  clock: { attention_now_ms: 1783857600000 },
+  gardens: { alpha: { id: 1 } },
   phase_two: {
     preference_delivery: {
       eligible: { public_id: 'note_delivery_eligible' },
       ineligible: { public_id: 'note_delivery_ineligible' },
     },
+    task_ids: { fertilize_grouped: 'task-fertilize' },
   },
+  roles: { editor: 'editor', viewer: 'viewer' },
 };
 const semantic = {
   rows_before: {
@@ -2090,6 +2094,16 @@ const finalRows = {
     ...structuredClone(semantic.rows_after.notifications),
     { public_id: 'note_delivery_eligible', row_id: 6 },
     { public_id: 'note_delivery_ineligible', row_id: 7 },
+    {
+      cleared_at_ms: 1783857600000, clear_reason: 'expired', created_at_ms: 1783857600000,
+      garden_id: 1, notification_type: 'task_due', public_id: 'note_editor', row_id: 8,
+      target_id: 'task-fertilize', target_type: 'task', username: 'editor',
+    },
+    {
+      cleared_at_ms: 1783857600000, clear_reason: 'rescheduled', created_at_ms: 1783857600000,
+      garden_id: 1, notification_type: 'task_due', public_id: 'note_viewer', row_id: 9,
+      target_id: 'task-fertilize', target_type: 'task', username: 'viewer',
+    },
   ],
   weather_alerts: structuredClone(semantic.rows_after.weather_alerts),
 };
@@ -2113,6 +2127,9 @@ def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_w
     None
 ):
     source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+    journey_source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
+        encoding="utf-8"
+    )
     for marker in (
         "mobile_partial_grouped_task_work",
         "mobile_snooze_manual_date",
@@ -2124,6 +2141,7 @@ def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_w
         "stale_dom_assertions",
     ):
         assert marker in source
+    assert "recorder.attachPage(peer);" in journey_source
 
 
 def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evidence() -> None:
