@@ -1353,7 +1353,7 @@ async function completeMobileQuickActions(page, fixture) {
     has: page.locator("input[type='date']"),
   }).last();
   await visible(dateDialog, "mobile Quick Actions date dialog before submit");
-  await dateDialog.locator("input[type='date']").fill(fixture.phase_two.manual_date);
+  await dateDialog.locator("input[type='date']").fill(fixture.phase_two.date);
   await dateDialog.locator(".confirm-yes").click();
   await dateDialog.waitFor({ state: "hidden" });
   await waitFor(async () => (
