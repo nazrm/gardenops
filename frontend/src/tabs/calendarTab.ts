@@ -1369,6 +1369,7 @@ function openCalendarTaskDateDialog(
 }
 
 async function persistPreferences(): Promise<void> {
+  if (!ctx.canWrite()) return;
   const request = createCalendarRequest();
   if (!preferencesLoaded || !isCurrentCalendarRequest(request)) return;
   try {
@@ -1631,7 +1632,6 @@ function ensureCalendarInstance(): Calendar {
     },
     noEventsContent: () => t("calendar.no_events"),
   });
-  calendar.render();
   return calendar;
 }
 
@@ -1643,8 +1643,13 @@ async function changeView(mode: CalendarViewMode): Promise<void> {
   const instance = ensureCalendarInstance();
   await nextAnimationFrame();
   if (!isCurrentCalendarRequest(request)) return;
-  instance.render();
-  instance.changeView(fullCalendarView(mode));
+  const targetView = fullCalendarView(mode);
+  if (!calendarRendered) {
+    instance.render();
+    calendarRendered = true;
+  } else if (instance.view.type !== targetView) {
+    instance.changeView(targetView);
+  }
   instance.updateSize();
   await persistPreferences();
 }

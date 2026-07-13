@@ -55,6 +55,24 @@ def test_calendar_state_is_scoped_to_the_active_garden_and_invalidated_on_switch
     assert "refreshSubscriptions(" in calendar_tab
 
 
+def test_calendar_view_changes_do_not_write_for_viewers_or_duplicate_initial_render() -> None:
+    calendar_tab = _read("frontend/src/tabs/calendarTab.ts")
+    persist_body = _function_body(
+        calendar_tab,
+        "async function persistPreferences",
+        "async function fetchPreferences",
+    )
+    instance_body = _function_body(
+        calendar_tab,
+        "function ensureCalendarInstance",
+        "async function changeView",
+    )
+
+    assert "if (!ctx.canWrite()) return;" in persist_body
+    assert "calendar.render();" not in instance_body
+    assert "let calendarRendered = false;" in calendar_tab
+
+
 def test_calendar_uses_the_shared_date_dialog_and_correction_notice() -> None:
     calendar_tab = _read("frontend/src/tabs/calendarTab.ts")
 
