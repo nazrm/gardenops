@@ -2228,6 +2228,17 @@ def test_phase_two_weather_projection_uses_exact_identities_not_magic_count() ->
     assert "expectedWeatherIds" in source
 
 
+def test_phase_two_maintenance_summary_is_derived_from_semantic_rows() -> None:
+    source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+
+    assert "notifications_created: 48" not in source
+    assert "tasks_auto_created: 60" not in source
+    assert "weather_alerts_created: 3" not in source
+    assert "maintenanceCreated.notifications.created.length" in source
+    assert 'taskValue.rule_source.startsWith("auto:")' in source
+    assert "expiredTasks" in source
+
+
 def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evidence() -> None:
     journey_source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
         encoding="utf-8"

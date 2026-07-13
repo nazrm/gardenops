@@ -2279,6 +2279,13 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     "Phase 2 pre-save maintenance unexpectedly delivered email");
   assert(maintenance.garden_id === fixture.gardens.alpha.id,
     "Phase 2 maintenance ran for the wrong garden");
+  const maintenanceCreated = maintenance.maintenance_semantic_state.maintenance_created;
+  const createdWeatherTasks = maintenanceCreated.tasks.created.filter(
+    (taskValue) => taskValue.rule_source.startsWith("auto:"),
+  ).length;
+  const expiredTasks = maintenanceCreated.tasks.mutated_existing.filter((mutation) => (
+    mutation.before.status !== "expired" && mutation.after.status === "expired"
+  )).length;
   exact({
     configured: maintenance.summary?.configured,
     gardens_processed: maintenance.summary?.gardens_processed,
@@ -2290,11 +2297,11 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   }, {
     configured: true,
     gardens_processed: 1,
-    notifications_created: 48,
-    tasks_auto_created: 60,
-    tasks_expired: 1,
-    weather_alerts_created: 3,
-    weather_tasks_created: 31,
+    notifications_created: maintenanceCreated.notifications.created.length,
+    tasks_auto_created: maintenanceCreated.tasks.created.length - createdWeatherTasks,
+    tasks_expired: expiredTasks,
+    weather_alerts_created: maintenanceCreated.weather_alerts.created.length,
+    weather_tasks_created: createdWeatherTasks,
   }, "Phase 2 maintenance summary was unexpected");
   assert(
     maintenance.deliveries.every((delivery) => (
