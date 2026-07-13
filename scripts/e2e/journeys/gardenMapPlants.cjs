@@ -346,6 +346,7 @@ function gardenIdFromRequest(request) {
 
 async function assertDelayedRouteFallsThroughToNetworkGuard(page, diagnostics) {
   const blockedMark = diagnostics.blockedRequests.length;
+  const consoleMark = diagnostics.consoleErrors.length;
   const failureMark = diagnostics.requestFailures.length;
   const outcome = await page.evaluate((url) => fetch(url, {
     cache: "no-store",
@@ -361,11 +362,16 @@ async function assertDelayedRouteFallsThroughToNetworkGuard(page, diagnostics) {
     diagnostics.blockedRequests[blockedMark] === ROUTE_GUARD_PROBE_URL,
     "Delayed route guard probe was not recorded by the global guard",
   );
+  await waitFor(
+    () => diagnostics.consoleErrors.length === consoleMark + 1,
+    "delayed route guard probe console diagnostic",
+  );
   assert(
     diagnostics.requestFailures.length === failureMark,
     "Delayed route guard probe leaked into browser failure diagnostics",
   );
   diagnostics.blockedRequests.splice(blockedMark, 1);
+  diagnostics.consoleErrors.splice(consoleMark, 1);
   return true;
 }
 
