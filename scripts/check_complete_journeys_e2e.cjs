@@ -2067,8 +2067,6 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     && !deliveredNotificationIds.includes(preferenceDeliveryFixture.ineligible.public_id),
   "Phase 2 post-save delivery did not apply the saved issue-created eligibility rule");
 
-  assert(state.weather_alerts.length === phase.seeded_state.weather_alerts.length + 4,
-    "Phase 2 generated weather alert count was unexpected");
   const weatherIds = state.weather_alerts.map((alert) => alert.id);
   assert(new Set(weatherIds).size === weatherIds.length,
     "Phase 2 weather alert IDs were duplicated");
@@ -2082,6 +2080,14 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   );
   assert(rainAlerts.length === 1, "Phase 2 rain alert count was unexpected");
   const rainAlert = rainAlerts[0];
+  const expectedWeatherIds = new Set(
+    state.maintenance_rows.weather_alerts.map((alert) => alert.row_id),
+  );
+  for (const alert of phase.seeded_state.weather_alerts) expectedWeatherIds.add(alert.id);
+  expectedWeatherIds.add(rainAlert.id);
+  exact(weatherIds.slice().sort((left, right) => left - right), [...expectedWeatherIds].sort(
+    (left, right) => left - right,
+  ), "Phase 2 generated weather alert identities were unexpected");
   assert(rainAlert.created_at_ms === fixture.clock.attention_now_ms,
     "Phase 2 rain alert timestamp was not frozen");
   exact({

@@ -2220,6 +2220,14 @@ def test_phase_two_notification_projection_uses_exact_identities_not_magic_count
     assert "!afterMaintenanceNotificationIds.has(notification.public_id)" in source
 
 
+def test_phase_two_weather_projection_uses_exact_identities_not_magic_count() -> None:
+    source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+
+    assert "phase.seeded_state.weather_alerts.length + 4" not in source
+    assert "Phase 2 generated weather alert identities were unexpected" in source
+    assert "expectedWeatherIds" in source
+
+
 def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evidence() -> None:
     journey_source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
         encoding="utf-8"
