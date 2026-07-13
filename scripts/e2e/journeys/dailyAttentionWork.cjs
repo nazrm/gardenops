@@ -1602,6 +1602,7 @@ async function attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixtu
   );
   diagnostics.consoleErrors.splice(beforeConsoleErrors, 1);
 
+  await page.waitForLoadState("networkidle");
   await page.reload({ waitUntil: "domcontentloaded" });
   await openPrimary(page, profile, "map");
   await selectGarden(page, profile, fixture.gardens.alpha.id);
