@@ -737,6 +737,15 @@ function calendarTaskForCompletion(event: CalendarEvent) {
   };
 }
 
+function canMutateCalendarTask(event: CalendarEvent): boolean {
+  return (
+    event.kind === "task"
+    && !event.read_only
+    && ctx.canWrite()
+    && (event.status === "pending" || event.status === "snoozed")
+  );
+}
+
 function calendarTaskForSnooze(event: CalendarEvent): GardenTask {
   return {
     id: event.target_id,
@@ -1053,7 +1062,7 @@ function renderDetail(event?: CalendarEvent): void {
     panel.appendChild(actions);
   }
 
-  if (event.kind === "task" && ctx.canWrite() && (event.status === "pending" || event.status === "snoozed")) {
+  if (canMutateCalendarTask(event)) {
     const actions = document.createElement("div");
     actions.className = "calendar-detail-actions";
     actions.appendChild(
@@ -1085,6 +1094,7 @@ async function runTaskAction(
   body: TaskActionRequest,
   options: { showSuccessToast?: boolean } = {},
 ): Promise<boolean> {
+  if (!canMutateCalendarTask(event)) return false;
   if (!ctx.isOnline()) {
     if (body.action === "complete" && body.completed_plant_ids?.length) {
       ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
@@ -1139,6 +1149,7 @@ async function enqueueOfflineCalendarTaskAction(
 }
 
 function completeCalendarTask(event: CalendarEvent): void {
+  if (!canMutateCalendarTask(event)) return;
   const task = calendarTaskForCompletion(event);
   if (!needsCompletionDialog(task)) {
     void runTaskAction(event, { action: "complete" });
@@ -1159,6 +1170,7 @@ function completeCalendarTask(event: CalendarEvent): void {
 }
 
 async function snoozeCalendarTask(event: CalendarEvent): Promise<void> {
+  if (!canMutateCalendarTask(event)) return;
   const task = calendarTaskForSnooze(event);
   const policy = taskSnoozePolicy(task);
   if (!policy.immediate) {
@@ -1195,6 +1207,7 @@ async function promptTaskAction(
   defaultDate = event.due_on || event.start_on,
   warning?: string,
 ): Promise<void> {
+  if (!canMutateCalendarTask(event)) return;
   const promptText = action === "snooze" ? t("tasks.snooze_prompt") : t("tasks.reschedule_prompt");
   const value = window.prompt(warning ? `${warning}\n\n${promptText}` : promptText, defaultDate);
   if (!value) return;

@@ -28,6 +28,7 @@ import { getAppShellMarkup } from "./components/layout";
 import {
   initAttentionTodayPanel,
   type AttentionTodayPanelController,
+  type AttentionTodayRequestScope,
 } from "./components/attentionTodayPanel";
 import {
   renderMapGrid,
@@ -201,6 +202,7 @@ import {
   enqueueDraft,
   isOnline,
 } from "./services/offlineQueue";
+import type { SyncResult } from "./services/offlineQueue";
 import {
   clearPrimedInviteToken,
   primeInviteTokenFromLocation,
@@ -219,6 +221,7 @@ import {
 import {
   initNotificationsFeature,
   loadNotificationCount,
+  refreshNotificationsForCurrentGarden,
   resetNotificationsForCurrentGarden,
   syncNotificationsForCurrentGarden,
 } from "./features/notificationsFeature";
@@ -1225,6 +1228,28 @@ const WRITE_CONTROL_IDS = [
 ];
 
 let attentionTodayPanel: AttentionTodayPanelController | null = null;
+let attentionTodayScopeGardenId: number | null = null;
+let attentionTodayScopeVersion = 0;
+let weatherMutationRefreshVersion = 0;
+
+function attentionTodayRequestScope(): AttentionTodayRequestScope {
+  return {
+    gardenId: getActiveGardenContext(),
+    version: attentionTodayScopeVersion,
+  };
+}
+
+function invalidateAttentionTodayForCurrentGarden(): void {
+  attentionTodayScopeGardenId = getActiveGardenContext();
+  attentionTodayScopeVersion += 1;
+  attentionTodayPanel?.invalidate();
+}
+
+function syncAttentionTodayScopeForCurrentGarden(): void {
+  if (attentionTodayScopeGardenId !== getActiveGardenContext()) {
+    invalidateAttentionTodayForCurrentGarden();
+  }
+}
 
 // ── AppContext (dependency injection for extracted modules) ──
 const appContext: AppContext = {
@@ -1668,6 +1693,22 @@ async function loadCalendar(): Promise<void> {
   await mod.loadCalendar();
 }
 
+async function refreshAfterOfflineSync(result: SyncResult): Promise<void> {
+  const syncedTypes = new Set(result.syncedTypes);
+  const refreshes: Promise<unknown>[] = [];
+  const taskTypes = ["task_complete", "task_skip", "task_snooze", "task_reschedule"];
+
+  if (taskTypes.some((type) => syncedTypes.has(type))) {
+    refreshes.push(loadTasksTab(), loadCalendar(), loadJournalEntries(), loadNotificationCount());
+    attentionTodayPanel?.refresh();
+  }
+  if (syncedTypes.has("journal")) refreshes.push(loadJournalEntries());
+  if (syncedTypes.has("issue_create")) refreshes.push(loadIssues());
+  if (syncedTypes.has("harvest_create")) refreshes.push(loadHarvestTab());
+
+  await Promise.allSettled(refreshes);
+}
+
 async function openCalendarEventComposer(
   prefill?: CalendarManualEventDraft,
 ): Promise<void> {
@@ -1957,7 +1998,9 @@ function ensureGatedFeatureInitializers(): void {
     gatedFeatureInitState.procurement = true;
   }
   if (isFeatureEnabled("weather") && !gatedFeatureInitState.weather) {
-    initWeatherFeature(appContext);
+    initWeatherFeature(appContext, {
+      onWeatherMutation: refreshWeatherMutationSurfaces,
+    });
     gatedFeatureInitState.weather = true;
   }
   if (isFeatureEnabled("planner") && !gatedFeatureInitState.analysis) {
@@ -2091,6 +2134,7 @@ function syncAttentionTodayAvailability(): boolean {
 }
 
 function ensureAttentionTodayPanel(): void {
+  syncAttentionTodayScopeForCurrentGarden();
   if (!syncAttentionTodayAvailability()) {
     attentionTodayPanel?.destroy();
     attentionTodayPanel = null;
@@ -2100,7 +2144,12 @@ function ensureAttentionTodayPanel(): void {
     attentionTodayPanel = initAttentionTodayPanel({
       fetchToday: fetchAttentionTodayApi,
       fetchPreferences: fetchAttentionPreferencesApi,
-      updatePreferences: updateAttentionPreferencesApi,
+      updatePreferences: async (preferences) => {
+        const updated = await updateAttentionPreferencesApi(preferences);
+        await refreshNotificationsForCurrentGarden();
+        return updated;
+      },
+      getRequestScope: attentionTodayRequestScope,
       onPrimaryAction: handleAttentionTodayAction,
       onSecondaryAction: handleAttentionTodayAction,
       onViewSection: handleAttentionTodayViewSection,
@@ -2108,6 +2157,43 @@ function ensureAttentionTodayPanel(): void {
     });
   }
   attentionTodayPanel.refresh();
+}
+
+interface WeatherMutationRefreshRequest {
+  gardenId: number | null;
+  version: number;
+}
+
+function isCurrentWeatherMutationRefresh(
+  request: WeatherMutationRefreshRequest,
+): boolean {
+  return (
+    request.version === weatherMutationRefreshVersion
+    && !gardenSwitchPending
+    && isCurrentGardenRequest(request.gardenId)
+  );
+}
+
+async function refreshWeatherMutationSurfaces(): Promise<void> {
+  const request: WeatherMutationRefreshRequest = {
+    gardenId: getActiveGardenContext(),
+    version: ++weatherMutationRefreshVersion,
+  };
+  if (request.gardenId === null || !isCurrentWeatherMutationRefresh(request)) {
+    return;
+  }
+
+  attentionTodayPanel?.refresh();
+  const refreshes: Promise<void>[] = [refreshNotificationsForCurrentGarden()];
+
+  // Hidden lazy tabs reload on navigation; only wake a visible task/calendar view.
+  if (activeTab === "activity" && subMode === "tasks") {
+    refreshes.push(loadTasksTab());
+  } else if (activeTab === "activity" && subMode === "calendar") {
+    refreshes.push(loadCalendar());
+  }
+
+  await Promise.allSettled(refreshes);
 }
 
 // ── Layout & Setup ─────────────────────────────────────────
@@ -6729,6 +6815,8 @@ function resetMapLayoutForGardenSwitch(): void {
 function clearGardenScopedStateForSwitch(): void {
   mapRefreshVersion += 1;
   weatherCacheRequestVersion += 1;
+  weatherMutationRefreshVersion += 1;
+  invalidateAttentionTodayForCurrentGarden();
   weatherLoadedAt = 0;
   weatherLoadPromise = null;
   weatherScheduleSeq += 1;
@@ -7022,6 +7110,8 @@ async function bootstrapApp(): Promise<void> {
     withoutPendingMediaFiles,
     uploadTargetMediaFiles,
     uploadJournalMediaFiles,
+  }, {
+    onSyncComplete: refreshAfterOfflineSync,
   });
   await refreshGardenContext({ profile: initialMe });
   if (isAdminMfaSetupRequired()) {

@@ -13403,7 +13403,24 @@ td.inventory-qty-zero {
   height: 4px;
   background: var(--bg-3);
   border-radius: 2px;
-  margin: 0 auto var(--sp-3);
+  margin: var(--sp-1) auto;
+}
+
+.mobile-quick-actions-toolbar {
+  position: relative;
+  min-height: 28px;
+  margin-bottom: var(--sp-3);
+}
+
+.mobile-quick-actions-close {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
 }
 
 .quick-action-title {
@@ -13477,6 +13494,24 @@ td.inventory-qty-zero {
   gap: var(--sp-1);
 }
 
+.quick-action-task-search {
+  width: 100%;
+  min-height: 44px;
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--bg-3);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font: inherit;
+}
+
+.quick-action-task-search:focus {
+  border-color: var(--brand);
+  outline: 2px solid color-mix(in srgb, var(--brand) 35%, transparent);
+  outline-offset: 1px;
+}
+
 .quick-action-task-item {
   display: block;
   width: 100%;
@@ -13499,6 +13534,32 @@ td.inventory-qty-zero {
   padding: var(--sp-4);
   color: var(--text-3);
   font-size: 0.85rem;
+}
+
+.quick-action-snooze-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: 0.85rem;
+}
+
+.quick-action-snooze-notice-action {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font: inherit;
+  cursor: pointer;
 }
 
 /* ── Smart gardener reports ─────────────────────────────── */

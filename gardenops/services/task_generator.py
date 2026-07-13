@@ -128,6 +128,7 @@ _AI_TASK_DESCRIPTION_TYPES = {"prune"}
 _WORK_ORDER_SOURCE_PREFIX = "work_order"
 _WORK_ORDER_GROUP_TYPES = {"prune", "fertilize"}
 _TASK_GENERATION_LOCK_SEED = 0x474F505441534B53
+_ATTENTION_RESTORE_LOCK_SEED = 0x474F50524553544F
 
 
 def _generated_description_metadata(
@@ -685,6 +686,13 @@ def restore_generated_watering_task_from_attention_outcome(
     actor_user_id: int | None,
     now_ms: int,
 ) -> str:
+    db.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, %s))",
+        (
+            f"gardenops:attention-restore:{garden_id}:{source_public_id}",
+            _ATTENTION_RESTORE_LOCK_SEED,
+        ),
+    )
     due_on = str(
         recovery_action.get("due_on")
         or metadata.get("due_on")

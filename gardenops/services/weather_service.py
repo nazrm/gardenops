@@ -4,14 +4,31 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import urllib.error
 import urllib.request
 from collections import defaultdict
 
 from gardenops.branding import app_user_agent
 from gardenops.db import DbConn, current_timestamp_ms
+from gardenops.services.attention.types import attention_request_clock
 
 _logger = logging.getLogger(__name__)
+
+
+def _external_forecast_fetch_allowed() -> bool:
+    """Return whether this process may make a remote weather-provider request."""
+    configured = os.environ.get("GARDENOPS_WEATHER_EXTERNAL_FETCH_ENABLED", "").strip()
+    if configured:
+        return configured.lower() in {"1", "true", "yes", "on"}
+    return os.environ.get("APP_ENV", "").strip().lower() != "test"
+
+
+def _weather_timestamp_ms() -> int:
+    """Use the attention test clock for weather state written during test runs."""
+    now_ms, _frozen_date = attention_request_clock(now_ms=current_timestamp_ms())
+    return now_ms
+
 
 # RHS hardiness to minimum temperature tolerance (deg C)
 # H1: >15 (tender), H2: 1-5, H3: -5 to 1, H4: -10 to -5, H5: -15 to -10
@@ -43,6 +60,12 @@ def _parse_hardiness(raw: str) -> str | None:
 def _min_temp_for_hardiness(code: str) -> float:
     """Return minimum safe temp for a hardiness code."""
     return _HARDINESS_MIN_TEMP.get(code, -20.0)
+
+
+def is_frost_vulnerable_at_temperature(hardiness: str | None, min_temp: float) -> bool:
+    """Return whether a plant's known hardiness is unsafe at ``min_temp``."""
+    code = _parse_hardiness(hardiness or "")
+    return code is not None and min_temp < _min_temp_for_hardiness(code)
 
 
 def _aggregate_met_timeseries(raw: dict) -> dict:
@@ -77,11 +100,14 @@ def _aggregate_met_timeseries(raw: dict) -> dict:
         temp_max_list.append(max(temps) if temps else None)
 
         precip = 0.0
+        precipitation_complete = True
         for e in entries:
             p1 = e["data"].get("next_1_hours", {}).get("details", {}).get("precipitation_amount")
-            if p1 is not None:
-                precip += p1
-        precip_sum_list.append(precip)
+            if p1 is None:
+                precipitation_complete = False
+                break
+            precip += p1
+        precip_sum_list.append(precip if precipitation_complete else None)
 
         winds = [
             e["data"]["instant"]["details"]["wind_speed"]
@@ -108,6 +134,10 @@ def fetch_forecast(latitude: float, longitude: float) -> dict:
     Returns daily aggregates in the same shape consumed by
     analyze_forecast() and the weather router.
     """
+    if not _external_forecast_fetch_allowed():
+        _logger.info("Weather forecast fetch skipped because external network access is disabled")
+        return {}
+
     lat = round(latitude, 4)
     lon = round(longitude, 4)
     url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={lat}&lon={lon}"
@@ -126,7 +156,7 @@ def fetch_forecast(latitude: float, longitude: float) -> dict:
 
 def get_cached_forecast(db: DbConn, garden_id: int) -> dict | None:
     """Return cached forecast if fresh enough, else None."""
-    now = current_timestamp_ms()
+    now = _weather_timestamp_ms()
     row = db.execute(
         """
         SELECT forecast_json, fetched_at_ms FROM weather_cache
@@ -153,7 +183,7 @@ def save_forecast_cache(
     forecast: dict,
 ) -> None:
     """Save forecast to cache, removing old entries."""
-    now = current_timestamp_ms()
+    now = _weather_timestamp_ms()
     db.execute("DELETE FROM weather_cache WHERE garden_id = %s", (garden_id,))
     db.execute(
         """
@@ -175,6 +205,9 @@ def get_or_fetch_forecast(
     cached = get_cached_forecast(db, garden_id)
     if cached:
         return cached
+    if not _external_forecast_fetch_allowed():
+        _logger.info("Weather forecast unavailable because external network access is disabled")
+        return {}
     forecast = fetch_forecast(latitude, longitude)
     if forecast and "daily" in forecast:
         save_forecast_cache(db, garden_id, latitude, longitude, forecast)
@@ -277,7 +310,7 @@ def analyze_forecast(forecast: dict) -> list[dict]:
     dry_start: str | None = None
     dry_end: str | None = None
     for i, d in enumerate(dates):
-        if i < len(precip) and (precip[i] is None or precip[i] < 1.0):
+        if i < len(precip) and precip[i] is not None and precip[i] < 1.0:
             if dry_streak == 0:
                 dry_start = d
             dry_streak += 1
@@ -362,8 +395,9 @@ def find_frost_vulnerable_plants(
 
     vulnerable = []
     for p in plants:
-        code = _parse_hardiness(str(p["hardiness"]))
-        if code and min_temp < _min_temp_for_hardiness(code):
+        hardiness = str(p["hardiness"])
+        code = _parse_hardiness(hardiness)
+        if code and is_frost_vulnerable_at_temperature(hardiness, min_temp):
             vulnerable.append(
                 {
                     "plt_id": str(p["plt_id"]),
@@ -422,7 +456,7 @@ def save_weather_alerts(
     """
     created = 0
     skipped = 0
-    now = current_timestamp_ms()
+    now = _weather_timestamp_ms()
 
     for alert in alerts:
         # Build plant_advice based on alert type
@@ -512,12 +546,16 @@ def save_weather_alerts(
                 merged_meta["plant_advice"] = [
                     advice_by_value[key] for key in sorted(advice_by_value)
                 ]
-            severity_rank = {"low": 1, "normal": 2, "high": 3}
+            severity_rank = {"low": 0, "normal": 1, "high": 2, "critical": 3}
             existing_severity = str(existing["severity"] or "normal")
             incoming_severity = str(alert["severity"] or "normal")
+            severity_escalated = severity_rank.get(
+                incoming_severity,
+                severity_rank["normal"],
+            ) > severity_rank.get(existing_severity, severity_rank["normal"])
             merged_severity = max(
                 (existing_severity, incoming_severity),
-                key=lambda value: severity_rank.get(value, 0),
+                key=lambda value: severity_rank.get(value, severity_rank["normal"]),
             )
             db.execute(
                 """
@@ -538,6 +576,16 @@ def save_weather_alerts(
                     alert_id,
                 ),
             )
+            if severity_escalated:
+                db.execute(
+                    """
+                    DELETE FROM user_attention_item_state
+                    WHERE garden_id = %s
+                      AND item_id = %s
+                      AND user_state = 'dismissed'
+                    """,
+                    (garden_id, f"attn:weather:alert:{alert_id}"),
+                )
             skipped += 1
 
         if plant_list:

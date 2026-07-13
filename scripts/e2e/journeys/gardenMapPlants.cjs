@@ -255,16 +255,13 @@ async function closeMobileSurfaces(page) {
     await page.locator("#mobile-fab-backdrop").click({ force: true }).catch(() => {});
   }
   if (await page.locator("body.mobile-map-sheet-open").count()) {
-    await page.keyboard.press("Escape");
     const closeButton = page.locator(
-      "#mobile-map-layers-close-btn:visible, #mobile-map-layouts-close-btn:visible, "
-      + "#mobile-map-tools-close-btn:visible, #mobile-map-shade-close-btn:visible",
+      ".mobile-map-sheet--open [data-mobile-map-sheet-initial-focus]",
     ).first();
-    if (await page.locator("body.mobile-map-sheet-open").count() && await closeButton.count()) {
-      await closeButton.click().catch(() => {});
-    }
-    if (await page.locator("body.mobile-map-sheet-open").count()) {
-      await page.locator("#mobile-map-sheet-backdrop").click({ force: true }).catch(() => {});
+    if (await closeButton.count()) {
+      await closeButton.click();
+    } else {
+      await page.locator("#mobile-map-sheet-backdrop").click({ force: true });
     }
   }
   await page.waitForFunction(() => (

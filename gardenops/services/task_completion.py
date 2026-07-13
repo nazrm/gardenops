@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import date
 from typing import Any, Literal
 
 from fastapi import HTTPException
@@ -213,6 +212,7 @@ def record_completion_journal_entry(
     outcome: CompletionOutcome,
     notes: str | None,
     now_ms: int,
+    occurred_on: str,
 ) -> tuple[str | None, dict[str, Any]]:
     task_type = str(task_row.get("task_type") or "")
     if not selected_plant_ids or not is_completion_capture_task(task_type):
@@ -260,7 +260,7 @@ def record_completion_journal_entry(
             generate_public_id("jrn"),
             int(task_row["garden_id"]),
             event_type,
-            date.today().isoformat(),
+            occurred_on,
             title,
             notes or "",
             json.dumps(entry_metadata, sort_keys=True, separators=(",", ":")),
@@ -288,7 +288,7 @@ def record_completion_journal_entry(
             db,
             garden_id=int(task_row["garden_id"]),
             plant_ids=selected_plant_ids,
-            seen_date=date.today().isoformat(),
+            seen_date=occurred_on,
             plot_ids=selected_plot_ids,
         )
     completion_records[key] = entry_public_id

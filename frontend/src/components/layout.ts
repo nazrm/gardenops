@@ -169,6 +169,8 @@ export function getAppShellMarkup(): string {
               data-dropdown-id="global-search-dropdown"
               type="search"
               name="plant-search"
+              aria-label="${t("nav.find_plant_on_map")}"
+              data-i18n-aria-label="nav.find_plant_on_map"
               placeholder="${t("nav.search_placeholder")}"
               data-i18n-placeholder="nav.search_placeholder"
               autocomplete="off"
@@ -1177,10 +1179,13 @@ export function getAppShellMarkup(): string {
         <p class="mobile-map-note" data-i18n="map.mobile_note">${t("map.mobile_note")}</p>
       </aside>
 
-      <button id="mobile-fab" class="mobile-fab" type="button" aria-label="${t("quick_actions.title")}" data-i18n-aria-label="quick_actions.title">+</button>
+      <button id="mobile-fab" class="mobile-fab" type="button" aria-label="${t("quick_actions.title")}" aria-controls="mobile-quick-actions" aria-haspopup="dialog" aria-expanded="false" data-i18n-aria-label="quick_actions.title">+</button>
       <div id="mobile-fab-backdrop" class="mobile-fab-backdrop" aria-hidden="true"></div>
-      <aside id="mobile-quick-actions" class="mobile-quick-actions" aria-hidden="true">
-        <div class="mobile-quick-actions-handle"></div>
+      <aside id="mobile-quick-actions" class="mobile-quick-actions" role="dialog" aria-modal="true" aria-label="${t("quick_actions.title")}" data-i18n-aria-label="quick_actions.title" aria-hidden="true" tabindex="-1" inert>
+        <div class="mobile-quick-actions-toolbar">
+          <div class="mobile-quick-actions-handle" aria-hidden="true"></div>
+          <button id="mobile-quick-actions-close-btn" class="mobile-quick-actions-close close-btn" type="button" aria-label="${t("quick_actions.close")}" title="${t("quick_actions.close")}" data-i18n-aria-label="quick_actions.close" data-i18n-title="quick_actions.close">&times;</button>
+        </div>
         <div id="mobile-quick-actions-content"></div>
       </aside>
 

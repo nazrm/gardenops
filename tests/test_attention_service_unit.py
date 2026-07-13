@@ -675,21 +675,52 @@ def test_scheduled_quiet_hours_suppress_digest_only_inside_window():
         show_no_action_history=True,
     )
     item = make_item(delivery_eligibility=("panel_only", "inbox", "digest"))
-    inside_quiet_hours_ms = int(datetime(2026, 7, 5, 22, 30, tzinfo=UTC).timestamp() * 1000)
-    outside_quiet_hours_ms = int(datetime(2026, 7, 5, 12, 0, tzinfo=UTC).timestamp() * 1000)
+    before_quiet_hours_ms = int(datetime(2026, 7, 5, 21, 29, tzinfo=UTC).timestamp() * 1000)
+    quiet_start_ms = int(datetime(2026, 7, 5, 21, 30, tzinfo=UTC).timestamp() * 1000)
+    quiet_end_minus_one_ms = int(datetime(2026, 7, 6, 6, 14, tzinfo=UTC).timestamp() * 1000)
+    quiet_end_ms = int(datetime(2026, 7, 6, 6, 15, tzinfo=UTC).timestamp() * 1000)
+
+    assert [
+        i.id
+        for i in apply_preferences([item], prefs, surface="digest", now_ms=before_quiet_hours_ms)
+    ] == ["attn:task:task_1"]
+    assert apply_preferences([item], prefs, surface="digest", now_ms=quiet_start_ms) == []
+    assert apply_preferences([item], prefs, surface="digest", now_ms=quiet_end_minus_one_ms) == []
+    assert [
+        i.id for i in apply_preferences([item], prefs, surface="digest", now_ms=quiet_end_ms)
+    ] == ["attn:task:task_1"]
+    assert [
+        i.id for i in apply_preferences([item], prefs, surface="panel", now_ms=quiet_start_ms)
+    ] == ["attn:task:task_1"]
+
+
+def test_legacy_quiet_window_fallback_preserves_minute_precision():
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={
+            "task_due": {
+                "panel": True,
+                "inbox": True,
+                "digest": True,
+                "min_severity": "low",
+            }
+        },
+        quiet_hours={"start": "21:30", "end": "06:15"},
+        show_no_action_history=True,
+    )
+    item = make_item(delivery_eligibility=("panel_only", "inbox", "digest"))
+    inside_quiet_hours_ms = int(datetime(2026, 7, 6, 6, 14, tzinfo=UTC).timestamp() * 1000)
+    outside_quiet_hours_ms = int(datetime(2026, 7, 6, 6, 15, tzinfo=UTC).timestamp() * 1000)
 
     assert apply_preferences([item], prefs, surface="digest", now_ms=inside_quiet_hours_ms) == []
     assert [
         i.id
         for i in apply_preferences([item], prefs, surface="digest", now_ms=outside_quiet_hours_ms)
     ] == ["attn:task:task_1"]
-    assert [
-        i.id
-        for i in apply_preferences([item], prefs, surface="panel", now_ms=inside_quiet_hours_ms)
-    ] == ["attn:task:task_1"]
 
 
-def test_non_configurable_notification_rows_bypass_attention_delivery_filter():
+def test_non_configurable_notification_rows_follow_attention_delivery_filter():
     from gardenops.services.notification_service import notification_rows_allowed_by_attention
 
     prefs = AttentionPreferenceSet(
@@ -721,13 +752,16 @@ def test_non_configurable_notification_rows_bypass_attention_delivery_filter():
         "created_at_ms": 1,
     }
 
-    assert notification_rows_allowed_by_attention(
-        [row],
-        preferences=prefs,
-        surface="digest",
-        garden_id=1,
-        user_id=2,
-    ) == [row]
+    assert (
+        notification_rows_allowed_by_attention(
+            [row],
+            preferences=prefs,
+            surface="digest",
+            garden_id=1,
+            user_id=2,
+        )
+        == []
+    )
 
 
 def test_active_provider_items_are_eligible_for_inbox_and_digest_surfaces():
@@ -801,3 +835,47 @@ def test_active_provider_items_are_eligible_for_inbox_and_digest_surfaces():
     for item in [task_item, weather_alert, issue_item, calendar_item]:
         assert "inbox" in item.delivery_eligibility
         assert "digest" in item.delivery_eligibility
+
+
+def test_weather_attention_provider_maps_alert_types_to_notification_subtypes() -> None:
+    from gardenops.services.attention.providers.weather import WeatherAttentionProvider
+
+    class _Rows:
+        def fetchall(self):
+            return [
+                {
+                    "id": index,
+                    "garden_id": 1,
+                    "alert_type": alert_type,
+                    "severity": "normal",
+                    "title": alert_type,
+                    "description": "",
+                    "valid_from": "2026-07-05",
+                    "valid_until": "2026-07-05",
+                    "metadata_json": "{}",
+                    "created_at_ms": 1,
+                }
+                for index, alert_type in enumerate(
+                    ["frost_warning", "rain_surplus", "heat_wave", "dry_spell", "unknown"],
+                    start=1,
+                )
+            ]
+
+    class _Connection:
+        def execute(self, _query, _params):
+            return _Rows()
+
+    items = WeatherAttentionProvider(frozen_date="2026-07-05")._active_alert_items(
+        _Connection(),
+        garden_id=1,
+        user_id=2,
+        today="2026-07-05",
+    )
+
+    assert {item.metadata["alert_type"]: item.type for item in items} == {
+        "frost_warning": "frost_warning",
+        "rain_surplus": "rain_alert",
+        "heat_wave": "heat_wave",
+        "dry_spell": "dry_spell",
+        "unknown": "weather_alert",
+    }

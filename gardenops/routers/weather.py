@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from gardenops.db import DB, DbConn
+from gardenops.db import DB, DbConn, current_timestamp_ms
 from gardenops.router_helpers import (
     active_garden_id as _active_garden_id,
 )
@@ -17,6 +17,8 @@ from gardenops.router_helpers import (
 from gardenops.router_helpers import (
     require_write as _require_write,
 )
+from gardenops.services.attention import set_user_attention_state
+from gardenops.services.attention.types import attention_request_clock
 from gardenops.services.automation import (
     on_dry_spell_alert,
     on_frost_alert,
@@ -34,6 +36,11 @@ from gardenops.services.weather_service import (
 from gardenops.sql_dates import offset_days_iso
 
 router = APIRouter()
+
+
+def _weather_request_clock() -> tuple[int, str]:
+    now_ms, frozen_date = attention_request_clock(now_ms=current_timestamp_ms())
+    return now_ms, frozen_date or offset_days_iso(0)
 
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -78,19 +85,48 @@ def _serialize_alert(row: dict[str, Any], plant_ids: list[str]) -> dict:
     }
 
 
-def _load_active_alerts(db: DbConn, garden_id: int) -> list[dict]:
+def _load_active_alerts(
+    db: DbConn,
+    garden_id: int,
+    *,
+    user_id: int | None = None,
+) -> list[dict]:
     """Load active (non-dismissed, not expired) alerts with linked plants."""
-    today_iso = offset_days_iso(0)
-    rows = db.execute(
-        """
-        SELECT * FROM weather_alerts
-        WHERE garden_id = %s AND dismissed = 0 AND valid_until >= %s
-        ORDER BY
-            CASE severity WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
-            valid_from ASC
-        """,
-        (garden_id, today_iso),
-    ).fetchall()
+    _now_ms, today_iso = _weather_request_clock()
+    if user_id is None:
+        rows = db.execute(
+            """
+            SELECT * FROM weather_alerts
+            WHERE garden_id = %s AND dismissed = 0 AND valid_until >= %s
+            ORDER BY
+                CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                    WHEN 'normal' THEN 2 ELSE 3 END,
+                valid_from ASC
+            """,
+            (garden_id, today_iso),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            """
+            SELECT * FROM weather_alerts
+            WHERE garden_id = %s
+              AND dismissed = 0
+              AND valid_until >= %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM user_attention_item_state state
+                  WHERE state.garden_id = weather_alerts.garden_id
+                    AND state.user_id = %s
+                    AND state.item_id = 'attn:weather:alert:' || weather_alerts.id::text
+                    AND state.user_state = 'dismissed'
+              )
+            ORDER BY
+                CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                    WHEN 'normal' THEN 2 ELSE 3 END,
+                valid_from ASC
+            """,
+            (garden_id, today_iso, user_id),
+        ).fetchall()
 
     plant_ids_by_alert: dict[int, list[str]] = {int(row["id"]): [] for row in rows}
     if plant_ids_by_alert:
@@ -132,7 +168,7 @@ def get_alerts(request: Request, db: DB) -> dict:
     """List active (non-dismissed) weather alerts."""
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
-    alerts = _load_active_alerts(db, garden_id)
+    alerts = _load_active_alerts(db, garden_id, user_id=context.user_id)
     return {"alerts": alerts, "total": len(alerts)}
 
 
@@ -218,17 +254,23 @@ def dismiss_alert(alert_id: int, request: Request, db: DB) -> dict:
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
     _require_write(context)
+    if context.user_id is None:
+        raise HTTPException(status_code=403, detail="Authentication required")
 
     row = db.execute(
-        "SELECT id FROM weather_alerts WHERE id = %s AND garden_id = %s",
+        "SELECT id FROM weather_alerts WHERE id = %s AND garden_id = %s FOR UPDATE",
         (alert_id, garden_id),
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Alert not found")
 
-    db.execute(
-        "UPDATE weather_alerts SET dismissed = 1 WHERE id = %s",
-        (alert_id,),
+    set_user_attention_state(
+        db,
+        garden_id=garden_id,
+        user_id=int(context.user_id),
+        item_id=f"attn:weather:alert:{alert_id}",
+        user_state="dismissed",
+        now_ms=_weather_request_clock()[0],
     )
     db.commit()
     return {"status": "dismissed", "id": alert_id}
@@ -278,7 +320,7 @@ def get_summary(request: Request, db: DB) -> dict:
             )
 
     # Active alerts
-    alerts = _load_active_alerts(db, garden_id)
+    alerts = _load_active_alerts(db, garden_id, user_id=context.user_id)
 
     # Frost-vulnerable plants (if any frost alert active)
     frost_plants: list[dict] = []

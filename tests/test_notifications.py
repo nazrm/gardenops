@@ -253,7 +253,7 @@ class TestNotifications(BaseApiTest):
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 
-    def test_muted_notification_type_clears_inbox_but_keeps_log(self) -> None:
+    def test_muted_notification_type_hides_inbox_without_mutating_log(self) -> None:
         from gardenops.services.notification_service import create_notification as _create_notif
 
         os.environ["AUTH_REQUIRED"] = "true"
@@ -311,11 +311,11 @@ class TestNotifications(BaseApiTest):
             self.assertEqual(log.status_code, 200)
             found = [n for n in log.json()["notifications"] if n["id"] == nid]
             self.assertEqual(len(found), 1)
-            self.assertEqual(found[0]["clear_reason"], "preference_hidden")
+            self.assertIsNone(found[0]["clear_reason"])
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 
-    def test_reenabled_task_notification_type_can_create_new_active_notification(self) -> None:
+    def test_reenabled_task_notification_type_keeps_existing_active_notification(self) -> None:
         from gardenops.services.notification_service import create_task_due_notifications
         from gardenops.sql_dates import offset_days_iso
 
@@ -389,7 +389,7 @@ class TestNotifications(BaseApiTest):
             conn = db.get_db()
             try:
                 second = create_task_due_notifications(conn, garden_id)
-                self.assertEqual(int(second["created"]), 1)
+                self.assertEqual(int(second["created"]), 0)
                 counts = conn.execute(
                     """
                     SELECT
@@ -407,7 +407,7 @@ class TestNotifications(BaseApiTest):
                     (garden_id, user_id, task_public_id),
                 ).fetchone()
                 assert counts is not None
-                self.assertEqual(int(counts["total"]), 2)
+                self.assertEqual(int(counts["total"]), 1)
                 self.assertEqual(int(counts["active"]), 1)
             finally:
                 db.return_db(conn)

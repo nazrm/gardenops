@@ -94,8 +94,11 @@ control.
   watering outcomes that need no action.
 - Calendar views, manual events, preferences, and subscription support for
   garden work and observations.
-- Notification and saved-view tooling for keeping recurring work, open issues,
-  weather alerts, and high-priority garden states visible.
+- Notification controls for category, urgency, inbox and digest delivery, quiet
+  hours, and user-scoped mute/dismiss behavior, normalized with the Map Today
+  attention rules so the same event does not make contradictory promises.
+- Saved-view tooling for keeping recurring work, open issues, weather alerts,
+  and high-priority garden states visible.
 
 ### Observations, Media, And History
 

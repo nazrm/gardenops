@@ -9,6 +9,118 @@ export interface QuickActionCallbacks {
   onIdentifyPlant: () => void;
 }
 
+type QuickActionTask = { id: string; title: string; task_type: string };
+
+export interface QuickActionSnoozeNotice {
+  message: string;
+  actionLabel: string;
+  durationMs: number;
+  onChangeDate: () => void;
+}
+
+function appendTaskPicker(
+  container: HTMLElement,
+  tasks: ReadonlyArray<QuickActionTask>,
+  onSelect: (taskId: string) => void,
+): void {
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "quick-action-task-search";
+  search.placeholder = t("quick_actions.search_tasks");
+  search.setAttribute("aria-label", t("quick_actions.search_tasks"));
+  search.autocomplete = "off";
+
+  const list = document.createElement("div");
+  list.className = "quick-action-task-list";
+
+  const renderMatches = (): void => {
+    const query = search.value.trim().toLocaleLowerCase();
+    const matches = query
+      ? tasks.filter((task) => task.title.toLocaleLowerCase().includes(query))
+      : tasks;
+    list.replaceChildren();
+    for (const task of matches) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "quick-action-task-item";
+      btn.textContent = task.title || `Task #${task.id}`;
+      btn.addEventListener("click", () => onSelect(task.id));
+      list.appendChild(btn);
+    }
+    if (matches.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "quick-action-empty";
+      empty.textContent = t("quick_actions.no_matching_tasks");
+      list.appendChild(empty);
+    }
+  };
+
+  search.addEventListener("input", renderMatches);
+  container.append(search, list);
+  renderMatches();
+}
+
+export function appendQuickActionSnoozeNotice(
+  container: HTMLElement,
+  notice: QuickActionSnoozeNotice,
+): void {
+  const element = document.createElement("div");
+  element.className = "quick-action-snooze-notice";
+  element.setAttribute("role", "status");
+  element.setAttribute("aria-live", "polite");
+
+  const message = document.createElement("span");
+  message.textContent = notice.message;
+
+  const action = document.createElement("button");
+  action.type = "button";
+  action.className = "quick-action-snooze-notice-action";
+  action.textContent = notice.actionLabel;
+
+  element.append(message, action);
+  const header = container.querySelector(".quick-action-header");
+  if (header) {
+    header.insertAdjacentElement("afterend", element);
+  } else {
+    container.prepend(element);
+  }
+
+  let remainingMs = notice.durationMs;
+  let startedAt = Date.now();
+  let paused = false;
+  let timeout = window.setTimeout(remove, remainingMs);
+
+  function remove(): void {
+    window.clearTimeout(timeout);
+    element.remove();
+  }
+
+  function pause(): void {
+    if (paused || !element.isConnected) return;
+    paused = true;
+    window.clearTimeout(timeout);
+    remainingMs = Math.max(0, remainingMs - (Date.now() - startedAt));
+  }
+
+  function resume(): void {
+    if (!paused || !element.isConnected) return;
+    paused = false;
+    startedAt = Date.now();
+    timeout = window.setTimeout(remove, remainingMs);
+  }
+
+  action.addEventListener("click", () => {
+    remove();
+    notice.onChangeDate();
+  });
+  element.addEventListener("mouseenter", pause);
+  element.addEventListener("mouseleave", resume);
+  element.addEventListener("focusin", pause);
+  element.addEventListener("focusout", () => {
+    if (!element.contains(document.activeElement)) resume();
+  });
+}
+
 export function renderQuickActionSheet(
   container: HTMLElement,
   cbs: QuickActionCallbacks,
@@ -74,6 +186,7 @@ export function renderTaskQuickComplete(
   backBtn.type = "button";
   backBtn.className = "quick-action-back";
   backBtn.textContent = "\u2190";
+  backBtn.setAttribute("aria-label", t("quick_actions.back"));
   backBtn.addEventListener("click", onBack);
 
   const title = document.createElement("h3");
@@ -91,19 +204,7 @@ export function renderTaskQuickComplete(
     return;
   }
 
-  const list = document.createElement("div");
-  list.className = "quick-action-task-list";
-
-  for (const task of tasks) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "quick-action-task-item";
-    btn.textContent = task.title || `Task #${task.id}`;
-    btn.addEventListener("click", () => onComplete(task.id));
-    list.appendChild(btn);
-  }
-
-  container.appendChild(list);
+  appendTaskPicker(container, tasks, onComplete);
 }
 
 export function renderTaskQuickSnooze(
@@ -121,6 +222,7 @@ export function renderTaskQuickSnooze(
   backBtn.type = "button";
   backBtn.className = "quick-action-back";
   backBtn.textContent = "\u2190";
+  backBtn.setAttribute("aria-label", t("quick_actions.back"));
   backBtn.addEventListener("click", onBack);
 
   const title = document.createElement("h3");
@@ -138,17 +240,5 @@ export function renderTaskQuickSnooze(
     return;
   }
 
-  const list = document.createElement("div");
-  list.className = "quick-action-task-list";
-
-  for (const task of tasks) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "quick-action-task-item";
-    btn.textContent = task.title || `Task #${task.id}`;
-    btn.addEventListener("click", () => onSnooze(task.id));
-    list.appendChild(btn);
-  }
-
-  container.appendChild(list);
+  appendTaskPicker(container, tasks, onSnooze);
 }

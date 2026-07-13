@@ -1642,7 +1642,7 @@ class TestAttentionTaskProvider(BaseApiTest):
         assert by_id["attn:task:task_high_due_today"].severity == "high"
         assert by_id["attn:task:task_completed_recent_cap"].category == "no_action_needed"
 
-    def test_generated_outdoor_watering_suppression_requires_matching_outcome(self) -> None:
+    def test_rain_outcomes_suppress_only_currently_covered_watering(self) -> None:
         from gardenops.services.attention import TaskAttentionProvider
         from gardenops.services.attention.outcomes import upsert_attention_outcome
 
@@ -1679,14 +1679,34 @@ class TestAttentionTaskProvider(BaseApiTest):
                  '{}', 1, 1),
                 ('task_generated_indoor', %s, 'water', 'Water indoor', '',
                  'pending', 'normal', '2026-07-05', NULL, 'water:RAIN4:2026-07-05',
-                 '{}', 1, 1)
+                 '{}', 1, 1),
+                ('task_generated_snoozed', %s, 'water', 'Water snoozed', '',
+                 'snoozed', 'normal', '2026-07-01', '2026-07-05',
+                 'water:RAIN5:2026-07-01', '{}', 1, 1)
                 """,
-                (garden_id, garden_id, garden_id, garden_id, garden_id),
+                (garden_id, garden_id, garden_id, garden_id, garden_id, garden_id),
             )
             task_rows = {
                 str(row["public_id"]): int(row["id"])
                 for row in conn.execute("SELECT id, public_id FROM garden_tasks").fetchall()
             }
+            for plant_id in ("RAIN1", "RAIN2", "RAIN3", "RAIN4", "RAIN5"):
+                conn.execute(
+                    """
+                    INSERT INTO plants
+                        (plt_id, name, latin, category, bloom_month, color,
+                         hardiness, height_cm, light, link)
+                    VALUES (%s, %s, '', 'busker', '', '', '', NULL, '', '')
+                    """,
+                    (plant_id, plant_id),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (plant_id, user_id, garden_id),
+                )
             for public_id in (
                 "task_generated_suppressed",
                 "task_manual_visible",
@@ -1699,6 +1719,27 @@ class TestAttentionTaskProvider(BaseApiTest):
             conn.execute(
                 "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'INDOOR-ATTN')",
                 (task_rows["task_generated_indoor"],),
+            )
+            for public_id, plant_id in (
+                ("task_generated_suppressed", "RAIN1"),
+                ("task_generated_without_outcome", "RAIN2"),
+                ("task_generated_no_plot", "RAIN3"),
+                ("task_generated_indoor", "RAIN4"),
+                ("task_generated_snoozed", "RAIN5"),
+            ):
+                conn.execute(
+                    "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
+                    (task_rows[public_id], plant_id),
+                )
+            conn.execute(
+                """
+                INSERT INTO plot_plants (plot_id, plt_id, quantity)
+                VALUES
+                    ('OUT1', 'RAIN1', 1),
+                    ('OUT1', 'RAIN2', 1),
+                    ('OUT1', 'RAIN5', 1),
+                    ('INDOOR-ATTN', 'RAIN4', 1)
+                """,
             )
             for rule in ("water:RAIN1:2026-07-05", "water:RAIN3:2026-07-05"):
                 upsert_attention_outcome(
@@ -1739,6 +1780,29 @@ class TestAttentionTaskProvider(BaseApiTest):
                 occurred_at_ms=1783180800000,
                 expires_at_ms=1785772800000,
             )
+            upsert_attention_outcome(
+                conn,
+                garden_id=garden_id,
+                provider="weather",
+                outcome_type="watering_rescheduled_by_rain",
+                source_type="task_generator",
+                source_id="1",
+                source_public_id="water:RAIN5:2026-07-01",
+                target_type="plant",
+                target_id="RAIN5",
+                title="Watering rescheduled by rain",
+                explanation="18 mm rain moved this watering.",
+                reason="Rain surplus rescheduled the watering date",
+                plant_ids=("RAIN5",),
+                plot_ids=(),
+                metadata={
+                    "due_on": "2026-07-01",
+                    "new_due_on": "2026-07-05",
+                    "rain_mm": 18,
+                },
+                occurred_at_ms=1783180800000,
+                expires_at_ms=1785772800000,
+            )
             conn.commit()
             items = TaskAttentionProvider(frozen_date="2026-07-05").collect(
                 conn,
@@ -1755,6 +1819,7 @@ class TestAttentionTaskProvider(BaseApiTest):
         assert "attn:task:task_generated_without_outcome" in item_ids
         assert "attn:task:task_generated_no_plot" in item_ids
         assert "attn:task:task_generated_indoor" in item_ids
+        assert "attn:task:task_generated_snoozed" in item_ids
 
 
 class TestAttentionExpandedProviders(BaseApiTest):

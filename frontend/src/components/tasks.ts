@@ -210,6 +210,13 @@ function createTaskCard(
     snoozeBtn.addEventListener("click", () => cbs.onSnooze(task));
     actions.appendChild(snoozeBtn);
 
+    const rescheduleBtn = document.createElement("button");
+    rescheduleBtn.type = "button";
+    rescheduleBtn.className = "task-action-btn";
+    rescheduleBtn.textContent = t("tasks.action_reschedule");
+    rescheduleBtn.addEventListener("click", () => cbs.onReschedule(task));
+    actions.appendChild(rescheduleBtn);
+
     const skipBtn = document.createElement("button");
     skipBtn.type = "button";
     skipBtn.className = "task-action-btn";

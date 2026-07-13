@@ -3518,6 +3518,7 @@ export function buildCalendarExportUrl(params: {
     start: params.start,
     end: params.end,
   });
+  if (activeGardenId !== null) query.set("garden_id", String(activeGardenId));
   if (params.preset) query.set("preset", params.preset);
   if (params.visible_sources) query.set("visible_sources", params.visible_sources);
   if (typeof params.include_recent_history === "boolean") {
@@ -3529,9 +3530,6 @@ export function buildCalendarExportUrl(params: {
   if (params.selected_plant_ids) query.set("selected_plant_ids", params.selected_plant_ids);
   if (params.selected_plot_ids) query.set("selected_plot_ids", params.selected_plot_ids);
   if (params.selected_zone_codes) query.set("selected_zone_codes", params.selected_zone_codes);
-  if (!query.has("garden_id") && activeGardenId !== null) {
-    query.set("garden_id", String(activeGardenId));
-  }
   return `/api/calendar/export.ics?${query.toString()}`;
 }
 

@@ -315,6 +315,38 @@ class TestTasks(BaseApiTest):
         overdue_titles = [t["title"] for t in r.json()["tasks"]]
         self.assertIn("Overdue task", overdue_titles)
 
+    def test_task_list_uses_frozen_attention_date_for_snoozed_tasks(self) -> None:
+        create = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "prune",
+                "title": "Frozen snoozed task",
+                "due_on": "2026-07-05",
+            },
+        )
+        self.assertEqual(create.status_code, 201, create.text)
+
+        snooze = self.client.post(
+            f"/api/tasks/{create.json()['id']}/action",
+            json={"action": "snooze", "snooze_until": "2026-07-12"},
+        )
+        self.assertEqual(snooze.status_code, 200, snooze.text)
+
+        with patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "test",
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1783252800000",
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-05",
+            },
+            clear=False,
+        ):
+            response = self.client.get("/api/tasks?view=today")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        titles = {task["title"] for task in response.json()["tasks"]}
+        self.assertNotIn("Frozen snoozed task", titles)
+
     def test_task_action_views_hide_stale_generated_watering_but_keep_manual(self) -> None:
         from gardenops.sql_dates import offset_days_iso
 
@@ -357,8 +389,13 @@ class TestTasks(BaseApiTest):
         finally:
             db.return_db(conn)
 
-        for view in ("today", "overdue"):
-            response = self.client.get(f"/api/tasks?view={view}&task_type=water")
+        for query in (
+            "?task_type=water",
+            "?status=pending&task_type=water",
+            "?view=today&task_type=water",
+            "?view=overdue&task_type=water",
+        ):
+            response = self.client.get(f"/api/tasks{query}")
             self.assertEqual(response.status_code, 200, response.text)
             titles = {task["title"] for task in response.json()["tasks"]}
             self.assertIn("Manual old water", titles)

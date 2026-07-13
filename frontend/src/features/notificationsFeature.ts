@@ -1,5 +1,8 @@
 import type { AppContext } from "../core/appContext";
-import type { NotificationEvent } from "../core/models";
+import type {
+  NotificationEvent,
+  NotificationPreferences,
+} from "../core/models";
 import { t } from "../core/i18n";
 import {
   ApiError,
@@ -40,6 +43,8 @@ const NOTIFICATION_FEATURE_READY_ATTR =
   "data-notification-feature-ready";
 const NOTIFICATION_TRIGGER_BOUND_ATTR =
   "data-notification-trigger-bound";
+const NOTIFICATION_TRIGGER_SELECTOR =
+  "#notification-bell, #mobile-notification-btn";
 
 interface NotificationRequestContext {
   gardenId: number;
@@ -116,10 +121,133 @@ function notificationsForView(
   );
 }
 
+function notificationPanelElement(): HTMLElement | null {
+  const panel = document.getElementById("notification-panel");
+  return panel instanceof HTMLElement ? panel : null;
+}
+
+function updateNotificationTriggerAccessibility(): void {
+  const label = t(
+    notificationPanelOpen
+      ? "notifications.close_panel"
+      : "notifications.open_panel",
+  ) as string;
+  document
+    .querySelectorAll<HTMLElement>(NOTIFICATION_TRIGGER_SELECTOR)
+    .forEach((trigger) => {
+      trigger.setAttribute(NOTIFICATION_TRIGGER_BOUND_ATTR, "true");
+      trigger.setAttribute("aria-controls", "notification-panel");
+      trigger.setAttribute("aria-haspopup", "dialog");
+      trigger.setAttribute("aria-expanded", String(notificationPanelOpen));
+      trigger.setAttribute("aria-label", label);
+    });
+}
+
+function setNotificationPanelHidden(
+  panel: HTMLElement,
+  hidden: boolean,
+): void {
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.hidden = hidden;
+  panel.setAttribute("aria-hidden", hidden ? "true" : "false");
+  if (hidden) {
+    panel.setAttribute("inert", "");
+    panel.removeAttribute("tabindex");
+    panel.removeAttribute("aria-labelledby");
+    panel.setAttribute("aria-label", t("notifications.title") as string);
+  } else {
+    panel.removeAttribute("inert");
+    panel.tabIndex = -1;
+  }
+  updateNotificationTriggerAccessibility();
+}
+
+function focusableNotificationPanelElements(
+  panel: HTMLElement,
+): HTMLElement[] {
+  const candidates = panel.querySelectorAll<HTMLElement>(
+    [
+      "button:not([disabled])",
+      "a[href]",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "[tabindex]:not([tabindex='-1'])",
+    ].join(","),
+  );
+  return Array.from(candidates).filter((element) => {
+    const style = window.getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden";
+  });
+}
+
+function focusNotificationPanel(): void {
+  const panel = notificationPanelElement();
+  if (!panel || !notificationPanelOpen) return;
+  const first = focusableNotificationPanelElements(panel)[0];
+  (first ?? panel).focus();
+}
+
+function restoreNotificationPanelFocus(): void {
+  const target = notificationFocusReturnTarget;
+  notificationFocusReturnTarget = null;
+  if (!target?.isConnected || target.matches(":disabled")) return;
+
+  if (target.id === "mobile-notification-btn") {
+    const mobileUtilitySheet = document.getElementById("mobile-utility-sheet");
+    const mobileUtilityTrigger = document.getElementById("mobile-utility-btn");
+    if (
+      mobileUtilitySheet instanceof HTMLElement
+      && !mobileUtilitySheet.classList.contains("mobile-utility-sheet--open")
+      && mobileUtilityTrigger instanceof HTMLElement
+    ) {
+      mobileUtilityTrigger.click();
+    }
+  }
+  window.requestAnimationFrame(() => target.focus());
+}
+
+function trapNotificationPanelFocus(event: KeyboardEvent): void {
+  if (!notificationPanelOpen) return;
+  const panel = notificationPanelElement();
+  if (!panel) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closeNotificationPanel(true);
+    return;
+  }
+  if (event.key !== "Tab") return;
+
+  const focusable = focusableNotificationPanelElements(panel);
+  if (focusable.length === 0) {
+    event.preventDefault();
+    panel.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!first || !last) return;
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !panel.contains(active) || active === panel) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+    return;
+  }
+  if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function markNotificationTrigger(id: string): void {
   const trigger = document.getElementById(id);
   if (!(trigger instanceof HTMLElement)) return;
-  trigger.setAttribute(NOTIFICATION_TRIGGER_BOUND_ATTR, "true");
+  updateNotificationTriggerAccessibility();
 }
 
 function isNotificationTriggerTarget(
@@ -127,7 +255,7 @@ function isNotificationTriggerTarget(
 ): boolean {
   if (!(target instanceof Element)) return false;
   return Boolean(
-    target.closest("#notification-bell, #mobile-notification-btn"),
+    target.closest(NOTIFICATION_TRIGGER_SELECTOR),
   );
 }
 
@@ -148,15 +276,41 @@ function bindNotificationTriggers(): void {
     NOTIFICATION_FEATURE_READY_ATTR,
     "true",
   );
+  const panel = notificationPanelElement();
+  if (panel) setNotificationPanelHidden(panel, !notificationPanelOpen);
   markNotificationTrigger("notification-bell");
   markNotificationTrigger("mobile-notification-btn");
 }
 
+function fullNotificationPreferencesUpdate(
+  prefs: NotificationPreferences,
+  ruleKey: string,
+): Omit<NotificationPreferences, "policy"> | null {
+  const rule = prefs.notification_rules[ruleKey];
+  if (!rule) return null;
+  return {
+    in_app_enabled: prefs.in_app_enabled,
+    email_enabled: prefs.email_enabled,
+    email_address: prefs.email_address,
+    digest_frequency: prefs.digest_frequency,
+    quiet_hours_json: { ...prefs.quiet_hours_json },
+    task_due_enabled: prefs.task_due_enabled,
+    task_overdue_enabled: prefs.task_overdue_enabled,
+    notification_rules: {
+      ...prefs.notification_rules,
+      [ruleKey]: {
+        ...rule,
+        in_app_enabled: false,
+      },
+    },
+  };
+}
+
 function renderCurrentNotificationPanel(): void {
-  const panel = document.getElementById(
-    "notification-panel",
-  );
+  const panel = notificationPanelElement();
   if (!panel || !notificationPanelOpen) return;
+  const hadPanelFocus = document.activeElement instanceof HTMLElement
+    && panel.contains(document.activeElement);
   renderNotificationPanel(
     panel,
     notificationItems,
@@ -276,6 +430,7 @@ function renderCurrentNotificationPanel(): void {
         void showNotificationPreferences(),
       onViewChange: (view) => {
         notificationPanelView = view;
+        renderCurrentNotificationPanel();
         void loadNotifications();
       },
       onMuteType: async (n) => {
@@ -287,17 +442,9 @@ function renderCurrentNotificationPanel(): void {
           const key = n.notification_subtype
             ? `${n.notification_type}:${n.notification_subtype}`
             : n.notification_type;
-          const rule = prefs.notification_rules[key];
-          if (!rule) return;
-          await updateNotificationPreferencesApi({
-            notification_rules: {
-              ...prefs.notification_rules,
-              [key]: {
-                ...rule,
-                in_app_enabled: false,
-              },
-            },
-          });
+          const updated = fullNotificationPreferencesUpdate(prefs, key);
+          if (!updated) return;
+          await updateNotificationPreferencesApi(updated);
           if (!isCurrentNotificationRequest(request)) return;
           notificationItems = notificationItems.filter(
             (item) =>
@@ -305,7 +452,7 @@ function renderCurrentNotificationPanel(): void {
                 ? `${item.notification_type}:${item.notification_subtype}`
                 : item.notification_type) !== key,
           );
-          await loadNotificationCount();
+          await ctx.refreshBadgeCounts();
           renderCurrentNotificationPanel();
           ctx.showToast(
             t("notifications.prefs_saved"),
@@ -319,6 +466,13 @@ function renderCurrentNotificationPanel(): void {
       view: notificationPanelView,
     },
   );
+  if (hadPanelFocus) {
+    window.requestAnimationFrame(() => {
+      if (notificationPanelOpen && !panel.contains(document.activeElement)) {
+        focusNotificationPanel();
+      }
+    });
+  }
 }
 
 export function initNotificationsFeature(
@@ -358,11 +512,7 @@ export function initNotificationsFeature(
       closeNotificationPanel();
     }
   });
-  document.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || !notificationPanelOpen) return;
-    event.preventDefault();
-    closeNotificationPanel(true);
-  });
+  document.addEventListener("keydown", trapNotificationPanelFocus, true);
 
   resetNotificationsForCurrentGarden();
   ensureNotificationPoller();
@@ -398,6 +548,15 @@ export async function loadNotificationCount(
     }
     // Silently ignore other errors - non-critical
   }
+}
+
+export async function refreshNotificationsForCurrentGarden(): Promise<void> {
+  syncNotificationsForCurrentGarden();
+  const request = notificationRequestContext();
+  if (!request) return;
+  await loadNotificationCount(request);
+  if (!isCurrentNotificationRequest(request) || !notificationPanelOpen) return;
+  await loadNotifications();
 }
 
 function applyBadgeCounts(counts: BadgeCounts): void {
@@ -450,19 +609,21 @@ function updateNotificationBadge(): void {
 
 async function toggleNotificationPanel(): Promise<void> {
   syncNotificationsForCurrentGarden();
-  const panel = document.getElementById(
-    "notification-panel",
-  );
+  const panel = notificationPanelElement();
   if (!panel) return;
-  notificationPanelOpen = !notificationPanelOpen;
-  panel.hidden = !notificationPanelOpen;
   if (notificationPanelOpen) {
-    panel.tabIndex = -1;
-    panel.focus();
-    notificationPanelView = "inbox";
-    await loadNotifications();
-  } else {
-    panel.removeAttribute("tabindex");
+    closeNotificationPanel(true);
+    return;
+  }
+
+  notificationPanelOpen = true;
+  notificationPanelView = "inbox";
+  setNotificationPanelHidden(panel, false);
+  renderCurrentNotificationPanel();
+  focusNotificationPanel();
+  await loadNotifications();
+  if (notificationPanelOpen) {
+    window.requestAnimationFrame(focusNotificationPanel);
   }
 }
 
@@ -497,14 +658,10 @@ async function loadNotifications(): Promise<void> {
 
 function closeNotificationPanel(restoreFocus = false): void {
   notificationPanelOpen = false;
-  const panel = document.getElementById(
-    "notification-panel",
-  );
-  if (panel) {
-    panel.hidden = true;
-    panel.removeAttribute("tabindex");
-  }
-  if (restoreFocus) notificationFocusReturnTarget?.focus();
+  const panel = notificationPanelElement();
+  if (panel) setNotificationPanelHidden(panel, true);
+  if (restoreFocus) restoreNotificationPanelFocus();
+  else notificationFocusReturnTarget = null;
 }
 
 async function showNotificationPreferences(): Promise<void> {
@@ -529,7 +686,7 @@ async function showNotificationPreferences(): Promise<void> {
             "success",
           );
           notificationPanelView = "inbox";
-          await loadNotificationCount();
+          await ctx.refreshBadgeCounts();
           await loadNotifications();
         } catch (err) {
           if (!isCurrentNotificationRequest(request)) return;
@@ -540,6 +697,7 @@ async function showNotificationPreferences(): Promise<void> {
         }
       },
     );
+    focusNotificationPanel();
   } catch (err) {
     if (!isCurrentNotificationRequest(request)) return;
     ctx.showToast(getApiErrorMessage(err), "error");

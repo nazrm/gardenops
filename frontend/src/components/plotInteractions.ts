@@ -46,6 +46,10 @@ import { dismissPopover, showPopover } from "./popover";
 import { renderSearchResults } from "./sidebar";
 import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
 import {
+  getTaskSnoozeCorrectionNotice,
+  openTaskDateDialog,
+} from "../features/taskSnoozeFlow";
+import {
   canQueueDefaultCompletionOffline,
   needsCompletionDialog,
   openTaskCompletionDialog,
@@ -335,10 +339,36 @@ function formatTaskDue(
   };
 }
 
+interface PlotTaskCardCallbacks {
+  onComplete?: (() => void) | undefined;
+  onSkip?: (() => void) | undefined;
+  onSnooze?: (() => void) | undefined;
+  onReschedule?: (() => void) | undefined;
+}
+
+function appendTaskCardAction(
+  container: HTMLElement,
+  className: string,
+  label: string,
+  icon: string,
+  onClick: () => void,
+): void {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `drawer-task-action ${className}`;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.textContent = icon;
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onClick();
+  });
+  container.appendChild(button);
+}
+
 function renderTaskCard(
   task: GardenTask,
-  onComplete?: (() => void) | undefined,
-  onSnooze?: (() => void) | undefined,
+  callbacks: PlotTaskCardCallbacks,
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "drawer-task-card";
@@ -363,32 +393,46 @@ function renderTaskCard(
   info.append(titleEl, dueEl);
   card.append(dot, info);
 
-  if (task.status !== "completed" && onComplete && onSnooze) {
+  if (task.status !== "completed") {
     const actions = document.createElement("div");
     actions.className = "drawer-task-actions";
-
-    const completeBtn = document.createElement("button");
-    completeBtn.type = "button";
-    completeBtn.className = "drawer-task-action action-complete";
-    completeBtn.title = t("tasks.action_complete") as string;
-    completeBtn.textContent = "\u2713";
-    completeBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      onComplete();
-    });
-
-    const snoozeBtn = document.createElement("button");
-    snoozeBtn.type = "button";
-    snoozeBtn.className = "drawer-task-action action-snooze";
-    snoozeBtn.title = t("tasks.action_snooze") as string;
-    snoozeBtn.textContent = "\u{1F552}";
-    snoozeBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      onSnooze();
-    });
-
-    actions.append(completeBtn, snoozeBtn);
-    card.appendChild(actions);
+    if (callbacks.onComplete) {
+      appendTaskCardAction(
+        actions,
+        "action-complete",
+        t("tasks.action_complete") as string,
+        "\u2713",
+        callbacks.onComplete,
+      );
+    }
+    if (callbacks.onSnooze) {
+      appendTaskCardAction(
+        actions,
+        "action-snooze",
+        t("tasks.action_snooze") as string,
+        "\u{1F552}",
+        callbacks.onSnooze,
+      );
+    }
+    if (callbacks.onReschedule) {
+      appendTaskCardAction(
+        actions,
+        "action-reschedule",
+        t("tasks.action_reschedule") as string,
+        "\u21B7",
+        callbacks.onReschedule,
+      );
+    }
+    if (callbacks.onSkip) {
+      appendTaskCardAction(
+        actions,
+        "action-skip",
+        t("tasks.action_skip") as string,
+        "\u00d7",
+        callbacks.onSkip,
+      );
+    }
+    if (actions.childElementCount > 0) card.appendChild(actions);
   }
 
   return card;
@@ -441,11 +485,14 @@ async function loadPlotTasksPreview(
         const card = renderTaskCard(
           task,
           cbs.canWrite()
-            ? () => void completeTaskInline(task, card, state, plotId, cbs)
-            : undefined,
-          cbs.canWrite()
-            ? () => void snoozeTaskInline(task, card)
-            : undefined,
+            ? {
+                onComplete: () => void completeTaskInline(task, card, state, plotId, cbs),
+                onSkip: () => void skipTaskInline(task, card, state, plotId, cbs),
+                onSnooze: () => void snoozeTaskInline(task, card, state, plotId, cbs),
+                onReschedule: () =>
+                  openPlotRescheduleDialog(task, card, state, plotId, cbs),
+              }
+            : {},
         );
         body.appendChild(card);
       }
@@ -469,18 +516,43 @@ async function enqueuePlotOfflineTaskAction(
   if (body.action === "complete" && body.completed_plant_ids?.length) {
     throw new Error("Grouped task completion cannot be queued offline.");
   }
-  if (body.action === "complete") {
-    await enqueueDraft("task_complete", { task_id: taskId });
-    return;
+  const draftTypeByAction: Record<TaskActionRequest["action"], string> = {
+    complete: "task_complete",
+    skip: "task_skip",
+    snooze: "task_snooze",
+    reschedule: "task_reschedule",
+  };
+  const { action, ...payload } = body;
+  await enqueueDraft(draftTypeByAction[action], {
+    task_id: taskId,
+    ...payload,
+  });
+}
+
+async function submitPlotTaskAction(
+  task: GardenTask,
+  card: HTMLElement,
+  state: AppState,
+  plotId: string,
+  cbs: PlotCallbacks,
+  body: TaskActionRequest,
+  successMessage?: string,
+): Promise<boolean> {
+  try {
+    if (!isOnline()) {
+      await enqueuePlotOfflineTaskAction(task.id, body);
+      showToast(t("offline.draft_saved"), "success");
+      return true;
+    }
+    await taskActionApi(task.id, body);
+    card.classList.add("task-fading");
+    if (successMessage) showToast(successMessage, "success");
+    await loadPlotTasksPreview(state, plotId, cbs);
+    return true;
+  } catch (err) {
+    showToast(getApiErrorMessage(err), "error");
+    return false;
   }
-  if (body.action === "snooze") {
-    await enqueueDraft("task_snooze", {
-      task_id: taskId,
-      snooze_until: body.snooze_until,
-    });
-    return;
-  }
-  throw new Error(`Unsupported plot task action: ${body.action}`);
 }
 
 async function completeTaskInline(
@@ -506,52 +578,114 @@ async function completeTaskInline(
       return;
     }
   }
-  try {
-    if (!isOnline()) {
-      await enqueuePlotOfflineTaskAction(task.id, body);
-      showToast(t("offline.draft_saved"), "success");
-      return;
-    }
-    await taskActionApi(task.id, body);
-    card.classList.add("task-fading");
-    showToast(t("plot_drawer.task_completed_toast") as string);
-    await loadPlotTasksPreview(state, plotId, cbs);
-  } catch (err) {
-    showToast(getApiErrorMessage(err), "error");
-  }
+  await submitPlotTaskAction(
+    task,
+    card,
+    state,
+    plotId,
+    cbs,
+    body,
+    t("plot_drawer.task_completed_toast") as string,
+  );
+}
+
+async function skipTaskInline(
+  task: GardenTask,
+  card: HTMLElement,
+  state: AppState,
+  plotId: string,
+  cbs: PlotCallbacks,
+): Promise<void> {
+  await submitPlotTaskAction(
+    task,
+    card,
+    state,
+    plotId,
+    cbs,
+    { action: "skip" },
+    t("tasks.action_success", { action: "skip" }) as string,
+  );
+}
+
+function openPlotSnoozeDateDialog(
+  task: GardenTask,
+  card: HTMLElement,
+  state: AppState,
+  plotId: string,
+  cbs: PlotCallbacks,
+  defaultDate: string,
+  warning?: string,
+): void {
+  openTaskDateDialog({
+    title: t("tasks.snooze_prompt") as string,
+    defaultDate,
+    warning,
+    onConfirm: (date) =>
+      void snoozeTaskInline(task, card, state, plotId, cbs, date),
+  });
 }
 
 async function snoozeTaskInline(
   task: GardenTask,
   card: HTMLElement,
+  state: AppState,
+  plotId: string,
+  cbs: PlotCallbacks,
+  requestedDate?: string,
 ): Promise<void> {
   const policy = taskSnoozePolicy(task);
-  const snoozeUntil = policy.immediate
-    ? policy.defaultDate
-    : window.prompt(
-      policy.warning ? `${policy.warning}\n\n${t("tasks.snooze_prompt")}` : t("tasks.snooze_prompt"),
+  if (!requestedDate && !policy.immediate) {
+    openPlotSnoozeDateDialog(
+      task,
+      card,
+      state,
+      plotId,
+      cbs,
       policy.defaultDate,
+      policy.warning,
     );
-  if (!snoozeUntil) return;
-  try {
-    if (!isOnline()) {
-      await enqueuePlotOfflineTaskAction(task.id, {
-        action: "snooze",
-        snooze_until: snoozeUntil,
-      });
-      showToast(t("offline.draft_saved"), "success");
-      return;
-    }
-    await taskActionApi(task.id, {
-      action: "snooze",
-      snooze_until: snoozeUntil,
-    });
-    card.classList.add("task-fading");
-    setTimeout(() => card.remove(), 300);
-    showToast(t("plot_drawer.task_snoozed_toast", { date: snoozeUntil }) as string);
-  } catch (err) {
-    showToast(getApiErrorMessage(err), "error");
+    return;
   }
+  const snoozeUntil = requestedDate ?? policy.defaultDate;
+  const completed = await submitPlotTaskAction(
+    task,
+    card,
+    state,
+    plotId,
+    cbs,
+    { action: "snooze", snooze_until: snoozeUntil },
+  );
+  if (!completed) return;
+  const notice = getTaskSnoozeCorrectionNotice(snoozeUntil, () => {
+    openPlotSnoozeDateDialog(task, card, state, plotId, cbs, snoozeUntil);
+  });
+  showToast(notice.message, "success", {
+    actions: [{ label: notice.actionLabel, onClick: notice.onChangeDate }],
+    durationMs: notice.durationMs,
+  });
+}
+
+function openPlotRescheduleDialog(
+  task: GardenTask,
+  card: HTMLElement,
+  state: AppState,
+  plotId: string,
+  cbs: PlotCallbacks,
+): void {
+  openTaskDateDialog({
+    title: t("tasks.reschedule_prompt") as string,
+    defaultDate: task.due_on,
+    onConfirm: (date) =>
+      void submitPlotTaskAction(
+        task,
+        card,
+        state,
+        plotId,
+        cbs,
+        { action: "reschedule", reschedule_to: date },
+        t("tasks.action_success", { action: "reschedule" }) as string,
+      ),
+  });
 }
 
 async function fetchPlantMediaPreviewMap(

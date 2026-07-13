@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, date, datetime
 from typing import Literal, cast
 
@@ -152,13 +153,44 @@ class RefreshTaskDescriptionsBody(StrictBaseModel):
     force_all: bool = False
 
 
+def _task_test_clock() -> tuple[int, str] | None:
+    frozen_now_ms = os.environ.get("GARDENOPS_ATTENTION_FROZEN_NOW_MS", "").strip()
+    frozen_date = os.environ.get("GARDENOPS_ATTENTION_FROZEN_DATE", "").strip()
+    if os.environ.get("APP_ENV", "").strip().lower() != "test" or not (
+        frozen_now_ms or frozen_date
+    ):
+        return None
+    if not frozen_now_ms or not frozen_date:
+        raise RuntimeError("Task frozen clock requires both frozen now_ms and frozen_date")
+    _validate_date(frozen_date)
+    parsed_frozen_date = date.fromisoformat(frozen_date).isoformat()
+    try:
+        parsed_now_ms = int(frozen_now_ms)
+    except ValueError as exc:
+        raise RuntimeError("Task frozen clock is invalid") from exc
+    return parsed_now_ms, parsed_frozen_date
+
+
+def _task_action_clock() -> tuple[int, str]:
+    frozen_clock = _task_test_clock()
+    if frozen_clock is not None:
+        return frozen_clock
+    return current_timestamp_ms(), date.today().isoformat()
+
+
 def _task_list_date_expressions() -> dict[str, str]:
+    today = "CURRENT_DATE"
+    frozen_clock = _task_test_clock()
+    if frozen_clock is not None:
+        # The validated date is normalized before SQL interpolation.
+        today = f"DATE '{frozen_clock[1]}'"
+
     return {
         "due_on": "t.due_on::date",
         "snoozed_until": "t.snoozed_until::date",
-        "today": "CURRENT_DATE",
-        "plus_7_days": "(CURRENT_DATE + INTERVAL '7 days')::date",
-        "plus_30_days": "(CURRENT_DATE + INTERVAL '30 days')::date",
+        "today": today,
+        "plus_7_days": f"({today} + INTERVAL '7 days')::date",
+        "plus_30_days": f"({today} + INTERVAL '30 days')::date",
     }
 
 
@@ -604,6 +636,7 @@ def _apply_task_action(
     task_id: int,
     body: ActionTaskBody,
     now_ms: int,
+    action_on: str,
     task_row: dict | None = None,
 ) -> None:
     if task_row is None:
@@ -660,6 +693,7 @@ def _apply_task_action(
             outcome=body.completion_outcome,
             notes=body.notes,
             now_ms=now_ms,
+            occurred_on=action_on,
         )
         remaining_plant_ids = remaining_plant_ids_after_completion(
             linked_plant_ids=linked_plant_ids,
@@ -956,12 +990,18 @@ def list_tasks(
         conditions.append(
             f"{actionable_status_clause} AND {actionable_date} < {date_expr['today']}"
         )
-    if view in {"today", "week", "month", "overdue"}:
+    if view in {"today", "week", "month", "overdue"} or status in {
+        None,
+        "pending",
+        "snoozed",
+    }:
         stale_generated_watering = stale_generated_watering_sql(
             action_on_sql=actionable_date,
             today_sql=date_expr["today"],
         )
-        conditions.append(f"NOT {stale_generated_watering}")
+        conditions.append(
+            f"NOT (t.status IN ('pending', 'snoozed') AND {stale_generated_watering})"
+        )
         params.extend(GENERATED_WATERING_RULE_SOURCE_PATTERNS)
 
     if status:
@@ -1211,7 +1251,7 @@ def task_action(
     context = _auth_context(request)
     _require_write(context)
     garden_id = _active_garden_id(context)
-    now_ms = current_timestamp_ms()
+    now_ms, action_on = _task_action_clock()
     prepared_operation = prepare_operation(
         db,
         request=request,
@@ -1243,7 +1283,15 @@ def task_action(
     row = _fetch_task(db, task_id, garden_id, for_update=True)
     internal_task_id = int(row["id"])
 
-    _apply_task_action(db, context, internal_task_id, body, now_ms, task_row=row)
+    _apply_task_action(
+        db,
+        context,
+        internal_task_id,
+        body,
+        now_ms,
+        action_on,
+        task_row=row,
+    )
     db.commit()
     return {"status": "ok"}
 
@@ -1260,7 +1308,7 @@ def batch_task_action(
     task_ids = _validate_task_ids(db, garden_id, body.task_ids)
     task_rows = _load_task_rows_by_internal_ids(db, task_ids, for_update=True)
 
-    now_ms = current_timestamp_ms()
+    now_ms, action_on = _task_action_clock()
     action_body = ActionTaskBody(
         action=body.action,
         snooze_until=body.snooze_until,
@@ -1273,7 +1321,15 @@ def batch_task_action(
         task_row = task_rows.get(task_id)
         if task_row is None:
             raise HTTPException(status_code=404, detail="Task not found")
-        _apply_task_action(db, context, task_id, action_body, now_ms, task_row=task_row)
+        _apply_task_action(
+            db,
+            context,
+            task_id,
+            action_body,
+            now_ms,
+            action_on,
+            task_row=task_row,
+        )
 
     db.commit()
     return {"status": "ok", "updated": len(task_ids)}

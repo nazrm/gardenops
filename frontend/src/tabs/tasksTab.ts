@@ -16,9 +16,13 @@ import {
 } from "../services/api";
 import { buildPlantNameMap } from "../core/plantNames";
 import { renderTaskList, createTaskForm } from "../components/tasks";
-import { confirmDialog, createModal } from "../components/dialogCore";
+import { confirmDialog } from "../components/dialogCore";
 import { selectPlot } from "../components/plotInteractions";
 import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import {
+  getTaskSnoozeCorrectionNotice,
+  openTaskDateDialog,
+} from "../features/taskSnoozeFlow";
 import {
   canQueueDefaultCompletionOffline,
   needsCompletionDialog,
@@ -377,12 +381,12 @@ function renderTaskBatchBar(): void {
     snoozeBtn.addEventListener("click", () => {
       const firstSelected = taskItems.find((task) => selectedTaskIds.has(task.id));
       const policy = firstSelected ? taskSnoozePolicy(firstSelected) : undefined;
-      openDateDialog(
-        t("tasks.snooze_prompt") as string,
-        policy?.defaultDate ?? formatLocalDate(new Date()),
-        (date) => void handleBatchTaskAction("snooze", { snooze_until: date }),
-        policy?.warning,
-      );
+      openTaskDateDialog({
+        title: t("tasks.snooze_prompt") as string,
+        defaultDate: policy?.defaultDate ?? formatLocalDate(new Date()),
+        onConfirm: (date) => void handleBatchTaskAction("snooze", { snooze_until: date }),
+        warning: policy?.warning,
+      });
     });
     bar.appendChild(snoozeBtn);
 
@@ -392,11 +396,12 @@ function renderTaskBatchBar(): void {
     rescheduleBtn.textContent = t("tasks.action_reschedule");
     rescheduleBtn.addEventListener("click", () => {
       const firstSelected = taskItems.find((task) => selectedTaskIds.has(task.id));
-      openDateDialog(
-        t("tasks.reschedule_prompt") as string,
-        firstSelected?.due_on ?? formatLocalDate(new Date()),
-        (date) => void handleBatchTaskAction("reschedule", { reschedule_to: date }),
-      );
+      openTaskDateDialog({
+        title: t("tasks.reschedule_prompt") as string,
+        defaultDate: firstSelected?.due_on ?? formatLocalDate(new Date()),
+        onConfirm: (date) =>
+          void handleBatchTaskAction("reschedule", { reschedule_to: date }),
+      });
     });
     bar.appendChild(rescheduleBtn);
   }
@@ -448,7 +453,9 @@ async function handleTaskAction(
       return false;
     }
     await enqueueOfflineTaskAction(taskId, action, extra);
-    ctx.showToast(t("offline.draft_saved"), "success");
+    if (options.showSuccessToast !== false) {
+      ctx.showToast(t("offline.draft_saved"), "success");
+    }
     void ctx.refreshOfflineIndicator();
     return true;
   }
@@ -562,81 +569,37 @@ async function snoozeTaskWithPolicy(task: GardenTask, snoozeUntil: string): Prom
     task.id,
     "snooze",
     { snooze_until: snoozeUntil },
-    online ? { showSuccessToast: false } : {},
+    { showSuccessToast: false },
   );
-  if (!ok || !online) return;
+  if (!ok) return;
+  if (!online) {
+    ctx.showToast(t("offline.draft_saved"), "success");
+  }
+  const notice = getTaskSnoozeCorrectionNotice(snoozeUntil, () => {
+    openSnoozeDateDialog(task, snoozeUntil);
+  });
   ctx.showToast(
-    t("tasks.snoozed_until_toast", { date: snoozeUntil }),
+    notice.message,
     "success",
     {
       actions: [
         {
-          label: t("tasks.snooze_change_date"),
-          onClick: () => {
-            openSnoozeDateDialog(task, snoozeUntil);
-          },
+          label: notice.actionLabel,
+          onClick: notice.onChangeDate,
         },
       ],
-      durationMs: 5000,
+      durationMs: notice.durationMs,
     },
   );
 }
 
-function openDateDialog(
-  title: string,
-  defaultDate: string,
-  onConfirm: (date: string) => void,
-  warning?: string,
-): void {
-  const { dialog, close } = createModal(title, `
-    <div class="modal-content confirm-dialog">
-      <h3></h3>
-      <p class="task-date-dialog-warning" hidden></p>
-      <input type="date" class="prompt-dialog-input" />
-      <div class="button-row">
-        <button type="button" class="confirm-yes"></button>
-        <button type="button" class="confirm-no"></button>
-      </div>
-    </div>
-  `);
-  const heading = dialog.querySelector("h3")!;
-  heading.textContent = title;
-  const warningEl = dialog.querySelector<HTMLElement>(".task-date-dialog-warning")!;
-  if (warning) {
-    warningEl.hidden = false;
-    warningEl.textContent = warning;
-  }
-  const input = dialog.querySelector<HTMLInputElement>("input[type='date']")!;
-  input.value = defaultDate;
-  input.min = formatLocalDate(new Date());
-  const cancelBtn = dialog.querySelector<HTMLButtonElement>(".confirm-no")!;
-  cancelBtn.textContent = t("common.cancel") as string;
-  cancelBtn.addEventListener("click", close);
-  const okBtn = dialog.querySelector<HTMLButtonElement>(".confirm-yes")!;
-  okBtn.textContent = t("common.save") as string;
-  okBtn.addEventListener("click", () => {
-    if (input.value) {
-      onConfirm(input.value);
-      close();
-    }
-  });
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && input.value) {
-      onConfirm(input.value);
-      close();
-    }
-  });
-  input.focus();
-}
-
 function openSnoozeDateDialog(task: GardenTask, defaultDate: string, warning?: string): void {
-  openDateDialog(
-    t("tasks.snooze_prompt") as string,
+  openTaskDateDialog({
+    title: t("tasks.snooze_prompt") as string,
     defaultDate,
-    (date) =>
-      void snoozeTaskWithPolicy(task, date),
+    onConfirm: (date) => void snoozeTaskWithPolicy(task, date),
     warning,
-  );
+  });
 }
 
 function openSnoozeDialog(task: GardenTask): void {
@@ -649,14 +612,14 @@ function openSnoozeDialog(task: GardenTask): void {
 }
 
 function openRescheduleDialog(task: GardenTask): void {
-  openDateDialog(
-    t("tasks.reschedule_prompt") as string,
-    task.due_on,
-    (date) =>
+  openTaskDateDialog({
+    title: t("tasks.reschedule_prompt") as string,
+    defaultDate: task.due_on,
+    onConfirm: (date) =>
       void handleTaskAction(task.id, "reschedule", {
         reschedule_to: date,
       }),
-  );
+  });
 }
 
 export function openTaskForm(

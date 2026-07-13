@@ -44,6 +44,7 @@ def test_phase_zero_complete_journey_files_exist() -> None:
         ROOT / "scripts" / "e2e" / "completeJourneyApi.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "foundation.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "gardenMapPlants.cjs",
+        ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs",
     )
     assert all(path.is_file() for path in expected)
 
@@ -108,6 +109,13 @@ def test_runner_accepts_phase_one_selection_before_parent_validation() -> None:
     assert "run_fast_postgres_tests.py" in result.stderr
 
 
+def test_runner_accepts_phase_two_selection_before_parent_validation() -> None:
+    result = _run_runner("--child", "2", "2", str(ROOT / "research" / "phase-two-child"))
+    assert result.returncode == 2
+    assert "not implemented" not in result.stderr.lower()
+    assert "run_fast_postgres_tests.py" in result.stderr
+
+
 def test_runner_rejects_preexisting_artifact_directory() -> None:
     artifact = ROOT / "research" / "optimization-map" / "runs" / "preexisting-phase-zero-test"
     artifact.mkdir(parents=True, exist_ok=False)
@@ -129,7 +137,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
     subprocess.run(["git", "init", "--quiet"], cwd=checkout, check=True, timeout=20)
     runner = checkout / "scripts" / "run_complete_journeys_e2e.sh"
     result = subprocess.run(
-        ["bash", str(runner), "--phase", "2"],
+        ["bash", str(runner), "--phase", "3"],
         cwd=checkout,
         capture_output=True,
         check=False,
@@ -445,7 +453,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     assert "runGardenMapPlants" in checker_source
     assert "fitPersistedHouseSizeToGrid" in app_source
     assert "state.houseSize = fitPersistedHouseSizeToGrid(house);" in app_source
-    assert "THROUGH_PHASE >= 1" in checker_source
+    assert "phaseSelected(1)" in checker_source
     assert "snapshotRestore.replace_children_calls === 1" in checker_source
     assert "beta_response_completion_count" in checker_source
     assert "expected_phase_one_viewer_denial_count === 4" in checker_source
@@ -479,6 +487,246 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "runtime touch evidence",
     ):
         assert marker in checker_source
+
+
+def test_mobile_surface_cleanup_does_not_clear_focused_map_object_selection() -> None:
+    journey_source = (ROOT / "scripts" / "e2e" / "journeys" / "gardenMapPlants.cjs").read_text(
+        encoding="utf-8"
+    )
+    helper_start = journey_source.index("async function closeMobileSurfaces(page)")
+    helper_end = journey_source.index("async function openMobileUtility", helper_start)
+    helper_source = journey_source[helper_start:helper_end]
+    map_sheet_start = helper_source.index("body.mobile-map-sheet-open")
+    map_sheet_source = helper_source[map_sheet_start:]
+
+    assert 'page.keyboard.press("Escape")' not in map_sheet_source
+    assert '".mobile-map-sheet--open [data-mobile-map-sheet-initial-focus]"' in map_sheet_source
+    assert "#mobile-map-layers-close-btn:visible" not in map_sheet_source
+    assert "await closeButton.click()" in map_sheet_source
+    assert 'page.locator("#mobile-map-sheet-backdrop").click' in map_sheet_source
+
+
+def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
+    journey_path = ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs"
+    journey_source = journey_path.read_text(encoding="utf-8")
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    runner_source = RUNNER.read_text(encoding="utf-8")
+
+    assert "MAX_IMPLEMENTED_PHASE=2" in runner_source
+    assert "runDailyAttentionWork" in journey_source
+    assert 'require("./e2e/journeys/dailyAttentionWork.cjs")' in checker_source
+    assert "phaseSelected(2)" in checker_source
+    assert "preparePhaseTwoFixtures" in checker_source
+    assert '"--prepare-phase-two"' in checker_source
+    for journey_id in ("D1", "D2", "D3", "D4", "D5", "R1"):
+        assert f'"{journey_id}"' in checker_source
+
+
+def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None:
+    journey_source = (ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs").read_text(
+        encoding="utf-8"
+    )
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    seed_source = (ROOT / "scripts" / "seed_complete_journeys_e2e.py").read_text(encoding="utf-8")
+
+    for marker in (
+        "exerciseCalendarSubscriptionFeed",
+        "page.waitForResponse",
+        "feed_path",
+        "page.context().request.get(feedUrl)",
+        "page.waitForRequest",
+        "exportRequest.url()",
+        'searchParams.get("garden_id")',
+        "assertCalendarExportIcs",
+        "unescapeIcsText",
+        "Calendar export leaked credential material",
+        "exercisePostMutationReload",
+        'page.reload({ waitUntil: "domcontentloaded" })',
+        "exerciseMobileCalendarAndNotifications",
+        "mobile notification trigger focus return",
+        "exerciseNotificationSettingsRace",
+        "**/api/notifications/preferences",
+        "assertDeduplicatedWeatherCheck",
+        "runConcurrentWeatherChecks",
+        "Concurrent weather checks created or failed to deduplicate a logical alert",
+        "exerciseEditorWeatherDeduplication",
+        "Offline task actions reached the server before connectivity returned",
+        "exerciseImmediateSnoozeCorrection",
+        "first high-volume tasks page",
+        "second high-volume tasks page",
+        "restored first high-volume tasks page",
+        "2s Change date correction action after immediate snooze",
+        "immediate one-week snooze mutation",
+        'action: "complete"',
+        'action: "skip"',
+        'action: "snooze"',
+        'action: "reschedule"',
+        "Muted legacy issue-created notification returned after reload",
+        "issueCreatedRuleControls",
+        "New issues: Email",
+        'selectOption("normal")',
+        "completed desktop bloom journal card after reload",
+        "completed grouped fertilize journal card after reload",
+        "Mobile Quick Actions did not expose dialog semantics",
+        "Mobile Quick Actions did not inert the main background surface",
+        "mobile Quick Actions FAB focus restoration",
+        "diagnostics.consoleErrors.splice(consoleMark, 1)",
+    ):
+        assert marker in journey_source
+    assert "navigator.clipboard.readText" not in journey_source
+
+    for marker in (
+        "writePrivateFailure",
+        "complete-journeys-browser-error.log",
+        "expectedPhaseTwoCanonicalAttentionRules",
+        'preset: "custom"',
+        "issue_follow_up_due",
+        "issue_follow_up_overdue",
+        "offlineTaskKeys",
+        "snooze_correction",
+        "calendar_feed_token_revocation",
+        "calendar_export_selected_garden_scope",
+        "ics_export_integrity_scope_redaction",
+        "weather_idempotency_cross_surface_refresh",
+        "weather_concurrent_identity_deduplication",
+        "mobile_quick_actions_accessibility",
+        "mobile_calendar_month_week_list_navigation",
+        "editor_weather_deduplicated_surfaces",
+        "post_mutation_reload_journal_records",
+        "mutedIssueWithDigest",
+        "Phase 2 canonical quiet hours retained legacy top-level keys",
+        "Phase 2 deterministic weather preparation was unexpected",
+    ):
+        assert marker in checker_source
+
+    for marker in (
+        "PHASE_TWO_CALENDAR_DESCRIPTION",
+        "PHASE_TWO_OFFLINE_SNOOZE_DATE",
+        "PHASE_TWO_OFFLINE_RESCHEDULE_DATE",
+        "PHASE_TWO_SNOOZE_CORRECTION_DUE_DATE",
+        "_reset_phase_two_weather_cache",
+        'sys.argv[1:] == ["--prepare-phase-two"]',
+        '"seeded_description": PHASE_TWO_CALENDAR_DESCRIPTION',
+        '"offline": {',
+    ):
+        assert marker in seed_source
+    assert '"token":' not in seed_source
+    assert '"feed_url":' not in seed_source
+
+
+def test_phase_two_subscription_probe_consumes_expected_diagnostics_and_is_wired() -> None:
+    journey_path = ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs"
+    journey_source = journey_path.read_text(encoding="utf-8")
+    helper_start = journey_source.index("async function exerciseCalendarSubscriptionFeed(")
+    helper_end = journey_source.index("async function exerciseCalendarLifecycle", helper_start)
+    helper_source = journey_source[helper_start:helper_end]
+    lifecycle_source = journey_source[
+        helper_end : journey_source.index("async function openNotifications", helper_end)
+    ]
+
+    assert "async function exerciseCalendarSubscriptionFeed(page, diagnostics)" in helper_source
+    assert "page.context().request.get(feedUrl)" in helper_source
+    assert "const revokedStatus = await page.evaluate" in helper_source
+    assert "diagnostics.httpErrors.splice(httpMark, 1)" in helper_source
+    assert "diagnostics.consoleErrors.splice(consoleMark, 1)" in helper_source
+    assert "exerciseCalendarSubscriptionFeed(page, diagnostics);" in lifecycle_source
+    assert "navigator.clipboard.readText" not in helper_source
+
+    result = subprocess.run(
+        ["node", "--check", str(journey_path)],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_profile_runner_receives_merged_profile_options() -> None:
+    script = r"""
+const { runDailyAttentionWork } = require('./scripts/e2e/journeys/dailyAttentionWork.cjs');
+const observed = [];
+runDailyAttentionWork({
+  fixture: { roles: { editor: 'editor', viewer: 'viewer' } },
+  password: 'admin-password',
+  username: 'admin',
+}, async (options) => {
+  if (!options || !options.profile || !options.role || !options.username || !options.password) {
+    throw new Error('profile options were not merged');
+  }
+  observed.push(`${options.role}:${options.profile}`);
+  return { error: null, result: { profile: options.profile, role: options.role } };
+}).then(() => {
+  const expected = [
+    'admin:desktop', 'admin:mobile',
+    'editor:desktop', 'editor:mobile',
+    'viewer:desktop', 'viewer:mobile',
+  ];
+  if (JSON.stringify(observed) !== JSON.stringify(expected)) process.exitCode = 2;
+}).catch((error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_selection_distinguishes_focused_and_cumulative_runs() -> None:
+    script = r"""
+const { phaseSelected } = require('./scripts/check_complete_journeys_e2e.cjs');
+if (phaseSelected(0) || phaseSelected(1) || !phaseSelected(2) || phaseSelected(3)) {
+  process.exitCode = 1;
+}
+"""
+    env = {
+        **os.environ,
+        "GARDENOPS_COMPLETE_JOURNEYS_E2E_PHASE": "2",
+        "GARDENOPS_COMPLETE_JOURNEYS_E2E_THROUGH_PHASE": "2",
+    }
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_focused_phase_session_expectation_preserves_zero_count_users() -> None:
+    script = r"""
+const { expectedSessionUserCounts } = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = { roles: {
+  admin: 'admin', editor: 'editor', onboarding: 'onboarding',
+  onboarding_mobile: 'onboarding-mobile', viewer: 'viewer',
+} };
+const profiles = [
+  { role: 'admin' }, { role: 'admin' },
+  { role: 'editor' }, { role: 'editor' },
+  { role: 'viewer' }, { role: 'viewer' },
+];
+const observed = expectedSessionUserCounts(fixture, profiles, false);
+const expected = {
+  admin: 2, editor: 2, onboarding: 0, 'onboarding-mobile': 0, viewer: 2,
+};
+if (JSON.stringify(observed) !== JSON.stringify(expected)) process.exitCode = 1;
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_seeder_refuses_direct_execution() -> None:
@@ -1344,3 +1592,66 @@ def test_manifest_writer_sanitizes_all_browser_derived_structures(tmp_path: Path
     assert secret not in serialized
     assert "quoted secret value" not in serialized
     assert serialized.count("[redacted diagnostic") >= 8
+
+
+def test_phase_two_manifest_request_paths_are_bounded_and_readable() -> None:
+    script = """
+const { isSafeManifestRequestPath } = require('./scripts/check_complete_journeys_e2e.cjs');
+const expected = [
+  '/api/calendar/events',
+  '/api/calendar/manual-events/calevt_example',
+  '/api/calendar/subscriptions/calsub_example',
+  '/api/media/summaries',
+  '/api/notifications/note_example',
+  '/api/plots/PLOT-1/plant-alerts',
+  '/api/plots/PLOT-1/plants',
+  '/api/security/csp-report',
+  '/api/tasks/tsk_example/action',
+  '/api/weather/alerts/7/dismiss',
+];
+if (!expected.every(isSafeManifestRequestPath)) process.exit(3);
+for (const unsafe of [
+  '/api/auth/sessions',
+  '/api/calendar/subscriptions/token/secret',
+  '/api/not-a-real-phase-two-route',
+  '/outside-api',
+]) {
+  if (isSafeManifestRequestPath(unsafe)) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_subscription_feed_url_is_redacted_from_manifest_evidence() -> None:
+    script = r"""
+const { sanitizeManifestEvidence } = require('./scripts/check_complete_journeys_e2e.cjs');
+const token = 'calendar-feed-token-must-not-escape';
+const url = `/calendar/subscriptions/${token}.ics`;
+const manifest = sanitizeManifestEvidence({
+  profiles: [{
+    assertions: { failed: [], passed: [], skipped: [] },
+    browser_profile: {},
+    diagnostics: { httpErrors: [`404 ${url}`] },
+    requests: [{ gardenId: 1, method: 'GET', path: url }],
+    structure: {},
+  }],
+});
+const serialized = JSON.stringify(manifest);
+if (serialized.includes(token) || serialized.includes(url)) process.exit(2);
+if (!serialized.includes('[redacted diagnostic')) process.exit(3);
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

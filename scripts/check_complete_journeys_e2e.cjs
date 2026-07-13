@@ -14,6 +14,7 @@ const {
 } = require("./e2e/completeJourneyBrowser.cjs");
 const { runFoundation } = require("./e2e/journeys/foundation.cjs");
 const { runGardenMapPlants } = require("./e2e/journeys/gardenMapPlants.cjs");
+const { runDailyAttentionWork } = require("./e2e/journeys/dailyAttentionWork.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const BASE_URL = process.env.BASE_URL || "";
@@ -26,6 +27,20 @@ const PASSWORD = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_PASSWORD || ""; // 
 const CHROMIUM_EXECUTABLE = fs.existsSync("/usr/bin/chromium-browser")
   ? "/usr/bin/chromium-browser"
   : "/usr/bin/chromium";
+
+function phaseSelected(phase) {
+  return phase >= PHASE && phase <= THROUGH_PHASE;
+}
+
+function expectedSessionUserCounts(fixture, profiles, phaseOneRan) {
+  return Object.fromEntries([
+    [fixture.roles.admin, profiles.filter((profile) => profile.role === "admin").length],
+    [fixture.roles.editor, profiles.filter((profile) => profile.role === "editor").length],
+    [fixture.roles.onboarding, phaseOneRan ? 1 : 0],
+    [fixture.roles.onboarding_mobile, phaseOneRan ? 1 : 0],
+    [fixture.roles.viewer, profiles.filter((profile) => profile.role === "viewer").length],
+  ]);
+}
 
 function assertRunnerEnvironment() {
   assert(process.env.APP_ENV === "test", "Complete journey E2E requires APP_ENV=test");
@@ -44,7 +59,7 @@ function assertRunnerEnvironment() {
   assert(isAllowedUrl(BASE_URL), "Complete journey BASE_URL is not loopback");
   assert(fs.existsSync(CHROMIUM_EXECUTABLE), "System Chromium is required");
   assert(process.env.GARDENOPS_LOGS_DIR, "Complete journey backend log directory is required");
-  assert(PHASE <= 1 && THROUGH_PHASE <= 1, "Requested phase is not implemented");
+  assert(PHASE <= 2 && THROUGH_PHASE <= 2, "Requested phase is not implemented");
 }
 
 function assertPrivateFiles() {
@@ -67,6 +82,24 @@ function databaseSnapshot() {
     { cwd: ROOT, encoding: "utf8", env: process.env },
   );
   return JSON.parse(output.trim()).database_snapshot;
+}
+
+function preparePhaseTwoFixtures() {
+  const output = execFileSync(
+    path.join(ROOT, ".venv", "bin", "python"),
+    [path.join(ROOT, "scripts", "seed_complete_journeys_e2e.py"), "--prepare-phase-two"],
+    { cwd: ROOT, encoding: "utf8", env: process.env },
+  );
+  return JSON.parse(output.trim());
+}
+
+function runPhaseTwoMaintenance() {
+  const output = execFileSync(
+    path.join(ROOT, ".venv", "bin", "python"),
+    [path.join(ROOT, "scripts", "seed_complete_journeys_e2e.py"), "--phase-two-maintenance"],
+    { cwd: ROOT, encoding: "utf8", env: process.env },
+  );
+  return JSON.parse(output.trim());
 }
 
 function phaseOneAuditExpectedEvents(loginCount) {
@@ -170,6 +203,33 @@ function safeFailure(error) {
     if (value) message = message.split(value).join("[redacted]");
   }
   return sanitizeDiagnostic(message);
+}
+
+function writePrivateFailure(error) {
+  const logDirectory = process.env.GARDENOPS_LOGS_DIR || "";
+  if (!logDirectory) return;
+  let detail = error instanceof Error
+    ? (error.stack || `${error.name}: ${error.message}`)
+    : String(error);
+  const redactions = [
+    PASSWORD,
+    process.env.DATABASE_URL || "",
+    process.env.GARDENOPS_DISPOSABLE_POSTGRES_URL || "",
+  ];
+  for (const value of redactions) {
+    if (value) detail = detail.split(value).join("[redacted]");
+  }
+  try {
+    const failureLog = path.join(logDirectory, "complete-journeys-browser-error.log");
+    fs.appendFileSync(
+      failureLog,
+      `${new Date().toISOString()} ${detail}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+    fs.chmodSync(failureLog, 0o600);
+  } catch {
+    // Failure evidence is best effort and must never replace the original error.
+  }
 }
 
 function safeIdentifier(value) {
@@ -654,6 +714,703 @@ function assertPhaseOneProfileEvidence(profiles) {
   };
 }
 
+function assertPhaseTwoProfileEvidence(profiles) {
+  assert(Array.isArray(profiles), "Phase 2 browser profile evidence is missing");
+  const expectedProfiles = [
+    {
+      profile: "desktop",
+      role: "admin",
+      checks: [
+        "admin_daily_attention_workflow",
+        "task_surface_parity",
+        "calendar_lifecycle_export_subscription",
+        "calendar_export_selected_garden_scope",
+        "calendar_feed_token_revocation",
+        "ics_export_integrity_scope_redaction",
+        "immediate_snooze_correction_action",
+        "notification_preferences_and_accessibility",
+        "notification_attention_projection_after_refresh",
+        "notification_settings_aba_race",
+        "post_mutation_reload_surfaces",
+        "post_mutation_reload_journal_records",
+      ],
+    },
+    {
+      profile: "mobile",
+      role: "admin",
+      checks: [
+        "mobile_today_quick_actions_weather",
+        "mobile_quick_actions_accessibility",
+        "weather_idempotency_cross_surface_refresh",
+        "weather_concurrent_identity_deduplication",
+        "mobile_calendar_notification_focus_inert",
+        "mobile_calendar_month_week_list_navigation",
+      ],
+    },
+    {
+      profile: "desktop",
+      role: "editor",
+      checks: ["editor_calendar_action_and_weather_scope", "editor_weather_deduplicated_surfaces"],
+    },
+    {
+      profile: "mobile",
+      role: "editor",
+      checks: ["editor_offline_task_replay", "editor_offline_task_actions_replay"],
+    },
+    {
+      profile: "desktop",
+      role: "viewer",
+      checks: ["viewer_read_only_and_denial"],
+    },
+    {
+      profile: "mobile",
+      role: "viewer",
+      checks: ["viewer_read_only_and_denial"],
+    },
+  ];
+  assert(profiles.length === expectedProfiles.length, "Phase 2 browser profile count was unexpected");
+  const byKey = new Map();
+  for (const profile of profiles) {
+    const key = `${profile?.role}:${profile?.profile}`;
+    assert(!byKey.has(key), `Phase 2 browser profile was duplicated: ${key}`);
+    byKey.set(key, profile);
+  }
+  for (const expected of expectedProfiles) {
+    const key = `${expected.role}:${expected.profile}`;
+    const profile = byKey.get(key);
+    assert(profile, `Phase 2 browser profile is missing: ${key}`);
+    assert(profile.failure === null, `Phase 2 browser profile failed: ${key}`);
+    assert((profile.assertions?.failed || []).length === 0, `Phase 2 assertions failed: ${key}`);
+    assert((profile.assertions?.skipped || []).length === 0, `Phase 2 assertions were skipped: ${key}`);
+    assert(profile.checks?.browser_diagnostics === true, `Phase 2 browser diagnostics missing: ${key}`);
+    assert(profile.checks?.map_first_without_plants === true, `Phase 2 map-first check is missing: ${key}`);
+    const expectedMobile = expected.profile === "mobile";
+    assert(
+      profile.browser_profile?.is_mobile === expectedMobile,
+      `Phase 2 browser device evidence was unexpected: ${key}`,
+    );
+    assert(
+      profile.browser_profile?.has_touch === expectedMobile
+        && (expectedMobile
+          ? profile.browser_profile?.max_touch_points > 0
+          : profile.browser_profile?.max_touch_points === 0),
+      `Phase 2 runtime touch evidence was unexpected: ${key}`,
+    );
+    for (const check of expected.checks) {
+      assert(profile.checks?.[check] === true, `Phase 2 browser check is missing: ${key}:${check}`);
+    }
+  }
+  return {
+    expected_profile_count: expectedProfiles.length,
+    profile_matrix_enforced: true,
+  };
+}
+
+function expectedPhaseTwoCanonicalAttentionRules() {
+  const panelFirst = { digest: false, inbox: false, min_severity: "low", panel: true };
+  const needsAction = { digest: false, inbox: true, min_severity: "low", panel: true };
+  const warning = { digest: true, inbox: true, min_severity: "normal", panel: true };
+  const upcoming = { digest: false, inbox: false, min_severity: "high", panel: true };
+  const mutedIssueWithDigest = { digest: true, inbox: false, min_severity: "normal", panel: true };
+  return {
+    calendar_event_due: { ...upcoming },
+    dry_spell: { ...warning },
+    frost_warning: { ...warning },
+    heat_wave: { ...warning },
+    issue_follow_up_due: { ...mutedIssueWithDigest },
+    issue_follow_up_overdue: { ...mutedIssueWithDigest },
+    needs_action: { ...needsAction },
+    no_action_needed: { digest: false, inbox: false, panel: true },
+    rain_alert: { ...warning },
+    system: { ...needsAction },
+    task_completed: { ...panelFirst },
+    task_due: { ...needsAction },
+    task_expired: { ...panelFirst },
+    task_generated: { ...panelFirst },
+    task_overdue: { ...needsAction },
+    task_skipped: { ...panelFirst },
+    task_snoozed_active: { ...panelFirst },
+    task_upcoming: { ...upcoming },
+    upcoming: { ...upcoming },
+    warning: { ...warning },
+    watering_covered_by_rain: { ...panelFirst },
+    watering_rescheduled_by_rain: { ...panelFirst },
+    weather_alert: { ...warning },
+  };
+}
+
+function assertPhaseTwoDatabaseState(state, fixture, maintenance) {
+  assert(state && typeof state === "object", "Phase 2 database state is missing");
+  const phase = fixture?.phase_two;
+  assert(phase && typeof phase === "object", "Phase 2 fixture state is missing");
+  const exact = (actual, expected, message) => {
+    assert(canonicalJson(actual) === canonicalJson(expected), message);
+  };
+  for (const field of [
+    "calendar_events",
+    "calendar_subscriptions",
+    "item_states",
+    "journal",
+    "notifications",
+    "offline_operations",
+    "outcomes",
+    "preferences",
+    "tasks",
+    "weather_alerts",
+  ]) {
+    assert(Array.isArray(state[field]), `Phase 2 ${field} projection is missing`);
+  }
+
+  const expectedTaskIds = Object.values(phase.task_ids).sort();
+  assert(state.tasks.length === expectedTaskIds.length, "Phase 2 fixture task count changed");
+  const taskById = new Map(state.tasks.map((task) => [task.public_id, task]));
+  assert(taskById.size === state.tasks.length, "Phase 2 fixture task IDs were duplicated");
+  exact([...taskById.keys()].sort(), expectedTaskIds, "Phase 2 fixture task IDs changed");
+  const initialTaskById = new Map(
+    phase.seeded_state.tasks.map((task) => [task.public_id, task]),
+  );
+  const task = (key) => {
+    const value = taskById.get(phase.task_ids[key]);
+    assert(value, `Phase 2 task is missing: ${key}`);
+    return value;
+  };
+  for (const finalTask of state.tasks) {
+    const initialTask = initialTaskById.get(finalTask.public_id);
+    assert(initialTask, `Phase 2 task was not seeded: ${finalTask.public_id}`);
+    for (const field of [
+      "garden_id",
+      "plot_ids",
+      "public_id",
+      "rule_source",
+      "task_type",
+      "window_end_on",
+      "window_kind",
+      "window_start_on",
+    ]) {
+      exact(
+        finalTask[field],
+        initialTask[field],
+        `Phase 2 task ${field} changed unexpectedly: ${finalTask.public_id}`,
+      );
+    }
+  }
+
+  const completedByKey = {
+    batch_a: fixture.roles.admin,
+    batch_b: fixture.roles.admin,
+    bloom_desktop: fixture.roles.admin,
+    bloom_mobile: fixture.roles.admin,
+    editor_offline: fixture.roles.editor,
+    editor_prune: fixture.roles.editor,
+    fertilize_mobile: fixture.roles.admin,
+    plot_drawer: fixture.roles.admin,
+  };
+  for (const [key, username] of Object.entries(completedByKey)) {
+    const completed = task(key);
+    assert(completed.status === "completed", `Phase 2 task was not completed: ${key}`);
+    assert(
+      completed.completed_by_username === username,
+      `Phase 2 task completion actor was unexpected: ${key}`,
+    );
+    assert(
+      completed.completed_at_ms === fixture.clock.attention_now_ms,
+      `Phase 2 task completion clock was not deterministic: ${key}`,
+    );
+    assert(completed.snoozed_until === null, `Completed Phase 2 task remained snoozed: ${key}`);
+  }
+
+  const grouped = task("fertilize_grouped");
+  assert(grouped.status === "pending", "Partial grouped fertilizing did not remain pending");
+  assert(grouped.completed_at_ms === null && grouped.completed_by_username === null,
+    "Partial grouped fertilizing was marked complete");
+  assert(grouped.due_on === phase.offline.reschedule_date,
+    "Offline reschedule did not retain the requested grouped fertilize date");
+  assert(grouped.snoozed_until === null,
+    "Offline reschedule left the grouped fertilize task snoozed");
+  exact(grouped.plant_ids, [phase.plant_ids.fertilize_b],
+    "Partial grouped fertilizing retained the wrong plants");
+  assert(grouped.title === `Fertilize: ${phase.plant_names.fertilize_b}`,
+    "Partial grouped fertilizing title did not describe the remaining plant");
+
+  const correction = task("snooze_correction");
+  assert(correction.status === "snoozed",
+    "Immediate snooze correction task did not remain snoozed after manual correction");
+  assert(correction.due_on === phase.snooze_correction.due_date,
+    "Immediate snooze correction changed the dedicated task due date");
+  assert(correction.snoozed_until === phase.manual_date,
+    "Immediate snooze correction did not retain the manually corrected date");
+  assert(correction.completed_at_ms === null && correction.completed_by_username === null,
+    "Immediate snooze correction task was unexpectedly completed");
+  exact(correction.metadata, { fixture: "complete_journeys_phase_2" },
+    "Immediate snooze correction task metadata changed");
+
+  const skippedPrune = task("prune_desktop");
+  assert(skippedPrune.status === "skipped", "Offline skip did not supersede the manual prune snooze");
+  assert(skippedPrune.snoozed_until === null,
+    "Offline skipped prune task retained the manual snooze date");
+  assert(skippedPrune.completed_at_ms === null && skippedPrune.completed_by_username === null,
+    "Offline skipped prune task was marked complete");
+
+  const staleGenerated = task("stale_generated_water");
+  assert(staleGenerated.status === "expired", "Stale generated watering task did not expire");
+  exact(staleGenerated.metadata, {
+    fixture: "complete_journeys_phase_2",
+    lifecycle: {
+      action_on: "2026-06-20",
+      expired_at_ms: fixture.clock.attention_now_ms,
+      expired_on: phase.date,
+      reason: "stale_generated_watering",
+      source: "generated_task_lifecycle",
+      status: "expired",
+    },
+  }, "Stale generated watering lifecycle evidence was unexpected");
+  const staleManual = task("stale_manual_water");
+  assert(staleManual.status === "snoozed", "Offline snooze did not update the manual overdue watering task");
+  assert(staleManual.snoozed_until === phase.offline.snooze_date,
+    "Offline manual watering snooze date was unexpected");
+  assert(staleManual.completed_at_ms === null && staleManual.completed_by_username === null,
+    "Offline snoozed manual watering task was marked complete");
+  exact(staleManual.metadata, { fixture: "complete_journeys_phase_2" },
+    "Manual overdue watering task metadata changed");
+
+  const rainOutdoor = task("rain_outdoor");
+  assert(rainOutdoor.status === "pending" && rainOutdoor.due_on === "2026-07-15",
+    "Outdoor watering task was not rescheduled after rain");
+  exact(rainOutdoor.metadata, {
+    fixture: "complete_journeys_phase_2",
+    rescheduled_from: phase.date,
+    rescheduled_reason: "rain_alert",
+  }, "Outdoor watering reschedule metadata was unexpected");
+  for (const key of ["rain_indoor", "rain_unplaced"]) {
+    const unaffected = task(key);
+    assert(unaffected.status === "pending" && unaffected.due_on === phase.date,
+      `Rain rescheduled an ineligible watering task: ${key}`);
+    exact(unaffected.metadata, { fixture: "complete_journeys_phase_2" },
+      `Rain changed metadata for an ineligible watering task: ${key}`);
+  }
+  const viewerTask = task("viewer_read_only");
+  assert(viewerTask.status === "pending" && viewerTask.completed_at_ms === null,
+    "Viewer changed a read-only Phase 2 task");
+
+  const journalExpectations = {
+    [phase.task_ids.bloom_desktop]: {
+      actor_username: fixture.roles.admin,
+      event_type: "bloomed",
+      outcome: "done",
+      plant_id: phase.plant_ids.bloom_desktop,
+      plot_ids: [],
+      task_type: "observe_bloom",
+      title: "",
+    },
+    [phase.task_ids.bloom_mobile]: {
+      actor_username: fixture.roles.admin,
+      event_type: "observed",
+      outcome: "not_seen_blooming_this_season",
+      plant_id: phase.plant_ids.bloom_mobile,
+      plot_ids: [],
+      task_type: "observe_bloom",
+      title: "Not seen blooming this season",
+    },
+    [phase.task_ids.editor_prune]: {
+      actor_username: fixture.roles.editor,
+      event_type: "pruned",
+      outcome: "done",
+      plant_id: phase.plant_ids.editor_prune,
+      plot_ids: [phase.plot_ids.alpha],
+      task_type: "prune",
+      title: "",
+    },
+    [phase.task_ids.fertilize_grouped]: {
+      actor_username: fixture.roles.admin,
+      event_type: "fertilized",
+      outcome: "done",
+      plant_id: phase.plant_ids.fertilize_a,
+      plot_ids: [phase.plot_ids.alpha],
+      task_type: "fertilize",
+      title: "",
+    },
+    [phase.task_ids.fertilize_mobile]: {
+      actor_username: fixture.roles.admin,
+      event_type: "fertilized",
+      outcome: "done",
+      plant_id: phase.plant_ids.fertilize_mobile,
+      plot_ids: [phase.plot_ids.alpha],
+      task_type: "fertilize",
+      title: "",
+    },
+  };
+  assert(
+    state.journal.length === Object.keys(journalExpectations).length,
+    "Phase 2 completion journal count was unexpected",
+  );
+  const journalByTask = new Map();
+  for (const entry of state.journal) {
+    const sourceTaskId = entry.metadata?.source_task_id;
+    assert(typeof sourceTaskId === "string" && sourceTaskId,
+      "Phase 2 journal entry has no source task");
+    assert(!journalByTask.has(sourceTaskId),
+      `Phase 2 task produced duplicate journal entries: ${sourceTaskId}`);
+    journalByTask.set(sourceTaskId, entry);
+  }
+  const journalPublicIds = new Set();
+  for (const [taskId, expected] of Object.entries(journalExpectations)) {
+    const entry = journalByTask.get(taskId);
+    assert(entry, `Phase 2 completion journal is missing: ${taskId}`);
+    assert(/^jrn_[a-z0-9]+$/.test(entry.public_id),
+      `Phase 2 completion journal ID is invalid: ${taskId}`);
+    journalPublicIds.add(entry.public_id);
+    exact({
+      actor_username: entry.actor_username,
+      event_type: entry.event_type,
+      garden_id: entry.garden_id,
+      occurred_on: entry.occurred_on,
+      plant_ids: entry.plant_ids,
+      plot_ids: entry.plot_ids,
+      title: entry.title,
+    }, {
+      actor_username: expected.actor_username,
+      event_type: expected.event_type,
+      garden_id: fixture.gardens.alpha.id,
+      occurred_on: phase.date,
+      plant_ids: [expected.plant_id],
+      plot_ids: expected.plot_ids,
+      title: expected.title,
+    }, `Phase 2 completion journal fields were unexpected: ${taskId}`);
+    exact(entry.metadata, {
+      outcome: expected.outcome,
+      selected_plant_ids: [expected.plant_id],
+      source: "task_completion",
+      source_task_id: taskId,
+      source_task_type: expected.task_type,
+    }, `Phase 2 completion journal metadata was unexpected: ${taskId}`);
+    const captureTask = taskById.get(taskId);
+    const captureKey = `${taskId}:${expected.event_type}:${expected.outcome}:${expected.plant_id}`;
+    exact(captureTask.metadata?.completion_journal_entries, {
+      [captureKey]: entry.public_id,
+    }, `Phase 2 task journal capture was not idempotent: ${taskId}`);
+    if (taskId === phase.task_ids.bloom_desktop) {
+      assert(captureTask.metadata?.completion_journal_entry_id === entry.public_id,
+        "Bloom completion did not retain its journal link");
+    }
+  }
+  assert(journalPublicIds.size === state.journal.length,
+    "Phase 2 completion journal public IDs were duplicated");
+
+  const seededObservations = phase.seeded_state.plant_observations;
+  const finalObservations = state.plant_observations;
+  assert(seededObservations && finalObservations,
+    "Phase 2 plant observation projection is missing");
+  const expectedObservations = structuredClone(seededObservations);
+  const desktopPlantId = phase.plant_ids.bloom_desktop;
+  const desktopPlant = expectedObservations.plants.find((row) => row.plant_id === desktopPlantId);
+  const desktopAssignment = expectedObservations.assignments.find(
+    (row) => row.plant_id === desktopPlantId && row.plot_id === phase.plot_ids.alpha,
+  );
+  assert(desktopPlant && desktopAssignment,
+    "Phase 2 desktop bloom observation fixture is incomplete");
+  desktopPlant.seen_growing = true;
+  desktopPlant.seen_growing_date = phase.date;
+  desktopAssignment.seen_growing = true;
+  desktopAssignment.seen_growing_date = phase.date;
+  exact(finalObservations, expectedObservations,
+    "Phase 2 bloom completion changed the wrong plant observation state");
+
+  exact(state.calendar_events, phase.seeded_state.calendar_events,
+    "Phase 2 calendar CRUD did not restore the seeded event graph exactly");
+  assert(state.calendar_subscriptions.length === 1,
+    "Phase 2 calendar subscription lifecycle count was unexpected");
+  const subscription = state.calendar_subscriptions[0];
+  exact({
+    creator_username: subscription.creator_username,
+    garden_id: subscription.garden_id,
+    label: subscription.label,
+    owner_username: subscription.owner_username,
+    preset_key: subscription.preset_key,
+    revoked: subscription.revoked,
+    scope: subscription.scope,
+    token_hash_length: subscription.token_hash_length,
+  }, {
+    creator_username: fixture.roles.admin,
+    garden_id: fixture.gardens.alpha.id,
+    label: "Phase 2 Admin Feed",
+    owner_username: fixture.roles.admin,
+    preset_key: "essential",
+    revoked: true,
+    scope: {
+      visible_sources: [
+        "garden_event",
+        "protect",
+        "prune",
+        "fertilize",
+        "sow",
+        "plant_out",
+        "observe_bloom",
+        "harvest",
+        "inspect_issue",
+        "weather_alert",
+      ],
+    },
+    token_hash_length: 64,
+  }, "Phase 2 revoked calendar subscription fields were unexpected");
+  assert(/^calsub_[a-z0-9]+$/.test(subscription.public_id),
+    "Phase 2 calendar subscription ID is invalid");
+  assert(/^\.\.\.[A-Za-z0-9_-]{6}$/.test(subscription.token_hint),
+    "Phase 2 calendar subscription token hint is invalid");
+  assert(!Object.hasOwn(subscription, "token_hash"),
+    "Phase 2 database evidence exposed a calendar subscription token hash");
+
+  const initialPreferenceByUser = new Map(
+    phase.seeded_state.preferences.map((preference) => [preference.username, preference]),
+  );
+  const finalPreferenceByUser = new Map(
+    state.preferences.map((preference) => [preference.username, preference]),
+  );
+  assert(finalPreferenceByUser.size === 3, "Phase 2 preference user count was unexpected");
+  for (const username of [fixture.roles.editor, fixture.roles.viewer]) {
+    exact(finalPreferenceByUser.get(username), initialPreferenceByUser.get(username),
+      `Phase 2 changed ${username} preferences`);
+  }
+  const initialAdminPreference = initialPreferenceByUser.get(fixture.roles.admin);
+  const finalAdminPreference = finalPreferenceByUser.get(fixture.roles.admin);
+  assert(initialAdminPreference && finalAdminPreference, "Phase 2 admin preferences are missing");
+  exact(finalAdminPreference, {
+    ...initialAdminPreference,
+    attention_quiet_hours: {
+      digest: { enabled: true, end: "07:15", start: "22:30" },
+    },
+    attention_rules: expectedPhaseTwoCanonicalAttentionRules(),
+    digest_frequency: "weekly",
+    legacy_quiet_hours: { end: "07:15", start: "22:30" },
+    notification_rules: {
+      issue_created: { email_enabled: true, in_app_enabled: false, min_severity: "normal" },
+      system: { email_enabled: true, in_app_enabled: true, min_severity: "low" },
+      task_due: { email_enabled: false, in_app_enabled: true, min_severity: "low" },
+      task_generated: { email_enabled: false, in_app_enabled: false, min_severity: "low" },
+      task_overdue: { email_enabled: false, in_app_enabled: true, min_severity: "low" },
+      task_upcoming: { email_enabled: false, in_app_enabled: false, min_severity: "high" },
+      "weather_alert:dry_spell": {
+        email_enabled: true, in_app_enabled: true, min_severity: "normal",
+      },
+      "weather_alert:frost_warning": {
+        email_enabled: true, in_app_enabled: true, min_severity: "normal",
+      },
+      "weather_alert:heat_wave": {
+        email_enabled: true, in_app_enabled: true, min_severity: "normal",
+      },
+      "weather_alert:rain_surplus": {
+        email_enabled: true, in_app_enabled: true, min_severity: "normal",
+      },
+    },
+    preset: "custom",
+  }, "Phase 2 admin notification preferences were not normalized exactly");
+  for (const key of ["issue_follow_up_due", "issue_follow_up_overdue"]) {
+    exact(finalAdminPreference.attention_rules?.[key], {
+      digest: true,
+      inbox: false,
+      min_severity: "normal",
+      panel: true,
+    }, `Phase 2 muted issue-created attention rule was not projected exactly: ${key}`);
+  }
+  exact(finalAdminPreference.notification_rules?.issue_created, {
+    email_enabled: true,
+    in_app_enabled: false,
+    min_severity: "normal",
+  }, "Phase 2 muted issue-created legacy projection was not exact");
+  exact(finalAdminPreference.attention_quiet_hours, {
+    digest: { enabled: true, end: "07:15", start: "22:30" },
+  }, "Phase 2 canonical quiet hours retained legacy top-level keys");
+
+  assert(state.notifications.length === 41,
+    "Phase 2 task and seeded notification projection count was unexpected");
+  const notificationIds = state.notifications.map((notification) => notification.public_id);
+  assert(new Set(notificationIds).size === notificationIds.length,
+    "Phase 2 notification public IDs were duplicated");
+  const finalNotificationById = new Map(
+    state.notifications.map((notification) => [notification.public_id, notification]),
+  );
+  for (const initialNotification of phase.seeded_state.notifications) {
+    exact(finalNotificationById.get(initialNotification.public_id), initialNotification,
+      `Phase 2 durable notification changed: ${initialNotification.public_id}`);
+  }
+
+  assert(state.weather_alerts.length === phase.seeded_state.weather_alerts.length + 4,
+    "Phase 2 generated weather alert count was unexpected");
+  const weatherIds = state.weather_alerts.map((alert) => alert.id);
+  assert(new Set(weatherIds).size === weatherIds.length,
+    "Phase 2 weather alert IDs were duplicated");
+  const finalWeatherById = new Map(state.weather_alerts.map((alert) => [alert.id, alert]));
+  for (const initialAlert of phase.seeded_state.weather_alerts) {
+    exact(finalWeatherById.get(initialAlert.id), initialAlert,
+      `Phase 2 seeded weather alert changed: ${initialAlert.id}`);
+  }
+  const rainAlerts = state.weather_alerts.filter(
+    (alert) => alert.garden_id === fixture.gardens.beta.id && alert.alert_type === "rain_surplus",
+  );
+  assert(rainAlerts.length === 1, "Phase 2 rain alert count was unexpected");
+  const rainAlert = rainAlerts[0];
+  exact({
+    dismissed: rainAlert.dismissed,
+    plant_ids: rainAlert.plant_ids,
+    severity: rainAlert.severity,
+    valid_from: rainAlert.valid_from,
+    valid_until: rainAlert.valid_until,
+  }, {
+    dismissed: false,
+    plant_ids: [
+      phase.plant_ids.rain_indoor,
+      phase.plant_ids.rain_outdoor,
+      phase.plant_ids.rain_unplaced,
+    ].sort(),
+    severity: "normal",
+    valid_from: phase.date,
+    valid_until: "2026-07-14",
+  }, "Phase 2 rain alert fields were unexpected");
+  assert(rainAlert.metadata?.rain_days === 3 && rainAlert.metadata?.total_mm === 16,
+    "Phase 2 rain alert metadata was unexpected");
+
+  assert(state.item_states.length === 1,
+    "Phase 2 user-scoped weather dismissal count was unexpected");
+  exact(state.item_states[0], {
+    garden_id: fixture.gardens.beta.id,
+    item_id: `attn:weather:alert:${rainAlert.id}`,
+    metadata: {},
+    reason: "",
+    snoozed_until_ms: null,
+    user_state: "dismissed",
+    username: fixture.roles.admin,
+  }, "Phase 2 weather dismissal was not user scoped");
+
+  assert(state.outcomes.length === 1, "Phase 2 rain outcome count was unexpected");
+  const outcome = state.outcomes[0];
+  assert(/^attnout_[a-z0-9]+$/.test(outcome.public_id),
+    "Phase 2 rain outcome ID is invalid");
+  assert(outcome.expires_at_ms - outcome.occurred_at_ms === 30 * 86_400_000,
+    "Phase 2 rain outcome retention was unexpected");
+  exact({
+    garden_id: outcome.garden_id,
+    outcome_type: outcome.outcome_type,
+    plant_ids: outcome.plant_ids,
+    plot_ids: outcome.plot_ids,
+    provider: outcome.provider,
+    recovery_action: outcome.recovery_action,
+    source_id: outcome.source_id,
+    source_public_id: outcome.source_public_id,
+    source_type: outcome.source_type,
+    target_id: outcome.target_id,
+    target_type: outcome.target_type,
+  }, {
+    garden_id: fixture.gardens.beta.id,
+    outcome_type: "watering_rescheduled_by_rain",
+    plant_ids: [phase.plant_ids.rain_outdoor],
+    plot_ids: [phase.plot_ids.beta],
+    provider: "weather",
+    recovery_action: {
+      due_on: phase.date,
+      kind: "restore_generated_watering_task",
+      label: "Restore watering",
+      plant_ids: [phase.plant_ids.rain_outdoor],
+      plot_ids: [phase.plot_ids.beta],
+      source_public_id: task("rain_outdoor").rule_source,
+      target_id: phase.plant_ids.rain_outdoor,
+      target_type: "plant",
+    },
+    source_id: String(rainAlert.id),
+    source_public_id: task("rain_outdoor").rule_source,
+    source_type: "task_generator",
+    target_id: phase.plant_ids.rain_outdoor,
+    target_type: "plant",
+  }, "Phase 2 rain outcome linkage was unexpected");
+  assert(
+    outcome.metadata?.weather_alert_id === String(rainAlert.id)
+      && outcome.metadata?.task_public_id === phase.task_ids.rain_outdoor
+      && outcome.metadata?.due_on === phase.date
+      && outcome.metadata?.new_due_on === rainOutdoor.due_on
+      && outcome.metadata?.rain_mm === 16,
+    "Phase 2 rain outcome metadata was unexpected",
+  );
+
+  const offlineTaskKeys = [
+    "editor_offline",
+    "prune_desktop",
+    "stale_manual_water",
+    "fertilize_grouped",
+  ];
+  assert(state.offline_operations.length === offlineTaskKeys.length,
+    "Phase 2 offline task replay operation count was unexpected");
+  const offlineOperationByTarget = new Map(
+    state.offline_operations.map((operation) => [operation.target_id, operation]),
+  );
+  assert(offlineOperationByTarget.size === offlineTaskKeys.length,
+    "Phase 2 offline task replay targets were duplicated");
+  exact([...offlineOperationByTarget.keys()].sort(), offlineTaskKeys.map(
+    (key) => phase.task_ids[key],
+  ).sort(), "Phase 2 offline task replay targets were unexpected");
+  for (const key of offlineTaskKeys) {
+    const taskId = phase.task_ids[key];
+    const operation = offlineOperationByTarget.get(taskId);
+    assert(operation, `Phase 2 offline task replay operation is missing: ${key}`);
+    assert(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      operation.operation_id,
+    ), `Phase 2 offline task operation ID is not a UUIDv4: ${key}`);
+    assert(/^[0-9a-f]{64}$/.test(operation.request_fingerprint),
+      `Phase 2 offline task request fingerprint is invalid: ${key}`);
+    exact({
+      endpoint: operation.endpoint,
+      garden_id: operation.garden_id,
+      result_id: operation.result_id,
+      target_id: operation.target_id,
+      target_type: operation.target_type,
+    }, {
+      endpoint: "task_action",
+      garden_id: fixture.gardens.alpha.id,
+      result_id: taskId,
+      target_id: taskId,
+      target_type: "task",
+    }, `Phase 2 offline task replay linkage was unexpected: ${key}`);
+  }
+
+  assert(maintenance && typeof maintenance === "object",
+    "Phase 2 maintenance evidence is missing");
+  assert(maintenance.delivery_count === 1 && maintenance.deliveries?.length === 1,
+    "Phase 2 digest delivery count was unexpected");
+  assert(maintenance.garden_id === fixture.gardens.alpha.id,
+    "Phase 2 maintenance ran for the wrong garden");
+  exact({
+    configured: maintenance.summary?.configured,
+    gardens_processed: maintenance.summary?.gardens_processed,
+    notifications_created: maintenance.summary?.notifications_created,
+    tasks_auto_created: maintenance.summary?.tasks_auto_created,
+    tasks_expired: maintenance.summary?.tasks_expired,
+    weather_alerts_created: maintenance.summary?.weather_alerts_created,
+  }, {
+    configured: true,
+    gardens_processed: 1,
+    notifications_created: 48,
+    tasks_auto_created: 60,
+    tasks_expired: 1,
+    weather_alerts_created: 3,
+  }, "Phase 2 maintenance summary was unexpected");
+  assert(
+    maintenance.deliveries.every((delivery) => (
+      Number.isSafeInteger(delivery.body_length) && delivery.body_length > 0
+      && Number.isSafeInteger(delivery.recipient_length) && delivery.recipient_length > 0
+      && Number.isSafeInteger(delivery.subject_length) && delivery.subject_length > 0
+    )),
+    "Phase 2 digest delivery evidence was invalid",
+  );
+
+  return {
+    calendar_lifecycle_exact: true,
+    completion_history_exact: true,
+    maintenance_exact: true,
+    notification_preferences_exact: true,
+    offline_replay_exact: true,
+    rain_automation_exact: true,
+    task_lifecycle_exact: true,
+    user_scoped_weather_dismissal_exact: true,
+  };
+}
+
 function assertExactPhaseOneMobileSnapshot(snapshots, expected) {
   assert(Array.isArray(snapshots), "Phase 1 mobile snapshot evidence is missing");
   assert(snapshots.length === 1, "Phase 1 did not retain exactly one mobile snapshot");
@@ -922,6 +1679,29 @@ function assertFixtureAttentionClock(fixture) {
   );
 }
 
+function isSafeManifestRequestPath(value) {
+  const requestPath = String(value || "");
+  return [
+    /^\/api\/auth\/(?:login|me|status)$/,
+    /^\/api\/attention\/(?:preferences|today)$/,
+    /^\/api\/calendar\/(?:events|export\.ics|preferences|manual-events(?:\/[^/?]+)?|subscriptions(?:\/[^/?]+)?)$/,
+    /^\/api\/dashboard\/badge-counts$/,
+    /^\/api\/gardens(?:\/\d+\/map-objects(?:\/[^/?]+(?:\/units(?:\/[^/?]+)?)?)?)?$/,
+    /^\/api\/journal(?:\/[^/?]+)?$/,
+    /^\/api\/layout-state$/,
+    /^\/api\/media(?:\/summaries)?$/,
+    /^\/api\/notifications(?:\/(?:generate|preferences|read-all|[^/?]+(?:\/(?:dismiss|read))?))?$/,
+    /^\/api\/plants(?:\/[^/?]+)?$/,
+    /^\/api\/plots(?:\/(?:alerts|elevations|[^/?]+(?:\/(?:plant-alerts|plants|tasks))?))?$/,
+    /^\/api\/security\/csp-report$/,
+    /^\/api\/snapshots$/,
+    /^\/api\/saved-views(?:\/presets)?$/,
+    /^\/api\/tasks(?:\/(?:batch-action|[^/?]+(?:\/action)?))?$/,
+    /^\/api\/version$/,
+    /^\/api\/weather\/(?:check|summary|alerts(?:\/\d+\/dismiss)?)$/,
+  ].some((pattern) => pattern.test(requestPath));
+}
+
 function sanitizeManifestEvidence(manifest) {
   const dirty = Boolean(manifest.git?.dirty);
   const output = {
@@ -936,6 +1716,7 @@ function sanitizeManifestEvidence(manifest) {
       : null,
     ended_at: safeUtcTimestamp(manifest.ended_at),
     failure: manifest.failure ? sanitizeDiagnostic(manifest.failure) : null,
+    failure_stage: manifest.failure_stage ? safeIdentifier(manifest.failure_stage) : null,
     filesystem: manifest.filesystem && typeof manifest.filesystem === "object"
       ? structuredClone(manifest.filesystem)
       : null,
@@ -1015,7 +1796,7 @@ function sanitizeManifestEvidence(manifest) {
           : sanitizeDiagnostic(request.gardenId),
         method: new Set(["DELETE", "GET", "HEAD", "PATCH", "POST", "PUT"])
           .has(String(request.method)) ? String(request.method) : "UNKNOWN",
-        path: /^\/api\/(?:auth\/(?:login|me|status)|attention\/today|version|plots(?:\/[^/?]+)?|plants(?:\/[^/?]+)?|dashboard\/badge-counts|gardens(?:\/\d+\/map-objects(?:\/[^/?]+(?:\/units(?:\/[^/?]+)?)?)?)?|layout-state|notifications|saved-views(?:\/presets)?|snapshots)$/.test(String(request.path))
+        path: isSafeManifestRequestPath(request.path)
           ? String(request.path)
           : sanitizeDiagnostic(request.path),
       }));
@@ -1054,6 +1835,7 @@ function assertNoResponseMocks() {
     fs.readFileSync(__filename, "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/foundation.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/gardenMapPlants.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/dailyAttentionWork.cjs"), "utf8"),
   ].join("\n");
   const forbiddenCalls = [
     `route.${"fulfill"}(`,
@@ -1077,10 +1859,12 @@ async function main() {
     database: null,
     ended_at: null,
     failure: null,
+    failure_stage: null,
     git: sourceProvenance(fixture.git),
     journey_ids: [
-      ...(THROUGH_PHASE >= 0 ? ["A1"] : []),
-      ...(THROUGH_PHASE >= 1 ? ["A3", "M1", "M2", "M3", "M4", "CROSS-01"] : []),
+      ...(phaseSelected(0) ? ["A1"] : []),
+      ...(phaseSelected(1) ? ["A3", "M1", "M2", "M3", "M4", "CROSS-01"] : []),
+      ...(phaseSelected(2) ? ["D1", "D2", "D3", "D4", "D5", "R1"] : []),
     ],
     phase: PHASE,
     profiles: [],
@@ -1094,9 +1878,16 @@ async function main() {
   let phaseZeroProfileEvidence = null;
   let phaseZeroProfiles = [];
   let phaseOneAuditEvidence = null;
+  let phaseOneDatabase = null;
   let phaseOneProfileEvidence = null;
   let phaseOneProfiles = [];
+  let phaseTwoDatabaseEvidence = null;
+  let phaseTwoPreparation = null;
+  let phaseTwoMaintenance = null;
+  let phaseTwoProfileEvidence = null;
+  let phaseTwoProfiles = [];
   let thrownError = null;
+  let currentStage = "runner-startup";
   try {
     const { chromium, devices } = require("../frontend/node_modules/playwright-core");
     browser = await chromium.launch({
@@ -1110,7 +1901,8 @@ async function main() {
       executablePath: CHROMIUM_EXECUTABLE,
       headless: true,
     });
-    if (THROUGH_PHASE >= 0) {
+    if (phaseSelected(0)) {
+      currentStage = "phase-zero-browser";
       const phaseZeroProfileStart = manifest.profiles.length;
       await runFoundation({
         artifactDir: ARTIFACT_DIR,
@@ -1125,7 +1917,8 @@ async function main() {
       phaseZeroProfiles = manifest.profiles.slice(phaseZeroProfileStart);
       phaseZeroProfileEvidence = assertPhaseZeroProfileEvidence(phaseZeroProfiles);
     }
-    if (THROUGH_PHASE >= 1) {
+    if (phaseSelected(1)) {
+      currentStage = "phase-one-browser";
       const phaseOneProfileStart = manifest.profiles.length;
       await runGardenMapPlants({
         artifactDir: ARTIFACT_DIR,
@@ -1138,14 +1931,48 @@ async function main() {
         username: USERNAME,
       });
       phaseOneProfiles = manifest.profiles.slice(phaseOneProfileStart);
+      currentStage = "phase-one-database-boundary";
+      phaseOneDatabase = databaseSnapshot();
     }
+    if (phaseSelected(2)) {
+      currentStage = "phase-two-prerequisites";
+      phaseTwoPreparation = preparePhaseTwoFixtures();
+      assert(
+        canonicalJson(phaseTwoPreparation) === canonicalJson({
+          fetched_at_ms: fixture.clock.attention_now_ms,
+          garden_ids: [fixture.gardens.alpha.id, fixture.gardens.beta.id].sort((a, b) => a - b),
+          weather_cache_rows: 2,
+        }),
+        "Phase 2 deterministic weather preparation was unexpected",
+      );
+      currentStage = "phase-two-maintenance";
+      phaseTwoMaintenance = runPhaseTwoMaintenance();
+      currentStage = "phase-two-browser";
+      const phaseTwoProfileStart = manifest.profiles.length;
+      await runDailyAttentionWork({
+        artifactDir: ARTIFACT_DIR,
+        baseUrl: BASE_URL,
+        browser,
+        devices,
+        fixture,
+        onProfile: (profile) => manifest.profiles.push(profile),
+        password: PASSWORD,
+        username: USERNAME,
+      });
+      phaseTwoProfiles = manifest.profiles.slice(phaseTwoProfileStart);
+    }
+    currentStage = "final-database-snapshot";
     const finalDatabase = databaseSnapshot();
+    currentStage = "cumulative-assertions";
     manifest.database = {
       observed_audit_state: finalDatabase.audit_state,
       observed_auth_state: finalDatabase.auth_state,
       observed_domain_counts: finalDatabase.domain_counts,
       observed_domain_tables: finalDatabase.domain_tables,
       observed_phase_one_state: finalDatabase.phase_one_state,
+      observed_phase_two_state: finalDatabase.phase_two_state,
+      phase_two_maintenance: phaseTwoMaintenance,
+      phase_two_preparation: phaseTwoPreparation,
     };
     const domainTableNames = new Set([
       ...Object.keys(fixture.database_snapshot.domain_tables),
@@ -1155,8 +1982,17 @@ async function main() {
       (table) => JSON.stringify(finalDatabase.domain_tables[table])
         !== JSON.stringify(fixture.database_snapshot.domain_tables[table]),
     );
-    const phaseOneRan = THROUGH_PHASE >= 1;
+    const phaseOneRan = phaseSelected(1);
+    const phaseTwoRan = phaseSelected(2);
     if (phaseOneRan) phaseOneProfileEvidence = assertPhaseOneProfileEvidence(phaseOneProfiles);
+    if (phaseTwoRan) {
+      phaseTwoProfileEvidence = assertPhaseTwoProfileEvidence(phaseTwoProfiles);
+      phaseTwoDatabaseEvidence = assertPhaseTwoDatabaseState(
+        finalDatabase.phase_two_state,
+        fixture,
+        phaseTwoMaintenance,
+      );
+    }
     const phaseOneSemanticDeltaTables = phaseOneRan ? new Set([
       "app_settings",
       "garden_journal_entries",
@@ -1173,10 +2009,53 @@ async function main() {
       "layout_state",
       "plot_ownership",
       "plots",
+      "weather_cache",
     ]) : new Set();
+    const phaseOneChangedDomainTables = phaseOneRan ? [...new Set([
+      ...Object.keys(fixture.database_snapshot.domain_tables),
+      ...Object.keys(phaseOneDatabase?.domain_tables || {}),
+    ])].filter(
+      (table) => JSON.stringify(phaseOneDatabase?.domain_tables?.[table])
+        !== JSON.stringify(fixture.database_snapshot.domain_tables[table]),
+    ) : [];
+    const phaseOneForbiddenDomainTables = phaseOneChangedDomainTables.filter(
+      (table) => !phaseOneSemanticDeltaTables.has(table),
+    );
     assert(
-      changedDomainTables.every((table) => phaseOneSemanticDeltaTables.has(table)),
-      `Browser journey changed forbidden domain tables: ${changedDomainTables.join(", ")}`,
+      phaseOneForbiddenDomainTables.length === 0,
+      `Phase 1 changed forbidden domain tables: ${phaseOneForbiddenDomainTables.join(", ")}`,
+    );
+    const phaseTwoSemanticDeltaTables = phaseTwoRan ? new Set([
+      ...phaseOneSemanticDeltaTables,
+      "app_settings",
+      "attention_outcomes",
+      "calendar_subscriptions",
+      "garden_calendar_event_plants",
+      "garden_calendar_event_plots",
+      "garden_calendar_events",
+      "garden_journal_entries",
+      "garden_journal_entry_plants",
+      "garden_journal_entry_plots",
+      "garden_task_plants",
+      "garden_task_plots",
+      "garden_tasks",
+      "notification_events",
+      "offline_create_operations",
+      "plants",
+      "plot_plants",
+      "user_attention_item_state",
+      "user_attention_preferences",
+      "user_calendar_preferences",
+      "user_notification_preferences",
+      "weather_alert_plants",
+      "weather_alerts",
+    ]) : phaseOneSemanticDeltaTables;
+    const forbiddenDomainTables = changedDomainTables.filter(
+      (table) => !phaseTwoSemanticDeltaTables.has(table),
+    );
+    assert(
+      forbiddenDomainTables.length === 0,
+      `Cumulative journey changed forbidden domain tables: ${forbiddenDomainTables.join(", ")}`,
     );
     assert(
       fixture.database_snapshot.auth_state.admin_session_count === 0,
@@ -1196,13 +2075,11 @@ async function main() {
         === fixture.database_snapshot.auth_state.users_expected_digest,
       "Browser login changed auth user state beyond last_login_at",
     );
-    const expectedSessionCounts = {
-      [fixture.roles.admin]: manifest.profiles.filter((profile) => profile.role === "admin").length,
-      [fixture.roles.editor]: manifest.profiles.filter((profile) => profile.role === "editor").length,
-      [fixture.roles.onboarding]: 1,
-      [fixture.roles.onboarding_mobile]: 1,
-      [fixture.roles.viewer]: manifest.profiles.filter((profile) => profile.role === "viewer").length,
-    };
+    const expectedSessionCounts = expectedSessionUserCounts(
+      fixture,
+      manifest.profiles,
+      phaseOneRan,
+    );
     assert(
       JSON.stringify(finalDatabase.auth_state.session_user_counts)
         === JSON.stringify(expectedSessionCounts),
@@ -1222,8 +2099,10 @@ async function main() {
       `Browser journey login audit count was unexpected: ${JSON.stringify(finalDatabase.audit_state)}`,
     );
     if (phaseOneRan) {
+      assert(phaseOneDatabase, "Phase 1 database boundary snapshot is missing");
+      const phaseOneProfileCount = phaseZeroProfiles.length + phaseOneProfiles.length;
       const initialPhaseOne = fixture.database_snapshot.phase_one_state;
-      const finalPhaseOne = finalDatabase.phase_one_state;
+      const finalPhaseOne = phaseOneDatabase.phase_one_state;
       const expectedCountDeltas = {
         app_settings: 1,
         garden_journal_entries: 1,
@@ -1243,7 +2122,7 @@ async function main() {
       };
       for (const [table, delta] of Object.entries(expectedCountDeltas)) {
         assert(
-          finalDatabase.domain_tables[table].count
+          phaseOneDatabase.domain_tables[table].count
             === fixture.database_snapshot.domain_tables[table].count + delta,
           `Phase 1 ${table} count delta was not ${delta}`,
         );
@@ -1425,20 +2304,20 @@ async function main() {
         "Onboarding did not create the expected visible gardens and legacy default contexts",
       );
       phaseOneAuditEvidence = assertPhaseOneAuditContract(
-        finalDatabase.audit_state,
-        manifest.profiles.length,
+        phaseOneDatabase.audit_state,
+        phaseOneProfileCount,
       );
       assert(
-        finalDatabase.phase_one_state.mobile_snapshot_count
+        phaseOneDatabase.phase_one_state.mobile_snapshot_count
           === fixture.database_snapshot.phase_one_state.mobile_snapshot_count + 1,
         "Phase 1 mobile action did not create exactly one snapshot",
       );
       assert(
-        finalDatabase.audit_state.expected_phase_one_snapshot_count === 2,
+        phaseOneDatabase.audit_state.expected_phase_one_snapshot_count === 2,
         "Phase 1 desktop and mobile snapshots did not create exactly two expected audit events",
       );
       assert(
-        finalDatabase.audit_state.expected_phase_one_viewer_denial_count === 4,
+        phaseOneDatabase.audit_state.expected_phase_one_viewer_denial_count === 4,
         "Phase 1 viewer write denials did not create the four exact audit events",
       );
     }
@@ -1466,9 +2345,9 @@ async function main() {
           + process.env.GARDENOPS_DISPOSABLE_POSTGRES_MARKER,
         )
         .digest("hex"),
-      semantic_delta_tables: [...phaseOneSemanticDeltaTables].sort(),
-      domain_counts_unchanged: !phaseOneRan,
-      domain_digests_unchanged: !phaseOneRan,
+      semantic_delta_tables: [...phaseTwoSemanticDeltaTables].sort(),
+      domain_counts_unchanged: !phaseOneRan && !phaseTwoRan,
+      domain_digests_unchanged: !phaseOneRan && !phaseTwoRan,
       phase_zero_enforcement: phaseZeroProfileEvidence ? {
         browser_profile_matrix: phaseZeroProfileEvidence.profile_matrix_enforced === true,
         cumulative_before_phase_one: true,
@@ -1489,7 +2368,21 @@ async function main() {
         stable_mutable_domain_rows_unchanged: true,
         targeted_audit_contract: Boolean(phaseOneAuditEvidence),
       } : null,
-      phase_one_mobile_snapshot_count: finalDatabase.phase_one_state.mobile_snapshot_count,
+      phase_one_mobile_snapshot_count: phaseOneDatabase?.phase_one_state.mobile_snapshot_count
+        ?? finalDatabase.phase_one_state.mobile_snapshot_count,
+      phase_two_enforcement: phaseTwoRan ? {
+        ...phaseTwoDatabaseEvidence,
+        browser_profile_matrix: phaseTwoProfileEvidence?.profile_matrix_enforced === true,
+        maintenance: phaseTwoMaintenance,
+        preparation: phaseTwoPreparation,
+      } : null,
+      phase_boundaries: {
+        phase_one_audit_total: phaseOneDatabase?.audit_state.total_count ?? null,
+        phase_one_profile_count: phaseOneRan
+          ? phaseZeroProfiles.length + phaseOneProfiles.length
+          : null,
+        phase_two_profile_count: phaseTwoRan ? phaseTwoProfiles.length : null,
+      },
       final: finalDatabase.domain_counts,
       initial: fixture.database_snapshot.domain_counts,
     };
@@ -1502,10 +2395,13 @@ async function main() {
     await browser.close();
     browser = null;
     manifest.status = "passed";
+    currentStage = "complete";
   } catch (error) {
     thrownError = error;
+    writePrivateFailure(error);
     manifest.status = "failed";
     manifest.failure = safeFailure(error);
+    manifest.failure_stage = currentStage;
   } finally {
     if (browser) {
       try {
@@ -1563,12 +2459,17 @@ module.exports = {
   assertPhaseZeroProfileEvidence,
   assertPhaseOneAuditContract,
   assertPhaseOneProfileEvidence,
+  assertPhaseTwoDatabaseState,
+  assertPhaseTwoProfileEvidence,
   assertNoResponseMocks,
   assertPageStructure,
   assertSourceRevisionStable,
   backendErrorEvidence,
+  expectedSessionUserCounts,
   gitState,
+  isSafeManifestRequestPath,
   phaseOneAuditExpectedEvents,
+  phaseSelected,
   safeUtcTimestamp,
   safeFailure,
   sanitizeManifestEvidence,

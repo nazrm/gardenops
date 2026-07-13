@@ -1,14 +1,47 @@
 """Tests for C7 recurring care schedules and C8 harvest window alerts."""
 
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 from unittest.mock import MagicMock, patch
 
+import gardenops.db as db
+from gardenops.services.attention.outcomes import upsert_attention_outcome
+from gardenops.services.attention.service import restore_attention_outcome
 from gardenops.services.task_generator import (
     generate_task_description_overrides,
     generate_tasks,
     infer_task_description,
 )
 from tests.base import DbTestBase
+
+
+class _RestoreRaceConnection:
+    """Synchronize concurrent restore reads without changing production behavior."""
+
+    def __init__(
+        self,
+        connection: Any,
+        outcome_barrier: threading.Barrier,
+        task_barrier: threading.Barrier,
+    ) -> None:
+        self._connection = connection
+        self._outcome_barrier = outcome_barrier
+        self._task_barrier = task_barrier
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        sql = str(query)
+        if "FROM attention_outcomes" in sql:
+            self._outcome_barrier.wait(timeout=10)
+        elif "FROM garden_tasks" in sql and "rule_source = %s" in sql:
+            try:
+                # With the advisory lock, the second request cannot reach this
+                # read. Time out so the lock holder can finish its transaction.
+                self._task_barrier.wait(timeout=1)
+            except threading.BrokenBarrierError:
+                pass
+        return self._connection.execute(query, params)
 
 
 class TestHarvestNoTaskForNonHarvestCategory(DbTestBase):
@@ -339,6 +372,88 @@ class TestInferTaskDescription(DbTestBase):
         en, no = infer_task_description(self.conn, {"rule_source": ""})
         assert en == ""
         assert no == ""
+
+
+class TestRainAttentionOutcomeRestoreConcurrency(DbTestBase):
+    def test_concurrent_restores_create_one_generated_watering_task(self) -> None:
+        self._insert_plant("RESTORE-RACE", "Restore race", care_watering="regular moisture")
+        now_ms = 1783180800000
+        source_public_id = "water:RESTORE-RACE:2026-07-05"
+        outcome_id = upsert_attention_outcome(
+            self.conn,
+            garden_id=self.garden_id,
+            provider="weather",
+            outcome_type="watering_covered_by_rain",
+            source_type="task_generator",
+            source_id="rain-restore-race",
+            source_public_id=source_public_id,
+            target_type="plant",
+            target_id="RESTORE-RACE",
+            title="Watering covered by rain",
+            explanation="Rain covers this watering.",
+            reason="Rain covers watering",
+            plant_ids=("RESTORE-RACE",),
+            metadata={"due_on": "2026-07-05", "plant_name": "Restore race"},
+            recovery_action={
+                "kind": "restore_generated_watering_task",
+                "label": "Restore watering",
+                "source_public_id": source_public_id,
+                "target_type": "plant",
+                "target_id": "RESTORE-RACE",
+                "due_on": "2026-07-05",
+                "plant_ids": ["RESTORE-RACE"],
+                "plot_ids": [],
+            },
+            occurred_at_ms=now_ms,
+            expires_at_ms=now_ms + 86_400_000,
+        )
+        self.conn.commit()
+        outcome_barrier = threading.Barrier(2)
+        task_barrier = threading.Barrier(2)
+
+        def restore_once(_: int) -> str:
+            conn = db.get_db()
+            try:
+                result = restore_attention_outcome(
+                    _RestoreRaceConnection(conn, outcome_barrier, task_barrier),
+                    garden_id=self.garden_id,
+                    outcome_id=outcome_id,
+                    user_id=self._owner_id,
+                    now_ms=now_ms,
+                )
+                conn.commit()
+                return result
+            finally:
+                db.return_db(conn)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(restore_once, range(2)))
+
+        tasks = self.conn.execute(
+            """
+            SELECT public_id, due_on, status
+            FROM garden_tasks
+            WHERE garden_id = %s
+              AND rule_source = %s
+            """,
+            (self.garden_id, source_public_id),
+        ).fetchall()
+        outcome = self.conn.execute(
+            """
+            SELECT expires_at_ms
+            FROM attention_outcomes
+            WHERE garden_id = %s
+              AND public_id = %s
+            """,
+            (self.garden_id, outcome_id),
+        ).fetchone()
+
+        assert results == ["restored", "restored"]
+        assert len(tasks) == 1
+        assert str(tasks[0]["due_on"]) == "2026-07-05"
+        assert str(tasks[0]["status"]) == "pending"
+        assert outcome is not None
+        assert int(outcome["expires_at_ms"]) < now_ms
 
 
 class TestTaskDescriptionOverrides(unittest.TestCase):

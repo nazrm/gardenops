@@ -1,5 +1,6 @@
 import type {
   SyncCallbacks,
+  SyncResult,
   SerializedFile,
 } from "../services/offlineQueue";
 import { t } from "../core/i18n";
@@ -44,11 +45,18 @@ export interface OfflineMediaHelpers {
 }
 
 let mediaHelpers: OfflineMediaHelpers;
+let onSyncComplete: ((result: SyncResult) => Promise<void> | void) | null = null;
+
+export interface OfflineFeatureOptions {
+  onSyncComplete?: (result: SyncResult) => Promise<void> | void;
+}
 
 export function initOfflineFeature(
   helpers: OfflineMediaHelpers,
+  options: OfflineFeatureOptions = {},
 ): void {
   mediaHelpers = helpers;
+  onSyncComplete = options.onSyncComplete ?? null;
   initOfflineIndicator();
 }
 
@@ -331,6 +339,9 @@ async function triggerOfflineSync(): Promise<void> {
     );
   } else if (result.failed > 0) {
     showToast(t("offline.sync_failed"), "error");
+  }
+  if (result.synced > 0) {
+    await onSyncComplete?.(result);
   }
   await refreshOfflineIndicator();
 }

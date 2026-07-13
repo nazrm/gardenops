@@ -14,6 +14,12 @@ let ctx: AppContext;
 let weatherSummary: WeatherSummary | null = null;
 let weatherGardenId: number | null = null;
 let weatherRequestVersion = 0;
+let weatherLoadVersion = 0;
+let onWeatherMutation: (() => Promise<void> | void) | null = null;
+
+export interface WeatherFeatureOptions {
+  onWeatherMutation?: () => Promise<void> | void;
+}
 
 interface WeatherRequestContext {
   gardenId: number;
@@ -40,14 +46,17 @@ function isCurrentWeatherRequest(request: WeatherRequestContext): boolean {
 export function resetWeatherForCurrentGarden(): void {
   weatherGardenId = getActiveGardenContext();
   weatherRequestVersion += 1;
+  weatherLoadVersion += 1;
   weatherSummary = null;
   document.getElementById("weather-dashboard")?.replaceChildren();
 }
 
 export function initWeatherFeature(
   appCtx: AppContext,
+  options: WeatherFeatureOptions = {},
 ): void {
   ctx = appCtx;
+  onWeatherMutation = options.onWeatherMutation ?? null;
 }
 
 export function getWeatherSummary(): WeatherSummary | null {
@@ -57,9 +66,15 @@ export function getWeatherSummary(): WeatherSummary | null {
 export async function loadWeather(): Promise<void> {
   const request = weatherRequestContext();
   if (!request) return;
+  const loadVersion = ++weatherLoadVersion;
   try {
     const summary = await fetchWeatherSummaryApi();
-    if (!isCurrentWeatherRequest(request)) return;
+    if (
+      loadVersion !== weatherLoadVersion
+      || !isCurrentWeatherRequest(request)
+    ) {
+      return;
+    }
     weatherSummary = summary;
     const container = document.getElementById(
       "weather-dashboard",
@@ -73,7 +88,7 @@ export async function loadWeather(): Promise<void> {
             try {
               await dismissWeatherAlertApi(alert.id);
               if (!isCurrentWeatherRequest(request)) return;
-              void loadWeather();
+              await refreshAfterWeatherMutation(request);
             } catch (err) {
               if (!isCurrentWeatherRequest(request)) return;
               ctx.showToast(
@@ -101,7 +116,7 @@ export async function loadWeather(): Promise<void> {
                 }),
                 "success",
               );
-              void loadWeather();
+              await refreshAfterWeatherMutation(request);
             } catch (err) {
               if (!isCurrentWeatherRequest(request)) return;
               ctx.showToast(
@@ -116,4 +131,14 @@ export async function loadWeather(): Promise<void> {
   } catch {
     // Weather is non-critical -- don't show errors
   }
+}
+
+async function refreshAfterWeatherMutation(
+  request: WeatherRequestContext,
+): Promise<void> {
+  if (!isCurrentWeatherRequest(request)) return;
+  await Promise.allSettled([
+    loadWeather(),
+    Promise.resolve(onWeatherMutation?.()),
+  ]);
 }

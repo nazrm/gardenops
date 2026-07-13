@@ -237,13 +237,17 @@ never fulfill or mock API responses.
 
 The phased complete-journey program extends the broad read map with durable
 desktop/mobile mutation, role, offline, provider, database, filesystem,
-accessibility, and performance evidence. Run one phase or the cumulative set:
+accessibility, and performance evidence. Use `--phase N` for the focused phase
+against a fresh fixture, or `--through-phase N` for the cumulative set from
+Phase 0 through Phase N:
 
 ```bash
 scripts/run_complete_journeys_e2e.sh --phase 0
 scripts/run_complete_journeys_e2e.sh --through-phase 0
 scripts/run_complete_journeys_e2e.sh --phase 1
 scripts/run_complete_journeys_e2e.sh --through-phase 1
+scripts/run_complete_journeys_e2e.sh --phase 2
+scripts/run_complete_journeys_e2e.sh --through-phase 2
 ```
 
 The runner creates its own disposable PostgreSQL child through
@@ -256,12 +260,11 @@ manifests/traces under a unique directory below the gitignored
 temporary logs/media/terrain/download state while retaining the ignored evidence
 run; failed runs preserve private logs and artifacts for diagnosis.
 
-Every Phase 1 invocation is cumulative: it first runs the Phase 0 desktop and
-Pixel 7 administrator foundation, then runs independent desktop and Pixel 7
-onboarding accounts plus desktop/mobile administrator, editor, and viewer
-profiles. The foundation proves session login, map-first startup, scoped
-notifications, and an ordinary A/B/A garden switch before the Phase 1 mutation
-work begins.
+The cumulative Phase 1 invocation first runs the Phase 0 desktop and Pixel 7
+administrator foundation, then runs independent desktop and Pixel 7 onboarding
+accounts plus desktop/mobile administrator, editor, and viewer profiles. The
+foundation proves session login, map-first startup, scoped notifications, and
+an ordinary A/B/A garden switch before the Phase 1 mutation work begins.
 
 Phase 1 exercises real mobile map-object and plot edits, plant-assignment
 lifecycle, indoor data, saved views, snapshots, versioned export/import, and
@@ -282,6 +285,23 @@ tables, the profile/device/role matrix, targeted audit histogram, lifecycle
 cleanup, cross-garden absence, backend-error evidence, and empty temporary
 filesystem state. The focused backend suite additionally injects a failure
 during restore and proves the transaction rolls back.
+
+Phase 2 runs six independent administrator, editor, and viewer profiles across
+desktop Chromium and a true Pixel 7 context. It exercises Today, every supported
+task action surface, partial grouped completion, task-specific snooze policy,
+offline task replay, durable completion history, Calendar CRUD and ICS download,
+subscription revocation, notification preference normalization and delivery
+eligibility, weather checks, rain no-action outcomes, stale generated-watering
+expiry, and repeated/concurrent weather deduplication. The checker reloads linked
+surfaces and then compares exact task, journal, attention, notification,
+calendar, weather, and offline-operation state in PostgreSQL.
+
+When Phase 2 follows Phase 1 in a cumulative run, Phase 1's intentional garden
+address update invalidates cached forecasts. The guarded Phase 2 preparation
+mode restores only the two frozen disposable forecast rows before Phase 2; it
+preserves existing row identities, refuses direct use outside the disposable
+test contract, and never enables remote weather fetches. Focused and cumulative
+Phase 2 runs therefore use the same deterministic weather boundary.
 
 The tracked coverage contract is `tests/journey_coverage.yaml`. Validate open
 phases during implementation and require complete closure only in the final

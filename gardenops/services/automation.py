@@ -11,6 +11,7 @@ from typing import Any
 from gardenops.db import DbConn, current_timestamp_ms
 from gardenops.services.attention.outcomes import upsert_attention_outcome
 from gardenops.services.attention.types import NO_ACTION_RETENTION_DAYS
+from gardenops.services.weather_service import is_frost_vulnerable_at_temperature
 
 _logger = logging.getLogger(__name__)
 
@@ -249,12 +250,28 @@ _CARE_WATERING_SQL = """
 """
 
 
-def _is_frost_vulnerable(plant: dict[str, Any]) -> bool:
-    hardiness = str(plant["hardiness"] or "").lower()
-    return not any(h in hardiness for h in ("h7", "h6", "zone 1", "zone 2", "zone 3"))
+def _frost_min_temp_from_alert(alert: Any) -> float | None:
+    try:
+        metadata = json.loads(str(alert["metadata_json"] or "{}"))
+    except TypeError, ValueError, json.JSONDecodeError:
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    try:
+        return float(metadata["coldest"])
+    except KeyError, TypeError, ValueError:
+        return None
 
 
-def _needs_extra_watering(plant: dict[str, Any]) -> bool:
+def _is_frost_vulnerable(plant: dict[str, Any], alert: Any) -> bool:
+    min_temp = _frost_min_temp_from_alert(alert)
+    return min_temp is not None and is_frost_vulnerable_at_temperature(
+        str(plant["hardiness"] or ""),
+        min_temp,
+    )
+
+
+def _needs_extra_watering(plant: dict[str, Any], _alert: Any) -> bool:
     watering = str(plant["care_watering"]).lower()
     return any(kw in watering for kw in _WATERING_KEYWORDS)
 
@@ -274,7 +291,7 @@ def _create_weather_tasks(
     actor_user_id: int | None,
     *,
     plant_sql: str,
-    plant_filter: Callable[[dict[str, Any]], bool],
+    plant_filter: Callable[[dict[str, Any], Any], bool],
     task_type: str,
     rule_prefix: str,
     severity: str,
@@ -284,7 +301,7 @@ def _create_weather_tasks(
 ) -> int:
     """Create weather-alert tasks for matching plants. Returns count created."""
     alert = db.execute(
-        "SELECT valid_from FROM weather_alerts WHERE id = %s AND garden_id = %s",
+        "SELECT valid_from, metadata_json FROM weather_alerts WHERE id = %s AND garden_id = %s",
         (alert_id, garden_id),
     ).fetchone()
     if not alert:
@@ -296,7 +313,9 @@ def _create_weather_tasks(
     created = 0
 
     matching_plants = [
-        plant for plant in db.execute(plant_sql, (garden_id,)).fetchall() if plant_filter(plant)
+        plant
+        for plant in db.execute(plant_sql, (garden_id,)).fetchall()
+        if plant_filter(plant, alert)
     ]
     if not matching_plants:
         return 0
@@ -645,8 +664,18 @@ def _reschedule_watering_during_rain(
         WHERE garden_id = %s AND task_type = 'water' AND status = 'pending'
           AND rule_source LIKE 'water:%%'
           AND due_on >= %s AND due_on <= %s
+          AND EXISTS (
+              SELECT 1
+              FROM garden_task_plants gtp
+              JOIN plot_plants pp ON pp.plt_id = gtp.plt_id
+              JOIN plots p ON p.plot_id = pp.plot_id
+              WHERE gtp.task_id = garden_tasks.id
+                AND gtp.plt_id = split_part(garden_tasks.rule_source, ':', 2)
+                AND p.garden_id = %s
+                AND p.grid_row IS NOT NULL
+          )
         """,
-        (garden_id, valid_from, valid_until),
+        (garden_id, valid_from, valid_until, garden_id),
     ).fetchall()
     if not rows:
         return

@@ -980,12 +980,23 @@ def _event_description_for_ics(event: dict[str, Any]) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def _fold_ical_line(line: str, limit: int = 73) -> str:
-    if len(line) <= limit:
+def _fold_ical_line(line: str, limit: int = 75) -> str:
+    """Fold an iCalendar content line without splitting UTF-8 characters."""
+    if not line:
         return line
-    parts = [line[:limit]]
-    rest = line[limit:]
-    while rest:
-        parts.append(" " + rest[: limit - 1])
-        rest = rest[limit - 1 :]
+
+    parts: list[str] = []
+    chunk: list[str] = []
+    chunk_bytes = 0
+    chunk_limit = limit
+    for character in line:
+        character_bytes = len(character.encode("utf-8"))
+        if chunk and chunk_bytes + character_bytes > chunk_limit:
+            parts.append((" " if parts else "") + "".join(chunk))
+            chunk = []
+            chunk_bytes = 0
+            chunk_limit = limit - 1
+        chunk.append(character)
+        chunk_bytes += character_bytes
+    parts.append((" " if parts else "") + "".join(chunk))
     return "\r\n".join(parts)

@@ -13,6 +13,12 @@ from gardenops.services.attention.types import (
 )
 
 _OUTCOME_TYPES = ("watering_covered_by_rain", "watering_rescheduled_by_rain")
+_ALERT_ITEM_TYPES = {
+    "frost_warning": "frost_warning",
+    "rain_surplus": "rain_alert",
+    "heat_wave": "heat_wave",
+    "dry_spell": "dry_spell",
+}
 
 
 def _parse_mapping(value: Any) -> dict[str, Any]:
@@ -85,7 +91,7 @@ class WeatherAttentionProvider:
         items: list[AttentionItem] = []
         for row in rows:
             alert_type = str(row["alert_type"])
-            item_type = "rain_alert" if alert_type == "rain_surplus" else "weather_alert"
+            item_type = _ALERT_ITEM_TYPES.get(alert_type, "weather_alert")
             items.append(
                 AttentionItem(
                     id=f"attn:weather:alert:{row['id']}",

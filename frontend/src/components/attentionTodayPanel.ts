@@ -15,6 +15,7 @@ export interface AttentionTodayPanelOptions {
   fetchToday: () => Promise<AttentionTodayResponse>;
   fetchPreferences: () => Promise<AttentionPreferences>;
   updatePreferences: (preferences: AttentionPreferencesUpdate) => Promise<AttentionPreferences>;
+  getRequestScope?: () => AttentionTodayRequestScope;
   onPrimaryAction?: (
     item: AttentionItem,
     action: AttentionAction,
@@ -27,11 +28,17 @@ export interface AttentionTodayPanelOptions {
   onError?: (message: string) => void;
 }
 
+export interface AttentionTodayRequestScope {
+  gardenId: number | null;
+  version: number;
+}
+
 export interface AttentionTodayPanelController {
   render(feed: AttentionTodayResponse | null): void;
   setLoading(): void;
   setError(message: string): void;
   refresh(): void;
+  invalidate(): void;
   closeMobileSheet(): void;
   destroy(): void;
 }
@@ -81,7 +88,14 @@ const PREFERENCE_RULE_ROWS: PreferenceRuleRow[] = [
   },
   {
     id: "weather-warnings",
-    ruleKeys: ["warning", "weather_alert", "frost_warning", "rain_alert"],
+    ruleKeys: [
+      "warning",
+      "weather_alert",
+      "frost_warning",
+      "rain_alert",
+      "heat_wave",
+      "dry_spell",
+    ],
     labelKey: "attention.preferences.category.weather_warnings",
     helpKey: "attention.preferences.category.weather_warnings_help",
     guardrail: true,
@@ -218,7 +232,7 @@ function preferenceMetadataBool(
 
 function quietHourField(
   quietHours: Record<string, unknown>,
-  channel: "digest" | "interruptive",
+  channel: "digest",
   field: "enabled" | "start" | "end",
   fallback: string | boolean,
 ): string | boolean {
@@ -264,6 +278,15 @@ export function initAttentionTodayPanel(
   let preferencesDialog: HTMLElement | null = null;
   let preferencesDialogKeydownBound = false;
   let preferencesReturnFocus: HTMLButtonElement | null = null;
+
+  function isCurrentRequestScope(
+    requestScope: AttentionTodayRequestScope | undefined,
+  ): boolean {
+    if (!requestScope || !options.getRequestScope) return true;
+    const current = options.getRequestScope();
+    return current.gardenId === requestScope.gardenId
+      && current.version === requestScope.version;
+  }
 
   function mobileSheetOpen(): boolean {
     return mobileHandle instanceof HTMLButtonElement
@@ -424,6 +447,7 @@ export function initAttentionTodayPanel(
   function showPreferencesDialog(
     preferences: AttentionPreferences,
     returnFocus: HTMLButtonElement,
+    requestScope: AttentionTodayRequestScope | undefined,
   ): void {
     closePreferencesDialog(false);
     preferencesReturnFocus = returnFocus;
@@ -619,7 +643,7 @@ export function initAttentionTodayPanel(
 
     const quietGrid = document.createElement("div");
     quietGrid.className = "attention-preferences-quiet-grid";
-    (["digest", "interruptive"] as const).forEach((channel) => {
+    (["digest"] as const).forEach((channel) => {
       const quietRow = document.createElement("div");
       quietRow.className = "attention-preferences-quiet-row";
       const enabled = document.createElement("input");
@@ -717,7 +741,7 @@ export function initAttentionTodayPanel(
 
     function collectQuietHours(): Record<string, unknown> {
       const quietHours = cloneRecord(preferences.quiet_hours);
-      (["digest", "interruptive"] as const).forEach((channel) => {
+      (["digest"] as const).forEach((channel) => {
         quietHours[channel] = {
           enabled: form.querySelector<HTMLInputElement>(
             `input[name='attention-quiet-${channel}-enabled']`,
@@ -762,10 +786,12 @@ export function initAttentionTodayPanel(
         metadata: collectMetadata(),
       })
         .then(() => {
+          if (!isCurrentRequestScope(requestScope)) return;
           closePreferencesDialog(true);
           refresh();
         })
         .catch((err: unknown) => {
+          if (!isCurrentRequestScope(requestScope)) return;
           const message = err instanceof Error ? err.message : t("attention.preferences.save_failed");
           error.textContent = message;
           error.hidden = false;
@@ -791,12 +817,16 @@ export function initAttentionTodayPanel(
   }
 
   async function openPreferencesDialog(button: HTMLButtonElement): Promise<void> {
+    const requestScope = options.getRequestScope?.();
+    if (requestScope?.gardenId === null) return;
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
     try {
       const preferences = await options.fetchPreferences();
-      showPreferencesDialog(preferences, button);
+      if (!isCurrentRequestScope(requestScope)) return;
+      showPreferencesDialog(preferences, button, requestScope);
     } catch (err) {
+      if (!isCurrentRequestScope(requestScope)) return;
       const message = err instanceof Error ? err.message : t("attention.preferences.load_failed");
       options.onError?.(message);
     } finally {
@@ -1138,15 +1168,33 @@ export function initAttentionTodayPanel(
 
   function refresh(): void {
     if (destroyed) return;
+    const requestScope = options.getRequestScope?.();
     const requestId = ++refreshSequence;
     setLoading();
+    if (requestScope?.gardenId === null) {
+      render(null);
+      return;
+    }
     void options.fetchToday()
       .then((feed) => {
-        if (requestId !== refreshSequence || destroyed) return;
+        if (
+          requestId !== refreshSequence
+          || destroyed
+          || !isCurrentRequestScope(requestScope)
+          || (requestScope && feed.garden_id !== requestScope.gardenId)
+        ) {
+          return;
+        }
         render(feed);
       })
       .catch((err: unknown) => {
-        if (requestId !== refreshSequence || destroyed) return;
+        if (
+          requestId !== refreshSequence
+          || destroyed
+          || !isCurrentRequestScope(requestScope)
+        ) {
+          return;
+        }
         const message = err instanceof Error ? err.message : t("attention.load_failed");
         setError(message);
         options.onError?.(message);
@@ -1159,12 +1207,20 @@ export function initAttentionTodayPanel(
     setMobileOpen(open);
   }
 
-  function destroy(): void {
-    destroyed = true;
+  function invalidate(): void {
+    if (destroyed) return;
     refreshSequence += 1;
     loading = false;
+    currentFeed = null;
     closePreferencesDialog(false);
     setMobileOpen(false);
+    render(null);
+  }
+
+  function destroy(): void {
+    if (destroyed) return;
+    invalidate();
+    destroyed = true;
     if (mobileHandle instanceof HTMLButtonElement) {
       mobileHandle.removeEventListener("click", handleMobileHandleClick);
     }
@@ -1187,6 +1243,7 @@ export function initAttentionTodayPanel(
     setLoading,
     setError,
     refresh,
+    invalidate,
     closeMobileSheet,
     destroy,
   };

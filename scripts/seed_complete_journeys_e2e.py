@@ -94,6 +94,58 @@ PHASE_ONE_ONBOARDING_HOUSE = {
 }
 PHASE_ONE_ONBOARDING_LATITUDE = 59.91
 PHASE_ONE_ONBOARDING_LONGITUDE = 10.75
+PHASE_TWO_NOW_MS = 1_783_857_600_000
+PHASE_TWO_DATE = "2026-07-12"
+PHASE_TWO_MANUAL_DATE = "2026-07-18"
+PHASE_TWO_SNOOZE_CORRECTION_DUE_DATE = "2026-07-16"
+PHASE_TWO_SNOOZE_CORRECTION_DEFAULT_DATE = "2026-07-19"
+PHASE_TWO_OFFLINE_SNOOZE_DATE = "2026-07-13"
+PHASE_TWO_OFFLINE_RESCHEDULE_DATE = "2026-07-20"
+PHASE_TWO_ALPHA_PLOT_ID = "COMPLETE-P2-ALPHA-BED"
+PHASE_TWO_BETA_PLOT_ID = "COMPLETE-P2-BETA-BED"
+PHASE_TWO_CALENDAR_PUBLIC_ID = "calevt_complete_p2_seeded"
+PHASE_TWO_CALENDAR_EVENT_ON = "2026-07-13"
+PHASE_TWO_CALENDAR_DESCRIPTION = "Escaped comma, semicolon; backslash \\ and line\nbreak."
+PHASE_TWO_NOTIFICATION_PUBLIC_ID = "note_complete_p2_admin"
+PHASE_TWO_TASKS = {
+    "bloom_desktop": "tsk_complete_p2_bloom_desktop",
+    "fertilize_grouped": "tsk_complete_p2_fertilize_grouped",
+    "snooze_correction": "tsk_complete_p2_snooze_correction",
+    "prune_desktop": "tsk_complete_p2_prune_desktop",
+    "batch_a": "tsk_complete_p2_batch_a",
+    "batch_b": "tsk_complete_p2_batch_b",
+    "bloom_mobile": "tsk_complete_p2_bloom_mobile",
+    "fertilize_mobile": "tsk_complete_p2_fertilize_mobile",
+    "editor_prune": "tsk_complete_p2_editor_prune",
+    "editor_offline": "tsk_complete_p2_editor_offline",
+    "viewer_read_only": "tsk_complete_p2_viewer_read_only",
+    "plot_drawer": "tsk_complete_p2_plot_drawer",
+    "stale_generated_water": "tsk_complete_p2_stale_generated_water",
+    "stale_manual_water": "tsk_complete_p2_stale_manual_water",
+    "rain_outdoor": "tsk_complete_p2_rain_outdoor",
+    "rain_indoor": "tsk_complete_p2_rain_indoor",
+    "rain_unplaced": "tsk_complete_p2_rain_unplaced",
+}
+PHASE_TWO_PLANTS = {
+    "bloom_desktop": ("COMPLETE-P2-BLOOM-DESKTOP", "Phase 2 Desktop Astrantia", "H5"),
+    "fertilize_a": ("COMPLETE-P2-FERT-A", "Phase 2 Fertilize A", "H5"),
+    "fertilize_b": ("COMPLETE-P2-FERT-B", "Phase 2 Fertilize B", "H5"),
+    "snooze_correction": ("COMPLETE-P2-SNOOZE-CORRECTION", "Phase 2 Correction Aster", "H5"),
+    "prune_desktop": ("COMPLETE-P2-PRUNE-DESKTOP", "Phase 2 Desktop Rose", "H5"),
+    "batch_a": ("COMPLETE-P2-BATCH-A", "Phase 2 Batch Thyme", "H5"),
+    "batch_b": ("COMPLETE-P2-BATCH-B", "Phase 2 Batch Sage", "H5"),
+    "bloom_mobile": ("COMPLETE-P2-BLOOM-MOBILE", "Phase 2 Mobile Campanula", "H5"),
+    "fertilize_mobile": ("COMPLETE-P2-FERT-MOBILE", "Phase 2 Mobile Tomato", "H1"),
+    "editor_prune": ("COMPLETE-P2-EDITOR-PRUNE", "Phase 2 Editor Currant", "H5"),
+    "editor_offline": ("COMPLETE-P2-EDITOR-OFFLINE", "Phase 2 Offline Parsley", "H5"),
+    "viewer_read_only": ("COMPLETE-P2-VIEWER", "Phase 2 Viewer Lavender", "H5"),
+    "plot_drawer": ("COMPLETE-P2-PLOT-DRAWER", "Phase 2 Plot Drawer Chive", "H5"),
+    "stale_generated_water": ("COMPLETE-P2-STALE-WATER", "Phase 2 Stale Water Mint", "H5"),
+    "stale_manual_water": ("COMPLETE-P2-MANUAL-WATER", "Phase 2 Manual Water Mint", "H5"),
+    "rain_outdoor": ("COMPLETE-P2-RAIN-OUTDOOR", "Phase 2 Rain Outdoor Basil", "H1"),
+    "rain_indoor": ("COMPLETE-P2-RAIN-INDOOR", "Phase 2 Rain Indoor Basil", "H1"),
+    "rain_unplaced": ("COMPLETE-P2-RAIN-UNPLACED", "Phase 2 Rain Unplaced Basil", "H1"),
+}
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -494,6 +546,481 @@ def _seed_phase_one_fixtures(conn, optimization_seed: Any) -> None:
             now_ms,
         ),
     )
+
+
+def _seed_phase_two_task(
+    conn,
+    *,
+    public_id: str,
+    garden_id: int,
+    actor_user_id: int,
+    task_type: str,
+    title: str,
+    plant_ids: tuple[str, ...],
+    plot_ids: tuple[str, ...],
+    due_on: str = PHASE_TWO_DATE,
+    rule_source: str = "",
+    window_start_on: str | None = None,
+    window_end_on: str | None = None,
+) -> None:
+    row = conn.execute(
+        """
+        INSERT INTO garden_tasks (
+            public_id, garden_id, task_type, title, description, status, severity,
+            due_on, snoozed_until, rule_source, metadata_json, created_by_user_id,
+            completed_by_user_id, completed_at_ms, created_at_ms, updated_at_ms,
+            window_start_on, window_end_on, window_kind
+        )
+        VALUES (
+            %s, %s, %s, %s, %s, 'pending', 'normal',
+            %s, NULL, %s, %s, %s,
+            NULL, NULL, %s, %s, %s, %s,
+            %s
+        )
+        RETURNING id
+        """,
+        (
+            public_id,
+            garden_id,
+            task_type,
+            title,
+            f"Deterministic Phase 2 task fixture for {title}.",
+            due_on,
+            rule_source,
+            json.dumps({"fixture": "complete_journeys_phase_2"}, sort_keys=True),
+            actor_user_id,
+            PHASE_TWO_NOW_MS,
+            PHASE_TWO_NOW_MS,
+            window_start_on,
+            window_end_on,
+            "recommended" if window_start_on is not None else None,
+        ),
+    ).fetchone()
+    if not row:
+        raise RuntimeError(f"Failed to create Complete journey Phase 2 task {public_id}")
+    task_id = int(row["id"])
+    for plant_id in plant_ids:
+        conn.execute(
+            "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
+            (task_id, plant_id),
+        )
+    for plot_id in plot_ids:
+        conn.execute(
+            "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, %s)",
+            (task_id, plot_id),
+        )
+
+
+def _reset_phase_two_weather_cache(
+    conn,
+    *,
+    alpha_id: int,
+    beta_id: int,
+) -> dict[str, Any]:
+    """Restore deterministic forecasts after earlier journeys invalidate the cache."""
+    alpha_forecast = {
+        "daily": {
+            "time": [
+                "2026-07-12",
+                "2026-07-13",
+                "2026-07-14",
+                "2026-07-15",
+                "2026-07-16",
+                "2026-07-17",
+                "2026-07-18",
+            ],
+            "temperature_2m_min": [-3.0, 12.0, 13.0, 14.0, 13.0, 12.0, 11.0],
+            "temperature_2m_max": [20.0, 31.0, 32.0, 33.0, 24.0, 23.0, 22.0],
+            "precipitation_sum": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "precipitation_probability_max": [0, 0, 0, 0, 0, 0, 0],
+            "wind_speed_10m_max": [3.0, 3.0, 4.0, 4.0, 3.0, 2.0, 2.0],
+        }
+    }
+    beta_forecast = {
+        "daily": {
+            "time": [
+                "2026-07-12",
+                "2026-07-13",
+                "2026-07-14",
+                "2026-07-15",
+                "2026-07-16",
+                "2026-07-17",
+                "2026-07-18",
+            ],
+            "temperature_2m_min": [11.0, 12.0, 12.0, 13.0, 13.0, 12.0, 11.0],
+            "temperature_2m_max": [18.0, 19.0, 20.0, 20.0, 19.0, 18.0, 18.0],
+            "precipitation_sum": [6.0, 5.0, 5.0, 0.0, 0.0, 0.0, 0.0],
+            "precipitation_probability_max": [90, 85, 80, 10, 10, 10, 10],
+            "wind_speed_10m_max": [5.0, 5.0, 4.0, 3.0, 3.0, 2.0, 2.0],
+        }
+    }
+    garden_ids = sorted([alpha_id, beta_id])
+    for garden_id, forecast, latitude, longitude in (
+        (alpha_id, alpha_forecast, 59.9139, 10.7522),
+        (beta_id, beta_forecast, 59.9239, 10.7622),
+    ):
+        rows = conn.execute(
+            "SELECT id FROM weather_cache WHERE garden_id = %s ORDER BY id",
+            (garden_id,),
+        ).fetchall()
+        forecast_json = json.dumps(forecast, sort_keys=True)
+        if len(rows) == 1:
+            conn.execute(
+                """
+                UPDATE weather_cache
+                SET fetched_at_ms = %s, forecast_json = %s, latitude = %s, longitude = %s
+                WHERE id = %s
+                """,
+                (PHASE_TWO_NOW_MS, forecast_json, latitude, longitude, int(rows[0]["id"])),
+            )
+        else:
+            conn.execute("DELETE FROM weather_cache WHERE garden_id = %s", (garden_id,))
+            conn.execute(
+                """
+                INSERT INTO weather_cache (
+                    garden_id, fetched_at_ms, forecast_json, latitude, longitude
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (garden_id, PHASE_TWO_NOW_MS, forecast_json, latitude, longitude),
+            )
+    return {
+        "fetched_at_ms": PHASE_TWO_NOW_MS,
+        "garden_ids": garden_ids,
+        "weather_cache_rows": 2,
+    }
+
+
+def _seed_phase_two_fixtures(conn, optimization_seed: Any) -> None:
+    """Add deterministic daily-attention fixtures after role memberships exist."""
+    users = {
+        str(row["username"]): int(row["id"])
+        for row in conn.execute(
+            "SELECT id, username FROM auth_users WHERE username = ANY(%s)",
+            ([ADMIN_USERNAME, EDITOR_LOGIN[0], VIEWER_LOGIN[0]],),
+        ).fetchall()
+    }
+    gardens = {
+        str(row["slug"]): int(row["id"])
+        for row in conn.execute(
+            "SELECT id, slug FROM gardens WHERE slug = ANY(%s)",
+            ([optimization_seed.GARDEN_A_SLUG, optimization_seed.GARDEN_B_SLUG],),
+        ).fetchall()
+    }
+    if len(users) != 3 or len(gardens) != 2:
+        raise RuntimeError("Complete journey Phase 2 users or gardens are missing")
+    admin_id = users[ADMIN_USERNAME]
+    alpha_id = gardens[optimization_seed.GARDEN_A_SLUG]
+    beta_id = gardens[optimization_seed.GARDEN_B_SLUG]
+
+    for plot_id, garden_id, zone_name in (
+        (PHASE_TWO_ALPHA_PLOT_ID, alpha_id, "Phase 2 daily work"),
+        (PHASE_TWO_BETA_PLOT_ID, beta_id, "Phase 2 rain work"),
+    ):
+        conn.execute(
+            """
+            INSERT INTO plots (
+                plot_id, garden_id, zone_code, zone_name, plot_number,
+                grid_row, grid_col, sub_zone, notes, color
+            )
+            VALUES (%s, %s, 'P2', %s, 1, 11, 11, '',
+                    'Disposable Phase 2 attention fixture', '#5f8c74')
+            """,
+            (plot_id, garden_id, zone_name),
+        )
+        conn.execute(
+            "INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
+            (plot_id, admin_id, garden_id),
+        )
+
+    alpha_plant_keys = {
+        "bloom_desktop",
+        "fertilize_a",
+        "fertilize_b",
+        "snooze_correction",
+        "prune_desktop",
+        "batch_a",
+        "batch_b",
+        "bloom_mobile",
+        "fertilize_mobile",
+        "editor_prune",
+        "editor_offline",
+        "viewer_read_only",
+        "plot_drawer",
+        "stale_generated_water",
+        "stale_manual_water",
+    }
+    for key, (plant_id, name, hardiness) in PHASE_TWO_PLANTS.items():
+        garden_id = alpha_id if key in alpha_plant_keys else beta_id
+        conn.execute(
+            """
+            INSERT INTO plants (
+                plt_id, name, latin, category, bloom_month, color, hardiness,
+                height_cm, light, link, care_watering, care_soil, care_planting,
+                care_maintenance, care_notes, year_planted, seen_growing,
+                seen_growing_date
+            )
+            VALUES (%s, %s, '', 'perennial', 'July', '#6f936f', %s, 60,
+                    'part sun', '', 'water regularly', '', '', '',
+                    'Disposable Phase 2 attention fixture', '2026', 1, '2026-07-01')
+            """,
+            (plant_id, name, hardiness),
+        )
+        conn.execute(
+            "INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
+            (plant_id, admin_id, garden_id),
+        )
+
+    for key in sorted(alpha_plant_keys):
+        plant_id = PHASE_TWO_PLANTS[key][0]
+        conn.execute(
+            """
+            INSERT INTO plot_plants (
+                plot_id, plt_id, quantity, seen_growing, seen_growing_date, room_label
+            )
+            VALUES (%s, %s, 1, 1, '2026-07-01', '')
+            """,
+            (PHASE_TWO_ALPHA_PLOT_ID, plant_id),
+        )
+    conn.execute(
+        """
+        INSERT INTO plot_plants (
+            plot_id, plt_id, quantity, seen_growing, seen_growing_date, room_label
+        )
+        VALUES (%s, %s, 1, 1, '2026-07-01', '')
+        """,
+        (PHASE_TWO_BETA_PLOT_ID, PHASE_TWO_PLANTS["rain_outdoor"][0]),
+    )
+    conn.execute(
+        """
+        INSERT INTO plot_plants (
+            plot_id, plt_id, quantity, seen_growing, seen_growing_date, room_label
+        )
+        VALUES (%s, %s, 1, 1, '2026-07-01', %s)
+        """,
+        (
+            PHASE_ONE_BETA_INDOOR_PLOT_ID,
+            PHASE_TWO_PLANTS["rain_indoor"][0],
+            PHASE_ONE_BETA_INDOOR_ROOM_LABEL,
+        ),
+    )
+
+    alpha_tasks = (
+        (
+            "bloom_desktop",
+            "observe_bloom",
+            "Observe bloom: Phase 2 Desktop Astrantia",
+            ("bloom_desktop",),
+        ),
+        (
+            "fertilize_grouped",
+            "fertilize",
+            "Fertilize Phase 2 pair",
+            ("fertilize_a", "fertilize_b"),
+        ),
+        ("prune_desktop", "prune", "Prune Phase 2 Desktop Rose", ("prune_desktop",)),
+        ("batch_a", "weed", "Weed Phase 2 Batch Thyme", ("batch_a",)),
+        ("batch_b", "weed", "Weed Phase 2 Batch Sage", ("batch_b",)),
+        (
+            "bloom_mobile",
+            "observe_bloom",
+            "Observe bloom: Phase 2 Mobile Campanula",
+            ("bloom_mobile",),
+        ),
+        ("fertilize_mobile", "fertilize", "Fertilize Phase 2 Mobile Tomato", ("fertilize_mobile",)),
+        ("editor_prune", "prune", "Prune Phase 2 Editor Currant", ("editor_prune",)),
+        ("editor_offline", "deadhead", "Deadhead Phase 2 Offline Parsley", ("editor_offline",)),
+        ("viewer_read_only", "prune", "Prune Phase 2 Viewer Lavender", ("viewer_read_only",)),
+        ("plot_drawer", "deadhead", "Deadhead Phase 2 Plot Drawer Chive", ("plot_drawer",)),
+    )
+    for task_key, task_type, title, plant_keys in alpha_tasks:
+        window_end = "2026-07-14" if task_type == "prune" else None
+        _seed_phase_two_task(
+            conn,
+            public_id=PHASE_TWO_TASKS[task_key],
+            garden_id=alpha_id,
+            actor_user_id=admin_id,
+            task_type=task_type,
+            title=title,
+            plant_ids=tuple(PHASE_TWO_PLANTS[key][0] for key in plant_keys),
+            plot_ids=(PHASE_TWO_ALPHA_PLOT_ID,),
+            window_start_on=PHASE_TWO_DATE if window_end else None,
+            window_end_on=window_end,
+        )
+
+    # This task is outside the maintenance upcoming window. It isolates the immediate
+    # one-week snooze plus transient Change date correction path from later offline actions.
+    _seed_phase_two_task(
+        conn,
+        public_id=PHASE_TWO_TASKS["snooze_correction"],
+        garden_id=alpha_id,
+        actor_user_id=admin_id,
+        task_type="fertilize",
+        title="Fertilize Phase 2 correction aster",
+        plant_ids=(PHASE_TWO_PLANTS["snooze_correction"][0],),
+        plot_ids=(PHASE_TWO_ALPHA_PLOT_ID,),
+        due_on=PHASE_TWO_SNOOZE_CORRECTION_DUE_DATE,
+    )
+
+    _seed_phase_two_task(
+        conn,
+        public_id=PHASE_TWO_TASKS["stale_generated_water"],
+        garden_id=alpha_id,
+        actor_user_id=admin_id,
+        task_type="water",
+        title="Water Phase 2 stale generated mint",
+        plant_ids=(PHASE_TWO_PLANTS["stale_generated_water"][0],),
+        plot_ids=(PHASE_TWO_ALPHA_PLOT_ID,),
+        due_on="2026-06-20",
+        rule_source="water:COMPLETE-P2-STALE-WATER:2026-06-20",
+    )
+    _seed_phase_two_task(
+        conn,
+        public_id=PHASE_TWO_TASKS["stale_manual_water"],
+        garden_id=alpha_id,
+        actor_user_id=admin_id,
+        task_type="water",
+        title="Water Phase 2 manual overdue mint",
+        plant_ids=(PHASE_TWO_PLANTS["stale_manual_water"][0],),
+        plot_ids=(PHASE_TWO_ALPHA_PLOT_ID,),
+        due_on="2026-06-20",
+    )
+    for task_key, plant_key, plot_ids in (
+        ("rain_outdoor", "rain_outdoor", (PHASE_TWO_BETA_PLOT_ID,)),
+        ("rain_indoor", "rain_indoor", (PHASE_ONE_BETA_INDOOR_PLOT_ID,)),
+        ("rain_unplaced", "rain_unplaced", ()),
+    ):
+        plant_id, name, _hardiness = PHASE_TWO_PLANTS[plant_key]
+        _seed_phase_two_task(
+            conn,
+            public_id=PHASE_TWO_TASKS[task_key],
+            garden_id=beta_id,
+            actor_user_id=admin_id,
+            task_type="water",
+            title=f"Water {name}",
+            plant_ids=(plant_id,),
+            plot_ids=plot_ids,
+            rule_source=f"water:{plant_id}:{PHASE_TWO_DATE}",
+        )
+
+    event = conn.execute(
+        """
+        INSERT INTO garden_calendar_events (
+            public_id, garden_id, title, description, event_on,
+            created_by_user_id, updated_by_user_id, created_at_ms, updated_at_ms
+        )
+        VALUES (%s, %s, 'Phase 2 seeded calendar event', %s, %s,
+                %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            PHASE_TWO_CALENDAR_PUBLIC_ID,
+            alpha_id,
+            PHASE_TWO_CALENDAR_DESCRIPTION,
+            PHASE_TWO_CALENDAR_EVENT_ON,
+            admin_id,
+            admin_id,
+            PHASE_TWO_NOW_MS,
+            PHASE_TWO_NOW_MS,
+        ),
+    ).fetchone()
+    if not event:
+        raise RuntimeError("Failed to create Complete journey Phase 2 calendar event")
+    conn.execute(
+        "INSERT INTO garden_calendar_event_plants (event_id, plt_id) VALUES (%s, %s)",
+        (int(event["id"]), PHASE_TWO_PLANTS["bloom_desktop"][0]),
+    )
+    conn.execute(
+        "INSERT INTO garden_calendar_event_plots (event_id, plot_id) VALUES (%s, %s)",
+        (int(event["id"]), PHASE_TWO_ALPHA_PLOT_ID),
+    )
+
+    for username, user_id in users.items():
+        conn.execute(
+            """
+            INSERT INTO user_notification_preferences (
+                user_id, in_app_enabled, email_enabled, email_address, digest_frequency,
+                quiet_hours_json, task_due_enabled, task_overdue_enabled, rules_json,
+                created_at_ms, updated_at_ms
+            )
+            VALUES (%s, 1, %s, %s, 'daily', %s, 1, 1, '{}', %s, %s)
+            """,
+            (
+                user_id,
+                1 if username == ADMIN_USERNAME else 0,
+                "complete-phase-2@example.invalid" if username == ADMIN_USERNAME else "",
+                json.dumps({"start": "22:15", "end": "07:45"}, sort_keys=True),
+                PHASE_TWO_NOW_MS,
+                PHASE_TWO_NOW_MS,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO user_attention_preferences (
+                user_id, preset, rules_json, quiet_hours_json, show_no_action_history,
+                metadata_json, created_at_ms, updated_at_ms
+            )
+            VALUES (%s, 'balanced', '{}', %s, 1, '{}', %s, %s)
+            """,
+            (
+                user_id,
+                json.dumps({"start": "22:15", "end": "07:45"}, sort_keys=True),
+                PHASE_TWO_NOW_MS,
+                PHASE_TWO_NOW_MS,
+            ),
+        )
+
+    for public_id, garden_id, user_id, notification_type, title, body in (
+        (
+            PHASE_TWO_NOTIFICATION_PUBLIC_ID,
+            alpha_id,
+            admin_id,
+            "issue_created",
+            "Phase 2 attention conflict",
+            "Alpha phase 2 scoped notification.",
+        ),
+        (
+            "note_complete_p2_beta_conflict",
+            beta_id,
+            admin_id,
+            "issue_created",
+            "Phase 2 attention conflict",
+            "Beta phase 2 scoped notification.",
+        ),
+        (
+            "note_complete_p2_editor",
+            alpha_id,
+            users[EDITOR_LOGIN[0]],
+            "system",
+            "Phase 2 editor reminder",
+            "Editor phase 2 scoped notification.",
+        ),
+    ):
+        conn.execute(
+            """
+            INSERT INTO notification_events (
+                public_id, garden_id, user_id, notification_type, notification_subtype,
+                severity, title, body, target_type, target_id, metadata_json,
+                dismissed, created_at_ms, expires_at_ms
+            )
+            VALUES (%s, %s, %s, %s, NULL, 'normal', %s,
+                    %s, 'system', %s,
+                    '{}', 0, %s, %s)
+            """,
+            (
+                public_id,
+                garden_id,
+                user_id,
+                notification_type,
+                title,
+                body,
+                public_id,
+                PHASE_TWO_NOW_MS,
+                PHASE_TWO_NOW_MS + 604_800_000,
+            ),
+        )
+
+    _reset_phase_two_weather_cache(conn, alpha_id=alpha_id, beta_id=beta_id)
 
 
 def _phase_one_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
@@ -1809,20 +2336,524 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
     }
 
 
+def _phase_two_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
+    gardens = {
+        str(row["slug"]): int(row["id"])
+        for row in conn.execute(
+            "SELECT id, slug FROM gardens WHERE slug = ANY(%s)",
+            ([optimization_seed.GARDEN_A_SLUG, optimization_seed.GARDEN_B_SLUG],),
+        ).fetchall()
+    }
+    alpha_id = gardens[optimization_seed.GARDEN_A_SLUG]
+    beta_id = gardens[optimization_seed.GARDEN_B_SLUG]
+    task_rows = conn.execute(
+        """
+        SELECT
+            task_value.id, task_value.public_id, task_value.garden_id,
+            task_value.task_type, task_value.title, task_value.status,
+            task_value.due_on, task_value.snoozed_until, task_value.rule_source,
+            task_value.metadata_json, task_value.window_start_on,
+            task_value.window_end_on, task_value.window_kind,
+            task_value.completed_at_ms, completed_by.username AS completed_by_username
+        FROM garden_tasks task_value
+        LEFT JOIN auth_users completed_by ON completed_by.id = task_value.completed_by_user_id
+        WHERE task_value.public_id = ANY(%s)
+        ORDER BY task_value.public_id
+        """,
+        (list(PHASE_TWO_TASKS.values()),),
+    ).fetchall()
+    task_ids = [int(row["id"]) for row in task_rows]
+    task_plants: dict[int, list[str]] = {task_id: [] for task_id in task_ids}
+    task_plots: dict[int, list[str]] = {task_id: [] for task_id in task_ids}
+    if task_ids:
+        for row in conn.execute(
+            """
+            SELECT task_id, plt_id
+            FROM garden_task_plants
+            WHERE task_id = ANY(%s)
+            ORDER BY task_id, plt_id
+            """,
+            (task_ids,),
+        ).fetchall():
+            task_plants[int(row["task_id"])].append(str(row["plt_id"]))
+        for row in conn.execute(
+            """
+            SELECT task_id, plot_id
+            FROM garden_task_plots
+            WHERE task_id = ANY(%s)
+            ORDER BY task_id, plot_id
+            """,
+            (task_ids,),
+        ).fetchall():
+            task_plots[int(row["task_id"])].append(str(row["plot_id"]))
+
+    phase_two_plant_ids = [value[0] for value in PHASE_TWO_PLANTS.values()]
+    plant_observation_rows = conn.execute(
+        """
+        SELECT plt_id, seen_growing, seen_growing_date
+        FROM plants
+        WHERE plt_id = ANY(%s)
+        ORDER BY plt_id
+        """,
+        (phase_two_plant_ids,),
+    ).fetchall()
+    assignment_observation_rows = conn.execute(
+        """
+        SELECT plot_id, plt_id, seen_growing, seen_growing_date
+        FROM plot_plants
+        WHERE plt_id = ANY(%s)
+        ORDER BY plot_id, plt_id
+        """,
+        (phase_two_plant_ids,),
+    ).fetchall()
+
+    journal_rows = conn.execute(
+        """
+        SELECT
+            entry.id, entry.public_id, entry.garden_id, entry.event_type,
+            entry.occurred_on, entry.title,
+            entry.metadata_json, actor.username AS actor_username
+        FROM garden_journal_entries entry
+        LEFT JOIN auth_users actor ON actor.id = entry.actor_user_id
+        WHERE entry.garden_id IN (%s, %s)
+          AND COALESCE(entry.metadata_json, '{}')::jsonb ->> 'source_task_id' = ANY(%s)
+        ORDER BY entry.id
+        """,
+        (alpha_id, beta_id, list(PHASE_TWO_TASKS.values())),
+    ).fetchall()
+    journal_ids = [int(row["id"]) for row in journal_rows]
+    journal_plants: dict[int, list[str]] = {entry_id: [] for entry_id in journal_ids}
+    journal_plots: dict[int, list[str]] = {entry_id: [] for entry_id in journal_ids}
+    if journal_ids:
+        for row in conn.execute(
+            """
+            SELECT entry_id, plt_id
+            FROM garden_journal_entry_plants
+            WHERE entry_id = ANY(%s)
+            ORDER BY entry_id, plt_id
+            """,
+            (journal_ids,),
+        ).fetchall():
+            journal_plants[int(row["entry_id"])].append(str(row["plt_id"]))
+        for row in conn.execute(
+            """
+            SELECT entry_id, plot_id
+            FROM garden_journal_entry_plots
+            WHERE entry_id = ANY(%s)
+            ORDER BY entry_id, plot_id
+            """,
+            (journal_ids,),
+        ).fetchall():
+            journal_plots[int(row["entry_id"])].append(str(row["plot_id"]))
+
+    calendar_rows = conn.execute(
+        """
+        SELECT event.id, event.public_id, event.garden_id, event.title,
+               event.description, event.event_on, creator.username AS creator_username,
+               updater.username AS updater_username
+        FROM garden_calendar_events event
+        JOIN auth_users creator ON creator.id = event.created_by_user_id
+        JOIN auth_users updater ON updater.id = event.updated_by_user_id
+        WHERE event.public_id = %s OR event.title LIKE 'Phase 2 Browser%%'
+        ORDER BY event.public_id
+        """,
+        (PHASE_TWO_CALENDAR_PUBLIC_ID,),
+    ).fetchall()
+    calendar_ids = [int(row["id"]) for row in calendar_rows]
+    calendar_plants: dict[int, list[str]] = {event_id: [] for event_id in calendar_ids}
+    calendar_plots: dict[int, list[str]] = {event_id: [] for event_id in calendar_ids}
+    if calendar_ids:
+        for row in conn.execute(
+            """
+            SELECT event_id, plt_id
+            FROM garden_calendar_event_plants
+            WHERE event_id = ANY(%s)
+            ORDER BY event_id, plt_id
+            """,
+            (calendar_ids,),
+        ).fetchall():
+            calendar_plants[int(row["event_id"])].append(str(row["plt_id"]))
+        for row in conn.execute(
+            """
+            SELECT event_id, plot_id
+            FROM garden_calendar_event_plots
+            WHERE event_id = ANY(%s)
+            ORDER BY event_id, plot_id
+            """,
+            (calendar_ids,),
+        ).fetchall():
+            calendar_plots[int(row["event_id"])].append(str(row["plot_id"]))
+
+    subscription_rows = conn.execute(
+        """
+        SELECT subscription.public_id, subscription.garden_id,
+               owner.username AS owner_username, creator.username AS creator_username,
+               subscription.label, subscription.preset_key, subscription.token_hint,
+               length(subscription.token_hash) AS token_hash_length,
+               subscription.scope_json, subscription.revoked_at_ms
+        FROM calendar_subscriptions subscription
+        JOIN auth_users owner ON owner.id = subscription.owner_user_id
+        JOIN auth_users creator ON creator.id = subscription.created_by_user_id
+        WHERE subscription.label LIKE 'Phase 2%%'
+        ORDER BY subscription.public_id
+        """
+    ).fetchall()
+    preference_rows = conn.execute(
+        """
+        SELECT users.username,
+               legacy.in_app_enabled, legacy.email_enabled, legacy.email_address,
+               legacy.digest_frequency, legacy.quiet_hours_json AS legacy_quiet_hours_json,
+               legacy.rules_json AS notification_rules_json,
+               attention.preset, attention.rules_json AS attention_rules_json,
+               attention.quiet_hours_json AS attention_quiet_hours_json,
+               attention.show_no_action_history, attention.metadata_json
+        FROM auth_users users
+        LEFT JOIN user_notification_preferences legacy ON legacy.user_id = users.id
+        LEFT JOIN user_attention_preferences attention ON attention.user_id = users.id
+        WHERE users.username = ANY(%s)
+        ORDER BY users.username
+        """,
+        ([ADMIN_USERNAME, EDITOR_LOGIN[0], VIEWER_LOGIN[0]],),
+    ).fetchall()
+    notification_rows = conn.execute(
+        """
+        SELECT event.public_id, event.garden_id, users.username,
+               event.notification_type, event.notification_subtype, event.severity,
+               event.title, event.target_type, event.target_id, event.dismissed,
+               event.read_at_ms, event.emailed_at_ms, event.cleared_at_ms,
+               event.clear_reason, event.metadata_json
+        FROM notification_events event
+        LEFT JOIN auth_users users ON users.id = event.user_id
+        WHERE event.public_id LIKE 'note_complete_p2%%'
+           OR event.target_id = ANY(%s)
+        ORDER BY event.public_id
+        """,
+        (list(PHASE_TWO_TASKS.values()),),
+    ).fetchall()
+    weather_rows = conn.execute(
+        """
+        SELECT alert.id, alert.garden_id, alert.alert_type, alert.severity,
+               alert.title, alert.valid_from, alert.valid_until,
+               alert.metadata_json, alert.dismissed
+        FROM weather_alerts alert
+        WHERE alert.garden_id IN (%s, %s)
+        ORDER BY alert.garden_id, alert.alert_type, alert.valid_from, alert.id
+        """,
+        (alpha_id, beta_id),
+    ).fetchall()
+    weather_ids = [int(row["id"]) for row in weather_rows]
+    weather_plants: dict[int, list[str]] = {alert_id: [] for alert_id in weather_ids}
+    if weather_ids:
+        for row in conn.execute(
+            """
+            SELECT alert_id, plt_id
+            FROM weather_alert_plants
+            WHERE alert_id = ANY(%s)
+            ORDER BY alert_id, plt_id
+            """,
+            (weather_ids,),
+        ).fetchall():
+            weather_plants[int(row["alert_id"])].append(str(row["plt_id"]))
+    outcome_rows = conn.execute(
+        """
+        SELECT public_id, garden_id, provider, outcome_type, source_type,
+               source_id, source_public_id, target_type, target_id,
+               plant_ids_json, plot_ids_json, recovery_action_json,
+               metadata_json, occurred_at_ms, expires_at_ms
+        FROM attention_outcomes
+        WHERE garden_id IN (%s, %s)
+          AND (
+              target_id = ANY(%s)
+              OR source_public_id LIKE 'water:COMPLETE-P2%%'
+          )
+        ORDER BY public_id
+        """,
+        (alpha_id, beta_id, list(PHASE_TWO_TASKS.values())),
+    ).fetchall()
+    item_state_rows = conn.execute(
+        """
+        SELECT users.username, state.garden_id, state.item_id, state.user_state,
+               state.snoozed_until_ms, state.reason, state.metadata_json
+        FROM user_attention_item_state state
+        JOIN auth_users users ON users.id = state.user_id
+        WHERE state.garden_id IN (%s, %s)
+          AND (state.item_id LIKE 'attn:weather:alert:%%'
+               OR state.item_id LIKE 'attn:task:tsk_complete_p2%%')
+        ORDER BY users.username, state.garden_id, state.item_id
+        """,
+        (alpha_id, beta_id),
+    ).fetchall()
+    operation_rows = conn.execute(
+        """
+        SELECT operation_id, garden_id, endpoint, target_type, target_id,
+               result_id, request_fingerprint
+        FROM offline_create_operations
+        WHERE operation_id LIKE 'phase2-%%'
+           OR target_id = ANY(%s)
+        ORDER BY operation_id
+        """,
+        (list(PHASE_TWO_TASKS.values()),),
+    ).fetchall()
+
+    return {
+        "calendar_events": [
+            {
+                "creator_username": str(row["creator_username"]),
+                "description": str(row["description"]),
+                "event_on": str(row["event_on"]),
+                "garden_id": int(row["garden_id"]),
+                "plant_ids": calendar_plants[int(row["id"])],
+                "plot_ids": calendar_plots[int(row["id"])],
+                "public_id": str(row["public_id"]),
+                "title": str(row["title"]),
+                "updater_username": str(row["updater_username"]),
+            }
+            for row in calendar_rows
+        ],
+        "calendar_subscriptions": [
+            {
+                "creator_username": str(row["creator_username"]),
+                "garden_id": int(row["garden_id"]),
+                "label": str(row["label"]),
+                "owner_username": str(row["owner_username"]),
+                "preset_key": str(row["preset_key"]),
+                "public_id": str(row["public_id"]),
+                "revoked": row["revoked_at_ms"] is not None,
+                "scope": _json_object(row["scope_json"], label="Phase 2 calendar scope"),
+                "token_hash_length": int(row["token_hash_length"]),
+                "token_hint": str(row["token_hint"]),
+            }
+            for row in subscription_rows
+        ],
+        "item_states": [
+            {
+                "garden_id": int(row["garden_id"]),
+                "item_id": str(row["item_id"]),
+                "metadata": _json_object(row["metadata_json"], label="Phase 2 attention state"),
+                "reason": str(row["reason"]),
+                "snoozed_until_ms": (
+                    int(row["snoozed_until_ms"]) if row["snoozed_until_ms"] is not None else None
+                ),
+                "user_state": str(row["user_state"]),
+                "username": str(row["username"]),
+            }
+            for row in item_state_rows
+        ],
+        "journal": [
+            {
+                "actor_username": (
+                    str(row["actor_username"]) if row["actor_username"] is not None else None
+                ),
+                "event_type": str(row["event_type"]),
+                "garden_id": int(row["garden_id"]),
+                "metadata": _json_object(row["metadata_json"], label="Phase 2 journal metadata"),
+                "occurred_on": str(row["occurred_on"]),
+                "plant_ids": journal_plants[int(row["id"])],
+                "plot_ids": journal_plots[int(row["id"])],
+                "public_id": str(row["public_id"]),
+                "title": str(row["title"]),
+            }
+            for row in journal_rows
+        ],
+        "notifications": [
+            {
+                "clear_reason": (
+                    str(row["clear_reason"]) if row["clear_reason"] is not None else None
+                ),
+                "cleared": row["cleared_at_ms"] is not None,
+                "dismissed": bool(row["dismissed"]),
+                "emailed": row["emailed_at_ms"] is not None,
+                "garden_id": int(row["garden_id"]),
+                "metadata": _json_object(
+                    row["metadata_json"] or "{}", label="Phase 2 notification metadata"
+                ),
+                "notification_subtype": str(row["notification_subtype"] or ""),
+                "notification_type": str(row["notification_type"]),
+                "public_id": str(row["public_id"]),
+                "read": row["read_at_ms"] is not None,
+                "severity": str(row["severity"] or "normal"),
+                "target_id": str(row["target_id"] or ""),
+                "target_type": str(row["target_type"] or ""),
+                "title": str(row["title"]),
+                "username": str(row["username"]) if row["username"] is not None else None,
+            }
+            for row in notification_rows
+        ],
+        "offline_operations": [dict(row) for row in operation_rows],
+        "outcomes": [
+            {
+                "expires_at_ms": int(row["expires_at_ms"]),
+                "garden_id": int(row["garden_id"]),
+                "metadata": _json_object(row["metadata_json"], label="Phase 2 outcome metadata"),
+                "occurred_at_ms": int(row["occurred_at_ms"]),
+                "outcome_type": str(row["outcome_type"]),
+                "plant_ids": json.loads(str(row["plant_ids_json"])),
+                "plot_ids": json.loads(str(row["plot_ids_json"])),
+                "provider": str(row["provider"]),
+                "public_id": str(row["public_id"]),
+                "recovery_action": _json_object(
+                    row["recovery_action_json"], label="Phase 2 recovery action"
+                ),
+                "source_id": str(row["source_id"]),
+                "source_public_id": str(row["source_public_id"]),
+                "source_type": str(row["source_type"]),
+                "target_id": str(row["target_id"]),
+                "target_type": str(row["target_type"]),
+            }
+            for row in outcome_rows
+        ],
+        "plant_observations": {
+            "assignments": [
+                {
+                    "plant_id": str(row["plt_id"]),
+                    "plot_id": str(row["plot_id"]),
+                    "seen_growing": bool(row["seen_growing"]),
+                    "seen_growing_date": str(row["seen_growing_date"] or ""),
+                }
+                for row in assignment_observation_rows
+            ],
+            "plants": [
+                {
+                    "plant_id": str(row["plt_id"]),
+                    "seen_growing": bool(row["seen_growing"]),
+                    "seen_growing_date": str(row["seen_growing_date"] or ""),
+                }
+                for row in plant_observation_rows
+            ],
+        },
+        "preferences": [
+            {
+                "attention_metadata": _json_object(
+                    row["metadata_json"] or "{}", label="Phase 2 attention metadata"
+                ),
+                "attention_quiet_hours": _json_object(
+                    row["attention_quiet_hours_json"] or "{}", label="Phase 2 attention quiet hours"
+                ),
+                "attention_rules": _json_object(
+                    row["attention_rules_json"] or "{}", label="Phase 2 attention rules"
+                ),
+                "digest_frequency": str(row["digest_frequency"] or ""),
+                "email_address": str(row["email_address"] or ""),
+                "email_enabled": bool(row["email_enabled"]),
+                "in_app_enabled": bool(row["in_app_enabled"]),
+                "legacy_quiet_hours": _json_object(
+                    row["legacy_quiet_hours_json"] or "{}", label="Phase 2 legacy quiet hours"
+                ),
+                "notification_rules": _json_object(
+                    row["notification_rules_json"] or "{}", label="Phase 2 notification rules"
+                ),
+                "preset": str(row["preset"] or ""),
+                "show_no_action_history": bool(row["show_no_action_history"]),
+                "username": str(row["username"]),
+            }
+            for row in preference_rows
+        ],
+        "tasks": [
+            {
+                "completed_at_ms": (
+                    int(row["completed_at_ms"]) if row["completed_at_ms"] is not None else None
+                ),
+                "completed_by_username": (
+                    str(row["completed_by_username"])
+                    if row["completed_by_username"] is not None
+                    else None
+                ),
+                "due_on": str(row["due_on"]),
+                "garden_id": int(row["garden_id"]),
+                "metadata": _json_object(row["metadata_json"], label="Phase 2 task metadata"),
+                "plant_ids": task_plants[int(row["id"])],
+                "plot_ids": task_plots[int(row["id"])],
+                "public_id": str(row["public_id"]),
+                "rule_source": str(row["rule_source"] or ""),
+                "snoozed_until": (
+                    str(row["snoozed_until"]) if row["snoozed_until"] is not None else None
+                ),
+                "status": str(row["status"]),
+                "task_type": str(row["task_type"]),
+                "title": str(row["title"]),
+                "window_end_on": (
+                    str(row["window_end_on"]) if row["window_end_on"] is not None else None
+                ),
+                "window_kind": str(row["window_kind"] or ""),
+                "window_start_on": (
+                    str(row["window_start_on"]) if row["window_start_on"] is not None else None
+                ),
+            }
+            for row in task_rows
+        ],
+        "weather_alerts": [
+            {
+                "alert_type": str(row["alert_type"]),
+                "dismissed": bool(row["dismissed"]),
+                "garden_id": int(row["garden_id"]),
+                "id": int(row["id"]),
+                "metadata": _json_object(row["metadata_json"], label="Phase 2 weather metadata"),
+                "plant_ids": weather_plants[int(row["id"])],
+                "severity": str(row["severity"]),
+                "title": str(row["title"]),
+                "valid_from": str(row["valid_from"]),
+                "valid_until": str(row["valid_until"]),
+            }
+            for row in weather_rows
+        ],
+    }
+
+
+def _phase_two_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
+    runtime = _phase_two_runtime_state(conn, optimization_seed)
+    return {
+        "calendar": {
+            "event_public_id": PHASE_TWO_CALENDAR_PUBLIC_ID,
+            "seeded_description": PHASE_TWO_CALENDAR_DESCRIPTION,
+            "seeded_event_on": PHASE_TWO_CALENDAR_EVENT_ON,
+            "seeded_title": "Phase 2 seeded calendar event",
+        },
+        "date": PHASE_TWO_DATE,
+        "manual_date": PHASE_TWO_MANUAL_DATE,
+        "snooze_correction": {
+            "default_date": PHASE_TWO_SNOOZE_CORRECTION_DEFAULT_DATE,
+            "due_date": PHASE_TWO_SNOOZE_CORRECTION_DUE_DATE,
+        },
+        "offline": {
+            "reschedule_date": PHASE_TWO_OFFLINE_RESCHEDULE_DATE,
+            "snooze_date": PHASE_TWO_OFFLINE_SNOOZE_DATE,
+        },
+        "notification_public_id": PHASE_TWO_NOTIFICATION_PUBLIC_ID,
+        "plant_ids": {key: value[0] for key, value in PHASE_TWO_PLANTS.items()},
+        "plant_names": {key: value[1] for key, value in PHASE_TWO_PLANTS.items()},
+        "plot_ids": {
+            "alpha": PHASE_TWO_ALPHA_PLOT_ID,
+            "beta": PHASE_TWO_BETA_PLOT_ID,
+            "beta_indoor": PHASE_ONE_BETA_INDOOR_PLOT_ID,
+        },
+        "seeded_state": runtime,
+        "task_ids": PHASE_TWO_TASKS,
+        "task_titles": {row["public_id"]: row["title"] for row in runtime["tasks"]},
+    }
+
+
 def _count(conn, table: str) -> int:
     allowed = {
+        "attention_outcomes",
         "auth_users",
+        "calendar_subscriptions",
+        "garden_calendar_events",
+        "garden_journal_entries",
         "garden_memberships",
         "garden_map_objects",
         "garden_tasks",
         "gardens",
         "layout_state",
         "notification_events",
+        "offline_create_operations",
         "plant_ownership",
         "plants",
         "plot_ownership",
         "plot_plants",
         "plots",
+        "user_attention_item_state",
+        "user_attention_preferences",
+        "user_notification_preferences",
         "weather_alerts",
     }
     if table not in allowed:
@@ -2077,18 +3108,26 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
         }
 
     tables = (
+        "attention_outcomes",
         "auth_users",
+        "calendar_subscriptions",
+        "garden_calendar_events",
+        "garden_journal_entries",
         "garden_memberships",
         "garden_map_objects",
         "garden_tasks",
         "gardens",
         "layout_state",
         "notification_events",
+        "offline_create_operations",
         "plant_ownership",
         "plants",
         "plot_ownership",
         "plot_plants",
         "plots",
+        "user_attention_item_state",
+        "user_attention_preferences",
+        "user_notification_preferences",
         "weather_alerts",
     )
     return {
@@ -2098,6 +3137,7 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
             "domain_counts": {table: _count(conn, table) for table in tables},
             "domain_tables": _domain_table_state(conn),
             "phase_one_state": _phase_one_runtime_state(conn, optimization_seed),
+            "phase_two_state": _phase_two_runtime_state(conn, optimization_seed),
         },
         "gardens": {
             "alpha": garden_payload(
@@ -2112,6 +3152,7 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
         "clock": _frozen_attention_clock(),
         "git": _git_state(),
         "phase_one": _phase_one_fixture_state(conn, optimization_seed),
+        "phase_two": _phase_two_fixture_state(conn, optimization_seed),
         "roles": {
             "admin": ADMIN_USERNAME,
             "editor": EDITOR_LOGIN[0],
@@ -2150,6 +3191,60 @@ def _write_json_exclusive(output_path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
+def _run_phase_two_maintenance(conn, optimization_seed: Any) -> dict[str, Any]:
+    from gardenops.services.notification_service import run_notification_maintenance_for_garden
+
+    alpha = conn.execute(
+        "SELECT id FROM gardens WHERE slug = %s",
+        (optimization_seed.GARDEN_A_SLUG,),
+    ).fetchone()
+    if not alpha:
+        raise RuntimeError("Complete journey Phase 2 maintenance garden is missing")
+    deliveries: list[dict[str, int]] = []
+
+    def record_delivery(recipient: str, subject: str, body: str) -> None:
+        deliveries.append(
+            {
+                "body_length": len(body),
+                "recipient_length": len(recipient),
+                "subject_length": len(subject),
+            }
+        )
+
+    summary = run_notification_maintenance_for_garden(
+        conn,
+        garden_id=int(alpha["id"]),
+        email_sender=record_delivery,
+        now_ms=PHASE_TWO_NOW_MS,
+    )
+    conn.commit()
+    return {
+        "delivery_count": len(deliveries),
+        "deliveries": deliveries,
+        "garden_id": int(alpha["id"]),
+        "summary": summary,
+    }
+
+
+def _prepare_phase_two(conn, optimization_seed: Any) -> dict[str, Any]:
+    gardens = {
+        str(row["slug"]): int(row["id"])
+        for row in conn.execute(
+            "SELECT id, slug FROM gardens WHERE slug = ANY(%s)",
+            ([optimization_seed.GARDEN_A_SLUG, optimization_seed.GARDEN_B_SLUG],),
+        ).fetchall()
+    }
+    if len(gardens) != 2:
+        raise RuntimeError("Complete journey Phase 2 preparation gardens are missing")
+    evidence = _reset_phase_two_weather_cache(
+        conn,
+        alpha_id=gardens[optimization_seed.GARDEN_A_SLUG],
+        beta_id=gardens[optimization_seed.GARDEN_B_SLUG],
+    )
+    conn.commit()
+    return evidence
+
+
 def main() -> None:
     _require_child_environment()
     _configure_reused_seed_guard()
@@ -2158,15 +3253,44 @@ def main() -> None:
     database_url = os.environ.get("DATABASE_URL", "")
     optimization_seed.require_optimization_journeys_e2e_database(database_url)
     snapshot_only = sys.argv[1:] == ["--snapshot"]
+    prepare_phase_two = sys.argv[1:] == ["--prepare-phase-two"]
+    phase_two_maintenance = sys.argv[1:] == ["--phase-two-maintenance"]
     output_path = Path(sys.argv[2]) if len(sys.argv) == 3 and sys.argv[1] == "--output" else None
-    if sys.argv[1:] and not snapshot_only and output_path is None:
-        raise SystemExit("Usage: seed_complete_journeys_e2e.py [--snapshot | --output PATH]")
+    if (
+        sys.argv[1:]
+        and not snapshot_only
+        and not prepare_phase_two
+        and not phase_two_maintenance
+        and output_path is None
+    ):
+        raise SystemExit(
+            "Usage: seed_complete_journeys_e2e.py "
+            "[--snapshot | --prepare-phase-two | --phase-two-maintenance | --output PATH]"
+        )
 
     conn = None
     try:
         conn = get_db()
         try:
             optimization_seed.verify_optimization_journeys_e2e_database_marker(conn)
+            if prepare_phase_two:
+                print(
+                    json.dumps(
+                        _prepare_phase_two(conn, optimization_seed),
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+                return
+            if phase_two_maintenance:
+                print(
+                    json.dumps(
+                        _run_phase_two_maintenance(conn, optimization_seed),
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+                return
             if not snapshot_only:
                 optimization_seed.seed(conn)
                 conn.execute(
@@ -2193,6 +3317,7 @@ def main() -> None:
                         "beta": garden_ids_by_slug[optimization_seed.GARDEN_B_SLUG],
                     },
                 )
+                _seed_phase_two_fixtures(conn, optimization_seed)
                 conn.commit()
             result = _snapshot(conn, optimization_seed)
             if output_path is not None:

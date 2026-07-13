@@ -9,8 +9,8 @@ const BASE_URL = process.env.BASE_URL || "http://127.0.0.1:5173";
 const ROOT_DIR = path.resolve(__dirname, "..");
 const CHROMIUM_EXECUTABLE = process.env.CHROMIUM_EXECUTABLE
   || (fs.existsSync("/usr/bin/chromium-browser") ? "/usr/bin/chromium-browser" : "/usr/bin/chromium");
-const FROZEN_NOW_ISO = process.env.GARDENOPS_TASK_HISTORY_E2E_FROZEN_NOW_ISO
-  || "2026-07-05T12:00:00.000Z";
+const FROZEN_NOW_MS = Number(process.env.GARDENOPS_ATTENTION_FROZEN_NOW_MS || "1783252800000");
+const FROZEN_DATE = process.env.GARDENOPS_ATTENTION_FROZEN_DATE || "2026-07-05";
 
 function formatLocalDate(date) {
   const year = date.getFullYear();
@@ -25,7 +25,7 @@ function addDays(baseDate, days) {
   return formatLocalDate(next);
 }
 
-const EXPECTED_SNOOZE_DATE = addDays(new Date(FROZEN_NOW_ISO), 7);
+const EXPECTED_SNOOZE_DATE = addDays(new Date(FROZEN_NOW_MS), 7);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -35,6 +35,14 @@ function assertDeepEqual(actual, expected, message) {
   const actualJson = JSON.stringify(actual);
   const expectedJson = JSON.stringify(expected);
   assert(actualJson === expectedJson, `${message}\nexpected: ${expectedJson}\nactual: ${actualJson}`);
+}
+
+function assertFrozenClock() {
+  assert(Number.isSafeInteger(FROZEN_NOW_MS) && FROZEN_NOW_MS > 0, "Invalid frozen timestamp");
+  assert(
+    new Date(FROZEN_NOW_MS).toISOString().slice(0, 10) === FROZEN_DATE,
+    "Frozen date and timestamp must agree",
+  );
 }
 
 function assertNoRouteMocks() {
@@ -55,6 +63,10 @@ function e2ePythonEnv() {
     AUTH_REQUIRED: process.env.AUTH_REQUIRED || "false",
     GARDENOPS_TASK_HISTORY_E2E_ALLOW_TRUNCATE:
       process.env.GARDENOPS_TASK_HISTORY_E2E_ALLOW_TRUNCATE || "1",
+    GARDENOPS_ATTENTION_FROZEN_NOW_MS:
+      process.env.GARDENOPS_ATTENTION_FROZEN_NOW_MS || "1783252800000",
+    GARDENOPS_ATTENTION_FROZEN_DATE:
+      process.env.GARDENOPS_ATTENTION_FROZEN_DATE || "2026-07-05",
     UV_CACHE_DIR: process.env.UV_CACHE_DIR || "/tmp/gardenops-uv-cache",
   };
 }
@@ -72,6 +84,8 @@ function runE2ePython(args) {
       `APP_ENV=${env.APP_ENV}`,
       `AUTH_REQUIRED=${env.AUTH_REQUIRED}`,
       `GARDENOPS_TASK_HISTORY_E2E_ALLOW_TRUNCATE=${env.GARDENOPS_TASK_HISTORY_E2E_ALLOW_TRUNCATE}`,
+      `GARDENOPS_ATTENTION_FROZEN_NOW_MS=${env.GARDENOPS_ATTENTION_FROZEN_NOW_MS}`,
+      `GARDENOPS_ATTENTION_FROZEN_DATE=${env.GARDENOPS_ATTENTION_FROZEN_DATE}`,
       `GARDENOPS_LOGS_DIR=${env.GARDENOPS_LOGS_DIR || "/tmp/gardenops-task-history-e2e-logs"}`,
       `DATABASE_URL=${env.DATABASE_URL || ""}`,
       `UV_CACHE_DIR=${process.env.GARDENOPS_TASK_HISTORY_E2E_POSTGRES_UV_CACHE_DIR || "/tmp/gardenops-uv-cache-postgres"}`,
@@ -147,9 +161,9 @@ async function setupPage(browser) {
       resourceLoadFailures.push(`Resource ${response.status()} ${url.pathname}`);
     }
   });
-  await page.addInitScript((frozenNowIso) => {
+  await page.addInitScript((frozenNowMs) => {
     const RealDate = Date;
-    const frozenMs = new RealDate(frozenNowIso).getTime();
+    const frozenMs = frozenNowMs;
     function FrozenDate(...args) {
       if (new.target) {
         return args.length === 0 ? new RealDate(frozenMs) : new RealDate(...args);
@@ -162,7 +176,7 @@ async function setupPage(browser) {
     FrozenDate.parse = RealDate.parse;
     FrozenDate.UTC = RealDate.UTC;
     globalThis.Date = FrozenDate;
-  }, FROZEN_NOW_ISO);
+  }, FROZEN_NOW_MS);
   await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
   return { page, browserErrors, resourceLoadFailures };
 }
@@ -197,6 +211,7 @@ async function openCompletionDialogFromCard(page, card) {
 
 async function main() {
   assertNoRouteMocks();
+  assertFrozenClock();
 
   const browser = await chromium.launch({
     headless: true,

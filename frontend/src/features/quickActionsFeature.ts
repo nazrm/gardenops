@@ -1,11 +1,14 @@
 import type { AppContext } from "../core/appContext";
+import type { GardenTask } from "../core/models";
 import type { QuickActionCallbacks } from "../components/quickActions";
 import { t } from "../core/i18n";
 import {
+  appendQuickActionSnoozeNotice,
   renderQuickActionSheet,
   renderTaskQuickComplete,
   renderTaskQuickSnooze,
 } from "../components/quickActions";
+import { trapFocus } from "../components/dialogCore";
 import {
   fetchTasksApi,
   taskActionApi,
@@ -17,6 +20,10 @@ import {
 } from "../services/offlineQueue";
 import { taskSnoozePolicy } from "./taskSnoozePolicy";
 import {
+  getTaskSnoozeCorrectionNotice,
+  openTaskDateDialog,
+} from "./taskSnoozeFlow";
+import {
   canQueueDefaultCompletionOffline,
   needsCompletionDialog,
   openTaskCompletionDialog,
@@ -25,6 +32,12 @@ import {
 let ctx: AppContext;
 let quickActionSheetOpen = false;
 let escapeHandler: ((e: KeyboardEvent) => void) | null = null;
+let releaseFocusTrap: (() => void) | null = null;
+let inertBackgroundElements: Array<{
+  element: HTMLElement;
+  wasInert: boolean;
+}> = [];
+const QUICK_ACTION_TASK_LIMIT = 200;
 type IdentifyPlantModule = typeof import("../components/identifyPlant");
 let identifyPlantModulePromise: Promise<IdentifyPlantModule> | null = null;
 
@@ -52,12 +65,17 @@ export function initQuickActionsFeature(
 ): void {
   ctx = appCtx;
 
-  document
-    .getElementById("mobile-fab")
-    ?.addEventListener("click", toggleQuickActionSheet);
+  const fab = document.getElementById("mobile-fab");
+  fab?.setAttribute("aria-controls", "mobile-quick-actions");
+  fab?.setAttribute("aria-haspopup", "dialog");
+  fab?.setAttribute("aria-expanded", "false");
+  fab?.addEventListener("click", toggleQuickActionSheet);
   document
     .getElementById("mobile-fab-backdrop")
-    ?.addEventListener("click", closeQuickActionSheet);
+    ?.addEventListener("click", () => closeQuickActionSheet());
+  document
+    .getElementById("mobile-quick-actions-close-btn")
+    ?.addEventListener("click", () => closeQuickActionSheet());
 }
 
 function getQuickActionCallbacks(): QuickActionCallbacks {
@@ -65,24 +83,24 @@ function getQuickActionCallbacks(): QuickActionCallbacks {
     onCompleteTask: () =>
       void showTaskQuickComplete(),
     onLogJournal: () => {
-      closeQuickActionSheet();
+      closeQuickActionSheet(false);
       ctx.navigateToSubMode("journal");
       void ctx.openJournalComposer();
     },
     onReportIssue: () => {
-      closeQuickActionSheet();
+      closeQuickActionSheet(false);
       ctx.navigateToSubMode("issues");
       void ctx.openIssueForm();
     },
     onLogHarvest: () => {
-      closeQuickActionSheet();
+      closeQuickActionSheet(false);
       ctx.navigateToSubMode("harvest");
       void ctx.openHarvestForm();
     },
     onSnoozeTask: () =>
       void showTaskQuickSnooze(),
     onIdentifyPlant: () => {
-      closeQuickActionSheet();
+      closeQuickActionSheet(false);
       showIdentifyPlantModalLazy({
         onAddPlant: (prefill) => {
           ctx.navigateToSubMode("plants");
@@ -97,69 +115,138 @@ function getQuickActionCallbacks(): QuickActionCallbacks {
   };
 }
 
-export function toggleQuickActionSheet(): void {
-  if (!quickActionSheetOpen && !ctx.ensureWriteAccess()) {
-    return;
-  }
-  quickActionSheetOpen = !quickActionSheetOpen;
-  const sheet = document.getElementById(
-    "mobile-quick-actions",
-  );
-  const backdrop = document.getElementById(
-    "mobile-fab-backdrop",
-  );
-  const fab = document.getElementById("mobile-fab");
-  if (sheet)
-    sheet.setAttribute(
-      "aria-hidden",
-      String(!quickActionSheetOpen),
-    );
-  if (backdrop)
-    backdrop.setAttribute(
-      "aria-hidden",
-      String(!quickActionSheetOpen),
-    );
-  if (fab)
-    fab.classList.toggle(
-      "open",
-      quickActionSheetOpen,
-    );
-
-  if (quickActionSheetOpen) {
-    const content = document.getElementById(
-      "mobile-quick-actions-content",
-    );
-    if (content) {
-      renderQuickActionSheet(
-        content,
-        getQuickActionCallbacks(),
-      );
-    }
-    escapeHandler = (e: KeyboardEvent) => { if (e.key === "Escape") closeQuickActionSheet(); };
-    window.addEventListener("keydown", escapeHandler);
-  } else if (escapeHandler) {
-    window.removeEventListener("keydown", escapeHandler);
-    escapeHandler = null;
-  }
+function quickActionSheet(): HTMLElement | null {
+  const sheet = document.getElementById("mobile-quick-actions");
+  return sheet instanceof HTMLElement ? sheet : null;
 }
 
-export function closeQuickActionSheet(): void {
-  quickActionSheetOpen = false;
-  const sheet = document.getElementById(
-    "mobile-quick-actions",
-  );
-  const backdrop = document.getElementById(
-    "mobile-fab-backdrop",
-  );
+function quickActionContent(): HTMLElement | null {
+  const content = document.getElementById("mobile-quick-actions-content");
+  return content instanceof HTMLElement ? content : null;
+}
+
+function setQuickActionBackgroundInert(
+  sheet: HTMLElement,
+  active: boolean,
+): void {
+  if (active) {
+    if (inertBackgroundElements.length > 0) return;
+    const backdrop = document.getElementById("mobile-fab-backdrop");
+    const shell = sheet.parentElement;
+    if (!(shell instanceof HTMLElement)) return;
+    inertBackgroundElements = Array.from(shell.children)
+      .filter(
+        (child): child is HTMLElement =>
+          child instanceof HTMLElement && child !== sheet && child !== backdrop,
+      )
+      .map((element) => ({
+        element,
+        wasInert: element.hasAttribute("inert"),
+      }));
+    for (const { element } of inertBackgroundElements) {
+      element.setAttribute("inert", "");
+    }
+    return;
+  }
+
+  for (const { element, wasInert } of inertBackgroundElements) {
+    if (wasInert) {
+      element.setAttribute("inert", "");
+    } else {
+      element.removeAttribute("inert");
+    }
+  }
+  inertBackgroundElements = [];
+}
+
+function focusQuickActionSheet(preferContent = false): void {
+  window.requestAnimationFrame(() => {
+    if (!quickActionSheetOpen) return;
+    const sheet = quickActionSheet();
+    if (!sheet) return;
+    const content = quickActionContent();
+    const contentTarget = preferContent
+      ? content?.querySelector<HTMLElement>(
+        "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      )
+      : null;
+    const closeButton = document.getElementById("mobile-quick-actions-close-btn");
+    const target = contentTarget ?? closeButton ?? sheet;
+    if (target instanceof HTMLElement) target.focus();
+  });
+}
+
+function renderQuickActionHome(restoreFocus = false): void {
+  const content = quickActionContent();
+  if (!content) return;
+  renderQuickActionSheet(content, getQuickActionCallbacks());
+  if (restoreFocus) focusQuickActionSheet();
+}
+
+function openQuickActionSheet(): void {
+  const sheet = quickActionSheet();
+  if (!sheet) return;
+  quickActionSheetOpen = true;
+  sheet.setAttribute("aria-hidden", "false");
+  sheet.removeAttribute("inert");
+  document.getElementById("mobile-fab-backdrop")?.setAttribute("aria-hidden", "false");
   const fab = document.getElementById("mobile-fab");
-  if (sheet)
-    sheet.setAttribute("aria-hidden", "true");
-  if (backdrop)
-    backdrop.setAttribute("aria-hidden", "true");
-  if (fab) fab.classList.remove("open");
+  if (fab instanceof HTMLElement) {
+    fab.classList.add("open");
+    fab.setAttribute("aria-expanded", "true");
+    fab.setAttribute("aria-label", t("quick_actions.close") as string);
+  }
+  setQuickActionBackgroundInert(sheet, true);
+  renderQuickActionHome();
+  releaseFocusTrap?.();
+  releaseFocusTrap = trapFocus(sheet);
+  escapeHandler = (event: KeyboardEvent) => {
+    if (
+      event.key !== "Escape" ||
+      !(event.target instanceof Node) ||
+      !sheet.contains(event.target)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    closeQuickActionSheet();
+  };
+  window.addEventListener("keydown", escapeHandler);
+  focusQuickActionSheet();
+}
+
+export function toggleQuickActionSheet(): void {
+  if (quickActionSheetOpen) {
+    closeQuickActionSheet();
+    return;
+  }
+  if (!ctx.ensureWriteAccess()) return;
+  openQuickActionSheet();
+}
+
+export function closeQuickActionSheet(restoreFocus = true): void {
+  const sheet = quickActionSheet();
+  quickActionSheetOpen = false;
+  releaseFocusTrap?.();
+  releaseFocusTrap = null;
   if (escapeHandler) {
     window.removeEventListener("keydown", escapeHandler);
     escapeHandler = null;
+  }
+  if (sheet) {
+    sheet.setAttribute("aria-hidden", "true");
+    sheet.setAttribute("inert", "");
+    setQuickActionBackgroundInert(sheet, false);
+  }
+  document.getElementById("mobile-fab-backdrop")?.setAttribute("aria-hidden", "true");
+  const fab = document.getElementById("mobile-fab");
+  if (fab instanceof HTMLElement) {
+    fab.classList.remove("open");
+    fab.setAttribute("aria-expanded", "false");
+    fab.setAttribute("aria-label", t("quick_actions.title") as string);
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => fab.focus());
+    }
   }
 }
 
@@ -171,13 +258,14 @@ async function showTaskQuickComplete(): Promise<void> {
   try {
     const result = await fetchTasksApi({
       view: "today",
-      limit: 20,
+      limit: QUICK_ACTION_TASK_LIMIT,
       offset: 0,
     });
     const pending = result.tasks.filter(
       (tk) => tk.status === "pending",
     );
     const pendingById = new Map(pending.map((task) => [task.id, task]));
+    if (!quickActionSheetOpen) return;
     renderTaskQuickComplete(
       content,
       pending.map((tk) => ({
@@ -250,16 +338,10 @@ async function showTaskQuickComplete(): Promise<void> {
         }
       },
       () => {
-        const c = document.getElementById(
-          "mobile-quick-actions-content",
-        );
-        if (c)
-          renderQuickActionSheet(
-            c,
-            getQuickActionCallbacks(),
-          );
+        renderQuickActionHome(true);
       },
     );
+    focusQuickActionSheet(true);
   } catch (err) {
     ctx.showToast(
       getApiErrorMessage(err),
@@ -268,21 +350,62 @@ async function showTaskQuickComplete(): Promise<void> {
   }
 }
 
-async function showTaskQuickSnooze(): Promise<void> {
-  const content = document.getElementById(
-    "mobile-quick-actions-content",
-  );
+function openQuickSnoozeDateDialog(
+  task: GardenTask,
+  defaultDate: string,
+  warning?: string,
+): void {
+  openTaskDateDialog({
+    title: t("tasks.snooze_prompt") as string,
+    defaultDate,
+    onConfirm: (date) => void snoozeQuickTask(task, date),
+    warning,
+    onClose: () => focusQuickActionSheet(true),
+  });
+}
+
+async function snoozeQuickTask(
+  task: GardenTask,
+  snoozeUntil: string,
+): Promise<void> {
+  const online = isOnline();
+  try {
+    if (!online) {
+      await enqueueDraft("task_snooze", {
+        task_id: task.id,
+        snooze_until: snoozeUntil,
+      });
+      ctx.showToast(t("offline.draft_saved"), "success");
+      void ctx.refreshOfflineIndicator();
+    } else {
+      await taskActionApi(task.id, {
+        action: "snooze",
+        snooze_until: snoozeUntil,
+      });
+      void ctx.refreshBadgeCounts();
+    }
+    await showTaskQuickSnooze({ task, snoozeUntil });
+  } catch (err) {
+    ctx.showToast(getApiErrorMessage(err), "error");
+  }
+}
+
+async function showTaskQuickSnooze(
+  correction?: { task: GardenTask; snoozeUntil: string },
+): Promise<void> {
+  const content = quickActionContent();
   if (!content) return;
   try {
     const result = await fetchTasksApi({
       view: "today",
-      limit: 20,
+      limit: QUICK_ACTION_TASK_LIMIT,
       offset: 0,
     });
     const pending = result.tasks.filter(
       (tk) => tk.status === "pending",
     );
     const pendingById = new Map(pending.map((task) => [task.id, task]));
+    if (!quickActionSheetOpen) return;
     renderTaskQuickSnooze(
       content,
       pending.map((tk) => ({
@@ -294,58 +417,32 @@ async function showTaskQuickSnooze(): Promise<void> {
         const task = pendingById.get(taskId);
         if (!task) return;
         const policy = taskSnoozePolicy(task);
-        const snoozeDate = policy.immediate
-          ? policy.defaultDate
-          : window.prompt(
-            policy.warning
-              ? `${policy.warning}\n\n${t("tasks.snooze_prompt")}`
-              : t("tasks.snooze_prompt"),
+        if (!policy.immediate) {
+          openQuickSnoozeDateDialog(
+            task,
             policy.defaultDate,
+            policy.warning,
           );
-        if (!snoozeDate) return;
-        if (!isOnline()) {
-          await enqueueDraft("task_snooze", {
-            task_id: taskId,
-            snooze_until: snoozeDate,
-          });
-          ctx.showToast(
-            t("offline.draft_saved"),
-            "success",
-          );
-          void ctx.refreshOfflineIndicator();
           return;
         }
-        try {
-          await taskActionApi(taskId, {
-            action: "snooze",
-            snooze_until: snoozeDate,
-          });
-          ctx.showToast(
-            t("tasks.action_success", {
-              action: "snooze",
-            }),
-            "success",
-          );
-          void ctx.refreshBadgeCounts();
-          await showTaskQuickSnooze();
-        } catch (err) {
-          ctx.showToast(
-            getApiErrorMessage(err),
-            "error",
-          );
-        }
+        await snoozeQuickTask(task, policy.defaultDate);
       },
       () => {
-        const c = document.getElementById(
-          "mobile-quick-actions-content",
-        );
-        if (c)
-          renderQuickActionSheet(
-            c,
-            getQuickActionCallbacks(),
-          );
+        renderQuickActionHome(true);
       },
     );
+    if (correction) {
+      appendQuickActionSnoozeNotice(
+        content,
+        getTaskSnoozeCorrectionNotice(
+          correction.snoozeUntil,
+          () => openQuickSnoozeDateDialog(correction.task, correction.snoozeUntil),
+        ),
+      );
+      focusQuickActionSheet(true);
+    } else {
+      focusQuickActionSheet(true);
+    }
   } catch (err) {
     ctx.showToast(
       getApiErrorMessage(err),

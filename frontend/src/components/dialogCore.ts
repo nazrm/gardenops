@@ -23,7 +23,7 @@ export function trapFocus(container: HTMLElement): () => void {
   return () => container.removeEventListener("keydown", handler);
 }
 
-export function createModal(ariaLabel: string, innerMarkup: string): {
+export function createModal(ariaLabel: string, innerMarkup: string, options: { onClose?: (() => void) | undefined } = {}): {
   dialog: HTMLDivElement;
   close: () => void;
 } {
@@ -44,6 +44,7 @@ export function createModal(ariaLabel: string, innerMarkup: string): {
     releaseFocusTrap();
     dialog.remove();
     window.removeEventListener("keydown", onEscape);
+    options.onClose?.();
   };
   window.addEventListener("keydown", onEscape);
 

@@ -20,6 +20,7 @@ from gardenops.services.weather_service import (
     check_weather_and_generate_alerts,
     fetch_forecast,
     find_frost_vulnerable_plants,
+    get_or_fetch_forecast,
     save_weather_alerts,
 )
 from tests.base import DbTestBase, strong_password
@@ -141,6 +142,22 @@ class TestAggregateMetTimeseries(unittest.TestCase):
         assert _aggregate_met_timeseries({}) == {}
         assert _aggregate_met_timeseries({"properties": {"timeseries": []}}) == {}
 
+    def test_incomplete_hourly_precipitation_is_unknown(self) -> None:
+        missing_precipitation = self._make_entry("2026-03-16T12:00:00Z", 8.0, 5.0, 0.0)
+        missing_precipitation["data"].pop("next_1_hours")
+        raw = {
+            "properties": {
+                "timeseries": [
+                    self._make_entry("2026-03-16T06:00:00Z", 2.0, 3.0, 0.0),
+                    missing_precipitation,
+                ],
+            },
+        }
+
+        result = _aggregate_met_timeseries(raw)
+
+        assert result["daily"]["precipitation_sum"] == [None]
+
     def test_limits_to_seven_days(self) -> None:
         entries = []
         for day in range(1, 12):
@@ -153,6 +170,10 @@ class TestAggregateMetTimeseries(unittest.TestCase):
 
 
 class TestFetchForecast(unittest.TestCase):
+    @patch.dict(
+        "os.environ",
+        {"GARDENOPS_WEATHER_EXTERNAL_FETCH_ENABLED": "true"},
+    )
     @patch("gardenops.services.weather_service.urllib.request.urlopen")
     def test_uses_met_compact_query_url(
         self,
@@ -333,6 +354,34 @@ class TestAnalyzeForecast(unittest.TestCase):
         assert len(dry) == 1
         assert dry[0]["severity"] == "high"
 
+    def test_missing_precipitation_breaks_a_dry_spell(self) -> None:
+        forecast = {
+            "daily": {
+                "time": [f"2026-07-{day:02d}" for day in range(1, 8)],
+                "temperature_2m_min": [15.0] * 7,
+                "temperature_2m_max": [25.0] * 7,
+                "precipitation_sum": [0.0, 0.0, None, 0.0, 0.0, 0.0, 0.0],
+            },
+        }
+
+        alerts = analyze_forecast(forecast)
+
+        assert not [alert for alert in alerts if alert["alert_type"] == "dry_spell"]
+
+    def test_absent_precipitation_is_not_a_dry_day(self) -> None:
+        forecast = {
+            "daily": {
+                "time": [f"2026-07-{day:02d}" for day in range(1, 8)],
+                "temperature_2m_min": [15.0] * 7,
+                "temperature_2m_max": [25.0] * 7,
+                "precipitation_sum": [],
+            },
+        }
+
+        alerts = analyze_forecast(forecast)
+
+        assert not [alert for alert in alerts if alert["alert_type"] == "dry_spell"]
+
     def test_rain_surplus_detection(self) -> None:
         forecast = {
             "daily": {
@@ -413,6 +462,31 @@ class _WeatherDbTestBase(unittest.TestCase):
         ).fetchone()
         assert row is not None
         return int(row["id"])
+
+
+class TestForecastEgressGuard(_WeatherDbTestBase):
+    @patch("gardenops.services.weather_service.urllib.request.urlopen")
+    def test_missing_and_stale_cache_do_not_egress_when_internet_is_disabled(
+        self,
+        mock_urlopen: unittest.mock.MagicMock,
+    ) -> None:
+        mock_urlopen.side_effect = AssertionError("unexpected weather-provider egress")
+        with patch.dict(
+            "os.environ",
+            {"GARDENOPS_WEATHER_EXTERNAL_FETCH_ENABLED": "false"},
+        ):
+            assert get_or_fetch_forecast(self.conn, self.garden_id, 59.91, 10.75) == {}
+            self.conn.execute(
+                """
+                INSERT INTO weather_cache
+                    (garden_id, fetched_at_ms, forecast_json, latitude, longitude)
+                VALUES (%s, 0, %s, 59.91, 10.75)
+                """,
+                (self.garden_id, json.dumps({"daily": {"time": ["2026-01-01"]}})),
+            )
+            self.conn.commit()
+            assert get_or_fetch_forecast(self.conn, self.garden_id, 59.91, 10.75) == {}
+        mock_urlopen.assert_not_called()
 
 
 class TestFindFrostVulnerablePlants(_WeatherDbTestBase):
@@ -588,6 +662,44 @@ class TestSaveWeatherAlerts(_WeatherDbTestBase):
         assert result["created"] == 1
         assert result["skipped"] == 0
 
+    def test_frozen_attention_clock_controls_alert_timestamp(self) -> None:
+        frozen_now_ms = 1_959_379_200_000
+        with patch.dict(
+            "os.environ",
+            {
+                "APP_ENV": "test",
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": str(frozen_now_ms),
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2032-02-03",
+            },
+        ):
+            result = save_weather_alerts(
+                self.conn,
+                self.garden_id,
+                [
+                    {
+                        "alert_type": "frost_warning",
+                        "severity": "high",
+                        "title": "Frozen frost",
+                        "description": "Clock-controlled alert timestamp.",
+                        "valid_from": "2032-02-03",
+                        "valid_until": "2032-02-04",
+                        "metadata": {},
+                    },
+                ],
+            )
+
+        row = self.conn.execute(
+            """
+            SELECT created_at_ms
+            FROM weather_alerts
+            WHERE garden_id = %s AND alert_type = 'frost_warning'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert result == {"created": 1, "skipped": 0}
+        assert row is not None
+        assert int(row["created_at_ms"]) == frozen_now_ms
+
     def test_deduplication(self) -> None:
         alerts = [
             {
@@ -646,6 +758,90 @@ class TestSaveWeatherAlerts(_WeatherDbTestBase):
         ).fetchone()
         assert row is not None
         assert int(row["c"]) == 1
+
+    def test_severity_escalation_clears_user_weather_dismissals(self) -> None:
+        from gardenops.security import create_user
+
+        user = create_user(
+            self.conn,
+            username="weather_alert_state_user",
+            password=strong_password("weather-alert-state-user"),
+            role="admin",
+        )
+        self.conn.commit()
+        alert = {
+            "alert_type": "frost_warning",
+            "severity": "low",
+            "title": "Frost",
+            "description": "Cold snap",
+            "valid_from": "2035-03-01",
+            "valid_until": "2035-03-01",
+            "metadata": {"coldest": -1.0},
+        }
+        save_weather_alerts(self.conn, self.garden_id, [alert])
+        row = self.conn.execute(
+            """
+            SELECT id
+            FROM weather_alerts
+            WHERE garden_id = %s
+              AND alert_type = 'frost_warning'
+              AND valid_from = '2035-03-01'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert row is not None
+        alert_id = int(row["id"])
+        self.conn.execute(
+            """
+            INSERT INTO user_attention_item_state
+                (user_id, garden_id, item_id, user_state, reason,
+                 metadata_json, created_at_ms, updated_at_ms)
+            VALUES (%s, %s, %s, 'dismissed', '', '{}', %s, %s)
+            """,
+            (
+                int(user["id"]),
+                self.garden_id,
+                f"attn:weather:alert:{alert_id}",
+                db.current_timestamp_ms(),
+                db.current_timestamp_ms(),
+            ),
+        )
+        self.conn.commit()
+
+        same_severity = save_weather_alerts(self.conn, self.garden_id, [alert])
+        state_after_same_severity = self.conn.execute(
+            """
+            SELECT 1
+            FROM user_attention_item_state
+            WHERE user_id = %s
+              AND garden_id = %s
+              AND item_id = %s
+            """,
+            (int(user["id"]), self.garden_id, f"attn:weather:alert:{alert_id}"),
+        ).fetchone()
+        escalated = {**alert, "severity": "high"}
+        escalated_result = save_weather_alerts(self.conn, self.garden_id, [escalated])
+        state_after_escalation = self.conn.execute(
+            """
+            SELECT 1
+            FROM user_attention_item_state
+            WHERE user_id = %s
+              AND garden_id = %s
+              AND item_id = %s
+            """,
+            (int(user["id"]), self.garden_id, f"attn:weather:alert:{alert_id}"),
+        ).fetchone()
+        severity = self.conn.execute(
+            "SELECT severity FROM weather_alerts WHERE id = %s",
+            (alert_id,),
+        ).fetchone()
+
+        assert same_severity == {"created": 0, "skipped": 1}
+        assert state_after_same_severity is not None
+        assert escalated_result == {"created": 0, "skipped": 1}
+        assert state_after_escalation is None
+        assert severity is not None
+        assert str(severity["severity"]) == "high"
 
 
 class TestWeatherAlertIdentityMigration(_WeatherDbTestBase):

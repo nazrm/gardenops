@@ -49,6 +49,7 @@ export interface SyncCallbacks {
 
 export interface SyncResult {
   synced: number;
+  syncedTypes: string[];
   failed: number;
   remaining: number;
 }
@@ -236,6 +237,7 @@ export async function syncAllDrafts(
 ): Promise<SyncResult> {
   const drafts = await getPendingDrafts();
   let synced = 0;
+  const syncedTypes = new Set<string>();
   let failed = 0;
 
   for (const draft of drafts) {
@@ -249,6 +251,7 @@ export async function syncAllDrafts(
       await handler(draft.payload, draft);
       await removeDraft(draft.id);
       synced += 1;
+      syncedTypes.add(draft.type);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await markFailed(draft.id, message);
@@ -257,7 +260,7 @@ export async function syncAllDrafts(
   }
 
   const remaining = await getPendingCount();
-  return { synced, failed, remaining };
+  return { synced, syncedTypes: [...syncedTypes].sort(), failed, remaining };
 }
 
 export function isOnline(): boolean {

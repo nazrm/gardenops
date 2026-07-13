@@ -170,16 +170,20 @@ class TestOnIssueCreated(DbTestBase):
 
 
 class TestOnFrostAlert(DbTestBase):
-    def _create_frost_alert(self, valid_from: str = "2026-01-15") -> int:
+    def _create_frost_alert(
+        self,
+        valid_from: str = "2026-01-15",
+        coldest: float = -6.0,
+    ) -> int:
         now_ms = db.current_timestamp_ms()
         cursor = self.conn.execute(
             """INSERT INTO weather_alerts
                (garden_id, alert_type, severity, title, description,
                 valid_from, valid_until, metadata_json, created_at_ms)
                VALUES (%s, 'frost_warning', 'high', 'Frost', 'Cold',
-                       %s, %s, '{}', %s)
+                       %s, %s, %s, %s)
                RETURNING id""",
-            (self.garden_id, valid_from, valid_from, now_ms),
+            (self.garden_id, valid_from, valid_from, json.dumps({"coldest": coldest}), now_ms),
         )
         alert_id = cursor.fetchone()["id"]
         self.conn.commit()
@@ -245,6 +249,49 @@ class TestOnFrostAlert(DbTestBase):
             alert_id,
             self._owner_id,
         )
+        assert created == 0
+
+    def test_mild_frost_only_targets_temperature_vulnerable_plants(self) -> None:
+        self._insert_plant("FP-MILD-TENDER", "Tender", hardiness="H2")
+        self._insert_plant("FP-MILD-HARDY", "Hardy enough", hardiness="H3")
+        alert_id = self._create_frost_alert(coldest=-1.0)
+
+        created = on_frost_alert(
+            self.conn,
+            self.garden_id,
+            alert_id,
+            self._owner_id,
+        )
+        task_ids = {
+            str(row["rule_source"])
+            for row in self.conn.execute(
+                "SELECT rule_source FROM garden_tasks WHERE garden_id = %s",
+                (self.garden_id,),
+            ).fetchall()
+        }
+
+        assert created == 1
+        assert f"auto:frost_protect:{alert_id}:FP-MILD-TENDER" in task_ids
+        assert f"auto:frost_protect:{alert_id}:FP-MILD-HARDY" not in task_ids
+
+    def test_frost_without_temperature_does_not_generate_guesswork(self) -> None:
+        self._insert_plant("FP-UNKNOWN", "Unknown forecast", hardiness="H2")
+        now_ms = db.current_timestamp_ms()
+        alert = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'frost_warning', 'high', 'Frost', 'Cold',
+                    '2026-01-15', '2026-01-15', '{}', %s)
+            RETURNING id
+            """,
+            (self.garden_id, now_ms),
+        ).fetchone()
+        assert alert is not None
+
+        created = on_frost_alert(self.conn, self.garden_id, int(alert["id"]), self._owner_id)
+
         assert created == 0
 
     def test_nonexistent_alert_returns_zero(self) -> None:
@@ -521,6 +568,110 @@ class TestWeatherTaskTyping(DbTestBase):
         assert outcome_metadata["new_due_on"] == "2026-07-16"
         assert recovery_action["due_on"] == "2026-07-15"
         assert recovery_action["target_id"] == "RN2"
+
+    def test_rain_alert_only_reschedules_watering_for_outdoor_target_plants(self) -> None:
+        for plant_id, name in (
+            ("RG-OUT", "Outdoor watering"),
+            ("RG-INDOOR", "Indoor watering"),
+            ("RG-INDOOR-PLOT", "Indoor plot watering"),
+            ("RG-UNPLACED", "Unplaced watering"),
+        ):
+            self._insert_plant(plant_id, name, care_watering="Water regularly in summer")
+        self.conn.execute(
+            """
+            INSERT INTO plots
+                (plot_id, garden_id, zone_code, zone_name, plot_number,
+                 grid_row, grid_col, sub_zone, notes)
+            VALUES
+                ('RG-OUT-PLOT', %s, 'R', 'Outdoor', 1, 4, 4, '', ''),
+                ('RG-INDOOR-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+            """,
+            (self.garden_id, self.garden_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO plot_plants (plot_id, plt_id, quantity)
+            VALUES
+                ('RG-OUT-PLOT', 'RG-OUT', 1),
+                ('RG-INDOOR-PLOT', 'RG-INDOOR', 1)
+            """,
+        )
+        task_rows = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, description, status,
+                 severity, due_on, rule_source, metadata_json,
+                 created_at_ms, updated_at_ms)
+            VALUES
+                ('task_rain_gate_outdoor', %s, 'water', 'Water outdoors', '',
+                 'pending', 'normal', '2026-07-15', 'water:RG-OUT:2026-07-15', '{}', 1, 1),
+                ('task_rain_gate_indoor', %s, 'water', 'Water indoors', '',
+                 'pending', 'normal', '2026-07-15', 'water:RG-INDOOR:2026-07-15', '{}', 1, 1),
+                ('task_rain_gate_indoor_plot', %s, 'water', 'Water indoor plot', '',
+                 'pending', 'normal', '2026-07-15', 'water:RG-INDOOR-PLOT:2026-07-15', '{}', 1, 1),
+                ('task_rain_gate_unplaced', %s, 'water', 'Water unplaced', '',
+                 'pending', 'normal', '2026-07-15', 'water:RG-UNPLACED:2026-07-15', '{}', 1, 1)
+            RETURNING id, public_id
+            """,
+            (self.garden_id, self.garden_id, self.garden_id, self.garden_id),
+        ).fetchall()
+        task_ids = {str(row["public_id"]): int(row["id"]) for row in task_rows}
+        for public_id, plant_id in (
+            ("task_rain_gate_outdoor", "RG-OUT"),
+            ("task_rain_gate_indoor", "RG-INDOOR"),
+            ("task_rain_gate_indoor_plot", "RG-INDOOR-PLOT"),
+            ("task_rain_gate_unplaced", "RG-UNPLACED"),
+        ):
+            self.conn.execute(
+                "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
+                (task_ids[public_id], plant_id),
+            )
+        self.conn.execute(
+            """
+            INSERT INTO garden_task_plots (task_id, plot_id)
+            VALUES
+                (%s, 'RG-OUT-PLOT'),
+                (%s, 'RG-INDOOR-PLOT')
+            """,
+            (
+                task_ids["task_rain_gate_outdoor"],
+                task_ids["task_rain_gate_indoor_plot"],
+            ),
+        )
+        alert_id = self._create_alert("rain_surplus", valid_from="2026-07-15")
+
+        on_rain_alert(self.conn, self.garden_id, alert_id, self._owner_id)
+
+        due_dates = {
+            str(row["rule_source"]): str(row["due_on"])
+            for row in self.conn.execute(
+                """
+                SELECT rule_source, due_on
+                FROM garden_tasks
+                WHERE garden_id = %s
+                  AND rule_source LIKE 'water:RG-%%'
+                """,
+                (self.garden_id,),
+            ).fetchall()
+        }
+        outcome_sources = {
+            str(row["source_public_id"])
+            for row in self.conn.execute(
+                """
+                SELECT source_public_id
+                FROM attention_outcomes
+                WHERE garden_id = %s
+                  AND outcome_type = 'watering_rescheduled_by_rain'
+                """,
+                (self.garden_id,),
+            ).fetchall()
+        }
+
+        assert due_dates["water:RG-OUT:2026-07-15"] == "2026-07-16"
+        assert due_dates["water:RG-INDOOR:2026-07-15"] == "2026-07-15"
+        assert due_dates["water:RG-INDOOR-PLOT:2026-07-15"] == "2026-07-15"
+        assert due_dates["water:RG-UNPLACED:2026-07-15"] == "2026-07-15"
+        assert outcome_sources == {"water:RG-OUT:2026-07-15"}
 
 
 class TestOnHarvestLogged(DbTestBase):

@@ -24,13 +24,15 @@ _HIDDEN_USER_STATES = {"dismissed", "snoozed", "preference_hidden"}
 _PANEL_ELIGIBILITY = {"panel_only", "inbox", "digest", "interruptive"}
 _NON_EMAIL_SURFACES = {"panel", "inbox"}
 _LEGACY_RULE_KEY_MAP = {
-    "issue_created": "issue_follow_up_due",
-    "task_upcoming": "task_upcoming",
-    "task_generated": "task_generated",
-    "weather_alert:frost_warning": "frost_warning",
-    "weather_alert:rain_surplus": "rain_alert",
-    "weather_alert:heat_wave": "weather_alert",
-    "weather_alert:dry_spell": "weather_alert",
+    "task_due": ("task_due",),
+    "task_overdue": ("task_overdue",),
+    "task_upcoming": ("task_upcoming",),
+    "task_generated": ("task_generated",),
+    "issue_created": ("issue_follow_up_due", "issue_follow_up_overdue"),
+    "weather_alert:frost_warning": ("frost_warning",),
+    "weather_alert:rain_surplus": ("rain_alert",),
+    "weather_alert:heat_wave": ("heat_wave",),
+    "weather_alert:dry_spell": ("dry_spell",),
 }
 _ATTENTION_RULE_KEYS = {
     "needs_action",
@@ -49,6 +51,8 @@ _ATTENTION_RULE_KEYS = {
     "weather_alert",
     "frost_warning",
     "rain_alert",
+    "heat_wave",
+    "dry_spell",
     "watering_covered_by_rain",
     "watering_rescheduled_by_rain",
     "issue_follow_up_due",
@@ -194,6 +198,8 @@ def _with_planned_type_rules(
             "weather_alert": _copy_rule(category_rules["warning"]),
             "frost_warning": _copy_rule(category_rules["warning"]),
             "rain_alert": _copy_rule(category_rules["warning"]),
+            "heat_wave": _copy_rule(category_rules["warning"]),
+            "dry_spell": _copy_rule(category_rules["warning"]),
             "watering_covered_by_rain": _copy_rule(panel_first),
             "watering_rescheduled_by_rain": _copy_rule(panel_first),
             "issue_follow_up_due": _visible_action_rule(category_rules),
@@ -241,37 +247,119 @@ def _legacy_rules_and_metadata(
     rules = _preset_rules("balanced")
     metadata: dict[str, Any] = {}
     unknown_legacy_rules: dict[str, Any] = {}
-    global_inbox = bool(legacy_preferences.get("in_app_enabled", True))
-    global_digest = bool(legacy_preferences.get("email_enabled", False))
     for rule_key, legacy_rule in _parse_mapping(
         legacy_preferences.get("notification_rules")
     ).items():
         if not isinstance(legacy_rule, dict):
             continue
         raw_rule_key = str(rule_key)
-        normalized_rule_key = _LEGACY_RULE_KEY_MAP.get(raw_rule_key)
-        if normalized_rule_key is None and raw_rule_key in _ATTENTION_RULE_KEYS:
-            normalized_rule_key = raw_rule_key
-        if normalized_rule_key is None:
+        normalized_rule_keys = _LEGACY_RULE_KEY_MAP.get(raw_rule_key)
+        if normalized_rule_keys is None and raw_rule_key in _ATTENTION_RULE_KEYS:
+            normalized_rule_keys = (raw_rule_key,)
+        if normalized_rule_keys is None:
             unknown_legacy_rules[raw_rule_key] = dict(legacy_rule)
             continue
         legacy_enabled = bool(legacy_rule.get("in_app_enabled", True))
         legacy_email_enabled = bool(legacy_rule.get("email_enabled", legacy_enabled))
-        rules[normalized_rule_key] = {
-            "panel": True,
-            "inbox": global_inbox and legacy_enabled,
-            "digest": global_digest and legacy_email_enabled,
-            "min_severity": normalize_severity(str(legacy_rule.get("min_severity", "low"))),
-        }
-    if not global_inbox:
-        for rule in rules.values():
-            rule["inbox"] = False
-    if not global_digest:
-        for rule in rules.values():
-            rule["digest"] = False
+        for normalized_rule_key in normalized_rule_keys:
+            rules[normalized_rule_key] = {
+                "panel": True,
+                "inbox": legacy_enabled,
+                "digest": legacy_email_enabled,
+                "min_severity": normalize_severity(str(legacy_rule.get("min_severity", "low"))),
+            }
     if unknown_legacy_rules:
         metadata["legacy_notification_rules"] = unknown_legacy_rules
     return rules, metadata
+
+
+def merge_notification_preferences(
+    preferences: AttentionPreferenceSet,
+    *,
+    notification_rules: dict[str, dict[str, Any]],
+    quiet_hours: dict[str, Any],
+) -> AttentionPreferenceSet:
+    """Project notification settings into the canonical Attention preference set.
+
+    Global in-app/email switches remain delivery capabilities in the legacy row.
+    This projection owns per-category eligibility and the digest quiet window.
+    """
+    rules = {key: _copy_rule(rule) for key, rule in preferences.rules.items()}
+    preset_rules = _preset_rules(
+        preferences.preset if preferences.preset in {"calm", "balanced", "detailed"} else "balanced"
+    )
+    for legacy_key, target_keys in _LEGACY_RULE_KEY_MAP.items():
+        legacy_rule = notification_rules.get(legacy_key)
+        if not isinstance(legacy_rule, dict):
+            continue
+        for target_key in target_keys:
+            rule = _copy_rule(rules.get(target_key) or preset_rules.get(target_key) or {})
+            rule.setdefault("panel", True)
+            rule["inbox"] = bool(legacy_rule.get("in_app_enabled", True))
+            rule["digest"] = bool(legacy_rule.get("email_enabled", True))
+            rule["min_severity"] = normalize_severity(str(legacy_rule.get("min_severity", "low")))
+            rules[target_key] = rule
+
+    normalized_quiet_hours = dict(preferences.quiet_hours)
+    for legacy_key in ("active", "end", "end_hour", "from", "start", "start_hour", "to"):
+        normalized_quiet_hours.pop(legacy_key, None)
+    start = quiet_hours.get("start")
+    end = quiet_hours.get("end")
+    if isinstance(start, str) and start.strip() and isinstance(end, str) and end.strip():
+        normalized_quiet_hours["digest"] = {
+            "enabled": True,
+            "start": start.strip(),
+            "end": end.strip(),
+        }
+    else:
+        normalized_quiet_hours.pop("digest", None)
+
+    return replace(
+        preferences,
+        preset="custom",
+        rules=rules,
+        quiet_hours=normalized_quiet_hours,
+    )
+
+
+def notification_rules_from_attention(
+    preferences: AttentionPreferenceSet,
+) -> dict[str, dict[str, Any]]:
+    """Return the notification-rule fields represented by Attention rules."""
+    projected: dict[str, dict[str, Any]] = {}
+    for legacy_key, target_keys in _LEGACY_RULE_KEY_MAP.items():
+        rule = next(
+            (
+                preferences.rules[target_key]
+                for target_key in target_keys
+                if target_key in preferences.rules
+            ),
+            None,
+        )
+        if rule is None:
+            continue
+        projected[legacy_key] = {
+            "in_app_enabled": bool(rule.get("inbox", False)),
+            "email_enabled": bool(rule.get("digest", False)),
+            "min_severity": normalize_severity(str(rule.get("min_severity", "low"))),
+        }
+    return projected
+
+
+def notification_quiet_hours_from_attention(
+    preferences: AttentionPreferenceSet,
+) -> dict[str, str] | None:
+    """Project an explicitly configured digest quiet window for the legacy UI."""
+    digest = preferences.quiet_hours.get("digest")
+    if not isinstance(digest, dict):
+        return None
+    if not bool(digest.get("enabled")):
+        return {}
+    start = digest.get("start")
+    end = digest.get("end")
+    if not isinstance(start, str) or not isinstance(end, str):
+        return {}
+    return {"start": start, "end": end}
 
 
 def resolve_attention_preferences(
@@ -342,24 +430,39 @@ def _is_guardrail_item(item: AttentionItem) -> bool:
     return item.type in _GUARDRAIL_TYPES or item.category == "system"
 
 
-def _quiet_hour(value: Any) -> int | None:
+def _quiet_minute(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
     if isinstance(value, int):
-        return value if 0 <= value <= 23 else None
-    if isinstance(value, str):
-        try:
-            hour = int(value.split(":", maxsplit=1)[0])
-        except TypeError, ValueError:
-            return None
-        return hour if 0 <= hour <= 23 else None
-    return None
+        return value * 60 if 0 <= value <= 23 else None
+    if not isinstance(value, str):
+        return None
+    parts = value.strip().split(":")
+    if len(parts) not in {1, 2}:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) == 2 else 0
+    except ValueError:
+        return None
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return None
+    return hour * 60 + minute
 
 
-def _hour_in_quiet_window(*, current_hour: int, start_hour: int, end_hour: int) -> bool:
-    if start_hour == end_hour:
+def _minute_in_quiet_window(*, current_minute: int, start_minute: int, end_minute: int) -> bool:
+    if start_minute == end_minute:
         return False
-    if start_hour < end_hour:
-        return start_hour <= current_hour < end_hour
-    return current_hour >= start_hour or current_hour < end_hour
+    if start_minute < end_minute:
+        return start_minute <= current_minute < end_minute
+    return current_minute >= start_minute or current_minute < end_minute
+
+
+def _quiet_window_bound(value: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in value and value[key] is not None:
+            return value[key]
+    return None
 
 
 def _quiet_hours_active(
@@ -370,7 +473,21 @@ def _quiet_hours_active(
 ) -> bool:
     if surface not in {"digest", "interruptive"}:
         return False
-    value = quiet_hours.get(surface, quiet_hours.get("active", False))
+    is_legacy_window = False
+    if surface in quiet_hours:
+        value = quiet_hours[surface]
+    elif "active" in quiet_hours:
+        value = quiet_hours["active"]
+    elif any(
+        key in quiet_hours for key in ("start", "from", "start_hour", "end", "to", "end_hour")
+    ):
+        # A legacy user_notification_preferences row has one schedule for
+        # delivery. Treat it as a normalized fallback window for each
+        # delivery surface without imposing an unrelated enabled flag.
+        value = quiet_hours
+        is_legacy_window = True
+    else:
+        value = False
     if isinstance(value, dict):
         if bool(
             value.get("active")
@@ -379,21 +496,21 @@ def _quiet_hours_active(
             or value.get("in_quiet_hours")
         ):
             return True
-        if not bool(value.get("enabled")):
+        if not is_legacy_window and not bool(value.get("enabled")):
             return False
-        start_hour = _quiet_hour(value.get("start") or value.get("from") or value.get("start_hour"))
-        end_hour = _quiet_hour(value.get("end") or value.get("to") or value.get("end_hour"))
-        if start_hour is None or end_hour is None:
+        start_minute = _quiet_minute(_quiet_window_bound(value, ("start", "from", "start_hour")))
+        end_minute = _quiet_minute(_quiet_window_bound(value, ("end", "to", "end_hour")))
+        if start_minute is None or end_minute is None:
             return False
         now_utc = (
             datetime.fromtimestamp(now_ms / 1000, tz=UTC)
             if now_ms is not None
             else datetime.now(UTC)
         )
-        return _hour_in_quiet_window(
-            current_hour=now_utc.hour,
-            start_hour=start_hour,
-            end_hour=end_hour,
+        return _minute_in_quiet_window(
+            current_minute=now_utc.hour * 60 + now_utc.minute,
+            start_minute=start_minute,
+            end_minute=end_minute,
         )
     return bool(value)
 
