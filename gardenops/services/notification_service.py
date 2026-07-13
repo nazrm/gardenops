@@ -398,6 +398,75 @@ def notification_rows_allowed_by_attention(
     return allowed
 
 
+def attention_notification_sql_filter(
+    preferences: AttentionPreferenceSet,
+    *,
+    surface: AttentionSurface,
+    garden_id: int,
+    user_id: int,
+    now_ms: int | None = None,
+) -> tuple[str, list[Any]]:
+    """Return a SQL predicate matching notification rows allowed by Attention.
+
+    This keeps notification queries bounded in the database instead of loading every
+    active row and applying Attention preferences in Python before pagination,
+    counting, read-all updates, or digest caps.
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    severities = tuple(_SEVERITY_RANK.keys())
+
+    for policy in _NOTIFICATION_POLICIES:
+        notification_type = str(policy["notification_type"])
+        notification_subtype = (
+            str(policy["notification_subtype"]) if policy["notification_subtype"] else None
+        )
+        allowed_severities = [
+            severity
+            for severity in severities
+            if notification_rows_allowed_by_attention(
+                [
+                    {
+                        "notification_type": notification_type,
+                        "notification_subtype": notification_subtype,
+                        "severity": severity,
+                        "garden_id": garden_id,
+                        "user_id": user_id,
+                        "created_at_ms": now_ms or 0,
+                    }
+                ],
+                preferences=preferences,
+                surface=surface,
+                garden_id=garden_id,
+                user_id=user_id,
+                now_ms=now_ms,
+            )
+        ]
+        if not allowed_severities:
+            continue
+
+        subtype_sql = "notification_subtype IS NULL"
+        policy_params: list[Any] = [notification_type]
+        if notification_subtype is not None:
+            subtype_sql = "notification_subtype = %s"
+            policy_params.append(notification_subtype)
+
+        if len(allowed_severities) == len(severities):
+            clauses.append(f"(notification_type = %s AND {subtype_sql})")
+            params.extend(policy_params)
+            continue
+
+        severity_placeholders = ",".join(["%s"] * len(allowed_severities))
+        clauses.append(
+            f"(notification_type = %s AND {subtype_sql} "
+            f"AND COALESCE(severity, 'normal') IN ({severity_placeholders}))"
+        )
+        params.extend([*policy_params, *allowed_severities])
+
+    if not clauses:
+        return "1 = 0", []
+    return "(" + " OR ".join(clauses) + ")", params
+
 def _date_start_ms(date_iso: str | None) -> int | None:
     if not date_iso:
         return None
@@ -1233,9 +1302,17 @@ def get_unread_count(
     """Count unread, non-dismissed notifications for a user in a garden."""
     now = current_timestamp_ms()
     if user_id is not None:
-        rows = db.execute(
-            """
-            SELECT *
+        preferences = load_attention_preferences(db, user_id)
+        attention_where, attention_params = attention_notification_sql_filter(
+            preferences,
+            surface="inbox",
+            garden_id=garden_id,
+            user_id=user_id,
+            now_ms=now,
+        )
+        row = db.execute(
+            f"""
+            SELECT COUNT(*) AS c
             FROM notification_events
             WHERE garden_id = %s
               AND user_id = %s
@@ -1243,20 +1320,11 @@ def get_unread_count(
               AND dismissed = 0
               AND cleared_at_ms IS NULL
               AND (expires_at_ms IS NULL OR expires_at_ms >= %s)
-            """,
-            (garden_id, user_id, now),
-        ).fetchall()
-        preferences = load_attention_preferences(db, user_id)
-        return len(
-            notification_rows_allowed_by_attention(
-                [dict(row) for row in rows],
-                preferences=preferences,
-                surface="inbox",
-                garden_id=garden_id,
-                user_id=user_id,
-                now_ms=now,
-            )
-        )
+              AND {attention_where}
+            """,  # noqa: S608
+            (garden_id, user_id, now, *attention_params),
+        ).fetchone()
+        return int(row["c"]) if row else 0
     user_condition = "AND user_id = %s" if user_id is not None else ""
     params: tuple[Any, ...] = (
         (
@@ -1314,39 +1382,26 @@ def mark_all_read(
     """Mark all notifications as read for user in garden. Returns count updated."""
     now = current_timestamp_ms()
     if user_id is not None:
-        rows = db.execute(
-            """
-            SELECT *
-            FROM notification_events
+        preferences = load_attention_preferences(db, user_id)
+        attention_where, attention_params = attention_notification_sql_filter(
+            preferences,
+            surface="inbox",
+            garden_id=garden_id,
+            user_id=user_id,
+            now_ms=now,
+        )
+        cur = db.execute(
+            f"""
+            UPDATE notification_events SET read_at_ms = %s
             WHERE garden_id = %s
               AND user_id = %s
               AND read_at_ms IS NULL
               AND dismissed = 0
               AND cleared_at_ms IS NULL
               AND (expires_at_ms IS NULL OR expires_at_ms >= %s)
-            """,
-            (garden_id, user_id, now),
-        ).fetchall()
-        preferences = load_attention_preferences(db, user_id)
-        visible_rows = notification_rows_allowed_by_attention(
-            [dict(row) for row in rows],
-            preferences=preferences,
-            surface="inbox",
-            garden_id=garden_id,
-            user_id=user_id,
-            now_ms=now,
-        )
-        if not visible_rows:
-            db.commit()
-            return 0
-        ids = [int(row["id"]) for row in visible_rows]
-        placeholders = ",".join(["%s"] * len(ids))
-        cur = db.execute(
-            f"""
-            UPDATE notification_events SET read_at_ms = %s
-            WHERE id IN ({placeholders})
+              AND {attention_where}
             """,  # noqa: S608
-            [now, *ids],
+            (now, garden_id, user_id, now, *attention_params),
         )
     else:
         cur = db.execute(
@@ -2103,8 +2158,17 @@ def deliver_pending_email_digests(
             skipped_users += 1
             continue
 
+        user_id = int(pref["user_id"])
+        attention_preferences = load_attention_preferences(db, user_id)
+        attention_where, attention_params = attention_notification_sql_filter(
+            attention_preferences,
+            surface="digest",
+            garden_id=garden_id,
+            user_id=user_id,
+            now_ms=now_value,
+        )
         notifications = db.execute(
-            """
+            f"""
             SELECT id, public_id, garden_id, user_id, notification_type,
                    notification_subtype, severity, title, body, target_type,
                    target_id, metadata_json, created_at_ms
@@ -2116,9 +2180,11 @@ def deliver_pending_email_digests(
               AND read_at_ms IS NULL
               AND user_id = %s
               AND (expires_at_ms IS NULL OR expires_at_ms >= %s)
+              AND {attention_where}
             ORDER BY created_at_ms ASC
-            """,
-            (garden_id, int(pref["user_id"]), now_value),
+            LIMIT %s
+            """,  # noqa: S608
+            (garden_id, user_id, now_value, *attention_params, max_events_per_user),
         ).fetchall()
         rules = _rules_from_pref_row(dict(pref))
         notifications = [
@@ -2132,16 +2198,6 @@ def deliver_pending_email_digests(
                 channel="email",
             )
         ]
-        attention_preferences = load_attention_preferences(db, int(pref["user_id"]))
-        notifications = notification_rows_allowed_by_attention(
-            [dict(row) for row in notifications],
-            preferences=attention_preferences,
-            surface="digest",
-            garden_id=garden_id,
-            user_id=int(pref["user_id"]),
-            now_ms=now_value,
-        )
-        notifications = notifications[:max_events_per_user]
         if not notifications:
             continue
 
