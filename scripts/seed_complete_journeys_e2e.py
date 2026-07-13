@@ -109,10 +109,10 @@ PHASE_TWO_CALENDAR_DESCRIPTION = "Escaped comma, semicolon; backslash \\ and lin
 PHASE_TWO_NOTIFICATION_PUBLIC_ID = "note_complete_p2_admin"
 PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID = "note_complete_p2_delivery_eligible"
 PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID = "note_complete_p2_delivery_ineligible"
-PHASE_TWO_DELIVERY_ELIGIBLE_TITLE = "Phase 2 delivery eligible system notice"
-PHASE_TWO_DELIVERY_ELIGIBLE_BODY = "Phase 2 eligible system notice after saved preferences."
-PHASE_TWO_DELIVERY_INELIGIBLE_TITLE = "Phase 2 delivery ineligible system notice"
-PHASE_TWO_DELIVERY_INELIGIBLE_BODY = "Phase 2 low-severity system notice after saved preferences."
+PHASE_TWO_DELIVERY_ELIGIBLE_TITLE = "Phase 2 delivery eligible issue notice"
+PHASE_TWO_DELIVERY_ELIGIBLE_BODY = "Phase 2 eligible issue notice after saved preferences."
+PHASE_TWO_DELIVERY_INELIGIBLE_TITLE = "Phase 2 delivery ineligible issue notice"
+PHASE_TWO_DELIVERY_INELIGIBLE_BODY = "Phase 2 low-severity issue notice after saved preferences."
 PHASE_TWO_TASKS = {
     "bloom_desktop": "tsk_complete_p2_bloom_desktop",
     "fertilize_grouped": "tsk_complete_p2_fertilize_grouped",
@@ -3527,26 +3527,27 @@ def _run_phase_two_preference_delivery(conn, optimization_seed: Any) -> dict[str
     attention_rules = _json_object(
         target["attention_rules_json"], label="Phase 2 saved attention rules"
     )
-    system_notification_rule = notification_rules.get("system")
-    system_attention_rule = attention_rules.get("system")
+    issue_notification_rule = notification_rules.get("issue_created")
+    issue_due_attention_rule = attention_rules.get("issue_follow_up_due")
+    issue_overdue_attention_rule = attention_rules.get("issue_follow_up_overdue")
+    expected_issue_attention_rule = {
+        "digest": True,
+        "inbox": True,
+        "min_severity": "normal",
+        "panel": True,
+    }
     if (
         not bool(target["email_enabled"])
         or str(target["digest_frequency"]) != "weekly"
-        or not isinstance(system_notification_rule, dict)
-        or system_notification_rule
+        or not isinstance(issue_notification_rule, dict)
+        or issue_notification_rule
         != {
             "email_enabled": True,
             "in_app_enabled": True,
-            "min_severity": "high",
+            "min_severity": "normal",
         }
-        or not isinstance(system_attention_rule, dict)
-        or system_attention_rule
-        != {
-            "digest": True,
-            "inbox": True,
-            "min_severity": "high",
-            "panel": True,
-        }
+        or issue_due_attention_rule != expected_issue_attention_rule
+        or issue_overdue_attention_rule != expected_issue_attention_rule
     ):
         raise RuntimeError("Phase 2 browser did not save the required delivery preferences")
 
@@ -3584,7 +3585,7 @@ def _run_phase_two_preference_delivery(conn, optimization_seed: Any) -> dict[str
                 severity, title, body, target_type, target_id, metadata_json,
                 dismissed, created_at_ms, expires_at_ms
             )
-            VALUES (%s, %s, %s, 'system', NULL, %s, %s, %s, 'status', %s,
+            VALUES (%s, %s, %s, 'issue_created', NULL, %s, %s, %s, 'issue', %s,
                     %s, 0, %s, %s)
             """,
             (

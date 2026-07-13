@@ -972,7 +972,7 @@ function expectedPhaseTwoCanonicalAttentionRules() {
     needs_action: { ...needsAction },
     no_action_needed: { digest: false, inbox: false, panel: true },
     rain_alert: { ...warning },
-    system: { digest: true, inbox: true, min_severity: "high", panel: true },
+    system: { digest: false, inbox: true, min_severity: "low", panel: true },
     task_completed: { ...panelFirst },
     task_due: { ...needsAction },
     task_expired: { ...panelFirst },
@@ -1596,12 +1596,12 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
       garden_id: fixture.gardens.alpha.id,
       metadata: { fixture: "complete_journeys_phase_2", preference_delivery: true },
       notification_subtype: "",
-      notification_type: "system",
+      notification_type: "issue_created",
       public_id: preferenceDeliveryFixture.eligible.public_id,
       read: false,
       severity: preferenceDeliveryFixture.eligible.severity,
       target_id: preferenceDeliveryFixture.eligible.public_id,
-      target_type: "status",
+      target_type: "issue",
       title: preferenceDeliveryFixture.eligible.title,
       username: fixture.roles.admin,
     },
@@ -1616,12 +1616,12 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
       garden_id: fixture.gardens.alpha.id,
       metadata: { fixture: "complete_journeys_phase_2", preference_delivery: true },
       notification_subtype: "",
-      notification_type: "system",
+      notification_type: "issue_created",
       public_id: preferenceDeliveryFixture.ineligible.public_id,
       read: false,
       severity: preferenceDeliveryFixture.ineligible.severity,
       target_id: preferenceDeliveryFixture.ineligible.public_id,
-      target_type: "status",
+      target_type: "issue",
       title: preferenceDeliveryFixture.ineligible.title,
       username: fixture.roles.admin,
     },
@@ -1646,7 +1646,7 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   );
   assert(deliveredNotificationIds.includes(preferenceDeliveryFixture.eligible.public_id)
     && !deliveredNotificationIds.includes(preferenceDeliveryFixture.ineligible.public_id),
-  "Phase 2 post-save delivery did not apply the saved system eligibility rule");
+  "Phase 2 post-save delivery did not apply the saved issue-created eligibility rule");
 
   assert(state.weather_alerts.length === phase.seeded_state.weather_alerts.length + 4,
     "Phase 2 generated weather alert count was unexpected");

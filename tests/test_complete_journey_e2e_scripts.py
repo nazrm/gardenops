@@ -572,6 +572,7 @@ def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None
     ):
         assert marker in journey_source
     assert "navigator.clipboard.readText" not in journey_source
+    assert "systemRuleControls" not in journey_source
 
     for marker in (
         "writePrivateFailure",
@@ -592,6 +593,8 @@ def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None
         "editor_weather_deduplicated_surfaces",
         "post_mutation_reload_journal_records",
         "mutedIssueWithDigest",
+        'notification_type: "issue_created"',
+        "saved issue-created eligibility rule",
         "Phase 2 canonical quiet hours retained legacy top-level keys",
         "Phase 2 deterministic weather preparation was unexpected",
     ):
@@ -605,6 +608,7 @@ def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None
         "_reset_phase_two_weather_cache",
         'sys.argv[1:] == ["--prepare-phase-two"]',
         '"seeded_description": PHASE_TWO_CALENDAR_DESCRIPTION',
+        "expected_issue_attention_rule",
         '"offline": {',
     ):
         assert marker in seed_source
@@ -630,6 +634,9 @@ def test_phase_two_subscription_probe_consumes_expected_diagnostics_and_is_wired
     assert "const revokedStatus = await page.evaluate" in helper_source
     assert "diagnostics.httpErrors.splice(httpMark, 1)" in helper_source
     assert "diagnostics.consoleErrors.splice(consoleMark, 1)" in helper_source
+    assert 'labelDialog.locator(".prompt-dialog-input").fill(label)' in helper_source
+    assert 'labelDialog.locator(".confirm-yes").click()' in helper_source
+    assert 'page.once("dialog"' not in helper_source
     assert (
         "exerciseCalendarSubscriptionFeed(page, diagnostics, onSubscriptionCreated);"
         in lifecycle_source
@@ -1750,6 +1757,20 @@ def test_phase_two_journey_forbids_node_request_clients_and_unscoped_notificatio
     assert 'const remaining = panel.locator(".notification-item").first()' not in source
     assert "Phase 2 explicit notification fixture" in source
     assert "page-origin feed fetch" in source
+
+
+def test_phase_two_delayed_races_do_not_wait_for_the_intentionally_held_beta_surface() -> None:
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
+
+    assert "{ waitForSettle = true } = {}" in source
+    assert (
+        source.count(
+            'selectGarden(page, "desktop", fixture.gardens.beta.id, { waitForSettle: false })'
+        )
+        == 3
+    )
+    assert 'waitForSettle: false });\n      await openTasks' not in source
+    assert 'waitForSettle: false });\n      await startCalendar' not in source
 
 
 def test_phase_two_evidence_contract_preserves_phase_one_and_sanitizes_trace_database_evidence(

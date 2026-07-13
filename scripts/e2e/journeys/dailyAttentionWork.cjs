@@ -56,7 +56,7 @@ async function closeMobileUtility(page) {
   );
 }
 
-async function selectGarden(page, profile, gardenId) {
+async function selectGarden(page, profile, gardenId, { waitForSettle = true } = {}) {
   if (profile === "mobile") {
     if (!await page.locator("body.mobile-utility-open").count()) {
       await page.locator("#mobile-utility-btn").click();
@@ -70,10 +70,12 @@ async function selectGarden(page, profile, gardenId) {
     `${profile} active garden ${gardenId}`,
   );
   if (profile === "mobile") await closeMobileUtility(page);
-  await waitFor(
-    async () => !await page.locator("body.garden-switch-pending").count(),
-    `${profile} garden switch ${gardenId} to settle`,
-  );
+  if (waitForSettle) {
+    await waitFor(
+      async () => !await page.locator("body.garden-switch-pending").count(),
+      `${profile} garden switch ${gardenId} to settle`,
+    );
+  }
 }
 
 async function openPrimary(page, profile, tab) {
@@ -452,8 +454,13 @@ async function exerciseCalendarSubscriptionFeed(page, diagnostics, onCreated = n
     response.request().method() === "POST"
       && new URL(response.url()).pathname === "/api/calendar/subscriptions"
   ));
-  page.once("dialog", (nativeDialog) => nativeDialog.accept(label));
   await page.locator("#calendar-new-feed-btn").click();
+  const labelDialog = page.locator(".modal").filter({
+    has: page.locator(".prompt-dialog-input"),
+  });
+  await visible(labelDialog, "calendar subscription label dialog");
+  await labelDialog.locator(".prompt-dialog-input").fill(label);
+  await labelDialog.locator(".confirm-yes").click();
   const created = await createResponse;
   assert(created.status() === 201, `Calendar subscription creation returned ${created.status()}`);
   const createdPayload = await created.json();
@@ -648,18 +655,6 @@ async function issueCreatedRuleControls(prefs) {
   return { digest, inbox, severity };
 }
 
-async function systemRuleControls(prefs) {
-  const row = prefs.locator(".notification-prefs-rule-row").filter({ hasText: /^System$/ }).first();
-  await visible(row, "system notification preference");
-  const inbox = row.getByRole("button", { name: "System: App", exact: true });
-  const digest = row.getByRole("button", { name: "System: Email", exact: true });
-  const severity = row.locator(".notification-prefs-severity");
-  await visible(inbox, "system inbox notification preference");
-  await visible(digest, "system digest notification preference");
-  await visible(severity, "system notification severity preference");
-  return { digest, inbox, severity };
-}
-
 async function notificationBadgeState(page, profile) {
   const badge = page.locator(profile === "mobile" ? "#mobile-notification-badge" : "#notification-badge");
   return badge.evaluate((element) => ({
@@ -814,8 +809,7 @@ async function exerciseTasksCalendarRace(page, context, fixture) {
         "Stale Beta task DOM replaced Alpha after Tasks A/B/A race");
     },
     betaStart: async () => {
-      await selectGarden(page, "desktop", fixture.gardens.beta.id);
-      await openTasks(page, "desktop");
+      await selectGarden(page, "desktop", fixture.gardens.beta.id, { waitForSettle: false });
     },
     endpointPattern: "**/api/tasks**",
     label: "Tasks",
@@ -836,8 +830,7 @@ async function exerciseTasksCalendarRace(page, context, fixture) {
         "Stale Beta calendar DOM replaced Alpha after Calendar A/B/A race");
     },
     betaStart: async () => {
-      await selectGarden(page, "desktop", fixture.gardens.beta.id);
-      await startCalendar(page, "desktop");
+      await selectGarden(page, "desktop", fixture.gardens.beta.id, { waitForSettle: false });
     },
     endpointPattern: "**/api/calendar/events**",
     label: "Calendar",
@@ -854,8 +847,7 @@ async function exerciseCalendarSubscriptionRace(page, context, fixture, label) {
         "Stale subscription DOM duplicated or removed the Alpha subscription after A/B/A race");
     },
     betaStart: async () => {
-      await selectGarden(page, "desktop", fixture.gardens.beta.id);
-      await startCalendar(page, "desktop");
+      await selectGarden(page, "desktop", fixture.gardens.beta.id, { waitForSettle: false });
     },
     endpointPattern: "**/api/calendar/subscriptions**",
     label: "Calendar subscriptions",
@@ -908,14 +900,6 @@ async function exerciseNotifications(page, fixture, onPreferencesSaved) {
   await issue.severity.selectOption("normal");
   assert(await issue.severity.inputValue() === "normal",
     "Issue-created severity did not change before preference save");
-  const system = await systemRuleControls(prefs);
-  assert(await system.inbox.getAttribute("aria-pressed") === "true"
-    && await system.digest.getAttribute("aria-pressed") === "true"
-    && await system.severity.inputValue() === "low",
-  "Initial system delivery rule was not projected into notification settings");
-  await system.severity.selectOption("high");
-  assert(await system.severity.inputValue() === "high",
-    "System delivery severity did not change before preference save");
   await prefs.locator("#notification-prefs-digest-frequency").selectOption("weekly");
   const quietInputs = prefs.locator("input[type='time']");
   assert(await quietInputs.nth(0).inputValue() === "22:15", "Quiet start minute was not preserved");
