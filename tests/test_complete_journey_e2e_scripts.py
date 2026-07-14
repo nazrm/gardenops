@@ -2409,8 +2409,8 @@ def test_phase_two_precleared_task_notices_keep_historical_reason() -> None:
     )[0]
 
     assert "if (notification.cleared_at_ms !== null) return expected;" in lifecycle
-    action_map = lifecycle.split("const actionByTask = new Map([", 1)[1].split("]);", 1)[0]
-    assert "stale_manual_water" not in action_map
+    assert "notification.expires_at_ms < fixture.clock.attention_now_ms" in lifecycle
+    assert 'expected.clear_reason = "expired";' in lifecycle
 
 
 def test_phase_two_mobile_quick_action_keeps_manual_date_completion_actionable() -> None:
