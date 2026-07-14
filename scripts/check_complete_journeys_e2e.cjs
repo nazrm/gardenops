@@ -3593,7 +3593,12 @@ function assertPhaseTwoDatabaseState(
   assert(rainAlert.metadata?.rain_days === 3 && rainAlert.metadata?.total_mm === 16,
     "Phase 2 rain alert metadata was unexpected");
 
-  assert(state.item_states.length === 2,
+  const viewerMaintenanceAlertId = Math.max(
+    ...state.maintenance_rows.weather_alerts.map((alert) => alert.row_id),
+  );
+  assert(Number.isSafeInteger(viewerMaintenanceAlertId) && viewerMaintenanceAlertId > 0,
+    "Phase 2 viewer maintenance weather alert identity was missing");
+  assert(state.item_states.length === 3,
     "Phase 2 user-scoped weather dismissal count was unexpected");
   exact(state.item_states.slice().sort((left, right) => (
     `${left.username}:${left.item_id}`.localeCompare(`${right.username}:${right.item_id}`)
@@ -3606,6 +3611,15 @@ function assertPhaseTwoDatabaseState(
       snoozed_until_ms: null,
       user_state: "dismissed",
       username: fixture.roles.admin,
+    },
+    {
+      garden_id: fixture.gardens.alpha.id,
+      item_id: `attn:weather:alert:${viewerMaintenanceAlertId}`,
+      metadata: {},
+      reason: "",
+      snoozed_until_ms: null,
+      user_state: "dismissed",
+      username: fixture.roles.viewer,
     },
     {
       garden_id: fixture.gardens.alpha.id,
