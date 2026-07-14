@@ -1957,8 +1957,13 @@ function exactMaintenanceNotification(actual, expected) {
     "clear_reason",
   ];
   for (const field of fields) {
+    const context = field === "clear_reason"
+      ? ` actual=${canonicalJson(actual[field])} expected=${canonicalJson(expected[field])}`
+        + ` user=${canonicalJson(expected.username)} type=${canonicalJson(expected.notification_type)}`
+        + ` target=${canonicalJson(expected.target_id)}`
+      : "";
     assert(canonicalJson(actual[field]) === canonicalJson(expected[field]),
-      `Phase 2 unexpectedly mutated maintenance notification ${field}: ${expected.public_id}`);
+      `Phase 2 unexpectedly mutated maintenance notification ${field}: ${expected.public_id}${context}`);
   }
 }
 
