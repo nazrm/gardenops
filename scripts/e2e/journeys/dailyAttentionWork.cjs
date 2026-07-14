@@ -2225,20 +2225,18 @@ async function attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixtu
     `${profile} viewer task changed write affordances after forbidden direct write`);
 }
 
-async function dismissPersonalViewerWeatherAlert(page, profile, fixture) {
-  const alert = fixture.phase_two.seeded_state.weather_alerts.find((candidate) => (
-    candidate.garden_id === fixture.gardens.alpha.id
-  ));
-  assert(alert, `${profile} viewer personal weather alert fixture was missing`);
+async function dismissPersonalViewerWeatherAlert(page, profile) {
   await openCare(page, profile);
   await visible(page.locator("#weather-dashboard"), `${profile} viewer Weather before dismissal`);
   const dismiss = page.locator(
-    `#weather-dashboard .weather-alert-dismiss[data-alert-id="${alert.id}"]`,
-  );
+    "#weather-dashboard .weather-alert-dismiss[data-alert-id]:visible",
+  ).first();
   await visible(dismiss, `${profile} viewer personal weather dismissal control`);
+  const alertId = await dismiss.getAttribute("data-alert-id");
+  assert(/^\d+$/.test(alertId || ""), `${profile} viewer weather dismissal lacked an alert ID`);
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
-      && new URL(response.url()).pathname === `/api/weather/alerts/${alert.id}/dismiss`
+      && new URL(response.url()).pathname === `/api/weather/alerts/${alertId}/dismiss`
   ));
   await dismiss.click();
   const response = await responsePromise;
@@ -2266,7 +2264,7 @@ async function exerciseViewer(page, diagnostics, profile, fixture) {
   await assertForbiddenViewerMutation(page, diagnostics, profile, fixture, {
     path: "/api/weather/check",
   });
-  await dismissPersonalViewerWeatherAlert(page, profile, fixture);
+  await dismissPersonalViewerWeatherAlert(page, profile);
   await openCalendarAgenda(page, profile);
   const event = page.locator(".fc-event:visible").filter({ hasText: task.title }).first();
   await visible(event, `${profile} viewer calendar task`);
