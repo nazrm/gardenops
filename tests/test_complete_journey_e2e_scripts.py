@@ -2146,7 +2146,7 @@ const fixture = {
     },
     task_ids: { fertilize_grouped: 'task-fertilize' },
   },
-  roles: { editor: 'editor', viewer: 'viewer' },
+  roles: { admin: 'admin', editor: 'editor', viewer: 'viewer' },
 };
 const semantic = {
   rows_before: {
@@ -2168,12 +2168,17 @@ const finalRows = {
     { public_id: 'note_delivery_ineligible', row_id: 7 },
     {
       cleared_at_ms: 1783857600000, clear_reason: 'expired', created_at_ms: 1783857600000,
-      garden_id: 1, notification_type: 'task_due', public_id: 'note_editor', row_id: 8,
+      garden_id: 1, notification_type: 'task_due', public_id: 'note_admin', row_id: 8,
+      target_id: 'task-fertilize', target_type: 'task', username: 'admin',
+    },
+    {
+      cleared_at_ms: 1783857600000, clear_reason: 'expired', created_at_ms: 1783857600000,
+      garden_id: 1, notification_type: 'task_due', public_id: 'note_editor', row_id: 9,
       target_id: 'task-fertilize', target_type: 'task', username: 'editor',
     },
     {
       cleared_at_ms: 1783857600000, clear_reason: 'rescheduled', created_at_ms: 1783857600000,
-      garden_id: 1, notification_type: 'task_due', public_id: 'note_viewer', row_id: 9,
+      garden_id: 1, notification_type: 'task_due', public_id: 'note_viewer', row_id: 10,
       target_id: 'task-fertilize', target_type: 'task', username: 'viewer',
     },
   ],

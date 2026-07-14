@@ -1599,6 +1599,7 @@ function assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture) {
       if (
         fixture.gardens?.alpha?.id
         && fixture.phase_two.task_ids?.fertilize_grouped
+        && fixture.roles?.admin
         && fixture.roles?.editor
         && fixture.roles?.viewer
         && fixture.clock?.attention_now_ms
@@ -1613,8 +1614,10 @@ function assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture) {
           && row.cleared_at_ms === fixture.clock.attention_now_ms
         ));
         const browserCreatedByUser = new Map(browserCreated.map((row) => [row.username, row]));
-        assert(browserCreated.length === 2 && browserCreatedByUser.size === 2,
+        assert(browserCreated.length === 3 && browserCreatedByUser.size === 3,
           "Phase 2 browser created an unexpected grouped-task notification set");
+        assert(browserCreatedByUser.get(fixture.roles.admin)?.clear_reason === "expired",
+          "Phase 2 admin grouped-task notification did not retain its expected clear reason");
         assert(browserCreatedByUser.get(fixture.roles.editor)?.clear_reason === "expired",
           "Phase 2 editor grouped-task notification did not retain its expected clear reason");
         assert(browserCreatedByUser.get(fixture.roles.viewer)?.clear_reason === "rescheduled",
@@ -2477,7 +2480,11 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     }
   }
   const actualGroupedTaskNotificationUsers = [...groupedTaskNotificationUsers].sort();
-  const expectedGroupedTaskNotificationUsers = [fixture.roles.editor, fixture.roles.viewer].sort();
+  const expectedGroupedTaskNotificationUsers = [
+    fixture.roles.admin,
+    fixture.roles.editor,
+    fixture.roles.viewer,
+  ].sort();
   exact(
     actualGroupedTaskNotificationUsers,
     expectedGroupedTaskNotificationUsers,
