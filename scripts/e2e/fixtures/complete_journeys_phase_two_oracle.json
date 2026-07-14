@@ -288,7 +288,7 @@
           "user_calendar_preferences": {"added": 4, "removed": 0},
           "user_notification_preferences": {"added": 3, "removed": 3},
           "weather_alert_plants": {"added": 34, "removed": 1},
-          "weather_alerts": {"added": 5, "removed": 2}
+          "weather_alerts": {"added": 4, "removed": 1}
         },
         "cumulative_through_phase_two": {
           "app_settings": {"added": 3, "removed": 0},
@@ -321,7 +321,7 @@
           "user_calendar_preferences": {"added": 4, "removed": 0},
           "user_notification_preferences": {"added": 3, "removed": 3},
           "weather_alert_plants": {"added": 34, "removed": 1},
-          "weather_alerts": {"added": 5, "removed": 2},
+          "weather_alerts": {"added": 4, "removed": 1},
           "weather_cache": {"added": 1, "removed": 1}
         }
       }

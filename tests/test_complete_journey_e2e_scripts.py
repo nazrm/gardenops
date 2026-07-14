@@ -3015,6 +3015,14 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
         "added": 2,
         "removed": 0,
     }
+    assert exact_counts["phase_two_only"]["weather_alerts"] == {
+        "added": 4,
+        "removed": 1,
+    }
+    assert exact_counts["cumulative_through_phase_two"]["weather_alerts"] == {
+        "added": 4,
+        "removed": 1,
+    }
     assert "expected_added: exact.added" in source
     assert "expected_removed: exact.removed" in source
 
