@@ -536,7 +536,9 @@ def merge_notification_preferences(
             "end": end.strip(),
         }
     else:
-        normalized_quiet_hours.pop("digest", None)
+        current_digest = normalized_quiet_hours.get("digest")
+        if not isinstance(current_digest, dict) or bool(current_digest.get("enabled")):
+            normalized_quiet_hours.pop("digest", None)
     timezone = quiet_hours.get("timezone")
     if timezone is not None:
         normalized_quiet_hours["timezone"] = _normalize_timezone(timezone)

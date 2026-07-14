@@ -743,7 +743,7 @@ def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None
         "mobile_calendar_month_week_list_navigation",
         "editor_weather_deduplicated_surfaces",
         "post_mutation_reload_journal_records",
-        "mutedIssueWithDigest",
+        "expectedPhaseTwoNotificationRules",
         'notification_type: "issue_created"',
         "saved issue-created eligibility rule",
         "Phase 2 canonical quiet hours retained legacy top-level keys",
@@ -2808,12 +2808,15 @@ def test_phase_two_preference_save_waits_for_rendered_list_before_close() -> Non
     assert source.count("closeSavedNotificationPreferencePanel(") == 3
 
 
-def test_phase_two_checker_allows_only_exact_viewer_personal_preference_changes() -> None:
+def test_phase_two_checker_requires_exact_role_preference_normalization() -> None:
     source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
 
+    assert "Phase 2 editor notification preferences were not normalized exactly" in source
     assert "Phase 2 viewer personal preference normalization was unexpected" in source
     assert "attention_metadata: { weather_aware_watering_suppression: true }" in source
     assert 'digest: { enabled: false, end: "07:00", start: "22:00" }' in source
+    assert "notification_rules: normalizedPersonalNotificationRules" in source
+    assert "legacy_quiet_hours: {}" in source
 
 
 def test_phase_two_viewer_calendar_preference_matches_patch_request() -> None:

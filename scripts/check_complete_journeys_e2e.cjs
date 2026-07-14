@@ -1868,19 +1868,28 @@ function assertPhaseTwoOfflineOperationReplay(profiles, state, fixture) {
   return { offline_operation_ids_preserved_before_after_replay: true };
 }
 
-function expectedPhaseTwoCanonicalAttentionRules() {
+function expectedPhaseTwoCanonicalAttentionRules({
+  issueDigest = true,
+  issueInbox = false,
+  issueSeverity = "normal",
+} = {}) {
   const panelFirst = { digest: false, inbox: false, min_severity: "low", panel: true };
   const needsAction = { digest: false, inbox: true, min_severity: "low", panel: true };
   const warning = { digest: true, inbox: true, min_severity: "normal", panel: true };
   const upcoming = { digest: false, inbox: false, min_severity: "high", panel: true };
-  const mutedIssueWithDigest = { digest: true, inbox: false, min_severity: "normal", panel: true };
+  const issueRule = {
+    digest: issueDigest,
+    inbox: issueInbox,
+    min_severity: issueSeverity,
+    panel: true,
+  };
   return {
     calendar_event_due: { ...upcoming },
     dry_spell: { ...warning },
     frost_warning: { ...warning },
     heat_wave: { ...warning },
-    issue_follow_up_due: { ...mutedIssueWithDigest },
-    issue_follow_up_overdue: { ...mutedIssueWithDigest },
+    issue_follow_up_due: { ...issueRule },
+    issue_follow_up_overdue: { ...issueRule },
     needs_action: { ...needsAction },
     no_action_needed: { digest: false, inbox: false, panel: true },
     rain_alert: { ...warning },
@@ -1898,6 +1907,37 @@ function expectedPhaseTwoCanonicalAttentionRules() {
     watering_covered_by_rain: { ...panelFirst },
     watering_rescheduled_by_rain: { ...panelFirst },
     weather_alert: { ...warning },
+  };
+}
+
+function expectedPhaseTwoNotificationRules({
+  issueEmail = true,
+  issueInApp = false,
+  issueSeverity = "normal",
+} = {}) {
+  return {
+    issue_created: {
+      email_enabled: issueEmail,
+      in_app_enabled: issueInApp,
+      min_severity: issueSeverity,
+    },
+    system: { email_enabled: true, in_app_enabled: true, min_severity: "low" },
+    task_due: { email_enabled: false, in_app_enabled: true, min_severity: "low" },
+    task_generated: { email_enabled: false, in_app_enabled: false, min_severity: "low" },
+    task_overdue: { email_enabled: false, in_app_enabled: true, min_severity: "low" },
+    task_upcoming: { email_enabled: false, in_app_enabled: false, min_severity: "high" },
+    "weather_alert:dry_spell": {
+      email_enabled: true, in_app_enabled: true, min_severity: "normal",
+    },
+    "weather_alert:frost_warning": {
+      email_enabled: true, in_app_enabled: true, min_severity: "normal",
+    },
+    "weather_alert:heat_wave": {
+      email_enabled: true, in_app_enabled: true, min_severity: "normal",
+    },
+    "weather_alert:rain_surplus": {
+      email_enabled: true, in_app_enabled: true, min_severity: "normal",
+    },
   };
 }
 
@@ -3007,8 +3047,25 @@ function assertPhaseTwoDatabaseState(
     state.preferences.map((preference) => [preference.username, preference]),
   );
   assert(finalPreferenceByUser.size === 3, "Phase 2 preference user count was unexpected");
-  exact(finalPreferenceByUser.get(fixture.roles.editor), initialPreferenceByUser.get(fixture.roles.editor),
-    `Phase 2 changed ${fixture.roles.editor} preferences`);
+  const normalizedPersonalAttentionRules = expectedPhaseTwoCanonicalAttentionRules({
+    issueDigest: false,
+    issueInbox: true,
+    issueSeverity: "low",
+  });
+  const normalizedPersonalNotificationRules = expectedPhaseTwoNotificationRules({
+    issueEmail: false,
+    issueInApp: true,
+    issueSeverity: "low",
+  });
+  const initialEditorPreference = initialPreferenceByUser.get(fixture.roles.editor);
+  const finalEditorPreference = finalPreferenceByUser.get(fixture.roles.editor);
+  assert(initialEditorPreference && finalEditorPreference, "Phase 2 editor preferences are missing");
+  exact(finalEditorPreference, {
+    ...initialEditorPreference,
+    attention_rules: normalizedPersonalAttentionRules,
+    notification_rules: normalizedPersonalNotificationRules,
+    preset: "custom",
+  }, "Phase 2 editor notification preferences were not normalized exactly");
   const initialViewerPreference = initialPreferenceByUser.get(fixture.roles.viewer);
   const finalViewerPreference = finalPreferenceByUser.get(fixture.roles.viewer);
   assert(initialViewerPreference && finalViewerPreference, "Phase 2 viewer preferences are missing");
@@ -3019,6 +3076,10 @@ function assertPhaseTwoDatabaseState(
       digest: { enabled: false, end: "07:00", start: "22:00" },
       timezone: "UTC",
     },
+    attention_rules: normalizedPersonalAttentionRules,
+    legacy_quiet_hours: {},
+    notification_rules: normalizedPersonalNotificationRules,
+    preset: "custom",
   }, "Phase 2 viewer personal preference normalization was unexpected");
   const initialAdminPreference = initialPreferenceByUser.get(fixture.roles.admin);
   const finalAdminPreference = finalPreferenceByUser.get(fixture.roles.admin);
@@ -3033,26 +3094,7 @@ function assertPhaseTwoDatabaseState(
     digest_frequency: "weekly",
     email_enabled: true,
     legacy_quiet_hours: { end: "07:15", start: "22:30", timezone: "UTC" },
-    notification_rules: {
-      issue_created: { email_enabled: true, in_app_enabled: false, min_severity: "normal" },
-      system: { email_enabled: true, in_app_enabled: true, min_severity: "low" },
-      task_due: { email_enabled: false, in_app_enabled: true, min_severity: "low" },
-      task_generated: { email_enabled: false, in_app_enabled: false, min_severity: "low" },
-      task_overdue: { email_enabled: false, in_app_enabled: true, min_severity: "low" },
-      task_upcoming: { email_enabled: false, in_app_enabled: false, min_severity: "high" },
-      "weather_alert:dry_spell": {
-        email_enabled: true, in_app_enabled: true, min_severity: "normal",
-      },
-      "weather_alert:frost_warning": {
-        email_enabled: true, in_app_enabled: true, min_severity: "normal",
-      },
-      "weather_alert:heat_wave": {
-        email_enabled: true, in_app_enabled: true, min_severity: "normal",
-      },
-      "weather_alert:rain_surplus": {
-        email_enabled: true, in_app_enabled: true, min_severity: "normal",
-      },
-    },
+    notification_rules: expectedPhaseTwoNotificationRules(),
     preset: "custom",
   }, "Phase 2 admin notification preferences were not normalized exactly");
   for (const key of ["issue_follow_up_due", "issue_follow_up_overdue"]) {

@@ -877,6 +877,29 @@ def test_legacy_notification_quiet_hours_persist_the_browser_timezone():
     }
 
 
+def test_legacy_notification_save_preserves_disabled_canonical_quiet_window():
+    from gardenops.services.attention.preferences import merge_notification_preferences
+
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={},
+        quiet_hours={
+            "digest": {"enabled": False, "start": "22:00", "end": "07:00"},
+            "timezone": "Europe/Oslo",
+        },
+    )
+
+    merged = merge_notification_preferences(
+        prefs,
+        notification_rules={},
+        quiet_hours={},
+        notification_rule_keys=set(),
+    )
+
+    assert merged.quiet_hours == prefs.quiet_hours
+
+
 def test_invalid_persisted_quiet_hour_timezone_falls_back_to_utc():
     prefs = AttentionPreferenceSet(
         user_id=2,
