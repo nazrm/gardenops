@@ -1950,6 +1950,7 @@ function assertPhaseTwoTaskActionRevisionSequence(profiles, finalTasks, fixture)
   assert(Array.isArray(initialTasks), "Phase 2 seeded task revision projection is missing");
   const currentRevision = new Map(initialTasks.map((task) => [task.public_id, task.updated_at_ms]));
   const finalById = new Map(finalTasks.map((task) => [task.public_id, task]));
+  const deniedOnly = new Set();
   const touched = new Set();
   let batchRequestCount = 0;
   let deniedRequestCount = 0;
@@ -1988,14 +1989,15 @@ function assertPhaseTwoTaskActionRevisionSequence(profiles, finalTasks, fixture)
 
     const taskId = entry.task_id;
     assert(currentRevision.has(taskId), `Phase 2 task action targeted an unknown task: ${taskId}`);
-    assert(evidence.expectedUpdatedAtMs === currentRevision.get(taskId),
-      `Phase 2 task action request revision was not the current sequence value: ${taskId}`);
     if (request.statusCode === 403) {
       deniedRequestCount += 1;
       assert(evidence.responseUpdatedAtMs === null,
         `Denied Phase 2 task action exposed a response revision: ${taskId}`);
+      deniedOnly.add(taskId);
       continue;
     }
+    assert(evidence.expectedUpdatedAtMs === currentRevision.get(taskId),
+      `Phase 2 task action request revision was not the current sequence value: ${taskId}`);
     assert(request.statusCode >= 200 && request.statusCode < 300,
       `Phase 2 task action did not succeed: ${taskId}`);
     assert(Number.isSafeInteger(evidence.responseUpdatedAtMs)
@@ -2010,6 +2012,11 @@ function assertPhaseTwoTaskActionRevisionSequence(profiles, finalTasks, fixture)
   for (const taskId of touched) {
     assert(finalById.get(taskId)?.updated_at_ms === currentRevision.get(taskId),
       `Phase 2 final task revision did not close the browser sequence: ${taskId}`);
+  }
+  for (const taskId of deniedOnly) {
+    if (touched.has(taskId)) continue;
+    assert(finalById.get(taskId)?.updated_at_ms === currentRevision.get(taskId),
+      `Denied Phase 2 task action changed the final task revision: ${taskId}`);
   }
   return {
     batch_task_revision_request_count: batchRequestCount,

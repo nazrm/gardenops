@@ -2652,7 +2652,7 @@ const profiles = [{
     },
   ],
 }, {
-  profile: 'desktop', role: 'viewer', requests: [action('task-c', 30, null, 403)],
+  profile: 'desktop', role: 'viewer', requests: [action('task-c', null, null, 403)],
 }];
 const finalTasks = [
   { public_id: 'task-a', updated_at_ms: 12 },
@@ -2669,6 +2669,14 @@ try {
   process.exit(5);
 } catch (error) {
   if (!String(error.message).includes('current sequence value')) process.exit(6);
+}
+const mutatedAfterDenial = structuredClone(finalTasks);
+mutatedAfterDenial[2].updated_at_ms = 31;
+try {
+  assertPhaseTwoTaskActionRevisionSequence(profiles, mutatedAfterDenial, fixture);
+  process.exit(7);
+} catch (error) {
+  if (!String(error.message).includes('Denied Phase 2 task action changed')) process.exit(8);
 }
 """
     result = subprocess.run(
