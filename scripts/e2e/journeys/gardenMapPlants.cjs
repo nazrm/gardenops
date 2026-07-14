@@ -696,10 +696,11 @@ async function tapMapTarget(page, target, label) {
       const x = rect.left + rect.width * xRatio;
       const y = rect.top + rect.height * yRatio;
       const hit = document.elementFromPoint(x, y);
+      const interactive = hit?.closest("button, a, input, select, textarea, [role='button']");
       if (
         hit
         && (hit === element || element.contains(hit))
-        && !hit.closest("button, a, input, select, textarea, [role='button']")
+        && (!interactive || interactive === element)
       ) {
         return { x, y };
       }

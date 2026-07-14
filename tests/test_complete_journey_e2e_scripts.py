@@ -487,6 +487,17 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         assert marker in checker_source
 
 
+def test_mobile_plot_hit_test_allows_plot_role_but_rejects_nested_controls() -> None:
+    source = (ROOT / "scripts/e2e/journeys/gardenMapPlants.cjs").read_text(encoding="utf-8")
+    hit_test = source.split("async function tapMapTarget", 1)[1].split(
+        "async function editMobilePlotThroughBottomSheet", 1
+    )[0]
+
+    assert "const interactive = hit?.closest" in hit_test
+    assert "interactive === element" in hit_test
+    assert "!hit.closest" not in hit_test
+
+
 def test_mobile_surface_cleanup_does_not_clear_focused_map_object_selection() -> None:
     journey_source = (ROOT / "scripts" / "e2e" / "journeys" / "gardenMapPlants.cjs").read_text(
         encoding="utf-8"
