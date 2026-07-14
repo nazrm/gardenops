@@ -1951,7 +1951,7 @@ async function exerciseViewer(page, diagnostics, profile, fixture) {
   await page.waitForLoadState("networkidle");
   const personalCalendarView = profile === "desktop" ? "week" : "month";
   const calendarPreferenceSave = page.waitForResponse((response) => {
-    if (response.request().method() !== "PUT"
+    if (response.request().method() !== "PATCH"
       || new URL(response.url()).pathname !== "/api/calendar/preferences") return false;
     try {
       return response.request().postDataJSON()?.default_view === personalCalendarView;

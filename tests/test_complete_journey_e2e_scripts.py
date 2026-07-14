@@ -2421,6 +2421,16 @@ def test_phase_two_checker_allows_only_exact_viewer_personal_preference_changes(
     assert 'digest: { enabled: false, end: "07:00", start: "22:00" }' in source
 
 
+def test_phase_two_viewer_calendar_preference_matches_patch_request() -> None:
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
+    viewer = source.split("async function exerciseViewer", 1)[1].split(
+        "async function runProfile", 1
+    )[0]
+
+    assert 'response.request().method() !== "PATCH"' in viewer
+    assert 'response.request().method() !== "PUT"' not in viewer
+
+
 def test_phase_two_notification_projection_uses_exact_identities_not_magic_count() -> None:
     source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
 
