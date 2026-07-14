@@ -72,6 +72,16 @@ def test_notification_navigation_and_settings_are_native_keyboard_controls() -> 
     assert 'querySelector<HTMLElement>(".notification-settings-btn")' in feature
 
 
+def test_notification_outside_click_uses_stable_event_path() -> None:
+    feature = (ROOT / "frontend/src/features/notificationsFeature.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const eventPath = e.composedPath();" in feature
+    assert "!eventPath.includes(panel)" in feature
+    assert "!panel.contains(e.target as Node)" not in feature
+
+
 def test_viewers_keep_today_and_weather_navigation_without_write_affordances() -> None:
     attention = (ROOT / "frontend/src/components/attentionTodayPanel.ts").read_text(
         encoding="utf-8"

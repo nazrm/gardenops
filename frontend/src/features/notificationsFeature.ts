@@ -521,6 +521,7 @@ export function initNotificationsFeature(
 
   document.addEventListener("click", (e) => {
     if (!notificationPanelOpen) return;
+    const eventPath = e.composedPath();
     const panel = document.getElementById(
       "notification-panel",
     );
@@ -535,9 +536,9 @@ export function initNotificationsFeature(
     );
     if (
       panel &&
-      !panel.contains(e.target as Node) &&
-      !(wrapper?.contains(e.target as Node) ?? false) &&
-      !(mobileButton?.contains(e.target as Node) ?? false)
+      !eventPath.includes(panel) &&
+      !(wrapper && eventPath.includes(wrapper)) &&
+      !(mobileButton && eventPath.includes(mobileButton))
     ) {
       closeNotificationPanel();
     }
