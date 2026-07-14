@@ -135,6 +135,22 @@ def test_notification_outside_click_uses_stable_event_path() -> None:
     assert "!panel.contains(e.target as Node)" not in feature
 
 
+def test_notification_view_switch_never_reuses_previous_view_items_after_failure() -> None:
+    feature = (ROOT / "frontend/src/features/notificationsFeature.ts").read_text(encoding="utf-8")
+    render = feature.split("function renderCurrentNotificationPanel", 1)[1].split(
+        "export function initNotificationsFeature", 1
+    )[0]
+    load = feature.split("async function loadNotifications", 1)[1].split(
+        "function closeNotificationPanel", 1
+    )[0]
+
+    assert 'let notificationItemsView: "inbox" | "log" | null = null;' in feature
+    assert "notificationItemsView === notificationPanelView ? notificationItems : []" in render
+    assert "notificationItemsView = view;" in load
+    assert "notificationItems = [];" in load
+    assert "renderCurrentNotificationPanel();" in load
+
+
 def test_viewers_keep_today_and_weather_navigation_without_write_affordances() -> None:
     attention = (ROOT / "frontend/src/components/attentionTodayPanel.ts").read_text(
         encoding="utf-8"

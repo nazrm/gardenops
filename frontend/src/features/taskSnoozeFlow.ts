@@ -8,7 +8,10 @@ import {
 export interface TaskDateDialogOptions {
   title: string;
   defaultDate: string;
-  onConfirm: (date: string, confirmOutsideWindow?: boolean) => void;
+  onConfirm: (
+    date: string,
+    confirmOutsideWindow?: boolean,
+  ) => boolean | void | Promise<boolean | void>;
   warning?: string | undefined;
   requireManualDate?: boolean | undefined;
   maxDate?: string | undefined;
@@ -40,6 +43,7 @@ export function openTaskDateDialog({
       <h3></h3>
       <p class="task-date-dialog-warning" hidden></p>
       <input type="date" class="prompt-dialog-input" />
+      <p class="task-date-dialog-feedback" role="alert" aria-live="assertive" hidden></p>
       <div class="button-row">
         <button type="button" class="confirm-yes"></button>
         <button type="button" class="confirm-no"></button>
@@ -52,12 +56,14 @@ export function openTaskDateDialog({
   warningEl.id = "task-date-dialog-warning";
   warningEl.setAttribute("role", "alert");
   const input = dialog.querySelector<HTMLInputElement>("input[type='date']")!;
+  const feedback = dialog.querySelector<HTMLElement>(".task-date-dialog-feedback")!;
+  feedback.id = "task-date-dialog-feedback";
   input.value = requireManualDate ? "" : defaultDate;
   input.min = formatLocalDate(new Date());
   if (maxDate) input.max = maxDate;
   input.required = true;
   input.setAttribute("aria-label", title);
-  if (warning || getDateSafety) input.setAttribute("aria-describedby", warningEl.id);
+  input.setAttribute("aria-describedby", `${warningEl.id} ${feedback.id}`);
 
   const updateDateSafety = (): TaskSnoozeDateSafety | undefined => {
     const safety = input.value ? getDateSafety?.(input.value) : undefined;
@@ -72,33 +78,60 @@ export function openTaskDateDialog({
   cancelBtn.textContent = t("common.cancel") as string;
   cancelBtn.addEventListener("click", close);
   const okBtn = dialog.querySelector<HTMLButtonElement>(".confirm-yes")!;
-  let confirming = false;
+  let submitting = false;
+  const setSubmitting = (pending: boolean): void => {
+    submitting = pending;
+    input.disabled = pending;
+    okBtn.disabled = pending;
+    cancelBtn.disabled = pending;
+    dialog.toggleAttribute("aria-busy", pending);
+  };
+  const showSubmitFailure = (): void => {
+    feedback.hidden = false;
+    feedback.textContent = String(t("tasks.dialog_submit_failed"));
+  };
   const confirm = async (): Promise<void> => {
+    if (submitting) return;
+    let focusInputAfterSubmit = false;
+    feedback.hidden = true;
+    feedback.textContent = "";
     const safety = updateDateSafety();
     if (!input.value || !input.reportValidity() || safety?.blocked) {
       input.focus();
       return;
     }
-    if (safety?.confirmationRequired) {
-      if (confirming) return;
-      confirming = true;
-      okBtn.disabled = true;
-      const accepted = await confirmDialog(
-        safety.message ?? "",
-        safety.confirmationLabel,
+    setSubmitting(true);
+    try {
+      let confirmOutsideWindow = false;
+      if (safety?.confirmationRequired) {
+        const accepted = await confirmDialog(
+          safety.message ?? "",
+          safety.confirmationLabel,
+        );
+        if (!accepted) {
+          focusInputAfterSubmit = true;
+          return;
+        }
+        confirmOutsideWindow = true;
+      }
+      const result = await onConfirm(
+        input.value,
+        confirmOutsideWindow || undefined,
       );
-      confirming = false;
-      okBtn.disabled = false;
-      if (!accepted) {
-        input.focus();
+      if (result === false) {
+        showSubmitFailure();
         return;
       }
-      onConfirm(input.value, true);
       close();
-      return;
+    } catch {
+      showSubmitFailure();
+    } finally {
+      if (dialog.isConnected) {
+        setSubmitting(false);
+        if (focusInputAfterSubmit) input.focus();
+        else if (!feedback.hidden) okBtn.focus();
+      }
     }
-    onConfirm(input.value);
-    close();
   };
   okBtn.textContent = t("common.save") as string;
   okBtn.addEventListener("click", () => {

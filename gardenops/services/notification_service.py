@@ -1098,6 +1098,14 @@ def _clear_active_notifications_for_target(
     return cur.rowcount
 
 
+def _lock_task_notification_projection(db: DbConn, *, garden_id: int) -> None:
+    """Serialize task projection generation and clearing for one garden."""
+    db.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, %s))",
+        (f"gardenops:task-notifications:{garden_id}", _TASK_NOTIFICATION_LOCK_SEED),
+    )
+
+
 def create_task_due_notifications_in_transaction(
     db: DbConn,
     garden_id: int,
@@ -1114,10 +1122,7 @@ def create_task_due_notifications_in_transaction(
     # Serialize the check/insert sequence per garden. The notification schema
     # intentionally keeps delivery history, so a unique active-row constraint
     # cannot express this lifecycle safely.
-    db.execute(
-        "SELECT pg_advisory_xact_lock(hashtextextended(%s, %s))",
-        (f"gardenops:task-notifications:{garden_id}", _TASK_NOTIFICATION_LOCK_SEED),
-    )
+    _lock_task_notification_projection(db, garden_id=garden_id)
     created = 0
     skipped = 0
     now_value, frozen_date = notification_request_clock(now_ms=now_ms)
@@ -1665,6 +1670,8 @@ def clear_stale_task_notifications(
     now_ms: int | None = None,
 ) -> int:
     """Clear task notifications whose task target is no longer inbox-actionable."""
+    if garden_id is not None:
+        _lock_task_notification_projection(db, garden_id=garden_id)
     now_value, frozen_date = notification_request_clock(now_ms=now_ms)
     today = today_iso or _notification_today_iso(frozen_date=frozen_date)
     today_start_ms = _date_start_ms(today) or now_value
@@ -1840,6 +1847,7 @@ def clear_task_notifications(
     reason: str,
     now_ms: int | None = None,
 ) -> int:
+    _lock_task_notification_projection(db, garden_id=garden_id)
     now_value, _ = notification_request_clock(now_ms=now_ms)
     cur = db.execute(
         """
@@ -3132,6 +3140,42 @@ def _lock_pending_email_digest_delivery(
     )
 
 
+def _load_locked_digest_recipient(
+    db: DbConn,
+    *,
+    garden_id: int,
+    user_id: int,
+) -> dict[str, Any] | None:
+    """Revalidate and pin one recipient's delivery configuration."""
+    row = db.execute(
+        """
+        SELECT p.user_id, p.email_enabled, p.email_address,
+               p.digest_frequency, u.subscription_tier
+        FROM user_notification_preferences p
+        JOIN garden_memberships gm ON gm.user_id = p.user_id
+        JOIN auth_users u ON u.id = p.user_id
+        WHERE gm.garden_id = %s
+          AND p.user_id = %s
+        FOR UPDATE OF p, gm, u
+        """,
+        (garden_id, user_id),
+    ).fetchone()
+    if row is None:
+        return None
+    recipient = dict(row)
+    configuration = digest_delivery_configuration(
+        recipient,
+        subscription_tier=str(recipient.get("subscription_tier") or "home"),
+    )
+    if not bool(configuration["configured"]):
+        return None
+    return {
+        **recipient,
+        "email_address": str(configuration["email_address"]),
+        "digest_frequency": str(configuration["digest_frequency"]),
+    }
+
+
 def deliver_pending_email_digests(
     db: DbConn,
     garden_id: int,
@@ -3167,9 +3211,7 @@ def deliver_pending_email_digests(
 
     recipients = db.execute(
         """
-        SELECT p.user_id,
-               p.email_address,
-               p.digest_frequency
+        SELECT p.user_id
         FROM user_notification_preferences p
         JOIN garden_memberships gm ON gm.user_id = p.user_id
         JOIN auth_users u ON u.id = p.user_id
@@ -3191,7 +3233,15 @@ def deliver_pending_email_digests(
             garden_id=garden_id,
             user_id=user_id,
         )
-        digest_frequency = str(pref["digest_frequency"])
+        recipient = _load_locked_digest_recipient(
+            db,
+            garden_id=garden_id,
+            user_id=user_id,
+        )
+        if recipient is None:
+            skipped_users += 1
+            continue
+        digest_frequency = str(recipient["digest_frequency"])
         interval_ms = _digest_interval_ms(digest_frequency)
         last_sent_row = db.execute(
             """
@@ -3245,7 +3295,7 @@ def deliver_pending_email_digests(
         subject = f"{app_name()} digest \u2014 {garden_name}: {len(notifications)} update{plural}"
         body = _build_digest_email_body(notifications)
         try:
-            email_sender(str(pref["email_address"]), subject, body)
+            email_sender(str(recipient["email_address"]), subject, body)
         except Exception:
             skipped_users += 1
             logger.warning(

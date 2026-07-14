@@ -2546,6 +2546,8 @@ async function runProfile(options) {
     result.failure = "Phase 2 profile journey failed; see top-level sanitized failure";
     result.assertions.failed.push(result.failure);
   } finally {
+    await recorder.settle();
+    result.requests = recorder.records;
     result.diagnostics = guarded.diagnostics;
     try {
       result.trace = await guarded.close(status);

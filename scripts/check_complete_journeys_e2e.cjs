@@ -701,7 +701,28 @@ function assertWholeTableProjectionCoverage(initial, final, allowedTables) {
         && evidence.row_digests.every((digest) => /^[a-f0-9]{32}$/.test(String(digest)))
         && canonicalJson(evidence.row_digests) === canonicalJson([...evidence.row_digests].sort()),
       `${boundary} whole-table row digest projection is invalid: ${table}`);
+      assert(Array.isArray(evidence?.identity_columns) && evidence.identity_columns.length > 0
+        && evidence.identity_columns.every((column) => /^[a-z_][a-z0-9_]*$/.test(String(column)))
+        && new Set(evidence.identity_columns).size === evidence.identity_columns.length,
+      `${boundary} whole-table stable identity columns are invalid: ${table}`);
+      assert(Array.isArray(evidence?.row_projections)
+        && evidence.row_projections.length === evidence.count
+        && evidence.row_projections.every((row) => (
+          /^[a-f0-9]{64}$/.test(String(row?.identity_digest || ""))
+          && /^[a-f0-9]{64}$/.test(String(row?.row_digest || ""))
+        ))
+        && canonicalJson(evidence.row_projections) === canonicalJson([...evidence.row_projections].sort(
+          (left, right) => `${left.identity_digest}:${left.row_digest}`
+            .localeCompare(`${right.identity_digest}:${right.row_digest}`),
+        ))
+        && new Set(evidence.row_projections.map((row) => row.identity_digest)).size
+          === evidence.row_projections.length,
+      `${boundary} whole-table stable row projection is invalid: ${table}`);
     }
+  }
+  for (const table of initialTables) {
+    assert(canonicalJson(initial[table].identity_columns) === canonicalJson(final[table].identity_columns),
+      `Whole-table stable identity columns changed during the run: ${table}`);
   }
   return {
     all_public_domain_tables_projected: true,
@@ -723,6 +744,77 @@ function rowDigestMultisetDelta(before, after) {
   return { added: added.sort(), removed: removed.sort() };
 }
 
+function stableRowIdentityDelta(before, after) {
+  const beforeByIdentity = new Map(before.map((row) => [row.identity_digest, row.row_digest]));
+  const afterByIdentity = new Map(after.map((row) => [row.identity_digest, row.row_digest]));
+  assert(beforeByIdentity.size === before.length && afterByIdentity.size === after.length,
+    "Whole-table stable row projection duplicated an identity");
+  const added = [];
+  const removed = [];
+  const updated = [];
+  for (const [identityDigest, beforeDigest] of beforeByIdentity) {
+    if (!afterByIdentity.has(identityDigest)) {
+      removed.push({ before_row_digest: beforeDigest, identity_digest: identityDigest });
+      continue;
+    }
+    const afterDigest = afterByIdentity.get(identityDigest);
+    if (afterDigest !== beforeDigest) {
+      updated.push({
+        after_row_digest: afterDigest,
+        before_row_digest: beforeDigest,
+        identity_digest: identityDigest,
+      });
+    }
+  }
+  for (const [identityDigest, afterDigest] of afterByIdentity) {
+    if (!beforeByIdentity.has(identityDigest)) {
+      added.push({ after_row_digest: afterDigest, identity_digest: identityDigest });
+    }
+  }
+  const sortRows = (rows) => rows.sort((left, right) => (
+    left.identity_digest.localeCompare(right.identity_digest)
+  ));
+  return { added: sortRows(added), removed: sortRows(removed), updated: sortRows(updated) };
+}
+
+function expectedPhaseTwoUpdatedTaskIdentityDigests(fixture, domainTables) {
+  const identityColumns = domainTables?.garden_tasks?.identity_columns;
+  assert(canonicalJson(identityColumns) === canonicalJson(["public_id"]),
+    "Phase 2 task stable identity is not public_id");
+  const taskKeys = [
+    "batch_a",
+    "batch_b",
+    "bloom_desktop",
+    "bloom_mobile",
+    "editor_offline",
+    "editor_prune",
+    "fertilize_grouped",
+    "fertilize_mobile",
+    "plot_drawer",
+    "prune_desktop",
+    "rain_outdoor",
+    "snooze_correction",
+    "stale_generated_water",
+    "stale_manual_water",
+  ];
+  const taskIds = taskKeys.map((key) => fixture?.phase_two?.task_ids?.[key]);
+  assert(taskIds.every((taskId) => typeof taskId === "string" && taskId)
+    && new Set(taskIds).size === taskIds.length,
+  "Phase 2 expected task mutation identities are invalid");
+  return taskIds.map((publicId) => sha256(canonicalJson({ public_id: publicId }))).sort();
+}
+
+function assertExpectedIdentityDigests(contract, field, rows, table) {
+  if (!Array.isArray(contract[field])) return;
+  const expected = [...contract[field]].map(String).sort();
+  assert(expected.every((digest) => /^[a-f0-9]{64}$/.test(digest))
+    && new Set(expected).size === expected.length,
+  `Whole-table ${field} accounting is invalid: ${table}`);
+  const actual = rows.map((row) => row.identity_digest).sort();
+  assert(canonicalJson(actual) === canonicalJson(expected),
+    `Whole-table mutation changed the wrong stable row identity: ${table}:${field}`);
+}
+
 function assertWholeTableMutationAccounting(initial, final, allowedTables, accounting) {
   assertWholeTableProjectionCoverage(initial, final, allowedTables);
   assert(accounting && typeof accounting === "object" && !Array.isArray(accounting),
@@ -731,7 +823,16 @@ function assertWholeTableMutationAccounting(initial, final, allowedTables, accou
   const changedTables = {};
   for (const table of Object.keys(initial).sort()) {
     const delta = rowDigestMultisetDelta(initial[table].row_digests, final[table].row_digests);
-    if (delta.added.length === 0 && delta.removed.length === 0) continue;
+    const identityDelta = stableRowIdentityDelta(
+      initial[table].row_projections,
+      final[table].row_projections,
+    );
+    if (delta.added.length === 0 && delta.removed.length === 0) {
+      assert(identityDelta.added.length === 0 && identityDelta.removed.length === 0
+        && identityDelta.updated.length === 0,
+      `Whole-table digest and stable identity projections disagree: ${table}`);
+      continue;
+    }
     const contract = accounting[table];
     assert(allowed.has(table), `Whole-table mutation changed an unallowed table: ${table}`);
     assert(contract && typeof contract === "object" && contract.allow_row_delta === true,
@@ -751,8 +852,25 @@ function assertWholeTableMutationAccounting(initial, final, allowedTables, accou
           `Whole-table mutation diverged from independent ${field} accounting: ${table}`);
       }
     }
+    for (const [field, actual] of [
+      ["expected_identity_added", identityDelta.added.length],
+      ["expected_identity_removed", identityDelta.removed.length],
+      ["expected_identity_updated", identityDelta.updated.length],
+    ]) {
+      if (Number.isSafeInteger(contract[field])) {
+        assert(actual === contract[field],
+          `Whole-table mutation diverged from independent ${field} accounting: ${table}`);
+      }
+    }
+    assertExpectedIdentityDigests(contract, "expected_added_identity_digests", identityDelta.added, table);
+    assertExpectedIdentityDigests(contract, "expected_removed_identity_digests", identityDelta.removed, table);
+    assertExpectedIdentityDigests(contract, "expected_updated_identity_digests", identityDelta.updated, table);
     changedTables[table] = {
       added: delta.added.length,
+      identity_changes: identityDelta,
+      identity_rows_added: identityDelta.added.length,
+      identity_rows_removed: identityDelta.removed.length,
+      identity_rows_updated: identityDelta.updated.length,
       removed: delta.removed.length,
       evidence: String(contract.evidence || ""),
     };
@@ -765,6 +883,10 @@ function assertWholeTableMutationAccounting(initial, final, allowedTables, accou
       initial[table].row_digests,
       final[table].row_digests,
     );
+    const identityDelta = stableRowIdentityDelta(
+      initial[table].row_projections,
+      final[table].row_projections,
+    );
     for (const [field, actual] of [
       ["expected_added", delta.added.length],
       ["expected_removed", delta.removed.length],
@@ -774,6 +896,19 @@ function assertWholeTableMutationAccounting(initial, final, allowedTables, accou
           `Whole-table mutation diverged from independent ${field} accounting: ${table}`);
       }
     }
+    for (const [field, actual] of [
+      ["expected_identity_added", identityDelta.added.length],
+      ["expected_identity_removed", identityDelta.removed.length],
+      ["expected_identity_updated", identityDelta.updated.length],
+    ]) {
+      if (Number.isSafeInteger(contract[field])) {
+        assert(actual === contract[field],
+          `Whole-table mutation diverged from independent ${field} accounting: ${table}`);
+      }
+    }
+    assertExpectedIdentityDigests(contract, "expected_added_identity_digests", identityDelta.added, table);
+    assertExpectedIdentityDigests(contract, "expected_removed_identity_digests", identityDelta.removed, table);
+    assertExpectedIdentityDigests(contract, "expected_updated_identity_digests", identityDelta.updated, table);
   }
   return {
     changed_tables: changedTables,
@@ -862,6 +997,29 @@ function assertSourceRevisionStable(initial, final) {
 
 function safeNonnegativeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function sanitizeTaskActionEvidence(value) {
+  if (!value || typeof value !== "object") return null;
+  const action = new Set(["complete", "reschedule", "skip", "snooze"]).has(value.action)
+    ? value.action : null;
+  const revision = (candidate) => Number.isSafeInteger(candidate) && candidate >= 0
+    ? candidate : null;
+  if (Array.isArray(value.expectedRevisions)) {
+    return {
+      action,
+      expectedRevisions: value.expectedRevisions.slice(0, 200).map((entry) => ({
+        expectedUpdatedAtMs: revision(entry?.expectedUpdatedAtMs),
+        taskId: safeIdentifier(entry?.taskId),
+      })),
+      responseUpdatedCount: revision(value.responseUpdatedCount),
+    };
+  }
+  return {
+    action,
+    expectedUpdatedAtMs: revision(value.expectedUpdatedAtMs),
+    responseUpdatedAtMs: revision(value.responseUpdatedAtMs),
+  };
 }
 
 function sanitizeCheckValue(value, depth = 0) {
@@ -1450,6 +1608,7 @@ async function runPhaseTwoReadOnlyPermutation({
       result.failure = "Phase 2 read-only permutation probe failed; inspect private evidence";
       result.assertions.failed.push(result.failure);
     } finally {
+      await recorder.settle();
       result.diagnostics = guarded.diagnostics;
       result.requests = recorder.records;
       try {
@@ -1769,6 +1928,124 @@ function isPhaseTwoAuditPath(pathname) {
     /^\/api\/tasks(?:\/(?:batch-action|[^/]+\/action))?$/,
     /^\/api\/weather\/(?:check|alerts\/\d+\/dismiss)$/,
   ].some((pattern) => pattern.test(pathname));
+}
+
+function orderedPhaseTwoTaskActionRequests(profiles) {
+  return (profiles || []).flatMap((profile) => (profile?.requests || []).flatMap((request) => {
+    const individual = /^\/api\/tasks\/([^/]+)\/action$/.exec(String(request?.path || ""));
+    const batch = request?.path === "/api/tasks/batch-action";
+    if (request?.method !== "POST" || (!individual && !batch)) return [];
+    return [{
+      batch,
+      browser_profile: `${profile.role}:${profile.profile}`,
+      request,
+      task_id: individual?.[1] || null,
+    }];
+  }));
+}
+
+function assertPhaseTwoTaskActionRevisionSequence(profiles, finalTasks, fixture) {
+  assert(Array.isArray(finalTasks), "Phase 2 final task revision projection is missing");
+  const initialTasks = fixture?.phase_two?.seeded_state?.tasks;
+  assert(Array.isArray(initialTasks), "Phase 2 seeded task revision projection is missing");
+  const currentRevision = new Map(initialTasks.map((task) => [task.public_id, task.updated_at_ms]));
+  const finalById = new Map(finalTasks.map((task) => [task.public_id, task]));
+  const touched = new Set();
+  let batchRequestCount = 0;
+  let deniedRequestCount = 0;
+  let successfulRequestCount = 0;
+  for (const entry of orderedPhaseTwoTaskActionRequests(profiles)) {
+    const { request } = entry;
+    const evidence = request.taskAction;
+    assert(evidence && typeof evidence === "object",
+      `Phase 2 task action omitted revision evidence: ${entry.browser_profile}:${request.path}`);
+    assert(new Set(["complete", "reschedule", "skip", "snooze"]).has(evidence.action),
+      `Phase 2 task action name is invalid: ${entry.browser_profile}:${request.path}`);
+    if (entry.batch) {
+      batchRequestCount += 1;
+      assert(request.statusCode >= 200 && request.statusCode < 300,
+        "Phase 2 batch task action did not succeed");
+      const revisions = evidence.expectedRevisions;
+      assert(Array.isArray(revisions) && revisions.length > 0,
+        "Phase 2 batch task action omitted expected revisions");
+      assert(new Set(revisions.map((item) => item.taskId)).size === revisions.length,
+        "Phase 2 batch task action duplicated a revision target");
+      for (const item of revisions) {
+        assert(currentRevision.has(item.taskId),
+          `Phase 2 batch task action targeted an unknown task: ${item.taskId}`);
+        assert(item.expectedUpdatedAtMs === currentRevision.get(item.taskId),
+          `Phase 2 batch task action used a stale revision: ${item.taskId}`);
+        const finalTask = finalById.get(item.taskId);
+        assert(finalTask && finalTask.updated_at_ms >= item.expectedUpdatedAtMs,
+          `Phase 2 batch task action has no closing task revision: ${item.taskId}`);
+        currentRevision.set(item.taskId, finalTask.updated_at_ms);
+        touched.add(item.taskId);
+      }
+      assert(evidence.responseUpdatedCount === revisions.length,
+        "Phase 2 batch task action response count did not close its revision set");
+      continue;
+    }
+
+    const taskId = entry.task_id;
+    assert(currentRevision.has(taskId), `Phase 2 task action targeted an unknown task: ${taskId}`);
+    assert(evidence.expectedUpdatedAtMs === currentRevision.get(taskId),
+      `Phase 2 task action request revision was not the current sequence value: ${taskId}`);
+    if (request.statusCode === 403) {
+      deniedRequestCount += 1;
+      assert(evidence.responseUpdatedAtMs === null,
+        `Denied Phase 2 task action exposed a response revision: ${taskId}`);
+      continue;
+    }
+    assert(request.statusCode >= 200 && request.statusCode < 300,
+      `Phase 2 task action did not succeed: ${taskId}`);
+    assert(Number.isSafeInteger(evidence.responseUpdatedAtMs)
+      && evidence.responseUpdatedAtMs >= evidence.expectedUpdatedAtMs,
+    `Phase 2 task action response omitted its next revision: ${taskId}`);
+    currentRevision.set(taskId, evidence.responseUpdatedAtMs);
+    touched.add(taskId);
+    successfulRequestCount += 1;
+  }
+  assert(successfulRequestCount > 0 && deniedRequestCount > 0 && batchRequestCount > 0,
+    "Phase 2 task revision sequence did not cover success, denial, and batch actions");
+  for (const taskId of touched) {
+    assert(finalById.get(taskId)?.updated_at_ms === currentRevision.get(taskId),
+      `Phase 2 final task revision did not close the browser sequence: ${taskId}`);
+  }
+  return {
+    batch_task_revision_request_count: batchRequestCount,
+    denied_task_revision_request_count: deniedRequestCount,
+    successful_task_revision_request_count: successfulRequestCount,
+    task_action_revision_sequence_exact: true,
+  };
+}
+
+function phaseTwoTaskNotificationClearReasons(profiles, fixture) {
+  const reasons = new Map();
+  const reasonByAction = {
+    complete: "completed",
+    reschedule: "rescheduled",
+    skip: "skipped",
+    snooze: "snoozed",
+  };
+  for (const entry of orderedPhaseTwoTaskActionRequests(profiles)) {
+    const { request } = entry;
+    if (!(request.statusCode >= 200 && request.statusCode < 300)) continue;
+    const evidence = request.taskAction;
+    assert(evidence && reasonByAction[evidence.action],
+      `Phase 2 successful task action lacks lifecycle evidence: ${request.path}`);
+    const taskIds = entry.batch
+      ? evidence.expectedRevisions.map((revision) => revision.taskId)
+      : [entry.task_id];
+    for (const taskId of taskIds) {
+      if (reasons.has(taskId)) continue;
+      const partialGroupedCompletion = (
+        taskId === fixture.phase_two.task_ids.fertilize_grouped
+        && evidence.action === "complete"
+      );
+      reasons.set(taskId, partialGroupedCompletion ? "superseded" : reasonByAction[evidence.action]);
+    }
+  }
+  return reasons;
 }
 
 function phaseTwoBrowserMutationRecords(profiles, fixture) {
@@ -2150,9 +2427,9 @@ function assertPhaseTwoScopedMutableRows(
         const browserCreatedByUser = new Map(browserCreated.map((row) => [row.username, row]));
         assert(browserCreated.length === 3 && browserCreatedByUser.size === 3,
           "Phase 2 browser created an unexpected grouped-task notification set");
-        assert(browserCreatedByUser.get(fixture.roles.admin)?.clear_reason === "expired",
+        assert(browserCreatedByUser.get(fixture.roles.admin)?.clear_reason === "rescheduled",
           "Phase 2 admin grouped-task notification did not retain its expected clear reason");
-        assert(browserCreatedByUser.get(fixture.roles.editor)?.clear_reason === "expired",
+        assert(browserCreatedByUser.get(fixture.roles.editor)?.clear_reason === "rescheduled",
           "Phase 2 editor grouped-task notification did not retain its expected clear reason");
         assert(browserCreatedByUser.get(fixture.roles.viewer)?.clear_reason === "rescheduled",
           "Phase 2 viewer grouped-task notification did not retain its expected clear reason");
@@ -2562,6 +2839,7 @@ function assertPhaseTwoMaintenanceSemanticState(
   fixture,
   preferenceDelivery,
   oracle = phaseTwoOracle(),
+  profiles = [],
 ) {
   const semantic = maintenance?.maintenance_semantic_state;
   assert(semantic && typeof semantic === "object", "Phase 2 maintenance semantic state is missing");
@@ -2669,6 +2947,7 @@ function assertPhaseTwoMaintenanceSemanticState(
   const deliveredIds = new Set(
     preferenceDelivery.delivery_notifications.map((notification) => notification.public_id),
   );
+  const taskClearReasons = phaseTwoTaskNotificationClearReasons(profiles, fixture);
   const viewerMaintenanceAlert = finalRows.weather_alerts.reduce((latest, alert) => (
     latest === null || alert.row_id > latest.row_id ? alert : latest
   ), null);
@@ -2692,6 +2971,7 @@ function assertPhaseTwoMaintenanceSemanticState(
             fixture,
             deliveredIds,
             viewerMaintenanceAlert,
+            taskClearReasons,
           ),
         );
       } else {
@@ -2844,6 +3124,7 @@ function expectedPhaseTwoMaintenanceNotification(
   fixture,
   deliveredIds,
   viewerMaintenanceAlert,
+  taskClearReasons = new Map(),
 ) {
   const expected = { ...notification };
   if (deliveredIds.has(notification.public_id)) {
@@ -2871,8 +3152,10 @@ function expectedPhaseTwoMaintenanceNotification(
     return expected;
   }
   if (notification.cleared_at_ms !== null) return expected;
+  const clearReason = taskClearReasons.get(notification.target_id);
+  if (!clearReason) return expected;
   expected.cleared_at_ms = fixture.clock.attention_now_ms;
-  expected.clear_reason = "expired";
+  expected.clear_reason = clearReason;
   return expected;
 }
 
@@ -2882,6 +3165,7 @@ function assertPhaseTwoDatabaseState(
   maintenance,
   preferenceDelivery,
   oracle = phaseTwoOracle(),
+  profiles = [],
 ) {
   assert(state && typeof state === "object", "Phase 2 database state is missing");
   const phase = fixture?.phase_two;
@@ -3403,7 +3687,7 @@ function assertPhaseTwoDatabaseState(
       !afterMaintenanceNotificationIds.has(notification.public_id)
       && notification.target_id === phase.task_ids.fertilize_grouped
       && notification.notification_type === "task_due"
-      && ["expired", "rescheduled"].includes(notification.clear_reason)
+      && notification.clear_reason === "rescheduled"
     ) {
       expectedNotificationIds.add(notification.public_id);
       groupedTaskNotificationUsers.add(notification.username);
@@ -3752,6 +4036,7 @@ function assertPhaseTwoDatabaseState(
     fixture,
     preferenceDelivery,
     oracle,
+    profiles,
   );
   assert(maintenance.delivery_count === 0 && maintenance.deliveries?.length === 0,
     "Phase 2 pre-save maintenance unexpectedly delivered email");
@@ -4414,6 +4699,7 @@ function sanitizeManifestEvidence(manifest) {
         requestId: isSafeRequestId(request.requestId) ? String(request.requestId) : null,
         statusCode: Number.isSafeInteger(request.statusCode) && request.statusCode >= 100
           && request.statusCode <= 599 ? request.statusCode : null,
+        taskAction: sanitizeTaskActionEvidence(request.taskAction),
       }));
     }
     return profile;
@@ -4661,6 +4947,11 @@ async function main() {
     if (phaseTwoRan) {
       phaseTwoProfileEvidence = {
         ...assertPhaseTwoProfileEvidence(phaseTwoProfiles, oracle),
+        ...assertPhaseTwoTaskActionRevisionSequence(
+          phaseTwoProfiles,
+          finalDatabase.phase_two_state.tasks,
+          fixture,
+        ),
         ...assertPhaseTwoBrowserMutationMultiset(
           [...phaseTwoReadOnlyProfiles, ...phaseTwoProfiles],
           fixture,
@@ -4674,6 +4965,7 @@ async function main() {
           phaseTwoMaintenance,
           phaseTwoPreferenceDelivery,
           oracle,
+          phaseTwoProfiles,
         ),
         ...assertPhaseTwoOfflineOperationReplay(phaseTwoProfiles, finalDatabase.phase_two_state, fixture),
       };
@@ -4737,6 +5029,11 @@ async function main() {
     const phaseTwoExactMutationCounts = phaseTwoRan
       ? oracle.phase_two?.whole_table_mutation_accounting?.exact_counts?.[phaseTwoMutationScope]
       : null;
+    const phaseTwoExactIdentityCounts = phaseTwoRan
+      ? oracle.phase_two?.whole_table_mutation_accounting?.exact_identity_counts?.[
+        phaseTwoMutationScope
+      ]
+      : null;
     if (phaseTwoRan) {
       assert(phaseTwoExactMutationCounts && typeof phaseTwoExactMutationCounts === "object"
         && !Array.isArray(phaseTwoExactMutationCounts),
@@ -4746,7 +5043,32 @@ async function main() {
           && Number.isSafeInteger(counts?.added) && counts.added >= 0
           && Number.isSafeInteger(counts?.removed) && counts.removed >= 0,
         `Phase 2 ${phaseTwoMutationScope} mutation count is invalid: ${table}`);
+        const identityCounts = phaseTwoExactIdentityCounts?.[table];
+        assert(Number.isSafeInteger(identityCounts?.added) && identityCounts.added >= 0
+          && Number.isSafeInteger(identityCounts?.removed) && identityCounts.removed >= 0
+          && Number.isSafeInteger(identityCounts?.updated) && identityCounts.updated >= 0
+          && identityCounts.added + identityCounts.updated === counts.added
+          && identityCounts.removed + identityCounts.updated === counts.removed,
+        `Phase 2 ${phaseTwoMutationScope} stable identity count is invalid: ${table}`);
       }
+      assert(phaseTwoExactIdentityCounts && Object.keys(phaseTwoExactIdentityCounts).every(
+        (table) => Object.hasOwn(phaseTwoExactMutationCounts, table)
+      ), `Phase 2 ${phaseTwoMutationScope} stable identity accounting names an unknown table`);
+    }
+    const phaseTwoExpectedUpdatedIdentityDigests = phaseTwoRan
+      ? {
+        garden_tasks: expectedPhaseTwoUpdatedTaskIdentityDigests(
+          fixture,
+          fixture.database_snapshot.domain_tables,
+        ),
+      }
+      : {};
+    if (phaseTwoRan) {
+      assert(
+        phaseTwoExpectedUpdatedIdentityDigests.garden_tasks.length
+          === phaseTwoExactIdentityCounts.garden_tasks.updated,
+        "Phase 2 expected task mutation identities do not match the independent count oracle",
+      );
     }
     const phaseTwoSemanticDeltaTables = phaseTwoRan ? new Set([
       ...phaseOneSemanticDeltaTables,
@@ -4775,13 +5097,22 @@ async function main() {
       phaseTwoSemanticDeltaTables,
       Object.fromEntries([...phaseTwoSemanticDeltaTables].map((table) => {
         const exact = phaseTwoExactMutationCounts?.[table] || { added: 0, removed: 0 };
+        const identity = phaseTwoExactIdentityCounts?.[table]
+          || { added: 0, removed: 0, updated: 0 };
+        const expectedUpdatedIdentityDigests = phaseTwoExpectedUpdatedIdentityDigests[table];
         return [table, {
           allow_row_delta: true,
           evidence: phaseTwoRan ? `phase_two_${phaseTwoMutationScope}_independent_oracle`
             : "phase_one_boundary_assertions",
           ...(phaseTwoRan ? {
             expected_added: exact.added,
+            expected_identity_added: identity.added,
+            expected_identity_removed: identity.removed,
+            expected_identity_updated: identity.updated,
             expected_removed: exact.removed,
+            ...(expectedUpdatedIdentityDigests ? {
+              expected_updated_identity_digests: expectedUpdatedIdentityDigests,
+            } : {}),
           } : {}),
         }];
       })),
@@ -5260,6 +5591,7 @@ module.exports = {
   assertPhaseTwoPersonalNotificationPreferencePersistence,
   assertPhaseTwoMaintenanceSpec,
   assertPhaseTwoScopedMutableRows,
+  assertPhaseTwoTaskActionRevisionSequence,
   assertExpectedMaintenanceMutations,
   exactMaintenanceNotification,
   assertPhaseTwoProfileEvidence,
@@ -5275,12 +5607,15 @@ module.exports = {
   backendErrorEvidence,
   expectedPhaseOneRestoreGraphsAfterPhaseTwo,
   expectedPhaseOneStableDomainProjectionAfterPhaseTwo,
+  expectedPhaseTwoMaintenanceNotification,
+  expectedPhaseTwoUpdatedTaskIdentityDigests,
   expectedSessionUserCounts,
   gitState,
   isSafeManifestRequestPath,
   isSafeRequestId,
   isPhaseTwoAuditPath,
   phaseTwoBrowserMutationRecords,
+  phaseTwoTaskNotificationClearReasons,
   phaseOneAuditExpectedEvents,
   phaseSelected,
   safeUtcTimestamp,
@@ -5291,6 +5626,7 @@ module.exports = {
   auditManifestProjection,
   assertWholeTableProjectionCoverage,
   assertWholeTableMutationAccounting,
+  stableRowIdentityDelta,
   evidenceBinding,
   isElfExecutable,
   normalizedNodeDependencyTree,

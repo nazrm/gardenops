@@ -157,6 +157,16 @@ _ATTENTION_RESTORE_LOCK_SEED = 0x474F50524553544F
 _RAIN_REASSESSMENT_DELAY_DAYS = 2
 
 
+def _effective_garden_today_iso(now_ms: int) -> str:
+    """Return the shared local/frozen Attention date for task lifecycle work."""
+    from gardenops.services.attention.types import attention_request_clock, attention_today_date
+
+    effective_now_ms, frozen_date = attention_request_clock(now_ms=now_ms)
+    if frozen_date is not None:
+        return attention_today_date(now_ms=effective_now_ms, frozen_date=frozen_date)
+    return date.fromtimestamp(effective_now_ms / 1000).isoformat()
+
+
 def _generated_description_metadata(
     description_no: str,
     extra: dict[str, Any] | None = None,
@@ -673,6 +683,25 @@ def _format_rain_mm(rain_mm: float | None) -> str:
     return f"{rain_mm:.1f} mm rain"
 
 
+def _refresh_task_notification_projection(
+    db: DbConn,
+    *,
+    garden_id: int,
+    task_public_id: str,
+    now_ms: int,
+) -> None:
+    # Imported lazily because notification_service owns projection policy and
+    # imports this module for task generation and rain reconciliation.
+    from gardenops.services.notification_service import refresh_task_notifications_for_task
+
+    refresh_task_notifications_for_task(
+        db,
+        garden_id=garden_id,
+        task_public_id=task_public_id,
+        now_ms=now_ms,
+    )
+
+
 def _write_watering_covered_by_rain_outcome(
     db: DbConn,
     *,
@@ -755,12 +784,29 @@ def restore_generated_watering_task_from_attention_outcome(
             _ATTENTION_RESTORE_LOCK_SEED,
         ),
     )
+    locked_outcome = db.execute(
+        """
+        SELECT source_public_id, target_id
+        FROM attention_outcomes
+        WHERE garden_id = %s
+          AND public_id = %s
+        FOR UPDATE
+        """,
+        (garden_id, outcome_public_id),
+    ).fetchone()
+    if locked_outcome is None:
+        raise HTTPException(status_code=404, detail="Attention outcome not found")
+    if (
+        str(locked_outcome["source_public_id"] or "") != source_public_id
+        or str(locked_outcome["target_id"] or "") != target_id
+    ):
+        raise HTTPException(status_code=409, detail="Attention outcome recovery target changed")
     original_due_on = str(
         recovery_action.get("due_on")
         or metadata.get("due_on")
         or source_public_id.rsplit(":", 1)[-1]
     )
-    today_iso = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
+    today_iso = _effective_garden_today_iso(now_ms)
     due_on = max(original_due_on, today_iso)
     plant_ids = [
         str(plant_id) for plant_id in recovery_action.get("plant_ids", [target_id]) if str(plant_id)
@@ -870,6 +916,12 @@ def restore_generated_watering_task_from_attention_outcome(
         """,
         (max(0, now_ms - 1), now_ms, garden_id, outcome_public_id),
     )
+    _refresh_task_notification_projection(
+        db,
+        garden_id=garden_id,
+        task_public_id=task_public_id,
+        now_ms=now_ms,
+    )
     return task_public_id
 
 
@@ -963,12 +1015,12 @@ def _recover_rain_outcome_task(
     outcome: DbRow,
     metadata: dict[str, Any],
     now_ms: int,
+    today_iso: str,
 ) -> tuple[str, str] | None:
     source_public_id = str(outcome["source_public_id"] or "")
     target_id = str(outcome["target_id"] or "")
     original_due_on = str(metadata.get("due_on") or source_public_id.rsplit(":", 1)[-1])
-    today = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
-    due_on = max(original_due_on, today)
+    due_on = max(original_due_on, today_iso)
     plant_ids = _parse_string_list(outcome["plant_ids_json"])
     if target_id and target_id not in plant_ids:
         plant_ids.insert(0, target_id)
@@ -1103,6 +1155,7 @@ def reconcile_rain_watering_outcomes(
     now_ms: int,
 ) -> dict[str, int]:
     """Align rain-suppressed and rain-rescheduled watering with current coverage."""
+    today = _effective_garden_today_iso(now_ms)
     outcomes = db.execute(
         """
         SELECT id, public_id, outcome_type, source_id, source_public_id, target_id,
@@ -1132,7 +1185,6 @@ def reconcile_rain_watering_outcomes(
         original_due_on = str(metadata.get("due_on") or "")
         if not original_due_on:
             continue
-        today = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
         proposed_recovery_on = max(original_due_on, today)
         covering_alert = _rain_alert_covering_date(db, garden_id, original_due_on)
         if covering_alert is None and proposed_recovery_on != original_due_on:
@@ -1205,6 +1257,12 @@ def reconcile_rain_watering_outcomes(
                     int(outcome["id"]),
                 ),
             )
+            _refresh_task_notification_projection(
+                db,
+                garden_id=garden_id,
+                task_public_id=str(task["public_id"]),
+                now_ms=now_ms,
+            )
             adjusted += 1
             continue
 
@@ -1246,6 +1304,7 @@ def reconcile_rain_watering_outcomes(
             outcome=outcome,
             metadata=metadata,
             now_ms=now_ms,
+            today_iso=today,
         )
         if recovered_task is None:
             _update_rain_outcome_lifecycle(
@@ -1272,6 +1331,12 @@ def reconcile_rain_watering_outcomes(
             ),
             task_public_id=task_public_id,
             due_on=due_on,
+            now_ms=now_ms,
+        )
+        _refresh_task_notification_projection(
+            db,
+            garden_id=garden_id,
+            task_public_id=task_public_id,
             now_ms=now_ms,
         )
         recovered += 1

@@ -157,6 +157,16 @@ function reconcileSelectionWithVisibleTasks(): void {
   );
 }
 
+function retireSuccessfulTaskActions(taskIds: readonly string[]): void {
+  const retiredIds = new Set(taskIds);
+  const previousLength = taskItems.length;
+  taskItems = taskItems.filter((task) => !retiredIds.has(task.id));
+  tasksTotal = Math.max(0, tasksTotal - (previousLength - taskItems.length));
+  for (const taskId of retiredIds) selectedTaskIds.delete(taskId);
+  reconcileSelectionWithVisibleTasks();
+  renderTasksView();
+}
+
 function setTaskOperation(next: "idle" | "generate" | "regenerate"): void {
   taskOperation = next;
   syncTaskHeaderButtons();
@@ -486,6 +496,7 @@ async function discardOfflineTaskAction(state: OfflineTaskActionState): Promise<
 }
 
 async function retryOfflineTaskAction(state: OfflineTaskActionState): Promise<void> {
+  if (!ctx.ensureWriteAccess()) return;
   const changed = await retryDraft(state.draftId);
   if (!changed) return;
   await refreshTaskOfflineActions(true);
@@ -696,7 +707,7 @@ function renderTaskBatchBar(): void {
       openTaskDateDialog({
         title: t("tasks.snooze_prompt") as string,
         defaultDate: policy.defaultDate,
-        onConfirm: (date, confirmOutsideWindow) => void handleBatchTaskAction("snooze", {
+        onConfirm: (date, confirmOutsideWindow) => handleBatchTaskAction("snooze", {
           snooze_until: date,
           ...(confirmOutsideWindow ? { confirm_outside_window: true } : {}),
         }),
@@ -718,7 +729,7 @@ function renderTaskBatchBar(): void {
         title: t("tasks.reschedule_prompt") as string,
         defaultDate: firstSelectedTask?.due_on ?? formatLocalDate(new Date()),
         onConfirm: (date) =>
-          void handleBatchTaskAction("reschedule", { reschedule_to: date }),
+          handleBatchTaskAction("reschedule", { reschedule_to: date }),
       });
     });
     bar.appendChild(rescheduleBtn);
@@ -859,6 +870,7 @@ async function handleTaskAction(
         "success",
       );
     }
+    retireSuccessfulTaskActions([taskId]);
     void ctx.refreshBadgeCounts();
     void loadTasks();
     return true;
@@ -873,15 +885,15 @@ async function handleBatchTaskAction(
   action: TaskActionRequest["action"],
   extra?: TaskActionExtra,
   taskIdOverride?: string[],
-): Promise<void> {
+): Promise<boolean> {
   const requestGardenId = getActiveGardenContext();
-  if (!ctx.ensureWriteAccess()) return;
+  if (!ctx.ensureWriteAccess()) return false;
   const taskIds = taskIdOverride ?? getSelectedVisibleTaskIds();
   if (taskIds.length === 0) {
     ctx.showToast(t("tasks.batch_none_selected"), "error");
-    return;
+    return false;
   }
-  if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return;
+  if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return false;
   if (!ctx.isOnline()) {
     try {
       await enqueueTaskActionBatch(taskIds.map((taskId) => {
@@ -894,9 +906,9 @@ async function handleBatchTaskAction(
       }));
     } catch (err) {
       ctx.showToast(offlineTaskActionErrorMessage(err), "error");
-      return;
+      return false;
     }
-    if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return;
+    if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return false;
     selectedTaskIds.clear();
     await refreshTaskOfflineActions(true, requestGardenId);
     ctx.showToast(
@@ -904,12 +916,12 @@ async function handleBatchTaskAction(
       "success",
     );
     void ctx.refreshOfflineIndicator();
-    return;
+    return true;
   }
   const batchTasks: GardenTask[] = [];
   for (const taskId of taskIds) {
     const task = taskItems.find((candidate) => candidate.id === taskId);
-    if (!task) return;
+    if (!task) return false;
     batchTasks.push(task);
   }
   try {
@@ -917,17 +929,20 @@ async function handleBatchTaskAction(
       taskIds,
       withBatchTaskActionRevisions(batchTasks, { action, ...extra }),
     );
-    if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return;
+    if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return false;
     selectedTaskIds.clear();
     ctx.showToast(
       t("tasks.batch_result", { count: result.updated }),
       "success",
     );
+    retireSuccessfulTaskActions(taskIds);
     void ctx.refreshBadgeCounts();
     void loadTasks();
+    return true;
   } catch (err) {
-    if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return;
+    if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return false;
     ctx.showToast(getApiErrorMessage(err), "error");
+    return false;
   }
 }
 
@@ -948,7 +963,7 @@ function completeTask(task: GardenTask): void {
     buildPlantNameMap(ctx.getPlants()),
     (body) => {
       const { action: _action, ...extra } = body;
-      void handleTaskAction(task, "complete", extra);
+      return handleTaskAction(task, "complete", extra);
     },
   );
 }
@@ -984,11 +999,11 @@ async function snoozeTaskWithPolicy(
   snoozeUntil: string,
   options: SnoozeTaskOptions = {},
   confirmOutsideWindow = false,
-): Promise<void> {
+): Promise<boolean> {
   const safety = taskSnoozeDateSafety(task, snoozeUntil);
   if (safety.blocked) {
     ctx.showToast(safety.message ?? t("tasks.snooze_prompt"), "error");
-    return;
+    return false;
   }
   const online = ctx.isOnline();
   const ok = await handleTaskAction(
@@ -1006,7 +1021,7 @@ async function snoozeTaskWithPolicy(
       showSuccessToast: false,
     },
   );
-  if (!ok) return;
+  if (!ok) return false;
   if (!online) {
     ctx.showToast(t("offline.draft_saved"), "success");
   }
@@ -1026,6 +1041,7 @@ async function snoozeTaskWithPolicy(
       durationMs: notice.durationMs,
     },
   );
+  return true;
 }
 
 function openSnoozeDateDialog(
@@ -1042,7 +1058,7 @@ function openSnoozeDateDialog(
     title: t("tasks.snooze_prompt") as string,
     defaultDate,
     onConfirm: (date, confirmOutsideWindow) =>
-      void snoozeTaskWithPolicy(task, date, options, confirmOutsideWindow),
+      snoozeTaskWithPolicy(task, date, options, confirmOutsideWindow),
     warning: policy.manualDateMessage,
     requireManualDate: policy.requireManualDate,
     maxDate: policy.maxDate,
@@ -1068,7 +1084,7 @@ function openRescheduleDialog(task: GardenTask): void {
     title: t("tasks.reschedule_prompt") as string,
     defaultDate: task.due_on,
     onConfirm: (date) =>
-      void handleTaskAction(task, "reschedule", {
+      handleTaskAction(task, "reschedule", {
         reschedule_to: date,
       }),
   });

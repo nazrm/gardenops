@@ -1,15 +1,18 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { assert, visible } = require("./completeJourneyAssertions.cjs");
 
+const ROOT = path.resolve(__dirname, "..", "..");
 const NETWORK_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:"]);
 const LOCAL_PROTOCOLS = new Set(["about:", "blob:", "data:"]);
 const PIXEL_7_VIEWPORT = Object.freeze({ height: 839, width: 412 });
 const ROUTE_GUARD_PROBE_URL = "http://192.0.2.1/api/complete-journey-route-guard";
+const TRACE_CONTROLS = new WeakMap();
 const EXPECTED_CONSOLE_DIAGNOSTIC_CONTEXTS = new Set([
   "calendar-feed-revoked",
   "map-import-rejected",
@@ -239,6 +242,13 @@ async function createGuardedContext(
   const pendingBlockedConsoleDiagnostics = [];
   let diagnosticSequence = 0;
   let authenticated = false;
+  let traceStarted = false;
+  const startTracing = async () => {
+    if (traceStarted) return;
+    await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
+    traceStarted = true;
+  };
+  TRACE_CONTROLS.set(context, { startTracing });
   await context.route("**/*", async (route) => {
     const requestUrl = route.request().url();
     if (!isAllowedUrl(requestUrl, allowedOrigins)) {
@@ -347,7 +357,6 @@ async function createGuardedContext(
       }
     });
   });
-  await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
   return {
     context,
     diagnostics,
@@ -361,21 +370,36 @@ async function createGuardedContext(
       name: profileName,
       viewport: profile.viewport,
     },
+    startTracing,
     async close(status) {
       const traceName = `${artifactLabel}-${status}.zip`;
       const tracePath = path.join(artifactDir, traceName);
       const stagingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "gardenops-trace-"));
       fs.chmodSync(stagingDirectory, 0o700);
-      const stagedTrace = path.join(stagingDirectory, "trace.zip");
+      const rawTrace = path.join(stagingDirectory, "trace-raw.zip");
+      const sanitizedTrace = path.join(stagingDirectory, "trace-sanitized.zip");
       try {
-        await context.tracing.stop({ path: stagedTrace });
-        fs.copyFileSync(stagedTrace, tracePath, fs.constants.COPYFILE_EXCL);
+        // A pre-authentication failure still gets a minimal trace, which is sanitized before retention.
+        await startTracing();
+        await context.tracing.stop({ path: rawTrace });
+        execFileSync(path.join(ROOT, ".venv", "bin", "python"), [
+          path.join(ROOT, "scripts", "validate_playwright_trace.py"),
+          "--sanitize",
+          rawTrace,
+          sanitizedTrace,
+        ], { stdio: "pipe" });
+        execFileSync(path.join(ROOT, ".venv", "bin", "python"), [
+          path.join(ROOT, "scripts", "validate_playwright_trace.py"),
+          sanitizedTrace,
+        ], { stdio: "pipe" });
+        fs.copyFileSync(sanitizedTrace, tracePath, fs.constants.COPYFILE_EXCL);
         const traceStat = fs.lstatSync(tracePath);
         assert(traceStat.isFile() && !traceStat.isSymbolicLink() && traceStat.nlink === 1,
           "Trace output must be a regular, single-link file");
         fs.chmodSync(tracePath, 0o600);
         const sha256 = crypto.createHash("sha256").update(fs.readFileSync(tracePath)).digest("hex");
         await context.close();
+        TRACE_CONTROLS.delete(context);
         return { name: traceName, sha256 };
       } finally {
         fs.rmSync(stagingDirectory, { force: true, recursive: true });
@@ -444,12 +468,47 @@ async function authenticate(page, username, password) {
   assert(profile.status === 200, "Session profile endpoint did not return 200");
   assert(profile.body.username === username, "Session profile does not match fixture user");
   assert(profile.body.auth_type === "session", "Fixture user is not session-authenticated");
+  const traceControl = TRACE_CONTROLS.get(page.context());
+  assert(traceControl, "Authenticated browser context has no guarded trace control");
+  await traceControl.startTracing();
   return profile.body;
 }
 
 function createApiRecorder(page, actor = {}) {
   const records = [];
   const recordsByRequest = new Map();
+  const pendingResponseReads = new Set();
+  const taskActions = new Set(["complete", "reschedule", "skip", "snooze"]);
+  const safeRevision = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const taskActionEvidence = (request, pathname) => {
+    let body;
+    try {
+      body = request.postDataJSON();
+    } catch {
+      body = null;
+    }
+    if (!body || typeof body !== "object") return null;
+    if (/^\/api\/tasks\/[^/]+\/action$/.test(pathname)) {
+      return {
+        action: taskActions.has(body.action) ? body.action : null,
+        expectedUpdatedAtMs: safeRevision(body.expected_updated_at_ms),
+        responseUpdatedAtMs: null,
+      };
+    }
+    if (pathname === "/api/tasks/batch-action") {
+      const taskIds = Array.isArray(body.task_ids) ? body.task_ids.map(String) : [];
+      const revisions = body.expected_updated_at_ms_by_task_id;
+      return {
+        action: taskActions.has(body.action) ? body.action : null,
+        expectedRevisions: taskIds.map((taskId) => ({
+          expectedUpdatedAtMs: safeRevision(revisions?.[taskId]),
+          taskId,
+        })).sort((left, right) => left.taskId.localeCompare(right.taskId)),
+        responseUpdatedCount: null,
+      };
+    }
+    return null;
+  };
   const attachPage = (targetPage) => {
     targetPage.on("request", (request) => {
       let parsed;
@@ -471,6 +530,7 @@ function createApiRecorder(page, actor = {}) {
         path: parsed.pathname,
         requestId: null,
         statusCode: null,
+        taskAction: request.method() === "POST" ? taskActionEvidence(request, parsed.pathname) : null,
       };
       records.push(record);
       recordsByRequest.set(request, record);
@@ -480,6 +540,20 @@ function createApiRecorder(page, actor = {}) {
       if (record) {
         record.requestId = response.headers()["x-request-id"] || null;
         record.statusCode = response.status();
+        if (record.taskAction) {
+          const responseRead = Promise.resolve()
+            .then(() => response.json())
+            .then((body) => {
+              if (Object.hasOwn(record.taskAction, "responseUpdatedAtMs")) {
+                record.taskAction.responseUpdatedAtMs = safeRevision(body?.updated_at_ms);
+              } else {
+                record.taskAction.responseUpdatedCount = safeRevision(body?.updated);
+              }
+            })
+            .catch(() => {})
+            .finally(() => pendingResponseReads.delete(responseRead));
+          pendingResponseReads.add(responseRead);
+        }
       }
     });
     targetPage.on("requestfailed", (request) => {
@@ -492,6 +566,11 @@ function createApiRecorder(page, actor = {}) {
     attachPage,
     mark: () => records.length,
     records,
+    settle: async () => {
+      while (pendingResponseReads.size > 0) {
+        await Promise.all([...pendingResponseReads]);
+      }
+    },
     since: (mark) => records.slice(mark),
   };
 }

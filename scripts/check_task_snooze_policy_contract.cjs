@@ -13,8 +13,10 @@ for (const taskType of ["observe_bloom", "prune", "fertilize"]) {
     throw new Error(`Missing mapped snooze policy for ${taskType}`);
   }
 }
-if (!source.includes("window_end_on")) {
-  throw new Error("Snooze policy must account for window_end_on");
+for (const windowBound of ["window_start_on", "window_end_on"]) {
+  if (!source.includes(windowBound)) {
+    throw new Error(`Snooze policy must account for ${windowBound}`);
+  }
 }
 if (!source.includes("formatLocalDate")) {
   throw new Error("Snooze policy must format local calendar dates");
@@ -44,6 +46,10 @@ for (const requiredFragment of [
   "safety?.blocked",
   "safety?.confirmationRequired",
   "confirmDialog(",
+  "await onConfirm(",
+  "result === false",
+  "tasks.dialog_submit_failed",
+  "okBtn.disabled = pending",
 ]) {
   if (!snoozeFlowSource.includes(requiredFragment)) {
     throw new Error(`Task date dialog is missing selected-date safety: ${requiredFragment}`);
@@ -75,6 +81,16 @@ if (!completionSource.includes("not_seen_blooming_this_season")) {
 }
 if (completionSource.includes("ids.slice(0, 5)")) {
   throw new Error("Large grouped completion must not silently preselect only five plants");
+}
+for (const requiredFragment of [
+  "await onConfirm(body)",
+  "result === false",
+  "tasks.dialog_submit_failed",
+  "confirm.disabled = submitting",
+]) {
+  if (!completionSource.includes(requiredFragment)) {
+    throw new Error(`Completion dialog must await recoverable submission: ${requiredFragment}`);
+  }
 }
 
 for (const relativePath of [

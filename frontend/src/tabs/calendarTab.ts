@@ -148,6 +148,34 @@ function setCalendarDataState(
   }
 }
 
+function clearUnavailableCalendarEvents(removeRenderedEvents = false): void {
+  const root = document.getElementById("calendar-root");
+  const hadCalendarFocus = document.activeElement instanceof HTMLElement
+    && root instanceof HTMLElement
+    && root.contains(document.activeElement);
+  currentEventsById.clear();
+  selectedEventId = null;
+  updateSummary(0);
+  renderDetail();
+  if (removeRenderedEvents) calendar?.removeAllEvents();
+  if (hadCalendarFocus) {
+    document.getElementById("calendar-today-btn")?.focus();
+  }
+}
+
+function retireSuccessfulCalendarTaskAction(taskId: string): void {
+  let removed = 0;
+  for (const [eventId, event] of currentEventsById) {
+    if (event.kind !== "task" || event.target_id !== taskId) continue;
+    currentEventsById.delete(eventId);
+    calendar?.getEventById(eventId)?.remove();
+    if (selectedEventId === eventId) selectedEventId = null;
+    removed += 1;
+  }
+  if (removed > 0) updateSummary(Math.max(0, currentSummaryCount - removed));
+  renderDetail(selectedEventId ? currentEventsById.get(selectedEventId) : undefined);
+}
+
 function applyCalendarPreferences(result: CalendarPreferencesResponse): void {
   availableSources = result.available_sources;
   presets = result.presets;
@@ -986,7 +1014,7 @@ async function loadCalendarTaskForSnooze(event: CalendarEvent): Promise<GardenTa
   if (!ctx.isOnline()) {
     const task = getCachedCalendarTaskForSnooze(event);
     if (!task) {
-      ctx.showToast(t("calendar.offline_unavailable"), "error");
+      ctx.showToast(t("calendar.offline_snooze_unavailable"), "error");
     }
     return task;
   }
@@ -1066,13 +1094,17 @@ function actionButton(
   label: string,
   onClick: () => void,
   disabled = false,
+  disabledReason = t("offline.indicator_offline") as string,
 ): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "btn btn-sm";
   button.textContent = label;
   button.disabled = disabled;
-  if (disabled) button.title = t("offline.indicator_offline");
+  if (disabled) {
+    button.title = disabledReason;
+    button.setAttribute("aria-label", `${label}. ${disabledReason}`);
+  }
   button.addEventListener("click", onClick);
   return button;
 }
@@ -1093,6 +1125,7 @@ async function discardCalendarOfflineAction(
 async function retryCalendarOfflineAction(
   state: OfflineTaskActionState,
 ): Promise<void> {
+  if (!ctx.ensureWriteAccess()) return;
   const changed = await retryDraft(state.draftId);
   if (!changed) return;
   await refreshCalendarTaskActions();
@@ -1337,7 +1370,7 @@ function renderDetail(event?: CalendarEvent): void {
         void retryCalendarOfflineAction(offlineAction);
       }));
     }
-    if (ctx.canWrite()) {
+    if (ctx.canWrite() || offlineAction.status === "failed") {
       recovery.appendChild(actionButton(t("offline.discard"), () => {
         void discardCalendarOfflineAction(offlineAction);
       }));
@@ -1442,6 +1475,8 @@ function renderDetail(event?: CalendarEvent): void {
     const snoozePolicy = cachedSnoozeTask
       ? taskSnoozePolicy(cachedSnoozeTask)
       : undefined;
+    const offlineSnoozeUnavailable = !ctx.isOnline() && !cachedSnoozeTask;
+    const offlineSnoozeReason = t("calendar.offline_snooze_unavailable") as string;
     const onSnoozeDate = () => void openCalendarTaskSnoozeDateDialog(event);
     const taskForCompletion = calendarTaskForCompletion(event);
     actions.appendChild(
@@ -1459,12 +1494,22 @@ function renderDetail(event?: CalendarEvent): void {
       }),
     );
     actions.appendChild(
-      actionButton(snoozePolicy?.label ?? t("tasks.action_snooze"), () => {
-        void snoozeCalendarTask(event);
-      }),
+      actionButton(
+        snoozePolicy?.label ?? t("tasks.action_snooze"),
+        () => {
+          void snoozeCalendarTask(event);
+        },
+        offlineSnoozeUnavailable,
+        offlineSnoozeReason,
+      ),
     );
     actions.appendChild(
-      actionButton(t("tasks.snooze_change_date"), onSnoozeDate),
+      actionButton(
+        t("tasks.snooze_change_date"),
+        onSnoozeDate,
+        offlineSnoozeUnavailable,
+        offlineSnoozeReason,
+      ),
     );
     actions.appendChild(
       actionButton(t("tasks.action_reschedule"), () => {
@@ -1525,6 +1570,7 @@ async function runCalendarTaskActionForTarget(
     if (options.showSuccessToast !== false) {
       ctx.showToast(t("tasks.action_success", { action: body.action }), "success");
     }
+    retireSuccessfulCalendarTaskAction(target.taskId);
     void ctx.refreshBadgeCounts();
     await loadCalendar();
     return true;
@@ -1571,9 +1617,7 @@ function completeCalendarTask(event: CalendarEvent): void {
     }
   }
   const plantNames = new Map(ctx.getPlants().map((plant) => [plant.plt_id, plant.name]));
-  openTaskCompletionDialog(task, plantNames, (body) => {
-    void runTaskAction(event, body);
-  });
+  openTaskCompletionDialog(task, plantNames, (body) => runTaskAction(event, body));
 }
 
 async function snoozeCalendarTask(event: CalendarEvent): Promise<void> {
@@ -1638,7 +1682,7 @@ function openCalendarTaskDateDialogForTarget(
   openTaskDateDialog({
     title: t("tasks.reschedule_prompt") as string,
     defaultDate,
-    onConfirm: (date) => void runCalendarTaskActionForTarget(
+    onConfirm: (date) => runCalendarTaskActionForTarget(
       target,
       { action: "reschedule", reschedule_to: date },
     ),
@@ -1674,7 +1718,7 @@ function openCalendarTaskSnoozeDateDialogForTarget(
     requireManualDate: policy.requireManualDate,
     maxDate: policy.maxDate,
     getDateSafety: (date) => taskSnoozeDateSafety(task, date),
-    onConfirm: (date, confirmOutsideWindow) => void runCalendarTaskActionForTarget(
+    onConfirm: (date, confirmOutsideWindow) => runCalendarTaskActionForTarget(
       target,
       {
         action: "snooze",
@@ -1899,9 +1943,7 @@ function ensureCalendarInstance(): Calendar {
             calendarEventsCacheKey(gardenId, query),
           );
           if (!cached) {
-            currentEventsById.clear();
-            selectedEventId = null;
-            renderDetail();
+            clearUnavailableCalendarEvents();
             setCalendarDataState("unavailable");
             successCallback([]);
             return;
@@ -1969,8 +2011,9 @@ function ensureCalendarInstance(): Calendar {
         );
       } catch (err) {
         if (!isCurrentCalendarEventsRequest(request)) return;
+        clearUnavailableCalendarEvents();
         setCalendarDataState("unavailable");
-        failureCallback(err as Error);
+        successCallback([]);
         ctx.showToast(getApiErrorMessage(err), "error");
       } finally {
         if (isCurrentCalendarEventsRequest(request)) setLoading(false);
@@ -2157,9 +2200,7 @@ export async function loadCalendar(): Promise<void> {
       if (offline) {
         const cached = calendarPreferencesCache.get(gardenId);
         if (!cached) {
-          currentEventsById.clear();
-          calendar?.removeAllEvents();
-          renderDetail();
+          clearUnavailableCalendarEvents(true);
           setCalendarDataState("unavailable");
           return;
         }
@@ -2196,6 +2237,7 @@ export async function loadCalendar(): Promise<void> {
     if (!offline) await refreshSubscriptions(request);
   } catch (err) {
     if (!isCurrentCalendarRequest(request)) return;
+    clearUnavailableCalendarEvents(true);
     setCalendarDataState("unavailable");
     ctx.showToast(getApiErrorMessage(err), "error");
   }

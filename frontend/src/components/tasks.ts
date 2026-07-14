@@ -263,7 +263,10 @@ function createTaskCard(
       retry.addEventListener("click", () => cbs.onRetryOfflineAction?.(offlineAction));
       recovery.appendChild(retry);
     }
-    if (cbs.canWrite !== false && cbs.onDiscardOfflineAction) {
+    if (
+      cbs.onDiscardOfflineAction
+      && (cbs.canWrite !== false || offlineAction.status === "failed")
+    ) {
       const discard = document.createElement("button");
       discard.type = "button";
       discard.className = "task-action-btn task-offline-discard";

@@ -165,14 +165,20 @@ export function taskSnoozeDateSafety(
     };
   }
 
-  if (
-    task.window_end_on
-    && (task.task_type === "prune" || task.task_type === "fertilize")
-    && snoozeUntil > task.window_end_on
-  ) {
+  const windowStart = dateFromValue(task.window_start_on);
+  if (windowStart && snoozeUntil < windowStart) {
     return {
       confirmationRequired: true,
-      message: String(t("tasks.snooze_window_warning", { date: task.window_end_on })),
+      message: String(t("tasks.snooze_window_start_warning", { date: windowStart })),
+      confirmationLabel: String(t("tasks.snooze_confirm_anyway")),
+    };
+  }
+
+  const windowEnd = dateFromValue(task.window_end_on);
+  if (windowEnd && snoozeUntil > windowEnd) {
+    return {
+      confirmationRequired: true,
+      message: String(t("tasks.snooze_window_warning", { date: windowEnd })),
       confirmationLabel: String(t("tasks.snooze_confirm_anyway")),
     };
   }

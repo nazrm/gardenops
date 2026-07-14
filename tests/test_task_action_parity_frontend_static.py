@@ -87,10 +87,7 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         quick_actions = frontend_source("components/quickActions.ts")
         quick_feature = frontend_source("features/quickActionsFeature.ts")
 
-        self.assertIn(
-            'actionButton(snoozePolicy?.label ?? t("tasks.action_snooze")',
-            calendar,
-        )
+        self.assertIn('snoozePolicy?.label ?? t("tasks.action_snooze")', calendar)
         self.assertIn('"action-snooze",\n        taskSnoozePolicy(task).label', plot)
         self.assertIn("snooze_label: taskSnoozePolicy(tk).label", quick_feature)
         self.assertIn("task.snooze_label", quick_actions)
@@ -200,7 +197,8 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
             self.assertIn('t("tasks.complete_grouped_one_by_one")', source)
         for source in (tasks_tab, calendar, plot):
             self.assertIn("openTaskCompletionDialog", source)
-        self.assertIn("openTaskCompletionDialog(task, plantNames", quick_actions)
+        self.assertIn("openTaskCompletionDialog(", quick_actions)
+        self.assertIn("(body) => completeQuickTask(task, body)", quick_actions)
 
     def test_grouped_completion_requires_explicit_plant_selection_on_every_surface(self) -> None:
         completion = frontend_source("features/taskCompletionFlow.ts")
@@ -209,7 +207,11 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         plot = frontend_source("components/plotInteractions.ts")
         quick_actions = frontend_source("features/quickActionsFeature.ts")
 
-        self.assertIn("confirm.disabled = selectionRequired && selected.size === 0", completion)
+        self.assertIn(
+            "const selectionMissing = selectionRequired && selected.size === 0",
+            completion,
+        )
+        self.assertIn("confirm.disabled = submitting || selectionMissing", completion)
         self.assertIn('t("tasks.complete_select_one")', completion)
         for source in (tasks_tab, calendar, plot, quick_actions):
             self.assertIn("needsCompletionDialog", source)
@@ -275,6 +277,49 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         self.assertIn('event.key !== "Escape"', feature)
         self.assertIn("fab.focus()", feature)
         self.assertIn("onClose: () => focusQuickActionSheet(true)", feature)
+
+    def test_successful_actions_retire_stale_controls_before_refresh(self) -> None:
+        tasks = frontend_source("tabs/tasksTab.ts")
+        calendar = frontend_source("tabs/calendarTab.ts")
+        quick = frontend_source("features/quickActionsFeature.ts")
+        plot = frontend_source("components/plotInteractions.ts")
+
+        self.assertIn("function retireSuccessfulTaskActions", tasks)
+        self.assertLess(
+            tasks.index("retireSuccessfulTaskActions([taskId]);"),
+            tasks.index("void loadTasks();", tasks.index("retireSuccessfulTaskActions([taskId]);")),
+        )
+        self.assertIn("function retireSuccessfulCalendarTaskAction", calendar)
+        self.assertIn("calendar?.getEventById(eventId)?.remove();", calendar)
+        self.assertIn("clearUnavailableCalendarEvents();", calendar)
+        self.assertIn("successCallback([]);", calendar)
+        self.assertIn("function retireQuickTaskControls", quick)
+        self.assertIn("controls.forEach((control) => control.remove())", quick)
+        self.assertIn("card.remove();", plot)
+        self.assertIn('appendPlotTaskPreviewDataState(body, "unavailable")', plot)
+        self.assertIn("container.replaceChildren(section);", plot)
+
+    def test_quick_actions_preserve_snooze_view_and_correction_on_connectivity(self) -> None:
+        feature = frontend_source("features/quickActionsFeature.ts")
+
+        self.assertIn('quickActionView: "home" | "complete" | "snooze"', feature)
+        self.assertIn("if (quickActionSheetOpen) renderCurrentQuickActionView();", feature)
+        self.assertIn('if (quickActionView === "snooze")', feature)
+        self.assertIn("void renderTaskQuickSnoozeView();", feature)
+        self.assertIn("quickSnoozeCorrection", feature)
+        self.assertIn("expiresAtMs", feature)
+        self.assertIn("appendStoredQuickSnoozeCorrection(content);", feature)
+
+    def test_plot_bottom_sheet_peek_hides_content_and_focuses_the_handle(self) -> None:
+        sheet = frontend_source("components/bottomSheet.ts")
+        styles = frontend_source("style.css")
+
+        self.assertIn('sheetContent.className = "sheet-content"', sheet)
+        self.assertIn("content.hidden = isPeek", sheet)
+        self.assertIn('content.toggleAttribute("inert", isPeek)', sheet)
+        self.assertIn('content.setAttribute("aria-hidden", isPeek ? "true" : "false")', sheet)
+        self.assertIn("if (isPeek) handle.focus({ preventScroll: true });", sheet)
+        self.assertIn(".sheet-content {", styles)
 
 
 if __name__ == "__main__":

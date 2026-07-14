@@ -28,6 +28,7 @@ let ctx: AppContext;
 let notificationsInitialized = false;
 
 let notificationItems: NotificationEvent[] = [];
+let notificationItemsView: "inbox" | "log" | null = null;
 let notificationUnreadCount = 0;
 let notificationPanelOpen = false;
 let notificationPanelView: "inbox" | "log" = "inbox";
@@ -102,6 +103,7 @@ function finishNotificationMutation(
 
 function clearNotificationState(): void {
   notificationItems = [];
+  notificationItemsView = null;
   notificationUnreadCount = 0;
   document.getElementById("notification-panel")?.replaceChildren();
   updateNotificationBadge();
@@ -367,7 +369,7 @@ function renderCurrentNotificationPanel(): void {
     : null;
   renderNotificationPanel(
     panel,
-    notificationItems,
+    notificationItemsView === notificationPanelView ? notificationItems : [],
     notificationUnreadCount,
     {
       onClose: () => closeNotificationPanel(true),
@@ -733,9 +735,19 @@ async function loadNotifications(): Promise<void> {
       result.notifications,
       view,
     );
+    notificationItemsView = view;
     renderCurrentNotificationPanel();
   } catch (err) {
-    if (!isCurrentNotificationRequest(request)) return;
+    if (
+      loadVersion !== notificationItemsLoadVersion
+      || notificationPanelView !== view
+      || !isCurrentNotificationRequest(request)
+    ) {
+      return;
+    }
+    notificationItems = [];
+    notificationItemsView = view;
+    renderCurrentNotificationPanel();
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
@@ -778,6 +790,7 @@ async function showNotificationPreferences(): Promise<void> {
           );
           notificationPanelView = "inbox";
           notificationPanelMode = "list";
+          renderCurrentNotificationPanel();
           await ctx.refreshBadgeCounts();
           await loadNotifications();
           window.requestAnimationFrame(() => {

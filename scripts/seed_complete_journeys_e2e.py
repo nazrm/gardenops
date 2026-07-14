@@ -3054,6 +3054,78 @@ def _domain_table_state(conn) -> dict[str, dict[str, Any]]:
     state: dict[str, dict[str, Any]] = {}
     for row in rows:
         table = str(row["tablename"])
+        identity_candidates = conn.execute(
+            """
+            SELECT candidate.indisprimary,
+                   array_agg(attribute.attname ORDER BY key_column.ordinality) AS columns
+            FROM pg_index candidate
+            JOIN LATERAL unnest(candidate.indkey::smallint[]) WITH ORDINALITY
+              AS key_column(attnum, ordinality)
+              ON key_column.ordinality <= candidate.indnkeyatts
+            JOIN pg_attribute attribute
+              ON attribute.attrelid = candidate.indrelid
+             AND attribute.attnum = key_column.attnum
+            WHERE candidate.indrelid = to_regclass(%s)
+              AND candidate.indisunique
+              AND candidate.indpred IS NULL
+              AND candidate.indexprs IS NULL
+              AND key_column.attnum > 0
+            GROUP BY candidate.indexrelid, candidate.indisprimary
+            """,
+            (f"public.{table}",),
+        ).fetchall()
+        safe_natural_columns = {"key", "operation_id", "plt_id", "plot_id", "public_id", "slug"}
+
+        def identity_score(candidate: dict[str, Any]) -> tuple[int, int, tuple[str, ...]]:
+            columns = tuple(str(value) for value in candidate["columns"])
+            contains_sensitive_column = any(
+                re.search(r"(?:password|secret|token|hash)", column, re.IGNORECASE)
+                for column in columns
+            )
+            natural = any(column in safe_natural_columns for column in columns)
+            return (
+                3
+                if contains_sensitive_column
+                else 0
+                if "public_id" in columns
+                else 1
+                if natural
+                else 2,
+                0 if bool(candidate["indisprimary"]) else 1,
+                columns,
+            )
+
+        if not identity_candidates:
+            raise RuntimeError(
+                f"Complete journey domain table has no stable unique identity: {table}"
+            )
+        identity_columns = [
+            str(value) for value in min(identity_candidates, key=identity_score)["columns"]
+        ]
+        projected_rows = conn.execute(
+            sql.SQL("SELECT to_jsonb(row_value) AS payload FROM {} AS row_value").format(
+                sql.Identifier(table)
+            )
+        ).fetchall()
+        row_projections: list[dict[str, str]] = []
+        for projected in projected_rows:
+            payload = projected["payload"]
+            if not isinstance(payload, dict):
+                raise RuntimeError(f"Complete journey row projection is invalid: {table}")
+            identity = {column: payload.get(column) for column in identity_columns}
+            identity_bytes = json.dumps(identity, separators=(",", ":"), sort_keys=True).encode(
+                "utf-8"
+            )
+            row_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+            row_projections.append(
+                {
+                    "identity_digest": sha256(identity_bytes).hexdigest(),
+                    "row_digest": sha256(row_bytes).hexdigest(),
+                }
+            )
+        row_projections.sort(key=lambda value: (value["identity_digest"], value["row_digest"]))
+        if len({value["identity_digest"] for value in row_projections}) != len(row_projections):
+            raise RuntimeError(f"Complete journey domain identity is not unique: {table}")
         result = conn.execute(
             sql.SQL(
                 """
@@ -3078,7 +3150,9 @@ def _domain_table_state(conn) -> dict[str, dict[str, Any]]:
         state[table] = {
             "count": int(result["count"] if result else 0),
             "digest": str(result["digest"] if result else ""),
+            "identity_columns": identity_columns,
             "row_digests": [str(value) for value in (result["row_digests"] or [])],
+            "row_projections": row_projections,
         }
     return state
 

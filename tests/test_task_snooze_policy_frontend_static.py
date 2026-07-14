@@ -38,15 +38,48 @@ class TaskSnoozePolicyFrontendStaticTests(unittest.TestCase):
         self.assertIn("safety?.confirmationRequired", flow)
         self.assertIn("confirmDialog(", flow)
 
+    def test_persisted_windows_require_confirmation_at_both_bounds_for_every_type(self) -> None:
+        policy = frontend_source("features/taskSnoozePolicy.ts")
+        safety = policy.split("export function taskSnoozeDateSafety", 1)[1].split(
+            "export function taskSnoozePolicy", 1
+        )[0]
+
+        self.assertIn("dateFromValue(task.window_start_on)", safety)
+        self.assertIn("snoozeUntil < windowStart", safety)
+        self.assertIn("dateFromValue(task.window_end_on)", safety)
+        self.assertIn("snoozeUntil > windowEnd", safety)
+        self.assertNotIn('task.task_type === "prune"', safety)
+        self.assertNotIn('task.task_type === "fertilize"', safety)
+
+    def test_task_dialogs_await_submission_and_keep_recoverable_failure_state(self) -> None:
+        date_flow = frontend_source("features/taskSnoozeFlow.ts")
+        completion_flow = frontend_source("features/taskCompletionFlow.ts")
+
+        for source, awaited_call, pending_guard in (
+            (date_flow, "await onConfirm(", "okBtn.disabled = pending"),
+            (completion_flow, "await onConfirm(body)", "confirm.disabled = submitting"),
+        ):
+            self.assertIn("Promise<boolean | void>", source)
+            self.assertIn(awaited_call, source)
+            self.assertIn("result === false", source)
+            self.assertIn('t("tasks.dialog_submit_failed")', source)
+            self.assertIn(pending_guard, source)
+            self.assertIn("dialog.isConnected", source)
+
+        self.assertIn('class="task-date-dialog-feedback"', date_flow)
+        self.assertIn("input.value", date_flow)
+        self.assertIn("submitError", completion_flow)
+
     def test_confirmed_window_snoozes_carry_the_server_confirmation_bit(self) -> None:
         api = frontend_source("services/api.ts")
         flow = frontend_source("features/taskSnoozeFlow.ts")
         replay = frontend_source("features/offlineFeature.ts")
 
         self.assertIn("confirm_outside_window?: boolean;", api)
-        self.assertIn("onConfirm: (date: string, confirmOutsideWindow?: boolean) => void;", flow)
+        self.assertIn("Promise<boolean | void>", flow)
         self.assertIn("if (!input.value || !input.reportValidity() || safety?.blocked)", flow)
-        self.assertIn("onConfirm(input.value, true);", flow)
+        self.assertIn("confirmOutsideWindow = true;", flow)
+        self.assertIn("confirmOutsideWindow || undefined", flow)
         self.assertIn('payload["confirm_outside_window"] === true', replay)
         self.assertIn("body.confirm_outside_window = true;", replay)
 
@@ -80,6 +113,7 @@ class TaskSnoozePolicyFrontendStaticTests(unittest.TestCase):
 
         for key in (
             "tasks.snooze_confirm_anyway",
+            "tasks.snooze_window_start_warning",
             "tasks.snooze_weather_date_limit",
             "tasks.snooze_weather_remains_due",
             "tasks.snooze_recurrence_date_limit",

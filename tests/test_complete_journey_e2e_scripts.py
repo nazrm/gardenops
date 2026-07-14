@@ -694,6 +694,16 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
         assert f'"{journey_id}"' in checker_source
 
 
+def test_phase_two_d4_provider_boundary_remains_required() -> None:
+    coverage = (ROOT / "tests" / "journey_coverage.yaml").read_text(encoding="utf-8")
+    d4 = coverage.split("    id: D4\n", 1)[1].split("    id: D5\n", 1)[0]
+
+    assert "    provider: required\n" in d4
+    assert "    provider: proven\n" not in d4
+    assert "Production notification event handling through an exact local SMTP delivery" in d4
+    assert "does not claim that provider boundary" in d4
+
+
 def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None:
     journey_source = (ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs").read_text(
         encoding="utf-8"
@@ -2342,12 +2352,12 @@ const finalRows = {
     { public_id: 'note_delivery_eligible', row_id: 6 },
     { public_id: 'note_delivery_ineligible', row_id: 7 },
     {
-      cleared_at_ms: 1783857600000, clear_reason: 'expired', created_at_ms: 1783857600000,
+      cleared_at_ms: 1783857600000, clear_reason: 'rescheduled', created_at_ms: 1783857600000,
       garden_id: 1, notification_type: 'task_due', public_id: 'note_admin', row_id: 8,
       target_id: 'task-fertilize', target_type: 'task', username: 'admin',
     },
     {
-      cleared_at_ms: 1783857600000, clear_reason: 'expired', created_at_ms: 1783857600000,
+      cleared_at_ms: 1783857600000, clear_reason: 'rescheduled', created_at_ms: 1783857600000,
       garden_id: 1, notification_type: 'task_due', public_id: 'note_editor', row_id: 9,
       target_id: 'task-fertilize', target_type: 'task', username: 'editor',
     },
@@ -2442,7 +2452,12 @@ const {
 const row = (digests, digest) => ({
   count: digests.length,
   digest: digest.repeat(32),
+  identity_columns: ['id'],
   row_digests: [...digests].sort(),
+  row_projections: digests.map((rowDigest, index) => ({
+    identity_digest: (index + 1).toString(16).padStart(64, '0'),
+    row_digest: rowDigest.repeat(2),
+  })),
 });
 const initial = {
   garden_tasks: row(['a'.repeat(32), 'b'.repeat(32)], 'a'),
@@ -2478,19 +2493,28 @@ try {
 def test_whole_table_mutation_accounting_rejects_injected_row_change() -> None:
     script = """
 const { assertWholeTableMutationAccounting } = require('./scripts/check_complete_journeys_e2e.cjs');
-const row = (digests) => ({
-  count: digests.length,
+const row = (entries) => ({
+  count: entries.length,
   digest: 'a'.repeat(32),
-  row_digests: [...digests].sort(),
+  identity_columns: ['id'],
+  row_digests: entries.map((entry) => entry.row.repeat(32)).sort(),
+  row_projections: entries.map((entry) => ({
+    identity_digest: entry.id.repeat(64),
+    row_digest: entry.row.repeat(64),
+  })).sort((left, right) => left.identity_digest.localeCompare(right.identity_digest)),
 });
-const initial = { garden_tasks: row(['1'.repeat(32)]) };
-const final = { garden_tasks: row(['2'.repeat(32)]) };
+const initial = { garden_tasks: row([{ id: '1', row: '1' }, { id: '2', row: '3' }]) };
+const final = { garden_tasks: row([{ id: '1', row: '2' }, { id: '2', row: '3' }]) };
 const accounting = {
   garden_tasks: {
     allow_row_delta: true,
     evidence: 'independent-oracle',
     expected_added: 1,
+    expected_identity_added: 0,
+    expected_identity_removed: 0,
+    expected_identity_updated: 1,
     expected_removed: 1,
+    expected_updated_identity_digests: ['1'.repeat(64)],
   },
 };
 assertWholeTableMutationAccounting(initial, final, new Set(['garden_tasks']), accounting);
@@ -2503,13 +2527,61 @@ try {
 try {
   assertWholeTableMutationAccounting(
     initial,
-    { garden_tasks: row(['2'.repeat(32), '3'.repeat(32)]) },
+    { garden_tasks: row([
+      { id: '1', row: '2' }, { id: '2', row: '3' }, { id: '3', row: '4' },
+    ]) },
     new Set(['garden_tasks']),
     accounting,
   );
   process.exit(5);
 } catch (error) {
   if (!String(error.message).includes('expected_added')) process.exit(6);
+}
+try {
+  assertWholeTableMutationAccounting(
+    initial,
+    { garden_tasks: row([{ id: '1', row: '1' }, { id: '2', row: '2' }]) },
+    new Set(['garden_tasks']),
+    accounting,
+  );
+  process.exit(7);
+} catch (error) {
+  if (!String(error.message).includes('wrong stable row identity')) process.exit(8);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_task_identity_allowlist_is_bound_to_declared_targets() -> None:
+    script = """
+const {
+  expectedPhaseTwoUpdatedTaskIdentityDigests,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const keys = [
+  'batch_a', 'batch_b', 'bloom_desktop', 'bloom_mobile', 'editor_offline',
+  'editor_prune', 'fertilize_grouped', 'fertilize_mobile', 'plot_drawer',
+  'prune_desktop', 'rain_outdoor', 'snooze_correction', 'stale_generated_water',
+  'stale_manual_water',
+];
+const fixture = { phase_two: { task_ids: Object.fromEntries(
+  keys.map((key) => [key, `task-${key}`]),
+) } };
+const digests = expectedPhaseTwoUpdatedTaskIdentityDigests(
+  fixture, { garden_tasks: { identity_columns: ['public_id'] } },
+);
+if (digests.length !== 14 || new Set(digests).size !== 14) process.exit(3);
+if (!digests.every((digest) => /^[a-f0-9]{64}$/.test(digest))) process.exit(4);
+fixture.phase_two.task_ids.batch_b = fixture.phase_two.task_ids.batch_a;
+try {
+  expectedPhaseTwoUpdatedTaskIdentityDigests(
+    fixture, { garden_tasks: { identity_columns: ['public_id'] } },
+  );
+  process.exit(5);
+} catch (error) {
+  if (!String(error.message).includes('identities are invalid')) process.exit(6);
 }
 """
     result = subprocess.run(
@@ -2540,6 +2612,63 @@ try {
   process.exit(3);
 } catch (error) {
   if (!String(error.message).includes('mutation multiset')) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_task_action_revision_sequence_closes_each_request() -> None:
+    script = """
+const {
+  assertPhaseTwoTaskActionRevisionSequence,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = { phase_two: { seeded_state: { tasks: [
+  { public_id: 'task-a', updated_at_ms: 10 },
+  { public_id: 'task-b', updated_at_ms: 20 },
+  { public_id: 'task-c', updated_at_ms: 30 },
+] } } };
+const action = (taskId, expected, response, statusCode = 200) => ({
+  method: 'POST',
+  path: `/api/tasks/${taskId}/action`,
+  statusCode,
+  taskAction: {
+    action: 'snooze', expectedUpdatedAtMs: expected, responseUpdatedAtMs: response,
+  },
+});
+const profiles = [{
+  profile: 'desktop', role: 'admin', requests: [
+    action('task-a', 10, 11),
+    action('task-a', 11, 12),
+    {
+      method: 'POST', path: '/api/tasks/batch-action', statusCode: 200,
+      taskAction: {
+        action: 'complete',
+        expectedRevisions: [{ taskId: 'task-b', expectedUpdatedAtMs: 20 }],
+        responseUpdatedCount: 1,
+      },
+    },
+  ],
+}, {
+  profile: 'desktop', role: 'viewer', requests: [action('task-c', 30, null, 403)],
+}];
+const finalTasks = [
+  { public_id: 'task-a', updated_at_ms: 12 },
+  { public_id: 'task-b', updated_at_ms: 21 },
+  { public_id: 'task-c', updated_at_ms: 30 },
+];
+const evidence = assertPhaseTwoTaskActionRevisionSequence(profiles, finalTasks, fixture);
+if (!evidence.task_action_revision_sequence_exact) process.exit(3);
+if (evidence.successful_task_revision_request_count !== 2) process.exit(4);
+const stale = structuredClone(profiles);
+stale[0].requests[1].taskAction.expectedUpdatedAtMs = 10;
+try {
+  assertPhaseTwoTaskActionRevisionSequence(stale, finalTasks, fixture);
+  process.exit(5);
+} catch (error) {
+  if (!String(error.message).includes('current sequence value')) process.exit(6);
 }
 """
     result = subprocess.run(
@@ -2778,17 +2907,73 @@ def test_phase_two_completion_journals_retain_task_plot_context() -> None:
     assert "selected_plot_ids: expected.plot_ids," in metadata_expectation
 
 
-def test_phase_two_read_only_sweep_expires_active_maintenance_task_notices() -> None:
+def test_phase_two_task_notification_lifecycle_is_action_specific() -> None:
+    script = """
+const {
+  expectedPhaseTwoMaintenanceNotification,
+  phaseTwoTaskNotificationClearReasons,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = {
+  clock: { attention_now_ms: 1783857600000 },
+  gardens: { alpha: { id: 7 } },
+  phase_two: {
+    seeded_state: { weather_alerts: [] },
+    task_ids: { fertilize_grouped: 'task-grouped' },
+  },
+  roles: { viewer: 'viewer' },
+};
+const active = {
+  cleared_at_ms: null,
+  clear_reason: null,
+  emailed_at_ms: null,
+  garden_id: 7,
+  notification_type: 'task_due',
+  public_id: 'notification-one',
+  target_id: 'task-one',
+  username: 'admin',
+};
+const untouched = expectedPhaseTwoMaintenanceNotification(
+  active, fixture, new Set(), null, new Map(),
+);
+if (untouched.cleared_at_ms !== null || untouched.clear_reason !== null) process.exit(3);
+const completed = expectedPhaseTwoMaintenanceNotification(
+  active, fixture, new Set(), null, new Map([['task-one', 'completed']]),
+);
+if (completed.cleared_at_ms !== 1783857600000) process.exit(4);
+if (completed.clear_reason !== 'completed') process.exit(5);
+const actionRequest = (taskId, action) => ({
+  method: 'POST',
+  path: `/api/tasks/${taskId}/action`,
+  statusCode: 200,
+  taskAction: { action, expectedUpdatedAtMs: 10, responseUpdatedAtMs: 11 },
+});
+const reasons = phaseTwoTaskNotificationClearReasons([{
+  profile: 'desktop', role: 'admin', requests: [
+    actionRequest('task-one', 'complete'),
+    actionRequest('task-two', 'snooze'),
+    actionRequest('task-grouped', 'complete'),
+    actionRequest('task-grouped', 'reschedule'),
+  ],
+}], fixture);
+if (reasons.get('task-one') !== 'completed') process.exit(6);
+if (reasons.get('task-two') !== 'snoozed') process.exit(7);
+if (reasons.get('task-grouped') !== 'superseded') process.exit(8);
+if (reasons.has('untouched-task')) process.exit(9);
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
     source = CHECKER.read_text(encoding="utf-8")
     lifecycle = source.split("function expectedPhaseTwoMaintenanceNotification", 1)[1].split(
         "function assertPhaseTwoDatabaseState", 1
     )[0]
-
     assert "if (notification.cleared_at_ms !== null) return expected;" in lifecycle
-    assert "expected.cleared_at_ms = fixture.clock.attention_now_ms;" in lifecycle
-    assert 'expected.clear_reason = "expired";' in lifecycle
-    assert "const roleStage" not in lifecycle
-    assert "const actionByTask" not in lifecycle
+    assert "const clearReason = taskClearReasons.get(notification.target_id);" in lifecycle
+    assert "if (!clearReason) return expected;" in lifecycle
+    assert "expected.clear_reason = clearReason;" in lifecycle
+    assert 'expected.clear_reason = "expired";' not in lifecycle
 
 
 def test_phase_two_mobile_quick_action_keeps_manual_date_completion_actionable() -> None:
@@ -3053,7 +3238,24 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
         "added": 4,
         "removed": 1,
     }
+    exact_identity_counts = oracle["phase_two"]["whole_table_mutation_accounting"][
+        "exact_identity_counts"
+    ]
+    assert exact_identity_counts["phase_two_only"]["garden_tasks"] == {
+        "added": 62,
+        "removed": 0,
+        "updated": 14,
+    }
+    assert exact_identity_counts["phase_two_only"]["notification_events"] == {
+        "added": 59,
+        "removed": 0,
+        "updated": 2,
+    }
+    assert "expectedPhaseTwoUpdatedTaskIdentityDigests" in source
+    assert '"rain_outdoor"' in source
     assert "expected_added: exact.added" in source
+    assert "expected_identity_updated: identity.updated" in source
+    assert "expected_updated_identity_digests: expectedUpdatedIdentityDigests" in source
     assert "expected_removed: exact.removed" in source
 
 
@@ -3061,16 +3263,22 @@ def test_phase_two_maintenance_notifications_have_exact_post_journey_lifecycle()
     source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
 
     assert "expectedPhaseTwoMaintenanceNotification" in source
+    assert "phaseTwoTaskNotificationClearReasons" in source
     lifecycle = source.split("function expectedPhaseTwoMaintenanceNotification", 1)[1].split(
         "function assertPhaseTwoDatabaseState", 1
     )[0]
     assert "if (notification.cleared_at_ms !== null) return expected;" in lifecycle
-    assert 'expected.clear_reason = "expired";' in lifecycle
+    assert 'expected.clear_reason = "expired";' not in lifecycle
     assert 'expected.clear_reason = "weather_dismissed";' in lifecycle
     assert "notification.username === fixture.roles.viewer" in lifecycle
     assert "viewerDismissedWeatherTargets.has(notification.target_id)" in lifecycle
     assert "viewerMaintenanceAlert" in lifecycle
-    assert "const actionByTask" not in lifecycle
+    assert "taskClearReasons.get(notification.target_id)" in lifecycle
+    action_causes = source.split("function phaseTwoTaskNotificationClearReasons", 1)[1].split(
+        "function phaseTwoBrowserMutationRecords", 1
+    )[0]
+    for cause in ("completed", "rescheduled", "skipped", "snoozed", "superseded"):
+        assert cause in action_causes
     assert "preferenceDelivery?.delivery_notifications" in source
 
 
@@ -3139,6 +3347,94 @@ def test_playwright_trace_validator_rejects_non_zip_and_missing_records(tmp_path
     assert subprocess.run([sys.executable, validator, invalid], check=False).returncode == 1
     assert subprocess.run([sys.executable, validator, missing], check=False).returncode == 1
     assert subprocess.run([sys.executable, validator, valid], check=False).returncode == 0
+
+
+def test_playwright_trace_validator_rejects_and_sanitizes_secret_material(tmp_path: Path) -> None:
+    validator = ROOT / "scripts" / "validate_playwright_trace.py"
+    source = tmp_path / "source.zip"
+    sanitized = tmp_path / "sanitized.zip"
+    canaries = (
+        "password-canary-value",
+        "session-canary-value",
+        "csrf-canary-value",
+        "subscription-canary-value",
+        "bearer-canary-value",
+        "named-csrf-canary-value",
+    )
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr(
+            "trace.trace",
+            json.dumps(
+                {
+                    "headers": [
+                        {"name": "Cookie", "value": f"gardenops_session={canaries[1]}"},
+                        {"name": "x-csrf-token", "value": canaries[2]},
+                    ],
+                    "password": canaries[0],
+                    "token_field": {"name": "csrf_token", "value": canaries[5]},
+                }
+            ),
+        )
+        archive.writestr(
+            "trace.network",
+            json.dumps(
+                {
+                    "authorization": f"Bearer {canaries[4]}",
+                    "url": f"/calendar/subscriptions/{canaries[3]}.ics",
+                }
+            ),
+        )
+
+    rejected = subprocess.run(
+        [sys.executable, validator, source], capture_output=True, check=False, text=True
+    )
+    assert rejected.returncode == 1
+    assert "secret material" in rejected.stderr
+    assert all(canary not in rejected.stderr for canary in canaries)
+
+    scrubbed = subprocess.run(
+        [sys.executable, validator, "--sanitize", source, sanitized],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert scrubbed.returncode == 0, scrubbed.stderr
+    assert sanitized.stat().st_mode & 0o777 == 0o600
+    with zipfile.ZipFile(sanitized) as archive:
+        retained = b"\n".join(archive.read(name) for name in archive.namelist())
+    assert all(canary.encode() not in retained for canary in canaries)
+    assert b"[redacted]" in retained
+    assert subprocess.run([sys.executable, validator, sanitized], check=False).returncode == 0
+
+
+def test_guarded_context_defers_trace_until_after_authentication() -> None:
+    script = """
+const {
+  authenticate,
+  createGuardedContext,
+} = require('./scripts/e2e/completeJourneyBrowser.cjs');
+let starts = 0;
+const context = {
+  close: async () => {},
+  on: () => {},
+  route: async () => {},
+  tracing: { start: async () => { starts += 1; }, stop: async () => {} },
+};
+const browser = { newContext: async () => context };
+createGuardedContext(browser, {}, 'desktop', process.cwd())
+  .then(async (guarded) => {
+    if (starts !== 0) process.exit(3);
+    await guarded.startTracing();
+    await guarded.startTracing();
+    if (starts !== 1) process.exit(4);
+    if (!String(authenticate).includes('await traceControl.startTracing()')) process.exit(5);
+  })
+  .catch(() => process.exit(6));
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_phase_two_database_contract_covers_maintenance_and_audit_semantics() -> None:
@@ -3533,6 +3829,84 @@ peer.emit('response', response(peerRequest, 'peer-request-id-1'));
 if (recorder.records.length !== 2) process.exit(3);
 if (recorder.records[0].requestId !== 'primary-request-id-1') process.exit(4);
 if (recorder.records[1].requestId !== 'peer-request-id-1') process.exit(5);
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_browser_api_recorder_retains_only_task_revision_evidence() -> None:
+    script = """
+const { createApiRecorder } = require('./scripts/e2e/completeJourneyBrowser.cjs');
+const handlers = new Map();
+const page = {
+  emit(event, value) { for (const handler of handlers.get(event) || []) handler(value); },
+  on(event, handler) { handlers.set(event, [...(handlers.get(event) || []), handler]); },
+};
+const request = {
+  headers: () => ({ authorization: 'Bearer request-secret', 'x-garden-id': '7' }),
+  method: () => 'POST',
+  postDataJSON: () => ({
+    action: 'snooze', expected_updated_at_ms: 10,
+    notes: 'request-body-secret', password: 'password-secret',
+  }),
+  url: () => 'http://127.0.0.1/api/tasks/task-one/action',
+};
+const response = {
+  headers: () => ({ 'set-cookie': 'response-secret', 'x-request-id': 'request-id-1' }),
+  json: async () => ({ token: 'response-body-secret', updated_at_ms: 11 }),
+  request: () => request,
+  status: () => 200,
+};
+const batchRequest = {
+  headers: () => ({ cookie: 'batch-request-secret', 'x-garden-id': '7' }),
+  method: () => 'POST',
+  postDataJSON: () => ({
+    action: 'complete',
+    expected_updated_at_ms_by_task_id: { 'task-a': 20, 'task-b': 21 },
+    notes: 'batch-body-secret',
+    task_ids: ['task-b', 'task-a'],
+  }),
+  url: () => 'http://127.0.0.1/api/tasks/batch-action',
+};
+const batchResponse = {
+  headers: () => ({ 'x-request-id': 'request-id-2' }),
+  json: async () => ({ secret: 'batch-response-secret', updated: 2 }),
+  request: () => batchRequest,
+  status: () => 200,
+};
+const recorder = createApiRecorder(page, {
+  authType: 'session', role: 'admin', username: 'admin',
+});
+page.emit('request', request);
+page.emit('response', response);
+page.emit('request', batchRequest);
+page.emit('response', batchResponse);
+recorder.settle().then(() => {
+  if (recorder.records.length !== 2) process.exit(3);
+  const evidence = recorder.records[0].taskAction;
+  if (JSON.stringify(evidence) !== JSON.stringify({
+    action: 'snooze', expectedUpdatedAtMs: 10, responseUpdatedAtMs: 11,
+  })) process.exit(4);
+  const batchEvidence = recorder.records[1].taskAction;
+  if (JSON.stringify(batchEvidence) !== JSON.stringify({
+    action: 'complete',
+    expectedRevisions: [
+      { expectedUpdatedAtMs: 20, taskId: 'task-a' },
+      { expectedUpdatedAtMs: 21, taskId: 'task-b' },
+    ],
+    responseUpdatedCount: 2,
+  })) process.exit(5);
+  const retained = JSON.stringify(recorder.records);
+  for (const secret of [
+    'request-secret', 'request-body-secret', 'password-secret',
+    'response-secret', 'response-body-secret', 'batch-request-secret',
+    'batch-body-secret', 'batch-response-secret',
+  ]) {
+    if (retained.includes(secret)) process.exit(6);
+  }
+}).catch(() => process.exit(7));
 """
     result = subprocess.run(
         ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True

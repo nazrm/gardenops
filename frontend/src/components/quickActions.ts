@@ -66,6 +66,7 @@ function appendTaskPicker(
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "quick-action-task-item";
+      btn.dataset["taskId"] = task.id;
       const primaryLabel = task.snooze_label
         ? `${taskLabel}: ${task.snooze_label}`
         : taskLabel;
@@ -88,6 +89,7 @@ function appendTaskPicker(
         const secondary = document.createElement("button");
         secondary.type = "button";
         secondary.className = "quick-action-task-item";
+        secondary.dataset["taskId"] = task.id;
         secondary.textContent = secondaryAction.label;
         secondary.setAttribute("aria-label", `${taskLabel}: ${secondaryAction.label}`);
         secondary.disabled = Boolean(task.offline_status) || unavailableOffline;

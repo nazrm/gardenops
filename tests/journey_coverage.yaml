@@ -135,7 +135,7 @@ journeys:
     desktop: proven
     mobile: proven
     roles: proven
-    provider: proven
+    provider: required
     accessibility: required
     evidence: *phase_two_evidence
     offline: not_applicable
@@ -145,6 +145,7 @@ journeys:
       filesystem: Notification preference and delivery workflows do not use a supported file workflow.
       roles: Personal notification preference persistence is verified for admin, editor, and viewer on desktop and mobile.
       accessibility: Phase 2 records mobile target geometry only; Phase 8 owns keyboard, focus, semantics, and screen-reader closure.
+      provider: Production notification event handling through an exact local SMTP delivery remains open; Phase 2 does not claim that provider boundary.
       database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
   - <<: *open_journey
     id: D5

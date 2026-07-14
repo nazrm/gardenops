@@ -177,12 +177,52 @@ def test_calendar_offline_snooze_requires_a_complete_cached_task_policy() -> Non
     assert "task.updated_at_ms === event.updated_at_ms" in calendar_tab
     assert "getCachedTodayTasks(gardenId)" in calendar_tab
     assert "getCachedCalendarTaskForSnooze(event)" in snooze_loader
-    assert 'ctx.showToast(t("calendar.offline_unavailable"), "error")' in snooze_loader
+    assert 'ctx.showToast(t("calendar.offline_snooze_unavailable"), "error")' in snooze_loader
     assert "function calendarTaskForSnooze" not in calendar_tab
     assert 'rule_source: ""' not in calendar_tab
     assert "metadata: {}" not in calendar_tab
     assert 'body.action === "snooze" && !target.offlineSnoozeTask' in action_body
     assert "withTaskActionRevision(target.taskRevision, body)" in action_body
+
+
+def test_calendar_disables_unsupported_offline_snooze_controls_with_a_reason() -> None:
+    calendar_tab = _read("frontend/src/tabs/calendarTab.ts")
+    detail_body = _function_body(
+        calendar_tab,
+        "function renderDetail",
+        "async function runTaskAction",
+    )
+    action_button = _function_body(
+        calendar_tab,
+        "function actionButton",
+        "async function discardCalendarOfflineAction",
+    )
+
+    assert "offlineSnoozeUnavailable = !ctx.isOnline() && !cachedSnoozeTask" in detail_body
+    assert detail_body.count("offlineSnoozeUnavailable") >= 3
+    assert detail_body.count("offlineSnoozeReason") >= 3
+    assert 't("calendar.offline_snooze_unavailable")' in detail_body
+    assert 'button.setAttribute("aria-label", `${label}. ${disabledReason}`)' in action_button
+
+
+def test_calendar_refresh_failures_clear_hidden_focusable_events() -> None:
+    calendar_tab = _read("frontend/src/tabs/calendarTab.ts")
+    clear_body = _function_body(
+        calendar_tab,
+        "function clearUnavailableCalendarEvents",
+        "function retireSuccessfulCalendarTaskAction",
+    )
+    event_source = _function_body(
+        calendar_tab,
+        "events: async",
+        "datesSet:",
+    )
+
+    assert "currentEventsById.clear();" in clear_body
+    assert "selectedEventId = null;" in clear_body
+    assert 'document.getElementById("calendar-today-btn")?.focus();' in clear_body
+    assert "clearUnavailableCalendarEvents();" in event_source
+    assert "successCallback([]);" in event_source
 
 
 def test_calendar_subscription_refreshes_before_clipboard_failure_fallback() -> None:

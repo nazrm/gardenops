@@ -81,6 +81,7 @@ import {
 import {
   initOfflineFeature,
   refreshOfflineIndicator,
+  syncOfflineDraftsNow,
 } from "./features/offlineFeature";
 import { showAuthGate, showForcedPasswordChangeGate } from "./features/authGate";
 import { createPasskey, getPasskey, isPasskeySupported } from "./features/passkeys";
@@ -6537,7 +6538,11 @@ function applyWriteAccessUi(): void {
   if (!canWriteInGarden) closeQuickActionSheet(false);
   renderMapObjectsPanelView();
   syncMobileCapabilities();
-  void refreshOfflineIndicator();
+  if (canWriteInGarden) {
+    void syncOfflineDraftsNow();
+  } else {
+    void refreshOfflineIndicator();
+  }
 }
 
 function ensureWriteAccess(): boolean {

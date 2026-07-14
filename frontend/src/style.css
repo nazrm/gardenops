@@ -6681,6 +6681,14 @@ th.sort-desc::after {
   background: var(--border);
 }
 
+.sheet-content {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .sheet-header {
   display: flex;
   justify-content: space-between;

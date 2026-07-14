@@ -77,7 +77,7 @@ def test_phase_two_manifest_only_marks_enforced_dimensions_proven() -> None:
         "D1": {"desktop", "mobile", "provider"},
         "D2": {"desktop", "mobile", "roles"},
         "D3": {"desktop", "mobile", "roles", "filesystem"},
-        "D4": {"desktop", "mobile", "roles", "provider"},
+        "D4": {"desktop", "mobile", "roles"},
         "D5": {"desktop", "mobile", "roles"},
         "R1": {"desktop", "mobile"},
     }
@@ -91,6 +91,7 @@ def test_phase_two_manifest_only_marks_enforced_dimensions_proven() -> None:
         assert journey["accessibility"] == "required"
         assert journey["performance"] == "required"
     assert journeys["D2"]["offline"] == "required"
+    assert journeys["D4"]["provider"] == "required"
 
 
 def test_duplicate_journey_id_is_rejected(tmp_path: Path) -> None:

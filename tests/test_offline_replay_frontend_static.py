@@ -175,6 +175,28 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
             mobile_indicator,
         )
 
+    def test_downgraded_viewers_can_discard_failed_drafts_without_retrying_writes(self) -> None:
+        feature = (ROOT / "frontend/src/features/offlineFeature.ts").read_text(encoding="utf-8")
+        indicator = (ROOT / "frontend/src/components/offlineIndicator.ts").read_text(
+            encoding="utf-8"
+        )
+        task_cards = (ROOT / "frontend/src/components/tasks.ts").read_text(encoding="utf-8")
+        tasks = (ROOT / "frontend/src/tabs/tasksTab.ts").read_text(encoding="utf-8")
+        calendar = (ROOT / "frontend/src/tabs/calendarTab.ts").read_text(encoding="utf-8")
+
+        self.assertIn("canDiscardDrafts: true", feature)
+        self.assertIn("canRetryDrafts: canRetryOfflineDrafts()", feature)
+        self.assertIn("if (!isOnline() || !canRetryOfflineDrafts())", feature)
+        self.assertIn("if (!canRetryOfflineDrafts())", feature)
+        self.assertIn("canDiscardDrafts?: boolean", indicator)
+        self.assertIn("canRetryDrafts?: boolean", indicator)
+        self.assertIn("if (canRetryDrafts)", indicator)
+        self.assertIn("if (canDiscardDrafts)", indicator)
+        self.assertIn('offlineAction.status === "failed"', task_cards)
+        self.assertIn("if (!ctx.ensureWriteAccess()) return;", tasks)
+        self.assertIn("if (!ctx.ensureWriteAccess()) return;", calendar)
+        self.assertIn('ctx.canWrite() || offlineAction.status === "failed"', calendar)
+
     def test_online_startup_and_reopen_replay_pending_work_once_per_active_sync(self) -> None:
         feature = (ROOT / "frontend" / "src" / "features" / "offlineFeature.ts").read_text(
             encoding="utf-8"

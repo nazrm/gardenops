@@ -32,6 +32,49 @@ class _TaskNotificationReadBarrierConnection:
         self._connection.commit()
 
 
+class _TaskNotificationScanPauseConnection:
+    """Pause generation after its actionable task snapshot has been read."""
+
+    def __init__(
+        self,
+        connection: Any,
+        task_scanned: threading.Event,
+        allow_generation: threading.Event,
+    ) -> None:
+        self._connection = connection
+        self._task_scanned = task_scanned
+        self._allow_generation = allow_generation
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        result = self._connection.execute(query, params)
+        normalized_query = " ".join(str(query).upper().split())
+        if "SELECT ID, PUBLIC_ID, TITLE, METADATA_JSON" in normalized_query:
+            self._task_scanned.set()
+            if not self._allow_generation.wait(timeout=5):
+                raise TimeoutError("task notification generation was not released")
+        return result
+
+    def commit(self) -> None:
+        self._connection.commit()
+
+
+class _TaskNotificationLockAttemptConnection:
+    """Expose when task mutation cleanup waits for the projection lock."""
+
+    def __init__(self, connection: Any, lock_attempted: threading.Event) -> None:
+        self._connection = connection
+        self._lock_attempted = lock_attempted
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        normalized_query = " ".join(str(query).upper().split())
+        if "PG_ADVISORY_XACT_LOCK" in normalized_query:
+            self._lock_attempted.set()
+        return self._connection.execute(query, params)
+
+    def commit(self) -> None:
+        self._connection.commit()
+
+
 class _DigestDeliveryLockAttemptConnection:
     """Expose when a concurrent digest worker begins waiting for its recipient lock."""
 
@@ -43,6 +86,31 @@ class _DigestDeliveryLockAttemptConnection:
         normalized_query = " ".join(str(query).upper().split())
         if "PG_ADVISORY_XACT_LOCK" in normalized_query:
             self._lock_attempted.set()
+        return self._connection.execute(query, params)
+
+    def commit(self) -> None:
+        self._connection.commit()
+
+
+class _DigestDeliveryPauseBeforeLockConnection:
+    """Pause after recipient discovery but before the recipient lock is acquired."""
+
+    def __init__(
+        self,
+        connection: Any,
+        lock_attempted: threading.Event,
+        allow_lock: threading.Event,
+    ) -> None:
+        self._connection = connection
+        self._lock_attempted = lock_attempted
+        self._allow_lock = allow_lock
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        normalized_query = " ".join(str(query).upper().split())
+        if "PG_ADVISORY_XACT_LOCK" in normalized_query:
+            self._lock_attempted.set()
+            if not self._allow_lock.wait(timeout=5):
+                raise TimeoutError("digest recipient lock was not released")
         return self._connection.execute(query, params)
 
     def commit(self) -> None:
@@ -108,6 +176,105 @@ class TestTaskNotificationConcurrency(DbTestBase):
         ).fetchone()
         assert row is not None
         self.assertEqual(int(row["count"]), 1)
+
+    def test_task_clear_serializes_with_in_flight_generation(self) -> None:
+        from gardenops.services.notification_service import (
+            clear_task_notifications,
+            create_task_due_notifications,
+        )
+
+        self.conn.execute(
+            """
+            INSERT INTO garden_memberships (garden_id, user_id, role)
+            VALUES (%s, %s, 'admin')
+            ON CONFLICT DO NOTHING
+            """,
+            (self.garden_id, self._owner_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, status, severity,
+                 due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+            VALUES ('task_notification_action_race', %s, 'water', 'Water action race',
+                    'pending', 'normal', %s, '', '{}', 1, 1)
+            """,
+            (self.garden_id, date.today().isoformat()),
+        )
+        self.conn.commit()
+
+        task_scanned = threading.Event()
+        allow_generation = threading.Event()
+        task_updated = threading.Event()
+        clear_lock_attempted = threading.Event()
+
+        def generate() -> dict[str, int]:
+            conn = db.get_db()
+            try:
+                return create_task_due_notifications(
+                    _TaskNotificationScanPauseConnection(
+                        conn,
+                        task_scanned,
+                        allow_generation,
+                    ),
+                    self.garden_id,
+                )
+            finally:
+                db.return_db(conn)
+
+        def complete_and_clear() -> int:
+            conn = db.get_db()
+            try:
+                wrapped = _TaskNotificationLockAttemptConnection(conn, clear_lock_attempted)
+                wrapped.execute(
+                    """
+                    UPDATE garden_tasks
+                    SET status = 'completed', updated_at_ms = 2
+                    WHERE garden_id = %s AND public_id = 'task_notification_action_race'
+                    """,
+                    (self.garden_id,),
+                )
+                task_updated.set()
+                cleared = clear_task_notifications(
+                    wrapped,
+                    garden_id=self.garden_id,
+                    task_public_id="task_notification_action_race",
+                    reason="completed",
+                    now_ms=2,
+                )
+                wrapped.commit()
+                return cleared
+            finally:
+                db.return_db(conn)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            generation_future = pool.submit(generate)
+            self.assertTrue(task_scanned.wait(timeout=5))
+            action_future = pool.submit(complete_and_clear)
+            self.assertTrue(task_updated.wait(timeout=5))
+            if not clear_lock_attempted.wait(timeout=0.5):
+                action_future.result(timeout=5)
+            allow_generation.set()
+            generation_result = generation_future.result(timeout=5)
+            cleared = action_future.result(timeout=5)
+
+        self.assertEqual(int(generation_result["created"]), 1)
+        self.assertEqual(cleared, 1)
+        row = self.conn.execute(
+            """
+            SELECT cleared_at_ms, clear_reason
+            FROM notification_events
+            WHERE garden_id = %s
+              AND user_id = %s
+              AND target_type = 'task'
+              AND target_id = 'task_notification_action_race'
+              AND notification_type = 'task_due'
+            """,
+            (self.garden_id, self._owner_id),
+        ).fetchone()
+        assert row is not None
+        self.assertEqual(int(row["cleared_at_ms"]), 2)
+        self.assertEqual(str(row["clear_reason"]), "completed")
 
 
 class TestPendingEmailDigestConcurrency(DbTestBase):
@@ -218,6 +385,321 @@ class TestPendingEmailDigestConcurrency(DbTestBase):
         ).fetchone()
         assert row is not None
         self.assertEqual(int(row["emailed_at_ms"]), now + 1)
+
+    def test_recipient_configuration_is_revalidated_after_lock_wait(self) -> None:
+        from gardenops.services.notification_service import deliver_pending_email_digests
+
+        user = create_user(
+            self.conn,
+            username="digest_revalidation_race",
+            password=strong_password("digest-revalidation-race"),
+            role="editor",
+        )
+        user_id = int(user["id"])
+        now = 1_800_000_000_000
+        self.conn.execute(
+            "UPDATE auth_users SET subscription_tier = 'pro' WHERE id = %s",
+            (user_id,),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO garden_memberships (garden_id, user_id, role)
+            VALUES (%s, %s, 'editor')
+            ON CONFLICT DO NOTHING
+            """,
+            (self.garden_id, user_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO user_notification_preferences
+                (user_id, in_app_enabled, email_enabled, email_address,
+                 digest_frequency, quiet_hours_json, task_due_enabled,
+                 task_overdue_enabled, created_at_ms, updated_at_ms)
+            VALUES (%s, 1, 1, 'before@example.test', 'daily', '{}', 1, 1, %s, %s)
+            """,
+            (user_id, now, now),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO notification_events
+                (public_id, garden_id, user_id, notification_type, title, body,
+                 target_type, target_id, read_at_ms, emailed_at_ms, metadata_json,
+                 dismissed, created_at_ms, notification_subtype, severity, expires_at_ms,
+                 cleared_at_ms, clear_reason, superseded_by_id)
+            VALUES
+                ('note_digest_revalidation_history', %s, %s, 'task_due',
+                 'Earlier reminder', '', 'task', 'task_digest_revalidation_history',
+                 NULL, %s, '{}', 0, %s, NULL, 'normal', NULL, NULL, NULL, NULL),
+                ('note_digest_revalidation_pending', %s, %s, 'task_due',
+                 'Current reminder', '', 'task', 'task_digest_revalidation_pending',
+                 NULL, NULL, '{}', 0, %s, NULL, 'normal', NULL, NULL, NULL, NULL)
+            """,
+            (
+                self.garden_id,
+                user_id,
+                now - (2 * 86_400_000),
+                now - (2 * 86_400_000),
+                self.garden_id,
+                user_id,
+                now - 1,
+            ),
+        )
+        self.conn.commit()
+
+        def reset_eligible_recipient() -> None:
+            self.conn.execute(
+                "UPDATE auth_users SET subscription_tier = 'pro' WHERE id = %s",
+                (user_id,),
+            )
+            self.conn.execute(
+                """
+                INSERT INTO garden_memberships (garden_id, user_id, role)
+                VALUES (%s, %s, 'editor')
+                ON CONFLICT DO NOTHING
+                """,
+                (self.garden_id, user_id),
+            )
+            self.conn.execute(
+                """
+                UPDATE user_notification_preferences
+                SET email_enabled = 1,
+                    email_address = 'before@example.test',
+                    digest_frequency = 'daily'
+                WHERE user_id = %s
+                """,
+                (user_id,),
+            )
+            self.conn.commit()
+
+        def race_configuration_change(
+            sql: str,
+            params: tuple[Any, ...],
+        ) -> tuple[dict[str, int | bool], list[str]]:
+            reset_eligible_recipient()
+            lock_attempted = threading.Event()
+            allow_lock = threading.Event()
+            sent: list[str] = []
+
+            def deliver() -> dict[str, int | bool]:
+                conn = db.get_db()
+                try:
+                    return deliver_pending_email_digests(
+                        _DigestDeliveryPauseBeforeLockConnection(
+                            conn,
+                            lock_attempted,
+                            allow_lock,
+                        ),
+                        self.garden_id,
+                        email_sender=lambda recipient, _subject, _body: sent.append(recipient),
+                        now_ms=now,
+                    )
+                finally:
+                    db.return_db(conn)
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(deliver)
+                self.assertTrue(lock_attempted.wait(timeout=5))
+                mutation_conn = db.get_db()
+                try:
+                    mutation_conn.execute(sql, params)
+                    mutation_conn.commit()
+                finally:
+                    db.return_db(mutation_conn)
+                allow_lock.set()
+                return future.result(timeout=5), sent
+
+        invalidations = (
+            (
+                "membership",
+                "DELETE FROM garden_memberships WHERE garden_id = %s AND user_id = %s",
+                (self.garden_id, user_id),
+            ),
+            (
+                "entitlement",
+                "UPDATE auth_users SET subscription_tier = 'home' WHERE id = %s",
+                (user_id,),
+            ),
+            (
+                "email enabled",
+                "UPDATE user_notification_preferences SET email_enabled = 0 WHERE user_id = %s",
+                (user_id,),
+            ),
+            (
+                "email address",
+                "UPDATE user_notification_preferences SET email_address = '' WHERE user_id = %s",
+                (user_id,),
+            ),
+            (
+                "digest disabled",
+                "UPDATE user_notification_preferences SET digest_frequency = 'none' "
+                "WHERE user_id = %s",
+                (user_id,),
+            ),
+            (
+                "weekly cadence",
+                "UPDATE user_notification_preferences SET digest_frequency = 'weekly' "
+                "WHERE user_id = %s",
+                (user_id,),
+            ),
+        )
+        for label, sql, params in invalidations:
+            with self.subTest(label=label):
+                result, sent = race_configuration_change(sql, params)
+                self.assertEqual(int(result["emailed_users"]), 0)
+                self.assertEqual(int(result["skipped_users"]), 1)
+                self.assertEqual(sent, [])
+
+        result, sent = race_configuration_change(
+            "UPDATE user_notification_preferences SET email_address = %s WHERE user_id = %s",
+            ("after@example.test", user_id),
+        )
+        self.assertEqual(int(result["emailed_users"]), 1)
+        self.assertEqual(sent, ["after@example.test"])
+
+
+class TestRainTaskNotificationLifecycle(DbTestBase):
+    def test_rain_adjustment_refreshes_projection_before_same_run_digest(self) -> None:
+        from gardenops.services.attention.outcomes import upsert_attention_outcome
+        from gardenops.services.notification_service import (
+            create_task_due_notifications,
+            deliver_pending_email_digests,
+        )
+        from gardenops.services.task_generator import reconcile_rain_watering_outcomes
+
+        now_ms = 1_784_044_800_000
+        self._insert_plant("RAIN-DIGEST", "Rain digest", care_watering="regular moisture")
+        self.conn.execute(
+            "UPDATE auth_users SET subscription_tier = 'pro' WHERE id = %s",
+            (self._owner_id,),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO garden_memberships (garden_id, user_id, role)
+            VALUES (%s, %s, 'admin')
+            ON CONFLICT DO NOTHING
+            """,
+            (self.garden_id, self._owner_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO user_notification_preferences
+                (user_id, in_app_enabled, email_enabled, email_address,
+                 digest_frequency, quiet_hours_json, task_due_enabled,
+                 task_overdue_enabled, created_at_ms, updated_at_ms)
+            VALUES (%s, 1, 1, 'rain-digest@example.test', 'daily', '{}', 1, 1, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE
+            SET in_app_enabled = 1,
+                email_enabled = 1,
+                email_address = EXCLUDED.email_address,
+                digest_frequency = EXCLUDED.digest_frequency,
+                task_due_enabled = 1,
+                task_overdue_enabled = 1,
+                updated_at_ms = EXCLUDED.updated_at_ms
+            """,
+            (self._owner_id, now_ms, now_ms),
+        )
+        task = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, status, severity,
+                 due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+            VALUES ('task_rain_digest', %s, 'water', 'Water before extended rain',
+                    'pending', 'normal', '2026-07-14', 'water:RAIN-DIGEST:2026-07-14',
+                    '{}', %s, %s)
+            RETURNING id
+            """,
+            (self.garden_id, now_ms, now_ms),
+        ).fetchone()
+        assert task is not None
+        self.conn.execute(
+            "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
+            (int(task["id"]), "RAIN-DIGEST"),
+        )
+        alert = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'rain_surplus', 'high', 'Extended rain', 'Heavy rain continues',
+                    '2026-07-14', '2026-07-17', '{}', %s)
+            RETURNING id
+            """,
+            (self.garden_id, now_ms),
+        ).fetchone()
+        assert alert is not None
+        upsert_attention_outcome(
+            self.conn,
+            garden_id=self.garden_id,
+            provider="weather",
+            outcome_type="watering_rescheduled_by_rain",
+            source_type="task_generator",
+            source_id=str(alert["id"]),
+            source_public_id="water:RAIN-DIGEST:2026-07-14",
+            target_type="plant",
+            target_id="RAIN-DIGEST",
+            title="Watering rescheduled by rain",
+            explanation="Rain moved this watering.",
+            reason="Rain covers watering",
+            plant_ids=("RAIN-DIGEST",),
+            metadata={"due_on": "2026-07-14", "new_due_on": "2026-07-14"},
+            recovery_action={},
+            occurred_at_ms=now_ms,
+            expires_at_ms=now_ms + 86_400_000,
+        )
+        self.conn.commit()
+
+        sent: list[tuple[str, str, str]] = []
+        with patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "test",
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": str(now_ms),
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-14",
+            },
+            clear=False,
+        ):
+            initial = create_task_due_notifications(
+                self.conn,
+                self.garden_id,
+                now_ms=now_ms,
+            )
+            reconciliation = reconcile_rain_watering_outcomes(
+                self.conn,
+                garden_id=self.garden_id,
+                now_ms=now_ms,
+            )
+            delivered = deliver_pending_email_digests(
+                self.conn,
+                self.garden_id,
+                email_sender=lambda recipient, subject, body: sent.append(
+                    (recipient, subject, body)
+                ),
+                now_ms=now_ms,
+            )
+
+        self.assertEqual(initial["created"], 1)
+        self.assertEqual(reconciliation["adjusted"], 1)
+        self.assertEqual(int(delivered["emailed_users"]), 0)
+        self.assertEqual(sent, [])
+        task_after = self.conn.execute(
+            "SELECT due_on FROM garden_tasks WHERE public_id = 'task_rain_digest'",
+        ).fetchone()
+        notification = self.conn.execute(
+            """
+            SELECT emailed_at_ms, cleared_at_ms, clear_reason
+            FROM notification_events
+            WHERE garden_id = %s
+              AND target_type = 'task'
+              AND target_id = 'task_rain_digest'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert task_after is not None
+        assert notification is not None
+        self.assertEqual(str(task_after["due_on"]), "2026-07-19")
+        self.assertIsNone(notification["emailed_at_ms"])
+        self.assertIsNotNone(notification["cleared_at_ms"])
+        self.assertEqual(str(notification["clear_reason"]), "superseded")
 
 
 class TestNotifications(BaseApiTest):

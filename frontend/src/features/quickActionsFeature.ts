@@ -44,6 +44,12 @@ let escapeHandler: ((e: KeyboardEvent) => void) | null = null;
 let releaseFocusTrap: (() => void) | null = null;
 let quickTaskLoadVersion = 0;
 let quickConnectivityListenerBound = false;
+let quickActionView: "home" | "complete" | "snooze" = "home";
+let quickSnoozeCorrection: {
+  expiresAtMs: number;
+  snoozeUntil: string;
+  task: GardenTask;
+} | null = null;
 let inertBackgroundElements: Array<{
   element: HTMLElement;
   wasInert: boolean;
@@ -119,7 +125,7 @@ export function initQuickActionsFeature(
   if (!quickConnectivityListenerBound) {
     quickConnectivityListenerBound = true;
     onConnectivityChange(() => {
-      if (quickActionSheetOpen) renderQuickActionHome();
+      if (quickActionSheetOpen) renderCurrentQuickActionView();
     });
   }
 }
@@ -223,6 +229,9 @@ function focusQuickActionSheet(preferContent = false): void {
 }
 
 function renderQuickActionHome(restoreFocus = false): void {
+  quickTaskLoadVersion += 1;
+  quickActionView = "home";
+  quickSnoozeCorrection = null;
   const content = quickActionContent();
   if (!content) return;
   renderQuickActionSheet(content, getQuickActionCallbacks(), {
@@ -230,6 +239,46 @@ function renderQuickActionHome(restoreFocus = false): void {
     online: isOnline(),
   });
   if (restoreFocus) focusQuickActionSheet();
+}
+
+function renderCurrentQuickActionView(): void {
+  if (quickActionView === "complete") {
+    void renderTaskQuickCompleteView();
+    return;
+  }
+  if (quickActionView === "snooze") {
+    void renderTaskQuickSnoozeView();
+    return;
+  }
+  renderQuickActionHome();
+}
+
+function retireQuickTaskControls(taskId: string): void {
+  const content = quickActionContent();
+  if (!content) return;
+  const controls = content.querySelectorAll<HTMLElement>(
+    `[data-task-id="${CSS.escape(taskId)}"]`,
+  );
+  controls.forEach((control) => control.remove());
+}
+
+function appendStoredQuickSnoozeCorrection(content: HTMLElement): boolean {
+  content.querySelector(".quick-action-snooze-notice")?.remove();
+  const correction = quickSnoozeCorrection;
+  const remainingMs = correction ? correction.expiresAtMs - Date.now() : 0;
+  if (!correction || remainingMs <= 0) {
+    quickSnoozeCorrection = null;
+    return false;
+  }
+  const notice = getTaskSnoozeCorrectionNotice(
+    correction.snoozeUntil,
+    () => openQuickSnoozeDateDialog(correction.task, correction.snoozeUntil),
+  );
+  appendQuickActionSnoozeNotice(content, {
+    ...notice,
+    durationMs: remainingMs,
+  });
+  return true;
 }
 
 function openQuickActionSheet(): void {
@@ -277,6 +326,8 @@ export function closeQuickActionSheet(restoreFocus = true): void {
   const sheet = quickActionSheet();
   quickActionSheetOpen = false;
   quickTaskLoadVersion += 1;
+  quickActionView = "home";
+  quickSnoozeCorrection = null;
   releaseFocusTrap?.();
   releaseFocusTrap = null;
   if (escapeHandler) {
@@ -311,9 +362,9 @@ function isCurrentQuickTaskRequest(gardenId: number, version: number): boolean {
 async function completeQuickTask(
   task: GardenTask,
   body: TaskActionRequest,
-): Promise<void> {
+): Promise<boolean> {
   const gardenId = getActiveGardenContext();
-  if (gardenId === null || gardenId !== task.garden_id || !ctx.ensureWriteAccess()) return;
+  if (gardenId === null || gardenId !== task.garden_id || !ctx.ensureWriteAccess()) return false;
   const actionBody = withTaskActionRevision(task, body);
   try {
     if (!isOnline()) {
@@ -334,16 +385,25 @@ async function completeQuickTask(
       );
       void ctx.refreshBadgeCounts();
     }
-    await showTaskQuickComplete();
   } catch (err) {
     ctx.showToast(
       isOnline() ? getApiErrorMessage(err) : offlineTaskActionErrorMessage(err),
       "error",
     );
+    return false;
   }
+  retireQuickTaskControls(task.id);
+  await renderTaskQuickCompleteView();
+  return true;
 }
 
 async function showTaskQuickComplete(): Promise<void> {
+  quickActionView = "complete";
+  quickSnoozeCorrection = null;
+  await renderTaskQuickCompleteView();
+}
+
+async function renderTaskQuickCompleteView(): Promise<void> {
   const content = document.getElementById(
     "mobile-quick-actions-content",
   );
@@ -386,9 +446,12 @@ async function showTaskQuickComplete(): Promise<void> {
             await ctx.ensurePlantsCacheLoaded();
           }
           const plantNames = new Map(ctx.getPlants().map((plant) => [plant.plt_id, plant.name]));
-          openTaskCompletionDialog(task, plantNames, (body) => {
-            void completeQuickTask(task, body);
-          }, { modalParent: quickActionSheet() });
+          openTaskCompletionDialog(
+            task,
+            plantNames,
+            (body) => completeQuickTask(task, body),
+            { modalParent: quickActionSheet() },
+          );
           return;
         }
         await completeQuickTask(task, { action: "complete" });
@@ -400,6 +463,7 @@ async function showTaskQuickComplete(): Promise<void> {
     );
     focusQuickActionSheet(true);
   } catch (err) {
+    if (!isCurrentQuickTaskRequest(gardenId, loadVersion)) return;
     ctx.showToast(
       getApiErrorMessage(err),
       "error",
@@ -420,7 +484,7 @@ function openQuickSnoozeDateDialog(
     title: t("tasks.snooze_prompt") as string,
     defaultDate,
     onConfirm: (date, confirmOutsideWindow) =>
-      void snoozeQuickTask(task, date, confirmOutsideWindow),
+      snoozeQuickTask(task, date, confirmOutsideWindow),
     warning: policy.manualDateMessage,
     requireManualDate: policy.requireManualDate,
     maxDate: policy.maxDate,
@@ -434,13 +498,13 @@ async function snoozeQuickTask(
   task: GardenTask,
   snoozeUntil: string,
   confirmOutsideWindow = false,
-): Promise<void> {
+): Promise<boolean> {
   const gardenId = getActiveGardenContext();
-  if (gardenId === null || gardenId !== task.garden_id || !ctx.ensureWriteAccess()) return;
+  if (gardenId === null || gardenId !== task.garden_id || !ctx.ensureWriteAccess()) return false;
   const safety = taskSnoozeDateSafety(task, snoozeUntil);
   if (safety.blocked) {
     ctx.showToast(safety.message ?? t("tasks.snooze_prompt"), "error");
-    return;
+    return false;
   }
   const actionBody = withTaskActionRevision(task, {
     action: "snooze",
@@ -461,26 +525,41 @@ async function snoozeQuickTask(
         });
       } catch (err) {
         ctx.showToast(offlineTaskActionErrorMessage(err), "error");
-        return;
+        return false;
       }
       ctx.showToast(t("offline.draft_saved"), "success");
       void ctx.refreshOfflineIndicator();
-      await showTaskQuickSnooze({ task, snoozeUntil });
-      return;
     } else {
       const result = await taskActionApi(task.id, actionBody);
       task.updated_at_ms = result.updated_at_ms;
       void ctx.refreshBadgeCounts();
     }
-    await showTaskQuickSnooze({ task, snoozeUntil });
   } catch (err) {
     ctx.showToast(getApiErrorMessage(err), "error");
+    return false;
   }
+  retireQuickTaskControls(task.id);
+  await showTaskQuickSnooze({ task, snoozeUntil });
+  return true;
 }
 
 async function showTaskQuickSnooze(
   correction?: { task: GardenTask; snoozeUntil: string },
 ): Promise<void> {
+  quickActionView = "snooze";
+  quickSnoozeCorrection = correction
+    ? {
+        ...correction,
+        expiresAtMs: Date.now() + getTaskSnoozeCorrectionNotice(
+          correction.snoozeUntil,
+          () => {},
+        ).durationMs,
+      }
+    : null;
+  await renderTaskQuickSnoozeView();
+}
+
+async function renderTaskQuickSnoozeView(): Promise<void> {
   const content = quickActionContent();
   if (!content) return;
   const gardenId = getActiveGardenContext();
@@ -531,19 +610,11 @@ async function showTaskQuickSnooze(
       },
       result.dataState,
     );
-    if (correction) {
-      appendQuickActionSnoozeNotice(
-        content,
-        getTaskSnoozeCorrectionNotice(
-          correction.snoozeUntil,
-          () => openQuickSnoozeDateDialog(correction.task, correction.snoozeUntil),
-        ),
-      );
-      focusQuickActionSheet(true);
-    } else {
-      focusQuickActionSheet(true);
-    }
+    appendStoredQuickSnoozeCorrection(content);
+    focusQuickActionSheet(true);
   } catch (err) {
+    if (!isCurrentQuickTaskRequest(gardenId, loadVersion)) return;
+    appendStoredQuickSnoozeCorrection(content);
     ctx.showToast(
       getApiErrorMessage(err),
       "error",

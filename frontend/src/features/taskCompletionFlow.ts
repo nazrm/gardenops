@@ -50,7 +50,9 @@ export function defaultSelectedPlantIds(task: CompletionTask): Set<string> {
 export function openTaskCompletionDialog(
   task: CompletionTask,
   plantNames: Map<string, string>,
-  onConfirm: (body: TaskActionRequest) => void,
+  onConfirm: (
+    body: TaskActionRequest,
+  ) => boolean | void | Promise<boolean | void>,
   options: TaskCompletionDialogOptions = {},
 ): void {
   const selected = defaultSelectedPlantIds(task);
@@ -72,17 +74,61 @@ export function openTaskCompletionDialog(
   const list = dialog.querySelector<HTMLElement>(".task-completion-list")!;
   const feedback = dialog.querySelector<HTMLElement>(".task-completion-feedback")!;
   const confirm = dialog.querySelector<HTMLButtonElement>(".confirm-yes")!;
+  const selectAll = dialog.querySelector<HTMLButtonElement>(".task-completion-select-all")!;
+  const clear = dialog.querySelector<HTMLButtonElement>(".task-completion-clear")!;
+  const cancel = dialog.querySelector<HTMLButtonElement>(".confirm-no")!;
+  const notSeen = dialog.querySelector<HTMLButtonElement>(".task-completion-not-seen")!;
   const checkboxes: HTMLInputElement[] = [];
+  let submitting = false;
+  let submitError = "";
 
   const syncState = (): void => {
     for (const checkbox of checkboxes) {
       checkbox.checked = selected.has(checkbox.value);
+      checkbox.disabled = submitting;
     }
     const selectionRequired = needsCompletionSelection(task);
-    confirm.disabled = selectionRequired && selected.size === 0;
-    feedback.textContent = selectionRequired && selected.size === 0
+    const selectionMissing = selectionRequired && selected.size === 0;
+    confirm.disabled = submitting || selectionMissing;
+    notSeen.disabled = submitting || selectionMissing;
+    selectAll.disabled = submitting;
+    clear.disabled = submitting;
+    cancel.disabled = submitting;
+    dialog.toggleAttribute("aria-busy", submitting);
+    feedback.textContent = selectionMissing
       ? String(t("tasks.complete_select_one"))
-      : "";
+      : submitError;
+  };
+
+  const submit = async (
+    body: TaskActionRequest,
+    submitButton: HTMLButtonElement,
+  ): Promise<void> => {
+    if (submitting) return;
+    if (needsCompletionSelection(task) && selected.size === 0) {
+      syncState();
+      (checkboxes[0] ?? confirm).focus();
+      return;
+    }
+    submitting = true;
+    submitError = "";
+    syncState();
+    try {
+      const result = await onConfirm(body);
+      if (result === false) {
+        submitError = String(t("tasks.dialog_submit_failed"));
+        return;
+      }
+      close();
+    } catch {
+      submitError = String(t("tasks.dialog_submit_failed"));
+    } finally {
+      if (dialog.isConnected) {
+        submitting = false;
+        syncState();
+        if (submitError) submitButton.focus();
+      }
+    }
   };
 
   for (const plantId of task.plant_ids ?? []) {
@@ -94,6 +140,7 @@ export function openTaskCompletionDialog(
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) selected.add(plantId);
       else selected.delete(plantId);
+      submitError = "";
       syncState();
     });
     checkboxes.push(checkbox);
@@ -101,40 +148,33 @@ export function openTaskCompletionDialog(
     list.appendChild(label);
   }
 
-  const selectAll = dialog.querySelector<HTMLButtonElement>(".task-completion-select-all")!;
   selectAll.textContent = String(t("common.select_all"));
   selectAll.addEventListener("click", () => {
     for (const checkbox of checkboxes) selected.add(checkbox.value);
+    submitError = "";
     syncState();
     confirm.focus();
   });
 
-  const clear = dialog.querySelector<HTMLButtonElement>(".task-completion-clear")!;
   clear.textContent = String(t("common.clear"));
   clear.addEventListener("click", () => {
     selected.clear();
+    submitError = "";
     syncState();
     checkboxes[0]?.focus();
   });
 
-  dialog.querySelector<HTMLButtonElement>(".confirm-no")!.textContent = String(t("common.cancel"));
-  dialog.querySelector<HTMLButtonElement>(".confirm-no")!.addEventListener("click", close);
-  const notSeen = dialog.querySelector<HTMLButtonElement>(".task-completion-not-seen")!;
+  cancel.textContent = String(t("common.cancel"));
+  cancel.addEventListener("click", close);
   if (task.task_type === "observe_bloom") {
     notSeen.textContent = String(t("tasks.action_not_seen_blooming"));
     notSeen.addEventListener("click", () => {
       const completed_plant_ids = [...selected];
-      if (needsCompletionSelection(task) && completed_plant_ids.length === 0) {
-        syncState();
-        (checkboxes[0] ?? confirm).focus();
-        return;
-      }
-      onConfirm({
+      void submit({
         action: "complete",
         completed_plant_ids,
         completion_outcome: "not_seen_blooming_this_season",
-      });
-      close();
+      }, notSeen);
     });
   } else {
     notSeen.remove();
@@ -146,13 +186,11 @@ export function openTaskCompletionDialog(
   );
   confirm.addEventListener("click", () => {
     const completed_plant_ids = [...selected];
-    if (needsCompletionSelection(task) && completed_plant_ids.length === 0) {
-      syncState();
-      (checkboxes[0] ?? confirm).focus();
-      return;
-    }
-    onConfirm({ action: "complete", completed_plant_ids, completion_outcome: "done" });
-    close();
+    void submit({
+      action: "complete",
+      completed_plant_ids,
+      completion_outcome: "done",
+    }, confirm);
   });
   syncState();
   (checkboxes[0] ?? confirm).focus();

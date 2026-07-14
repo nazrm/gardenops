@@ -53,6 +53,10 @@ let onSyncComplete: ((result: SyncResult) => Promise<void> | void) | null = null
 let canManageDrafts: (() => boolean) | null = null;
 let syncInFlight: Promise<void> | null = null;
 
+function canRetryOfflineDrafts(): boolean {
+  return canManageDrafts?.() ?? true;
+}
+
 export interface OfflineFeatureOptions {
   canManageDrafts?: () => boolean;
   onSyncComplete?: (result: SyncResult) => Promise<void> | void;
@@ -343,7 +347,8 @@ export async function refreshOfflineIndicator(): Promise<void> {
     wrapper,
     {
       failedDrafts: snapshot.failedDrafts,
-      canManageDrafts: canManageDrafts?.() ?? true,
+      canDiscardDrafts: true,
+      canRetryDrafts: canRetryOfflineDrafts(),
       online: isOnline(),
       pendingCount: snapshot.pendingCount,
       syncingCount: snapshot.syncingCount,
@@ -362,6 +367,10 @@ export async function refreshOfflineIndicator(): Promise<void> {
       },
       onRetry: (draft) => {
         void (async () => {
+          if (!canRetryOfflineDrafts()) {
+            await refreshOfflineIndicator();
+            return;
+          }
           const changed = await retryDraft(draft.id);
           if (changed && isOnline()) {
             await syncOfflineDraftsNow();
@@ -393,7 +402,7 @@ function updateToastRecoveryClearance(
 export async function syncOfflineDraftsNow(): Promise<void> {
   if (syncInFlight) return syncInFlight;
   const sync = (async () => {
-    if (!isOnline()) {
+    if (!isOnline() || !canRetryOfflineDrafts()) {
       await refreshOfflineIndicator();
       return;
     }
@@ -427,7 +436,7 @@ export async function syncOfflineDraftsNow(): Promise<void> {
 }
 
 async function syncPendingOfflineDrafts(): Promise<void> {
-  if (!isOnline()) {
+  if (!isOnline() || !canRetryOfflineDrafts()) {
     await refreshOfflineIndicator();
     return;
   }

@@ -306,7 +306,11 @@ export function showBottomSheet(params: BottomSheetParams): void {
   if (params.canWrite !== false) {
     body.insertBefore(addPlantSection, tasksPreview);
   }
-  sheet.append(handleBar, header, body);
+  const sheetContent = document.createElement("div");
+  sheetContent.className = "sheet-content";
+  sheetContent.append(header, body);
+  sheet.append(handleBar, sheetContent);
+  applySnapState(sheet, handleBar, currentSnap);
 
   document.body.appendChild(sheet);
   activeSheet = sheet;
@@ -418,7 +422,15 @@ function applySnapState(
   currentSnap = state;
   sheet.style.height = SNAP_HEIGHTS[currentSnap];
   sheet.dataset["snapState"] = currentSnap;
-  handle.setAttribute("aria-expanded", currentSnap === "peek" ? "false" : "true");
+  const isPeek = currentSnap === "peek";
+  handle.setAttribute("aria-expanded", isPeek ? "false" : "true");
+  const content = sheet.querySelector<HTMLElement>(".sheet-content");
+  if (content) {
+    content.hidden = isPeek;
+    content.toggleAttribute("inert", isPeek);
+    content.setAttribute("aria-hidden", isPeek ? "true" : "false");
+  }
+  if (isPeek) handle.focus({ preventScroll: true });
 }
 
 function snapToNearest(sheet: HTMLElement, handle: HTMLButtonElement): void {

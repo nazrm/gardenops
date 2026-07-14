@@ -8,7 +8,8 @@ export interface OfflineIndicatorCallbacks {
 }
 
 export interface OfflineIndicatorState {
-  canManageDrafts?: boolean;
+  canDiscardDrafts?: boolean;
+  canRetryDrafts?: boolean;
   failedDrafts: OfflineDraft[];
   online: boolean;
   pendingCount: number;
@@ -39,7 +40,8 @@ export function renderOfflineIndicator(
 ): void {
   container.replaceChildren();
   const {
-    canManageDrafts = true,
+    canDiscardDrafts = true,
+    canRetryDrafts = true,
     failedDrafts,
     online,
     pendingCount,
@@ -90,7 +92,7 @@ export function renderOfflineIndicator(
     badge.appendChild(count);
   }
 
-  if (callbacks && canManageDrafts && online && pendingCount > 0 && syncingCount === 0) {
+  if (callbacks && canRetryDrafts && online && pendingCount > 0 && syncingCount === 0) {
     const btn = document.createElement("button");
     btn.className = "offline-sync-btn";
     btn.type = "button";
@@ -121,20 +123,25 @@ export function renderOfflineIndicator(
     error.textContent = draft.last_error || t("offline.failed_unknown");
     copy.append(label, error);
     row.appendChild(copy);
-    if (callbacks && canManageDrafts) {
+    if (callbacks && (canRetryDrafts || canDiscardDrafts)) {
       const actions = document.createElement("div");
       actions.className = "offline-failure-actions";
-      const retry = document.createElement("button");
-      retry.type = "button";
-      retry.className = "offline-retry-btn";
-      retry.textContent = t("offline.retry");
-      retry.addEventListener("click", () => callbacks.onRetry(draft));
-      const discard = document.createElement("button");
-      discard.type = "button";
-      discard.className = "offline-discard-btn";
-      discard.textContent = t("offline.discard");
-      discard.addEventListener("click", () => callbacks.onDiscard(draft));
-      actions.append(retry, discard);
+      if (canRetryDrafts) {
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "offline-retry-btn";
+        retry.textContent = t("offline.retry");
+        retry.addEventListener("click", () => callbacks.onRetry(draft));
+        actions.appendChild(retry);
+      }
+      if (canDiscardDrafts) {
+        const discard = document.createElement("button");
+        discard.type = "button";
+        discard.className = "offline-discard-btn";
+        discard.textContent = t("offline.discard");
+        discard.addEventListener("click", () => callbacks.onDiscard(draft));
+        actions.appendChild(discard);
+      }
       row.appendChild(actions);
     }
     failures.appendChild(row);

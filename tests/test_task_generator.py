@@ -1,6 +1,7 @@
 """Tests for C7 recurring care schedules and C8 harvest window alerts."""
 
 import json
+import os
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -17,6 +18,7 @@ from gardenops.services.task_generator import (
     generate_tasks,
     infer_task_description,
     reconcile_rain_watering_outcomes,
+    restore_generated_watering_task_from_attention_outcome,
 )
 from tests.base import DbTestBase
 
@@ -36,7 +38,7 @@ class _RestoreRaceConnection:
 
     def execute(self, query: Any, params: Any = None) -> Any:
         sql = str(query)
-        if "FROM attention_outcomes" in sql:
+        if "FROM attention_outcomes" in sql and "FOR UPDATE" not in sql:
             self._outcome_barrier.wait(timeout=10)
         elif "FROM garden_tasks" in sql and "rule_source = %s" in sql:
             try:
@@ -46,6 +48,52 @@ class _RestoreRaceConnection:
             except threading.BrokenBarrierError:
                 pass
         return self._connection.execute(query, params)
+
+
+class _PauseAfterRestoreTaskLockConnection:
+    """Hold a manual restore after it locks its task row."""
+
+    def __init__(
+        self,
+        connection: Any,
+        task_locked: threading.Event,
+        allow_restore: threading.Event,
+    ) -> None:
+        self._connection = connection
+        self._task_locked = task_locked
+        self._allow_restore = allow_restore
+        self._outcome_locked = False
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        sql = str(query)
+        if "FROM attention_outcomes" in sql and "FOR UPDATE" in sql:
+            result = self._connection.execute(query, params)
+            self._outcome_locked = True
+            return result
+        if "FROM garden_tasks" in sql and "rule_source = %s" in sql and "FOR UPDATE" in sql:
+            if not self._outcome_locked:
+                raise AssertionError("manual restore locked its task before its outcome")
+            result = self._connection.execute(query, params)
+            self._task_locked.set()
+            if not self._allow_restore.wait(timeout=5):
+                raise TimeoutError("manual restore was not released")
+            return result
+        return self._connection.execute(query, params)
+
+
+class _ObserveAutomaticOutcomeLockConnection:
+    """Expose when automatic recovery has acquired its outcome row locks."""
+
+    def __init__(self, connection: Any, outcome_locked: threading.Event) -> None:
+        self._connection = connection
+        self._outcome_locked = outcome_locked
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        result = self._connection.execute(query, params)
+        sql = str(query)
+        if "FROM attention_outcomes" in sql and "ORDER BY id" in sql and "FOR UPDATE" in sql:
+            self._outcome_locked.set()
+        return result
 
 
 class TestHarvestNoTaskForNonHarvestCategory(DbTestBase):
@@ -202,6 +250,87 @@ class TestInferTaskDescription(DbTestBase):
         assert "Why:" in en
         assert "Hvorfor:" in no
 
+    def test_manual_and_automatic_rain_recovery_use_frozen_garden_date(self) -> None:
+        now_ms = 1_783_180_800_000
+        frozen_clock = {
+            "APP_ENV": "test",
+            "GARDENOPS_ATTENTION_FROZEN_NOW_MS": str(now_ms),
+            "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-05",
+        }
+        recovery_action_by_plant: dict[str, dict[str, Any]] = {}
+        outcome_by_plant: dict[str, str] = {}
+        for plant_id, plant_name in (
+            ("RAIN-DATE-MANUAL", "Manual rain date"),
+            ("RAIN-DATE-AUTO", "Automatic rain date"),
+        ):
+            self._insert_plant(plant_id, plant_name, care_watering="regular moisture")
+            source_public_id = f"water:{plant_id}:2026-07-04"
+            recovery_action = {
+                "kind": "restore_generated_watering_task",
+                "label": "Restore watering",
+                "source_public_id": source_public_id,
+                "target_type": "plant",
+                "target_id": plant_id,
+                "due_on": "2026-07-04",
+                "plant_ids": [plant_id],
+                "plot_ids": [],
+            }
+            outcome_by_plant[plant_id] = upsert_attention_outcome(
+                self.conn,
+                garden_id=self.garden_id,
+                provider="weather",
+                outcome_type="watering_covered_by_rain",
+                source_type="task_generator",
+                source_id=f"rain-date-{plant_id}",
+                source_public_id=source_public_id,
+                target_type="plant",
+                target_id=plant_id,
+                title="Watering covered by rain",
+                explanation="Rain covers this watering.",
+                reason="Rain covers watering",
+                plant_ids=(plant_id,),
+                metadata={"due_on": "2026-07-04", "plant_name": plant_name},
+                recovery_action=recovery_action,
+                occurred_at_ms=now_ms,
+                expires_at_ms=now_ms + 86_400_000,
+            )
+            recovery_action_by_plant[plant_id] = recovery_action
+
+        with patch.dict(os.environ, frozen_clock, clear=False):
+            restored = restore_attention_outcome(
+                self.conn,
+                garden_id=self.garden_id,
+                outcome_id=outcome_by_plant["RAIN-DATE-MANUAL"],
+                user_id=self._owner_id,
+                now_ms=now_ms,
+            )
+            automatic = reconcile_rain_watering_outcomes(
+                self.conn,
+                garden_id=self.garden_id,
+                now_ms=now_ms,
+            )
+
+        self.assertEqual(restored, "restored")
+        self.assertEqual(automatic["recovered"], 1)
+        rows = self.conn.execute(
+            """
+            SELECT rule_source, due_on
+            FROM garden_tasks
+            WHERE garden_id = %s
+              AND rule_source = ANY(%s)
+            ORDER BY rule_source
+            """,
+            (
+                self.garden_id,
+                [
+                    recovery_action_by_plant[plant_id]["source_public_id"]
+                    for plant_id in sorted(recovery_action_by_plant)
+                ],
+            ),
+        ).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({str(row["due_on"]) for row in rows}, {"2026-07-05"})
+
     def test_rain_suppressed_watering_records_attention_outcome(self) -> None:
         self._insert_plant("RW1", "Hydrangea", care_watering="regular moisture")
         self.conn.execute(
@@ -274,6 +403,14 @@ class TestInferTaskDescription(DbTestBase):
         self._insert_plant("RW-WITHDRAW", "Withdrawn rain", care_watering="regular moisture")
         self.conn.execute(
             """
+            INSERT INTO garden_memberships (garden_id, user_id, role)
+            VALUES (%s, %s, 'admin')
+            ON CONFLICT DO NOTHING
+            """,
+            (self.garden_id, self._owner_id),
+        )
+        self.conn.execute(
+            """
             INSERT INTO plots
                 (plot_id, garden_id, zone_code, zone_name, plot_number,
                  grid_row, grid_col, sub_zone, notes)
@@ -299,23 +436,32 @@ class TestInferTaskDescription(DbTestBase):
         assert alert is not None
         now_ms = 1_784_044_800_000
 
-        generation = generate_tasks(
-            self.conn,
-            self.garden_id,
-            7,
-            2026,
-            self._owner_id,
-            now_ms=now_ms,
-        )
-        self.conn.execute(
-            "UPDATE weather_alerts SET dismissed = 1 WHERE id = %s",
-            (int(alert["id"]),),
-        )
-        recovery = reconcile_rain_watering_outcomes(
-            self.conn,
-            garden_id=self.garden_id,
-            now_ms=now_ms + 1,
-        )
+        with patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "test",
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": str(now_ms),
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-15",
+            },
+            clear=False,
+        ):
+            generation = generate_tasks(
+                self.conn,
+                self.garden_id,
+                7,
+                2026,
+                self._owner_id,
+                now_ms=now_ms,
+            )
+            self.conn.execute(
+                "UPDATE weather_alerts SET dismissed = 1 WHERE id = %s",
+                (int(alert["id"]),),
+            )
+            recovery = reconcile_rain_watering_outcomes(
+                self.conn,
+                garden_id=self.garden_id,
+                now_ms=now_ms + 1,
+            )
 
         task = self.conn.execute(
             """
@@ -336,6 +482,18 @@ class TestInferTaskDescription(DbTestBase):
             """,
             (self.garden_id,),
         ).fetchone()
+        notification = self.conn.execute(
+            """
+            SELECT notification_type, metadata_json
+            FROM notification_events
+            WHERE garden_id = %s
+              AND target_type = 'task'
+              AND target_id = %s
+              AND dismissed = 0
+              AND cleared_at_ms IS NULL
+            """,
+            (self.garden_id, str(task["public_id"]) if task is not None else ""),
+        ).fetchone()
         assert generation["rain_suppressed"] == 1
         assert recovery["recovered"] == 1
         assert task is not None
@@ -348,6 +506,9 @@ class TestInferTaskDescription(DbTestBase):
         outcome_metadata = json.loads(str(outcome["metadata_json"]))
         assert outcome_metadata["lifecycle"]["status"] == "automatically_recovered"
         assert json.loads(str(outcome["recovery_action_json"])) == {}
+        assert notification is not None
+        assert str(notification["notification_type"]) == "task_due"
+        assert json.loads(str(notification["metadata_json"]))["due_on"] == "2026-07-15"
 
     def test_rain_suppression_keeps_unplaced_and_indoor_watering_tasks(self) -> None:
         self._insert_plant("RNOPLOT", "Unplaced Hydrangea", care_watering="regular moisture")
@@ -984,6 +1145,122 @@ class TestRainAttentionOutcomeRestoreConcurrency(DbTestBase):
         assert str(tasks[0]["status"]) == "pending"
         assert outcome is not None
         assert int(outcome["expires_at_ms"]) < now_ms
+
+    def test_manual_and_automatic_rain_recovery_share_outcome_then_task_lock_order(
+        self,
+    ) -> None:
+        self._insert_plant("RESTORE-LOCK-ORDER", "Restore lock order")
+        now_ms = 1_783_180_800_000
+        source_public_id = "water:RESTORE-LOCK-ORDER:2026-07-05"
+        task = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, status, severity,
+                 due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+            VALUES ('task_restore_lock_order', %s, 'water', 'Water lock order',
+                    'pending', 'normal', '2026-07-05', %s, '{}', %s, %s)
+            RETURNING id, public_id
+            """,
+            (self.garden_id, source_public_id, now_ms, now_ms),
+        ).fetchone()
+        assert task is not None
+        self.conn.execute(
+            "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
+            (int(task["id"]), "RESTORE-LOCK-ORDER"),
+        )
+        recovery_action = {
+            "kind": "restore_generated_watering_task",
+            "label": "Restore watering",
+            "source_public_id": source_public_id,
+            "target_type": "plant",
+            "target_id": "RESTORE-LOCK-ORDER",
+            "due_on": "2026-07-05",
+            "plant_ids": ["RESTORE-LOCK-ORDER"],
+            "plot_ids": [],
+        }
+        outcome_id = upsert_attention_outcome(
+            self.conn,
+            garden_id=self.garden_id,
+            provider="weather",
+            outcome_type="watering_covered_by_rain",
+            source_type="task_generator",
+            source_id="rain-restore-lock-order",
+            source_public_id=source_public_id,
+            target_type="plant",
+            target_id="RESTORE-LOCK-ORDER",
+            title="Watering covered by rain",
+            explanation="Rain covers this watering.",
+            reason="Rain covers watering",
+            plant_ids=("RESTORE-LOCK-ORDER",),
+            metadata={"due_on": "2026-07-05", "plant_name": "Restore lock order"},
+            recovery_action=recovery_action,
+            occurred_at_ms=now_ms,
+            expires_at_ms=now_ms + 86_400_000,
+        )
+        self.conn.commit()
+
+        task_locked = threading.Event()
+        allow_restore = threading.Event()
+        automatic_outcome_locked = threading.Event()
+
+        def manual_restore() -> str:
+            conn = db.get_db()
+            try:
+                result = restore_generated_watering_task_from_attention_outcome(
+                    _PauseAfterRestoreTaskLockConnection(
+                        conn,
+                        task_locked,
+                        allow_restore,
+                    ),
+                    garden_id=self.garden_id,
+                    outcome_public_id=outcome_id,
+                    source_public_id=source_public_id,
+                    target_id="RESTORE-LOCK-ORDER",
+                    metadata={"due_on": "2026-07-05", "plant_name": "Restore lock order"},
+                    recovery_action=recovery_action,
+                    actor_user_id=self._owner_id,
+                    now_ms=now_ms,
+                )
+                conn.commit()
+                return result
+            finally:
+                db.return_db(conn)
+
+        def automatic_restore() -> dict[str, int]:
+            conn = db.get_db()
+            try:
+                result = reconcile_rain_watering_outcomes(
+                    _ObserveAutomaticOutcomeLockConnection(conn, automatic_outcome_locked),
+                    garden_id=self.garden_id,
+                    now_ms=now_ms,
+                )
+                conn.commit()
+                return result
+            finally:
+                db.return_db(conn)
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "APP_ENV": "test",
+                    "GARDENOPS_ATTENTION_FROZEN_NOW_MS": str(now_ms),
+                    "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-05",
+                },
+                clear=False,
+            ),
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
+            manual_future = pool.submit(manual_restore)
+            self.assertTrue(task_locked.wait(timeout=5))
+            automatic_future = pool.submit(automatic_restore)
+            automatic_outcome_locked.wait(timeout=0.5)
+            allow_restore.set()
+            manual_result = manual_future.result(timeout=8)
+            automatic_result = automatic_future.result(timeout=8)
+
+        self.assertEqual(manual_result, "task_restore_lock_order")
+        self.assertEqual(automatic_result, {"recovered": 0, "adjusted": 0, "closed": 0})
 
 
 class TestTaskDescriptionOverrides(unittest.TestCase):
