@@ -26,14 +26,17 @@ import {
   openTaskDateDialog,
 } from "../features/taskSnoozeFlow";
 import {
+  canQueueCompletionOffline,
   canQueueDefaultCompletionOffline,
   needsCompletionDialog,
+  offlineTaskActionLabels,
   openTaskCompletionDialog,
 } from "../features/taskCompletionFlow";
 import {
   enqueueTaskActionBatch,
   getTaskActionStates,
   OfflineTaskActionConflictError,
+  onConnectivityChange,
   onOfflineQueueChange,
   removeDraft,
   retryDraft,
@@ -56,6 +59,7 @@ let tasksDataState: "live" | "cached" | "unavailable" = "unavailable";
 let taskOperation: "idle" | "generate" | "regenerate" = "idle";
 let tasksRequestGeneration = 0;
 let offlineQueueListenerBound = false;
+let taskConnectivityListenerBound = false;
 const TASKS_PAGE_SIZE = 50;
 type TaskActionExtra = Omit<TaskActionRequest, "action">;
 
@@ -155,12 +159,12 @@ function setTaskOperation(next: "idle" | "generate" | "regenerate"): void {
 function syncTaskHeaderButtons(): void {
   const generateBtn = document.getElementById("tasks-generate-btn");
   if (generateBtn instanceof HTMLButtonElement) {
-    generateBtn.disabled = !ctx.canWrite() || taskOperation !== "idle";
+    generateBtn.disabled = !ctx.canWrite() || !ctx.isOnline() || taskOperation !== "idle";
     generateBtn.setAttribute("aria-busy", taskOperation === "generate" ? "true" : "false");
   }
   const regenerateBtn = document.getElementById("tasks-refresh-desc-btn");
   if (regenerateBtn instanceof HTMLButtonElement) {
-    regenerateBtn.disabled = !ctx.canWrite() || taskOperation !== "idle";
+    regenerateBtn.disabled = !ctx.canWrite() || !ctx.isOnline() || taskOperation !== "idle";
     regenerateBtn.setAttribute(
       "aria-busy",
       taskOperation === "regenerate" ? "true" : "false",
@@ -168,7 +172,7 @@ function syncTaskHeaderButtons(): void {
   }
   const addBtn = document.getElementById("tasks-add-btn");
   if (addBtn instanceof HTMLButtonElement) {
-    addBtn.disabled = !ctx.canWrite() || taskOperation !== "idle";
+    addBtn.disabled = !ctx.canWrite() || !ctx.isOnline() || taskOperation !== "idle";
   }
 }
 
@@ -251,6 +255,13 @@ export function initTasksTab(appCtx: AppContext): void {
     offlineQueueListenerBound = true;
     onOfflineQueueChange(() => {
       void refreshTaskOfflineActions(true);
+    });
+  }
+  if (!taskConnectivityListenerBound) {
+    taskConnectivityListenerBound = true;
+    onConnectivityChange(() => {
+      syncTaskHeaderButtons();
+      renderTasksView();
     });
   }
 
@@ -544,9 +555,10 @@ function renderTasksView(
     onRetryOfflineAction: (state) => void retryOfflineTaskAction(state),
     offlineTaskActions: taskOfflineActions,
     selectedTaskIds,
-    onEmptyAction: canWrite ? () => void handleGenerateTasks() : undefined,
+    onEmptyAction: canWrite && ctx.isOnline() ? () => void handleGenerateTasks() : undefined,
     canWrite,
     dataState: tasksDataState,
+    online: ctx.isOnline(),
   }, plantNames);
   ctx.renderDataExportBars();
   renderTasksPagination();
@@ -729,15 +741,29 @@ async function enqueueOfflineTaskAction(
   taskId: string,
   action: TaskActionRequest["action"],
   extra?: TaskActionExtra,
+  task?: Pick<GardenTask, "task_type" | "title">,
 ): Promise<void> {
-  if (action === "complete" && extra?.completed_plant_ids?.length) {
-    throw new Error("Grouped task completion cannot be queued offline.");
-  }
-  const payload: Record<string, unknown> = {
+  await enqueueTaskActionBatch([
+    offlineTaskActionInput(action, offlineTaskActionPayload(taskId, action, extra, task)),
+  ]);
+}
+
+function offlineTaskActionPayload(
+  taskId: string,
+  action: TaskActionRequest["action"],
+  extra?: TaskActionExtra,
+  task?: Pick<GardenTask, "task_type" | "title">,
+): Record<string, unknown> {
+  return {
     task_id: taskId,
+    ...(task
+      ? offlineTaskActionLabels(task, action)
+      : {
+          action_label: String(t(`tasks.action_${action}`)),
+          task_label: String(t("offline.failed_task", { task: taskId })),
+        }),
     ...extra,
   };
-  await enqueueTaskActionBatch([offlineTaskActionInput(action, payload)]);
 }
 
 function offlineTaskActionInput(
@@ -768,12 +794,9 @@ async function handleTaskAction(
   if (!actionIsCurrent()) return false;
   if (!ctx.ensureWriteAccess()) return false;
   if (!ctx.isOnline()) {
-    if (action === "complete" && extra?.completed_plant_ids?.length) {
-      ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
-      return false;
-    }
     try {
-      await enqueueOfflineTaskAction(taskId, action, extra);
+      const task = taskItems.find((candidate) => candidate.id === taskId);
+      await enqueueOfflineTaskAction(taskId, action, extra, task);
     } catch (err) {
       ctx.showToast(offlineTaskActionErrorMessage(err), "error");
       return false;
@@ -822,7 +845,12 @@ async function handleBatchTaskAction(
     try {
       await enqueueTaskActionBatch(taskIds.map((taskId) => offlineTaskActionInput(
         action,
-        { task_id: taskId, ...extra },
+        offlineTaskActionPayload(
+          taskId,
+          action,
+          extra,
+          taskItems.find((task) => task.id === taskId),
+        ),
       )));
     } catch (err) {
       ctx.showToast(offlineTaskActionErrorMessage(err), "error");
@@ -860,12 +888,11 @@ function completeTask(task: GardenTask): void {
     return;
   }
   if (!ctx.isOnline()) {
-    if (canQueueDefaultCompletionOffline(task)) {
-      void handleTaskAction(task.id, "complete");
+    const needsExplicitOutcome = !canQueueDefaultCompletionOffline(task);
+    if (needsExplicitOutcome && !canQueueCompletionOffline(task)) {
+      ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
       return;
     }
-    ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
-    return;
   }
   openTaskCompletionDialog(
     task,

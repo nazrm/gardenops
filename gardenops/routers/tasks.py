@@ -62,6 +62,7 @@ from gardenops.services.task_completion import (
     is_completion_capture_task,
     plant_names_for_ids,
     record_completion_journal_entry,
+    refreshed_generated_group_description,
     refreshed_group_title,
     remaining_plant_ids_after_completion,
     task_plot_ids_for_plant_ids,
@@ -224,7 +225,7 @@ class ActionTaskBody(StrictBaseModel):
     reschedule_to: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     notes: str | None = Field(default=None, max_length=2000)
     completed_plant_ids: list[str] | None = None
-    completion_outcome: CompletionOutcome = "done"
+    completion_outcome: CompletionOutcome | None = None
 
 
 class BatchActionTaskBody(ActionTaskBody):
@@ -745,7 +746,10 @@ def _apply_task_action(
     notification_refreshed = False
     if body.action == "complete":
         task_type = str(task_row.get("task_type") or "")
-        validate_completion_outcome(task_type=task_type, outcome=body.completion_outcome)
+        completion_outcome = validate_completion_outcome(
+            task_type=task_type,
+            outcome=body.completion_outcome,
+        )
         linked_plant_ids = _task_linked_plant_ids(db, task_id)
         requested_plant_ids: list[str] = []
         seen_requested_plant_ids: set[str] = set()
@@ -762,7 +766,7 @@ def _apply_task_action(
                 task_row=task_row,
                 task_type=task_type,
                 selected_plant_ids=requested_plant_ids,
-                outcome=body.completion_outcome,
+                outcome=completion_outcome,
             )
         ):
             return
@@ -807,7 +811,7 @@ def _apply_task_action(
             task_row=task_row,
             selected_plant_ids=selected_plant_ids,
             selected_plot_ids=selected_plot_ids,
-            outcome=body.completion_outcome,
+            outcome=completion_outcome,
             notes=body.notes,
             now_ms=now_ms,
             occurred_on=action_on,
@@ -831,12 +835,23 @@ def _apply_task_action(
             )
             remaining_names = plant_names_for_ids(db, remaining_plant_ids)
             next_title = str(task_row.get("title") or "")
+            next_description = str(task_row.get("description") or "")
             if task_type in {"prune", "fertilize"} and remaining_names:
                 next_title = refreshed_group_title(task_type, remaining_names)
+                refreshed_description = refreshed_generated_group_description(
+                    db,
+                    task_row=task_row,
+                    task_type=task_type,
+                    remaining_plant_ids=remaining_plant_ids,
+                    metadata=next_metadata,
+                )
+                if refreshed_description is not None:
+                    next_description, next_metadata = refreshed_description
             db.execute(
                 """
                 UPDATE garden_tasks
                 SET title = %s,
+                    description = %s,
                     status = 'pending',
                     completed_by_user_id = NULL,
                     completed_at_ms = NULL,
@@ -847,6 +862,7 @@ def _apply_task_action(
                 """,
                 (
                     next_title,
+                    next_description,
                     json.dumps(next_metadata, sort_keys=True, separators=(",", ":")),
                     now_ms,
                     task_id,
@@ -1287,9 +1303,7 @@ def update_task(
     ):
         raise HTTPException(
             status_code=409,
-            detail=(
-                "Task type and scope cannot be changed after grouped completion history begins"
-            ),
+            detail=("Task type and scope cannot be changed after completion history begins"),
         )
 
     if "due_on" in updates and updates["due_on"] is not None:

@@ -25,6 +25,29 @@ from gardenops.routers.shademap import (
 )
 from gardenops.security import generate_passkey_user_handle, hash_password
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+PHASE_TWO_ORACLE_PATH = (
+    REPOSITORY_ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_two_oracle.json"
+)
+
+
+def _load_phase_two_oracle() -> tuple[dict[str, Any], str]:
+    try:
+        raw = PHASE_TWO_ORACLE_PATH.read_bytes()
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Complete journey Phase 2 oracle is unavailable or invalid") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise RuntimeError("Complete journey Phase 2 oracle schema is unsupported")
+    phase_two = payload.get("phase_two")
+    if not isinstance(phase_two, dict) or not isinstance(phase_two.get("fixture"), dict):
+        raise RuntimeError("Complete journey Phase 2 oracle fixture contract is missing")
+    return payload, sha256(raw).hexdigest()
+
+
+PHASE_TWO_ORACLE, PHASE_TWO_ORACLE_SHA256 = _load_phase_two_oracle()
+PHASE_TWO_ORACLE_FIXTURE = PHASE_TWO_ORACLE["phase_two"]["fixture"]
+
 ADMIN_USERNAME = os.environ.get(
     "GARDENOPS_COMPLETE_JOURNEYS_E2E_USERNAME", "complete_journeys_e2e_admin"
 )
@@ -95,7 +118,7 @@ PHASE_ONE_ONBOARDING_HOUSE = {
 PHASE_ONE_ONBOARDING_LATITUDE = 59.91
 PHASE_ONE_ONBOARDING_LONGITUDE = 10.75
 PHASE_TWO_NOW_MS = 1_783_857_600_000
-PHASE_TWO_DATE = "2026-07-12"
+PHASE_TWO_DATE = str(PHASE_TWO_ORACLE_FIXTURE["date"])
 PHASE_TWO_MANUAL_DATE = "2026-07-18"
 PHASE_TWO_SNOOZE_CORRECTION_DUE_DATE = "2026-07-12"
 PHASE_TWO_SNOOZE_CORRECTION_DEFAULT_DATE = "2026-07-19"
@@ -103,18 +126,34 @@ PHASE_TWO_OFFLINE_SNOOZE_DATE = "2026-07-13"
 PHASE_TWO_OFFLINE_RESCHEDULE_DATE = "2026-07-20"
 PHASE_TWO_ALPHA_PLOT_ID = "COMPLETE-P2-ALPHA-BED"
 PHASE_TWO_BETA_PLOT_ID = "COMPLETE-P2-BETA-BED"
-PHASE_TWO_CALENDAR_PUBLIC_ID = "calevt_complete_p2_seeded"
-PHASE_TWO_CALENDAR_EVENT_ON = "2026-07-13"
-PHASE_TWO_CALENDAR_DESCRIPTION = "Escaped comma, semicolon; backslash \\ and line\nbreak."
+PHASE_TWO_CALENDAR_PUBLIC_ID = str(PHASE_TWO_ORACLE_FIXTURE["calendar"]["event_public_id"])
+PHASE_TWO_CALENDAR_EVENT_ON = str(PHASE_TWO_ORACLE_FIXTURE["calendar"]["seeded_event_on"])
+PHASE_TWO_CALENDAR_DESCRIPTION = str(PHASE_TWO_ORACLE_FIXTURE["calendar"]["seeded_description"])
 PHASE_TWO_NOTIFICATION_PUBLIC_ID = "note_complete_p2_admin"
-PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID = "note_complete_p2_delivery_eligible"
-PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID = "note_complete_p2_delivery_ineligible"
-PHASE_TWO_DELIVERY_ELIGIBLE_ISSUE_PUBLIC_ID = "issue_complete_p2_delivery_eligible"
-PHASE_TWO_DELIVERY_INELIGIBLE_ISSUE_PUBLIC_ID = "issue_complete_p2_delivery_ineligible"
-PHASE_TWO_DELIVERY_ELIGIBLE_TITLE = "Phase 2 delivery eligible issue notice"
-PHASE_TWO_DELIVERY_ELIGIBLE_BODY = "Phase 2 eligible issue notice after saved preferences."
-PHASE_TWO_DELIVERY_INELIGIBLE_TITLE = "Phase 2 delivery ineligible issue notice"
-PHASE_TWO_DELIVERY_INELIGIBLE_BODY = "Phase 2 low-severity issue notice after saved preferences."
+PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID = str(
+    PHASE_TWO_ORACLE_FIXTURE["preference_delivery"]["eligible"]["public_id"]
+)
+PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID = str(
+    PHASE_TWO_ORACLE_FIXTURE["preference_delivery"]["ineligible"]["public_id"]
+)
+PHASE_TWO_DELIVERY_ELIGIBLE_ISSUE_PUBLIC_ID = str(
+    PHASE_TWO_ORACLE_FIXTURE["preference_delivery"]["eligible"]["issue_public_id"]
+)
+PHASE_TWO_DELIVERY_INELIGIBLE_ISSUE_PUBLIC_ID = str(
+    PHASE_TWO_ORACLE_FIXTURE["preference_delivery"]["ineligible"]["issue_public_id"]
+)
+PHASE_TWO_DELIVERY_ELIGIBLE_TITLE = str(
+    PHASE_TWO_ORACLE_FIXTURE["preference_delivery"]["eligible"]["title"]
+)
+PHASE_TWO_DELIVERY_ELIGIBLE_BODY = str(
+    PHASE_TWO_ORACLE_FIXTURE["preference_delivery"]["eligible"]["body"]
+)
+PHASE_TWO_DELIVERY_INELIGIBLE_TITLE = str(
+    PHASE_TWO_ORACLE_FIXTURE["preference_delivery"]["ineligible"]["title"]
+)
+PHASE_TWO_DELIVERY_INELIGIBLE_BODY = str(
+    PHASE_TWO_ORACLE_FIXTURE["preference_delivery"]["ineligible"]["body"]
+)
 PHASE_TWO_TASKS = {
     "bloom_desktop": "tsk_complete_p2_bloom_desktop",
     "fertilize_grouped": "tsk_complete_p2_fertilize_grouped",
@@ -154,41 +193,7 @@ PHASE_TWO_PLANTS = {
     "rain_indoor": ("COMPLETE-P2-RAIN-INDOOR", "Phase 2 Rain Indoor Basil", "H1"),
     "rain_unplaced": ("COMPLETE-P2-RAIN-UNPLACED", "Phase 2 Rain Unplaced Basil", "H1"),
 }
-PHASE_TWO_MAINTENANCE_EXPECTATIONS = {
-    "created": {
-        "notifications": {
-            "by_role": {"admin": 17, "editor": 17, "viewer": 17},
-            "by_type": {
-                "task_due:": 36,
-                "task_overdue:": 6,
-                "weather_alert:dry_spell": 3,
-                "weather_alert:frost_warning": 3,
-                "weather_alert:heat_wave": 3,
-            },
-            "total": 51,
-        },
-        "tasks": {
-            "by_rule_family": {"auto": 31, "water": 30},
-            "by_type": {"protect": 16, "water": 45},
-            "total": 61,
-        },
-        "weather_alerts": {
-            "by_type": {"dry_spell": 1, "heat_wave": 1},
-            "total": 2,
-        },
-    },
-    "mutated_existing": {"notifications": 0, "tasks": 1, "weather_alerts": 1},
-    "summary": {
-        "configured": True,
-        "gardens_processed": 1,
-        "notifications_created": 51,
-        "tasks_auto_created": 30,
-        "tasks_expired": 1,
-        "weather_alerts_created": 2,
-        "weather_tasks_created": 31,
-    },
-}
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+PHASE_TWO_MAINTENANCE_EXPECTATIONS = PHASE_TWO_ORACLE["phase_two"]["maintenance"]
 
 
 def _frozen_attention_clock() -> dict[str, Any]:
@@ -271,9 +276,54 @@ def _git_state() -> dict[str, Any]:
     }
 
 
+def _require_expected_head() -> str:
+    expected = os.environ.get("GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD", "").strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", expected):
+        raise RuntimeError(
+            "Complete journey E2E requires a 40-character review-gated expected HEAD"
+        )
+    observed = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        capture_output=True,
+        check=True,
+        text=True,
+        cwd=REPOSITORY_ROOT,
+    ).stdout.strip()
+    if observed != expected:
+        raise RuntimeError(
+            f"Complete journey review-gated HEAD mismatch: expected {expected}, found {observed}"
+        )
+    return expected
+
+
+def _assert_phase_two_oracle_seed_contract() -> None:
+    fixture = PHASE_TWO_ORACLE_FIXTURE
+    calendar = fixture["calendar"]
+    if {
+        "event_public_id": PHASE_TWO_CALENDAR_PUBLIC_ID,
+        "seeded_description": PHASE_TWO_CALENDAR_DESCRIPTION,
+        "seeded_event_on": PHASE_TWO_CALENDAR_EVENT_ON,
+        "seeded_title": "Phase 2 seeded calendar event",
+    } != calendar:
+        raise RuntimeError("Complete journey Phase 2 calendar seed diverged from its oracle")
+    expected_alpha = {
+        str(item["id"]): str(item["name"]) for item in fixture.get("maintenance_alpha_plants", [])
+    }
+    observed_alpha = {
+        plant_id: name
+        for plant_id, name, _hardiness in PHASE_TWO_PLANTS.values()
+        if plant_id in expected_alpha
+    }
+    if observed_alpha != expected_alpha:
+        raise RuntimeError("Complete journey Phase 2 maintenance plants diverged from its oracle")
+    if not isinstance(PHASE_TWO_MAINTENANCE_EXPECTATIONS, dict):
+        raise RuntimeError("Complete journey Phase 2 maintenance oracle is invalid")
+
+
 def _require_child_environment() -> None:
     if os.environ.get("GARDENOPS_COMPLETE_JOURNEYS_E2E_CHILD") != "1":
         raise RuntimeError("Complete journey E2E must run as the disposable runner child")
+    _require_expected_head()
     if os.environ.get("APP_ENV") != "test":
         raise RuntimeError("Complete journey E2E requires APP_ENV=test")
     if os.environ.get("AUTH_REQUIRED") != "true" or os.environ.get("AUTH_MODE") != "session":
@@ -294,7 +344,10 @@ def _require_child_environment() -> None:
     marker = os.environ["GARDENOPS_DISPOSABLE_POSTGRES_MARKER"]
     if not system_identifier.isdecimal() or not marker.startswith(f"{system_identifier}."):
         raise RuntimeError("Complete journey disposable marker is not bound to the runner cluster")
+    if os.environ.get("PYTHON_DOTENV_DISABLED") != "1":
+        raise RuntimeError("Complete journey E2E must disable dotenv loading")
     _frozen_attention_clock()
+    _assert_phase_two_oracle_seed_contract()
 
 
 def _configure_reused_seed_guard() -> None:
@@ -2908,16 +2961,16 @@ def _phase_two_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
 
 def _phase_two_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
     runtime = _phase_two_runtime_state(conn, optimization_seed)
+    oracle_fixture = PHASE_TWO_ORACLE_FIXTURE
     return {
-        "calendar": {
-            "event_public_id": PHASE_TWO_CALENDAR_PUBLIC_ID,
-            "seeded_description": PHASE_TWO_CALENDAR_DESCRIPTION,
-            "seeded_event_on": PHASE_TWO_CALENDAR_EVENT_ON,
-            "seeded_title": "Phase 2 seeded calendar event",
-        },
+        "calendar": dict(oracle_fixture["calendar"]),
         "date": PHASE_TWO_DATE,
         "manual_date": PHASE_TWO_MANUAL_DATE,
-        "maintenance_expectations": PHASE_TWO_MAINTENANCE_EXPECTATIONS,
+        "oracle": {
+            "path": "scripts/e2e/fixtures/complete_journeys_phase_two_oracle.json",
+            "schema_version": PHASE_TWO_ORACLE["schema_version"],
+            "sha256": PHASE_TWO_ORACLE_SHA256,
+        },
         "snooze_correction": {
             "default_date": PHASE_TWO_SNOOZE_CORRECTION_DEFAULT_DATE,
             "due_date": PHASE_TWO_SNOOZE_CORRECTION_DUE_DATE,
@@ -2931,20 +2984,7 @@ def _phase_two_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
             "public_id": PHASE_TWO_NOTIFICATION_PUBLIC_ID,
         },
         "preference_delivery": {
-            "eligible": {
-                "body": PHASE_TWO_DELIVERY_ELIGIBLE_BODY,
-                "issue_public_id": PHASE_TWO_DELIVERY_ELIGIBLE_ISSUE_PUBLIC_ID,
-                "public_id": PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID,
-                "severity": "high",
-                "title": PHASE_TWO_DELIVERY_ELIGIBLE_TITLE,
-            },
-            "ineligible": {
-                "body": PHASE_TWO_DELIVERY_INELIGIBLE_BODY,
-                "issue_public_id": PHASE_TWO_DELIVERY_INELIGIBLE_ISSUE_PUBLIC_ID,
-                "public_id": PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID,
-                "severity": "low",
-                "title": PHASE_TWO_DELIVERY_INELIGIBLE_TITLE,
-            },
+            **oracle_fixture["preference_delivery"],
             "occurred_at_ms": PHASE_TWO_NOW_MS,
         },
         "notification_public_id": PHASE_TWO_NOTIFICATION_PUBLIC_ID,
@@ -3014,7 +3054,14 @@ def _domain_table_state(conn) -> dict[str, dict[str, Any]]:
                         string_agg(to_jsonb(row_value)::text, E'\\n'
                             ORDER BY to_jsonb(row_value)::text),
                         ''
-                    )) AS digest
+                    )) AS digest,
+                    COALESCE(
+                        array_agg(
+                            md5(to_jsonb(row_value)::text)
+                            ORDER BY md5(to_jsonb(row_value)::text)
+                        ),
+                        ARRAY[]::text[]
+                    ) AS row_digests
                 FROM {} AS row_value
                 """
             ).format(sql.Identifier(table))
@@ -3022,6 +3069,7 @@ def _domain_table_state(conn) -> dict[str, dict[str, Any]]:
         state[table] = {
             "count": int(result["count"] if result else 0),
             "digest": str(result["digest"] if result else ""),
+            "row_digests": [str(value) for value in (result["row_digests"] or [])],
         }
     return state
 

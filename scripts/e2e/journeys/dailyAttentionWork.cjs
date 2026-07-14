@@ -146,6 +146,75 @@ async function openToday(page, profile) {
   return panel;
 }
 
+async function assertMapFirstGeometry(page, profile) {
+  const geometry = await page.evaluate((isMobile) => {
+    const map = document.querySelector("#map-grid");
+    if (!(map instanceof HTMLElement)) throw new Error("map-first surface is missing");
+    const mapRect = map.getBoundingClientRect();
+    const viewport = { height: window.innerHeight, width: window.innerWidth };
+    const center = {
+      x: Math.round(mapRect.left + mapRect.width / 2),
+      y: Math.round(mapRect.top + mapRect.height / 2),
+    };
+    const centerTarget = document.elementFromPoint(center.x, center.y);
+    if (!centerTarget || !map.contains(centerTarget)) {
+      throw new Error("map-first center point is obscured");
+    }
+    const blockingSelectors = [
+      ".drawer",
+      ".bottom-sheet",
+      "[role='dialog']:not([hidden])",
+      ".modal:not([hidden])",
+      ".plot-popover",
+    ];
+    const overlapping = blockingSelectors.flatMap((selector) => (
+      [...document.querySelectorAll(selector)].filter((element) => {
+        if (!(element instanceof HTMLElement) || element.contains(map)) return false;
+        const style = window.getComputedStyle(element);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0
+          && rect.left < mapRect.right && rect.right > mapRect.left
+          && rect.top < mapRect.bottom && rect.bottom > mapRect.top;
+      }).map((element) => element.id || element.className || selector)
+    ));
+    if (overlapping.length > 0) throw new Error(`map-first overlay overlap: ${overlapping.join(",")}`);
+    const closedSheets = isMobile ? [
+      "#attention-today-mobile-sheet",
+      "#mobile-utility-sheet",
+      "#mobile-quick-actions",
+    ].map((selector) => {
+      const element = document.querySelector(selector);
+      if (!(element instanceof HTMLElement)) throw new Error(`mobile sheet is missing: ${selector}`);
+      const style = window.getComputedStyle(element);
+      const hidden = element.hidden || element.getAttribute("aria-hidden") === "true"
+        || style.display === "none" || style.visibility === "hidden";
+      if (!hidden || !element.inert) throw new Error(`closed mobile sheet is not hidden and inert: ${selector}`);
+      return selector;
+    }) : [];
+    return {
+      center_owned_by_map: true,
+      closed_mobile_sheets: closedSheets.length,
+      map_height: Math.round(mapRect.height),
+      map_width: Math.round(mapRect.width),
+      overlay_count: overlapping.length,
+      viewport_height: viewport.height,
+      viewport_width: viewport.width,
+    };
+  }, profile === "mobile");
+  assert(geometry.map_width >= geometry.viewport_width * (profile === "mobile" ? 0.8 : 0.45),
+    `${profile} map-first width was too small`);
+  assert(geometry.map_height >= geometry.viewport_height * (profile === "mobile" ? 0.42 : 0.35),
+    `${profile} map-first height was too small`);
+  assert(geometry.overlay_count === 0 && geometry.center_owned_by_map === true,
+    `${profile} map-first surface had an overlapping overlay`);
+  if (profile === "mobile") {
+    assert(geometry.closed_mobile_sheets === 3,
+      "Mobile map-first surface did not keep every closed sheet inert");
+  }
+  return geometry;
+}
+
 async function completeBloomTask(page, card, plantName, notSeen) {
   await card.getByRole("button", { name: /^Complete$/i }).click();
   const dialog = page.locator(".task-completion-dialog").last();
@@ -407,17 +476,26 @@ async function completePlotDrawerTask(page, fixture) {
   await assertFocusInside(drawer, "plot drawer");
   const preview = page.locator(".drawer-tasks-preview:visible, .sheet-tasks-preview:visible");
   await visible(preview, "plot task preview");
-  const taskSectionToggle = preview.locator(".drawer-section-header").first();
+  const taskSectionToggle = preview.locator("button.drawer-section-header").first();
   await visible(taskSectionToggle, "plot task collapsible control");
+  assert(await taskSectionToggle.evaluate((element) => (
+    element instanceof HTMLButtonElement && element.type === "button"
+  )), "Plot task collapsible control was not a non-submitting native button");
   assert(await taskSectionToggle.getAttribute("aria-expanded") === "true",
     "Plot task section did not expose its expanded state");
+  const drawerUrl = page.url();
+  await taskSectionToggle.click();
+  await waitFor(async () => await taskSectionToggle.getAttribute("aria-expanded") === "false",
+    "plot task section keyboard collapse boundary");
+  assert(page.url() === drawerUrl, "Plot task collapse unexpectedly navigated away from the drawer");
   await taskSectionToggle.focus();
-  await taskSectionToggle.press("Enter");
-  assert(await taskSectionToggle.getAttribute("aria-expanded") === "false",
-    "Plot task section did not collapse from the keyboard");
-  await taskSectionToggle.press("Enter");
-  assert(await taskSectionToggle.getAttribute("aria-expanded") === "true",
-    "Plot task section did not expand from the keyboard");
+  assert(await taskSectionToggle.evaluate((element) => document.activeElement === element),
+    "Plot task collapsible control did not retain keyboard focus");
+  await page.keyboard.press("Enter");
+  await waitFor(async () => await taskSectionToggle.getAttribute("aria-expanded") === "true",
+    "plot task section keyboard expand boundary");
+  assert(page.url() === drawerUrl && await drawer.isVisible(),
+    "Plot task keyboard expansion lost the drawer state boundary");
   const staleGenerated = taskTitle(fixture, "stale_generated_water");
   const staleManual = taskTitle(fixture, "stale_manual_water");
   assert(await preview.getByText(staleGenerated.title, { exact: true }).count() === 0,
@@ -700,6 +778,36 @@ async function exerciseCalendarLifecycle(
 
   const title = `Phase 2 Browser ${profile === "mobile" ? "Mobile" : "Desktop"} Calendar Event`;
   const editedTitle = `${title} Edited`;
+  const mutationEvidence = [];
+  const captureMutation = async (response, expected) => {
+    const request = response.request();
+    const pathname = new URL(response.url()).pathname;
+    assert(request.method() === expected.method && pathname === expected.path,
+      `Calendar lifecycle response did not match ${expected.method} ${expected.path}`);
+    assert(response.status() === expected.statusCode,
+      `Calendar lifecycle ${expected.method} returned ${response.status()}`);
+    const requestId = response.headers()["x-request-id"] || "";
+    assert(/^[A-Za-z0-9._-]{1,64}$/.test(requestId),
+      `Calendar lifecycle ${expected.method} response lacked a safe request ID`);
+    const payload = await response.json();
+    assert(payload && typeof payload === "object" && payload.status === expected.status,
+      `Calendar lifecycle ${expected.method} response body was unexpected`);
+    if (expected.eventId) {
+      assert(payload.event?.target_id === expected.eventId,
+        `Calendar lifecycle ${expected.method} response event identity was unexpected`);
+    }
+    if (expected.deletedId) {
+      assert(payload.id === expected.deletedId,
+        "Calendar lifecycle DELETE response identity was unexpected");
+    }
+    mutationEvidence.push({
+      method: expected.method,
+      path: expected.path,
+      request_id: requestId,
+      status_code: expected.statusCode,
+    });
+    return payload;
+  };
   await page.locator("#calendar-new-event-btn").click();
   let dialog = page.locator("#calendar-manual-event-form").last();
   await visible(dialog, "calendar create form");
@@ -708,7 +816,20 @@ async function exerciseCalendarLifecycle(
   await dialog.locator("textarea[name='description']").fill("Phase 2 browser lifecycle.");
   await selectChip(dialog, ".calendar-manual-event-plant-input", fixture.phase_two.plant_names.bloom_desktop);
   await selectChip(dialog, ".calendar-manual-event-plot-input", fixture.phase_two.plot_ids.alpha);
+  const createResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+      && new URL(response.url()).pathname === "/api/calendar/manual-events"
+  ));
   await dialog.locator("button[type='submit']").click();
+  const createdPayload = await captureMutation(await createResponsePromise, {
+    method: "POST",
+    path: "/api/calendar/manual-events",
+    status: "created",
+    statusCode: 201,
+  });
+  const eventId = createdPayload.event?.target_id;
+  assert(typeof eventId === "string" && /^calevt_[a-z0-9]+$/.test(eventId),
+    "Calendar lifecycle create response returned an invalid event ID");
   const event = page.locator(".fc-event").filter({ hasText: title }).first();
   await visible(event, "created browser calendar event");
   await event.click();
@@ -716,19 +837,42 @@ async function exerciseCalendarLifecycle(
   dialog = page.locator("#calendar-manual-event-form").last();
   await visible(dialog, "calendar edit form");
   await dialog.locator("input[name='title']").fill(editedTitle);
+  const updateResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === "PATCH"
+      && new URL(response.url()).pathname === `/api/calendar/manual-events/${eventId}`
+  ));
   await dialog.locator("button[type='submit']").click();
+  await captureMutation(await updateResponsePromise, {
+    eventId,
+    method: "PATCH",
+    path: `/api/calendar/manual-events/${eventId}`,
+    status: "updated",
+    statusCode: 200,
+  });
   const edited = page.locator(".fc-event").filter({ hasText: editedTitle }).first();
   await visible(edited, "edited browser calendar event");
   await edited.click();
   await page.locator("[data-calendar-detail-delete-manual-event='true']").click();
   const confirm = page.locator("[role='alertdialog']");
   await visible(confirm, "calendar delete confirmation");
+  const deleteResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === "DELETE"
+      && new URL(response.url()).pathname === `/api/calendar/manual-events/${eventId}`
+  ));
   await confirm.locator(".confirm-yes").click();
+  await captureMutation(await deleteResponsePromise, {
+    deletedId: eventId,
+    method: "DELETE",
+    path: `/api/calendar/manual-events/${eventId}`,
+    status: "deleted",
+    statusCode: 200,
+  });
   await edited.waitFor({ state: "hidden" });
 
   if (includeExportAndSubscription) {
     await exerciseCalendarSubscriptionFeed(page, diagnostics, onSubscriptionCreated);
   }
+  return { event_id: eventId, mutations: mutationEvidence };
 }
 
 async function openNotifications(page, profile) {
@@ -773,6 +917,104 @@ async function issueCreatedRuleControls(prefs) {
   await visible(digest, "issue-created digest notification preference");
   await visible(severity, "issue-created notification severity preference");
   return { digest, inbox, severity };
+}
+
+async function assertMobilePreferenceTouchGeometry(prefs) {
+  const controls = prefs.locator(
+    ".notification-prefs-toggle:visible, .notification-prefs-severity:visible, .btn-primary:visible",
+  );
+  const measurements = [];
+  const count = await controls.count();
+  assert(count >= 4, "Mobile notification preferences did not expose enough touch controls");
+  for (let index = 0; index < count; index += 1) {
+    const box = await controls.nth(index).boundingBox();
+    assert(box && box.width >= 44 && box.height >= 44,
+      `Mobile notification preference control ${index + 1} is smaller than 44px`);
+    measurements.push({ height: Math.round(box.height), width: Math.round(box.width) });
+  }
+  return measurements;
+}
+
+async function openNotificationPreferences(page, profile, fixture, label) {
+  await openPrimary(page, profile, "map");
+  await visible(page.locator("#map-grid"), `${label} map before notification preferences`);
+  await selectGarden(page, profile, fixture.gardens.alpha.id);
+  const { panel } = await openNotifications(page, profile);
+  await panel.locator(".notification-settings-btn").click();
+  const prefs = panel.locator(".notification-prefs-form");
+  await visible(prefs, `${label} notification preferences`);
+  return { panel, prefs };
+}
+
+async function saveNotificationPreferenceSeverity(page, prefs, severity, label) {
+  assert(typeof severity === "string" && severity.length > 0,
+    `${label} notification preference severity was invalid`);
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === "PUT"
+      && new URL(response.url()).pathname === "/api/notifications/preferences"
+  ));
+  await prefs.locator(".btn-primary").click();
+  const response = await responsePromise;
+  assert(response.status() === 200, `${label} notification preference save failed`);
+  const requestId = response.headers()["x-request-id"] || "";
+  assert(/^[A-Za-z0-9._-]{1,64}$/.test(requestId),
+    `${label} notification preference save lacked a request ID`);
+  return { request_id: requestId, status_code: response.status() };
+}
+
+async function closeNotificationPreferencePanel(page, panel, profile, label) {
+  await closeNotificationSettingsWithKeyboard(page, panel, label);
+  if (profile === "mobile") await closeMobileUtility(page);
+}
+
+async function exercisePersonalNotificationPreferencePersistence(page, profile, role, fixture, oracle) {
+  const contract = oracle?.phase_two?.fixture?.notification_persistence?.[`${role}:${profile}`];
+  assert(contract && typeof contract === "object", `Missing ${role}:${profile} preference oracle`);
+  let { panel, prefs } = await openNotificationPreferences(page, profile, fixture, `${role} ${profile}`);
+  let issue = await issueCreatedRuleControls(prefs);
+  assert(await issue.severity.inputValue() === contract.initial_severity,
+    `${role} ${profile} notification preference did not begin at its oracle severity`);
+  const touchTargets = profile === "mobile" ? await assertMobilePreferenceTouchGeometry(prefs) : [];
+  await issue.severity.selectOption(contract.saved_severity);
+  const saveResponses = [await saveNotificationPreferenceSeverity(
+    page,
+    prefs,
+    contract.saved_severity,
+    `${role} ${profile} saved`,
+  )];
+  await closeNotificationPreferencePanel(page, panel, profile, `${role} ${profile} saved`);
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  ({ panel, prefs } = await openNotificationPreferences(page, profile, fixture, `${role} ${profile} reload`));
+  issue = await issueCreatedRuleControls(prefs);
+  assert(await issue.severity.inputValue() === contract.saved_severity,
+    `${role} ${profile} notification preference did not persist after reload`);
+
+  let restoredSeverity = null;
+  if (contract.restored_severity) {
+    restoredSeverity = contract.restored_severity;
+    await issue.severity.selectOption(restoredSeverity);
+    saveResponses.push(await saveNotificationPreferenceSeverity(
+      page,
+      prefs,
+      restoredSeverity,
+      `${role} ${profile} restored`,
+    ));
+    await closeNotificationPreferencePanel(page, panel, profile, `${role} ${profile} restored`);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    ({ panel, prefs } = await openNotificationPreferences(page, profile, fixture, `${role} ${profile} restore reload`));
+    issue = await issueCreatedRuleControls(prefs);
+    assert(await issue.severity.inputValue() === restoredSeverity,
+      `${role} ${profile} notification preference restoration did not persist after reload`);
+  }
+  await closeNotificationPreferencePanel(page, panel, profile, `${role} ${profile} final`);
+  return {
+    initial_severity: contract.initial_severity,
+    reloaded_saved_severity: contract.saved_severity,
+    restored_severity: restoredSeverity,
+    save_responses: saveResponses,
+    touch_targets: touchTargets,
+  };
 }
 
 async function notificationBadgeState(page, profile) {
@@ -972,7 +1214,9 @@ async function exerciseCalendarSubscriptionRace(page, context, fixture, label) {
   });
 }
 
-async function exerciseNotifications(page, fixture, onPreferencesSaved) {
+async function exerciseNotifications(page, fixture, oracle, onPreferencesSaved) {
+  const contract = oracle?.phase_two?.fixture?.notification_persistence?.["admin:desktop"];
+  assert(contract && typeof contract === "object", "Missing admin desktop notification preference oracle");
   let { panel, trigger } = await openNotifications(page, "desktop");
   await visible(panel.getByText("Alpha phase 2 scoped notification.", { exact: true }),
     "Alpha scoped notification");
@@ -1030,13 +1274,13 @@ async function exerciseNotifications(page, fixture, onPreferencesSaved) {
     "Initial canonical issue-created attention rule was not projected into notification settings");
   assert(await issue.digest.getAttribute("aria-pressed") === "false",
     "Initial issue-created digest channel did not start disabled");
-  assert(await issue.severity.inputValue() === "low",
+  assert(await issue.severity.inputValue() === contract.initial_severity,
     "Initial issue-created severity did not start at low");
   await issue.digest.click();
   assert(await issue.digest.getAttribute("aria-pressed") === "true",
     "Issue-created digest channel did not toggle before preference save");
-  await issue.severity.selectOption("normal");
-  assert(await issue.severity.inputValue() === "normal",
+  await issue.severity.selectOption(contract.saved_severity);
+  assert(await issue.severity.inputValue() === contract.saved_severity,
     "Issue-created severity did not change before preference save");
   await prefs.locator("#notification-prefs-digest-frequency").selectOption("weekly");
   const quietInputs = prefs.locator("input[type='time']");
@@ -1051,6 +1295,9 @@ async function exerciseNotifications(page, fixture, onPreferencesSaved) {
   await prefs.locator(".btn-primary").click();
   const saved = await preferenceSave;
   assert(saved.status() === 200, `Notification preference save returned ${saved.status()}`);
+  const savedRequestId = saved.headers()["x-request-id"] || "";
+  assert(/^[A-Za-z0-9._-]{1,64}$/.test(savedRequestId),
+    "Notification preference save lacked a request ID");
   await visible(panel.locator("#notification-tab-inbox"), "notification inbox after preference save");
   if (onPreferencesSaved) {
     await assertPostSavePreferenceDelivery(page, fixture, await onPreferencesSaved());
@@ -1065,6 +1312,19 @@ async function exerciseNotifications(page, fixture, onPreferencesSaved) {
   await scopedItem.waitFor({ state: "hidden" });
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "hidden" });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  ({ panel } = await openNotificationPreferences(page, "desktop", fixture, "admin desktop preference reload"));
+  const reloadedIssue = await issueCreatedRuleControls(panel.locator(".notification-prefs-form"));
+  assert(await reloadedIssue.severity.inputValue() === contract.saved_severity,
+    "Admin desktop notification preference did not persist after reload");
+  await closeNotificationPreferencePanel(page, panel, "desktop", "admin desktop preference reload");
+  return {
+    initial_severity: contract.initial_severity,
+    reloaded_saved_severity: contract.saved_severity,
+    restored_severity: null,
+    save_responses: [{ request_id: savedRequestId, status_code: saved.status() }],
+    touch_targets: [],
+  };
 }
 
 async function exercisePostMutationReload(page, fixture) {
@@ -1184,44 +1444,8 @@ async function exerciseMobilePartialGroupedAndSnooze(page, fixture) {
   await exerciseImmediateSnoozeCorrection(page, fixture);
 }
 
-async function exerciseMobileNotificationPreferenceMutation(page) {
-  let { panel } = await openNotifications(page, "mobile");
-  await panel.locator(".notification-settings-btn").click();
-  let prefs = panel.locator(".notification-prefs-form");
-  await visible(prefs, "mobile notification preferences");
-  let issue = await issueCreatedRuleControls(prefs);
-  assert(await issue.severity.inputValue() === "normal",
-    "Mobile notification preferences did not receive the saved issue-created severity");
-
-  const save = async (expectedSeverity, label) => {
-    const responsePromise = page.waitForResponse((response) => (
-      response.request().method() === "PUT"
-        && new URL(response.url()).pathname === "/api/notifications/preferences"
-    ));
-    await prefs.locator(".btn-primary").click();
-    const response = await responsePromise;
-    assert(response.status() === 200, `${label} notification preference save failed`);
-    await waitFor(async () => await issue.severity.inputValue() === expectedSeverity,
-      `${label} notification preference projection`);
-  };
-
-  await issue.severity.selectOption("low");
-  await save("low", "mobile low-severity");
-  await page.keyboard.press("Escape");
-  await panel.waitFor({ state: "hidden" });
-
-  ({ panel } = await openNotifications(page, "mobile"));
-  await panel.locator(".notification-settings-btn").click();
-  prefs = panel.locator(".notification-prefs-form");
-  await visible(prefs, "reopened mobile notification preferences");
-  issue = await issueCreatedRuleControls(prefs);
-  assert(await issue.severity.inputValue() === "low",
-    "Mobile low-severity preference mutation did not persist before restoration");
-  await issue.severity.selectOption("normal");
-  await save("normal", "mobile restored normal severity");
-  await page.keyboard.press("Escape");
-  await panel.waitFor({ state: "hidden" });
-  await closeMobileUtility(page);
+async function exerciseMobileNotificationPreferenceMutation(page, fixture, oracle) {
+  return exercisePersonalNotificationPreferencePersistence(page, "mobile", "admin", fixture, oracle);
 }
 
 async function exerciseMobileHistoryReload(page, fixture) {
@@ -2052,6 +2276,8 @@ async function runProfile(options) {
       result.browser_profile,
     );
     await visible(page.locator("#map-grid"), "Phase 2 map-first surface");
+    result.checks.map_first_geometry = await assertMapFirstGeometry(page, run.profile);
+    result.checks.map_first_geometry_and_inert_surfaces = true;
     await selectGarden(page, run.profile, fixture.gardens.alpha.id);
     result.checks.last_completed_step = "profile-setup";
 
@@ -2079,15 +2305,26 @@ async function runProfile(options) {
       result.checks.last_completed_step = "plot-drawer-task";
       await exerciseTasksCalendarRace(page, guarded.context, fixture);
       result.checks.last_completed_step = "tasks-calendar-race";
-      await exerciseCalendarLifecycle(page, run.profile, fixture, guarded.diagnostics, {
+      result.checks.calendar_lifecycle_mutations = await exerciseCalendarLifecycle(
+        page,
+        run.profile,
+        fixture,
+        guarded.diagnostics,
+        {
         onSubscriptionCreated: async ({ label }) => {
           await exerciseCalendarSubscriptionRace(page, guarded.context, fixture, label);
         },
-      });
+        },
+      );
       result.checks.last_completed_step = "calendar-lifecycle";
       await exerciseNotificationSettingsRace(page, guarded.context, fixture);
       result.checks.last_completed_step = "notification-settings-race";
-      await exerciseNotifications(page, fixture, options.onPreferencesSaved);
+      result.checks.personal_notification_preference_persistence = await exerciseNotifications(
+        page,
+        fixture,
+        options.oracle,
+        options.onPreferencesSaved,
+      );
       result.checks.last_completed_step = "notification-preferences";
       await exercisePostMutationReload(page, fixture);
       result.checks.last_completed_step = "post-mutation-reload";
@@ -2114,11 +2351,19 @@ async function runProfile(options) {
       result.checks.last_completed_step = "mobile-quick-actions";
       await exerciseMobilePartialGroupedAndSnooze(page, fixture);
       result.checks.last_completed_step = "mobile-partial-grouped-snooze";
-      await exerciseCalendarLifecycle(page, run.profile, fixture, guarded.diagnostics, {
+      result.checks.calendar_lifecycle_mutations = await exerciseCalendarLifecycle(
+        page,
+        run.profile,
+        fixture,
+        guarded.diagnostics,
+        {
         includeExportAndSubscription: false,
-      });
+        },
+      );
       result.checks.last_completed_step = "mobile-calendar-lifecycle";
-      await exerciseMobileNotificationPreferenceMutation(page);
+      result.checks.personal_notification_preference_persistence = (
+        await exerciseMobileNotificationPreferenceMutation(page, fixture, options.oracle)
+      );
       result.checks.last_completed_step = "mobile-notification-preferences";
       await exerciseMobileHistoryReload(page, fixture);
       result.checks.last_completed_step = "mobile-history-reload";
@@ -2143,16 +2388,46 @@ async function runProfile(options) {
       result.checks.last_completed_step = "editor-calendar";
       await exerciseEditorWeatherDeduplication(page, fixture);
       result.checks.last_completed_step = "editor-weather-deduplication";
+      result.checks.personal_notification_preference_persistence = (
+        await exercisePersonalNotificationPreferencePersistence(
+          page,
+          run.profile,
+          run.role,
+          fixture,
+          options.oracle,
+        )
+      );
+      result.checks.last_completed_step = "editor-notification-preferences";
       result.checks.editor_calendar_action_and_weather_scope = true;
       result.checks.editor_weather_deduplicated_surfaces = true;
     } else if (run.role === "editor") {
       result.checks.offline_task_operation_ids = await exerciseOfflineTask(page, fixture);
       result.checks.last_completed_step = "editor-offline-replay";
+      result.checks.personal_notification_preference_persistence = (
+        await exercisePersonalNotificationPreferencePersistence(
+          page,
+          run.profile,
+          run.role,
+          fixture,
+          options.oracle,
+        )
+      );
+      result.checks.last_completed_step = "editor-notification-preferences";
       result.checks.editor_offline_task_replay = true;
       result.checks.editor_offline_task_actions_replay = true;
     } else {
       await exerciseViewer(page, guarded.diagnostics, run.profile, fixture);
       result.checks.last_completed_step = "viewer-read-only";
+      result.checks.personal_notification_preference_persistence = (
+        await exercisePersonalNotificationPreferencePersistence(
+          page,
+          run.profile,
+          run.role,
+          fixture,
+          options.oracle,
+        )
+      );
+      result.checks.last_completed_step = "viewer-notification-preferences";
       result.checks.viewer_read_only_and_denial = true;
       result.checks.viewer_direct_forbidden_task_write = true;
       result.checks.viewer_today_weather_affordances = true;
@@ -2165,7 +2440,6 @@ async function runProfile(options) {
     );
     assertDiagnosticsClean(guarded.diagnostics, `${run.profile} ${run.role} Phase 2`);
     result.checks.browser_diagnostics = true;
-    result.checks.map_first_without_plants = true;
     result.assertions.passed.push(`phase-two-${run.role}-${run.profile}`);
     result.requests = recorder.records;
     status = "passed";

@@ -20,6 +20,7 @@ import {
   enqueueDraft,
   getTaskActionStates,
   OfflineTaskActionConflictError,
+  onConnectivityChange,
 } from "../services/offlineQueue";
 import { cacheTaskList, getCachedTodayTasks } from "../services/taskCache";
 import { taskSnoozePolicy } from "./taskSnoozePolicy";
@@ -28,8 +29,10 @@ import {
   openTaskDateDialog,
 } from "./taskSnoozeFlow";
 import {
+  canQueueCompletionOffline,
   canQueueDefaultCompletionOffline,
   needsCompletionDialog,
+  offlineTaskActionLabels,
   openTaskCompletionDialog,
 } from "./taskCompletionFlow";
 
@@ -38,6 +41,7 @@ let quickActionSheetOpen = false;
 let escapeHandler: ((e: KeyboardEvent) => void) | null = null;
 let releaseFocusTrap: (() => void) | null = null;
 let quickTaskLoadVersion = 0;
+let quickConnectivityListenerBound = false;
 let inertBackgroundElements: Array<{
   element: HTMLElement;
   wasInert: boolean;
@@ -110,6 +114,12 @@ export function initQuickActionsFeature(
   document
     .getElementById("mobile-quick-actions-close-btn")
     ?.addEventListener("click", () => closeQuickActionSheet());
+  if (!quickConnectivityListenerBound) {
+    quickConnectivityListenerBound = true;
+    onConnectivityChange(() => {
+      if (quickActionSheetOpen) renderQuickActionHome();
+    });
+  }
 }
 
 function getQuickActionCallbacks(): QuickActionCallbacks {
@@ -213,7 +223,10 @@ function focusQuickActionSheet(preferContent = false): void {
 function renderQuickActionHome(restoreFocus = false): void {
   const content = quickActionContent();
   if (!content) return;
-  renderQuickActionSheet(content, getQuickActionCallbacks());
+  renderQuickActionSheet(content, getQuickActionCallbacks(), {
+    canWrite: ctx.canWrite(),
+    online: isOnline(),
+  });
   if (restoreFocus) focusQuickActionSheet();
 }
 
@@ -293,6 +306,39 @@ function isCurrentQuickTaskRequest(gardenId: number, version: number): boolean {
   );
 }
 
+async function completeQuickTask(
+  task: GardenTask,
+  body: Parameters<typeof taskActionApi>[1],
+): Promise<void> {
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null || gardenId !== task.garden_id || !ctx.ensureWriteAccess()) return;
+  try {
+    if (!isOnline()) {
+      const { action, ...payload } = body;
+      await enqueueDraft("task_complete", {
+        task_id: task.id,
+        ...offlineTaskActionLabels(task, action),
+        ...payload,
+      });
+      ctx.showToast(t("offline.draft_saved"), "success");
+      void ctx.refreshOfflineIndicator();
+    } else {
+      await taskActionApi(task.id, body);
+      ctx.showToast(
+        t("tasks.action_success", { action: "complete" }),
+        "success",
+      );
+      void ctx.refreshBadgeCounts();
+    }
+    await showTaskQuickComplete();
+  } catch (err) {
+    ctx.showToast(
+      isOnline() ? getApiErrorMessage(err) : offlineTaskActionErrorMessage(err),
+      "error",
+    );
+  }
+}
+
 async function showTaskQuickComplete(): Promise<void> {
   const content = document.getElementById(
     "mobile-quick-actions-content",
@@ -315,6 +361,7 @@ async function showTaskQuickComplete(): Promise<void> {
         id: tk.id,
         title: tk.title,
         task_type: tk.task_type,
+        offline_supported: isOnline() || canQueueCompletionOffline(tk),
         ...(offlineStates.get(tk.id)
           ? { offline_status: offlineStates.get(tk.id)!.status }
           : {}),
@@ -322,71 +369,25 @@ async function showTaskQuickComplete(): Promise<void> {
       async (taskId) => {
         if (!isCurrentQuickTaskRequest(gardenId, loadVersion)) return;
         const task = actionableById.get(taskId);
-        if (task && needsCompletionDialog(task)) {
+        if (!task) return;
+        if (needsCompletionDialog(task)) {
           if (!isOnline()) {
-            if (!canQueueDefaultCompletionOffline(task)) {
+            const needsExplicitOutcome = !canQueueDefaultCompletionOffline(task);
+            if (needsExplicitOutcome && !canQueueCompletionOffline(task)) {
               ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
               return;
             }
-          } else {
+          }
+          if (isOnline()) {
             await ctx.ensurePlantsCacheLoaded();
-            const plantNames = new Map(ctx.getPlants().map((plant) => [plant.plt_id, plant.name]));
-            openTaskCompletionDialog(task, plantNames, (body) => {
-              void (async () => {
-                try {
-                  await taskActionApi(taskId, body);
-                  ctx.showToast(
-                    t("tasks.action_success", {
-                      action: "complete",
-                    }),
-                    "success",
-                  );
-                  void ctx.refreshBadgeCounts();
-                  await showTaskQuickComplete();
-                } catch (err) {
-                  ctx.showToast(
-                    getApiErrorMessage(err),
-                    "error",
-                  );
-                }
-              })();
-            }, { modalParent: quickActionSheet() });
-            return;
           }
-        }
-        if (!isOnline()) {
-          try {
-            await enqueueDraft("task_complete", { task_id: taskId });
-          } catch (err) {
-            ctx.showToast(offlineTaskActionErrorMessage(err), "error");
-            return;
-          }
-          ctx.showToast(
-            t("offline.draft_saved"),
-            "success",
-          );
-          void ctx.refreshOfflineIndicator();
-          await showTaskQuickComplete();
+          const plantNames = new Map(ctx.getPlants().map((plant) => [plant.plt_id, plant.name]));
+          openTaskCompletionDialog(task, plantNames, (body) => {
+            void completeQuickTask(task, body);
+          }, { modalParent: quickActionSheet() });
           return;
         }
-        try {
-          await taskActionApi(taskId, {
-            action: "complete",
-          });
-          ctx.showToast(
-            t("tasks.action_success", {
-              action: "complete",
-            }),
-            "success",
-          );
-          void ctx.refreshBadgeCounts();
-          await showTaskQuickComplete();
-        } catch (err) {
-          ctx.showToast(
-            getApiErrorMessage(err),
-            "error",
-          );
-        }
+        await completeQuickTask(task, { action: "complete" });
       },
       () => {
         renderQuickActionHome(true);
@@ -429,6 +430,7 @@ async function snoozeQuickTask(
       try {
         await enqueueDraft("task_snooze", {
           task_id: task.id,
+          ...offlineTaskActionLabels(task, "snooze"),
           snooze_until: snoozeUntil,
         });
       } catch (err) {

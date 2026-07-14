@@ -356,6 +356,21 @@ class MigrationGuardTests(unittest.TestCase):
         self.assertIn("USING btree (request_id, id)", migration_sql)
         self.assertNotIn("USING btree (request_id)\n", migration_sql)
 
+    def test_audit_schema_signature_requires_request_id_then_id_index_keys(self) -> None:
+        snapshot = self._complete_schema_snapshot()
+        snapshot.index_definitions["ux_audit_events_request_id"] = (
+            "CREATE UNIQUE INDEX ux_audit_events_request_id "
+            "ON public.audit_events USING btree (id, request_id) "
+            "WHERE (request_id <> ''::text)"
+        )
+
+        missing = missing_schema_parts(snapshot)
+
+        self.assertIn(
+            {"kind": "index-definition", "object": "ux_audit_events_request_id"},
+            missing,
+        )
+
     def test_schema_signature_validates_critical_definitions(self) -> None:
         snapshot = self._complete_schema_snapshot()
         snapshot.column_nullability["auth_users.password_hash"] = False

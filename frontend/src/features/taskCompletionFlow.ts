@@ -4,6 +4,7 @@ import { createModal } from "../components/dialogCore";
 import type { TaskActionRequest } from "../services/api";
 
 type CompletionTask = Pick<GardenTask, "task_type" | "plant_ids">;
+type TaskActionLabelTask = Pick<GardenTask, "task_type" | "title">;
 
 interface TaskCompletionDialogOptions {
   modalParent?: HTMLElement | null | undefined;
@@ -24,7 +25,21 @@ export function needsCompletionDialog(task: CompletionTask): boolean {
 }
 
 export function canQueueDefaultCompletionOffline(task: CompletionTask): boolean {
-  return task.task_type === "observe_bloom" && (task.plant_ids?.length ?? 0) <= 1;
+  return !needsCompletionDialog(task);
+}
+
+export function canQueueCompletionOffline(task: CompletionTask): boolean {
+  return canQueueDefaultCompletionOffline(task) || task.task_type === "observe_bloom";
+}
+
+export function offlineTaskActionLabels(
+  task: TaskActionLabelTask,
+  action: TaskActionRequest["action"],
+): { action_label: string; task_label: string } {
+  return {
+    action_label: String(t(`tasks.action_${action}`)),
+    task_label: task.title.trim() || String(t(`tasks.type_${task.task_type}`)),
+  };
 }
 
 export function defaultSelectedPlantIds(task: CompletionTask): Set<string> {
@@ -63,8 +78,11 @@ export function openTaskCompletionDialog(
     for (const checkbox of checkboxes) {
       checkbox.checked = selected.has(checkbox.value);
     }
-    confirm.disabled = selected.size === 0;
-    feedback.textContent = selected.size === 0 ? String(t("tasks.complete_select_one")) : "";
+    const selectionRequired = needsCompletionSelection(task);
+    confirm.disabled = selectionRequired && selected.size === 0;
+    feedback.textContent = selectionRequired && selected.size === 0
+      ? String(t("tasks.complete_select_one"))
+      : "";
   };
 
   for (const plantId of task.plant_ids ?? []) {
@@ -106,9 +124,9 @@ export function openTaskCompletionDialog(
     notSeen.textContent = String(t("tasks.action_not_seen_blooming"));
     notSeen.addEventListener("click", () => {
       const completed_plant_ids = [...selected];
-      if (completed_plant_ids.length === 0) {
+      if (needsCompletionSelection(task) && completed_plant_ids.length === 0) {
         syncState();
-        checkboxes[0]?.focus();
+        (checkboxes[0] ?? confirm).focus();
         return;
       }
       onConfirm({
@@ -121,17 +139,21 @@ export function openTaskCompletionDialog(
   } else {
     notSeen.remove();
   }
-  confirm.textContent = String(t("tasks.action_complete"));
+  confirm.textContent = String(
+    task.task_type === "observe_bloom"
+      ? t("tasks.action_seen_blooming")
+      : t("tasks.action_complete"),
+  );
   confirm.addEventListener("click", () => {
     const completed_plant_ids = [...selected];
-    if (completed_plant_ids.length === 0) {
+    if (needsCompletionSelection(task) && completed_plant_ids.length === 0) {
       syncState();
-      checkboxes[0]?.focus();
+      (checkboxes[0] ?? confirm).focus();
       return;
     }
     onConfirm({ action: "complete", completed_plant_ids, completion_outcome: "done" });
     close();
   });
   syncState();
-  checkboxes[0]?.focus();
+  (checkboxes[0] ?? confirm).focus();
 }

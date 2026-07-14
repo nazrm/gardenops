@@ -17,7 +17,21 @@ die() {
 }
 
 usage() {
-  die "usage: scripts/run_complete_journeys_e2e.sh (--phase N | --through-phase N)"
+  die "usage: scripts/run_complete_journeys_e2e.sh --expected-head <40hex> (--phase N | --through-phase N)"
+}
+
+validate_expected_head() {
+  local value="${1:-}"
+  [[ "$value" =~ ^[0-9A-Fa-f]{40}$ ]] || die "expected head must be a 40-character hexadecimal commit"
+  printf '%s\n' "${value,,}"
+}
+
+require_expected_head() {
+  local expected="$1" observed
+  observed="$(git rev-parse --verify HEAD 2>/dev/null)" \
+    || die "could not resolve the review-gated repository HEAD"
+  [[ "$observed" == "$expected" ]] \
+    || die "review-gated HEAD mismatch: expected $expected, found $observed"
 }
 
 validate_phase() {
@@ -86,6 +100,65 @@ scrub_inherited_environment() {
   done < <(env)
   unset ALL_PROXY HTTP_PROXY HTTPS_PROXY NO_PROXY all_proxy http_proxy https_proxy no_proxy
   unset BASH_ENV ENV NODE_OPTIONS NODE_PATH NPM_CONFIG_USERCONFIG PYTHONHOME PYTHONPATH
+  while IFS='=' read -r name ignored; do
+    case "$name" in
+      VITE_*) unset "$name" ;;
+    esac
+  done < <(env)
+}
+
+verify_locked_dependencies() {
+  local npm_userconfig="$PRIVATE_DIR/npmrc"
+  : > "$npm_userconfig"
+  chmod 600 "$npm_userconfig"
+  command -v uv >/dev/null 2>&1 || die "uv is required to verify the locked Python environment"
+  uv sync --locked --all-groups --dry-run > "$LOG_DIR/uv-lock-verify.log" 2>&1 \
+    || die "locked Python dependency verification failed"
+  "$ROOT_DIR/.venv/bin/python" -m pip check > "$LOG_DIR/python-pip-check.log" 2>&1 \
+    || die "installed Python dependency verification failed"
+  (
+    cd "$ROOT_DIR/frontend"
+    env -i \
+      HOME="$PRIVATE_DIR/home" \
+      LANG="${LANG:-C.UTF-8}" \
+      PATH="$PATH" \
+      TMPDIR="$PRIVATE_DIR" \
+      npm ci --dry-run --ignore-scripts --no-audit --no-fund --userconfig "$npm_userconfig"
+  ) > "$LOG_DIR/npm-lock-verify.log" 2>&1 \
+    || die "locked Node dependency verification failed"
+  export GARDENOPS_COMPLETE_JOURNEYS_E2E_LOCK_VERIFIED=true
+}
+
+write_isolated_vite_config() {
+  VITE_CONFIG_PATH="$PRIVATE_DIR/complete-journeys-vite.config.mjs"
+  VITE_ENV_DIR="$PRIVATE_DIR/vite-env"
+  VITE_DIST_DIR="$PRIVATE_DIR/frontend-dist"
+  mkdir -p "$VITE_ENV_DIR"
+  chmod 700 "$VITE_ENV_DIR"
+  printf '%s\n' \
+    "import { defineConfig, mergeConfig } from 'vite';" \
+    "import baseConfig from '$ROOT_DIR/frontend/vite.config.ts';" \
+    "const root = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_ROOT;" \
+    "const envDir = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_ENV_DIR;" \
+    "const outDir = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_DIST_DIR;" \
+    "const proxyTarget = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_PROXY_TARGET;" \
+    "export default defineConfig((configEnv) => mergeConfig(typeof baseConfig === 'function' ? baseConfig(configEnv) : baseConfig, { root, envDir, build: { emptyOutDir: true, outDir }, preview: { proxy: { '/api': proxyTarget, '/calendar/subscriptions': proxyTarget } }, server: { proxy: { '/api': proxyTarget, '/calendar/subscriptions': proxyTarget } } }));" \
+    > "$VITE_CONFIG_PATH"
+  chmod 600 "$VITE_CONFIG_PATH"
+}
+
+vite_environment() {
+  env -i \
+    HOME="$PRIVATE_DIR/home" \
+    LANG="${LANG:-C.UTF-8}" \
+    PATH="$PATH" \
+    TMPDIR="$PRIVATE_DIR" \
+    GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_ROOT="$ROOT_DIR/frontend" \
+    GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_ENV_DIR="$VITE_ENV_DIR" \
+    GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_DIST_DIR="$VITE_DIST_DIR" \
+    GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
+    GARDENOPS_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
+    "$@"
 }
 
 pick_loopback_port() {
@@ -169,6 +242,8 @@ if [[ "${1:-}" == "--self-test-scrub" ]]; then
   scrub_inherited_environment
   [[ -z "${OPENAI_API_KEY:-}${ANTHROPIC_API_KEY:-}${DATABASE_URL:-}${BASH_ENV:-}${NODE_OPTIONS:-}${PYTHONPATH:-}" ]] \
     || die "environment scrub self-test failed"
+  ! env | cut -d= -f1 | grep -q '^VITE_' \
+    || die "Vite environment scrub self-test failed"
   exit 0
 fi
 if [[ "${1:-}" == "--self-test-process-group" ]]; then
@@ -196,33 +271,27 @@ fi
 PHASE=""
 THROUGH_PHASE=""
 ARTIFACT_INPUT=""
+EXPECTED_HEAD=""
 CHILD_MODE=0
 
 if [[ "${1:-}" == "--child" ]]; then
-  [[ "$#" -eq 4 ]] || usage
+  [[ "$#" -eq 6 && "${5:-}" == "--expected-head" ]] || usage
   CHILD_MODE=1
   PHASE="$(validate_phase "$2")"
   THROUGH_PHASE="$(validate_phase "$3")"
   ((THROUGH_PHASE >= PHASE)) || die "through phase must be greater than or equal to phase"
   ARTIFACT_INPUT="$4"
+  EXPECTED_HEAD="$(validate_expected_head "$6")"
 else
-  if [[ "$#" -gt 2 ]]; then
-    phase_flag_count=0
-    for argument in "$@"; do
-      if [[ "$argument" == "--phase" || "$argument" == "--through-phase" ]]; then
-        ((phase_flag_count += 1))
-      fi
-    done
-    ((phase_flag_count <= 1)) || die "duplicate phase selection is not allowed"
-  fi
-  [[ "$#" -eq 2 ]] || usage
-  case "$1" in
+  [[ "$#" -eq 4 && "${1:-}" == "--expected-head" ]] || usage
+  EXPECTED_HEAD="$(validate_expected_head "$2")"
+  case "$3" in
     --phase)
-      PHASE="$(validate_phase "$2")"
+      PHASE="$(validate_phase "$4")"
       THROUGH_PHASE="$PHASE"
       ;;
     --through-phase)
-      THROUGH_PHASE="$(validate_phase "$2")"
+      THROUGH_PHASE="$(validate_phase "$4")"
       PHASE=0
       ;;
     *) usage ;;
@@ -234,6 +303,7 @@ fi
 ARTIFACT_DIR="$(validate_artifact_dir "$ARTIFACT_INPUT")"
 ((PHASE <= MAX_IMPLEMENTED_PHASE && THROUGH_PHASE <= MAX_IMPLEMENTED_PHASE)) \
   || die "requested phase is not implemented by this harness"
+require_expected_head "$EXPECTED_HEAD"
 
 if [[ "$CHILD_MODE" -eq 0 ]]; then
   ARTIFACT_PARENT="$(dirname -- "$ARTIFACT_DIR")"
@@ -256,12 +326,14 @@ if [[ "$CHILD_MODE" -eq 0 ]]; then
     PYTHONPYCACHEPREFIX="/tmp/gardenops-complete-journeys-parent-pycache" \
     TMPDIR="${TMPDIR:-/tmp}" \
     USER="${USER:-gardenops-e2e}" \
+    GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD="$EXPECTED_HEAD" \
     "$ROOT_DIR/.venv/bin/python" scripts/run_fast_postgres_tests.py \
       --command --command-database gardenops_test -- \
       bash "$ROOT_DIR/scripts/run_complete_journeys_e2e.sh" \
-        --child "$PHASE" "$THROUGH_PHASE" "$ARTIFACT_DIR"
+        --child "$PHASE" "$THROUGH_PHASE" "$ARTIFACT_DIR" --expected-head "$EXPECTED_HEAD"
 fi
 
+require_expected_head "$EXPECTED_HEAD"
 require_disposable_parent
 require_disposable_environment
 [[ -d "$ARTIFACT_DIR" && ! -L "$ARTIFACT_DIR" ]] \
@@ -296,6 +368,9 @@ export GARDENOPS_COMPLETE_JOURNEYS_E2E_PASSWORD="CompleteJourneysE2E!Passphrase2
 export GARDENOPS_COMPLETE_JOURNEYS_E2E_PHASE="$PHASE"
 export GARDENOPS_COMPLETE_JOURNEYS_E2E_THROUGH_PHASE="$THROUGH_PHASE"
 export GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR="$ARTIFACT_DIR"
+export GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD="$EXPECTED_HEAD"
+export GARDENOPS_COMPLETE_JOURNEYS_E2E_FRONTEND_MODE=production-preview
+export PYTHON_DOTENV_DISABLED=1
 
 PRIVATE_DIR="$(mktemp -d /tmp/gardenops-complete-journeys.XXXXXX)"
 
@@ -313,8 +388,8 @@ LOG_DIR="$PRIVATE_DIR/logs"
 MEDIA_DIR="$PRIVATE_DIR/media"
 TERRAIN_DIR="$PRIVATE_DIR/terrain"
 DOWNLOAD_DIR="$PRIVATE_DIR/downloads"
-mkdir -p "$LOG_DIR" "$MEDIA_DIR" "$TERRAIN_DIR" "$DOWNLOAD_DIR"
-chmod 700 "$PRIVATE_DIR" "$LOG_DIR" "$MEDIA_DIR" "$TERRAIN_DIR" "$DOWNLOAD_DIR"
+mkdir -p "$PRIVATE_DIR/home" "$LOG_DIR" "$MEDIA_DIR" "$TERRAIN_DIR" "$DOWNLOAD_DIR"
+chmod 700 "$PRIVATE_DIR" "$PRIVATE_DIR/home" "$LOG_DIR" "$MEDIA_DIR" "$TERRAIN_DIR" "$DOWNLOAD_DIR"
 
 export GARDENOPS_LOGS_DIR="$LOG_DIR"
 export MEDIA_STORAGE_DIR="$MEDIA_DIR"
@@ -360,6 +435,12 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+[[ "${GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD:-}" == "$EXPECTED_HEAD" ]] \
+  || die "review-gated expected HEAD was not propagated to the disposable child"
+require_expected_head "$EXPECTED_HEAD"
+verify_locked_dependencies
+write_isolated_vite_config
+
 "$ROOT_DIR/.venv/bin/python" scripts/seed_complete_journeys_e2e.py \
   --output "$FIXTURE_PATH"
 chmod 600 "$FIXTURE_PATH"
@@ -367,13 +448,26 @@ chmod 600 "$FIXTURE_PATH"
 setsid "$ROOT_DIR/.venv/bin/uvicorn" gardenops.main:app \
   --host 127.0.0.1 --port "$BACKEND_PORT" > "$LOG_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
-setsid bash -c \
-  'cd "$1" && exec npm run dev -- --host 127.0.0.1 --port "$2" --strictPort' \
-  bash "$ROOT_DIR/frontend" "$FRONTEND_PORT" > "$LOG_DIR/frontend.log" 2>&1 &
+vite_environment "$ROOT_DIR/frontend/node_modules/.bin/vite" build \
+  --config "$VITE_CONFIG_PATH" > "$LOG_DIR/frontend-build.log" 2>&1 \
+  || die "production frontend build failed"
+setsid env -i \
+  HOME="$PRIVATE_DIR/home" \
+  LANG="${LANG:-C.UTF-8}" \
+  PATH="$PATH" \
+  TMPDIR="$PRIVATE_DIR" \
+  GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_ROOT="$ROOT_DIR/frontend" \
+  GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_ENV_DIR="$VITE_ENV_DIR" \
+  GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_DIST_DIR="$VITE_DIST_DIR" \
+  GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
+  GARDENOPS_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
+  "$ROOT_DIR/frontend/node_modules/.bin/vite" preview \
+    --config "$VITE_CONFIG_PATH" --host 127.0.0.1 --port "$FRONTEND_PORT" --strictPort \
+    > "$LOG_DIR/frontend.log" 2>&1 &
 FRONTEND_PID=$!
 
 wait_for_url "http://127.0.0.1:${BACKEND_PORT}/api/health" "$BACKEND_PID" "FastAPI"
-wait_for_url "http://127.0.0.1:${FRONTEND_PORT}/" "$FRONTEND_PID" "Vite"
+wait_for_url "http://127.0.0.1:${FRONTEND_PORT}/" "$FRONTEND_PID" "production frontend preview"
 
 BASE_URL="http://127.0.0.1:${FRONTEND_PORT}" \
   node scripts/check_complete_journeys_e2e.cjs

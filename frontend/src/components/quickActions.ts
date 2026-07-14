@@ -14,7 +14,8 @@ type QuickActionTask = {
   title: string;
   task_type: string;
   snooze_label?: string;
-  offline_status?: "queued" | "failed";
+  offline_status?: "queued" | "syncing" | "failed";
+  offline_supported?: boolean;
 };
 
 export type QuickActionDataState = "live" | "cached" | "unavailable";
@@ -74,7 +75,9 @@ function appendTaskPicker(
       const accessibleLabel = stateLabel ? `${primaryLabel}: ${stateLabel}` : primaryLabel;
       btn.textContent = accessibleLabel;
       btn.setAttribute("aria-label", accessibleLabel);
-      btn.disabled = Boolean(task.offline_status);
+      const unavailableOffline = task.offline_supported === false;
+      btn.disabled = Boolean(task.offline_status) || unavailableOffline;
+      if (unavailableOffline) btn.title = t("offline.indicator_offline");
       if (task.offline_status) {
         btn.classList.add(`quick-action-task-item--${task.offline_status}`);
         btn.dataset["offlineTaskState"] = task.offline_status;
@@ -87,7 +90,8 @@ function appendTaskPicker(
         secondary.className = "quick-action-task-item";
         secondary.textContent = secondaryAction.label;
         secondary.setAttribute("aria-label", `${taskLabel}: ${secondaryAction.label}`);
-        secondary.disabled = Boolean(task.offline_status);
+        secondary.disabled = Boolean(task.offline_status) || unavailableOffline;
+        if (unavailableOffline) secondary.title = t("offline.indicator_offline");
         secondary.addEventListener("click", () => secondaryAction.onSelect(task.id));
         list.appendChild(secondary);
       }
@@ -183,9 +187,15 @@ export function appendQuickActionSnoozeNotice(
   });
 }
 
+export interface QuickActionSheetOptions {
+  canWrite?: boolean;
+  online?: boolean;
+}
+
 export function renderQuickActionSheet(
   container: HTMLElement,
   cbs: QuickActionCallbacks,
+  options: QuickActionSheetOptions = {},
 ): void {
   container.replaceChildren();
 
@@ -202,20 +212,28 @@ export function renderQuickActionSheet(
     label: string;
     key: string;
     cb: () => void;
+    requiresOnline?: boolean;
+    requiresWrite?: boolean;
   }> = [
-    { icon: QUICK_ACTION_ICONS.complete, label: t("quick_actions.complete_task"), key: "complete-task", cb: cbs.onCompleteTask },
-    { icon: QUICK_ACTION_ICONS.journal, label: t("quick_actions.log_journal"), key: "log-journal", cb: cbs.onLogJournal },
-    { icon: QUICK_ACTION_ICONS.issue, label: t("quick_actions.report_issue"), key: "report-issue", cb: cbs.onReportIssue },
-    { icon: QUICK_ACTION_ICONS.harvest, label: t("quick_actions.log_harvest"), key: "log-harvest", cb: cbs.onLogHarvest },
-    { icon: QUICK_ACTION_ICONS.snooze, label: t("quick_actions.snooze_task"), key: "snooze-task", cb: cbs.onSnoozeTask },
-    { icon: QUICK_ACTION_ICONS.identify, label: t("quick_actions.identify_plant"), key: "identify-plant", cb: cbs.onIdentifyPlant },
+    { icon: QUICK_ACTION_ICONS.complete, label: t("quick_actions.complete_task"), key: "complete-task", cb: cbs.onCompleteTask, requiresWrite: true },
+    { icon: QUICK_ACTION_ICONS.journal, label: t("quick_actions.log_journal"), key: "log-journal", cb: cbs.onLogJournal, requiresWrite: true },
+    { icon: QUICK_ACTION_ICONS.issue, label: t("quick_actions.report_issue"), key: "report-issue", cb: cbs.onReportIssue, requiresWrite: true },
+    { icon: QUICK_ACTION_ICONS.harvest, label: t("quick_actions.log_harvest"), key: "log-harvest", cb: cbs.onLogHarvest, requiresWrite: true },
+    { icon: QUICK_ACTION_ICONS.snooze, label: t("quick_actions.snooze_task"), key: "snooze-task", cb: cbs.onSnoozeTask, requiresWrite: true },
+    { icon: QUICK_ACTION_ICONS.identify, label: t("quick_actions.identify_plant"), key: "identify-plant", cb: cbs.onIdentifyPlant, requiresOnline: true, requiresWrite: true },
   ];
 
   for (const action of actions) {
+    if (action.requiresWrite && options.canWrite === false) continue;
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "quick-action-btn";
     btn.dataset["quickAction"] = action.key;
+    const unavailableOffline = Boolean(
+      action.requiresOnline && options.online === false,
+    );
+    btn.disabled = unavailableOffline;
+    if (unavailableOffline) btn.title = t("offline.indicator_offline");
 
     const icon = document.createElement("span");
     icon.className = "quick-action-icon";

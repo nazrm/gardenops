@@ -415,8 +415,7 @@ def get_notification_preferences(request: Request, db: DB) -> dict:
         if key in serialized["notification_rules"]:
             serialized["notification_rules"][key].update(projection)
     digest_quiet_hours = notification_quiet_hours_from_attention(attention_preferences)
-    if digest_quiet_hours is not None:
-        serialized["quiet_hours_json"] = digest_quiet_hours
+    serialized["quiet_hours_json"] = digest_quiet_hours or {}
     serialized["task_due_enabled"] = bool(
         serialized["notification_rules"]["task_due"]["in_app_enabled"]
     )

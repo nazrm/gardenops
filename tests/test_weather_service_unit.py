@@ -1244,7 +1244,7 @@ class TestWeatherAlertIdentityMigration(_WeatherDbTestBase):
 
 
 class TestWeatherAlertIdentityConcurrency(DbTestBase):
-    def test_concurrent_creators_share_one_alert_and_its_links(self) -> None:
+    def test_concurrent_complete_snapshots_share_one_alert_and_last_links(self) -> None:
         self._insert_plant("RACE-PLANT-A", "Race plant A", hardiness="H2")
         self._insert_plant("RACE-PLANT-B", "Race plant B", hardiness="H2")
         alert = {
@@ -1258,13 +1258,14 @@ class TestWeatherAlertIdentityConcurrency(DbTestBase):
         }
         insert_barrier = threading.Barrier(2)
 
-        def save_once(index: int) -> tuple[dict[str, int], int]:
+        def save_once(index: int) -> tuple[dict[str, int], int, str]:
             conn = db.get_db()
             try:
                 suffix = "A" if index == 0 else "B"
+                plant_id = f"RACE-PLANT-{suffix}"
                 frost_plants = [
                     {
-                        "plt_id": f"RACE-PLANT-{suffix}",
+                        "plt_id": plant_id,
                         "name": f"Race plant {suffix}",
                         "hardiness": "H2",
                         "min_safe_temp": 1.0,
@@ -1277,15 +1278,18 @@ class TestWeatherAlertIdentityConcurrency(DbTestBase):
                     frost_plants=frost_plants,
                 )
                 conn.commit()
-                return result, conn.info.backend_pid
+                return result, conn.info.backend_pid, plant_id
             finally:
                 db.return_db(conn)
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             outcomes = list(pool.map(save_once, range(2)))
 
-        results = [result for result, _ in outcomes]
-        backend_pids = {backend_pid for _, backend_pid in outcomes}
+        results = [result for result, _, _ in outcomes]
+        backend_pids = {backend_pid for _, backend_pid, _ in outcomes}
+        final_plant_id = next(
+            plant_id for result, _backend_pid, plant_id in outcomes if result["skipped"] == 1
+        )
         assert len(backend_pids) == 2
         assert sorted(result["created"] for result in results) == [0, 1]
         assert sorted(result["skipped"] for result in results) == [0, 1]
@@ -1306,20 +1310,14 @@ class TestWeatherAlertIdentityConcurrency(DbTestBase):
             "SELECT plt_id FROM weather_alert_plants WHERE alert_id = %s ORDER BY plt_id",
             (alert_id,),
         ).fetchall()
-        assert [str(row["plt_id"]) for row in plant_rows] == [
-            "RACE-PLANT-A",
-            "RACE-PLANT-B",
-        ]
+        assert [str(row["plt_id"]) for row in plant_rows] == [final_plant_id]
         metadata_row = self.conn.execute(
             "SELECT metadata_json FROM weather_alerts WHERE id = %s",
             (alert_id,),
         ).fetchone()
         assert metadata_row is not None
         metadata = json.loads(str(metadata_row["metadata_json"]))
-        assert {item["plt_id"] for item in metadata["plant_advice"]} == {
-            "RACE-PLANT-A",
-            "RACE-PLANT-B",
-        }
+        assert [item["plt_id"] for item in metadata["plant_advice"]] == [final_plant_id]
 
 
 class TestWeatherNotificationConcurrency(DbTestBase):
@@ -1529,6 +1527,373 @@ class TestCheckWeatherEndToEnd(_WeatherDbTestBase):
         )
         assert result["forecast_available"] is False
         assert result["alerts_created"] == 0
+
+
+class TestWeatherForecastRemediation(DbTestBase):
+    def test_incomplete_precipitation_does_not_resolve_dry_alert_work(self) -> None:
+        from gardenops.services.notification_service import reconcile_weather_alert_work
+
+        alert = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'dry_spell', 'normal', 'Dry spell', 'Water regularly',
+                    '2032-02-03', '2032-02-08', '{}', 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert alert is not None
+        self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, status, severity,
+                 due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+            VALUES ('tsk_partial_precip', %s, 'water', 'Water in dry spell', 'pending',
+                    'normal', '2032-02-03', %s, '{}', 1, 1)
+            """,
+            (self.garden_id, f"auto:dry_water:{int(alert['id'])}:PLT-PARTIAL"),
+        )
+        forecast = {
+            "daily": {
+                "time": ["2032-02-03", "2032-02-04", "2032-02-05"],
+                "temperature_2m_min": [5.0, 6.0, 7.0],
+                "temperature_2m_max": [10.0, 11.0, 12.0],
+                "precipitation_sum": [0.0, None, 0.0],
+            }
+        }
+
+        with patch(
+            "gardenops.services.weather_service.get_or_fetch_forecast",
+            return_value=forecast,
+        ):
+            result = check_weather_and_generate_alerts(
+                self.conn,
+                self.garden_id,
+                59.91,
+                10.75,
+            )
+        downstream = reconcile_weather_alert_work(
+            self.conn,
+            garden_id=self.garden_id,
+            alerts=list(result["alerts"]),
+            actor_user_id=None,
+            now_ms=1_959_379_200_000,
+            replace_forecast_alerts=True,
+        )
+
+        alert_after = self.conn.execute(
+            "SELECT dismissed FROM weather_alerts WHERE id = %s",
+            (int(alert["id"]),),
+        ).fetchone()
+        task_after = self.conn.execute(
+            "SELECT status FROM garden_tasks WHERE public_id = 'tsk_partial_precip'",
+        ).fetchone()
+        assert result["forecast_complete_alert_types"] == ["frost_warning", "heat_wave"]
+        assert downstream["alerts_resolved"] == 0
+        assert alert_after is not None
+        assert task_after is not None
+        assert not bool(alert_after["dismissed"])
+        assert str(task_after["status"]) == "pending"
+
+    def test_complete_same_identity_contracts_alert_links_and_weather_tasks(self) -> None:
+        from gardenops.services.notification_service import reconcile_weather_alert_work
+
+        self._insert_plant("WX-A", "No longer vulnerable", hardiness="H2")
+        self._insert_plant("WX-B", "Still vulnerable", hardiness="H2")
+        first = {
+            "alert_type": "frost_warning",
+            "severity": "high",
+            "title": "Severe frost",
+            "description": "Protect exposed plants.",
+            "valid_from": "2032-02-03",
+            "valid_until": "2032-02-08",
+            "metadata": {"coldest": -8.0},
+        }
+        save_weather_alerts(
+            self.conn,
+            self.garden_id,
+            [first],
+            frost_plants=[
+                {"plt_id": "WX-A", "name": "No longer vulnerable", "hardiness": "H2"},
+                {"plt_id": "WX-B", "name": "Still vulnerable", "hardiness": "H2"},
+            ],
+        )
+        weather_alert = self.conn.execute(
+            """
+            SELECT id FROM weather_alerts
+            WHERE garden_id = %s AND alert_type = 'frost_warning' AND valid_from = '2032-02-03'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert weather_alert is not None
+        alert_id = int(weather_alert["id"])
+        self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, status, severity,
+                 due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+            VALUES
+                ('tsk_weather_contract_a', %s, 'protect', 'Protect A', 'pending', 'high',
+                 '2032-02-03', %s, '{}', 1, 1),
+                ('tsk_weather_contract_b', %s, 'protect', 'Protect B', 'pending', 'high',
+                 '2032-02-03', %s, '{}', 1, 1)
+            """,
+            (
+                self.garden_id,
+                f"auto:frost_protect:{alert_id}:WX-A",
+                self.garden_id,
+                f"auto:frost_protect:{alert_id}:WX-B",
+            ),
+        )
+        contracted = {
+            **first,
+            "severity": "normal",
+            "title": "Frost",
+            "valid_until": "2032-02-05",
+            "metadata": {"coldest": -2.0},
+        }
+        save_weather_alerts(
+            self.conn,
+            self.garden_id,
+            [contracted],
+            frost_plants=[
+                {"plt_id": "WX-B", "name": "Still vulnerable", "hardiness": "H2"},
+            ],
+        )
+
+        downstream = reconcile_weather_alert_work(
+            self.conn,
+            garden_id=self.garden_id,
+            alerts=[contracted],
+            actor_user_id=None,
+            now_ms=1_959_379_200_000,
+            replace_forecast_alerts=True,
+        )
+        alert_after = self.conn.execute(
+            """
+            SELECT severity, valid_until, metadata_json
+            FROM weather_alerts
+            WHERE id = %s
+            """,
+            (alert_id,),
+        ).fetchone()
+        plant_links = self.conn.execute(
+            "SELECT plt_id FROM weather_alert_plants WHERE alert_id = %s ORDER BY plt_id",
+            (alert_id,),
+        ).fetchall()
+        tasks = self.conn.execute(
+            """
+            SELECT public_id, status, metadata_json
+            FROM garden_tasks
+            WHERE public_id IN ('tsk_weather_contract_a', 'tsk_weather_contract_b')
+            ORDER BY public_id
+            """,
+        ).fetchall()
+
+        assert downstream["tasks_retired"] == 1
+        assert alert_after is not None
+        assert str(alert_after["severity"]) == "normal"
+        assert str(alert_after["valid_until"]) == "2032-02-05"
+        assert [str(row["plt_id"]) for row in plant_links] == ["WX-B"]
+        assert [str(row["status"]) for row in tasks] == ["skipped", "pending"]
+        assert json.loads(str(tasks[1]["metadata_json"]))["weather_valid_until"] == "2032-02-05"
+        alert_metadata = json.loads(str(alert_after["metadata_json"]))
+        assert [entry["plt_id"] for entry in alert_metadata["plant_advice"]] == ["WX-B"]
+
+    def test_same_severity_refresh_preserves_acknowledgement_but_escalation_rearms(self) -> None:
+        from gardenops.services.notification_service import create_weather_alert_notifications
+
+        self.conn.execute(
+            """
+            INSERT INTO garden_memberships (garden_id, user_id, role)
+            VALUES (%s, %s, 'admin')
+            ON CONFLICT DO NOTHING
+            """,
+            (self.garden_id, self._owner_id),
+        )
+        alert = {
+            "alert_type": "frost_warning",
+            "severity": "normal",
+            "title": "Frost warning",
+            "description": "Cover tender plants.",
+            "valid_from": "2032-02-03",
+            "valid_until": "2032-02-06",
+            "metadata": {"coldest": -2.0},
+        }
+        save_weather_alerts(self.conn, self.garden_id, [alert])
+        create_weather_alert_notifications(self.conn, garden_id=self.garden_id, alerts=[alert])
+        self.conn.execute(
+            """
+            UPDATE notification_events
+            SET read_at_ms = 111, emailed_at_ms = 222
+            WHERE garden_id = %s
+              AND user_id = %s
+              AND notification_type = 'weather_alert'
+              AND target_id = 'frost_warning:2032-02-03'
+            """,
+            (self.garden_id, self._owner_id),
+        )
+        same_severity = {**alert, "title": "Updated frost warning", "valid_until": "2032-02-05"}
+        save_weather_alerts(self.conn, self.garden_id, [same_severity])
+        create_weather_alert_notifications(
+            self.conn,
+            garden_id=self.garden_id,
+            alerts=[same_severity],
+        )
+        acknowledged = self.conn.execute(
+            """
+            SELECT read_at_ms, emailed_at_ms
+            FROM notification_events
+            WHERE garden_id = %s
+              AND user_id = %s
+              AND notification_type = 'weather_alert'
+              AND target_id = 'frost_warning:2032-02-03'
+            """,
+            (self.garden_id, self._owner_id),
+        ).fetchone()
+        escalated = {**same_severity, "severity": "high"}
+        save_weather_alerts(self.conn, self.garden_id, [escalated])
+        create_weather_alert_notifications(self.conn, garden_id=self.garden_id, alerts=[escalated])
+        rearmed = self.conn.execute(
+            """
+            SELECT read_at_ms, emailed_at_ms
+            FROM notification_events
+            WHERE garden_id = %s
+              AND user_id = %s
+              AND notification_type = 'weather_alert'
+              AND target_id = 'frost_warning:2032-02-03'
+            """,
+            (self.garden_id, self._owner_id),
+        ).fetchone()
+
+        assert acknowledged is not None
+        assert int(acknowledged["read_at_ms"]) == 111
+        assert int(acknowledged["emailed_at_ms"]) == 222
+        assert rearmed is not None
+        assert rearmed["read_at_ms"] is None
+        assert rearmed["emailed_at_ms"] is None
+
+    def test_automatic_same_identity_reappearance_rearms_notification_and_attention(self) -> None:
+        from gardenops.services.notification_service import reconcile_weather_alert_work
+
+        self.conn.execute(
+            """
+            INSERT INTO garden_memberships (garden_id, user_id, role)
+            VALUES (%s, %s, 'admin')
+            ON CONFLICT DO NOTHING
+            """,
+            (self.garden_id, self._owner_id),
+        )
+        alert = {
+            "alert_type": "frost_warning",
+            "severity": "normal",
+            "title": "Frost warning",
+            "description": "Cover tender plants.",
+            "valid_from": "2032-02-03",
+            "valid_until": "2032-02-06",
+            "metadata": {"coldest": -2.0},
+        }
+        now_ms = 1_959_379_200_000
+        save_weather_alerts(self.conn, self.garden_id, [alert])
+        reconcile_weather_alert_work(
+            self.conn,
+            garden_id=self.garden_id,
+            alerts=[alert],
+            actor_user_id=None,
+            now_ms=now_ms,
+            replace_forecast_alerts=True,
+        )
+        alert_row = self.conn.execute(
+            """
+            SELECT id
+            FROM weather_alerts
+            WHERE garden_id = %s AND alert_type = 'frost_warning' AND valid_from = '2032-02-03'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert alert_row is not None
+        alert_id = int(alert_row["id"])
+        self.conn.execute(
+            """
+            UPDATE notification_events
+            SET read_at_ms = 111, emailed_at_ms = 222
+            WHERE garden_id = %s
+              AND user_id = %s
+              AND notification_type = 'weather_alert'
+              AND target_id = 'frost_warning:2032-02-03'
+            """,
+            (self.garden_id, self._owner_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO user_attention_item_state
+                (user_id, garden_id, item_id, user_state, reason,
+                 metadata_json, created_at_ms, updated_at_ms)
+            VALUES (%s, %s, %s, 'dismissed', '', '{}', %s, %s)
+            """,
+            (
+                self._owner_id,
+                self.garden_id,
+                f"attn:weather:alert:{alert_id}",
+                now_ms,
+                now_ms,
+            ),
+        )
+        reconcile_weather_alert_work(
+            self.conn,
+            garden_id=self.garden_id,
+            alerts=[],
+            actor_user_id=None,
+            now_ms=now_ms + 1,
+            replace_forecast_alerts=True,
+        )
+
+        save_weather_alerts(self.conn, self.garden_id, [alert])
+        reconcile_weather_alert_work(
+            self.conn,
+            garden_id=self.garden_id,
+            alerts=[alert],
+            actor_user_id=None,
+            now_ms=now_ms + 2,
+            replace_forecast_alerts=True,
+        )
+
+        notification = self.conn.execute(
+            """
+            SELECT read_at_ms, emailed_at_ms, cleared_at_ms
+            FROM notification_events
+            WHERE garden_id = %s
+              AND user_id = %s
+              AND notification_type = 'weather_alert'
+              AND target_id = 'frost_warning:2032-02-03'
+            """,
+            (self.garden_id, self._owner_id),
+        ).fetchone()
+        state = self.conn.execute(
+            """
+            SELECT 1
+            FROM user_attention_item_state
+            WHERE garden_id = %s
+              AND user_id = %s
+              AND item_id = %s
+            """,
+            (self.garden_id, self._owner_id, f"attn:weather:alert:{alert_id}"),
+        ).fetchone()
+        alert_after = self.conn.execute(
+            "SELECT dismissed, metadata_json FROM weather_alerts WHERE id = %s",
+            (alert_id,),
+        ).fetchone()
+
+        assert notification is not None
+        assert notification["read_at_ms"] is None
+        assert notification["emailed_at_ms"] is None
+        assert notification["cleared_at_ms"] is None
+        assert state is None
+        assert alert_after is not None
+        assert not bool(alert_after["dismissed"])
+        assert not json.loads(str(alert_after["metadata_json"])).get("notification_rearm_pending")
 
 
 if __name__ == "__main__":

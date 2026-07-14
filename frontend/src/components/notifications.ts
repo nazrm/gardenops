@@ -253,6 +253,7 @@ export function renderNotificationPanel(
   title.textContent = t("notifications.title") as string;
 
   const headerActions = document.createElement("div");
+  headerActions.className = "notification-panel-header-actions";
   headerActions.style.display = "flex";
   headerActions.style.alignItems = "center";
   headerActions.style.gap = "var(--sp-2)";

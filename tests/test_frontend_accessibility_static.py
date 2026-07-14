@@ -129,6 +129,22 @@ def test_mobile_toasts_clear_the_primary_navigation() -> None:
     assert mobile_toast_rule
 
 
+def test_coarse_pointer_notification_and_completion_controls_have_row_sized_targets() -> None:
+    styles = _read_frontend("style.css")
+    notifications = _read_frontend("components/notifications.ts")
+
+    assert 'headerActions.className = "notification-panel-header-actions";' in notifications
+    assert "@media (pointer: coarse)" in styles
+    assert ".notification-mark-all-btn," in styles
+    assert ".notification-item-dismiss" in styles
+    assert "min-width: 44px;" in styles
+    assert "min-height: 44px;" in styles
+    assert ".notification-panel-header-actions," in styles
+    assert ".notification-item-actions {\n    flex-direction: row;" in styles
+    assert ".task-completion-list label {\n    min-height: 44px;" in styles
+    assert "flex-direction: row;" in styles
+
+
 def test_task_form_uses_shared_modal_focus_and_explicit_exit_controls() -> None:
     tasks_tab = _read_frontend("tabs/tasksTab.ts")
     task_form = _read_frontend("components/tasks.ts")

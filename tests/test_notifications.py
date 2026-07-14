@@ -3125,14 +3125,38 @@ class TestRainSuppressedWateringNotificationLifecycle(BaseApiTest):
                     1_959_379_200_001,
                     frozen_date="2032-02-03",
                 )
+                pending_marker = conn.execute(
+                    "SELECT value FROM app_settings WHERE key = %s",
+                    (f"last_task_gen_month:{garden_id}",),
+                ).fetchone()
+                conn.execute(
+                    """
+                    INSERT INTO weather_alerts
+                        (garden_id, alert_type, severity, title, description,
+                         valid_from, valid_until, metadata_json, created_at_ms)
+                    VALUES (%s, 'rain_surplus', 'normal', 'Heavy rain', 'Skip watering',
+                            '2032-02-03', '2032-02-05', '{}', 1)
+                    """,
+                    (garden_id,),
+                )
+                third = _auto_generate_monthly_tasks(
+                    conn,
+                    garden_id,
+                    1_959_379_200_002,
+                    frozen_date="2032-02-03",
+                )
             marker = conn.execute(
                 "SELECT value FROM app_settings WHERE key = %s",
                 (f"last_task_gen_month:{garden_id}",),
             ).fetchone()
             assert marker is not None
-            self.assertEqual(str(marker["value"]), "2032-02:rain_pending")
+            assert pending_marker is not None
+            self.assertTrue(str(pending_marker["value"]).startswith("2032-02:rain_pending:"))
+            self.assertTrue(str(marker["value"]).startswith("2032-02:rain_pending:"))
+            self.assertNotEqual(str(marker["value"]), str(pending_marker["value"]))
             self.assertEqual(first["tasks_rain_suppressed"], 1)
-            self.assertEqual(second["tasks_rain_suppressed"], 1)
+            self.assertEqual(second, {"tasks_skipped": True, "tasks_rain_pending": True})
+            self.assertEqual(third["tasks_rain_suppressed"], 1)
             self.assertEqual(generate_tasks.call_count, 2)
         finally:
             db.return_db(conn)

@@ -144,23 +144,23 @@ class WeatherAttentionProvider:
                 if dict(row["recovery_action"]).get("kind") == "restore_generated_watering_task"
             }
         )
-        expired_restore_sources: set[str] = set()
+        terminal_restore_sources: set[str] = set()
         if restore_sources:
-            expired_rows = conn.execute(
+            terminal_rows = conn.execute(
                 """
                 SELECT rule_source
                 FROM garden_tasks
                 WHERE garden_id = %s
-                  AND status = 'expired'
+                  AND status IN ('completed', 'expired')
                   AND rule_source = ANY(%s)
                 """,
                 (garden_id, restore_sources),
             ).fetchall()
-            expired_restore_sources = {str(row["rule_source"]) for row in expired_rows}
+            terminal_restore_sources = {str(row["rule_source"]) for row in terminal_rows}
         items: list[AttentionItem] = []
         for row in rows:
             recovery_action = dict(row["recovery_action"])
-            if str(row["source_public_id"]) in expired_restore_sources:
+            if str(row["source_public_id"]) in terminal_restore_sources:
                 recovery_action = {}
             secondary_actions: tuple[AttentionAction, ...] = ()
             if recovery_action:

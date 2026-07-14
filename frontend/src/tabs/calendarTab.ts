@@ -50,13 +50,16 @@ import {
   openTaskDateDialog,
 } from "../features/taskSnoozeFlow";
 import {
+  canQueueCompletionOffline,
   canQueueDefaultCompletionOffline,
   needsCompletionDialog,
+  offlineTaskActionLabels,
   openTaskCompletionDialog,
 } from "../features/taskCompletionFlow";
 import {
   getTaskActionStates,
   OfflineTaskActionConflictError,
+  onConnectivityChange,
   onOfflineQueueChange,
   removeDraft,
   retryDraft,
@@ -615,6 +618,8 @@ function renderHeaderActions(): void {
   const newEventButton = queryButton("calendar-new-event-btn");
   if (newEventButton) {
     newEventButton.hidden = !ctx.canWrite();
+    newEventButton.disabled = !ctx.isOnline();
+    newEventButton.title = ctx.isOnline() ? "" : t("offline.indicator_offline");
   }
   const newFeedButton = queryButton("calendar-new-feed-btn");
   if (newFeedButton) {
@@ -924,6 +929,7 @@ function calendarTaskForCompletion(event: CalendarEvent) {
   return {
     task_type: event.source_key as GardenTask["task_type"],
     plant_ids: event.plant_ids,
+    title: event.title,
   };
 }
 
@@ -970,13 +976,20 @@ function calendarTaskForSnooze(event: CalendarEvent): GardenTask {
 
 interface CalendarTaskActionTarget {
   gardenId: number;
+  taskLabel: string;
+  taskType: GardenTask["task_type"];
   taskId: string;
 }
 
 function calendarTaskActionTarget(event: CalendarEvent): CalendarTaskActionTarget | null {
   const gardenId = getActiveGardenContext();
   if (gardenId === null || !event.target_id) return null;
-  return { gardenId, taskId: event.target_id };
+  return {
+    gardenId,
+    taskId: event.target_id,
+    taskLabel: event.title,
+    taskType: event.source_key as GardenTask["task_type"],
+  };
 }
 
 function canMutateCalendarTaskTarget(target: CalendarTaskActionTarget): boolean {
@@ -1001,11 +1014,17 @@ function detailRow(label: string, value: string): HTMLElement {
   return row;
 }
 
-function actionButton(label: string, onClick: () => void): HTMLButtonElement {
+function actionButton(
+  label: string,
+  onClick: () => void,
+  disabled = false,
+): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "btn btn-sm";
   button.textContent = label;
+  button.disabled = disabled;
+  if (disabled) button.title = t("offline.indicator_offline");
   button.addEventListener("click", onClick);
   return button;
 }
@@ -1265,15 +1284,17 @@ function renderDetail(event?: CalendarEvent): void {
     }
     const recovery = document.createElement("div");
     recovery.className = "task-offline-recovery";
-    if (offlineAction.status === "failed") {
+    if (ctx.canWrite() && offlineAction.status === "failed") {
       recovery.appendChild(actionButton(t("offline.retry"), () => {
         void retryCalendarOfflineAction(offlineAction);
       }));
     }
-    recovery.appendChild(actionButton(t("offline.discard"), () => {
-      void discardCalendarOfflineAction(offlineAction);
-    }));
-    state.appendChild(recovery);
+    if (ctx.canWrite()) {
+      recovery.appendChild(actionButton(t("offline.discard"), () => {
+        void discardCalendarOfflineAction(offlineAction);
+      }));
+    }
+    if (recovery.childElementCount > 0) state.appendChild(recovery);
     panel.appendChild(state);
   }
 
@@ -1346,13 +1367,21 @@ function renderDetail(event?: CalendarEvent): void {
   if (event.kind === "manual_event" && ctx.canWrite()) {
     const actions = document.createElement("div");
     actions.className = "calendar-detail-actions";
-    const editButton = actionButton(t("common.edit"), () => {
-      void openManualEventDialog(event);
-    });
+    const editButton = actionButton(
+      t("common.edit"),
+      () => {
+        void openManualEventDialog(event);
+      },
+      !ctx.isOnline(),
+    );
     editButton.dataset["calendarDetailEditManualEvent"] = "true";
-    const deleteButton = actionButton(t("common.delete"), () => {
-      void deleteManualEvent(event);
-    });
+    const deleteButton = actionButton(
+      t("common.delete"),
+      () => {
+        void deleteManualEvent(event);
+      },
+      !ctx.isOnline(),
+    );
     deleteButton.dataset["calendarDetailDeleteManualEvent"] = "true";
     actions.append(editButton, deleteButton);
     panel.appendChild(actions);
@@ -1370,10 +1399,15 @@ function renderDetail(event?: CalendarEvent): void {
         snoozePolicy.warning,
       );
     };
+    const taskForCompletion = calendarTaskForCompletion(event);
     actions.appendChild(
-      actionButton(t("tasks.action_complete"), () => {
-        completeCalendarTask(event);
-      }),
+      actionButton(
+        t("tasks.action_complete"),
+        () => {
+          completeCalendarTask(event);
+        },
+        !ctx.isOnline() && !canQueueCompletionOffline(taskForCompletion),
+      ),
     );
     actions.appendChild(
       actionButton(t("tasks.action_skip"), () => {
@@ -1419,12 +1453,8 @@ async function runCalendarTaskActionForTarget(
   if (!canMutateCalendarTaskTarget(target)) return false;
   if (!isCurrentCalendarRequest(request)) return false;
   if (!ctx.isOnline()) {
-    if (body.action === "complete" && body.completed_plant_ids?.length) {
-      ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
-      return false;
-    }
     try {
-      await enqueueOfflineCalendarTaskAction(target.taskId, body);
+      await enqueueOfflineCalendarTaskAction(target, body);
     } catch (err) {
       ctx.showToast(offlineTaskActionErrorMessage(err), "error");
       return false;
@@ -1452,32 +1482,24 @@ async function runCalendarTaskActionForTarget(
 }
 
 async function enqueueOfflineCalendarTaskAction(
-  taskId: string,
+  target: CalendarTaskActionTarget,
   body: TaskActionRequest,
 ): Promise<void> {
-  if (body.action === "complete") {
-    await ctx.enqueueDraft("task_complete", { task_id: taskId });
-    return;
-  }
-  if (body.action === "skip") {
-    await ctx.enqueueDraft("task_skip", { task_id: taskId });
-    return;
-  }
-  if (body.action === "snooze") {
-    await ctx.enqueueDraft("task_snooze", {
-      task_id: taskId,
-      snooze_until: body.snooze_until,
-    });
-    return;
-  }
-  if (body.action === "reschedule") {
-    await ctx.enqueueDraft("task_reschedule", {
-      task_id: taskId,
-      reschedule_to: body.reschedule_to,
-    });
-    return;
-  }
-  throw new Error(`Unsupported calendar task action: ${body.action}`);
+  const draftTypeByAction = {
+    complete: "task_complete",
+    skip: "task_skip",
+    snooze: "task_snooze",
+    reschedule: "task_reschedule",
+  } as const;
+  const { action, ...payload } = body;
+  await ctx.enqueueDraft(draftTypeByAction[action], {
+    task_id: target.taskId,
+    ...offlineTaskActionLabels(
+      { task_type: target.taskType, title: target.taskLabel },
+      action,
+    ),
+    ...payload,
+  });
 }
 
 function completeCalendarTask(event: CalendarEvent): void {
@@ -1488,12 +1510,11 @@ function completeCalendarTask(event: CalendarEvent): void {
     return;
   }
   if (!ctx.isOnline()) {
-    if (canQueueDefaultCompletionOffline(task)) {
-      void runTaskAction(event, { action: "complete" });
+    const needsExplicitOutcome = !canQueueDefaultCompletionOffline(task);
+    if (needsExplicitOutcome && !canQueueCompletionOffline(task)) {
+      ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
       return;
     }
-    ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
-    return;
   }
   const plantNames = new Map(ctx.getPlants().map((plant) => [plant.plt_id, plant.name]));
   openTaskCompletionDialog(task, plantNames, (body) => {
@@ -1954,6 +1975,10 @@ export function initCalendarTab(appCtx: AppContext): void {
     calendarOfflineListenerBound = true;
     onOfflineQueueChange(() => {
       void refreshCalendarTaskActions();
+    });
+    onConnectivityChange(() => {
+      renderHeaderActions();
+      renderDetail(selectedEventId ? currentEventsById.get(selectedEventId) : undefined);
     });
   }
   if (initBound) return;

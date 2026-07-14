@@ -8,16 +8,28 @@ export interface OfflineIndicatorCallbacks {
 }
 
 export interface OfflineIndicatorState {
+  canManageDrafts?: boolean;
   failedDrafts: OfflineDraft[];
   online: boolean;
   pendingCount: number;
+  syncingCount: number;
 }
 
 function failedDraftLabel(draft: OfflineDraft): string {
   const taskId = String(draft.payload["task_id"] ?? "").trim();
-  return taskId
-    ? t("offline.failed_task", { task: taskId })
-    : t("offline.failed_draft", { type: draft.type });
+  if (!taskId) return t("offline.failed_draft", { type: draft.type });
+  const taskLabel = typeof draft.payload["task_label"] === "string"
+    && draft.payload["task_label"].trim()
+    ? draft.payload["task_label"].trim()
+    : t("offline.failed_task", { task: taskId });
+  const actionLabel = typeof draft.payload["action_label"] === "string"
+    && draft.payload["action_label"].trim()
+    ? draft.payload["action_label"].trim()
+    : t(`tasks.action_${draft.type.replace("task_", "")}`);
+  return t("offline.failed_task_action", {
+    action: actionLabel,
+    task: taskLabel,
+  });
 }
 
 export function renderOfflineIndicator(
@@ -26,9 +38,15 @@ export function renderOfflineIndicator(
   callbacks?: OfflineIndicatorCallbacks,
 ): void {
   container.replaceChildren();
-  const { failedDrafts, online, pendingCount } = state;
+  const {
+    canManageDrafts = true,
+    failedDrafts,
+    online,
+    pendingCount,
+    syncingCount,
+  } = state;
 
-  if (online && pendingCount === 0 && failedDrafts.length === 0) {
+  if (online && pendingCount === 0 && syncingCount === 0 && failedDrafts.length === 0) {
     container.hidden = true;
     return;
   }
@@ -47,10 +65,15 @@ export function renderOfflineIndicator(
     const label = document.createElement("span");
     label.textContent = t("offline.indicator_offline");
     badge.appendChild(label);
-  } else {
+  } else if (syncingCount > 0) {
     badge.classList.add("offline-indicator--syncing");
     const label = document.createElement("span");
     label.textContent = t("offline.indicator_syncing");
+    badge.appendChild(label);
+  } else {
+    badge.classList.add("offline-indicator--pending");
+    const label = document.createElement("span");
+    label.textContent = t("offline.indicator_pending_ready");
     badge.appendChild(label);
   }
 
@@ -67,7 +90,7 @@ export function renderOfflineIndicator(
     badge.appendChild(count);
   }
 
-  if (callbacks && online && pendingCount > 0) {
+  if (callbacks && canManageDrafts && online && pendingCount > 0 && syncingCount === 0) {
     const btn = document.createElement("button");
     btn.className = "offline-sync-btn";
     btn.type = "button";
@@ -98,7 +121,7 @@ export function renderOfflineIndicator(
     error.textContent = draft.last_error || t("offline.failed_unknown");
     copy.append(label, error);
     row.appendChild(copy);
-    if (callbacks) {
+    if (callbacks && canManageDrafts) {
       const actions = document.createElement("div");
       actions.className = "offline-failure-actions";
       const retry = document.createElement("button");

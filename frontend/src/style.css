@@ -8521,6 +8521,9 @@ td.inventory-qty-zero {
 .task-card.task-completed {
   opacity: 0.6;
 }
+.task-card.task-overdue {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
 .task-card-header {
   display: flex;
   align-items: center;
@@ -8629,6 +8632,10 @@ td.inventory-qty-zero {
   background: color-mix(in srgb, var(--text-3) 14%, transparent);
   color: var(--text-3);
 }
+.task-status-chip.status-overdue {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
 .task-card-tags {
   display: flex;
   flex-wrap: wrap;
@@ -8677,6 +8684,10 @@ td.inventory-qty-zero {
 .task-offline-status.status-queued {
   background: var(--accent-muted);
   color: var(--accent);
+}
+.task-offline-status.status-syncing {
+  background: color-mix(in srgb, var(--warning, #8a5a00) 14%, transparent);
+  color: var(--warning, #8a5a00);
 }
 .task-offline-status.status-failed {
   background: var(--danger-muted);
@@ -9134,6 +9145,43 @@ td.inventory-qty-zero {
 }
 .notification-item-dismiss:hover {
   color: var(--danger);
+}
+
+@media (pointer: coarse) {
+  .notification-mark-all-btn,
+  .notification-settings-btn,
+  .notification-panel-close,
+  .notification-panel-tab,
+  .notification-item-mute,
+  .notification-item-dismiss {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .notification-mark-all-btn,
+  .notification-settings-btn,
+  .notification-panel-close,
+  .notification-item-mute,
+  .notification-item-dismiss {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .notification-panel-header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .notification-panel-header-actions,
+  .notification-item-actions {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .notification-item-main {
+    min-height: 44px;
+  }
 }
 .notification-empty {
   text-align: center;
@@ -11076,6 +11124,19 @@ td.inventory-qty-zero {
   flex: 0 0 auto;
 }
 
+@media (pointer: coarse) {
+  .task-completion-list label {
+    min-height: 44px;
+    padding: var(--sp-1) var(--sp-2);
+    flex-direction: row;
+  }
+
+  .task-completion-list input {
+    width: 22px;
+    height: 22px;
+  }
+}
+
 .task-completion-feedback {
   min-height: 1.25rem;
   margin-top: var(--sp-2);
@@ -11156,6 +11217,12 @@ td.inventory-qty-zero {
 @media (max-width: 600px) {
   #toast-container {
     bottom: calc(78px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+@media (max-width: 960px) {
+  body.offline-recovery-open #toast-container {
+    bottom: calc(78px + env(safe-area-inset-bottom, 0px) + var(--offline-recovery-offset, 0px));
   }
 }
 
@@ -14469,6 +14536,11 @@ td.inventory-qty-zero {
 .offline-indicator--syncing {
   background: var(--bg-warning, #f0ad4e);
   color: #000;
+}
+
+.offline-indicator--pending {
+  background: var(--bg-3);
+  color: var(--text-1);
 }
 
 .offline-indicator--failed {

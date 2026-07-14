@@ -692,6 +692,163 @@ class TestRainAttentionOutcomeRestoreConcurrency(DbTestBase):
         )
         self.assertEqual(outcome_item.secondary_actions, ())
 
+    def test_completed_task_does_not_expose_weather_recovery_action(self) -> None:
+        from gardenops.services.attention.providers.weather import WeatherAttentionProvider
+
+        now_ms = 1783180800000
+        source_public_id = "water:COMPLETED-RESTORE:2026-07-05"
+        self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, description, status,
+                 severity, due_on, rule_source, metadata_json, completed_at_ms,
+                 created_at_ms, updated_at_ms)
+            VALUES (%s, %s, 'water', 'Completed watering', '', 'completed', 'normal',
+                    '2026-07-05', %s, '{}', %s, %s, %s)
+            """,
+            (
+                "task_completed_restore",
+                self.garden_id,
+                source_public_id,
+                now_ms,
+                now_ms,
+                now_ms,
+            ),
+        )
+        outcome_id = upsert_attention_outcome(
+            self.conn,
+            garden_id=self.garden_id,
+            provider="weather",
+            outcome_type="watering_covered_by_rain",
+            source_type="task_generator",
+            source_id="rain-completed-restore",
+            source_public_id=source_public_id,
+            target_type="plant",
+            target_id="COMPLETED-RESTORE",
+            title="Watering covered by rain",
+            explanation="Rain covers this watering.",
+            reason="Rain covers watering",
+            plant_ids=("COMPLETED-RESTORE",),
+            metadata={"due_on": "2026-07-05"},
+            recovery_action={
+                "kind": "restore_generated_watering_task",
+                "label": "Restore watering",
+                "source_public_id": source_public_id,
+                "target_type": "plant",
+                "target_id": "COMPLETED-RESTORE",
+                "due_on": "2026-07-05",
+                "plant_ids": ["COMPLETED-RESTORE"],
+                "plot_ids": [],
+            },
+            occurred_at_ms=now_ms,
+            expires_at_ms=now_ms + 86_400_000,
+        )
+        self.conn.commit()
+
+        attention_items = WeatherAttentionProvider(frozen_date="2026-07-05").collect(
+            self.conn,
+            garden_id=self.garden_id,
+            user_id=self._owner_id,
+            now_ms=now_ms,
+        )
+        outcome_item = next(
+            item for item in attention_items if item.id == f"attn:outcome:{outcome_id}"
+        )
+
+        self.assertEqual(outcome_item.secondary_actions, ())
+
+    def test_completed_task_restore_keeps_outcome_and_terminal_history_intact(self) -> None:
+        self._insert_plant(
+            "COMPLETED-RESTORE-REQUEST",
+            "Completed restore request",
+            care_watering="regular moisture",
+        )
+        now_ms = 1783180800000
+        expires_at_ms = now_ms + 86_400_000
+        source_public_id = "water:COMPLETED-RESTORE-REQUEST:2026-07-05"
+        task = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, description, status,
+                 severity, due_on, rule_source, metadata_json, completed_at_ms,
+                 created_at_ms, updated_at_ms)
+            VALUES (%s, %s, 'water', 'Completed watering', '', 'completed', 'normal',
+                    '2026-07-05', %s, '{}', %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                "task_completed_restore_request",
+                self.garden_id,
+                source_public_id,
+                now_ms,
+                now_ms,
+                now_ms,
+            ),
+        ).fetchone()
+        assert task is not None
+        outcome_id = upsert_attention_outcome(
+            self.conn,
+            garden_id=self.garden_id,
+            provider="weather",
+            outcome_type="watering_covered_by_rain",
+            source_type="task_generator",
+            source_id="rain-completed-restore-request",
+            source_public_id=source_public_id,
+            target_type="plant",
+            target_id="COMPLETED-RESTORE-REQUEST",
+            title="Watering covered by rain",
+            explanation="Rain covers this watering.",
+            reason="Rain covers watering",
+            plant_ids=("COMPLETED-RESTORE-REQUEST",),
+            metadata={"due_on": "2026-07-05"},
+            recovery_action={
+                "kind": "restore_generated_watering_task",
+                "label": "Restore watering",
+                "source_public_id": source_public_id,
+                "target_type": "plant",
+                "target_id": "COMPLETED-RESTORE-REQUEST",
+                "due_on": "2026-07-05",
+                "plant_ids": ["COMPLETED-RESTORE-REQUEST"],
+                "plot_ids": [],
+            },
+            occurred_at_ms=now_ms,
+            expires_at_ms=expires_at_ms,
+        )
+        self.conn.commit()
+
+        with self.assertRaises(HTTPException) as raised:
+            restore_attention_outcome(
+                self.conn,
+                garden_id=self.garden_id,
+                outcome_id=outcome_id,
+                user_id=self._owner_id,
+                now_ms=now_ms,
+            )
+
+        task_after = self.conn.execute(
+            "SELECT status, completed_at_ms FROM garden_tasks WHERE id = %s",
+            (int(task["id"]),),
+        ).fetchone()
+        outcome_after = self.conn.execute(
+            """
+            SELECT expires_at_ms, recovery_action_json
+            FROM attention_outcomes
+            WHERE garden_id = %s AND public_id = %s
+            """,
+            (self.garden_id, outcome_id),
+        ).fetchone()
+
+        self.assertEqual(raised.exception.status_code, 409)
+        assert task_after is not None
+        assert outcome_after is not None
+        self.assertEqual(str(task_after["status"]), "completed")
+        self.assertEqual(int(task_after["completed_at_ms"]), now_ms)
+        self.assertEqual(int(outcome_after["expires_at_ms"]), expires_at_ms)
+        self.assertEqual(
+            json.loads(str(outcome_after["recovery_action_json"]))["kind"],
+            "restore_generated_watering_task",
+        )
+
     def test_concurrent_restores_create_one_generated_watering_task(self) -> None:
         self._insert_plant("RESTORE-RACE", "Restore race", care_watering="regular moisture")
         now_ms = 1783180800000

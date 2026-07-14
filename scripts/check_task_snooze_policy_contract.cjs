@@ -32,7 +32,13 @@ if (!completionSource.includes("needsCompletionDialog")) {
   throw new Error("Completion flow must expose a dialog decision helper");
 }
 if (!completionSource.includes("canQueueDefaultCompletionOffline")) {
-  throw new Error("Completion flow must preserve offline default completion for simple bloom tasks");
+  throw new Error("Completion flow must preserve offline default completion for simple task actions");
+}
+if (!completionSource.includes("canQueueCompletionOffline")) {
+  throw new Error("Completion flow must explicitly allow supported offline bloom outcomes");
+}
+if (!completionSource.includes("offlineTaskActionLabels")) {
+  throw new Error("Completion flow must provide human-readable offline task action labels");
 }
 if (!completionSource.includes('task.task_type === "observe_bloom"')) {
   throw new Error("Observe-bloom completion must open the completion dialog");
@@ -52,6 +58,12 @@ for (const relativePath of [
 ]) {
   const surfaceSource = fs.readFileSync(path.join(root, relativePath), "utf8");
   if (!surfaceSource.includes("canQueueDefaultCompletionOffline")) {
-    throw new Error(`${relativePath} must preserve offline default completion for simple bloom tasks`);
+    throw new Error(`${relativePath} must preserve offline default completion for simple task actions`);
+  }
+  if (!surfaceSource.includes("canQueueCompletionOffline")) {
+    throw new Error(`${relativePath} must gate supported offline bloom completion`);
+  }
+  if (!surfaceSource.includes("offlineTaskActionLabels")) {
+    throw new Error(`${relativePath} must retain human-readable offline task action labels`);
   }
 }

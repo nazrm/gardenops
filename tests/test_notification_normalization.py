@@ -539,6 +539,83 @@ class TestNotificationNormalization(BaseApiTest):
             finally:
                 db.return_db(conn)
 
+    def test_saved_attention_quiet_hours_clear_legacy_notification_window(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "test",
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+            },
+            clear=False,
+        ):
+            conn = db.get_db()
+            try:
+                garden = conn.execute(
+                    "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1"
+                ).fetchone()
+                assert garden is not None
+                garden_id = int(garden["id"])
+                user_id, password = self._create_pro_member(
+                    conn,
+                    "canonical_quiet_hours_user",
+                )
+                self._save_legacy_preferences(
+                    conn,
+                    user_id=user_id,
+                    now_ms=_FROZEN_NOW_MS,
+                    quiet_hours={
+                        "start": "21:30",
+                        "end": "06:15",
+                        "timezone": "Europe/Oslo",
+                    },
+                )
+                self._save_attention_preferences(
+                    conn,
+                    user_id=user_id,
+                    now_ms=_FROZEN_NOW_MS,
+                    rules={
+                        "task_due": {
+                            "panel": True,
+                            "inbox": True,
+                            "digest": True,
+                            "min_severity": "low",
+                        }
+                    },
+                    quiet_hours={},
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            client, headers = self._authenticated_client(
+                "canonical_quiet_hours_user",
+                password,
+                garden_id=garden_id,
+            )
+            notification_preferences = client.get(
+                "/api/notifications/preferences",
+                headers=headers,
+            )
+            self.assertEqual(
+                notification_preferences.status_code,
+                200,
+                notification_preferences.text,
+            )
+            attention_preferences = client.get(
+                "/api/attention/preferences",
+                headers=headers,
+            )
+            self.assertEqual(
+                attention_preferences.status_code,
+                200,
+                attention_preferences.text,
+            )
+
+        self.assertEqual(notification_preferences.json()["quiet_hours_json"], {})
+        self.assertEqual(attention_preferences.json()["quiet_hours"], {})
+
     def test_notification_and_attention_settings_share_one_effective_rule_set(self) -> None:
         from gardenops.services.notification_service import (
             create_notification,

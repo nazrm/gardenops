@@ -2,6 +2,7 @@ import type { GardenTask, TaskType } from "../core/models";
 import { getLocale, t } from "../core/i18n";
 import { renderEmptyState } from "./emptyState";
 import { taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import { canQueueCompletionOffline } from "../features/taskCompletionFlow";
 import type { OfflineTaskActionState } from "../services/offlineQueue";
 
 export type TaskListDataState = "live" | "cached" | "unavailable";
@@ -38,6 +39,7 @@ export interface TaskListCallbacks {
   onEmptyAction?: (() => void) | undefined;
   canWrite?: boolean | undefined;
   dataState?: TaskListDataState | undefined;
+  online?: boolean | undefined;
 }
 
 function isBatchActionable(task: GardenTask): boolean {
@@ -59,6 +61,24 @@ function isOverdue(dueOn: string): boolean {
   today.setHours(0, 0, 0, 0);
   const due = new Date(dueOn + "T00:00:00");
   return due < today;
+}
+
+function presentationDueOn(task: GardenTask): string {
+  return task.status === "snoozed" && task.snoozed_until
+    ? task.snoozed_until
+    : task.due_on;
+}
+
+function isExpiredSnooze(task: GardenTask): boolean {
+  return task.status === "snoozed"
+    && Boolean(task.snoozed_until)
+    && isOverdue(task.snoozed_until!);
+}
+
+function isOverdueForPresentation(task: GardenTask): boolean {
+  if (task.status === "expired") return true;
+  return (task.status === "pending" || task.status === "snoozed")
+    && isOverdue(presentationDueOn(task));
 }
 
 function formatDueDate(dueOn: string): string {
@@ -87,8 +107,9 @@ function createTaskCard(
   cbs: TaskListCallbacks,
   plantNames: Map<string, string>,
 ): HTMLElement {
+  const overdue = isOverdueForPresentation(task);
   const card = document.createElement("div");
-  card.className = `task-card${task.status === "completed" ? " task-completed" : ""}`;
+  card.className = `task-card${task.status === "completed" ? " task-completed" : ""}${overdue ? " task-overdue" : ""}`;
   card.dataset["taskId"] = task.id;
   const offlineAction = cbs.offlineTaskActions?.get(task.id);
   if (offlineAction) {
@@ -144,8 +165,11 @@ function createTaskCard(
 
   if (task.status !== "pending") {
     const statusChip = document.createElement("span");
-    statusChip.className = `task-status-chip status-${task.status}`;
-    statusChip.textContent = t(`tasks.status_${task.status}`);
+    const expiredSnooze = isExpiredSnooze(task) || task.status === "expired";
+    statusChip.className = `task-status-chip status-${expiredSnooze ? "overdue" : task.status}`;
+    statusChip.textContent = expiredSnooze
+      ? t("tasks.overdue")
+      : t(`tasks.status_${task.status}`);
     header.appendChild(statusChip);
   }
 
@@ -160,11 +184,12 @@ function createTaskCard(
 
   const due = document.createElement("span");
   due.className = "task-card-due";
-  if (task.status === "pending" && isOverdue(task.due_on)) {
+  const dueOn = presentationDueOn(task);
+  if (overdue) {
     due.classList.add("overdue");
-    due.textContent = `${t("tasks.overdue")} \u2014 ${formatDueDate(task.due_on)}`;
+    due.textContent = `${t("tasks.overdue")} \u2014 ${formatDueDate(dueOn)}`;
   } else {
-    due.textContent = formatDueDate(task.due_on);
+    due.textContent = formatDueDate(dueOn);
   }
   header.appendChild(due);
 
@@ -230,7 +255,7 @@ function createTaskCard(
     }
     const recovery = document.createElement("div");
     recovery.className = "task-offline-recovery";
-    if (offlineAction.status === "failed" && cbs.onRetryOfflineAction) {
+    if (cbs.canWrite !== false && offlineAction.status === "failed" && cbs.onRetryOfflineAction) {
       const retry = document.createElement("button");
       retry.type = "button";
       retry.className = "task-action-btn task-offline-retry";
@@ -238,7 +263,7 @@ function createTaskCard(
       retry.addEventListener("click", () => cbs.onRetryOfflineAction?.(offlineAction));
       recovery.appendChild(retry);
     }
-    if (cbs.onDiscardOfflineAction) {
+    if (cbs.canWrite !== false && cbs.onDiscardOfflineAction) {
       const discard = document.createElement("button");
       discard.type = "button";
       discard.className = "task-action-btn task-offline-discard";
@@ -265,10 +290,15 @@ function createTaskCard(
     && !offlineAction
     && (task.status === "pending" || task.status === "snoozed")
   ) {
+    const offlineUnsupportedCompletion = cbs.online === false && !canQueueCompletionOffline(task);
     const completeBtn = document.createElement("button");
     completeBtn.type = "button";
     completeBtn.className = "task-action-btn task-action-complete";
     completeBtn.textContent = t("tasks.action_complete");
+    completeBtn.disabled = offlineUnsupportedCompletion;
+    if (offlineUnsupportedCompletion) {
+      completeBtn.title = t("offline.indicator_offline");
+    }
     completeBtn.addEventListener("click", () => cbs.onComplete(task));
     actions.appendChild(completeBtn);
 
@@ -302,10 +332,13 @@ function createTaskCard(
   }
 
   if (cbs.canWrite !== false && !offlineAction) {
+    const offlineUnsupportedMutation = cbs.online === false;
     const editBtn = document.createElement("button");
     editBtn.type = "button";
     editBtn.className = "task-action-btn";
     editBtn.textContent = t("common.edit");
+    editBtn.disabled = offlineUnsupportedMutation;
+    if (offlineUnsupportedMutation) editBtn.title = t("offline.indicator_offline");
     editBtn.addEventListener("click", () => cbs.onEdit(task));
     actions.appendChild(editBtn);
 
@@ -313,6 +346,8 @@ function createTaskCard(
     deleteBtn.type = "button";
     deleteBtn.className = "task-action-btn task-action-delete";
     deleteBtn.textContent = t("common.delete");
+    deleteBtn.disabled = offlineUnsupportedMutation;
+    if (offlineUnsupportedMutation) deleteBtn.title = t("offline.indicator_offline");
     deleteBtn.addEventListener("click", () => cbs.onDelete(task));
     actions.appendChild(deleteBtn);
   }

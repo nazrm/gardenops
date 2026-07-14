@@ -756,6 +756,7 @@ def restore_generated_watering_task_from_attention_outcome(
         WHERE garden_id = %s
           AND rule_source = %s
         LIMIT 1
+        FOR UPDATE
         """,
         (garden_id, source_public_id),
     ).fetchone()
@@ -785,6 +786,11 @@ def restore_generated_watering_task_from_attention_outcome(
                     now_ms,
                     int(existing["id"]),
                 ),
+            )
+        elif str(existing["status"]) == "completed":
+            raise HTTPException(
+                status_code=409,
+                detail="Completed generated watering task cannot be restored",
             )
         elif str(existing["status"]) == "expired":
             raise HTTPException(

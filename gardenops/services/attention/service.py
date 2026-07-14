@@ -69,6 +69,20 @@ def _suppresses_rain_handled_watering(preferences: AttentionPreferenceSet) -> bo
     return value if isinstance(value, bool) else True
 
 
+def _classify_expired_task_snoozes(items: list[AttentionItem]) -> list[AttentionItem]:
+    """Apply one overdue classification across task and attention surfaces."""
+    return [
+        replace(item, type="task_overdue", reason="Overdue")
+        if (
+            item.provider == "task"
+            and item.type == "task_snoozed_active"
+            and item.reason == "Snooze expired"
+        )
+        else item
+        for item in items
+    ]
+
+
 def _serialize_action(action: AttentionAction | None) -> dict[str, Any] | None:
     if action is None:
         return None
@@ -689,7 +703,7 @@ class AttentionService:
                 else:
                     conn.rollback()
                 degraded_providers.append({"provider": provider.key, "reason": "provider_failed"})
-        return collected, degraded_providers
+        return _classify_expired_task_snoozes(collected), degraded_providers
 
     def collect_provider_items(
         self,

@@ -322,7 +322,7 @@ REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
     "ux_audit_events_request_id": (
         "unique index",
         "audit_events",
-        "request_id",
+        "using btree (request_id, id)",
         "where",
         "request_id <> ''",
     ),

@@ -74,7 +74,9 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         )
         styles = (ROOT / "frontend" / "src" / "style.css").read_text(encoding="utf-8")
 
-        self.assertIn('draft.status === "failed" ? "failed" : "queued"', queue)
+        self.assertIn('status: "queued" | "syncing" | "failed"', queue)
+        self.assertIn('draft.status === "syncing"', queue)
+        self.assertIn("syncingCount:", queue)
         self.assertIn("export async function retryDraft", queue)
         self.assertIn('draft.status = "pending";', queue)
         self.assertIn("onRetryOfflineAction", task_cards)
@@ -83,6 +85,9 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn('failures.setAttribute("role", "alert")', indicator)
         self.assertIn("callbacks.onRetry(draft)", indicator)
         self.assertIn("callbacks.onDiscard(draft)", indicator)
+        self.assertIn('t("offline.failed_task_action"', indicator)
+        self.assertIn('payload["task_label"]', indicator)
+        self.assertIn('payload["action_label"]', indicator)
         mobile_indicator = styles.rsplit("@media (max-width: 960px) {", 1)[1]
         self.assertIn(".offline-indicator-wrapper", mobile_indicator)
         self.assertIn("top: auto;", mobile_indicator)
@@ -90,6 +95,47 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
             "bottom: calc(78px + env(safe-area-inset-bottom, 0px) + var(--sp-2));",
             mobile_indicator,
         )
+
+    def test_online_startup_and_reopen_replay_pending_work_once_per_active_sync(self) -> None:
+        feature = (ROOT / "frontend" / "src" / "features" / "offlineFeature.ts").read_text(
+            encoding="utf-8"
+        )
+        queue = (ROOT / "frontend" / "src" / "services" / "offlineQueue.ts").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("let syncInFlight: Promise<void> | null = null;", feature)
+        self.assertIn("void syncPendingOfflineDrafts();", feature)
+        self.assertIn('window.addEventListener("focus"', feature)
+        self.assertIn('document.addEventListener("visibilitychange"', feature)
+        self.assertIn('document.visibilityState === "visible"', feature)
+        self.assertIn("if (snapshot.pendingCount > 0)", feature)
+        self.assertIn("let activeSync: Promise<SyncResult> | null = null;", queue)
+        self.assertIn("await markSyncing(draft.id)", queue)
+        self.assertIn('IDBKeyRange.only("syncing")', queue)
+        self.assertIn('status: "pending"', queue)
+
+    def test_transient_retries_are_bounded_and_failures_keep_human_labels(self) -> None:
+        queue = (ROOT / "frontend" / "src" / "services" / "offlineQueue.ts").read_text(
+            encoding="utf-8"
+        )
+        toast = (ROOT / "frontend" / "src" / "components" / "toast.ts").read_text(
+            encoding="utf-8"
+        )
+        styles = (ROOT / "frontend" / "src" / "style.css").read_text(encoding="utf-8")
+
+        self.assertIn("const MAX_TRANSIENT_ATTEMPTS_PER_SYNC = 2", queue)
+        self.assertIn("function isTransientSyncError", queue)
+        self.assertIn("for (let attempt = 1; attempt <= MAX_TRANSIENT_ATTEMPTS_PER_SYNC", queue)
+        self.assertIn("await waitForTransientRetry(attempt)", queue)
+        self.assertIn("task_label", queue)
+        self.assertIn("action_label", queue)
+        self.assertIn("const MAX_VISIBLE_TOASTS = 3", toast)
+        self.assertIn("const activeToasts = new Map", toast)
+        self.assertIn("while (visibleToasts.length >= MAX_VISIBLE_TOASTS)", toast)
+        self.assertIn("removeToast(oldest, true)", toast)
+        self.assertIn("body.offline-recovery-open #toast-container", styles)
+        self.assertIn("--offline-recovery-offset", styles)
 
     def test_cold_offline_views_are_honest_and_warm_filters_use_matching_cache(self) -> None:
         app = (ROOT / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")

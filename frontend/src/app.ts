@@ -6502,11 +6502,17 @@ function applyWriteAccessUi(): void {
       el.disabled = !canWriteInGarden;
     }
   }
+  const mobileFab = document.getElementById("mobile-fab");
+  if (mobileFab instanceof HTMLElement) {
+    mobileFab.hidden = !canWriteInGarden;
+  }
   if (!canWriteInGarden && state.editMode) {
     toggleEditMode(state, editCbs);
   }
+  if (!canWriteInGarden) closeQuickActionSheet(false);
   renderMapObjectsPanelView();
   syncMobileCapabilities();
+  void refreshOfflineIndicator();
 }
 
 function ensureWriteAccess(): boolean {
@@ -7191,6 +7197,7 @@ async function bootstrapApp(): Promise<void> {
     uploadTargetMediaFiles,
     uploadJournalMediaFiles,
   }, {
+    canManageDrafts: () => canWriteInGarden,
     onSyncComplete: refreshAfterOfflineSync,
   });
   await refreshGardenContext({ profile: initialMe });

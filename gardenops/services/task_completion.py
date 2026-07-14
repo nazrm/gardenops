@@ -46,10 +46,17 @@ def clear_completion_capture_metadata(task_row: dict[str, Any]) -> dict[str, Any
 
 
 def grouped_completion_history_started(task_row: dict[str, Any]) -> bool:
-    """Whether a grouped task's durable history fixes its original scope."""
+    """Whether durable completion history fixes a task's original scope."""
     metadata = parse_task_metadata(task_row)
     original_plant_ids = metadata.get("completion_capture_original_plant_ids")
-    return isinstance(original_plant_ids, list) and len(original_plant_ids) > 1
+    completion_entries = metadata.get("completion_journal_entries")
+    return (
+        is_completion_capture_task(str(task_row.get("task_type") or ""))
+        and isinstance(original_plant_ids, list)
+        and bool(original_plant_ids)
+        and isinstance(completion_entries, dict)
+        and any(isinstance(entry_id, str) and entry_id for entry_id in completion_entries.values())
+    )
 
 
 def append_bloom_not_yet_event(
@@ -203,6 +210,44 @@ def refreshed_group_title(task_type: str, remaining_names: list[str]) -> str:
     return f"{prefix} {count} plants"
 
 
+def refreshed_generated_group_description(
+    db: DbConn,
+    *,
+    task_row: dict[str, Any],
+    task_type: str,
+    remaining_plant_ids: list[str],
+    metadata: dict[str, Any],
+) -> tuple[str, dict[str, Any]] | None:
+    """Refresh work-order text after a partial prune or fertilize completion."""
+    rule_source = str(task_row.get("rule_source") or "")
+    if task_type not in {"prune", "fertilize"} or not rule_source.startswith(
+        f"work_order:{task_type}:"
+    ):
+        return None
+    if metadata.get("description_customized"):
+        return None
+
+    # Description inference reads the current task links, which the caller has
+    # already reduced to the remaining plants.
+    from gardenops.services.task_generator import infer_task_description
+
+    description_en, description_no = infer_task_description(db, task_row)
+    if not description_en or not description_no:
+        return None
+
+    refreshed_metadata = dict(metadata)
+    refreshed_metadata.update(
+        {
+            "description_no": description_no,
+            "description_generated": True,
+            "description_source": "work_order",
+            "work_order": True,
+            "plant_count": len(remaining_plant_ids),
+        }
+    )
+    return description_en, refreshed_metadata
+
+
 def validate_completed_plant_ids(
     *,
     task_type: str,
@@ -242,7 +287,18 @@ def validate_completed_plant_ids(
     return requested
 
 
-def validate_completion_outcome(*, task_type: str, outcome: CompletionOutcome) -> None:
+def validate_completion_outcome(
+    *,
+    task_type: str,
+    outcome: CompletionOutcome | None,
+) -> CompletionOutcome:
+    if outcome is None:
+        if task_type == "observe_bloom":
+            raise HTTPException(
+                status_code=422,
+                detail="completion_outcome is required for observe_bloom completion",
+            )
+        return "done"
     if outcome == "not_seen_blooming_this_season" and task_type != "observe_bloom":
         raise HTTPException(
             status_code=422,
@@ -251,6 +307,7 @@ def validate_completion_outcome(*, task_type: str, outcome: CompletionOutcome) -
                 "observe_bloom tasks"
             ),
         )
+    return outcome
 
 
 def record_completion_journal_entry(

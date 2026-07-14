@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import date
 from unittest.mock import patch
@@ -798,6 +799,69 @@ class TestTasks(BaseApiTest):
         self.assertEqual(done_journal["total"], 1)
         self.assertEqual(remaining_journal["total"], 0)
 
+    def test_partial_grouped_work_orders_refresh_remaining_descriptions(self) -> None:
+        for task_type, prefix in (("prune", "Prune"), ("fertilize", "Fertilize")):
+            with self.subTest(task_type=task_type):
+                response = self.client.post(
+                    "/api/tasks",
+                    json={
+                        "task_type": task_type,
+                        "title": f"{prefix} 2 plants",
+                        "description": "Stale work order for Test Plant and Rose",
+                        "due_on": "2026-06-01",
+                        "plant_ids": ["PLT-TEST", "PLT-002"],
+                    },
+                )
+                self.assertEqual(response.status_code, 201, response.text)
+                task_id = response.json()["id"]
+
+                conn = db.get_db()
+                try:
+                    conn.execute(
+                        """
+                        UPDATE garden_tasks
+                        SET rule_source = %s,
+                            metadata_json = %s
+                        WHERE public_id = %s
+                        """,
+                        (
+                            f"work_order:{task_type}:2026-W23",
+                            json.dumps(
+                                {
+                                    "description_no": (
+                                        "Utdatert arbeidsordre for Test Plant og Rose"
+                                    ),
+                                    "description_generated": True,
+                                    "description_source": "work_order",
+                                    "work_order": True,
+                                    "plant_count": 2,
+                                },
+                                separators=(",", ":"),
+                            ),
+                            task_id,
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    db.return_db(conn)
+
+                partial = self.client.post(
+                    f"/api/tasks/{task_id}/action",
+                    json={"action": "complete", "completed_plant_ids": ["PLT-TEST"]},
+                )
+                self.assertEqual(partial.status_code, 200, partial.text)
+
+                task = self.client.get(f"/api/tasks/{task_id}").json()
+                self.assertEqual(task["status"], "pending")
+                self.assertEqual(task["title"], f"{prefix}: Rose")
+                self.assertIn("Rose", task["description"])
+                self.assertNotIn("Test Plant", task["description"])
+                self.assertIn("Rose", task["metadata"]["description_no"])
+                self.assertNotIn("Test Plant", task["metadata"]["description_no"])
+                self.assertTrue(task["metadata"]["description_generated"])
+                self.assertEqual(task["metadata"]["description_source"], "work_order")
+                self.assertEqual(task["metadata"]["plant_count"], 1)
+
     def test_grouped_partial_completion_splits_plot_links_by_selected_plants(self) -> None:
         response = self.client.post(
             "/api/tasks",
@@ -982,6 +1046,32 @@ class TestTasks(BaseApiTest):
             self.assertEqual(changed.status_code, 409, changed.text)
             self.assertIn("completion history", changed.text)
 
+    def test_single_plant_completion_history_rejects_scope_and_type_edits(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "prune",
+                "title": "Prune rose",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-002"],
+                "plot_ids": ["B2"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        completed = self.client.post(f"/api/tasks/{task_id}/action", json={"action": "complete"})
+        self.assertEqual(completed.status_code, 200, completed.text)
+
+        for payload in (
+            {"plant_ids": ["PLT-TEST"]},
+            {"plot_ids": ["B1"]},
+            {"task_type": "fertilize"},
+        ):
+            changed = self.client.patch(f"/api/tasks/{task_id}", json=payload)
+            self.assertEqual(changed.status_code, 409, changed.text)
+            self.assertIn("completion history", changed.text)
+
     def test_completion_history_preserves_task_plot_scope_when_plant_moves(self) -> None:
         response = self.client.post(
             "/api/tasks",
@@ -1141,6 +1231,31 @@ class TestTasks(BaseApiTest):
         self.assertFalse(plants["PLT-002"]["bloomed_this_year"])
         self.assertNotEqual(plants["PLT-002"]["seen_growing"], False)
 
+    def test_observe_bloom_completion_requires_explicit_outcome(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "observe_bloom",
+                "title": "Observe bloom: Rose",
+                "due_on": "2026-06-01",
+                "plant_ids": ["PLT-002"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        response = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            json={"action": "complete"},
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("completion_outcome", response.text)
+        self.assertEqual(self.client.get(f"/api/tasks/{task_id}").json()["status"], "pending")
+        self.assertEqual(
+            self.client.get("/api/journal?event_type=bloomed&plant_id=PLT-002").json()["total"],
+            0,
+        )
+
     def test_observe_bloom_completion_creates_plant_level_journal_entry(self) -> None:
         assign = self.client.post("/api/plots/B1/plants/PLT-TEST", json={"quantity": 1})
         self.assertEqual(assign.status_code, 201)
@@ -1159,7 +1274,7 @@ class TestTasks(BaseApiTest):
 
         response = self.client.post(
             f"/api/tasks/{task_id}/action",
-            json={"action": "complete"},
+            json={"action": "complete", "completion_outcome": "done"},
         )
         self.assertEqual(response.status_code, 200)
 
@@ -1212,7 +1327,7 @@ class TestTasks(BaseApiTest):
         for _ in range(2):
             response = self.client.post(
                 f"/api/tasks/{task_id}/action",
-                json={"action": "complete"},
+                json={"action": "complete", "completion_outcome": "done"},
             )
             self.assertEqual(response.status_code, 200)
 
@@ -1248,7 +1363,7 @@ class TestTasks(BaseApiTest):
 
         completed = self.client.post(
             f"/api/tasks/{task_id}/action",
-            json={"action": "complete"},
+            json={"action": "complete", "completion_outcome": "done"},
         )
         self.assertEqual(completed.status_code, 200, completed.text)
 
@@ -1282,7 +1397,7 @@ class TestTasks(BaseApiTest):
 
         response = self.client.post(
             f"/api/tasks/{task_id}/action",
-            json={"action": "complete"},
+            json={"action": "complete", "completion_outcome": "done"},
         )
         self.assertEqual(response.status_code, 200)
 
@@ -1432,7 +1547,7 @@ class TestTasks(BaseApiTest):
 
         response = self.client.post(
             f"/api/tasks/{task_id}/action",
-            json={"action": "complete"},
+            json={"action": "complete", "completion_outcome": "done"},
         )
         self.assertEqual(response.status_code, 200)
 
@@ -1501,7 +1616,7 @@ class TestTasks(BaseApiTest):
 
         response = self.client.post(
             f"/api/tasks/{task_id}/action",
-            json={"action": "complete"},
+            json={"action": "complete", "completion_outcome": "done"},
         )
         self.assertEqual(response.status_code, 200)
 

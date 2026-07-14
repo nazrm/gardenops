@@ -29,8 +29,16 @@ const ARTIFACT_DIR = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR ||
 const FIXTURE_PATH = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_FIXTURE_PATH || "";
 const PHASE = Number(process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_PHASE || "-1");
 const THROUGH_PHASE = Number(process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_THROUGH_PHASE || "-1");
+const EXPECTED_HEAD = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD || "";
 const USERNAME = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_USERNAME || "";
 const PASSWORD = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_PASSWORD || ""; // push-sanitizer: allow SECRET_ASSIGNMENT - environment lookup only
+const PHASE_TWO_ORACLE_PATH = path.join(
+  ROOT,
+  "scripts",
+  "e2e",
+  "fixtures",
+  "complete_journeys_phase_two_oracle.json",
+);
 const CHROMIUM_LAUNCHER = fs.existsSync("/usr/bin/chromium-browser")
   ? "/usr/bin/chromium-browser"
   : "/usr/bin/chromium";
@@ -76,6 +84,15 @@ function assertRunnerEnvironment() {
     process.env.DATABASE_URL === process.env.GARDENOPS_DISPOSABLE_POSTGRES_URL,
     "Complete journey DATABASE_URL must match the disposable runner URL",
   );
+  assertExpectedHead();
+  assert(process.env.PYTHON_DOTENV_DISABLED === "1",
+    "Complete journey E2E must disable dotenv loading");
+  assert(process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_LOCK_VERIFIED === "true",
+    "Complete journey E2E requires locked dependency verification");
+  assert(process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_FRONTEND_MODE === "production-preview",
+    "Complete journey E2E must serve a production frontend preview");
+  assert(Object.keys(process.env).every((name) => !name.startsWith("VITE_")),
+    "Complete journey E2E forbids inherited Vite environment variables");
   assert(Number.isInteger(PHASE) && PHASE >= 0 && PHASE <= 9, "Invalid phase selection");
   assert(
     Number.isInteger(THROUGH_PHASE) && THROUGH_PHASE >= PHASE && THROUGH_PHASE <= 9,
@@ -99,6 +116,18 @@ function assertRunnerEnvironment() {
   assert(PHASE <= 2 && THROUGH_PHASE <= 2, "Requested phase is not implemented");
 }
 
+function assertExpectedHead() {
+  assert(/^[0-9a-f]{40}$/.test(EXPECTED_HEAD),
+    "Complete journey E2E requires a review-gated expected HEAD");
+  const observed = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
+    cwd: ROOT,
+    encoding: "utf8",
+  }).trim();
+  assert(observed === EXPECTED_HEAD,
+    `Complete journey review-gated HEAD mismatch: expected ${EXPECTED_HEAD}, found ${observed}`);
+  return observed;
+}
+
 function assertPrivateFiles() {
   const artifactReal = fs.realpathSync.native(ARTIFACT_DIR);
   const researchReal = fs.realpathSync.native(path.join(ROOT, "research"));
@@ -110,6 +139,43 @@ function assertPrivateFiles() {
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function phaseTwoOracle() {
+  const oracle = readJson(PHASE_TWO_ORACLE_PATH);
+  assert(oracle && typeof oracle === "object" && oracle.schema_version === 1,
+    "Phase 2 oracle schema is unsupported");
+  assert(oracle.phase_two && typeof oracle.phase_two === "object"
+    && oracle.phase_two.fixture && typeof oracle.phase_two.fixture === "object"
+    && oracle.phase_two.maintenance && typeof oracle.phase_two.maintenance === "object",
+  "Phase 2 oracle contract is incomplete");
+  return oracle;
+}
+
+function assertFixtureOracleBinding(fixture, oracle) {
+  const binding = fixture?.phase_two?.oracle;
+  assert(binding && typeof binding === "object", "Phase 2 fixture oracle binding is missing");
+  assert(binding.path === "scripts/e2e/fixtures/complete_journeys_phase_two_oracle.json",
+    "Phase 2 fixture oracle path is invalid");
+  assert(binding.schema_version === oracle.schema_version,
+    "Phase 2 fixture oracle schema binding drifted");
+  assert(binding.sha256 === sha256File(PHASE_TWO_ORACLE_PATH),
+    "Phase 2 fixture oracle digest drifted");
+  assert(canonicalJson(fixture.phase_two.calendar) === canonicalJson(oracle.phase_two.fixture.calendar),
+    "Phase 2 fixture calendar diverged from the independent oracle");
+  assert(
+    canonicalJson(fixture.phase_two.preference_delivery.eligible)
+      === canonicalJson(oracle.phase_two.fixture.preference_delivery.eligible)
+      && canonicalJson(fixture.phase_two.preference_delivery.ineligible)
+        === canonicalJson(oracle.phase_two.fixture.preference_delivery.ineligible),
+    "Phase 2 preference delivery fixture diverged from the independent oracle",
+  );
+  assert(!Object.hasOwn(fixture.phase_two, "maintenance_expectations"),
+    "Phase 2 fixture must not carry observed maintenance expectations");
+  return {
+    oracle_binding_exact: true,
+    oracle_sha256: binding.sha256,
+  };
 }
 
 function databaseSnapshot() {
@@ -357,13 +423,81 @@ function fileBinding(filePath) {
   };
 }
 
-function resolvedExecutableBinding(filePath) {
+function resolvedExecutableBinding(filePath, label = "executable") {
   const resolvedPath = fs.realpathSync.native(filePath);
-  assert(resolvedPath === filePath, "Chromium executable binding must use its resolved path");
-  assert(isElfExecutable(resolvedPath), "Chromium executable binding must identify an ELF binary");
+  assert(resolvedPath === filePath, `${label} binding must use its resolved path`);
+  assert(isElfExecutable(resolvedPath), `${label} binding must identify an ELF binary`);
   return {
     ...fileBinding(resolvedPath),
     resolved_regular_file: true,
+  };
+}
+
+function installedPythonDependencyMetadata() {
+  const output = execFileSync(
+    path.join(ROOT, ".venv", "bin", "python"),
+    [
+      "-I",
+      "-c",
+      [
+        "import importlib.metadata as metadata, json, re",
+        "items = sorted((re.sub(r'[-_.]+', '-', dist.metadata['Name']).lower(), dist.version) for dist in metadata.distributions() if dist.metadata.get('Name'))",
+        "print(json.dumps(items, separators=(',', ':')))",
+      ].join("; "),
+    ],
+    { cwd: ROOT, encoding: "utf8", env: { PATH: process.env.PATH || "/usr/bin:/bin" } },
+  );
+  const packages = JSON.parse(output);
+  assert(Array.isArray(packages) && packages.every((entry) => Array.isArray(entry)
+    && entry.length === 2 && typeof entry[0] === "string" && typeof entry[1] === "string"),
+  "Installed Python dependency metadata is invalid");
+  return {
+    package_count: packages.length,
+    packages_sha256: sha256(canonicalJson(packages)),
+  };
+}
+
+function normalizedNodeDependencyTree(dependencies) {
+  if (!dependencies || typeof dependencies !== "object") return {};
+  return Object.fromEntries(Object.entries(dependencies).sort(([left], [right]) => (
+    left.localeCompare(right)
+  )).map(([name, value]) => {
+    assert(value && typeof value === "object" && typeof value.version === "string",
+      `Installed Node dependency metadata is invalid for ${name}`);
+    return [name, {
+      dependencies: normalizedNodeDependencyTree(value.dependencies),
+      version: value.version,
+    }];
+  }));
+}
+
+function countNodeDependencies(tree) {
+  return Object.values(tree).reduce((count, value) => (
+    count + 1 + countNodeDependencies(value.dependencies)
+  ), 0);
+}
+
+function installedNodeDependencyMetadata() {
+  const metadataHome = path.join(path.dirname(process.env.GARDENOPS_LOGS_DIR), "node-metadata-home");
+  fs.mkdirSync(metadataHome, { mode: 0o700, recursive: true });
+  const output = execFileSync("npm", ["ls", "--all", "--json", "--ignore-scripts", "--no-audit", "--no-fund"], {
+    cwd: path.join(ROOT, "frontend"),
+    encoding: "utf8",
+    env: {
+      HOME: metadataHome,
+      LANG: process.env.LANG || "C.UTF-8",
+      NPM_CONFIG_USERCONFIG: path.join(metadataHome, "npmrc"),
+      PATH: process.env.PATH || "/usr/bin:/bin",
+      TMPDIR: process.env.TMPDIR || "/tmp",
+    },
+  });
+  const payload = JSON.parse(output);
+  assert(!Array.isArray(payload.problems) || payload.problems.length === 0,
+    "Installed Node dependency metadata reports dependency problems");
+  const dependencies = normalizedNodeDependencyTree(payload.dependencies);
+  return {
+    package_count: countNodeDependencies(dependencies),
+    tree_sha256: sha256(canonicalJson(dependencies)),
   };
 }
 
@@ -375,6 +509,9 @@ function evidenceBinding() {
   const uvLock = fs.readFileSync(uvLockPath, "utf8");
   const uvLockVersionMatch = /^version\s*=\s*(?:"([^"]+)"|([0-9]+))/m.exec(uvLock);
   const uvLockVersion = uvLockVersionMatch?.[1] || uvLockVersionMatch?.[2] || "";
+  const pythonExecutable = fs.realpathSync.native(path.join(ROOT, ".venv", "bin", "python"));
+  const nodeExecutable = fs.realpathSync.native(process.execPath);
+  const oracle = phaseTwoOracle();
   return {
     fixture: fileBinding(FIXTURE_PATH),
     lockfiles: {
@@ -387,6 +524,10 @@ function evidenceBinding() {
         format_version: uvLockVersion,
       },
     },
+    oracle: {
+      ...fileBinding(PHASE_TWO_ORACLE_PATH),
+      schema_version: oracle.schema_version,
+    },
     runtime: {
       node_version: process.version,
       platform: process.platform,
@@ -396,6 +537,11 @@ function evidenceBinding() {
       chromium_launcher: fileBinding(fs.realpathSync.native(CHROMIUM_LAUNCHER)),
       chromium_executable: resolvedExecutableBinding(CHROMIUM_EXECUTABLE),
       chromium_version: null,
+      dependency_lock_verified: process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_LOCK_VERIFIED === "true",
+      node_executable: resolvedExecutableBinding(nodeExecutable, "Node executable"),
+      node_dependencies: installedNodeDependencyMetadata(),
+      python_dependencies: installedPythonDependencyMetadata(),
+      python_executable: resolvedExecutableBinding(pythonExecutable, "Python executable"),
     },
   };
 }
@@ -409,6 +555,7 @@ function canonicalProjectionDigests(manifest) {
     database: manifest.database,
     evidence_binding: manifest.evidence_binding,
     profiles: manifest.profiles,
+    review_gate: manifest.review_gate,
     trace_artifacts: manifest.trace_artifacts,
   };
   const auditProjection = projection.database?.audit_projection;
@@ -494,11 +641,66 @@ function assertWholeTableProjectionCoverage(initial, final, allowedTables) {
         `${boundary} whole-table count is invalid: ${table}`);
       assert(/^[a-f0-9]{32}$/.test(String(evidence?.digest || "")),
         `${boundary} whole-table digest is invalid: ${table}`);
+      assert(Array.isArray(evidence?.row_digests)
+        && evidence.row_digests.length === evidence.count
+        && evidence.row_digests.every((digest) => /^[a-f0-9]{32}$/.test(String(digest)))
+        && canonicalJson(evidence.row_digests) === canonicalJson([...evidence.row_digests].sort()),
+      `${boundary} whole-table row digest projection is invalid: ${table}`);
     }
   }
   return {
     all_public_domain_tables_projected: true,
     projected_table_count: finalTables.length,
+  };
+}
+
+function rowDigestMultisetDelta(before, after) {
+  const counts = new Map();
+  for (const digest of before) counts.set(digest, (counts.get(digest) || 0) - 1);
+  for (const digest of after) counts.set(digest, (counts.get(digest) || 0) + 1);
+  const added = [];
+  const removed = [];
+  for (const [digest, count] of counts) {
+    for (let index = 0; index < Math.abs(count); index += 1) {
+      (count > 0 ? added : removed).push(digest);
+    }
+  }
+  return { added: added.sort(), removed: removed.sort() };
+}
+
+function assertWholeTableMutationAccounting(initial, final, allowedTables, accounting) {
+  assertWholeTableProjectionCoverage(initial, final, allowedTables);
+  assert(accounting && typeof accounting === "object" && !Array.isArray(accounting),
+    "Whole-table mutation accounting is missing");
+  const allowed = new Set(allowedTables);
+  const changedTables = {};
+  for (const table of Object.keys(initial).sort()) {
+    const delta = rowDigestMultisetDelta(initial[table].row_digests, final[table].row_digests);
+    if (delta.added.length === 0 && delta.removed.length === 0) continue;
+    const contract = accounting[table];
+    assert(allowed.has(table), `Whole-table mutation changed an unallowed table: ${table}`);
+    assert(contract && typeof contract === "object" && contract.allow_row_delta === true,
+      `Whole-table mutation lacks independent accounting: ${table}`);
+    for (const [field, actual] of [["max_added", delta.added.length], ["max_removed", delta.removed.length]]) {
+      if (Number.isSafeInteger(contract[field])) {
+        assert(actual <= contract[field],
+          `Whole-table mutation exceeded independent ${field} accounting: ${table}`);
+      }
+    }
+    changedTables[table] = {
+      added: delta.added.length,
+      removed: delta.removed.length,
+      evidence: String(contract.evidence || ""),
+    };
+  }
+  for (const [table, contract] of Object.entries(accounting)) {
+    assert(allowed.has(table), `Whole-table accounting names an unallowed table: ${table}`);
+    assert(contract && typeof contract === "object" && contract.allow_row_delta === true,
+      `Whole-table accounting contract is invalid: ${table}`);
+  }
+  return {
+    changed_tables: changedTables,
+    independent_accounting_enforced: true,
   };
 }
 
@@ -1192,7 +1394,126 @@ function assertPhaseTwoProfileOrder(profiles) {
   return [...PHASE_TWO_PROFILE_ORDER];
 }
 
-function assertPhaseTwoProfileEvidence(profiles) {
+function assertPhaseTwoCalendarLifecycleEvidence(profiles, oracle = phaseTwoOracle()) {
+  const expected = oracle.phase_two.calendar_lifecycle;
+  assert(Array.isArray(expected?.profiles) && Array.isArray(expected?.mutations),
+    "Phase 2 calendar lifecycle oracle is invalid");
+  const expectedByMethod = expected.mutations.map((mutation) => ({
+    method: mutation.method,
+    path: mutation.path,
+    status_code: mutation.status_code,
+  }));
+  for (const key of expected.profiles) {
+    const [role, profileName] = String(key).split(":");
+    const profile = profiles.find((entry) => entry.role === role && entry.profile === profileName);
+    assert(profile, `Phase 2 calendar lifecycle profile is missing: ${key}`);
+    const lifecycle = profile.checks?.calendar_lifecycle_mutations;
+    assert(lifecycle && typeof lifecycle === "object" && typeof lifecycle.event_id === "string"
+      && /^calevt_[a-z0-9]+$/.test(lifecycle.event_id)
+      && Array.isArray(lifecycle.mutations),
+    `Phase 2 calendar lifecycle response evidence is missing: ${key}`);
+    const expectedMutations = expectedByMethod.map((mutation) => ({
+      ...mutation,
+      path: mutation.path.replace("{event_id}", lifecycle.event_id),
+    }));
+    const observedMutations = lifecycle.mutations.map((mutation) => ({
+      method: mutation?.method,
+      path: mutation?.path,
+      request_id: mutation?.request_id,
+      status_code: mutation?.status_code,
+    }));
+    assert(observedMutations.length === expectedMutations.length,
+      `Phase 2 calendar lifecycle response count was unexpected: ${key}`);
+    assert(new Set(observedMutations.map((mutation) => mutation.request_id)).size === observedMutations.length
+      && observedMutations.every((mutation) => isSafeRequestId(mutation.request_id)),
+    `Phase 2 calendar lifecycle request IDs were incomplete: ${key}`);
+    const responseMutationMultiset = observedMutations
+      .map(({ request_id: _requestId, ...mutation }) => mutation)
+      .sort((left, right) => `${left.method}:${left.path}`.localeCompare(`${right.method}:${right.path}`));
+    const expectedMutationMultiset = expectedMutations
+      .sort((left, right) => `${left.method}:${left.path}`.localeCompare(`${right.method}:${right.path}`));
+    assert(canonicalJson(responseMutationMultiset) === canonicalJson(expectedMutationMultiset),
+      `Phase 2 calendar lifecycle response/status evidence diverged: ${key}`);
+    const requestMutations = (profile.requests || []).filter((request) => (
+      ["POST", "PATCH", "DELETE"].includes(request.method)
+      && /^\/api\/calendar\/manual-events(?:\/[^/]+)?$/.test(request.path)
+    )).map((request) => ({
+      method: request.method,
+      path: request.path,
+      request_id: request.requestId,
+      status_code: request.statusCode,
+    }));
+    assert(canonicalJson(requestMutations.sort((left, right) => (
+      `${left.method}:${left.path}:${left.request_id}`.localeCompare(
+        `${right.method}:${right.path}:${right.request_id}`,
+      )
+    ))) === canonicalJson(observedMutations.map((mutation) => ({
+      method: mutation.method,
+      path: mutation.path,
+      request_id: mutation.request_id,
+      status_code: mutation.status_code,
+    })).sort((left, right) => (
+      `${left.method}:${left.path}:${left.request_id}`.localeCompare(
+        `${right.method}:${right.path}:${right.request_id}`,
+      )
+    ))), `Phase 2 calendar lifecycle independent mutation multiset diverged: ${key}`);
+  }
+  return { calendar_lifecycle_response_and_request_multisets_exact: true };
+}
+
+function assertPhaseTwoPersonalNotificationPreferencePersistence(profiles, oracle = phaseTwoOracle()) {
+  const matrix = oracle.phase_two.fixture.notification_persistence;
+  assert(matrix && typeof matrix === "object", "Phase 2 notification preference oracle is invalid");
+  for (const [key, expected] of Object.entries(matrix)) {
+    const [role, profileName] = key.split(":");
+    const profile = profiles.find((entry) => entry.role === role && entry.profile === profileName);
+    const evidence = profile?.checks?.personal_notification_preference_persistence;
+    assert(evidence && typeof evidence === "object", `Phase 2 notification preference evidence is missing: ${key}`);
+    assert(evidence.initial_severity === expected.initial_severity
+      && evidence.reloaded_saved_severity === expected.saved_severity
+      && evidence.restored_severity === (expected.restored_severity || null),
+    `Phase 2 notification preference persistence diverged from oracle: ${key}`);
+    assert(Array.isArray(evidence.save_responses)
+      && evidence.save_responses.length === (expected.restored_severity ? 2 : 1)
+      && evidence.save_responses.every((response) => response.status_code === 200
+        && isSafeRequestId(response.request_id)),
+    `Phase 2 notification preference save evidence is incomplete: ${key}`);
+    assert(Array.isArray(evidence.touch_targets),
+      `Phase 2 notification preference touch evidence is invalid: ${key}`);
+    if (profileName === "mobile") {
+      assert(evidence.touch_targets.length >= 4 && evidence.touch_targets.every((target) => (
+        Number.isFinite(target.height) && target.height >= 44
+        && Number.isFinite(target.width) && target.width >= 44
+      )), `Phase 2 mobile notification preference controls are smaller than 44px: ${key}`);
+    } else {
+      assert(evidence.touch_targets.length === 0,
+        `Phase 2 desktop notification preference emitted mobile touch evidence: ${key}`);
+    }
+  }
+  return { personal_notification_preferences_persisted_across_role_device_matrix: true };
+}
+
+function assertPhaseTwoMapFirstGeometry(profiles) {
+  for (const profile of profiles) {
+    const geometry = profile?.checks?.map_first_geometry;
+    assert(profile?.checks?.map_first_geometry_and_inert_surfaces === true
+      && geometry && typeof geometry === "object"
+      && geometry.center_owned_by_map === true
+      && geometry.overlay_count === 0
+      && Number.isFinite(geometry.map_width) && Number.isFinite(geometry.map_height)
+      && Number.isFinite(geometry.viewport_width) && Number.isFinite(geometry.viewport_height),
+    `Phase 2 map-first geometry evidence is incomplete: ${profile?.role}:${profile?.profile}`);
+    const mobile = profile.profile === "mobile";
+    assert(geometry.map_width >= geometry.viewport_width * (mobile ? 0.8 : 0.45)
+      && geometry.map_height >= geometry.viewport_height * (mobile ? 0.42 : 0.35),
+    `Phase 2 map-first geometry was too small: ${profile.role}:${profile.profile}`);
+    assert(!mobile || geometry.closed_mobile_sheets === 3,
+      `Phase 2 closed mobile sheets were not inert: ${profile.role}:${profile.profile}`);
+  }
+  return { map_first_geometry_overlap_and_inertness_exact: true };
+}
+
+function assertPhaseTwoProfileEvidence(profiles, oracle = phaseTwoOracle()) {
   assert(Array.isArray(profiles), "Phase 2 browser profile evidence is missing");
   const expectedProfiles = [
     {
@@ -1213,6 +1534,8 @@ function assertPhaseTwoProfileEvidence(profiles) {
         "stale_dom_assertions",
         "post_mutation_reload_surfaces",
         "post_mutation_reload_journal_records",
+        "map_first_geometry_and_inert_surfaces",
+        "personal_notification_preference_persistence",
       ],
     },
     {
@@ -1231,12 +1554,19 @@ function assertPhaseTwoProfileEvidence(profiles) {
         "mobile_calendar_lifecycle",
         "mobile_notification_preference_mutation",
         "mobile_history_reload",
+        "map_first_geometry_and_inert_surfaces",
+        "personal_notification_preference_persistence",
       ],
     },
     {
       profile: "desktop",
       role: "editor",
-      checks: ["editor_calendar_action_and_weather_scope", "editor_weather_deduplicated_surfaces"],
+      checks: [
+        "editor_calendar_action_and_weather_scope",
+        "editor_weather_deduplicated_surfaces",
+        "map_first_geometry_and_inert_surfaces",
+        "personal_notification_preference_persistence",
+      ],
     },
     {
       profile: "mobile",
@@ -1244,6 +1574,8 @@ function assertPhaseTwoProfileEvidence(profiles) {
       checks: [
         "editor_offline_task_replay",
         "editor_offline_task_actions_replay",
+        "map_first_geometry_and_inert_surfaces",
+        "personal_notification_preference_persistence",
       ],
     },
     {
@@ -1253,6 +1585,8 @@ function assertPhaseTwoProfileEvidence(profiles) {
         "viewer_read_only_and_denial",
         "viewer_direct_forbidden_task_write",
         "viewer_today_weather_affordances",
+        "map_first_geometry_and_inert_surfaces",
+        "personal_notification_preference_persistence",
       ],
     },
     {
@@ -1262,6 +1596,8 @@ function assertPhaseTwoProfileEvidence(profiles) {
         "viewer_read_only_and_denial",
         "viewer_direct_forbidden_task_write",
         "viewer_today_weather_affordances",
+        "map_first_geometry_and_inert_surfaces",
+        "personal_notification_preference_persistence",
       ],
     },
   ];
@@ -1281,7 +1617,6 @@ function assertPhaseTwoProfileEvidence(profiles) {
     assert((profile.assertions?.failed || []).length === 0, `Phase 2 assertions failed: ${key}`);
     assert((profile.assertions?.skipped || []).length === 0, `Phase 2 assertions were skipped: ${key}`);
     assert(profile.checks?.browser_diagnostics === true, `Phase 2 browser diagnostics missing: ${key}`);
-    assert(profile.checks?.map_first_without_plants === true, `Phase 2 map-first check is missing: ${key}`);
     const expectedMobile = expected.profile === "mobile";
     assert(
       profile.browser_profile?.is_mobile === expectedMobile,
@@ -1305,6 +1640,9 @@ function assertPhaseTwoProfileEvidence(profiles) {
     }
   }
   return {
+    ...assertPhaseTwoCalendarLifecycleEvidence(profiles, oracle),
+    ...assertPhaseTwoMapFirstGeometry(profiles),
+    ...assertPhaseTwoPersonalNotificationPreferencePersistence(profiles, oracle),
     execution_model: "ordered-shared-state-choreography",
     expected_profile_count: expectedProfiles.length,
     isolated_profile_execution_claimed: false,
@@ -1555,7 +1893,14 @@ function expectedPhaseTwoCanonicalAttentionRules() {
   };
 }
 
-function assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture) {
+function assertPhaseTwoScopedMutableRows(
+  semantic,
+  finalRows,
+  fixture,
+  validatedMaintenanceEvidence = false,
+) {
+  assert(validatedMaintenanceEvidence === true,
+    "Phase 2 scoped row identities require independent logical maintenance validation");
   assert(semantic && typeof semantic === "object", "Phase 2 scoped mutable-row evidence is missing");
   const before = semantic.rows_before;
   const after = semantic.rows_after;
@@ -1586,6 +1931,8 @@ function assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture) {
     const beforeProjection = projection(before[table], "before-maintenance");
     const afterProjection = projection(after[table], "after-maintenance");
     const finalProjection = projection(finalRows[table], "final");
+    // Row IDs are allocation-dependent. They are only retained as lifecycle identities after the
+    // independent oracle comparison has validated every maintenance row's logical content.
     const afterIdentities = new Set(afterProjection.map((row) => row.identity));
     for (const row of beforeProjection) {
       assert(afterIdentities.has(row.identity),
@@ -1650,12 +1997,12 @@ function semanticHistogram(rows, keyForRow) {
   )));
 }
 
-function assertPhaseTwoMaintenanceSpec(createdByTable, summary, fixture) {
-  const spec = fixture?.phase_two?.maintenance_expectations;
-  assert(spec && typeof spec === "object", "Phase 2 maintenance reference specification is missing");
+function assertPhaseTwoMaintenanceSpec(createdByTable, summary, fixture, oracle = phaseTwoOracle()) {
+  const spec = oracle?.phase_two?.maintenance;
+  assert(spec && typeof spec === "object", "Phase 2 maintenance oracle specification is missing");
   const exact = (actual, expected, label) => assert(
     canonicalJson(actual) === canonicalJson(expected),
-    `Phase 2 maintenance ${label} diverged from the fixture specification`,
+    `Phase 2 maintenance ${label} diverged from the independent oracle`,
   );
   const taskRows = createdByTable.tasks.created;
   const notificationRows = createdByTable.notifications.created;
@@ -1701,19 +2048,312 @@ function assertPhaseTwoMaintenanceSpec(createdByTable, summary, fixture) {
     spec.mutated_existing,
     "existing-row mutation histogram",
   );
-  exact({
-    configured: summary?.configured,
-    gardens_processed: summary?.gardens_processed,
-    notifications_created: summary?.notifications_created,
-    tasks_auto_created: summary?.tasks_auto_created,
-    tasks_expired: summary?.tasks_expired,
-    weather_alerts_created: summary?.weather_alerts_created,
-    weather_tasks_created: summary?.weather_tasks_created,
-  }, spec.summary, "summary");
-  return { maintenance_fixture_spec_exact: true };
+  exact(summary, spec.summary, "summary");
+  return { maintenance_oracle_spec_exact: true };
 }
 
-function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture, preferenceDelivery) {
+function replaceOracleTemplate(template, values) {
+  assert(typeof template === "string" && template.length > 0,
+    "Phase 2 oracle template is invalid");
+  return template.replace(/\{([a-z_]+)\}/g, (_match, key) => {
+    assert(Object.hasOwn(values, key), `Phase 2 oracle template value is missing: ${key}`);
+    return String(values[key]);
+  });
+}
+
+function sortedLogicalRows(rows) {
+  return rows.map((row) => canonicalJson(row)).sort();
+}
+
+function endOfUtcDayMs(value) {
+  const timestamp = Date.parse(`${value}T23:59:59.999Z`);
+  assert(Number.isSafeInteger(timestamp), `Phase 2 oracle date is invalid: ${value}`);
+  return timestamp;
+}
+
+function maintenanceAlertTypesById(createdByTable) {
+  const mapping = new Map();
+  for (const row of [
+    ...(createdByTable.weather_alerts?.created || []),
+    ...(createdByTable.weather_alerts?.mutated_existing || []).map((pair) => pair.after),
+  ]) {
+    assert(Number.isSafeInteger(row?.row_id) && typeof row.alert_type === "string",
+      "Phase 2 maintenance weather alert identity is invalid");
+    assert(!mapping.has(row.row_id), `Phase 2 maintenance weather alert ID was duplicated: ${row.row_id}`);
+    mapping.set(row.row_id, row.alert_type);
+  }
+  return mapping;
+}
+
+function normalizeMaintenanceTaskLogicalRow(row, alertTypesById) {
+  const weatherAlertId = row?.metadata?.weather_alert_id;
+  const weatherAlertType = weatherAlertId === undefined ? null : alertTypesById.get(weatherAlertId);
+  if (weatherAlertId !== undefined) {
+    assert(weatherAlertType, "Phase 2 maintenance task references an unknown weather alert");
+  }
+  const ruleSource = String(row.rule_source || "").replace(
+    /^auto:([^:]+):\d+:([^:]+)$/,
+    (_match, rule, plantId) => `auto:${rule}:${weatherAlertType}:${plantId}`,
+  );
+  const { weather_alert_id: _weatherAlertId, ...taskMetadata } = row.metadata || {};
+  return {
+    completed_at_ms: row.completed_at_ms,
+    created_at_ms: row.created_at_ms,
+    due_on: row.due_on,
+    garden_id: row.garden_id,
+    metadata: weatherAlertType ? { ...taskMetadata, weather_alert_type: weatherAlertType } : row.metadata,
+    plant_ids: [...row.plant_ids].sort(),
+    plot_ids: [...row.plot_ids].sort(),
+    rule_source: ruleSource,
+    severity: row.severity,
+    snoozed_until: row.snoozed_until,
+    status: row.status,
+    task_type: row.task_type,
+    title: row.title,
+    updated_at_ms: row.updated_at_ms,
+  };
+}
+
+function expectedPhaseTwoMaintenanceTaskRows(fixture, oracle) {
+  const fixtureContract = oracle.phase_two.fixture;
+  const logical = oracle.phase_two.maintenance.logical_rows;
+  const alphaPlants = fixtureContract.maintenance_alpha_plants;
+  const weekly = logical.weekly_water;
+  const taskRows = [];
+  const base = {
+    completed_at_ms: null,
+    created_at_ms: fixture.clock.attention_now_ms,
+    garden_id: fixture.gardens.alpha.id,
+    severity: "normal",
+    snoozed_until: null,
+    status: "pending",
+    updated_at_ms: fixture.clock.attention_now_ms,
+  };
+  for (const plant of alphaPlants) {
+    for (const dueOn of weekly.due_on) {
+      taskRows.push({
+        ...base,
+        due_on: dueOn,
+        metadata: {
+          description_generated: true,
+          description_no: replaceOracleTemplate(weekly.description_template, { plant_name: plant.name }),
+          description_source: "care_instructions",
+        },
+        plant_ids: [plant.id],
+        plot_ids: [weekly.plot_id],
+        rule_source: `water:${plant.id}:${dueOn}`,
+        task_type: "water",
+        title: replaceOracleTemplate(weekly.title_template, { plant_name: plant.name }),
+      });
+    }
+  }
+  for (const [rule, specification] of Object.entries(logical.weather_generated_tasks)) {
+    const targetPlants = specification.plant_ids
+      ? alphaPlants.filter((plant) => specification.plant_ids.includes(plant.id))
+      : alphaPlants;
+    for (const plant of targetPlants) {
+      taskRows.push({
+        ...base,
+        due_on: specification.due_on,
+        metadata: {
+          description_no: replaceOracleTemplate(specification.description_template, {
+            plant_name: plant.name,
+          }),
+          weather_alert_type: rule === "dry_water" ? "dry_spell"
+            : rule === "frost_protect" ? "frost_warning" : "heat_wave",
+          weather_valid_from: oracle.phase_two.maintenance.logical_rows.weather_alerts[
+            rule === "dry_water" ? "dry_spell" : rule === "frost_protect" ? "frost_warning" : "heat_wave"
+          ].valid_from,
+          weather_valid_until: specification.valid_until,
+        },
+        plant_ids: [plant.id],
+        plot_ids: [weekly.plot_id],
+        rule_source: `auto:${rule}:${rule === "dry_water" ? "dry_spell"
+          : rule === "frost_protect" ? "frost_warning" : "heat_wave"}:${plant.id}`,
+        task_type: specification.task_type,
+        title: replaceOracleTemplate(specification.title_template, {
+          plant_name: plant.name,
+          plot_id: weekly.plot_id,
+        }),
+      });
+    }
+  }
+  return taskRows;
+}
+
+function expectedPhaseTwoWeatherLogicalRows(fixture, oracle) {
+  const alphaPlants = oracle.phase_two.fixture.maintenance_alpha_plants;
+  const specifications = oracle.phase_two.maintenance.logical_rows.weather_alerts;
+  const advice = alphaPlants.map((plant) => ({
+    care_watering: "water regularly",
+    name: plant.name,
+    plt_id: plant.id,
+  }));
+  return ["dry_spell", "heat_wave"].map((alertType) => {
+    const specification = specifications[alertType];
+    const metadata = {
+      days: specification.days,
+      forecast_plant_links_authoritative: true,
+      plant_advice: advice,
+    };
+    if (alertType === "heat_wave") metadata.peak = specification.peak;
+    return {
+      alert_type: alertType,
+      created_at_ms: fixture.clock.attention_now_ms,
+      description: specification.description,
+      dismissed: false,
+      garden_id: fixture.gardens.alpha.id,
+      metadata,
+      plant_ids: alphaPlants.map((plant) => plant.id).sort(),
+      severity: specification.severity,
+      title: specification.title,
+      valid_from: specification.valid_from,
+      valid_until: specification.valid_until,
+    };
+  });
+}
+
+function normalizeMaintenanceWeatherLogicalRow(row) {
+  return {
+    alert_type: row.alert_type,
+    created_at_ms: row.created_at_ms,
+    description: row.description,
+    dismissed: row.dismissed,
+    garden_id: row.garden_id,
+    metadata: row.metadata,
+    plant_ids: [...row.plant_ids].sort(),
+    severity: row.severity,
+    title: row.title,
+    valid_from: row.valid_from,
+    valid_until: row.valid_until,
+  };
+}
+
+function normalizeMaintenanceNotificationLogicalRow(row, alertTypesById) {
+  const { alert_id: alertId, ...notificationMetadata } = row.metadata || {};
+  const metadata = row.notification_type === "weather_alert" ? {
+    ...notificationMetadata,
+    alert_type: alertTypesById.get(alertId),
+  } : row.metadata;
+  if (row.notification_type === "weather_alert") {
+    assert(metadata.alert_type, "Phase 2 weather notification references an unknown alert");
+  }
+  return {
+    body: row.body,
+    clear_reason: row.clear_reason,
+    cleared_at_ms: row.cleared_at_ms,
+    created_at_ms: row.created_at_ms,
+    dismissed: row.dismissed,
+    emailed_at_ms: row.emailed_at_ms,
+    expires_at_ms: row.expires_at_ms,
+    garden_id: row.garden_id,
+    metadata,
+    notification_subtype: row.notification_subtype,
+    notification_type: row.notification_type,
+    read_at_ms: row.read_at_ms,
+    severity: row.severity,
+    target_id: row.target_id,
+    target_type: row.target_type,
+    title: row.title,
+    username: row.username,
+  };
+}
+
+function expectedPhaseTwoMaintenanceNotificationRows(fixture, oracle) {
+  const fixtureContract = oracle.phase_two.fixture;
+  const weatherSpecifications = oracle.phase_two.maintenance.logical_rows.weather_alerts;
+  const users = [fixture.roles.admin, fixture.roles.editor, fixture.roles.viewer];
+  const rows = [];
+  const standard = {
+    clear_reason: "",
+    cleared_at_ms: null,
+    created_at_ms: fixture.clock.attention_now_ms,
+    dismissed: false,
+    emailed_at_ms: null,
+    garden_id: fixture.gardens.alpha.id,
+    notification_subtype: "",
+    read_at_ms: null,
+    severity: "normal",
+    target_type: "task",
+  };
+  const taskRows = [
+    ...fixtureContract.due_task_notifications.map((task) => ({ ...task, notification_type: "task_due" })),
+    ...fixtureContract.overdue_task_notifications.map((task) => ({ ...task, notification_type: "task_overdue" })),
+  ];
+  for (const task of taskRows) {
+    const dueOn = task.due_on || fixtureContract.date;
+    const due = task.notification_type === "task_due";
+    for (const username of users) {
+      rows.push({
+        ...standard,
+        body: due ? "Due today" : `Due on ${dueOn}`,
+        expires_at_ms: endOfUtcDayMs(fixtureContract.date),
+        metadata: {
+          due_on: dueOn,
+          plant_count: task.plants.length,
+          plants: task.plants,
+          task_title: task.task_title,
+        },
+        notification_type: task.notification_type,
+        target_id: task.task_id,
+        title: `${due ? "Due today" : "Overdue"}: ${task.task_title} (${task.plants.join(", ")})`,
+        username,
+      });
+    }
+  }
+  for (const [alertType, specification] of Object.entries(weatherSpecifications)) {
+    for (const username of users) {
+      rows.push({
+        ...standard,
+        body: specification.description,
+        expires_at_ms: endOfUtcDayMs(specification.valid_until),
+        metadata: {
+          alert_type: alertType,
+          severity: specification.severity,
+          valid_from: specification.valid_from,
+          valid_until: specification.valid_until,
+        },
+        notification_subtype: alertType,
+        notification_type: "weather_alert",
+        severity: specification.severity,
+        target_id: `${alertType}:${specification.valid_from}`,
+        target_type: "weather_alert",
+        title: specification.title,
+        username,
+      });
+    }
+  }
+  return rows;
+}
+
+function assertPhaseTwoMaintenanceLogicalRows(createdByTable, fixture, oracle = phaseTwoOracle()) {
+  const alertTypesById = maintenanceAlertTypesById(createdByTable);
+  const actualTasks = createdByTable.tasks.created.map((row) => (
+    normalizeMaintenanceTaskLogicalRow(row, alertTypesById)
+  ));
+  const actualNotifications = createdByTable.notifications.created.map((row) => (
+    normalizeMaintenanceNotificationLogicalRow(row, alertTypesById)
+  ));
+  const actualWeather = createdByTable.weather_alerts.created.map(normalizeMaintenanceWeatherLogicalRow);
+  assert(canonicalJson(sortedLogicalRows(actualTasks))
+    === canonicalJson(sortedLogicalRows(expectedPhaseTwoMaintenanceTaskRows(fixture, oracle))),
+  "Phase 2 maintenance task logical rows diverged from the independent oracle");
+  assert(canonicalJson(sortedLogicalRows(actualNotifications))
+    === canonicalJson(sortedLogicalRows(expectedPhaseTwoMaintenanceNotificationRows(fixture, oracle))),
+  "Phase 2 maintenance notification logical rows diverged from the independent oracle");
+  assert(canonicalJson(sortedLogicalRows(actualWeather))
+    === canonicalJson(sortedLogicalRows(expectedPhaseTwoWeatherLogicalRows(fixture, oracle))),
+  "Phase 2 maintenance weather logical rows diverged from the independent oracle");
+  return { maintenance_logical_rows_exact: true };
+}
+
+function assertPhaseTwoMaintenanceSemanticState(
+  maintenance,
+  state,
+  fixture,
+  preferenceDelivery,
+  oracle = phaseTwoOracle(),
+) {
   const semantic = maintenance?.maintenance_semantic_state;
   assert(semantic && typeof semantic === "object", "Phase 2 maintenance semantic state is missing");
   assert(semantic.frozen_now_ms === fixture.clock.attention_now_ms,
@@ -1726,6 +2366,7 @@ function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture, pre
     createdByTable,
     maintenance.summary,
     fixture,
+    oracle,
   );
   const createdCounts = {};
   for (const table of expectedTables) {
@@ -1750,7 +2391,8 @@ function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture, pre
     }
     createdCounts[table] = evidence.created.length;
   }
-  assertExpectedMaintenanceMutations(createdByTable, fixture);
+  assertExpectedMaintenanceMutations(createdByTable, fixture, oracle);
+  const logicalRowsEvidence = assertPhaseTwoMaintenanceLogicalRows(createdByTable, fixture, oracle);
 
   const tasks = createdByTable.tasks.created;
   const taskPublicIds = new Set();
@@ -1841,7 +2483,8 @@ function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture, pre
   }
   return {
     ...fixtureSpecEvidence,
-    ...assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture),
+    ...logicalRowsEvidence,
+    ...assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture, true),
   };
 }
 
@@ -1860,21 +2503,23 @@ function assertMaintenanceMutationPair(pair, table) {
   return after;
 }
 
-function expectedPhaseTwoFrostMaintenanceRow(fixture) {
+function expectedPhaseTwoFrostMaintenanceRow(fixture, oracle = phaseTwoOracle()) {
   const initial = fixture.phase_two.seeded_state.weather_alerts.find((alert) => (
     alert.garden_id === fixture.gardens.alpha.id && alert.alert_type === "frost_warning"
   ));
   assert(initial, "Phase 2 seeded alpha frost alert is missing");
+  const specification = oracle.phase_two.maintenance.logical_rows.weather_alerts.frost_warning;
   return {
     alert_type: "frost_warning",
     created_at_ms: initial.created_at_ms,
-    description: `Frost expected on 1 day(s). Coldest: -3.0\u00b0C on ${initial.valid_from}. Protect tender plants.`,
+    description: specification.description,
     dismissed: false,
     garden_id: fixture.gardens.alpha.id,
     metadata: {
       coldest: -3,
-      coldest_date: initial.valid_from,
-      frost_days: [[initial.valid_from, -3]],
+      coldest_date: specification.valid_from,
+      forecast_plant_links_authoritative: true,
+      frost_days: [[specification.valid_from, -3]],
       plant_advice: [{
         hardiness: "H1",
         min_safe_temp: 15,
@@ -1882,18 +2527,20 @@ function expectedPhaseTwoFrostMaintenanceRow(fixture) {
         plt_id: fixture.phase_two.plant_ids.fertilize_mobile,
       }],
     },
-    plant_ids: [...initial.plant_ids, fixture.phase_two.plant_ids.fertilize_mobile].sort(),
+    plant_ids: [...oracle.phase_two.maintenance.logical_rows.weather_generated_tasks
+      .frost_protect.plant_ids].sort(),
     row_id: initial.id,
     severity: "normal",
-    title: "Frost warning: -3\u00b0C expected",
-    valid_from: initial.valid_from,
-    valid_until: initial.valid_until,
+    title: specification.title,
+    valid_from: specification.valid_from,
+    valid_until: specification.valid_until,
   };
 }
 
-function assertExpectedMaintenanceMutations(createdByTable, fixture) {
+function assertExpectedMaintenanceMutations(createdByTable, fixture, oracle = phaseTwoOracle()) {
+  const expectedMutations = oracle.phase_two.maintenance.mutated_existing;
   const taskMutations = createdByTable.tasks.mutated_existing;
-  assert(taskMutations.length === 1,
+  assert(taskMutations.length === expectedMutations.tasks,
     "Phase 2 maintenance mutated an unexpected number of existing tasks");
   const taskMutation = taskMutations[0];
   const beforeTask = taskMutation.before;
@@ -1916,20 +2563,20 @@ function assertExpectedMaintenanceMutations(createdByTable, fixture) {
     && afterTask.metadata?.lifecycle?.expired_at_ms === fixture.clock.attention_now_ms,
   "Phase 2 maintenance stale generated task lifecycle was unexpected");
 
-  assert(createdByTable.notifications.mutated_existing.length === 0,
+  assert(createdByTable.notifications.mutated_existing.length === expectedMutations.notifications,
     "Phase 2 maintenance unexpectedly mutated an existing notification row");
   const weatherMutations = createdByTable.weather_alerts.mutated_existing;
-  assert(weatherMutations.length === 1,
+  assert(weatherMutations.length === expectedMutations.weather_alerts,
     "Phase 2 maintenance mutated an unexpected number of existing weather alerts");
   const weatherMutation = weatherMutations[0];
   const afterWeather = assertMaintenanceMutationPair(weatherMutation, "weather_alerts");
-  assert(canonicalJson(afterWeather) === canonicalJson(expectedPhaseTwoFrostMaintenanceRow(fixture)),
+  assert(canonicalJson(afterWeather) === canonicalJson(expectedPhaseTwoFrostMaintenanceRow(fixture, oracle)),
     "Phase 2 maintenance frost alert refresh was unexpected");
   const changedWeatherFields = Object.keys(afterWeather).filter(
     (field) => canonicalJson(weatherMutation.before[field]) !== canonicalJson(afterWeather[field]),
   ).sort();
   assert(canonicalJson(changedWeatherFields) === canonicalJson([
-    "description", "metadata", "plant_ids", "title",
+    "description", "metadata", "plant_ids", "title", "valid_until",
   ]), "Phase 2 maintenance changed unexpected frost alert fields");
   return true;
 }
@@ -1983,7 +2630,13 @@ function expectedPhaseTwoMaintenanceNotification(notification, fixture, delivere
   return expected;
 }
 
-function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDelivery) {
+function assertPhaseTwoDatabaseState(
+  state,
+  fixture,
+  maintenance,
+  preferenceDelivery,
+  oracle = phaseTwoOracle(),
+) {
   assert(state && typeof state === "object", "Phase 2 database state is missing");
   const phase = fixture?.phase_two;
   assert(phase && typeof phase === "object", "Phase 2 fixture state is missing");
@@ -2786,20 +3439,13 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     state,
     fixture,
     preferenceDelivery,
+    oracle,
   );
   assert(maintenance.delivery_count === 0 && maintenance.deliveries?.length === 0,
     "Phase 2 pre-save maintenance unexpectedly delivered email");
   assert(maintenance.garden_id === fixture.gardens.alpha.id,
     "Phase 2 maintenance ran for the wrong garden");
-  exact({
-    configured: maintenance.summary?.configured,
-    gardens_processed: maintenance.summary?.gardens_processed,
-    notifications_created: maintenance.summary?.notifications_created,
-    tasks_auto_created: maintenance.summary?.tasks_auto_created,
-    tasks_expired: maintenance.summary?.tasks_expired,
-    weather_alerts_created: maintenance.summary?.weather_alerts_created,
-    weather_tasks_created: maintenance.summary?.weather_tasks_created,
-  }, fixture.phase_two.maintenance_expectations.summary,
+  exact(maintenance.summary, oracle.phase_two.maintenance.summary,
   "Phase 2 maintenance summary was unexpected");
   assert(
     maintenance.deliveries.every((delivery) => (
@@ -3297,6 +3943,11 @@ function sanitizeManifestEvidence(manifest) {
           ),
           uv_lock: sanitizeFileBinding(manifest.evidence_binding.lockfiles?.uv_lock),
         },
+        oracle: {
+          ...sanitizeFileBinding(manifest.evidence_binding.oracle),
+          schema_version: Number.isSafeInteger(manifest.evidence_binding.oracle?.schema_version)
+            ? manifest.evidence_binding.oracle.schema_version : null,
+        },
         runtime: {
           architecture: safeIdentifier(manifest.evidence_binding.runtime?.architecture),
           chromium_executable: sanitizeFileBinding(
@@ -3310,10 +3961,32 @@ function sanitizeManifestEvidence(manifest) {
             manifest.evidence_binding.runtime?.frontend_package_version,
           ),
           node_version: safeIdentifier(manifest.evidence_binding.runtime?.node_version),
+          node_executable: sanitizeFileBinding(manifest.evidence_binding.runtime?.node_executable),
+          node_dependencies: {
+            package_count: safeNonnegativeInteger(
+              manifest.evidence_binding.runtime?.node_dependencies?.package_count,
+            ),
+            tree_sha256: /^[a-f0-9]{64}$/.test(String(
+              manifest.evidence_binding.runtime?.node_dependencies?.tree_sha256 || "",
+            )) ? manifest.evidence_binding.runtime.node_dependencies.tree_sha256 : null,
+          },
           platform: safeIdentifier(manifest.evidence_binding.runtime?.platform),
           playwright_core_version: safeIdentifier(
             manifest.evidence_binding.runtime?.playwright_core_version,
           ),
+          python_dependencies: {
+            package_count: safeNonnegativeInteger(
+              manifest.evidence_binding.runtime?.python_dependencies?.package_count,
+            ),
+            packages_sha256: /^[a-f0-9]{64}$/.test(String(
+              manifest.evidence_binding.runtime?.python_dependencies?.packages_sha256 || "",
+            )) ? manifest.evidence_binding.runtime.python_dependencies.packages_sha256 : null,
+          },
+          python_executable: sanitizeFileBinding(
+            manifest.evidence_binding.runtime?.python_executable,
+          ),
+          dependency_lock_verified:
+            manifest.evidence_binding.runtime?.dependency_lock_verified === true,
         },
       }
       : null,
@@ -3334,6 +4007,13 @@ function sanitizeManifestEvidence(manifest) {
     phase: Number(manifest.phase || 0),
     profiles: [],
     run_id: safeIdentifier(manifest.run_id),
+    review_gate: {
+      expected_head: /^[0-9a-f]{40}$/.test(String(manifest.review_gate?.expected_head || ""))
+        ? manifest.review_gate.expected_head : null,
+      final_head: /^[0-9a-f]{40}$/.test(String(manifest.review_gate?.final_head || ""))
+        ? manifest.review_gate.final_head : null,
+      verified: manifest.review_gate?.verified === true,
+    },
     started_at: safeUtcTimestamp(manifest.started_at),
     status: safeIdentifier(manifest.status),
     suite: safeIdentifier(manifest.suite),
@@ -3492,6 +4172,8 @@ async function main() {
   assertNoResponseMocks();
   assertNoNodeRequestClients();
   const fixture = readJson(FIXTURE_PATH);
+  const oracle = phaseTwoOracle();
+  const fixtureOracleEvidence = assertFixtureOracleBinding(fixture, oracle);
   assertFixtureAttentionClock(fixture);
   let manifest = {
     backend_log: null,
@@ -3512,6 +4194,11 @@ async function main() {
     phase: PHASE,
     profiles: [],
     run_id: crypto.randomUUID(),
+    review_gate: {
+      expected_head: EXPECTED_HEAD,
+      final_head: null,
+      verified: false,
+    },
     started_at: new Date().toISOString(),
     status: "running",
     suite: "complete-journeys-e2e",
@@ -3622,6 +4309,7 @@ async function main() {
         browser,
         devices,
         fixture,
+        oracle,
         onProfile: (profile) => manifest.profiles.push(profile),
         onPreferencesSaved: () => {
           assert(!phaseTwoPreferenceDelivery,
@@ -3659,13 +4347,14 @@ async function main() {
     const phaseTwoRan = phaseSelected(2);
     if (phaseOneRan) phaseOneProfileEvidence = assertPhaseOneProfileEvidence(phaseOneProfiles);
     if (phaseTwoRan) {
-      phaseTwoProfileEvidence = assertPhaseTwoProfileEvidence(phaseTwoProfiles);
+      phaseTwoProfileEvidence = assertPhaseTwoProfileEvidence(phaseTwoProfiles, oracle);
       phaseTwoDatabaseEvidence = {
         ...assertPhaseTwoDatabaseState(
           finalDatabase.phase_two_state,
           fixture,
           phaseTwoMaintenance,
           phaseTwoPreferenceDelivery,
+          oracle,
         ),
         ...assertPhaseTwoOfflineOperationReplay(phaseTwoProfiles, finalDatabase.phase_two_state, fixture),
       };
@@ -3717,31 +4406,15 @@ async function main() {
       phaseOneForbiddenDomainTables.length === 0,
       `Phase 1 changed forbidden domain tables: ${phaseOneForbiddenDomainTables.join(", ")}`,
     );
+    const phaseTwoOracleTables = oracle.phase_two?.whole_table_mutation_accounting?.phase_two_tables;
+    assert(Array.isArray(phaseTwoOracleTables) && phaseTwoOracleTables.length > 0
+      && phaseTwoOracleTables.every((table) => /^[a-z_]+$/.test(String(table))),
+    "Phase 2 whole-table oracle accounting is invalid");
+    assert(new Set(phaseTwoOracleTables).size === phaseTwoOracleTables.length,
+      "Phase 2 whole-table oracle accounting has duplicate tables");
     const phaseTwoSemanticDeltaTables = phaseTwoRan ? new Set([
       ...phaseOneSemanticDeltaTables,
-      "app_settings",
-      "attention_outcomes",
-      "calendar_subscriptions",
-      "garden_calendar_event_plants",
-      "garden_calendar_event_plots",
-      "garden_calendar_events",
-      "garden_issues",
-      "garden_journal_entries",
-      "garden_journal_entry_plants",
-      "garden_journal_entry_plots",
-      "garden_task_plants",
-      "garden_task_plots",
-      "garden_tasks",
-      "notification_events",
-      "offline_create_operations",
-      "plants",
-      "plot_plants",
-      "user_attention_item_state",
-      "user_attention_preferences",
-      "user_calendar_preferences",
-      "user_notification_preferences",
-      "weather_alert_plants",
-      "weather_alerts",
+      ...phaseTwoOracleTables,
     ]) : phaseOneSemanticDeltaTables;
     const forbiddenDomainTables = changedDomainTables.filter(
       (table) => !phaseTwoSemanticDeltaTables.has(table),
@@ -3754,6 +4427,21 @@ async function main() {
       fixture.database_snapshot.domain_tables,
       finalDatabase.domain_tables,
       phaseTwoSemanticDeltaTables,
+    );
+    const wholeTableMutationAccounting = assertWholeTableMutationAccounting(
+      fixture.database_snapshot.domain_tables,
+      finalDatabase.domain_tables,
+      phaseTwoSemanticDeltaTables,
+      Object.fromEntries([
+        ...[...phaseOneSemanticDeltaTables].map((table) => [table, {
+          allow_row_delta: true,
+          evidence: "phase_one_boundary_assertions",
+        }]),
+        ...(phaseTwoRan ? phaseTwoOracleTables : []).map((table) => [table, {
+          allow_row_delta: true,
+          evidence: "phase_two_independent_oracle",
+        }]),
+      ]),
     );
     for (const [table, count] of Object.entries(finalDatabase.domain_counts)) {
       if (Object.hasOwn(finalDatabase.domain_tables, table)) {
@@ -4050,6 +4738,7 @@ async function main() {
         )
         .digest("hex"),
       semantic_delta_tables: [...phaseTwoSemanticDeltaTables].sort(),
+      whole_table_mutation_accounting: wholeTableMutationAccounting,
       whole_table_projection_coverage: wholeTableProjectionEvidence,
       whole_table_projections: {
         final: finalDatabase.domain_tables,
@@ -4087,6 +4776,7 @@ async function main() {
         ...phaseTwoDatabaseEvidence,
         ...phaseTwoAuditEvidence,
         browser_profile_matrix: phaseTwoProfileEvidence?.profile_matrix_enforced === true,
+        fixture_oracle_binding: fixtureOracleEvidence,
         profile_execution: phaseTwoProfileEvidence,
         read_only_permutation_execution: phaseTwoReadOnlyPermutationEvidence,
         phase_fixture_scope: PHASE === 2 && THROUGH_PHASE === 2
@@ -4096,6 +4786,7 @@ async function main() {
         preference_delivery: phaseTwoPreferenceDelivery,
         preparation: phaseTwoPreparation,
         whole_table_projection_coverage: wholeTableProjectionEvidence,
+        whole_table_mutation_accounting: wholeTableMutationAccounting,
       } : null,
       phase_boundaries: {
         phase_one_audit_total: phaseOneDatabase?.audit_state.total_count ?? null,
@@ -4143,6 +4834,25 @@ async function main() {
       manifest.git = sourceProvenance(finalGit);
       if (!thrownError) assertSourceRevisionStable(fixture.git, finalGit);
     } catch (error) {
+      if (!thrownError) {
+        thrownError = error;
+        manifest.status = "failed";
+        manifest.failure = safeFailure(error);
+      }
+    }
+    try {
+      const finalHead = assertExpectedHead();
+      manifest.review_gate = {
+        expected_head: EXPECTED_HEAD,
+        final_head: finalHead,
+        verified: true,
+      };
+    } catch (error) {
+      manifest.review_gate = {
+        expected_head: EXPECTED_HEAD,
+        final_head: null,
+        verified: false,
+      };
       if (!thrownError) {
         thrownError = error;
         manifest.status = "failed";
@@ -4198,8 +4908,12 @@ module.exports = {
   assertPhaseOneAuditContract,
   assertPhaseOneProfileEvidence,
   assertPhaseTwoAuditEvents,
+  assertPhaseTwoCalendarLifecycleEvidence,
   assertPhaseTwoDatabaseState,
+  assertPhaseTwoMaintenanceLogicalRows,
+  assertPhaseTwoMapFirstGeometry,
   assertPhaseTwoOfflineOperationReplay,
+  assertPhaseTwoPersonalNotificationPreferencePersistence,
   assertPhaseTwoMaintenanceSpec,
   assertPhaseTwoScopedMutableRows,
   assertExpectedMaintenanceMutations,
@@ -4212,6 +4926,8 @@ module.exports = {
   assertTraceArtifacts,
   assertPageStructure,
   assertSourceRevisionStable,
+  assertExpectedHead,
+  assertFixtureOracleBinding,
   backendErrorEvidence,
   expectedPhaseOneRestoreGraphsAfterPhaseTwo,
   expectedPhaseOneStableDomainProjectionAfterPhaseTwo,
@@ -4230,10 +4946,12 @@ module.exports = {
   canonicalProjectionDigests,
   auditManifestProjection,
   assertWholeTableProjectionCoverage,
+  assertWholeTableMutationAccounting,
   evidenceBinding,
   isElfExecutable,
   resolveChromiumExecutable,
   sourceProvenance,
+  phaseTwoOracle,
   writeManifestAtomic,
   runPhaseTwoReadOnlyPermutation,
 };

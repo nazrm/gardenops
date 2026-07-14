@@ -49,8 +49,11 @@ export interface OfflineMediaHelpers {
 
 let mediaHelpers: OfflineMediaHelpers;
 let onSyncComplete: ((result: SyncResult) => Promise<void> | void) | null = null;
+let canManageDrafts: (() => boolean) | null = null;
+let syncInFlight: Promise<void> | null = null;
 
 export interface OfflineFeatureOptions {
+  canManageDrafts?: () => boolean;
   onSyncComplete?: (result: SyncResult) => Promise<void> | void;
 }
 
@@ -60,6 +63,7 @@ export function initOfflineFeature(
 ): void {
   mediaHelpers = helpers;
   onSyncComplete = options.onSyncComplete ?? null;
+  canManageDrafts = options.canManageDrafts ?? null;
   initOfflineIndicator();
 }
 
@@ -325,8 +329,10 @@ export async function refreshOfflineIndicator(): Promise<void> {
     wrapper,
     {
       failedDrafts: snapshot.failedDrafts,
+      canManageDrafts: canManageDrafts?.() ?? true,
       online: isOnline(),
       pendingCount: snapshot.pendingCount,
+      syncingCount: snapshot.syncingCount,
     },
     {
       onDiscard: (draft) => {
@@ -353,22 +359,68 @@ export async function refreshOfflineIndicator(): Promise<void> {
       onSyncNow: () => void syncOfflineDraftsNow(),
     },
   );
+  updateToastRecoveryClearance(wrapper, snapshot.failedDrafts.length > 0);
+}
+
+function updateToastRecoveryClearance(
+  wrapper: HTMLElement,
+  hasFailures: boolean,
+): void {
+  const clearance = hasFailures && !wrapper.hidden
+    ? Math.ceil(wrapper.getBoundingClientRect().height + 8)
+    : 0;
+  document.body.classList.toggle("offline-recovery-open", hasFailures);
+  document.documentElement.style.setProperty(
+    "--offline-recovery-offset",
+    `${clearance}px`,
+  );
 }
 
 export async function syncOfflineDraftsNow(): Promise<void> {
-  const result = await syncAllDrafts(
-    getOfflineSyncCallbacks(),
-  );
-  if (result.synced > 0 && result.remaining === 0) {
-    showToast(
-      t("offline.sync_complete"),
-      "success",
-    );
-  } else if (result.failed > 0) {
-    showToast(t("offline.sync_failed"), "error");
+  if (syncInFlight) return syncInFlight;
+  const sync = (async () => {
+    if (!isOnline()) {
+      await refreshOfflineIndicator();
+      return;
+    }
+    try {
+      const result = await syncAllDrafts(
+        getOfflineSyncCallbacks(),
+      );
+      if (result.synced > 0 && result.remaining === 0) {
+        showToast(
+          t("offline.sync_complete"),
+          "success",
+        );
+      } else if (result.failed > 0) {
+        showToast(t("offline.sync_failed"), "error");
+      }
+      if (result.synced > 0) {
+        await onSyncComplete?.(result);
+      }
+    } catch {
+      showToast(t("offline.sync_failed"), "error");
+    } finally {
+      await refreshOfflineIndicator();
+    }
+  })();
+  syncInFlight = sync;
+  try {
+    await sync;
+  } finally {
+    if (syncInFlight === sync) syncInFlight = null;
   }
-  if (result.synced > 0) {
-    await onSyncComplete?.(result);
+}
+
+async function syncPendingOfflineDrafts(): Promise<void> {
+  if (!isOnline()) {
+    await refreshOfflineIndicator();
+    return;
+  }
+  const snapshot = await getOfflineQueueSnapshot();
+  if (snapshot.pendingCount > 0) {
+    await syncOfflineDraftsNow();
+    return;
   }
   await refreshOfflineIndicator();
 }
@@ -384,12 +436,21 @@ function initOfflineIndicator(): void {
     document.body.appendChild(wrapper);
   }
   void refreshOfflineIndicator();
+  void syncPendingOfflineDrafts();
 
   onConnectivityChange((online) => {
     if (online) {
-      void syncOfflineDraftsNow();
+      void syncPendingOfflineDrafts();
     }
     void refreshOfflineIndicator();
+  });
+  window.addEventListener("focus", () => {
+    void syncPendingOfflineDrafts();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      void syncPendingOfflineDrafts();
+    }
   });
   onOfflineQueueChange(() => {
     void refreshOfflineIndicator();

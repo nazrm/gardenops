@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -62,6 +63,14 @@ _NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS = tuple(
     for pattern in _WEATHER_TASK_RULE_SOURCE_PATTERNS
     if pattern != _DRY_WEATHER_TASK_RULE_SOURCE_PATTERN
 )
+_FORECAST_ALERT_TYPES = frozenset({"frost_warning", "heat_wave", "dry_spell", "rain_surplus"})
+_FORECAST_RECONCILIATION_SCOPE_KEY = "_forecast_reconciliation_scope"
+_WEATHER_TASK_PREFIX_BY_ALERT_TYPE = {
+    "frost_warning": "frost_protect",
+    "heat_wave": "heat_protect",
+    "dry_spell": "dry_water",
+    "rain_surplus": "rain_drainage",
+}
 
 _NOTIFICATION_POLICIES: tuple[dict[str, Any], ...] = (
     {
@@ -1810,9 +1819,7 @@ def refresh_task_notifications_for_task(
         "created": int(result.get("created", 0)),
         "skipped": int(result.get("skipped", 0)),
     }
-    log_refresh = (
-        logger.warning if cleared > 0 and refresh_result["created"] == 0 else logger.info
-    )
+    log_refresh = logger.warning if cleared > 0 and refresh_result["created"] == 0 else logger.info
     log_refresh(
         "Task notification refresh garden_id=%s target_id=%s cleared=%s created=%s skipped=%s",
         garden_id,
@@ -1990,6 +1997,26 @@ def _weather_alert_identities(alerts: list[dict[str, Any]]) -> list[tuple[str, s
     )
 
 
+def _split_forecast_reconciliation_scope(
+    alerts: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], set[str] | None]:
+    """Separate the private forecast-completeness marker from real alerts."""
+    scoped_alerts: list[dict[str, Any]] = []
+    complete_alert_types: set[str] | None = None
+    for alert in alerts:
+        marker = alert.get(_FORECAST_RECONCILIATION_SCOPE_KEY)
+        if marker is None:
+            scoped_alerts.append(alert)
+            continue
+        if isinstance(marker, list):
+            complete_alert_types = {
+                str(alert_type) for alert_type in marker if str(alert_type) in _FORECAST_ALERT_TYPES
+            }
+        else:
+            complete_alert_types = set()
+    return scoped_alerts, complete_alert_types
+
+
 def _parse_weather_lifecycle_metadata(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
@@ -2025,7 +2052,7 @@ def _load_weather_alert_for_update(
 ) -> dict[str, Any] | None:
     row = db.execute(
         """
-        SELECT id, alert_type, severity, title, description, valid_from, valid_until
+        SELECT id, alert_type, severity, title, description, valid_from, valid_until, metadata_json
         FROM weather_alerts
         WHERE garden_id = %s
           AND alert_type = %s
@@ -2077,6 +2104,7 @@ def _resolve_missing_forecast_alert_work(
     garden_id: int,
     alerts: list[dict[str, Any]],
     now_ms: int,
+    complete_alert_types: set[str] | None = None,
 ) -> dict[str, int]:
     """Retire active forecast-owned work absent from a complete forecast run."""
     current_identities = set(_weather_alert_identities(alerts))
@@ -2096,6 +2124,8 @@ def _resolve_missing_forecast_alert_work(
     resolved_notifications = 0
     for row in rows:
         alert_type = str(row["alert_type"])
+        if complete_alert_types is not None and alert_type not in complete_alert_types:
+            continue
         valid_from = str(row["valid_from"])
         if (alert_type, valid_from) in current_identities:
             continue
@@ -2197,11 +2227,14 @@ def _recover_reappeared_forecast_alert_work(
     garden_id: int,
     alerts: list[dict[str, Any]],
     now_ms: int,
+    complete_alert_types: set[str] | None = None,
 ) -> int:
     """Reopen only work automatically retired by forecast reconciliation."""
     today = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
     recovered = 0
     for alert_type, valid_from in _weather_alert_identities(alerts):
+        if complete_alert_types is not None and alert_type not in complete_alert_types:
+            continue
         alert = db.execute(
             """
             SELECT id, valid_from, valid_until
@@ -2296,6 +2329,134 @@ def _recover_reappeared_forecast_alert_work(
     return recovered
 
 
+def _reconcile_authoritative_weather_tasks(
+    db: DbConn,
+    *,
+    garden_id: int,
+    alerts: list[dict[str, Any]],
+    now_ms: int,
+    complete_alert_types: set[str] | None = None,
+) -> int:
+    """Retire stale weather-task projections and keep their validity metadata current."""
+    today = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
+    retired = 0
+    for alert_type, valid_from in _weather_alert_identities(alerts):
+        if complete_alert_types is not None and alert_type not in complete_alert_types:
+            continue
+        task_prefix = _WEATHER_TASK_PREFIX_BY_ALERT_TYPE.get(alert_type)
+        if task_prefix is None:
+            continue
+        alert = db.execute(
+            """
+            SELECT id, valid_from, valid_until, metadata_json
+            FROM weather_alerts
+            WHERE garden_id = %s
+              AND alert_type = %s
+              AND valid_from = %s
+              AND dismissed = 0
+            FOR UPDATE
+            """,
+            (garden_id, alert_type, valid_from),
+        ).fetchone()
+        if alert is None:
+            continue
+        alert_id = int(alert["id"])
+        alert_metadata = _parse_weather_lifecycle_metadata(alert["metadata_json"])
+        plant_links_authoritative = bool(alert_metadata.get("forecast_plant_links_authoritative"))
+        linked_plant_ids: set[str] = set()
+        if plant_links_authoritative:
+            linked_plant_ids = {
+                str(row["plt_id"])
+                for row in db.execute(
+                    "SELECT plt_id FROM weather_alert_plants WHERE alert_id = %s",
+                    (alert_id,),
+                ).fetchall()
+            }
+        task_rows = db.execute(
+            """
+            SELECT id, public_id, status, rule_source, metadata_json
+            FROM garden_tasks
+            WHERE garden_id = %s
+              AND status IN ('pending', 'snoozed')
+              AND rule_source LIKE %s
+            FOR UPDATE
+            """,
+            (garden_id, f"auto:{task_prefix}:{alert_id}:%"),
+        ).fetchall()
+        for task in task_rows:
+            task_metadata = _parse_weather_lifecycle_metadata(task["metadata_json"])
+            task_metadata["weather_alert_id"] = alert_id
+            task_metadata["weather_valid_from"] = str(alert["valid_from"])
+            task_metadata["weather_valid_until"] = str(alert["valid_until"])
+            rule_parts = str(task["rule_source"] or "").split(":", 3)
+            plant_id = rule_parts[3] if len(rule_parts) == 4 else ""
+            terminal_status = ""
+            terminal_reason = ""
+            if plant_links_authoritative and plant_id not in linked_plant_ids:
+                terminal_status = "skipped"
+                terminal_reason = "plant_no_longer_affected_by_current_forecast"
+            elif str(alert["valid_until"]) < today:
+                terminal_status = "expired"
+                terminal_reason = "weather_alert_validity_ended"
+
+            if terminal_status:
+                _record_weather_lifecycle_transition(
+                    task_metadata,
+                    {
+                        "status": terminal_status,
+                        "reason": terminal_reason,
+                        "resolution_kind": "authoritative_forecast",
+                        "resolved_at_ms": now_ms,
+                        "source": "forecast_reconciliation",
+                        "weather_alert_id": alert_id,
+                    },
+                )
+                update = db.execute(
+                    """
+                    UPDATE garden_tasks
+                    SET status = %s,
+                        snoozed_until = NULL,
+                        completed_by_user_id = NULL,
+                        completed_at_ms = NULL,
+                        metadata_json = %s,
+                        updated_at_ms = %s
+                    WHERE id = %s AND status IN ('pending', 'snoozed')
+                    """,
+                    (
+                        terminal_status,
+                        json.dumps(task_metadata, sort_keys=True, separators=(",", ":")),
+                        now_ms,
+                        int(task["id"]),
+                    ),
+                )
+                if update.rowcount != 1:
+                    continue
+                retired += 1
+                clear_task_notifications(
+                    db,
+                    garden_id=garden_id,
+                    task_public_id=str(task["public_id"]),
+                    reason=("forecast_reconciled" if terminal_status == "skipped" else "expired"),
+                    now_ms=now_ms,
+                )
+                continue
+
+            if task_metadata != _parse_weather_lifecycle_metadata(task["metadata_json"]):
+                db.execute(
+                    """
+                    UPDATE garden_tasks
+                    SET metadata_json = %s, updated_at_ms = %s
+                    WHERE id = %s AND status IN ('pending', 'snoozed')
+                    """,
+                    (
+                        json.dumps(task_metadata, sort_keys=True, separators=(",", ":")),
+                        now_ms,
+                        int(task["id"]),
+                    ),
+                )
+    return retired
+
+
 def _refresh_weather_alert_notification(
     db: DbConn,
     *,
@@ -2306,6 +2467,7 @@ def _refresh_weather_alert_notification(
     body: str,
     metadata_json: str,
     expires_at_ms: int | None,
+    rearm: bool = False,
 ) -> bool:
     content_changed = (
         str(row["severity"] or "normal") != severity
@@ -2316,7 +2478,7 @@ def _refresh_weather_alert_notification(
         or row["cleared_at_ms"] is not None
         or row["clear_reason"] is not None
     )
-    if not content_changed:
+    if not content_changed and not rearm:
         return False
     db.execute(
         """
@@ -2328,8 +2490,8 @@ def _refresh_weather_alert_notification(
             metadata_json = %s,
             expires_at_ms = %s,
             dismissed = 0,
-            read_at_ms = NULL,
-            emailed_at_ms = NULL,
+            read_at_ms = CASE WHEN %s THEN NULL ELSE read_at_ms END,
+            emailed_at_ms = CASE WHEN %s THEN NULL ELSE emailed_at_ms END,
             cleared_at_ms = NULL,
             clear_reason = NULL
         WHERE id = %s
@@ -2341,6 +2503,8 @@ def _refresh_weather_alert_notification(
             body,
             metadata_json,
             expires_at_ms,
+            rearm,
+            rearm,
             int(row["id"]),
         ),
     )
@@ -2370,12 +2534,23 @@ def create_weather_alert_notifications(
         if alert_row is None:
             skipped += 1
             continue
+        alert_metadata = _parse_weather_lifecycle_metadata(alert_row["metadata_json"])
+        rearm_from_reappearance = bool(alert_metadata.get("notification_rearm_pending"))
         members = db.execute(
             "SELECT user_id FROM garden_memberships WHERE garden_id = %s",
             (garden_id,),
         ).fetchall()
         member_ids = [int(member["user_id"]) for member in members]
         if not member_ids:
+            if rearm_from_reappearance:
+                alert_metadata["notification_rearm_pending"] = False
+                db.execute(
+                    "UPDATE weather_alerts SET metadata_json = %s WHERE id = %s",
+                    (
+                        json.dumps(alert_metadata, sort_keys=True, separators=(",", ":")),
+                        int(alert_row["id"]),
+                    ),
+                )
             continue
 
         target_id = _weather_alert_target_id(alert_type, valid_from)
@@ -2430,7 +2605,7 @@ def create_weather_alert_notifications(
 
         for user_id in member_ids:
             rows = rows_by_user.get(user_id, [])
-            if user_id in dismissed_user_ids:
+            if user_id in dismissed_user_ids and not rearm_from_reappearance:
                 clear_weather_alert_notifications(
                     db,
                     garden_id=garden_id,
@@ -2447,6 +2622,10 @@ def create_weather_alert_notifications(
             ]
             if active_rows:
                 active_row = active_rows[0]
+                severity_escalated = (
+                    SEVERITY_RANK[severity]
+                    > SEVERITY_RANK[_normalize_severity(str(active_row["severity"] or "normal"))]
+                )
                 _refresh_weather_alert_notification(
                     db,
                     row=active_row,
@@ -2456,6 +2635,7 @@ def create_weather_alert_notifications(
                     body=body,
                     metadata_json=metadata_json,
                     expires_at_ms=expires_at_ms,
+                    rearm=rearm_from_reappearance or severity_escalated,
                 )
                 for duplicate in active_rows[1:]:
                     db.execute(
@@ -2473,7 +2653,8 @@ def create_weather_alert_notifications(
             dismissed_row = next((row for row in rows if bool(row["dismissed"])), None)
             if dismissed_row is not None:
                 dismissed_severity = _normalize_severity(str(dismissed_row["severity"] or "normal"))
-                if SEVERITY_RANK[severity] <= SEVERITY_RANK[dismissed_severity]:
+                severity_escalated = SEVERITY_RANK[severity] > SEVERITY_RANK[dismissed_severity]
+                if not rearm_from_reappearance and not severity_escalated:
                     skipped += 1
                     continue
                 _refresh_weather_alert_notification(
@@ -2485,6 +2666,7 @@ def create_weather_alert_notifications(
                     body=body,
                     metadata_json=metadata_json,
                     expires_at_ms=expires_at_ms,
+                    rearm=True,
                 )
                 skipped += 1
                 continue
@@ -2509,15 +2691,21 @@ def create_weather_alert_notifications(
                 continue
 
             if rows:
+                prior_row = rows[0]
+                severity_escalated = (
+                    SEVERITY_RANK[severity]
+                    > SEVERITY_RANK[_normalize_severity(str(prior_row["severity"] or "normal"))]
+                )
                 _refresh_weather_alert_notification(
                     db,
-                    row=rows[0],
+                    row=prior_row,
                     notification_subtype=alert_type,
                     severity=severity,
                     title=title,
                     body=body,
                     metadata_json=metadata_json,
                     expires_at_ms=expires_at_ms,
+                    rearm=rearm_from_reappearance or severity_escalated,
                 )
                 skipped += 1
                 continue
@@ -2538,6 +2726,15 @@ def create_weather_alert_notifications(
                 now_ms=now_value,
             )
             created += 1
+        if rearm_from_reappearance:
+            alert_metadata["notification_rearm_pending"] = False
+            db.execute(
+                "UPDATE weather_alerts SET metadata_json = %s WHERE id = %s",
+                (
+                    json.dumps(alert_metadata, sort_keys=True, separators=(",", ":")),
+                    int(alert_row["id"]),
+                ),
+            )
     return {"created": created, "skipped": skipped}
 
 
@@ -2552,29 +2749,33 @@ def reconcile_weather_alert_work(
 ) -> dict[str, int]:
     """Reconcile weather alert notifications and generated tasks in one transaction."""
     now_value, _ = notification_request_clock(now_ms=now_ms)
+    forecast_alerts, complete_alert_types = _split_forecast_reconciliation_scope(alerts)
     resolution = {
         "alerts_resolved": 0,
         "tasks_resolved": 0,
         "tasks_recovered": 0,
         "notifications_resolved": 0,
+        "tasks_retired": 0,
     }
     if replace_forecast_alerts:
         resolution = _resolve_missing_forecast_alert_work(
             db,
             garden_id=garden_id,
-            alerts=alerts,
+            alerts=forecast_alerts,
             now_ms=now_value,
+            complete_alert_types=complete_alert_types,
         )
         resolution["tasks_recovered"] = _recover_reappeared_forecast_alert_work(
             db,
             garden_id=garden_id,
-            alerts=alerts,
+            alerts=forecast_alerts,
             now_ms=now_value,
+            complete_alert_types=complete_alert_types,
         )
     notifications = create_weather_alert_notifications(
         db,
         garden_id=garden_id,
-        alerts=alerts,
+        alerts=forecast_alerts,
         now_ms=now_value,
     )
     task_handlers = {
@@ -2584,7 +2785,7 @@ def reconcile_weather_alert_work(
         "rain_surplus": on_rain_alert,
     }
     tasks_created = 0
-    for alert_type, valid_from in _weather_alert_identities(alerts):
+    for alert_type, valid_from in _weather_alert_identities(forecast_alerts):
         handler = task_handlers.get(alert_type)
         if handler is None:
             continue
@@ -2602,6 +2803,14 @@ def reconcile_weather_alert_work(
                 actor_user_id,
                 now_ms=now_value,
             )
+    if replace_forecast_alerts:
+        resolution["tasks_retired"] = _reconcile_authoritative_weather_tasks(
+            db,
+            garden_id=garden_id,
+            alerts=forecast_alerts,
+            now_ms=now_value,
+            complete_alert_types=complete_alert_types,
+        )
     rain_reconciliation = reconcile_rain_watering_outcomes(
         db,
         garden_id=garden_id,
@@ -2958,6 +3167,37 @@ def _run_weather_check_if_due(
     }
 
 
+def _monthly_rain_generation_signature(
+    db: DbConn,
+    *,
+    garden_id: int,
+    year: int,
+    month: int,
+) -> str:
+    """Fingerprint active rain coverage relevant to one generation month."""
+    month_start = date(year, month, 1)
+    month_end = (date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)) - timedelta(
+        days=1
+    )
+    rows = db.execute(
+        """
+        SELECT id, valid_from, valid_until
+        FROM weather_alerts
+        WHERE garden_id = %s
+          AND alert_type = 'rain_surplus'
+          AND dismissed = 0
+          AND valid_from <= %s
+          AND valid_until >= %s
+        ORDER BY id ASC
+        """,
+        (garden_id, month_end.isoformat(), month_start.isoformat()),
+    ).fetchall()
+    payload = [(int(row["id"]), str(row["valid_from"]), str(row["valid_until"])) for row in rows]
+    return hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    ).hexdigest()[:16]
+
+
 def _auto_generate_monthly_tasks(
     db: DbConn,
     garden_id: int,
@@ -2969,13 +3209,25 @@ def _auto_generate_monthly_tasks(
     today = date.fromisoformat(_notification_today_iso(frozen_date=frozen_date))
     month_key = f"{today.year}-{today.month:02d}"
     settings_key = f"last_task_gen_month:{garden_id}"
+    rain_pending_prefix = f"{month_key}:rain_pending"
 
     row = db.execute(
         "SELECT value FROM app_settings WHERE key = %s",
         (settings_key,),
     ).fetchone()
-    if row and str(row["value"]) == month_key:
-        return {"tasks_skipped": True}
+    if row:
+        marker = str(row["value"])
+        if marker == month_key:
+            return {"tasks_skipped": True}
+        if marker.startswith(f"{rain_pending_prefix}:"):
+            signature = _monthly_rain_generation_signature(
+                db,
+                garden_id=garden_id,
+                year=today.year,
+                month=today.month,
+            )
+            if marker == f"{rain_pending_prefix}:{signature}":
+                return {"tasks_skipped": True, "tasks_rain_pending": True}
 
     result = generate_tasks(
         db,
@@ -2986,7 +3238,15 @@ def _auto_generate_monthly_tasks(
         now_ms=now_ms,
     )
     rain_suppressed = int(result.get("rain_suppressed", 0))
-    generation_marker = month_key if rain_suppressed == 0 else f"{month_key}:rain_pending"
+    generation_marker = month_key
+    if rain_suppressed:
+        signature = _monthly_rain_generation_signature(
+            db,
+            garden_id=garden_id,
+            year=today.year,
+            month=today.month,
+        )
+        generation_marker = f"{rain_pending_prefix}:{signature}"
 
     db.execute(
         """

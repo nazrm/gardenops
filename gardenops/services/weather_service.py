@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import urllib.error
 import urllib.request
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from gardenops.branding import app_user_agent
 from gardenops.db import DbConn, current_timestamp_ms
@@ -64,6 +65,17 @@ _MET_PRECIPITATION_WINDOWS = (
     ("next_6_hours", 6),
     ("next_12_hours", 12),
 )
+_FORECAST_ALERT_TYPES_BY_FIELD = {
+    "temperature_2m_min": ("frost_warning",),
+    "temperature_2m_max": ("heat_wave",),
+    "precipitation_sum": ("dry_spell", "rain_surplus"),
+}
+_FORECAST_ALERT_TYPES = frozenset(
+    alert_type
+    for alert_types in _FORECAST_ALERT_TYPES_BY_FIELD.values()
+    for alert_type in alert_types
+)
+_FORECAST_RECONCILIATION_SCOPE_KEY = "_forecast_reconciliation_scope"
 
 
 def _parse_hardiness(raw: str) -> str | None:
@@ -285,6 +297,81 @@ def get_or_fetch_forecast(
     if forecast and "daily" in forecast:
         save_forecast_cache(db, garden_id, latitude, longitude, forecast)
     return forecast
+
+
+def _complete_forecast_alert_types(forecast: dict) -> set[str]:
+    """Return alert families backed by a complete daily forecast series.
+
+    A missing value means the provider has not authoritatively said that the
+    corresponding weather condition is absent. Those families may still have
+    persisted alerts and generated tasks, so they must be excluded from
+    destructive reconciliation.
+    """
+    daily = forecast.get("daily")
+    if not isinstance(daily, dict):
+        return set()
+    dates = daily.get("time")
+    if (
+        not isinstance(dates, list)
+        or not dates
+        or any(not isinstance(value, str) or not value for value in dates)
+    ):
+        return set()
+    try:
+        for value in dates:
+            date.fromisoformat(value)
+    except ValueError:
+        return set()
+
+    complete_types: set[str] = set()
+    for field, alert_types in _FORECAST_ALERT_TYPES_BY_FIELD.items():
+        values = daily.get(field)
+        if not isinstance(values, list) or len(values) != len(dates):
+            continue
+        try:
+            normalized_values = [float(value) for value in values]
+        except TypeError, ValueError:
+            continue
+        if all(not isinstance(value, bool) for value in values) and all(
+            math.isfinite(value) for value in normalized_values
+        ):
+            complete_types.update(alert_types)
+    return complete_types
+
+
+def _forecast_with_complete_daily_families(
+    forecast: dict,
+    complete_alert_types: set[str],
+) -> dict:
+    """Return a numeric daily forecast with incomplete families omitted.
+
+    ``analyze_forecast`` predates provider partial-response handling and
+    assumes numeric series. Restricting analysis to complete families means a
+    malformed precipitation series cannot prevent a complete temperature
+    family from being processed, or turn into an accidental reconciliation.
+    """
+    daily = dict(forecast["daily"])
+    for field, alert_types in _FORECAST_ALERT_TYPES_BY_FIELD.items():
+        if not set(alert_types).issubset(complete_alert_types):
+            daily[field] = []
+            continue
+        daily[field] = [float(value) for value in daily[field]]
+    return {**forecast, "daily": daily}
+
+
+def _forecast_reconciliation_scope_marker(complete_alert_types: set[str]) -> dict[str, object]:
+    """Carry forecast completeness through callers that only pass alert rows.
+
+    The weather routes intentionally hand a plain alerts list to downstream
+    reconciliation. This non-alert marker preserves the completeness scope
+    without changing that route contract; notification reconciliation removes
+    it before any alert work is performed.
+    """
+    return {
+        "alert_type": "",
+        "valid_from": "",
+        _FORECAST_RECONCILIATION_SCOPE_KEY: sorted(complete_alert_types),
+    }
 
 
 def analyze_forecast(forecast: dict) -> list[dict]:
@@ -532,6 +619,9 @@ def save_weather_alerts(
     """Links relevant plants to alerts and builds plant_advice in metadata.
 
     Deduplicates by (garden_id, alert_type, valid_from).
+    A same-identity forecast replaces its severity and validity window. Plant
+    links are replaced only when the caller supplied that family's complete
+    affected-plant set.
     Does not commit; the caller owns the transaction with downstream work.
     Returns {"created": N, "skipped": N}.
     """
@@ -544,9 +634,11 @@ def save_weather_alerts(
         alert_meta = dict(alert.get("metadata", {}))
         plant_list: list[dict] = []
         alert_type = alert["alert_type"]
+        plant_links_authoritative = False
 
-        if alert_type == "frost_warning" and frost_plants:
-            plant_list = frost_plants
+        if alert_type == "frost_warning" and frost_plants is not None:
+            plant_list = list(frost_plants)
+            plant_links_authoritative = True
             alert_meta["plant_advice"] = [
                 {
                     "plt_id": p["plt_id"],
@@ -554,18 +646,23 @@ def save_weather_alerts(
                     "hardiness": p.get("hardiness", ""),
                     "min_safe_temp": p.get("min_safe_temp", 0),
                 }
-                for p in frost_plants
+                for p in sorted(plant_list, key=lambda plant: str(plant["plt_id"]))
             ]
-        elif alert_type in ("heat_wave", "dry_spell", "rain_surplus") and watering_plants:
-            plant_list = watering_plants
+        elif (
+            alert_type in ("heat_wave", "dry_spell", "rain_surplus") and watering_plants is not None
+        ):
+            plant_list = list(watering_plants)
+            plant_links_authoritative = True
             alert_meta["plant_advice"] = [
                 {
                     "plt_id": p["plt_id"],
                     "name": p["name"],
                     "care_watering": p.get("care_watering", ""),
                 }
-                for p in watering_plants
+                for p in sorted(plant_list, key=lambda plant: str(plant["plt_id"]))
             ]
+        if plant_links_authoritative:
+            alert_meta["forecast_plant_links_authoritative"] = True
 
         metadata = json.dumps(alert_meta, default=str)
         wrow = db.execute(
@@ -615,7 +712,12 @@ def save_weather_alerts(
                 existing_meta = {}
             merged_meta: dict[str, object] = {**existing_meta, **alert_meta}
             lifecycle = existing_meta.get("lifecycle")
-            if isinstance(lifecycle, dict) and lifecycle.get("status") == "resolved":
+            reappeared = (
+                isinstance(lifecycle, dict)
+                and lifecycle.get("status") == "resolved"
+                and lifecycle.get("resolution_kind") == "automatic_forecast"
+            )
+            if reappeared:
                 _record_lifecycle_transition(
                     merged_meta,
                     {
@@ -625,19 +727,7 @@ def save_weather_alerts(
                         "source": "forecast_reconciliation",
                     },
                 )
-            existing_advice = existing_meta.get("plant_advice")
-            incoming_advice = alert_meta.get("plant_advice")
-            if isinstance(existing_advice, list) or isinstance(incoming_advice, list):
-                advice_by_value: dict[str, object] = {}
-                for advice in [
-                    *(existing_advice if isinstance(existing_advice, list) else []),
-                    *(incoming_advice if isinstance(incoming_advice, list) else []),
-                ]:
-                    key = json.dumps(advice, sort_keys=True, separators=(",", ":"), default=str)
-                    advice_by_value[key] = advice
-                merged_meta["plant_advice"] = [
-                    advice_by_value[key] for key in sorted(advice_by_value)
-                ]
+                merged_meta["notification_rearm_pending"] = True
             severity_rank = {"low": 0, "normal": 1, "high": 2, "critical": 3}
             existing_severity = str(existing["severity"] or "normal")
             incoming_severity = str(alert["severity"] or "normal")
@@ -645,10 +735,6 @@ def save_weather_alerts(
                 incoming_severity,
                 severity_rank["normal"],
             ) > severity_rank.get(existing_severity, severity_rank["normal"])
-            merged_severity = max(
-                (existing_severity, incoming_severity),
-                key=lambda value: severity_rank.get(value, severity_rank["normal"]),
-            )
             db.execute(
                 """
                 UPDATE weather_alerts
@@ -656,24 +742,20 @@ def save_weather_alerts(
                     title = COALESCE(NULLIF(%s, ''), title),
                     description = COALESCE(NULLIF(%s, ''), description),
                     dismissed = 0,
-                    valid_until = CASE
-                        WHEN alert_type = 'rain_surplus' THEN %s
-                        ELSE GREATEST(valid_until, %s)
-                    END,
+                    valid_until = %s,
                     metadata_json = %s
                 WHERE id = %s
                 """,
                 (
-                    merged_severity,
+                    incoming_severity,
                     alert["title"],
                     alert["description"],
-                    alert["valid_until"],
                     alert["valid_until"],
                     json.dumps(merged_meta, default=str),
                     alert_id,
                 ),
             )
-            if severity_escalated:
+            if severity_escalated or reappeared:
                 db.execute(
                     """
                     DELETE FROM user_attention_item_state
@@ -685,13 +767,22 @@ def save_weather_alerts(
                 )
             skipped += 1
 
-        if plant_list:
-            for plant in plant_list:
+        if plant_links_authoritative:
+            plant_ids = sorted({str(plant["plt_id"]) for plant in plant_list})
+            if plant_ids:
+                db.execute(
+                    "DELETE FROM weather_alert_plants "
+                    "WHERE alert_id = %s AND NOT (plt_id = ANY(%s))",
+                    (alert_id, plant_ids),
+                )
+            else:
+                db.execute("DELETE FROM weather_alert_plants WHERE alert_id = %s", (alert_id,))
+            for plant_id in plant_ids:
                 db.execute(
                     "INSERT INTO weather_alert_plants"
                     " (alert_id, plt_id) VALUES (%s, %s)"
                     " ON CONFLICT DO NOTHING",
-                    (alert_id, plant["plt_id"]),
+                    (alert_id, plant_id),
                 )
     return {"created": created, "skipped": skipped}
 
@@ -714,17 +805,20 @@ def check_weather_and_generate_alerts(
     }
     """
     forecast = get_or_fetch_forecast(db, garden_id, latitude, longitude)
-    if not forecast or "daily" not in forecast:
+    if not isinstance(forecast, dict) or not isinstance(forecast.get("daily"), dict):
         return {
             "forecast_available": False,
             "alerts_created": 0,
             "alerts_skipped": 0,
             "alerts": [],
+            "forecast_complete_alert_types": [],
             "frost_vulnerable_plants": [],
             "watering_sensitive_plants": [],
         }
 
-    alerts = analyze_forecast(forecast)
+    complete_alert_types = _complete_forecast_alert_types(forecast)
+    analysis_forecast = _forecast_with_complete_daily_families(forecast, complete_alert_types)
+    alerts = analyze_forecast(analysis_forecast)
 
     # Find vulnerable plants for frost warnings
     frost_plants: list[dict] = []
@@ -748,12 +842,16 @@ def check_weather_and_generate_alerts(
         frost_plants,
         watering_plants,
     )
+    reconciliation_alerts = list(alerts)
+    if complete_alert_types != _FORECAST_ALERT_TYPES:
+        reconciliation_alerts.append(_forecast_reconciliation_scope_marker(complete_alert_types))
 
     return {
         "forecast_available": True,
         "alerts_created": result["created"],
         "alerts_skipped": result["skipped"],
-        "alerts": alerts,
+        "alerts": reconciliation_alerts,
+        "forecast_complete_alert_types": sorted(complete_alert_types),
         "frost_vulnerable_plants": frost_plants,
         "watering_sensitive_plants": watering_plants,
     }

@@ -193,6 +193,7 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         for source in (tasks_tab, calendar, plot, quick_actions):
             self.assertIn("needsCompletionDialog", source)
             self.assertIn("canQueueDefaultCompletionOffline", source)
+            self.assertIn("canQueueCompletionOffline", source)
             self.assertIn('t("tasks.complete_grouped_one_by_one")', source)
         for source in (tasks_tab, calendar, plot):
             self.assertIn("openTaskCompletionDialog", source)
@@ -205,13 +206,39 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         plot = frontend_source("components/plotInteractions.ts")
         quick_actions = frontend_source("features/quickActionsFeature.ts")
 
-        self.assertIn("confirm.disabled = selected.size === 0", completion)
+        self.assertIn("confirm.disabled = selectionRequired && selected.size === 0", completion)
         self.assertIn('t("tasks.complete_select_one")', completion)
         for source in (tasks_tab, calendar, plot, quick_actions):
             self.assertIn("needsCompletionDialog", source)
             self.assertIn("complete_grouped_one_by_one", source)
         for source in (tasks_tab, calendar, plot, quick_actions):
             self.assertIn("openTaskCompletionDialog", source)
+
+    def test_offline_bloom_completion_keeps_an_explicit_outcome_and_labels(self) -> None:
+        completion = frontend_source("features/taskCompletionFlow.ts")
+        tasks_tab = frontend_source("tabs/tasksTab.ts")
+        calendar = frontend_source("tabs/calendarTab.ts")
+        plot = frontend_source("components/plotInteractions.ts")
+        quick_actions = frontend_source("features/quickActionsFeature.ts")
+
+        self.assertIn('task.task_type === "observe_bloom"', completion)
+        self.assertIn('completion_outcome: "done"', completion)
+        self.assertIn('completion_outcome: "not_seen_blooming_this_season"', completion)
+        self.assertIn('t("tasks.action_seen_blooming")', completion)
+        for source in (tasks_tab, calendar, plot, quick_actions):
+            self.assertIn("offlineTaskActionLabels", source)
+            self.assertIn("canQueueCompletionOffline", source)
+
+    def test_expired_snoozes_render_as_overdue_cards(self) -> None:
+        task_cards = frontend_source("components/tasks.ts")
+        styles = frontend_source("style.css")
+
+        self.assertIn('if (task.status === "expired") return true;', task_cards)
+        self.assertIn("function isExpiredSnooze", task_cards)
+        self.assertIn('t("tasks.overdue")', task_cards)
+        self.assertIn("task-overdue", task_cards)
+        self.assertIn(".task-card.task-overdue", styles)
+        self.assertIn(".task-status-chip.status-overdue", styles)
 
     def test_plot_cards_expose_each_supported_task_action(self) -> None:
         source = frontend_source("components/plotInteractions.ts")

@@ -57,8 +57,10 @@ import {
   openTaskDateDialog,
 } from "../features/taskSnoozeFlow";
 import {
+  canQueueCompletionOffline,
   canQueueDefaultCompletionOffline,
   needsCompletionDialog,
+  offlineTaskActionLabels,
   openTaskCompletionDialog,
 } from "../features/taskCompletionFlow";
 
@@ -327,21 +329,24 @@ function formatTaskDue(
       overdue: false,
     };
   }
-  if (task.due_on === today) {
-    return { text: t("plot_drawer.due_today") as string, overdue: false };
-  }
-  if (task.due_on < today) {
-    const diff = Math.round(
-      (new Date(today).getTime() - new Date(task.due_on).getTime()) /
+  const dueOn = task.status === "snoozed" && task.snoozed_until
+    ? task.snoozed_until
+    : task.due_on;
+  if (task.status === "expired" || dueOn < today) {
+    const diff = Math.max(1, Math.round(
+      (new Date(today).getTime() - new Date(dueOn).getTime()) /
         86_400_000,
-    );
+    ));
     return {
       text: t("plot_drawer.overdue_by", { days: diff }) as string,
       overdue: true,
     };
   }
+  if (dueOn === today) {
+    return { text: t("plot_drawer.due_today") as string, overdue: false };
+  }
   return {
-    text: t("plot_drawer.due_on", { date: task.due_on }) as string,
+    text: t("plot_drawer.due_on", { date: dueOn }) as string,
     overdue: false,
   };
 }
@@ -536,7 +541,9 @@ async function loadPlotTasksPreview(
             ? { offlineAction: offlineActions.get(task.id) }
             : cbs.canWrite()
             ? {
-                onComplete: () => void completeTaskInline(task, card, state, plotId, cbs),
+                ...(isOnline() || canQueueCompletionOffline(task)
+                  ? { onComplete: () => void completeTaskInline(task, card, state, plotId, cbs) }
+                  : {}),
                 onSkip: () => void skipTaskInline(task, card, state, plotId, cbs),
                 onSnooze: () => void snoozeTaskInline(task, card, state, plotId, cbs),
                 onSnoozeDate: () => {
@@ -572,12 +579,9 @@ async function loadPlotTasksPreview(
 }
 
 async function enqueuePlotOfflineTaskAction(
-  taskId: string,
+  task: GardenTask,
   body: TaskActionRequest,
 ): Promise<void> {
-  if (body.action === "complete" && body.completed_plant_ids?.length) {
-    throw new Error("Grouped task completion cannot be queued offline.");
-  }
   const draftTypeByAction: Record<TaskActionRequest["action"], string> = {
     complete: "task_complete",
     skip: "task_skip",
@@ -586,7 +590,8 @@ async function enqueuePlotOfflineTaskAction(
   };
   const { action, ...payload } = body;
   await enqueueDraft(draftTypeByAction[action], {
-    task_id: taskId,
+    task_id: task.id,
+    ...offlineTaskActionLabels(task, action),
     ...payload,
   });
 }
@@ -612,7 +617,7 @@ async function submitPlotTaskAction(
   }
   try {
     if (!isOnline()) {
-      await enqueuePlotOfflineTaskAction(task.id, body);
+      await enqueuePlotOfflineTaskAction(task, body);
       card.classList.add("task-offline-queued");
       card.dataset["offlineTaskState"] = "queued";
       card.querySelector(".drawer-task-actions")?.remove();
@@ -652,18 +657,20 @@ async function completeTaskInline(
 ): Promise<void> {
   if (needsCompletionDialog(task) && !body.completed_plant_ids?.length) {
     if (!isOnline()) {
-      if (!canQueueDefaultCompletionOffline(task)) {
+      const needsExplicitOutcome = !canQueueDefaultCompletionOffline(task);
+      if (needsExplicitOutcome && !canQueueCompletionOffline(task)) {
         showToast(t("tasks.complete_grouped_one_by_one"), "error");
         return;
       }
-    } else {
-      await cbs.ensurePlantsCacheLoaded();
-      const plantNames = new Map(state.plantsCache.map((plant) => [plant.plt_id, plant.name]));
-      openTaskCompletionDialog(task, plantNames, (body) => {
-        void completeTaskInline(task, card, state, plotId, cbs, body);
-      });
-      return;
     }
+    if (isOnline()) {
+      await cbs.ensurePlantsCacheLoaded();
+    }
+    const plantNames = new Map(state.plantsCache.map((plant) => [plant.plt_id, plant.name]));
+    openTaskCompletionDialog(task, plantNames, (body) => {
+      void completeTaskInline(task, card, state, plotId, cbs, body);
+    });
+    return;
   }
   await submitPlotTaskAction(
     task,

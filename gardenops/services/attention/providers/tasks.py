@@ -14,6 +14,7 @@ from gardenops.services.attention.types import (
     normalize_severity,
 )
 from gardenops.services.generated_task_lifecycle import (
+    GENERATED_NON_WATERING_WEATHER_RULE_SOURCE_PATTERNS,
     GENERATED_WATERING_RULE_SOURCE_PATTERNS,
     stale_generated_watering_sql,
 )
@@ -42,6 +43,12 @@ class TaskAttentionProvider:
         today = attention_today_date(now_ms=now_ms, frozen_date=self.frozen_date)
         recent_cutoff_ms = now_ms - _DAY_MS
         rows = self._collect_rows(conn, garden_id, today=today, recent_cutoff_ms=recent_cutoff_ms)
+        rows = self._without_stale_non_watering_weather_rows(
+            conn,
+            garden_id=garden_id,
+            rows=rows,
+            today=today,
+        )
         task_ids = [int(row["id"]) for row in rows]
         plot_ids_by_task_id = self._plot_ids_by_task_id(conn, task_ids)
         plant_ids_by_task_id = self._plant_ids_by_task_id(conn, task_ids)
@@ -173,6 +180,46 @@ class TaskAttentionProvider:
             (garden_id, recent_cutoff_ms, recent_cutoff_ms, _TERMINAL_BUCKET_LIMIT),
         ).fetchall()
         return [*active_overdue, *active_due, *snoozed_ready, *terminal]
+
+    @staticmethod
+    def _without_stale_non_watering_weather_rows(
+        conn: Any,
+        *,
+        garden_id: int,
+        rows: list[Any],
+        today: str,
+    ) -> list[Any]:
+        active_task_ids = [
+            int(row["id"]) for row in rows if str(row["status"]) in {"pending", "snoozed"}
+        ]
+        if not active_task_ids:
+            return rows
+        stale_rows = conn.execute(
+            """
+            SELECT t.id
+            FROM garden_tasks t
+            LEFT JOIN weather_alerts wa
+              ON wa.garden_id = t.garden_id
+             AND wa.id = CASE
+                WHEN split_part(t.rule_source, ':', 3) ~ '^[0-9]+$'
+                THEN split_part(t.rule_source, ':', 3)::int ELSE NULL
+             END
+            WHERE t.garden_id = %s
+              AND t.id = ANY(%s)
+              AND t.status IN ('pending', 'snoozed')
+              AND t.task_type <> 'water'
+              AND t.rule_source LIKE ANY(%s)
+              AND (wa.id IS NULL OR wa.dismissed = 1 OR wa.valid_until < %s)
+            """,
+            (
+                garden_id,
+                active_task_ids,
+                list(GENERATED_NON_WATERING_WEATHER_RULE_SOURCE_PATTERNS),
+                today,
+            ),
+        ).fetchall()
+        stale_task_ids = {int(row["id"]) for row in stale_rows}
+        return [row for row in rows if int(row["id"]) not in stale_task_ids]
 
     @staticmethod
     def _plot_ids_by_task_id(conn: Any, task_ids: list[int]) -> dict[int, tuple[str, ...]]:

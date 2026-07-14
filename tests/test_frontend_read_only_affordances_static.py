@@ -28,6 +28,21 @@ def test_app_passes_active_garden_write_access_and_clears_stale_selection() -> N
     assert "renderIndoorPlants(content, { canWrite: canWriteInGarden })" in source
 
 
+def test_viewer_and_offline_mutation_controls_are_hidden_or_disabled_by_capability() -> None:
+    app = _read("frontend/src/app.ts")
+    quick_actions = _read("frontend/src/components/quickActions.ts")
+    task_cards = _read("frontend/src/components/tasks.ts")
+    calendar = _read("frontend/src/tabs/calendarTab.ts")
+
+    assert "mobileFab.hidden = !canWriteInGarden;" in app
+    assert "if (!canWriteInGarden) closeQuickActionSheet(false);" in app
+    assert "if (action.requiresWrite && options.canWrite === false) continue;" in quick_actions
+    assert "const unavailableOffline = Boolean(" in quick_actions
+    assert "offlineUnsupportedCompletion" in task_cards
+    assert "newEventButton.hidden = !ctx.canWrite();" in calendar
+    assert "newEventButton.disabled = !ctx.isOnline();" in calendar
+
+
 def test_read_only_role_indicator_is_visible_in_desktop_and_mobile_shells() -> None:
     app = _read("frontend/src/app.ts")
     layout = _read("frontend/src/components/layout.ts")

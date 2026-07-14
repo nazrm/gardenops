@@ -1971,6 +1971,46 @@ class TestAttentionTaskProvider(BaseApiTest):
         assert "attn:task:task_skipped_old" not in by_id
         assert by_id["attn:task:task_snoozed_overdue"].reason == "Snooze expired"
 
+    def test_attention_service_classifies_expired_task_snoozes_as_overdue(self) -> None:
+        from gardenops.services.attention import AttentionService, TaskAttentionProvider
+
+        garden_id, user_id = self._garden_and_user()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (public_id, garden_id, task_type, title, description, status, severity,
+                     due_on, snoozed_until, rule_source, metadata_json,
+                     created_at_ms, updated_at_ms)
+                VALUES ('task_attention_expired_snooze', %s, 'water', 'Water mint', '',
+                        'snoozed', 'normal', '2026-07-03', '2026-07-04', '', '{}', 1, 1)
+                """,
+                (garden_id,),
+            )
+            conn.commit()
+
+            response = AttentionService(
+                providers=[TaskAttentionProvider(frozen_date="2026-07-05")]
+            ).today(
+                conn,
+                garden_id=garden_id,
+                user_id=user_id,
+                now_ms=1783180800000,
+            )
+        finally:
+            db.return_db(conn)
+
+        item = next(
+            item
+            for section in response["sections"]
+            for item in section["items"]
+            if item["id"] == "attn:task:task_attention_expired_snooze"
+        )
+        self.assertEqual(item["type"], "task_overdue")
+        self.assertEqual(item["reason"], "Overdue")
+        self.assertEqual(item["category"], "needs_action")
+
     def test_task_provider_caps_do_not_crowd_out_high_value_rows(self) -> None:
         from gardenops.services.attention import TaskAttentionProvider
 

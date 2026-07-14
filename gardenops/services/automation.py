@@ -339,6 +339,23 @@ def _create_weather_tasks(
         for plant in db.execute(plant_sql, (garden_id,)).fetchall()
         if plant_filter(plant, alert)
     ]
+    try:
+        alert_metadata = json.loads(str(alert["metadata_json"] or "{}"))
+    except TypeError, ValueError, json.JSONDecodeError:
+        alert_metadata = {}
+    if isinstance(alert_metadata, dict) and alert_metadata.get(
+        "forecast_plant_links_authoritative"
+    ):
+        linked_plant_ids = {
+            str(row["plt_id"])
+            for row in db.execute(
+                "SELECT plt_id FROM weather_alert_plants WHERE alert_id = %s",
+                (alert_id,),
+            ).fetchall()
+        }
+        matching_plants = [
+            plant for plant in matching_plants if str(plant["plt_id"]) in linked_plant_ids
+        ]
     if not matching_plants:
         return 0
 

@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -20,6 +21,14 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run_complete_journeys_e2e.sh"
 SEEDER = ROOT / "scripts" / "seed_complete_journeys_e2e.py"
 CHECKER = ROOT / "scripts" / "check_complete_journeys_e2e.cjs"
+ORACLE = ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_two_oracle.json"
+EXPECTED_HEAD = subprocess.run(
+    ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
+).stdout.strip()
+
+
+def _review_args(*args: str) -> tuple[str, ...]:
+    return ("--expected-head", EXPECTED_HEAD, *args)
 
 
 def _run_runner(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -45,6 +54,7 @@ def test_phase_zero_complete_journey_files_exist() -> None:
         ROOT / "scripts" / "e2e" / "journeys" / "foundation.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "gardenMapPlants.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs",
+        ORACLE,
     )
     assert all(path.is_file() for path in expected)
 
@@ -52,9 +62,9 @@ def test_phase_zero_complete_journey_files_exist() -> None:
 @pytest.mark.parametrize(
     ("args", "message"),
     [
-        (("--phase", "10"), "phase"),
-        (("--phase", "0", "--phase", "1"), "duplicate"),
-        (("--through-phase", "-1"), "phase"),
+        (_review_args("--phase", "10"), "phase"),
+        (_review_args("--phase", "0", "--phase", "1"), "usage"),
+        (_review_args("--through-phase", "-1"), "phase"),
         (("--unknown",), "usage"),
         (("--child",), "usage"),
     ],
@@ -78,7 +88,15 @@ def test_runner_child_rejects_unverified_parent_before_environment() -> None:
         "GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER",
     ):
         env.pop(name, None)
-    result = _run_runner("--child", "0", "0", str(ROOT / "research" / "bad-child"), env=env)
+    result = _run_runner(
+        "--child",
+        "0",
+        "0",
+        str(ROOT / "research" / "bad-child"),
+        "--expected-head",
+        EXPECTED_HEAD,
+        env=env,
+    )
     assert result.returncode == 2
     assert "run_fast_postgres_tests.py" in result.stderr
 
@@ -103,14 +121,28 @@ def test_seeder_rejects_missing_disposable_environment(
 
 
 def test_runner_accepts_phase_one_selection_before_parent_validation() -> None:
-    result = _run_runner("--child", "1", "1", str(ROOT / "research" / "phase-one-child"))
+    result = _run_runner(
+        "--child",
+        "1",
+        "1",
+        str(ROOT / "research" / "phase-one-child"),
+        "--expected-head",
+        EXPECTED_HEAD,
+    )
     assert result.returncode == 2
     assert "not implemented" not in result.stderr.lower()
     assert "run_fast_postgres_tests.py" in result.stderr
 
 
 def test_runner_accepts_phase_two_selection_before_parent_validation() -> None:
-    result = _run_runner("--child", "2", "2", str(ROOT / "research" / "phase-two-child"))
+    result = _run_runner(
+        "--child",
+        "2",
+        "2",
+        str(ROOT / "research" / "phase-two-child"),
+        "--expected-head",
+        EXPECTED_HEAD,
+    )
     assert result.returncode == 2
     assert "not implemented" not in result.stderr.lower()
     assert "run_fast_postgres_tests.py" in result.stderr
@@ -122,11 +154,27 @@ def test_runner_rejects_preexisting_artifact_directory() -> None:
     env = os.environ.copy()
     env["GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR"] = str(artifact)
     try:
-        result = _run_runner("--phase", "0", env=env)
+        result = _run_runner(*_review_args("--phase", "0"), env=env)
         assert result.returncode == 2
         assert "newly created" in result.stderr.lower()
     finally:
         artifact.rmdir()
+
+
+def test_runner_requires_matching_review_gated_head_before_artifacts_or_children() -> None:
+    missing = _run_runner("--phase", "0")
+    assert missing.returncode == 2
+    assert "expected-head" in missing.stderr.lower()
+
+    stale = _run_runner("--expected-head", "0" * 40, "--phase", "0")
+    assert stale.returncode == 2
+    assert "review-gated head mismatch" in stale.stderr.lower()
+
+
+def test_runner_rejects_malformed_review_gated_head() -> None:
+    result = _run_runner("--expected-head", "not-a-commit", "--phase", "0")
+    assert result.returncode == 2
+    assert "40-character" in result.stderr.lower()
 
 
 def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path: Path) -> None:
@@ -137,7 +185,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
     subprocess.run(["git", "init", "--quiet"], cwd=checkout, check=True, timeout=20)
     runner = checkout / "scripts" / "run_complete_journeys_e2e.sh"
     result = subprocess.run(
-        ["bash", str(runner), "--phase", "3"],
+        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "3"],
         cwd=checkout,
         capture_output=True,
         check=False,
@@ -171,10 +219,48 @@ def test_runner_environment_scrub_is_behavioral() -> None:
             "ANTHROPIC_API_KEY": "disposable-canary",
             "DATABASE_URL": "disposable-canary",
             "OPENAI_API_KEY": "disposable-canary",
+            "VITE_E2E_CANARY": "disposable-canary",
         }
     )
     result = _run_runner("--self-test-scrub", env=env)
     assert result.returncode == 0, result.stderr
+
+
+def test_runner_dotenv_disable_contract_is_behavioral(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("GARDENOPS_E2E_DOTENV_CANARY=loaded\n", encoding="utf-8")
+    env = os.environ.copy()
+    env["PYTHON_DOTENV_DISABLED"] = "1"
+    env.pop("GARDENOPS_E2E_DOTENV_CANARY", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; from dotenv import load_dotenv; "
+                "load_dotenv(dotenv_path='.env'); "
+                "raise SystemExit(1 if os.environ.get('GARDENOPS_E2E_DOTENV_CANARY') else 0)"
+            ),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_runner_uses_isolated_production_preview_and_locked_dependency_gate() -> None:
+    source = RUNNER.read_text(encoding="utf-8")
+    assert "--expected-head <40hex>" in source
+    assert "verify_locked_dependencies" in source
+    assert "uv sync --locked --all-groups --dry-run" in source
+    assert "npm ci --dry-run --ignore-scripts" in source
+    assert "PYTHON_DOTENV_DISABLED=1" in source
+    assert "VITE_ENV_DIR" in source
+    assert '"$ROOT_DIR/frontend/node_modules/.bin/vite" build' in source
+    assert '"$ROOT_DIR/frontend/node_modules/.bin/vite" preview' in source
+    assert "npm run dev" not in source
 
 
 @pytest.mark.parametrize("variable", ["BASH_ENV", "PYTHONPATH", "NODE_OPTIONS"])
@@ -229,10 +315,34 @@ def test_seeder_rejects_marker_not_bound_to_system_identifier(
         "GARDENOPS_DISPOSABLE_POSTGRES_MARKER": "999.marker",
         "GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER": "123",
         "GARDENOPS_DISPOSABLE_POSTGRES_URL": ("postgresql://127.0.0.1:55432/gardenops_test"),
+        "GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD": EXPECTED_HEAD,
+        "PYTHON_DOTENV_DISABLED": "1",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
     with pytest.raises(RuntimeError, match="not bound"):
+        _require_child_environment()
+
+
+def test_seeder_rejects_stale_review_gated_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    values = {
+        "APP_ENV": "test",
+        "AUTH_MODE": "session",
+        "AUTH_REQUIRED": "true",
+        "DATABASE_URL": "postgresql://127.0.0.1:55432/gardenops_test",
+        "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-12",
+        "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1783857600000",
+        "GARDENOPS_COMPLETE_JOURNEYS_E2E_ALLOW_TRUNCATE": "1",
+        "GARDENOPS_COMPLETE_JOURNEYS_E2E_CHILD": "1",
+        "GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD": "0" * 40,
+        "GARDENOPS_DISPOSABLE_POSTGRES_MARKER": "123.marker",
+        "GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER": "123",
+        "GARDENOPS_DISPOSABLE_POSTGRES_URL": "postgresql://127.0.0.1:55432/gardenops_test",
+        "PYTHON_DOTENV_DISABLED": "1",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    with pytest.raises(RuntimeError, match="review-gated HEAD mismatch"):
         _require_child_environment()
 
 
@@ -574,7 +684,8 @@ def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None
         "Muted legacy issue-created notification returned after reload",
         "issueCreatedRuleControls",
         "New issues: Email",
-        'selectOption("normal")',
+        "exercisePersonalNotificationPreferencePersistence",
+        "contract.saved_severity",
         "completed desktop bloom journal card after reload",
         "mobile grouped fertilize journal after reload",
         "Mobile Quick Actions did not expose dialog semantics",
@@ -2195,11 +2306,11 @@ const finalRows = {
   ],
   weather_alerts: structuredClone(semantic.rows_after.weather_alerts),
 };
-assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture);
+assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture, true);
 try {
   const changed = structuredClone(finalRows);
   changed.weather_alerts.push({ row_id: 8 });
-  assertPhaseTwoScopedMutableRows(semantic, changed, fixture);
+  assertPhaseTwoScopedMutableRows(semantic, changed, fixture, true);
   process.exit(3);
 } catch (error) {
   if (!/extra or missing mutable row/.test(String(error.message))) process.exit(4);
@@ -2233,6 +2344,7 @@ const fixture = {
     },
   } },
 };
+const oracle = { phase_two: { maintenance: fixture.phase_two.maintenance_expectations } };
 const created = {
   tasks: {
     created: [
@@ -2249,12 +2361,14 @@ const created = {
   },
   weather_alerts: { created: [{ alert_type: 'heat_wave' }], mutated_existing: [] },
 };
-assertPhaseTwoMaintenanceSpec(created, fixture.phase_two.maintenance_expectations.summary, fixture);
+assertPhaseTwoMaintenanceSpec(
+  created, fixture.phase_two.maintenance_expectations.summary, fixture, oracle,
+);
 try {
   const drifted = structuredClone(created);
   drifted.tasks.created.push({ rule_source: 'auto:unexpected:plant', task_type: 'protect' });
   assertPhaseTwoMaintenanceSpec(
-    drifted, fixture.phase_two.maintenance_expectations.summary, fixture,
+    drifted, fixture.phase_two.maintenance_expectations.summary, fixture, oracle,
   );
   process.exit(3);
 } catch (error) {
@@ -2272,9 +2386,22 @@ def test_whole_table_projection_contract_rejects_unprojected_allowed_table() -> 
 const {
   assertWholeTableProjectionCoverage,
 } = require('./scripts/check_complete_journeys_e2e.cjs');
-const row = (count, digest) => ({ count, digest: digest.repeat(32) });
-const initial = { garden_tasks: row(2, 'a'), notification_events: row(3, 'b') };
-const final = { garden_tasks: row(4, 'c'), notification_events: row(5, 'd') };
+const row = (digests, digest) => ({
+  count: digests.length,
+  digest: digest.repeat(32),
+  row_digests: [...digests].sort(),
+});
+const initial = {
+  garden_tasks: row(['a'.repeat(32), 'b'.repeat(32)], 'a'),
+  notification_events: row(['c'.repeat(32), 'd'.repeat(32), 'e'.repeat(32)], 'b'),
+};
+const final = {
+  garden_tasks: row(['1'.repeat(32), '2'.repeat(32), '3'.repeat(32), '4'.repeat(32)], 'c'),
+  notification_events: row(
+    ['5'.repeat(32), '6'.repeat(32), '7'.repeat(32), '8'.repeat(32), '9'.repeat(32)],
+    'd',
+  ),
+};
 assertWholeTableProjectionCoverage(
   initial, final, new Set(['garden_tasks', 'notification_events']),
 );
@@ -2287,6 +2414,43 @@ try {
   process.exit(3);
 } catch (error) {
   if (!String(error.message).includes('coverage changed')) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_whole_table_mutation_accounting_rejects_injected_row_change() -> None:
+    script = """
+const { assertWholeTableMutationAccounting } = require('./scripts/check_complete_journeys_e2e.cjs');
+const row = (digests) => ({
+  count: digests.length,
+  digest: 'a'.repeat(32),
+  row_digests: [...digests].sort(),
+});
+const initial = { garden_tasks: row(['1'.repeat(32)]) };
+const final = { garden_tasks: row(['2'.repeat(32)]) };
+const accounting = {
+  garden_tasks: {
+    allow_row_delta: true,
+    evidence: 'independent-oracle',
+    max_added: 1,
+    max_removed: 1,
+  },
+};
+assertWholeTableMutationAccounting(initial, final, new Set(['garden_tasks']), accounting);
+try {
+  assertWholeTableMutationAccounting(
+    initial,
+    { garden_tasks: row(['2'.repeat(32), '3'.repeat(32)]) },
+    new Set(['garden_tasks']),
+    accounting,
+  );
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('max_added')) process.exit(4);
 }
 """
     result = subprocess.run(
@@ -2308,6 +2472,109 @@ try {
   process.exit(3);
 } catch (error) {
   if (!String(error.message).includes('shared-state choreography')) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_calendar_lifecycle_requires_exact_response_and_independent_request_multisets() -> None:
+    script = """
+const {
+  assertPhaseTwoCalendarLifecycleEvidence,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const eventId = 'calevt_calendarproof';
+const mutations = [
+  {
+    method: 'POST', path: '/api/calendar/manual-events',
+    request_id: 'calendar-post-1', status_code: 201,
+  },
+  {
+    method: 'PATCH', path: `/api/calendar/manual-events/${eventId}`,
+    request_id: 'calendar-patch-1', status_code: 200,
+  },
+  {
+    method: 'DELETE', path: `/api/calendar/manual-events/${eventId}`,
+    request_id: 'calendar-delete-1', status_code: 200,
+  },
+];
+const profile = (profile) => ({
+  role: 'admin', profile,
+  checks: {
+    calendar_lifecycle_mutations: {
+      event_id: eventId,
+      mutations: structuredClone(mutations),
+    },
+  },
+  requests: mutations.map((mutation) => ({
+    method: mutation.method, path: mutation.path, requestId: mutation.request_id,
+    statusCode: mutation.status_code,
+  })),
+});
+const oracle = { phase_two: { calendar_lifecycle: {
+  profiles: ['admin:desktop', 'admin:mobile'],
+  mutations: [
+    { method: 'POST', path: '/api/calendar/manual-events', status_code: 201 },
+    { method: 'PATCH', path: '/api/calendar/manual-events/{event_id}', status_code: 200 },
+    { method: 'DELETE', path: '/api/calendar/manual-events/{event_id}', status_code: 200 },
+  ],
+} } };
+const profiles = [profile('desktop'), profile('mobile')];
+assertPhaseTwoCalendarLifecycleEvidence(profiles, oracle);
+const injected = structuredClone(profiles);
+injected[0].requests[1].requestId = 'calendar-injected-request-id';
+try {
+  assertPhaseTwoCalendarLifecycleEvidence(injected, oracle);
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('independent mutation multiset')) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_notification_preference_matrix_rejects_undersized_mobile_touch_target() -> None:
+    script = """
+const {
+  assertPhaseTwoPersonalNotificationPreferencePersistence,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const matrix = {
+  'admin:desktop': { initial_severity: 'low', saved_severity: 'normal' },
+  'admin:mobile': {
+    initial_severity: 'normal', saved_severity: 'low', restored_severity: 'normal',
+  },
+};
+const profile = (role, profileName, expected) => ({
+  role, profile: profileName,
+  checks: { personal_notification_preference_persistence: {
+    initial_severity: expected.initial_severity,
+    reloaded_saved_severity: expected.saved_severity,
+    restored_severity: expected.restored_severity || null,
+    save_responses: Array.from({ length: expected.restored_severity ? 2 : 1 }, (_, index) => ({
+      request_id: `${role}-${profileName}-save-${index + 1}`, status_code: 200,
+    })),
+    touch_targets: profileName === 'mobile'
+      ? Array.from({ length: 4 }, () => ({ height: 44, width: 44 })) : [],
+  } },
+});
+const oracle = { phase_two: { fixture: { notification_persistence: matrix } } };
+const profiles = Object.entries(matrix).map(([key, expected]) => {
+  const [role, profileName] = key.split(':');
+  return profile(role, profileName, expected);
+});
+assertPhaseTwoPersonalNotificationPreferencePersistence(profiles, oracle);
+const injected = structuredClone(profiles);
+injected[1].checks.personal_notification_preference_persistence.touch_targets[0].height = 43;
+try {
+  assertPhaseTwoPersonalNotificationPreferencePersistence(injected, oracle);
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('smaller than 44px')) process.exit(4);
 }
 """
     result = subprocess.run(
@@ -2382,9 +2649,7 @@ def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_w
 
 
 def test_phase_two_viewer_denial_consumes_response_before_reload() -> None:
-    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
     viewer_denial = source.split("async function attemptForbiddenViewerTaskWrite", 1)[1].split(
         "async function exerciseViewer", 1
     )[0]
@@ -2402,9 +2667,9 @@ def test_phase_two_completion_journals_retain_task_plot_context() -> None:
     )[0]
 
     for task_key in ("bloom_desktop", "bloom_mobile"):
-        task_expectation = journal_expectations.split(
-            f"[phase.task_ids.{task_key}]: {{", 1
-        )[1].split("    },", 1)[0]
+        task_expectation = journal_expectations.split(f"[phase.task_ids.{task_key}]: {{", 1)[
+            1
+        ].split("    },", 1)[0]
         assert "plot_ids: [phase.plot_ids.alpha]," in task_expectation
 
     metadata_expectation = source.split("exact(entry.metadata, {", 1)[1].split(
@@ -2515,7 +2780,7 @@ def test_phase_two_rain_reassessment_expectation_is_horticulturally_explicit() -
 
     assert 'const expectedRainValidUntil = "2026-07-14";' in source
     assert 'const expectedRainReassessmentOn = "2026-07-16";' in source
-    assert 'rain_reassessment_delay_days: 2' in source
+    assert "rain_reassessment_delay_days: 2" in source
     assert 'rain_reassessment_policy: "check_root_zone_moisture_before_watering"' in source
     assert 'rainOutdoor.due_on === "2026-07-15"' not in source
     assert 'reason: "absent_from_current_forecast"' in source
@@ -2524,17 +2789,32 @@ def test_phase_two_rain_reassessment_expectation_is_horticulturally_explicit() -
     assert "resolved_at_ms: fixture.clock.attention_now_ms" in source
 
 
-def test_phase_two_maintenance_summary_is_derived_from_independent_fixture_spec() -> None:
+def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracle() -> None:
     source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
 
     seed_source = (ROOT / "scripts/seed_complete_journeys_e2e.py").read_text(encoding="utf-8")
+    oracle = json.loads(ORACLE.read_text(encoding="utf-8"))
     assert "assertPhaseTwoMaintenanceSpec" in source
-    assert "maintenance_expectations.summary" in source
+    assert "phaseTwoOracle" in source
+    assert "maintenance_expectations.summary" not in source
     assert "maintenanceCreated.notifications.created.length" not in source
     assert "PHASE_TWO_MAINTENANCE_EXPECTATIONS" in seed_source
-    assert '"by_rule_family"' in seed_source
-    assert '"by_role"' in seed_source
-    assert '"mutated_existing"' in seed_source
+    assert "complete_journeys_phase_two_oracle.json" in seed_source
+    assert oracle["phase_two"]["maintenance"]["summary"]["notifications_created"] == 51
+    assert oracle["phase_two"]["maintenance"]["logical_rows"]["weekly_water"]["due_on"] == [
+        "2026-07-15",
+        "2026-07-22",
+    ]
+    assert oracle["phase_two"]["maintenance"]["created"]["notifications"]["by_role"] == {
+        "admin": 17,
+        "editor": 17,
+        "viewer": 17,
+    }
+    assert oracle["phase_two"]["maintenance"]["mutated_existing"] == {
+        "notifications": 0,
+        "tasks": 1,
+        "weather_alerts": 1,
+    }
 
 
 def test_phase_two_maintenance_notifications_have_exact_post_journey_lifecycle() -> None:
@@ -2556,6 +2836,7 @@ def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evi
     )
     checker_source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
     seed_source = (ROOT / "scripts/seed_complete_journeys_e2e.py").read_text(encoding="utf-8")
+    oracle_source = ORACLE.read_text(encoding="utf-8")
     for marker in (
         "PHASE_TWO_DELIVERY_ELIGIBLE_NOTIFICATION_PUBLIC_ID",
         "PHASE_TWO_DELIVERY_INELIGIBLE_NOTIFICATION_PUBLIC_ID",
@@ -2578,11 +2859,11 @@ def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evi
         "preference_delivery: phaseTwoPreferenceDelivery",
         "preference_delivery_exact",
         "expectedPreferenceDeliveryIssues",
-        '"garden_issues"',
         "preference_delivery_rows",
         "delivery_badge_count",
     ):
         assert marker in checker_source
+    assert '"garden_issues"' in oracle_source
 
 
 def test_phase_two_harness_forbids_direct_mutation_probes_and_verifies_trace_artifacts() -> None:
@@ -2650,14 +2931,16 @@ const weatherAfter = {
   description: 'Frost expected on 1 day(s). Coldest: -3.0\u00b0C on 2026-07-12. '
     + 'Protect tender plants.',
   metadata: {
-    coldest: -3, coldest_date: '2026-07-12', frost_days: [['2026-07-12', -3]],
+    coldest: -3, coldest_date: '2026-07-12', forecast_plant_links_authoritative: true,
+    frost_days: [['2026-07-12', -3]],
     plant_advice: [{
       hardiness: 'H1', min_safe_temp: 15, name: 'Phase 2 Mobile Tomato',
       plt_id: 'COMPLETE-P2-FERT-MOBILE',
     }],
   },
-  plant_ids: ['COMPLETE-P2-FERT-MOBILE', 'OPT-JOURNEY-A-PLANT'],
+  plant_ids: ['COMPLETE-P2-FERT-MOBILE'],
   title: 'Frost warning: -3\u00b0C expected',
+  valid_until: '2026-07-12',
 };
 const evidence = {
   notifications: { mutated_existing: [] },
@@ -2871,11 +3154,11 @@ const fixture = { phase_two: { preference_delivery: {
   eligible: { public_id: 'note-delivery-eligible' },
   ineligible: { public_id: 'note-delivery-ineligible' },
 } } };
-assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture);
+assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture, true);
 try {
   const changed = structuredClone(finalRows);
   changed.tasks.push(row(7, 'task-extra'));
-  assertPhaseTwoScopedMutableRows(semantic, changed, fixture);
+  assertPhaseTwoScopedMutableRows(semantic, changed, fixture, true);
   process.exit(3);
 } catch (error) {
   if (!/extra or missing mutable row/i.test(String(error.message))) process.exit(4);
