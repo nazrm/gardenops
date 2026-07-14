@@ -2242,7 +2242,9 @@ async function dismissPersonalViewerWeatherAlert(page, profile) {
   const response = await responsePromise;
   assert(response.status() === 200,
     `${profile} viewer personal weather dismissal returned ${response.status()}`);
-  await dismiss.waitFor({ state: "detached" });
+  await page.locator(
+    `#weather-dashboard .weather-alert-dismiss[data-alert-id="${alertId}"]`,
+  ).waitFor({ state: "detached" });
 }
 
 async function exerciseViewer(page, diagnostics, profile, fixture) {
