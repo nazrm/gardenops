@@ -151,6 +151,7 @@ def test_task_form_uses_shared_modal_focus_and_explicit_exit_controls() -> None:
 def test_plot_drawer_sheet_and_collapsibles_are_keyboard_dialogs() -> None:
     drawer = _read_frontend("components/drawer.ts")
     sheet = _read_frontend("components/bottomSheet.ts")
+    map_view = _read_frontend("components/mapView.ts")
 
     assert 'const header = document.createElement("button")' in drawer
     assert 'header.setAttribute("aria-controls", bodyId)' in drawer
@@ -162,5 +163,10 @@ def test_plot_drawer_sheet_and_collapsibles_are_keyboard_dialogs() -> None:
         assert "trapFocus(" in source
         assert 'e.key !== "Escape"' in source
         assert "activeReturnFocus" in source
+        assert "activeReturnPlotId" in source
+        assert '`.plot[data-plot-id="${CSS.escape(returnPlotId)}"]`' in source
     assert 'const handleBar = document.createElement("button")' in sheet
     assert 'handleBar.setAttribute("aria-label", t("plot_drawer.resize_sheet"))' in sheet
+    assert "el.tabIndex = 0" in map_view
+    assert 'el.setAttribute("role", "button")' in map_view
+    assert 'e.key !== "Enter" && e.key !== " "' in map_view

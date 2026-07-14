@@ -434,7 +434,12 @@ async function completePlotDrawerTask(page, fixture) {
     "Completed plot drawer task retained write controls");
   await page.keyboard.press("Escape");
   await drawer.waitFor({ state: "hidden" });
-  await waitFor(async () => await details.evaluate((element) => document.activeElement === element),
+  await waitFor(async () => await page.evaluate(({ plotId }) => {
+    const active = document.activeElement;
+    const detailsTrigger = document.querySelector(`[data-view-plot-details='${plotId}']`);
+    const plotTrigger = document.querySelector(`.plot[data-plot-id='${plotId}']`);
+    return active === detailsTrigger || active === plotTrigger;
+  }, { plotId: fixture.phase_two.plot_ids.alpha }),
     "plot drawer focus return");
 }
 

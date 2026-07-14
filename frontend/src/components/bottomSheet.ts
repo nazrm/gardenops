@@ -51,6 +51,7 @@ let dragStartY = 0;
 let dragStartHeight = 0;
 let cleanupFns: Array<() => void> = [];
 let activeReturnFocus: HTMLElement | null = null;
+let activeReturnPlotId: string | null = null;
 
 function buildBottomSheetPlantsSection(
   params: BottomSheetPlantSectionParams,
@@ -289,6 +290,7 @@ export function showBottomSheet(params: BottomSheetParams): void {
 
   document.body.appendChild(sheet);
   activeSheet = sheet;
+  activeReturnPlotId = plotId;
   activeReturnFocus = focusedBeforeOpen?.isConnected
     ? focusedBeforeOpen
     : document.querySelector<HTMLElement>(`.plot[data-plot-id="${CSS.escape(plotId)}"]`);
@@ -441,6 +443,7 @@ function wireCardDrag(container: HTMLElement): void {
 
 export function dismissBottomSheet(restoreFocus = false): void {
   const returnFocus = activeReturnFocus;
+  const returnPlotId = activeReturnPlotId;
   for (const fn of cleanupFns) fn();
   cleanupFns = [];
   if (activeSheet) {
@@ -448,8 +451,18 @@ export function dismissBottomSheet(restoreFocus = false): void {
     activeSheet = null;
   }
   activeReturnFocus = null;
-  if (restoreFocus && returnFocus?.isConnected) {
-    window.requestAnimationFrame(() => returnFocus.focus());
+  activeReturnPlotId = null;
+  if (restoreFocus) {
+    window.requestAnimationFrame(() => {
+      const target = returnFocus?.isConnected
+        ? returnFocus
+        : returnPlotId
+          ? document.querySelector<HTMLElement>(
+            `.plot[data-plot-id="${CSS.escape(returnPlotId)}"]`,
+          )
+          : null;
+      target?.focus();
+    });
   }
 }
 

@@ -38,6 +38,7 @@ type DrawerPlantSectionParams = Pick<
 let activeDrawer: HTMLElement | null = null;
 let cleanupFns: Array<() => void> = [];
 let activeReturnFocus: HTMLElement | null = null;
+let activeReturnPlotId: string | null = null;
 let collapsibleId = 0;
 
 export function setCollapsibleSectionState(section: HTMLElement, collapsed: boolean): void {
@@ -292,6 +293,7 @@ export function showDrawer(params: DrawerParams): void {
   document.body.appendChild(backdrop);
   document.body.appendChild(drawer);
   activeDrawer = drawer;
+  activeReturnPlotId = plotId;
   activeReturnFocus = focusedBeforeOpen?.isConnected
     ? focusedBeforeOpen
     : document.querySelector<HTMLElement>(`.plot[data-plot-id="${CSS.escape(plotId)}"]`);
@@ -332,6 +334,7 @@ export function showDrawer(params: DrawerParams): void {
 
 export function dismissDrawer(restoreFocus = false): void {
   const returnFocus = activeReturnFocus;
+  const returnPlotId = activeReturnPlotId;
   for (const fn of cleanupFns) fn();
   cleanupFns = [];
 
@@ -341,8 +344,18 @@ export function dismissDrawer(restoreFocus = false): void {
   }
   document.querySelector(".drawer-backdrop")?.remove();
   activeReturnFocus = null;
-  if (restoreFocus && returnFocus?.isConnected) {
-    window.requestAnimationFrame(() => returnFocus.focus());
+  activeReturnPlotId = null;
+  if (restoreFocus) {
+    window.requestAnimationFrame(() => {
+      const target = returnFocus?.isConnected
+        ? returnFocus
+        : returnPlotId
+          ? document.querySelector<HTMLElement>(
+            `.plot[data-plot-id="${CSS.escape(returnPlotId)}"]`,
+          )
+          : null;
+      target?.focus();
+    });
   }
 }
 
