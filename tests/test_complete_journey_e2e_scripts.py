@@ -283,9 +283,7 @@ if (JSON.stringify(normalized) !== JSON.stringify({
 
 
 def test_map_first_geometry_measures_the_visible_map_viewport() -> None:
-    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
     geometry = source.split("async function assertMapFirstGeometry", 1)[1].split(
         "async function completeBloomTask", 1
     )[0]
@@ -2768,6 +2766,18 @@ def test_attention_preferences_strip_legacy_quiet_hours_before_save() -> None:
     for field in ("active", "end", "end_hour", "from", "start", "start_hour", "to"):
         assert f'"{field}"' in collector
     assert "delete quietHours[field]" in collector
+
+
+def test_phase_two_seed_uses_canonical_attention_quiet_hours() -> None:
+    source = (ROOT / "scripts/seed_complete_journeys_e2e.py").read_text(encoding="utf-8")
+    attention_insert = source.split("INSERT INTO user_attention_preferences", 1)[1].split(
+        "for public_id, garden_id", 1
+    )[0]
+
+    assert '"digest": {' in attention_insert
+    assert '"enabled": True' in attention_insert
+    assert '"start": "22:15"' in attention_insert
+    assert '"end": "07:45"' in attention_insert
 
 
 def test_phase_two_checker_allows_only_exact_viewer_personal_preference_changes() -> None:

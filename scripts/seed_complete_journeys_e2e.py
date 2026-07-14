@@ -1059,7 +1059,16 @@ def _seed_phase_two_fixtures(conn, optimization_seed: Any) -> None:
             """,
             (
                 user_id,
-                json.dumps({"start": "22:15", "end": "07:45"}, sort_keys=True),
+                json.dumps(
+                    {
+                        "digest": {
+                            "enabled": True,
+                            "start": "22:15",
+                            "end": "07:45",
+                        }
+                    },
+                    sort_keys=True,
+                ),
                 PHASE_TWO_NOW_MS,
                 PHASE_TWO_NOW_MS,
             ),
