@@ -14,7 +14,10 @@ type QuickActionTask = {
   title: string;
   task_type: string;
   snooze_label?: string;
+  offline_status?: "queued" | "failed";
 };
+
+export type QuickActionDataState = "live" | "cached" | "unavailable";
 
 const QUICK_ACTION_ICONS = {
   complete: "\u2713",
@@ -65,8 +68,17 @@ function appendTaskPicker(
       const primaryLabel = task.snooze_label
         ? `${taskLabel}: ${task.snooze_label}`
         : taskLabel;
-      btn.textContent = primaryLabel;
-      btn.setAttribute("aria-label", primaryLabel);
+      const stateLabel = task.offline_status
+        ? t(`offline.task_${task.offline_status}`, { action: "" }).trim()
+        : "";
+      const accessibleLabel = stateLabel ? `${primaryLabel}: ${stateLabel}` : primaryLabel;
+      btn.textContent = accessibleLabel;
+      btn.setAttribute("aria-label", accessibleLabel);
+      btn.disabled = Boolean(task.offline_status);
+      if (task.offline_status) {
+        btn.classList.add(`quick-action-task-item--${task.offline_status}`);
+        btn.dataset["offlineTaskState"] = task.offline_status;
+      }
       btn.addEventListener("click", () => onSelect(task.id));
       list.appendChild(btn);
       if (secondaryAction) {
@@ -75,6 +87,7 @@ function appendTaskPicker(
         secondary.className = "quick-action-task-item";
         secondary.textContent = secondaryAction.label;
         secondary.setAttribute("aria-label", `${taskLabel}: ${secondaryAction.label}`);
+        secondary.disabled = Boolean(task.offline_status);
         secondary.addEventListener("click", () => secondaryAction.onSelect(task.id));
         list.appendChild(secondary);
       }
@@ -90,6 +103,23 @@ function appendTaskPicker(
   search.addEventListener("input", renderMatches);
   container.append(search, list);
   renderMatches();
+}
+
+function appendQuickActionDataState(
+  container: HTMLElement,
+  dataState: QuickActionDataState,
+): boolean {
+  if (dataState === "live") return false;
+  const status = document.createElement("div");
+  status.className = `offline-data-state offline-data-state--${dataState}`;
+  status.setAttribute("role", "status");
+  status.textContent = t(
+    dataState === "cached"
+      ? "quick_actions.offline_cached"
+      : "quick_actions.offline_unavailable",
+  );
+  container.appendChild(status);
+  return dataState === "unavailable";
 }
 
 export function appendQuickActionSnoozeNotice(
@@ -205,9 +235,10 @@ export function renderQuickActionSheet(
 
 export function renderTaskQuickComplete(
   container: HTMLElement,
-  tasks: ReadonlyArray<{ id: string; title: string; task_type: string }>,
+  tasks: ReadonlyArray<QuickActionTask>,
   onComplete: (taskId: string) => void,
   onBack: () => void,
+  dataState: QuickActionDataState = "live",
 ): void {
   container.replaceChildren();
 
@@ -228,6 +259,8 @@ export function renderTaskQuickComplete(
   header.append(backBtn, title);
   container.appendChild(header);
 
+  if (appendQuickActionDataState(container, dataState)) return;
+
   if (tasks.length === 0) {
     const empty = document.createElement("p");
     empty.className = "quick-action-empty";
@@ -245,6 +278,7 @@ export function renderTaskQuickSnooze(
   onSnooze: (taskId: string) => void,
   onSnoozeDate: (taskId: string) => void,
   onBack: () => void,
+  dataState: QuickActionDataState = "live",
 ): void {
   container.replaceChildren();
 
@@ -264,6 +298,8 @@ export function renderTaskQuickSnooze(
 
   header.append(backBtn, title);
   container.appendChild(header);
+
+  if (appendQuickActionDataState(container, dataState)) return;
 
   if (tasks.length === 0) {
     const empty = document.createElement("p");

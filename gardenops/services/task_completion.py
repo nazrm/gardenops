@@ -41,6 +41,7 @@ def clear_completion_capture_metadata(task_row: dict[str, Any]) -> dict[str, Any
     metadata.pop("completion_journal_entries", None)
     metadata.pop("completion_journal_entry_id", None)
     metadata.pop("completion_capture_original_plant_ids", None)
+    metadata.pop("completion_capture_original_plot_ids", None)
     return metadata
 
 
@@ -140,25 +141,30 @@ def update_task_plant_links(
     )
 
 
-def current_plot_ids_for_plant_ids(
+def task_plot_ids_for_plant_ids(
     db: DbConn,
     *,
+    task_id: int,
     garden_id: int,
     plant_ids: list[str],
 ) -> list[str]:
-    """Return current placements for selected plants in one garden."""
+    """Return task-scoped current assignments for selected plants."""
     if not plant_ids:
         return []
     rows = db.execute(
         """
         SELECT DISTINCT pp.plot_id
-        FROM plot_plants pp
+        FROM garden_task_plots gtp
+        JOIN plot_plants pp ON pp.plot_id = gtp.plot_id
         JOIN plots p ON p.plot_id = pp.plot_id
-        WHERE p.garden_id = %s
+        JOIN plot_ownership po ON po.plot_id = pp.plot_id
+        WHERE gtp.task_id = %s
+          AND p.garden_id = %s
+          AND po.garden_id = %s
           AND pp.plt_id = ANY(%s)
         ORDER BY pp.plot_id
         """,
-        (garden_id, plant_ids),
+        (task_id, garden_id, garden_id, plant_ids),
     ).fetchall()
     return [str(row["plot_id"]) for row in rows]
 
@@ -289,6 +295,7 @@ def record_completion_journal_entry(
         "source_task_type": task_type,
         "outcome": outcome,
         "selected_plant_ids": selected_plant_ids,
+        "selected_plot_ids": selected_plot_ids,
     }
     title = ""
     if outcome == "not_seen_blooming_this_season":
@@ -322,21 +329,18 @@ def record_completion_journal_entry(
         "INSERT INTO garden_journal_entry_plants (entry_id, plt_id) VALUES (%s, %s)",
         [(entry_id, plant_id) for plant_id in selected_plant_ids],
     )
-    if task_type != "observe_bloom":
-        executemany(
-            db,
-            "INSERT INTO garden_journal_entry_plots (entry_id, plot_id) VALUES (%s, %s)",
-            [(entry_id, plot_id) for plot_id in selected_plot_ids],
-        )
+    executemany(
+        db,
+        "INSERT INTO garden_journal_entry_plots (entry_id, plot_id) VALUES (%s, %s)",
+        [(entry_id, plot_id) for plot_id in selected_plot_ids],
+    )
     if task_type == "observe_bloom" and outcome == "done":
         mark_seen_growing_from_observation(
             db,
             garden_id=int(task_row["garden_id"]),
             plant_ids=selected_plant_ids,
             seen_date=occurred_on,
-            # Completion selects plants, not a particular assignment. The
-            # observation helper updates an assignment only when it is unique.
-            plot_ids=None,
+            plot_ids=selected_plot_ids,
         )
     completion_records[key] = entry_public_id
     if task_type == "observe_bloom" and outcome == "done":

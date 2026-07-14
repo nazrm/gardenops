@@ -19,7 +19,13 @@ import {
 } from "../services/api";
 import type { MediaAsset, MediaLinkRef, TaskActionRequest } from "../services/api";
 import type { PlantAlertType } from "./plantCard";
-import { enqueueDraft, isOnline } from "../services/offlineQueue";
+import {
+  enqueueDraft,
+  getTaskActionStates,
+  isOnline,
+  OfflineTaskActionConflictError,
+  type OfflineTaskActionState,
+} from "../services/offlineQueue";
 import { renderMediaGalleryLazy } from "./mediaGalleryLoader";
 import { showToast } from "./toast";
 import {
@@ -341,6 +347,7 @@ function formatTaskDue(
 }
 
 interface PlotTaskCardCallbacks {
+  offlineAction?: OfflineTaskActionState | undefined;
   onComplete?: (() => void) | undefined;
   onSkip?: (() => void) | undefined;
   onSnooze?: (() => void) | undefined;
@@ -374,7 +381,12 @@ function renderTaskCard(
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "drawer-task-card";
+  card.dataset["taskId"] = task.id;
   if (task.status === "completed") card.classList.add("task-completed");
+  if (callbacks.offlineAction) {
+    card.classList.add(`task-offline-${callbacks.offlineAction.status}`);
+    card.dataset["offlineTaskState"] = callbacks.offlineAction.status;
+  }
 
   const dot = document.createElement("span");
   dot.className = `drawer-task-severity severity-${task.severity}`;
@@ -393,9 +405,27 @@ function renderTaskCard(
   dueEl.textContent = due.text;
 
   info.append(titleEl, dueEl);
+  if (callbacks.offlineAction) {
+    const offlineState = document.createElement("div");
+    offlineState.className = `drawer-task-offline-state task-offline-state task-offline-state--${callbacks.offlineAction.status}`;
+    offlineState.setAttribute(
+      "role",
+      callbacks.offlineAction.status === "failed" ? "alert" : "status",
+    );
+    offlineState.textContent = t(`offline.task_${callbacks.offlineAction.status}`, {
+      action: t(`tasks.action_${callbacks.offlineAction.action}`),
+    });
+    if (callbacks.offlineAction.status === "failed" && callbacks.offlineAction.lastError) {
+      const error = document.createElement("span");
+      error.className = "task-offline-error";
+      error.textContent = callbacks.offlineAction.lastError;
+      offlineState.appendChild(error);
+    }
+    info.appendChild(offlineState);
+  }
   card.append(dot, info);
 
-  if (task.status !== "completed") {
+  if (task.status !== "completed" && !callbacks.offlineAction) {
     const actions = document.createElement("div");
     actions.className = "drawer-task-actions";
     if (callbacks.onComplete) {
@@ -462,9 +492,10 @@ async function loadPlotTasksPreview(
   if (!container) return;
 
   try {
-    const [actionableRes, completedRes] = await Promise.all([
+    const [actionableRes, completedRes, offlineActions] = await Promise.all([
       fetchTasksApi({ plot_id: plotId, view: "today" }),
       fetchTasksApi({ plot_id: plotId, status: "completed" }),
+      getTaskActionStates(gardenId),
     ]);
     if (
       seq !== plotTasksSeq
@@ -501,7 +532,9 @@ async function loadPlotTasksPreview(
       for (const task of allTasks) {
         const card = renderTaskCard(
           task,
-          cbs.canWrite()
+          offlineActions.has(task.id)
+            ? { offlineAction: offlineActions.get(task.id) }
+            : cbs.canWrite()
             ? {
                 onComplete: () => void completeTaskInline(task, card, state, plotId, cbs),
                 onSkip: () => void skipTaskInline(task, card, state, plotId, cbs),
@@ -580,6 +613,16 @@ async function submitPlotTaskAction(
   try {
     if (!isOnline()) {
       await enqueuePlotOfflineTaskAction(task.id, body);
+      card.classList.add("task-offline-queued");
+      card.dataset["offlineTaskState"] = "queued";
+      card.querySelector(".drawer-task-actions")?.remove();
+      const offlineState = document.createElement("div");
+      offlineState.className = "drawer-task-offline-state task-offline-state task-offline-state--queued";
+      offlineState.setAttribute("role", "status");
+      offlineState.textContent = t("offline.task_queued", {
+        action: t(`tasks.action_${body.action}`),
+      });
+      card.querySelector(".drawer-task-info")?.appendChild(offlineState);
       showToast(t("offline.draft_saved"), "success");
       return true;
     }
@@ -589,7 +632,12 @@ async function submitPlotTaskAction(
     await loadPlotTasksPreview(state, plotId, cbs);
     return true;
   } catch (err) {
-    showToast(getApiErrorMessage(err), "error");
+    showToast(
+      err instanceof OfflineTaskActionConflictError
+        ? t(err.kind === "duplicate" ? "offline.task_duplicate" : "offline.task_conflict")
+        : getApiErrorMessage(err),
+      "error",
+    );
     return false;
   }
 }

@@ -66,7 +66,7 @@ export function trapFocus(container: HTMLElement): () => void {
     if (e.key !== "Tab") return;
     const focusable = Array.from(
       container.querySelectorAll<HTMLElement>(selector),
-    ).filter((el) => !el.hasAttribute("disabled"));
+    ).filter((el) => !el.hasAttribute("disabled") && !el.closest("[hidden], [inert]") && window.getComputedStyle(el).display !== "none" && window.getComputedStyle(el).visibility !== "hidden");
     if (focusable.length === 0) return;
     const first = focusable[0]!;
     const last = focusable[focusable.length - 1]!;

@@ -39,7 +39,7 @@ from gardenops.services.generated_task_lifecycle import (
     GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
     expire_stale_generated_tasks,
 )
-from gardenops.services.task_generator import generate_tasks
+from gardenops.services.task_generator import generate_tasks, reconcile_rain_watering_outcomes
 from gardenops.services.weather_service import check_weather_and_generate_alerts
 from gardenops.sql_dates import offset_days_iso
 
@@ -55,6 +55,12 @@ _WEATHER_TASK_RULE_SOURCE_PATTERNS = (
     "auto:heat_protect:%",
     "auto:dry_water:%",
     "auto:rain_drainage:%",
+)
+_DRY_WEATHER_TASK_RULE_SOURCE_PATTERN = "auto:dry_water:%"
+_NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS = tuple(
+    pattern
+    for pattern in _WEATHER_TASK_RULE_SOURCE_PATTERNS
+    if pattern != _DRY_WEATHER_TASK_RULE_SOURCE_PATTERN
 )
 
 _NOTIFICATION_POLICIES: tuple[dict[str, Any], ...] = (
@@ -830,8 +836,8 @@ def _stale_generated_task_public_ids(
     garden_id: int,
     today_iso: str,
 ) -> set[str]:
-    weather_pattern_clauses = " OR ".join(
-        ["t.rule_source LIKE %s"] * len(_WEATHER_TASK_RULE_SOURCE_PATTERNS),
+    non_dry_weather_pattern_clauses = " OR ".join(
+        ["t.rule_source LIKE %s"] * len(_NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS),
     )
     weekly_watering_pattern_clauses = " OR ".join(
         ["t.rule_source LIKE %s"] * len(GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS),
@@ -862,10 +868,19 @@ def _stale_generated_task_public_ids(
               AND COALESCE(t.snoozed_until, t.due_on) < %s
             )
             OR (
-              ({weather_pattern_clauses})
+              t.rule_source LIKE %s
+              AND (
+                wa.id IS NULL
+                OR wa.dismissed = 1
+                OR wa.valid_until < %s
+              )
+            )
+            OR (
+              ({non_dry_weather_pattern_clauses})
               AND (
                 COALESCE(t.snoozed_until, t.due_on) < %s
                 OR wa.id IS NULL
+                OR wa.dismissed = 1
                 OR wa.valid_until < %s
               )
             )
@@ -876,7 +891,9 @@ def _stale_generated_task_public_ids(
             today_iso,
             *GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
             today_iso,
-            *_WEATHER_TASK_RULE_SOURCE_PATTERNS,
+            _DRY_WEATHER_TASK_RULE_SOURCE_PATTERN,
+            today_iso,
+            *_NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS,
             today_iso,
             today_iso,
         ],
@@ -1564,8 +1581,8 @@ def clear_stale_task_notifications(
     now_value, frozen_date = notification_request_clock(now_ms=now_ms)
     today = today_iso or _notification_today_iso(frozen_date=frozen_date)
     today_start_ms = _date_start_ms(today) or now_value
-    weather_pattern_clauses = " OR ".join(
-        ["t.rule_source LIKE %s"] * len(_WEATHER_TASK_RULE_SOURCE_PATTERNS),
+    non_dry_weather_pattern_clauses = " OR ".join(
+        ["t.rule_source LIKE %s"] * len(_NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS),
     )
     weekly_watering_pattern_clauses = " OR ".join(
         ["t.rule_source LIKE %s"] * len(GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS),
@@ -1574,8 +1591,12 @@ def clear_stale_task_notifications(
         "("
         f"(({weekly_watering_pattern_clauses}) AND COALESCE(t.snoozed_until, t.due_on) < %s)"
         " OR "
-        f"(({weather_pattern_clauses}) AND "
-        "(COALESCE(t.snoozed_until, t.due_on) < %s OR wa.valid_until < %s OR wa.id IS NULL))"
+        f"(t.rule_source LIKE %s AND "
+        "(wa.valid_until < %s OR wa.dismissed = 1 OR wa.id IS NULL))"
+        " OR "
+        f"(({non_dry_weather_pattern_clauses}) AND "
+        "(COALESCE(t.snoozed_until, t.due_on) < %s "
+        "OR wa.valid_until < %s OR wa.dismissed = 1 OR wa.id IS NULL))"
         ")"
     )
     conditions = [
@@ -1658,7 +1679,9 @@ def clear_stale_task_notifications(
             today,
             *GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
             today,
-            *_WEATHER_TASK_RULE_SOURCE_PATTERNS,
+            _DRY_WEATHER_TASK_RULE_SOURCE_PATTERN,
+            today,
+            *_NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS,
             today,
             today,
             today,
@@ -1669,7 +1692,9 @@ def clear_stale_task_notifications(
             today,
             *GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
             today,
-            *_WEATHER_TASK_RULE_SOURCE_PATTERNS,
+            _DRY_WEATHER_TASK_RULE_SOURCE_PATTERN,
+            today,
+            *_NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS,
             today,
             today,
             today,
@@ -1940,6 +1965,32 @@ def _weather_alert_identities(alerts: list[dict[str, Any]]) -> list[tuple[str, s
     )
 
 
+def _parse_weather_lifecycle_metadata(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except TypeError, ValueError, json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _record_weather_lifecycle_transition(
+    metadata: dict[str, Any],
+    transition: dict[str, Any],
+) -> None:
+    current = metadata.get("lifecycle")
+    history = metadata.get("lifecycle_history")
+    transitions = list(history) if isinstance(history, list) else []
+    if isinstance(current, dict) and current != transition:
+        transitions.append(dict(current))
+    if transitions:
+        metadata["lifecycle_history"] = transitions[-20:]
+    metadata["lifecycle"] = transition
+
+
 def _load_weather_alert_for_update(
     db: DbConn,
     *,
@@ -2023,18 +2074,17 @@ def _resolve_missing_forecast_alert_work(
         valid_from = str(row["valid_from"])
         if (alert_type, valid_from) in current_identities:
             continue
-        try:
-            metadata = json.loads(str(row["metadata_json"] or "{}"))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            metadata = {}
-        if not isinstance(metadata, dict):
-            metadata = {}
-        metadata["lifecycle"] = {
-            "status": "resolved",
-            "reason": "absent_from_current_forecast",
-            "resolved_at_ms": now_ms,
-            "source": "forecast_reconciliation",
-        }
+        metadata = _parse_weather_lifecycle_metadata(row["metadata_json"])
+        _record_weather_lifecycle_transition(
+            metadata,
+            {
+                "status": "resolved",
+                "reason": "absent_from_current_forecast",
+                "resolution_kind": "automatic_forecast",
+                "resolved_at_ms": now_ms,
+                "source": "forecast_reconciliation",
+            },
+        )
         db.execute(
             "UPDATE weather_alerts SET dismissed = 1, metadata_json = %s WHERE id = %s",
             (json.dumps(metadata, sort_keys=True, separators=(",", ":")), int(row["id"])),
@@ -2056,7 +2106,7 @@ def _resolve_missing_forecast_alert_work(
         resolved_notifications += notification.rowcount
         task_rows = db.execute(
             """
-            SELECT id, public_id
+            SELECT id, public_id, status, due_on, snoozed_until, metadata_json
             FROM garden_tasks
             WHERE garden_id = %s
               AND status IN ('pending', 'snoozed')
@@ -2067,6 +2117,21 @@ def _resolve_missing_forecast_alert_work(
             (garden_id, list(_WEATHER_TASK_RULE_SOURCE_PATTERNS), str(row["id"])),
         ).fetchall()
         for task_row in task_rows:
+            task_metadata = _parse_weather_lifecycle_metadata(task_row["metadata_json"])
+            _record_weather_lifecycle_transition(
+                task_metadata,
+                {
+                    "status": "resolved",
+                    "reason": "absent_from_current_forecast",
+                    "resolution_kind": "automatic_forecast",
+                    "resolved_at_ms": now_ms,
+                    "source": "forecast_reconciliation",
+                    "weather_alert_id": int(row["id"]),
+                    "previous_status": str(task_row["status"]),
+                    "previous_due_on": str(task_row["due_on"] or ""),
+                    "previous_snoozed_until": str(task_row["snoozed_until"] or ""),
+                },
+            )
             task_update = db.execute(
                 """
                 UPDATE garden_tasks
@@ -2074,10 +2139,15 @@ def _resolve_missing_forecast_alert_work(
                     snoozed_until = NULL,
                     completed_by_user_id = NULL,
                     completed_at_ms = NULL,
+                    metadata_json = %s,
                     updated_at_ms = %s
                 WHERE id = %s AND status IN ('pending', 'snoozed')
                 """,
-                (now_ms, int(task_row["id"])),
+                (
+                    json.dumps(task_metadata, sort_keys=True, separators=(",", ":")),
+                    now_ms,
+                    int(task_row["id"]),
+                ),
             )
             if task_update.rowcount != 1:
                 continue
@@ -2094,6 +2164,111 @@ def _resolve_missing_forecast_alert_work(
         "tasks_resolved": resolved_tasks,
         "notifications_resolved": resolved_notifications,
     }
+
+
+def _recover_reappeared_forecast_alert_work(
+    db: DbConn,
+    *,
+    garden_id: int,
+    alerts: list[dict[str, Any]],
+    now_ms: int,
+) -> int:
+    """Reopen only work automatically retired by forecast reconciliation."""
+    today = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
+    recovered = 0
+    for alert_type, valid_from in _weather_alert_identities(alerts):
+        alert = db.execute(
+            """
+            SELECT id, valid_from, valid_until
+            FROM weather_alerts
+            WHERE garden_id = %s
+              AND alert_type = %s
+              AND valid_from = %s
+              AND dismissed = 0
+            FOR UPDATE
+            """,
+            (garden_id, alert_type, valid_from),
+        ).fetchone()
+        if alert is None or str(alert["valid_until"]) < today:
+            continue
+        task_rows = db.execute(
+            """
+            SELECT id, public_id, task_type, status, due_on, snoozed_until,
+                   rule_source, metadata_json
+            FROM garden_tasks
+            WHERE garden_id = %s
+              AND status = 'skipped'
+              AND rule_source LIKE ANY(%s)
+              AND split_part(rule_source, ':', 3) = %s
+            FOR UPDATE
+            """,
+            (garden_id, list(_WEATHER_TASK_RULE_SOURCE_PATTERNS), str(alert["id"])),
+        ).fetchall()
+        for task in task_rows:
+            metadata = _parse_weather_lifecycle_metadata(task["metadata_json"])
+            lifecycle = metadata.get("lifecycle")
+            if not isinstance(lifecycle, dict):
+                continue
+            if lifecycle.get("reason") != "absent_from_current_forecast":
+                continue
+            if lifecycle.get("resolution_kind") != "automatic_forecast":
+                continue
+            if int(lifecycle.get("weather_alert_id") or 0) != int(alert["id"]):
+                continue
+
+            previous_status = str(lifecycle.get("previous_status") or "pending")
+            previous_snoozed_until = str(lifecycle.get("previous_snoozed_until") or "")
+            restored_status = (
+                "snoozed"
+                if previous_status == "snoozed" and previous_snoozed_until >= today
+                else "pending"
+            )
+            restored_snoozed_until = (
+                previous_snoozed_until if restored_status == "snoozed" else None
+            )
+            previous_due_on = str(lifecycle.get("previous_due_on") or task["due_on"] or valid_from)
+            restored_due_on = max(previous_due_on, today)
+            _record_weather_lifecycle_transition(
+                metadata,
+                {
+                    "status": "active",
+                    "reason": "same_identity_reappeared",
+                    "recovered_at_ms": now_ms,
+                    "source": "forecast_reconciliation",
+                    "weather_alert_id": int(alert["id"]),
+                },
+            )
+            update = db.execute(
+                """
+                UPDATE garden_tasks
+                SET status = %s,
+                    due_on = %s,
+                    snoozed_until = %s,
+                    completed_by_user_id = NULL,
+                    completed_at_ms = NULL,
+                    metadata_json = %s,
+                    updated_at_ms = %s
+                WHERE id = %s AND status = 'skipped'
+                """,
+                (
+                    restored_status,
+                    restored_due_on,
+                    restored_snoozed_until,
+                    json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+                    now_ms,
+                    int(task["id"]),
+                ),
+            )
+            if update.rowcount != 1:
+                continue
+            recovered += 1
+            refresh_task_notifications_for_task(
+                db,
+                garden_id=garden_id,
+                task_public_id=str(task["public_id"]),
+                now_ms=now_ms,
+            )
+    return recovered
 
 
 def _refresh_weather_alert_notification(
@@ -2355,10 +2530,17 @@ def reconcile_weather_alert_work(
     resolution = {
         "alerts_resolved": 0,
         "tasks_resolved": 0,
+        "tasks_recovered": 0,
         "notifications_resolved": 0,
     }
     if replace_forecast_alerts:
         resolution = _resolve_missing_forecast_alert_work(
+            db,
+            garden_id=garden_id,
+            alerts=alerts,
+            now_ms=now_value,
+        )
+        resolution["tasks_recovered"] = _recover_reappeared_forecast_alert_work(
             db,
             garden_id=garden_id,
             alerts=alerts,
@@ -2395,10 +2577,17 @@ def reconcile_weather_alert_work(
                 actor_user_id,
                 now_ms=now_value,
             )
+    rain_reconciliation = reconcile_rain_watering_outcomes(
+        db,
+        garden_id=garden_id,
+        now_ms=now_value,
+    )
     return {
         "notifications_created": int(notifications["created"]),
         "notifications_skipped": int(notifications["skipped"]),
         "tasks_created": tasks_created,
+        "rain_tasks_recovered": rain_reconciliation["recovered"],
+        "rain_tasks_adjusted": rain_reconciliation["adjusted"],
         **resolution,
     }
 
@@ -2751,7 +2940,7 @@ def _auto_generate_monthly_tasks(
     *,
     frozen_date: str | None = None,
 ) -> dict[str, int | bool]:
-    """Generate seasonal tasks once per calendar month per garden."""
+    """Generate monthly tasks until rain-suppressed watering is recoverable."""
     today = date.fromisoformat(_notification_today_iso(frozen_date=frozen_date))
     month_key = f"{today.year}-{today.month:02d}"
     settings_key = f"last_task_gen_month:{garden_id}"
@@ -2771,6 +2960,8 @@ def _auto_generate_monthly_tasks(
         actor_user_id=None,
         now_ms=now_ms,
     )
+    rain_suppressed = int(result.get("rain_suppressed", 0))
+    generation_marker = month_key if rain_suppressed == 0 else f"{month_key}:rain_pending"
 
     db.execute(
         """
@@ -2778,7 +2969,7 @@ def _auto_generate_monthly_tasks(
         VALUES (%s, %s)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """,
-        (settings_key, month_key),
+        (settings_key, generation_marker),
     )
     db.commit()
 
@@ -2804,6 +2995,7 @@ def _auto_generate_monthly_tasks(
     return {
         "tasks_created": result.get("created", 0),
         "tasks_skipped_dedup": result.get("skipped", 0),
+        "tasks_rain_suppressed": rain_suppressed,
         "notifications_created": notification_result.get("created", 0),
         "notifications_skipped": notification_result.get("skipped", 0),
     }

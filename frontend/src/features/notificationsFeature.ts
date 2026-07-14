@@ -217,6 +217,10 @@ function trapNotificationPanelFocus(event: KeyboardEvent): void {
   if (event.key === "Escape") {
     event.preventDefault();
     event.stopPropagation();
+    if (notificationPanelMode === "settings") {
+      exitNotificationSettings();
+      return;
+    }
     closeNotificationPanel(true);
     return;
   }
@@ -244,6 +248,17 @@ function trapNotificationPanelFocus(event: KeyboardEvent): void {
     event.preventDefault();
     first.focus();
   }
+}
+
+function exitNotificationSettings(): void {
+  if (!notificationPanelOpen) return;
+  notificationPanelMode = "list";
+  renderCurrentNotificationPanel();
+  window.requestAnimationFrame(() => {
+    notificationPanelElement()
+      ?.querySelector<HTMLElement>(".notification-settings-btn")
+      ?.focus();
+  });
 }
 
 function markNotificationTrigger(id: string): void {
@@ -712,6 +727,11 @@ async function showNotificationPreferences(): Promise<void> {
           notificationPanelMode = "list";
           await ctx.refreshBadgeCounts();
           await loadNotifications();
+          window.requestAnimationFrame(() => {
+            notificationPanelElement()
+              ?.querySelector<HTMLElement>(".notification-settings-btn")
+              ?.focus();
+          });
         } catch (err) {
           if (!isCurrentNotificationRequest(request)) return;
           ctx.showToast(
@@ -720,6 +740,7 @@ async function showNotificationPreferences(): Promise<void> {
           );
         }
       },
+      exitNotificationSettings,
     );
     focusNotificationPanel();
   } catch (err) {

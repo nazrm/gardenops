@@ -35,6 +35,7 @@ from gardenops.services.attention import (
     notification_rules_from_attention,
     save_attention_preferences,
 )
+from gardenops.services.attention.service import lock_attention_preferences
 from gardenops.services.notification_service import (
     clear_expired_notifications,
     clear_stale_informational_notifications,
@@ -443,6 +444,7 @@ def update_notification_preferences(
     if user_id is None:
         return {"status": "ok"}
 
+    lock_attention_preferences(db, user_id)
     existing_preference = db.execute(
         "SELECT * FROM user_notification_preferences WHERE user_id = %s",
         (user_id,),

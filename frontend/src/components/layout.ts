@@ -830,6 +830,7 @@ export function getAppShellMarkup(): string {
             </div>
             <div class="calendar-layout">
               <div class="calendar-surface">
+                <div id="calendar-data-state" class="offline-data-state" role="status" hidden></div>
                 <div id="calendar-root" class="calendar-root" aria-live="polite"></div>
               </div>
               <aside id="calendar-detail-panel" class="calendar-detail-panel">

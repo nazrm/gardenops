@@ -425,6 +425,8 @@ def _setup_error_log() -> None:
                     str(record.request_id),
                     80,  # type: ignore[attr-defined]
                 )
+            if hasattr(record, "audit_event_id"):
+                entry["audit_event_id"] = int(record.audit_event_id)  # type: ignore[attr-defined]
             if hasattr(record, "report_request_id"):
                 entry["report_request_id"] = _sanitize_log_str(
                     str(record.report_request_id),
@@ -1143,7 +1145,7 @@ def _forced_password_change_path_allowed(path: str) -> bool:
 
 def _is_personal_attention_mutation_path(path: str) -> bool:
     normalized_path = path.rstrip("/") or "/"
-    if normalized_path == "/api/attention/preferences":
+    if normalized_path in {"/api/attention/preferences", "/api/calendar/preferences"}:
         return True
     if not normalized_path.startswith("/api/attention/items/"):
         return False

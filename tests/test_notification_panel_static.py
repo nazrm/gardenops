@@ -53,6 +53,25 @@ def test_notification_preference_time_and_severity_controls_have_accessible_name
     assert "...(timeZone ? { timezone: timeZone } : {})" in component
 
 
+def test_notification_navigation_and_settings_are_native_keyboard_controls() -> None:
+    feature = (ROOT / "frontend/src/features/notificationsFeature.ts").read_text(encoding="utf-8")
+    component = (ROOT / "frontend/src/components/notifications.ts").read_text(encoding="utf-8")
+
+    assert 'const content = document.createElement("button")' in component
+    assert 'content.type = "button";' in component
+    assert 'content.addEventListener("click", () => cbs.onNavigate(notification))' in component
+    assert 'const form = document.createElement("form")' in component
+    assert (
+        'container.setAttribute("aria-labelledby", "notification-preferences-title")' in component
+    )
+    assert 'cancelBtn.className = "notification-prefs-cancel"' in component
+    assert 'cancelBtn.addEventListener("click", onCancel)' in component
+    assert 'saveBtn.type = "submit"' in component
+    assert 'if (notificationPanelMode === "settings")' in feature
+    assert "exitNotificationSettings();" in feature
+    assert 'querySelector<HTMLElement>(".notification-settings-btn")' in feature
+
+
 def test_viewers_keep_today_and_weather_navigation_without_write_affordances() -> None:
     attention = (ROOT / "frontend/src/components/attentionTodayPanel.ts").read_text(
         encoding="utf-8"

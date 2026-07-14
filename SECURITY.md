@@ -25,10 +25,13 @@ audit insert failure rolls the deletion back. Referenced media files are
 unlinked only after that commit; cleanup failures cannot roll back the durable
 database decision and must remain observable for operational follow-up.
 
-API mutations reserve a durable audit row, keyed by the server-bound request
-ID, before application code runs. The final audit write may update only that
-incomplete reservation; a reused client request ID cannot overwrite a finalized
-row. If reservation fails, the mutation is rejected. Routes with stricter audit
-requirements finalize the reservation in the same transaction as their domain
-change; an interrupted ordinary route leaves an explicit incomplete reservation
-instead of an unaudited successful request.
+API mutations reserve a durable audit row before application code runs. The
+database-generated audit row ID is the server-only admission and finalization
+identity; `X-Request-ID` remains a correlation value and may legitimately be
+reused by a client. A final audit write may update only the incomplete row bound
+to the current server request context, so correlation-ID reuse cannot overwrite
+or capture another request's reservation. If reservation fails, the mutation is
+rejected. Routes with stricter audit requirements finalize the reservation in
+the same transaction as their domain change; an interrupted ordinary route
+leaves an explicit incomplete reservation instead of an unaudited successful
+request.

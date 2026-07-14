@@ -42,13 +42,60 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertNotIn("FOREIGN KEY (issue_id", migration)
         self.assertNotIn("FOREIGN KEY (harvest_entry_id", migration)
 
-    def test_cached_task_and_calendar_views_do_not_refetch_while_offline(self) -> None:
+    def test_task_action_batches_are_atomic_and_reject_unresolved_conflicts(self) -> None:
+        queue = (ROOT / "frontend" / "src" / "services" / "offlineQueue.ts").read_text(
+            encoding="utf-8"
+        )
         tasks = (ROOT / "frontend" / "src" / "tabs" / "tasksTab.ts").read_text(
+            encoding="utf-8"
+        )
+
+        batch = queue.split("export async function enqueueTaskActionBatch", 1)[1].split(
+            "export async function enqueueDraft", 1
+        )[0]
+        self.assertIn('db!.transaction(STORE_NAME, "readwrite")', batch)
+        self.assertIn("const existingRequest = store.getAll();", batch)
+        self.assertIn("transaction.abort();", batch)
+        self.assertIn('draft.status === "failed"', batch)
+        self.assertIn("transaction.oncomplete", batch)
+        self.assertIn("emitQueueChanged();", batch)
+        self.assertIn("await enqueueTaskActionBatch(taskIds.map", tasks)
+        self.assertIn('t("tasks.batch_queued", { count: taskIds.length })', tasks)
+
+    def test_terminal_task_failures_are_visible_and_recoverable(self) -> None:
+        queue = (ROOT / "frontend" / "src" / "services" / "offlineQueue.ts").read_text(
+            encoding="utf-8"
+        )
+        task_cards = (ROOT / "frontend" / "src" / "components" / "tasks.ts").read_text(
+            encoding="utf-8"
+        )
+        indicator = (ROOT / "frontend" / "src" / "components" / "offlineIndicator.ts").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('draft.status === "failed" ? "failed" : "queued"', queue)
+        self.assertIn("export async function retryDraft", queue)
+        self.assertIn('draft.status = "pending";', queue)
+        self.assertIn("onRetryOfflineAction", task_cards)
+        self.assertIn("onDiscardOfflineAction", task_cards)
+        self.assertIn('role", offlineAction.status === "failed" ? "alert" : "status"', task_cards)
+        self.assertIn('failures.setAttribute("role", "alert")', indicator)
+        self.assertIn("callbacks.onRetry(draft)", indicator)
+        self.assertIn("callbacks.onDiscard(draft)", indicator)
+
+    def test_cold_offline_views_are_honest_and_warm_filters_use_matching_cache(self) -> None:
+        tasks = (ROOT / "frontend" / "src" / "tabs" / "tasksTab.ts").read_text(
+            encoding="utf-8"
+        )
+        task_cache = (ROOT / "frontend" / "src" / "services" / "taskCache.ts").read_text(
             encoding="utf-8"
         )
         calendar = (ROOT / "frontend" / "src" / "tabs" / "calendarTab.ts").read_text(
             encoding="utf-8"
         )
+        quick_actions = (
+            ROOT / "frontend" / "src" / "features" / "quickActionsFeature.ts"
+        ).read_text(encoding="utf-8")
 
         tasks_guard = tasks.index(
             "if (!ctx.isOnline()) {", tasks.index("export async function loadTasks")
@@ -59,13 +106,15 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
             "renderTasksView(options.focusTaskId, request);",
             tasks[tasks_guard:tasks_fetch],
         )
-
-        calendar_guard = calendar.index(
-            "if (!ctx.isOnline()) {", calendar.index("export async function loadCalendar")
-        )
-        calendar_fetch = calendar.index("await fetchPreferences(request)", calendar_guard)
-        self.assertLess(calendar_guard, calendar_fetch)
-        self.assertIn("calendar?.updateSize();", calendar[calendar_guard:calendar_fetch])
+        self.assertIn('tasksDataState = "unavailable";', tasks[tasks_guard:tasks_fetch])
+        self.assertIn("normalizedParams", task_cache)
+        self.assertIn("filterCompleteBaseSnapshot", task_cache)
+        self.assertIn("entry.params[\"task_type\"] || entry.params[\"status\"]", task_cache)
+        self.assertIn("calendarPreferencesCache.get(gardenId)", calendar)
+        self.assertIn("calendarEventsCache.get(", calendar)
+        self.assertIn('setCalendarDataState("unavailable")', calendar)
+        self.assertIn("getCachedTodayTasks(gardenId)", quick_actions)
+        self.assertIn(': { dataState: "unavailable", tasks: [] };', quick_actions)
 
 
 if __name__ == "__main__":

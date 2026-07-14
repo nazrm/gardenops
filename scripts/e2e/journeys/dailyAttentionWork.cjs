@@ -351,6 +351,44 @@ async function completeBatch(page, fixture) {
   await secondCard.waitFor({ state: "hidden" });
 }
 
+async function exerciseTaskFormKeyboard(page, fixture) {
+  await openTasks(page, "desktop");
+  const add = page.locator("#tasks-add-btn");
+  await add.focus();
+  await add.press("Enter");
+  let dialog = page.locator(".modal").filter({ has: page.locator(".task-form-dialog") }).last();
+  await visible(dialog, "task create dialog");
+  assert(await dialog.getAttribute("role") === "dialog"
+    && await dialog.getAttribute("aria-modal") === "true",
+  "Task create form did not expose modal dialog semantics");
+  await assertFocusInside(dialog, "task create dialog");
+  assert(await dialog.locator("label[for='task-form-type']").count() === 1
+    && await dialog.locator("label[for='task-form-name']").count() === 1
+    && await dialog.locator("label[for='task-form-due']").count() === 1,
+  "Task create form controls were not explicitly labelled");
+  assert(await dialog.locator("#task-form-type").evaluate(
+    (element) => document.activeElement === element,
+  ), "Task create dialog did not focus its first form control");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  await waitFor(async () => await add.evaluate((element) => document.activeElement === element),
+    "task create dialog focus return");
+
+  const existing = taskCard(page, taskTitle(fixture, "stale_manual_water").title);
+  const edit = existing.getByRole("button", { name: /^Edit$/i });
+  await visible(edit, "task edit command");
+  await edit.focus();
+  await edit.press("Enter");
+  dialog = page.locator(".modal").filter({ has: page.locator(".task-form-dialog") }).last();
+  await visible(dialog, "task edit dialog");
+  const cancel = dialog.getByRole("button", { name: /^Cancel$/i });
+  await cancel.focus();
+  await cancel.press("Enter");
+  await dialog.waitFor({ state: "detached" });
+  await waitFor(async () => await edit.evaluate((element) => document.activeElement === element),
+    "task edit cancel focus return");
+}
+
 async function completePlotDrawerTask(page, fixture) {
   await openPrimary(page, "desktop", "map");
   const plot = page.locator(`.plot[data-plot-id='${fixture.phase_two.plot_ids.alpha}']`);
@@ -361,8 +399,25 @@ async function completePlotDrawerTask(page, fixture) {
   );
   await visible(details, "Phase 2 plot details command");
   await details.click();
+  const drawer = page.locator(".drawer");
+  await visible(drawer, "plot drawer dialog");
+  assert(await drawer.getAttribute("role") === "dialog"
+    && await drawer.getAttribute("aria-modal") === "true",
+  "Plot drawer did not expose modal dialog semantics");
+  await assertFocusInside(drawer, "plot drawer");
   const preview = page.locator(".drawer-tasks-preview:visible, .sheet-tasks-preview:visible");
   await visible(preview, "plot task preview");
+  const taskSectionToggle = preview.locator(".drawer-section-header").first();
+  await visible(taskSectionToggle, "plot task collapsible control");
+  assert(await taskSectionToggle.getAttribute("aria-expanded") === "true",
+    "Plot task section did not expose its expanded state");
+  await taskSectionToggle.focus();
+  await taskSectionToggle.press("Enter");
+  assert(await taskSectionToggle.getAttribute("aria-expanded") === "false",
+    "Plot task section did not collapse from the keyboard");
+  await taskSectionToggle.press("Enter");
+  assert(await taskSectionToggle.getAttribute("aria-expanded") === "true",
+    "Plot task section did not expand from the keyboard");
   const staleGenerated = taskTitle(fixture, "stale_generated_water");
   const staleManual = taskTitle(fixture, "stale_manual_water");
   assert(await preview.getByText(staleGenerated.title, { exact: true }).count() === 0,
@@ -377,8 +432,10 @@ async function completePlotDrawerTask(page, fixture) {
   await visible(completedCard, "completed plot drawer task history");
   assert(await completedCard.locator(".drawer-task-actions").count() === 0,
     "Completed plot drawer task retained write controls");
-  await page.locator(".drawer .close-btn").click();
-  await page.locator(".drawer").waitFor({ state: "hidden" });
+  await page.keyboard.press("Escape");
+  await drawer.waitFor({ state: "hidden" });
+  await waitFor(async () => await details.evaluate((element) => document.activeElement === element),
+    "plot drawer focus return");
 }
 
 async function selectChip(dialog, containerSelector, value) {
@@ -687,6 +744,20 @@ async function openNotifications(page, profile) {
   return { panel, trigger };
 }
 
+async function closeNotificationSettingsWithKeyboard(page, panel, label) {
+  await page.keyboard.press("Escape");
+  await visible(panel.locator(".notification-settings-btn"), `${label} notification list`);
+  assert(await panel.isVisible(), `${label} Escape closed the full notification panel from settings`);
+  await waitFor(
+    async () => await panel.locator(".notification-settings-btn").evaluate(
+      (element) => document.activeElement === element,
+    ),
+    `${label} notification settings focus return`,
+  );
+  await page.keyboard.press("Escape");
+  await panel.waitFor({ state: "hidden" });
+}
+
 async function issueCreatedRuleControls(prefs) {
   const row = prefs.locator(".notification-prefs-rule-row").filter({ hasText: /New issues/i }).first();
   await visible(row, "issue-created notification preference");
@@ -754,8 +825,7 @@ async function exerciseNotificationSettingsRace(page, context, fixture) {
   await visible(prefs, "initial Alpha notification settings");
   assert(await prefs.locator("#notification-prefs-email-address").inputValue()
     === "complete-phase-2@example.invalid", "Initial Alpha notification settings were unavailable");
-  await page.keyboard.press("Escape");
-  await panel.waitFor({ state: "hidden" });
+  await closeNotificationSettingsWithKeyboard(page, panel, "initial Alpha");
 
   const betaGardenId = fixture.gardens.beta.id;
   let betaSettingsHeld = false;
@@ -795,8 +865,7 @@ async function exerciseNotificationSettingsRace(page, context, fixture) {
   await visible(prefs, "Alpha notification settings after A/B/A race");
   assert(await prefs.locator("#notification-prefs-email-address").inputValue()
     === "complete-phase-2@example.invalid", "Delayed Beta settings replaced Alpha notification settings");
-  await page.keyboard.press("Escape");
-  await panel.waitFor({ state: "hidden" });
+  await closeNotificationSettingsWithKeyboard(page, panel, "Alpha after A/B/A race");
 }
 
 async function exerciseDelayedGardenRequestRace(page, context, fixture, {
@@ -904,6 +973,13 @@ async function exerciseNotifications(page, fixture, onPreferencesSaved) {
     "Alpha scoped notification");
   assert(await panel.getByText("Beta phase 2 scoped notification.", { exact: true }).count() === 0,
     "Beta notification leaked into Alpha inbox");
+  const notificationMain = panel.locator(".notification-item-main").first();
+  await visible(notificationMain, "keyboard notification navigation control");
+  assert(await notificationMain.evaluate((element) => element.tagName === "BUTTON"),
+    "Notification navigation was not exposed as a native button");
+  await notificationMain.focus();
+  assert(await notificationMain.evaluate((element) => document.activeElement === element),
+    "Notification navigation button did not receive keyboard focus");
   const inboxTab = panel.locator("#notification-tab-inbox");
   await inboxTab.focus();
   await inboxTab.press("ArrowRight");
@@ -919,8 +995,21 @@ async function exerciseNotifications(page, fixture, onPreferencesSaved) {
 
   ({ panel } = await openNotifications(page, "desktop"));
   await panel.locator(".notification-settings-btn").click();
-  const prefs = panel.locator(".notification-prefs-form");
+  let prefs = panel.locator(".notification-prefs-form");
   await visible(prefs, "notification preferences");
+  const cancel = prefs.locator(".notification-prefs-cancel");
+  await cancel.focus();
+  await cancel.press("Enter");
+  await visible(panel.locator("#notification-tab-inbox"), "notification list after settings cancel");
+  await waitFor(
+    async () => await panel.locator(".notification-settings-btn").evaluate(
+      (element) => document.activeElement === element,
+    ),
+    "notification settings cancel focus return",
+  );
+  await panel.locator(".notification-settings-btn").click();
+  prefs = panel.locator(".notification-prefs-form");
+  await visible(prefs, "reopened notification preferences");
   assert(await prefs.locator("#notification-prefs-email-address").inputValue()
     === "complete-phase-2@example.invalid", "Notification email preference was lost");
   const globalToggles = prefs.locator(".notification-prefs-toggle");
@@ -1028,8 +1117,7 @@ async function exercisePostMutationReload(page, fixture) {
   assert(await quietInputs.nth(0).inputValue() === "22:30"
     && await quietInputs.nth(1).inputValue() === "07:15",
   "Reloaded notification settings did not retain canonical digest quiet hours");
-  await page.keyboard.press("Escape");
-  await panel.waitFor({ state: "hidden" });
+  await closeNotificationSettingsWithKeyboard(page, panel, "reloaded preferences");
 }
 
 async function exerciseMobileCalendarAndNotifications(page, fixture) {
@@ -1291,6 +1379,39 @@ async function exerciseWeather(page, profile, fixture, recorder) {
   await selectGarden(page, profile, fixture.gardens.alpha.id);
 }
 
+async function exerciseMobilePlotSheetKeyboard(page, fixture) {
+  await openPrimary(page, "mobile", "map");
+  const plot = page.locator(`.plot[data-plot-id='${fixture.phase_two.plot_ids.alpha}']`);
+  await visible(plot, "mobile plot for keyboard sheet");
+  await plot.click();
+  const sheet = page.locator(".bottom-sheet");
+  await visible(sheet, "mobile plot sheet dialog");
+  assert(await sheet.getAttribute("role") === "dialog"
+    && await sheet.getAttribute("aria-modal") === "true",
+  "Mobile plot sheet did not expose modal dialog semantics");
+  await assertFocusInside(sheet, "mobile plot sheet");
+
+  const handle = sheet.locator(".sheet-handle-bar");
+  assert(await handle.evaluate((element) => element.tagName === "BUTTON"),
+    "Mobile plot sheet handle was not keyboard operable");
+  const initialSnap = await sheet.getAttribute("data-snap-state");
+  await handle.focus();
+  await handle.press("Enter");
+  await waitFor(async () => await sheet.getAttribute("data-snap-state") !== initialSnap,
+    "mobile plot sheet keyboard resize");
+
+  const sectionToggle = sheet.locator(".drawer-section-header").first();
+  await visible(sectionToggle, "mobile plot collapsible control");
+  await sectionToggle.focus();
+  await sectionToggle.press("Enter");
+  assert(await sectionToggle.getAttribute("aria-expanded") === "false",
+    "Mobile plot section did not collapse from the keyboard");
+  await page.keyboard.press("Escape");
+  await sheet.waitFor({ state: "hidden" });
+  await waitFor(async () => await plot.evaluate((element) => document.activeElement === element),
+    "mobile plot sheet focus return");
+}
+
 async function completeMobileQuickActions(page, fixture) {
   await openPrimary(page, "mobile", "map");
   const fab = page.locator("#mobile-fab");
@@ -1482,12 +1603,107 @@ async function queuedOfflineTaskOperations(page) {
   });
 }
 
+async function markOfflineTaskDraftFailed(page, taskId, errorMessage) {
+  return page.evaluate(async ({ targetTaskId, message }) => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("gardenops-offline");
+      request.onerror = () => reject(request.error || new Error("Offline queue could not open"));
+      request.onsuccess = () => resolve(request.result);
+    });
+    try {
+      const draftId = await new Promise((resolve, reject) => {
+        const transaction = database.transaction("drafts", "readwrite");
+        const store = transaction.objectStore("drafts");
+        const request = store.getAll();
+        let matchedId = null;
+        request.onerror = () => reject(request.error || new Error("Offline drafts could not load"));
+        request.onsuccess = () => {
+          const draft = (request.result || []).find((candidate) => (
+            String(candidate?.payload?.task_id || "") === targetTaskId
+          ));
+          if (!draft) {
+            transaction.abort();
+            reject(new Error(`Offline task draft ${targetTaskId} was not found`));
+            return;
+          }
+          draft.status = "failed";
+          draft.retry_count = 5;
+          draft.last_error = message;
+          matchedId = draft.id;
+          store.put(draft);
+        };
+        transaction.onerror = () => reject(
+          transaction.error || new Error("Offline task failure state could not be saved"),
+        );
+        transaction.oncomplete = () => resolve(matchedId);
+      });
+      window.dispatchEvent(new CustomEvent("gardenops:offline-queue-changed"));
+      return draftId;
+    } finally {
+      database.close();
+    }
+  }, { targetTaskId: taskId, message: errorMessage });
+}
+
 async function exerciseOfflineTask(page, fixture) {
-  await openTasks(page, "mobile");
   const completion = taskTitle(fixture, "editor_offline");
   const staleManual = taskTitle(fixture, "stale_manual_water");
   const prune = taskTitle(fixture, "prune_desktop");
   const remainingGroupedTitle = `Fertilize: ${fixture.phase_two.plant_names.fertilize_b}`;
+
+  await page.context().setOffline(true);
+  await openTasks(page, "mobile");
+  await visible(page.locator("#tasks-list .offline-data-state--unavailable"),
+    "cold offline Tasks unavailable state");
+  assert(await page.locator("#tasks-list .task-card").count() === 0,
+    "Cold offline Tasks rendered false empty task data");
+
+  await openPrimary(page, "mobile", "activity");
+  const calendarButton = page.locator(
+    "#sub-mode-calendar:visible, [data-sub-mode='calendar']:visible",
+  ).first();
+  await calendarButton.click();
+  await visible(page.locator("#calendar-data-state.offline-data-state--unavailable"),
+    "cold offline Calendar unavailable state");
+  assert(await page.locator("#calendar-root").isHidden(),
+    "Cold offline Calendar exposed a false empty calendar");
+
+  await openPrimary(page, "mobile", "map");
+  const fab = page.locator("#mobile-fab");
+  await fab.click();
+  const quickSheet = page.locator("#mobile-quick-actions");
+  await quickSheet.locator("[data-quick-action='complete-task']").click();
+  await visible(quickSheet.locator(".offline-data-state--unavailable"),
+    "cold offline Quick Actions unavailable state");
+  assert(await quickSheet.locator(".quick-action-task-item").count() === 0,
+    "Cold offline Quick Actions rendered false empty task choices");
+  await page.keyboard.press("Escape");
+  await page.context().setOffline(false);
+  await waitFor(async () => page.evaluate(() => navigator.onLine),
+    "editor browser to return online after cold-state checks");
+
+  await openTasks(page, "mobile");
+  const typeFilter = page.locator("#tasks-filter-type");
+  const filteredResponse = page.waitForResponse((response) => (
+    response.request().method() === "GET"
+      && new URL(response.url()).pathname === "/api/tasks"
+      && new URL(response.url()).searchParams.get("task_type") === "prune"
+  ));
+  await typeFilter.selectOption("prune");
+  await filteredResponse;
+  await waitFor(async () => await page.locator("#tasks-list .task-card").count() > 0,
+    "warm filtered task cache");
+  assert(await page.locator("#tasks-list .task-card-type").evaluateAll(
+    (elements) => elements.every((element) => element.textContent?.trim() === "Prune"),
+  ), "Online task filter returned mixed task types");
+  const unfilteredResponse = page.waitForResponse((response) => (
+    response.request().method() === "GET"
+      && new URL(response.url()).pathname === "/api/tasks"
+      && !new URL(response.url()).searchParams.has("task_type")
+  ));
+  await typeFilter.selectOption("");
+  await unfilteredResponse;
+
   const completionCard = taskCard(page, completion.title);
   const staleManualCard = taskCard(page, staleManual.title);
   const groupedCard = taskCard(page, remainingGroupedTitle);
@@ -1521,8 +1737,24 @@ async function exerciseOfflineTask(page, fixture) {
   page.on("request", replayListener);
   try {
     await page.context().setOffline(true);
+    await typeFilter.selectOption("prune");
+    await visible(page.locator("#tasks-list .offline-data-state--cached"),
+      "warm offline filtered Tasks cache state");
+    assert(await page.locator("#tasks-list .task-card-type").evaluateAll(
+      (elements) => elements.length > 0
+        && elements.every((element) => element.textContent?.trim() === "Prune"),
+    ), "Warm offline task cache ignored the active type filter");
+    await typeFilter.selectOption("");
+    await visible(completionCard, "unfiltered warm offline task cache");
+
     await completionCard.getByRole("button", { name: /^Complete$/i }).click();
+    await waitFor(async () => await completionCard.getAttribute("data-offline-task-state") === "queued",
+      "offline completion queued state");
+    assert(await completionCard.locator(".task-card-actions button").count() === 0,
+      "Queued offline completion retained conflicting task controls");
     await staleManualCard.getByRole("button", { name: /^Snooze$/i }).click();
+    await waitFor(async () => await staleManualCard.getAttribute("data-offline-task-state") === "queued",
+      "offline snooze queued state");
     await groupedCard.getByRole("button", { name: /^Reschedule$/i }).click();
     const rescheduleDialog = page.locator(".confirm-dialog").filter({
       has: page.locator("input[type='date']"),
@@ -1530,18 +1762,73 @@ async function exerciseOfflineTask(page, fixture) {
     await visible(rescheduleDialog, "offline reschedule date dialog");
     await rescheduleDialog.locator("input[type='date']").fill(fixture.phase_two.offline.reschedule_date);
     await rescheduleDialog.locator(".confirm-yes").click();
+    await waitFor(async () => await groupedCard.getAttribute("data-offline-task-state") === "queued",
+      "offline reschedule queued state");
 
     await openCalendarAgenda(page, "mobile");
     const pruneEvent = page.locator(".fc-event:visible").filter({ hasText: prune.title }).first();
     await visible(pruneEvent, "offline calendar skip task");
     await pruneEvent.click();
     await page.locator("#calendar-detail-panel").getByRole("button", { name: /^Skip$/i }).click();
+    await waitFor(async () => await pruneEvent.getAttribute("data-offline-task-state") === "queued",
+      "offline Calendar skip queued state");
+    await visible(page.locator("#calendar-detail-panel .task-offline-state--queued"),
+      "offline Calendar queued task detail");
     await waitFor(async () => {
       const count = await page.locator("#offline-indicator .offline-indicator-count").textContent();
       return /\b4\b/.test(count || "");
     }, "four queued offline task drafts");
     assert(replayedActions.length === 0, "Offline task actions reached the server before connectivity returned");
     await visible(page.locator("#toast-container").filter({ hasText: /saved/i }), "offline draft toast");
+
+    await markOfflineTaskDraftFailed(
+      page,
+      fixture.phase_two.task_ids.editor_offline,
+      "Deliberate journey sync failure",
+    );
+    await openTasks(page, "mobile");
+    const failedCompletionCard = taskCard(page, completion.title);
+    await waitFor(
+      async () => await failedCompletionCard.getAttribute("data-offline-task-state") === "failed",
+      "terminal offline task failure state",
+    );
+    await visible(page.locator("#offline-indicator .offline-failures"),
+      "global failed offline work recovery");
+    await visible(failedCompletionCard.locator(".task-offline-error").filter({
+      hasText: "Deliberate journey sync failure",
+    }), "per-task offline failure reason");
+    await failedCompletionCard.locator(".task-offline-retry").click();
+    await waitFor(
+      async () => await failedCompletionCard.getAttribute("data-offline-task-state") === "queued",
+      "offline task retry queued state",
+    );
+
+    await markOfflineTaskDraftFailed(
+      page,
+      fixture.phase_two.task_ids.stale_manual_water,
+      "Deliberate discard recovery failure",
+    );
+    const failedSnoozeCard = taskCard(page, staleManual.title);
+    await waitFor(
+      async () => await failedSnoozeCard.getAttribute("data-offline-task-state") === "failed",
+      "offline task discard failure state",
+    );
+    await failedSnoozeCard.locator(".task-offline-discard").click();
+    const discardConfirmation = page.locator("[role='alertdialog']").last();
+    await visible(discardConfirmation, "offline task discard confirmation");
+    await discardConfirmation.locator(".confirm-yes").click();
+    await waitFor(
+      async () => await failedSnoozeCard.getAttribute("data-offline-task-state") === null,
+      "offline task discard recovery",
+    );
+    await failedSnoozeCard.getByRole("button", { name: /^Snooze$/i }).click();
+    await waitFor(
+      async () => await failedSnoozeCard.getAttribute("data-offline-task-state") === "queued",
+      "discarded offline task re-enqueue",
+    );
+    assert((await queuedOfflineTaskOperations(page)).length === 4,
+      "Retry and discard recovery changed the atomic four-task queue size");
+
     const queuedOperations = await queuedOfflineTaskOperations(page);
     const expectedQueuedOperations = [
       { task_id: fixture.phase_two.task_ids.editor_offline, type: "task_complete" },
@@ -1656,6 +1943,28 @@ async function exerciseViewer(page, diagnostics, profile, fixture) {
   await event.click();
   assert(await page.locator("#calendar-detail-panel .calendar-detail-actions").count() === 0,
     `${profile} viewer received calendar task actions`);
+  await page.waitForLoadState("networkidle");
+  const personalCalendarView = profile === "desktop" ? "week" : "month";
+  const calendarPreferenceSave = page.waitForResponse((response) => {
+    if (response.request().method() !== "PUT"
+      || new URL(response.url()).pathname !== "/api/calendar/preferences") return false;
+    try {
+      return response.request().postDataJSON()?.default_view === personalCalendarView;
+    } catch {
+      return false;
+    }
+  });
+  await page.locator(`[data-calendar-view='${personalCalendarView}']`).click();
+  const calendarPreferenceResponse = await calendarPreferenceSave;
+  assert(calendarPreferenceResponse.status() === 200,
+    `${profile} viewer personal calendar preference save failed`);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openPrimary(page, profile, "map");
+  await selectGarden(page, profile, fixture.gardens.alpha.id);
+  await openCalendar(page, profile);
+  assert(await page.locator(`[data-calendar-view='${personalCalendarView}']`).evaluate(
+    (element) => element.classList.contains("active"),
+  ), `${profile} viewer personal calendar preference did not persist after reload`);
   const today = await openToday(page, profile);
   await visible(today.locator('[data-testid="attention-today-section-needs_attention"]'),
     `${profile} viewer Today affordance`);
@@ -1671,17 +1980,18 @@ async function exerciseViewer(page, diagnostics, profile, fixture) {
     `${profile} viewer Today received restore controls`);
   const openTask = today.locator('[data-attention-action-kind="open_task"]').first();
   await visible(openTask, `${profile} viewer Today task navigation`);
-  if (profile === "desktop") {
-    const targetTaskId = await openTask.getAttribute("data-attention-action-target-id");
-    assert(targetTaskId, `${profile} viewer Today task navigation omitted its target`);
-    await openTask.click();
-    const navigatedCard = page.locator(`.task-card[data-task-id="${targetTaskId}"]`);
-    await visible(navigatedCard, `${profile} viewer task after Today navigation`);
-    assert(await navigatedCard.locator(".task-card-actions button").count() === 0,
-      `${profile} viewer Today navigation exposed task write controls`);
-  }
+  const targetTaskId = await openTask.getAttribute("data-attention-action-target-id");
+  assert(targetTaskId, `${profile} viewer Today task navigation omitted its target`);
+  await openTask.click();
+  const navigatedCard = page.locator(`.task-card[data-task-id="${targetTaskId}"]`);
+  await visible(navigatedCard, `${profile} viewer task after Today navigation`);
+  assert(await navigatedCard.locator(".task-card-actions button").count() === 0,
+    `${profile} viewer Today navigation exposed task write controls`);
+  assert(await page.locator(".plot-popover, .drawer, .bottom-sheet").count() === 0,
+    `${profile} viewer Today task navigation retained a map overlay`);
   if (profile === "mobile") {
-    await page.locator("[data-testid='attention-today-mobile-close']").click();
+    assert(await page.locator("#attention-today-mobile-sheet").getAttribute("aria-hidden") === "true",
+      "Mobile Today task navigation retained the Today sheet");
   }
   await selectGarden(page, profile, fixture.gardens.beta.id);
   await openCare(page, profile);
@@ -1742,7 +2052,8 @@ async function runProfile(options) {
     if (run.role === "admin" && run.profile === "desktop") {
       await exerciseToday(page, run.profile, fixture);
       result.checks.last_completed_step = "today-attention";
-      await openTasks(page, run.profile);
+      await exerciseTaskFormKeyboard(page, fixture);
+      result.checks.last_completed_step = "task-form-keyboard";
       await exerciseGroupedCompletionRestrictions(page, fixture);
       result.checks.last_completed_step = "grouped-completion-restrictions";
       await openTasks(page, run.profile);
@@ -1791,6 +2102,8 @@ async function runProfile(options) {
     } else if (run.role === "admin" && run.profile === "mobile") {
       await exerciseToday(page, run.profile, fixture);
       result.checks.last_completed_step = "mobile-today";
+      await exerciseMobilePlotSheetKeyboard(page, fixture);
+      result.checks.last_completed_step = "mobile-plot-sheet-keyboard";
       await completeMobileQuickActions(page, fixture);
       result.checks.last_completed_step = "mobile-quick-actions";
       await exerciseMobilePartialGroupedAndSnooze(page, fixture);

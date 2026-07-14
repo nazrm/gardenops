@@ -1,6 +1,7 @@
 """Tests for integrity layer: health endpoints, FK enforcement, consistency."""
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import gardenops.db as db
@@ -145,7 +146,7 @@ class MigrationGuardTests(unittest.TestCase):
         finally:
             db.return_db(conn)
 
-        self.assertEqual(versions, set(range(1, 24)))
+        self.assertEqual(versions, set(range(1, 25)))
         self.assertEqual(table["name"], "offline_create_operations")
         self.assertEqual(index["name"], "ux_weather_alerts_identity")
 
@@ -329,7 +330,7 @@ class MigrationGuardTests(unittest.TestCase):
             diagnostics["missing"],
         )
 
-    def test_audit_schema_signature_requires_request_correlation(self) -> None:
+    def test_audit_schema_signature_retains_nonunique_request_correlation(self) -> None:
         self.assertIn("request_id", REQUIRED_COLUMNS["audit_events"])
         self.assertIn("ux_audit_events_request_id", REQUIRED_INDEXES)
         self.assertIn(
@@ -347,6 +348,13 @@ class MigrationGuardTests(unittest.TestCase):
         self.assertEqual(diagnostics["mode"], "verified-upgrade-baseline")
         self.assertTrue(diagnostics["can_stamp_migrations"])
         self.assertEqual(diagnostics["stamp_through"], 22)
+
+        migration_sql = (
+            Path(__file__).parents[1] / "migrations/0024_audit_request_correlation_index.sql"
+        ).read_text()
+        self.assertIn("DROP INDEX IF EXISTS public.ux_audit_events_request_id", migration_sql)
+        self.assertIn("USING btree (request_id, id)", migration_sql)
+        self.assertNotIn("USING btree (request_id)\n", migration_sql)
 
     def test_schema_signature_validates_critical_definitions(self) -> None:
         snapshot = self._complete_schema_snapshot()

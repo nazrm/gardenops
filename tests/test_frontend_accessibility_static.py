@@ -127,3 +127,40 @@ def test_mobile_toasts_clear_the_primary_navigation() -> None:
     )
 
     assert mobile_toast_rule
+
+
+def test_task_form_uses_shared_modal_focus_and_explicit_exit_controls() -> None:
+    tasks_tab = _read_frontend("tabs/tasksTab.ts")
+    task_form = _read_frontend("components/tasks.ts")
+
+    assert "createModal(" in tasks_tab
+    assert "onCancel: close" in tasks_tab
+    assert 'form.setAttribute("aria-labelledby", "task-form-title")' in task_form
+    for control_id in (
+        "task-form-type",
+        "task-form-name",
+        "task-form-description",
+        "task-form-severity",
+        "task-form-due",
+    ):
+        assert f'.id = "{control_id}"' in task_form
+    assert "typeLabel.htmlFor = typeSelect.id" in task_form
+    assert "cancelBtn.addEventListener(\"click\", onCancel)" in task_form
+
+
+def test_plot_drawer_sheet_and_collapsibles_are_keyboard_dialogs() -> None:
+    drawer = _read_frontend("components/drawer.ts")
+    sheet = _read_frontend("components/bottomSheet.ts")
+
+    assert 'const header = document.createElement("button")' in drawer
+    assert 'header.setAttribute("aria-controls", bodyId)' in drawer
+    assert 'header.setAttribute("aria-expanded", "true")' in drawer
+    assert "if (body) body.hidden = collapsed" in drawer
+    for source in (drawer, sheet):
+        assert 'setAttribute("role", "dialog")' in source
+        assert 'setAttribute("aria-modal", "true")' in source
+        assert "trapFocus(" in source
+        assert 'e.key !== "Escape"' in source
+        assert "activeReturnFocus" in source
+    assert 'const handleBar = document.createElement("button")' in sheet
+    assert 'handleBar.setAttribute("aria-label", t("plot_drawer.resize_sheet"))' in sheet

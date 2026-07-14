@@ -154,6 +154,40 @@ PHASE_TWO_PLANTS = {
     "rain_indoor": ("COMPLETE-P2-RAIN-INDOOR", "Phase 2 Rain Indoor Basil", "H1"),
     "rain_unplaced": ("COMPLETE-P2-RAIN-UNPLACED", "Phase 2 Rain Unplaced Basil", "H1"),
 }
+PHASE_TWO_MAINTENANCE_EXPECTATIONS = {
+    "created": {
+        "notifications": {
+            "by_role": {"admin": 17, "editor": 17, "viewer": 17},
+            "by_type": {
+                "task_due:": 36,
+                "task_overdue:": 6,
+                "weather_alert:dry_spell": 3,
+                "weather_alert:frost_warning": 3,
+                "weather_alert:heat_wave": 3,
+            },
+            "total": 51,
+        },
+        "tasks": {
+            "by_rule_family": {"auto": 31, "water": 30},
+            "by_type": {"protect": 16, "water": 45},
+            "total": 61,
+        },
+        "weather_alerts": {
+            "by_type": {"dry_spell": 1, "heat_wave": 1},
+            "total": 2,
+        },
+    },
+    "mutated_existing": {"notifications": 0, "tasks": 1, "weather_alerts": 1},
+    "summary": {
+        "configured": True,
+        "gardens_processed": 1,
+        "notifications_created": 51,
+        "tasks_auto_created": 30,
+        "tasks_expired": 1,
+        "weather_alerts_created": 2,
+        "weather_tasks_created": 31,
+    },
+}
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -2883,6 +2917,7 @@ def _phase_two_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
         },
         "date": PHASE_TWO_DATE,
         "manual_date": PHASE_TWO_MANUAL_DATE,
+        "maintenance_expectations": PHASE_TWO_MAINTENANCE_EXPECTATIONS,
         "snooze_correction": {
             "default_date": PHASE_TWO_SNOOZE_CORRECTION_DEFAULT_DATE,
             "due_date": PHASE_TWO_SNOOZE_CORRECTION_DUE_DATE,

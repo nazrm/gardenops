@@ -1,3 +1,4 @@
+import json
 from unittest.mock import patch
 
 import gardenops.db as db
@@ -135,6 +136,113 @@ class TestWeather(BaseApiTest):
         self.assertEqual(str(task_row["status"]), "skipped")
         self.assertEqual(str(notification["clear_reason"]), "forecast_resolved")
         self.assertEqual(str(state["user_state"]), "dismissed")
+
+    def test_same_identity_reappearance_recovers_only_automatically_resolved_task(self) -> None:
+        from gardenops.services.notification_service import reconcile_weather_alert_work
+        from gardenops.services.weather_service import save_weather_alerts
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1"
+            ).fetchone()
+            dates = conn.execute(
+                """
+                SELECT CURRENT_DATE::text AS today,
+                       (CURRENT_DATE + INTERVAL '3 days')::date::text AS valid_until
+                """
+            ).fetchone()
+            assert garden is not None
+            assert dates is not None
+            garden_id = int(garden["id"])
+            today = str(dates["today"])
+            conn.execute(
+                "UPDATE plants SET care_watering = 'Water regularly' WHERE plt_id = 'PLT-002'"
+            )
+            conn.execute(
+                """
+                INSERT INTO plot_plants (plot_id, plt_id, quantity)
+                VALUES ('B1', 'PLT-002', 1)
+                ON CONFLICT DO NOTHING
+                """,
+            )
+            alert = {
+                "alert_type": "dry_spell",
+                "severity": "normal",
+                "title": "Returning dry spell",
+                "description": "Water outdoor plants regularly.",
+                "valid_from": today,
+                "valid_until": str(dates["valid_until"]),
+                "metadata": {"days": 6},
+            }
+            now_ms = db.current_timestamp_ms()
+            save_weather_alerts(conn, garden_id, [alert])
+            initial = reconcile_weather_alert_work(
+                conn,
+                garden_id=garden_id,
+                alerts=[alert],
+                actor_user_id=None,
+                now_ms=now_ms,
+                replace_forecast_alerts=True,
+            )
+            resolved = reconcile_weather_alert_work(
+                conn,
+                garden_id=garden_id,
+                alerts=[],
+                actor_user_id=None,
+                now_ms=now_ms + 1,
+                replace_forecast_alerts=True,
+            )
+            save_weather_alerts(conn, garden_id, [alert])
+            recovered = reconcile_weather_alert_work(
+                conn,
+                garden_id=garden_id,
+                alerts=[alert],
+                actor_user_id=None,
+                now_ms=now_ms + 2,
+                replace_forecast_alerts=True,
+            )
+            tasks = conn.execute(
+                """
+                SELECT status, metadata_json
+                FROM garden_tasks
+                WHERE garden_id = %s
+                  AND rule_source LIKE 'auto:dry_water:%%:PLT-002'
+                """,
+                (garden_id,),
+            ).fetchall()
+            alert_row = conn.execute(
+                """
+                SELECT dismissed, metadata_json
+                FROM weather_alerts
+                WHERE garden_id = %s
+                  AND alert_type = 'dry_spell'
+                  AND valid_from = %s
+                """,
+                (garden_id, today),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+
+        assert initial["tasks_created"] == 1
+        assert resolved["tasks_resolved"] == 1
+        assert recovered["tasks_recovered"] == 1
+        assert len(tasks) == 1
+        assert str(tasks[0]["status"]) == "pending"
+        task_metadata = json.loads(str(tasks[0]["metadata_json"]))
+        assert task_metadata["lifecycle"]["reason"] == "same_identity_reappeared"
+        assert any(
+            event.get("resolution_kind") == "automatic_forecast"
+            for event in task_metadata["lifecycle_history"]
+        )
+        assert alert_row is not None
+        assert not bool(alert_row["dismissed"])
+        alert_metadata = json.loads(str(alert_row["metadata_json"]))
+        assert alert_metadata["lifecycle"]["reason"] == "reappeared_in_current_forecast"
+        assert any(
+            event.get("resolution_kind") == "automatic_forecast"
+            for event in alert_metadata["lifecycle_history"]
+        )
 
     def test_weather_check_rolls_back_alerts_when_reconciliation_fails(self) -> None:
         conn = db.get_db()
@@ -581,6 +689,13 @@ class TestWeather(BaseApiTest):
                 ON CONFLICT DO NOTHING
                 """,
                 (garden_id, self._owner_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO plot_plants (plot_id, plt_id, quantity)
+                VALUES ('B1', 'PLT-002', 1)
+                ON CONFLICT DO NOTHING
+                """,
             )
             conn.commit()
             save_weather_alerts(conn, garden_id, [alert])

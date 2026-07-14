@@ -10,7 +10,11 @@ const { assert, assertPageStructure } = require("./e2e/completeJourneyAssertions
 const {
   assertLoopbackBaseUrl,
   assertBrowserProfileContract,
+  assertDiagnosticsClean,
   allowedBrowserOrigins,
+  authenticate,
+  createApiRecorder,
+  createGuardedContext,
   isAllowedUrl,
   redactTokenShapedSecrets,
   sanitizeDiagnostic,
@@ -27,9 +31,28 @@ const PHASE = Number(process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_PHASE || "-1");
 const THROUGH_PHASE = Number(process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_THROUGH_PHASE || "-1");
 const USERNAME = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_USERNAME || "";
 const PASSWORD = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_PASSWORD || ""; // push-sanitizer: allow SECRET_ASSIGNMENT - environment lookup only
-const CHROMIUM_EXECUTABLE = fs.existsSync("/usr/bin/chromium-browser")
+const CHROMIUM_LAUNCHER = fs.existsSync("/usr/bin/chromium-browser")
   ? "/usr/bin/chromium-browser"
   : "/usr/bin/chromium";
+const CHROMIUM_EXECUTABLE = resolveChromiumExecutable(CHROMIUM_LAUNCHER);
+const PHASE_TWO_PROFILE_ORDER = [
+  "admin:desktop",
+  "admin:mobile",
+  "editor:desktop",
+  "editor:mobile",
+  "viewer:desktop",
+  "viewer:mobile",
+];
+const PHASE_TWO_READ_ONLY_PERMUTATION_ORDER = [
+  "viewer:mobile",
+  "admin:desktop",
+  "editor:mobile",
+  "viewer:desktop",
+  "admin:mobile",
+  "editor:desktop",
+];
+const PHASE_TWO_EDITOR_PASSWORD = "CompleteJourneysEditorE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+const PHASE_TWO_VIEWER_PASSWORD = "CompleteJourneysViewerE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 
 function phaseSelected(phase) {
   return phase >= PHASE && phase <= THROUGH_PHASE;
@@ -284,12 +307,63 @@ function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+function isElfExecutable(filePath) {
+  try {
+    const descriptor = fs.openSync(filePath, "r");
+    try {
+      const magic = Buffer.alloc(4);
+      return fs.readSync(descriptor, magic, 0, magic.length, 0) === magic.length
+        && magic.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  } catch {
+    return false;
+  }
+}
+
+function resolveChromiumExecutable(launcherPath) {
+  const candidates = [];
+  if (fs.existsSync(launcherPath)) candidates.push(fs.realpathSync.native(launcherPath));
+  candidates.push(
+    "/usr/lib/chromium/chromium",
+    "/usr/lib/chromium-browser/chromium-browser",
+  );
+  return candidates.find((candidate) => isElfExecutable(candidate)) || launcherPath;
+}
+
+function sha256File(filePath) {
+  const digest = crypto.createHash("sha256");
+  const descriptor = fs.openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    for (;;) {
+      const count = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (count === 0) break;
+      digest.update(buffer.subarray(0, count));
+    }
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  return digest.digest("hex");
+}
+
 function fileBinding(filePath) {
   const stat = fs.statSync(filePath);
   assert(stat.isFile(), `Evidence binding is not a file: ${path.basename(filePath)}`);
   return {
-    sha256: sha256(fs.readFileSync(filePath)),
+    sha256: sha256File(filePath),
     size_bytes: stat.size,
+  };
+}
+
+function resolvedExecutableBinding(filePath) {
+  const resolvedPath = fs.realpathSync.native(filePath);
+  assert(resolvedPath === filePath, "Chromium executable binding must use its resolved path");
+  assert(isElfExecutable(resolvedPath), "Chromium executable binding must identify an ELF binary");
+  return {
+    ...fileBinding(resolvedPath),
+    resolved_regular_file: true,
   };
 }
 
@@ -319,7 +393,8 @@ function evidenceBinding() {
       architecture: process.arch,
       frontend_package_version: String(packageJson.version || ""),
       playwright_core_version: String(packageJson.devDependencies?.["playwright-core"] || ""),
-      chromium_executable: fileBinding(CHROMIUM_EXECUTABLE),
+      chromium_launcher: fileBinding(fs.realpathSync.native(CHROMIUM_LAUNCHER)),
+      chromium_executable: resolvedExecutableBinding(CHROMIUM_EXECUTABLE),
       chromium_version: null,
     },
   };
@@ -336,11 +411,94 @@ function canonicalProjectionDigests(manifest) {
     profiles: manifest.profiles,
     trace_artifacts: manifest.trace_artifacts,
   };
+  const auditProjection = projection.database?.audit_projection;
+  if (manifest.status === "passed") {
+    assert(
+      auditProjection && typeof auditProjection === "object"
+        && Array.isArray(auditProjection.events),
+      "Passed manifest is missing its sanitized audit projection",
+    );
+  }
   return {
-    audit_snapshot: sha256(canonicalJson(projection.database?.observed_audit_state)),
+    audit_snapshot: auditProjection && typeof auditProjection === "object"
+      ? sha256(canonicalJson(auditProjection))
+      : null,
     final_database: sha256(canonicalJson(projection.database)),
     final_projection: sha256(canonicalJson(projection)),
     profiles: sha256(canonicalJson(projection.profiles)),
+  };
+}
+
+function auditManifestProjection(auditState) {
+  assert(auditState && typeof auditState === "object", "Audit manifest projection is missing");
+  assert(Array.isArray(auditState.events), "Audit manifest event histogram is missing");
+  for (const [label, value] of [
+    ["expected login count", auditState.expected_login_count],
+    ["expected Phase 1 snapshot count", auditState.expected_phase_one_snapshot_count],
+    ["total count", auditState.total_count],
+  ]) {
+    assert(Number.isSafeInteger(value) && value >= 0,
+      `Audit manifest ${label} is invalid`);
+  }
+  const events = auditState.events.map((event) => {
+    assert(Number.isSafeInteger(event?.count) && event.count > 0,
+      "Audit manifest event count is invalid");
+    assert(["DELETE", "GET", "HEAD", "PATCH", "POST", "PUT"].includes(event?.method),
+      "Audit manifest event method is invalid");
+    assert(isSafeAuditProjectionPath(event?.path), "Audit manifest event path is invalid");
+    assert(Number.isSafeInteger(event?.status_code)
+      && event.status_code >= 100 && event.status_code <= 599,
+    "Audit manifest event status is invalid");
+    return {
+      count: event.count,
+      method: event.method,
+      path: event.path,
+      status_code: event.status_code,
+    };
+  }).sort((left, right) => auditEventKey(left).localeCompare(auditEventKey(right)));
+  const projection = {
+    events,
+    expected_login_count: auditState.expected_login_count,
+    expected_phase_one_snapshot_count: auditState.expected_phase_one_snapshot_count,
+    total_count: auditState.total_count,
+  };
+  assert(
+    projection.events.reduce((total, event) => total + event.count, 0)
+      === projection.total_count,
+    "Audit manifest projection total disagrees with its event histogram",
+  );
+  return projection;
+}
+
+function isSafeAuditProjectionPath(value) {
+  const pathname = String(value || "");
+  return pathname === "/api/media/summaries"
+    || phaseOneAuditExpectedEvents(0).some((event) => event.path === pathname)
+    || isPhaseTwoAuditPath(pathname);
+}
+
+function assertWholeTableProjectionCoverage(initial, final, allowedTables) {
+  assert(initial && typeof initial === "object", "Initial whole-table projection is missing");
+  assert(final && typeof final === "object", "Final whole-table projection is missing");
+  const initialTables = Object.keys(initial).sort();
+  const finalTables = Object.keys(final).sort();
+  assert(canonicalJson(initialTables) === canonicalJson(finalTables),
+    "Whole-table projection coverage changed during the run");
+  for (const table of allowedTables) {
+    assert(Object.hasOwn(initial, table) && Object.hasOwn(final, table),
+      `Allowed table lacks a whole-table projection: ${table}`);
+  }
+  for (const [boundary, projection] of [["initial", initial], ["final", final]]) {
+    for (const [table, evidence] of Object.entries(projection)) {
+      assert(Number.isSafeInteger(evidence?.count) && evidence.count >= 0,
+        `${boundary} whole-table count is invalid: ${table}`);
+      assert(/^[a-f0-9]{32}$/.test(String(evidence?.digest || "")),
+        `${boundary} whole-table digest is invalid: ${table}`);
+    }
+  }
+  return {
+    all_public_domain_tables_projected: true,
+    projected_table_count: finalTables.length,
   };
 }
 
@@ -868,6 +1026,172 @@ function assertPhaseOneProfileEvidence(profiles) {
   };
 }
 
+async function freezeReadOnlyProbeClock(context, nowMs) {
+  await context.addInitScript((frozenNowMs) => {
+    const RealDate = Date;
+    function FrozenDate(...args) {
+      if (new.target) {
+        return args.length === 0 ? new RealDate(frozenNowMs) : new RealDate(...args);
+      }
+      return new RealDate(frozenNowMs).toString();
+    }
+    Object.setPrototypeOf(FrozenDate, RealDate);
+    FrozenDate.prototype = RealDate.prototype;
+    FrozenDate.now = () => frozenNowMs;
+    FrozenDate.parse = RealDate.parse;
+    FrozenDate.UTC = RealDate.UTC;
+    globalThis.Date = FrozenDate;
+  }, nowMs);
+}
+
+async function runPhaseTwoReadOnlyPermutation({
+  artifactDir,
+  baseUrl,
+  browser,
+  devices,
+  fixture,
+  onProfile,
+  password,
+  username,
+}) {
+  const credentials = {
+    admin: { password, username },
+    editor: { password: PHASE_TWO_EDITOR_PASSWORD, username: fixture.roles.editor },
+    viewer: { password: PHASE_TWO_VIEWER_PASSWORD, username: fixture.roles.viewer },
+  };
+  for (const [index, key] of PHASE_TWO_READ_ONLY_PERMUTATION_ORDER.entries()) {
+    const [role, profileName] = key.split(":");
+    const guarded = await createGuardedContext(
+      browser,
+      devices,
+      profileName,
+      artifactDir,
+      `phase-two-read-only-${String(index + 1).padStart(2, "0")}-${role}-${profileName}`,
+      { baseUrl },
+    );
+    await freezeReadOnlyProbeClock(guarded.context, fixture.clock.attention_now_ms);
+    const page = await guarded.context.newPage();
+    const recorder = createApiRecorder(page, {
+      authType: "session",
+      role,
+      username: credentials[role].username,
+    });
+    const result = {
+      assertions: { failed: [], passed: [], skipped: [] },
+      browser_profile: guarded.profile,
+      checks: {
+        execution_model: "fresh-context-read-only-permutation",
+        probe_sequence: index + 1,
+      },
+      diagnostics: null,
+      failure: null,
+      profile: profileName,
+      requests: [],
+      role,
+      trace: null,
+    };
+    let caughtError = null;
+    let status = "failed";
+    try {
+      await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+      const authenticatedUser = await authenticate(
+        page,
+        credentials[role].username,
+        credentials[role].password,
+      );
+      guarded.markAuthenticated();
+      assert(authenticatedUser.role === role,
+        `Phase 2 read-only probe role was unexpected: ${key}`);
+      result.browser_profile.user_agent = await page.evaluate(() => navigator.userAgent);
+      result.browser_profile.max_touch_points = await page.evaluate(() => navigator.maxTouchPoints);
+      result.browser_profile.has_touch = result.browser_profile.max_touch_points > 0;
+      result.browser_profile.viewport = page.viewportSize();
+      result.browser_profile.user_agent_contract = assertBrowserProfileContract(
+        profileName,
+        result.browser_profile,
+      );
+      await page.locator("#map-grid").waitFor({ state: "visible", timeout: 15000 });
+      const scopedReads = await page.evaluate(async (gardenId) => {
+        const responses = await Promise.all([
+          fetch("/api/attention/today", {
+            credentials: "include",
+            headers: { "x-garden-id": String(gardenId) },
+          }),
+          fetch("/api/tasks", {
+            credentials: "include",
+            headers: { "x-garden-id": String(gardenId) },
+          }),
+        ]);
+        return responses.map((response) => response.status);
+      }, fixture.gardens.alpha.id);
+      assert(canonicalJson(scopedReads) === canonicalJson([200, 200]),
+        `Phase 2 read-only scoped probes failed: ${key}`);
+      const unexpectedMutationRequests = recorder.records.filter((request) => (
+        ["DELETE", "PATCH", "POST", "PUT"].includes(request.method)
+        && ![
+          "/api/auth/login",
+          "/api/media/summaries",
+        ].includes(request.path)
+      ));
+      assert(unexpectedMutationRequests.length === 0,
+        `Phase 2 read-surface probe issued a domain mutation request: ${key}`);
+      assertDiagnosticsClean(guarded.diagnostics, `${key} Phase 2 read-only permutation`);
+      result.checks.browser_diagnostics = true;
+      result.checks.domain_mutation_requests_absent = true;
+      result.checks.phase_two_read_only_scope_probe = true;
+      result.checks.shared_state_mutation_claimed = false;
+      result.assertions.passed.push(`phase-two-read-only-${role}-${profileName}`);
+      status = "passed";
+    } catch (error) {
+      caughtError = error;
+      result.failure = "Phase 2 read-only permutation probe failed; inspect private evidence";
+      result.assertions.failed.push(result.failure);
+    } finally {
+      result.diagnostics = guarded.diagnostics;
+      result.requests = recorder.records;
+      try {
+        result.trace = await guarded.close(status);
+      } catch (error) {
+        if (!caughtError) caughtError = error;
+      }
+      onProfile(result);
+    }
+    if (caughtError) throw caughtError;
+  }
+}
+
+function assertPhaseTwoReadOnlyPermutationEvidence(profiles) {
+  assert(Array.isArray(profiles), "Phase 2 read-only permutation evidence is missing");
+  const observedOrder = profiles.map(({ role, profile }) => `${role}:${profile}`);
+  assert(canonicalJson(observedOrder) === canonicalJson(PHASE_TWO_READ_ONLY_PERMUTATION_ORDER),
+    "Phase 2 read-only probes did not follow the declared permutation");
+  for (const [index, profile] of profiles.entries()) {
+    assert(profile.failure === null, `Phase 2 read-only probe failed: ${observedOrder[index]}`);
+    assert(profile.checks?.execution_model === "fresh-context-read-only-permutation"
+      && profile.checks?.domain_mutation_requests_absent === true
+      && profile.checks?.probe_sequence === index + 1
+      && profile.checks?.phase_two_read_only_scope_probe === true
+      && profile.checks?.shared_state_mutation_claimed === false,
+    `Phase 2 read-only probe evidence was incomplete: ${observedOrder[index]}`);
+    assert(profile.checks?.browser_diagnostics === true,
+      `Phase 2 read-only probe diagnostics were missing: ${observedOrder[index]}`);
+  }
+  return {
+    execution_model: "fresh-context-read-only-permutation",
+    expected_profile_count: PHASE_TWO_READ_ONLY_PERMUTATION_ORDER.length,
+    profile_order: [...PHASE_TWO_READ_ONLY_PERMUTATION_ORDER],
+    shared_state_mutation_claimed: false,
+  };
+}
+
+function assertPhaseTwoProfileOrder(profiles) {
+  assert(Array.isArray(profiles), "Phase 2 browser profile evidence is missing");
+  const observedOrder = profiles.map(({ role, profile }) => `${role}:${profile}`);
+  assert(canonicalJson(observedOrder) === canonicalJson(PHASE_TWO_PROFILE_ORDER),
+    "Phase 2 profiles did not follow the declared shared-state choreography");
+  return [...PHASE_TWO_PROFILE_ORDER];
+}
+
 function assertPhaseTwoProfileEvidence(profiles) {
   assert(Array.isArray(profiles), "Phase 2 browser profile evidence is missing");
   const expectedProfiles = [
@@ -942,6 +1266,7 @@ function assertPhaseTwoProfileEvidence(profiles) {
     },
   ];
   assert(profiles.length === expectedProfiles.length, "Phase 2 browser profile count was unexpected");
+  const expectedOrder = assertPhaseTwoProfileOrder(profiles);
   const byKey = new Map();
   for (const profile of profiles) {
     const key = `${profile?.role}:${profile?.profile}`;
@@ -980,7 +1305,11 @@ function assertPhaseTwoProfileEvidence(profiles) {
     }
   }
   return {
+    execution_model: "ordered-shared-state-choreography",
     expected_profile_count: expectedProfiles.length,
+    isolated_profile_execution_claimed: false,
+    profile_order: expectedOrder,
+    profile_order_enforced: true,
     profile_matrix_enforced: true,
   };
 }
@@ -1118,9 +1447,10 @@ function assertPhaseTwoAuditEvents(beforeAudit, finalAudit, profiles, fixture) {
   );
   return {
     phase_two_audit_event_count: phaseTwoAuditEvents.length,
+    phase_two_audit_correlation_exact: true,
     phase_two_audit_events_exact: true,
     phase_two_audit_mutations_one_to_one: true,
-    phase_two_audit_request_ids_one_to_one: true,
+    phase_two_audit_server_ids_one_to_one: true,
     phase_two_audit_timestamps_frozen: auditTimestampsFrozen,
     phase_two_audit_wall_clock_uncontrolled: true,
     phase_two_unlogged_put_mutation_count: unloggedPutMutations,
@@ -1305,6 +1635,81 @@ function assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture) {
   return { scoped_mutable_row_projections_exact: true };
 }
 
+function semanticHistogram(rows, keyForRow) {
+  const counts = {};
+  for (const row of rows) {
+    const key = String(keyForRow(row) || "");
+    assert(key, "Phase 2 maintenance semantic histogram has an empty key");
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return Object.fromEntries(Object.entries(counts).sort(([left], [right]) => (
+    left.localeCompare(right)
+  )));
+}
+
+function assertPhaseTwoMaintenanceSpec(createdByTable, summary, fixture) {
+  const spec = fixture?.phase_two?.maintenance_expectations;
+  assert(spec && typeof spec === "object", "Phase 2 maintenance reference specification is missing");
+  const exact = (actual, expected, label) => assert(
+    canonicalJson(actual) === canonicalJson(expected),
+    `Phase 2 maintenance ${label} diverged from the fixture specification`,
+  );
+  const taskRows = createdByTable.tasks.created;
+  const notificationRows = createdByTable.notifications.created;
+  const weatherRows = createdByTable.weather_alerts.created;
+  exact(taskRows.length, spec.created?.tasks?.total, "task count");
+  exact(
+    semanticHistogram(taskRows, (row) => row.task_type),
+    spec.created?.tasks?.by_type,
+    "task-type histogram",
+  );
+  exact(
+    semanticHistogram(taskRows, (row) => String(row.rule_source || "").split(":")[0]),
+    spec.created?.tasks?.by_rule_family,
+    "task rule-family histogram",
+  );
+  exact(notificationRows.length, spec.created?.notifications?.total, "notification count");
+  exact(
+    semanticHistogram(
+      notificationRows,
+      (row) => `${row.notification_type}:${row.notification_subtype || ""}`,
+    ),
+    spec.created?.notifications?.by_type,
+    "notification type/subtype histogram",
+  );
+  const roleByUsername = new Map(Object.entries(fixture.roles || {}).map(
+    ([role, username]) => [username, role],
+  ));
+  exact(
+    semanticHistogram(notificationRows, (row) => roleByUsername.get(row.username)),
+    spec.created?.notifications?.by_role,
+    "notification role histogram",
+  );
+  exact(weatherRows.length, spec.created?.weather_alerts?.total, "weather-alert count");
+  exact(
+    semanticHistogram(weatherRows, (row) => row.alert_type),
+    spec.created?.weather_alerts?.by_type,
+    "weather-alert type histogram",
+  );
+  exact(
+    Object.fromEntries(["notifications", "tasks", "weather_alerts"].map((table) => (
+      [table, createdByTable[table].mutated_existing.length]
+    ))),
+    spec.mutated_existing,
+    "existing-row mutation histogram",
+  );
+  exact({
+    configured: summary?.configured,
+    gardens_processed: summary?.gardens_processed,
+    notifications_created: summary?.notifications_created,
+    tasks_auto_created: summary?.tasks_auto_created,
+    tasks_expired: summary?.tasks_expired,
+    weather_alerts_created: summary?.weather_alerts_created,
+    weather_tasks_created: summary?.weather_tasks_created,
+  }, spec.summary, "summary");
+  return { maintenance_fixture_spec_exact: true };
+}
+
 function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture, preferenceDelivery) {
   const semantic = maintenance?.maintenance_semantic_state;
   assert(semantic && typeof semantic === "object", "Phase 2 maintenance semantic state is missing");
@@ -1314,6 +1719,11 @@ function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture, pre
   assert(createdByTable && typeof createdByTable === "object",
     "Phase 2 maintenance created-row evidence is missing");
   const expectedTables = ["tasks", "notifications", "weather_alerts"];
+  const fixtureSpecEvidence = assertPhaseTwoMaintenanceSpec(
+    createdByTable,
+    maintenance.summary,
+    fixture,
+  );
   const createdCounts = {};
   for (const table of expectedTables) {
     const evidence = createdByTable[table];
@@ -1426,7 +1836,10 @@ function assertPhaseTwoMaintenanceSemanticState(maintenance, state, fixture, pre
       }
     }
   }
-  return assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture);
+  return {
+    ...fixtureSpecEvidence,
+    ...assertPhaseTwoScopedMutableRows(semantic, finalRows, fixture),
+  };
 }
 
 function assertMaintenanceMutationPair(pair, table) {
@@ -2349,13 +2762,6 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     "Phase 2 pre-save maintenance unexpectedly delivered email");
   assert(maintenance.garden_id === fixture.gardens.alpha.id,
     "Phase 2 maintenance ran for the wrong garden");
-  const maintenanceCreated = maintenance.maintenance_semantic_state.maintenance_created;
-  const createdWeatherTasks = maintenanceCreated.tasks.created.filter(
-    (taskValue) => taskValue.rule_source.startsWith("auto:"),
-  ).length;
-  const expiredTasks = maintenanceCreated.tasks.mutated_existing.filter((mutation) => (
-    mutation.before.status !== "expired" && mutation.after.status === "expired"
-  )).length;
   exact({
     configured: maintenance.summary?.configured,
     gardens_processed: maintenance.summary?.gardens_processed,
@@ -2364,15 +2770,8 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     tasks_expired: maintenance.summary?.tasks_expired,
     weather_alerts_created: maintenance.summary?.weather_alerts_created,
     weather_tasks_created: maintenance.summary?.weather_tasks_created,
-  }, {
-    configured: true,
-    gardens_processed: 1,
-    notifications_created: maintenanceCreated.notifications.created.length,
-    tasks_auto_created: maintenanceCreated.tasks.created.length - createdWeatherTasks,
-    tasks_expired: expiredTasks,
-    weather_alerts_created: maintenanceCreated.weather_alerts.created.length,
-    weather_tasks_created: createdWeatherTasks,
-  }, "Phase 2 maintenance summary was unexpected");
+  }, fixture.phase_two.maintenance_expectations.summary,
+  "Phase 2 maintenance summary was unexpected");
   assert(
     maintenance.deliveries.every((delivery) => (
       Number.isSafeInteger(delivery.body_length) && delivery.body_length > 0
@@ -2807,6 +3206,11 @@ function isSafeManifestRequestPath(value) {
   ].some((pattern) => pattern.test(requestPath));
 }
 
+function isSafeDiagnosticPath(value) {
+  return isSafeManifestRequestPath(value)
+    || String(value || "") === "/api/complete-journey-route-guard";
+}
+
 function sanitizeFileBinding(value) {
   return {
     format_version: (
@@ -2816,6 +3220,23 @@ function sanitizeFileBinding(value) {
     sha256: /^[a-f0-9]{64}$/.test(String(value?.sha256 || "")) ? value.sha256 : null,
     size_bytes: Number.isSafeInteger(value?.size_bytes) && value.size_bytes >= 0
       ? value.size_bytes
+      : null,
+    resolved_regular_file: value?.resolved_regular_file === true,
+  };
+}
+
+function sanitizeClassifiedConsoleDiagnostic(value) {
+  return {
+    context: safeIdentifier(value?.context),
+    diagnostic: sanitizeDiagnostic(value?.diagnostic),
+    id: safeIdentifier(value?.id),
+    method: new Set(["DELETE", "GET", "HEAD", "PATCH", "POST", "PUT"])
+      .has(String(value?.method)) ? String(value.method) : "UNKNOWN",
+    path: isSafeDiagnosticPath(value?.path)
+      ? String(value.path)
+      : sanitizeDiagnostic(value?.path),
+    status: Number.isSafeInteger(value?.status) && value.status >= 0 && value.status <= 599
+      ? value.status
       : null,
   };
 }
@@ -2851,6 +3272,9 @@ function sanitizeManifestEvidence(manifest) {
           architecture: safeIdentifier(manifest.evidence_binding.runtime?.architecture),
           chromium_executable: sanitizeFileBinding(
             manifest.evidence_binding.runtime?.chromium_executable,
+          ),
+          chromium_launcher: sanitizeFileBinding(
+            manifest.evidence_binding.runtime?.chromium_launcher,
           ),
           chromium_version: safeIdentifier(manifest.evidence_binding.runtime?.chromium_version),
           frontend_package_version: safeIdentifier(
@@ -2916,6 +3340,9 @@ function sanitizeManifestEvidence(manifest) {
         })),
       diagnostics: {
         blockedRequests: (rawProfile.diagnostics?.blockedRequests || []).map(sanitizeDiagnostic),
+        classifiedConsoleDiagnostics: (
+          rawProfile.diagnostics?.classifiedConsoleDiagnostics || []
+        ).map(sanitizeClassifiedConsoleDiagnostic),
         consoleErrors: (rawProfile.diagnostics?.consoleErrors || []).map(sanitizeDiagnostic),
         expectedAuth401Responses: Number(rawProfile.diagnostics?.expectedAuth401Responses || 0),
         httpErrors: (rawProfile.diagnostics?.httpErrors || []).map(sanitizeDiagnostic),
@@ -2935,7 +3362,9 @@ function sanitizeManifestEvidence(manifest) {
       trace: sanitizeTraceEvidence(rawProfile.trace),
     };
     for (const [key, values] of Object.entries(profile.diagnostics || {})) {
-      if (Array.isArray(values)) profile.diagnostics[key] = values.map(sanitizeDiagnostic);
+      if (key !== "classifiedConsoleDiagnostics" && Array.isArray(values)) {
+        profile.diagnostics[key] = values.map(sanitizeDiagnostic);
+      }
     }
     if (profile.structure) {
       for (const key of ["duplicateIds", "unnamedControls"]) {
@@ -3038,7 +3467,9 @@ async function main() {
   let manifest = {
     backend_log: null,
     browser: "chromium",
-    database: null,
+    database: {
+      audit_projection: auditManifestProjection(fixture.database_snapshot.audit_state),
+    },
     evidence_binding: evidenceBinding(),
     ended_at: null,
     failure: null,
@@ -3073,6 +3504,8 @@ async function main() {
   let phaseTwoPreferenceDelivery = null;
   let phaseTwoProfileEvidence = null;
   let phaseTwoProfiles = [];
+  let phaseTwoReadOnlyPermutationEvidence = null;
+  let phaseTwoReadOnlyProfiles = [];
   let thrownError = null;
   let currentStage = "runner-startup";
   try {
@@ -3136,6 +3569,22 @@ async function main() {
       currentStage = "phase-two-maintenance";
       phaseTwoMaintenance = runPhaseTwoMaintenance();
       phaseTwoAuditBaseline = databaseSnapshot().audit_state;
+      currentStage = "phase-two-read-only-permutation";
+      const phaseTwoReadOnlyStart = manifest.profiles.length;
+      await runPhaseTwoReadOnlyPermutation({
+        artifactDir: ARTIFACT_DIR,
+        baseUrl: BASE_URL,
+        browser,
+        devices,
+        fixture,
+        onProfile: (profile) => manifest.profiles.push(profile),
+        password: PASSWORD,
+        username: USERNAME,
+      });
+      phaseTwoReadOnlyProfiles = manifest.profiles.slice(phaseTwoReadOnlyStart);
+      phaseTwoReadOnlyPermutationEvidence = assertPhaseTwoReadOnlyPermutationEvidence(
+        phaseTwoReadOnlyProfiles,
+      );
       currentStage = "phase-two-browser";
       const phaseTwoProfileStart = manifest.profiles.length;
       await runDailyAttentionWork({
@@ -3162,17 +3611,12 @@ async function main() {
     const finalDatabase = databaseSnapshot();
     currentStage = "cumulative-assertions";
     manifest.database = {
-      observed_audit_state: finalDatabase.audit_state,
-      observed_auth_state: finalDatabase.auth_state,
-      observed_domain_counts: finalDatabase.domain_counts,
-      observed_domain_tables: finalDatabase.domain_tables,
-      observed_phase_one_boundary_state: phaseOneDatabase?.phase_one_state ?? null,
-      observed_phase_one_state: finalDatabase.phase_one_state,
-      observed_phase_two_state: finalDatabase.phase_two_state,
-      phase_two_audit_events: phaseTwoAuditEvidence,
-      phase_two_maintenance: phaseTwoMaintenance,
-      phase_two_preference_delivery: phaseTwoPreferenceDelivery,
-      phase_two_preparation: phaseTwoPreparation,
+      audit_projection: auditManifestProjection(finalDatabase.audit_state),
+      whole_table_projections: {
+        final: finalDatabase.domain_tables,
+        initial: fixture.database_snapshot.domain_tables,
+        phase_one_boundary: phaseOneDatabase?.domain_tables ?? null,
+      },
     };
     const domainTableNames = new Set([
       ...Object.keys(fixture.database_snapshot.domain_tables),
@@ -3199,7 +3643,7 @@ async function main() {
       phaseTwoAuditEvidence = assertPhaseTwoAuditEvents(
         phaseTwoAuditBaseline,
         finalDatabase.audit_state,
-        phaseTwoProfiles,
+        [...phaseTwoReadOnlyProfiles, ...phaseTwoProfiles],
         fixture,
       );
       if (phaseOneRan) {
@@ -3277,6 +3721,17 @@ async function main() {
       forbiddenDomainTables.length === 0,
       `Cumulative journey changed forbidden domain tables: ${forbiddenDomainTables.join(", ")}`,
     );
+    const wholeTableProjectionEvidence = assertWholeTableProjectionCoverage(
+      fixture.database_snapshot.domain_tables,
+      finalDatabase.domain_tables,
+      phaseTwoSemanticDeltaTables,
+    );
+    for (const [table, count] of Object.entries(finalDatabase.domain_counts)) {
+      if (Object.hasOwn(finalDatabase.domain_tables, table)) {
+        assert(finalDatabase.domain_tables[table].count === count,
+          `Final whole-table projection count disagreed for ${table}`);
+      }
+    }
     assert(
       fixture.database_snapshot.auth_state.admin_session_count === 0,
       "Foundation fixture unexpectedly started with an administrator session",
@@ -3538,6 +3993,7 @@ async function main() {
       );
     }
     manifest.database = {
+      audit_projection: auditManifestProjection(finalDatabase.audit_state),
       auth_expected_writes: {
         admin_last_login_updated: true,
         auth_users_other_fields_unchanged: true,
@@ -3565,6 +4021,12 @@ async function main() {
         )
         .digest("hex"),
       semantic_delta_tables: [...phaseTwoSemanticDeltaTables].sort(),
+      whole_table_projection_coverage: wholeTableProjectionEvidence,
+      whole_table_projections: {
+        final: finalDatabase.domain_tables,
+        initial: fixture.database_snapshot.domain_tables,
+        phase_one_boundary: phaseOneDatabase?.domain_tables ?? null,
+      },
       domain_counts_unchanged: !phaseOneRan && !phaseTwoRan,
       domain_digests_unchanged: !phaseOneRan && !phaseTwoRan,
       phase_zero_enforcement: phaseZeroProfileEvidence ? {
@@ -3596,9 +4058,15 @@ async function main() {
         ...phaseTwoDatabaseEvidence,
         ...phaseTwoAuditEvidence,
         browser_profile_matrix: phaseTwoProfileEvidence?.profile_matrix_enforced === true,
+        profile_execution: phaseTwoProfileEvidence,
+        read_only_permutation_execution: phaseTwoReadOnlyPermutationEvidence,
+        phase_fixture_scope: PHASE === 2 && THROUGH_PHASE === 2
+          ? "fresh-fixture-phase-two-only"
+          : "fresh-fixture-cumulative-through-phase-two",
         maintenance: phaseTwoMaintenance,
         preference_delivery: phaseTwoPreferenceDelivery,
         preparation: phaseTwoPreparation,
+        whole_table_projection_coverage: wholeTableProjectionEvidence,
       } : null,
       phase_boundaries: {
         phase_one_audit_total: phaseOneDatabase?.audit_state.total_count ?? null,
@@ -3606,6 +4074,9 @@ async function main() {
           ? phaseZeroProfiles.length + phaseOneProfiles.length
           : null,
         phase_two_profile_count: phaseTwoRan ? phaseTwoProfiles.length : null,
+        phase_two_read_only_permutation_profile_count: phaseTwoRan
+          ? phaseTwoReadOnlyProfiles.length
+          : null,
       },
       final: finalDatabase.domain_counts,
       initial: fixture.database_snapshot.domain_counts,
@@ -3700,10 +4171,13 @@ module.exports = {
   assertPhaseTwoAuditEvents,
   assertPhaseTwoDatabaseState,
   assertPhaseTwoOfflineOperationReplay,
+  assertPhaseTwoMaintenanceSpec,
   assertPhaseTwoScopedMutableRows,
   assertExpectedMaintenanceMutations,
   exactMaintenanceNotification,
   assertPhaseTwoProfileEvidence,
+  assertPhaseTwoProfileOrder,
+  assertPhaseTwoReadOnlyPermutationEvidence,
   assertNoResponseMocks,
   assertNoNodeRequestClients,
   assertTraceArtifacts,
@@ -3725,7 +4199,12 @@ module.exports = {
   sanitizeManifestEvidence,
   sanitizeDatabaseEvidence,
   canonicalProjectionDigests,
+  auditManifestProjection,
+  assertWholeTableProjectionCoverage,
   evidenceBinding,
+  isElfExecutable,
+  resolveChromiumExecutable,
   sourceProvenance,
   writeManifestAtomic,
+  runPhaseTwoReadOnlyPermutation,
 };

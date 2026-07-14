@@ -847,6 +847,25 @@ class TestTasks(BaseApiTest):
                 "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'FOREIGN-PLOT')",
                 (int(task["id"]),),
             )
+            conn.execute(
+                """
+                INSERT INTO plots
+                    (plot_id, garden_id, zone_code, zone_name, plot_number,
+                     grid_row, grid_col, sub_zone, notes)
+                VALUES ('B3', %s, 'B', 'Beds', 3, 1, 3, '', '')
+                """,
+                (self._get_default_garden_id(),),
+            )
+            conn.execute(
+                """
+                INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id)
+                VALUES ('B3', %s, %s)
+                """,
+                (self._owner_id, self._get_default_garden_id()),
+            )
+            conn.execute(
+                "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES ('B3', 'PLT-TEST', 1)",
+            )
             conn.commit()
         finally:
             db.return_db(conn)
@@ -897,6 +916,31 @@ class TestTasks(BaseApiTest):
         final = self.client.post(f"/api/tasks/{task_id}/action", json={"action": "complete"})
         self.assertEqual(final.status_code, 200, final.text)
 
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO plots
+                    (plot_id, garden_id, zone_code, zone_name, plot_number,
+                     grid_row, grid_col, sub_zone, notes)
+                VALUES ('B3', %s, 'B', 'Beds', 3, 1, 3, '', '')
+                """,
+                (self._get_default_garden_id(),),
+            )
+            conn.execute(
+                """
+                INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id)
+                VALUES ('B3', %s, %s)
+                """,
+                (self._owner_id, self._get_default_garden_id()),
+            )
+            conn.execute(
+                "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES ('B3', 'PLT-TEST', 1)",
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
         reopen = self.client.post(
             f"/api/tasks/{task_id}/action",
             json={"action": "reschedule", "reschedule_to": "2026-07-01"},
@@ -908,6 +952,7 @@ class TestTasks(BaseApiTest):
         self.assertEqual(task["plot_ids"], ["B1", "B2"])
         self.assertEqual(task["title"], "Prune 2 plants")
         self.assertNotIn("completion_capture_original_plant_ids", task["metadata"])
+        self.assertNotIn("completion_capture_original_plot_ids", task["metadata"])
 
     def test_grouped_completion_history_rejects_scope_and_type_edits(self) -> None:
         response = self.client.post(
@@ -937,7 +982,7 @@ class TestTasks(BaseApiTest):
             self.assertEqual(changed.status_code, 409, changed.text)
             self.assertIn("completion history", changed.text)
 
-    def test_completion_history_uses_current_plant_placement(self) -> None:
+    def test_completion_history_preserves_task_plot_scope_when_plant_moves(self) -> None:
         response = self.client.post(
             "/api/tasks",
             json={
@@ -965,7 +1010,7 @@ class TestTasks(BaseApiTest):
         self.assertEqual(complete.status_code, 200, complete.text)
         journal = self.client.get("/api/journal?event_type=pruned&plant_id=PLT-002").json()
         self.assertEqual(journal["total"], 1)
-        self.assertEqual(journal["entries"][0]["plot_ids"], ["B1"])
+        self.assertEqual(journal["entries"][0]["plot_ids"], ["B2"])
 
     def test_task_completion_capture_is_idempotent_for_same_selected_plants(self) -> None:
         response = self.client.post(
@@ -1126,7 +1171,7 @@ class TestTasks(BaseApiTest):
         entry = journal["entries"][0]
         self.assertEqual(entry["occurred_on"], date.today().isoformat())
         self.assertEqual(entry["plant_ids"], ["PLT-TEST"])
-        self.assertEqual(entry["plot_ids"], [])
+        self.assertEqual(entry["plot_ids"], ["B1"])
         self.assertEqual(entry["metadata"]["source"], "task_completion")
         self.assertEqual(entry["metadata"]["source_task_id"], task_id)
         self.assertEqual(entry["metadata"]["source_task_type"], "observe_bloom")
@@ -1173,7 +1218,49 @@ class TestTasks(BaseApiTest):
 
         journal = self.client.get("/api/journal?event_type=bloomed&plant_id=PLT-002").json()
         self.assertEqual(journal["total"], 1)
-        self.assertEqual(journal["entries"][0]["plot_ids"], [])
+        self.assertEqual(journal["entries"][0]["plot_ids"], ["B2"])
+
+    def test_observe_bloom_completion_updates_only_task_selected_assignment(self) -> None:
+        create = self.client.post(
+            "/api/plants",
+            json={"plt_id": "BL-SCOPED", "name": "Scoped Bloom", "category": "froe"},
+        )
+        self.assertEqual(create.status_code, 201, create.text)
+        for plot_id in ("B1", "B2"):
+            assigned = self.client.post(
+                f"/api/plots/{plot_id}/plants/BL-SCOPED",
+                json={"quantity": 1},
+            )
+            self.assertEqual(assigned.status_code, 201, assigned.text)
+
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "observe_bloom",
+                "title": "Observe bloom: Scoped Bloom",
+                "due_on": "2026-06-01",
+                "plant_ids": ["BL-SCOPED"],
+                "plot_ids": ["B1"],
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["id"]
+
+        completed = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            json={"action": "complete"},
+        )
+        self.assertEqual(completed.status_code, 200, completed.text)
+
+        journal = self.client.get("/api/journal?event_type=bloomed&plant_id=BL-SCOPED").json()
+        self.assertEqual(journal["total"], 1)
+        self.assertEqual(journal["entries"][0]["plot_ids"], ["B1"])
+        assignments = {
+            row["plot_id"]: row
+            for row in self.client.get("/api/plants/BL-SCOPED/assignments").json()
+        }
+        self.assertTrue(assignments["B1"]["seen_growing"])
+        self.assertIsNone(assignments["B2"]["seen_growing"])
 
     def test_observe_bloom_completion_without_plot_context_marks_single_assignment_seen_growing(
         self,

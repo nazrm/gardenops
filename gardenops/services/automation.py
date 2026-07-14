@@ -232,21 +232,22 @@ def sync_issue_followup_task(
 
 _WATERING_KEYWORDS = ("regular", "often", "jevnlig", "ofte", "mye", "frequently")
 _WEATHER_TASK_LOCK_SEED = 0x47415244454E4F50
+_RAIN_REASSESSMENT_DELAY_DAYS = 2
 
-_HARDINESS_SQL = """
+_OUTDOOR_HARDINESS_SQL = """
     SELECT p.plt_id, p.name, p.hardiness
     FROM plants p
     JOIN plant_ownership po ON po.plt_id = p.plt_id
     WHERE po.garden_id = %s
       AND p.hardiness != '' AND p.hardiness IS NOT NULL
-"""
-
-_CARE_WATERING_SQL = """
-    SELECT p.plt_id, p.name, p.care_watering
-    FROM plants p
-    JOIN plant_ownership po ON po.plt_id = p.plt_id
-    WHERE po.garden_id = %s
-      AND p.care_watering IS NOT NULL AND p.care_watering != ''
+      AND EXISTS (
+          SELECT 1
+          FROM plot_plants pp
+          JOIN plots outdoor_plot ON outdoor_plot.plot_id = pp.plot_id
+          WHERE pp.plt_id = p.plt_id
+            AND outdoor_plot.garden_id = po.garden_id
+            AND outdoor_plot.grid_row IS NOT NULL
+      )
 """
 
 _OUTDOOR_CARE_WATERING_SQL = """
@@ -319,7 +320,8 @@ def _create_weather_tasks(
 ) -> int:
     """Create weather-alert tasks for matching plants. Returns count created."""
     alert = db.execute(
-        "SELECT valid_from, metadata_json FROM weather_alerts WHERE id = %s AND garden_id = %s",
+        "SELECT valid_from, valid_until, metadata_json "
+        "FROM weather_alerts WHERE id = %s AND garden_id = %s AND dismissed = 0",
         (alert_id, garden_id),
     ).fetchone()
     if not alert:
@@ -404,7 +406,12 @@ def _create_weather_tasks(
         else:
             title = title_tpl.format(name=pname)
 
-        metadata = {"description_no": desc_no_tpl.format(name=pname)}
+        metadata = {
+            "description_no": desc_no_tpl.format(name=pname),
+            "weather_alert_id": alert_id,
+            "weather_valid_from": str(alert["valid_from"]),
+            "weather_valid_until": str(alert["valid_until"]),
+        }
         if due_on != original_due_on:
             metadata["generated_original_due_on"] = original_due_on
         meta = json.dumps(metadata)
@@ -461,7 +468,7 @@ def on_frost_alert(
         garden_id,
         alert_id,
         actor_user_id,
-        plant_sql=_HARDINESS_SQL,
+        plant_sql=_OUTDOOR_HARDINESS_SQL,
         plant_filter=_is_frost_vulnerable,
         task_type="protect",
         rule_prefix="auto:frost_protect",
@@ -469,6 +476,7 @@ def on_frost_alert(
         title_tpl="Protect from frost: {name}",
         desc_en_tpl="Frost alert \u2014 cover or move {name} to shelter",
         desc_no_tpl="Frostvarsel \u2014 dekk til eller flytt {name} i ly",
+        outdoor_plot_links_only=True,
         now_ms=now_ms,
     )
 
@@ -487,7 +495,7 @@ def on_heat_alert(
         garden_id,
         alert_id,
         actor_user_id,
-        plant_sql=_CARE_WATERING_SQL,
+        plant_sql=_OUTDOOR_CARE_WATERING_SQL,
         plant_filter=_needs_extra_watering,
         task_type="protect",
         rule_prefix="auto:heat_protect",
@@ -495,6 +503,7 @@ def on_heat_alert(
         title_tpl="Provide shade: {name}",
         desc_en_tpl="Heat wave \u2014 provide shade and extra water for {name}",
         desc_no_tpl="Heteb\u00f8lge \u2014 gi skygge og ekstra vann til {name}",
+        outdoor_plot_links_only=True,
         now_ms=now_ms,
     )
 
@@ -513,7 +522,7 @@ def on_dry_spell_alert(
         garden_id,
         alert_id,
         actor_user_id,
-        plant_sql=_CARE_WATERING_SQL,
+        plant_sql=_OUTDOOR_CARE_WATERING_SQL,
         plant_filter=_needs_extra_watering,
         task_type="water",
         rule_prefix="auto:dry_water",
@@ -521,6 +530,7 @@ def on_dry_spell_alert(
         title_tpl="Water regularly: {name}",
         desc_en_tpl="Dry spell \u2014 water {name} regularly, check soil moisture",
         desc_no_tpl="T\u00f8rkeperiode \u2014 vann {name} jevnlig, sjekk jordfuktighet",
+        outdoor_plot_links_only=True,
         now_ms=now_ms,
     )
 
@@ -713,8 +723,8 @@ def _reschedule_watering_during_rain(
     # not auto-generated drainage tasks ('auto:rain_drainage:').
     rows = db.execute(
         """
-        SELECT id, public_id, title, due_on, snoozed_until, status, rule_source, metadata_json,
-               COALESCE(snoozed_until, due_on) AS action_on
+        SELECT id, public_id, title, description, due_on, snoozed_until, status,
+               rule_source, metadata_json, COALESCE(snoozed_until, due_on) AS action_on
         FROM garden_tasks
         WHERE garden_id = %s AND task_type = 'water' AND status IN ('pending', 'snoozed')
           AND rule_source LIKE 'water:%%'
@@ -746,8 +756,11 @@ def _reschedule_watering_during_rain(
     ).fetchall()
     if not rows:
         return
-    # Reschedule to one day after the rain alert ends
-    new_due = (date.fromisoformat(valid_until) + timedelta(days=1)).isoformat()
+    # Saturated root zones need time to drain. Reassess moisture two days after
+    # the forecast rain ends instead of blindly watering the following day.
+    new_due = (
+        date.fromisoformat(valid_until) + timedelta(days=_RAIN_REASSESSMENT_DELAY_DAYS)
+    ).isoformat()
     effective_now_ms = now_ms if now_ms is not None else current_timestamp_ms()
     for row in rows:
         old_meta = row["metadata_json"] if "metadata_json" in row.keys() else "{}"
@@ -755,12 +768,30 @@ def _reschedule_watering_during_rain(
         old_action_on = str(row["action_on"])
         meta["rescheduled_from"] = old_action_on
         meta["rescheduled_reason"] = "rain_alert"
+        meta["rescheduled_weather_alert_id"] = int(alert["id"])
+        meta["rescheduled_alert_valid_until"] = str(valid_until)
+        meta["rain_reassessment_policy"] = "check_root_zone_moisture_before_watering"
+        meta["rain_reassessment_delay_days"] = _RAIN_REASSESSMENT_DELAY_DAYS
+        meta.setdefault("rain_original_title", str(row["title"] or ""))
+        meta.setdefault("rain_original_description", str(row["description"] or ""))
+        current_title = str(row["title"] or "Watering")
+        reassessment_title = (
+            current_title
+            if current_title.startswith("Reassess after rain:")
+            else f"Reassess after rain: {current_title}"
+        )
+        reassessment_description = (
+            "Check root-zone soil moisture after the heavy rain has drained; "
+            "water only if the soil is dry."
+        )
         plant_ids = _plant_ids_for_task(db, int(row["id"]))
         plot_ids = _plot_ids_for_task(db, int(row["id"]))
         update = db.execute(
             """
             UPDATE garden_tasks
-            SET due_on = CASE WHEN status = 'snoozed' THEN due_on ELSE %s END,
+            SET title = %s,
+                description = %s,
+                due_on = CASE WHEN status = 'snoozed' THEN due_on ELSE %s END,
                 snoozed_until = CASE WHEN status = 'snoozed' THEN %s ELSE NULL END,
                 metadata_json = %s,
                 updated_at_ms = %s
@@ -769,6 +800,8 @@ def _reschedule_watering_during_rain(
               AND COALESCE(snoozed_until, due_on) = %s
             """,
             (
+                reassessment_title,
+                reassessment_description,
                 new_due,
                 new_due,
                 json.dumps(meta, separators=(",", ":")),

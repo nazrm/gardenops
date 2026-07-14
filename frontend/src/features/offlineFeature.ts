@@ -6,10 +6,13 @@ import type {
 import { t } from "../core/i18n";
 import { showToast } from "../components/toast";
 import { renderOfflineIndicator } from "../components/offlineIndicator";
+import { confirmDialog } from "../components/dialogCore";
 import {
   onConnectivityChange,
   onOfflineQueueChange,
-  getPendingCount,
+  getOfflineQueueSnapshot,
+  removeDraft,
+  retryDraft,
   syncAllDrafts,
   isOnline,
   deserializeFiles,
@@ -317,18 +320,42 @@ export async function refreshOfflineIndicator(): Promise<void> {
     "offline-indicator",
   );
   if (!wrapper) return;
-  const count = await getPendingCount();
+  const snapshot = await getOfflineQueueSnapshot();
   renderOfflineIndicator(
     wrapper,
-    count,
-    isOnline(),
     {
-      onSyncNow: () => void triggerOfflineSync(),
+      failedDrafts: snapshot.failedDrafts,
+      online: isOnline(),
+      pendingCount: snapshot.pendingCount,
+    },
+    {
+      onDiscard: (draft) => {
+        void (async () => {
+          const confirmed = await confirmDialog(
+            t("offline.discard_confirm"),
+            t("offline.discard"),
+          );
+          if (!confirmed) return;
+          await removeDraft(draft.id);
+          await refreshOfflineIndicator();
+        })();
+      },
+      onRetry: (draft) => {
+        void (async () => {
+          const changed = await retryDraft(draft.id);
+          if (changed && isOnline()) {
+            await syncOfflineDraftsNow();
+          } else {
+            await refreshOfflineIndicator();
+          }
+        })();
+      },
+      onSyncNow: () => void syncOfflineDraftsNow(),
     },
   );
 }
 
-async function triggerOfflineSync(): Promise<void> {
+export async function syncOfflineDraftsNow(): Promise<void> {
   const result = await syncAllDrafts(
     getOfflineSyncCallbacks(),
   );
@@ -360,7 +387,7 @@ function initOfflineIndicator(): void {
 
   onConnectivityChange((online) => {
     if (online) {
-      void triggerOfflineSync();
+      void syncOfflineDraftsNow();
     }
     void refreshOfflineIndicator();
   });

@@ -505,7 +505,7 @@ class TestGenerateTasksDedup(DbTestBase):
             (self.garden_id,),
         ).fetchone()
 
-        assert result == {"created": 3, "skipped": 1}
+        assert result == {"created": 3, "skipped": 1, "rain_suppressed": 1}
         assert [(int(row["created_at_ms"]), int(row["updated_at_ms"])) for row in task_rows] == [
             (now_ms, now_ms),
             (now_ms, now_ms),

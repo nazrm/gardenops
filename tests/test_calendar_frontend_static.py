@@ -55,7 +55,7 @@ def test_calendar_state_is_scoped_to_the_active_garden_and_invalidated_on_switch
     assert "refreshSubscriptions(" in calendar_tab
 
 
-def test_calendar_view_changes_do_not_write_for_viewers_or_duplicate_initial_render() -> None:
+def test_calendar_view_changes_persist_as_personal_preferences_for_viewers() -> None:
     calendar_tab = _read("frontend/src/tabs/calendarTab.ts")
     persist_body = _function_body(
         calendar_tab,
@@ -68,9 +68,25 @@ def test_calendar_view_changes_do_not_write_for_viewers_or_duplicate_initial_ren
         "async function changeView",
     )
 
-    assert "if (!ctx.canWrite()) return;" in persist_body
+    assert "if (!ctx.canWrite()) return;" not in persist_body
+    assert "await updateCalendarPreferencesApi" in persist_body
+    assert "calendarPreferencesCache.set(gardenId" in persist_body
+    assert 't("calendar.preferences_save_failed"' in persist_body
+    assert 'ctx.showToast(' in persist_body
     assert "calendar.render();" not in instance_body
     assert "let calendarRendered = false;" in calendar_tab
+
+
+def test_calendar_cold_offline_state_does_not_render_false_empty_events() -> None:
+    calendar_tab = _read("frontend/src/tabs/calendarTab.ts")
+    layout = _read("frontend/src/components/layout.ts")
+
+    assert "const calendarPreferencesCache = new Map" in calendar_tab
+    assert "const calendarEventsCache = new Map" in calendar_tab
+    assert 'setCalendarDataState("unavailable")' in calendar_tab
+    assert 'setCalendarDataState("cached")' in calendar_tab
+    assert 'root.hidden = state === "unavailable"' in calendar_tab
+    assert 'id="calendar-data-state"' in layout
 
 
 def test_calendar_uses_the_shared_date_dialog_and_correction_notice() -> None:

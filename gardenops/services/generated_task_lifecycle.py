@@ -24,13 +24,15 @@ def is_stale_generated_watering_task(
     rule_source: str | None,
     action_on: Any,
     today: str,
+    alert_valid_until: Any = None,
+    alert_active: bool = True,
 ) -> bool:
-    return (
-        task_type == "water"
-        and is_generated_watering_rule_source(rule_source)
-        and bool(action_on)
-        and str(action_on) < today
-    )
+    if task_type != "water" or not is_generated_watering_rule_source(rule_source):
+        return False
+    value = (rule_source or "").strip()
+    if value.startswith("auto:dry_water:"):
+        return not alert_active or not alert_valid_until or str(alert_valid_until) < today
+    return bool(action_on) and str(action_on) < today
 
 
 def stale_generated_watering_sql(
@@ -40,11 +42,24 @@ def stale_generated_watering_sql(
     today_sql: str = "%s",
 ) -> str:
     prefix = f"{task_alias}." if task_alias else ""
+    correlation_prefix = prefix or "garden_tasks."
     action_on = action_on_sql or f"COALESCE({prefix}snoozed_until, {prefix}due_on)"
+    action_on_date = f"({action_on})::date"
+    today_date = f"({today_sql})::date"
     return (
         f"({prefix}task_type = 'water' "
-        f"AND ({prefix}rule_source LIKE %s OR {prefix}rule_source LIKE %s) "
-        f"AND {action_on} < {today_sql})"
+        "AND ("
+        f"({prefix}rule_source LIKE %s AND {action_on_date} < {today_date}) "
+        "OR "
+        f"({prefix}rule_source LIKE %s AND NOT EXISTS ("
+        "SELECT 1 FROM weather_alerts lifecycle_weather_alert "
+        f"WHERE lifecycle_weather_alert.garden_id = {correlation_prefix}garden_id "
+        "AND lifecycle_weather_alert.id = CASE "
+        f"WHEN split_part({correlation_prefix}rule_source, ':', 3) ~ '^[0-9]+$' "
+        f"THEN split_part({correlation_prefix}rule_source, ':', 3)::int ELSE NULL END "
+        "AND lifecycle_weather_alert.dismissed = 0 "
+        f"AND lifecycle_weather_alert.valid_until::date >= {today_date}"
+        "))))"
     )
 
 
@@ -117,7 +132,9 @@ def expire_stale_generated_tasks(
         """,  # noqa: S608
         [
             garden_id,
-            *GENERATED_WATERING_RULE_SOURCE_PATTERNS,
+            GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS[0],
+            today,
+            "auto:dry_water:%",
             today,
         ],
     ).fetchall()

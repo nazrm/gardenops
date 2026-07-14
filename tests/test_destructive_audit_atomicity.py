@@ -412,11 +412,11 @@ class TestGardenDeleteAuditAtomicity(BaseApiTest):
             values: tuple[object, ...],
             *,
             reserve: bool = False,
-        ) -> None:
+        ) -> int:
             if reserve:
-                original_audit_insert(conn, values, reserve=True)
-                return
+                return original_audit_insert(conn, values, reserve=True)
             conn.execute("SELECT 1 / 0")
+            raise AssertionError("unreachable")
 
         with patch.dict(
             os.environ,

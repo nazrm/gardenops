@@ -569,7 +569,6 @@ def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None
         "Mobile Quick Actions did not expose dialog semantics",
         "Mobile Quick Actions did not inert the main background surface",
         "mobile Quick Actions FAB focus restoration",
-        "diagnostics.consoleErrors.splice(consoleMark, 1)",
     ):
         assert marker in journey_source
     assert "navigator.clipboard.readText" not in journey_source
@@ -617,7 +616,7 @@ def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None
     assert '"feed_url":' not in seed_source
 
 
-def test_phase_two_subscription_probe_consumes_expected_diagnostics_and_is_wired() -> None:
+def test_phase_two_subscription_probe_is_wired_to_classified_diagnostics() -> None:
     journey_path = ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs"
     journey_source = journey_path.read_text(encoding="utf-8")
     helper_start = journey_source.index("async function exerciseCalendarSubscriptionFeed(")
@@ -633,8 +632,6 @@ def test_phase_two_subscription_probe_consumes_expected_diagnostics_and_is_wired
     )
     assert "page-origin feed fetch" in helper_source
     assert "const revokedStatus = await page.evaluate" in helper_source
-    assert "diagnostics.httpErrors.splice(httpMark, 1)" in helper_source
-    assert "diagnostics.consoleErrors.splice(consoleMark, 1)" in helper_source
     assert 'labelDialog.locator(".prompt-dialog-input").fill(label)' in helper_source
     assert 'labelDialog.locator(".confirm-yes").click()' in helper_source
     assert 'page.once("dialog"' not in helper_source
@@ -643,6 +640,11 @@ def test_phase_two_subscription_probe_consumes_expected_diagnostics_and_is_wired
         in lifecycle_source
     )
     assert "navigator.clipboard.readText" not in helper_source
+
+    browser_source = (ROOT / "scripts/e2e/completeJourneyBrowser.cjs").read_text(encoding="utf-8")
+    assert '"calendar-feed-revoked"' in browser_source
+    assert "classifiedConsoleDiagnostics" in browser_source
+    assert "expectedHttpDiagnosticContext" in browser_source
 
     result = subprocess.run(
         ["node", "--check", str(journey_path)],
@@ -774,6 +776,61 @@ def test_browser_harness_has_no_response_mocking() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_console_diagnostics_require_specific_request_status_and_context() -> None:
+    script = """
+const {
+  assertDiagnosticsClean,
+  expectedHttpDiagnosticContext,
+} = require('./scripts/e2e/completeJourneyBrowser.cjs');
+const classify = (authenticated, method, path, status) => expectedHttpDiagnosticContext({
+  authenticated, method, path, status,
+});
+if (classify(false, 'GET', '/api/auth/me', 401) !== 'preauth-session-probe') process.exit(3);
+if (classify(true, 'GET', '/api/auth/me', 401) !== 'unexpected-http-response') process.exit(4);
+if (classify(true, 'POST', '/api/tasks/task-1/action', 403) !== 'viewer-task-write-denied') {
+  process.exit(5);
+}
+if (classify(true, 'POST', '/api/tasks/task-1/action', 500) !== 'unexpected-http-response') {
+  process.exit(6);
+}
+if (classify(
+  true, 'GET', '/calendar/subscriptions/feed-token.ics', 404,
+) !== 'calendar-feed-revoked') process.exit(9);
+if (classify(
+  true, 'GET', '/api/calendar/subscriptions/feed-token.ics', 404,
+) !== 'unexpected-http-response') process.exit(10);
+const base = {
+  blockedRequests: [], consoleErrors: [], expectedAuth401Responses: 1, httpErrors: [],
+  pageErrors: [], requestFailures: [],
+};
+assertDiagnosticsClean({
+  ...base,
+  classifiedConsoleDiagnostics: [{
+    context: 'preauth-session-probe', method: 'GET', path: '/api/auth/me', status: 401,
+  }],
+}, 'valid');
+try {
+  assertDiagnosticsClean({
+    ...base,
+    classifiedConsoleDiagnostics: [
+      { context: 'preauth-session-probe', method: 'GET', path: '/api/auth/me', status: 401 },
+      {
+        context: 'unexpected-http-response', method: 'POST',
+        path: '/api/tasks/task-1/action', status: 500,
+      },
+    ],
+  }, 'tampered');
+  process.exit(7);
+} catch (error) {
+  if (!String(error.message).includes('unclassified console diagnostic')) process.exit(8);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_manifest_sanitizer_drops_unknown_root_fields_and_normalizes_requests() -> None:
     script = """
 const { sanitizeManifestEvidence } = require('./scripts/check_complete_journeys_e2e.cjs');
@@ -781,16 +838,24 @@ const result = sanitizeManifestEvidence({
   browser: 'chromium', database: null, ended_at: '2026-07-12T00:00:00Z',
   failure: null, filesystem: null, git: { dirty: false, sha: 'abc' },
   journey_ids: ['M1'], phase: 1, profiles: [{
-    assertions: {}, browser_profile: {}, checks: {}, diagnostics: {}, profile: 'desktop',
+    assertions: {}, browser_profile: {}, checks: {}, diagnostics: {
+      classifiedConsoleDiagnostics: [{
+        context: 'viewer-task-write-denied', diagnostic: 'raw secret=hidden',
+        id: 'console-1', method: 'POST', path: '/api/tasks/task-1/action', status: 403,
+      }],
+    }, profile: 'desktop',
     requests: [{ gardenId: '1', method: 'GET', path: '/api/saved-views' }],
     role: 'admin', trace: 'x',
-  }], run_id: 'run', started_at: '2026-07-12T00:00:00Z', status: 'passed',
+  }], run_id: 'run', started_at: '2026-07-12T00:00:00Z', status: 'running',
   suite: 'complete-journeys-e2e', through_phase: 1, injected: 'must-not-survive',
 });
 if ('injected' in result) process.exit(3);
 if (result.profiles[0].requests[0].path !== '/api/saved-views') process.exit(4);
 if (result.started_at !== '2026-07-12T00:00:00Z') process.exit(5);
 if (result.ended_at !== '2026-07-12T00:00:00Z') process.exit(6);
+const diagnostic = result.profiles[0].diagnostics.classifiedConsoleDiagnostics[0];
+if (diagnostic.context !== 'viewer-task-write-denied' || diagnostic.status !== 403) process.exit(7);
+if (diagnostic.path !== '/api/tasks/task-1/action') process.exit(8);
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -826,7 +891,7 @@ const result = sanitizeManifestEvidence({
       boolean_check: true,
     },
     requests: [], role: 'admin', trace: 'x',
-  }], run_id: 'run', started_at: '2026-07-12T00:00:00Z', status: 'passed',
+  }], run_id: 'run', started_at: '2026-07-12T00:00:00Z', status: 'running',
   suite: 'complete-journeys-e2e', through_phase: 1,
 });
 const checks = result.profiles[0].checks;
@@ -2130,6 +2195,155 @@ try {
     assert result.returncode == 0, result.stderr
 
 
+def test_maintenance_reference_spec_rejects_observed_histogram_drift() -> None:
+    script = """
+const { assertPhaseTwoMaintenanceSpec } = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = {
+  roles: { admin: 'admin-user', editor: 'editor-user', viewer: 'viewer-user' },
+  phase_two: { maintenance_expectations: {
+    created: {
+      tasks: { total: 2, by_type: { protect: 1, water: 1 }, by_rule_family: { auto: 1, water: 1 } },
+      notifications: {
+        total: 3, by_role: { admin: 1, editor: 1, viewer: 1 },
+        by_type: { 'task_due:': 3 },
+      },
+      weather_alerts: { total: 1, by_type: { heat_wave: 1 } },
+    },
+    mutated_existing: { notifications: 0, tasks: 1, weather_alerts: 0 },
+    summary: {
+      configured: true, gardens_processed: 1, notifications_created: 3,
+      tasks_auto_created: 1, tasks_expired: 1, weather_alerts_created: 1,
+      weather_tasks_created: 1,
+    },
+  } },
+};
+const created = {
+  tasks: {
+    created: [
+      { rule_source: 'water:plant:date', task_type: 'water' },
+      { rule_source: 'auto:heat:plant', task_type: 'protect' },
+    ],
+    mutated_existing: [{}],
+  },
+  notifications: {
+    created: ['admin-user', 'editor-user', 'viewer-user'].map((username) => ({
+      notification_subtype: '', notification_type: 'task_due', username,
+    })),
+    mutated_existing: [],
+  },
+  weather_alerts: { created: [{ alert_type: 'heat_wave' }], mutated_existing: [] },
+};
+assertPhaseTwoMaintenanceSpec(created, fixture.phase_two.maintenance_expectations.summary, fixture);
+try {
+  const drifted = structuredClone(created);
+  drifted.tasks.created.push({ rule_source: 'auto:unexpected:plant', task_type: 'protect' });
+  assertPhaseTwoMaintenanceSpec(
+    drifted, fixture.phase_two.maintenance_expectations.summary, fixture,
+  );
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('task count')) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_whole_table_projection_contract_rejects_unprojected_allowed_table() -> None:
+    script = """
+const {
+  assertWholeTableProjectionCoverage,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const row = (count, digest) => ({ count, digest: digest.repeat(32) });
+const initial = { garden_tasks: row(2, 'a'), notification_events: row(3, 'b') };
+const final = { garden_tasks: row(4, 'c'), notification_events: row(5, 'd') };
+assertWholeTableProjectionCoverage(
+  initial, final, new Set(['garden_tasks', 'notification_events']),
+);
+try {
+  assertWholeTableProjectionCoverage(
+    initial,
+    { garden_tasks: final.garden_tasks },
+    new Set(['garden_tasks', 'notification_events']),
+  );
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('coverage changed')) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_profile_order_declares_and_rejects_choreography_permutation() -> None:
+    script = """
+const { assertPhaseTwoProfileOrder } = require('./scripts/check_complete_journeys_e2e.cjs');
+const profiles = [
+  ['admin', 'desktop'], ['admin', 'mobile'], ['editor', 'desktop'],
+  ['editor', 'mobile'], ['viewer', 'desktop'], ['viewer', 'mobile'],
+].map(([role, profile]) => ({ role, profile }));
+assertPhaseTwoProfileOrder(profiles);
+try {
+  assertPhaseTwoProfileOrder([profiles[1], profiles[0], ...profiles.slice(2)]);
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('shared-state choreography')) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_read_only_profiles_prove_a_distinct_fresh_context_permutation() -> None:
+    script = """
+const {
+  assertPhaseTwoReadOnlyPermutationEvidence,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const order = [
+  ['viewer', 'mobile'], ['admin', 'desktop'], ['editor', 'mobile'],
+  ['viewer', 'desktop'], ['admin', 'mobile'], ['editor', 'desktop'],
+];
+const profiles = order.map(([role, profile], index) => ({
+  checks: {
+    browser_diagnostics: true,
+    domain_mutation_requests_absent: true,
+    execution_model: 'fresh-context-read-only-permutation',
+    phase_two_read_only_scope_probe: true,
+    probe_sequence: index + 1,
+    shared_state_mutation_claimed: false,
+  },
+  failure: null,
+  profile,
+  role,
+}));
+const evidence = assertPhaseTwoReadOnlyPermutationEvidence(profiles);
+if (evidence.shared_state_mutation_claimed !== false || evidence.expected_profile_count !== 6) {
+  process.exit(3);
+}
+try {
+  assertPhaseTwoReadOnlyPermutationEvidence([...profiles].reverse());
+  process.exit(4);
+} catch (error) {
+  if (!String(error.message).includes('declared permutation')) process.exit(5);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    assert "runPhaseTwoReadOnlyPermutation" in checker_source
+    assert 'currentStage = "phase-two-read-only-permutation"' in checker_source
+    assert "unexpectedMutationRequests.length === 0" in checker_source
+
+
 def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_weather_checks() -> (
     None
 ):
@@ -2152,21 +2366,17 @@ def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_w
 
 
 def test_phase_two_mobile_quick_action_keeps_manual_date_completion_actionable() -> None:
-    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
     quick_actions = source.split("async function completeMobileQuickActions", 1)[1].split(
         "async function exerciseEditorCalendar", 1
     )[0]
 
-    assert '.fill(fixture.phase_two.date);' in quick_actions
-    assert '.fill(fixture.phase_two.manual_date);' not in quick_actions
+    assert ".fill(fixture.phase_two.date);" in quick_actions
+    assert ".fill(fixture.phase_two.manual_date);" not in quick_actions
 
 
 def test_phase_two_snooze_correction_opens_mobile_week_overflow() -> None:
-    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
     correction = source.split("async function exerciseImmediateSnoozeCorrection", 1)[1].split(
         "async function snoozePruneWithManualDate", 1
     )[0]
@@ -2176,23 +2386,20 @@ def test_phase_two_snooze_correction_opens_mobile_week_overflow() -> None:
 
 
 def test_phase_two_offline_calendar_is_loaded_before_connectivity_is_lost() -> None:
-    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
     offline = source.split("async function exerciseOfflineTask", 1)[1].split(
         "async function exerciseViewer", 1
     )[0]
 
     warmup = offline.index('"calendar skip task before going offline"')
-    disconnect = offline.index("page.context().setOffline(true)")
-    assert warmup < disconnect
-    assert 'await openTasks(page, "mobile");' in offline[warmup:disconnect]
+    cold_disconnect = offline.index("page.context().setOffline(true)")
+    warm_disconnect = offline.index("page.context().setOffline(true)", warmup)
+    assert cold_disconnect < warmup < warm_disconnect
+    assert 'await openTasks(page, "mobile");' in offline[warmup:warm_disconnect]
 
 
 def test_attention_preferences_strip_legacy_quiet_hours_before_save() -> None:
-    source = (ROOT / "frontend/src/components/attentionTodayPanel.ts").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "frontend/src/components/attentionTodayPanel.ts").read_text(encoding="utf-8")
     collector = source.split("function collectQuietHours", 1)[1].split(
         "function collectMetadata", 1
     )[0]
@@ -2206,7 +2413,7 @@ def test_phase_two_checker_allows_only_exact_viewer_personal_preference_changes(
     source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
 
     assert "Phase 2 viewer personal preference normalization was unexpected" in source
-    assert 'attention_metadata: { weather_aware_watering_suppression: true }' in source
+    assert "attention_metadata: { weather_aware_watering_suppression: true }" in source
     assert 'digest: { enabled: false, end: "07:00", start: "22:00" }' in source
 
 
@@ -2231,15 +2438,17 @@ def test_phase_two_weather_projection_uses_exact_identities_not_magic_count() ->
     assert "resolved_at_ms: fixture.clock.attention_now_ms" in source
 
 
-def test_phase_two_maintenance_summary_is_derived_from_semantic_rows() -> None:
+def test_phase_two_maintenance_summary_is_derived_from_independent_fixture_spec() -> None:
     source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
 
-    assert "notifications_created: 48" not in source
-    assert "tasks_auto_created: 60" not in source
-    assert "weather_alerts_created: 3" not in source
-    assert "maintenanceCreated.notifications.created.length" in source
-    assert 'taskValue.rule_source.startsWith("auto:")' in source
-    assert "expiredTasks" in source
+    seed_source = (ROOT / "scripts/seed_complete_journeys_e2e.py").read_text(encoding="utf-8")
+    assert "assertPhaseTwoMaintenanceSpec" in source
+    assert "maintenance_expectations.summary" in source
+    assert "maintenanceCreated.notifications.created.length" not in source
+    assert "PHASE_TWO_MAINTENANCE_EXPECTATIONS" in seed_source
+    assert '"by_rule_family"' in seed_source
+    assert '"by_role"' in seed_source
+    assert '"mutated_existing"' in seed_source
 
 
 def test_phase_two_maintenance_notifications_have_exact_post_journey_lifecycle() -> None:
@@ -2277,7 +2486,7 @@ def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evi
     ):
         assert marker in journey_source
     for marker in (
-        "phase_two_preference_delivery",
+        "preference_delivery: phaseTwoPreferenceDelivery",
         "preference_delivery_exact",
         "expectedPreferenceDeliveryIssues",
         '"garden_issues"',
@@ -2723,6 +2932,7 @@ for (const field of ['dismissed', 'read_at_ms', 'emailed_at_ms', 'cleared_at_ms'
 def test_public_manifest_binds_fixture_runtime_lockfiles_and_recomputable_digests() -> None:
     script = """
 const {
+  auditManifestProjection,
   canonicalProjectionDigests,
   sanitizeManifestEvidence,
 } = require('./scripts/check_complete_journeys_e2e.cjs');
@@ -2733,22 +2943,71 @@ const binding = {
     uv_lock: { format_version: '1', sha256: 'c'.repeat(64), size_bytes: 13 },
   },
   runtime: {
-    architecture: 'x64', chromium_executable: { sha256: 'd'.repeat(64), size_bytes: 14 },
+    chromium_launcher: { sha256: 'e'.repeat(64), size_bytes: 15 },
+    architecture: 'x64', chromium_executable: {
+      resolved_regular_file: true, sha256: 'd'.repeat(64), size_bytes: 14,
+    },
     chromium_version: '140.0.0.0', frontend_package_version: '0.1.1', node_version: 'v24.0.0',
     platform: 'linux', playwright_core_version: '1.61.0',
   },
 };
+const auditState = {
+  events: [{ count: 1, method: 'POST', path: '/api/auth/login', status_code: 200 }],
+  expected_login_count: 1, expected_phase_one_snapshot_count: 0, total_count: 1,
+};
 const manifest = sanitizeManifestEvidence({
-  evidence_binding: binding, profiles: [], database: { safe: true },
+  evidence_binding: binding, profiles: [], database: {
+    audit_projection: auditManifestProjection(auditState),
+    safe: true,
+  },
 });
 if (!manifest.evidence_binding
     || manifest.evidence_binding.fixture.sha256 !== binding.fixture.sha256) process.exit(3);
 if (JSON.stringify(manifest.canonical_projection_digests)
     !== JSON.stringify(canonicalProjectionDigests(manifest))) process.exit(4);
+if (!manifest.evidence_binding.runtime.chromium_executable.resolved_regular_file) process.exit(6);
+if (manifest.evidence_binding.runtime.chromium_launcher.sha256 !== 'e'.repeat(64)) process.exit(9);
+if (!/^[a-f0-9]{64}$/.test(manifest.canonical_projection_digests.audit_snapshot)) process.exit(7);
 const tampered = structuredClone(manifest);
 tampered.database.safe = false;
 if (tampered.canonical_projection_digests.final_database
     === canonicalProjectionDigests(tampered).final_database) process.exit(5);
+const auditTampered = structuredClone(manifest);
+auditTampered.database.audit_projection.total_count = 2;
+if (auditTampered.canonical_projection_digests.audit_snapshot
+    === canonicalProjectionDigests(auditTampered).audit_snapshot) process.exit(8);
+try {
+  auditManifestProjection({ ...auditState, total_count: 2 });
+  process.exit(12);
+} catch (error) {
+  if (!String(error.message).includes('event histogram')) process.exit(13);
+}
+try {
+  sanitizeManifestEvidence({ database: null, profiles: [], status: 'passed' });
+  process.exit(10);
+} catch (error) {
+  if (!String(error.message).includes('sanitized audit projection')) process.exit(11);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_chromium_evidence_resolves_and_hashes_the_elf_payload() -> None:
+    script = """
+const {
+  isElfExecutable,
+  resolveChromiumExecutable,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const resolved = resolveChromiumExecutable('/usr/bin/chromium');
+if (resolved === '/usr/bin/chromium') process.exit(3);
+if (!isElfExecutable(resolved)) process.exit(4);
+const source = require('node:fs').readFileSync('./scripts/check_complete_journeys_e2e.cjs', 'utf8');
+if (!source.includes('executablePath: CHROMIUM_EXECUTABLE')) process.exit(5);
+if (!source.includes('chromium_launcher: fileBinding')) process.exit(6);
+if (!source.includes('chromium_executable: resolvedExecutableBinding')) process.exit(7);
 """
     result = subprocess.run(
         ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True

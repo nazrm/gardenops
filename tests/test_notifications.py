@@ -1604,7 +1604,8 @@ class TestNotifications(BaseApiTest):
         finally:
             db.return_db(conn)
 
-    def test_past_weather_watering_notification_moves_to_log(self) -> None:
+    def test_dry_spell_watering_notification_remains_actionable_through_alert(self) -> None:
+        from gardenops.services.attention.providers.tasks import TaskAttentionProvider
         from gardenops.services.notification_service import (
             create_notification as _create_notif,
         )
@@ -1683,8 +1684,8 @@ class TestNotifications(BaseApiTest):
                 (notification_id,),
             ).fetchone()
             assert row is not None
-            self.assertEqual(row["clear_reason"], "expired")
-            self.assertIsNotNone(row["cleared_at_ms"])
+            self.assertIsNone(row["clear_reason"])
+            self.assertIsNone(row["cleared_at_ms"])
 
             active = conn.execute(
                 """
@@ -1700,7 +1701,17 @@ class TestNotifications(BaseApiTest):
                 (garden_id, user_id, task_public_id),
             ).fetchone()
             assert active is not None
-            self.assertEqual(int(active["c"]), 0)
+            self.assertEqual(int(active["c"]), 1)
+            attention_items = TaskAttentionProvider(frozen_date=today).collect(
+                conn,
+                garden_id=garden_id,
+                user_id=user_id,
+                now_ms=now,
+            )
+            self.assertIn(
+                f"attn:task:{task_public_id}",
+                {item.id for item in attention_items},
+            )
         finally:
             db.return_db(conn)
 
@@ -2507,7 +2518,7 @@ class TestRainSuppressedWateringNotificationLifecycle(BaseApiTest):
         finally:
             db.return_db(conn)
 
-    def test_task_weather_maintenance_clears_stale_generated_watering_notifications(self) -> None:
+    def test_task_weather_maintenance_keeps_valid_dry_spell_watering_notifications(self) -> None:
         from gardenops.services.notification_service import (
             create_notification as _create_notif,
         )
@@ -2586,8 +2597,8 @@ class TestRainSuppressedWateringNotificationLifecycle(BaseApiTest):
                 (notification_id,),
             ).fetchone()
             assert row is not None
-            self.assertEqual(row["clear_reason"], "expired")
-            self.assertIsNotNone(row["cleared_at_ms"])
+            self.assertIsNone(row["clear_reason"])
+            self.assertIsNone(row["cleared_at_ms"])
             self.assertIsNone(row["superseded_by_id"])
         finally:
             db.return_db(conn)
@@ -3006,5 +3017,43 @@ class TestRainSuppressedWateringNotificationLifecycle(BaseApiTest):
                     frozen_date="2032-02-03",
                 )
             self.assertEqual(generate_tasks.call_args.kwargs["now_ms"], frozen_now_ms)
+        finally:
+            db.return_db(conn)
+
+    def test_monthly_generation_marker_stays_pending_for_rain_suppressed_watering(self) -> None:
+        from gardenops.services.notification_service import _auto_generate_monthly_tasks
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            assert garden is not None
+            garden_id = int(garden["id"])
+            with patch(
+                "gardenops.services.notification_service.generate_tasks",
+                return_value={"created": 0, "skipped": 1, "rain_suppressed": 1},
+            ) as generate_tasks:
+                first = _auto_generate_monthly_tasks(
+                    conn,
+                    garden_id,
+                    1_959_379_200_000,
+                    frozen_date="2032-02-03",
+                )
+                second = _auto_generate_monthly_tasks(
+                    conn,
+                    garden_id,
+                    1_959_379_200_001,
+                    frozen_date="2032-02-03",
+                )
+            marker = conn.execute(
+                "SELECT value FROM app_settings WHERE key = %s",
+                (f"last_task_gen_month:{garden_id}",),
+            ).fetchone()
+            assert marker is not None
+            self.assertEqual(str(marker["value"]), "2032-02:rain_pending")
+            self.assertEqual(first["tasks_rain_suppressed"], 1)
+            self.assertEqual(second["tasks_rain_suppressed"], 1)
+            self.assertEqual(generate_tasks.call_count, 2)
         finally:
             db.return_db(conn)

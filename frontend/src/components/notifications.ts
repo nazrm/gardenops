@@ -149,13 +149,16 @@ export function createNotificationItem(
 ): HTMLElement {
   const item = document.createElement("div");
   item.className = `notification-item${notification.read_at_ms ? "" : " unread"}`;
+  item.setAttribute("role", "article");
 
   const icon = document.createElement("span");
   icon.className = "notification-item-icon";
   icon.textContent = TYPE_ICONS[notification.notification_type] ?? "\u2139\uFE0F";
 
-  const content = document.createElement("div");
-  content.className = "notification-item-content";
+  const content = document.createElement("button");
+  content.type = "button";
+  content.className = "notification-item-content notification-item-main";
+  content.addEventListener("click", () => cbs.onNavigate(notification));
 
   const localized = localizeNotification(notification);
 
@@ -224,10 +227,6 @@ export function createNotificationItem(
     actions.append(dismissBtn);
   }
   item.append(actions);
-
-  item.addEventListener("click", () => {
-    cbs.onNavigate(notification);
-  });
 
   return item;
 }
@@ -370,18 +369,20 @@ export function renderNotificationPanel(
 export function renderNotificationPreferencesForm(
   container: HTMLElement,
   prefs: NotificationPreferences,
-  onSave: (updated: Partial<NotificationPreferences>) => void,
+  onSave: (updated: Partial<NotificationPreferences>) => void | Promise<void>,
+  onCancel: () => void,
 ): void {
   container.replaceChildren();
   container.setAttribute("role", "dialog");
   container.setAttribute("aria-modal", "true");
-  container.removeAttribute("aria-labelledby");
-  container.setAttribute("aria-label", t("notifications.prefs_title") as string);
+  container.setAttribute("aria-labelledby", "notification-preferences-title");
+  container.removeAttribute("aria-label");
 
-  const form = document.createElement("div");
+  const form = document.createElement("form");
   form.className = "notification-prefs-form";
 
   const titleEl = document.createElement("h3");
+  titleEl.id = "notification-preferences-title";
   titleEl.style.marginBottom = "var(--sp-3)";
   titleEl.textContent = t("notifications.prefs_title") as string;
   form.append(titleEl);
@@ -637,16 +638,37 @@ export function renderNotificationPreferencesForm(
     form.append(groupEl);
   }
 
-  // Save button
+  // Form actions
   const saveRow = document.createElement("div");
+  saveRow.className = "notification-prefs-actions";
   saveRow.style.marginTop = "var(--sp-3)";
   saveRow.style.textAlign = "right";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "notification-prefs-cancel";
+  cancelBtn.textContent = t("common.cancel") as string;
+  cancelBtn.addEventListener("click", onCancel);
   const saveBtn = document.createElement("button");
-  saveBtn.type = "button";
+  saveBtn.type = "submit";
   saveBtn.className = "btn-primary";
   saveBtn.textContent = t("common.save") as string;
-  saveBtn.addEventListener("click", () => onSave(state));
-  saveRow.append(saveBtn);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!form.reportValidity()) return;
+    saveBtn.disabled = true;
+    cancelBtn.disabled = true;
+    form.setAttribute("aria-busy", "true");
+    try {
+      await onSave(state);
+    } finally {
+      if (form.isConnected) {
+        saveBtn.disabled = false;
+        cancelBtn.disabled = false;
+        form.removeAttribute("aria-busy");
+      }
+    }
+  });
+  saveRow.append(cancelBtn, saveBtn);
   form.append(saveRow);
 
   container.append(form);

@@ -2,7 +2,7 @@ import logging
 from typing import Any
 
 from gardenops.db import DbConn, current_timestamp_ms, get_db, return_db
-from gardenops.observability import get_request_id
+from gardenops.observability import get_audit_event_id, get_request_id, set_audit_event_id
 from gardenops.security import AuthContext
 from gardenops.security_telemetry import enqueue_security_telemetry
 
@@ -14,21 +14,28 @@ _AUDIT_EVENT_INSERT_SQL = """
         garden_id, method, path, status_code, remote_host, detail
     )
     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    ON CONFLICT (request_id) WHERE request_id != ''
-    DO UPDATE SET
-        occurred_at_ms = EXCLUDED.occurred_at_ms,
-        actor_user_id = EXCLUDED.actor_user_id,
-        actor_username = EXCLUDED.actor_username,
-        actor_role = EXCLUDED.actor_role,
-        actor_auth_type = EXCLUDED.actor_auth_type,
-        garden_id = EXCLUDED.garden_id,
-        method = EXCLUDED.method,
-        path = EXCLUDED.path,
-        status_code = EXCLUDED.status_code,
-        remote_host = EXCLUDED.remote_host,
-        detail = EXCLUDED.detail
-    WHERE audit_events.status_code = 102
-      AND audit_events.detail = 'mutation_started'
+    RETURNING id
+"""
+
+_AUDIT_EVENT_FINALIZE_SQL = """
+    UPDATE audit_events
+    SET
+        occurred_at_ms = %s,
+        request_id = %s,
+        actor_user_id = %s,
+        actor_username = %s,
+        actor_role = %s,
+        actor_auth_type = %s,
+        garden_id = %s,
+        method = %s,
+        path = %s,
+        status_code = %s,
+        remote_host = %s,
+        detail = %s
+    WHERE id = %s
+      AND request_id = %s
+      AND status_code = 102
+      AND detail = 'mutation_started'
     RETURNING id
 """
 
@@ -38,7 +45,6 @@ _AUDIT_EVENT_RESERVE_SQL = """
         garden_id, method, path, status_code, remote_host, detail
     )
     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    ON CONFLICT (request_id) WHERE request_id != '' DO NOTHING
     RETURNING id
 """
 
@@ -108,10 +114,22 @@ def _insert_audit_event_row(
     values: tuple[object, ...],
     *,
     reserve: bool = False,
-) -> None:
-    sql = _AUDIT_EVENT_RESERVE_SQL if reserve else _AUDIT_EVENT_INSERT_SQL
-    if conn.execute(sql, values).fetchone() is None:
-        raise RuntimeError("Audit request ID is already finalized or reserved")
+) -> int:
+    audit_event_id = get_audit_event_id()
+    if reserve:
+        if audit_event_id is not None:
+            raise RuntimeError("Mutation audit event is already reserved for this request")
+        row = conn.execute(_AUDIT_EVENT_RESERVE_SQL, values).fetchone()
+    elif audit_event_id is None:
+        row = conn.execute(_AUDIT_EVENT_INSERT_SQL, values).fetchone()
+    else:
+        row = conn.execute(
+            _AUDIT_EVENT_FINALIZE_SQL,
+            (*values, audit_event_id, values[1]),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("Audit event is already finalized or unavailable")
+    return int(row["id"])
 
 
 def write_required_audit_event(
@@ -126,11 +144,11 @@ def write_required_audit_event(
     use_auth_context_garden: bool = True,
     db: DbConn,
 ) -> AuditEventValues:
-    """Insert an audit event in the caller-owned transaction.
+    """Finalize the reserved event, or insert one, in the caller-owned transaction.
 
     This deliberately does not commit, roll back, enqueue telemetry, or handle
-    insertion errors. Callers that require audit durability must commit or roll
-    back their business operation and this audit row together.
+    finalization or insertion errors. Callers that require audit durability must
+    commit or roll back their business operation and this audit row together.
     """
     values = _audit_event_values(
         method=method,
@@ -238,8 +256,8 @@ def reserve_mutation_audit_event(
 ) -> None:
     """Persist a fail-closed mutation intent before application code runs.
 
-    The normal audit write later upserts this row by request ID with the final
-    status. A process failure can therefore leave an explicit 102 intent, but
+    The normal audit write later finalizes this row by its server-only database
+    identity. A process failure can therefore leave an explicit 102 intent, but
     never a successful mutation with no durable request-correlated audit row.
     """
     conn = get_db()
@@ -256,8 +274,9 @@ def reserve_mutation_audit_event(
         )
         if not values[1]:
             raise RuntimeError("Mutation audit reservation requires a request ID")
-        _insert_audit_event_row(conn, values, reserve=True)
+        audit_event_id = _insert_audit_event_row(conn, values, reserve=True)
         conn.commit()
+        set_audit_event_id(audit_event_id)
     except Exception:
         conn.rollback()
         raise

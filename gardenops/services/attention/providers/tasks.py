@@ -124,7 +124,9 @@ class TaskAttentionProvider:
             (
                 garden_id,
                 today,
-                *GENERATED_WATERING_RULE_SOURCE_PATTERNS,
+                GENERATED_WATERING_RULE_SOURCE_PATTERNS[0],
+                today,
+                GENERATED_WATERING_RULE_SOURCE_PATTERNS[1],
                 today,
                 _ACTIVE_BUCKET_LIMIT,
             ),
@@ -149,7 +151,9 @@ class TaskAttentionProvider:
             (
                 garden_id,
                 today,
-                *GENERATED_WATERING_RULE_SOURCE_PATTERNS,
+                GENERATED_WATERING_RULE_SOURCE_PATTERNS[0],
+                today,
+                GENERATED_WATERING_RULE_SOURCE_PATTERNS[1],
                 today,
                 _SNOOZED_BUCKET_LIMIT,
             ),
@@ -253,11 +257,14 @@ class TaskAttentionProvider:
         for outcome in outcomes:
             if str(outcome["source_type"]) != "task_generator":
                 continue
+            metadata = TaskAttentionProvider._parse_metadata(outcome["metadata"])
+            lifecycle = TaskAttentionProvider._parse_metadata(metadata.get("lifecycle"))
+            if lifecycle.get("status") in {"automatically_recovered", "superseded"}:
+                continue
             rule_source = str(outcome["source_public_id"])
             target_id = str(outcome["target_id"])
             if not rule_source or not target_id:
                 continue
-            metadata = TaskAttentionProvider._parse_metadata(outcome["metadata"])
             covered_due_on = str(metadata.get("new_due_on") or metadata.get("due_on") or "")
             if not covered_due_on:
                 continue

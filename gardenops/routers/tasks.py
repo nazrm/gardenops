@@ -58,13 +58,13 @@ from gardenops.services.task_completion import (
     append_bloom_not_yet_event,
     clear_completion_capture_metadata,
     completion_capture_already_recorded,
-    current_plot_ids_for_plant_ids,
     grouped_completion_history_started,
     is_completion_capture_task,
     plant_names_for_ids,
     record_completion_journal_entry,
     refreshed_group_title,
     remaining_plant_ids_after_completion,
+    task_plot_ids_for_plant_ids,
     update_task_plant_links,
     update_task_plot_links,
     validate_completed_plant_ids,
@@ -145,14 +145,44 @@ def _restore_completion_capture_scope(
     if not restored_ids:
         return
     update_task_plant_links(db, task_id=task_id, remaining_plant_ids=restored_ids)
+    raw_plot_ids = metadata.get("completion_capture_original_plot_ids")
+    if isinstance(raw_plot_ids, list):
+        requested_plot_ids = list(
+            dict.fromkeys(str(value).strip() for value in raw_plot_ids if str(value).strip())
+        )
+    else:
+        requested_plot_ids = [
+            str(row["plot_id"])
+            for row in db.execute(
+                "SELECT plot_id FROM garden_task_plots WHERE task_id = %s ORDER BY plot_id",
+                (task_id,),
+            ).fetchall()
+        ]
+    restored_plot_ids: list[str] = []
+    if requested_plot_ids:
+        plot_rows = db.execute(
+            """
+            SELECT p.plot_id
+            FROM plots p
+            JOIN plot_ownership po ON po.plot_id = p.plot_id
+            WHERE p.garden_id = %s
+              AND po.garden_id = %s
+              AND p.plot_id = ANY(%s)
+            """,
+            (
+                int(task_row["garden_id"]),
+                int(task_row["garden_id"]),
+                requested_plot_ids,
+            ),
+        ).fetchall()
+        existing_plot_ids = {str(row["plot_id"]) for row in plot_rows}
+        restored_plot_ids = [
+            plot_id for plot_id in requested_plot_ids if plot_id in existing_plot_ids
+        ]
     update_task_plot_links(
         db,
         task_id=task_id,
-        remaining_plot_ids=current_plot_ids_for_plant_ids(
-            db,
-            garden_id=int(task_row["garden_id"]),
-            plant_ids=restored_ids,
-        ),
+        remaining_plot_ids=restored_plot_ids,
     )
     task_type = str(task_row.get("task_type") or "")
     if task_type in {"prune", "fertilize"}:
@@ -620,10 +650,20 @@ def _task_linked_plant_ids(
 def _task_linked_plot_ids(
     db: DbConn,
     task_id: int,
+    garden_id: int,
 ) -> list[str]:
     rows = db.execute(
-        "SELECT plot_id FROM garden_task_plots WHERE task_id = %s ORDER BY plot_id",
-        (task_id,),
+        """
+        SELECT gtp.plot_id
+        FROM garden_task_plots gtp
+        JOIN plots p ON p.plot_id = gtp.plot_id
+        JOIN plot_ownership po ON po.plot_id = gtp.plot_id
+        WHERE gtp.task_id = %s
+          AND p.garden_id = %s
+          AND po.garden_id = %s
+        ORDER BY gtp.plot_id
+        """,
+        (task_id, garden_id, garden_id),
     ).fetchall()
     return [str(row["plot_id"]) for row in rows]
 
@@ -733,7 +773,8 @@ def _apply_task_action(
         )
         if task_type == "observe_bloom":
             _require_observation_plant_access(db, context, selected_plant_ids)
-        linked_plot_ids = _task_linked_plot_ids(db, task_id)
+        garden_id = int(task_row["garden_id"])
+        linked_plot_ids = _task_linked_plot_ids(db, task_id, garden_id)
         if current_status == "completed":
             return
         remaining_plant_ids = remaining_plant_ids_after_completion(
@@ -747,16 +788,16 @@ def _apply_task_action(
         )
         selected_plot_ids = linked_plot_ids
         remaining_plot_ids: list[str] = []
-        if is_completion_capture_task(task_type):
-            selected_plot_ids = current_plot_ids_for_plant_ids(
+        if is_partial_completion:
+            selected_plot_ids = task_plot_ids_for_plant_ids(
                 db,
-                garden_id=int(task_row["garden_id"]),
+                task_id=task_id,
+                garden_id=garden_id,
                 plant_ids=selected_plant_ids,
             )
-        if is_partial_completion:
-            garden_id = int(task_row["garden_id"])
-            remaining_plot_ids = current_plot_ids_for_plant_ids(
+            remaining_plot_ids = task_plot_ids_for_plant_ids(
                 db,
+                task_id=task_id,
                 garden_id=garden_id,
                 plant_ids=remaining_plant_ids,
             )
@@ -774,6 +815,9 @@ def _apply_task_action(
         original_plant_ids = next_metadata.get("completion_capture_original_plant_ids")
         if is_completion_capture_task(task_type) and not isinstance(original_plant_ids, list):
             next_metadata["completion_capture_original_plant_ids"] = linked_plant_ids
+        original_plot_ids = next_metadata.get("completion_capture_original_plot_ids")
+        if is_completion_capture_task(task_type) and not isinstance(original_plot_ids, list):
+            next_metadata["completion_capture_original_plot_ids"] = linked_plot_ids
         if is_partial_completion:
             update_task_plant_links(
                 db,

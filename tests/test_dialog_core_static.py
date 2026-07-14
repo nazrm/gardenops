@@ -1,12 +1,13 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_shared_modal_primitives_stack_and_restore_focus() -> None:
     source = (ROOT / "frontend/src/components/dialogCore.ts").read_text(encoding="utf-8")
-    quick_actions = (ROOT / "frontend/src/features/quickActionsFeature.ts").read_text(encoding="utf-8")
+    quick_actions = (ROOT / "frontend/src/features/quickActionsFeature.ts").read_text(
+        encoding="utf-8"
+    )
     completion = (ROOT / "frontend/src/features/taskCompletionFlow.ts").read_text(encoding="utf-8")
     snooze = (ROOT / "frontend/src/features/taskSnoozeFlow.ts").read_text(encoding="utf-8")
 

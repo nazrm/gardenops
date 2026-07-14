@@ -1,5 +1,7 @@
 import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import gardenops.db as db
@@ -713,6 +715,146 @@ class TestNotificationNormalization(BaseApiTest):
                 [row["id"] for row in restored_inbox.json()["notifications"]],
                 [notification_id],
             )
+
+    def test_notification_sync_preserves_concurrent_attention_preference_update(self) -> None:
+        import gardenops.routers.attention as attention_router
+        import gardenops.routers.notifications as notification_router
+
+        with patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "test",
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": str(_FROZEN_NOW_MS),
+                "GARDENOPS_ATTENTION_FROZEN_DATE": _FROZEN_DATE,
+            },
+            clear=False,
+        ):
+            conn = db.get_db()
+            try:
+                garden = conn.execute(
+                    "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1"
+                ).fetchone()
+                assert garden is not None
+                garden_id = int(garden["id"])
+                user_id, password = self._create_pro_member(
+                    conn,
+                    "concurrent_preference_sync",
+                )
+                self._save_legacy_preferences(
+                    conn,
+                    user_id=user_id,
+                    now_ms=_FROZEN_NOW_MS,
+                )
+                self._save_attention_preferences(
+                    conn,
+                    user_id=user_id,
+                    now_ms=_FROZEN_NOW_MS,
+                    rules={
+                        "task_due": {
+                            "panel": True,
+                            "inbox": True,
+                            "digest": False,
+                            "min_severity": "low",
+                        }
+                    },
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            attention_client, attention_headers = self._authenticated_client(
+                "concurrent_preference_sync",
+                password,
+                garden_id=garden_id,
+            )
+            notification_client, notification_headers = self._authenticated_client(
+                "concurrent_preference_sync",
+                password,
+                garden_id=garden_id,
+            )
+            attention_payload = attention_client.get(
+                "/api/attention/preferences",
+                headers=attention_headers,
+            ).json()
+            attention_payload.pop("user_id", None)
+            attention_payload["show_no_action_history"] = False
+            attention_payload["metadata"]["concurrent_attention_update"] = True
+
+            notification_payload = notification_client.get(
+                "/api/notifications/preferences",
+                headers=notification_headers,
+            ).json()
+            notification_payload.pop("policy", None)
+            notification_payload["notification_rules"]["task_due"] = {
+                "in_app_enabled": False,
+                "email_enabled": False,
+                "min_severity": "high",
+            }
+
+            real_attention_save = attention_router.save_attention_preferences
+            real_notification_lock = notification_router.lock_attention_preferences
+            attention_saved = threading.Event()
+            allow_attention_commit = threading.Event()
+            notification_lock_attempted = threading.Event()
+
+            def delayed_attention_save(*args, **kwargs):
+                saved = real_attention_save(*args, **kwargs)
+                attention_saved.set()
+                if not allow_attention_commit.wait(timeout=5):
+                    raise AssertionError("Timed out waiting to release Attention preference write")
+                return saved
+
+            def observed_notification_lock(*args, **kwargs):
+                notification_lock_attempted.set()
+                return real_notification_lock(*args, **kwargs)
+
+            with (
+                patch.object(
+                    attention_router,
+                    "save_attention_preferences",
+                    side_effect=delayed_attention_save,
+                ),
+                patch.object(
+                    notification_router,
+                    "lock_attention_preferences",
+                    side_effect=observed_notification_lock,
+                ),
+                ThreadPoolExecutor(max_workers=2) as executor,
+            ):
+                attention_future = executor.submit(
+                    attention_client.put,
+                    "/api/attention/preferences",
+                    headers=attention_headers,
+                    json=attention_payload,
+                )
+                self.assertTrue(attention_saved.wait(timeout=5))
+                notification_future = executor.submit(
+                    notification_client.put,
+                    "/api/notifications/preferences",
+                    headers=notification_headers,
+                    json=notification_payload,
+                )
+                self.assertTrue(notification_lock_attempted.wait(timeout=5))
+                self.assertFalse(notification_future.done())
+                allow_attention_commit.set()
+                attention_response = attention_future.result(timeout=5)
+                notification_response = notification_future.result(timeout=5)
+
+            self.assertEqual(attention_response.status_code, 200, attention_response.text)
+            self.assertEqual(notification_response.status_code, 200, notification_response.text)
+            final = attention_client.get(
+                "/api/attention/preferences",
+                headers=attention_headers,
+            )
+            self.assertEqual(final.status_code, 200, final.text)
+            final_body = final.json()
+            self.assertFalse(final_body["show_no_action_history"])
+            self.assertTrue(final_body["metadata"]["concurrent_attention_update"])
+            self.assertFalse(final_body["rules"]["task_due"]["inbox"])
+            self.assertEqual(final_body["rules"]["task_due"]["min_severity"], "high")
 
     def test_notification_settings_round_trip_preserves_distinct_grouped_attention_rules(
         self,

@@ -16,6 +16,7 @@ from gardenops.services.task_generator import (
     generate_task_description_overrides,
     generate_tasks,
     infer_task_description,
+    reconcile_rain_watering_outcomes,
 )
 from tests.base import DbTestBase
 
@@ -212,6 +213,85 @@ class TestInferTaskDescription(DbTestBase):
         assert str(outcome["source_public_id"]) == "water:RW1:2026-07-01"
         assert "18 mm rain" in str(outcome["explanation"])
         assert '"due_on":"2026-07-01"' in str(outcome["metadata_json"])
+
+    def test_withdrawn_rain_recovers_suppressed_watering_as_reassessment(self) -> None:
+        self._insert_plant("RW-WITHDRAW", "Withdrawn rain", care_watering="regular moisture")
+        self.conn.execute(
+            """
+            INSERT INTO plots
+                (plot_id, garden_id, zone_code, zone_name, plot_number,
+                 grid_row, grid_col, sub_zone, notes)
+            VALUES ('RW-WITHDRAW-OUT', %s, 'R', 'Rain withdrawal', 1, 5, 5, '', '')
+            """,
+            (self.garden_id,),
+        )
+        self.conn.execute(
+            "INSERT INTO plot_plants (plot_id, plt_id, quantity) "
+            "VALUES ('RW-WITHDRAW-OUT', 'RW-WITHDRAW', 1)",
+        )
+        alert = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'rain_surplus', 'high', 'Heavy rain', 'Saturated soil expected',
+                    '2026-07-15', '2026-07-17', '{"total_mm":35}', 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert alert is not None
+        now_ms = 1_784_044_800_000
+
+        generation = generate_tasks(
+            self.conn,
+            self.garden_id,
+            7,
+            2026,
+            self._owner_id,
+            now_ms=now_ms,
+        )
+        self.conn.execute(
+            "UPDATE weather_alerts SET dismissed = 1 WHERE id = %s",
+            (int(alert["id"]),),
+        )
+        recovery = reconcile_rain_watering_outcomes(
+            self.conn,
+            garden_id=self.garden_id,
+            now_ms=now_ms + 1,
+        )
+
+        task = self.conn.execute(
+            """
+            SELECT public_id, due_on, title, description, metadata_json
+            FROM garden_tasks
+            WHERE garden_id = %s
+              AND rule_source = 'water:RW-WITHDRAW:2026-07-15'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        outcome = self.conn.execute(
+            """
+            SELECT metadata_json, recovery_action_json
+            FROM attention_outcomes
+            WHERE garden_id = %s
+              AND source_public_id = 'water:RW-WITHDRAW:2026-07-15'
+              AND outcome_type = 'watering_covered_by_rain'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert generation["rain_suppressed"] == 1
+        assert recovery["recovered"] == 1
+        assert task is not None
+        assert str(task["due_on"]) == "2026-07-15"
+        assert str(task["title"]) == "Reassess watering: Withdrawn rain"
+        assert "water only if" in str(task["description"])
+        task_metadata = json.loads(str(task["metadata_json"]))
+        assert task_metadata["rain_reassessment_delay_days"] == 2
+        assert outcome is not None
+        outcome_metadata = json.loads(str(outcome["metadata_json"]))
+        assert outcome_metadata["lifecycle"]["status"] == "automatically_recovered"
+        assert json.loads(str(outcome["recovery_action_json"])) == {}
 
     def test_rain_suppression_keeps_unplaced_and_indoor_watering_tasks(self) -> None:
         self._insert_plant("RNOPLOT", "Unplaced Hydrangea", care_watering="regular moisture")
@@ -534,6 +614,8 @@ class TestRainAttentionOutcomeRestoreConcurrency(DbTestBase):
         assert json.loads(str(task["metadata_json"]))["restored_original_due_on"] == "2026-07-05"
 
     def test_expired_task_does_not_consume_rain_recovery_outcome(self) -> None:
+        from gardenops.services.attention.providers.weather import WeatherAttentionProvider
+
         now_ms = 1783180800000
         expires_at_ms = now_ms + 86_400_000
         source_public_id = "water:EXPIRED-RESTORE:2026-07-05"
@@ -599,6 +681,16 @@ class TestRainAttentionOutcomeRestoreConcurrency(DbTestBase):
         ).fetchone()
         assert outcome is not None
         self.assertEqual(int(outcome["expires_at_ms"]), expires_at_ms)
+        attention_items = WeatherAttentionProvider(frozen_date="2026-07-05").collect(
+            self.conn,
+            garden_id=self.garden_id,
+            user_id=self._owner_id,
+            now_ms=now_ms,
+        )
+        outcome_item = next(
+            item for item in attention_items if item.id == f"attn:outcome:{outcome_id}"
+        )
+        self.assertEqual(outcome_item.secondary_actions, ())
 
     def test_concurrent_restores_create_one_generated_watering_task(self) -> None:
         self._insert_plant("RESTORE-RACE", "Restore race", care_watering="regular moisture")

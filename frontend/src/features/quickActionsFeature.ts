@@ -18,7 +18,10 @@ import {
 import {
   isOnline,
   enqueueDraft,
+  getTaskActionStates,
+  OfflineTaskActionConflictError,
 } from "../services/offlineQueue";
+import { cacheTaskList, getCachedTodayTasks } from "../services/taskCache";
 import { taskSnoozePolicy } from "./taskSnoozePolicy";
 import {
   getTaskSnoozeCorrectionNotice,
@@ -42,6 +45,35 @@ let inertBackgroundElements: Array<{
 const QUICK_ACTION_TASK_LIMIT = 200;
 type IdentifyPlantModule = typeof import("../components/identifyPlant");
 let identifyPlantModulePromise: Promise<IdentifyPlantModule> | null = null;
+
+interface QuickTaskLoadResult {
+  dataState: "live" | "cached" | "unavailable";
+  tasks: GardenTask[];
+}
+
+async function loadQuickActionTasks(gardenId: number): Promise<QuickTaskLoadResult> {
+  const params = {
+    view: "today",
+    limit: QUICK_ACTION_TASK_LIMIT,
+    offset: 0,
+  };
+  if (!isOnline()) {
+    const cached = getCachedTodayTasks(gardenId);
+    return cached
+      ? { dataState: "cached", tasks: cached }
+      : { dataState: "unavailable", tasks: [] };
+  }
+  const result = await fetchTasksApi(params);
+  cacheTaskList(gardenId, params, result);
+  return { dataState: "live", tasks: result.tasks };
+}
+
+function offlineTaskActionErrorMessage(error: unknown): string {
+  if (error instanceof OfflineTaskActionConflictError) {
+    return t(error.kind === "duplicate" ? "offline.task_duplicate" : "offline.task_conflict");
+  }
+  return getApiErrorMessage(error);
+}
 
 function showIdentifyPlantModalLazy(
   ...params: Parameters<IdentifyPlantModule["showIdentifyPlantModal"]>
@@ -270,11 +302,8 @@ async function showTaskQuickComplete(): Promise<void> {
   if (gardenId === null) return;
   const loadVersion = ++quickTaskLoadVersion;
   try {
-    const result = await fetchTasksApi({
-      view: "today",
-      limit: QUICK_ACTION_TASK_LIMIT,
-      offset: 0,
-    });
+    const result = await loadQuickActionTasks(gardenId);
+    const offlineStates = await getTaskActionStates(gardenId);
     const actionable = result.tasks.filter(
       (tk) => tk.status === "pending" || tk.status === "snoozed",
     );
@@ -286,6 +315,9 @@ async function showTaskQuickComplete(): Promise<void> {
         id: tk.id,
         title: tk.title,
         task_type: tk.task_type,
+        ...(offlineStates.get(tk.id)
+          ? { offline_status: offlineStates.get(tk.id)!.status }
+          : {}),
       })),
       async (taskId) => {
         if (!isCurrentQuickTaskRequest(gardenId, loadVersion)) return;
@@ -323,14 +355,18 @@ async function showTaskQuickComplete(): Promise<void> {
           }
         }
         if (!isOnline()) {
-          await enqueueDraft("task_complete", {
-            task_id: taskId,
-          });
+          try {
+            await enqueueDraft("task_complete", { task_id: taskId });
+          } catch (err) {
+            ctx.showToast(offlineTaskActionErrorMessage(err), "error");
+            return;
+          }
           ctx.showToast(
             t("offline.draft_saved"),
             "success",
           );
           void ctx.refreshOfflineIndicator();
+          await showTaskQuickComplete();
           return;
         }
         try {
@@ -355,6 +391,7 @@ async function showTaskQuickComplete(): Promise<void> {
       () => {
         renderQuickActionHome(true);
       },
+      result.dataState,
     );
     focusQuickActionSheet(true);
   } catch (err) {
@@ -389,23 +426,18 @@ async function snoozeQuickTask(
   const online = isOnline();
   try {
     if (!online) {
-      await enqueueDraft("task_snooze", {
-        task_id: task.id,
-        snooze_until: snoozeUntil,
-      });
+      try {
+        await enqueueDraft("task_snooze", {
+          task_id: task.id,
+          snooze_until: snoozeUntil,
+        });
+      } catch (err) {
+        ctx.showToast(offlineTaskActionErrorMessage(err), "error");
+        return;
+      }
       ctx.showToast(t("offline.draft_saved"), "success");
       void ctx.refreshOfflineIndicator();
-      const content = quickActionContent();
-      if (content && quickActionSheetOpen && getActiveGardenContext() === gardenId) {
-        appendQuickActionSnoozeNotice(
-          content,
-          getTaskSnoozeCorrectionNotice(
-            snoozeUntil,
-            () => openQuickSnoozeDateDialog(task, snoozeUntil),
-          ),
-        );
-        focusQuickActionSheet(true);
-      }
+      await showTaskQuickSnooze({ task, snoozeUntil });
       return;
     } else {
       await taskActionApi(task.id, {
@@ -429,11 +461,8 @@ async function showTaskQuickSnooze(
   if (gardenId === null) return;
   const loadVersion = ++quickTaskLoadVersion;
   try {
-    const result = await fetchTasksApi({
-      view: "today",
-      limit: QUICK_ACTION_TASK_LIMIT,
-      offset: 0,
-    });
+    const result = await loadQuickActionTasks(gardenId);
+    const offlineStates = await getTaskActionStates(gardenId);
     const actionable = result.tasks.filter(
       (tk) => tk.status === "pending" || tk.status === "snoozed",
     );
@@ -452,6 +481,9 @@ async function showTaskQuickSnooze(
         title: tk.title,
         task_type: tk.task_type,
         snooze_label: taskSnoozePolicy(tk).label,
+        ...(offlineStates.get(tk.id)
+          ? { offline_status: offlineStates.get(tk.id)!.status }
+          : {}),
       })),
       async (taskId) => {
         if (!isCurrentQuickTaskRequest(gardenId, loadVersion)) return;
@@ -472,6 +504,7 @@ async function showTaskQuickSnooze(
       () => {
         renderQuickActionHome(true);
       },
+      result.dataState,
     );
     if (correction) {
       appendQuickActionSnoozeNotice(

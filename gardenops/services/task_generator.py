@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException
@@ -131,6 +131,7 @@ _WORK_ORDER_SOURCE_PREFIX = "work_order"
 _WORK_ORDER_GROUP_TYPES = {"prune", "fertilize"}
 _TASK_GENERATION_LOCK_SEED = 0x474F505441534B53
 _ATTENTION_RESTORE_LOCK_SEED = 0x474F50524553544F
+_RAIN_REASSESSMENT_DELAY_DAYS = 2
 
 
 def _generated_description_metadata(
@@ -843,6 +844,370 @@ def restore_generated_watering_task_from_attention_outcome(
     return task_public_id
 
 
+def _parse_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    if not value:
+        return []
+    try:
+        parsed = json.loads(str(value))
+    except TypeError, ValueError, json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if str(item)]
+
+
+def _record_task_lifecycle_transition(
+    metadata: dict[str, Any],
+    transition: dict[str, Any],
+) -> None:
+    current = metadata.get("lifecycle")
+    history = metadata.get("lifecycle_history")
+    transitions = list(history) if isinstance(history, list) else []
+    if isinstance(current, dict) and current != transition:
+        transitions.append(dict(current))
+    if transitions:
+        metadata["lifecycle_history"] = transitions[-20:]
+    metadata["lifecycle"] = transition
+
+
+def _rain_reassessment_due_on(alert_valid_until: str) -> str:
+    return (
+        date.fromisoformat(alert_valid_until) + timedelta(days=_RAIN_REASSESSMENT_DELAY_DAYS)
+    ).isoformat()
+
+
+def _update_rain_outcome_lifecycle(
+    db: DbConn,
+    *,
+    outcome: DbRow,
+    metadata: dict[str, Any],
+    status: str,
+    reason: str,
+    explanation: str,
+    now_ms: int,
+    task_public_id: str = "",
+    due_on: str = "",
+) -> None:
+    _record_task_lifecycle_transition(
+        metadata,
+        {
+            "status": status,
+            "reason": reason,
+            "transitioned_at_ms": now_ms,
+            "source": "rain_forecast_reconciliation",
+            **({"task_public_id": task_public_id} if task_public_id else {}),
+            **({"due_on": due_on} if due_on else {}),
+        },
+    )
+    db.execute(
+        """
+        UPDATE attention_outcomes
+        SET title = %s,
+            explanation = %s,
+            reason = %s,
+            recovery_action_json = '{}',
+            metadata_json = %s,
+            updated_at_ms = %s
+        WHERE id = %s
+        """,
+        (
+            "Watering reassessment restored"
+            if status == "automatically_recovered"
+            else "Watering outcome closed",
+            explanation,
+            "Rain forecast changed" if status == "automatically_recovered" else reason,
+            json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+            now_ms,
+            int(outcome["id"]),
+        ),
+    )
+
+
+def _recover_rain_outcome_task(
+    db: DbConn,
+    *,
+    garden_id: int,
+    outcome: DbRow,
+    metadata: dict[str, Any],
+    now_ms: int,
+) -> tuple[str, str] | None:
+    source_public_id = str(outcome["source_public_id"] or "")
+    target_id = str(outcome["target_id"] or "")
+    original_due_on = str(metadata.get("due_on") or source_public_id.rsplit(":", 1)[-1])
+    today = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
+    due_on = max(original_due_on, today)
+    plant_ids = _parse_string_list(outcome["plant_ids_json"])
+    if target_id and target_id not in plant_ids:
+        plant_ids.insert(0, target_id)
+    if not plant_ids:
+        return None
+    owned_plants = db.execute(
+        """
+        SELECT p.plt_id, p.name
+        FROM plants p
+        JOIN plant_ownership po ON po.plt_id = p.plt_id
+        WHERE po.garden_id = %s
+          AND p.plt_id = ANY(%s)
+        ORDER BY p.plt_id
+        """,
+        (garden_id, plant_ids),
+    ).fetchall()
+    owned_ids = [str(row["plt_id"]) for row in owned_plants]
+    if not owned_ids:
+        return None
+    plant_name = str(owned_plants[0]["name"] or owned_ids[0])
+    title = f"Reassess watering: {plant_name}"
+    description = (
+        "Check root-zone soil moisture after the rain forecast changed; "
+        "water only if the soil has drained and is dry."
+    )
+    existing = db.execute(
+        """
+        SELECT id, public_id, status, due_on, snoozed_until, title, description, metadata_json
+        FROM garden_tasks
+        WHERE garden_id = %s
+          AND rule_source = %s
+        ORDER BY id DESC
+        LIMIT 1
+        FOR UPDATE
+        """,
+        (garden_id, source_public_id),
+    ).fetchone()
+
+    task_metadata: dict[str, Any] = {
+        "description_source": "rain_forecast_reconciliation",
+        "rain_reassessment_policy": "check_root_zone_moisture_before_watering",
+        "rain_reassessment_delay_days": _RAIN_REASSESSMENT_DELAY_DAYS,
+        "rain_outcome_public_id": str(outcome["public_id"]),
+        "rain_weather_alert_id": str(outcome["source_id"]),
+        "rain_original_due_on": original_due_on,
+    }
+    if existing is not None and str(existing["status"]) in {"completed", "skipped"}:
+        return None
+    if existing is not None and str(existing["status"]) in {"pending", "snoozed"}:
+        existing_metadata = _parse_mapping_json(existing["metadata_json"])
+        existing_metadata.setdefault("rain_original_title", str(existing["title"] or ""))
+        existing_metadata.setdefault(
+            "rain_original_description",
+            str(existing["description"] or ""),
+        )
+        existing_metadata.update(task_metadata)
+        _record_task_lifecycle_transition(
+            existing_metadata,
+            {
+                "status": "active",
+                "reason": "rain_forecast_changed",
+                "recovered_at_ms": now_ms,
+                "source": "rain_forecast_reconciliation",
+            },
+        )
+        db.execute(
+            """
+            UPDATE garden_tasks
+            SET title = %s,
+                description = %s,
+                due_on = CASE WHEN status = 'snoozed' THEN due_on ELSE %s END,
+                snoozed_until = CASE WHEN status = 'snoozed' THEN %s ELSE NULL END,
+                metadata_json = %s,
+                updated_at_ms = %s
+            WHERE id = %s AND status IN ('pending', 'snoozed')
+            """,
+            (
+                title,
+                description,
+                due_on,
+                due_on,
+                json.dumps(existing_metadata, sort_keys=True, separators=(",", ":")),
+                now_ms,
+                int(existing["id"]),
+            ),
+        )
+        task_public_id = str(existing["public_id"])
+        return task_public_id, due_on
+
+    rule_source = source_public_id
+    if existing is not None and str(existing["status"]) == "expired":
+        rule_source = f"{source_public_id}:forecast-recovery:{outcome['public_id']}"
+        task_metadata["replaces_expired_task_public_id"] = str(existing["public_id"])
+    _record_task_lifecycle_transition(
+        task_metadata,
+        {
+            "status": "active",
+            "reason": "rain_forecast_changed",
+            "recovered_at_ms": now_ms,
+            "source": "rain_forecast_reconciliation",
+        },
+    )
+    task_id = _create_task_for_plants(
+        db,
+        garden_id,
+        "water",
+        title,
+        due_on,
+        rule_source,
+        owned_ids,
+        None,
+        now_ms,
+        description=description,
+        metadata_json=_generated_description_metadata(
+            "Sjekk jordfuktigheten etter at regnvarselet endret seg; "
+            "vann bare hvis jorden er tørr.",
+            task_metadata,
+        ),
+    )
+    task_row = db.execute(
+        "SELECT public_id FROM garden_tasks WHERE id = %s",
+        (task_id,),
+    ).fetchone()
+    assert task_row is not None
+    return str(task_row["public_id"]), due_on
+
+
+def reconcile_rain_watering_outcomes(
+    db: DbConn,
+    *,
+    garden_id: int,
+    now_ms: int,
+) -> dict[str, int]:
+    """Align rain-suppressed and rain-rescheduled watering with current coverage."""
+    outcomes = db.execute(
+        """
+        SELECT id, public_id, outcome_type, source_id, source_public_id, target_id,
+               plant_ids_json, plot_ids_json, metadata_json, recovery_action_json
+        FROM attention_outcomes
+        WHERE garden_id = %s
+          AND provider = 'weather'
+          AND source_type = 'task_generator'
+          AND outcome_type IN ('watering_covered_by_rain', 'watering_rescheduled_by_rain')
+          AND expires_at_ms > %s
+        ORDER BY id
+        FOR UPDATE
+        """,
+        (garden_id, now_ms),
+    ).fetchall()
+    recovered = 0
+    adjusted = 0
+    closed = 0
+    for outcome in outcomes:
+        metadata = _parse_mapping_json(outcome["metadata_json"])
+        lifecycle = metadata.get("lifecycle")
+        if isinstance(lifecycle, dict) and lifecycle.get("status") in {
+            "automatically_recovered",
+            "superseded",
+        }:
+            continue
+        original_due_on = str(metadata.get("due_on") or "")
+        if not original_due_on:
+            continue
+        covering_alert = _rain_alert_covering_date(db, garden_id, original_due_on)
+        if covering_alert is not None:
+            if str(outcome["outcome_type"]) != "watering_rescheduled_by_rain":
+                continue
+            task = db.execute(
+                """
+                SELECT id, public_id, status, due_on, snoozed_until, metadata_json,
+                       COALESCE(snoozed_until, due_on) AS action_on
+                FROM garden_tasks
+                WHERE garden_id = %s AND rule_source = %s
+                ORDER BY id DESC LIMIT 1
+                FOR UPDATE
+                """,
+                (garden_id, str(outcome["source_public_id"])),
+            ).fetchone()
+            if task is None or str(task["status"]) not in {"pending", "snoozed"}:
+                continue
+            expected_action_on = str(metadata.get("new_due_on") or "")
+            if expected_action_on and str(task["action_on"]) != expected_action_on:
+                continue
+            new_due_on = _rain_reassessment_due_on(str(covering_alert["valid_until"]))
+            if str(task["action_on"]) == new_due_on:
+                continue
+            task_metadata = _parse_mapping_json(task["metadata_json"])
+            task_metadata["rescheduled_alert_valid_until"] = str(covering_alert["valid_until"])
+            task_metadata["rescheduled_weather_alert_id"] = int(covering_alert["id"])
+            task_metadata["rain_reassessment_delay_days"] = _RAIN_REASSESSMENT_DELAY_DAYS
+            task_metadata["rain_reassessment_policy"] = "check_root_zone_moisture_before_watering"
+            db.execute(
+                """
+                UPDATE garden_tasks
+                SET due_on = CASE WHEN status = 'snoozed' THEN due_on ELSE %s END,
+                    snoozed_until = CASE WHEN status = 'snoozed' THEN %s ELSE NULL END,
+                    metadata_json = %s,
+                    updated_at_ms = %s
+                WHERE id = %s AND status IN ('pending', 'snoozed')
+                """,
+                (
+                    new_due_on,
+                    new_due_on,
+                    json.dumps(task_metadata, sort_keys=True, separators=(",", ":")),
+                    now_ms,
+                    int(task["id"]),
+                ),
+            )
+            metadata["new_due_on"] = new_due_on
+            metadata["weather_alert_id"] = str(covering_alert["id"])
+            metadata["alert_valid_until"] = str(covering_alert["valid_until"])
+            db.execute(
+                """
+                UPDATE attention_outcomes
+                SET source_id = %s,
+                    explanation = %s,
+                    metadata_json = %s,
+                    updated_at_ms = %s
+                WHERE id = %s
+                """,
+                (
+                    str(covering_alert["id"]),
+                    "Heavy rain moved watering to a later soil-moisture reassessment on "
+                    f"{new_due_on}.",
+                    json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+                    now_ms,
+                    int(outcome["id"]),
+                ),
+            )
+            adjusted += 1
+            continue
+
+        recovered_task = _recover_rain_outcome_task(
+            db,
+            garden_id=garden_id,
+            outcome=outcome,
+            metadata=metadata,
+            now_ms=now_ms,
+        )
+        if recovered_task is None:
+            _update_rain_outcome_lifecycle(
+                db,
+                outcome=outcome,
+                metadata=metadata,
+                status="superseded",
+                reason="task_already_terminal_or_plant_unavailable",
+                explanation="The watering outcome closed without changing terminal garden history.",
+                now_ms=now_ms,
+            )
+            closed += 1
+            continue
+        task_public_id, due_on = recovered_task
+        _update_rain_outcome_lifecycle(
+            db,
+            outcome=outcome,
+            metadata=metadata,
+            status="automatically_recovered",
+            reason="rain_coverage_withdrawn_or_contracted",
+            explanation=(
+                "The rain forecast no longer covers this watering. "
+                f"A soil-moisture reassessment is actionable on {due_on}."
+            ),
+            task_public_id=task_public_id,
+            due_on=due_on,
+            now_ms=now_ms,
+        )
+        recovered += 1
+    return {"recovered": recovered, "adjusted": adjusted, "closed": closed}
+
+
 def _create_task(
     db: DbConn,
     garden_id: int,
@@ -1097,7 +1462,7 @@ def generate_tasks(
 ) -> dict[str, int]:
     """Generate seasonal tasks for a given month.
 
-    Returns ``{"created": N, "skipped": N}``.
+    Returns ``{"created": N, "skipped": N, "rain_suppressed": N}``.
     """
     _lock_monthly_task_generation(db, garden_id, target_month, target_year)
     now_ms = current_timestamp_ms() if now_ms is None else now_ms
@@ -1105,6 +1470,7 @@ def generate_tasks(
     due_on = f"{target_year}-{target_month:02d}-01"
     created = 0
     skipped = 0
+    rain_suppressed = 0
     created_specs: list[dict[str, Any]] = []
     work_order_candidates: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -1284,6 +1650,7 @@ def generate_tasks(
                         plot_ids=outdoor_plot_ids,
                         now_ms=now_ms,
                     )
+                    rain_suppressed += 1
                     skipped += 1
                 else:
                     desc_en, desc_no = _infer_descriptions_for_rule(
@@ -1482,7 +1849,11 @@ def generate_tasks(
         )
 
     db.commit()
-    return {"created": created, "skipped": skipped}
+    return {
+        "created": created,
+        "skipped": skipped,
+        "rain_suppressed": rain_suppressed,
+    }
 
 
 def _empty_plant_context(plt_id: str) -> dict[str, str]:

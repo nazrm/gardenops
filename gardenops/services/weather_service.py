@@ -31,6 +31,20 @@ def _weather_timestamp_ms() -> int:
     return now_ms
 
 
+def _record_lifecycle_transition(
+    metadata: dict[str, object],
+    transition: dict[str, object],
+) -> None:
+    current = metadata.get("lifecycle")
+    history = metadata.get("lifecycle_history")
+    transitions = list(history) if isinstance(history, list) else []
+    if isinstance(current, dict) and current != transition:
+        transitions.append(dict(current))
+    if transitions:
+        metadata["lifecycle_history"] = transitions[-20:]
+    metadata["lifecycle"] = transition
+
+
 # RHS hardiness to minimum temperature tolerance (deg C)
 # H1: >15 (tender), H2: 1-5, H3: -5 to 1, H4: -10 to -5, H5: -15 to -10
 # H6: -20 to -15, H7: <-20 (fully hardy)
@@ -600,6 +614,17 @@ def save_weather_alerts(
             except TypeError, ValueError, json.JSONDecodeError:
                 existing_meta = {}
             merged_meta: dict[str, object] = {**existing_meta, **alert_meta}
+            lifecycle = existing_meta.get("lifecycle")
+            if isinstance(lifecycle, dict) and lifecycle.get("status") == "resolved":
+                _record_lifecycle_transition(
+                    merged_meta,
+                    {
+                        "status": "active",
+                        "reason": "reappeared_in_current_forecast",
+                        "reappeared_at_ms": now,
+                        "source": "forecast_reconciliation",
+                    },
+                )
             existing_advice = existing_meta.get("plant_advice")
             incoming_advice = alert_meta.get("plant_advice")
             if isinstance(existing_advice, list) or isinstance(incoming_advice, list):

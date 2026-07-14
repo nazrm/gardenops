@@ -7,17 +7,19 @@ import enGbLocale from "@fullcalendar/core/locales/en-gb";
 import nbLocale from "@fullcalendar/core/locales/nb";
 
 import { createChipInput, type ChipInputResult } from "../components/chipInput";
-import { createModal, promptDialog } from "../components/dialogCore";
+import { confirmDialog, createModal, promptDialog } from "../components/dialogCore";
 import type { AppContext } from "../core/appContext";
 import { queryButton, querySelect } from "../core/dom";
 import { getLocale, t } from "../core/i18n";
 import type {
   CalendarCapabilities,
   CalendarEvent,
+  CalendarEventsResponse,
   CalendarManualEventDraft,
   CalendarManualEventInput,
   CalendarPresetDefinition,
   CalendarPresetKey,
+  CalendarPreferencesResponse,
   CalendarSourceDefinition,
   CalendarSourceKey,
   CalendarSubscription,
@@ -52,6 +54,15 @@ import {
   needsCompletionDialog,
   openTaskCompletionDialog,
 } from "../features/taskCompletionFlow";
+import {
+  getTaskActionStates,
+  OfflineTaskActionConflictError,
+  onOfflineQueueChange,
+  removeDraft,
+  retryDraft,
+  type OfflineTaskActionState,
+} from "../services/offlineQueue";
+import { syncOfflineDraftsNow } from "../features/offlineFeature";
 
 let ctx: AppContext;
 let calendar: Calendar | null = null;
@@ -80,6 +91,12 @@ let calendarPlotInput: ChipInputResult | null = null;
 let calendarZoneInput: ChipInputResult | null = null;
 let calendarRequestGeneration = 0;
 let calendarEventsRequestGeneration = 0;
+let calendarTaskActions = new Map<string, OfflineTaskActionState>();
+let calendarOfflineListenerBound = false;
+const calendarPreferencesCache = new Map<number, CalendarPreferencesResponse>();
+const calendarEventsCache = new Map<string, CalendarEventsResponse>();
+
+type CalendarEventsQuery = Parameters<typeof fetchCalendarEventsApi>[0];
 
 interface CalendarRequestContext {
   gardenId: number | null;
@@ -88,6 +105,80 @@ interface CalendarRequestContext {
 
 interface CalendarEventsRequestContext extends CalendarRequestContext {
   eventsGeneration: number;
+}
+
+function calendarEventsCacheKey(
+  gardenId: number,
+  query: CalendarEventsQuery,
+): string {
+  return `${gardenId}:${JSON.stringify(Object.entries(query).sort(([left], [right]) => (
+    left.localeCompare(right)
+  )))}`;
+}
+
+function setCalendarDataState(
+  state: "live" | "cached" | "unavailable",
+): void {
+  const status = document.getElementById("calendar-data-state");
+  const root = document.getElementById("calendar-root");
+  if (status instanceof HTMLElement) {
+    status.hidden = state === "live";
+    status.className = `offline-data-state offline-data-state--${state}`;
+    status.textContent = state === "cached"
+      ? t("calendar.offline_cached")
+      : state === "unavailable"
+        ? t("calendar.offline_unavailable")
+        : "";
+  }
+  if (root instanceof HTMLElement) root.hidden = state === "unavailable";
+  if (state === "unavailable") {
+    const summary = document.getElementById("calendar-summary");
+    if (summary) summary.textContent = t("calendar.offline_unavailable");
+  }
+}
+
+function applyCalendarPreferences(result: CalendarPreferencesResponse): void {
+  availableSources = result.available_sources;
+  presets = result.presets;
+  capabilities = result.capabilities;
+  currentViewMode = result.persisted ? result.preferences.default_view : defaultResponsiveView();
+  currentPreset = result.preferences.selected_preset;
+  visibleSources = new Set(result.preferences.visible_sources);
+  includeRecentHistory = result.preferences.include_recent_history;
+  selectedPlantIds = new Set(result.preferences.selected_plant_ids || []);
+  selectedPlotIds = new Set(result.preferences.selected_plot_ids || []);
+  selectedZoneCodes = new Set(result.preferences.selected_zone_codes || []);
+  preferencesLoaded = true;
+  renderPresetOptions();
+  syncControlsFromState();
+  renderZoneFilter();
+  renderPlotFilter();
+  renderPlantFilter();
+  renderFilterState();
+  renderSourceFilters();
+  renderHeaderActions();
+  renderSubscriptionsPanel();
+}
+
+async function refreshCalendarTaskActions(render = true): Promise<void> {
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) {
+    calendarTaskActions.clear();
+    return;
+  }
+  const states = await getTaskActionStates(gardenId);
+  if (gardenId !== getActiveGardenContext()) return;
+  calendarTaskActions = states;
+  if (!render) return;
+  calendar?.refetchEvents();
+  renderDetail(selectedEventId ? currentEventsById.get(selectedEventId) : undefined);
+}
+
+function offlineTaskActionErrorMessage(error: unknown): string {
+  if (error instanceof OfflineTaskActionConflictError) {
+    return t(error.kind === "duplicate" ? "offline.task_duplicate" : "offline.task_conflict");
+  }
+  return getApiErrorMessage(error);
 }
 
 function createCalendarRequest(): CalendarRequestContext {
@@ -467,6 +558,15 @@ function handleCalendarEventMount(arg: EventMountArg): void {
   arg.el.dataset["calendarSource"] = event.source_key;
   arg.el.dataset["calendarStatus"] = event.status;
   arg.el.dataset["calendarTitle"] = event.title;
+  const offlineAction = event.kind === "task"
+    ? calendarTaskActions.get(event.target_id)
+    : undefined;
+  if (offlineAction) {
+    arg.el.dataset["offlineTaskState"] = offlineAction.status;
+    arg.el.classList.add(`calendar-task-offline-${offlineAction.status}`);
+  } else {
+    delete arg.el.dataset["offlineTaskState"];
+  }
   if (event.window_state) {
     arg.el.dataset["calendarWindowState"] = event.window_state;
   } else {
@@ -554,6 +654,7 @@ export function resetCalendarForGardenSwitch(): void {
   selectedEventId = null;
   currentSummaryCount = 0;
   preferencesLoaded = false;
+  calendarTaskActions.clear();
   calendar?.removeAllEvents();
   calendarPlantInput?.destroy();
   calendarPlantInput = null;
@@ -569,7 +670,9 @@ export function resetCalendarForGardenSwitch(): void {
   renderHeaderActions();
   renderSubscriptionsPanel();
   updateSummary(0);
+  setCalendarDataState("unavailable");
   renderDetail();
+  setCalendarDataState("unavailable");
 }
 
 function syncControlsFromState(): void {
@@ -834,6 +937,7 @@ function canMutateCalendarTask(event: CalendarEvent): boolean {
     && event.kind === "task"
     && !event.read_only
     && ctx.canWrite()
+    && !calendarTaskActions.has(event.target_id)
     && (event.status === "pending" || event.status === "snoozed")
   );
 }
@@ -904,6 +1008,32 @@ function actionButton(label: string, onClick: () => void): HTMLButtonElement {
   button.textContent = label;
   button.addEventListener("click", onClick);
   return button;
+}
+
+async function discardCalendarOfflineAction(
+  state: OfflineTaskActionState,
+): Promise<void> {
+  const confirmed = await confirmDialog(
+    t("offline.discard_confirm"),
+    t("offline.discard"),
+  );
+  if (!confirmed) return;
+  await removeDraft(state.draftId);
+  await refreshCalendarTaskActions();
+  void ctx.refreshOfflineIndicator();
+}
+
+async function retryCalendarOfflineAction(
+  state: OfflineTaskActionState,
+): Promise<void> {
+  const changed = await retryDraft(state.draftId);
+  if (!changed) return;
+  await refreshCalendarTaskActions();
+  if (ctx.isOnline()) {
+    await syncOfflineDraftsNow();
+  } else {
+    ctx.showToast(t("offline.retry_queued"), "success");
+  }
 }
 
 async function openManualEventDialog(
@@ -1115,6 +1245,38 @@ function renderDetail(event?: CalendarEvent): void {
   }
   panel.appendChild(meta);
 
+  const offlineAction = event.kind === "task"
+    ? calendarTaskActions.get(event.target_id)
+    : undefined;
+  if (offlineAction) {
+    const state = document.createElement("div");
+    state.className = `task-offline-state task-offline-state--${offlineAction.status}`;
+    state.setAttribute("role", offlineAction.status === "failed" ? "alert" : "status");
+    const message = document.createElement("span");
+    message.textContent = t(`offline.task_${offlineAction.status}`, {
+      action: t(`tasks.action_${offlineAction.action}`),
+    });
+    state.appendChild(message);
+    if (offlineAction.status === "failed" && offlineAction.lastError) {
+      const error = document.createElement("span");
+      error.className = "task-offline-error";
+      error.textContent = offlineAction.lastError;
+      state.appendChild(error);
+    }
+    const recovery = document.createElement("div");
+    recovery.className = "task-offline-recovery";
+    if (offlineAction.status === "failed") {
+      recovery.appendChild(actionButton(t("offline.retry"), () => {
+        void retryCalendarOfflineAction(offlineAction);
+      }));
+    }
+    recovery.appendChild(actionButton(t("offline.discard"), () => {
+      void discardCalendarOfflineAction(offlineAction);
+    }));
+    state.appendChild(recovery);
+    panel.appendChild(state);
+  }
+
   if (event.description.trim()) {
     const description = document.createElement("p");
     description.className = "calendar-detail-description";
@@ -1261,8 +1423,14 @@ async function runCalendarTaskActionForTarget(
       ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
       return false;
     }
-    await enqueueOfflineCalendarTaskAction(target.taskId, body);
+    try {
+      await enqueueOfflineCalendarTaskAction(target.taskId, body);
+    } catch (err) {
+      ctx.showToast(offlineTaskActionErrorMessage(err), "error");
+      return false;
+    }
     if (!isCurrentCalendarRequest(request)) return false;
+    await refreshCalendarTaskActions();
     ctx.showToast(t("offline.draft_saved"), "success");
     void ctx.refreshOfflineIndicator();
     return true;
@@ -1408,11 +1576,12 @@ function openCalendarTaskDateDialogForTarget(
 }
 
 async function persistPreferences(): Promise<void> {
-  if (!ctx.canWrite()) return;
   const request = createCalendarRequest();
   if (!preferencesLoaded || !isCurrentCalendarRequest(request)) return;
+  const gardenId = request.gardenId;
+  if (gardenId === null) return;
   try {
-    await updateCalendarPreferencesApi({
+    const result = await updateCalendarPreferencesApi({
       default_view: currentViewMode,
       selected_preset: currentPreset,
       visible_sources: visibleSourceList(),
@@ -1421,9 +1590,23 @@ async function persistPreferences(): Promise<void> {
       selected_plot_ids: selectedPlotIdList(),
       selected_zone_codes: selectedZoneCodeList(),
     });
-  } catch {
     if (!isCurrentCalendarRequest(request)) return;
-    // Non-critical. Keep local state responsive even if persistence fails.
+    calendarPreferencesCache.set(gardenId, {
+      preferences: result.preferences,
+      persisted: true,
+      available_views: ["month", "week", "agenda"],
+      available_sources: availableSources,
+      presets,
+      capabilities,
+    });
+  } catch (err) {
+    if (!isCurrentCalendarRequest(request)) return;
+    ctx.showToast(
+      t("calendar.preferences_save_failed", {
+        error: getApiErrorMessage(err),
+      }),
+      "error",
+    );
   }
 }
 
@@ -1431,28 +1614,12 @@ async function fetchPreferences(
   request = createCalendarRequest(),
 ): Promise<boolean> {
   if (!isCurrentCalendarRequest(request)) return false;
+  const gardenId = request.gardenId;
+  if (gardenId === null) return false;
   const result = await fetchCalendarPreferencesApi();
   if (!isCurrentCalendarRequest(request)) return false;
-  availableSources = result.available_sources;
-  presets = result.presets;
-  capabilities = result.capabilities;
-  currentViewMode = result.persisted ? result.preferences.default_view : defaultResponsiveView();
-  currentPreset = result.preferences.selected_preset;
-  visibleSources = new Set(result.preferences.visible_sources);
-  includeRecentHistory = result.preferences.include_recent_history;
-  selectedPlantIds = new Set(result.preferences.selected_plant_ids || []);
-  selectedPlotIds = new Set(result.preferences.selected_plot_ids || []);
-  selectedZoneCodes = new Set(result.preferences.selected_zone_codes || []);
-  preferencesLoaded = true;
-  renderPresetOptions();
-  syncControlsFromState();
-  renderZoneFilter();
-  renderPlotFilter();
-  renderPlantFilter();
-  renderFilterState();
-  renderSourceFilters();
-  renderHeaderActions();
-  renderSubscriptionsPanel();
+  calendarPreferencesCache.set(gardenId, result);
+  applyCalendarPreferences(result);
   return true;
 }
 
@@ -1585,18 +1752,43 @@ function ensureCalendarInstance(): Calendar {
         successCallback([]);
         return;
       }
+      const gardenId = request.gardenId;
+      if (gardenId === null) {
+        successCallback([]);
+        return;
+      }
+      const query: CalendarEventsQuery = {
+        start: fetchInfo.startStr.slice(0, 10),
+        end: fetchInfo.endStr.slice(0, 10),
+        preset: currentPreset,
+        visible_sources: visibleSourceList().join(","),
+        include_recent_history: includeRecentHistory,
+        selected_plant_ids: selectedPlantIdList().join(","),
+        selected_plot_ids: selectedPlotIdList().join(","),
+        selected_zone_codes: selectedZoneCodeList().join(","),
+      };
       try {
         setLoading(true);
-        const result = await fetchCalendarEventsApi({
-          start: fetchInfo.startStr.slice(0, 10),
-          end: fetchInfo.endStr.slice(0, 10),
-          preset: currentPreset,
-          visible_sources: visibleSourceList().join(","),
-          include_recent_history: includeRecentHistory,
-          selected_plant_ids: selectedPlantIdList().join(","),
-          selected_plot_ids: selectedPlotIdList().join(","),
-          selected_zone_codes: selectedZoneCodeList().join(","),
-        });
+        let result: CalendarEventsResponse;
+        if (!ctx.isOnline()) {
+          const cached = calendarEventsCache.get(
+            calendarEventsCacheKey(gardenId, query),
+          );
+          if (!cached) {
+            currentEventsById.clear();
+            selectedEventId = null;
+            renderDetail();
+            setCalendarDataState("unavailable");
+            successCallback([]);
+            return;
+          }
+          result = cached;
+          setCalendarDataState("cached");
+        } else {
+          result = await fetchCalendarEventsApi(query);
+          calendarEventsCache.set(calendarEventsCacheKey(gardenId, query), result);
+          setCalendarDataState("live");
+        }
         if (!isCurrentCalendarEventsRequest(request)) {
           successCallback([]);
           return;
@@ -1653,6 +1845,7 @@ function ensureCalendarInstance(): Calendar {
         );
       } catch (err) {
         if (!isCurrentCalendarEventsRequest(request)) return;
+        setCalendarDataState("unavailable");
         failureCallback(err as Error);
         ctx.showToast(getApiErrorMessage(err), "error");
       } finally {
@@ -1757,6 +1950,12 @@ export function refreshCalendarLocalization(): void {
 
 export function initCalendarTab(appCtx: AppContext): void {
   ctx = appCtx;
+  if (!calendarOfflineListenerBound) {
+    calendarOfflineListenerBound = true;
+    onOfflineQueueChange(() => {
+      void refreshCalendarTaskActions();
+    });
+  }
   if (initBound) return;
   initBound = true;
 
@@ -1815,14 +2014,25 @@ export async function loadCalendar(): Promise<void> {
   calendarRequestGeneration += 1;
   const request = createCalendarRequest();
   if (!isCurrentCalendarRequest(request)) return;
-  if (!ctx.isOnline()) {
-    calendar?.updateSize();
-    return;
-  }
+  const gardenId = request.gardenId;
+  if (gardenId === null) return;
+  const offline = !ctx.isOnline();
   try {
     if (!preferencesLoaded) {
-      const loaded = await fetchPreferences(request);
-      if (!loaded || !isCurrentCalendarRequest(request)) return;
+      if (offline) {
+        const cached = calendarPreferencesCache.get(gardenId);
+        if (!cached) {
+          currentEventsById.clear();
+          calendar?.removeAllEvents();
+          renderDetail();
+          setCalendarDataState("unavailable");
+          return;
+        }
+        applyCalendarPreferences(cached);
+      } else {
+        const loaded = await fetchPreferences(request);
+        if (!loaded || !isCurrentCalendarRequest(request)) return;
+      }
     } else {
       renderPresetOptions();
       syncControlsFromState();
@@ -1847,9 +2057,11 @@ export async function loadCalendar(): Promise<void> {
       instance.refetchEvents();
     }
     instance.updateSize();
-    await refreshSubscriptions(request);
+    await refreshCalendarTaskActions(false);
+    if (!offline) await refreshSubscriptions(request);
   } catch (err) {
     if (!isCurrentCalendarRequest(request)) return;
+    setCalendarDataState("unavailable");
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }

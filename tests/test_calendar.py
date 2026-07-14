@@ -197,6 +197,40 @@ class TestCalendarApi(BaseApiTest):
         self.assertEqual(data["preferences"]["selected_plant_ids"], [])
         self.assertFalse(data["capabilities"]["can_subscribe"])
 
+    def test_viewer_can_persist_personal_calendar_preferences(self) -> None:
+        try:
+            os.environ["AUTH_REQUIRED"] = "true"
+            self._create_test_user("calendar_pref_viewer", "viewerpass", "viewer")
+            viewer_client, viewer_headers = self._authenticated_client(
+                "calendar_pref_viewer",
+                "viewerpass",
+            )
+
+            updated = viewer_client.patch(
+                "/api/calendar/preferences",
+                headers=viewer_headers,
+                json={
+                    "default_view": "agenda",
+                    "include_recent_history": True,
+                    "selected_plot_ids": ["B1"],
+                },
+            )
+            self.assertEqual(updated.status_code, 200, updated.text)
+            self.assertEqual(updated.json()["preferences"]["default_view"], "agenda")
+            self.assertTrue(updated.json()["preferences"]["include_recent_history"])
+            self.assertEqual(updated.json()["preferences"]["selected_plot_ids"], ["B1"])
+
+            loaded = viewer_client.get(
+                "/api/calendar/preferences",
+                headers=viewer_headers,
+            )
+            self.assertEqual(loaded.status_code, 200, loaded.text)
+            self.assertTrue(loaded.json()["persisted"])
+            self.assertEqual(loaded.json()["preferences"], updated.json()["preferences"])
+            self.assertFalse(loaded.json()["capabilities"]["can_subscribe"])
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
     def test_calendar_selected_plant_preferences_filter_events_and_export(self) -> None:
         try:
             os.environ["AUTH_REQUIRED"] = "true"

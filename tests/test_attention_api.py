@@ -930,6 +930,263 @@ class TestAttentionMutations(BaseApiTest):
         self.assertEqual(metadata["restored_due_on_from"], "2026-07-08")
         self.assertEqual(active_outcomes, [])
 
+    def test_watering_restore_rejects_stale_cross_garden_plant_and_plot_scope(self) -> None:
+        from gardenops.services.attention.outcomes import upsert_attention_outcome
+
+        garden_id, user_id = self._garden_user_and_task("task_attention_restore_scope_guard")
+        conn = db.get_db()
+        try:
+            foreign_garden = conn.execute(
+                "INSERT INTO gardens (slug, name) VALUES ('restore-foreign', 'Foreign') "
+                "RETURNING id",
+            ).fetchone()
+            assert foreign_garden is not None
+            foreign_garden_id = int(foreign_garden["id"])
+            conn.execute(
+                """
+                INSERT INTO plants (plt_id, name, category)
+                VALUES
+                    ('RESTORE-VALID', 'Valid restore plant', 'test'),
+                    ('RESTORE-FOREIGN', 'Foreign restore plant', 'test')
+                """,
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES
+                    ('RESTORE-VALID', %s, %s),
+                    ('RESTORE-FOREIGN', %s, %s)
+                """,
+                (user_id, garden_id, user_id, foreign_garden_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO plots
+                    (plot_id, garden_id, zone_code, zone_name, plot_number,
+                     grid_row, grid_col, sub_zone, notes)
+                VALUES ('RESTORE-FOREIGN-PLOT', %s, 'F', 'Foreign', 1, 1, 1, '', '')
+                """,
+                (foreign_garden_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id)
+                VALUES ('RESTORE-FOREIGN-PLOT', %s, %s)
+                """,
+                (user_id, foreign_garden_id),
+            )
+            foreign_plot_outcome = upsert_attention_outcome(
+                conn,
+                garden_id=garden_id,
+                provider="weather",
+                outcome_type="watering_covered_by_rain",
+                source_type="task_generator",
+                source_id="scope-plot",
+                source_public_id="water:RESTORE-VALID:2026-07-05",
+                target_type="plant",
+                target_id="RESTORE-VALID",
+                title="Watering covered by rain",
+                explanation="Rain covered watering.",
+                plant_ids=("RESTORE-VALID",),
+                plot_ids=("RESTORE-FOREIGN-PLOT",),
+                metadata={"due_on": "2026-07-05"},
+                recovery_action={
+                    "kind": "restore_generated_watering_task",
+                    "label": "Restore watering",
+                    "source_public_id": "water:RESTORE-VALID:2026-07-05",
+                    "target_type": "plant",
+                    "target_id": "RESTORE-VALID",
+                    "due_on": "2026-07-05",
+                    "plant_ids": ["RESTORE-VALID"],
+                    "plot_ids": ["RESTORE-FOREIGN-PLOT"],
+                },
+                occurred_at_ms=1783180800000,
+                expires_at_ms=1785772800000,
+            )
+            foreign_plant_outcome = upsert_attention_outcome(
+                conn,
+                garden_id=garden_id,
+                provider="weather",
+                outcome_type="watering_covered_by_rain",
+                source_type="task_generator",
+                source_id="scope-plant",
+                source_public_id="water:RESTORE-FOREIGN:2026-07-05",
+                target_type="plant",
+                target_id="RESTORE-FOREIGN",
+                title="Watering covered by rain",
+                explanation="Rain covered watering.",
+                plant_ids=("RESTORE-FOREIGN",),
+                metadata={"due_on": "2026-07-05"},
+                recovery_action={
+                    "kind": "restore_generated_watering_task",
+                    "label": "Restore watering",
+                    "source_public_id": "water:RESTORE-FOREIGN:2026-07-05",
+                    "target_type": "plant",
+                    "target_id": "RESTORE-FOREIGN",
+                    "due_on": "2026-07-05",
+                    "plant_ids": ["RESTORE-FOREIGN"],
+                    "plot_ids": [],
+                },
+                occurred_at_ms=1783180800000,
+                expires_at_ms=1785772800000,
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1783180800000",
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-05",
+            },
+        ):
+            client, headers = self._authenticated_client(
+                "test_admin",
+                "testadminpass",
+                garden_id=garden_id,
+            )
+            plot_response = client.post(
+                f"/api/attention/outcomes/{foreign_plot_outcome}/restore",
+                headers=headers,
+            )
+            plant_response = client.post(
+                f"/api/attention/outcomes/{foreign_plant_outcome}/restore",
+                headers=headers,
+            )
+
+        self.assertEqual(plot_response.status_code, 409, plot_response.text)
+        self.assertEqual(plant_response.status_code, 409, plant_response.text)
+        conn = db.get_db()
+        try:
+            tasks = conn.execute(
+                """
+                SELECT public_id
+                FROM garden_tasks
+                WHERE rule_source IN (
+                    'water:RESTORE-VALID:2026-07-05',
+                    'water:RESTORE-FOREIGN:2026-07-05'
+                )
+                """,
+            ).fetchall()
+        finally:
+            db.return_db(conn)
+        self.assertEqual(tasks, [])
+
+    def test_watering_restore_rolls_back_implicit_cross_garden_plot_link(self) -> None:
+        from gardenops.services.attention.outcomes import upsert_attention_outcome
+
+        garden_id, user_id = self._garden_user_and_task("task_attention_restore_link_guard")
+        with patch.dict(
+            "os.environ",
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1783180800000",
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-05",
+            },
+        ):
+            client, headers = self._authenticated_client(
+                "test_admin",
+                "testadminpass",
+                garden_id=garden_id,
+            )
+            conn = db.get_db()
+            try:
+                foreign_garden = conn.execute(
+                    "INSERT INTO gardens (slug, name) VALUES ('restore-link-foreign', 'Foreign') "
+                    "RETURNING id",
+                ).fetchone()
+                assert foreign_garden is not None
+                foreign_garden_id = int(foreign_garden["id"])
+                conn.execute(
+                    "INSERT INTO plants (plt_id, name, category) "
+                    "VALUES ('RESTORE-LINK', 'Restore link plant', 'test')",
+                )
+                conn.execute(
+                    "INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id) "
+                    "VALUES ('RESTORE-LINK', %s, %s)",
+                    (user_id, garden_id),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO plots
+                        (plot_id, garden_id, zone_code, zone_name, plot_number,
+                         grid_row, grid_col, sub_zone, notes)
+                    VALUES ('RESTORE-LINK-PLOT', %s, 'R', 'Restore', 1, 8, 8, '', '')
+                    """,
+                    (garden_id,),
+                )
+                conn.execute(
+                    "INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id) "
+                    "VALUES ('RESTORE-LINK-PLOT', %s, %s)",
+                    (user_id, foreign_garden_id),
+                )
+                conn.execute(
+                    "UPDATE plots SET garden_id = %s WHERE plot_id = 'RESTORE-LINK-PLOT'",
+                    (garden_id,),
+                )
+                conn.execute(
+                    "INSERT INTO plot_plants (plot_id, plt_id, quantity) "
+                    "VALUES ('RESTORE-LINK-PLOT', 'RESTORE-LINK', 1)",
+                )
+                outcome_id = upsert_attention_outcome(
+                    conn,
+                    garden_id=garden_id,
+                    provider="weather",
+                    outcome_type="watering_covered_by_rain",
+                    source_type="task_generator",
+                    source_id="scope-generated-link",
+                    source_public_id="water:RESTORE-LINK:2026-07-05",
+                    target_type="plant",
+                    target_id="RESTORE-LINK",
+                    title="Watering covered by rain",
+                    explanation="Rain covered watering.",
+                    plant_ids=("RESTORE-LINK",),
+                    metadata={"due_on": "2026-07-05"},
+                    recovery_action={
+                        "kind": "restore_generated_watering_task",
+                        "label": "Restore watering",
+                        "source_public_id": "water:RESTORE-LINK:2026-07-05",
+                        "target_type": "plant",
+                        "target_id": "RESTORE-LINK",
+                        "due_on": "2026-07-05",
+                        "plant_ids": ["RESTORE-LINK"],
+                        "plot_ids": [],
+                    },
+                    occurred_at_ms=1783180800000,
+                    expires_at_ms=1785772800000,
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            response = client.post(
+                f"/api/attention/outcomes/{outcome_id}/restore",
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        conn = db.get_db()
+        try:
+            task = conn.execute(
+                "SELECT id FROM garden_tasks WHERE rule_source = %s",
+                ("water:RESTORE-LINK:2026-07-05",),
+            ).fetchone()
+            outcome = conn.execute(
+                "SELECT expires_at_ms FROM attention_outcomes WHERE public_id = %s",
+                (outcome_id,),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertIsNone(task)
+        self.assertIsNotNone(outcome)
+        self.assertGreater(int(outcome["expires_at_ms"]), 1783180800000)
+
 
 class TestAttentionTodayApi(BaseApiTest):
     def _seed_due_task(self, public_id: str = "task_attention_auth") -> None:

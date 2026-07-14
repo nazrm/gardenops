@@ -9,6 +9,14 @@ const { assert, visible } = require("./completeJourneyAssertions.cjs");
 const NETWORK_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:"]);
 const LOCAL_PROTOCOLS = new Set(["about:", "blob:", "data:"]);
 const PIXEL_7_VIEWPORT = Object.freeze({ height: 839, width: 412 });
+const ROUTE_GUARD_PROBE_URL = "http://192.0.2.1/api/complete-journey-route-guard";
+const EXPECTED_CONSOLE_DIAGNOSTIC_CONTEXTS = new Set([
+  "calendar-feed-revoked",
+  "map-import-rejected",
+  "network-guard-probe",
+  "preauth-session-probe",
+  "viewer-task-write-denied",
+]);
 
 function redactTokenShapedSecrets(value) {
   return String(value)
@@ -104,6 +112,39 @@ function safeUrl(rawUrl) {
   }
 }
 
+function expectedHttpDiagnosticContext({ authenticated, method, path: pathname, status }) {
+  if (!authenticated && method === "GET" && pathname === "/api/auth/me" && status === 401) {
+    return "preauth-session-probe";
+  }
+  if (method === "POST" && pathname === "/api/plots/import" && [409, 413, 422].includes(status)) {
+    return "map-import-rejected";
+  }
+  if (
+    method === "GET"
+    && /^\/calendar\/subscriptions\/[^/]+\.ics$/.test(pathname)
+    && status === 404
+  ) {
+    return "calendar-feed-revoked";
+  }
+  if (
+    method === "POST"
+    && /^\/api\/tasks\/[^/]+\/action$/.test(pathname)
+    && status === 403
+  ) {
+    return "viewer-task-write-denied";
+  }
+  return "unexpected-http-response";
+}
+
+function consoleStatus(text) {
+  const match = /\b([1-5]\d{2})\s+\([^)]+\)/.exec(String(text || ""));
+  return match ? Number(match[1]) : null;
+}
+
+function diagnosticLabel(event) {
+  return [event.id, event.context, event.method, event.status, event.path].join(" ");
+}
+
 function assertLoopbackBaseUrl(baseUrl) {
   let parsed;
   try {
@@ -169,6 +210,7 @@ async function createGuardedContext(
   });
   const diagnostics = {
     blockedRequests: [],
+    classifiedConsoleDiagnostics: [],
     consoleErrors: [],
     expectedAuth401Responses: 0,
     httpErrors: [],
@@ -176,11 +218,23 @@ async function createGuardedContext(
     pageErrors: [],
     requestFailures: [],
   };
+  const pendingHttpConsoleDiagnostics = [];
+  const pendingBlockedConsoleDiagnostics = [];
+  let diagnosticSequence = 0;
   let authenticated = false;
   await context.route("**/*", async (route) => {
     const requestUrl = route.request().url();
     if (!isAllowedUrl(requestUrl, allowedOrigins)) {
-      diagnostics.blockedRequests.push(safeUrl(requestUrl));
+      const sanitizedUrl = safeUrl(requestUrl);
+      diagnostics.blockedRequests.push(sanitizedUrl);
+      pendingBlockedConsoleDiagnostics.push({
+        context: sanitizedUrl === ROUTE_GUARD_PROBE_URL
+          ? "network-guard-probe"
+          : "unexpected-blocked-request",
+        method: route.request().method(),
+        path: new URL(sanitizedUrl).pathname,
+        status: 0,
+      });
       await route.abort("blockedbyclient");
       return;
     }
@@ -199,21 +253,62 @@ async function createGuardedContext(
     page.on("console", (message) => {
       if (message.type() !== "error") return;
       const text = message.text();
-      if (
-        text.startsWith("Failed to load resource:")
-        && text.includes("401 (Unauthorized)")
-        && diagnostics.expectedAuth401Responses > diagnostics.ignoredAuth401ConsoleErrors
-      ) {
+      const status = consoleStatus(text);
+      let locationPath = "";
+      try {
+        const locationUrl = message.location()?.url || "";
+        if (locationUrl) locationPath = new URL(locationUrl).pathname;
+      } catch {
+        locationPath = "";
+      }
+      const statusCandidates = status === null ? [] : pendingHttpConsoleDiagnostics
+        .map((entry, index) => ({ entry, index }))
+        .filter(({ entry }) => entry.status === status);
+      const pathCandidates = locationPath
+        ? statusCandidates.filter(({ entry }) => entry.path === locationPath)
+        : [];
+      const candidates = pathCandidates.length > 0 ? pathCandidates : statusCandidates;
+      let pendingIndex = candidates.length === 1 ? candidates[0].index : -1;
+      let pending = pendingIndex >= 0
+        ? pendingHttpConsoleDiagnostics.splice(pendingIndex, 1)[0]
+        : null;
+      if (!pending && pendingBlockedConsoleDiagnostics.length === 1) {
+        pendingIndex = 0;
+        pending = pendingBlockedConsoleDiagnostics.splice(pendingIndex, 1)[0];
+      }
+      const event = {
+        context: pending?.context || "unclassified-console-error",
+        diagnostic: sanitizeDiagnostic(text),
+        id: `console-${++diagnosticSequence}`,
+        method: pending?.method || "UNKNOWN",
+        path: pending?.path || "unknown",
+        status: pending?.status ?? status,
+      };
+      diagnostics.classifiedConsoleDiagnostics.push(event);
+      if (event.context === "preauth-session-probe") {
         diagnostics.ignoredAuth401ConsoleErrors += 1;
         return;
       }
-      diagnostics.consoleErrors.push(sanitizeDiagnostic(text));
+      diagnostics.consoleErrors.push(diagnosticLabel(event));
     });
     page.on("pageerror", (error) => diagnostics.pageErrors.push(sanitizeDiagnostic(error.message)));
     page.on("response", (response) => {
       if (response.status() < 400) return;
       const parsed = new URL(response.url());
-      if (!authenticated && response.status() === 401 && parsed.pathname === "/api/auth/me") {
+      const method = response.request().method();
+      const context = expectedHttpDiagnosticContext({
+        authenticated,
+        method,
+        path: parsed.pathname,
+        status: response.status(),
+      });
+      pendingHttpConsoleDiagnostics.push({
+        context,
+        method,
+        path: parsed.pathname,
+        status: response.status(),
+      });
+      if (context === "preauth-session-probe") {
         diagnostics.expectedAuth401Responses += 1;
         return;
       }
@@ -271,6 +366,20 @@ function assertDiagnosticsClean(diagnostics, label) {
   assert(
     diagnostics.consoleErrors.length === 0,
     `${label} emitted console errors: ${diagnostics.consoleErrors.join(" | ")}`,
+  );
+  const classified = diagnostics.classifiedConsoleDiagnostics || [];
+  assert(
+    classified.every((entry) => (
+      EXPECTED_CONSOLE_DIAGNOSTIC_CONTEXTS.has(entry?.context)
+      && typeof entry?.method === "string"
+      && typeof entry?.path === "string"
+      && Number.isSafeInteger(entry?.status)
+    )),
+    `${label} retained an unclassified console diagnostic`,
+  );
+  assert(
+    classified.filter((entry) => entry.context === "preauth-session-probe").length === 1,
+    `${label} did not classify exactly one pre-auth console diagnostic`,
   );
   assert(
     diagnostics.expectedAuth401Responses === 1,
@@ -369,6 +478,7 @@ module.exports = {
   authenticate,
   createApiRecorder,
   createGuardedContext,
+  expectedHttpDiagnosticContext,
   isAllowedUrl,
   redactTokenShapedSecrets,
   sanitizeDiagnostic,

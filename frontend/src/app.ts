@@ -2098,6 +2098,8 @@ async function handleAttentionTodayAction(
   }
   if (action.kind === "open_task" || action.target_type === "task" || item.target_type === "task") {
     const targetTaskId = action.target_id || item.target_id || "";
+    attentionTodayPanel?.closeMobileSheet();
+    closePanel();
     navigateToSubMode("tasks");
     if (targetTaskId) {
       await openTaskFromAttention(targetTaskId, requestGardenId);
@@ -2122,6 +2124,8 @@ async function handleAttentionTodayAction(
     attentionTodayPanel?.refresh();
     return;
   }
+  attentionTodayPanel?.closeMobileSheet();
+  closePanel();
   navigateToSubMode("tasks");
   await loadTasksTab();
   if (!isCurrentGardenRequest(requestGardenId)) return;
@@ -2140,6 +2144,7 @@ async function handleAttentionTodayViewSection(sectionKey: AttentionSectionKey):
     await loadCalendar();
     return;
   }
+  closePanel();
   navigateToSubMode("tasks");
   await loadTasksTab();
 }

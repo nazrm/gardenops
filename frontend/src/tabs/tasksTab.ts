@@ -18,7 +18,7 @@ import {
 } from "../services/api";
 import { buildPlantNameMap } from "../core/plantNames";
 import { renderTaskList, createTaskForm } from "../components/tasks";
-import { confirmDialog } from "../components/dialogCore";
+import { confirmDialog, createModal } from "../components/dialogCore";
 import { selectPlot } from "../components/plotInteractions";
 import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
 import {
@@ -30,6 +30,19 @@ import {
   needsCompletionDialog,
   openTaskCompletionDialog,
 } from "../features/taskCompletionFlow";
+import {
+  enqueueTaskActionBatch,
+  getTaskActionStates,
+  OfflineTaskActionConflictError,
+  onOfflineQueueChange,
+  removeDraft,
+  retryDraft,
+  type OfflineTaskActionState,
+  type TaskActionDraftInput,
+  type TaskActionDraftType,
+} from "../services/offlineQueue";
+import { cacheTaskList, getCachedTaskList } from "../services/taskCache";
+import { syncOfflineDraftsNow } from "../features/offlineFeature";
 
 let ctx: AppContext;
 
@@ -38,8 +51,11 @@ let tasksTotal = 0;
 let tasksOffset = 0;
 let tasksView = "today";
 let selectedTaskIds = new Set<string>();
+let taskOfflineActions = new Map<string, OfflineTaskActionState>();
+let tasksDataState: "live" | "cached" | "unavailable" = "unavailable";
 let taskOperation: "idle" | "generate" | "regenerate" = "idle";
 let tasksRequestGeneration = 0;
+let offlineQueueListenerBound = false;
 const TASKS_PAGE_SIZE = 50;
 type TaskActionExtra = Omit<TaskActionRequest, "action">;
 
@@ -54,7 +70,7 @@ interface SnoozeTaskOptions {
 }
 
 interface TasksRequestContext {
-  gardenId: number | null;
+  gardenId: number;
   generation: number;
 }
 
@@ -111,7 +127,8 @@ function isCurrentTaskAction(
 }
 
 function isBatchActionable(task: GardenTask): boolean {
-  return task.status === "pending" || task.status === "snoozed";
+  return (task.status === "pending" || task.status === "snoozed")
+    && !taskOfflineActions.has(task.id);
 }
 
 function getSelectedVisibleTaskIds(): string[] {
@@ -216,6 +233,8 @@ export function resetTasksForGardenSwitch(): void {
   tasksOffset = 0;
   tasksView = "today";
   selectedTaskIds.clear();
+  taskOfflineActions.clear();
+  tasksDataState = "unavailable";
   taskOperation = "idle";
   const typeFilter = querySelect("tasks-filter-type");
   if (typeFilter) typeFilter.value = "";
@@ -227,6 +246,13 @@ export function resetTasksForGardenSwitch(): void {
 
 export function initTasksTab(appCtx: AppContext): void {
   ctx = appCtx;
+
+  if (!offlineQueueListenerBound) {
+    offlineQueueListenerBound = true;
+    onOfflineQueueChange(() => {
+      void refreshTaskOfflineActions(true);
+    });
+  }
 
   document
     .getElementById("tasks-add-btn")
@@ -306,23 +332,36 @@ export async function loadTasks(
   if (!ctx) return;
   const request = createTasksRequest(options.expectedGardenId);
   if (!request) return;
+  const params: Record<string, string | number> = {
+    limit: TASKS_PAGE_SIZE,
+    offset: tasksOffset,
+    view: tasksView,
+  };
+  const typeFilter = querySelect("tasks-filter-type")?.value;
+  if (typeFilter) params["task_type"] = typeFilter;
+  const statusFilter = querySelect("tasks-filter-status")?.value;
+  if (statusFilter) params["status"] = statusFilter;
   if (!ctx.isOnline()) {
+    const cached = getCachedTaskList(request.gardenId, params);
+    if (cached) {
+      taskItems = cached.tasks;
+      tasksTotal = cached.total;
+      tasksDataState = "cached";
+    } else {
+      taskItems = [];
+      tasksTotal = 0;
+      tasksDataState = "unavailable";
+    }
+    await refreshTaskOfflineActions(false, request.gardenId);
+    if (!isCurrentTasksRequest(request)) return;
     reconcileSelectionWithVisibleTasks();
     renderTasksView(options.focusTaskId, request);
     return;
   }
   try {
-    const params: Record<string, string | number> = {
-      limit: TASKS_PAGE_SIZE,
-      offset: tasksOffset,
-      view: tasksView,
-    };
-    const typeFilter = querySelect("tasks-filter-type")?.value;
-    if (typeFilter) params["task_type"] = typeFilter;
-    const statusFilter = querySelect("tasks-filter-status")?.value;
-    if (statusFilter) params["status"] = statusFilter;
     const result = await fetchTasksApi(params);
     if (!isCurrentTasksRequest(request)) return;
+    cacheTaskList(request.gardenId, params, result);
     if (result.total > 0 && result.tasks.length === 0 && tasksOffset > 0) {
       tasksOffset = Math.max(
         0,
@@ -352,6 +391,9 @@ export async function loadTasks(
     if (!isCurrentTasksRequest(request)) return;
     taskItems = nextTasks;
     tasksTotal = Math.max(result.total, nextTasks.length);
+    tasksDataState = "live";
+    await refreshTaskOfflineActions(false, request.gardenId);
+    if (!isCurrentTasksRequest(request)) return;
     reconcileSelectionWithVisibleTasks();
     renderTasksView(options.focusTaskId, request);
     if (targetLoadError) {
@@ -360,6 +402,55 @@ export async function loadTasks(
   } catch (err) {
     if (!isCurrentTasksRequest(request)) return;
     ctx.showToast(getApiErrorMessage(err), "error");
+  }
+}
+
+async function refreshTaskOfflineActions(
+  render = false,
+  gardenId = getActiveGardenContext(),
+): Promise<void> {
+  if (gardenId === null) {
+    taskOfflineActions.clear();
+    if (render) renderTasksView();
+    return;
+  }
+  const states = await getTaskActionStates(gardenId);
+  if (gardenId !== getActiveGardenContext()) return;
+  taskOfflineActions = states;
+  reconcileSelectionWithVisibleTasks();
+  if (render) renderTasksView();
+}
+
+function offlineTaskActionErrorMessage(error: unknown): string {
+  if (error instanceof OfflineTaskActionConflictError) {
+    return t(
+      error.kind === "duplicate"
+        ? "offline.task_duplicate"
+        : "offline.task_conflict",
+    );
+  }
+  return getApiErrorMessage(error);
+}
+
+async function discardOfflineTaskAction(state: OfflineTaskActionState): Promise<void> {
+  const confirmed = await confirmDialog(
+    t("offline.discard_confirm"),
+    t("offline.discard"),
+  );
+  if (!confirmed) return;
+  await removeDraft(state.draftId);
+  await refreshTaskOfflineActions(true);
+  void ctx.refreshOfflineIndicator();
+}
+
+async function retryOfflineTaskAction(state: OfflineTaskActionState): Promise<void> {
+  const changed = await retryDraft(state.draftId);
+  if (!changed) return;
+  await refreshTaskOfflineActions(true);
+  if (ctx.isOnline()) {
+    await syncOfflineDraftsNow();
+  } else {
+    ctx.showToast(t("offline.retry_queued"), "success");
   }
 }
 
@@ -389,8 +480,9 @@ function renderTasksView(
   if (!container) return;
   const summary = document.getElementById("tasks-summary");
   if (summary) {
-    summary.textContent =
-      tasksTotal === 0
+    summary.textContent = tasksDataState === "unavailable"
+      ? t("tasks.offline_unavailable")
+      : tasksTotal === 0
         ? t("tasks.summary_none")
         : t("tasks.summary_count", { count: tasksTotal });
   }
@@ -431,9 +523,13 @@ function renderTasksView(
         renderTasksView();
       }
       : undefined,
+    onDiscardOfflineAction: (state) => void discardOfflineTaskAction(state),
+    onRetryOfflineAction: (state) => void retryOfflineTaskAction(state),
+    offlineTaskActions: taskOfflineActions,
     selectedTaskIds,
     onEmptyAction: canWrite ? () => void handleGenerateTasks() : undefined,
     canWrite,
+    dataState: tasksDataState,
   }, plantNames);
   ctx.renderDataExportBars();
   renderTasksPagination();
@@ -444,6 +540,7 @@ function renderTasksPagination(): void {
   const container = document.getElementById("tasks-pagination");
   if (!container) return;
   container.replaceChildren();
+  if (tasksDataState === "unavailable") return;
   if (tasksTotal <= TASKS_PAGE_SIZE) return;
   const page =
     Math.floor(tasksOffset / TASKS_PAGE_SIZE) + 1;
@@ -623,23 +720,20 @@ async function enqueueOfflineTaskAction(
     task_id: taskId,
     ...extra,
   };
-  if (action === "complete") {
-    await ctx.enqueueDraft("task_complete", payload);
-    return;
-  }
-  if (action === "skip") {
-    await ctx.enqueueDraft("task_skip", payload);
-    return;
-  }
-  if (action === "snooze") {
-    await ctx.enqueueDraft("task_snooze", payload);
-    return;
-  }
-  if (action === "reschedule") {
-    await ctx.enqueueDraft("task_reschedule", payload);
-    return;
-  }
-  throw new Error(`Unsupported task action: ${action}`);
+  await enqueueTaskActionBatch([offlineTaskActionInput(action, payload)]);
+}
+
+function offlineTaskActionInput(
+  action: TaskActionRequest["action"],
+  payload: Record<string, unknown>,
+): TaskActionDraftInput {
+  const typeByAction: Record<TaskActionRequest["action"], TaskActionDraftType> = {
+    complete: "task_complete",
+    skip: "task_skip",
+    snooze: "task_snooze",
+    reschedule: "task_reschedule",
+  };
+  return { type: typeByAction[action], payload };
 }
 
 async function handleTaskAction(
@@ -661,8 +755,14 @@ async function handleTaskAction(
       ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
       return false;
     }
-    await enqueueOfflineTaskAction(taskId, action, extra);
+    try {
+      await enqueueOfflineTaskAction(taskId, action, extra);
+    } catch (err) {
+      ctx.showToast(offlineTaskActionErrorMessage(err), "error");
+      return false;
+    }
     if (!actionIsCurrent()) return false;
+    await refreshTaskOfflineActions(true, requestGardenId);
     if (options.showSuccessToast !== false) {
       ctx.showToast(t("offline.draft_saved"), "success");
     }
@@ -702,14 +802,20 @@ async function handleBatchTaskAction(
   }
   if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return;
   if (!ctx.isOnline()) {
-    for (const taskId of taskIds) {
-      await enqueueOfflineTaskAction(taskId, action, extra);
-      if (!isCurrentTask(taskId, requestGardenId)) return;
+    try {
+      await enqueueTaskActionBatch(taskIds.map((taskId) => offlineTaskActionInput(
+        action,
+        { task_id: taskId, ...extra },
+      )));
+    } catch (err) {
+      ctx.showToast(offlineTaskActionErrorMessage(err), "error");
+      return;
     }
+    if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return;
     selectedTaskIds.clear();
-    renderTasksView();
+    await refreshTaskOfflineActions(true, requestGardenId);
     ctx.showToast(
-      t("tasks.batch_result", { count: taskIds.length }),
+      t("tasks.batch_queued", { count: taskIds.length }),
       "success",
     );
     void ctx.refreshOfflineIndicator();
@@ -857,6 +963,10 @@ export function openTaskForm(
 ): void {
   const readOnly = Boolean(existingTask) && !ctx.canWrite();
   if (!existingTask && !ctx.ensureWriteAccess()) return;
+  const { dialog, close } = createModal(
+    t("tasks.form_title"),
+    '<div class="modal-content task-form-dialog"></div>',
+  );
   const form = createTaskForm({
     task: existingTask,
     readOnly,
@@ -880,26 +990,16 @@ export function openTaskForm(
         if (!existingTask) {
           tasksOffset = 0;
         }
-        overlay.remove();
+        close();
         void loadTasks();
       } catch (err) {
         ctx.showToast(getApiErrorMessage(err), "error");
       }
     },
-    onCancel: () => overlay.remove(),
+    onCancel: close,
   });
-  const overlay = document.createElement("div");
-  overlay.className = "modal";
-  overlay.setAttribute("role", "dialog");
-  overlay.setAttribute("aria-modal", "true");
-  overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-  const dialog = document.createElement("div");
-  dialog.className = "modal-content";
-  dialog.appendChild(form);
-  overlay.appendChild(dialog);
-  document.body.appendChild(overlay);
+  dialog.querySelector(".task-form-dialog")?.appendChild(form);
+  form.querySelector<HTMLElement>("input:not([disabled]), select:not([disabled])")?.focus();
 }
 
 async function deleteTask(task: GardenTask): Promise<void> {

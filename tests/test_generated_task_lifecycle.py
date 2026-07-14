@@ -5,6 +5,52 @@ from tests.base import DbTestBase
 
 
 class TestGeneratedTaskLifecycle(DbTestBase):
+    def test_dry_spell_watering_stays_active_until_alert_validity_ends(self) -> None:
+        alert = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'dry_spell', 'normal', 'Dry spell', 'Water regularly',
+                    '2026-07-10', '2026-07-16', '{}', 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert alert is not None
+        task = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (garden_id, public_id, task_type, title, description, status,
+                 severity, due_on, rule_source, metadata_json,
+                 created_by_user_id, created_at_ms, updated_at_ms)
+            VALUES (%s, 'tsk_dry_validity', 'water', 'Water during dry spell', '',
+                    'pending', 'normal', '2026-07-10', %s, '{}', %s, 1, 1)
+            RETURNING id
+            """,
+            (
+                self.garden_id,
+                f"auto:dry_water:{int(alert['id'])}:PLT-TEST",
+                self._owner_id,
+            ),
+        ).fetchone()
+        assert task is not None
+
+        expired = expire_stale_generated_tasks(
+            self.conn,
+            garden_id=self.garden_id,
+            today_iso="2026-07-14",
+            now_ms=1783987200000,
+        )
+
+        row = self.conn.execute(
+            "SELECT status FROM garden_tasks WHERE id = %s",
+            (int(task["id"]),),
+        ).fetchone()
+        assert expired == 0
+        assert row is not None
+        assert str(row["status"]) == "pending"
+
     def test_expiry_skips_task_locked_by_concurrent_user_action(self) -> None:
         now_ms = current_timestamp_ms()
         task = self.conn.execute(

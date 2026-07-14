@@ -91,7 +91,21 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         self.assertIn('"action-snooze",\n        taskSnoozePolicy(task).label', plot)
         self.assertIn("snooze_label: taskSnoozePolicy(tk).label", quick_feature)
         self.assertIn("task.snooze_label", quick_actions)
-        self.assertIn('btn.setAttribute("aria-label", primaryLabel)', quick_actions)
+        self.assertIn('btn.setAttribute("aria-label", accessibleLabel)', quick_actions)
+
+    def test_each_task_surface_suppresses_conflicting_queued_actions(self) -> None:
+        queue = frontend_source("services/offlineQueue.ts")
+        task_cards = frontend_source("components/tasks.ts")
+        calendar = frontend_source("tabs/calendarTab.ts")
+        quick_actions = frontend_source("components/quickActions.ts")
+        plot = frontend_source("components/plotInteractions.ts")
+
+        assert "OfflineTaskActionConflictError" in queue
+        assert 'draft.status === "failed"' in queue
+        assert "&& !offlineAction" in task_cards
+        assert "calendarTaskActions.has(event.target_id)" in calendar
+        assert "btn.disabled = Boolean(task.offline_status)" in quick_actions
+        assert 'task.status !== "completed" && !callbacks.offlineAction' in plot
 
     def test_quick_and_plot_task_pickers_include_today_actionable_snoozed_tasks(self) -> None:
         quick_actions = frontend_source("features/quickActionsFeature.ts")
@@ -119,6 +133,17 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         self.assertIn("fetchTaskApi(options.focusTaskId)", tasks_tab)
         self.assertIn("focusTaskCard", tasks_tab)
         self.assertIn('card.dataset["taskId"] = task.id;', task_cards)
+        today_action = app.split("async function handleAttentionTodayAction", 1)[1].split(
+            "async function handleAttentionTodayViewSection", 1
+        )[0]
+        task_navigation = today_action.split('action.kind === "open_task"', 1)[1].split(
+            'action.kind === "open_weather"', 1
+        )[0]
+        self.assertIn("attentionTodayPanel?.closeMobileSheet();", task_navigation)
+        self.assertLess(
+            task_navigation.index("closePanel();"),
+            task_navigation.index('navigateToSubMode("tasks")'),
+        )
 
     def test_task_and_calendar_loads_reject_stale_garden_responses(self) -> None:
         app = frontend_source("app.ts")

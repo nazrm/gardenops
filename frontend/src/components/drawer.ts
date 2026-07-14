@@ -3,6 +3,7 @@ import { t } from "../core/i18n";
 import type { MediaAsset } from "../services/api";
 import { renderPlantCard } from "./plantCard";
 import type { PlantAlertType } from "./plantCard";
+import { trapFocus } from "./dialogCore";
 
 export interface DrawerParams {
   plotId: string;
@@ -36,6 +37,16 @@ type DrawerPlantSectionParams = Pick<
 
 let activeDrawer: HTMLElement | null = null;
 let cleanupFns: Array<() => void> = [];
+let activeReturnFocus: HTMLElement | null = null;
+let collapsibleId = 0;
+
+export function setCollapsibleSectionState(section: HTMLElement, collapsed: boolean): void {
+  section.classList.toggle("collapsed", collapsed);
+  const button = section.querySelector<HTMLButtonElement>(".drawer-section-header");
+  const body = section.querySelector<HTMLElement>(".drawer-section-body");
+  button?.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  if (body) body.hidden = collapsed;
+}
 
 export function createCollapsibleSection(
   title: string,
@@ -45,7 +56,8 @@ export function createCollapsibleSection(
   const section = document.createElement("div");
   section.className = "drawer-section";
 
-  const header = document.createElement("div");
+  const header = document.createElement("button");
+  header.type = "button";
   header.className = "drawer-section-header";
 
   const titleEl = document.createElement("span");
@@ -60,9 +72,13 @@ export function createCollapsibleSection(
   chevron.className = "drawer-section-chevron";
   chevron.textContent = "\u25BC";
 
+  const bodyId = `plot-panel-section-${++collapsibleId}`;
+  body.id = bodyId;
+  header.setAttribute("aria-controls", bodyId);
+  header.setAttribute("aria-expanded", "true");
   header.append(titleEl, countEl, chevron);
   header.addEventListener("click", () => {
-    section.classList.toggle("collapsed");
+    setCollapsibleSectionState(section, !section.classList.contains("collapsed"));
   });
 
   section.append(header, body);
@@ -132,6 +148,7 @@ function buildDrawerPlantsSection(
     btn.addEventListener("click", () => {
       const pltId = btn.dataset["calendarCreatePlant"];
       if (!pltId || !params.onCreateCalendarEvent) return;
+      dismissDrawer();
       params.onClose();
       params.onCreateCalendarEvent({ plant_ids: [pltId] });
     });
@@ -142,20 +159,29 @@ function buildDrawerPlantsSection(
 }
 
 export function showDrawer(params: DrawerParams): void {
+  const focusedBeforeOpen = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
   dismissDrawer();
 
   const { plotId, plants, mediaPreviewByPlantId, plantAlertsByPlantId, onClose, onSearch, onRemove, onEdit } = params;
 
   const backdrop = document.createElement("div");
   backdrop.className = "drawer-backdrop";
+  backdrop.setAttribute("aria-hidden", "true");
 
   const drawer = document.createElement("aside");
   drawer.className = "drawer";
+  drawer.setAttribute("role", "dialog");
+  drawer.setAttribute("aria-modal", "true");
+  drawer.setAttribute("aria-labelledby", "plot-drawer-title");
+  drawer.tabIndex = -1;
 
   const header = document.createElement("div");
   header.className = "drawer-header";
 
   const title = document.createElement("h2");
+  title.id = "plot-drawer-title";
   title.textContent = plotId;
 
   const closeBtn = document.createElement("button");
@@ -191,6 +217,7 @@ export function showDrawer(params: DrawerParams): void {
     searchInput.id = "drawer-plant-search";
     searchInput.className = "plant-search-input";
     searchInput.placeholder = t("plants.search_placeholder");
+    searchInput.setAttribute("aria-label", t("plants.search_placeholder"));
 
     const searchResults = document.createElement("div");
     searchResults.id = "drawer-search-results";
@@ -215,6 +242,7 @@ export function showDrawer(params: DrawerParams): void {
       calendarLink.dataset["createCalendarEventPlot"] = plotId;
       calendarLink.textContent = t("calendar.new_event");
       calendarLink.addEventListener("click", () => {
+        dismissDrawer();
         onClose();
         params.onCreateCalendarEvent?.({ plot_ids: [plotId] });
       });
@@ -264,6 +292,9 @@ export function showDrawer(params: DrawerParams): void {
   document.body.appendChild(backdrop);
   document.body.appendChild(drawer);
   activeDrawer = drawer;
+  activeReturnFocus = focusedBeforeOpen?.isConnected
+    ? focusedBeforeOpen
+    : document.querySelector<HTMLElement>(`.plot[data-plot-id="${CSS.escape(plotId)}"]`);
 
   requestAnimationFrame(() => {
     backdrop.classList.add("drawer-backdrop-visible");
@@ -271,28 +302,36 @@ export function showDrawer(params: DrawerParams): void {
   });
 
   const close = () => {
+    dismissDrawer(true);
     onClose();
-    dismissDrawer();
   };
 
   closeBtn?.addEventListener("click", close);
   backdrop.addEventListener("click", close);
 
   const onEscape = (e: KeyboardEvent) => {
-    if (e.key === "Escape") close();
+    if (e.key !== "Escape") return;
+    const childDialog = Array.from(document.querySelectorAll<HTMLElement>(".modal[aria-modal='true']"))
+      .find((candidate) => candidate.isConnected && !drawer.contains(candidate));
+    if (childDialog) return;
+    e.preventDefault();
+    close();
   };
   window.addEventListener("keydown", onEscape);
+  const releaseFocusTrap = trapFocus(drawer);
 
   searchInput?.addEventListener("input", onSearch);
 
   cleanupFns.push(() => {
     window.removeEventListener("keydown", onEscape);
+    releaseFocusTrap();
   });
 
-  searchInput?.focus();
+  (searchInput ?? closeBtn).focus();
 }
 
-export function dismissDrawer(): void {
+export function dismissDrawer(restoreFocus = false): void {
+  const returnFocus = activeReturnFocus;
   for (const fn of cleanupFns) fn();
   cleanupFns = [];
 
@@ -301,6 +340,10 @@ export function dismissDrawer(): void {
     activeDrawer = null;
   }
   document.querySelector(".drawer-backdrop")?.remove();
+  activeReturnFocus = null;
+  if (restoreFocus && returnFocus?.isConnected) {
+    window.requestAnimationFrame(() => returnFocus.focus());
+  }
 }
 
 export function isDrawerOpen(): boolean {
@@ -316,7 +359,7 @@ export function updateDrawerPlantsSection(
     "[data-drawer-plants-section]",
   );
   if (currentSection?.classList.contains("collapsed")) {
-    nextSection.classList.add("collapsed");
+    setCollapsibleSectionState(nextSection, true);
   }
   if (currentSection) {
     currentSection.replaceWith(nextSection);
