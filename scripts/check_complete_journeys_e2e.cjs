@@ -2652,6 +2652,7 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
           ...initialAlert.metadata,
           lifecycle: {
             reason: "absent_from_current_forecast",
+            resolution_kind: "automatic_forecast",
             resolved_at_ms: fixture.clock.attention_now_ms,
             source: "forecast_reconciliation",
             status: "resolved",
