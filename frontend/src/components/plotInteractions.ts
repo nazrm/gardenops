@@ -780,7 +780,8 @@ async function submitPlotTaskAction(
       });
       return true;
     }
-    await taskActionApi(task.id, actionBody);
+    const result = await taskActionApi(task.id, actionBody);
+    task.updated_at_ms = result.updated_at_ms;
     card.classList.add("task-fading");
     if (successMessage) showToast(successMessage, "success");
     await loadPlotTasksPreview(state, plotId, cbs, {

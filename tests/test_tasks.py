@@ -716,6 +716,7 @@ class TestTasks(BaseApiTest):
             )
             self.assertEqual(applied.status_code, 200, applied.text)
             after = self.client.get(f"/api/tasks/{task_id}").json()
+            self.assertEqual(applied.json()["updated_at_ms"], after["updated_at_ms"])
 
             replay = self.client.post(
                 f"/api/tasks/{task_id}/action",
@@ -726,6 +727,7 @@ class TestTasks(BaseApiTest):
             replayed = self.client.get(f"/api/tasks/{task_id}").json()
 
         self.assertGreater(after["updated_at_ms"], before["updated_at_ms"])
+        self.assertEqual(replay.json()["updated_at_ms"], after["updated_at_ms"])
         self.assertEqual(replayed["updated_at_ms"], after["updated_at_ms"])
 
     def test_batch_task_actions_reject_stale_revisions_before_mutating_any_task(self) -> None:

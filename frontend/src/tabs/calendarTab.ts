@@ -1515,7 +1515,12 @@ async function runCalendarTaskActionForTarget(
     return true;
   }
   try {
-    await taskActionApi(target.taskId, actionBody, { gardenId: target.gardenId });
+    const result = await taskActionApi(
+      target.taskId,
+      actionBody,
+      { gardenId: target.gardenId },
+    );
+    target.taskRevision.updated_at_ms = result.updated_at_ms;
     if (!isCurrentCalendarRequest(request)) return false;
     if (options.showSuccessToast !== false) {
       ctx.showToast(t("tasks.action_success", { action: body.action }), "success");

@@ -619,12 +619,12 @@ def _task_action_replay_response(
     target_id: str,
 ) -> dict:
     row = db.execute(
-        "SELECT 1 FROM garden_tasks WHERE public_id = %s AND garden_id = %s",
+        "SELECT updated_at_ms FROM garden_tasks WHERE public_id = %s AND garden_id = %s",
         (target_id, garden_id),
     ).fetchone()
     if not row:
         raise_operation_target_gone()
-    return {"status": "ok"}
+    return {"status": "ok", "updated_at_ms": int(row["updated_at_ms"])}
 
 
 def _parse_task_metadata(task_row: dict) -> dict:
@@ -1663,8 +1663,14 @@ def task_action(
         action_on,
         task_row=row,
     )
+    updated = db.execute(
+        "SELECT updated_at_ms FROM garden_tasks WHERE id = %s",
+        (internal_task_id,),
+    ).fetchone()
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Task not found")
     db.commit()
-    return {"status": "ok"}
+    return {"status": "ok", "updated_at_ms": int(updated["updated_at_ms"])}
 
 
 @router.post("/tasks/batch-action")

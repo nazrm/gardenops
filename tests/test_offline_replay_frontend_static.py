@@ -97,9 +97,8 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn("export function withTaskActionRevision", api)
         self.assertIn("expected_updated_at_ms: task.updated_at_ms", api)
         self.assertIn('Omit<TaskActionRequest, "action" | "expected_updated_at_ms">', tasks)
-        self.assertIn(
-            "taskActionApi(taskId, withTaskActionRevision(task, { action, ...extra }))", tasks
-        )
+        self.assertIn("const result = await taskActionApi(", tasks)
+        self.assertIn("withTaskActionRevision(task, { action, ...extra })", tasks)
         self.assertIn("offlineTaskActionPayload(task, action, extra)", tasks)
         self.assertIn('const expectedUpdatedAtMs = payload["expected_updated_at_ms"];', replay)
         self.assertIn("expected_updated_at_ms: expectedUpdatedAtMs", replay)
@@ -113,6 +112,18 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn("expected_updated_at_ms_by_task_id: Record<string, number>", api)
         self.assertIn("export function withBatchTaskActionRevisions", api)
         self.assertIn("withBatchTaskActionRevisions(batchTasks, { action, ...extra })", tasks)
+
+    def test_online_task_actions_refresh_revision_for_immediate_corrections(self) -> None:
+        expected_refreshes = {
+            "tabs/tasksTab.ts": "task.updated_at_ms = result.updated_at_ms;",
+            "tabs/calendarTab.ts": ("target.taskRevision.updated_at_ms = result.updated_at_ms;"),
+            "components/plotInteractions.ts": ("task.updated_at_ms = result.updated_at_ms;"),
+            "features/quickActionsFeature.ts": ("task.updated_at_ms = result.updated_at_ms;"),
+        }
+
+        for relative_path, refresh in expected_refreshes.items():
+            source = (ROOT / "frontend" / "src" / relative_path).read_text(encoding="utf-8")
+            self.assertIn(refresh, source)
 
     def test_every_task_action_surface_stamps_the_current_task_revision(self) -> None:
         expected_stamps = {

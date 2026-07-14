@@ -847,7 +847,11 @@ async function handleTaskAction(
     return true;
   }
   try {
-    await taskActionApi(taskId, withTaskActionRevision(task, { action, ...extra }));
+    const result = await taskActionApi(
+      taskId,
+      withTaskActionRevision(task, { action, ...extra }),
+    );
+    task.updated_at_ms = result.updated_at_ms;
     if (!actionIsCurrent()) return false;
     if (options.showSuccessToast !== false) {
       ctx.showToast(

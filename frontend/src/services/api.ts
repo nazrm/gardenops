@@ -3270,8 +3270,12 @@ export async function taskActionApi(
   taskId: string,
   body: TaskActionRequest,
   options?: Pick<ApiRequestOptions, "gardenId" | "operationId">,
-): Promise<{ status: string }> {
-  return apiPost<{ status: string }>(`/api/tasks/${taskId}/action`, body, options);
+): Promise<{ status: string; updated_at_ms: number }> {
+  return apiPost<{ status: string; updated_at_ms: number }>(
+    `/api/tasks/${taskId}/action`,
+    body,
+    options,
+  );
 }
 
 export async function batchTaskActionApi(

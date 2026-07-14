@@ -326,7 +326,8 @@ async function completeQuickTask(
       ctx.showToast(t("offline.draft_saved"), "success");
       void ctx.refreshOfflineIndicator();
     } else {
-      await taskActionApi(task.id, actionBody);
+      const result = await taskActionApi(task.id, actionBody);
+      task.updated_at_ms = result.updated_at_ms;
       ctx.showToast(
         t("tasks.action_success", { action: "complete" }),
         "success",
@@ -467,7 +468,8 @@ async function snoozeQuickTask(
       await showTaskQuickSnooze({ task, snoozeUntil });
       return;
     } else {
-      await taskActionApi(task.id, actionBody);
+      const result = await taskActionApi(task.id, actionBody);
+      task.updated_at_ms = result.updated_at_ms;
       void ctx.refreshBadgeCounts();
     }
     await showTaskQuickSnooze({ task, snoozeUntil });
