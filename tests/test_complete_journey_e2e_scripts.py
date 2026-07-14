@@ -2612,6 +2612,17 @@ try {
     assert result.returncode == 0, result.stderr
 
 
+def test_phase_two_profile_evidence_accepts_structured_preference_evidence() -> None:
+    source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+    profile_checker = source.split("function assertPhaseTwoProfileEvidence", 1)[1].split(
+        "function isPhaseTwoAuditPath", 1
+    )[0]
+
+    assert 'check === "personal_notification_preference_persistence"' in profile_checker
+    assert 'typeof evidence === "object"' in profile_checker
+    assert "profile.checks?.[check] === true" not in profile_checker
+
+
 def test_phase_two_read_only_profiles_prove_a_distinct_fresh_context_permutation() -> None:
     script = """
 const {

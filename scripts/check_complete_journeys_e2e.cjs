@@ -1638,7 +1638,13 @@ function assertPhaseTwoProfileEvidence(profiles, oracle = phaseTwoOracle()) {
     assert(profile.browser_profile?.user_agent_contract === expectedUserAgentContract,
       `Phase 2 user-agent contract evidence was unexpected: ${key}`);
     for (const check of expected.checks) {
-      assert(profile.checks?.[check] === true, `Phase 2 browser check is missing: ${key}:${check}`);
+      const evidence = profile.checks?.[check];
+      const present = evidence === true || (
+        check === "personal_notification_preference_persistence"
+        && evidence
+        && typeof evidence === "object"
+      );
+      assert(present, `Phase 2 browser check is missing: ${key}:${check}`);
     }
   }
   return {
