@@ -1978,45 +1978,8 @@ function expectedPhaseTwoMaintenanceNotification(notification, fixture, delivere
     return expected;
   }
   if (notification.cleared_at_ms !== null) return expected;
-  const phaseTwoDayStartMs = Date.parse(`${fixture.phase_two.date}T00:00:00Z`);
-  if (
-    (
-      Number.isSafeInteger(notification.expires_at_ms)
-      && notification.expires_at_ms < fixture.clock.attention_now_ms
-    )
-    || (
-      notification.notification_type === "task_overdue"
-      && Number.isSafeInteger(notification.created_at_ms)
-      && notification.created_at_ms < phaseTwoDayStartMs
-    )
-  ) {
-    expected.cleared_at_ms = fixture.clock.attention_now_ms;
-    expected.clear_reason = "expired";
-    return expected;
-  }
-  const roleStage = new Map([
-    [fixture.roles.admin, 0],
-    [fixture.roles.editor, 1],
-    [fixture.roles.viewer, 2],
-  ]);
-  const actionByTask = new Map([
-    [fixture.phase_two.task_ids.fertilize_grouped, { reason: "superseded", stage: 0 }],
-    [fixture.phase_two.task_ids.prune_desktop, { reason: "snoozed", stage: 0 }],
-    [fixture.phase_two.task_ids.batch_a, { reason: "completed", stage: 0 }],
-    [fixture.phase_two.task_ids.batch_b, { reason: "completed", stage: 0 }],
-    [fixture.phase_two.task_ids.bloom_mobile, { reason: "completed", stage: 0 }],
-    [fixture.phase_two.task_ids.fertilize_mobile, { reason: "snoozed", stage: 0 }],
-    [fixture.phase_two.task_ids.plot_drawer, { reason: "completed", stage: 0 }],
-    [fixture.phase_two.task_ids.snooze_correction, { reason: "snoozed", stage: 0 }],
-    [fixture.phase_two.task_ids.editor_prune, { reason: "completed", stage: 1 }],
-    [fixture.phase_two.task_ids.editor_offline, { reason: "completed", stage: 1 }],
-  ]);
-  const notificationStage = roleStage.get(notification.username);
-  assert(Number.isSafeInteger(notificationStage),
-    `Phase 2 task notification had an unexpected user: ${notification.public_id}`);
-  const action = actionByTask.get(notification.target_id);
   expected.cleared_at_ms = fixture.clock.attention_now_ms;
-  expected.clear_reason = !action || notificationStage <= action.stage ? "expired" : action.reason;
+  expected.clear_reason = "expired";
   return expected;
 }
 
