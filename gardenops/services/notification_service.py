@@ -467,6 +467,7 @@ def attention_notification_sql_filter(
         return "1 = 0", []
     return "(" + " OR ".join(clauses) + ")", params
 
+
 def _date_start_ms(date_iso: str | None) -> int | None:
     if not date_iso:
         return None
