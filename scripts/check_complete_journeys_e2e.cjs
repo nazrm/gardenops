@@ -3073,11 +3073,11 @@ function assertPhaseTwoDatabaseState(
     ...initialViewerPreference,
     attention_metadata: { weather_aware_watering_suppression: true },
     attention_quiet_hours: {
-      digest: { enabled: false, end: "07:00", start: "22:00" },
+      digest: { enabled: true, end: "07:45", start: "22:15" },
       timezone: "UTC",
     },
     attention_rules: normalizedPersonalAttentionRules,
-    legacy_quiet_hours: {},
+    legacy_quiet_hours: { end: "07:45", start: "22:15", timezone: "UTC" },
     notification_rules: normalizedPersonalNotificationRules,
     preset: "custom",
   }, "Phase 2 viewer personal preference normalization was unexpected");

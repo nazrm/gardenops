@@ -2814,9 +2814,9 @@ def test_phase_two_checker_requires_exact_role_preference_normalization() -> Non
     assert "Phase 2 editor notification preferences were not normalized exactly" in source
     assert "Phase 2 viewer personal preference normalization was unexpected" in source
     assert "attention_metadata: { weather_aware_watering_suppression: true }" in source
-    assert 'digest: { enabled: false, end: "07:00", start: "22:00" }' in source
+    assert 'digest: { enabled: true, end: "07:45", start: "22:15" }' in source
     assert "notification_rules: normalizedPersonalNotificationRules" in source
-    assert "legacy_quiet_hours: {}" in source
+    assert 'legacy_quiet_hours: { end: "07:45", start: "22:15", timezone: "UTC" }' in source
 
 
 def test_phase_two_viewer_calendar_preference_matches_patch_request() -> None:
