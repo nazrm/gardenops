@@ -2000,7 +2000,6 @@ function expectedPhaseTwoMaintenanceNotification(notification, fixture, delivere
     [fixture.roles.viewer, 2],
   ]);
   const actionByTask = new Map([
-    [fixture.phase_two.task_ids.bloom_desktop, { reason: "completed", stage: 0 }],
     [fixture.phase_two.task_ids.fertilize_grouped, { reason: "superseded", stage: 0 }],
     [fixture.phase_two.task_ids.prune_desktop, { reason: "snoozed", stage: 0 }],
     [fixture.phase_two.task_ids.batch_a, { reason: "completed", stage: 0 }],

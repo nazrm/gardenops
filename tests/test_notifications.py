@@ -1441,6 +1441,63 @@ class TestNotifications(BaseApiTest):
         self.assertEqual(partial_metadata["plants"], ["Rose"])
         self.assertNotIn("Test Plant", str(active_partial[0]["title"]))
 
+    def test_due_today_notification_survives_read_side_cleanup(self) -> None:
+        from gardenops.services.notification_service import (
+            clear_expired_notifications,
+            clear_stale_task_notifications,
+            create_notification,
+        )
+
+        due_on = "2032-02-03"
+        now_ms = 1_959_422_400_000
+        expires_at_ms = 1_959_465_599_999
+        created = self.client.post(
+            "/api/tasks",
+            json={"task_type": "fertilize", "title": "Feed today", "due_on": due_on},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        task_id = created.json()["id"]
+        garden_id = self._get_default_garden_id()
+
+        conn = db.get_db()
+        try:
+            create_notification(
+                conn,
+                garden_id,
+                None,
+                "task_due",
+                "Due today: Feed today",
+                "Due today",
+                target_type="task",
+                target_id=task_id,
+                metadata={"due_on": due_on},
+                expires_at_ms=expires_at_ms,
+                now_ms=now_ms,
+            )
+            expired = clear_expired_notifications(conn, garden_id=garden_id, now_ms=now_ms)
+            stale = clear_stale_task_notifications(
+                conn,
+                garden_id=garden_id,
+                today_iso=due_on,
+                now_ms=now_ms,
+            )
+            row = conn.execute(
+                """
+                SELECT cleared_at_ms, clear_reason
+                FROM notification_events
+                WHERE garden_id = %s AND target_id = %s
+                """,
+                (garden_id, task_id),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+
+        self.assertEqual(expired, 0)
+        self.assertEqual(stale, 0)
+        self.assertIsNotNone(row)
+        self.assertIsNone(row["cleared_at_ms"])
+        self.assertIsNone(row["clear_reason"])
+
     def test_dismissed_task_notification_does_not_regenerate(self) -> None:
         from gardenops.services.notification_service import (
             create_task_due_notifications,
