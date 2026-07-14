@@ -2447,6 +2447,16 @@ def test_phase_two_weather_projection_uses_exact_identities_not_magic_count() ->
     assert "phase.seeded_state.weather_alerts.length + 4" not in source
     assert "Phase 2 generated weather alert identities were unexpected" in source
     assert "expectedWeatherIds" in source
+
+
+def test_phase_two_rain_reassessment_expectation_is_horticulturally_explicit() -> None:
+    source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+
+    assert 'const expectedRainValidUntil = "2026-07-14";' in source
+    assert 'const expectedRainReassessmentOn = "2026-07-16";' in source
+    assert 'rain_reassessment_delay_days: 2' in source
+    assert 'rain_reassessment_policy: "check_root_zone_moisture_before_watering"' in source
+    assert 'rainOutdoor.due_on === "2026-07-15"' not in source
     assert 'reason: "absent_from_current_forecast"' in source
     assert 'source: "forecast_reconciliation"' in source
     assert "resolved_at_ms: fixture.clock.attention_now_ms" in source

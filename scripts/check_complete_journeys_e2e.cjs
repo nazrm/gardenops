@@ -2143,13 +2143,32 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   exact(staleManual.metadata, { fixture: "complete_journeys_phase_2" },
     "Manual overdue watering task metadata changed");
 
+  const rainAlerts = state.weather_alerts.filter(
+    (alert) => alert.garden_id === fixture.gardens.beta.id && alert.alert_type === "rain_surplus",
+  );
+  assert(rainAlerts.length === 1, "Phase 2 rain alert count was unexpected");
+  const rainAlert = rainAlerts[0];
+  const expectedRainValidUntil = "2026-07-14";
+  const expectedRainReassessmentOn = "2026-07-16";
   const rainOutdoor = task("rain_outdoor");
-  assert(rainOutdoor.status === "pending" && rainOutdoor.due_on === "2026-07-15",
+  assert(rainAlert.valid_until === expectedRainValidUntil,
+    "Phase 2 rain alert validity window was unexpected");
+  assert(rainOutdoor.status === "pending" && rainOutdoor.due_on === expectedRainReassessmentOn,
     "Outdoor watering task was not rescheduled after rain");
+  assert(rainOutdoor.title === "Reassess after rain: Water Phase 2 Rain Outdoor Basil",
+    "Outdoor watering task did not become a moisture reassessment");
   exact(rainOutdoor.metadata, {
     fixture: "complete_journeys_phase_2",
+    rain_original_description: (
+      "Deterministic Phase 2 task fixture for Water Phase 2 Rain Outdoor Basil."
+    ),
+    rain_original_title: "Water Phase 2 Rain Outdoor Basil",
+    rain_reassessment_delay_days: 2,
+    rain_reassessment_policy: "check_root_zone_moisture_before_watering",
+    rescheduled_alert_valid_until: expectedRainValidUntil,
     rescheduled_from: phase.date,
     rescheduled_reason: "rain_alert",
+    rescheduled_weather_alert_id: rainAlert.id,
   }, "Outdoor watering reschedule metadata was unexpected");
   for (const key of ["rain_indoor", "rain_unplaced"]) {
     const unaffected = task(key);
@@ -2614,11 +2633,6 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     exact(finalWeatherById.get(initialAlert.id), expectedAlert,
       `Phase 2 seeded weather alert changed: ${initialAlert.id}`);
   }
-  const rainAlerts = state.weather_alerts.filter(
-    (alert) => alert.garden_id === fixture.gardens.beta.id && alert.alert_type === "rain_surplus",
-  );
-  assert(rainAlerts.length === 1, "Phase 2 rain alert count was unexpected");
-  const rainAlert = rainAlerts[0];
   const expectedWeatherIds = new Set(
     state.maintenance_rows.weather_alerts.map((alert) => alert.row_id),
   );
