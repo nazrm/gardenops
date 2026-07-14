@@ -1145,8 +1145,20 @@ def _forced_password_change_path_allowed(path: str) -> bool:
 
 def _is_personal_attention_mutation_path(path: str) -> bool:
     normalized_path = path.rstrip("/") or "/"
-    if normalized_path in {"/api/attention/preferences", "/api/calendar/preferences"}:
+    if normalized_path in {
+        "/api/attention/preferences",
+        "/api/calendar/preferences",
+        "/api/notifications/preferences",
+        "/api/notifications/read-all",
+    }:
         return True
+    notification_prefix = "/api/notifications/"
+    if normalized_path.startswith(notification_prefix):
+        notification_action = normalized_path.removeprefix(notification_prefix)
+        if notification_action.endswith("/read"):
+            notification_id = notification_action.removesuffix("/read")
+            return "/" not in notification_id and notification_id.startswith("note_")
+        return "/" not in notification_action and notification_action.startswith("note_")
     if not normalized_path.startswith("/api/attention/items/"):
         return False
     return normalized_path.rsplit("/", 1)[-1] in {"read", "dismiss", "snooze", "restore"}

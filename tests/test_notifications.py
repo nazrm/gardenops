@@ -1184,6 +1184,64 @@ class TestNotifications(BaseApiTest):
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 
+    def test_viewer_can_manage_personal_notification_state_but_not_generate(self) -> None:
+        from gardenops.services.notification_service import create_notification
+
+        user = self._create_test_user(
+            "notification_viewer", "notificationviewerpass", role="viewer"
+        )
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO garden_memberships (garden_id, user_id, role)
+                VALUES (%s, %s, 'viewer')
+                ON CONFLICT (garden_id, user_id) DO UPDATE SET role = excluded.role
+                """,
+                (garden_id, int(user["id"])),
+            )
+            notification_id = create_notification(
+                conn,
+                garden_id,
+                int(user["id"]),
+                "system",
+                "Viewer personal notification",
+                "Viewer can manage this personal state.",
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            client, headers = self._authenticated_client(
+                "notification_viewer",
+                "notificationviewerpass",
+                garden_id=garden_id,
+            )
+            current = client.get("/api/notifications/preferences", headers=headers)
+            self.assertEqual(current.status_code, 200, current.text)
+            update = current.json()
+            update.pop("policy", None)
+            update["notification_rules"]["issue_created"]["min_severity"] = "high"
+            saved = client.put("/api/notifications/preferences", headers=headers, json=update)
+            self.assertEqual(saved.status_code, 200, saved.text)
+
+            marked = client.post(
+                f"/api/notifications/{notification_id}/read",
+                headers=headers,
+            )
+            self.assertEqual(marked.status_code, 200, marked.text)
+            dismissed = client.delete(f"/api/notifications/{notification_id}", headers=headers)
+            self.assertEqual(dismissed.status_code, 200, dismissed.text)
+
+            generated = client.post("/api/notifications/generate", headers=headers)
+            self.assertEqual(generated.status_code, 403, generated.text)
+
     def test_notification_delivery_requires_admin_role(self) -> None:
         self._create_test_user("delivery_editor", "deliveryeditorpass", role="editor")
         os.environ["AUTH_REQUIRED"] = "true"
