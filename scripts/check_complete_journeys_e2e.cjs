@@ -461,6 +461,8 @@ function normalizedNodeDependencyTree(dependencies) {
   if (!dependencies || typeof dependencies !== "object") return {};
   return Object.fromEntries(Object.entries(dependencies).sort(([left], [right]) => (
     left.localeCompare(right)
+  )).filter(([, value]) => (
+    value && typeof value === "object" && typeof value.version === "string"
   )).map(([name, value]) => {
     assert(value && typeof value === "object" && typeof value.version === "string",
       `Installed Node dependency metadata is invalid for ${name}`);
@@ -4949,6 +4951,7 @@ module.exports = {
   assertWholeTableMutationAccounting,
   evidenceBinding,
   isElfExecutable,
+  normalizedNodeDependencyTree,
   resolveChromiumExecutable,
   sourceProvenance,
   phaseTwoOracle,

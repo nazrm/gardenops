@@ -265,6 +265,23 @@ def test_runner_uses_isolated_production_preview_and_locked_dependency_gate() ->
     assert "npm run dev" not in source
 
 
+def test_installed_node_metadata_ignores_absent_optional_dependency_placeholders() -> None:
+    script = """
+const { normalizedNodeDependencyTree } = require('./scripts/check_complete_journeys_e2e.cjs');
+const normalized = normalizedNodeDependencyTree({
+  installed: { version: '1.2.3', dependencies: { nested: { version: '4.5.6' } } },
+  missingOptional: {},
+});
+if (JSON.stringify(normalized) !== JSON.stringify({
+  installed: { dependencies: { nested: { dependencies: {}, version: '4.5.6' } }, version: '1.2.3' },
+})) process.exit(3);
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize("variable", ["BASH_ENV", "PYTHONPATH", "NODE_OPTIONS"])
 def test_runner_entrypoint_strips_interpreter_startup_overrides(variable: str) -> None:
     env = os.environ.copy()
