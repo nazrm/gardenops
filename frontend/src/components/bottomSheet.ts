@@ -53,6 +53,24 @@ let cleanupFns: Array<() => void> = [];
 let activeReturnFocus: HTMLElement | null = null;
 let activeReturnPlotId: string | null = null;
 
+function restoreSheetFocus(
+  returnFocus: HTMLElement | null,
+  returnPlotId: string | null,
+): void {
+  const focusTarget = () => {
+    const target = returnFocus?.isConnected
+      ? returnFocus
+      : returnPlotId
+        ? document.querySelector<HTMLElement>(
+          `.plot[data-plot-id="${CSS.escape(returnPlotId)}"]`,
+        )
+        : null;
+    target?.focus();
+  };
+  focusTarget();
+  window.requestAnimationFrame(focusTarget);
+}
+
 function buildBottomSheetPlantsSection(
   params: BottomSheetPlantSectionParams,
 ): HTMLElement {
@@ -308,8 +326,11 @@ export function showBottomSheet(params: BottomSheetParams): void {
   }
 
   const close = () => {
-    dismissBottomSheet(true);
+    const returnFocus = activeReturnFocus;
+    const returnPlotId = activeReturnPlotId;
+    dismissBottomSheet();
     onClose();
+    restoreSheetFocus(returnFocus, returnPlotId);
   };
   closeBtn.addEventListener("click", close);
 
@@ -453,16 +474,7 @@ export function dismissBottomSheet(restoreFocus = false): void {
   activeReturnFocus = null;
   activeReturnPlotId = null;
   if (restoreFocus) {
-    window.requestAnimationFrame(() => {
-      const target = returnFocus?.isConnected
-        ? returnFocus
-        : returnPlotId
-          ? document.querySelector<HTMLElement>(
-            `.plot[data-plot-id="${CSS.escape(returnPlotId)}"]`,
-          )
-          : null;
-      target?.focus();
-    });
+    restoreSheetFocus(returnFocus, returnPlotId);
   }
 }
 

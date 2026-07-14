@@ -165,6 +165,8 @@ def test_plot_drawer_sheet_and_collapsibles_are_keyboard_dialogs() -> None:
         assert "activeReturnFocus" in source
         assert "activeReturnPlotId" in source
         assert '`.plot[data-plot-id="${CSS.escape(returnPlotId)}"]`' in source
+        assert "focusTarget();" in source
+        assert "window.requestAnimationFrame(focusTarget)" in source
     assert 'const handleBar = document.createElement("button")' in sheet
     assert 'handleBar.setAttribute("aria-label", t("plot_drawer.resize_sheet"))' in sheet
     assert "el.tabIndex = 0" in map_view

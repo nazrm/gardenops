@@ -41,6 +41,24 @@ let activeReturnFocus: HTMLElement | null = null;
 let activeReturnPlotId: string | null = null;
 let collapsibleId = 0;
 
+function restoreDrawerFocus(
+  returnFocus: HTMLElement | null,
+  returnPlotId: string | null,
+): void {
+  const focusTarget = () => {
+    const target = returnFocus?.isConnected
+      ? returnFocus
+      : returnPlotId
+        ? document.querySelector<HTMLElement>(
+          `.plot[data-plot-id="${CSS.escape(returnPlotId)}"]`,
+        )
+        : null;
+    target?.focus();
+  };
+  focusTarget();
+  window.requestAnimationFrame(focusTarget);
+}
+
 export function setCollapsibleSectionState(section: HTMLElement, collapsed: boolean): void {
   section.classList.toggle("collapsed", collapsed);
   const button = section.querySelector<HTMLButtonElement>(".drawer-section-header");
@@ -304,8 +322,11 @@ export function showDrawer(params: DrawerParams): void {
   });
 
   const close = () => {
-    dismissDrawer(true);
+    const returnFocus = activeReturnFocus;
+    const returnPlotId = activeReturnPlotId;
+    dismissDrawer();
     onClose();
+    restoreDrawerFocus(returnFocus, returnPlotId);
   };
 
   closeBtn?.addEventListener("click", close);
@@ -346,16 +367,7 @@ export function dismissDrawer(restoreFocus = false): void {
   activeReturnFocus = null;
   activeReturnPlotId = null;
   if (restoreFocus) {
-    window.requestAnimationFrame(() => {
-      const target = returnFocus?.isConnected
-        ? returnFocus
-        : returnPlotId
-          ? document.querySelector<HTMLElement>(
-            `.plot[data-plot-id="${CSS.escape(returnPlotId)}"]`,
-          )
-          : null;
-      target?.focus();
-    });
+    restoreDrawerFocus(returnFocus, returnPlotId);
   }
 }
 
