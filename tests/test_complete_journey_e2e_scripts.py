@@ -2917,11 +2917,12 @@ def test_phase_two_checker_requires_exact_role_preference_normalization() -> Non
     assert "Phase 2 editor notification preferences were not normalized exactly" in source
     assert "Phase 2 viewer personal preference normalization was unexpected" in source
     assert "attention_metadata: { weather_aware_watering_suppression: true }" in source
-    assert "for (const rule of Object.values(normalizedPersonalAttentionRules))" in source
-    assert 'if (key !== "system") rule.email_enabled = false' in source
+    assert "const viewerAttentionRules = Object.fromEntries" in source
+    assert "const viewerNotificationRules = Object.fromEntries" in source
+    assert 'key === "system" ? { ...rule } : { ...rule, email_enabled: false }' in source
     assert 'attention_quiet_hours: { timezone: "UTC" }' in source
     assert "legacy_quiet_hours: {}" in source
-    assert "notification_rules: normalizedPersonalNotificationRules" in source
+    assert "notification_rules: viewerNotificationRules" in source
 
 
 def test_phase_two_viewer_calendar_preference_matches_patch_request() -> None:

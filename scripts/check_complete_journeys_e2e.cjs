@@ -3140,15 +3140,11 @@ function assertPhaseTwoDatabaseState(
     issueInbox: true,
     issueSeverity: "low",
   });
-  for (const rule of Object.values(normalizedPersonalAttentionRules)) rule.digest = false;
   const normalizedPersonalNotificationRules = expectedPhaseTwoNotificationRules({
     issueEmail: false,
     issueInApp: true,
     issueSeverity: "low",
   });
-  for (const [key, rule] of Object.entries(normalizedPersonalNotificationRules)) {
-    if (key !== "system") rule.email_enabled = false;
-  }
   const initialEditorPreference = initialPreferenceByUser.get(fixture.roles.editor);
   const finalEditorPreference = finalPreferenceByUser.get(fixture.roles.editor);
   assert(initialEditorPreference && finalEditorPreference, "Phase 2 editor preferences are missing");
@@ -3158,6 +3154,15 @@ function assertPhaseTwoDatabaseState(
     notification_rules: normalizedPersonalNotificationRules,
     preset: "custom",
   }, "Phase 2 editor notification preferences were not normalized exactly");
+  const viewerAttentionRules = Object.fromEntries(Object.entries(
+    normalizedPersonalAttentionRules,
+  ).map(([key, rule]) => [key, { ...rule, digest: false }]));
+  const viewerNotificationRules = Object.fromEntries(Object.entries(
+    normalizedPersonalNotificationRules,
+  ).map(([key, rule]) => [
+    key,
+    key === "system" ? { ...rule } : { ...rule, email_enabled: false },
+  ]));
   const initialViewerPreference = initialPreferenceByUser.get(fixture.roles.viewer);
   const finalViewerPreference = finalPreferenceByUser.get(fixture.roles.viewer);
   assert(initialViewerPreference && finalViewerPreference, "Phase 2 viewer preferences are missing");
@@ -3165,9 +3170,9 @@ function assertPhaseTwoDatabaseState(
     ...initialViewerPreference,
     attention_metadata: { weather_aware_watering_suppression: true },
     attention_quiet_hours: { timezone: "UTC" },
-    attention_rules: normalizedPersonalAttentionRules,
+    attention_rules: viewerAttentionRules,
     legacy_quiet_hours: {},
-    notification_rules: normalizedPersonalNotificationRules,
+    notification_rules: viewerNotificationRules,
     preset: "custom",
   }, "Phase 2 viewer personal preference normalization was unexpected");
   const initialAdminPreference = initialPreferenceByUser.get(fixture.roles.admin);
