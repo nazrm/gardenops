@@ -30,6 +30,7 @@ from gardenops.router_helpers import (
 )
 from gardenops.services.attention import load_attention_preferences
 from gardenops.services.notification_service import (
+    attention_notification_sql_filter,
     clear_expired_notifications,
     clear_notifications_hidden_by_preferences,
     clear_stale_informational_notifications,
@@ -42,7 +43,6 @@ from gardenops.services.notification_service import (
     mark_read,
     normalize_notification_rules,
     notification_policy_catalog,
-    notification_rows_allowed_by_attention,
     notification_rules_json,
     run_notification_maintenance_for_garden,
 )
@@ -253,22 +253,22 @@ def list_notifications(
     where = " AND ".join(conditions)
 
     if scope == "inbox" and user_id is not None:
-        candidate_rows = db.execute(
-            f"SELECT * FROM notification_events WHERE {where} "  # noqa: S608
-            "ORDER BY created_at_ms DESC",
-            params,
-        ).fetchall()
         preferences = load_attention_preferences(db, user_id)
-        filtered_rows = notification_rows_allowed_by_attention(
-            [dict(row) for row in candidate_rows],
-            preferences=preferences,
+        attention_where, attention_params = attention_notification_sql_filter(
+            preferences,
             surface="inbox",
             garden_id=garden_id,
             user_id=user_id,
             now_ms=now,
         )
-        rows = filtered_rows[offset : offset + limit]
-        total = len(filtered_rows)
+        where = f"{where} AND {attention_where}"
+        params.extend(attention_params)
+        rows = db.execute(
+            f"SELECT * FROM notification_events WHERE {where} "  # noqa: S608
+            "ORDER BY created_at_ms DESC LIMIT %s OFFSET %s",
+            [*params, limit, offset],
+        ).fetchall()
+        total = None
     else:
         rows = db.execute(
             f"SELECT * FROM notification_events WHERE {where} "  # noqa: S608
