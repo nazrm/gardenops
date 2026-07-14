@@ -1976,9 +1976,17 @@ function expectedPhaseTwoMaintenanceNotification(notification, fixture, delivere
     return expected;
   }
   if (notification.cleared_at_ms !== null) return expected;
+  const phaseTwoDayStartMs = Date.parse(`${fixture.phase_two.date}T00:00:00Z`);
   if (
-    Number.isSafeInteger(notification.expires_at_ms)
-    && notification.expires_at_ms < fixture.clock.attention_now_ms
+    (
+      Number.isSafeInteger(notification.expires_at_ms)
+      && notification.expires_at_ms < fixture.clock.attention_now_ms
+    )
+    || (
+      notification.notification_type === "task_overdue"
+      && Number.isSafeInteger(notification.created_at_ms)
+      && notification.created_at_ms < phaseTwoDayStartMs
+    )
   ) {
     expected.cleared_at_ms = fixture.clock.attention_now_ms;
     expected.clear_reason = "expired";

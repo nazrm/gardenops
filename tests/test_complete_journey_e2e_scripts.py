@@ -2410,6 +2410,8 @@ def test_phase_two_precleared_task_notices_keep_historical_reason() -> None:
 
     assert "if (notification.cleared_at_ms !== null) return expected;" in lifecycle
     assert "notification.expires_at_ms < fixture.clock.attention_now_ms" in lifecycle
+    assert 'notification.notification_type === "task_overdue"' in lifecycle
+    assert "notification.created_at_ms < phaseTwoDayStartMs" in lifecycle
     assert 'expected.clear_reason = "expired";' in lifecycle
 
 
