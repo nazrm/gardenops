@@ -3150,6 +3150,7 @@ def test_phase_two_database_contract_covers_maintenance_and_audit_semantics() ->
         "phase_two_audit_events",
         "assertPhaseOneStatePreservedAfterPhaseTwo",
         "phase_one_scoped_state_preserved_after_phase_two",
+        "Offline reschedule did not recompute the grouped fertilize recommendation window",
     ):
         assert marker in checker_source or marker in seed_source
     assert '"before": before_by_id[row_id]' in seed_source

@@ -2918,9 +2918,6 @@ function assertPhaseTwoDatabaseState(
       "public_id",
       "rule_source",
       "task_type",
-      "window_end_on",
-      "window_kind",
-      "window_start_on",
     ]) {
       exact(
         finalTask[field],
@@ -2985,10 +2982,28 @@ function assertPhaseTwoDatabaseState(
     "Offline reschedule did not retain the requested grouped fertilize date");
   assert(grouped.snoozed_until === null,
     "Offline reschedule left the grouped fertilize task snoozed");
+  assert(
+    grouped.window_start_on === "2026-07-13"
+      && grouped.window_end_on === "2026-07-27"
+      && grouped.window_kind === "recommended",
+    "Offline reschedule did not recompute the grouped fertilize recommendation window",
+  );
   exact(grouped.plant_ids, [phase.plant_ids.fertilize_b],
     "Partial grouped fertilizing retained the wrong plants");
   assert(grouped.title === `Fertilize: ${phase.plant_names.fertilize_b}`,
     "Partial grouped fertilizing title did not describe the remaining plant");
+
+  for (const finalTask of state.tasks) {
+    if (finalTask.public_id === phase.task_ids.fertilize_grouped) continue;
+    const initialTask = initialTaskById.get(finalTask.public_id);
+    for (const field of ["window_start_on", "window_end_on", "window_kind"]) {
+      exact(
+        finalTask[field],
+        initialTask[field],
+        `Phase 2 task ${field} changed unexpectedly: ${finalTask.public_id}`,
+      );
+    }
+  }
 
   const correction = task("snooze_correction");
   assert(correction.status === "snoozed",
