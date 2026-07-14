@@ -3178,6 +3178,7 @@ const after = {
     lifecycle: { expired_at_ms: 1783857600000, status: 'expired' },
   },
   status: 'expired',
+  updated_at_ms: before.updated_at_ms + 1,
 };
 const weatherBefore = {
   alert_type: 'frost_warning', created_at_ms: 1783983645512,

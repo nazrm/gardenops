@@ -2761,12 +2761,16 @@ function assertExpectedMaintenanceMutations(createdByTable, fixture, oracle = ph
   );
   assert(beforeTask.status === "pending" && afterTask.status === "expired",
     "Phase 2 maintenance stale generated task expiration was unexpected");
-  assert(afterTask.updated_at_ms === fixture.clock.attention_now_ms,
-    "Phase 2 maintenance stale generated task mutation was not frozen");
+  assert(afterTask.updated_at_ms === beforeTask.updated_at_ms + 1,
+    "Phase 2 maintenance stale generated task revision did not advance monotonically");
   const changedTaskFields = Object.keys(afterTask).filter(
     (field) => canonicalJson(beforeTask[field]) !== canonicalJson(afterTask[field]),
   ).sort();
-  assert(canonicalJson(changedTaskFields) === canonicalJson(["metadata", "status"]),
+  assert(canonicalJson(changedTaskFields) === canonicalJson([
+    "metadata",
+    "status",
+    "updated_at_ms",
+  ]),
     "Phase 2 maintenance changed unexpected stale generated task fields");
   assert(afterTask.metadata?.lifecycle?.status === "expired"
     && afterTask.metadata?.lifecycle?.expired_at_ms === fixture.clock.attention_now_ms,
@@ -2924,9 +2928,29 @@ function assertPhaseTwoDatabaseState(
         `Phase 2 task ${field} changed unexpectedly: ${finalTask.public_id}`,
       );
     }
-    assert(finalTask.created_at_ms === fixture.clock.attention_now_ms
-      && finalTask.updated_at_ms === fixture.clock.attention_now_ms,
-    `Phase 2 task timestamps were not frozen: ${finalTask.public_id}`);
+    assert(finalTask.created_at_ms === fixture.clock.attention_now_ms,
+      `Phase 2 task creation timestamp was not frozen: ${finalTask.public_id}`);
+    const revisionFields = [
+      "completed_at_ms",
+      "due_on",
+      "metadata",
+      "plant_ids",
+      "plot_ids",
+      "snoozed_until",
+      "status",
+      "window_end_on",
+      "window_kind",
+      "window_start_on",
+    ];
+    const taskChanged = revisionFields.some(
+      (field) => canonicalJson(finalTask[field]) !== canonicalJson(initialTask[field]),
+    );
+    assert(
+      taskChanged
+        ? finalTask.updated_at_ms > initialTask.updated_at_ms
+        : finalTask.updated_at_ms === initialTask.updated_at_ms,
+      `Phase 2 task revision did not match its mutation state: ${finalTask.public_id}`,
+    );
   }
 
   const completedByKey = {
