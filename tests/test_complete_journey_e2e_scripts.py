@@ -3038,11 +3038,11 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
         "removed": 0,
     }
     assert exact_counts["phase_two_only"]["user_attention_item_state"] == {
-        "added": 2,
+        "added": 3,
         "removed": 0,
     }
     assert exact_counts["cumulative_through_phase_two"]["user_attention_item_state"] == {
-        "added": 2,
+        "added": 3,
         "removed": 0,
     }
     assert exact_counts["phase_two_only"]["weather_alerts"] == {
