@@ -2465,11 +2465,17 @@ const accounting = {
   garden_tasks: {
     allow_row_delta: true,
     evidence: 'independent-oracle',
-    max_added: 1,
-    max_removed: 1,
+    expected_added: 1,
+    expected_removed: 1,
   },
 };
 assertWholeTableMutationAccounting(initial, final, new Set(['garden_tasks']), accounting);
+try {
+  assertWholeTableMutationAccounting(initial, initial, new Set(['garden_tasks']), accounting);
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('expected_added')) process.exit(4);
+}
 try {
   assertWholeTableMutationAccounting(
     initial,
@@ -2477,9 +2483,9 @@ try {
     new Set(['garden_tasks']),
     accounting,
   );
-  process.exit(3);
+  process.exit(5);
 } catch (error) {
-  if (!String(error.message).includes('max_added')) process.exit(4);
+  if (!String(error.message).includes('expected_added')) process.exit(6);
 }
 """
     result = subprocess.run(
@@ -2894,6 +2900,19 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
         "tasks": 1,
         "weather_alerts": 1,
     }
+    exact_counts = oracle["phase_two"]["whole_table_mutation_accounting"][
+        "exact_counts"
+    ]
+    assert exact_counts["phase_two_only"]["garden_tasks"] == {
+        "added": 76,
+        "removed": 14,
+    }
+    assert exact_counts["cumulative_through_phase_two"]["gardens"] == {
+        "added": 3,
+        "removed": 0,
+    }
+    assert "expected_added: exact.added" in source
+    assert "expected_removed: exact.removed" in source
 
 
 def test_phase_two_maintenance_notifications_have_exact_post_journey_lifecycle() -> None:

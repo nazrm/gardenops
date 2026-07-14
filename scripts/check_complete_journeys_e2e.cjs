@@ -689,6 +689,15 @@ function assertWholeTableMutationAccounting(initial, final, allowedTables, accou
           `Whole-table mutation exceeded independent ${field} accounting: ${table}`);
       }
     }
+    for (const [field, actual] of [
+      ["expected_added", delta.added.length],
+      ["expected_removed", delta.removed.length],
+    ]) {
+      if (Number.isSafeInteger(contract[field])) {
+        assert(actual === contract[field],
+          `Whole-table mutation diverged from independent ${field} accounting: ${table}`);
+      }
+    }
     changedTables[table] = {
       added: delta.added.length,
       removed: delta.removed.length,
@@ -699,6 +708,19 @@ function assertWholeTableMutationAccounting(initial, final, allowedTables, accou
     assert(allowed.has(table), `Whole-table accounting names an unallowed table: ${table}`);
     assert(contract && typeof contract === "object" && contract.allow_row_delta === true,
       `Whole-table accounting contract is invalid: ${table}`);
+    const delta = rowDigestMultisetDelta(
+      initial[table].row_digests,
+      final[table].row_digests,
+    );
+    for (const [field, actual] of [
+      ["expected_added", delta.added.length],
+      ["expected_removed", delta.removed.length],
+    ]) {
+      if (Number.isSafeInteger(contract[field])) {
+        assert(actual === contract[field],
+          `Whole-table mutation diverged from independent ${field} accounting: ${table}`);
+      }
+    }
   }
   return {
     changed_tables: changedTables,
@@ -4484,10 +4506,32 @@ async function main() {
     "Phase 2 whole-table oracle accounting is invalid");
     assert(new Set(phaseTwoOracleTables).size === phaseTwoOracleTables.length,
       "Phase 2 whole-table oracle accounting has duplicate tables");
+    const phaseTwoMutationScope = PHASE === 2 && THROUGH_PHASE === 2
+      ? "phase_two_only"
+      : "cumulative_through_phase_two";
+    const phaseTwoExactMutationCounts = phaseTwoRan
+      ? oracle.phase_two?.whole_table_mutation_accounting?.exact_counts?.[phaseTwoMutationScope]
+      : null;
+    if (phaseTwoRan) {
+      assert(phaseTwoExactMutationCounts && typeof phaseTwoExactMutationCounts === "object"
+        && !Array.isArray(phaseTwoExactMutationCounts),
+      `Phase 2 ${phaseTwoMutationScope} mutation counts are missing`);
+      for (const [table, counts] of Object.entries(phaseTwoExactMutationCounts)) {
+        assert(/^[a-z_]+$/.test(table)
+          && Number.isSafeInteger(counts?.added) && counts.added >= 0
+          && Number.isSafeInteger(counts?.removed) && counts.removed >= 0,
+        `Phase 2 ${phaseTwoMutationScope} mutation count is invalid: ${table}`);
+      }
+    }
     const phaseTwoSemanticDeltaTables = phaseTwoRan ? new Set([
       ...phaseOneSemanticDeltaTables,
       ...phaseTwoOracleTables,
     ]) : phaseOneSemanticDeltaTables;
+    if (phaseTwoRan) {
+      assert(Object.keys(phaseTwoExactMutationCounts).every(
+        (table) => phaseTwoSemanticDeltaTables.has(table),
+      ), `Phase 2 ${phaseTwoMutationScope} mutation counts name an unallowed table`);
+    }
     const forbiddenDomainTables = changedDomainTables.filter(
       (table) => !phaseTwoSemanticDeltaTables.has(table),
     );
@@ -4504,16 +4548,18 @@ async function main() {
       fixture.database_snapshot.domain_tables,
       finalDatabase.domain_tables,
       phaseTwoSemanticDeltaTables,
-      Object.fromEntries([
-        ...[...phaseOneSemanticDeltaTables].map((table) => [table, {
+      Object.fromEntries([...phaseTwoSemanticDeltaTables].map((table) => {
+        const exact = phaseTwoExactMutationCounts?.[table] || { added: 0, removed: 0 };
+        return [table, {
           allow_row_delta: true,
-          evidence: "phase_one_boundary_assertions",
-        }]),
-        ...(phaseTwoRan ? phaseTwoOracleTables : []).map((table) => [table, {
-          allow_row_delta: true,
-          evidence: "phase_two_independent_oracle",
-        }]),
-      ]),
+          evidence: phaseTwoRan ? `phase_two_${phaseTwoMutationScope}_independent_oracle`
+            : "phase_one_boundary_assertions",
+          ...(phaseTwoRan ? {
+            expected_added: exact.added,
+            expected_removed: exact.removed,
+          } : {}),
+        }];
+      })),
     );
     for (const [table, count] of Object.entries(finalDatabase.domain_counts)) {
       if (Object.hasOwn(finalDatabase.domain_tables, table)) {
