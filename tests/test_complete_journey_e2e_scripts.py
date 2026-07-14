@@ -2782,14 +2782,19 @@ def test_phase_two_seed_uses_canonical_attention_quiet_hours() -> None:
 
 def test_phase_two_preference_save_waits_for_rendered_list_before_close() -> None:
     source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
-    close_after_save = source.split("async function closeNotificationPreferencePanel", 1)[1].split(
-        "async function exercisePersonalNotificationPreferencePersistence", 1
-    )[0]
+    close_after_save = source.split("async function closeSavedNotificationPreferencePanel", 1)[
+        1
+    ].split("async function closeNotificationPreferencePanel", 1)[0]
+    close_without_save = source.split("async function closeNotificationPreferencePanel", 1)[
+        1
+    ].split("async function exercisePersonalNotificationPreferencePersistence", 1)[0]
 
     assert 'panel.locator(".notification-settings-btn")' in close_after_save
     assert "notification settings save focus return" in close_after_save
     assert 'page.keyboard.press("Escape")' in close_after_save
     assert "closeNotificationSettingsWithKeyboard" not in close_after_save
+    assert "closeNotificationSettingsWithKeyboard" in close_without_save
+    assert source.count("closeSavedNotificationPreferencePanel(") == 3
 
 
 def test_phase_two_checker_allows_only_exact_viewer_personal_preference_changes() -> None:

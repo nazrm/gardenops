@@ -960,7 +960,7 @@ async function saveNotificationPreferenceSeverity(page, prefs, severity, label) 
   return { request_id: requestId, status_code: response.status() };
 }
 
-async function closeNotificationPreferencePanel(page, panel, profile, label) {
+async function closeSavedNotificationPreferencePanel(page, panel, profile, label) {
   const settingsButton = panel.locator(".notification-settings-btn");
   await visible(settingsButton, `${label} notification list after save`);
   await waitFor(
@@ -969,6 +969,11 @@ async function closeNotificationPreferencePanel(page, panel, profile, label) {
   );
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "hidden" });
+  if (profile === "mobile") await closeMobileUtility(page);
+}
+
+async function closeNotificationPreferencePanel(page, panel, profile, label) {
+  await closeNotificationSettingsWithKeyboard(page, panel, label);
   if (profile === "mobile") await closeMobileUtility(page);
 }
 
@@ -987,7 +992,7 @@ async function exercisePersonalNotificationPreferencePersistence(page, profile, 
     contract.saved_severity,
     `${role} ${profile} saved`,
   )];
-  await closeNotificationPreferencePanel(page, panel, profile, `${role} ${profile} saved`);
+  await closeSavedNotificationPreferencePanel(page, panel, profile, `${role} ${profile} saved`);
 
   await page.reload({ waitUntil: "domcontentloaded" });
   ({ panel, prefs } = await openNotificationPreferences(page, profile, fixture, `${role} ${profile} reload`));
@@ -1005,7 +1010,12 @@ async function exercisePersonalNotificationPreferencePersistence(page, profile, 
       restoredSeverity,
       `${role} ${profile} restored`,
     ));
-    await closeNotificationPreferencePanel(page, panel, profile, `${role} ${profile} restored`);
+    await closeSavedNotificationPreferencePanel(
+      page,
+      panel,
+      profile,
+      `${role} ${profile} restored`,
+    );
     await page.reload({ waitUntil: "domcontentloaded" });
     ({ panel, prefs } = await openNotificationPreferences(page, profile, fixture, `${role} ${profile} restore reload`));
     issue = await issueCreatedRuleControls(prefs);
