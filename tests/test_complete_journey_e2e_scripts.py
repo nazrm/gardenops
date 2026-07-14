@@ -3169,6 +3169,9 @@ def test_phase_two_notification_projection_uses_exact_identities_not_magic_count
     assert "expectedNotificationIds" in source
     assert "groupedTaskNotificationUsers" in source
     assert "!afterMaintenanceNotificationIds.has(notification.public_id)" in source
+    assert "Phase 2 grouped-task notification clear reasons were unexpected" in source
+    assert 'clear_reason: "expired"' in source
+    assert 'clear_reason: "rescheduled"' in source
 
 
 def test_phase_two_weather_projection_uses_exact_identities_not_magic_count() -> None:

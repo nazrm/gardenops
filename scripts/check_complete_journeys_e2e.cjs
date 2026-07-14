@@ -3689,6 +3689,7 @@ function assertPhaseTwoDatabaseState(
         notification_type: notification.notification_type,
         username: notification.username,
       });
+      groupedTaskNotificationUsers.add(notification.username);
     }
     if (
       !afterMaintenanceNotificationIds.has(notification.public_id)
@@ -3697,7 +3698,6 @@ function assertPhaseTwoDatabaseState(
       && notification.clear_reason === "rescheduled"
     ) {
       expectedNotificationIds.add(notification.public_id);
-      groupedTaskNotificationUsers.add(notification.username);
     }
   }
   const actualGroupedTaskNotificationUsers = [...groupedTaskNotificationUsers].sort();
@@ -3714,6 +3714,30 @@ function assertPhaseTwoDatabaseState(
     )}; expected=${canonicalJson(expectedGroupedTaskNotificationUsers)}; rows=${canonicalJson(
       groupedTaskNotificationRows,
     )}`,
+  );
+  exact(
+    groupedTaskNotificationRows.sort((left, right) => left.username.localeCompare(right.username)),
+    [
+      {
+        clear_reason: "expired",
+        cleared: true,
+        notification_type: "task_due",
+        username: fixture.roles.admin,
+      },
+      {
+        clear_reason: "expired",
+        cleared: true,
+        notification_type: "task_due",
+        username: fixture.roles.editor,
+      },
+      {
+        clear_reason: "rescheduled",
+        cleared: true,
+        notification_type: "task_due",
+        username: fixture.roles.viewer,
+      },
+    ].sort((left, right) => left.username.localeCompare(right.username)),
+    "Phase 2 grouped-task notification clear reasons were unexpected",
   );
   exact(notificationIds.slice().sort(), [...expectedNotificationIds].sort(),
     "Phase 2 task and seeded notification projection identities were unexpected");
