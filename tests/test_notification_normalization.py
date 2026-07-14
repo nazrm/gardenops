@@ -774,6 +774,7 @@ class TestNotificationNormalization(BaseApiTest):
             attention_body["rules"]["issue_follow_up_due"]["min_severity"] = "low"
             attention_body["rules"]["issue_follow_up_overdue"]["min_severity"] = "low"
             attention_body.pop("user_id", None)
+            attention_body.pop("digest_delivery", None)
             unmuted = client.put(
                 "/api/attention/preferences",
                 headers=headers,

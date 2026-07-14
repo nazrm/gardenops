@@ -107,8 +107,9 @@ def test_calendar_snooze_correction_keeps_a_stable_task_target_after_refresh() -
         "function openCalendarTaskDateDialog",
     )
 
-    assert "calendarTaskActionTarget(event)" in correction_body
-    assert "openCalendarTaskDateDialogForTarget(target" in correction_body
+    assert "const task = await loadCalendarTaskForSnooze(event);" in correction_body
+    assert "calendarTaskActionTarget(event, task)" in correction_body
+    assert "openCalendarTaskSnoozeDateDialogForTarget(target" in correction_body
     assert "currentEventsById.get(event.id)" not in correction_body
 
 
