@@ -2113,6 +2113,21 @@ function sortedLogicalRows(rows) {
   return rows.map((row) => canonicalJson(row)).sort();
 }
 
+function assertLogicalRowsEqual(actualRows, expectedRows, label) {
+  const actual = sortedLogicalRows(actualRows);
+  const expected = sortedLogicalRows(expectedRows);
+  if (canonicalJson(actual) === canonicalJson(expected)) return;
+  const firstMismatch = Array.from(
+    { length: Math.max(actual.length, expected.length) },
+    (_value, index) => index,
+  ).find((index) => actual[index] !== expected[index]);
+  throw new Error(
+    `Phase 2 maintenance ${label} diverged from the independent oracle; `
+      + `first mismatch at ${firstMismatch}: actual=${actual[firstMismatch] ?? "<missing>"} `
+      + `expected=${expected[firstMismatch] ?? "<missing>"}`,
+  );
+}
+
 function endOfUtcDayMs(value) {
   const timestamp = Date.parse(`${value}T23:59:59.999Z`);
   assert(Number.isSafeInteger(timestamp), `Phase 2 oracle date is invalid: ${value}`);
@@ -2383,15 +2398,21 @@ function assertPhaseTwoMaintenanceLogicalRows(createdByTable, fixture, oracle = 
     normalizeMaintenanceNotificationLogicalRow(row, alertTypesById)
   ));
   const actualWeather = createdByTable.weather_alerts.created.map(normalizeMaintenanceWeatherLogicalRow);
-  assert(canonicalJson(sortedLogicalRows(actualTasks))
-    === canonicalJson(sortedLogicalRows(expectedPhaseTwoMaintenanceTaskRows(fixture, oracle))),
-  "Phase 2 maintenance task logical rows diverged from the independent oracle");
-  assert(canonicalJson(sortedLogicalRows(actualNotifications))
-    === canonicalJson(sortedLogicalRows(expectedPhaseTwoMaintenanceNotificationRows(fixture, oracle))),
-  "Phase 2 maintenance notification logical rows diverged from the independent oracle");
-  assert(canonicalJson(sortedLogicalRows(actualWeather))
-    === canonicalJson(sortedLogicalRows(expectedPhaseTwoWeatherLogicalRows(fixture, oracle))),
-  "Phase 2 maintenance weather logical rows diverged from the independent oracle");
+  assertLogicalRowsEqual(
+    actualTasks,
+    expectedPhaseTwoMaintenanceTaskRows(fixture, oracle),
+    "task logical rows",
+  );
+  assertLogicalRowsEqual(
+    actualNotifications,
+    expectedPhaseTwoMaintenanceNotificationRows(fixture, oracle),
+    "notification logical rows",
+  );
+  assertLogicalRowsEqual(
+    actualWeather,
+    expectedPhaseTwoWeatherLogicalRows(fixture, oracle),
+    "weather logical rows",
+  );
   return { maintenance_logical_rows_exact: true };
 }
 
