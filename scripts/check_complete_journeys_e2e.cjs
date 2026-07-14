@@ -1993,7 +1993,6 @@ function expectedPhaseTwoMaintenanceNotification(notification, fixture, delivere
     [fixture.phase_two.task_ids.snooze_correction, { reason: "snoozed", stage: 0 }],
     [fixture.phase_two.task_ids.editor_prune, { reason: "completed", stage: 1 }],
     [fixture.phase_two.task_ids.editor_offline, { reason: "completed", stage: 1 }],
-    [fixture.phase_two.task_ids.stale_manual_water, { reason: "snoozed", stage: 1 }],
   ]);
   const notificationStage = roleStage.get(notification.username);
   assert(Number.isSafeInteger(notificationStage),
