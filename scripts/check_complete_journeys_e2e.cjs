@@ -2452,8 +2452,20 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
   const afterMaintenanceNotificationIds = new Set(
     afterMaintenanceNotifications.map((notification) => notification.public_id),
   );
+  const groupedTaskNotificationRows = [];
   const groupedTaskNotificationUsers = new Set();
   for (const notification of state.notifications) {
+    if (
+      !afterMaintenanceNotificationIds.has(notification.public_id)
+      && notification.target_id === phase.task_ids.fertilize_grouped
+    ) {
+      groupedTaskNotificationRows.push({
+        clear_reason: notification.clear_reason,
+        cleared: notification.cleared,
+        notification_type: notification.notification_type,
+        username: notification.username,
+      });
+    }
     if (
       !afterMaintenanceNotificationIds.has(notification.public_id)
       && notification.target_id === phase.task_ids.fertilize_grouped
@@ -2471,7 +2483,9 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     expectedGroupedTaskNotificationUsers,
     `Phase 2 grouped-task notification users were unexpected: actual=${canonicalJson(
       actualGroupedTaskNotificationUsers,
-    )}; expected=${canonicalJson(expectedGroupedTaskNotificationUsers)}`,
+    )}; expected=${canonicalJson(expectedGroupedTaskNotificationUsers)}; rows=${canonicalJson(
+      groupedTaskNotificationRows,
+    )}`,
   );
   exact(notificationIds.slice().sort(), [...expectedNotificationIds].sort(),
     "Phase 2 task and seeded notification projection identities were unexpected");

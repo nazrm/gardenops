@@ -1415,9 +1415,25 @@ class TestNotifications(BaseApiTest):
                 """,
                 (garden_id, unrelated_task_id),
             ).fetchone()
+            active_partial = conn.execute(
+                """
+                SELECT title, metadata_json
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND target_type = 'task'
+                  AND target_id = %s
+                  AND dismissed = 0
+                  AND cleared_at_ms IS NULL
+                """,
+                (garden_id, partial_task_id),
+            ).fetchall()
         finally:
             db.return_db(conn)
         self.assertEqual(int(active_unrelated["count"]), 0)
+        self.assertEqual(len(active_partial), 1)
+        partial_metadata = json.loads(str(active_partial[0]["metadata_json"]))
+        self.assertEqual(partial_metadata["plants"], ["Rose"])
+        self.assertNotIn("Test Plant", str(active_partial[0]["title"]))
 
     def test_dismissed_task_notification_does_not_regenerate(self) -> None:
         from gardenops.services.notification_service import (
