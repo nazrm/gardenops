@@ -2742,13 +2742,13 @@ def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_w
 
 def test_phase_two_viewer_denial_consumes_response_before_reload() -> None:
     source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
-    viewer_denial = source.split("async function attemptForbiddenViewerTaskWrite", 1)[1].split(
-        "async function exerciseViewer", 1
+    viewer_denial = source.split("async function assertForbiddenViewerMutation", 1)[1].split(
+        "async function attemptForbiddenViewerTaskWrite", 1
     )[0]
 
-    assert "await result.text();" in viewer_denial
-    assert viewer_denial.index("await result.text();") < viewer_denial.index(
-        "return { status: result.status };"
+    assert "const text = await result.text();" in viewer_denial
+    assert viewer_denial.index("const text = await result.text();") < viewer_denial.index(
+        "return { body: responseBody, status: result.status };"
     )
 
 
@@ -2917,9 +2917,11 @@ def test_phase_two_checker_requires_exact_role_preference_normalization() -> Non
     assert "Phase 2 editor notification preferences were not normalized exactly" in source
     assert "Phase 2 viewer personal preference normalization was unexpected" in source
     assert "attention_metadata: { weather_aware_watering_suppression: true }" in source
-    assert 'digest: { enabled: true, end: "07:45", start: "22:15" }' in source
+    assert "for (const rule of Object.values(normalizedPersonalAttentionRules))" in source
+    assert 'if (key !== "system") rule.email_enabled = false' in source
+    assert 'attention_quiet_hours: { timezone: "UTC" }' in source
+    assert "legacy_quiet_hours: {}" in source
     assert "notification_rules: normalizedPersonalNotificationRules" in source
-    assert 'legacy_quiet_hours: { end: "07:45", start: "22:15", timezone: "UTC" }' in source
 
 
 def test_phase_two_viewer_calendar_preference_matches_patch_request() -> None:

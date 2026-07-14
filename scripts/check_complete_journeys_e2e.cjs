@@ -3140,11 +3140,15 @@ function assertPhaseTwoDatabaseState(
     issueInbox: true,
     issueSeverity: "low",
   });
+  for (const rule of Object.values(normalizedPersonalAttentionRules)) rule.digest = false;
   const normalizedPersonalNotificationRules = expectedPhaseTwoNotificationRules({
     issueEmail: false,
     issueInApp: true,
     issueSeverity: "low",
   });
+  for (const [key, rule] of Object.entries(normalizedPersonalNotificationRules)) {
+    if (key !== "system") rule.email_enabled = false;
+  }
   const initialEditorPreference = initialPreferenceByUser.get(fixture.roles.editor);
   const finalEditorPreference = finalPreferenceByUser.get(fixture.roles.editor);
   assert(initialEditorPreference && finalEditorPreference, "Phase 2 editor preferences are missing");
@@ -3160,12 +3164,9 @@ function assertPhaseTwoDatabaseState(
   exact(finalViewerPreference, {
     ...initialViewerPreference,
     attention_metadata: { weather_aware_watering_suppression: true },
-    attention_quiet_hours: {
-      digest: { enabled: true, end: "07:45", start: "22:15" },
-      timezone: "UTC",
-    },
+    attention_quiet_hours: { timezone: "UTC" },
     attention_rules: normalizedPersonalAttentionRules,
-    legacy_quiet_hours: { end: "07:45", start: "22:15", timezone: "UTC" },
+    legacy_quiet_hours: {},
     notification_rules: normalizedPersonalNotificationRules,
     preset: "custom",
   }, "Phase 2 viewer personal preference normalization was unexpected");
