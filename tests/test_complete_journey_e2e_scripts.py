@@ -2365,6 +2365,19 @@ def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_w
     assert "recorder.attachPage(peer);" in journey_source
 
 
+def test_phase_two_completion_journals_retain_task_plot_context() -> None:
+    source = CHECKER.read_text(encoding="utf-8")
+    journal_expectations = source.split("const journalExpectations = {", 1)[1].split(
+        "assert(\n    state.journal.length", 1
+    )[0]
+
+    for task_key in ("bloom_desktop", "bloom_mobile"):
+        task_expectation = journal_expectations.split(
+            f"[phase.task_ids.{task_key}]: {{", 1
+        )[1].split("    },", 1)[0]
+        assert "plot_ids: [phase.plot_ids.alpha]," in task_expectation
+
+
 def test_phase_two_mobile_quick_action_keeps_manual_date_completion_actionable() -> None:
     source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
     quick_actions = source.split("async function completeMobileQuickActions", 1)[1].split(
