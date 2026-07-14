@@ -2832,6 +2832,18 @@ def test_phase_two_viewer_weather_keeps_personal_dismissal_controls() -> None:
     assert 'page.locator("#weather-dashboard .weather-alert-dismiss:visible").count() > 0' in viewer
 
 
+def test_phase_two_viewer_denial_console_diagnostics_are_classified() -> None:
+    source = (ROOT / "scripts/e2e/completeJourneyBrowser.cjs").read_text(encoding="utf-8")
+
+    for context in (
+        "viewer-calendar-event-write-denied",
+        "viewer-calendar-subscription-write-denied",
+        "viewer-task-write-denied",
+        "viewer-weather-refresh-denied",
+    ):
+        assert source.count(f'"{context}"') >= 2
+
+
 def test_phase_two_offline_calendar_is_loaded_before_connectivity_is_lost() -> None:
     source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
     offline = source.split("async function exerciseOfflineTask", 1)[1].split(

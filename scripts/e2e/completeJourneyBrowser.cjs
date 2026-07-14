@@ -15,7 +15,10 @@ const EXPECTED_CONSOLE_DIAGNOSTIC_CONTEXTS = new Set([
   "map-import-rejected",
   "network-guard-probe",
   "preauth-session-probe",
+  "viewer-calendar-event-write-denied",
+  "viewer-calendar-subscription-write-denied",
   "viewer-task-write-denied",
+  "viewer-weather-refresh-denied",
 ]);
 
 function redactTokenShapedSecrets(value) {
@@ -132,6 +135,15 @@ function expectedHttpDiagnosticContext({ authenticated, method, path: pathname, 
     && status === 403
   ) {
     return "viewer-task-write-denied";
+  }
+  if (method === "POST" && pathname === "/api/calendar/manual-events" && status === 403) {
+    return "viewer-calendar-event-write-denied";
+  }
+  if (method === "POST" && pathname === "/api/calendar/subscriptions" && status === 403) {
+    return "viewer-calendar-subscription-write-denied";
+  }
+  if (method === "POST" && pathname === "/api/weather/check" && status === 403) {
+    return "viewer-weather-refresh-denied";
   }
   return "unexpected-http-response";
 }
