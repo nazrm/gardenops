@@ -2464,8 +2464,15 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
       groupedTaskNotificationUsers.add(notification.username);
     }
   }
-  exact([...groupedTaskNotificationUsers].sort(), [fixture.roles.editor, fixture.roles.viewer].sort(),
-    "Phase 2 grouped-task notification users were unexpected");
+  const actualGroupedTaskNotificationUsers = [...groupedTaskNotificationUsers].sort();
+  const expectedGroupedTaskNotificationUsers = [fixture.roles.editor, fixture.roles.viewer].sort();
+  exact(
+    actualGroupedTaskNotificationUsers,
+    expectedGroupedTaskNotificationUsers,
+    `Phase 2 grouped-task notification users were unexpected: actual=${canonicalJson(
+      actualGroupedTaskNotificationUsers,
+    )}; expected=${canonicalJson(expectedGroupedTaskNotificationUsers)}`,
+  );
   exact(notificationIds.slice().sort(), [...expectedNotificationIds].sort(),
     "Phase 2 task and seeded notification projection identities were unexpected");
   for (const initialNotification of phase.seeded_state.notifications) {
