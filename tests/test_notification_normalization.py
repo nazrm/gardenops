@@ -858,6 +858,7 @@ class TestNotificationNormalization(BaseApiTest):
                 headers=attention_headers,
             ).json()
             attention_payload.pop("user_id", None)
+            attention_payload.pop("digest_delivery", None)
             attention_payload["show_no_action_history"] = False
             attention_payload["metadata"]["concurrent_attention_update"] = True
 
