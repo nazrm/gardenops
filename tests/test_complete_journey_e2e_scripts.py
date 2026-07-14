@@ -2395,6 +2395,10 @@ def test_phase_two_offline_calendar_is_loaded_before_connectivity_is_lost() -> N
     cold_disconnect = offline.index("page.context().setOffline(true)")
     warm_disconnect = offline.index("page.context().setOffline(true)", warmup)
     assert cold_disconnect < warmup < warm_disconnect
+    assert (
+        'openSubMode(page, "mobile", "activity", "tasks", "#tasks-tab-content")'
+        in offline[cold_disconnect:warmup]
+    )
     assert 'await openTasks(page, "mobile");' in offline[warmup:warm_disconnect]
 
 

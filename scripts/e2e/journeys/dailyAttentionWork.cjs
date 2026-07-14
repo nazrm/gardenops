@@ -1657,7 +1657,7 @@ async function exerciseOfflineTask(page, fixture) {
   const remainingGroupedTitle = `Fertilize: ${fixture.phase_two.plant_names.fertilize_b}`;
 
   await page.context().setOffline(true);
-  await openTasks(page, "mobile");
+  await openSubMode(page, "mobile", "activity", "tasks", "#tasks-tab-content");
   await visible(page.locator("#tasks-list .offline-data-state--unavailable"),
     "cold offline Tasks unavailable state");
   assert(await page.locator("#tasks-list .task-card").count() === 0,
