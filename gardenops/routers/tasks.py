@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -56,6 +56,7 @@ from gardenops.services.notification_service import (
 from gardenops.services.task_completion import (
     CompletionOutcome,
     append_bloom_not_yet_event,
+    capture_completion_original_task_state,
     clear_completion_capture_metadata,
     completion_capture_already_recorded,
     grouped_completion_history_started,
@@ -65,10 +66,12 @@ from gardenops.services.task_completion import (
     refreshed_generated_group_description,
     refreshed_group_title,
     remaining_plant_ids_after_completion,
+    restore_completion_capture_original_presentation,
     task_plot_ids_for_plant_ids,
     update_task_plant_links,
     update_task_plot_links,
     validate_completed_plant_ids,
+    validate_completion_capture_plant_links,
     validate_completion_outcome,
 )
 from gardenops.services.task_windows import derive_recommended_window_strings
@@ -100,37 +103,33 @@ _ALLOWED_TASK_ACTIONS_BY_STATUS: dict[str, set[str]] = {
 }
 
 
-def _reopened_completion_metadata_json(
+def _reopened_completion_metadata(
     task_row: dict,
     current_status: str,
-) -> str | None:
+) -> dict | None:
     if current_status != "completed":
         return None
     task_type = str(task_row.get("task_type") or "")
     if not is_completion_capture_task(task_type):
         return None
-    return json.dumps(
-        clear_completion_capture_metadata(task_row),
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    return clear_completion_capture_metadata(task_row)
 
 
-def _restore_completion_capture_scope(
+def _restore_completion_capture_links(
     db: DbConn,
     *,
     task_id: int,
     task_row: dict,
-) -> None:
+) -> tuple[list[str], list[str]] | None:
     metadata = _parse_task_metadata(task_row)
     raw_plant_ids = metadata.get("completion_capture_original_plant_ids")
     if not isinstance(raw_plant_ids, list):
-        return
+        return None
     requested_ids = list(
         dict.fromkeys(str(value).strip() for value in raw_plant_ids if str(value).strip())
     )
     if not requested_ids:
-        return
+        return None
     rows = db.execute(
         """
         SELECT DISTINCT p.plt_id
@@ -144,7 +143,7 @@ def _restore_completion_capture_scope(
     existing_ids = {str(row["plt_id"]) for row in rows}
     restored_ids = [plant_id for plant_id in requested_ids if plant_id in existing_ids]
     if not restored_ids:
-        return
+        return None
     update_task_plant_links(db, task_id=task_id, remaining_plant_ids=restored_ids)
     raw_plot_ids = metadata.get("completion_capture_original_plot_ids")
     if isinstance(raw_plot_ids, list):
@@ -185,14 +184,42 @@ def _restore_completion_capture_scope(
         task_id=task_id,
         remaining_plot_ids=restored_plot_ids,
     )
+    return restored_ids, restored_plot_ids
+
+
+def _restore_completion_capture_scope(
+    db: DbConn,
+    *,
+    task_id: int,
+    task_row: dict,
+    metadata: dict,
+) -> tuple[str, str, dict]:
+    restored_scope = _restore_completion_capture_links(
+        db,
+        task_id=task_id,
+        task_row=task_row,
+    )
+    title = str(task_row.get("title") or "")
+    description = str(task_row.get("description") or "")
+    if restored_scope is None:
+        return title, description, metadata
+
+    restored_ids, _ = restored_scope
     task_type = str(task_row.get("task_type") or "")
     if task_type in {"prune", "fertilize"}:
         names = plant_names_for_ids(db, restored_ids)
         if names:
-            db.execute(
-                "UPDATE garden_tasks SET title = %s WHERE id = %s",
-                (refreshed_group_title(task_type, names), task_id),
+            title = refreshed_group_title(task_type, names)
+            refreshed_description = refreshed_generated_group_description(
+                db,
+                task_row=task_row,
+                task_type=task_type,
+                remaining_plant_ids=restored_ids,
+                metadata=metadata,
             )
+            if refreshed_description is not None:
+                description, metadata = refreshed_description
+    return title, description, metadata
 
 
 class CreateTaskBody(StrictBaseModel):
@@ -226,6 +253,8 @@ class ActionTaskBody(StrictBaseModel):
     notes: str | None = Field(default=None, max_length=2000)
     completed_plant_ids: list[str] | None = None
     completion_outcome: CompletionOutcome | None = None
+    expected_updated_at_ms: int | None = Field(default=None, ge=0)
+    confirm_outside_window: bool = False
 
 
 class BatchActionTaskBody(ActionTaskBody):
@@ -603,6 +632,78 @@ def _parse_task_metadata(task_row: dict) -> dict:
     return metadata if isinstance(metadata, dict) else {}
 
 
+def _require_current_task_revision(task_row: dict, expected_updated_at_ms: int | None) -> None:
+    if expected_updated_at_ms is None:
+        return
+    if int(task_row.get("updated_at_ms") or 0) != expected_updated_at_ms:
+        raise HTTPException(
+            status_code=409,
+            detail="Task changed since this action was created; refresh it and try again",
+        )
+
+
+def _task_date_value(value: object) -> str | None:
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, str) and len(value) >= 10:
+        candidate = value[:10]
+        try:
+            date.fromisoformat(candidate)
+        except ValueError:
+            return None
+        return candidate
+    return None
+
+
+def _task_snooze_deadline(task_row: dict) -> str | None:
+    metadata = _parse_task_metadata(task_row)
+    rule_source = str(task_row.get("rule_source") or "").strip()
+    weather_valid_until = metadata.get("weather_valid_until")
+    is_weather_task = rule_source.startswith("auto:") and (
+        isinstance(weather_valid_until, str) or metadata.get("weather_alert_id") is not None
+    )
+    if is_weather_task:
+        candidates = [
+            candidate
+            for value in (weather_valid_until, task_row.get("window_end_on"))
+            if (candidate := _task_date_value(value)) is not None
+        ]
+        return min(candidates) if candidates else None
+
+    if str(task_row.get("task_type") or "") != "water" or not rule_source.startswith("water:"):
+        return None
+    recurrence_source = rule_source.rsplit(":", 1)[-1]
+    try:
+        next_recurrence = date.fromisoformat(recurrence_source) + timedelta(days=7)
+    except ValueError:
+        return None
+    return (next_recurrence - timedelta(days=1)).isoformat()
+
+
+def _validate_task_snooze_date(task_row: dict, body: ActionTaskBody) -> None:
+    assert body.snooze_until is not None
+    deadline = _task_snooze_deadline(task_row)
+    if deadline is not None and body.snooze_until > deadline:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This task cannot be snoozed beyond {deadline}",
+        )
+
+    window_start = _task_date_value(task_row.get("window_start_on"))
+    window_end = _task_date_value(task_row.get("window_end_on"))
+    outside_window = (
+        window_start is not None
+        and body.snooze_until < window_start
+        or window_end is not None
+        and body.snooze_until > window_end
+    )
+    if outside_window and not body.confirm_outside_window:
+        raise HTTPException(
+            status_code=409,
+            detail="This date is outside the recommended task window; confirm the exception",
+        )
+
+
 def _update_task_metadata(
     db: DbConn,
     task_id: int,
@@ -746,11 +847,15 @@ def _apply_task_action(
     notification_refreshed = False
     if body.action == "complete":
         task_type = str(task_row.get("task_type") or "")
+        linked_plant_ids = _task_linked_plant_ids(db, task_id)
+        validate_completion_capture_plant_links(
+            task_type=task_type,
+            linked_plant_ids=linked_plant_ids,
+        )
         completion_outcome = validate_completion_outcome(
             task_type=task_type,
             outcome=body.completion_outcome,
         )
-        linked_plant_ids = _task_linked_plant_ids(db, task_id)
         requested_plant_ids: list[str] = []
         seen_requested_plant_ids: set[str] = set()
         for raw_plant_id in body.completed_plant_ids or []:
@@ -768,6 +873,12 @@ def _apply_task_action(
                 selected_plant_ids=requested_plant_ids,
                 outcome=completion_outcome,
             )
+        ):
+            return
+        if (
+            current_status == "completed"
+            and is_completion_capture_task(task_type)
+            and body.completed_plant_ids is None
         ):
             return
         selected_plant_ids = validate_completed_plant_ids(
@@ -816,12 +927,12 @@ def _apply_task_action(
             now_ms=now_ms,
             occurred_on=action_on,
         )
-        original_plant_ids = next_metadata.get("completion_capture_original_plant_ids")
-        if is_completion_capture_task(task_type) and not isinstance(original_plant_ids, list):
-            next_metadata["completion_capture_original_plant_ids"] = linked_plant_ids
-        original_plot_ids = next_metadata.get("completion_capture_original_plot_ids")
-        if is_completion_capture_task(task_type) and not isinstance(original_plot_ids, list):
-            next_metadata["completion_capture_original_plot_ids"] = linked_plot_ids
+        next_metadata = capture_completion_original_task_state(
+            task_row=task_row,
+            metadata=next_metadata,
+            linked_plant_ids=linked_plant_ids,
+            linked_plot_ids=linked_plot_ids,
+        )
         if is_partial_completion:
             update_task_plant_links(
                 db,
@@ -876,10 +987,28 @@ def _apply_task_action(
             )
             notification_refreshed = True
         else:
+            completed_title = str(task_row.get("title") or "")
+            completed_description = str(task_row.get("description") or "")
+            if grouped_completion_history_started(task_row):
+                _restore_completion_capture_links(
+                    db,
+                    task_id=task_id,
+                    task_row=task_row,
+                )
+                (
+                    completed_title,
+                    completed_description,
+                    next_metadata,
+                ) = restore_completion_capture_original_presentation(
+                    task_row=task_row,
+                    metadata=next_metadata,
+                )
             db.execute(
                 """
                 UPDATE garden_tasks
-                SET status = 'completed',
+                SET title = %s,
+                    description = %s,
+                    status = 'completed',
                     completed_by_user_id = %s,
                     completed_at_ms = %s,
                     snoozed_until = NULL,
@@ -888,6 +1017,8 @@ def _apply_task_action(
                 WHERE id = %s
                 """,
                 (
+                    completed_title,
+                    completed_description,
                     context.user_id,
                     now_ms,
                     json.dumps(next_metadata, sort_keys=True, separators=(",", ":")),
@@ -896,13 +1027,20 @@ def _apply_task_action(
                 ),
             )
     elif body.action == "skip":
-        reopen_metadata_json = _reopened_completion_metadata_json(task_row, current_status)
-        if reopen_metadata_json is not None:
-            _restore_completion_capture_scope(db, task_id=task_id, task_row=task_row)
+        reopen_metadata = _reopened_completion_metadata(task_row, current_status)
+        if reopen_metadata is not None:
+            title, description, reopen_metadata = _restore_completion_capture_scope(
+                db,
+                task_id=task_id,
+                task_row=task_row,
+                metadata=reopen_metadata,
+            )
             db.execute(
                 """
                 UPDATE garden_tasks
-                SET status = 'skipped',
+                SET title = %s,
+                    description = %s,
+                    status = 'skipped',
                     snoozed_until = NULL,
                     completed_by_user_id = NULL,
                     completed_at_ms = NULL,
@@ -910,7 +1048,13 @@ def _apply_task_action(
                     updated_at_ms = %s
                 WHERE id = %s
                 """,
-                (reopen_metadata_json, now_ms, task_id),
+                (
+                    title,
+                    description,
+                    json.dumps(reopen_metadata, sort_keys=True, separators=(",", ":")),
+                    now_ms,
+                    task_id,
+                ),
             )
         else:
             db.execute(
@@ -931,13 +1075,25 @@ def _apply_task_action(
                 status_code=422, detail="snooze_until is required for snooze action"
             )
         _validate_date(body.snooze_until)
-        reopen_metadata_json = _reopened_completion_metadata_json(task_row, current_status)
+        _validate_task_snooze_date(task_row, body)
+        reopen_metadata = _reopened_completion_metadata(task_row, current_status)
         if str(task_row.get("task_type") or "") == "observe_bloom":
             metadata_task_row = task_row
-            if reopen_metadata_json is not None:
-                _restore_completion_capture_scope(db, task_id=task_id, task_row=task_row)
+            title = str(task_row.get("title") or "")
+            description = str(task_row.get("description") or "")
+            if reopen_metadata is not None:
+                title, description, reopen_metadata = _restore_completion_capture_scope(
+                    db,
+                    task_id=task_id,
+                    task_row=task_row,
+                    metadata=reopen_metadata,
+                )
                 metadata_task_row = dict(task_row)
-                metadata_task_row["metadata_json"] = reopen_metadata_json
+                metadata_task_row["metadata_json"] = json.dumps(
+                    reopen_metadata,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
             next_metadata = append_bloom_not_yet_event(
                 task_row=metadata_task_row,
                 snooze_until=body.snooze_until,
@@ -947,7 +1103,9 @@ def _apply_task_action(
             db.execute(
                 """
                 UPDATE garden_tasks
-                SET status = 'snoozed',
+                SET title = %s,
+                    description = %s,
+                    status = 'snoozed',
                     snoozed_until = %s,
                     completed_by_user_id = NULL,
                     completed_at_ms = NULL,
@@ -956,18 +1114,27 @@ def _apply_task_action(
                 WHERE id = %s
                 """,
                 (
+                    title,
+                    description,
                     body.snooze_until,
                     json.dumps(next_metadata, sort_keys=True, separators=(",", ":")),
                     now_ms,
                     task_id,
                 ),
             )
-        elif reopen_metadata_json is not None:
-            _restore_completion_capture_scope(db, task_id=task_id, task_row=task_row)
+        elif reopen_metadata is not None:
+            title, description, reopen_metadata = _restore_completion_capture_scope(
+                db,
+                task_id=task_id,
+                task_row=task_row,
+                metadata=reopen_metadata,
+            )
             db.execute(
                 """
                 UPDATE garden_tasks
-                SET status = 'snoozed',
+                SET title = %s,
+                    description = %s,
+                    status = 'snoozed',
                     snoozed_until = %s,
                     completed_by_user_id = NULL,
                     completed_at_ms = NULL,
@@ -975,7 +1142,14 @@ def _apply_task_action(
                     updated_at_ms = %s
                 WHERE id = %s
                 """,
-                (body.snooze_until, reopen_metadata_json, now_ms, task_id),
+                (
+                    title,
+                    description,
+                    body.snooze_until,
+                    json.dumps(reopen_metadata, sort_keys=True, separators=(",", ":")),
+                    now_ms,
+                    task_id,
+                ),
             )
         else:
             db.execute(
@@ -1001,13 +1175,20 @@ def _apply_task_action(
             task_row,
             body.reschedule_to,
         )
-        reopen_metadata_json = _reopened_completion_metadata_json(task_row, current_status)
-        if reopen_metadata_json is not None:
-            _restore_completion_capture_scope(db, task_id=task_id, task_row=task_row)
+        reopen_metadata = _reopened_completion_metadata(task_row, current_status)
+        if reopen_metadata is not None:
+            title, description, reopen_metadata = _restore_completion_capture_scope(
+                db,
+                task_id=task_id,
+                task_row=task_row,
+                metadata=reopen_metadata,
+            )
             db.execute(
                 """
                 UPDATE garden_tasks
                 SET due_on = %s,
+                    title = %s,
+                    description = %s,
                     status = 'pending',
                     snoozed_until = NULL,
                     completed_by_user_id = NULL,
@@ -1021,7 +1202,9 @@ def _apply_task_action(
                 """,
                 (
                     body.reschedule_to,
-                    reopen_metadata_json,
+                    title,
+                    description,
+                    json.dumps(reopen_metadata, sort_keys=True, separators=(",", ":")),
                     window_start_on,
                     window_end_on,
                     window_kind,
@@ -1430,6 +1613,7 @@ def task_action(
             )
     row = _fetch_task(db, task_id, garden_id, for_update=True)
     internal_task_id = int(row["id"])
+    _require_current_task_revision(row, body.expected_updated_at_ms)
 
     _apply_task_action(
         db,
@@ -1464,6 +1648,8 @@ def batch_task_action(
         notes=body.notes,
         completed_plant_ids=body.completed_plant_ids,
         completion_outcome=body.completion_outcome,
+        expected_updated_at_ms=body.expected_updated_at_ms,
+        confirm_outside_window=body.confirm_outside_window,
     )
     for task_id in task_ids:
         task_row = task_rows.get(task_id)

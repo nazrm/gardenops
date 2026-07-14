@@ -22,6 +22,7 @@ from gardenops.router_helpers import (
 )
 from gardenops.services.attention import (
     AttentionService,
+    apply_digest_delivery_capability,
     attention_request_clock,
     load_attention_preferences,
     resolve_attention_preferences,
@@ -32,6 +33,8 @@ from gardenops.services.attention import (
     set_user_attention_state,
 )
 from gardenops.services.attention.preferences import normalize_attention_preference_payload
+from gardenops.services.attention.service import lock_attention_preferences
+from gardenops.services.notification_service import load_digest_delivery_configuration
 
 router = APIRouter()
 
@@ -72,6 +75,14 @@ def _clocked_service() -> tuple[AttentionService, int]:
     return AttentionService(frozen_date=frozen_date), now_ms
 
 
+def _load_digest_delivery(db: DB, context: Any) -> dict[str, Any]:
+    return load_digest_delivery_configuration(
+        db,
+        user_id=context.user_id,
+        subscription_tier=context.subscription_tier,
+    )
+
+
 def _validated_force_degraded_provider(value: str | None) -> str | None:
     if value is None:
         return None
@@ -110,12 +121,14 @@ def get_attention_today(
     garden_id = _active_garden_id(context)
     force_degraded = _validated_force_degraded_provider(force_degraded_provider)
     service, now_ms = _clocked_service()
+    digest_delivery = _load_digest_delivery(db, context)
     return service.today(
         db,
         garden_id=garden_id,
         user_id=context.user_id,
         now_ms=now_ms,
         force_degraded_provider=force_degraded,
+        digest_delivery=digest_delivery,
     )
 
 
@@ -123,7 +136,10 @@ def get_attention_today(
 def get_attention_preferences(request: Request, db: DB) -> dict[str, Any]:
     context = _auth_context(request)
     preferences = load_attention_preferences(db, context.user_id)
-    return serialize_attention_preferences(preferences)
+    return serialize_attention_preferences(
+        preferences,
+        digest_delivery=_load_digest_delivery(db, context),
+    )
 
 
 @router.put("/attention/preferences")
@@ -165,9 +181,29 @@ def put_attention_preferences(
                     "show_no_action_history": show_no_action_history,
                     "metadata": metadata,
                 },
-            )
+            ),
+            digest_delivery=_load_digest_delivery(db, context),
         )
     user_id = int(context.user_id)
+    lock_attention_preferences(db, user_id)
+    digest_delivery = _load_digest_delivery(db, context)
+    if preset == "custom" and not bool(digest_delivery["configured"]):
+        requested_preferences = resolve_attention_preferences(
+            user_id=user_id,
+            legacy_preferences=None,
+            saved_attention_preferences={
+                "user_id": user_id,
+                "preset": preset,
+                "rules": rules,
+                "quiet_hours": quiet_hours,
+                "show_no_action_history": show_no_action_history,
+                "metadata": metadata,
+            },
+        )
+        rules = apply_digest_delivery_capability(
+            requested_preferences,
+            configured=False,
+        ).rules
     now_ms = current_timestamp_ms()
     preferences = save_attention_preferences(
         db,
@@ -180,7 +216,10 @@ def put_attention_preferences(
         now_ms=now_ms,
     )
     db.commit()
-    return serialize_attention_preferences(preferences)
+    return serialize_attention_preferences(
+        preferences,
+        digest_delivery=digest_delivery,
+    )
 
 
 @router.post("/attention/items/{item_id}/read")

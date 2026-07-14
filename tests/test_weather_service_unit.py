@@ -1597,6 +1597,185 @@ class TestWeatherForecastRemediation(DbTestBase):
         assert not bool(alert_after["dismissed"])
         assert str(task_after["status"]) == "pending"
 
+    def test_truncated_forecast_resolves_only_alerts_inside_coverage(self) -> None:
+        from gardenops.services.notification_service import reconcile_weather_alert_work
+
+        covered = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'frost_warning', 'normal', 'Covered frost', 'Protect plants',
+                    '2032-02-03', '2032-02-03', '{}', 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        outside = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'frost_warning', 'normal', 'Later frost', 'Protect plants',
+                    '2032-02-06', '2032-02-06', '{}', 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert covered is not None
+        assert outside is not None
+        self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, status, severity,
+                 due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+            VALUES
+                ('tsk_covered_forecast', %s, 'protect', 'Protect covered plants', 'pending',
+                 'normal', '2032-02-03', %s, '{}', 1, 1),
+                ('tsk_outside_forecast', %s, 'protect', 'Protect later plants', 'pending',
+                 'normal', '2032-02-06', %s, '{}', 1, 1)
+            """,
+            (
+                self.garden_id,
+                f"auto:frost_protect:{int(covered['id'])}:PLT-COVERED",
+                self.garden_id,
+                f"auto:frost_protect:{int(outside['id'])}:PLT-OUTSIDE",
+            ),
+        )
+        forecast = {
+            "daily": {
+                "time": ["2032-02-03"],
+                "temperature_2m_min": [5.0],
+                "temperature_2m_max": [20.0],
+                "precipitation_sum": [0.0],
+            }
+        }
+
+        with patch(
+            "gardenops.services.weather_service.get_or_fetch_forecast",
+            return_value=forecast,
+        ):
+            result = check_weather_and_generate_alerts(
+                self.conn,
+                self.garden_id,
+                59.91,
+                10.75,
+            )
+        marker = next(
+            alert["_forecast_reconciliation_scope"]
+            for alert in result["alerts"]
+            if "_forecast_reconciliation_scope" in alert
+        )
+        assert marker["coverage_bounds"] == {
+            "frost_warning": {"start": "2032-02-03", "end": "2032-02-03"}
+        }
+
+        downstream = reconcile_weather_alert_work(
+            self.conn,
+            garden_id=self.garden_id,
+            alerts=list(result["alerts"]),
+            actor_user_id=None,
+            now_ms=1_959_379_200_000,
+            replace_forecast_alerts=True,
+        )
+        alerts_after = self.conn.execute(
+            "SELECT id, dismissed FROM weather_alerts WHERE id = ANY(%s)",
+            ([int(covered["id"]), int(outside["id"])],),
+        ).fetchall()
+        tasks_after = self.conn.execute(
+            """
+            SELECT public_id, status
+            FROM garden_tasks
+            WHERE public_id IN ('tsk_covered_forecast', 'tsk_outside_forecast')
+            """,
+        ).fetchall()
+        alert_state = {int(row["id"]): bool(row["dismissed"]) for row in alerts_after}
+        task_state = {str(row["public_id"]): str(row["status"]) for row in tasks_after}
+
+        assert downstream["alerts_resolved"] == 1
+        assert downstream["tasks_resolved"] == 1
+        assert alert_state[int(covered["id"])] is True
+        assert alert_state[int(outside["id"])] is False
+        assert task_state == {
+            "tsk_covered_forecast": "skipped",
+            "tsk_outside_forecast": "pending",
+        }
+
+    def test_short_forecast_does_not_reconcile_heat_without_streak_horizon(self) -> None:
+        from gardenops.services.notification_service import reconcile_weather_alert_work
+
+        alert = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'heat_wave', 'normal', 'Heat wave', 'Water plants',
+                    '2032-02-03', '2032-02-04', '{}', 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert alert is not None
+        self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, status, severity,
+                 due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+            VALUES ('tsk_short_heat_forecast', %s, 'water', 'Water in heat', 'pending',
+                    'normal', '2032-02-03', %s, '{}', 1, 1)
+            """,
+            (self.garden_id, f"auto:heat_protect:{int(alert['id'])}:PLT-HEAT"),
+        )
+        forecast = {
+            "daily": {
+                "time": ["2032-02-03", "2032-02-04"],
+                "temperature_2m_min": [5.0, 6.0],
+                "temperature_2m_max": [20.0, 21.0],
+                "precipitation_sum": [0.0, 0.0],
+            }
+        }
+
+        with patch(
+            "gardenops.services.weather_service.get_or_fetch_forecast",
+            return_value=forecast,
+        ):
+            result = check_weather_and_generate_alerts(
+                self.conn,
+                self.garden_id,
+                59.91,
+                10.75,
+            )
+        marker = next(
+            alert_scope["_forecast_reconciliation_scope"]
+            for alert_scope in result["alerts"]
+            if "_forecast_reconciliation_scope" in alert_scope
+        )
+        assert "heat_wave" in result["forecast_complete_alert_types"]
+        assert "heat_wave" not in marker["coverage_bounds"]
+
+        downstream = reconcile_weather_alert_work(
+            self.conn,
+            garden_id=self.garden_id,
+            alerts=list(result["alerts"]),
+            actor_user_id=None,
+            now_ms=1_959_379_200_000,
+            replace_forecast_alerts=True,
+        )
+        alert_after = self.conn.execute(
+            "SELECT dismissed FROM weather_alerts WHERE id = %s",
+            (int(alert["id"]),),
+        ).fetchone()
+        task_after = self.conn.execute(
+            "SELECT status FROM garden_tasks WHERE public_id = 'tsk_short_heat_forecast'",
+        ).fetchone()
+
+        assert downstream["alerts_resolved"] == 0
+        assert downstream["tasks_resolved"] == 0
+        assert alert_after is not None
+        assert task_after is not None
+        assert not bool(alert_after["dismissed"])
+        assert str(task_after["status"]) == "pending"
+
     def test_complete_same_identity_contracts_alert_links_and_weather_tasks(self) -> None:
         from gardenops.services.notification_service import reconcile_weather_alert_work
 

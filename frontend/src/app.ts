@@ -2066,74 +2066,100 @@ function parsePlotIdInput(raw: string): string[] {
     });
 }
 
+function closeAttentionTodayNavigationOverlays(): void {
+  attentionTodayPanel?.closeMobileSheet();
+  closePanel();
+}
+
+async function openAttentionIssueTarget(
+  item: AttentionItem,
+  action: AttentionAction,
+  requestGardenId: number,
+): Promise<void> {
+  const targetIssueId = action.target_id || item.target_id || "";
+  closeAttentionTodayNavigationOverlays();
+  navigateToSubMode("issues");
+  await loadIssues();
+  if (!isCurrentGardenRequest(requestGardenId)) return;
+  if (targetIssueId) {
+    try {
+      const issue = await fetchIssueApi(targetIssueId);
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      await openIssueForm(issue);
+    } catch (err) {
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      showToast(getApiErrorMessage(err), "error");
+    }
+  }
+  if (!isCurrentGardenRequest(requestGardenId)) return;
+  attentionTodayPanel?.refresh();
+}
+
 async function handleAttentionTodayAction(
   item: AttentionItem,
   action: AttentionAction,
 ): Promise<void> {
   const requestGardenId = getActiveGardenContext();
   if (requestGardenId === null) return;
-  if (action.kind === "restore_attention_outcome") {
-    if (!ensureWriteAccess()) return;
-    await restoreAttentionOutcomeApi(action.target_id);
-    if (!isCurrentGardenRequest(requestGardenId)) return;
-    attentionTodayPanel?.refresh();
-    return;
-  }
-  if (action.kind === "open_attention_detail") {
-    if (!isCurrentGardenRequest(requestGardenId)) return;
-    attentionTodayPanel?.refresh();
-    return;
-  }
-  const firstPlotId = item.plot_ids[0];
-  if (firstPlotId) {
-    await appContext.selectPlot(firstPlotId);
-    if (!isCurrentGardenRequest(requestGardenId)) return;
-  }
-  if (action.kind === "open_issue" || action.target_type === "issue" || item.target_type === "issue") {
-    navigateToSubMode("issues");
-    await loadIssues();
-    if (!isCurrentGardenRequest(requestGardenId)) return;
-    attentionTodayPanel?.refresh();
-    return;
-  }
-  if (action.kind === "open_task" || action.target_type === "task" || item.target_type === "task") {
-    const targetTaskId = action.target_id || item.target_id || "";
-    attentionTodayPanel?.closeMobileSheet();
-    closePanel();
-    navigateToSubMode("tasks");
-    if (targetTaskId) {
-      await openTaskFromAttention(targetTaskId, requestGardenId);
-    } else {
-      await loadTasksTab();
+  switch (action.kind) {
+    case "restore_attention_outcome":
+      if (!ensureWriteAccess()) return;
+      await restoreAttentionOutcomeApi(action.target_id);
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      attentionTodayPanel?.refresh();
+      return;
+    case "open_attention_detail":
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      attentionTodayPanel?.refresh();
+      return;
+    case "open_issue":
+      await openAttentionIssueTarget(item, action, requestGardenId);
+      return;
+    case "open_task": {
+      const targetTaskId = action.target_id || item.target_id || "";
+      closeAttentionTodayNavigationOverlays();
+      navigateToSubMode("tasks");
+      if (targetTaskId) {
+        await openTaskFromAttention(targetTaskId, requestGardenId);
+      } else {
+        await loadTasksTab();
+      }
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      attentionTodayPanel?.refresh();
+      return;
     }
-    if (!isCurrentGardenRequest(requestGardenId)) return;
-    attentionTodayPanel?.refresh();
-    return;
+    case "open_weather":
+      closeAttentionTodayNavigationOverlays();
+      navigateToSubMode("care");
+      await loadWeather();
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      attentionTodayPanel?.refresh();
+      return;
+    case "select_plot":
+      if (!action.target_id) return;
+      attentionTodayPanel?.closeMobileSheet();
+      setActiveTab("map");
+      await appContext.selectPlot(action.target_id);
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      attentionTodayPanel?.refresh();
+      return;
+    case "focus_plant": {
+      const targetPlantId = action.target_id || item.target_id || item.plant_ids[0] || "";
+      closeAttentionTodayNavigationOverlays();
+      if (targetPlantId) {
+        focusPlantsInPlantsView([targetPlantId]);
+      } else {
+        navigateToSubMode("plants");
+      }
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      attentionTodayPanel?.refresh();
+      return;
+    }
   }
-  if (action.kind === "open_weather" || action.target_type === "weather_alert") {
-    navigateToSubMode("care");
-    await loadWeather();
-    if (!isCurrentGardenRequest(requestGardenId)) return;
-    attentionTodayPanel?.refresh();
-    return;
-  }
-  if (action.kind === "select_plot" && action.target_id) {
-    await appContext.selectPlot(action.target_id);
-    if (!isCurrentGardenRequest(requestGardenId)) return;
-    setActiveTab("map");
-    attentionTodayPanel?.refresh();
-    return;
-  }
-  attentionTodayPanel?.closeMobileSheet();
-  closePanel();
-  navigateToSubMode("tasks");
-  await loadTasksTab();
-  if (!isCurrentGardenRequest(requestGardenId)) return;
-  attentionTodayPanel?.refresh();
 }
 
 async function handleAttentionTodayViewSection(sectionKey: AttentionSectionKey): Promise<void> {
-  attentionTodayPanel?.closeMobileSheet();
+  closeAttentionTodayNavigationOverlays();
   if (sectionKey === "warnings" || sectionKey === "no_action_needed") {
     navigateToSubMode("care");
     await loadWeather();
@@ -2144,7 +2170,6 @@ async function handleAttentionTodayViewSection(sectionKey: AttentionSectionKey):
     await loadCalendar();
     return;
   }
-  closePanel();
   navigateToSubMode("tasks");
   await loadTasksTab();
 }

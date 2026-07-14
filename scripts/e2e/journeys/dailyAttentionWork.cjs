@@ -2138,26 +2138,46 @@ async function exerciseOfflineTask(page, fixture) {
   }
 }
 
-async function attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixture, task) {
+async function assertForbiddenViewerMutation(
+  page,
+  diagnostics,
+  profile,
+  fixture,
+  { body, method = "POST", path },
+) {
   const beforeHttpErrors = diagnostics.httpErrors.length;
   const beforeConsoleErrors = diagnostics.consoleErrors.length;
-  const response = await page.evaluate(async ({ gardenId, taskId }) => {
-    const result = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/action`, {
-      body: JSON.stringify({ action: "complete" }),
+  const response = await page.evaluate(async ({ body: requestBody, gardenId, method: requestMethod, path: requestPath }) => {
+    const csrf = document.cookie
+      .split("; ")
+      .find((part) => part.startsWith("gardenops_csrf="))
+      ?.slice("gardenops_csrf=".length) || "";
+    const result = await fetch(requestPath, {
+      body: requestBody === undefined ? undefined : JSON.stringify(requestBody),
       credentials: "include",
       headers: {
         "content-type": "application/json",
+        "x-csrf-token": decodeURIComponent(csrf),
         "x-garden-id": String(gardenId),
       },
-      method: "POST",
+      method: requestMethod,
     });
-    await result.text();
-    return { status: result.status };
-  }, { gardenId: fixture.gardens.alpha.id, taskId: task.id });
-  assert(response.status === 403, `${profile} viewer direct task write was not forbidden`);
+    let responseBody = null;
+    const text = await result.text();
+    if (text) responseBody = JSON.parse(text);
+    return { body: responseBody, status: result.status };
+  }, {
+    body,
+    gardenId: fixture.gardens.alpha.id,
+    method,
+    path,
+  });
+  assert(response.status === 403, `${profile} viewer direct write was not forbidden: ${path}`);
+  assert(response.body?.detail === "Write access required",
+    `${profile} viewer direct write was rejected before authorization: ${path}`);
   await waitFor(() => diagnostics.httpErrors.length === beforeHttpErrors + 1,
     `${profile} viewer direct forbidden write response`);
-  const expectedError = `403 /api/tasks/${task.id}/action`;
+  const expectedError = `403 ${path}`;
   const directErrors = diagnostics.httpErrors.splice(beforeHttpErrors);
   assert(JSON.stringify(directErrors) === JSON.stringify([expectedError]),
     `${profile} viewer direct write did not produce the expected forbidden response`);
@@ -2166,6 +2186,13 @@ async function attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixtu
     `${profile} viewer direct forbidden write console response`,
   );
   diagnostics.consoleErrors.splice(beforeConsoleErrors, 1);
+}
+
+async function attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixture, task) {
+  await assertForbiddenViewerMutation(page, diagnostics, profile, fixture, {
+    body: { action: "complete" },
+    path: `/api/tasks/${encodeURIComponent(task.id)}/action`,
+  });
 
   await page.waitForLoadState("networkidle");
   await page.reload({ waitUntil: "domcontentloaded" });
@@ -2180,6 +2207,26 @@ async function attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixtu
     `${profile} viewer task changed write affordances after forbidden direct write`);
 }
 
+async function dismissPersonalViewerWeatherAlert(page, profile, fixture) {
+  const response = await page.evaluate(async ({ gardenId }) => {
+    const csrf = document.cookie
+      .split("; ")
+      .find((part) => part.startsWith("gardenops_csrf="))
+      ?.slice("gardenops_csrf=".length) || "";
+    const result = await fetch("/api/weather/alerts/1/dismiss", {
+      credentials: "include",
+      headers: {
+        "x-csrf-token": decodeURIComponent(csrf),
+        "x-garden-id": String(gardenId),
+      },
+      method: "POST",
+    });
+    return { body: await result.json(), status: result.status };
+  }, { gardenId: fixture.gardens.alpha.id });
+  assert(response.status === 200 && response.body?.status === "dismissed",
+    `${profile} viewer could not dismiss personal weather attention`);
+}
+
 async function exerciseViewer(page, diagnostics, profile, fixture) {
   await openTasks(page, profile);
   const task = taskTitle(fixture, "viewer_read_only");
@@ -2188,6 +2235,18 @@ async function exerciseViewer(page, diagnostics, profile, fixture) {
   assert(await card.locator(".task-card-actions button").count() === 0,
     `${profile} viewer received task write controls`);
   await attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixture, task);
+  await assertForbiddenViewerMutation(page, diagnostics, profile, fixture, {
+    body: { event_on: fixture.phase_two.date, title: "Forbidden viewer event" },
+    path: "/api/calendar/manual-events",
+  });
+  await assertForbiddenViewerMutation(page, diagnostics, profile, fixture, {
+    body: { label: "Forbidden viewer subscription" },
+    path: "/api/calendar/subscriptions",
+  });
+  await assertForbiddenViewerMutation(page, diagnostics, profile, fixture, {
+    path: "/api/weather/check",
+  });
+  await dismissPersonalViewerWeatherAlert(page, profile, fixture);
   await openCalendarAgenda(page, profile);
   const event = page.locator(".fc-event:visible").filter({ hasText: task.title }).first();
   await visible(event, `${profile} viewer calendar task`);

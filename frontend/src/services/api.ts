@@ -67,11 +67,27 @@ export class ApiError extends Error {
 
 export interface TaskActionRequest {
   action: "complete" | "skip" | "snooze" | "reschedule";
+  expected_updated_at_ms?: number;
+  confirm_outside_window?: boolean;
   snooze_until?: string;
   reschedule_to?: string;
   notes?: string;
   completed_plant_ids?: string[];
   completion_outcome?: "done" | "not_seen_blooming_this_season";
+}
+
+export type RevisionedTaskActionRequest = TaskActionRequest & {
+  expected_updated_at_ms: number;
+};
+
+export function withTaskActionRevision(
+  task: Pick<GardenTask, "updated_at_ms">,
+  body: TaskActionRequest,
+): RevisionedTaskActionRequest {
+  return {
+    ...body,
+    expected_updated_at_ms: task.updated_at_ms,
+  };
 }
 
 function normalizeApiPath(input: RequestInfo | URL): string {

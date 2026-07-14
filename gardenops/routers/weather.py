@@ -211,7 +211,6 @@ def dismiss_alert(alert_id: int, request: Request, db: DB) -> dict:
     """Dismiss a weather alert."""
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
-    _require_write(context)
     if context.user_id is None:
         raise HTTPException(status_code=403, detail="Authentication required")
 

@@ -880,6 +880,10 @@ function assertTraceArtifacts(profiles, artifactDirectory = ARTIFACT_DIR) {
       "Trace artifact must be a regular, single-link file");
     const observed = crypto.createHash("sha256").update(fs.readFileSync(tracePath)).digest("hex");
     assert(observed === sha256, `Trace artifact hash mismatch: ${name}`);
+    execFileSync(path.join(ROOT, ".venv", "bin", "python"), [
+      path.join(ROOT, "scripts", "validate_playwright_trace.py"),
+      tracePath,
+    ], { stdio: "pipe" });
     return { name, sha256 };
   });
 }
@@ -1733,6 +1737,7 @@ function phaseTwoBrowserMutationRecords(profiles, fixture) {
         actor_auth_type: request.actorAuthType,
         actor_role: request.actorRole,
         actor_username: request.actorUsername,
+        browser_profile: `${profile.role}:${profile.profile}`,
         garden_id: gardenId,
         method: request.method,
         path: request.path,
@@ -1742,6 +1747,45 @@ function phaseTwoBrowserMutationRecords(profiles, fixture) {
     })
   ));
   return mutations;
+}
+
+function normalizePhaseTwoMutationPath(pathname) {
+  return pathname
+    .replace(/^\/api\/calendar\/manual-events\/[^/]+$/, "/api/calendar/manual-events/{event_id}")
+    .replace(/^\/api\/calendar\/subscriptions\/[^/]+$/, "/api/calendar/subscriptions/{subscription_id}")
+    .replace(/^\/api\/weather\/alerts\/\d+\/dismiss$/, "/api/weather/alerts/{alert_id}/dismiss");
+}
+
+function assertPhaseTwoBrowserMutationMultiset(profiles, fixture, oracle = phaseTwoOracle()) {
+  const expectedByProfile = oracle.phase_two?.browser_mutations;
+  assert(expectedByProfile && typeof expectedByProfile === "object" && !Array.isArray(expectedByProfile),
+    "Phase 2 browser mutation oracle is missing");
+  const expected = Object.entries(expectedByProfile).flatMap(([browserProfile, rows]) => {
+    assert(Array.isArray(rows), `Phase 2 browser mutation oracle profile is invalid: ${browserProfile}`);
+    return rows.map((row) => ({
+      browser_profile: browserProfile,
+      count: row.count,
+      method: row.method,
+      path: row.path,
+      status_code: row.status_code,
+    }));
+  });
+  const histogram = new Map();
+  for (const mutation of phaseTwoBrowserMutationRecords(profiles, fixture)) {
+    const logical = {
+      browser_profile: mutation.browser_profile,
+      method: mutation.method,
+      path: normalizePhaseTwoMutationPath(mutation.path),
+      status_code: mutation.status_code,
+    };
+    const key = canonicalJson(logical);
+    histogram.set(key, (histogram.get(key) || 0) + 1);
+  }
+  const actual = [...histogram.entries()].map(([key, count]) => ({ ...JSON.parse(key), count }));
+  const sorted = (rows) => rows.map(canonicalJson).sort();
+  assert(canonicalJson(sorted(actual)) === canonicalJson(sorted(expected)),
+    "Phase 2 browser mutation multiset diverged from the independent oracle");
+  return { browser_mutation_multiset_exact: true };
 }
 
 function auditRecordMatchesBrowserMutation(event, request) {
@@ -4441,7 +4485,14 @@ async function main() {
     const phaseTwoRan = phaseSelected(2);
     if (phaseOneRan) phaseOneProfileEvidence = assertPhaseOneProfileEvidence(phaseOneProfiles);
     if (phaseTwoRan) {
-      phaseTwoProfileEvidence = assertPhaseTwoProfileEvidence(phaseTwoProfiles, oracle);
+      phaseTwoProfileEvidence = {
+        ...assertPhaseTwoProfileEvidence(phaseTwoProfiles, oracle),
+        ...assertPhaseTwoBrowserMutationMultiset(
+          [...phaseTwoReadOnlyProfiles, ...phaseTwoProfiles],
+          fixture,
+          oracle,
+        ),
+      };
       phaseTwoDatabaseEvidence = {
         ...assertPhaseTwoDatabaseState(
           finalDatabase.phase_two_state,
@@ -5026,6 +5077,7 @@ module.exports = {
   assertPhaseOneAuditContract,
   assertPhaseOneProfileEvidence,
   assertPhaseTwoAuditEvents,
+  assertPhaseTwoBrowserMutationMultiset,
   assertPhaseTwoCalendarLifecycleEvidence,
   assertPhaseTwoDatabaseState,
   assertPhaseTwoMaintenanceLogicalRows,

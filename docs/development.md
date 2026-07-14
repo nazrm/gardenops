@@ -242,12 +242,12 @@ against a fresh fixture, or `--through-phase N` for the cumulative set from
 Phase 0 through Phase N:
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 0
-scripts/run_complete_journeys_e2e.sh --through-phase 0
-scripts/run_complete_journeys_e2e.sh --phase 1
-scripts/run_complete_journeys_e2e.sh --through-phase 1
-scripts/run_complete_journeys_e2e.sh --phase 2
-scripts/run_complete_journeys_e2e.sh --through-phase 2
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 0
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 0
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 1
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 1
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 2
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 2
 ```
 
 The runner creates its own disposable PostgreSQL child through

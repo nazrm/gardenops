@@ -12,8 +12,10 @@ import { trapFocus } from "../components/dialogCore";
 import {
   fetchTasksApi,
   getActiveGardenContext,
+  type TaskActionRequest,
   taskActionApi,
   getApiErrorMessage,
+  withTaskActionRevision,
 } from "../services/api";
 import {
   isOnline,
@@ -23,7 +25,7 @@ import {
   onConnectivityChange,
 } from "../services/offlineQueue";
 import { cacheTaskList, getCachedTodayTasks } from "../services/taskCache";
-import { taskSnoozePolicy } from "./taskSnoozePolicy";
+import { taskSnoozeDateSafety, taskSnoozePolicy } from "./taskSnoozePolicy";
 import {
   getTaskSnoozeCorrectionNotice,
   openTaskDateDialog,
@@ -308,13 +310,14 @@ function isCurrentQuickTaskRequest(gardenId: number, version: number): boolean {
 
 async function completeQuickTask(
   task: GardenTask,
-  body: Parameters<typeof taskActionApi>[1],
+  body: TaskActionRequest,
 ): Promise<void> {
   const gardenId = getActiveGardenContext();
   if (gardenId === null || gardenId !== task.garden_id || !ctx.ensureWriteAccess()) return;
+  const actionBody = withTaskActionRevision(task, body);
   try {
     if (!isOnline()) {
-      const { action, ...payload } = body;
+      const { action, ...payload } = actionBody;
       await enqueueDraft("task_complete", {
         task_id: task.id,
         ...offlineTaskActionLabels(task, action),
@@ -323,7 +326,7 @@ async function completeQuickTask(
       ctx.showToast(t("offline.draft_saved"), "success");
       void ctx.refreshOfflineIndicator();
     } else {
-      await taskActionApi(task.id, body);
+      await taskActionApi(task.id, actionBody);
       ctx.showToast(
         t("tasks.action_success", { action: "complete" }),
         "success",
@@ -405,14 +408,22 @@ async function showTaskQuickComplete(): Promise<void> {
 
 function openQuickSnoozeDateDialog(
   task: GardenTask,
-  defaultDate: string,
-  warning?: string,
+  defaultDate = taskSnoozePolicy(task).defaultDate,
 ): void {
+  const policy = taskSnoozePolicy(task);
+  if (policy.blockedMessage) {
+    ctx.showToast(policy.blockedMessage, "error");
+    return;
+  }
   openTaskDateDialog({
     title: t("tasks.snooze_prompt") as string,
     defaultDate,
-    onConfirm: (date) => void snoozeQuickTask(task, date),
-    warning,
+    onConfirm: (date, confirmOutsideWindow) =>
+      void snoozeQuickTask(task, date, confirmOutsideWindow),
+    warning: policy.manualDateMessage,
+    requireManualDate: policy.requireManualDate,
+    maxDate: policy.maxDate,
+    getDateSafety: (date) => taskSnoozeDateSafety(task, date),
     modalParent: quickActionSheet(),
     onClose: () => focusQuickActionSheet(true),
   });
@@ -421,17 +432,31 @@ function openQuickSnoozeDateDialog(
 async function snoozeQuickTask(
   task: GardenTask,
   snoozeUntil: string,
+  confirmOutsideWindow = false,
 ): Promise<void> {
   const gardenId = getActiveGardenContext();
   if (gardenId === null || gardenId !== task.garden_id || !ctx.ensureWriteAccess()) return;
+  const safety = taskSnoozeDateSafety(task, snoozeUntil);
+  if (safety.blocked) {
+    ctx.showToast(safety.message ?? t("tasks.snooze_prompt"), "error");
+    return;
+  }
+  const actionBody = withTaskActionRevision(task, {
+    action: "snooze",
+    snooze_until: snoozeUntil,
+    ...(safety.confirmationRequired && confirmOutsideWindow
+      ? { confirm_outside_window: true }
+      : {}),
+  });
   const online = isOnline();
   try {
     if (!online) {
       try {
+        const { action, ...payload } = actionBody;
         await enqueueDraft("task_snooze", {
           task_id: task.id,
-          ...offlineTaskActionLabels(task, "snooze"),
-          snooze_until: snoozeUntil,
+          ...offlineTaskActionLabels(task, action),
+          ...payload,
         });
       } catch (err) {
         ctx.showToast(offlineTaskActionErrorMessage(err), "error");
@@ -442,10 +467,7 @@ async function snoozeQuickTask(
       await showTaskQuickSnooze({ task, snoozeUntil });
       return;
     } else {
-      await taskActionApi(task.id, {
-        action: "snooze",
-        snooze_until: snoozeUntil,
-      });
+      await taskActionApi(task.id, actionBody);
       void ctx.refreshBadgeCounts();
     }
     await showTaskQuickSnooze({ task, snoozeUntil });
@@ -473,8 +495,7 @@ async function showTaskQuickSnooze(
     const onSnoozeDate = (taskId: string): void => {
       const task = actionableById.get(taskId);
       if (!task) return;
-      const policy = taskSnoozePolicy(task);
-      openQuickSnoozeDateDialog(task, policy.defaultDate, policy.warning);
+      openQuickSnoozeDateDialog(task);
     };
     renderTaskQuickSnooze(
       content,
@@ -492,12 +513,12 @@ async function showTaskQuickSnooze(
         const task = actionableById.get(taskId);
         if (!task) return;
         const policy = taskSnoozePolicy(task);
+        if (policy.blockedMessage) {
+          ctx.showToast(policy.blockedMessage, "error");
+          return;
+        }
         if (!policy.immediate) {
-          openQuickSnoozeDateDialog(
-            task,
-            policy.defaultDate,
-            policy.warning,
-          );
+          openQuickSnoozeDateDialog(task, policy.defaultDate);
           return;
         }
         await snoozeQuickTask(task, policy.defaultDate);

@@ -136,12 +136,12 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         today_action = app.split("async function handleAttentionTodayAction", 1)[1].split(
             "async function handleAttentionTodayViewSection", 1
         )[0]
-        task_navigation = today_action.split('action.kind === "open_task"', 1)[1].split(
-            'action.kind === "open_weather"', 1
+        task_navigation = today_action.split('case "open_task":', 1)[1].split(
+            'case "open_weather":', 1
         )[0]
-        self.assertIn("attentionTodayPanel?.closeMobileSheet();", task_navigation)
+        self.assertIn("closeAttentionTodayNavigationOverlays();", task_navigation)
         self.assertLess(
-            task_navigation.index("closePanel();"),
+            task_navigation.index("closeAttentionTodayNavigationOverlays();"),
             task_navigation.index('navigateToSubMode("tasks")'),
         )
 

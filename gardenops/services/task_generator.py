@@ -88,6 +88,26 @@ def _local_bloom_months(db: DbConn, garden_id: int) -> dict[str, set[int]]:
     return months_by_plant
 
 
+def _bloom_season_closed_plants(
+    db: DbConn,
+    garden_id: int,
+    target_year: int,
+) -> set[str]:
+    rows = db.execute(
+        """
+        SELECT DISTINCT jep.plt_id
+        FROM garden_journal_entries je
+        JOIN garden_journal_entry_plants jep ON jep.entry_id = je.id
+        WHERE je.garden_id = %s
+          AND je.event_type = 'observed'
+          AND EXTRACT(YEAR FROM je.occurred_on::date)::int = %s
+          AND je.metadata_json::jsonb ->> 'outcome' = 'not_seen_blooming_this_season'
+        """,
+        (garden_id, target_year),
+    ).fetchall()
+    return {str(row["plt_id"]) for row in rows}
+
+
 _HARVEST_OFFSETS: dict[str, int] = {
     "baerbusker": 2,  # berry bushes: ~2 months after bloom
     "frø": 3,  # planted from seed: ~3 months after sow
@@ -1107,7 +1127,11 @@ def reconcile_rain_watering_outcomes(
         original_due_on = str(metadata.get("due_on") or "")
         if not original_due_on:
             continue
+        today = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
+        proposed_recovery_on = max(original_due_on, today)
         covering_alert = _rain_alert_covering_date(db, garden_id, original_due_on)
+        if covering_alert is None and proposed_recovery_on != original_due_on:
+            covering_alert = _rain_alert_covering_date(db, garden_id, proposed_recovery_on)
         if covering_alert is not None:
             if str(outcome["outcome_type"]) != "watering_rescheduled_by_rain":
                 continue
@@ -1175,6 +1199,38 @@ def reconcile_rain_watering_outcomes(
             )
             adjusted += 1
             continue
+
+        expected_action_on = str(metadata.get("new_due_on") or "")
+        if expected_action_on:
+            current_task = db.execute(
+                """
+                SELECT status, COALESCE(snoozed_until, due_on) AS action_on
+                FROM garden_tasks
+                WHERE garden_id = %s AND rule_source = %s
+                ORDER BY id DESC LIMIT 1
+                FOR UPDATE
+                """,
+                (garden_id, str(outcome["source_public_id"])),
+            ).fetchone()
+            if (
+                current_task is not None
+                and str(current_task["status"]) in {"pending", "snoozed"}
+                and str(current_task["action_on"]) != expected_action_on
+            ):
+                _update_rain_outcome_lifecycle(
+                    db,
+                    outcome=outcome,
+                    metadata=metadata,
+                    status="superseded",
+                    reason="gardener_schedule_preserved",
+                    explanation=(
+                        "The rain forecast changed, but the gardener's newer task date "
+                        "was preserved."
+                    ),
+                    now_ms=now_ms,
+                )
+                closed += 1
+                continue
 
         recovered_task = _recover_rain_outcome_task(
             db,
@@ -1495,6 +1551,7 @@ def generate_tasks(
 
     plant_contexts = [_plant_context_from_row(plant) for plant in plants]
     local_bloom_months = _local_bloom_months(db, garden_id)
+    bloom_season_closed_plants = _bloom_season_closed_plants(db, garden_id, target_year)
     _delete_pending_rule_tasks(
         db,
         garden_id=garden_id,
@@ -1541,7 +1598,7 @@ def generate_tasks(
         bloom_months = local_months if local_months else _bloom_months(bloom_raw)
         if target_month in bloom_months:
             rule = f"bloom_observe:{plt_id}:{target_year}-{target_month:02d}"
-            if rule in existing_rule_sources:
+            if plt_id in bloom_season_closed_plants or rule in existing_rule_sources:
                 skipped += 1
             else:
                 desc_en, desc_no = _infer_descriptions_for_rule(

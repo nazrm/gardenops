@@ -2,7 +2,7 @@ import json
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
 
@@ -371,6 +371,140 @@ class TestNotifications(BaseApiTest):
             self.assertEqual(int(delivered["emailed_users"]), 1)
             self.assertEqual(sent[0][0], "email-only-task@example.test")
             self.assertIn("Email-only basil task", sent[0][2])
+        finally:
+            db.return_db(conn)
+
+    def test_digest_only_event_persists_during_quiet_hours_and_delivers_later(self) -> None:
+        from gardenops.services.notification_service import (
+            create_garden_member_notifications,
+            deliver_pending_email_digests,
+        )
+
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+            ).fetchone()
+            assert garden is not None
+            garden_id = int(garden["id"])
+            user = create_user(
+                conn,
+                username=f"quiet_digest_{self.__class__.__name__.lower()}",
+                password=strong_password("quietdigestpass123"),
+                role="editor",
+            )
+            user_id = int(user["id"])
+            now = db.current_timestamp_ms()
+            now_utc = datetime.fromtimestamp(now / 1000, UTC)
+            quiet_hours = {
+                "timezone": "UTC",
+                "digest": {
+                    "enabled": True,
+                    "start": (now_utc - timedelta(hours=1)).strftime("%H:%M"),
+                    "end": (now_utc + timedelta(hours=1)).strftime("%H:%M"),
+                },
+            }
+            conn.execute(
+                "UPDATE auth_users SET subscription_tier = 'pro' WHERE id = %s",
+                (user_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO garden_memberships (garden_id, user_id, role)
+                VALUES (%s, %s, 'editor')
+                ON CONFLICT DO NOTHING
+                """,
+                (garden_id, user_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_notification_preferences
+                    (user_id, in_app_enabled, email_enabled, email_address,
+                     digest_frequency, quiet_hours_json, task_due_enabled,
+                     task_overdue_enabled, created_at_ms, updated_at_ms)
+                VALUES (%s, 0, 1, %s, 'daily', '{}', 1, 1, %s, %s)
+                """,
+                (user_id, "quiet-digest@example.test", now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_attention_preferences
+                    (user_id, preset, rules_json, quiet_hours_json,
+                     show_no_action_history, created_at_ms, updated_at_ms)
+                VALUES (%s, 'custom', %s, %s, 1, %s, %s)
+                """,
+                (
+                    user_id,
+                    json.dumps(
+                        {
+                            "issue_follow_up_due": {
+                                "panel": True,
+                                "inbox": False,
+                                "digest": True,
+                                "min_severity": "low",
+                            }
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(quiet_hours, separators=(",", ":")),
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+
+            generated = create_garden_member_notifications(
+                conn,
+                garden_id=garden_id,
+                notification_type="issue_created",
+                title="Check mildew",
+                body="Review the cucumber bed.",
+                target_type="issue",
+                target_id="issue_quiet_digest",
+                now_ms=now,
+            )
+            self.assertGreaterEqual(int(generated["created"]), 1)
+            event = conn.execute(
+                """
+                SELECT id, emailed_at_ms
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND user_id = %s
+                  AND notification_type = 'issue_created'
+                  AND target_id = 'issue_quiet_digest'
+                """,
+                (garden_id, user_id),
+            ).fetchone()
+            assert event is not None
+            self.assertIsNone(event["emailed_at_ms"])
+
+            sent: list[tuple[str, str, str]] = []
+            blocked = deliver_pending_email_digests(
+                conn,
+                garden_id,
+                email_sender=lambda recipient, subject, body: sent.append(
+                    (recipient, subject, body)
+                ),
+                now_ms=now,
+            )
+            self.assertEqual(int(blocked["emailed_users"]), 0)
+            self.assertEqual(sent, [])
+
+            conn.execute(
+                "UPDATE user_attention_preferences SET quiet_hours_json = '{}' WHERE user_id = %s",
+                (user_id,),
+            )
+            delivered = deliver_pending_email_digests(
+                conn,
+                garden_id,
+                email_sender=lambda recipient, subject, body: sent.append(
+                    (recipient, subject, body)
+                ),
+                now_ms=now + 1,
+            )
+            self.assertEqual(int(delivered["emailed_users"]), 1)
+            self.assertEqual(len(sent), 1)
+            self.assertIn("Check mildew", sent[0][2])
         finally:
             db.return_db(conn)
 

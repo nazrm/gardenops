@@ -15,12 +15,18 @@ import {
   refreshTaskDescriptionsApi,
   getActiveGardenContext,
   getApiErrorMessage,
+  withTaskActionRevision,
 } from "../services/api";
 import { buildPlantNameMap } from "../core/plantNames";
 import { renderTaskList, createTaskForm } from "../components/tasks";
 import { confirmDialog, createModal } from "../components/dialogCore";
 import { selectPlot } from "../components/plotInteractions";
-import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import {
+  formatLocalDate,
+  taskSnoozeDateSafety,
+  taskSnoozePolicy,
+  type TaskSnoozeDateSafety,
+} from "../features/taskSnoozePolicy";
 import {
   getTaskSnoozeCorrectionNotice,
   openTaskDateDialog,
@@ -61,7 +67,7 @@ let tasksRequestGeneration = 0;
 let offlineQueueListenerBound = false;
 let taskConnectivityListenerBound = false;
 const TASKS_PAGE_SIZE = 50;
-type TaskActionExtra = Omit<TaskActionRequest, "action">;
+type TaskActionExtra = Omit<TaskActionRequest, "action" | "expected_updated_at_ms">;
 
 interface TaskActionOptions {
   allowMissingTask?: boolean;
@@ -259,9 +265,16 @@ export function initTasksTab(appCtx: AppContext): void {
   }
   if (!taskConnectivityListenerBound) {
     taskConnectivityListenerBound = true;
-    onConnectivityChange(() => {
+    onConnectivityChange((online) => {
       syncTaskHeaderButtons();
       renderTasksView();
+      if (
+        online
+        && ctx.getActiveTab() === "activity"
+        && ctx.getSubMode() === "tasks"
+      ) {
+        void loadTasks();
+      }
     });
   }
 
@@ -522,11 +535,8 @@ function renderTasksView(
   renderTaskList(container, taskItems, {
     onComplete: (task) => completeTask(task),
     onSnooze: (task) => void openSnoozeDialog(task),
-    onSnoozeDate: (task) => {
-      const policy = taskSnoozePolicy(task);
-      openSnoozeDateDialog(task, policy.defaultDate, policy.warning);
-    },
-    onSkip: (task) => void handleTaskAction(task.id, "skip"),
+    onSnoozeDate: (task) => openSnoozeDateDialog(task),
+    onSkip: (task) => void handleTaskAction(task, "skip"),
     onReschedule: (task) => void openRescheduleDialog(task),
     onEdit: (task) => void openTaskForm(task),
     onDelete: (task) => void deleteTask(task),
@@ -678,12 +688,21 @@ function renderTaskBatchBar(): void {
         (task) => isBatchActionable(task) && selectedTaskIds.has(task.id),
       );
       const policy = batchSnoozePolicy(selectedTasks);
+      if (policy.blockedMessage) {
+        ctx.showToast(policy.blockedMessage, "error");
+        return;
+      }
       openTaskDateDialog({
         title: t("tasks.snooze_prompt") as string,
         defaultDate: policy.defaultDate,
-        onConfirm: (date) => void handleBatchTaskAction("snooze", { snooze_until: date }),
+        onConfirm: (date, confirmOutsideWindow) => void handleBatchTaskAction("snooze", {
+          snooze_until: date,
+          ...(confirmOutsideWindow ? { confirm_outside_window: true } : {}),
+        }),
         warning: policy.warning,
         requireManualDate: policy.requiresManualDate,
+        maxDate: policy.maxDate,
+        getDateSafety: policy.getDateSafety,
       });
     });
     bar.appendChild(snoozeBtn);
@@ -711,6 +730,22 @@ interface BatchSnoozePolicy {
   defaultDate: string;
   warning?: string | undefined;
   requiresManualDate: boolean;
+  maxDate?: string | undefined;
+  blockedMessage?: string | undefined;
+  getDateSafety: (date: string) => TaskSnoozeDateSafety;
+}
+
+function batchSnoozeDateSafety(
+  selectedTasks: GardenTask[],
+  snoozeUntil: string,
+): TaskSnoozeDateSafety {
+  let confirmation: TaskSnoozeDateSafety | undefined;
+  for (const task of selectedTasks) {
+    const safety = taskSnoozeDateSafety(task, snoozeUntil);
+    if (safety.blocked) return safety;
+    if (!confirmation && safety.confirmationRequired) confirmation = safety;
+  }
+  return confirmation ?? {};
 }
 
 function batchSnoozePolicy(selectedTasks: GardenTask[]): BatchSnoozePolicy {
@@ -720,49 +755,50 @@ function batchSnoozePolicy(selectedTasks: GardenTask[]): BatchSnoozePolicy {
     return {
       defaultDate: formatLocalDate(new Date()),
       requiresManualDate: false,
+      getDateSafety: () => ({}),
     };
   }
   const homogeneous = policies.every((policy) => policy.defaultDate === first.defaultDate);
-  if (!homogeneous) {
-    return {
-      defaultDate: formatLocalDate(new Date()),
-      warning: t("tasks.batch_snooze_mixed_warning") as string,
-      requiresManualDate: true,
-    };
-  }
+  const maxDate = policies.reduce<string | undefined>((earliest, policy) => (
+    policy.maxDate && (!earliest || policy.maxDate < earliest)
+      ? policy.maxDate
+      : earliest
+  ), undefined);
   return {
-    defaultDate: first.defaultDate,
-    warning: policies.find((policy) => policy.warning)?.warning,
-    requiresManualDate: false,
+    defaultDate: homogeneous ? first.defaultDate : formatLocalDate(new Date()),
+    warning: !homogeneous
+      ? t("tasks.batch_snooze_mixed_warning") as string
+      : policies.find((policy) => policy.manualDateMessage)?.manualDateMessage,
+    requiresManualDate: !homogeneous || policies.some((policy) => policy.requireManualDate),
+    maxDate,
+    blockedMessage: policies.find((policy) => policy.blockedMessage)?.blockedMessage,
+    getDateSafety: (date) => batchSnoozeDateSafety(selectedTasks, date),
   };
 }
 
 async function enqueueOfflineTaskAction(
-  taskId: string,
+  task: GardenTask,
   action: TaskActionRequest["action"],
   extra?: TaskActionExtra,
-  task?: Pick<GardenTask, "task_type" | "title">,
 ): Promise<void> {
   await enqueueTaskActionBatch([
-    offlineTaskActionInput(action, offlineTaskActionPayload(taskId, action, extra, task)),
+    offlineTaskActionInput(action, offlineTaskActionPayload(task, action, extra)),
   ]);
 }
 
 function offlineTaskActionPayload(
-  taskId: string,
+  task: Pick<GardenTask, "id" | "task_type" | "title" | "updated_at_ms">,
   action: TaskActionRequest["action"],
   extra?: TaskActionExtra,
-  task?: Pick<GardenTask, "task_type" | "title">,
 ): Record<string, unknown> {
-  return {
-    task_id: taskId,
-    ...(task
-      ? offlineTaskActionLabels(task, action)
-      : {
-          action_label: String(t(`tasks.action_${action}`)),
-          task_label: String(t("offline.failed_task", { task: taskId })),
-        }),
+  const { action: _action, ...payload } = withTaskActionRevision(task, {
+    action,
     ...extra,
+  });
+  return {
+    task_id: task.id,
+    ...offlineTaskActionLabels(task, action),
+    ...payload,
   };
 }
 
@@ -780,12 +816,13 @@ function offlineTaskActionInput(
 }
 
 async function handleTaskAction(
-  taskId: string,
+  task: GardenTask,
   action: TaskActionRequest["action"],
   extra?: TaskActionExtra,
   options: TaskActionOptions = {},
 ): Promise<boolean> {
-  const requestGardenId = options.expectedGardenId ?? getActiveGardenContext();
+  const taskId = task.id;
+  const requestGardenId = options.expectedGardenId ?? task.garden_id;
   const actionIsCurrent = (): boolean => isCurrentTaskAction(
     taskId,
     requestGardenId,
@@ -795,8 +832,7 @@ async function handleTaskAction(
   if (!ctx.ensureWriteAccess()) return false;
   if (!ctx.isOnline()) {
     try {
-      const task = taskItems.find((candidate) => candidate.id === taskId);
-      await enqueueOfflineTaskAction(taskId, action, extra, task);
+      await enqueueOfflineTaskAction(task, action, extra);
     } catch (err) {
       ctx.showToast(offlineTaskActionErrorMessage(err), "error");
       return false;
@@ -810,7 +846,7 @@ async function handleTaskAction(
     return true;
   }
   try {
-    await taskActionApi(taskId, { action, ...extra });
+    await taskActionApi(taskId, withTaskActionRevision(task, { action, ...extra }));
     if (!actionIsCurrent()) return false;
     if (options.showSuccessToast !== false) {
       ctx.showToast(
@@ -843,15 +879,14 @@ async function handleBatchTaskAction(
   if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return;
   if (!ctx.isOnline()) {
     try {
-      await enqueueTaskActionBatch(taskIds.map((taskId) => offlineTaskActionInput(
-        action,
-        offlineTaskActionPayload(
-          taskId,
+      await enqueueTaskActionBatch(taskIds.map((taskId) => {
+        const task = taskItems.find((candidate) => candidate.id === taskId);
+        if (!task) throw new Error("Task is no longer available");
+        return offlineTaskActionInput(
           action,
-          extra,
-          taskItems.find((task) => task.id === taskId),
-        ),
-      )));
+          offlineTaskActionPayload(task, action, extra),
+        );
+      }));
     } catch (err) {
       ctx.showToast(offlineTaskActionErrorMessage(err), "error");
       return;
@@ -884,7 +919,7 @@ async function handleBatchTaskAction(
 
 function completeTask(task: GardenTask): void {
   if (!needsCompletionDialog(task)) {
-    void handleTaskAction(task.id, "complete");
+    void handleTaskAction(task, "complete");
     return;
   }
   if (!ctx.isOnline()) {
@@ -899,7 +934,7 @@ function completeTask(task: GardenTask): void {
     buildPlantNameMap(ctx.getPlants()),
     (body) => {
       const { action: _action, ...extra } = body;
-      void handleTaskAction(task.id, "complete", extra);
+      void handleTaskAction(task, "complete", extra);
     },
   );
 }
@@ -934,12 +969,23 @@ async function snoozeTaskWithPolicy(
   task: GardenTask,
   snoozeUntil: string,
   options: SnoozeTaskOptions = {},
+  confirmOutsideWindow = false,
 ): Promise<void> {
+  const safety = taskSnoozeDateSafety(task, snoozeUntil);
+  if (safety.blocked) {
+    ctx.showToast(safety.message ?? t("tasks.snooze_prompt"), "error");
+    return;
+  }
   const online = ctx.isOnline();
   const ok = await handleTaskAction(
-    task.id,
+    task,
     "snooze",
-    { snooze_until: snoozeUntil },
+    {
+      snooze_until: snoozeUntil,
+      ...(safety.confirmationRequired && confirmOutsideWindow
+        ? { confirm_outside_window: true }
+        : {}),
+    },
     {
       ...(options.allowMissingTask ? { allowMissingTask: true } : {}),
       expectedGardenId: task.garden_id,
@@ -951,7 +997,7 @@ async function snoozeTaskWithPolicy(
     ctx.showToast(t("offline.draft_saved"), "success");
   }
   const notice = getTaskSnoozeCorrectionNotice(snoozeUntil, () => {
-    openSnoozeDateDialog(task, snoozeUntil, undefined, { allowMissingTask: true });
+    openSnoozeDateDialog(task, snoozeUntil, { allowMissingTask: true });
   });
   ctx.showToast(
     notice.message,
@@ -970,25 +1016,37 @@ async function snoozeTaskWithPolicy(
 
 function openSnoozeDateDialog(
   task: GardenTask,
-  defaultDate: string,
-  warning?: string,
+  defaultDate = taskSnoozePolicy(task).defaultDate,
   options: SnoozeTaskOptions = {},
 ): void {
+  const policy = taskSnoozePolicy(task);
+  if (policy.blockedMessage) {
+    ctx.showToast(policy.blockedMessage, "error");
+    return;
+  }
   openTaskDateDialog({
     title: t("tasks.snooze_prompt") as string,
     defaultDate,
-    onConfirm: (date) => void snoozeTaskWithPolicy(task, date, options),
-    warning,
+    onConfirm: (date, confirmOutsideWindow) =>
+      void snoozeTaskWithPolicy(task, date, options, confirmOutsideWindow),
+    warning: policy.manualDateMessage,
+    requireManualDate: policy.requireManualDate,
+    maxDate: policy.maxDate,
+    getDateSafety: (date) => taskSnoozeDateSafety(task, date),
   });
 }
 
 function openSnoozeDialog(task: GardenTask): void {
   const policy = taskSnoozePolicy(task);
+  if (policy.blockedMessage) {
+    ctx.showToast(policy.blockedMessage, "error");
+    return;
+  }
   if (policy.immediate) {
     void snoozeTaskWithPolicy(task, policy.defaultDate);
     return;
   }
-  openSnoozeDateDialog(task, policy.defaultDate, policy.warning);
+  openSnoozeDateDialog(task, policy.defaultDate);
 }
 
 function openRescheduleDialog(task: GardenTask): void {
@@ -996,7 +1054,7 @@ function openRescheduleDialog(task: GardenTask): void {
     title: t("tasks.reschedule_prompt") as string,
     defaultDate: task.due_on,
     onConfirm: (date) =>
-      void handleTaskAction(task.id, "reschedule", {
+      void handleTaskAction(task, "reschedule", {
         reschedule_to: date,
       }),
   });

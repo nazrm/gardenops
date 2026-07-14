@@ -363,7 +363,7 @@ class TestWeather(BaseApiTest):
         ).fetchone()["id"]
         db.return_db(conn)
 
-        self._create_test_user("weather_peer", "weather-peer-pass", role="admin")
+        self._create_test_user("weather_peer", "weather-peer-pass", role="viewer")
         with patch.dict(
             "os.environ",
             {
@@ -398,11 +398,16 @@ class TestWeather(BaseApiTest):
             peer_alerts = peer_client.get("/api/weather/alerts", headers=peer_headers)
             own_summary = user_client.get("/api/weather/summary", headers=user_headers)
             peer_summary = peer_client.get("/api/weather/summary", headers=peer_headers)
+            peer_dismissed = peer_client.post(
+                f"/api/weather/alerts/{alert_id}/dismiss",
+                headers=peer_headers,
+            )
 
         self.assertNotIn(alert_id, {alert["id"] for alert in own_alerts.json()["alerts"]})
         self.assertIn(alert_id, {alert["id"] for alert in peer_alerts.json()["alerts"]})
         self.assertNotIn(alert_id, {alert["id"] for alert in own_summary.json()["alerts"]})
         self.assertIn(alert_id, {alert["id"] for alert in peer_summary.json()["alerts"]})
+        self.assertEqual(peer_dismissed.status_code, 200)
 
         conn = db.get_db()
         try:

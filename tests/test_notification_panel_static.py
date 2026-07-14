@@ -122,3 +122,16 @@ def test_today_preferences_preserve_untouched_rules_within_grouped_rows() -> Non
     assert "if (!dirtyRuleRows.has(rowConfig.id)) return;" in attention
     assert "groupedRules.every((rule) => Boolean(rule.inbox))" in attention
     assert "groupedRules.every((rule) => Boolean(rule.digest))" in attention
+
+
+def test_today_preferences_disable_digest_until_delivery_is_configured() -> None:
+    attention = (ROOT / "frontend/src/components/attentionTodayPanel.ts").read_text(
+        encoding="utf-8"
+    )
+    models = (ROOT / "frontend/src/core/models.ts").read_text(encoding="utf-8")
+
+    assert "digest_delivery?:" in models
+    assert "const digestConfigured = preferences.digest_delivery?.configured ?? true;" in attention
+    assert 'surface === "digest" && !digestConfigured' in attention
+    assert "enabled.disabled = true;" in attention
+    assert 'toggle.setAttribute("aria-describedby", digestDescriptionId);' in attention

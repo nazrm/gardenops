@@ -331,7 +331,7 @@ def _create_weather_tasks(
     original_due_on = str(alert["valid_from"])[:10]
     effective_now_ms = now_ms if now_ms is not None else current_timestamp_ms()
     today_iso = datetime.fromtimestamp(effective_now_ms / 1000, UTC).date().isoformat()
-    due_on = max(original_due_on, today_iso) if task_type == "water" else original_due_on
+    due_on = max(original_due_on, today_iso)
     created = 0
 
     matching_plants = [

@@ -162,7 +162,7 @@ export function renderWeatherDashboard(
   // Alert cards
   if (summary.alerts.length > 0) {
     const alertCards = summary.alerts.map((alert) =>
-      createWeatherAlertCardMarkup(alert, canWriteWeather()),
+      createWeatherAlertCardMarkup(alert, true),
     ).join("");
     sections.push(`
       <div class="weather-section">

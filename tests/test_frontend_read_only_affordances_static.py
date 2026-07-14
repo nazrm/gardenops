@@ -53,3 +53,13 @@ def test_read_only_role_indicator_is_visible_in_desktop_and_mobile_shells() -> N
     role_rule = styles.split(".garden-role-chip {", 1)[1].split("}", 1)[0]
     assert "display: inline-flex;" in role_rule
     assert styles.count(".garden-role-chip {") == 1
+
+
+def test_viewers_can_dismiss_personal_weather_attention_but_not_refresh_forecasts() -> None:
+    weather = _read("frontend/src/components/weather.ts")
+    main = _read("gardenops/main.py")
+
+    assert "createWeatherAlertCardMarkup(alert, true)" in weather
+    assert "if (canWriteWeather()) callbacks.onCheckWeather();" in weather
+    assert 'weather_alert_prefix = "/api/weather/alerts/"' in main
+    assert "return alert_id.isdigit()" in main

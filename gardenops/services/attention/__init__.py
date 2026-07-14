@@ -4,6 +4,7 @@ from gardenops.services.attention.outcomes import (
 )
 from gardenops.services.attention.preferences import (
     AttentionPreferenceSet,
+    apply_digest_delivery_capability,
     apply_preferences,
     merge_notification_preferences,
     notification_quiet_hours_from_attention,
@@ -65,6 +66,7 @@ __all__ = [
     "NotificationStatusAttentionProvider",
     "TaskAttentionProvider",
     "WeatherAttentionProvider",
+    "apply_digest_delivery_capability",
     "apply_preferences",
     "apply_user_states",
     "attention_request_clock",

@@ -52,8 +52,11 @@ assertIncludes(app, "invalidateAttentionTodayForCurrentGarden", "app must invali
 assertIncludes(app, "getRequestScope: attentionTodayRequestScope", "app must pass Today request scope to the controller");
 assertIncludes(app, "attentionTodayPanel?.destroy()", "app must teardown Today panel when feature gate disables it");
 assertIncludes(app, "attentionTodayPanel?.closeMobileSheet()", "app must close mobile Today sheet outside mobile map context");
-assertIncludes(app, "action.kind === \"open_issue\"", "Attention issue actions must route to Issues");
-assertIncludes(app, "action.kind === \"open_attention_detail\"", "group summary actions must not fall through to Tasks");
+assertIncludes(app, "switch (action.kind)", "Attention actions must dispatch by action kind");
+assertIncludes(app, "case \"open_issue\":", "Attention issue actions must route to Issues");
+assertIncludes(app, "openAttentionIssueTarget", "Attention issue actions must open their exact target");
+assertIncludes(panel, "options.onError?.(message)", "failed Attention actions must report an error");
+assertIncludes(app, "case \"open_attention_detail\":", "group summary actions must not fall through to Tasks");
 assertIncludes(app, "onViewSection", "section overflow affordance must route out of the compact panel");
 assertIncludes(app, "refreshWeatherMutationSurfaces", "app must coordinate one-shot weather mutation refreshes");
 assertIncludes(app, "refreshNotificationsForCurrentGarden", "weather refresh must update the notification badge and open inbox");

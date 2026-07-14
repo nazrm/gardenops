@@ -1,4 +1,5 @@
 import importlib.util
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -445,6 +446,45 @@ def test_guardrail_keeps_critical_system_visible_on_non_email_surface():
 
     assert visible[0].id == "attn:notification:system"
     assert visible[0].user_state == "unread"
+
+
+def test_system_notification_bypasses_rules_but_respects_digest_quiet_hours():
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={
+            "system": {
+                "panel": False,
+                "inbox": False,
+                "digest": False,
+                "min_severity": "critical",
+            }
+        },
+        quiet_hours={
+            "timezone": "UTC",
+            "digest": {"enabled": True, "start": "15:00", "end": "17:00"},
+        },
+        show_no_action_history=True,
+    )
+    item = make_item(
+        id="attn:notification:system-digest",
+        provider="notification_status",
+        type="system",
+        category="system",
+        severity="normal",
+        delivery_eligibility=("digest",),
+    )
+
+    assert apply_preferences([item], prefs, surface="digest", now_ms=1783180800000) == []
+    assert [
+        visible.id
+        for visible in apply_preferences(
+            [item],
+            replace(prefs, quiet_hours={}),
+            surface="digest",
+            now_ms=1783180800000,
+        )
+    ] == ["attn:notification:system-digest"]
 
 
 def test_guardrail_still_respects_channel_eligibility():

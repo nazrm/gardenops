@@ -75,6 +75,12 @@ _FORECAST_ALERT_TYPES = frozenset(
     for alert_types in _FORECAST_ALERT_TYPES_BY_FIELD.values()
     for alert_type in alert_types
 )
+_FORECAST_RECONCILIATION_MIN_DAYS = {
+    "frost_warning": 1,
+    "heat_wave": 3,
+    "dry_spell": 5,
+    "rain_surplus": 3,
+}
 _FORECAST_RECONCILIATION_SCOPE_KEY = "_forecast_reconciliation_scope"
 
 
@@ -299,6 +305,29 @@ def get_or_fetch_forecast(
     return forecast
 
 
+def _validated_contiguous_forecast_dates(forecast: dict) -> list[str] | None:
+    daily = forecast.get("daily")
+    if not isinstance(daily, dict):
+        return None
+    dates = daily.get("time")
+    if (
+        not isinstance(dates, list)
+        or not dates
+        or any(not isinstance(value, str) or not value for value in dates)
+    ):
+        return None
+    try:
+        parsed_dates = [date.fromisoformat(value) for value in dates]
+    except ValueError:
+        return None
+    if any(
+        current != previous + timedelta(days=1)
+        for previous, current in zip(parsed_dates, parsed_dates[1:])
+    ):
+        return None
+    return list(dates)
+
+
 def _complete_forecast_alert_types(forecast: dict) -> set[str]:
     """Return alert families backed by a complete daily forecast series.
 
@@ -308,19 +337,8 @@ def _complete_forecast_alert_types(forecast: dict) -> set[str]:
     destructive reconciliation.
     """
     daily = forecast.get("daily")
-    if not isinstance(daily, dict):
-        return set()
-    dates = daily.get("time")
-    if (
-        not isinstance(dates, list)
-        or not dates
-        or any(not isinstance(value, str) or not value for value in dates)
-    ):
-        return set()
-    try:
-        for value in dates:
-            date.fromisoformat(value)
-    except ValueError:
+    dates = _validated_contiguous_forecast_dates(forecast)
+    if not isinstance(daily, dict) or dates is None:
         return set()
 
     complete_types: set[str] = set()
@@ -337,6 +355,22 @@ def _complete_forecast_alert_types(forecast: dict) -> set[str]:
         ):
             complete_types.update(alert_types)
     return complete_types
+
+
+def _forecast_reconciliation_coverage_bounds(
+    forecast: dict,
+    complete_alert_types: set[str],
+) -> dict[str, tuple[str, str]]:
+    """Return safe reconciliation bounds for each fully observed alert family."""
+    dates = _validated_contiguous_forecast_dates(forecast)
+    if dates is None:
+        return {}
+    bounds: dict[str, tuple[str, str]] = {}
+    for alert_type in complete_alert_types:
+        minimum_days = _FORECAST_RECONCILIATION_MIN_DAYS[alert_type]
+        if len(dates) >= minimum_days:
+            bounds[alert_type] = (dates[0], dates[-1])
+    return bounds
 
 
 def _forecast_with_complete_daily_families(
@@ -359,18 +393,27 @@ def _forecast_with_complete_daily_families(
     return {**forecast, "daily": daily}
 
 
-def _forecast_reconciliation_scope_marker(complete_alert_types: set[str]) -> dict[str, object]:
+def _forecast_reconciliation_scope_marker(
+    complete_alert_types: set[str],
+    coverage_bounds: dict[str, tuple[str, str]],
+) -> dict[str, object]:
     """Carry forecast completeness through callers that only pass alert rows.
 
     The weather routes intentionally hand a plain alerts list to downstream
-    reconciliation. This non-alert marker preserves the completeness scope
-    without changing that route contract; notification reconciliation removes
-    it before any alert work is performed.
+    reconciliation. This non-alert marker preserves completeness and validated
+    date bounds without changing that route contract; notification
+    reconciliation removes it before any alert work is performed.
     """
     return {
         "alert_type": "",
         "valid_from": "",
-        _FORECAST_RECONCILIATION_SCOPE_KEY: sorted(complete_alert_types),
+        _FORECAST_RECONCILIATION_SCOPE_KEY: {
+            "complete_alert_types": sorted(complete_alert_types),
+            "coverage_bounds": {
+                alert_type: {"start": start, "end": end}
+                for alert_type, (start, end) in sorted(coverage_bounds.items())
+            },
+        },
     }
 
 
@@ -817,6 +860,10 @@ def check_weather_and_generate_alerts(
         }
 
     complete_alert_types = _complete_forecast_alert_types(forecast)
+    coverage_bounds = _forecast_reconciliation_coverage_bounds(
+        forecast,
+        complete_alert_types,
+    )
     analysis_forecast = _forecast_with_complete_daily_families(forecast, complete_alert_types)
     alerts = analyze_forecast(analysis_forecast)
 
@@ -843,8 +890,9 @@ def check_weather_and_generate_alerts(
         watering_plants,
     )
     reconciliation_alerts = list(alerts)
-    if complete_alert_types != _FORECAST_ALERT_TYPES:
-        reconciliation_alerts.append(_forecast_reconciliation_scope_marker(complete_alert_types))
+    reconciliation_alerts.append(
+        _forecast_reconciliation_scope_marker(complete_alert_types, coverage_bounds)
+    )
 
     return {
         "forecast_available": True,

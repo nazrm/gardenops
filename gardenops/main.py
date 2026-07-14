@@ -1159,6 +1159,10 @@ def _is_personal_attention_mutation_path(path: str) -> bool:
             notification_id = notification_action.removesuffix("/read")
             return "/" not in notification_id and notification_id.startswith("note_")
         return "/" not in notification_action and notification_action.startswith("note_")
+    weather_alert_prefix = "/api/weather/alerts/"
+    if normalized_path.startswith(weather_alert_prefix) and normalized_path.endswith("/dismiss"):
+        alert_id = normalized_path.removeprefix(weather_alert_prefix).removesuffix("/dismiss")
+        return alert_id.isdigit()
     if not normalized_path.startswith("/api/attention/items/"):
         return False
     return normalized_path.rsplit("/", 1)[-1] in {"read", "dismiss", "snooze", "restore"}

@@ -24,6 +24,7 @@ import {
   createHarvestApi,
   addMediaLinkApi,
   uploadMediaApi,
+  type RevisionedTaskActionRequest,
 } from "../services/api";
 import type { OfflineDraft } from "../core/models";
 
@@ -104,8 +105,21 @@ function attachmentOperationIds(
 function taskActionBody(
   payload: Record<string, unknown>,
   action: Parameters<typeof taskActionApi>[1]["action"],
-): Parameters<typeof taskActionApi>[1] {
-  const body: Parameters<typeof taskActionApi>[1] = { action };
+): RevisionedTaskActionRequest {
+  const expectedUpdatedAtMs = payload["expected_updated_at_ms"];
+  if (
+    typeof expectedUpdatedAtMs !== "number"
+    || !Number.isSafeInteger(expectedUpdatedAtMs)
+  ) {
+    throw new Error("Offline task action is missing its expected revision");
+  }
+  const body: RevisionedTaskActionRequest = {
+    action,
+    expected_updated_at_ms: expectedUpdatedAtMs,
+  };
+  if (payload["confirm_outside_window"] === true) {
+    body.confirm_outside_window = true;
+  }
   if (typeof payload["snooze_until"] === "string") {
     body.snooze_until = payload["snooze_until"];
   }

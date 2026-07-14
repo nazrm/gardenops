@@ -22,6 +22,33 @@ if (!source.includes("formatLocalDate")) {
 if (source.includes("toISOString()")) {
   throw new Error("Snooze policy must not derive dates with toISOString()");
 }
+for (const requiredFragment of [
+  "taskSnoozeDateSafety",
+  "taskSnoozeMaximumDate",
+  "weather_valid_until",
+  "snoozeUntil > weatherDeadline",
+  "next_recurrence_on",
+  "snoozeUntil >= nextRecurrence",
+]) {
+  if (!source.includes(requiredFragment)) {
+    throw new Error(`Snooze policy is missing selected-date safety: ${requiredFragment}`);
+  }
+}
+
+const snoozeFlow = path.join(root, "frontend/src/features/taskSnoozeFlow.ts");
+const snoozeFlowSource = fs.readFileSync(snoozeFlow, "utf8");
+for (const requiredFragment of [
+  "getDateSafety",
+  "input.addEventListener(\"input\", updateDateSafety)",
+  "input.addEventListener(\"change\", updateDateSafety)",
+  "safety?.blocked",
+  "safety?.confirmationRequired",
+  "confirmDialog(",
+]) {
+  if (!snoozeFlowSource.includes(requiredFragment)) {
+    throw new Error(`Task date dialog is missing selected-date safety: ${requiredFragment}`);
+  }
+}
 
 const completionHelper = path.join(root, "frontend/src/features/taskCompletionFlow.ts");
 if (!fs.existsSync(completionHelper)) {
@@ -65,5 +92,11 @@ for (const relativePath of [
   }
   if (!surfaceSource.includes("offlineTaskActionLabels")) {
     throw new Error(`${relativePath} must retain human-readable offline task action labels`);
+  }
+  if (!surfaceSource.includes("taskSnoozeDateSafety")) {
+    throw new Error(`${relativePath} must recheck safety for the selected snooze date`);
+  }
+  if (!surfaceSource.includes("getDateSafety")) {
+    throw new Error(`${relativePath} must pass selected-date safety into the date dialog`);
   }
 }

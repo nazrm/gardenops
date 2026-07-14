@@ -554,6 +554,9 @@ export function initAttentionTodayPanel(
     const customRadio = fieldset.querySelector<HTMLInputElement>(
       "input[value='custom']",
     );
+    const digestConfigured = preferences.digest_delivery?.configured ?? true;
+    const digestAvailable = preferences.digest_delivery?.available ?? true;
+    const digestDescriptionId = "attention-preferences-digest-availability";
     const dirtyRuleRows = new Set<string>();
     const selectCustomPreset = (): void => {
       if (customRadio) customRadio.checked = true;
@@ -568,6 +571,19 @@ export function initAttentionTodayPanel(
       t("attention.preferences.delivery_matrix"),
     );
     matrixLegend.id = "attention-preferences-matrix";
+    if (!digestConfigured) {
+      const digestDescription = appendTextElement(
+        matrix,
+        "p",
+        "attention-preferences-delivery-note",
+        t(
+          digestAvailable
+            ? "attention.preferences.digest_setup_required"
+            : "attention.preferences.digest_unavailable",
+        ),
+      );
+      digestDescription.id = digestDescriptionId;
+    }
 
     const matrixHeader = document.createElement("div");
     matrixHeader.className = "attention-preferences-matrix-header";
@@ -624,6 +640,11 @@ export function initAttentionTodayPanel(
         toggle.type = "checkbox";
         toggle.name = `attention-rule-${rowConfig.id}-${surface}`;
         toggle.checked = Boolean(rule[surface]);
+        if (surface === "digest" && !digestConfigured) {
+          toggle.checked = false;
+          toggle.disabled = true;
+          toggle.setAttribute("aria-describedby", digestDescriptionId);
+        }
         toggle.setAttribute(
           "aria-label",
           `${t(rowConfig.labelKey)} ${surfaceLabel(surface)}`,
@@ -707,6 +728,11 @@ export function initAttentionTodayPanel(
       enabled.checked = Boolean(
         quietHourField(preferences.quiet_hours, channel, "enabled", false),
       );
+      if (channel === "digest" && !digestConfigured) {
+        enabled.checked = false;
+        enabled.disabled = true;
+        enabled.setAttribute("aria-describedby", digestDescriptionId);
+      }
       enabled.setAttribute(
         "data-testid",
         `attention-preferences-quiet-${channel}-enabled`,
@@ -730,6 +756,7 @@ export function initAttentionTodayPanel(
       start.type = "time";
       start.name = `attention-quiet-${channel}-start`;
       start.value = String(quietHourField(preferences.quiet_hours, channel, "start", "22:00"));
+      start.disabled = channel === "digest" && !digestConfigured;
       start.setAttribute("aria-label", `${text.textContent} ${t("attention.preferences.start")}`);
       start.setAttribute("data-testid", `attention-preferences-quiet-${channel}-start`);
       start.addEventListener("change", selectCustomPreset);
@@ -744,6 +771,7 @@ export function initAttentionTodayPanel(
       end.type = "time";
       end.name = `attention-quiet-${channel}-end`;
       end.value = String(quietHourField(preferences.quiet_hours, channel, "end", "07:00"));
+      end.disabled = channel === "digest" && !digestConfigured;
       end.setAttribute("aria-label", `${text.textContent} ${t("attention.preferences.end")}`);
       end.setAttribute("data-testid", `attention-preferences-quiet-${channel}-end`);
       end.addEventListener("change", selectCustomPreset);
@@ -953,6 +981,9 @@ export function initAttentionTodayPanel(
     button.setAttribute("aria-busy", "true");
     try {
       await handler(item, action);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : t("attention.load_failed");
+      options.onError?.(message);
     } finally {
       button.disabled = false;
       button.setAttribute("aria-busy", "false");

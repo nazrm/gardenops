@@ -1,13 +1,18 @@
-import { createModal } from "../components/dialogCore";
+import { confirmDialog, createModal } from "../components/dialogCore";
 import { t } from "../core/i18n";
-import { formatLocalDate } from "./taskSnoozePolicy";
+import {
+  formatLocalDate,
+  type TaskSnoozeDateSafety,
+} from "./taskSnoozePolicy";
 
 export interface TaskDateDialogOptions {
   title: string;
   defaultDate: string;
-  onConfirm: (date: string) => void;
+  onConfirm: (date: string, confirmOutsideWindow?: boolean) => void;
   warning?: string | undefined;
   requireManualDate?: boolean | undefined;
+  maxDate?: string | undefined;
+  getDateSafety?: ((date: string) => TaskSnoozeDateSafety) | undefined;
   modalParent?: HTMLElement | null | undefined;
   onClose?: (() => void) | undefined;
 }
@@ -25,6 +30,8 @@ export function openTaskDateDialog({
   onConfirm,
   warning,
   requireManualDate = false,
+  maxDate,
+  getDateSafety,
   modalParent,
   onClose,
 }: TaskDateDialogOptions): void {
@@ -44,29 +51,66 @@ export function openTaskDateDialog({
   const warningEl = dialog.querySelector<HTMLElement>(".task-date-dialog-warning")!;
   warningEl.id = "task-date-dialog-warning";
   warningEl.setAttribute("role", "alert");
-  if (warning) {
-    warningEl.hidden = false;
-    warningEl.textContent = warning;
-  }
   const input = dialog.querySelector<HTMLInputElement>("input[type='date']")!;
   input.value = requireManualDate ? "" : defaultDate;
   input.min = formatLocalDate(new Date());
-  input.required = requireManualDate;
+  if (maxDate) input.max = maxDate;
+  input.required = true;
   input.setAttribute("aria-label", title);
-  if (warning) input.setAttribute("aria-describedby", warningEl.id);
+  if (warning || getDateSafety) input.setAttribute("aria-describedby", warningEl.id);
+
+  const updateDateSafety = (): TaskSnoozeDateSafety | undefined => {
+    const safety = input.value ? getDateSafety?.(input.value) : undefined;
+    const message = safety?.message ?? warning;
+    warningEl.hidden = !message;
+    warningEl.textContent = message ?? "";
+    return safety;
+  };
+  updateDateSafety();
+
   const cancelBtn = dialog.querySelector<HTMLButtonElement>(".confirm-no")!;
   cancelBtn.textContent = t("common.cancel") as string;
   cancelBtn.addEventListener("click", close);
-  const confirm = (): void => {
-    if (!input.value) return;
+  const okBtn = dialog.querySelector<HTMLButtonElement>(".confirm-yes")!;
+  let confirming = false;
+  const confirm = async (): Promise<void> => {
+    const safety = updateDateSafety();
+    if (!input.value || !input.reportValidity() || safety?.blocked) {
+      input.focus();
+      return;
+    }
+    if (safety?.confirmationRequired) {
+      if (confirming) return;
+      confirming = true;
+      okBtn.disabled = true;
+      const accepted = await confirmDialog(
+        safety.message ?? "",
+        safety.confirmationLabel,
+      );
+      confirming = false;
+      okBtn.disabled = false;
+      if (!accepted) {
+        input.focus();
+        return;
+      }
+      onConfirm(input.value, true);
+      close();
+      return;
+    }
     onConfirm(input.value);
     close();
   };
-  const okBtn = dialog.querySelector<HTMLButtonElement>(".confirm-yes")!;
   okBtn.textContent = t("common.save") as string;
-  okBtn.addEventListener("click", confirm);
+  okBtn.addEventListener("click", () => {
+    void confirm();
+  });
+  input.addEventListener("input", updateDateSafety);
+  input.addEventListener("change", updateDateSafety);
   input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") confirm();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void confirm();
+    }
   });
   input.focus();
 }

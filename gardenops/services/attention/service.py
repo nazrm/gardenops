@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from gardenops.services.attention.preferences import (
     AttentionPreferenceSet,
+    apply_digest_delivery_capability,
     apply_preferences,
     normalize_attention_preference_payload,
     normalize_attention_quiet_hours,
@@ -95,15 +96,28 @@ def _serialize_action(action: AttentionAction | None) -> dict[str, Any] | None:
     }
 
 
-def serialize_attention_preferences(preferences: AttentionPreferenceSet) -> dict[str, Any]:
-    return {
-        "user_id": preferences.user_id,
-        "preset": preferences.preset,
-        "rules": preferences.rules,
-        "quiet_hours": preferences.quiet_hours,
-        "show_no_action_history": preferences.show_no_action_history,
-        "metadata": preferences.metadata,
+def serialize_attention_preferences(
+    preferences: AttentionPreferenceSet,
+    *,
+    digest_delivery: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    effective_preferences = preferences
+    if digest_delivery is not None:
+        effective_preferences = apply_digest_delivery_capability(
+            preferences,
+            configured=bool(digest_delivery.get("configured")),
+        )
+    serialized = {
+        "user_id": effective_preferences.user_id,
+        "preset": effective_preferences.preset,
+        "rules": effective_preferences.rules,
+        "quiet_hours": effective_preferences.quiet_hours,
+        "show_no_action_history": effective_preferences.show_no_action_history,
+        "metadata": effective_preferences.metadata,
     }
+    if digest_delivery is not None:
+        serialized["digest_delivery"] = digest_delivery
+    return serialized
 
 
 def lock_attention_preferences(conn: Any, user_id: int) -> None:
@@ -485,6 +499,7 @@ def serialize_today_response(
     items: list[AttentionItem],
     preferences: AttentionPreferenceSet,
     degraded_providers: list[dict[str, str]],
+    digest_delivery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     buckets: dict[str, list[AttentionItem]] = {key: [] for key in _SECTION_KEYS}
     for item in items:
@@ -512,7 +527,10 @@ def serialize_today_response(
             **counts,
             "total": sum(counts.values()),
         },
-        "preferences": serialize_attention_preferences(preferences),
+        "preferences": serialize_attention_preferences(
+            preferences,
+            digest_delivery=digest_delivery,
+        ),
         "degraded_providers": degraded_providers,
     }
 
@@ -753,6 +771,7 @@ class AttentionService:
         user_id: int | None,
         now_ms: int,
         force_degraded_provider: str | None = None,
+        digest_delivery: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         preferences = load_attention_preferences(conn, user_id)
         user_states = load_user_attention_states(
@@ -779,4 +798,5 @@ class AttentionService:
             items=ranked,
             preferences=preferences,
             degraded_providers=degraded_providers,
+            digest_delivery=digest_delivery,
         )

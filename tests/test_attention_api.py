@@ -116,6 +116,42 @@ class TestAttentionPreferences(BaseApiTest):
         self.assertFalse(preferences.rules["needs_action"]["digest"])
         self.assertTrue(preferences.show_no_action_history)
 
+    def test_digest_delivery_configuration_requires_pro_and_complete_email_setup(self) -> None:
+        from gardenops.services.notification_service import digest_delivery_configuration
+
+        complete = {
+            "email_enabled": True,
+            "email_address": "gardener@example.test",
+            "digest_frequency": "daily",
+        }
+        home = digest_delivery_configuration(complete, subscription_tier="home")
+        self.assertFalse(home["available"])
+        self.assertFalse(home["configured"])
+
+        incomplete_pro_rows = (
+            None,
+            {**complete, "email_enabled": False},
+            {**complete, "email_address": ""},
+            {**complete, "digest_frequency": "none"},
+        )
+        for preference_row in incomplete_pro_rows:
+            with self.subTest(preference_row=preference_row):
+                configuration = digest_delivery_configuration(
+                    preference_row,
+                    subscription_tier="pro",
+                )
+                self.assertTrue(configuration["available"])
+                self.assertFalse(configuration["configured"])
+
+        for frequency in ("daily", "weekly"):
+            with self.subTest(frequency=frequency):
+                configuration = digest_delivery_configuration(
+                    {**complete, "digest_frequency": frequency},
+                    subscription_tier="pro",
+                )
+                self.assertTrue(configuration["available"])
+                self.assertTrue(configuration["configured"])
+
     def test_legacy_notification_preferences_migrate_to_custom_panel_visible(self) -> None:
         from gardenops.services.attention.preferences import resolve_attention_preferences
 
@@ -550,6 +586,186 @@ class TestAttentionMutations(BaseApiTest):
                 headers=pro_headers,
             )
             self.assertEqual(missing.status_code, 404)
+
+    def test_home_tier_cannot_enable_attention_digest_preferences(self) -> None:
+        garden_id = self._get_default_garden_id()
+        home_id, home_password = self._create_tier_user("attention_digest_home", "home")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+            },
+        ):
+            home_client, home_headers = self._authenticated_client(
+                "attention_digest_home",
+                home_password,
+                garden_id=garden_id,
+            )
+            response = home_client.put(
+                "/api/attention/preferences",
+                headers=home_headers,
+                json={
+                    "preset": "custom",
+                    "rules": {"task_due": {"panel": True, "digest": True}},
+                    "quiet_hours": {},
+                },
+            )
+
+        self.assertEqual(response.status_code, 403, response.text)
+        conn = db.get_db()
+        try:
+            saved = conn.execute(
+                "SELECT 1 FROM user_attention_preferences WHERE user_id = %s",
+                (home_id,),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertIsNone(saved)
+
+    def test_unconfigured_pro_attention_digest_is_reported_and_normalized(self) -> None:
+        garden_id = self._get_default_garden_id()
+
+        with patch.dict(
+            "os.environ",
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+            },
+        ):
+            client, headers = self._authenticated_client(
+                "test_admin",
+                "testadminpass",
+                garden_id=garden_id,
+            )
+            loaded = client.get("/api/attention/preferences", headers=headers)
+            self.assertEqual(loaded.status_code, 200, loaded.text)
+            self.assertEqual(
+                loaded.json()["digest_delivery"],
+                {
+                    "available": True,
+                    "configured": False,
+                    "email_enabled": False,
+                    "email_address": "",
+                    "digest_frequency": "daily",
+                },
+            )
+            self.assertFalse(any(rule.get("digest") for rule in loaded.json()["rules"].values()))
+
+            saved = client.put(
+                "/api/attention/preferences",
+                headers=headers,
+                json={
+                    "preset": "custom",
+                    "rules": {
+                        "task_due": {
+                            "panel": True,
+                            "inbox": True,
+                            "digest": True,
+                            "min_severity": "low",
+                        }
+                    },
+                    "quiet_hours": {},
+                },
+            )
+            self.assertEqual(saved.status_code, 200, saved.text)
+            self.assertFalse(saved.json()["rules"]["task_due"]["digest"])
+            self.assertFalse(saved.json()["digest_delivery"]["configured"])
+
+            today = client.get("/api/attention/today", headers=headers)
+            self.assertEqual(today.status_code, 200, today.text)
+            self.assertEqual(
+                today.json()["preferences"]["digest_delivery"],
+                saved.json()["digest_delivery"],
+            )
+            self.assertFalse(today.json()["preferences"]["rules"]["task_due"]["digest"])
+
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                "SELECT rules_json FROM user_attention_preferences WHERE user_id = %s",
+                (self._owner_id,),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        assert row is not None
+        self.assertFalse(json.loads(str(row["rules_json"]))["task_due"]["digest"])
+
+    def test_configured_pro_attention_digest_is_reported_and_retained(self) -> None:
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO user_notification_preferences
+                    (user_id, in_app_enabled, email_enabled, email_address,
+                     digest_frequency, quiet_hours_json, task_due_enabled,
+                     task_overdue_enabled, rules_json, created_at_ms, updated_at_ms)
+                VALUES (%s, 1, 1, %s, 'weekly', '{}', 1, 1, '{}', 1, 1)
+                """,
+                (self._owner_id, "attention-digest@example.test"),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+            },
+        ):
+            client, headers = self._authenticated_client(
+                "test_admin",
+                "testadminpass",
+                garden_id=garden_id,
+            )
+            saved = client.put(
+                "/api/attention/preferences",
+                headers=headers,
+                json={
+                    "preset": "custom",
+                    "rules": {
+                        "task_due": {
+                            "panel": True,
+                            "inbox": True,
+                            "digest": True,
+                            "min_severity": "low",
+                        }
+                    },
+                    "quiet_hours": {},
+                },
+            )
+            self.assertEqual(saved.status_code, 200, saved.text)
+            self.assertEqual(
+                saved.json()["digest_delivery"],
+                {
+                    "available": True,
+                    "configured": True,
+                    "email_enabled": True,
+                    "email_address": "attention-digest@example.test",
+                    "digest_frequency": "weekly",
+                },
+            )
+            self.assertTrue(saved.json()["rules"]["task_due"]["digest"])
+
+            loaded = client.get("/api/attention/preferences", headers=headers)
+            self.assertEqual(loaded.status_code, 200, loaded.text)
+            self.assertEqual(loaded.json()["digest_delivery"], saved.json()["digest_delivery"])
+            self.assertTrue(loaded.json()["rules"]["task_due"]["digest"])
+
+            today = client.get("/api/attention/today", headers=headers)
+            self.assertEqual(today.status_code, 200, today.text)
+            self.assertEqual(
+                today.json()["preferences"]["digest_delivery"],
+                saved.json()["digest_delivery"],
+            )
+            self.assertTrue(today.json()["preferences"]["rules"]["task_due"]["digest"])
 
     def test_unsupported_outcome_restore_returns_409(self) -> None:
         from gardenops.services.attention.outcomes import upsert_attention_outcome

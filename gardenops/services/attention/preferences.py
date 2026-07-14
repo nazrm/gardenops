@@ -85,6 +85,23 @@ class AttentionPreferenceSet:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def apply_digest_delivery_capability(
+    preferences: AttentionPreferenceSet,
+    *,
+    configured: bool,
+) -> AttentionPreferenceSet:
+    """Disable digest rules when global email delivery is not fully configured."""
+    if configured:
+        return preferences
+    rules: dict[str, dict[str, Any]] = {}
+    for key, rule in preferences.rules.items():
+        constrained_rule = dict(rule)
+        if constrained_rule.get("digest") is True:
+            constrained_rule["digest"] = False
+        rules[key] = constrained_rule
+    return replace(preferences, rules=rules)
+
+
 def _preset_rules(preset: str) -> dict[str, dict[str, Any]]:
     if preset == "calm":
         return _with_planned_type_rules(
@@ -767,6 +784,7 @@ def apply_preferences(
     *,
     surface: AttentionSurface,
     now_ms: int | None = None,
+    respect_quiet_hours: bool = True,
 ) -> list[AttentionItem]:
     visible: list[AttentionItem] = []
     for item in items:
@@ -779,6 +797,12 @@ def apply_preferences(
         if not _channel_eligible(item, surface):
             continue
         if _is_non_configurable_system_notification(item):
+            if respect_quiet_hours and _quiet_hours_active(
+                preferences.quiet_hours,
+                surface,
+                now_ms=now_ms,
+            ):
+                continue
             visible.append(
                 replace(
                     item,
@@ -806,7 +830,11 @@ def apply_preferences(
             continue
         if not _rule_allows_surface(rule, surface):
             continue
-        if _quiet_hours_active(preferences.quiet_hours, surface, now_ms=now_ms):
+        if respect_quiet_hours and _quiet_hours_active(
+            preferences.quiet_hours,
+            surface,
+            now_ms=now_ms,
+        ):
             continue
         visible.append(item)
     return visible

@@ -282,6 +282,34 @@ function sameTaskActionDraft(
     && JSON.stringify(existing.payload) === JSON.stringify(requested.payload);
 }
 
+function isPendingTaskSnoozeCorrection(
+  existing: OfflineDraft,
+  requested: Omit<OfflineDraft, "id">,
+): boolean {
+  return existing.status === "pending"
+    && existing.type === "task_snooze"
+    && requested.type === "task_snooze"
+    && existing.garden_id === requested.garden_id
+    && taskIdForPayload(existing.payload) === taskIdForPayload(requested.payload)
+    && typeof existing.payload["snooze_until"] === "string"
+    && typeof requested.payload["snooze_until"] === "string"
+    && existing.payload["snooze_until"] !== requested.payload["snooze_until"];
+}
+
+function replacePendingTaskSnoozeDraft(
+  existing: OfflineDraft,
+  requested: Omit<OfflineDraft, "id">,
+): OfflineDraft {
+  return {
+    ...requested,
+    id: existing.id,
+    payload: {
+      ...requested.payload,
+      expected_updated_at_ms: existing.payload["expected_updated_at_ms"],
+    },
+  };
+}
+
 function createDraft(
   type: string,
   payload: Record<string, unknown>,
@@ -338,6 +366,7 @@ export async function enqueueTaskActionBatch(
     const store = transaction.objectStore(STORE_NAME);
     const existingRequest = store.getAll();
     const ids: number[] = [];
+    const snoozeCorrections = new Map<string, OfflineDraft>();
     let failure: Error | null = null;
     let settled = false;
 
@@ -364,6 +393,13 @@ export async function enqueueTaskActionBatch(
           && taskIdForPayload(candidate.payload) === taskId
         ));
         if (!existing) continue;
+        if (isPendingTaskSnoozeCorrection(existing, requested)) {
+          snoozeCorrections.set(
+            taskId,
+            replacePendingTaskSnoozeDraft(existing, requested),
+          );
+          continue;
+        }
         failure = new OfflineTaskActionConflictError({
           kind: sameTaskActionDraft(existing, requested) ? "duplicate" : "conflict",
           taskId,
@@ -375,12 +411,13 @@ export async function enqueueTaskActionBatch(
       }
 
       for (const draft of drafts) {
-        const addRequest = store.add(draft);
-        addRequest.onsuccess = () => {
-          ids.push(addRequest.result as number);
+        const correction = snoozeCorrections.get(taskIdForPayload(draft.payload));
+        const writeRequest = correction ? store.put(correction) : store.add(draft);
+        writeRequest.onsuccess = () => {
+          ids.push(writeRequest.result as number);
         };
-        addRequest.onerror = () => {
-          failure = new Error(`IDB request failed: ${addRequest.error?.message}`);
+        writeRequest.onerror = () => {
+          failure = new Error(`IDB request failed: ${writeRequest.error?.message}`);
         };
       }
     };
@@ -520,16 +557,16 @@ export async function markFailed(
   emitQueueChanged();
 }
 
-async function markSyncing(id: number): Promise<boolean> {
+async function markSyncing(id: number): Promise<OfflineDraft | null> {
   const store = getStore("readwrite");
   const existing = await wrap(store.get(id));
-  if (!existing) return false;
+  if (!existing) return null;
   const draft = existing as OfflineDraft;
-  if (draft.status !== "pending") return false;
+  if (draft.status !== "pending") return null;
   draft.status = "syncing";
   await wrap(store.put(draft));
   emitQueueChanged();
-  return true;
+  return draft;
 }
 
 function isTransientSyncError(error: unknown): boolean {
@@ -549,13 +586,13 @@ async function syncDraft(
   draft: OfflineDraft,
   handler: (payload: Record<string, unknown>, draft: OfflineDraft) => Promise<void>,
 ): Promise<{ synced: boolean; error?: string }> {
-  const marked = await markSyncing(draft.id);
-  if (!marked) return { synced: false };
+  const syncingDraft = await markSyncing(draft.id);
+  if (!syncingDraft) return { synced: false };
 
   for (let attempt = 1; attempt <= MAX_TRANSIENT_ATTEMPTS_PER_SYNC; attempt += 1) {
     try {
-      await handler(draft.payload, draft);
-      await removeDraft(draft.id);
+      await handler(syncingDraft.payload, syncingDraft);
+      await removeDraft(syncingDraft.id);
       return { synced: true };
     } catch (err) {
       const transient = isTransientSyncError(err);

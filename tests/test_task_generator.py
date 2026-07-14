@@ -71,6 +71,44 @@ class TestHarvestNoTaskForNonHarvestCategory(DbTestBase):
         assert len(tasks) == 0
 
 
+class TestBloomObservationSeasonClosure(DbTestBase):
+    def test_not_seen_this_season_suppresses_remaining_bloom_window(self) -> None:
+        self._insert_plant("BLOOM-CLOSED", "Late rose", bloom_month="mai-juni")
+        entry = self.conn.execute(
+            """
+            INSERT INTO garden_journal_entries
+                (public_id, garden_id, event_type, occurred_on, title, notes,
+                 metadata_json, actor_user_id, created_at_ms, updated_at_ms)
+            VALUES ('jrn_bloom_closed', %s, 'observed', '2026-05-20',
+                    'Not seen blooming this season', '', %s, %s, 1, 1)
+            RETURNING id
+            """,
+            (
+                self.garden_id,
+                json.dumps({"outcome": "not_seen_blooming_this_season"}),
+                self._owner_id,
+            ),
+        ).fetchone()
+        assert entry is not None
+        self.conn.execute(
+            "INSERT INTO garden_journal_entry_plants (entry_id, plt_id) VALUES (%s, %s)",
+            (int(entry["id"]), "BLOOM-CLOSED"),
+        )
+
+        generate_tasks(self.conn, self.garden_id, 6, 2026, self._owner_id)
+
+        task = self.conn.execute(
+            """
+            SELECT id FROM garden_tasks
+            WHERE garden_id = %s
+              AND task_type = 'observe_bloom'
+              AND rule_source = 'bloom_observe:BLOOM-CLOSED:2026-06'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert task is None
+
+
 class TestInferTaskDescription(DbTestBase):
     """Verify infer_task_description recovers bilingual text from rule_source."""
 

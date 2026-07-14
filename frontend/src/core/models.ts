@@ -258,6 +258,13 @@ export interface AttentionPreferences {
   quiet_hours: Record<string, unknown>;
   show_no_action_history: boolean;
   metadata: Record<string, unknown>;
+  digest_delivery?: {
+    available: boolean;
+    configured: boolean;
+    email_enabled: boolean;
+    email_address: string;
+    digest_frequency: "none" | "daily" | "weekly";
+  };
 }
 
 export interface AttentionPreferencesUpdate {

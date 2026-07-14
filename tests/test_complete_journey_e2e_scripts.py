@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from datetime import date
 from pathlib import Path
 
@@ -254,8 +255,12 @@ def test_runner_uses_isolated_production_preview_and_locked_dependency_gate() ->
     source = RUNNER.read_text(encoding="utf-8")
     assert "--expected-head <40hex>" in source
     assert "verify_locked_dependencies" in source
-    assert "uv sync --locked --all-groups --dry-run" in source
+    assert "uv sync --locked --all-groups --check --no-config" in source
     assert "npm ci --dry-run --ignore-scripts" in source
+    assert "state.added !== 0 || state.changed !== 0 || state.removed !== 0" in source
+    assert 'export HOME="$PRIVATE_DIR/home"' in source
+    assert 'export XDG_CONFIG_HOME="$PRIVATE_DIR/xdg-config"' in source
+    assert "tail -n 100" not in source
     assert "PYTHON_DOTENV_DISABLED=1" in source
     assert "VITE_ENV_DIR" in source
     assert '"$ROOT_DIR/frontend/node_modules/.bin/vite" build' in source
@@ -263,6 +268,17 @@ def test_runner_uses_isolated_production_preview_and_locked_dependency_gate() ->
     assert "import { defineConfig, mergeConfig } from 'vite'" not in source
     assert "const resolved = typeof baseConfig === 'function'" in source
     assert "npm run dev" not in source
+
+
+def test_documented_complete_journey_commands_bind_the_exact_head() -> None:
+    development = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
+    commands = [
+        line
+        for line in development.splitlines()
+        if line.startswith("scripts/run_complete_journeys_e2e.sh")
+    ]
+    assert len(commands) >= 6
+    assert all('--expected-head "$(git rev-parse HEAD)"' in command for command in commands)
 
 
 def test_installed_node_metadata_ignores_absent_optional_dependency_placeholders() -> None:
@@ -2494,6 +2510,36 @@ try {
     assert result.returncode == 0, result.stderr
 
 
+def test_phase_two_browser_mutation_oracle_rejects_duplicate_idempotent_write() -> None:
+    script = """
+const {
+  assertPhaseTwoBrowserMutationMultiset,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = { roles: { viewer: 'viewer' } };
+const request = {
+  actorAuthType: 'session', actorRole: 'viewer', actorUsername: 'viewer', gardenId: '1',
+  method: 'PUT', path: '/api/notifications/preferences', requestId: 'request-one', statusCode: 200,
+};
+const profile = { profile: 'desktop', requests: [request], role: 'viewer' };
+const oracle = { phase_two: { browser_mutations: { 'viewer:desktop': [
+  { method: 'PUT', path: '/api/notifications/preferences', status_code: 200, count: 1 },
+] } } };
+assertPhaseTwoBrowserMutationMultiset([profile], fixture, oracle);
+try {
+  assertPhaseTwoBrowserMutationMultiset([
+    { ...profile, requests: [request, { ...request, requestId: 'request-two' }] },
+  ], fixture, oracle);
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('mutation multiset')) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_phase_two_profile_order_declares_and_rejects_choreography_permutation() -> None:
     script = """
 const { assertPhaseTwoProfileOrder } = require('./scripts/check_complete_journeys_e2e.cjs');
@@ -2971,6 +3017,24 @@ def test_phase_two_harness_forbids_direct_mutation_probes_and_verifies_trace_art
     assert "trace_artifacts" in checker_source
     assert "sha256" in checker_source
     assert "if (!manifest.trace_artifacts && manifest.profiles.length > 0)" in checker_source
+    assert "validate_playwright_trace.py" in checker_source
+
+
+def test_playwright_trace_validator_rejects_non_zip_and_missing_records(tmp_path: Path) -> None:
+    validator = ROOT / "scripts" / "validate_playwright_trace.py"
+    invalid = tmp_path / "invalid.zip"
+    invalid.write_text("trace", encoding="utf-8")
+    missing = tmp_path / "missing.zip"
+    with zipfile.ZipFile(missing, "w") as archive:
+        archive.writestr("trace.trace", "trace")
+    valid = tmp_path / "valid.zip"
+    with zipfile.ZipFile(valid, "w") as archive:
+        archive.writestr("trace.trace", "trace")
+        archive.writestr("trace.network", "network")
+
+    assert subprocess.run([sys.executable, validator, invalid], check=False).returncode == 1
+    assert subprocess.run([sys.executable, validator, missing], check=False).returncode == 1
+    assert subprocess.run([sys.executable, validator, valid], check=False).returncode == 0
 
 
 def test_phase_two_database_contract_covers_maintenance_and_audit_semantics() -> None:

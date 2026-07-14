@@ -1,6 +1,76 @@
 {
   "schema_version": 1,
   "phase_two": {
+    "browser_mutations": {
+      "admin:desktop": [
+        {"method":"DELETE","path":"/api/calendar/manual-events/{event_id}","status_code":200,"count":1},
+        {"method":"DELETE","path":"/api/calendar/subscriptions/{subscription_id}","status_code":200,"count":1},
+        {"method":"PATCH","path":"/api/calendar/manual-events/{event_id}","status_code":200,"count":1},
+        {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":5},
+        {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/calendar/manual-events","status_code":201,"count":1},
+        {"method":"POST","path":"/api/calendar/subscriptions","status_code":201,"count":1},
+        {"method":"POST","path":"/api/media/summaries","status_code":200,"count":2},
+        {"method":"POST","path":"/api/tasks/batch-action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_bloom_desktop/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_plot_drawer/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_prune_desktop/action","status_code":200,"count":1},
+        {"method":"PUT","path":"/api/notifications/preferences","status_code":200,"count":2}
+      ],
+      "admin:mobile": [
+        {"method":"DELETE","path":"/api/calendar/manual-events/{event_id}","status_code":200,"count":1},
+        {"method":"PATCH","path":"/api/calendar/manual-events/{event_id}","status_code":200,"count":1},
+        {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":8},
+        {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/calendar/manual-events","status_code":201,"count":1},
+        {"method":"POST","path":"/api/media/summaries","status_code":200,"count":2},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_bloom_mobile/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_fertilize_grouped/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_fertilize_mobile/action","status_code":200,"count":2},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_snooze_correction/action","status_code":200,"count":2},
+        {"method":"POST","path":"/api/weather/alerts/{alert_id}/dismiss","status_code":200,"count":1},
+        {"method":"POST","path":"/api/weather/check","status_code":200,"count":4},
+        {"method":"PUT","path":"/api/notifications/preferences","status_code":200,"count":2}
+      ],
+      "editor:desktop": [
+        {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":2},
+        {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_editor_prune/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/weather/check","status_code":200,"count":1},
+        {"method":"PUT","path":"/api/notifications/preferences","status_code":200,"count":1}
+      ],
+      "editor:mobile": [
+        {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/media/summaries","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_editor_offline/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_fertilize_grouped/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_prune_desktop/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_stale_manual_water/action","status_code":200,"count":1},
+        {"method":"PUT","path":"/api/notifications/preferences","status_code":200,"count":1}
+      ],
+      "viewer:desktop": [
+        {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":2},
+        {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/calendar/manual-events","status_code":403,"count":1},
+        {"method":"POST","path":"/api/calendar/subscriptions","status_code":403,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_viewer_read_only/action","status_code":403,"count":1},
+        {"method":"POST","path":"/api/weather/alerts/{alert_id}/dismiss","status_code":200,"count":1},
+        {"method":"POST","path":"/api/weather/check","status_code":403,"count":1},
+        {"method":"PUT","path":"/api/attention/preferences","status_code":200,"count":1},
+        {"method":"PUT","path":"/api/notifications/preferences","status_code":200,"count":1}
+      ],
+      "viewer:mobile": [
+        {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":2},
+        {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/calendar/manual-events","status_code":403,"count":1},
+        {"method":"POST","path":"/api/calendar/subscriptions","status_code":403,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_viewer_read_only/action","status_code":403,"count":1},
+        {"method":"POST","path":"/api/weather/alerts/{alert_id}/dismiss","status_code":200,"count":1},
+        {"method":"POST","path":"/api/weather/check","status_code":403,"count":1},
+        {"method":"PUT","path":"/api/attention/preferences","status_code":200,"count":1},
+        {"method":"PUT","path":"/api/notifications/preferences","status_code":200,"count":1}
+      ]
+    },
     "fixture": {
       "date": "2026-07-12",
       "calendar": {

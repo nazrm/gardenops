@@ -36,6 +36,7 @@ import {
   deleteCalendarSubscriptionApi,
   fetchCalendarEventsApi,
   fetchCalendarPreferencesApi,
+  fetchTaskApi,
   getActiveGardenContext,
   getApiErrorMessage,
   listCalendarSubscriptionsApi,
@@ -43,8 +44,9 @@ import {
   taskActionApi,
   updateCalendarManualEventApi,
   updateCalendarPreferencesApi,
+  withTaskActionRevision,
 } from "../services/api";
-import { taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import { taskSnoozeDateSafety, taskSnoozePolicy } from "../features/taskSnoozePolicy";
 import {
   getTaskSnoozeCorrectionNotice,
   openTaskDateDialog,
@@ -974,14 +976,41 @@ function calendarTaskForSnooze(event: CalendarEvent): GardenTask {
   };
 }
 
+async function loadCalendarTaskForSnooze(event: CalendarEvent): Promise<GardenTask | null> {
+  if (!canMutateCalendarTask(event)) return null;
+  if (!ctx.isOnline()) return calendarTaskForSnooze(event);
+
+  const request = createCalendarRequest();
+  try {
+    const task = await fetchTaskApi(event.target_id);
+    if (
+      !isCurrentCalendarRequest(request)
+      || !canMutateCalendarTask(event)
+      || task.garden_id !== request.gardenId
+    ) {
+      return null;
+    }
+    return task;
+  } catch (err) {
+    if (isCurrentCalendarRequest(request)) {
+      ctx.showToast(getApiErrorMessage(err), "error");
+    }
+    return null;
+  }
+}
+
 interface CalendarTaskActionTarget {
   gardenId: number;
   taskLabel: string;
   taskType: GardenTask["task_type"];
   taskId: string;
+  task: GardenTask;
 }
 
-function calendarTaskActionTarget(event: CalendarEvent): CalendarTaskActionTarget | null {
+function calendarTaskActionTarget(
+  event: CalendarEvent,
+  task = calendarTaskForSnooze(event),
+): CalendarTaskActionTarget | null {
   const gardenId = getActiveGardenContext();
   if (gardenId === null || !event.target_id) return null;
   return {
@@ -989,6 +1018,7 @@ function calendarTaskActionTarget(event: CalendarEvent): CalendarTaskActionTarge
     taskId: event.target_id,
     taskLabel: event.title,
     taskType: event.source_key as GardenTask["task_type"],
+    task,
   };
 }
 
@@ -1391,14 +1421,7 @@ function renderDetail(event?: CalendarEvent): void {
     const actions = document.createElement("div");
     actions.className = "calendar-detail-actions";
     const snoozePolicy = taskSnoozePolicy(calendarTaskForSnooze(event));
-    const onSnoozeDate = () => {
-      openCalendarTaskDateDialog(
-        event,
-        "snooze",
-        snoozePolicy.defaultDate,
-        snoozePolicy.warning,
-      );
-    };
+    const onSnoozeDate = () => void openCalendarTaskSnoozeDateDialog(event);
     const taskForCompletion = calendarTaskForCompletion(event);
     actions.appendChild(
       actionButton(
@@ -1424,7 +1447,7 @@ function renderDetail(event?: CalendarEvent): void {
     );
     actions.appendChild(
       actionButton(t("tasks.action_reschedule"), () => {
-        openCalendarTaskDateDialog(event, "reschedule");
+        openCalendarTaskDateDialog(event);
       }),
     );
     panel.appendChild(actions);
@@ -1452,9 +1475,10 @@ async function runCalendarTaskActionForTarget(
   const request = createCalendarRequest();
   if (!canMutateCalendarTaskTarget(target)) return false;
   if (!isCurrentCalendarRequest(request)) return false;
+  const actionBody = withTaskActionRevision(target.task, body);
   if (!ctx.isOnline()) {
     try {
-      await enqueueOfflineCalendarTaskAction(target, body);
+      await enqueueOfflineCalendarTaskAction(target, actionBody);
     } catch (err) {
       ctx.showToast(offlineTaskActionErrorMessage(err), "error");
       return false;
@@ -1466,7 +1490,7 @@ async function runCalendarTaskActionForTarget(
     return true;
   }
   try {
-    await taskActionApi(target.taskId, body, { gardenId: target.gardenId });
+    await taskActionApi(target.taskId, actionBody, { gardenId: target.gardenId });
     if (!isCurrentCalendarRequest(request)) return false;
     if (options.showSuccessToast !== false) {
       ctx.showToast(t("tasks.action_success", { action: body.action }), "success");
@@ -1491,7 +1515,7 @@ async function enqueueOfflineCalendarTaskAction(
     snooze: "task_snooze",
     reschedule: "task_reschedule",
   } as const;
-  const { action, ...payload } = body;
+  const { action, ...payload } = withTaskActionRevision(target.task, body);
   await ctx.enqueueDraft(draftTypeByAction[action], {
     task_id: target.taskId,
     ...offlineTaskActionLabels(
@@ -1524,27 +1548,32 @@ function completeCalendarTask(event: CalendarEvent): void {
 
 async function snoozeCalendarTask(event: CalendarEvent): Promise<void> {
   if (!canMutateCalendarTask(event)) return;
-  const task = calendarTaskForSnooze(event);
+  const task = await loadCalendarTaskForSnooze(event);
+  if (!task) return;
   const policy = taskSnoozePolicy(task);
-  if (!policy.immediate) {
-    openCalendarTaskDateDialog(
-      event,
-      "snooze",
-      policy.defaultDate,
-      policy.warning,
-    );
+  if (policy.blockedMessage) {
+    ctx.showToast(policy.blockedMessage, "error");
     return;
   }
-  const ok = await runTaskAction(
-    event,
+  const target = calendarTaskActionTarget(event, task);
+  if (!target) return;
+  if (!policy.immediate) {
+    openCalendarTaskSnoozeDateDialogForTarget(target, task, policy.defaultDate);
+    return;
+  }
+  const safety = taskSnoozeDateSafety(task, policy.defaultDate);
+  if (safety.blocked) {
+    ctx.showToast(safety.message ?? t("tasks.snooze_prompt"), "error");
+    return;
+  }
+  const ok = await runCalendarTaskActionForTarget(
+    target,
     { action: "snooze", snooze_until: policy.defaultDate },
     { showSuccessToast: false },
   );
   if (!ok) return;
-  const target = calendarTaskActionTarget(event);
-  if (!target) return;
   const notice = getTaskSnoozeCorrectionNotice(policy.defaultDate, () => {
-    openCalendarTaskDateDialogForTarget(target, "snooze", policy.defaultDate);
+    openCalendarTaskSnoozeDateDialogForTarget(target, task, policy.defaultDate);
   });
   ctx.showToast(
     notice.message,
@@ -1563,36 +1592,66 @@ async function snoozeCalendarTask(event: CalendarEvent): Promise<void> {
 
 function openCalendarTaskDateDialog(
   event: CalendarEvent,
-  action: "snooze" | "reschedule",
   defaultDate = event.due_on || event.start_on,
-  warning?: string,
 ): void {
   if (!canMutateCalendarTask(event)) return;
   const target = calendarTaskActionTarget(event);
   if (!target) return;
-  openCalendarTaskDateDialogForTarget(target, action, defaultDate, warning);
+  openCalendarTaskDateDialogForTarget(target, defaultDate);
 }
 
 function openCalendarTaskDateDialogForTarget(
   target: CalendarTaskActionTarget,
-  action: "snooze" | "reschedule",
   defaultDate: string,
-  warning?: string,
 ): void {
   if (!canMutateCalendarTaskTarget(target)) return;
-  const title = action === "snooze"
-    ? t("tasks.snooze_prompt") as string
-    : t("tasks.reschedule_prompt") as string;
   openTaskDateDialog({
-    title,
+    title: t("tasks.reschedule_prompt") as string,
     defaultDate,
-    warning,
-    onConfirm: (date) => {
-      const body: TaskActionRequest = action === "snooze"
-        ? { action: "snooze", snooze_until: date }
-        : { action: "reschedule", reschedule_to: date };
-      void runCalendarTaskActionForTarget(target, body);
-    },
+    onConfirm: (date) => void runCalendarTaskActionForTarget(
+      target,
+      { action: "reschedule", reschedule_to: date },
+    ),
+  });
+}
+
+async function openCalendarTaskSnoozeDateDialog(
+  event: CalendarEvent,
+  defaultDate?: string,
+): Promise<void> {
+  const task = await loadCalendarTaskForSnooze(event);
+  if (!task) return;
+  const target = calendarTaskActionTarget(event, task);
+  if (!target) return;
+  openCalendarTaskSnoozeDateDialogForTarget(target, task, defaultDate);
+}
+
+function openCalendarTaskSnoozeDateDialogForTarget(
+  target: CalendarTaskActionTarget,
+  task: GardenTask,
+  defaultDate = taskSnoozePolicy(task).defaultDate,
+): void {
+  if (!canMutateCalendarTaskTarget(target)) return;
+  const policy = taskSnoozePolicy(task);
+  if (policy.blockedMessage) {
+    ctx.showToast(policy.blockedMessage, "error");
+    return;
+  }
+  openTaskDateDialog({
+    title: t("tasks.snooze_prompt") as string,
+    defaultDate,
+    warning: policy.manualDateMessage,
+    requireManualDate: policy.requireManualDate,
+    maxDate: policy.maxDate,
+    getDateSafety: (date) => taskSnoozeDateSafety(task, date),
+    onConfirm: (date, confirmOutsideWindow) => void runCalendarTaskActionForTarget(
+      target,
+      {
+        action: "snooze",
+        snooze_until: date,
+        ...(confirmOutsideWindow ? { confirm_outside_window: true } : {}),
+      },
+    ),
   });
 }
 
@@ -1976,9 +2035,16 @@ export function initCalendarTab(appCtx: AppContext): void {
     onOfflineQueueChange(() => {
       void refreshCalendarTaskActions();
     });
-    onConnectivityChange(() => {
+    onConnectivityChange((online) => {
       renderHeaderActions();
       renderDetail(selectedEventId ? currentEventsById.get(selectedEventId) : undefined);
+      if (
+        online
+        && ctx.getActiveTab() === "activity"
+        && ctx.getSubMode() === "calendar"
+      ) {
+        void loadCalendar();
+      }
     });
   }
   if (initBound) return;

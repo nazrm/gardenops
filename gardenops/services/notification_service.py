@@ -15,6 +15,7 @@ from typing import Any, cast
 
 from gardenops.branding import app_name
 from gardenops.db import DbConn, current_timestamp_ms
+from gardenops.feature_gates import feature_allowed
 from gardenops.router_helpers import generate_public_id
 from gardenops.services.attention.preferences import (
     AttentionPreferenceSet,
@@ -357,6 +358,7 @@ def notification_rows_allowed_by_attention(
     garden_id: int,
     user_id: int,
     now_ms: int | None = None,
+    respect_quiet_hours: bool = True,
 ) -> list[dict[str, Any]]:
     allowed: list[dict[str, Any]] = []
     for row in rows:
@@ -365,7 +367,13 @@ def notification_rows_allowed_by_attention(
             fallback_garden_id=garden_id,
             fallback_user_id=user_id,
         )
-        if apply_preferences([item], preferences, surface=surface, now_ms=now_ms):
+        if apply_preferences(
+            [item],
+            preferences,
+            surface=surface,
+            now_ms=now_ms,
+            respect_quiet_hours=respect_quiet_hours,
+        ):
             allowed.append(row)
     return allowed
 
@@ -398,14 +406,66 @@ def _database_boolean(value: Any, *, default: bool) -> bool:
     return default
 
 
+def digest_delivery_configuration(
+    pref_row: dict[str, Any] | None,
+    *,
+    subscription_tier: str,
+) -> dict[str, Any]:
+    """Return the entitlement and complete global setup for digest delivery."""
+    available = feature_allowed(subscription_tier, "email_notifications")
+    email_enabled = _database_boolean(
+        pref_row.get("email_enabled") if pref_row is not None else None,
+        default=False,
+    )
+    email_address = str(pref_row.get("email_address") or "") if pref_row is not None else ""
+    raw_frequency = (
+        str(pref_row.get("digest_frequency") or "none") if pref_row is not None else "daily"
+    )
+    digest_frequency = raw_frequency if raw_frequency in {"none", "daily", "weekly"} else "none"
+    configured = (
+        available
+        and email_enabled
+        and bool(email_address.strip())
+        and digest_frequency in {"daily", "weekly"}
+    )
+    return {
+        "available": available,
+        "configured": configured,
+        "email_enabled": email_enabled,
+        "email_address": email_address,
+        "digest_frequency": digest_frequency,
+    }
+
+
+def load_digest_delivery_configuration(
+    db: DbConn,
+    *,
+    user_id: int | None,
+    subscription_tier: str,
+) -> dict[str, Any]:
+    row = None
+    if user_id is not None:
+        loaded = db.execute(
+            """
+            SELECT email_enabled, email_address, digest_frequency
+            FROM user_notification_preferences
+            WHERE user_id = %s
+            """,
+            (user_id,),
+        ).fetchone()
+        if loaded is not None:
+            row = dict(loaded)
+    return digest_delivery_configuration(row, subscription_tier=subscription_tier)
+
+
 def _legacy_email_delivery_enabled(pref_row: dict[str, Any] | None) -> bool:
     if pref_row is None:
         return False
-    return (
-        _database_boolean(pref_row.get("email_enabled"), default=False)
-        and bool(str(pref_row.get("email_address") or "").strip())
-        and pref_row.get("digest_frequency") in {"daily", "weekly"}
-        and pref_row.get("subscription_tier") == "pro"
+    return bool(
+        digest_delivery_configuration(
+            pref_row,
+            subscription_tier=str(pref_row.get("subscription_tier") or "home"),
+        )["configured"]
     )
 
 
@@ -427,6 +487,7 @@ def notification_rows_allowed_for_user(
     now_ms: int | None = None,
     preferences: AttentionPreferenceSet | None = None,
     legacy_in_app_enabled: bool | None = None,
+    respect_quiet_hours: bool = True,
 ) -> list[dict[str, Any]]:
     """Apply canonical Attention eligibility and the legacy channel capability."""
     if surface == "inbox":
@@ -444,6 +505,7 @@ def notification_rows_allowed_for_user(
         garden_id=garden_id,
         user_id=user_id,
         now_ms=now_ms,
+        respect_quiet_hours=respect_quiet_hours,
     )
 
 
@@ -887,8 +949,7 @@ def _stale_generated_task_public_ids(
             OR (
               ({non_dry_weather_pattern_clauses})
               AND (
-                COALESCE(t.snoozed_until, t.due_on) < %s
-                OR wa.id IS NULL
+                wa.id IS NULL
                 OR wa.dismissed = 1
                 OR wa.valid_until < %s
               )
@@ -903,7 +964,6 @@ def _stale_generated_task_public_ids(
             _DRY_WEATHER_TASK_RULE_SOURCE_PATTERN,
             today_iso,
             *_NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS,
-            today_iso,
             today_iso,
         ],
     ).fetchall()
@@ -974,8 +1034,11 @@ def _delivery_allowed_for_user(
         garden_id=garden_id,
         user_id=user_id,
         now_ms=now_ms,
+        respect_quiet_hours=False,
     ):
         return True
+    # Generation uses durable channel eligibility. Digest cadence and quiet
+    # hours are applied only while a pending digest is delivered.
     return _legacy_email_delivery_enabled(legacy_pref) and bool(
         notification_rows_allowed_for_user(
             db,
@@ -985,6 +1048,7 @@ def _delivery_allowed_for_user(
             garden_id=garden_id,
             user_id=user_id,
             now_ms=now_ms,
+            respect_quiet_hours=False,
         )
     )
 
@@ -1999,10 +2063,11 @@ def _weather_alert_identities(alerts: list[dict[str, Any]]) -> list[tuple[str, s
 
 def _split_forecast_reconciliation_scope(
     alerts: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], set[str] | None]:
-    """Separate the private forecast-completeness marker from real alerts."""
+) -> tuple[list[dict[str, Any]], set[str] | None, dict[str, tuple[str, str]] | None]:
+    """Separate private forecast scope metadata from real alerts."""
     scoped_alerts: list[dict[str, Any]] = []
     complete_alert_types: set[str] | None = None
+    coverage_bounds: dict[str, tuple[str, str]] | None = None
     for alert in alerts:
         marker = alert.get(_FORECAST_RECONCILIATION_SCOPE_KEY)
         if marker is None:
@@ -2012,9 +2077,65 @@ def _split_forecast_reconciliation_scope(
             complete_alert_types = {
                 str(alert_type) for alert_type in marker if str(alert_type) in _FORECAST_ALERT_TYPES
             }
+        elif isinstance(marker, dict):
+            raw_types = marker.get("complete_alert_types")
+            complete_alert_types = (
+                {
+                    str(alert_type)
+                    for alert_type in raw_types
+                    if str(alert_type) in _FORECAST_ALERT_TYPES
+                }
+                if isinstance(raw_types, list)
+                else set()
+            )
+            coverage_bounds = _parse_forecast_coverage_bounds(marker.get("coverage_bounds"))
         else:
             complete_alert_types = set()
-    return scoped_alerts, complete_alert_types
+            coverage_bounds = {}
+    return scoped_alerts, complete_alert_types, coverage_bounds
+
+
+def _parse_forecast_coverage_bounds(value: Any) -> dict[str, tuple[str, str]]:
+    if not isinstance(value, dict):
+        return {}
+    bounds: dict[str, tuple[str, str]] = {}
+    for alert_type, raw_bounds in value.items():
+        if alert_type not in _FORECAST_ALERT_TYPES or not isinstance(raw_bounds, dict):
+            continue
+        start = raw_bounds.get("start")
+        end = raw_bounds.get("end")
+        if not isinstance(start, str) or not isinstance(end, str):
+            continue
+        try:
+            start_date = date.fromisoformat(start)
+            end_date = date.fromisoformat(end)
+        except ValueError:
+            continue
+        if start_date <= end_date:
+            bounds[alert_type] = (start, end)
+    return bounds
+
+
+def _forecast_alert_within_coverage(
+    *,
+    alert_type: str,
+    valid_from: str,
+    valid_until: str,
+    coverage_bounds: dict[str, tuple[str, str]] | None,
+) -> bool:
+    if coverage_bounds is None:
+        return True
+    bounds = coverage_bounds.get(alert_type)
+    if bounds is None:
+        return False
+    try:
+        start = date.fromisoformat(valid_from)
+        end = date.fromisoformat(valid_until)
+        coverage_start = date.fromisoformat(bounds[0])
+        coverage_end = date.fromisoformat(bounds[1])
+    except ValueError:
+        return False
+    return coverage_start <= start <= end <= coverage_end
 
 
 def _parse_weather_lifecycle_metadata(value: Any) -> dict[str, Any]:
@@ -2105,12 +2226,13 @@ def _resolve_missing_forecast_alert_work(
     alerts: list[dict[str, Any]],
     now_ms: int,
     complete_alert_types: set[str] | None = None,
+    coverage_bounds: dict[str, tuple[str, str]] | None = None,
 ) -> dict[str, int]:
-    """Retire active forecast-owned work absent from a complete forecast run."""
+    """Retire active forecast-owned work absent from the covered forecast run."""
     current_identities = set(_weather_alert_identities(alerts))
     rows = db.execute(
         """
-        SELECT id, alert_type, valid_from, metadata_json
+        SELECT id, alert_type, valid_from, valid_until, metadata_json
         FROM weather_alerts
         WHERE garden_id = %s
           AND dismissed = 0
@@ -2127,6 +2249,13 @@ def _resolve_missing_forecast_alert_work(
         if complete_alert_types is not None and alert_type not in complete_alert_types:
             continue
         valid_from = str(row["valid_from"])
+        if not _forecast_alert_within_coverage(
+            alert_type=alert_type,
+            valid_from=valid_from,
+            valid_until=str(row["valid_until"]),
+            coverage_bounds=coverage_bounds,
+        ):
+            continue
         if (alert_type, valid_from) in current_identities:
             continue
         metadata = _parse_weather_lifecycle_metadata(row["metadata_json"])
@@ -2228,6 +2357,7 @@ def _recover_reappeared_forecast_alert_work(
     alerts: list[dict[str, Any]],
     now_ms: int,
     complete_alert_types: set[str] | None = None,
+    coverage_bounds: dict[str, tuple[str, str]] | None = None,
 ) -> int:
     """Reopen only work automatically retired by forecast reconciliation."""
     today = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
@@ -2248,6 +2378,13 @@ def _recover_reappeared_forecast_alert_work(
             (garden_id, alert_type, valid_from),
         ).fetchone()
         if alert is None or str(alert["valid_until"]) < today:
+            continue
+        if not _forecast_alert_within_coverage(
+            alert_type=alert_type,
+            valid_from=str(alert["valid_from"]),
+            valid_until=str(alert["valid_until"]),
+            coverage_bounds=coverage_bounds,
+        ):
             continue
         task_rows = db.execute(
             """
@@ -2336,6 +2473,7 @@ def _reconcile_authoritative_weather_tasks(
     alerts: list[dict[str, Any]],
     now_ms: int,
     complete_alert_types: set[str] | None = None,
+    coverage_bounds: dict[str, tuple[str, str]] | None = None,
 ) -> int:
     """Retire stale weather-task projections and keep their validity metadata current."""
     today = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
@@ -2359,6 +2497,13 @@ def _reconcile_authoritative_weather_tasks(
             (garden_id, alert_type, valid_from),
         ).fetchone()
         if alert is None:
+            continue
+        if not _forecast_alert_within_coverage(
+            alert_type=alert_type,
+            valid_from=str(alert["valid_from"]),
+            valid_until=str(alert["valid_until"]),
+            coverage_bounds=coverage_bounds,
+        ):
             continue
         alert_id = int(alert["id"])
         alert_metadata = _parse_weather_lifecycle_metadata(alert["metadata_json"])
@@ -2749,7 +2894,9 @@ def reconcile_weather_alert_work(
 ) -> dict[str, int]:
     """Reconcile weather alert notifications and generated tasks in one transaction."""
     now_value, _ = notification_request_clock(now_ms=now_ms)
-    forecast_alerts, complete_alert_types = _split_forecast_reconciliation_scope(alerts)
+    forecast_alerts, complete_alert_types, coverage_bounds = _split_forecast_reconciliation_scope(
+        alerts
+    )
     resolution = {
         "alerts_resolved": 0,
         "tasks_resolved": 0,
@@ -2764,6 +2911,7 @@ def reconcile_weather_alert_work(
             alerts=forecast_alerts,
             now_ms=now_value,
             complete_alert_types=complete_alert_types,
+            coverage_bounds=coverage_bounds,
         )
         resolution["tasks_recovered"] = _recover_reappeared_forecast_alert_work(
             db,
@@ -2771,6 +2919,7 @@ def reconcile_weather_alert_work(
             alerts=forecast_alerts,
             now_ms=now_value,
             complete_alert_types=complete_alert_types,
+            coverage_bounds=coverage_bounds,
         )
     notifications = create_weather_alert_notifications(
         db,
@@ -2810,6 +2959,7 @@ def reconcile_weather_alert_work(
             alerts=forecast_alerts,
             now_ms=now_value,
             complete_alert_types=complete_alert_types,
+            coverage_bounds=coverage_bounds,
         )
     rain_reconciliation = reconcile_rain_watering_outcomes(
         db,

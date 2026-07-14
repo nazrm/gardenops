@@ -1,4 +1,9 @@
-import type { AppState, GardenTask, Plant } from "../core/models";
+import type {
+  AppState,
+  GardenTask,
+  Plant,
+  TaskListResponse,
+} from "../core/models";
 import { t } from "../core/i18n";
 import {
   addPlantToPlotApi,
@@ -16,6 +21,7 @@ import {
   searchPlantsApi,
   taskActionApi,
   uploadMediaApi,
+  withTaskActionRevision,
 } from "../services/api";
 import type { MediaAsset, MediaLinkRef, TaskActionRequest } from "../services/api";
 import type { PlantAlertType } from "./plantCard";
@@ -23,9 +29,15 @@ import {
   enqueueDraft,
   getTaskActionStates,
   isOnline,
+  onConnectivityChange,
+  onOfflineQueueChange,
   OfflineTaskActionConflictError,
   type OfflineTaskActionState,
 } from "../services/offlineQueue";
+import {
+  cacheTaskList,
+  getCachedTaskList,
+} from "../services/taskCache";
 import { renderMediaGalleryLazy } from "./mediaGalleryLoader";
 import { showToast } from "./toast";
 import {
@@ -51,7 +63,11 @@ import { renderPlotJournalPreviewLazy } from "./journalPreviewLoader";
 import { confirmDialog } from "./dialogCore";
 import { dismissPopover, showPopover } from "./popover";
 import { renderSearchResults } from "./sidebar";
-import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import {
+  formatLocalDate,
+  taskSnoozeDateSafety,
+  taskSnoozePolicy,
+} from "../features/taskSnoozePolicy";
 import {
   getTaskSnoozeCorrectionNotice,
   openTaskDateDialog,
@@ -87,6 +103,12 @@ let plantSearchSeq = 0;
 let plotMediaSeq = 0;
 let plotTasksSeq = 0;
 let plantSearchTimerId: ReturnType<typeof setTimeout> | null = null;
+let activePlotTasksPanel: {
+  state: AppState;
+  plotId: string;
+  cbs: PlotCallbacks;
+} | null = null;
+let plotTaskPanelListenersBound = false;
 
 const PLANT_SEARCH_DEBOUNCE_MS = 250;
 const PLOT_PANEL_CACHE_TTL_MS = 5_000;
@@ -184,6 +206,47 @@ export function invalidatePlotPanelCache(plotId: string): void {
   plotCacheVersions.set(plotId, getPlotCacheVersion(plotId) + 1);
   plotPlantsCache.delete(plotId);
   plotSupplementalCache.delete(plotId);
+}
+
+function getPlotTasksPreviewContainer(): HTMLElement | null {
+  return getDrawerTasksPreview() ?? getSheetTasksPreview();
+}
+
+function getActivePlotPanelModalParent(): HTMLElement | null {
+  return getPlotTasksPreviewContainer()?.closest<HTMLElement>(
+    ".drawer, .bottom-sheet",
+  ) ?? null;
+}
+
+async function refreshActivePlotTasksPreview(): Promise<void> {
+  const active = activePlotTasksPanel;
+  if (!active || active.state.selectedPlotId !== active.plotId) return;
+  await loadPlotTasksPreview(active.state, active.plotId, active.cbs);
+}
+
+function bindPlotTaskPanelListeners(): void {
+  if (plotTaskPanelListenersBound) return;
+  plotTaskPanelListenersBound = true;
+  onConnectivityChange(() => {
+    void refreshActivePlotTasksPreview();
+  });
+  onOfflineQueueChange(() => {
+    void refreshActivePlotTasksPreview();
+  });
+}
+
+function activatePlotTasksPanel(
+  state: AppState,
+  plotId: string,
+  cbs: PlotCallbacks,
+): void {
+  activePlotTasksPanel = { state, plotId, cbs };
+  bindPlotTaskPanelListeners();
+}
+
+function deactivatePlotTasksPanel(): void {
+  activePlotTasksPanel = null;
+  plotTasksSeq += 1;
 }
 
 function getPanelCallbacks(
@@ -484,22 +547,117 @@ function renderTaskCard(
   return card;
 }
 
+type PlotTaskPreviewDataState = "live" | "cached" | "unavailable";
+
+interface PlotTaskPreviewData {
+  actionableRes: TaskListResponse;
+  completedRes: TaskListResponse;
+  dataState: PlotTaskPreviewDataState;
+}
+
+interface PlotTaskPreviewLoadOptions {
+  focusTaskId?: string | undefined;
+}
+
+function getCachedPlotTaskPreview(
+  gardenId: number,
+  plotId: string,
+): PlotTaskPreviewData | null {
+  const actionableRes = getCachedTaskList(gardenId, {
+    plot_id: plotId,
+    view: "today",
+  });
+  const completedRes = getCachedTaskList(gardenId, {
+    plot_id: plotId,
+    status: "completed",
+  });
+  if (!actionableRes || !completedRes) return null;
+  return { actionableRes, completedRes, dataState: "cached" };
+}
+
+async function getPlotTaskPreview(
+  gardenId: number,
+  plotId: string,
+): Promise<PlotTaskPreviewData> {
+  if (!isOnline()) {
+    return getCachedPlotTaskPreview(gardenId, plotId) ?? {
+      actionableRes: { tasks: [], total: 0 },
+      completedRes: { tasks: [], total: 0 },
+      dataState: "unavailable",
+    };
+  }
+
+  try {
+    const [actionableRes, completedRes] = await Promise.all([
+      fetchTasksApi({ plot_id: plotId, view: "today" }),
+      fetchTasksApi({ plot_id: plotId, status: "completed" }),
+    ]);
+    cacheTaskList(gardenId, { plot_id: plotId, view: "today" }, actionableRes);
+    cacheTaskList(
+      gardenId,
+      { plot_id: plotId, status: "completed" },
+      completedRes,
+    );
+    return { actionableRes, completedRes, dataState: "live" };
+  } catch (err) {
+    if (!isOnline()) {
+      return getCachedPlotTaskPreview(gardenId, plotId) ?? {
+        actionableRes: { tasks: [], total: 0 },
+        completedRes: { tasks: [], total: 0 },
+        dataState: "unavailable",
+      };
+    }
+    throw err;
+  }
+}
+
+function appendPlotTaskPreviewDataState(
+  body: HTMLElement,
+  dataState: Exclude<PlotTaskPreviewDataState, "live">,
+): void {
+  const status = document.createElement("div");
+  status.className = `offline-data-state offline-data-state--${dataState}`;
+  status.setAttribute("role", "status");
+  status.textContent = t(
+    dataState === "cached"
+      ? "tasks.offline_cached"
+      : "tasks.offline_unavailable",
+  ) as string;
+  body.appendChild(status);
+}
+
+function restorePlotTaskPreviewFocus(
+  section: HTMLElement,
+  focusTaskId?: string,
+): void {
+  if (!focusTaskId) return;
+  const taskCard = section.querySelector<HTMLElement>(
+    `.drawer-task-card[data-task-id="${CSS.escape(focusTaskId)}"]`,
+  );
+  const target = taskCard
+    ?? section.querySelector<HTMLElement>(".drawer-section-header");
+  if (!target) return;
+  if (taskCard) taskCard.tabIndex = -1;
+  window.requestAnimationFrame(() => {
+    if (target.isConnected && !target.closest("[inert]")) target.focus();
+  });
+}
+
 async function loadPlotTasksPreview(
   state: AppState,
   plotId: string,
   cbs: PlotCallbacks,
+  options: PlotTaskPreviewLoadOptions = {},
 ): Promise<void> {
   const seq = ++plotTasksSeq;
   const gardenId = getActiveGardenContext();
   if (gardenId === null) return;
-  const container =
-    getDrawerTasksPreview() ?? getSheetTasksPreview();
+  const container = getPlotTasksPreviewContainer();
   if (!container) return;
 
   try {
-    const [actionableRes, completedRes, offlineActions] = await Promise.all([
-      fetchTasksApi({ plot_id: plotId, view: "today" }),
-      fetchTasksApi({ plot_id: plotId, status: "completed" }),
+    const [preview, offlineActions] = await Promise.all([
+      getPlotTaskPreview(gardenId, plotId),
       getTaskActionStates(gardenId),
     ]);
     if (
@@ -507,6 +665,8 @@ async function loadPlotTasksPreview(
       || state.selectedPlotId !== plotId
       || getActiveGardenContext() !== gardenId
     ) return;
+
+    const { actionableRes, completedRes, dataState } = preview;
 
     const oneWeekAgo = Date.now() - 7 * 86_400_000;
     const recentlyCompleted = completedRes.tasks.filter(
@@ -528,12 +688,16 @@ async function loadPlotTasksPreview(
     const body = document.createElement("div");
     body.className = "drawer-section-body";
 
-    if (allTasks.length === 0) {
+    if (dataState !== "live") {
+      appendPlotTaskPreviewDataState(body, dataState);
+    }
+
+    if (dataState !== "unavailable" && allTasks.length === 0) {
       const empty = document.createElement("p");
       empty.className = "empty-message";
       empty.textContent = t("plot_drawer.no_tasks") as string;
       body.appendChild(empty);
-    } else {
+    } else if (dataState !== "unavailable") {
       for (const task of allTasks) {
         const card = renderTaskCard(
           task,
@@ -546,18 +710,8 @@ async function loadPlotTasksPreview(
                   : {}),
                 onSkip: () => void skipTaskInline(task, card, state, plotId, cbs),
                 onSnooze: () => void snoozeTaskInline(task, card, state, plotId, cbs),
-                onSnoozeDate: () => {
-                  const policy = taskSnoozePolicy(task);
-                  openPlotSnoozeDateDialog(
-                    task,
-                    card,
-                    state,
-                    plotId,
-                    cbs,
-                    policy.defaultDate,
-                    policy.warning,
-                  );
-                },
+                onSnoozeDate: () =>
+                  openPlotSnoozeDateDialog(task, card, state, plotId, cbs),
                 onReschedule: () =>
                   openPlotRescheduleDialog(task, card, state, plotId, cbs),
               }
@@ -573,6 +727,7 @@ async function loadPlotTasksPreview(
       body,
     );
     container.replaceChildren(section);
+    restorePlotTaskPreviewFocus(section, options.focusTaskId);
   } catch (err) {
     console.warn("Plot task preview failed:", err);
   }
@@ -588,7 +743,7 @@ async function enqueuePlotOfflineTaskAction(
     snooze: "task_snooze",
     reschedule: "task_reschedule",
   };
-  const { action, ...payload } = body;
+  const { action, ...payload } = withTaskActionRevision(task, body);
   await enqueueDraft(draftTypeByAction[action], {
     task_id: task.id,
     ...offlineTaskActionLabels(task, action),
@@ -615,26 +770,22 @@ async function submitPlotTaskAction(
   ) {
     return false;
   }
+  const actionBody = withTaskActionRevision(task, body);
   try {
     if (!isOnline()) {
-      await enqueuePlotOfflineTaskAction(task, body);
-      card.classList.add("task-offline-queued");
-      card.dataset["offlineTaskState"] = "queued";
-      card.querySelector(".drawer-task-actions")?.remove();
-      const offlineState = document.createElement("div");
-      offlineState.className = "drawer-task-offline-state task-offline-state task-offline-state--queued";
-      offlineState.setAttribute("role", "status");
-      offlineState.textContent = t("offline.task_queued", {
-        action: t(`tasks.action_${body.action}`),
-      });
-      card.querySelector(".drawer-task-info")?.appendChild(offlineState);
+      await enqueuePlotOfflineTaskAction(task, actionBody);
       showToast(t("offline.draft_saved"), "success");
+      await loadPlotTasksPreview(state, plotId, cbs, {
+        focusTaskId: task.id,
+      });
       return true;
     }
-    await taskActionApi(task.id, body);
+    await taskActionApi(task.id, actionBody);
     card.classList.add("task-fading");
     if (successMessage) showToast(successMessage, "success");
-    await loadPlotTasksPreview(state, plotId, cbs);
+    await loadPlotTasksPreview(state, plotId, cbs, {
+      focusTaskId: task.id,
+    });
     return true;
   } catch (err) {
     showToast(
@@ -666,10 +817,13 @@ async function completeTaskInline(
     if (isOnline()) {
       await cbs.ensurePlantsCacheLoaded();
     }
+    if (state.selectedPlotId !== plotId) return;
+    const modalParent = getActivePlotPanelModalParent();
+    if (!modalParent) return;
     const plantNames = new Map(state.plantsCache.map((plant) => [plant.plt_id, plant.name]));
     openTaskCompletionDialog(task, plantNames, (body) => {
       void completeTaskInline(task, card, state, plotId, cbs, body);
-    });
+    }, { modalParent });
     return;
   }
   await submitPlotTaskAction(
@@ -707,15 +861,26 @@ function openPlotSnoozeDateDialog(
   state: AppState,
   plotId: string,
   cbs: PlotCallbacks,
-  defaultDate: string,
-  warning?: string,
+  defaultDate = taskSnoozePolicy(task).defaultDate,
 ): void {
+  const policy = taskSnoozePolicy(task);
+  if (policy.blockedMessage) {
+    showToast(policy.blockedMessage, "error");
+    return;
+  }
+  if (state.selectedPlotId !== plotId) return;
+  const modalParent = getActivePlotPanelModalParent();
+  if (!modalParent) return;
   openTaskDateDialog({
     title: t("tasks.snooze_prompt") as string,
     defaultDate,
-    warning,
-    onConfirm: (date) =>
-      void snoozeTaskInline(task, card, state, plotId, cbs, date),
+    warning: policy.manualDateMessage,
+    requireManualDate: policy.requireManualDate,
+    maxDate: policy.maxDate,
+    getDateSafety: (date) => taskSnoozeDateSafety(task, date),
+    onConfirm: (date, confirmOutsideWindow) =>
+      void snoozeTaskInline(task, card, state, plotId, cbs, date, confirmOutsideWindow),
+    modalParent,
   });
 }
 
@@ -726,8 +891,13 @@ async function snoozeTaskInline(
   plotId: string,
   cbs: PlotCallbacks,
   requestedDate?: string,
+  confirmOutsideWindow = false,
 ): Promise<void> {
   const policy = taskSnoozePolicy(task);
+  if (policy.blockedMessage) {
+    showToast(policy.blockedMessage, "error");
+    return;
+  }
   if (!requestedDate && !policy.immediate) {
     openPlotSnoozeDateDialog(
       task,
@@ -736,18 +906,28 @@ async function snoozeTaskInline(
       plotId,
       cbs,
       policy.defaultDate,
-      policy.warning,
     );
     return;
   }
   const snoozeUntil = requestedDate ?? policy.defaultDate;
+  const safety = taskSnoozeDateSafety(task, snoozeUntil);
+  if (safety.blocked) {
+    showToast(safety.message ?? t("tasks.snooze_prompt"), "error");
+    return;
+  }
   const completed = await submitPlotTaskAction(
     task,
     card,
     state,
     plotId,
     cbs,
-    { action: "snooze", snooze_until: snoozeUntil },
+    {
+      action: "snooze",
+      snooze_until: snoozeUntil,
+      ...(safety.confirmationRequired && confirmOutsideWindow
+        ? { confirm_outside_window: true }
+        : {}),
+    },
   );
   if (!completed) return;
   const notice = getTaskSnoozeCorrectionNotice(snoozeUntil, () => {
@@ -766,6 +946,9 @@ function openPlotRescheduleDialog(
   plotId: string,
   cbs: PlotCallbacks,
 ): void {
+  if (state.selectedPlotId !== plotId) return;
+  const modalParent = getActivePlotPanelModalParent();
+  if (!modalParent) return;
   openTaskDateDialog({
     title: t("tasks.reschedule_prompt") as string,
     defaultDate: task.due_on,
@@ -779,6 +962,7 @@ function openPlotRescheduleDialog(
         { action: "reschedule", reschedule_to: date },
         t("tasks.action_success", { action: "reschedule" }) as string,
       ),
+    modalParent,
   });
 }
 
@@ -932,6 +1116,7 @@ async function loadPlotMediaPreview(
 }
 
 function closePanel(state: AppState, cbs: PlotCallbacks): void {
+  deactivatePlotTasksPanel();
   cancelPendingPlantSearch();
   dismissPopover();
   dismissDrawer();
@@ -1002,6 +1187,7 @@ export async function selectPlot(
   cbs: PlotCallbacks,
   anchorEl?: HTMLElement,
 ): Promise<void> {
+  deactivatePlotTasksPanel();
   cancelPendingPlantSearch();
   dismissPopover();
   dismissDrawer();
@@ -1047,6 +1233,7 @@ export async function selectPlot(
         ? { onCreatePlant: cbs.onCreatePlant }
         : {}),
     });
+    activatePlotTasksPanel(state, plotId, cbs);
     void hydrateActivePlotPanel(state, plotId, topPlants, cbs, seq);
     void loadPlotTasksPreview(state, plotId, cbs);
     void loadPlotJournalPreview(plotId, cbs);
@@ -1090,6 +1277,7 @@ export async function openDrawerForPlot(
   plotId: string,
   cbs: PlotCallbacks,
 ): Promise<void> {
+  deactivatePlotTasksPanel();
   cancelPendingPlantSearch();
   const seq = ++plotSelectionSeq;
   state.selectedPlotId = plotId;
@@ -1117,6 +1305,7 @@ export async function openDrawerForPlot(
       ? { onCreatePlant: cbs.onCreatePlant }
       : {}),
   });
+  activatePlotTasksPanel(state, plotId, cbs);
   void hydrateActivePlotPanel(state, plotId, plants, cbs, seq);
   void loadPlotTasksPreview(state, plotId, cbs);
   void loadPlotJournalPreview(plotId, cbs);

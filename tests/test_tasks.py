@@ -523,6 +523,7 @@ class TestTasks(BaseApiTest):
                 "task_type": "fertilize",
                 "title": "Action test",
                 "due_on": "2026-05-01",
+                "plant_ids": ["PLT-002"],
             },
         )
         self.assertEqual(r.status_code, 201)
@@ -575,6 +576,7 @@ class TestTasks(BaseApiTest):
             json={
                 "action": "snooze",
                 "snooze_until": "2026-06-01",
+                "confirm_outside_window": True,
             },
         )
         self.assertEqual(r.status_code, 200)
@@ -640,6 +642,116 @@ class TestTasks(BaseApiTest):
         self.assertEqual(after["window_start_on"], "2026-04-24")
         self.assertEqual(after["window_end_on"], "2026-05-29")
 
+    def test_task_action_rejects_stale_revision_but_replays_owned_operation(self) -> None:
+        created = self.client.post(
+            "/api/tasks",
+            json={"task_type": "water", "title": "Revision test", "due_on": "2026-07-01"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        task_id = created.json()["id"]
+        original = self.client.get(f"/api/tasks/{task_id}").json()
+
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE garden_tasks SET updated_at_ms = updated_at_ms + 1 WHERE public_id = %s",
+                (task_id,),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        operation_headers = {"X-Offline-Operation-Id": "stale-task-revision"}
+        stale = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            headers=operation_headers,
+            json={"action": "skip", "expected_updated_at_ms": original["updated_at_ms"]},
+        )
+        self.assertEqual(stale.status_code, 409, stale.text)
+        self.assertIn("changed since", stale.json()["detail"])
+        current = self.client.get(f"/api/tasks/{task_id}").json()
+        self.assertEqual(current["status"], "pending")
+
+        accepted = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            headers=operation_headers,
+            json={"action": "skip", "expected_updated_at_ms": current["updated_at_ms"]},
+        )
+        replay = self.client.post(
+            f"/api/tasks/{task_id}/action",
+            headers=operation_headers,
+            json={"action": "skip", "expected_updated_at_ms": current["updated_at_ms"]},
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        self.assertEqual(replay.status_code, 200, replay.text)
+
+    def test_snooze_enforces_weather_recurrence_and_confirmed_task_windows(self) -> None:
+        weather = self.client.post(
+            "/api/tasks",
+            json={"task_type": "protect", "title": "Protect from frost", "due_on": "2026-07-01"},
+        )
+        watering = self.client.post(
+            "/api/tasks",
+            json={"task_type": "water", "title": "Weekly water", "due_on": "2026-07-01"},
+        )
+        prune = self.client.post(
+            "/api/tasks",
+            json={"task_type": "prune", "title": "Prune in window", "due_on": "2026-07-01"},
+        )
+        self.assertEqual(weather.status_code, 201, weather.text)
+        self.assertEqual(watering.status_code, 201, watering.text)
+        self.assertEqual(prune.status_code, 201, prune.text)
+
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                UPDATE garden_tasks
+                SET rule_source = 'auto:frost:1',
+                    metadata_json = '{"weather_alert_id":1,"weather_valid_until":"2026-07-03"}',
+                    window_end_on = '2026-07-03'
+                WHERE public_id = %s
+                """,
+                (weather.json()["id"],),
+            )
+            conn.execute(
+                """
+                UPDATE garden_tasks
+                SET rule_source = 'water:PLT-TEST:2026-07-01'
+                WHERE public_id = %s
+                """,
+                (watering.json()["id"],),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        weather_late = self.client.post(
+            f"/api/tasks/{weather.json()['id']}/action",
+            json={"action": "snooze", "snooze_until": "2026-07-04"},
+        )
+        watering_late = self.client.post(
+            f"/api/tasks/{watering.json()['id']}/action",
+            json={"action": "snooze", "snooze_until": "2026-07-08"},
+        )
+        outside_window = self.client.post(
+            f"/api/tasks/{prune.json()['id']}/action",
+            json={"action": "snooze", "snooze_until": "2027-08-15"},
+        )
+        confirmed = self.client.post(
+            f"/api/tasks/{prune.json()['id']}/action",
+            json={
+                "action": "snooze",
+                "snooze_until": "2027-08-15",
+                "confirm_outside_window": True,
+            },
+        )
+
+        self.assertEqual(weather_late.status_code, 409, weather_late.text)
+        self.assertEqual(watering_late.status_code, 409, watering_late.text)
+        self.assertEqual(outside_window.status_code, 409, outside_window.text)
+        self.assertEqual(confirmed.status_code, 200, confirmed.text)
+
     def test_task_actions_clear_completion_metadata_when_reopened(self) -> None:
         response = self.client.post(
             "/api/tasks",
@@ -647,6 +759,7 @@ class TestTasks(BaseApiTest):
                 "task_type": "prune",
                 "title": "Completed then rescheduled",
                 "due_on": "2026-05-01",
+                "plant_ids": ["PLT-002"],
             },
         )
         self.assertEqual(response.status_code, 201)
@@ -861,6 +974,137 @@ class TestTasks(BaseApiTest):
                 self.assertTrue(task["metadata"]["description_generated"])
                 self.assertEqual(task["metadata"]["description_source"], "work_order")
                 self.assertEqual(task["metadata"]["plant_count"], 1)
+
+    def test_grouped_completion_restores_history_then_regenerates_work_order_on_reschedule(
+        self,
+    ) -> None:
+        for plot_id, plant_id in (("B1", "PLT-TEST"), ("B2", "PLT-002")):
+            assigned = self.client.post(
+                f"/api/plots/{plot_id}/plants/{plant_id}",
+                json={"quantity": 1},
+            )
+            self.assertIn(assigned.status_code, {200, 201}, assigned.text)
+
+        task_cases = (
+            ("prune", "Prune", "pruned"),
+            ("fertilize", "Fertilize", "fertilized"),
+        )
+        for task_type, prefix, event_type in task_cases:
+            with self.subTest(task_type=task_type):
+                original_title = f"Original {prefix} work order"
+                original_description = f"Original English description for {prefix}"
+                original_description_no = f"Original Norwegian description for {prefix}"
+                response = self.client.post(
+                    "/api/tasks",
+                    json={
+                        "task_type": task_type,
+                        "title": original_title,
+                        "description": original_description,
+                        "due_on": "2026-06-01",
+                        "plant_ids": ["PLT-TEST", "PLT-002"],
+                        "plot_ids": ["B1", "B2"],
+                    },
+                )
+                self.assertEqual(response.status_code, 201, response.text)
+                task_id = response.json()["id"]
+
+                conn = db.get_db()
+                try:
+                    conn.execute(
+                        """
+                        UPDATE garden_tasks
+                        SET rule_source = %s,
+                            metadata_json = %s
+                        WHERE public_id = %s
+                        """,
+                        (
+                            f"work_order:{task_type}:2026-W23",
+                            json.dumps(
+                                {
+                                    "description_no": original_description_no,
+                                    "description_generated": True,
+                                    "description_source": "work_order",
+                                    "work_order": True,
+                                    "plant_count": 2,
+                                },
+                                separators=(",", ":"),
+                            ),
+                            task_id,
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    db.return_db(conn)
+
+                partial = self.client.post(
+                    f"/api/tasks/{task_id}/action",
+                    json={"action": "complete", "completed_plant_ids": ["PLT-TEST"]},
+                )
+                self.assertEqual(partial.status_code, 200, partial.text)
+                remaining = self.client.get(f"/api/tasks/{task_id}").json()
+                self.assertEqual(remaining["status"], "pending")
+                self.assertEqual(remaining["plant_ids"], ["PLT-002"])
+                self.assertEqual(remaining["plot_ids"], ["B2"])
+                self.assertEqual(remaining["title"], f"{prefix}: Rose")
+                self.assertIn("Rose", remaining["description"])
+                self.assertNotIn("Test Plant", remaining["description"])
+                self.assertIn("Rose", remaining["metadata"]["description_no"])
+                self.assertNotIn("Test Plant", remaining["metadata"]["description_no"])
+                self.assertEqual(remaining["metadata"]["plant_count"], 1)
+
+                final = self.client.post(
+                    f"/api/tasks/{task_id}/action",
+                    json={"action": "complete"},
+                )
+                self.assertEqual(final.status_code, 200, final.text)
+                completed = self.client.get(f"/api/tasks/{task_id}").json()
+                self.assertEqual(completed["status"], "completed")
+                self.assertEqual(completed["title"], original_title)
+                self.assertEqual(completed["description"], original_description)
+                self.assertEqual(
+                    completed["metadata"]["description_no"],
+                    original_description_no,
+                )
+                self.assertEqual(completed["metadata"]["plant_count"], 2)
+                self.assertEqual(completed["plant_ids"], ["PLT-002", "PLT-TEST"])
+                self.assertEqual(completed["plot_ids"], ["B1", "B2"])
+                self.assertEqual(len(completed["metadata"]["completion_journal_entries"]), 2)
+
+                for plant_id in ("PLT-TEST", "PLT-002"):
+                    journal = self.client.get(
+                        f"/api/journal?event_type={event_type}&plant_id={plant_id}"
+                    ).json()
+                    self.assertEqual(journal["total"], 1)
+                    self.assertEqual(
+                        journal["entries"][0]["metadata"]["selected_plant_ids"],
+                        [plant_id],
+                    )
+
+                repeated = self.client.post(
+                    f"/api/tasks/{task_id}/action",
+                    json={"action": "complete"},
+                )
+                self.assertEqual(repeated.status_code, 200, repeated.text)
+
+                rescheduled = self.client.post(
+                    f"/api/tasks/{task_id}/action",
+                    json={"action": "reschedule", "reschedule_to": "2026-07-01"},
+                )
+                self.assertEqual(rescheduled.status_code, 200, rescheduled.text)
+                reopened = self.client.get(f"/api/tasks/{task_id}").json()
+                self.assertEqual(reopened["status"], "pending")
+                self.assertEqual(reopened["plant_ids"], ["PLT-002", "PLT-TEST"])
+                self.assertEqual(reopened["plot_ids"], ["B1", "B2"])
+                self.assertEqual(reopened["title"], f"{prefix} 2 plants")
+                self.assertIn("Rose", reopened["description"])
+                self.assertIn("Test Plant", reopened["description"])
+                self.assertIn("Rose", reopened["metadata"]["description_no"])
+                self.assertIn("Test Plant", reopened["metadata"]["description_no"])
+                self.assertEqual(reopened["metadata"]["plant_count"], 2)
+                self.assertNotIn("completion_journal_entries", reopened["metadata"])
+                self.assertNotIn("completion_capture_original_plant_ids", reopened["metadata"])
+                self.assertNotIn("completion_capture_original_title", reopened["metadata"])
+                self.assertNotIn("completion_capture_original_description", reopened["metadata"])
 
     def test_grouped_partial_completion_splits_plot_links_by_selected_plants(self) -> None:
         response = self.client.post(
@@ -1128,25 +1372,47 @@ class TestTasks(BaseApiTest):
         journal = self.client.get("/api/journal?event_type=pruned&plant_id=PLT-TEST").json()
         self.assertEqual(journal["total"], 1)
 
-    def test_horticultural_completion_rejects_unlinked_selected_plants(self) -> None:
-        response = self.client.post(
-            "/api/tasks",
-            json={
-                "task_type": "prune",
-                "title": "Prune missing link",
-                "due_on": "2026-06-01",
-            },
+    def test_completion_capture_requires_linked_plants(self) -> None:
+        task_cases = (
+            ("observe_bloom", "bloomed", {"completion_outcome": "done"}),
+            ("prune", "pruned", {}),
+            ("fertilize", "fertilized", {}),
         )
-        self.assertEqual(response.status_code, 201, response.text)
-        task_id = response.json()["id"]
+        for task_type, event_type, completion_fields in task_cases:
+            with self.subTest(task_type=task_type):
+                response = self.client.post(
+                    "/api/tasks",
+                    json={
+                        "task_type": task_type,
+                        "title": f"Unlinked {task_type} task",
+                        "due_on": "2026-06-01",
+                    },
+                )
+                self.assertEqual(response.status_code, 201, response.text)
+                task_id = response.json()["id"]
 
-        response = self.client.post(
-            f"/api/tasks/{task_id}/action",
-            json={"action": "complete", "completed_plant_ids": ["PLT-002"]},
-        )
+                response = self.client.post(
+                    f"/api/tasks/{task_id}/action",
+                    json={"action": "complete", **completion_fields},
+                )
 
-        self.assertEqual(response.status_code, 422)
-        self.assertIn("linked to the task", response.text)
+                self.assertEqual(response.status_code, 409, response.text)
+                self.assertIn("linked plant", response.text)
+                self.assertIn("Repair the task's plant scope", response.text)
+                task = self.client.get(f"/api/tasks/{task_id}").json()
+                self.assertEqual(task["status"], "pending")
+                self.assertNotIn("completion_journal_entries", task["metadata"])
+
+                conn = db.get_db()
+                try:
+                    journal_count = conn.execute(
+                        "SELECT COUNT(*) AS c FROM garden_journal_entries WHERE event_type = %s",
+                        (event_type,),
+                    ).fetchone()
+                    self.assertIsNotNone(journal_count)
+                    self.assertEqual(int(journal_count["c"]), 0)
+                finally:
+                    db.return_db(conn)
 
     def test_non_bloom_completion_rejects_not_seen_bloom_outcome(self) -> None:
         response = self.client.post(
@@ -1645,6 +1911,7 @@ class TestTasks(BaseApiTest):
                     "task_type": "prune",
                     "title": title,
                     "due_on": "2026-05-01",
+                    "plant_ids": ["PLT-002"],
                 },
             )
             self.assertEqual(response.status_code, 201)

@@ -112,7 +112,7 @@ verify_locked_dependencies() {
   : > "$npm_userconfig"
   chmod 600 "$npm_userconfig"
   command -v uv >/dev/null 2>&1 || die "uv is required to verify the locked Python environment"
-  uv sync --locked --all-groups --dry-run > "$LOG_DIR/uv-lock-verify.log" 2>&1 \
+  uv sync --locked --all-groups --check --no-config > "$LOG_DIR/uv-lock-verify.log" 2>&1 \
     || die "locked Python dependency verification failed"
   "$ROOT_DIR/.venv/bin/python" -m pip check > "$LOG_DIR/python-pip-check.log" 2>&1 \
     || die "installed Python dependency verification failed"
@@ -123,9 +123,15 @@ verify_locked_dependencies() {
       LANG="${LANG:-C.UTF-8}" \
       PATH="$PATH" \
       TMPDIR="$PRIVATE_DIR" \
-      npm ci --dry-run --ignore-scripts --no-audit --no-fund --userconfig "$npm_userconfig"
-  ) > "$LOG_DIR/npm-lock-verify.log" 2>&1 \
+      npm ci --dry-run --ignore-scripts --no-audit --no-fund --json --userconfig "$npm_userconfig"
+  ) > "$LOG_DIR/npm-lock-verify.log" 2> "$LOG_DIR/npm-lock-verify.stderr.log" \
     || die "locked Node dependency verification failed"
+  node -e '
+    const fs = require("fs");
+    const state = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    if (state.added !== 0 || state.changed !== 0 || state.removed !== 0) process.exit(1);
+  ' "$LOG_DIR/npm-lock-verify.log" \
+    || die "installed Node dependencies diverge from package-lock.json"
   export GARDENOPS_COMPLETE_JOURNEYS_E2E_LOCK_VERIFIED=true
 }
 
@@ -394,6 +400,13 @@ DOWNLOAD_DIR="$PRIVATE_DIR/downloads"
 mkdir -p "$PRIVATE_DIR/home" "$LOG_DIR" "$MEDIA_DIR" "$TERRAIN_DIR" "$DOWNLOAD_DIR"
 chmod 700 "$PRIVATE_DIR" "$PRIVATE_DIR/home" "$LOG_DIR" "$MEDIA_DIR" "$TERRAIN_DIR" "$DOWNLOAD_DIR"
 
+export HOME="$PRIVATE_DIR/home"
+export XDG_CACHE_HOME="$PRIVATE_DIR/xdg-cache"
+export XDG_CONFIG_HOME="$PRIVATE_DIR/xdg-config"
+export XDG_DATA_HOME="$PRIVATE_DIR/xdg-data"
+mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+chmod 700 "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+
 export GARDENOPS_LOGS_DIR="$LOG_DIR"
 export MEDIA_STORAGE_DIR="$MEDIA_DIR"
 export GARDENOPS_COMPLETE_JOURNEYS_E2E_DOWNLOAD_DIR="$DOWNLOAD_DIR"
@@ -423,10 +436,6 @@ cleanup() {
   stop_process_group "$FRONTEND_PID"
   stop_process_group "$BACKEND_PID"
   if [[ "$status" -ne 0 ]]; then
-    printf 'Complete journey backend log tail:\n' >&2
-    tail -n 100 "$LOG_DIR/backend.log" 2>/dev/null >&2 || true
-    printf 'Complete journey frontend log tail:\n' >&2
-    tail -n 100 "$LOG_DIR/frontend.log" 2>/dev/null >&2 || true
     printf 'Private failure artifacts: %s and %s\n' "$ARTIFACT_DIR" "$PRIVATE_DIR" >&2
     finish_private_dir "$status" "$PRIVATE_DIR"
     exit "$status"

@@ -42,6 +42,10 @@ def clear_completion_capture_metadata(task_row: dict[str, Any]) -> dict[str, Any
     metadata.pop("completion_journal_entry_id", None)
     metadata.pop("completion_capture_original_plant_ids", None)
     metadata.pop("completion_capture_original_plot_ids", None)
+    metadata.pop("completion_capture_original_title", None)
+    metadata.pop("completion_capture_original_description", None)
+    metadata.pop("completion_capture_original_description_no", None)
+    metadata.pop("completion_capture_original_plant_count", None)
     return metadata
 
 
@@ -57,6 +61,56 @@ def grouped_completion_history_started(task_row: dict[str, Any]) -> bool:
         and isinstance(completion_entries, dict)
         and any(isinstance(entry_id, str) and entry_id for entry_id in completion_entries.values())
     )
+
+
+def capture_completion_original_task_state(
+    *,
+    task_row: dict[str, Any],
+    metadata: dict[str, Any],
+    linked_plant_ids: list[str],
+    linked_plot_ids: list[str],
+) -> dict[str, Any]:
+    """Keep the pre-partial task presentation stable for completed history."""
+    if not is_completion_capture_task(str(task_row.get("task_type") or "")):
+        return metadata
+
+    if not isinstance(metadata.get("completion_capture_original_plant_ids"), list):
+        metadata["completion_capture_original_plant_ids"] = list(linked_plant_ids)
+    if not isinstance(metadata.get("completion_capture_original_plot_ids"), list):
+        metadata["completion_capture_original_plot_ids"] = list(linked_plot_ids)
+    if not isinstance(metadata.get("completion_capture_original_title"), str):
+        metadata["completion_capture_original_title"] = str(task_row.get("title") or "")
+    if not isinstance(metadata.get("completion_capture_original_description"), str):
+        metadata["completion_capture_original_description"] = str(task_row.get("description") or "")
+    if "completion_capture_original_description_no" not in metadata:
+        metadata["completion_capture_original_description_no"] = metadata.get("description_no")
+    if "completion_capture_original_plant_count" not in metadata:
+        metadata["completion_capture_original_plant_count"] = metadata.get("plant_count")
+    return metadata
+
+
+def restore_completion_capture_original_presentation(
+    *,
+    task_row: dict[str, Any],
+    metadata: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    """Restore the task text and localized metadata captured before partial work."""
+    original_title = metadata.get("completion_capture_original_title")
+    original_description = metadata.get("completion_capture_original_description")
+    original_description_no = metadata.get("completion_capture_original_description_no")
+    original_plant_count = metadata.get("completion_capture_original_plant_count")
+
+    title = original_title if isinstance(original_title, str) else str(task_row.get("title") or "")
+    description = (
+        original_description
+        if isinstance(original_description, str)
+        else str(task_row.get("description") or "")
+    )
+    if isinstance(original_description_no, str):
+        metadata["description_no"] = original_description_no
+    if isinstance(original_plant_count, int) and not isinstance(original_plant_count, bool):
+        metadata["plant_count"] = original_plant_count
+    return title, description, metadata
 
 
 def append_bloom_not_yet_event(
@@ -261,6 +315,10 @@ def validate_completed_plant_ids(
         )
     if not is_completion_capture_task(task_type):
         return []
+    validate_completion_capture_plant_links(
+        task_type=task_type,
+        linked_plant_ids=linked_plant_ids,
+    )
     requested = []
     seen = set()
     for raw in requested_plant_ids or []:
@@ -275,8 +333,6 @@ def validate_completed_plant_ids(
             status_code=422,
             detail=f"completed_plant_ids must be linked to the task: {', '.join(invalid[:5])}",
         )
-    if not linked_plant_ids:
-        return []
     if len(linked_plant_ids) == 1 and requested_plant_ids is None:
         return linked_plant_ids
     if not requested:
@@ -285,6 +341,21 @@ def validate_completed_plant_ids(
             detail="completed_plant_ids is required for grouped horticultural completion",
         )
     return requested
+
+
+def validate_completion_capture_plant_links(
+    *,
+    task_type: str,
+    linked_plant_ids: list[str],
+) -> None:
+    if is_completion_capture_task(task_type) and not linked_plant_ids:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Completion capture requires at least one linked plant. "
+                "Repair the task's plant scope before completing it."
+            ),
+        )
 
 
 def validate_completion_outcome(
