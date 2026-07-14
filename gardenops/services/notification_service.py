@@ -1792,11 +1792,20 @@ def refresh_task_notifications_for_task(
         task_public_ids={task_public_id},
         now_ms=now_value,
     )
-    return {
+    refresh_result = {
         "cleared": cleared,
         "created": int(result.get("created", 0)),
         "skipped": int(result.get("skipped", 0)),
     }
+    logger.info(
+        "Task notification refresh garden_id=%s target_id=%s cleared=%s created=%s skipped=%s",
+        garden_id,
+        task_public_id,
+        refresh_result["cleared"],
+        refresh_result["created"],
+        refresh_result["skipped"],
+    )
+    return refresh_result
 
 
 def clear_issue_notifications(
