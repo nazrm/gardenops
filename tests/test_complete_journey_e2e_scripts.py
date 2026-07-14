@@ -2402,13 +2402,13 @@ def test_phase_two_completion_journals_retain_task_plot_context() -> None:
     assert "selected_plot_ids: expected.plot_ids," in metadata_expectation
 
 
-def test_phase_two_stale_manual_notice_keeps_pre_action_expiry_reason() -> None:
+def test_phase_two_precleared_task_notices_keep_historical_reason() -> None:
     source = CHECKER.read_text(encoding="utf-8")
-    notification_actions = source.split("const actionByTask = new Map([", 1)[1].split(
-        "]);", 1
+    lifecycle = source.split("function expectedPhaseTwoMaintenanceNotification", 1)[1].split(
+        "function assertPhaseTwoDatabaseState", 1
     )[0]
 
-    assert "stale_manual_water" not in notification_actions
+    assert "if (notification.cleared_at_ms !== null) return expected;" in lifecycle
 
 
 def test_phase_two_mobile_quick_action_keeps_manual_date_completion_actionable() -> None:

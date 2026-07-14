@@ -1975,6 +1975,7 @@ function expectedPhaseTwoMaintenanceNotification(notification, fixture, delivere
   if (!["task_due", "task_overdue", "task_upcoming"].includes(notification.notification_type)) {
     return expected;
   }
+  if (notification.cleared_at_ms !== null) return expected;
   const roleStage = new Map([
     [fixture.roles.admin, 0],
     [fixture.roles.editor, 1],
@@ -1992,6 +1993,7 @@ function expectedPhaseTwoMaintenanceNotification(notification, fixture, delivere
     [fixture.phase_two.task_ids.snooze_correction, { reason: "snoozed", stage: 0 }],
     [fixture.phase_two.task_ids.editor_prune, { reason: "completed", stage: 1 }],
     [fixture.phase_two.task_ids.editor_offline, { reason: "completed", stage: 1 }],
+    [fixture.phase_two.task_ids.stale_manual_water, { reason: "snoozed", stage: 1 }],
   ]);
   const notificationStage = roleStage.get(notification.username);
   assert(Number.isSafeInteger(notificationStage),
