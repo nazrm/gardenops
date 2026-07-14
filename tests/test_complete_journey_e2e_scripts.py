@@ -3481,6 +3481,36 @@ def test_playwright_trace_validator_sanitizes_opaque_binary_resource_secrets(
     assert subprocess.run([sys.executable, validator, sanitized], check=False).returncode == 0
 
 
+def test_playwright_trace_validator_ignores_cookie_name_in_evaluate_source(
+    tmp_path: Path,
+) -> None:
+    validator = ROOT / "scripts" / "validate_playwright_trace.py"
+    trace = tmp_path / "trace.zip"
+    expression = """() => {
+      const csrf = document.cookie
+        .split('; ')
+        .find((part) => part.startsWith("gardenops_csrf="));
+      return csrf?.slice("gardenops_csrf=".length) || "";
+    }"""
+    with zipfile.ZipFile(trace, "w") as archive:
+        archive.writestr(
+            "trace.trace",
+            json.dumps(
+                {
+                    "type": "before",
+                    "method": "Frame.evaluateExpression",
+                    "params": {"expression": expression},
+                }
+            ),
+        )
+        archive.writestr("trace.network", "network")
+
+    validated = subprocess.run(
+        [sys.executable, validator, trace], capture_output=True, check=False, text=True
+    )
+    assert validated.returncode == 0, validated.stderr
+
+
 def test_guarded_context_defers_trace_until_after_authentication() -> None:
     script = """
 const {

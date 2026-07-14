@@ -241,20 +241,21 @@ def _secret_categories(data: bytes) -> set[str]:
         return {
             f"binary:{category}" for category in _pattern_secret_categories(data.decode("latin-1"))
         }
-    categories = {f"text:{category}" for category in _pattern_secret_categories(text)}
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
         parsed = None
     if parsed is not None:
-        categories.update(f"structured:{category}" for category in _json_secret_categories(parsed))
+        return {f"structured:{category}" for category in _json_secret_categories(parsed)}
+
+    categories: set[str] = set()
     for line in text.splitlines():
         try:
             categories.update(
                 f"structured:{category}" for category in _json_secret_categories(json.loads(line))
             )
         except json.JSONDecodeError:
-            continue
+            categories.update(f"text:{category}" for category in _pattern_secret_categories(line))
     return categories
 
 
