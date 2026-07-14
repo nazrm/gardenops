@@ -72,6 +72,7 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         indicator = (ROOT / "frontend" / "src" / "components" / "offlineIndicator.ts").read_text(
             encoding="utf-8"
         )
+        styles = (ROOT / "frontend" / "src" / "style.css").read_text(encoding="utf-8")
 
         self.assertIn('draft.status === "failed" ? "failed" : "queued"', queue)
         self.assertIn("export async function retryDraft", queue)
@@ -82,6 +83,13 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn('failures.setAttribute("role", "alert")', indicator)
         self.assertIn("callbacks.onRetry(draft)", indicator)
         self.assertIn("callbacks.onDiscard(draft)", indicator)
+        mobile_indicator = styles.rsplit("@media (max-width: 960px) {", 1)[1]
+        self.assertIn(".offline-indicator-wrapper", mobile_indicator)
+        self.assertIn("top: auto;", mobile_indicator)
+        self.assertIn(
+            "bottom: calc(78px + env(safe-area-inset-bottom, 0px) + var(--sp-2));",
+            mobile_indicator,
+        )
 
     def test_cold_offline_views_are_honest_and_warm_filters_use_matching_cache(self) -> None:
         app = (ROOT / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")

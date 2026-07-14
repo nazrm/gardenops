@@ -14539,6 +14539,16 @@ td.inventory-qty-zero {
   cursor: pointer;
 }
 
+@media (max-width: 960px) {
+  .offline-indicator-wrapper {
+    top: auto;
+    right: var(--sp-2);
+    bottom: calc(78px + env(safe-area-inset-bottom, 0px) + var(--sp-2));
+    max-height: min(45vh, 24rem);
+    overflow-y: auto;
+  }
+}
+
 /* ── House clickable + Indoor panel ──────────────── */
 .house--clickable {
   cursor: pointer;
