@@ -2757,6 +2757,20 @@ function expectedPhaseTwoMaintenanceNotification(notification, fixture, delivere
   if (deliveredIds.has(notification.public_id)) {
     expected.emailed_at_ms = fixture.clock.attention_now_ms;
   }
+  const viewerWeatherAlert = fixture.phase_two.seeded_state.weather_alerts.find((alert) => (
+    alert.garden_id === fixture.gardens.alpha.id
+  ));
+  if (
+    viewerWeatherAlert
+    && notification.username === fixture.roles.viewer
+    && notification.garden_id === fixture.gardens.alpha.id
+    && notification.notification_type === "weather_alert"
+    && notification.target_id === `${viewerWeatherAlert.alert_type}:${viewerWeatherAlert.valid_from}`
+  ) {
+    expected.cleared_at_ms = fixture.clock.attention_now_ms;
+    expected.clear_reason = "weather_dismissed";
+    return expected;
+  }
   if (!["task_due", "task_overdue", "task_upcoming"].includes(notification.notification_type)) {
     return expected;
   }
