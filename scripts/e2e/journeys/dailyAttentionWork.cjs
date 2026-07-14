@@ -401,6 +401,11 @@ async function snoozePruneWithManualDate(page, fixture) {
   assert(await input.inputValue() === "2026-07-19", "Prune +1 week default was incorrect");
   await input.fill(fixture.phase_two.manual_date);
   await dialog.locator(".confirm-yes").click();
+  const outsideWindowConfirmation = page.getByRole("alertdialog").filter({
+    has: page.getByRole("button", { name: /^Snooze anyway$/i }),
+  });
+  await visible(outsideWindowConfirmation, "manual prune date outside-window confirmation");
+  await outsideWindowConfirmation.getByRole("button", { name: /^Snooze anyway$/i }).click();
   await card.waitFor({ state: "hidden" });
 }
 

@@ -2803,6 +2803,16 @@ def test_phase_two_snooze_correction_opens_mobile_week_overflow() -> None:
     assert 'page.locator(".fc-popover .fc-event:visible")' in correction
 
 
+def test_phase_two_manual_prune_snooze_confirms_window_override() -> None:
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
+    snooze = source.split("async function snoozePruneWithManualDate", 1)[1].split(
+        "async function completeBatch", 1
+    )[0]
+
+    assert "name: /^Snooze anyway$/i" in snooze
+    assert "visible(outsideWindowConfirmation" in snooze
+
+
 def test_phase_two_offline_calendar_is_loaded_before_connectivity_is_lost() -> None:
     source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
     offline = source.split("async function exerciseOfflineTask", 1)[1].split(
