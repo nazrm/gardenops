@@ -2830,6 +2830,9 @@ def test_phase_two_viewer_weather_keeps_personal_dismissal_controls() -> None:
 
     assert 'page.locator("#weather-dashboard .weather-check-btn:visible").count() === 0' in viewer
     assert 'page.locator("#weather-dashboard .weather-alert-dismiss:visible").count() > 0' in viewer
+    checker = CHECKER.read_text(encoding="utf-8")
+    assert "Phase 2 weather dismissals were not scoped to their users and gardens" in checker
+    assert "username: fixture.roles.viewer" in checker
 
 
 def test_phase_two_viewer_denial_console_diagnostics_are_classified() -> None:

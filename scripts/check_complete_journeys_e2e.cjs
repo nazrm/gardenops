@@ -3467,17 +3467,34 @@ function assertPhaseTwoDatabaseState(
   assert(rainAlert.metadata?.rain_days === 3 && rainAlert.metadata?.total_mm === 16,
     "Phase 2 rain alert metadata was unexpected");
 
-  assert(state.item_states.length === 1,
+  assert(state.item_states.length === 2,
     "Phase 2 user-scoped weather dismissal count was unexpected");
-  exact(state.item_states[0], {
-    garden_id: fixture.gardens.beta.id,
-    item_id: `attn:weather:alert:${rainAlert.id}`,
-    metadata: {},
-    reason: "",
-    snoozed_until_ms: null,
-    user_state: "dismissed",
-    username: fixture.roles.admin,
-  }, "Phase 2 weather dismissal was not user scoped");
+  exact(state.item_states.slice().sort((left, right) => (
+    `${left.username}:${left.item_id}`.localeCompare(`${right.username}:${right.item_id}`)
+  )), [
+    {
+      garden_id: fixture.gardens.beta.id,
+      item_id: `attn:weather:alert:${rainAlert.id}`,
+      metadata: {},
+      reason: "",
+      snoozed_until_ms: null,
+      user_state: "dismissed",
+      username: fixture.roles.admin,
+    },
+    {
+      garden_id: fixture.gardens.alpha.id,
+      item_id: `attn:weather:alert:${phase.seeded_state.weather_alerts.find((alert) => (
+        alert.garden_id === fixture.gardens.alpha.id
+      )).id}`,
+      metadata: {},
+      reason: "",
+      snoozed_until_ms: null,
+      user_state: "dismissed",
+      username: fixture.roles.viewer,
+    },
+  ].sort((left, right) => (
+    `${left.username}:${left.item_id}`.localeCompare(`${right.username}:${right.item_id}`)
+  )), "Phase 2 weather dismissals were not scoped to their users and gardens");
 
   assert(state.outcomes.length === 1, "Phase 2 rain outcome count was unexpected");
   const outcome = state.outcomes[0];
