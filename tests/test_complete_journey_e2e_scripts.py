@@ -3068,6 +3068,8 @@ def test_phase_two_maintenance_notifications_have_exact_post_journey_lifecycle()
     assert 'expected.clear_reason = "expired";' in lifecycle
     assert 'expected.clear_reason = "weather_dismissed";' in lifecycle
     assert "notification.username === fixture.roles.viewer" in lifecycle
+    assert "viewerDismissedWeatherTargets.has(notification.target_id)" in lifecycle
+    assert "viewerMaintenanceAlert" in lifecycle
     assert "const actionByTask" not in lifecycle
     assert "preferenceDelivery?.delivery_notifications" in source
 

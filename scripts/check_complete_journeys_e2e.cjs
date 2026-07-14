@@ -2669,6 +2669,11 @@ function assertPhaseTwoMaintenanceSemanticState(
   const deliveredIds = new Set(
     preferenceDelivery.delivery_notifications.map((notification) => notification.public_id),
   );
+  const viewerMaintenanceAlert = finalRows.weather_alerts.reduce((latest, alert) => (
+    latest === null || alert.row_id > latest.row_id ? alert : latest
+  ), null);
+  assert(viewerMaintenanceAlert,
+    "Phase 2 viewer maintenance weather notification target was missing");
   for (const table of expectedTables) {
     assert(Array.isArray(finalRows[table]),
       `Final Phase 2 maintenance ${table} projection is missing`);
@@ -2682,7 +2687,12 @@ function assertPhaseTwoMaintenanceSemanticState(
       if (table === "notifications") {
         exactMaintenanceNotification(
           finalRow,
-          expectedPhaseTwoMaintenanceNotification(expected, fixture, deliveredIds),
+          expectedPhaseTwoMaintenanceNotification(
+            expected,
+            fixture,
+            deliveredIds,
+            viewerMaintenanceAlert,
+          ),
         );
       } else {
         assert(canonicalJson(finalRow) === canonicalJson(expected),
@@ -2829,20 +2839,29 @@ function exactMaintenanceNotification(actual, expected) {
   }
 }
 
-function expectedPhaseTwoMaintenanceNotification(notification, fixture, deliveredIds) {
+function expectedPhaseTwoMaintenanceNotification(
+  notification,
+  fixture,
+  deliveredIds,
+  viewerMaintenanceAlert,
+) {
   const expected = { ...notification };
   if (deliveredIds.has(notification.public_id)) {
     expected.emailed_at_ms = fixture.clock.attention_now_ms;
   }
-  const viewerWeatherAlert = fixture.phase_two.seeded_state.weather_alerts.find((alert) => (
+  const seededViewerWeatherAlert = fixture.phase_two.seeded_state.weather_alerts.find((alert) => (
     alert.garden_id === fixture.gardens.alpha.id
   ));
+  const viewerDismissedWeatherTargets = new Set(
+    [seededViewerWeatherAlert, viewerMaintenanceAlert]
+      .filter(Boolean)
+      .map((alert) => `${alert.alert_type}:${alert.valid_from}`),
+  );
   if (
-    viewerWeatherAlert
-    && notification.username === fixture.roles.viewer
+    notification.username === fixture.roles.viewer
     && notification.garden_id === fixture.gardens.alpha.id
     && notification.notification_type === "weather_alert"
-    && notification.target_id === `${viewerWeatherAlert.alert_type}:${viewerWeatherAlert.valid_from}`
+    && viewerDismissedWeatherTargets.has(notification.target_id)
   ) {
     expected.cleared_at_ms = fixture.clock.attention_now_ms;
     expected.clear_reason = "weather_dismissed";
