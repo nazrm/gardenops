@@ -1063,6 +1063,23 @@ def create_task_due_notifications_in_transaction(
         target_filter_params = sorted(target_filter)
         target_placeholders = ",".join(["%s"] * len(target_filter_params))
         target_filter_clause = f" AND public_id IN ({target_placeholders})"
+    existing_history_clause = """
+        (
+            cleared_at_ms IS NULL
+            OR dismissed = 1
+            OR COALESCE(clear_reason, '') NOT IN ('preference_hidden', 'superseded')
+        )
+    """
+    if target_filter is not None:
+        # An explicit refresh follows a task mutation. Keep user suppression,
+        # but let the changed pending task replace ordinary cleared history.
+        existing_history_clause = """
+            (
+                cleared_at_ms IS NULL
+                OR dismissed = 1
+                OR COALESCE(clear_reason, '') = 'preference_hidden'
+            )
+        """
 
     members = db.execute(
         "SELECT user_id FROM garden_memberships WHERE garden_id = %s",
@@ -1167,11 +1184,7 @@ def create_task_due_notifications_in_transaction(
               AND notification_type IN ('task_due', 'task_overdue', 'task_upcoming')
               AND target_type = 'task'
               AND target_id IN ({target_placeholders})
-              AND (
-                cleared_at_ms IS NULL
-                OR dismissed = 1
-                OR COALESCE(clear_reason, '') NOT IN ('preference_hidden', 'superseded')
-              )
+              AND {existing_history_clause}
             """,  # noqa: S608
             [garden_id, *target_ids],
         ).fetchall()

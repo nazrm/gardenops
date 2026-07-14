@@ -1392,6 +1392,12 @@ class TestNotifications(BaseApiTest):
                 task_public_id=unrelated_task_id,
                 reason="superseded",
             )
+            clear_task_notifications(
+                conn,
+                garden_id=garden_id,
+                task_public_id=partial_task_id,
+                reason="expired",
+            )
             conn.commit()
         finally:
             db.return_db(conn)
