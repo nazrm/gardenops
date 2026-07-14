@@ -108,6 +108,12 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
             tasks[tasks_guard:tasks_fetch],
         )
         self.assertIn('tasksDataState = "unavailable";', tasks[tasks_guard:tasks_fetch])
+        fetch_error = tasks.split("} catch (err) {", 1)[1].split(
+            "async function refreshTaskOfflineActions", 1
+        )[0]
+        self.assertIn("if (!ctx.isOnline()) {", fetch_error)
+        self.assertIn("getCachedTaskList(request.gardenId, params)", fetch_error)
+        self.assertIn("renderTasksView(options.focusTaskId, request);", fetch_error)
         self.assertIn("normalizedParams", task_cache)
         self.assertIn("filterCompleteBaseSnapshot", task_cache)
         self.assertIn("entry.params[\"task_type\"] || entry.params[\"status\"]", task_cache)

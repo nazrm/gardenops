@@ -401,6 +401,23 @@ export async function loadTasks(
     }
   } catch (err) {
     if (!isCurrentTasksRequest(request)) return;
+    if (!ctx.isOnline()) {
+      const cached = getCachedTaskList(request.gardenId, params);
+      if (cached) {
+        taskItems = cached.tasks;
+        tasksTotal = cached.total;
+        tasksDataState = "cached";
+      } else {
+        taskItems = [];
+        tasksTotal = 0;
+        tasksDataState = "unavailable";
+      }
+      await refreshTaskOfflineActions(false, request.gardenId);
+      if (!isCurrentTasksRequest(request)) return;
+      reconcileSelectionWithVisibleTasks();
+      renderTasksView(options.focusTaskId, request);
+      return;
+    }
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
