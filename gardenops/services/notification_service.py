@@ -1797,7 +1797,10 @@ def refresh_task_notifications_for_task(
         "created": int(result.get("created", 0)),
         "skipped": int(result.get("skipped", 0)),
     }
-    logger.info(
+    log_refresh = (
+        logger.warning if cleared > 0 and refresh_result["created"] == 0 else logger.info
+    )
+    log_refresh(
         "Task notification refresh garden_id=%s target_id=%s cleared=%s created=%s skipped=%s",
         garden_id,
         task_public_id,
