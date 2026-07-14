@@ -84,6 +84,7 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn("callbacks.onDiscard(draft)", indicator)
 
     def test_cold_offline_views_are_honest_and_warm_filters_use_matching_cache(self) -> None:
+        app = (ROOT / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")
         tasks = (ROOT / "frontend" / "src" / "tabs" / "tasksTab.ts").read_text(
             encoding="utf-8"
         )
@@ -115,6 +116,17 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn('setCalendarDataState("unavailable")', calendar)
         self.assertIn("getCachedTodayTasks(gardenId)", quick_actions)
         self.assertIn(': { dataState: "unavailable", tasks: [] };', quick_actions)
+
+        navigation = app.split("async function refreshActiveNavigationContent", 1)[1].split(
+            "function scheduleActiveNavigationContentLoad", 1
+        )[0]
+        task_guard = navigation.index('if (!isOnline() && subMode === "tasks")')
+        calendar_guard = navigation.index('if (!isOnline() && subMode === "calendar")')
+        plant_load = navigation.index("await ensurePlantsCacheLoaded();")
+        self.assertLess(task_guard, plant_load)
+        self.assertLess(calendar_guard, plant_load)
+        self.assertIn("await loadTasksTab();", navigation[task_guard:calendar_guard])
+        self.assertIn("await loadCalendar();", navigation[calendar_guard:plant_load])
 
 
 if __name__ == "__main__":

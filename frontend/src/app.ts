@@ -2637,6 +2637,14 @@ function syncSavedViewsAvailability(): void {
 
 async function refreshActiveNavigationContent(): Promise<void> {
   if (activeTab === "garden" || activeTab === "activity") {
+    if (!isOnline() && subMode === "tasks") {
+      await loadTasksTab();
+      return;
+    }
+    if (!isOnline() && subMode === "calendar") {
+      await loadCalendar();
+      return;
+    }
     if (subMode === "plants") {
       await ensurePlantsLoaded();
     } else {
