@@ -467,6 +467,12 @@ async function completePlotDrawerTask(page, fixture) {
     `[data-view-plot-details='${fixture.phase_two.plot_ids.alpha}']`,
   );
   await visible(details, "Phase 2 plot details command");
+  const passiveToasts = page.locator("#toast-container .toast:not(.toast-interactive)");
+  for (let index = 0; index < await passiveToasts.count(); index += 1) {
+    assert(await passiveToasts.nth(index).evaluate(
+      (element) => getComputedStyle(element).pointerEvents === "none",
+    ), "Passive toast intercepted the next garden action");
+  }
   await details.click();
   const drawer = page.locator(".drawer");
   await visible(drawer, "plot drawer dialog");

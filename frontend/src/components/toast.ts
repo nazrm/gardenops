@@ -53,6 +53,7 @@ export function showToast(
 
   const toast = document.createElement("div");
   toast.className = `toast toast-${type}`;
+  if ((options.actions?.length ?? 0) > 0) toast.classList.add("toast-interactive");
   toast.dataset["toastKey"] = toastKey;
   toast.setAttribute("role", "status");
 

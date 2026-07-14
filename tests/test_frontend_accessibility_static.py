@@ -129,6 +129,16 @@ def test_mobile_toasts_clear_the_primary_navigation() -> None:
     assert mobile_toast_rule
 
 
+def test_passive_toasts_do_not_block_garden_controls() -> None:
+    styles = _read_frontend("style.css")
+    toast = _read_frontend("components/toast.ts")
+    toast_rule = styles.rsplit(".toast {", 1)[1].split("}", 1)[0]
+
+    assert "pointer-events: none;" in toast_rule
+    assert ".toast-interactive {\n  pointer-events: auto;" in styles
+    assert 'toast.classList.add("toast-interactive")' in toast
+
+
 def test_coarse_pointer_notification_and_completion_controls_have_row_sized_targets() -> None:
     styles = _read_frontend("style.css")
     notifications = _read_frontend("components/notifications.ts")
