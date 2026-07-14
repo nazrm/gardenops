@@ -2635,14 +2635,47 @@ function syncSavedViewsAvailability(): void {
     || !supportsSavedViews(subMode);
 }
 
+function renderColdOfflineTasksShell(): void {
+  const container = document.getElementById("tasks-list");
+  if (!(container instanceof HTMLElement)) return;
+  const unavailable = document.createElement("div");
+  unavailable.className = "offline-data-state offline-data-state--unavailable";
+  unavailable.setAttribute("role", "status");
+  unavailable.textContent = t("tasks.offline_unavailable");
+  container.replaceChildren(unavailable);
+  const summary = document.getElementById("tasks-summary");
+  if (summary) summary.textContent = t("tasks.offline_unavailable");
+}
+
+function renderColdOfflineCalendarShell(): void {
+  const status = document.getElementById("calendar-data-state");
+  const root = document.getElementById("calendar-root");
+  if (status instanceof HTMLElement) {
+    status.hidden = false;
+    status.className = "offline-data-state offline-data-state--unavailable";
+    status.textContent = t("calendar.offline_unavailable");
+  }
+  if (root instanceof HTMLElement) root.hidden = true;
+  const summary = document.getElementById("calendar-summary");
+  if (summary) summary.textContent = t("calendar.offline_unavailable");
+}
+
 async function refreshActiveNavigationContent(): Promise<void> {
   if (activeTab === "garden" || activeTab === "activity") {
     if (!isOnline() && subMode === "tasks") {
-      await loadTasksTab();
+      if (tasksTabModule) {
+        await tasksTabModule.loadTasks();
+      } else {
+        renderColdOfflineTasksShell();
+      }
       return;
     }
     if (!isOnline() && subMode === "calendar") {
-      await loadCalendar();
+      if (calendarTabModule) {
+        await calendarTabModule.loadCalendar();
+      } else {
+        renderColdOfflineCalendarShell();
+      }
       return;
     }
     if (subMode === "plants") {

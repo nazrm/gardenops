@@ -131,8 +131,14 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         plant_load = navigation.index("await ensurePlantsCacheLoaded();")
         self.assertLess(task_guard, plant_load)
         self.assertLess(calendar_guard, plant_load)
-        self.assertIn("await loadTasksTab();", navigation[task_guard:calendar_guard])
-        self.assertIn("await loadCalendar();", navigation[calendar_guard:plant_load])
+        self.assertIn("if (tasksTabModule)", navigation[task_guard:calendar_guard])
+        self.assertIn("renderColdOfflineTasksShell();", navigation[task_guard:calendar_guard])
+        self.assertIn("if (calendarTabModule)", navigation[calendar_guard:plant_load])
+        self.assertIn("renderColdOfflineCalendarShell();", navigation[calendar_guard:plant_load])
+        self.assertIn("function renderColdOfflineTasksShell(): void", app)
+        self.assertIn("function renderColdOfflineCalendarShell(): void", app)
+        self.assertIn('container.replaceChildren(unavailable);', app)
+        self.assertIn('root.hidden = true;', app)
 
 
 if __name__ == "__main__":
