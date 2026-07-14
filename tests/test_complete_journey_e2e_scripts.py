@@ -282,6 +282,18 @@ if (JSON.stringify(normalized) !== JSON.stringify({
     assert result.returncode == 0, result.stderr
 
 
+def test_map_first_geometry_measures_the_visible_map_viewport() -> None:
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
+        encoding="utf-8"
+    )
+    geometry = source.split("async function assertMapFirstGeometry", 1)[1].split(
+        "async function completeBloomTask", 1
+    )[0]
+
+    assert 'document.querySelector("#map-viewport")' in geometry
+    assert 'document.querySelector("#map-grid")' not in geometry
+
+
 @pytest.mark.parametrize("variable", ["BASH_ENV", "PYTHONPATH", "NODE_OPTIONS"])
 def test_runner_entrypoint_strips_interpreter_startup_overrides(variable: str) -> None:
     env = os.environ.copy()

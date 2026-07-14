@@ -148,7 +148,7 @@ async function openToday(page, profile) {
 
 async function assertMapFirstGeometry(page, profile) {
   const geometry = await page.evaluate((isMobile) => {
-    const map = document.querySelector("#map-grid");
+    const map = document.querySelector("#map-viewport");
     if (!(map instanceof HTMLElement)) throw new Error("map-first surface is missing");
     const mapRect = map.getBoundingClientRect();
     const viewport = { height: window.innerHeight, width: window.innerWidth };
