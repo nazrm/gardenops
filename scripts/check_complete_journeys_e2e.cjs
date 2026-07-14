@@ -3114,7 +3114,7 @@ function exactMaintenanceNotification(actual, expected) {
     "clear_reason",
   ];
   for (const field of fields) {
-    const context = field === "clear_reason"
+    const context = new Set(["cleared_at_ms", "clear_reason"]).has(field)
       ? ` actual=${canonicalJson(actual[field])} expected=${canonicalJson(expected[field])}`
         + ` user=${canonicalJson(expected.username)} type=${canonicalJson(expected.notification_type)}`
         + ` target=${canonicalJson(expected.target_id)}`

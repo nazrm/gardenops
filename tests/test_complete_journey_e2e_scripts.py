@@ -3302,6 +3302,7 @@ def test_phase_two_maintenance_notifications_have_exact_post_journey_lifecycle()
     for cause in ("completed", "rescheduled", "skipped", "snoozed", "superseded"):
         assert cause in action_causes
     assert "preferenceDelivery?.delivery_notifications" in source
+    assert 'new Set(["cleared_at_ms", "clear_reason"]).has(field)' in source
 
 
 def test_phase_two_post_save_delivery_uses_explicit_fixture_events_and_exact_evidence() -> None:
