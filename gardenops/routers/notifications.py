@@ -30,6 +30,7 @@ from gardenops.router_helpers import (
 )
 from gardenops.services.attention import load_attention_preferences
 from gardenops.services.notification_service import (
+    attention_notification_sql_filter,
     clear_expired_notifications,
     clear_notifications_hidden_by_preferences,
     clear_stale_informational_notifications,
@@ -40,7 +41,6 @@ from gardenops.services.notification_service import (
     get_unread_count,
     mark_all_read,
     mark_read,
-    attention_notification_sql_filter,
     normalize_notification_rules,
     notification_policy_catalog,
     notification_rules_json,
