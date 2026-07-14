@@ -3343,10 +3343,19 @@ def test_playwright_trace_validator_rejects_non_zip_and_missing_records(tmp_path
     with zipfile.ZipFile(valid, "w") as archive:
         archive.writestr("trace.trace", "trace")
         archive.writestr("trace.network", "network")
+    rejected_destination = tmp_path / "rejected-sanitized.zip"
 
     assert subprocess.run([sys.executable, validator, invalid], check=False).returncode == 1
     assert subprocess.run([sys.executable, validator, missing], check=False).returncode == 1
     assert subprocess.run([sys.executable, validator, valid], check=False).returncode == 0
+    assert (
+        subprocess.run(
+            [sys.executable, validator, "--sanitize", missing, rejected_destination],
+            check=False,
+        ).returncode
+        == 1
+    )
+    assert not rejected_destination.exists()
 
 
 def test_playwright_trace_validator_rejects_and_sanitizes_secret_material(tmp_path: Path) -> None:
@@ -3390,6 +3399,9 @@ def test_playwright_trace_validator_rejects_and_sanitizes_secret_material(tmp_pa
     )
     assert rejected.returncode == 1
     assert "secret material" in rejected.stderr
+    assert "trace.trace[" in rejected.stderr
+    assert "trace.network[" in rejected.stderr
+    assert "structured:" in rejected.stderr
     assert all(canary not in rejected.stderr for canary in canaries)
 
     scrubbed = subprocess.run(
@@ -3404,6 +3416,68 @@ def test_playwright_trace_validator_rejects_and_sanitizes_secret_material(tmp_pa
         retained = b"\n".join(archive.read(name) for name in archive.namelist())
     assert all(canary.encode() not in retained for canary in canaries)
     assert b"[redacted]" in retained
+    assert subprocess.run([sys.executable, validator, sanitized], check=False).returncode == 0
+
+
+def test_playwright_trace_validator_sanitizes_opaque_binary_resource_secrets(
+    tmp_path: Path,
+) -> None:
+    validator = ROOT / "scripts" / "validate_playwright_trace.py"
+    source = tmp_path / "source.zip"
+    sanitized = tmp_path / "sanitized.zip"
+    resource_name_canary = "unsafe-resource-name-canary"
+    canaries = {
+        "authorization": "binary-bearer-canary",
+        "cookie": "binary-session-canary",
+        "csrf_cookie": "binary-csrf-canary",
+        "sensitive_field": "binary-subscription-field-canary",
+        "subscription_path": "binary-subscription-path-canary",
+        "sensitive_query": "binary-query-canary",
+    }
+    binary_resource = (
+        b"\x89PLAYWRIGHT\x00\xff\n"
+        + (
+            f"Authorization: Bearer {canaries['authorization']}\n"
+            f"Cookie: gardenops_session={canaries['cookie']}; "
+            f"gardenops_csrf={canaries['csrf_cookie']}\n"
+            f'{{"subscription_token":"{canaries["sensitive_field"]}"}}\n'
+            f"/calendar/subscriptions/{canaries['subscription_path']}.ics\n"
+            f"https://example.invalid/?csrf_token={canaries['sensitive_query']}\n"
+        ).encode()
+    )
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("trace.trace", "trace")
+        archive.writestr("trace.network", "network")
+        archive.writestr(f"resources/{resource_name_canary}", binary_resource)
+
+    rejected = subprocess.run(
+        [sys.executable, validator, source], capture_output=True, check=False, text=True
+    )
+    assert rejected.returncode == 1
+    assert "resources/<member>[" in rejected.stderr
+    for category in (
+        "binary:authorization",
+        "binary:cookie",
+        "binary:sensitive-field",
+        "binary:sensitive-query",
+        "binary:subscription-token",
+    ):
+        assert category in rejected.stderr
+    assert resource_name_canary not in rejected.stderr
+    assert all(canary not in rejected.stderr for canary in canaries.values())
+
+    scrubbed = subprocess.run(
+        [sys.executable, validator, "--sanitize", source, sanitized],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert scrubbed.returncode == 0, scrubbed.stderr
+    with zipfile.ZipFile(sanitized) as archive:
+        retained_resource = archive.read(f"resources/{resource_name_canary}")
+    assert len(retained_resource) == len(binary_resource)
+    assert retained_resource.startswith(b"\x89PLAYWRIGHT\x00\xff\n")
+    assert all(canary.encode() not in retained_resource for canary in canaries.values())
     assert subprocess.run([sys.executable, validator, sanitized], check=False).returncode == 0
 
 

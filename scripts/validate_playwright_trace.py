@@ -45,19 +45,38 @@ SENSITIVE_HEADERS = {
     "x-xsrf-token",
 }
 SECRET_PATTERNS = (
-    re.compile(r"\b(?:Basic|Bearer)\s+(?!\[redacted\])[^\s\"',;]+", re.IGNORECASE),
-    re.compile(
-        r"\b(?:gardenops_session|gardenops_csrf|XSRF-TOKEN)=(?!\[redacted\])[^;\s\"']+",
-        re.IGNORECASE,
+    (
+        "authorization",
+        re.compile(r"\b(?:Basic|Bearer)\s+(?!\[redacted\])[^\s\"',;]+", re.IGNORECASE),
     ),
-    re.compile(
-        r"[\"']?(?:password|csrf_token|access_token|refresh_token|client_secret|subscription_token)"
-        r"[\"']?\s*[:=]\s*[\"'](?!\[redacted\])[^\"']+[\"']",
-        re.IGNORECASE,
+    (
+        "cookie",
+        re.compile(
+            r"\b(?:gardenops_session|gardenops_csrf|XSRF-TOKEN)=(?!\[redacted\])[^;\s\"']+",
+            re.IGNORECASE,
+        ),
     ),
-    re.compile(
-        r"/calendar/subscriptions/(?!\{(?:redacted|token)\}\.ics)[^/?#\s\"'<>]+\.ics\b",
-        re.IGNORECASE,
+    (
+        "sensitive-field",
+        re.compile(
+            r"[\"']?(?:password|csrf_token|access_token|refresh_token|client_secret|subscription_token)"
+            r"[\"']?\s*[:=]\s*[\"'](?!\[redacted\])[^\"']+[\"']",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "subscription-token",
+        re.compile(
+            r"/calendar/subscriptions/(?!\{(?:redacted|token)\}\.ics)[^/?#\s\"'<>]+\.ics\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "sensitive-query",
+        re.compile(
+            r"[?&](?:token|secret|password|csrf_token)=(?!\[redacted\])[^&#\s\"']+",
+            re.IGNORECASE,
+        ),
     ),
 )
 
@@ -70,6 +89,27 @@ def _is_redacted(value: object) -> bool:
     return value in (None, "", REDACTED) or (
         isinstance(value, str) and "[redacted" in value.lower()
     )
+
+
+def _secret_category_for_name(value: object) -> str:
+    normalized = _normalized_key(value)
+    if normalized in {"authorization", "proxy_authorization"}:
+        return "authorization"
+    if normalized in {"cookie", "cookies", "gardenops_session", "set_cookie"}:
+        return "cookie"
+    if "csrf" in normalized or "xsrf" in normalized:
+        return "csrf"
+    if normalized == "subscription_token":
+        return "subscription-token"
+    if normalized in {"credential", "credentials", "password"}:
+        return "credential"
+    if normalized in {"client_secret", "secret"}:
+        return "secret"
+    return "token"
+
+
+def _pattern_secret_categories(value: str) -> set[str]:
+    return {category for category, pattern in SECRET_PATTERNS if pattern.search(value)}
 
 
 def _sanitize_string(value: str) -> str:
@@ -128,27 +168,30 @@ def _sanitize_json(value: Any) -> Any:
     return sanitized
 
 
-def _json_secret_path(value: Any) -> bool:
+def _json_secret_categories(value: Any) -> set[str]:
     if isinstance(value, list):
-        return any(_json_secret_path(item) for item in value)
+        categories: set[str] = set()
+        for item in value:
+            categories.update(_json_secret_categories(item))
+        return categories
     if not isinstance(value, dict):
-        return isinstance(value, str) and any(pattern.search(value) for pattern in SECRET_PATTERNS)
+        return _pattern_secret_categories(value) if isinstance(value, str) else set()
 
     header_name = str(value.get("name", "")).strip().lower()
     named_value = _normalized_key(header_name)
+    categories = set()
     for key, item in value.items():
         normalized = _normalized_key(key)
         if normalized in SENSITIVE_KEYS and not _is_redacted(item):
-            return True
+            categories.add(_secret_category_for_name(normalized))
         if (
             normalized == "value"
             and (header_name in SENSITIVE_HEADERS or named_value in SENSITIVE_KEYS)
             and not _is_redacted(item)
         ):
-            return True
-        if _json_secret_path(item):
-            return True
-    return False
+            categories.add(_secret_category_for_name(header_name))
+        categories.update(_json_secret_categories(item))
+    return categories
 
 
 def _decoded_text(data: bytes) -> str | None:
@@ -185,23 +228,46 @@ def _sanitize_text(text: str) -> str:
     return _sanitize_string(text)
 
 
-def _contains_secret(data: bytes) -> bool:
+def _sanitize_binary(data: bytes) -> bytes:
+    text = data.decode("latin-1")
+    for _category, pattern in SECRET_PATTERNS:
+        text = pattern.sub(lambda match: "#" * len(match.group(0)), text)
+    return text.encode("latin-1")
+
+
+def _secret_categories(data: bytes) -> set[str]:
     text = _decoded_text(data)
     if text is None:
-        return any(pattern.search(data.decode("latin-1")) for pattern in SECRET_PATTERNS)
+        return {
+            f"binary:{category}" for category in _pattern_secret_categories(data.decode("latin-1"))
+        }
+    categories = {f"text:{category}" for category in _pattern_secret_categories(text)}
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
         parsed = None
-    if parsed is not None and _json_secret_path(parsed):
-        return True
+    if parsed is not None:
+        categories.update(f"structured:{category}" for category in _json_secret_categories(parsed))
     for line in text.splitlines():
         try:
-            if _json_secret_path(json.loads(line)):
-                return True
+            categories.update(
+                f"structured:{category}" for category in _json_secret_categories(json.loads(line))
+            )
         except json.JSONDecodeError:
             continue
-    return any(pattern.search(text) for pattern in SECRET_PATTERNS)
+    return categories
+
+
+def _contains_secret(data: bytes) -> bool:
+    return bool(_secret_categories(data))
+
+
+def _safe_member_label(name: str) -> str:
+    if name in {"trace.trace", "trace.network", "trace.stacks"}:
+        return name
+    if name.startswith("resources/"):
+        return "resources/<member>"
+    return "<other-member>"
 
 
 def sanitize_trace(source: Path, destination: Path) -> None:
@@ -209,14 +275,22 @@ def sanitize_trace(source: Path, destination: Path) -> None:
         raise ValueError("trace must be a regular file")
     if destination.exists() or destination.is_symlink():
         raise ValueError("sanitized trace destination must not exist")
-    with zipfile.ZipFile(source) as archive, zipfile.ZipFile(destination, "x") as output:
-        for info in archive.infolist():
-            data = archive.read(info)
-            text = _decoded_text(data)
-            sanitized = _sanitize_text(text).encode("utf-8") if text is not None else data
-            output.writestr(info, sanitized)
-    os.chmod(destination, 0o600)
-    validate_trace(destination)
+    try:
+        with zipfile.ZipFile(source) as archive, zipfile.ZipFile(destination, "x") as output:
+            for info in archive.infolist():
+                data = archive.read(info)
+                text = _decoded_text(data)
+                sanitized = (
+                    _sanitize_text(text).encode("utf-8")
+                    if text is not None
+                    else _sanitize_binary(data)
+                )
+                output.writestr(info, sanitized)
+        os.chmod(destination, 0o600)
+        validate_trace(destination)
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def validate_trace(path: Path) -> None:
@@ -232,10 +306,22 @@ def validate_trace(path: Path) -> None:
                 raise ValueError(f"trace archive is missing non-empty {required}")
         corrupt = archive.testzip()
         if corrupt is not None:
-            raise ValueError(f"trace archive contains a corrupt member: {corrupt}")
-        retained_members = (info for info in archive.infolist() if not info.is_dir())
-        if any(_contains_secret(archive.read(info)) for info in retained_members):
-            raise ValueError("trace archive contains secret material")
+            raise ValueError(
+                "trace archive contains a corrupt member: " + _safe_member_label(corrupt)
+            )
+        findings: dict[str, set[str]] = {}
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            categories = _secret_categories(archive.read(info))
+            if categories:
+                findings.setdefault(_safe_member_label(info.filename), set()).update(categories)
+        if findings:
+            diagnostics = "; ".join(
+                f"{member}[{','.join(sorted(categories))}]"
+                for member, categories in sorted(findings.items())
+            )
+            raise ValueError(f"trace archive contains secret material: {diagnostics}")
 
 
 def main() -> int:
