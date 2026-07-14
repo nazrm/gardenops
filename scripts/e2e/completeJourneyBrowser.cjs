@@ -20,6 +20,10 @@ const EXPECTED_CONSOLE_DIAGNOSTIC_CONTEXTS = new Set([
   "viewer-task-write-denied",
   "viewer-weather-refresh-denied",
 ]);
+const EXPECTED_ABORTED_REQUEST_PATHS = new Set([
+  "/api/calendar/export.ics",
+  "/api/dashboard/badge-counts",
+]);
 
 function redactTokenShapedSecrets(value) {
   return String(value)
@@ -229,6 +233,7 @@ async function createGuardedContext(
     ignoredAuth401ConsoleErrors: 0,
     pageErrors: [],
     requestFailures: [],
+    expectedRequestAborts: [],
   };
   const pendingHttpConsoleDiagnostics = [];
   const pendingBlockedConsoleDiagnostics = [];
@@ -328,6 +333,15 @@ async function createGuardedContext(
     });
     page.on("requestfailed", (request) => {
       const failure = request.failure()?.errorText || "unknown failure";
+      const parsed = new URL(request.url());
+      if (
+        request.method() === "GET"
+        && failure === "net::ERR_ABORTED"
+        && EXPECTED_ABORTED_REQUEST_PATHS.has(parsed.pathname)
+      ) {
+        diagnostics.expectedRequestAborts.push(`GET ${parsed.pathname}`);
+        return;
+      }
       if (!diagnostics.blockedRequests.includes(safeUrl(request.url()))) {
         diagnostics.requestFailures.push(sanitizeDiagnostic(`${safeUrl(request.url())}: ${failure}`));
       }

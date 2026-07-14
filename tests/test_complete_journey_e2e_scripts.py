@@ -2844,6 +2844,16 @@ def test_phase_two_viewer_denial_console_diagnostics_are_classified() -> None:
         assert source.count(f'"{context}"') >= 2
 
 
+def test_complete_journey_classifies_only_known_get_request_aborts() -> None:
+    source = (ROOT / "scripts/e2e/completeJourneyBrowser.cjs").read_text(encoding="utf-8")
+
+    assert '"/api/calendar/export.ics"' in source
+    assert '"/api/dashboard/badge-counts"' in source
+    assert 'request.method() === "GET"' in source
+    assert 'failure === "net::ERR_ABORTED"' in source
+    assert "diagnostics.expectedRequestAborts.push" in source
+
+
 def test_phase_two_offline_calendar_is_loaded_before_connectivity_is_lost() -> None:
     source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
     offline = source.split("async function exerciseOfflineTask", 1)[1].split(
