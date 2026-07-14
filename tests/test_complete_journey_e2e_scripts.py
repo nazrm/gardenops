@@ -2920,7 +2920,7 @@ def test_phase_two_checker_requires_exact_role_preference_normalization() -> Non
     assert "const viewerAttentionRules = Object.fromEntries" in source
     assert "const viewerNotificationRules = Object.fromEntries" in source
     assert 'key === "system" ? { ...rule } : { ...rule, email_enabled: false }' in source
-    assert 'attention_quiet_hours: { timezone: "UTC" }' in source
+    assert 'digest: { enabled: false, end: "07:45", start: "22:15" }' in source
     assert "legacy_quiet_hours: {}" in source
     assert "notification_rules: viewerNotificationRules" in source
 

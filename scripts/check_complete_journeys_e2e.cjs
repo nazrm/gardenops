@@ -3169,7 +3169,10 @@ function assertPhaseTwoDatabaseState(
   exact(finalViewerPreference, {
     ...initialViewerPreference,
     attention_metadata: { weather_aware_watering_suppression: true },
-    attention_quiet_hours: { timezone: "UTC" },
+    attention_quiet_hours: {
+      digest: { enabled: false, end: "07:45", start: "22:15" },
+      timezone: "UTC",
+    },
     attention_rules: viewerAttentionRules,
     legacy_quiet_hours: {},
     notification_rules: viewerNotificationRules,
