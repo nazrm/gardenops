@@ -2813,6 +2813,15 @@ def test_phase_two_manual_prune_snooze_confirms_window_override() -> None:
     assert "visible(outsideWindowConfirmation" in snooze
 
 
+def test_phase_two_viewer_denials_assert_the_global_authorization_boundary() -> None:
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
+    denial = source.split("async function assertForbiddenViewerMutation", 1)[1].split(
+        "async function attemptForbiddenViewerTaskWrite", 1
+    )[0]
+
+    assert 'response.body?.detail === "Forbidden: write access required"' in denial
+
+
 def test_phase_two_offline_calendar_is_loaded_before_connectivity_is_lost() -> None:
     source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
     offline = source.split("async function exerciseOfflineTask", 1)[1].split(

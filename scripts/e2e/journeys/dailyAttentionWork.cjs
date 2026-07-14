@@ -2178,8 +2178,8 @@ async function assertForbiddenViewerMutation(
     path,
   });
   assert(response.status === 403, `${profile} viewer direct write was not forbidden: ${path}`);
-  assert(response.body?.detail === "Write access required",
-    `${profile} viewer direct write was rejected before authorization: ${path}`);
+  assert(response.body?.detail === "Forbidden: write access required",
+    `${profile} viewer direct write did not reach the authorization gate: ${path}`);
   await waitFor(() => diagnostics.httpErrors.length === beforeHttpErrors + 1,
     `${profile} viewer direct forbidden write response`);
   const expectedError = `403 ${path}`;
