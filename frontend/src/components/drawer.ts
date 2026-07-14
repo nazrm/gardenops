@@ -179,6 +179,8 @@ function buildDrawerPlantsSection(
 
 export function showDrawer(params: DrawerParams): void {
   const focusedBeforeOpen = document.activeElement instanceof HTMLElement
+    && document.activeElement !== document.body
+    && document.activeElement !== document.documentElement
     ? document.activeElement
     : null;
   dismissDrawer();

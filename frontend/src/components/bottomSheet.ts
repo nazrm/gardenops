@@ -146,6 +146,8 @@ function buildBottomSheetPlantsSection(
 
 export function showBottomSheet(params: BottomSheetParams): void {
   const focusedBeforeOpen = document.activeElement instanceof HTMLElement
+    && document.activeElement !== document.body
+    && document.activeElement !== document.documentElement
     ? document.activeElement
     : null;
   dismissBottomSheet();
