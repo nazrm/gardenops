@@ -961,7 +961,14 @@ async function saveNotificationPreferenceSeverity(page, prefs, severity, label) 
 }
 
 async function closeNotificationPreferencePanel(page, panel, profile, label) {
-  await closeNotificationSettingsWithKeyboard(page, panel, label);
+  const settingsButton = panel.locator(".notification-settings-btn");
+  await visible(settingsButton, `${label} notification list after save`);
+  await waitFor(
+    async () => await settingsButton.evaluate((element) => document.activeElement === element),
+    `${label} notification settings save focus return`,
+  );
+  await page.keyboard.press("Escape");
+  await panel.waitFor({ state: "hidden" });
   if (profile === "mobile") await closeMobileUtility(page);
 }
 
