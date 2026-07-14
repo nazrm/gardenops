@@ -2883,9 +2883,7 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
         "2026-07-15",
         "2026-07-22",
     ]
-    weather_tasks = oracle["phase_two"]["maintenance"]["logical_rows"][
-        "weather_generated_tasks"
-    ]
+    weather_tasks = oracle["phase_two"]["maintenance"]["logical_rows"]["weather_generated_tasks"]
     assert weather_tasks["dry_water"]["severity"] == "normal"
     assert weather_tasks["frost_protect"]["severity"] == "high"
     assert weather_tasks["heat_protect"]["severity"] == "high"
@@ -2900,9 +2898,7 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
         "tasks": 1,
         "weather_alerts": 1,
     }
-    exact_counts = oracle["phase_two"]["whole_table_mutation_accounting"][
-        "exact_counts"
-    ]
+    exact_counts = oracle["phase_two"]["whole_table_mutation_accounting"]["exact_counts"]
     assert exact_counts["phase_two_only"]["garden_tasks"] == {
         "added": 76,
         "removed": 14,

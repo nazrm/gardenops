@@ -46,9 +46,7 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         queue = (ROOT / "frontend" / "src" / "services" / "offlineQueue.ts").read_text(
             encoding="utf-8"
         )
-        tasks = (ROOT / "frontend" / "src" / "tabs" / "tasksTab.ts").read_text(
-            encoding="utf-8"
-        )
+        tasks = (ROOT / "frontend" / "src" / "tabs" / "tasksTab.ts").read_text(encoding="utf-8")
 
         batch = queue.split("export async function enqueueTaskActionBatch", 1)[1].split(
             "export async function enqueueDraft", 1
@@ -119,9 +117,7 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         queue = (ROOT / "frontend" / "src" / "services" / "offlineQueue.ts").read_text(
             encoding="utf-8"
         )
-        toast = (ROOT / "frontend" / "src" / "components" / "toast.ts").read_text(
-            encoding="utf-8"
-        )
+        toast = (ROOT / "frontend" / "src" / "components" / "toast.ts").read_text(encoding="utf-8")
         styles = (ROOT / "frontend" / "src" / "style.css").read_text(encoding="utf-8")
 
         self.assertIn("const MAX_TRANSIENT_ATTEMPTS_PER_SYNC = 2", queue)
@@ -139,9 +135,7 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
 
     def test_cold_offline_views_are_honest_and_warm_filters_use_matching_cache(self) -> None:
         app = (ROOT / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")
-        tasks = (ROOT / "frontend" / "src" / "tabs" / "tasksTab.ts").read_text(
-            encoding="utf-8"
-        )
+        tasks = (ROOT / "frontend" / "src" / "tabs" / "tasksTab.ts").read_text(encoding="utf-8")
         task_cache = (ROOT / "frontend" / "src" / "services" / "taskCache.ts").read_text(
             encoding="utf-8"
         )
@@ -170,7 +164,7 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn("renderTasksView(options.focusTaskId, request);", fetch_error)
         self.assertIn("normalizedParams", task_cache)
         self.assertIn("filterCompleteBaseSnapshot", task_cache)
-        self.assertIn("entry.params[\"task_type\"] || entry.params[\"status\"]", task_cache)
+        self.assertIn('entry.params["task_type"] || entry.params["status"]', task_cache)
         self.assertIn("calendarPreferencesCache.get(gardenId)", calendar)
         self.assertIn("calendarEventsCache.get(", calendar)
         self.assertIn('setCalendarDataState("unavailable")', calendar)
@@ -191,8 +185,8 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn("renderColdOfflineCalendarShell();", navigation[calendar_guard:plant_load])
         self.assertIn("function renderColdOfflineTasksShell(): void", app)
         self.assertIn("function renderColdOfflineCalendarShell(): void", app)
-        self.assertIn('container.replaceChildren(unavailable);', app)
-        self.assertIn('root.hidden = true;', app)
+        self.assertIn("container.replaceChildren(unavailable);", app)
+        self.assertIn("root.hidden = true;", app)
 
 
 if __name__ == "__main__":

@@ -171,7 +171,7 @@ def test_task_form_uses_shared_modal_focus_and_explicit_exit_controls() -> None:
     ):
         assert f'.id = "{control_id}"' in task_form
     assert "typeLabel.htmlFor = typeSelect.id" in task_form
-    assert "cancelBtn.addEventListener(\"click\", onCancel)" in task_form
+    assert 'cancelBtn.addEventListener("click", onCancel)' in task_form
 
 
 def test_plot_drawer_sheet_and_collapsibles_are_keyboard_dialogs() -> None:

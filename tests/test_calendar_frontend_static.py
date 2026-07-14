@@ -72,7 +72,7 @@ def test_calendar_view_changes_persist_as_personal_preferences_for_viewers() -> 
     assert "await updateCalendarPreferencesApi" in persist_body
     assert "calendarPreferencesCache.set(gardenId" in persist_body
     assert 't("calendar.preferences_save_failed"' in persist_body
-    assert 'ctx.showToast(' in persist_body
+    assert "ctx.showToast(" in persist_body
     assert "calendar.render();" not in instance_body
     assert "let calendarRendered = false;" in calendar_tab
 
