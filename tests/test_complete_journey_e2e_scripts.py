@@ -2365,6 +2365,20 @@ def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_w
     assert "recorder.attachPage(peer);" in journey_source
 
 
+def test_phase_two_viewer_denial_consumes_response_before_reload() -> None:
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
+        encoding="utf-8"
+    )
+    viewer_denial = source.split("async function attemptForbiddenViewerTaskWrite", 1)[1].split(
+        "async function exerciseViewer", 1
+    )[0]
+
+    assert "await result.text();" in viewer_denial
+    assert viewer_denial.index("await result.text();") < viewer_denial.index(
+        "return { status: result.status };"
+    )
+
+
 def test_phase_two_completion_journals_retain_task_plot_context() -> None:
     source = CHECKER.read_text(encoding="utf-8")
     journal_expectations = source.split("const journalExpectations = {", 1)[1].split(

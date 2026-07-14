@@ -1906,6 +1906,7 @@ async function attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixtu
       },
       method: "POST",
     });
+    await result.text();
     return { status: result.status };
   }, { gardenId: fixture.gardens.alpha.id, taskId: task.id });
   assert(response.status === 403, `${profile} viewer direct task write was not forbidden`);
