@@ -3430,20 +3430,9 @@ function assertPhaseTwoDatabaseState(
       initialAlert.garden_id === fixture.gardens.beta.id
       && initialAlert.alert_type === "frost_warning"
     ) {
-      expectedAlert = {
-        ...initialAlert,
-        dismissed: true,
-        metadata: {
-          ...initialAlert.metadata,
-          lifecycle: {
-            reason: "absent_from_current_forecast",
-            resolution_kind: "automatic_forecast",
-            resolved_at_ms: fixture.clock.attention_now_ms,
-            source: "forecast_reconciliation",
-            status: "resolved",
-          },
-        },
-      };
+      exact(finalWeatherById.get(initialAlert.id), initialAlert,
+        "Phase 2 truncated forecast incorrectly resolved the seeded Beta frost alert");
+      continue;
     }
     exact(finalWeatherById.get(initialAlert.id), expectedAlert,
       `Phase 2 seeded weather alert changed: ${initialAlert.id}`);

@@ -2961,10 +2961,7 @@ def test_phase_two_rain_reassessment_expectation_is_horticulturally_explicit() -
     assert "rain_reassessment_delay_days: 2" in source
     assert 'rain_reassessment_policy: "check_root_zone_moisture_before_watering"' in source
     assert 'rainOutdoor.due_on === "2026-07-15"' not in source
-    assert 'reason: "absent_from_current_forecast"' in source
-    assert 'resolution_kind: "automatic_forecast"' in source
-    assert 'source: "forecast_reconciliation"' in source
-    assert "resolved_at_ms: fixture.clock.attention_now_ms" in source
+    assert "Phase 2 truncated forecast incorrectly resolved the seeded Beta frost alert" in source
 
 
 def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracle() -> None:
