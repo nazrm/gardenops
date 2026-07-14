@@ -2270,6 +2270,7 @@ function assertPhaseTwoDatabaseState(state, fixture, maintenance, preferenceDeli
     exact(entry.metadata, {
       outcome: expected.outcome,
       selected_plant_ids: [expected.plant_id],
+      selected_plot_ids: expected.plot_ids,
       source: "task_completion",
       source_task_id: taskId,
       source_task_type: expected.task_type,

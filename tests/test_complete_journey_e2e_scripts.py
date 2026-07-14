@@ -2377,6 +2377,11 @@ def test_phase_two_completion_journals_retain_task_plot_context() -> None:
         )[1].split("    },", 1)[0]
         assert "plot_ids: [phase.plot_ids.alpha]," in task_expectation
 
+    metadata_expectation = source.split("exact(entry.metadata, {", 1)[1].split(
+        "}, `Phase 2 completion journal metadata", 1
+    )[0]
+    assert "selected_plot_ids: expected.plot_ids," in metadata_expectation
+
 
 def test_phase_two_mobile_quick_action_keeps_manual_date_completion_actionable() -> None:
     source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
