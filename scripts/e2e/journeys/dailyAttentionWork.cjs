@@ -920,9 +920,7 @@ async function issueCreatedRuleControls(prefs) {
 }
 
 async function assertMobilePreferenceTouchGeometry(prefs) {
-  const controls = prefs.locator(
-    ".notification-prefs-toggle:visible, .notification-prefs-severity:visible, .btn-primary:visible",
-  );
+  const controls = prefs.locator("button:visible, select:visible, input:visible");
   const measurements = [];
   const count = await controls.count();
   assert(count >= 4, "Mobile notification preferences did not expose enough touch controls");

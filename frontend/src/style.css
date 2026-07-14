@@ -9324,6 +9324,12 @@ td.inventory-qty-zero {
   .notification-prefs-rule-controls {
     justify-content: flex-start;
   }
+  .notification-prefs-form button,
+  .notification-prefs-form input,
+  .notification-prefs-form select {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 
 /* ── Weather dashboard ───────────────────────────────────── */

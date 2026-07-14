@@ -53,6 +53,20 @@ def test_notification_preference_time_and_severity_controls_have_accessible_name
     assert "...(timeZone ? { timezone: timeZone } : {})" in component
 
 
+def test_mobile_notification_preference_controls_have_touch_targets() -> None:
+    styles = (ROOT / "frontend/src/style.css").read_text(encoding="utf-8")
+    journey = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
+
+    mobile_panel = styles.split("@media (max-width: 960px)", 1)[1].split(
+        "/* ── Weather dashboard", 1
+    )[0]
+    for control in ("button", "input", "select"):
+        assert f".notification-prefs-form {control}" in mobile_panel
+    assert "min-width: 44px;" in mobile_panel
+    assert "min-height: 44px;" in mobile_panel
+    assert 'prefs.locator("button:visible, select:visible, input:visible")' in journey
+
+
 def test_notification_navigation_and_settings_are_native_keyboard_controls() -> None:
     feature = (ROOT / "frontend/src/features/notificationsFeature.ts").read_text(encoding="utf-8")
     component = (ROOT / "frontend/src/components/notifications.ts").read_text(encoding="utf-8")
@@ -73,9 +87,7 @@ def test_notification_navigation_and_settings_are_native_keyboard_controls() -> 
 
 
 def test_notification_outside_click_uses_stable_event_path() -> None:
-    feature = (ROOT / "frontend/src/features/notificationsFeature.ts").read_text(
-        encoding="utf-8"
-    )
+    feature = (ROOT / "frontend/src/features/notificationsFeature.ts").read_text(encoding="utf-8")
 
     assert "const eventPath = e.composedPath();" in feature
     assert "!eventPath.includes(panel)" in feature
