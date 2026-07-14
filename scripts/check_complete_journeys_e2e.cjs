@@ -3162,7 +3162,10 @@ function expectedPhaseTwoMaintenanceNotification(
   const clearReason = taskClearReasons.get(notification.target_id);
   if (!clearReason) return expected;
   expected.cleared_at_ms = fixture.clock.attention_now_ms;
-  expected.clear_reason = clearReason;
+  expected.clear_reason = (
+    notification.notification_type === "task_overdue"
+    && new Set(["rescheduled", "snoozed"]).has(clearReason)
+  ) ? "expired" : clearReason;
   return expected;
 }
 

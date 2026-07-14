@@ -2949,6 +2949,15 @@ const completed = expectedPhaseTwoMaintenanceNotification(
 );
 if (completed.cleared_at_ms !== 1783857600000) process.exit(4);
 if (completed.clear_reason !== 'completed') process.exit(5);
+const overdueSnoozed = expectedPhaseTwoMaintenanceNotification(
+  { ...active, notification_type: 'task_overdue' },
+  fixture,
+  new Set(),
+  null,
+  new Map([['task-one', 'snoozed']]),
+);
+if (overdueSnoozed.cleared_at_ms !== 1783857600000) process.exit(10);
+if (overdueSnoozed.clear_reason !== 'expired') process.exit(11);
 const actionRequest = (taskId, action) => ({
   method: 'POST',
   path: `/api/tasks/${taskId}/action`,
@@ -2980,8 +2989,9 @@ if (reasons.has('untouched-task')) process.exit(9);
     assert "if (notification.cleared_at_ms !== null) return expected;" in lifecycle
     assert "const clearReason = taskClearReasons.get(notification.target_id);" in lifecycle
     assert "if (!clearReason) return expected;" in lifecycle
-    assert "expected.clear_reason = clearReason;" in lifecycle
-    assert 'expected.clear_reason = "expired";' not in lifecycle
+    assert 'notification.notification_type === "task_overdue"' in lifecycle
+    assert 'new Set(["rescheduled", "snoozed"]).has(clearReason)' in lifecycle
+    assert ') ? "expired" : clearReason;' in lifecycle
 
 
 def test_phase_two_mobile_quick_action_keeps_manual_date_completion_actionable() -> None:
@@ -3279,7 +3289,8 @@ def test_phase_two_maintenance_notifications_have_exact_post_journey_lifecycle()
         "function assertPhaseTwoDatabaseState", 1
     )[0]
     assert "if (notification.cleared_at_ms !== null) return expected;" in lifecycle
-    assert 'expected.clear_reason = "expired";' not in lifecycle
+    assert 'notification.notification_type === "task_overdue"' in lifecycle
+    assert 'new Set(["rescheduled", "snoozed"]).has(clearReason)' in lifecycle
     assert 'expected.clear_reason = "weather_dismissed";' in lifecycle
     assert "notification.username === fixture.roles.viewer" in lifecycle
     assert "viewerDismissedWeatherTargets.has(notification.target_id)" in lifecycle
