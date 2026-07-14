@@ -157,6 +157,21 @@ class TestAggregateMetTimeseries(unittest.TestCase):
         assert daily["precipitation_sum"] == [1.5, 0.0]
         assert daily["wind_speed_10m_max"] == [5.0, 7.0]
 
+    def test_marks_first_and_last_met_daily_buckets_as_partial(self) -> None:
+        raw = {
+            "properties": {
+                "timeseries": [
+                    self._make_entry("2026-03-16T12:00:00Z", 2.0, 3.0, 0.5),
+                    self._make_entry("2026-03-17T12:00:00Z", 8.0, 5.0, 1.0),
+                    self._make_entry("2026-03-18T12:00:00Z", 4.0, 2.0, 0.0),
+                ],
+            },
+        }
+
+        result = _aggregate_met_timeseries(raw)
+
+        assert result["daily_coverage"] == {"complete_dates": ["2026-03-17"]}
+
     def test_empty_timeseries(self) -> None:
         assert _aggregate_met_timeseries({}) == {}
         assert _aggregate_met_timeseries({"properties": {"timeseries": []}}) == {}
@@ -1530,6 +1545,68 @@ class TestCheckWeatherEndToEnd(_WeatherDbTestBase):
 
 
 class TestWeatherForecastRemediation(DbTestBase):
+    def test_met_partial_boundary_days_do_not_authoritatively_resolve_alerts(self) -> None:
+        from gardenops.services.notification_service import reconcile_weather_alert_work
+
+        boundary_alerts = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES
+                (%s, 'frost_warning', 'normal', 'First partial frost', 'Protect plants',
+                 '2032-02-03', '2032-02-03', '{}', 1),
+                (%s, 'frost_warning', 'normal', 'Last partial frost', 'Protect plants',
+                 '2032-02-05', '2032-02-05', '{}', 1)
+            RETURNING id
+            """,
+            (self.garden_id, self.garden_id),
+        ).fetchall()
+        assert len(boundary_alerts) == 2
+        forecast = {
+            "daily": {
+                "time": ["2032-02-03", "2032-02-04", "2032-02-05"],
+                "temperature_2m_min": [5.0, 6.0, 7.0],
+                "temperature_2m_max": [12.0, 13.0, 14.0],
+                "precipitation_sum": [0.0, 0.0, 0.0],
+            },
+            "daily_coverage": {"complete_dates": ["2032-02-04"]},
+        }
+
+        with patch(
+            "gardenops.services.weather_service.get_or_fetch_forecast",
+            return_value=forecast,
+        ):
+            result = check_weather_and_generate_alerts(
+                self.conn,
+                self.garden_id,
+                59.91,
+                10.75,
+            )
+        marker = next(
+            alert["_forecast_reconciliation_scope"]
+            for alert in result["alerts"]
+            if "_forecast_reconciliation_scope" in alert
+        )
+        downstream = reconcile_weather_alert_work(
+            self.conn,
+            garden_id=self.garden_id,
+            alerts=list(result["alerts"]),
+            actor_user_id=None,
+            now_ms=1_959_379_200_000,
+            replace_forecast_alerts=True,
+        )
+        alerts_after = self.conn.execute(
+            "SELECT dismissed FROM weather_alerts WHERE id = ANY(%s) ORDER BY id",
+            ([int(alert["id"]) for alert in boundary_alerts],),
+        ).fetchall()
+
+        assert marker["coverage_bounds"] == {
+            "frost_warning": {"start": "2032-02-04", "end": "2032-02-04"}
+        }
+        assert downstream["alerts_resolved"] == 0
+        assert [bool(alert["dismissed"]) for alert in alerts_after] == [False, False]
+
     def test_incomplete_precipitation_does_not_resolve_dry_alert_work(self) -> None:
         from gardenops.services.notification_service import reconcile_weather_alert_work
 

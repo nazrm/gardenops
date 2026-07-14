@@ -104,12 +104,13 @@ journeys:
     desktop: proven
     mobile: proven
     roles: proven
-    offline: proven
+    offline: required
     evidence: *phase_two_evidence
     provider: not_applicable
     filesystem: not_applicable
     notes:
       provider: Core task actions do not require an external provider.
+      offline: Offline task-action replay requires Phase 6 lost-ack and repeated reconnect evidence.
       filesystem: Task actions and completion history do not use a supported file workflow.
       audit: Browser mutations, including the viewer's rejected direct write, are correlated one-to-one with audit rows by method, path, status, actor, auth type, and garden where present; audit timestamps remain product wall-clock evidence.
       database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
@@ -135,7 +136,7 @@ journeys:
     mobile: proven
     roles: proven
     provider: proven
-    accessibility: proven
+    accessibility: required
     evidence: *phase_two_evidence
     offline: not_applicable
     filesystem: not_applicable
@@ -143,7 +144,7 @@ journeys:
       offline: Notification inbox and preference mutations are online-only.
       filesystem: Notification preference and delivery workflows do not use a supported file workflow.
       roles: Personal notification preference persistence is verified for admin, editor, and viewer on desktop and mobile.
-      accessibility: Mobile preference controls record at least 44px by 44px touch geometry.
+      accessibility: Phase 2 records mobile target geometry only; Phase 8 owns keyboard, focus, semantics, and screen-reader closure.
       database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
   - <<: *open_journey
     id: D5

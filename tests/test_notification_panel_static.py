@@ -86,6 +86,47 @@ def test_notification_navigation_and_settings_are_native_keyboard_controls() -> 
     assert 'querySelector<HTMLElement>(".notification-settings-btn")' in feature
 
 
+def test_notification_mutations_recover_from_api_failures_without_duplicate_actions() -> None:
+    feature = (ROOT / "frontend/src/features/notificationsFeature.ts").read_text(encoding="utf-8")
+    component = (ROOT / "frontend/src/components/notifications.ts").read_text(encoding="utf-8")
+
+    dismiss = feature.split("onDismiss: async (n) => {", 1)[1].split("onNavigate: async", 1)[0]
+    mark_all = feature.split("onMarkAllRead: async () => {", 1)[1].split("onOpenSettings:", 1)[0]
+
+    assert "function beginNotificationMutation(" in feature
+    assert "function finishNotificationMutation(" in feature
+    assert "notificationMutationInFlight = null;" in feature
+    assert "isMutationPending: notificationMutationIsInFlight," in feature
+    assert 'ctx.showToast(getApiErrorMessage(err), "error")' in feature
+    for action, api_call, state_update in (
+        (
+            dismiss,
+            "await dismissNotificationApi(n.id);",
+            "notificationItems = notificationItems.filter(",
+        ),
+        (mark_all, "await markAllNotificationsReadApi();", "notificationUnreadCount = 0;"),
+    ):
+        assert "const operation = beginNotificationMutation(request);" in action
+        assert action.index(api_call) < action.index(state_update)
+        assert "catch (err) {" in action
+        assert "throw err;" in action
+        assert "finally {" in action
+        assert "finishNotificationMutation(operation);" in action
+
+    assert "onDismiss: (notification: NotificationEvent) => void | Promise<void>;" in component
+    assert "onMarkAllRead: () => void | Promise<void>;" in component
+    assert "onActionError?: (error: unknown) => void;" in component
+    assert "isMutationPending?: () => boolean;" in component
+    assert "async function runNotificationAction(" in component
+    assert "if (button.disabled) return;" in component
+    assert "setNotificationActionPending(button, true);" in component
+    assert "await action();" in component
+    assert "onError?.(err);" in component
+    assert "setNotificationActionPending(button, false);" in component
+    assert component.count("void runNotificationAction(") == 2
+    assert component.count("cbs.isMutationPending?.() ?? false") == 2
+
+
 def test_notification_outside_click_uses_stable_event_path() -> None:
     feature = (ROOT / "frontend/src/features/notificationsFeature.ts").read_text(encoding="utf-8")
 

@@ -594,14 +594,15 @@ function auditManifestProjection(auditState) {
       "Audit manifest event count is invalid");
     assert(["DELETE", "GET", "HEAD", "PATCH", "POST", "PUT"].includes(event?.method),
       "Audit manifest event method is invalid");
-    assert(isSafeAuditProjectionPath(event?.path), "Audit manifest event path is invalid");
+    const eventPath = normalizeAuditProjectionPath(event?.path);
+    assert(eventPath !== null, "Audit manifest event path is invalid");
     assert(Number.isSafeInteger(event?.status_code)
       && event.status_code >= 100 && event.status_code <= 599,
     "Audit manifest event status is invalid");
     return {
       count: event.count,
       method: event.method,
-      path: event.path,
+      path: eventPath,
       status_code: event.status_code,
     };
   }).sort((left, right) => auditEventKey(left).localeCompare(auditEventKey(right)));
@@ -619,11 +620,63 @@ function auditManifestProjection(auditState) {
   return projection;
 }
 
-function isSafeAuditProjectionPath(value) {
+function normalizeAuditProjectionPath(value) {
   const pathname = String(value || "");
-  return pathname === "/api/media/summaries"
+  if (
+    pathname === "/api/media/summaries"
     || phaseOneAuditExpectedEvents(0).some((event) => event.path === pathname)
-    || isPhaseTwoAuditPath(pathname);
+  ) {
+    return pathname;
+  }
+  if (new Set([
+    "/api/auth/login",
+    "/api/attention/preferences",
+    "/api/calendar/preferences",
+    "/api/calendar/manual-events",
+    "/api/calendar/subscriptions",
+    "/api/notifications",
+    "/api/notifications/preferences",
+    "/api/tasks",
+    "/api/tasks/batch-action",
+    "/api/weather/check",
+  ]).has(pathname)) {
+    return pathname;
+  }
+  const parameterizedRoutes = [
+    [
+      /^\/api\/attention\/items\/[^/?#]+\/(read|dismiss|snooze|restore)$/,
+      (match) => `/api/attention/items/{item_id}/${match[1]}`,
+    ],
+    [
+      /^\/api\/attention\/outcomes\/[^/?#]+\/restore$/,
+      () => "/api/attention/outcomes/{outcome_id}/restore",
+    ],
+    [
+      /^\/api\/calendar\/manual-events\/[^/?#]+$/,
+      () => "/api/calendar/manual-events/{event_id}",
+    ],
+    [
+      /^\/api\/calendar\/subscriptions\/[^/?#]+$/,
+      () => "/api/calendar/subscriptions/{subscription_id}",
+    ],
+    [
+      /^\/api\/notifications\/[^/?#]+(?:\/(dismiss|read))?$/,
+      (match) => `/api/notifications/{notification_id}${match[1] ? `/${match[1]}` : ""}`,
+    ],
+    [
+      /^\/api\/tasks\/[^/?#]+\/action$/,
+      () => "/api/tasks/{task_id}/action",
+    ],
+    [
+      /^\/api\/weather\/alerts\/[^/?#]+\/dismiss$/,
+      () => "/api/weather/alerts/{alert_id}/dismiss",
+    ],
+  ];
+  for (const [pattern, projection] of parameterizedRoutes) {
+    const match = pattern.exec(pathname);
+    if (match) return projection(match);
+  }
+  return null;
 }
 
 function assertWholeTableProjectionCoverage(initial, final, allowedTables) {
@@ -845,6 +898,26 @@ function sanitizeDatabaseEvidence(value, depth = 0) {
   return Object.fromEntries(Object.entries(value)
     .filter(([key]) => /^[a-z0-9_-]{1,100}$/i.test(key))
     .map(([key, item]) => [key, sanitizeDatabaseEvidence(item, depth + 1)]));
+}
+
+function sanitizeAuditProjection(value) {
+  try {
+    return auditManifestProjection(value);
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeDatabaseManifestEvidence(value) {
+  const sanitized = sanitizeDatabaseEvidence(value);
+  if (
+    value && typeof value === "object" && !Array.isArray(value)
+    && sanitized && typeof sanitized === "object" && !Array.isArray(sanitized)
+    && Object.hasOwn(value, "audit_projection")
+  ) {
+    sanitized.audit_projection = sanitizeAuditProjection(value.audit_projection);
+  }
+  return sanitized;
 }
 
 function sanitizeTraceEvidence(value) {
@@ -4099,7 +4172,7 @@ function sanitizeManifestEvidence(manifest) {
     },
     browser: safeIdentifier(manifest.browser),
     database: manifest.database && typeof manifest.database === "object"
-      ? sanitizeDatabaseEvidence(manifest.database)
+      ? sanitizeDatabaseManifestEvidence(manifest.database)
       : null,
     evidence_binding: manifest.evidence_binding && typeof manifest.evidence_binding === "object"
       ? {

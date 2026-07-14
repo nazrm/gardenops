@@ -32,6 +32,23 @@ class _TaskNotificationReadBarrierConnection:
         self._connection.commit()
 
 
+class _DigestDeliveryLockAttemptConnection:
+    """Expose when a concurrent digest worker begins waiting for its recipient lock."""
+
+    def __init__(self, connection: Any, lock_attempted: threading.Event) -> None:
+        self._connection = connection
+        self._lock_attempted = lock_attempted
+
+    def execute(self, query: Any, params: Any = None) -> Any:
+        normalized_query = " ".join(str(query).upper().split())
+        if "PG_ADVISORY_XACT_LOCK" in normalized_query:
+            self._lock_attempted.set()
+        return self._connection.execute(query, params)
+
+    def commit(self) -> None:
+        self._connection.commit()
+
+
 class TestTaskNotificationConcurrency(DbTestBase):
     def test_concurrent_due_notification_checks_create_one_active_row(self) -> None:
         from gardenops.services.notification_service import create_task_due_notifications
@@ -91,6 +108,116 @@ class TestTaskNotificationConcurrency(DbTestBase):
         ).fetchone()
         assert row is not None
         self.assertEqual(int(row["count"]), 1)
+
+
+class TestPendingEmailDigestConcurrency(DbTestBase):
+    def test_concurrent_deliveries_claim_a_recipient_once(self) -> None:
+        from gardenops.services.notification_service import deliver_pending_email_digests
+
+        user = create_user(
+            self.conn,
+            username="digest_delivery_race",
+            password=strong_password("digest-delivery-race"),
+            role="editor",
+        )
+        user_id = int(user["id"])
+        now = 1_700_000_000_000
+        self.conn.execute(
+            "UPDATE auth_users SET subscription_tier = 'pro' WHERE id = %s",
+            (user_id,),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO garden_memberships (garden_id, user_id, role)
+            VALUES (%s, %s, 'editor')
+            ON CONFLICT DO NOTHING
+            """,
+            (self.garden_id, user_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO user_notification_preferences
+                (user_id, in_app_enabled, email_enabled, email_address,
+                 digest_frequency, quiet_hours_json, task_due_enabled,
+                 task_overdue_enabled, created_at_ms, updated_at_ms)
+            VALUES (%s, 1, 1, 'digest-race@example.test', 'daily', '{}', 1, 1, %s, %s)
+            """,
+            (user_id, now, now),
+        )
+        event = self.conn.execute(
+            """
+            INSERT INTO notification_events
+                (public_id, garden_id, user_id, notification_type, title, body,
+                 target_type, target_id, read_at_ms, emailed_at_ms, metadata_json,
+                 dismissed, created_at_ms, notification_subtype, severity, expires_at_ms,
+                 cleared_at_ms, clear_reason, superseded_by_id)
+            VALUES ('note_digest_delivery_race', %s, %s, 'task_due',
+                    'Water basil', 'Water basil today', 'task', 'task_digest_delivery_race',
+                    NULL, NULL, '{}', 0, %s, NULL, 'normal', NULL, NULL, NULL, NULL)
+            RETURNING id
+            """,
+            (self.garden_id, user_id, now),
+        ).fetchone()
+        assert event is not None
+        self.conn.commit()
+
+        first_email_started = threading.Event()
+        allow_first_delivery_to_finish = threading.Event()
+        second_lock_attempted = threading.Event()
+        second_finished = threading.Event()
+        sent: list[tuple[str, str, str]] = []
+
+        def first_sender(recipient: str, subject: str, body: str) -> None:
+            sent.append((recipient, subject, body))
+            first_email_started.set()
+            if not allow_first_delivery_to_finish.wait(timeout=5):
+                raise TimeoutError("first digest delivery was not released")
+
+        def second_sender(recipient: str, subject: str, body: str) -> None:
+            sent.append((recipient, subject, body))
+
+        def deliver_once(*, observe_lock: bool) -> dict[str, int | bool]:
+            conn = db.get_db()
+            try:
+                target = (
+                    _DigestDeliveryLockAttemptConnection(conn, second_lock_attempted)
+                    if observe_lock
+                    else conn
+                )
+                return deliver_pending_email_digests(
+                    target,
+                    self.garden_id,
+                    email_sender=second_sender if observe_lock else first_sender,
+                    now_ms=now + 1,
+                )
+            finally:
+                if observe_lock:
+                    second_finished.set()
+                db.return_db(conn)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(deliver_once, observe_lock=False)
+            try:
+                self.assertTrue(first_email_started.wait(timeout=5))
+                second = pool.submit(deliver_once, observe_lock=True)
+                self.assertTrue(second_lock_attempted.wait(timeout=5))
+                self.assertFalse(second_finished.wait(timeout=0.2))
+            finally:
+                allow_first_delivery_to_finish.set()
+
+            first_result = first.result(timeout=5)
+            second_result = second.result(timeout=5)
+
+        self.assertEqual(int(first_result["emailed_users"]), 1)
+        self.assertEqual(int(second_result["emailed_users"]), 0)
+        self.assertEqual(int(second_result["skipped_users"]), 1)
+        self.assertEqual(len(sent), 1)
+        row = self.conn.execute(
+            "SELECT emailed_at_ms FROM notification_events WHERE id = %s",
+            (int(event["id"]),),
+        ).fetchone()
+        assert row is not None
+        self.assertEqual(int(row["emailed_at_ms"]), now + 1)
 
 
 class TestNotifications(BaseApiTest):

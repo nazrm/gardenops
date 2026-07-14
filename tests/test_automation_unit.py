@@ -794,6 +794,69 @@ class TestWeatherTaskTyping(DbTestBase):
         assert int(outcome["created_at_ms"]) == frozen_now_ms
         assert int(outcome["updated_at_ms"]) == frozen_now_ms
 
+    def test_rain_reschedule_stops_before_next_weekly_watering_recurrence(self) -> None:
+        self._insert_plant("RNCAP", "Rain recurrence cap", care_watering="Water regularly")
+        self._place_outdoors("RNCAP", "RNCAP-OUT")
+        task = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, description, status,
+                 severity, due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+            VALUES ('task_rain_recurrence_cap', %s, 'water', 'Water before recurrence', '',
+                    'pending', 'normal', '2026-07-18', 'water:RNCAP:2026-07-18', '{}', 1, 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert task is not None
+        self.conn.execute(
+            "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, 'RNCAP')",
+            (int(task["id"]),),
+        )
+        self.conn.execute(
+            "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'RNCAP-OUT')",
+            (int(task["id"]),),
+        )
+        alert = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'rain_surplus', 'high', 'Long rain', 'Heavy rain',
+                    '2026-07-15', '2026-07-25', '{}', 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert alert is not None
+
+        on_rain_alert(self.conn, self.garden_id, int(alert["id"]), self._owner_id, now_ms=1)
+
+        task_after = self.conn.execute(
+            """
+            SELECT due_on, metadata_json FROM garden_tasks
+            WHERE public_id = 'task_rain_recurrence_cap'
+            """
+        ).fetchone()
+        outcome = self.conn.execute(
+            """
+            SELECT metadata_json FROM attention_outcomes
+            WHERE garden_id = %s
+              AND source_public_id = 'water:RNCAP:2026-07-18'
+              AND outcome_type = 'watering_rescheduled_by_rain'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+
+        assert task_after is not None
+        assert str(task_after["due_on"]) == "2026-07-24"
+        assert (
+            json.loads(str(task_after["metadata_json"]))["rain_reassessment_capped_by_recurrence"]
+            == "2026-07-24"
+        )
+        assert outcome is not None
+        assert json.loads(str(outcome["metadata_json"]))["new_due_on"] == "2026-07-24"
+
     def test_rain_alert_only_reschedules_watering_for_outdoor_target_plants(self) -> None:
         for plant_id, name in (
             ("RG-OUT", "Outdoor watering"),
@@ -956,7 +1019,7 @@ class TestWeatherTaskTyping(DbTestBase):
         ).fetchall()
         by_id = {str(row["public_id"]): row for row in tasks}
         assert str(by_id["task_rain_snoozed"]["due_on"]) == "2026-07-10"
-        assert str(by_id["task_rain_snoozed"]["snoozed_until"]) == "2026-07-17"
+        assert str(by_id["task_rain_snoozed"]["snoozed_until"]) == "2026-07-16"
         assert str(by_id["task_rain_mixed"]["due_on"]) == "2026-07-15"
 
     def test_rain_contraction_restores_rescheduled_watering_as_reassessment(self) -> None:
@@ -1040,6 +1103,73 @@ class TestWeatherTaskTyping(DbTestBase):
         outcome_metadata = json.loads(str(outcome["metadata_json"]))
         assert outcome_metadata["lifecycle"]["status"] == "automatically_recovered"
         assert json.loads(str(outcome["recovery_action_json"])) == {}
+
+    def test_rain_lifecycle_reconciliation_stops_before_next_weekly_recurrence(self) -> None:
+        self._insert_plant("RLCAP", "Rain lifecycle cap", care_watering="Water regularly")
+        self._place_outdoors("RLCAP", "RLCAP-OUT")
+        task = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, description, status,
+                 severity, due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+            VALUES ('task_rain_lifecycle_cap', %s, 'water', 'Water before recurrence', '',
+                    'pending', 'normal', '2026-07-18', 'water:RLCAP:2026-07-18', '{}', 1, 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert task is not None
+        self.conn.execute(
+            "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, 'RLCAP')",
+            (int(task["id"]),),
+        )
+        self.conn.execute(
+            "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'RLCAP-OUT')",
+            (int(task["id"]),),
+        )
+        alert = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'rain_surplus', 'high', 'Rain changed', 'Heavy rain',
+                    '2026-07-15', '2026-07-20', '{}', 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert alert is not None
+        now_ms = 1_784_044_800_000
+
+        on_rain_alert(self.conn, self.garden_id, int(alert["id"]), self._owner_id, now_ms=now_ms)
+        self.conn.execute(
+            "UPDATE weather_alerts SET valid_until = '2026-07-25' WHERE id = %s",
+            (int(alert["id"]),),
+        )
+        result = reconcile_rain_watering_outcomes(
+            self.conn,
+            garden_id=self.garden_id,
+            now_ms=now_ms + 1,
+        )
+
+        task_after = self.conn.execute(
+            "SELECT due_on FROM garden_tasks WHERE public_id = 'task_rain_lifecycle_cap'",
+        ).fetchone()
+        outcome = self.conn.execute(
+            """
+            SELECT metadata_json FROM attention_outcomes
+            WHERE garden_id = %s
+              AND source_public_id = 'water:RLCAP:2026-07-18'
+              AND outcome_type = 'watering_rescheduled_by_rain'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+
+        assert result["adjusted"] == 1
+        assert task_after is not None
+        assert str(task_after["due_on"]) == "2026-07-24"
+        assert outcome is not None
+        assert json.loads(str(outcome["metadata_json"]))["new_due_on"] == "2026-07-24"
 
     def test_late_dry_spell_generation_uses_today_not_a_stale_due_date(self) -> None:
         self._insert_plant("RDRY", "Late dry spell", care_watering="Water regularly")

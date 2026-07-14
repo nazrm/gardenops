@@ -75,9 +75,9 @@ def test_phase_two_manifest_only_marks_enforced_dimensions_proven() -> None:
     journeys = {journey["id"]: journey for journey in payload["journeys"]}
     expected_proven_dimensions = {
         "D1": {"desktop", "mobile", "provider"},
-        "D2": {"desktop", "mobile", "roles", "offline"},
+        "D2": {"desktop", "mobile", "roles"},
         "D3": {"desktop", "mobile", "roles", "filesystem"},
-        "D4": {"desktop", "mobile", "roles", "provider", "accessibility"},
+        "D4": {"desktop", "mobile", "roles", "provider"},
         "D5": {"desktop", "mobile", "roles"},
         "R1": {"desktop", "mobile"},
     }
@@ -88,9 +88,9 @@ def test_phase_two_manifest_only_marks_enforced_dimensions_proven() -> None:
         assert "scripts/check_complete_journeys_e2e.cjs" in journey["evidence"]
         assert "scripts/e2e/journeys/dailyAttentionWork.cjs" in journey["evidence"]
         assert "tests/test_complete_journey_e2e_scripts.py" in journey["evidence"]
-        expected_accessibility = "proven" if journey_id == "D4" else "required"
-        assert journey["accessibility"] == expected_accessibility
+        assert journey["accessibility"] == "required"
         assert journey["performance"] == "required"
+    assert journeys["D2"]["offline"] == "required"
 
 
 def test_duplicate_journey_id_is_rejected(tmp_path: Path) -> None:

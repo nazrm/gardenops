@@ -82,6 +82,7 @@ _FORECAST_RECONCILIATION_MIN_DAYS = {
     "rain_surplus": 3,
 }
 _FORECAST_RECONCILIATION_SCOPE_KEY = "_forecast_reconciliation_scope"
+_DAILY_COVERAGE_KEY = "daily_coverage"
 
 
 def _parse_hardiness(raw: str) -> str | None:
@@ -142,8 +143,8 @@ def _aggregate_met_timeseries(raw: dict) -> dict:
 
     by_date: dict[str, list[dict]] = defaultdict(list)
     for entry in timeseries:
-        date = entry["time"][:10]
-        by_date[date].append(entry)
+        day = entry["time"][:10]
+        by_date[day].append(entry)
 
     dates = sorted(by_date.keys())[:7]
     temp_min_list: list[float | None] = []
@@ -159,14 +160,14 @@ def _aggregate_met_timeseries(raw: dict) -> dict:
         key=lambda entry: str(entry.get("time", "")),
     )
     for entry in precipitation_entries:
-        date = str(entry.get("time", ""))[:10]
+        day = str(entry.get("time", ""))[:10]
         timestamp = _met_entry_timestamp(entry)
         window = _met_precipitation_window(entry)
         if timestamp is None or window is None:
             if timestamp is None or (
                 precipitation_covered_until is None or timestamp >= precipitation_covered_until
             ):
-                precipitation_complete[date] = False
+                precipitation_complete[day] = False
             continue
         if precipitation_covered_until is not None and timestamp < precipitation_covered_until:
             continue
@@ -187,8 +188,8 @@ def _aggregate_met_timeseries(raw: dict) -> dict:
             segment_start = segment_end
         precipitation_covered_until = window_end
 
-    for date in dates:
-        entries = by_date[date]
+    for day in dates:
+        entries = by_date[day]
         temps = [
             e["data"]["instant"]["details"]["air_temperature"]
             for e in entries
@@ -198,7 +199,7 @@ def _aggregate_met_timeseries(raw: dict) -> dict:
         temp_max_list.append(max(temps) if temps else None)
 
         precip_sum_list.append(
-            precipitation_by_date[date] if precipitation_complete[date] else None,
+            precipitation_by_date[day] if precipitation_complete[day] else None,
         )
 
         winds = [
@@ -207,6 +208,20 @@ def _aggregate_met_timeseries(raw: dict) -> dict:
             if "wind_speed" in e["data"].get("instant", {}).get("details", {})
         ]
         wind_max_list.append(max(winds) if winds else None)
+
+    # Locationforecast responses can begin and end in the middle of a calendar
+    # day. Interior buckets are the only dates bounded by provider data on both
+    # sides, so retain that conservative coverage separately from display data.
+    complete_dates: list[str] = []
+    try:
+        parsed_dates = [date.fromisoformat(day) for day in dates]
+    except ValueError:
+        parsed_dates = []
+    if parsed_dates and all(
+        current == previous + timedelta(days=1)
+        for previous, current in zip(parsed_dates, parsed_dates[1:])
+    ):
+        complete_dates = dates[1:-1]
 
     return {
         "daily": {
@@ -217,6 +232,7 @@ def _aggregate_met_timeseries(raw: dict) -> dict:
             "precipitation_probability_max": [None] * len(dates),
             "wind_speed_10m_max": wind_max_list,
         },
+        _DAILY_COVERAGE_KEY: {"complete_dates": complete_dates},
     }
 
 
@@ -328,6 +344,44 @@ def _validated_contiguous_forecast_dates(forecast: dict) -> list[str] | None:
     return list(dates)
 
 
+def _validated_complete_forecast_dates(forecast: dict) -> list[str] | None:
+    """Return dates safe for authoritative weather work.
+
+    Forecasts without MET coverage metadata retain the legacy contract: their
+    validated daily dates are authoritative. A MET response must explicitly
+    identify a contiguous subset of complete dates; malformed coverage is
+    treated as no authority rather than widening destructive reconciliation.
+    """
+    dates = _validated_contiguous_forecast_dates(forecast)
+    if dates is None:
+        return None
+    coverage = forecast.get(_DAILY_COVERAGE_KEY)
+    if coverage is None:
+        return dates
+    if not isinstance(coverage, dict):
+        return []
+    raw_dates = coverage.get("complete_dates")
+    if not isinstance(raw_dates, list):
+        return []
+    if not raw_dates:
+        return []
+    if any(not isinstance(value, str) for value in raw_dates):
+        return []
+    try:
+        parsed_dates = [date.fromisoformat(value) for value in raw_dates]
+    except ValueError:
+        return []
+    if len(set(raw_dates)) != len(raw_dates) or any(
+        current != previous + timedelta(days=1)
+        for previous, current in zip(parsed_dates, parsed_dates[1:])
+    ):
+        return []
+    known_dates = set(dates)
+    if any(value not in known_dates for value in raw_dates):
+        return []
+    return list(raw_dates)
+
+
 def _complete_forecast_alert_types(forecast: dict) -> set[str]:
     """Return alert families backed by a complete daily forecast series.
 
@@ -337,20 +391,23 @@ def _complete_forecast_alert_types(forecast: dict) -> set[str]:
     destructive reconciliation.
     """
     daily = forecast.get("daily")
-    dates = _validated_contiguous_forecast_dates(forecast)
-    if not isinstance(daily, dict) or dates is None:
+    all_dates = _validated_contiguous_forecast_dates(forecast)
+    dates = _validated_complete_forecast_dates(forecast)
+    if not isinstance(daily, dict) or all_dates is None or not dates:
         return set()
+    indexes = [all_dates.index(day) for day in dates]
 
     complete_types: set[str] = set()
     for field, alert_types in _FORECAST_ALERT_TYPES_BY_FIELD.items():
         values = daily.get(field)
-        if not isinstance(values, list) or len(values) != len(dates):
+        if not isinstance(values, list) or len(values) != len(all_dates):
             continue
         try:
-            normalized_values = [float(value) for value in values]
+            selected_values = [values[index] for index in indexes]
+            normalized_values = [float(value) for value in selected_values]
         except TypeError, ValueError:
             continue
-        if all(not isinstance(value, bool) for value in values) and all(
+        if all(not isinstance(value, bool) for value in selected_values) and all(
             math.isfinite(value) for value in normalized_values
         ):
             complete_types.update(alert_types)
@@ -362,8 +419,8 @@ def _forecast_reconciliation_coverage_bounds(
     complete_alert_types: set[str],
 ) -> dict[str, tuple[str, str]]:
     """Return safe reconciliation bounds for each fully observed alert family."""
-    dates = _validated_contiguous_forecast_dates(forecast)
-    if dates is None:
+    dates = _validated_complete_forecast_dates(forecast)
+    if not dates:
         return {}
     bounds: dict[str, tuple[str, str]] = {}
     for alert_type in complete_alert_types:
@@ -385,11 +442,17 @@ def _forecast_with_complete_daily_families(
     family from being processed, or turn into an accidental reconciliation.
     """
     daily = dict(forecast["daily"])
+    all_dates = _validated_contiguous_forecast_dates(forecast)
+    complete_dates = _validated_complete_forecast_dates(forecast)
+    if all_dates is None or complete_dates is None:
+        return {**forecast, "daily": {**daily, "time": []}}
+    indexes = [all_dates.index(day) for day in complete_dates]
+    daily["time"] = complete_dates
     for field, alert_types in _FORECAST_ALERT_TYPES_BY_FIELD.items():
         if not set(alert_types).issubset(complete_alert_types):
             daily[field] = []
             continue
-        daily[field] = [float(value) for value in daily[field]]
+        daily[field] = [float(daily[field][index]) for index in indexes]
     return {**forecast, "daily": daily}
 
 

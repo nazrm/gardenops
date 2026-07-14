@@ -52,6 +52,12 @@ interface NotificationRequestContext {
   version: number;
 }
 
+interface NotificationMutationOperation {
+  request: NotificationRequestContext;
+}
+
+let notificationMutationInFlight: NotificationMutationOperation | null = null;
+
 function notificationRequestContext(): NotificationRequestContext | null {
   const gardenId = getActiveGardenContext();
   if (gardenId === null || notificationGardenId !== gardenId) return null;
@@ -68,6 +74,32 @@ function isCurrentNotificationRequest(
   );
 }
 
+function notificationMutationIsInFlight(): boolean {
+  const operation = notificationMutationInFlight;
+  return operation !== null && isCurrentNotificationRequest(operation.request);
+}
+
+function beginNotificationMutation(
+  request: NotificationRequestContext,
+): NotificationMutationOperation | null {
+  if (notificationMutationIsInFlight()) return null;
+  const operation = { request };
+  notificationMutationInFlight = operation;
+  renderCurrentNotificationPanel();
+  return operation;
+}
+
+function finishNotificationMutation(
+  operation: NotificationMutationOperation,
+): void {
+  if (notificationMutationInFlight === operation) {
+    notificationMutationInFlight = null;
+  }
+  if (isCurrentNotificationRequest(operation.request)) {
+    renderCurrentNotificationPanel();
+  }
+}
+
 function clearNotificationState(): void {
   notificationItems = [];
   notificationUnreadCount = 0;
@@ -82,6 +114,7 @@ export function resetNotificationsForCurrentGarden(): void {
   notificationRequestVersion += 1;
   notificationCountLoadVersion += 1;
   notificationItemsLoadVersion += 1;
+  notificationMutationInFlight = null;
   notificationPanelView = "inbox";
   notificationPanelMode = "list";
   closeNotificationPanel();
@@ -338,6 +371,9 @@ function renderCurrentNotificationPanel(): void {
     notificationUnreadCount,
     {
       onClose: () => closeNotificationPanel(true),
+      onActionError: (err) =>
+        ctx.showToast(getApiErrorMessage(err), "error"),
+      isMutationPending: notificationMutationIsInFlight,
       onRead: async (n) => {
         const request = notificationRequestContext();
         if (!request) return;
@@ -356,19 +392,27 @@ function renderCurrentNotificationPanel(): void {
       onDismiss: async (n) => {
         const request = notificationRequestContext();
         if (!request) return;
-        await dismissNotificationApi(n.id);
-        if (!isCurrentNotificationRequest(request)) return;
-        notificationItems = notificationItems.filter(
-          (item) => item.id !== n.id,
-        );
-        if (!n.read_at_ms) {
-          notificationUnreadCount = Math.max(
-            0,
-            notificationUnreadCount - 1,
+        const operation = beginNotificationMutation(request);
+        if (!operation) return;
+        try {
+          await dismissNotificationApi(n.id);
+          if (!isCurrentNotificationRequest(request)) return;
+          notificationItems = notificationItems.filter(
+            (item) => item.id !== n.id,
           );
-          updateNotificationBadge();
+          if (!n.read_at_ms) {
+            notificationUnreadCount = Math.max(
+              0,
+              notificationUnreadCount - 1,
+            );
+            updateNotificationBadge();
+          }
+        } catch (err) {
+          if (!isCurrentNotificationRequest(request)) return;
+          throw err;
+        } finally {
+          finishNotificationMutation(operation);
         }
-        renderCurrentNotificationPanel();
       },
       onNavigate: async (n) => {
         const request = notificationRequestContext();
@@ -433,19 +477,27 @@ function renderCurrentNotificationPanel(): void {
       onMarkAllRead: async () => {
         const request = notificationRequestContext();
         if (!request) return;
-        await markAllNotificationsReadApi();
-        if (!isCurrentNotificationRequest(request)) return;
-        let unreadChanged = false;
-        for (const notification of notificationItems) {
-          if (notification.read_at_ms) continue;
-          notification.read_at_ms = Date.now();
-          unreadChanged = true;
+        const operation = beginNotificationMutation(request);
+        if (!operation) return;
+        try {
+          await markAllNotificationsReadApi();
+          if (!isCurrentNotificationRequest(request)) return;
+          let unreadChanged = false;
+          for (const notification of notificationItems) {
+            if (notification.read_at_ms) continue;
+            notification.read_at_ms = Date.now();
+            unreadChanged = true;
+          }
+          if (unreadChanged) {
+            notificationUnreadCount = 0;
+            updateNotificationBadge();
+          }
+        } catch (err) {
+          if (!isCurrentNotificationRequest(request)) return;
+          throw err;
+        } finally {
+          finishNotificationMutation(operation);
         }
-        if (unreadChanged) {
-          notificationUnreadCount = 0;
-          updateNotificationBadge();
-        }
-        renderCurrentNotificationPanel();
       },
       onOpenSettings: () =>
         void showNotificationPreferences(),

@@ -1,4 +1,6 @@
+from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -124,6 +126,86 @@ def test_calendar_export_url_carries_the_active_garden_context() -> None:
     assert "return `/api/calendar/export.ics?${query.toString()}`;" in export_url_builder
     assert 'query.set("garden_id", String(activeGardenId))' in export_url_builder
     assert "if (activeGardenId !== null)" in export_url_builder
+
+
+def test_calendar_export_uses_europe_oslo_local_calendar_dates() -> None:
+    calendar_tab = _read("frontend/src/tabs/calendarTab.ts")
+    snooze_policy = _read("frontend/src/features/taskSnoozePolicy.ts")
+    export_body = _function_body(
+        calendar_tab,
+        "function exportCalendar",
+        "function ensureCalendarInstance",
+    )
+    local_date_helper = _function_body(
+        snooze_policy,
+        "export function formatLocalDate",
+        "export function taskSnoozeMaximumDate",
+    )
+
+    oslo_date = datetime(2026, 7, 14, 22, tzinfo=UTC).astimezone(
+        ZoneInfo("Europe/Oslo"),
+    )
+
+    assert oslo_date.strftime("%Y-%m-%d") == "2026-07-15"
+    assert "formatLocalDate(view.activeStart)" in export_body
+    assert "formatLocalDate(view.activeEnd)" in export_body
+    assert "toISOString" not in export_body
+    assert "date.getFullYear()" in local_date_helper
+    assert "date.getMonth()" in local_date_helper
+    assert "date.getDate()" in local_date_helper
+    assert "toISOString" not in local_date_helper
+
+
+def test_calendar_offline_snooze_requires_a_complete_cached_task_policy() -> None:
+    calendar_tab = _read("frontend/src/tabs/calendarTab.ts")
+    snooze_loader = _function_body(
+        calendar_tab,
+        "async function loadCalendarTaskForSnooze",
+        "interface CalendarTaskActionTarget",
+    )
+    action_body = _function_body(
+        calendar_tab,
+        "async function runCalendarTaskActionForTarget",
+        "async function enqueueOfflineCalendarTaskAction",
+    )
+
+    assert 'import { getCachedTodayTasks } from "../services/taskCache";' in calendar_tab
+    assert "const calendarSnoozeTaskCache = new Map<string, GardenTask>();" in calendar_tab
+    assert "function isCompleteCalendarSnoozeTask" in calendar_tab
+    assert "task.rule_source" in calendar_tab
+    assert "task.metadata" in calendar_tab
+    assert "task.updated_at_ms === event.updated_at_ms" in calendar_tab
+    assert "getCachedTodayTasks(gardenId)" in calendar_tab
+    assert "getCachedCalendarTaskForSnooze(event)" in snooze_loader
+    assert 'ctx.showToast(t("calendar.offline_unavailable"), "error")' in snooze_loader
+    assert "function calendarTaskForSnooze" not in calendar_tab
+    assert 'rule_source: ""' not in calendar_tab
+    assert "metadata: {}" not in calendar_tab
+    assert 'body.action === "snooze" && !target.offlineSnoozeTask' in action_body
+    assert "withTaskActionRevision(target.taskRevision, body)" in action_body
+
+
+def test_calendar_subscription_refreshes_before_clipboard_failure_fallback() -> None:
+    calendar_tab = _read("frontend/src/tabs/calendarTab.ts")
+    copy_body = _function_body(
+        calendar_tab,
+        "async function copyCreatedCalendarFeed",
+        "async function createSubscription",
+    )
+    create_body = _function_body(
+        calendar_tab,
+        "async function createSubscription",
+        "function exportCalendar",
+    )
+
+    assert "await navigator.clipboard.writeText(feedUrl);" in copy_body
+    assert "catch {" in copy_body
+    assert 'ctx.showToast(t("calendar.feed_copy_prompt"), "error");' in copy_body
+    assert 'await promptDialog(t("calendar.feed_copy_prompt"), feedUrl);' in copy_body
+    assert create_body.count("createCalendarSubscriptionApi") == 1
+    assert create_body.index("await refreshSubscriptions(request);") < create_body.index(
+        "await copyCreatedCalendarFeed(feedUrl, request);",
+    )
 
 
 def test_dev_server_proxies_calendar_subscription_feeds() -> None:

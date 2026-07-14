@@ -11,6 +11,7 @@ from typing import Any
 from gardenops.db import DbConn, current_timestamp_ms
 from gardenops.services.attention.outcomes import upsert_attention_outcome
 from gardenops.services.attention.types import NO_ACTION_RETENTION_DAYS
+from gardenops.services.task_windows import weekly_watering_recurrence_deadline
 from gardenops.services.weather_service import is_frost_vulnerable_at_temperature
 
 _logger = logging.getLogger(__name__)
@@ -775,20 +776,29 @@ def _reschedule_watering_during_rain(
         return
     # Saturated root zones need time to drain. Reassess moisture two days after
     # the forecast rain ends instead of blindly watering the following day.
-    new_due = (
+    reassessment_due = (
         date.fromisoformat(valid_until) + timedelta(days=_RAIN_REASSESSMENT_DELAY_DAYS)
     ).isoformat()
     effective_now_ms = now_ms if now_ms is not None else current_timestamp_ms()
+    rescheduled = 0
     for row in rows:
         old_meta = row["metadata_json"] if "metadata_json" in row.keys() else "{}"
         meta = _parse_mapping_json(old_meta)
         old_action_on = str(row["action_on"])
+        recurrence_deadline = weekly_watering_recurrence_deadline(
+            str(row["rule_source"] or ""),
+        )
+        new_due = (
+            min(reassessment_due, recurrence_deadline) if recurrence_deadline else reassessment_due
+        )
         meta["rescheduled_from"] = old_action_on
         meta["rescheduled_reason"] = "rain_alert"
         meta["rescheduled_weather_alert_id"] = int(alert["id"])
         meta["rescheduled_alert_valid_until"] = str(valid_until)
         meta["rain_reassessment_policy"] = "check_root_zone_moisture_before_watering"
         meta["rain_reassessment_delay_days"] = _RAIN_REASSESSMENT_DELAY_DAYS
+        if recurrence_deadline and new_due != reassessment_due:
+            meta["rain_reassessment_capped_by_recurrence"] = recurrence_deadline
         meta.setdefault("rain_original_title", str(row["title"] or ""))
         meta.setdefault("rain_original_description", str(row["description"] or ""))
         current_title = str(row["title"] or "Watering")
@@ -830,6 +840,7 @@ def _reschedule_watering_during_rain(
         )
         if update.rowcount != 1:
             continue
+        rescheduled += 1
         # Keep task attention consistent in the same transaction as the
         # weather-driven move. Import locally to avoid the service cycle.
         from gardenops.services.notification_service import refresh_task_notifications_for_task
@@ -852,9 +863,8 @@ def _reschedule_watering_during_rain(
             now_ms=effective_now_ms,
         )
     _logger.info(
-        "Rescheduled %d watering tasks to %s due to rain alert %d",
-        len(rows),
-        new_due,
+        "Rescheduled %d watering tasks after rain alert %d",
+        rescheduled,
         alert_id,
     )
 

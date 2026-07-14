@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import patch
 
 import gardenops.db as db
@@ -327,10 +327,18 @@ class TestTasks(BaseApiTest):
         )
         self.assertEqual(create.status_code, 201, create.text)
 
-        snooze = self.client.post(
-            f"/api/tasks/{create.json()['id']}/action",
-            json={"action": "snooze", "snooze_until": "2026-07-12"},
-        )
+        with patch.dict(
+            os.environ,
+            {
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1783252800000",
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-05",
+            },
+            clear=False,
+        ):
+            snooze = self.client.post(
+                f"/api/tasks/{create.json()['id']}/action",
+                json={"action": "snooze", "snooze_until": "2026-07-12"},
+            )
         self.assertEqual(snooze.status_code, 200, snooze.text)
 
         with patch.dict(
@@ -571,18 +579,19 @@ class TestTasks(BaseApiTest):
             },
         )
         task_id3 = r.json()["id"]
+        snooze_until = (date.today() + timedelta(days=7)).isoformat()
         r = self.client.post(
             f"/api/tasks/{task_id3}/action",
             json={
                 "action": "snooze",
-                "snooze_until": "2026-06-01",
+                "snooze_until": snooze_until,
                 "confirm_outside_window": True,
             },
         )
         self.assertEqual(r.status_code, 200)
         r = self.client.get(f"/api/tasks/{task_id3}")
         self.assertEqual(r.json()["status"], "snoozed")
-        self.assertEqual(r.json()["snoozed_until"], "2026-06-01")
+        self.assertEqual(r.json()["snoozed_until"], snooze_until)
 
         # Snooze without date should fail
         r = self.client.post(
@@ -685,6 +694,127 @@ class TestTasks(BaseApiTest):
         self.assertEqual(accepted.status_code, 200, accepted.text)
         self.assertEqual(replay.status_code, 200, replay.text)
 
+    def test_task_action_revision_advances_with_frozen_clock_and_replay_is_read_only(self) -> None:
+        frozen_clock = {
+            "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1783180800000",
+            "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-05",
+        }
+        with patch.dict(os.environ, frozen_clock, clear=False):
+            created = self.client.post(
+                "/api/tasks",
+                json={"task_type": "water", "title": "Frozen revision", "due_on": "2026-07-05"},
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            task_id = created.json()["id"]
+            before = self.client.get(f"/api/tasks/{task_id}").json()
+            headers = {"X-Offline-Operation-Id": "frozen-revision-replay"}
+
+            applied = self.client.post(
+                f"/api/tasks/{task_id}/action",
+                headers=headers,
+                json={"action": "skip", "expected_updated_at_ms": before["updated_at_ms"]},
+            )
+            self.assertEqual(applied.status_code, 200, applied.text)
+            after = self.client.get(f"/api/tasks/{task_id}").json()
+
+            replay = self.client.post(
+                f"/api/tasks/{task_id}/action",
+                headers=headers,
+                json={"action": "skip", "expected_updated_at_ms": before["updated_at_ms"]},
+            )
+            self.assertEqual(replay.status_code, 200, replay.text)
+            replayed = self.client.get(f"/api/tasks/{task_id}").json()
+
+        self.assertGreater(after["updated_at_ms"], before["updated_at_ms"])
+        self.assertEqual(replayed["updated_at_ms"], after["updated_at_ms"])
+
+    def test_batch_task_actions_reject_stale_revisions_before_mutating_any_task(self) -> None:
+        task_ids: list[str] = []
+        for title in ("Fresh batch task", "Stale batch task"):
+            created = self.client.post(
+                "/api/tasks",
+                json={"task_type": "water", "title": title, "due_on": "2026-07-20"},
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            task_ids.append(created.json()["id"])
+
+        expected_revisions = {
+            task_ids[0]: 9_000_000_000_000,
+            task_ids[1]: 9_000_000_000_100,
+        }
+        conn = db.get_db()
+        try:
+            for task_id, revision in expected_revisions.items():
+                conn.execute(
+                    "UPDATE garden_tasks SET updated_at_ms = %s WHERE public_id = %s",
+                    (revision, task_id),
+                )
+            conn.execute(
+                "UPDATE garden_tasks SET metadata_json = metadata_json WHERE public_id = %s",
+                (task_ids[1],),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        response = self.client.post(
+            "/api/tasks/batch-action",
+            json={
+                "task_ids": task_ids,
+                "action": "skip",
+                "expected_updated_at_ms_by_task_id": expected_revisions,
+            },
+        )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn(task_ids[1], response.json()["detail"])
+        for task_id in task_ids:
+            task = self.client.get(f"/api/tasks/{task_id}").json()
+            self.assertEqual(task["status"], "pending")
+
+        missing_revisions = self.client.post(
+            "/api/tasks/batch-action",
+            json={"task_ids": task_ids, "action": "skip"},
+        )
+        self.assertEqual(missing_revisions.status_code, 422, missing_revisions.text)
+
+    def test_snooze_rejects_past_dates_and_confirms_outside_fertilize_window(self) -> None:
+        frozen_clock = {
+            "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1775044800000",
+            "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-04-01",
+        }
+        with patch.dict(os.environ, frozen_clock, clear=False):
+            created = self.client.post(
+                "/api/tasks",
+                json={"task_type": "fertilize", "title": "Feed roses", "due_on": "2026-04-01"},
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            task_id = created.json()["id"]
+            task = self.client.get(f"/api/tasks/{task_id}").json()
+            self.assertEqual(task["window_start_on"], "2026-03-25")
+            self.assertEqual(task["window_end_on"], "2026-04-08")
+
+            past = self.client.post(
+                f"/api/tasks/{task_id}/action",
+                json={"action": "snooze", "snooze_until": "2026-03-31"},
+            )
+            outside_window = self.client.post(
+                f"/api/tasks/{task_id}/action",
+                json={"action": "snooze", "snooze_until": "2026-04-09"},
+            )
+            confirmed = self.client.post(
+                f"/api/tasks/{task_id}/action",
+                json={
+                    "action": "snooze",
+                    "snooze_until": "2026-04-09",
+                    "confirm_outside_window": True,
+                },
+            )
+
+        self.assertEqual(past.status_code, 422, past.text)
+        self.assertEqual(outside_window.status_code, 409, outside_window.text)
+        self.assertEqual(confirmed.status_code, 200, confirmed.text)
+
     def test_snooze_enforces_weather_recurrence_and_confirmed_task_windows(self) -> None:
         weather = self.client.post(
             "/api/tasks",
@@ -726,26 +856,34 @@ class TestTasks(BaseApiTest):
         finally:
             db.return_db(conn)
 
-        weather_late = self.client.post(
-            f"/api/tasks/{weather.json()['id']}/action",
-            json={"action": "snooze", "snooze_until": "2026-07-04"},
-        )
-        watering_late = self.client.post(
-            f"/api/tasks/{watering.json()['id']}/action",
-            json={"action": "snooze", "snooze_until": "2026-07-08"},
-        )
-        outside_window = self.client.post(
-            f"/api/tasks/{prune.json()['id']}/action",
-            json={"action": "snooze", "snooze_until": "2027-08-15"},
-        )
-        confirmed = self.client.post(
-            f"/api/tasks/{prune.json()['id']}/action",
-            json={
-                "action": "snooze",
-                "snooze_until": "2027-08-15",
-                "confirm_outside_window": True,
+        with patch.dict(
+            os.environ,
+            {
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1782907200000",
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-07-01",
             },
-        )
+            clear=False,
+        ):
+            weather_late = self.client.post(
+                f"/api/tasks/{weather.json()['id']}/action",
+                json={"action": "snooze", "snooze_until": "2026-07-04"},
+            )
+            watering_late = self.client.post(
+                f"/api/tasks/{watering.json()['id']}/action",
+                json={"action": "snooze", "snooze_until": "2026-07-08"},
+            )
+            outside_window = self.client.post(
+                f"/api/tasks/{prune.json()['id']}/action",
+                json={"action": "snooze", "snooze_until": "2027-08-15"},
+            )
+            confirmed = self.client.post(
+                f"/api/tasks/{prune.json()['id']}/action",
+                json={
+                    "action": "snooze",
+                    "snooze_until": "2027-08-15",
+                    "confirm_outside_window": True,
+                },
+            )
 
         self.assertEqual(weather_late.status_code, 409, weather_late.text)
         self.assertEqual(watering_late.status_code, 409, watering_late.text)
@@ -1451,10 +1589,18 @@ class TestTasks(BaseApiTest):
         self.assertEqual(response.status_code, 201, response.text)
         task_id = response.json()["id"]
 
-        response = self.client.post(
-            f"/api/tasks/{task_id}/action",
-            json={"action": "snooze", "snooze_until": "2026-06-08"},
-        )
+        with patch.dict(
+            os.environ,
+            {
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": "1780278400000",
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2026-06-01",
+            },
+            clear=False,
+        ):
+            response = self.client.post(
+                f"/api/tasks/{task_id}/action",
+                json={"action": "snooze", "snooze_until": "2026-06-08"},
+            )
         self.assertEqual(response.status_code, 200, response.text)
 
         task = self.client.get(f"/api/tasks/{task_id}").json()
@@ -1917,11 +2063,19 @@ class TestTasks(BaseApiTest):
             self.assertEqual(response.status_code, 201)
             created_ids.append(response.json()["id"])
 
+        initial_revisions = {
+            task_id: self.client.get(f"/api/tasks/{task_id}").json()["updated_at_ms"]
+            for task_id in created_ids
+        }
+
         response = self.client.post(
             "/api/tasks/batch-action",
             json={
                 "task_ids": created_ids[:2],
                 "action": "complete",
+                "expected_updated_at_ms_by_task_id": {
+                    task_id: initial_revisions[task_id] for task_id in created_ids[:2]
+                },
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -1938,6 +2092,9 @@ class TestTasks(BaseApiTest):
                 "task_ids": [created_ids[2]],
                 "action": "reschedule",
                 "reschedule_to": "2026-06-10",
+                "expected_updated_at_ms_by_task_id": {
+                    created_ids[2]: initial_revisions[created_ids[2]],
+                },
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -1964,6 +2121,9 @@ class TestTasks(BaseApiTest):
                 "task_ids": [task_id],
                 "action": "complete",
                 "completed_plant_ids": ["PLT-TEST"],
+                "expected_updated_at_ms_by_task_id": {
+                    task_id: self.client.get(f"/api/tasks/{task_id}").json()["updated_at_ms"],
+                },
             },
         )
 

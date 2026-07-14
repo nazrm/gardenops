@@ -18,7 +18,10 @@ from gardenops.services.ai_provider import (
     generate_task_descriptions_with_ai,
     is_ai_provider_configured,
 )
-from gardenops.services.task_windows import derive_recommended_window_strings
+from gardenops.services.task_windows import (
+    derive_recommended_window_strings,
+    weekly_watering_recurrence_deadline,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -898,10 +901,12 @@ def _record_task_lifecycle_transition(
     metadata["lifecycle"] = transition
 
 
-def _rain_reassessment_due_on(alert_valid_until: str) -> str:
-    return (
+def _rain_reassessment_due_on(alert_valid_until: str, *, rule_source: str) -> str:
+    reassessment_due = (
         date.fromisoformat(alert_valid_until) + timedelta(days=_RAIN_REASSESSMENT_DELAY_DAYS)
     ).isoformat()
+    recurrence_deadline = weekly_watering_recurrence_deadline(rule_source)
+    return min(reassessment_due, recurrence_deadline) if recurrence_deadline else reassessment_due
 
 
 def _update_rain_outcome_lifecycle(
@@ -1137,7 +1142,7 @@ def reconcile_rain_watering_outcomes(
                 continue
             task = db.execute(
                 """
-                SELECT id, public_id, status, due_on, snoozed_until, metadata_json,
+                SELECT id, public_id, status, due_on, snoozed_until, rule_source, metadata_json,
                        COALESCE(snoozed_until, due_on) AS action_on
                 FROM garden_tasks
                 WHERE garden_id = %s AND rule_source = %s
@@ -1151,7 +1156,10 @@ def reconcile_rain_watering_outcomes(
             expected_action_on = str(metadata.get("new_due_on") or "")
             if expected_action_on and str(task["action_on"]) != expected_action_on:
                 continue
-            new_due_on = _rain_reassessment_due_on(str(covering_alert["valid_until"]))
+            new_due_on = _rain_reassessment_due_on(
+                str(covering_alert["valid_until"]),
+                rule_source=str(task["rule_source"] or ""),
+            )
             if str(task["action_on"]) == new_due_on:
                 continue
             task_metadata = _parse_mapping_json(task["metadata_json"])

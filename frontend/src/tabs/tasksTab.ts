@@ -15,6 +15,7 @@ import {
   refreshTaskDescriptionsApi,
   getActiveGardenContext,
   getApiErrorMessage,
+  withBatchTaskActionRevisions,
   withTaskActionRevision,
 } from "../services/api";
 import { buildPlantNameMap } from "../core/plantNames";
@@ -901,8 +902,17 @@ async function handleBatchTaskAction(
     void ctx.refreshOfflineIndicator();
     return;
   }
+  const batchTasks: GardenTask[] = [];
+  for (const taskId of taskIds) {
+    const task = taskItems.find((candidate) => candidate.id === taskId);
+    if (!task) return;
+    batchTasks.push(task);
+  }
   try {
-    const result = await batchTaskActionApi(taskIds, { action, ...extra });
+    const result = await batchTaskActionApi(
+      taskIds,
+      withBatchTaskActionRevisions(batchTasks, { action, ...extra }),
+    );
     if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return;
     selectedTaskIds.clear();
     ctx.showToast(

@@ -87,7 +87,10 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
         quick_actions = frontend_source("components/quickActions.ts")
         quick_feature = frontend_source("features/quickActionsFeature.ts")
 
-        self.assertIn("actionButton(snoozePolicy.label", calendar)
+        self.assertIn(
+            'actionButton(snoozePolicy?.label ?? t("tasks.action_snooze")',
+            calendar,
+        )
         self.assertIn('"action-snooze",\n        taskSnoozePolicy(task).label', plot)
         self.assertIn("snooze_label: taskSnoozePolicy(tk).label", quick_feature)
         self.assertIn("task.snooze_label", quick_actions)

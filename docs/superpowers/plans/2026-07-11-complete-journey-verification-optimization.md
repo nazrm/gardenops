@@ -111,7 +111,7 @@ Foundation browser proof must:
 Run:
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 0
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 0
 .venv/bin/python -m pytest tests/test_complete_journey_e2e_scripts.py tests/test_journey_coverage_manifest.py -q
 ```
 
@@ -227,7 +227,7 @@ For each failure:
 Focused commands:
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 1
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 1
 .venv/bin/python -m pytest tests/test_gardens_endpoints.py tests/test_plants.py tests/test_plots.py tests/test_map_objects.py tests/test_export_import.py tests/test_saved_views.py tests/test_indoor_plants.py -q
 ```
 
@@ -333,7 +333,7 @@ Database assertions: task status and links, journal event types, attention state
 Focused commands:
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 2
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 2
 .venv/bin/python -m pytest tests/test_attention_api.py tests/test_attention_service_unit.py tests/test_tasks.py tests/test_task_generator.py tests/test_notifications.py tests/test_calendar.py tests/test_weather.py tests/test_weather_service_unit.py tests/test_scheduler_automation.py -q
 .venv/bin/python scripts/run_fast_postgres_tests.py --command-database gardenops_attention_e2e_test --command -- scripts/run_attention_today_e2e.sh
 .venv/bin/python scripts/run_fast_postgres_tests.py --command-database gardenops_task_history_e2e_test --command -- scripts/run_task_completion_history_e2e.sh
@@ -433,7 +433,7 @@ Walk the private media directory and compare expected files to database storage 
 ### Task 3.7: Validate and review
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 3
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 3
 .venv/bin/python -m pytest tests/test_journal.py tests/test_issues.py tests/test_harvest.py tests/test_media.py tests/test_media_store_unit.py tests/test_identify.py tests/test_offline_idempotency.py tests/test_offline_idempotency_unit.py -q
 ```
 
@@ -525,7 +525,7 @@ Any discrepancy is a product defect, not a test tolerance. Fix the source query 
 ### Task 4.6: Validate and review
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 4
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 4
 .venv/bin/python -m pytest tests/test_inventory_endpoints.py tests/test_procurement.py tests/test_planner.py tests/test_workflows.py tests/test_gardener_reports.py tests/test_statistics_endpoints.py tests/test_exports.py tests/test_export_import.py tests/test_indoor_plants.py -q
 ```
 
@@ -624,7 +624,7 @@ Extend the existing authorization sweep rather than creating disconnected duplic
 ### Task 5.7: Validate and review
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 5
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 5
 scripts/run_totp_mfa_e2e.sh
 .venv/bin/python -m pytest tests/test_auth_endpoints.py tests/test_auth_lifecycle.py tests/test_auth_mfa_stepup.py tests/test_passkeys.py tests/test_security.py tests/test_security_mfa_unit.py tests/test_authorization_negative_sweep.py tests/test_authorization_write_gates.py tests/test_feature_gates.py tests/test_incident_controls_unit.py -q
 ```
@@ -726,7 +726,7 @@ Required failures:
 ### Task 6.6: Validate and review
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 6
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 6
 .venv/bin/python -m pytest tests/test_offline_idempotency.py tests/test_offline_idempotency_unit.py tests/test_destructive_audit_atomicity.py tests/test_integrity.py tests/test_export_import.py tests/test_media.py tests/test_gardens_endpoints.py -q
 .venv/bin/python scripts/run_fast_postgres_tests.py --cleanup-smoke after-start
 .venv/bin/python scripts/run_fast_postgres_tests.py --cleanup-smoke during-migration
@@ -817,7 +817,7 @@ Keep adapters provider-specific. Do not force weather, AI, PlantNet, and terrain
 ### Task 7.6: Validate and review
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 7
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 7
 .venv/bin/python scripts/run_fast_postgres_tests.py --command -- bash scripts/run_deterministic_provider_e2e.sh
 .venv/bin/python -m pytest tests/test_ai_provider.py tests/test_deterministic_ai_provider.py tests/test_identify.py tests/test_plantnet.py tests/test_weather.py tests/test_weather_service_unit.py tests/test_shademap.py tests/test_lidar_terrain.py tests/test_provider_settings.py tests/test_feature_gates.py -q
 ```
@@ -907,7 +907,7 @@ The GPT-5.6 Sol Ultra reviewer validates the recorded evidence and reruns automa
 ### Task 8.6: Validate and review
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 8
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 8
 .venv/bin/python -m pytest tests/test_frontend_accessibility_static.py tests/test_frontend_read_only_affordances_static.py tests/test_frontend_indoor_read_only_static.py tests/test_frontend_garden_scope_static.py -q
 cd frontend && npm run build
 ```
@@ -1019,7 +1019,7 @@ RUFF_CACHE_DIR=/tmp/gardenops-ruff-cache .venv/bin/ruff format --check gardenops
 cd frontend && npm ci && npm run build
 cd ..
 .venv/bin/python scripts/run_fast_postgres_tests.py --full-suite --shards 4
-scripts/run_complete_journeys_e2e.sh --through-phase 9
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 9
 .venv/bin/python scripts/run_fast_postgres_tests.py --command-database gardenops_attention_e2e_test --command -- scripts/run_attention_today_e2e.sh
 .venv/bin/python scripts/run_fast_postgres_tests.py --command-database gardenops_task_history_e2e_test --command -- scripts/run_task_completion_history_e2e.sh
 .venv/bin/python scripts/run_fast_postgres_tests.py --command -- bash scripts/run_deterministic_provider_e2e.sh
@@ -1414,7 +1414,7 @@ cd frontend && npm run build
 cd ..
 .venv/bin/python scripts/check_journey_coverage.py --allow-open
 .venv/bin/python scripts/run_fast_postgres_tests.py --full-suite --shards 4
-scripts/run_complete_journeys_e2e.sh --through-phase <N>
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase <N>
 .venv/bin/python .codex/skills/gardenops-documentation-upkeep/scripts/docs_impact_inventory.py --base origin/main
 .venv/bin/python .codex/skills/gardenops-git-push-sanitizer/scripts/git_push_sanitizer.py --pre-push
 ```

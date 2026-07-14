@@ -271,14 +271,22 @@ def test_runner_uses_isolated_production_preview_and_locked_dependency_gate() ->
 
 
 def test_documented_complete_journey_commands_bind_the_exact_head() -> None:
-    development = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
-    commands = [
-        line
-        for line in development.splitlines()
-        if line.startswith("scripts/run_complete_journeys_e2e.sh")
-    ]
-    assert len(commands) >= 6
-    assert all('--expected-head "$(git rev-parse HEAD)"' in command for command in commands)
+    documents = (
+        ROOT / "docs" / "development.md",
+        ROOT
+        / "docs"
+        / "superpowers"
+        / "plans"
+        / "2026-07-11-complete-journey-verification-optimization.md",
+    )
+    for document in documents:
+        commands = [
+            line.strip()
+            for line in document.read_text(encoding="utf-8").splitlines()
+            if line.strip().startswith("scripts/run_complete_journeys_e2e.sh")
+        ]
+        assert commands, document
+        assert all('--expected-head "$(git rev-parse HEAD)"' in command for command in commands)
 
 
 def test_installed_node_metadata_ignores_absent_optional_dependency_placeholders() -> None:
@@ -2830,9 +2838,31 @@ def test_phase_two_viewer_weather_keeps_personal_dismissal_controls() -> None:
 
     assert 'page.locator("#weather-dashboard .weather-check-btn:visible").count() === 0' in viewer
     assert 'page.locator("#weather-dashboard .weather-alert-dismiss:visible").count() > 0' in viewer
+    dismissal = source.split("async function dismissPersonalViewerWeatherAlert", 1)[1].split(
+        "async function exerciseViewer", 1
+    )[0]
+    assert "await dismiss.click();" in dismissal
+    assert "page.waitForResponse" in dismissal
+    assert "page.evaluate" not in dismissal
     checker = CHECKER.read_text(encoding="utf-8")
     assert "Phase 2 weather dismissals were not scoped to their users and gardens" in checker
     assert "username: fixture.roles.viewer" in checker
+
+
+def test_phase_two_mobile_calendar_exercises_export_and_subscription_controls() -> None:
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
+    lifecycle = source.split("async function exerciseCalendarLifecycle", 1)[1].split(
+        "async function openNotifications", 1
+    )[0]
+    mobile = source.split('run.role === "admin" && run.profile === "mobile"', 1)[1].split(
+        'run.role === "editor" && run.profile === "desktop"', 1
+    )[0]
+
+    assert "includeExport = true" in lifecycle
+    assert 'includeSubscription = profile === "desktop"' in lifecycle
+    assert 'page.locator("#calendar-new-feed-btn").click()' in lifecycle
+    assert "includeExportAndSubscription: false" not in mobile
+    assert "mobile_calendar_export_subscription_controls" in mobile
 
 
 def test_phase_two_viewer_denial_console_diagnostics_are_classified() -> None:
@@ -3590,6 +3620,48 @@ try {
 } catch (error) {
   if (!String(error.message).includes('sanitized audit projection')) process.exit(11);
 }
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_sanitized_audit_projection_retains_normalized_route_identity_without_secrets() -> None:
+    script = r"""
+const {
+  auditManifestProjection,
+  sanitizeManifestEvidence,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const opaqueRouteId = 'opaque-route-id-0123456789';
+const auditState = (path) => ({
+  events: [{ count: 1, method: 'POST', path, status_code: 200 }],
+  expected_login_count: 0,
+  expected_phase_one_snapshot_count: 0,
+  total_count: 1,
+});
+const taskAudit = auditManifestProjection(auditState(`/api/tasks/${opaqueRouteId}/action`));
+const task = sanitizeManifestEvidence({
+  database: { audit_projection: taskAudit },
+  profiles: [],
+});
+const attentionAudit = auditManifestProjection(
+  auditState(`/api/attention/items/${opaqueRouteId}/snooze`),
+);
+const attention = sanitizeManifestEvidence({
+  database: { audit_projection: attentionAudit },
+  profiles: [],
+});
+const taskPath = task.database.audit_projection.events[0].path;
+if (taskPath !== '/api/tasks/{task_id}/action') process.exit(3);
+if (attention.database.audit_projection.events[0].path
+    !== '/api/attention/items/{item_id}/snooze') process.exit(4);
+if (task.canonical_projection_digests.audit_snapshot
+    === attention.canonical_projection_digests.audit_snapshot) process.exit(5);
+if (task.canonical_projection_digests.final_database
+    === attention.canonical_projection_digests.final_database) process.exit(6);
+const serialized = JSON.stringify([task, attention]);
+if (serialized.includes(opaqueRouteId)) process.exit(7);
 """
     result = subprocess.run(
         ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True

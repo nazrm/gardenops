@@ -46,7 +46,11 @@ import {
   updateCalendarPreferencesApi,
   withTaskActionRevision,
 } from "../services/api";
-import { taskSnoozeDateSafety, taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import {
+  formatLocalDate,
+  taskSnoozeDateSafety,
+  taskSnoozePolicy,
+} from "../features/taskSnoozePolicy";
 import {
   getTaskSnoozeCorrectionNotice,
   openTaskDateDialog,
@@ -68,6 +72,7 @@ import {
   type OfflineTaskActionState,
 } from "../services/offlineQueue";
 import { syncOfflineDraftsNow } from "../features/offlineFeature";
+import { getCachedTodayTasks } from "../services/taskCache";
 
 let ctx: AppContext;
 let calendar: Calendar | null = null;
@@ -100,6 +105,7 @@ let calendarTaskActions = new Map<string, OfflineTaskActionState>();
 let calendarOfflineListenerBound = false;
 const calendarPreferencesCache = new Map<number, CalendarPreferencesResponse>();
 const calendarEventsCache = new Map<string, CalendarEventsResponse>();
+const calendarSnoozeTaskCache = new Map<string, GardenTask>();
 
 type CalendarEventsQuery = Parameters<typeof fetchCalendarEventsApi>[0];
 
@@ -468,20 +474,15 @@ function eventRank(event: CalendarEvent): number {
     : baseRank;
 }
 
-function localIsoDate(value: Date): string {
-  const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 10);
-}
-
 function defaultManualEventDate(existing?: CalendarEvent): string {
   if (existing?.start_on) return existing.start_on;
   const selected = selectedEventId ? currentEventsById.get(selectedEventId) : undefined;
   if (selected?.start_on) return selected.start_on;
   const focused = calendar?.getDate();
   if (focused instanceof Date && !Number.isNaN(focused.getTime())) {
-    return localIsoDate(focused);
+    return formatLocalDate(focused);
   }
-  return localIsoDate(new Date());
+  return formatLocalDate(new Date());
 }
 
 function resolveDraftPlantIds(
@@ -662,6 +663,7 @@ export function resetCalendarForGardenSwitch(): void {
   currentSummaryCount = 0;
   preferencesLoaded = false;
   calendarTaskActions.clear();
+  calendarSnoozeTaskCache.clear();
   calendar?.removeAllEvents();
   calendarPlantInput?.destroy();
   calendarPlantInput = null;
@@ -950,35 +952,44 @@ function canMutateCalendarTask(event: CalendarEvent): boolean {
   );
 }
 
-function calendarTaskForSnooze(event: CalendarEvent): GardenTask {
-  return {
-    id: event.target_id,
-    garden_id: getActiveGardenContext() ?? 0,
-    task_type: event.source_key as GardenTask["task_type"],
-    title: event.title,
-    description: event.description,
-    status: event.status as GardenTask["status"],
-    severity: event.severity as GardenTask["severity"],
-    due_on: event.due_on ?? event.start_on,
-    snoozed_until: event.snoozed_until ?? null,
-    window_start_on: event.window_start_on ?? null,
-    window_end_on: event.window_end_on ?? null,
-    window_kind: null,
-    rule_source: "",
-    metadata: {},
-    created_by_user_id: null,
-    completed_by_user_id: null,
-    completed_at_ms: event.completed_at_ms ?? null,
-    created_at_ms: event.created_at_ms,
-    updated_at_ms: event.updated_at_ms,
-    plant_ids: event.plant_ids,
-    plot_ids: event.plot_ids,
-  };
+function isCompleteCalendarSnoozeTask(
+  event: CalendarEvent,
+  task: GardenTask,
+  gardenId: number,
+): boolean {
+  return (
+    task.id === event.target_id
+    && task.garden_id === gardenId
+    && task.task_type === event.source_key
+    && task.updated_at_ms === event.updated_at_ms
+    && typeof task.rule_source === "string"
+    && task.metadata !== null
+    && typeof task.metadata === "object"
+    && !Array.isArray(task.metadata)
+  );
+}
+
+function getCachedCalendarTaskForSnooze(event: CalendarEvent): GardenTask | null {
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return null;
+  const cachedTask = calendarSnoozeTaskCache.get(event.target_id);
+  if (cachedTask && isCompleteCalendarSnoozeTask(event, cachedTask, gardenId)) {
+    return cachedTask;
+  }
+  return getCachedTodayTasks(gardenId)?.find((task) => (
+    isCompleteCalendarSnoozeTask(event, task, gardenId)
+  )) ?? null;
 }
 
 async function loadCalendarTaskForSnooze(event: CalendarEvent): Promise<GardenTask | null> {
   if (!canMutateCalendarTask(event)) return null;
-  if (!ctx.isOnline()) return calendarTaskForSnooze(event);
+  if (!ctx.isOnline()) {
+    const task = getCachedCalendarTaskForSnooze(event);
+    if (!task) {
+      ctx.showToast(t("calendar.offline_unavailable"), "error");
+    }
+    return task;
+  }
 
   const request = createCalendarRequest();
   try {
@@ -987,9 +998,12 @@ async function loadCalendarTaskForSnooze(event: CalendarEvent): Promise<GardenTa
       !isCurrentCalendarRequest(request)
       || !canMutateCalendarTask(event)
       || task.garden_id !== request.gardenId
+      || task.id !== event.target_id
+      || task.task_type !== event.source_key
     ) {
       return null;
     }
+    calendarSnoozeTaskCache.set(task.id, task);
     return task;
   } catch (err) {
     if (isCurrentCalendarRequest(request)) {
@@ -1004,12 +1018,13 @@ interface CalendarTaskActionTarget {
   taskLabel: string;
   taskType: GardenTask["task_type"];
   taskId: string;
-  task: GardenTask;
+  taskRevision: Pick<GardenTask, "updated_at_ms">;
+  offlineSnoozeTask?: GardenTask;
 }
 
 function calendarTaskActionTarget(
   event: CalendarEvent,
-  task = calendarTaskForSnooze(event),
+  task?: GardenTask,
 ): CalendarTaskActionTarget | null {
   const gardenId = getActiveGardenContext();
   if (gardenId === null || !event.target_id) return null;
@@ -1018,7 +1033,10 @@ function calendarTaskActionTarget(
     taskId: event.target_id,
     taskLabel: event.title,
     taskType: event.source_key as GardenTask["task_type"],
-    task,
+    taskRevision: task ?? { updated_at_ms: event.updated_at_ms },
+    ...(task && isCompleteCalendarSnoozeTask(event, task, gardenId)
+      ? { offlineSnoozeTask: task }
+      : {}),
   };
 }
 
@@ -1420,7 +1438,10 @@ function renderDetail(event?: CalendarEvent): void {
   if (canMutateCalendarTask(event)) {
     const actions = document.createElement("div");
     actions.className = "calendar-detail-actions";
-    const snoozePolicy = taskSnoozePolicy(calendarTaskForSnooze(event));
+    const cachedSnoozeTask = getCachedCalendarTaskForSnooze(event);
+    const snoozePolicy = cachedSnoozeTask
+      ? taskSnoozePolicy(cachedSnoozeTask)
+      : undefined;
     const onSnoozeDate = () => void openCalendarTaskSnoozeDateDialog(event);
     const taskForCompletion = calendarTaskForCompletion(event);
     actions.appendChild(
@@ -1438,7 +1459,7 @@ function renderDetail(event?: CalendarEvent): void {
       }),
     );
     actions.appendChild(
-      actionButton(snoozePolicy.label, () => {
+      actionButton(snoozePolicy?.label ?? t("tasks.action_snooze"), () => {
         void snoozeCalendarTask(event);
       }),
     );
@@ -1475,7 +1496,11 @@ async function runCalendarTaskActionForTarget(
   const request = createCalendarRequest();
   if (!canMutateCalendarTaskTarget(target)) return false;
   if (!isCurrentCalendarRequest(request)) return false;
-  const actionBody = withTaskActionRevision(target.task, body);
+  if (!ctx.isOnline() && body.action === "snooze" && !target.offlineSnoozeTask) {
+    ctx.showToast(t("calendar.offline_unavailable"), "error");
+    return false;
+  }
+  const actionBody = withTaskActionRevision(target.taskRevision, body);
   if (!ctx.isOnline()) {
     try {
       await enqueueOfflineCalendarTaskAction(target, actionBody);
@@ -1515,7 +1540,7 @@ async function enqueueOfflineCalendarTaskAction(
     snooze: "task_snooze",
     reschedule: "task_reschedule",
   } as const;
-  const { action, ...payload } = withTaskActionRevision(target.task, body);
+  const { action, ...payload } = withTaskActionRevision(target.taskRevision, body);
   await ctx.enqueueDraft(draftTypeByAction[action], {
     task_id: target.taskId,
     ...offlineTaskActionLabels(
@@ -1742,6 +1767,26 @@ async function revokeSubscription(subscription: CalendarSubscription): Promise<v
   }
 }
 
+async function copyCreatedCalendarFeed(
+  feedUrl: string,
+  request: CalendarRequestContext,
+): Promise<void> {
+  if (!navigator.clipboard?.writeText) {
+    await promptDialog(t("calendar.feed_copy_prompt"), feedUrl);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(feedUrl);
+  } catch {
+    if (!isCurrentCalendarRequest(request)) return;
+    ctx.showToast(t("calendar.feed_copy_prompt"), "error");
+    await promptDialog(t("calendar.feed_copy_prompt"), feedUrl);
+    return;
+  }
+  if (!isCurrentCalendarRequest(request)) return;
+  ctx.showToast(t("calendar.feed_copied"), "success");
+}
+
 async function createSubscription(): Promise<void> {
   const request = createCalendarRequest();
   if (!isCurrentCalendarRequest(request)) return;
@@ -1762,16 +1807,10 @@ async function createSubscription(): Promise<void> {
     }
     const result = await createCalendarSubscriptionApi(payload);
     if (!isCurrentCalendarRequest(request)) return;
-    const feedUrl = new URL(result.feed_path, window.location.origin).toString();
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(feedUrl);
-      if (!isCurrentCalendarRequest(request)) return;
-      ctx.showToast(t("calendar.feed_copied"), "success");
-    } else {
-      await promptDialog(t("calendar.feed_copy_prompt"), feedUrl);
-    }
-    if (!isCurrentCalendarRequest(request)) return;
     await refreshSubscriptions(request);
+    if (!isCurrentCalendarRequest(request)) return;
+    const feedUrl = new URL(result.feed_path, window.location.origin).toString();
+    await copyCreatedCalendarFeed(feedUrl, request);
   } catch (err) {
     if (!isCurrentCalendarRequest(request)) return;
     ctx.showToast(getApiErrorMessage(err), "error");
@@ -1781,8 +1820,8 @@ async function createSubscription(): Promise<void> {
 function exportCalendar(): void {
   if (!calendar) return;
   const view = calendar.view;
-  const start = view.activeStart.toISOString().slice(0, 10);
-  const end = view.activeEnd.toISOString().slice(0, 10);
+  const start = formatLocalDate(view.activeStart);
+  const end = formatLocalDate(view.activeEnd);
   window.location.assign(
     buildCalendarExportUrl({
       start,

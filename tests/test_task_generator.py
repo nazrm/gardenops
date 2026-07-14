@@ -146,10 +146,16 @@ class TestInferTaskDescription(DbTestBase):
             care_maintenance="fertilize monthly",
         )
         generate_tasks(self.conn, self.garden_id, 4, 2026, self._owner_id)
-        task = self.conn.execute(
-            "SELECT * FROM garden_tasks WHERE garden_id = %s AND task_type = 'fertilize'",
+        tasks = self.conn.execute(
+            """
+            SELECT * FROM garden_tasks
+            WHERE garden_id = %s AND task_type = 'fertilize'
+            ORDER BY due_on
+            """,
             (self.garden_id,),
-        ).fetchone()
+        ).fetchall()
+        assert len(tasks) == 2
+        task = tasks[0]
         assert task is not None
         cleared = dict(task)
         cleared["description"] = ""
@@ -158,6 +164,18 @@ class TestInferTaskDescription(DbTestBase):
         assert no, "NO description should be non-empty"
         assert "Dahlia" in en
         assert "Dahlia" in no
+        assert [
+            (
+                str(task["due_on"]),
+                str(task["window_start_on"]),
+                str(task["window_end_on"]),
+                str(task["window_kind"]),
+            )
+            for task in tasks
+        ] == [
+            ("2026-04-01", "2026-03-25", "2026-04-08", "recommended"),
+            ("2026-04-15", "2026-04-08", "2026-04-22", "recommended"),
+        ]
 
     def test_water(self) -> None:
         self._insert_plant("WA1", "Hydrangea", care_watering="regular")

@@ -80,6 +80,13 @@ export type RevisionedTaskActionRequest = TaskActionRequest & {
   expected_updated_at_ms: number;
 };
 
+export type BatchTaskActionRequest = Omit<
+  TaskActionRequest,
+  "expected_updated_at_ms"
+> & {
+  expected_updated_at_ms_by_task_id: Record<string, number>;
+};
+
 export function withTaskActionRevision(
   task: Pick<GardenTask, "updated_at_ms">,
   body: TaskActionRequest,
@@ -87,6 +94,18 @@ export function withTaskActionRevision(
   return {
     ...body,
     expected_updated_at_ms: task.updated_at_ms,
+  };
+}
+
+export function withBatchTaskActionRevisions(
+  tasks: readonly Pick<GardenTask, "id" | "updated_at_ms">[],
+  body: Omit<TaskActionRequest, "expected_updated_at_ms">,
+): BatchTaskActionRequest {
+  return {
+    ...body,
+    expected_updated_at_ms_by_task_id: Object.fromEntries(
+      tasks.map((task) => [task.id, task.updated_at_ms]),
+    ),
   };
 }
 
@@ -3257,7 +3276,7 @@ export async function taskActionApi(
 
 export async function batchTaskActionApi(
   taskIds: string[],
-  body: TaskActionRequest,
+  body: BatchTaskActionRequest,
 ): Promise<{ status: string; updated: number }> {
   return apiPost<{ status: string; updated: number }>("/api/tasks/batch-action", {
     task_ids: taskIds,

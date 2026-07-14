@@ -49,6 +49,7 @@ EmailSender = Callable[[str, str, str], None]
 logger = logging.getLogger(__name__)
 _SCHEDULER_LEASE_KEY = "notification_scheduler_lease"
 _TASK_NOTIFICATION_LOCK_SEED = 0x474F504E4F544946
+_DIGEST_DELIVERY_LOCK_SEED = 0x474F504449474553
 
 NotificationRule = dict[str, bool | str]
 
@@ -3115,6 +3116,22 @@ def _build_digest_email_body(notifications: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _lock_pending_email_digest_delivery(
+    db: DbConn,
+    *,
+    garden_id: int,
+    user_id: int,
+) -> None:
+    """Serialize one recipient's digest claim until the enclosing transaction ends."""
+    db.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, %s))",
+        (
+            f"gardenops:digest-delivery:{garden_id}:{user_id}",
+            _DIGEST_DELIVERY_LOCK_SEED,
+        ),
+    )
+
+
 def deliver_pending_email_digests(
     db: DbConn,
     garden_id: int,
@@ -3122,6 +3139,13 @@ def deliver_pending_email_digests(
     email_sender: EmailSender | None = None,
     now_ms: int | None = None,
 ) -> dict[str, int | bool]:
+    """Deliver pending digests with per-recipient transactional serialization.
+
+    Digest state is marked only after SMTP returns. SMTP cannot participate in
+    the database transaction, so a process crash after successful SMTP but
+    before commit remains an unavoidable at-least-once retry case. Keeping the
+    pre-send rows pending is safer than marking them first and losing a digest.
+    """
     settings = _smtp_settings()
     if email_sender is None:
         if settings is None:
@@ -3161,6 +3185,12 @@ def deliver_pending_email_digests(
 
     for pref in recipients:
         processed_users += 1
+        user_id = int(pref["user_id"])
+        _lock_pending_email_digest_delivery(
+            db,
+            garden_id=garden_id,
+            user_id=user_id,
+        )
         digest_frequency = str(pref["digest_frequency"])
         interval_ms = _digest_interval_ms(digest_frequency)
         last_sent_row = db.execute(
@@ -3171,7 +3201,7 @@ def deliver_pending_email_digests(
               AND user_id = %s
               AND emailed_at_ms IS NOT NULL
             """,
-            (garden_id, int(pref["user_id"])),
+            (garden_id, user_id),
         ).fetchone()
         last_sent = last_sent_row["last_sent"] if last_sent_row is not None else None
         if interval_ms is not None and last_sent and now_value - int(last_sent) < interval_ms:
@@ -3192,14 +3222,14 @@ def deliver_pending_email_digests(
               AND (expires_at_ms IS NULL OR expires_at_ms >= %s)
             ORDER BY created_at_ms ASC
             """,
-            (garden_id, int(pref["user_id"]), now_value),
+            (garden_id, user_id, now_value),
         ).fetchall()
         notifications = notification_rows_allowed_for_user(
             db,
             [dict(row) for row in notifications],
             surface="digest",
             garden_id=garden_id,
-            user_id=int(pref["user_id"]),
+            user_id=user_id,
             now_ms=now_value,
         )
         notifications = notifications[:max_events_per_user]
@@ -3237,7 +3267,7 @@ def deliver_pending_email_digests(
             SET last_email_digest_at_ms = %s, updated_at_ms = %s
             WHERE user_id = %s
             """,
-            (now_value, now_value, int(pref["user_id"])),
+            (now_value, now_value, user_id),
         )
         emailed_users += 1
         notifications_marked += len(ids)

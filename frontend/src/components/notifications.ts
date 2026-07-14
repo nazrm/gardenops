@@ -12,9 +12,11 @@ import { t } from "../core/i18n";
 export interface NotificationListCallbacks {
   onClose?: () => void;
   onRead: (notification: NotificationEvent) => void;
-  onDismiss: (notification: NotificationEvent) => void;
+  onDismiss: (notification: NotificationEvent) => void | Promise<void>;
   onNavigate: (notification: NotificationEvent) => void;
-  onMarkAllRead: () => void;
+  onMarkAllRead: () => void | Promise<void>;
+  onActionError?: (error: unknown) => void;
+  isMutationPending?: () => boolean;
   onOpenSettings?: () => void;
   onViewChange?: (view: "inbox" | "log") => void;
   onMuteType?: (notification: NotificationEvent) => void;
@@ -143,6 +145,40 @@ function notificationRuleKey(notification: NotificationEvent): string {
     : notification.notification_type;
 }
 
+function setNotificationActionPending(
+  button: HTMLButtonElement,
+  pending: boolean,
+): void {
+  button.disabled = pending;
+  if (pending) {
+    button.setAttribute("aria-busy", "true");
+  } else {
+    button.removeAttribute("aria-busy");
+  }
+}
+
+async function runNotificationAction(
+  action: () => void | Promise<void>,
+  button: HTMLButtonElement,
+  onError?: (error: unknown) => void,
+): Promise<void> {
+  if (button.disabled) return;
+  setNotificationActionPending(button, true);
+  try {
+    await action();
+  } catch (err) {
+    try {
+      onError?.(err);
+    } catch {
+      // Error reporting must not escape the event handler.
+    }
+  } finally {
+    if (button.isConnected) {
+      setNotificationActionPending(button, false);
+    }
+  }
+}
+
 export function createNotificationItem(
   notification: NotificationEvent,
   cbs: NotificationListCallbacks,
@@ -193,9 +229,17 @@ export function createNotificationItem(
   dismissBtn.textContent = "\u00D7";
   dismissBtn.title = t("notifications.dismiss") as string;
   dismissBtn.setAttribute("aria-label", t("notifications.dismiss") as string);
+  setNotificationActionPending(
+    dismissBtn,
+    cbs.isMutationPending?.() ?? false,
+  );
   dismissBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    cbs.onDismiss(notification);
+    void runNotificationAction(
+      () => cbs.onDismiss(notification),
+      dismissBtn,
+      cbs.onActionError,
+    );
   });
 
   item.append(icon, content);
@@ -263,7 +307,17 @@ export function renderNotificationPanel(
     markAllBtn.className = "notification-mark-all-btn";
     markAllBtn.type = "button";
     markAllBtn.textContent = t("notifications.mark_all_read") as string;
-    markAllBtn.addEventListener("click", () => cbs.onMarkAllRead());
+    setNotificationActionPending(
+      markAllBtn,
+      cbs.isMutationPending?.() ?? false,
+    );
+    markAllBtn.addEventListener("click", () => {
+      void runNotificationAction(
+        () => cbs.onMarkAllRead(),
+        markAllBtn,
+        cbs.onActionError,
+      );
+    });
     headerActions.append(markAllBtn);
   }
 

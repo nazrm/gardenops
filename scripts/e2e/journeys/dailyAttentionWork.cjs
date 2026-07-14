@@ -721,7 +721,8 @@ async function exerciseCalendarLifecycle(
   fixture,
   diagnostics,
   {
-    includeExportAndSubscription = profile === "desktop",
+    includeExport = true,
+    includeSubscription = profile === "desktop",
     onSubscriptionCreated = null,
   } = {},
 ) {
@@ -742,7 +743,7 @@ async function exerciseCalendarLifecycle(
   await visible(detail.getByText(fixture.phase_two.plot_ids.alpha, { exact: false }),
     "calendar plot link");
 
-  if (includeExportAndSubscription) {
+  if (includeExport) {
     const failureMark = diagnostics.requestFailures.length;
     const expectedAbortMark = diagnostics.expectedRequestAborts.length;
     const expectedDownloadAborts = [];
@@ -884,8 +885,16 @@ async function exerciseCalendarLifecycle(
   });
   await edited.waitFor({ state: "hidden" });
 
-  if (includeExportAndSubscription) {
+  if (includeSubscription) {
     await exerciseCalendarSubscriptionFeed(page, diagnostics, onSubscriptionCreated);
+  } else {
+    await page.locator("#calendar-new-feed-btn").click();
+    const labelDialog = page.locator(".modal").filter({
+      has: page.locator(".prompt-dialog-input"),
+    });
+    await visible(labelDialog, `${profile} calendar subscription label dialog`);
+    await labelDialog.locator(".confirm-no").click();
+    await labelDialog.waitFor({ state: "detached" });
   }
   return { event_id: eventId, mutations: mutationEvidence };
 }
@@ -2217,23 +2226,25 @@ async function attemptForbiddenViewerTaskWrite(page, diagnostics, profile, fixtu
 }
 
 async function dismissPersonalViewerWeatherAlert(page, profile, fixture) {
-  const response = await page.evaluate(async ({ gardenId }) => {
-    const csrf = document.cookie
-      .split("; ")
-      .find((part) => part.startsWith("gardenops_csrf="))
-      ?.slice("gardenops_csrf=".length) || "";
-    const result = await fetch("/api/weather/alerts/1/dismiss", {
-      credentials: "include",
-      headers: {
-        "x-csrf-token": decodeURIComponent(csrf),
-        "x-garden-id": String(gardenId),
-      },
-      method: "POST",
-    });
-    return { body: await result.json(), status: result.status };
-  }, { gardenId: fixture.gardens.alpha.id });
-  assert(response.status === 200 && response.body?.status === "dismissed",
-    `${profile} viewer could not dismiss personal weather attention`);
+  const alert = fixture.phase_two.seeded_state.weather_alerts.find((candidate) => (
+    candidate.garden_id === fixture.gardens.alpha.id
+  ));
+  assert(alert, `${profile} viewer personal weather alert fixture was missing`);
+  await openCare(page, profile);
+  await visible(page.locator("#weather-dashboard"), `${profile} viewer Weather before dismissal`);
+  const dismiss = page.locator(
+    `#weather-dashboard .weather-alert-dismiss[data-alert-id="${alert.id}"]`,
+  );
+  await visible(dismiss, `${profile} viewer personal weather dismissal control`);
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+      && new URL(response.url()).pathname === `/api/weather/alerts/${alert.id}/dismiss`
+  ));
+  await dismiss.click();
+  const response = await responsePromise;
+  assert(response.status() === 200,
+    `${profile} viewer personal weather dismissal returned ${response.status()}`);
+  await dismiss.waitFor({ state: "detached" });
 }
 
 async function exerciseViewer(page, diagnostics, profile, fixture) {
@@ -2445,9 +2456,6 @@ async function runProfile(options) {
         run.profile,
         fixture,
         guarded.diagnostics,
-        {
-        includeExportAndSubscription: false,
-        },
       );
       result.checks.last_completed_step = "mobile-calendar-lifecycle";
       result.checks.personal_notification_preference_persistence = (
@@ -2470,6 +2478,7 @@ async function runProfile(options) {
       result.checks.mobile_snooze_manual_date = true;
       result.checks.immediate_snooze_correction_action = true;
       result.checks.mobile_calendar_lifecycle = true;
+      result.checks.mobile_calendar_export_subscription_controls = true;
       result.checks.mobile_notification_preference_mutation = true;
       result.checks.mobile_history_reload = true;
     } else if (run.role === "editor" && run.profile === "desktop") {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Literal, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -74,7 +74,10 @@ from gardenops.services.task_completion import (
     validate_completion_capture_plant_links,
     validate_completion_outcome,
 )
-from gardenops.services.task_windows import derive_recommended_window_strings
+from gardenops.services.task_windows import (
+    derive_recommended_window_strings,
+    weekly_watering_recurrence_deadline,
+)
 
 router = APIRouter()
 
@@ -246,19 +249,23 @@ class UpdateTaskBody(StrictBaseModel):
     plot_ids: list[str] | None = None
 
 
-class ActionTaskBody(StrictBaseModel):
+class TaskActionFields(StrictBaseModel):
     action: Literal["complete", "skip", "snooze", "reschedule"]
     snooze_until: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     reschedule_to: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     notes: str | None = Field(default=None, max_length=2000)
     completed_plant_ids: list[str] | None = None
     completion_outcome: CompletionOutcome | None = None
-    expected_updated_at_ms: int | None = Field(default=None, ge=0)
     confirm_outside_window: bool = False
 
 
-class BatchActionTaskBody(ActionTaskBody):
+class ActionTaskBody(TaskActionFields):
+    expected_updated_at_ms: int | None = Field(default=None, ge=0)
+
+
+class BatchActionTaskBody(TaskActionFields):
     task_ids: list[str] = Field(min_length=1, max_length=200)
+    expected_updated_at_ms_by_task_id: dict[str, int] = Field(min_length=1)
 
 
 class RefreshTaskDescriptionsBody(StrictBaseModel):
@@ -670,18 +677,20 @@ def _task_snooze_deadline(task_row: dict) -> str | None:
         ]
         return min(candidates) if candidates else None
 
-    if str(task_row.get("task_type") or "") != "water" or not rule_source.startswith("water:"):
+    if str(task_row.get("task_type") or "") != "water":
         return None
-    recurrence_source = rule_source.rsplit(":", 1)[-1]
-    try:
-        next_recurrence = date.fromisoformat(recurrence_source) + timedelta(days=7)
-    except ValueError:
-        return None
-    return (next_recurrence - timedelta(days=1)).isoformat()
+    return weekly_watering_recurrence_deadline(rule_source)
 
 
-def _validate_task_snooze_date(task_row: dict, body: ActionTaskBody) -> None:
+def _validate_task_snooze_date(
+    task_row: dict,
+    body: ActionTaskBody,
+    *,
+    action_on: str,
+) -> None:
     assert body.snooze_until is not None
+    if body.snooze_until < action_on:
+        raise HTTPException(status_code=422, detail="snooze_until cannot be in the past")
     deadline = _task_snooze_deadline(task_row)
     if deadline is not None and body.snooze_until > deadline:
         raise HTTPException(
@@ -782,6 +791,36 @@ def _dedupe_task_ids(task_ids: list[str]) -> list[str]:
         seen.add(task_id)
         normalized.append(task_id)
     return normalized
+
+
+def _require_batch_task_revisions(
+    task_public_ids: list[str],
+    expected_updated_at_ms_by_task_id: dict[str, int],
+) -> dict[str, int]:
+    expected_ids = set(task_public_ids)
+    supplied_ids = set(expected_updated_at_ms_by_task_id)
+    missing_ids = [task_id for task_id in task_public_ids if task_id not in supplied_ids]
+    unexpected_ids = sorted(supplied_ids - expected_ids)
+    if missing_ids or unexpected_ids:
+        details: list[str] = []
+        if missing_ids:
+            details.append("missing revisions for " + ", ".join(missing_ids[:10]))
+        if unexpected_ids:
+            details.append("unexpected revisions for " + ", ".join(unexpected_ids[:10]))
+        raise HTTPException(
+            status_code=422,
+            detail="expected_updated_at_ms_by_task_id must match task_ids exactly: "
+            + "; ".join(details),
+        )
+    invalid_ids = [
+        task_id for task_id in task_public_ids if expected_updated_at_ms_by_task_id[task_id] < 0
+    ]
+    if invalid_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="Task revisions must be non-negative: " + ", ".join(invalid_ids[:10]),
+        )
+    return {task_id: expected_updated_at_ms_by_task_id[task_id] for task_id in task_public_ids}
 
 
 def _validate_task_ids(
@@ -1075,7 +1114,7 @@ def _apply_task_action(
                 status_code=422, detail="snooze_until is required for snooze action"
             )
         _validate_date(body.snooze_until)
-        _validate_task_snooze_date(task_row, body)
+        _validate_task_snooze_date(task_row, body, action_on=action_on)
         reopen_metadata = _reopened_completion_metadata(task_row, current_status)
         if str(task_row.get("task_type") or "") == "observe_bloom":
             metadata_task_row = task_row
@@ -1637,7 +1676,12 @@ def batch_task_action(
     context = _auth_context(request)
     _require_write(context)
     garden_id = _active_garden_id(context)
-    task_ids = _validate_task_ids(db, garden_id, body.task_ids)
+    task_public_ids = _dedupe_task_ids(body.task_ids)
+    expected_revisions = _require_batch_task_revisions(
+        task_public_ids,
+        body.expected_updated_at_ms_by_task_id,
+    )
+    task_ids = _validate_task_ids(db, garden_id, task_public_ids)
     task_rows = _load_task_rows_by_internal_ids(db, task_ids, for_update=True)
 
     now_ms, action_on = _task_action_clock()
@@ -1648,9 +1692,23 @@ def batch_task_action(
         notes=body.notes,
         completed_plant_ids=body.completed_plant_ids,
         completion_outcome=body.completion_outcome,
-        expected_updated_at_ms=body.expected_updated_at_ms,
         confirm_outside_window=body.confirm_outside_window,
     )
+    stale_task_ids = [
+        str(task_row["public_id"])
+        for task_id in task_ids
+        if (task_row := task_rows.get(task_id)) is not None
+        and int(task_row.get("updated_at_ms") or 0)
+        != expected_revisions[str(task_row["public_id"])]
+    ]
+    if stale_task_ids:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Tasks changed since this action was created; refresh them and try again: "
+                + ", ".join(stale_task_ids[:10])
+            ),
+        )
     for task_id in task_ids:
         task_row = task_rows.get(task_id)
         if task_row is None:

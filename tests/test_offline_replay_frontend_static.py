@@ -105,10 +105,19 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn("expected_updated_at_ms: expectedUpdatedAtMs", replay)
         self.assertIn("Offline task action is missing its expected revision", replay)
 
+    def test_online_batch_actions_send_each_selected_task_revision(self) -> None:
+        api = (ROOT / "frontend" / "src" / "services" / "api.ts").read_text(encoding="utf-8")
+        tasks = (ROOT / "frontend" / "src" / "tabs" / "tasksTab.ts").read_text(encoding="utf-8")
+
+        self.assertIn("export type BatchTaskActionRequest", api)
+        self.assertIn("expected_updated_at_ms_by_task_id: Record<string, number>", api)
+        self.assertIn("export function withBatchTaskActionRevisions", api)
+        self.assertIn("withBatchTaskActionRevisions(batchTasks, { action, ...extra })", tasks)
+
     def test_every_task_action_surface_stamps_the_current_task_revision(self) -> None:
         expected_stamps = {
             "tabs/tasksTab.ts": "withTaskActionRevision(task, { action, ...extra })",
-            "tabs/calendarTab.ts": "withTaskActionRevision(target.task, body)",
+            "tabs/calendarTab.ts": "withTaskActionRevision(target.taskRevision, body)",
             "features/quickActionsFeature.ts": (
                 "const actionBody = withTaskActionRevision(task, body);"
             ),
