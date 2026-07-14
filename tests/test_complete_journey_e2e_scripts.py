@@ -2402,6 +2402,15 @@ def test_phase_two_completion_journals_retain_task_plot_context() -> None:
     assert "selected_plot_ids: expected.plot_ids," in metadata_expectation
 
 
+def test_phase_two_stale_manual_notice_keeps_pre_action_expiry_reason() -> None:
+    source = CHECKER.read_text(encoding="utf-8")
+    notification_actions = source.split("const actionByTask = new Map([", 1)[1].split(
+        "]);", 1
+    )[0]
+
+    assert "stale_manual_water" not in notification_actions
+
+
 def test_phase_two_mobile_quick_action_keeps_manual_date_completion_actionable() -> None:
     source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
     quick_actions = source.split("async function completeMobileQuickActions", 1)[1].split(
@@ -2518,7 +2527,7 @@ def test_phase_two_maintenance_notifications_have_exact_post_journey_lifecycle()
 
     assert "expectedPhaseTwoMaintenanceNotification" in source
     assert 'reason: "superseded", stage: 0' in source
-    assert 'reason: "snoozed", stage: 1' in source
+    assert 'reason: "completed", stage: 1' in source
     assert 'notificationStage <= action.stage ? "expired" : action.reason' in source
     assert "preferenceDelivery?.delivery_notifications" in source
 
