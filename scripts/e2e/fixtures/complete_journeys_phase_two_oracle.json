@@ -118,6 +118,7 @@
           "dry_water": {
             "description_template": "T\u00f8rkeperiode \u2014 vann {plant_name} jevnlig, sjekk jordfuktighet",
             "due_on": "2026-07-12",
+            "severity": "normal",
             "task_type": "water",
             "title_template": "Water regularly: {plant_name} ({plot_id})",
             "valid_until": "2026-07-18"
@@ -126,6 +127,7 @@
             "description_template": "Frostvarsel \u2014 dekk til eller flytt {plant_name} i ly",
             "due_on": "2026-07-12",
             "plant_ids": ["COMPLETE-P2-FERT-MOBILE"],
+            "severity": "high",
             "task_type": "protect",
             "title_template": "Protect from frost: {plant_name} ({plot_id})",
             "valid_until": "2026-07-12"
@@ -133,6 +135,7 @@
           "heat_protect": {
             "description_template": "Heteb\u00f8lge \u2014 gi skygge og ekstra vann til {plant_name}",
             "due_on": "2026-07-13",
+            "severity": "high",
             "task_type": "protect",
             "title_template": "Provide shade: {plant_name} ({plot_id})",
             "valid_until": "2026-07-15"

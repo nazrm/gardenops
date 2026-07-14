@@ -2233,6 +2233,7 @@ function expectedPhaseTwoMaintenanceTaskRows(fixture, oracle) {
         plot_ids: [weekly.plot_id],
         rule_source: `auto:${rule}:${rule === "dry_water" ? "dry_spell"
           : rule === "frost_protect" ? "frost_warning" : "heat_wave"}:${plant.id}`,
+        severity: specification.severity,
         task_type: specification.task_type,
         title: replaceOracleTemplate(specification.title_template, {
           plant_name: plant.name,

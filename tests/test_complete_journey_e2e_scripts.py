@@ -2877,6 +2877,13 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
         "2026-07-15",
         "2026-07-22",
     ]
+    weather_tasks = oracle["phase_two"]["maintenance"]["logical_rows"][
+        "weather_generated_tasks"
+    ]
+    assert weather_tasks["dry_water"]["severity"] == "normal"
+    assert weather_tasks["frost_protect"]["severity"] == "high"
+    assert weather_tasks["heat_protect"]["severity"] == "high"
+    assert "severity: specification.severity" in source
     assert oracle["phase_two"]["maintenance"]["created"]["notifications"]["by_role"] == {
         "admin": 17,
         "editor": 17,
