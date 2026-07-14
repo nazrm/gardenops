@@ -260,6 +260,8 @@ def test_runner_uses_isolated_production_preview_and_locked_dependency_gate() ->
     assert "VITE_ENV_DIR" in source
     assert '"$ROOT_DIR/frontend/node_modules/.bin/vite" build' in source
     assert '"$ROOT_DIR/frontend/node_modules/.bin/vite" preview' in source
+    assert "import { defineConfig, mergeConfig } from 'vite'" not in source
+    assert "const resolved = typeof baseConfig === 'function'" in source
     assert "npm run dev" not in source
 
 

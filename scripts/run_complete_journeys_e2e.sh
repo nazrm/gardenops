@@ -136,13 +136,16 @@ write_isolated_vite_config() {
   mkdir -p "$VITE_ENV_DIR"
   chmod 700 "$VITE_ENV_DIR"
   printf '%s\n' \
-    "import { defineConfig, mergeConfig } from 'vite';" \
     "import baseConfig from '$ROOT_DIR/frontend/vite.config.ts';" \
     "const root = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_ROOT;" \
     "const envDir = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_ENV_DIR;" \
     "const outDir = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_DIST_DIR;" \
     "const proxyTarget = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_PROXY_TARGET;" \
-    "export default defineConfig((configEnv) => mergeConfig(typeof baseConfig === 'function' ? baseConfig(configEnv) : baseConfig, { root, envDir, build: { emptyOutDir: true, outDir }, preview: { proxy: { '/api': proxyTarget, '/calendar/subscriptions': proxyTarget } }, server: { proxy: { '/api': proxyTarget, '/calendar/subscriptions': proxyTarget } } }));" \
+    "const proxy = { '/api': proxyTarget, '/calendar/subscriptions': proxyTarget };" \
+    "export default async (configEnv) => {" \
+    "  const resolved = typeof baseConfig === 'function' ? await baseConfig(configEnv) : baseConfig;" \
+    "  return { ...resolved, root, envDir, build: { ...(resolved.build || {}), emptyOutDir: true, outDir }, preview: { ...(resolved.preview || {}), proxy }, server: { ...(resolved.server || {}), proxy } };" \
+    "};" \
     > "$VITE_CONFIG_PATH"
   chmod 600 "$VITE_CONFIG_PATH"
 }
