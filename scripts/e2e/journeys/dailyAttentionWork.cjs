@@ -744,6 +744,7 @@ async function exerciseCalendarLifecycle(
 
   if (includeExportAndSubscription) {
     const failureMark = diagnostics.requestFailures.length;
+    const expectedAbortMark = diagnostics.expectedRequestAborts.length;
     const expectedDownloadAborts = [];
     const downloadFailureListener = (request) => {
       const failure = request.failure()?.errorText || "";
@@ -780,8 +781,11 @@ async function exerciseCalendarLifecycle(
       page.off("requestfailed", downloadFailureListener);
     }
     const failuresAdded = diagnostics.requestFailures.length - failureMark;
-    assert(failuresAdded === expectedDownloadAborts.length,
+    const expectedAbortsAdded = diagnostics.expectedRequestAborts.length - expectedAbortMark;
+    assert(failuresAdded === 0,
       "Calendar export produced an unaccounted request failure");
+    assert(expectedAbortsAdded === expectedDownloadAborts.length,
+      "Calendar export abort accounting disagreed between diagnostics layers");
     assert(expectedDownloadAborts.length <= 1,
       "Calendar export produced duplicate browser download aborts");
     diagnostics.requestFailures.splice(failureMark, failuresAdded);
