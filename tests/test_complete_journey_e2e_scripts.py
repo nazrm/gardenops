@@ -2822,6 +2822,16 @@ def test_phase_two_viewer_denials_assert_the_global_authorization_boundary() -> 
     assert 'response.body?.detail === "Forbidden: write access required"' in denial
 
 
+def test_phase_two_viewer_weather_keeps_personal_dismissal_controls() -> None:
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
+    viewer = source.split("async function exerciseViewer", 1)[1].split(
+        "async function runProfile", 1
+    )[0]
+
+    assert 'page.locator("#weather-dashboard .weather-check-btn:visible").count() === 0' in viewer
+    assert 'page.locator("#weather-dashboard .weather-alert-dismiss:visible").count() > 0' in viewer
+
+
 def test_phase_two_offline_calendar_is_loaded_before_connectivity_is_lost() -> None:
     source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
     offline = source.split("async function exerciseOfflineTask", 1)[1].split(

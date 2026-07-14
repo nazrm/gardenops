@@ -2313,8 +2313,8 @@ async function exerciseViewer(page, diagnostics, profile, fixture) {
   await visible(page.locator("#weather-dashboard"), `${profile} viewer Weather affordance`);
   assert(await page.locator("#weather-dashboard .weather-check-btn:visible").count() === 0,
     `${profile} viewer Weather received write controls`);
-  assert(await page.locator("#weather-dashboard .weather-alert-dismiss:visible").count() === 0,
-    `${profile} viewer Weather received alert dismissal controls`);
+  assert(await page.locator("#weather-dashboard .weather-alert-dismiss:visible").count() > 0,
+    `${profile} viewer Weather omitted personal alert dismissal controls`);
 }
 
 async function runProfile(options) {
