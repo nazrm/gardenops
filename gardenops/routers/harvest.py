@@ -45,8 +45,8 @@ from gardenops.router_helpers import (
 )
 from gardenops.routers.media import collect_media_cleanup_for_target
 from gardenops.security import AuthContext
-from gardenops.services.automation import on_harvest_logged
-from gardenops.services.media_store import unlink_storage_keys
+from gardenops.services.automation import on_harvest_logged, reconcile_harvest_rollups
+from gardenops.services.media_store import drain_media_cleanup_jobs_best_effort
 from gardenops.sql_dates import month_number_sql
 
 router = APIRouter()
@@ -389,7 +389,7 @@ def _delete_linked_journal_entry(
     *,
     garden_id: int,
     journal_entry_id: str,
-) -> None:
+) -> list[tuple[str, str]]:
     media_storage_pairs = collect_media_cleanup_for_target(
         db,
         garden_id=garden_id,
@@ -400,9 +400,7 @@ def _delete_linked_journal_entry(
         "DELETE FROM garden_journal_entries WHERE public_id = %s AND garden_id = %s",
         (journal_entry_id, garden_id),
     )
-    if media_storage_pairs:
-        for storage_key, preview_storage_key in media_storage_pairs:
-            unlink_storage_keys(storage_key, preview_storage_key)
+    return media_storage_pairs
 
 
 # ── Endpoints ──
@@ -778,6 +776,7 @@ def update_harvest_entry(
     existing_row = _fetch_entry(db, entry_id, garden_id)
     internal_id = int(existing_row["id"])
     public_id = str(existing_row["public_id"])
+    previous_year = int(str(existing_row["occurred_on"])[:4])
 
     updates = body.model_dump(exclude_unset=True)
     if not updates:
@@ -852,6 +851,11 @@ def update_harvest_entry(
             internal_id,
         ),
     )
+    reconcile_harvest_rollups(
+        db,
+        garden_id=garden_id,
+        years=[previous_year, int(str(refreshed["occurred_on"])[:4])],
+    )
 
     db.commit()
     return {"status": "ok"}
@@ -865,6 +869,7 @@ def delete_harvest_entry(request: Request, db: DB, entry_id: str) -> dict:
     row = _fetch_entry(db, entry_id, garden_id)
     internal_id = int(row["id"])
     public_id = str(row["public_id"])
+    affected_year = int(str(row["occurred_on"])[:4])
     metadata = _parse_metadata(row.get("metadata_json"))
     journal_entry_id = _resolve_linked_journal_public_id(
         db,
@@ -878,14 +883,15 @@ def delete_harvest_entry(request: Request, db: DB, entry_id: str) -> dict:
         target_id=public_id,
     )
     if journal_entry_id is not None:
-        _delete_linked_journal_entry(
-            db,
-            garden_id=garden_id,
-            journal_entry_id=journal_entry_id,
+        media_storage_pairs.extend(
+            _delete_linked_journal_entry(
+                db,
+                garden_id=garden_id,
+                journal_entry_id=journal_entry_id,
+            )
         )
     db.execute("DELETE FROM harvest_entries WHERE id = %s", (internal_id,))
+    reconcile_harvest_rollups(db, garden_id=garden_id, years=[affected_year])
     db.commit()
-    if media_storage_pairs:
-        for storage_key, preview_storage_key in media_storage_pairs:
-            unlink_storage_keys(storage_key, preview_storage_key)
+    drain_media_cleanup_jobs_best_effort(db, storage_pairs=media_storage_pairs)
     return {"status": "ok"}

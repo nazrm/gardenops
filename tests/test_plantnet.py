@@ -112,6 +112,16 @@ class TestPreprocessImage(unittest.TestCase):
             preprocess_image_for_identification(raw, "text/plain")
         self.assertEqual(ctx.exception.status_code, 415)
 
+    def test_declared_mime_must_match_detected_format(self) -> None:
+        raw = _make_png()
+        with self.assertRaises(HTTPException) as ctx:
+            preprocess_image_for_identification(raw, "image/jpeg")
+        self.assertEqual(ctx.exception.status_code, 415)
+        self.assertEqual(
+            ctx.exception.detail,
+            "Image content does not match declared content type",
+        )
+
     def test_empty_payload_rejected(self) -> None:
         with self.assertRaises(HTTPException) as ctx:
             preprocess_image_for_identification(b"", "image/jpeg")
@@ -131,6 +141,15 @@ class TestPreprocessImage(unittest.TestCase):
         with Image.open(BytesIO(result)) as img:
             self.assertLessEqual(img.size[0], 1280)
             self.assertLessEqual(img.size[1], 1280)
+
+    def test_extreme_decompression_bomb_is_a_controlled_rejection(self) -> None:
+        with patch(
+            "gardenops.services.plantnet.Image.open",
+            side_effect=Image.DecompressionBombError("too many pixels"),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                preprocess_image_for_identification(_make_png(), "image/png")
+        self.assertEqual(ctx.exception.status_code, 413)
 
 
 class TestIdentify(unittest.TestCase):

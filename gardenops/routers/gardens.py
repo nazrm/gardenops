@@ -38,7 +38,10 @@ from gardenops.services.lidar_terrain import (
     local_terrain_storage_info,
     save_uploaded_terrain,
 )
-from gardenops.services.media_store import unlink_storage_keys
+from gardenops.services.media_store import (
+    drain_media_cleanup_jobs_best_effort,
+    enqueue_media_cleanup_jobs,
+)
 from gardenops.services.plot_references import delete_plots_for_replacement
 
 router = APIRouter()
@@ -574,6 +577,7 @@ def _delete_garden_related_state(
         db.execute(f"DELETE FROM plot_plants WHERE plt_id IN ({ph})", orphan_ids)
         db.execute(f"DELETE FROM plants WHERE plt_id IN ({ph})", orphan_ids)
     deleted_plants = len(orphan_ids)
+    enqueue_media_cleanup_jobs(db, media_storage_pairs)
     deleted = db.execute(
         "DELETE FROM gardens WHERE id = %s RETURNING id",
         (garden_id,),
@@ -968,8 +972,7 @@ def delete_garden(
         db.rollback()
         raise
     enqueue_audit_event_telemetry(audit_values, db=db)
-    for storage_key, preview_storage_key in media_storage_pairs:
-        unlink_storage_keys(storage_key, preview_storage_key)
+    drain_media_cleanup_jobs_best_effort(db, storage_pairs=media_storage_pairs)
     notify_garden_modified()
     record_security_event("destructive_admin_actions")
     record_security_event("destructive_admin_actions_delete_garden")
@@ -1931,8 +1934,7 @@ def complete_garden_onboarding(
                 )
                 plots_created += len(created)
         db.commit()
-        for storage_key, preview_storage_key in media_storage_pairs:
-            unlink_storage_keys(storage_key, preview_storage_key)
+        drain_media_cleanup_jobs_best_effort(db, storage_pairs=media_storage_pairs)
     except Exception:
         db.rollback()
         raise

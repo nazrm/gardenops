@@ -45,8 +45,12 @@ from gardenops.router_helpers import (
 )
 from gardenops.routers.media import collect_media_cleanup_for_target
 from gardenops.security import AuthContext
-from gardenops.services.automation import on_issue_created, sync_issue_followup_task
-from gardenops.services.media_store import unlink_storage_keys
+from gardenops.services.automation import (
+    on_issue_created,
+    retire_deleted_issue_followup_task,
+    sync_issue_followup_task,
+)
+from gardenops.services.media_store import drain_media_cleanup_jobs_best_effort
 from gardenops.services.notification_service import (
     clear_issue_notifications,
     clear_task_notifications,
@@ -1111,17 +1115,20 @@ def resolve_issue(
     internal_id = int(existing_row["id"])
 
     now_ms = current_timestamp_ms()
-    db.execute(
+    resolved = db.execute(
         """
         UPDATE garden_issues
         SET status = 'resolved',
             resolved_by_user_id = %s,
             resolved_at_ms = %s,
             updated_at_ms = %s
-        WHERE id = %s
+        WHERE id = %s AND status <> 'resolved'
+        RETURNING id
         """,
         (context.user_id, now_ms, now_ms, internal_id),
-    )
+    ).fetchone()
+    if not resolved:
+        return {"status": "ok"}
     current_row = _fetch_issue(db, issue_id, garden_id)
     plant_map, plot_map = _load_issue_links(db, [internal_id])
     plant_ids = plant_map.get(internal_id, [])
@@ -1178,15 +1185,35 @@ def delete_issue(request: Request, db: DB, issue_id: str) -> dict:
     existing_row = _fetch_issue(db, issue_id, garden_id)
     internal_id = int(existing_row["id"])
     public_id = str(existing_row["public_id"])
+    now_ms = current_timestamp_ms()
     media_storage_pairs = collect_media_cleanup_for_target(
         db,
         garden_id=garden_id,
         target_type="issue",
         target_id=public_id,
     )
+    task_public_id = retire_deleted_issue_followup_task(
+        db,
+        garden_id=garden_id,
+        issue_public_id=public_id,
+        now_ms=now_ms,
+    )
+    clear_issue_notifications(
+        db,
+        garden_id=garden_id,
+        issue_public_id=public_id,
+        reason="source_deleted",
+        now_ms=now_ms,
+    )
+    if task_public_id is not None:
+        clear_task_notifications(
+            db,
+            garden_id=garden_id,
+            task_public_id=task_public_id,
+            reason="issue_source_deleted",
+            now_ms=now_ms,
+        )
     db.execute("DELETE FROM garden_issues WHERE id = %s", (internal_id,))
     db.commit()
-    if media_storage_pairs:
-        for storage_key, preview_storage_key in media_storage_pairs:
-            unlink_storage_keys(storage_key, preview_storage_key)
+    drain_media_cleanup_jobs_best_effort(db, storage_pairs=media_storage_pairs)
     return {"status": "ok"}

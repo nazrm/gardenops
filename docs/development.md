@@ -248,6 +248,8 @@ scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --p
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 1
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 2
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 2
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 3
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 3
 ```
 
 The runner creates its own disposable PostgreSQL child through
@@ -361,6 +363,33 @@ mode restores only the two frozen disposable forecast rows before Phase 2; it
 preserves existing row identities, refuses direct use outside the disposable
 test contract, and never enables remote weather fetches. Focused and cumulative
 Phase 2 runs therefore use the same deterministic weather boundary.
+
+Phase 3 runs fresh desktop and Pixel 7 administrator, editor, and viewer
+profiles through the observation-to-action workflows. It covers journal,
+issue, harvest, and media lifecycle; explicit photo identification and
+diagnosis; issue reopen and repeated resolve; mobile decimal harvest entry;
+viewer write denial; and Alpha/Beta garden isolation. Identification and
+diagnosis use the deterministic local provider, remain advisory until the user
+chooses the corresponding action, and cannot silently create records.
+
+The mobile editor queues journal, issue, harvest, and attachment writes while
+Chromium is genuinely offline. The journey first requires the six
+application-generated operation UUIDs to be unique and stable across an
+IndexedDB reread, then maps them to deterministic oracle identities. It drops
+one response after the server commit, reloads, reconnects twice, and verifies
+one logical result per operation. Changed payload replay must return `409`;
+replay against the deleted journal target must return `410`. Expected offline
+network failures are correlated independently by request method and path,
+while any unrelated request or console failure remains fatal.
+
+Phase 3 postconditions compare exact journal links, issue history and follow-up
+tasks, notifications, harvest-linked journal and rollup data, media links and
+storage bytes, cleanup jobs, offline operation fingerprints, and browser/audit
+correlation. The checker walks the private media root and requires the database
+storage keys, original files, and previews to match without orphans. Journal,
+Issues, and Harvest clear their cached rows during a garden switch and reject
+late responses from the previous garden before the new content becomes
+interactive.
 
 The tracked coverage contract is `tests/journey_coverage.yaml`. Validate open
 phases during implementation and require complete closure only in the final

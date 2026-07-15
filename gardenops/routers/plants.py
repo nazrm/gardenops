@@ -39,7 +39,7 @@ from gardenops.security import (
     AuthContext,
     has_write_access,
 )
-from gardenops.services.media_store import unlink_storage_keys
+from gardenops.services.media_store import drain_media_cleanup_jobs_best_effort
 from gardenops.services.observation_cycles import (
     is_current_observation_year,
     observation_year,
@@ -1139,8 +1139,7 @@ def delete_plant(plt_id: str, db: DB, request: Request) -> dict:
         db.execute("DELETE FROM plot_plants WHERE plt_id = %s", (plt_id,))
         db.execute("DELETE FROM plants WHERE plt_id = %s", (plt_id,))
     db.commit()
-    for storage_key, preview_storage_key in media_storage_pairs:
-        unlink_storage_keys(storage_key, preview_storage_key)
+    drain_media_cleanup_jobs_best_effort(db, storage_pairs=media_storage_pairs)
     notify_garden_modified()
     return {"status": "ok"}
 
@@ -1157,19 +1156,7 @@ def plant_plots(plt_id: str, db: DB, request: Request) -> list[str]:
     ).fetchone()
     if not plant_exists:
         return []
-    owner_row = db.execute(
-        """
-        SELECT po.owner_user_id, po.garden_id
-        FROM plant_ownership po
-        WHERE po.plt_id = %s AND po.garden_id = %s
-        """,
-        (plt_id, garden_id),
-    ).fetchone()
-    if not owner_row:
-        if not _is_local_admin_fallback(context):
-            raise HTTPException(status_code=404, detail=f"Plant {plt_id} not found")
-    elif not _is_owner_or_admin(context, owner_row["owner_user_id"]):
-        raise HTTPException(status_code=404, detail=f"Plant {plt_id} not found")
+    _require_plant_access(db, plt_id, context, read_only=True)
     if _is_local_admin_fallback(context):
         rows = db.execute(
             "SELECT plot_id FROM plot_plants WHERE plt_id = %s ORDER BY plot_id",
@@ -1201,19 +1188,7 @@ def plant_assignments(plt_id: str, db: DB, request: Request) -> list[dict]:
     ).fetchone()
     if not plant_exists:
         return []
-    owner_row = db.execute(
-        """
-        SELECT po.owner_user_id, po.garden_id
-        FROM plant_ownership po
-        WHERE po.plt_id = %s AND po.garden_id = %s
-        """,
-        (plt_id, garden_id),
-    ).fetchone()
-    if not owner_row:
-        if not _is_local_admin_fallback(context):
-            raise HTTPException(status_code=404, detail=f"Plant {plt_id} not found")
-    elif not _is_owner_or_admin(context, owner_row["owner_user_id"]):
-        raise HTTPException(status_code=404, detail=f"Plant {plt_id} not found")
+    _require_plant_access(db, plt_id, context, read_only=True)
     rows = _assignment_rows_for_plant(db, plt_id=plt_id, garden_id=garden_id)
     return [_serialize_plot_assignment(r) for r in rows]
 

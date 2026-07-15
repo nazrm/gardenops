@@ -8,7 +8,6 @@ import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
-import warnings
 from dataclasses import dataclass, field
 from io import BytesIO
 
@@ -17,6 +16,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from gardenops.branding import app_user_agent
 from gardenops.redaction import redact_external_log_text
+from gardenops.services.image_safety import pillow_pixel_limit
 
 _log = logging.getLogger(__name__)
 
@@ -25,9 +25,15 @@ ALLOWED_ORGANS = frozenset(
 )
 
 _ALLOWED_IMAGE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp"})
+_IMAGE_FORMAT_BY_MIME = {
+    "image/jpeg": "JPEG",
+    "image/png": "PNG",
+    "image/webp": "WEBP",
+}
 
 _PREPROCESS_MAX_DIMENSION_DEFAULT = 1280
 _PREPROCESS_MAX_BYTES_DEFAULT = 5 * 1024 * 1024  # 5 MB
+_PREPROCESS_MAX_PIXELS = 24_000_000
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 
 
@@ -262,66 +268,74 @@ def preprocess_image_for_identification(
             detail="Unsupported image type. Allowed: JPEG, PNG, WebP.",
         )
 
-    previous_max_pixels = Image.MAX_IMAGE_PIXELS
-    Image.MAX_IMAGE_PIXELS = 24_000_000
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            try:
-                with Image.open(BytesIO(payload)) as probe:
-                    probe.verify()
-            except Image.DecompressionBombWarning as exc:
-                raise HTTPException(
-                    status_code=413,
-                    detail="Image dimensions are too large",
-                ) from exc
-            except UnidentifiedImageError as exc:
-                raise HTTPException(
-                    status_code=415,
-                    detail="Upload is not a valid image",
-                ) from exc
-            except OSError as exc:
-                raise HTTPException(
-                    status_code=415,
-                    detail="Failed to decode uploaded image",
-                ) from exc
+    with pillow_pixel_limit(_PREPROCESS_MAX_PIXELS):
+        try:
+            with Image.open(BytesIO(payload)) as probe:
+                actual_format = (probe.format or "").upper()
+                width, height = probe.size
+                if width <= 0 or height <= 0:
+                    raise HTTPException(status_code=415, detail="Image has invalid dimensions")
+                if width * height > _PREPROCESS_MAX_PIXELS:
+                    raise HTTPException(status_code=413, detail="Image dimensions are too large")
+                probe.verify()
+        except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+            raise HTTPException(
+                status_code=413,
+                detail="Image dimensions are too large",
+            ) from exc
+        except UnidentifiedImageError as exc:
+            raise HTTPException(
+                status_code=415,
+                detail="Upload is not a valid image",
+            ) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=415,
+                detail="Failed to decode uploaded image",
+            ) from exc
 
-            try:
-                with Image.open(BytesIO(payload)) as loaded:
-                    img = ImageOps.exif_transpose(loaded)
-                    img.load()
+        if actual_format != _IMAGE_FORMAT_BY_MIME[mime_type]:
+            raise HTTPException(
+                status_code=415,
+                detail="Image content does not match declared content type",
+            )
 
-                    width, height = img.size
-                    if width <= 0 or height <= 0:
-                        raise HTTPException(
-                            status_code=415,
-                            detail="Image has invalid dimensions",
-                        )
+        try:
+            with Image.open(BytesIO(payload)) as loaded:
+                width, height = loaded.size
+                if width <= 0 or height <= 0:
+                    raise HTTPException(status_code=415, detail="Image has invalid dimensions")
+                if width * height > _PREPROCESS_MAX_PIXELS:
+                    raise HTTPException(status_code=413, detail="Image dimensions are too large")
+                img = ImageOps.exif_transpose(loaded)
+                img.load()
 
-                    # Resize if too large
-                    if width > max_dimension or height > max_dimension:
-                        img.thumbnail(
-                            (max_dimension, max_dimension),
-                            Image.Resampling.LANCZOS,
-                        )
+                width, height = img.size
+                if width <= 0 or height <= 0:
+                    raise HTTPException(
+                        status_code=415,
+                        detail="Image has invalid dimensions",
+                    )
 
-                    # Convert to RGB JPEG for consistent API submission
-                    if img.mode != "RGB":
-                        img = img.convert("RGB")
+                if width > max_dimension or height > max_dimension:
+                    img.thumbnail(
+                        (max_dimension, max_dimension),
+                        Image.Resampling.LANCZOS,
+                    )
 
-                    buf = BytesIO()
-                    img.save(buf, format="JPEG", quality=90, optimize=True)
-                    return buf.getvalue(), "image/jpeg"
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
 
-            except Image.DecompressionBombWarning as exc:
-                raise HTTPException(
-                    status_code=413,
-                    detail="Image dimensions are too large",
-                ) from exc
-            except OSError as exc:
-                raise HTTPException(
-                    status_code=415,
-                    detail="Failed to process uploaded image",
-                ) from exc
-    finally:
-        Image.MAX_IMAGE_PIXELS = previous_max_pixels
+                buf = BytesIO()
+                img.save(buf, format="JPEG", quality=90, optimize=True)
+                return buf.getvalue(), "image/jpeg"
+        except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+            raise HTTPException(
+                status_code=413,
+                detail="Image dimensions are too large",
+            ) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=415,
+                detail="Failed to process uploaded image",
+            ) from exc

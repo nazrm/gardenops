@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -14,7 +14,11 @@ from PIL import Image
 import gardenops.db as db
 from gardenops.services.media_store import (
     _validate_declared_content_type,
+    _write_bytes_atomic,
     collect_orphaned_media_storage_keys,
+    drain_media_cleanup_jobs,
+    drain_media_cleanup_jobs_best_effort,
+    enqueue_media_cleanup_jobs,
     media_garden_max_assets,
     media_garden_max_bytes,
     media_max_dimension,
@@ -74,6 +78,17 @@ class TestResolveStorageKey(unittest.TestCase):
             with patch.dict("os.environ", {"MEDIA_STORAGE_DIR": tmp}):
                 with self.assertRaises(RuntimeError):
                     resolve_storage_key("../../etc/passwd")
+
+    def test_atomic_write_removes_temp_file_when_replace_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "original" / "asset.png"
+            with (
+                patch.dict("os.environ", {"MEDIA_STORAGE_DIR": tmp}),
+                patch("gardenops.services.media_store.os.replace", side_effect=OSError("denied")),
+                self.assertRaises(OSError),
+            ):
+                _write_bytes_atomic(target, b"payload")
+            assert list((Path(tmp) / "tmp").iterdir()) == []
 
 
 class TestValidateDeclaredContentType:
@@ -207,7 +222,30 @@ class TestPrepareMediaAsset(unittest.TestCase):
                         declared_content_type="image/png",
                         original_filename="corrupt.png",
                     )
-                assert ctx.exception.status_code == 415
+        assert ctx.exception.status_code == 415
+
+    def test_pixel_limit_is_enforced_before_normalization(self) -> None:
+        with patch.dict("os.environ", {"MEDIA_MAX_PIXELS": "4096"}):
+            with self.assertRaises(HTTPException) as ctx:
+                prepare_media_asset(
+                    payload=self._make_png(65, 65),
+                    declared_content_type="image/png",
+                    original_filename="wide.png",
+                )
+        assert ctx.exception.status_code == 413
+
+    def test_extreme_decompression_bomb_is_a_controlled_rejection(self) -> None:
+        with patch(
+            "gardenops.services.media_store.Image.open",
+            side_effect=Image.DecompressionBombError("too many pixels"),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                prepare_media_asset(
+                    payload=self._make_png(),
+                    declared_content_type="image/png",
+                    original_filename="bomb.png",
+                )
+        assert ctx.exception.status_code == 413
 
     def test_format_mismatch_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -304,6 +342,60 @@ class TestCollectOrphanedMediaStorageKeys(unittest.TestCase):
             "SELECT * FROM media_assets WHERE asset_id = 'linked1'",
         ).fetchone()
         assert remaining is not None
+
+    def test_cleanup_failure_is_retained_then_retry_succeeds(self) -> None:
+        storage_pairs = [("original/retry.png", "preview/retry.png")]
+        enqueue_media_cleanup_jobs(self.conn, storage_pairs)
+        self.conn.commit()
+
+        with patch(
+            "gardenops.services.media_store.resolve_storage_key",
+            side_effect=PermissionError(
+                13,
+                "permission denied",
+                "/srv/private/gardenops/media/secret-owner/photo.png",
+            ),
+        ):
+            failed = drain_media_cleanup_jobs(self.conn, storage_pairs=storage_pairs)
+        assert failed.attempted == 1
+        assert failed.failed == 1
+        row = self.conn.execute(
+            "SELECT attempts, last_error, last_attempt_at_ms FROM media_cleanup_jobs",
+        ).fetchone()
+        assert row is not None
+        assert int(row["attempts"]) == 1
+        assert row["last_attempt_at_ms"] is not None
+        assert "\n" not in str(row["last_error"])
+        assert len(str(row["last_error"])) <= 500
+        assert "/srv/private" not in str(row["last_error"])
+        assert "secret-owner" not in str(row["last_error"])
+        assert "PermissionError errno=EACCES(13)" in str(row["last_error"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict("os.environ", {"MEDIA_STORAGE_DIR": tmp}):
+                from gardenops.services.notification_service import (
+                    run_notification_maintenance_once,
+                )
+
+                maintenance = run_notification_maintenance_once(self.conn)
+        assert maintenance["media_cleanup_attempted"] == 1
+        assert maintenance["media_cleanup_failed"] == 0
+        assert self.conn.execute("SELECT 1 FROM media_cleanup_jobs").fetchone() is None
+
+    def test_best_effort_cleanup_contains_post_commit_database_failure(self) -> None:
+        connection = MagicMock()
+        storage_pairs = [("original/asset.png", "preview/asset.png")]
+        with patch(
+            "gardenops.services.media_store.drain_media_cleanup_jobs",
+            side_effect=RuntimeError("database unavailable"),
+        ):
+            result = drain_media_cleanup_jobs_best_effort(
+                connection,
+                storage_pairs=storage_pairs,
+            )
+        assert result.attempted == 0
+        assert result.failed == 1
+        connection.rollback.assert_called_once_with()
 
 
 if __name__ == "__main__":

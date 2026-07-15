@@ -20,6 +20,10 @@ const EXPECTED_CONSOLE_DIAGNOSTIC_CONTEXTS = new Set([
   "preauth-session-probe",
   "viewer-calendar-event-write-denied",
   "viewer-calendar-subscription-write-denied",
+  "viewer-harvest-write-denied",
+  "viewer-issue-write-denied",
+  "viewer-journal-write-denied",
+  "viewer-media-write-denied",
   "viewer-task-write-denied",
   "viewer-weather-refresh-denied",
 ]);
@@ -148,6 +152,18 @@ function expectedHttpDiagnosticContext({ authenticated, method, path: pathname, 
   }
   if (method === "POST" && pathname === "/api/calendar/subscriptions" && status === 403) {
     return "viewer-calendar-subscription-write-denied";
+  }
+  if (method === "POST" && pathname === "/api/journal" && status === 403) {
+    return "viewer-journal-write-denied";
+  }
+  if (method === "POST" && pathname === "/api/issues" && status === 403) {
+    return "viewer-issue-write-denied";
+  }
+  if (method === "POST" && pathname === "/api/harvest" && status === 403) {
+    return "viewer-harvest-write-denied";
+  }
+  if (method === "POST" && pathname === "/api/media/upload" && status === 403) {
+    return "viewer-media-write-denied";
   }
   if (method === "POST" && pathname === "/api/weather/check" && status === 403) {
     return "viewer-weather-refresh-denied";
@@ -519,11 +535,14 @@ function createApiRecorder(page, actor = {}) {
       }
       if (!parsed.pathname.startsWith("/api/")) return;
       const headers = request.headers();
-      const isLogin = parsed.pathname === "/api/auth/login";
+      const isAnonymousAuditPath = new Set([
+        "/api/auth/login",
+        "/api/client-errors",
+      ]).has(parsed.pathname);
       const record = {
-        actorAuthType: isLogin ? "none" : (actor.authType || null),
-        actorRole: isLogin ? "anonymous" : (actor.role || null),
-        actorUsername: isLogin ? "anonymous" : (actor.username || null),
+        actorAuthType: isAnonymousAuditPath ? "none" : (actor.authType || null),
+        actorRole: isAnonymousAuditPath ? "anonymous" : (actor.role || null),
+        actorUsername: isAnonymousAuditPath ? "anonymous" : (actor.username || null),
         gardenId: headers["x-garden-id"] || null,
         method: request.method(),
         operationId: headers["x-offline-operation-id"] || null,

@@ -111,9 +111,12 @@ control.
   30 days return the original result; if its target was deleted, replay returns
   `410 Gone` instead of recreating data.
 - Issue tracking for pests, disease, damage, treatments, severity, causes,
-  resolution, and follow-up dates.
+  follow-up dates, resolution, and reopening, with linked history and one
+  actionable follow-up per current issue state.
 - Media uploads and links for plants, plots, journal entries, issues, and
-  harvest records, including missing-cover reporting.
+  harvest records, including generated previews, plant cover selection,
+  missing-cover reporting, strict image validation, quota accounting, and
+  retryable post-commit file cleanup.
 
 ### Analysis And Decision Support
 
@@ -122,7 +125,9 @@ control.
 - Weather summaries, checks, alerts, frost/dryness analysis, and plant-aware
   weather risk helpers when configured.
 - Optional AI-assisted plant lookup, plant identification, issue diagnosis, and
-  garden-aware chat when provider keys are supplied.
+  garden-aware chat when provider keys are supplied. Identification and
+  diagnosis remain advisory until the user explicitly adds a plant or tracks
+  an issue.
 
 ### Sun, Shade, And Terrain
 

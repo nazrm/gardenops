@@ -36,6 +36,7 @@ REQUIRED_TABLES = (
     "garden_calendar_event_plots",
     "media_assets",
     "media_links",
+    "media_cleanup_jobs",
     "shademap_state",
     "shademap_obstacles",
     "user_attention_preferences",
@@ -161,8 +162,17 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     "harvest_entry_plots": ("entry_id", "plot_id"),
     "garden_calendar_events": ("id", "garden_id"),
     "garden_calendar_event_plots": ("event_id", "plot_id"),
-    "media_assets": ("asset_id", "garden_id", "actor_user_id"),
+    "media_assets": ("asset_id", "garden_id", "actor_user_id", "preview_bytes"),
     "media_links": ("asset_id", "target_type", "target_id"),
+    "media_cleanup_jobs": (
+        "id",
+        "storage_key",
+        "preview_storage_key",
+        "attempts",
+        "last_error",
+        "created_at_ms",
+        "last_attempt_at_ms",
+    ),
     "shademap_state": ("id", "garden_id", "selected_plot_id"),
     "shademap_obstacles": ("id", "garden_id", "linked_plot_id"),
     "user_attention_preferences": (
@@ -243,6 +253,7 @@ REQUIRED_INDEXES = (
     "idx_hepl_plot",
     "idx_garden_calendar_event_plots_plot",
     "idx_media_links_target",
+    "idx_media_cleanup_jobs_created",
     "idx_shademap_state_garden",
     "idx_shademap_obstacles_garden",
     "idx_user_attention_item_state_garden_user",
@@ -284,6 +295,9 @@ REQUIRED_CONSTRAINTS = (
     "plants_pkey",
     "plant_ownership_pkey",
     "media_links_pkey",
+    "media_cleanup_jobs_pkey",
+    "ux_media_cleanup_jobs_storage_keys",
+    "ck_media_cleanup_jobs_attempts_nonnegative",
     "fk_plot_ownership_plot_id_plots",
     "fk_plant_ownership_plt_id_plants",
     "fk_media_links_asset_id_media_assets",
@@ -495,6 +509,14 @@ _MIGRATION_0022_TABLE = "offline_create_operations"
 _MIGRATION_0022_INDEXES = {"idx_offline_create_operations_expiry"}
 _MIGRATION_0023_COLUMN = "audit_events.request_id"
 _MIGRATION_0023_INDEX = "ux_audit_events_request_id"
+_MIGRATION_0026_TABLE = "media_cleanup_jobs"
+_MIGRATION_0026_COLUMN = "media_assets.preview_bytes"
+_MIGRATION_0026_INDEXES = {"idx_media_cleanup_jobs_created"}
+_MIGRATION_0026_CONSTRAINTS = {
+    "media_cleanup_jobs_pkey",
+    "ux_media_cleanup_jobs_storage_keys",
+    "ck_media_cleanup_jobs_attempts_nonnegative",
+}
 _MIGRATION_0022_CONSTRAINTS = {
     constraint
     for constraint in REQUIRED_CONSTRAINTS
@@ -546,6 +568,29 @@ def _migration_0023_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
     )
 
 
+def _is_migration_0026_part(part: Mapping[str, object]) -> bool:
+    kind = str(part.get("kind", ""))
+    obj = str(part.get("object", ""))
+    if kind == "table":
+        return obj == _MIGRATION_0026_TABLE
+    if kind == "column":
+        return obj == _MIGRATION_0026_COLUMN or obj.startswith(f"{_MIGRATION_0026_TABLE}.")
+    if kind == "index":
+        return obj in _MIGRATION_0026_INDEXES
+    if kind == "constraint":
+        return obj in _MIGRATION_0026_CONSTRAINTS
+    return False
+
+
+def _migration_0026_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
+    return (
+        _MIGRATION_0026_TABLE not in snapshot.tables
+        and "preview_bytes" not in snapshot.columns.get("media_assets", set())
+        and not (_MIGRATION_0026_INDEXES & snapshot.indexes)
+        and not (_MIGRATION_0026_CONSTRAINTS & snapshot.constraints)
+    )
+
+
 def bootstrap_schema_diagnostics_from_snapshot(
     snapshot: SchemaSnapshot,
 ) -> dict[str, object]:
@@ -563,13 +608,19 @@ def bootstrap_schema_diagnostics_from_snapshot(
         missing_weather_identity = _MIGRATION_0021_INDEX not in snapshot.indexes
         missing_offline_operations = _migration_0022_schema_is_absent(snapshot)
         missing_audit_request_id = _migration_0023_schema_is_absent(snapshot)
-        if (missing_offline_operations or missing_audit_request_id) and all(
+        missing_media_cleanup = _migration_0026_schema_is_absent(snapshot)
+        if (
+            missing_offline_operations or missing_audit_request_id or missing_media_cleanup
+        ) and all(
             (missing_offline_operations and _is_migration_0022_part(part))
             or (missing_audit_request_id and _is_migration_0023_part(part))
             or (missing_weather_identity and _is_migration_0021_part(part))
+            or (missing_media_cleanup and _is_migration_0026_part(part))
             for part in missing
         ):
-            stamp_through = 22
+            stamp_through = 25
+            if missing_audit_request_id:
+                stamp_through = 22
             if missing_offline_operations:
                 stamp_through = 21
             if missing_weather_identity:

@@ -41,6 +41,7 @@ from gardenops.services.generated_task_lifecycle import (
     GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
     expire_stale_generated_tasks,
 )
+from gardenops.services.media_store import drain_media_cleanup_jobs
 from gardenops.services.task_generator import generate_tasks, reconcile_rain_watering_outcomes
 from gardenops.services.weather_service import check_weather_and_generate_alerts
 from gardenops.sql_dates import offset_days_iso
@@ -3609,6 +3610,8 @@ def _empty_maintenance_summary() -> dict[str, int | bool]:
         "emailed_users": 0,
         "notifications_marked": 0,
         "delivery_skipped_users": 0,
+        "media_cleanup_attempted": 0,
+        "media_cleanup_failed": 0,
         "configured": False,
     }
 
@@ -3622,6 +3625,9 @@ def _run_notification_maintenance_for_gardens(
 ) -> dict[str, int | bool]:
     now_value, frozen_date = notification_request_clock(now_ms=now_ms)
     summary = _empty_maintenance_summary()
+    cleanup = drain_media_cleanup_jobs(db)
+    summary["media_cleanup_attempted"] = cleanup.attempted
+    summary["media_cleanup_failed"] = cleanup.failed
     for garden_id in garden_ids:
         summary["gardens_processed"] = int(summary["gardens_processed"]) + 1
 

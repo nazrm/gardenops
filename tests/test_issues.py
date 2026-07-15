@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 
@@ -149,6 +150,196 @@ class TestIssueApi(BaseApiTest):
         issue = resp.json()
         self.assertEqual(issue["status"], "resolved")
         self.assertIsNotNone(issue["resolved_at_ms"])
+
+    def test_issue_resolve_is_idempotent_without_duplicate_side_effects(self) -> None:
+        created = self.client.post(
+            "/api/issues",
+            json={"issue_type": "damage", "title": "Split stem"},
+        )
+        issue_id = created.json()["id"]
+        first = self.client.post(f"/api/issues/{issue_id}/resolve")
+        self.assertEqual(first.status_code, 200, first.text)
+
+        conn = db.get_db()
+        try:
+            issue = conn.execute(
+                "SELECT metadata_json, resolved_at_ms FROM garden_issues WHERE public_id = %s",
+                (issue_id,),
+            ).fetchone()
+            assert issue is not None
+            history_count = len(json.loads(str(issue["metadata_json"]))["history"])
+            journal_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) AS c FROM garden_journal_entries
+                    WHERE metadata_json::jsonb ->> 'issue_id' = %s
+                    """,
+                    (issue_id,),
+                ).fetchone()["c"]
+            )
+            task_count = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM garden_tasks WHERE rule_source = %s",
+                    (f"auto:issue_followup:{issue_id}",),
+                ).fetchone()["c"]
+            )
+            notification_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) AS c FROM notification_events
+                    WHERE (target_type = 'issue' AND target_id = %s)
+                       OR target_id = (
+                           SELECT public_id FROM garden_tasks WHERE rule_source = %s
+                       )
+                    """,
+                    (issue_id, f"auto:issue_followup:{issue_id}"),
+                ).fetchone()["c"]
+            )
+            resolved_at_ms = int(issue["resolved_at_ms"])
+        finally:
+            db.return_db(conn)
+
+        second = self.client.post(f"/api/issues/{issue_id}/resolve")
+        self.assertEqual(second.status_code, 200, second.text)
+        conn = db.get_db()
+        try:
+            issue = conn.execute(
+                "SELECT metadata_json, resolved_at_ms FROM garden_issues WHERE public_id = %s",
+                (issue_id,),
+            ).fetchone()
+            assert issue is not None
+            self.assertEqual(len(json.loads(str(issue["metadata_json"]))["history"]), history_count)
+            self.assertEqual(int(issue["resolved_at_ms"]), resolved_at_ms)
+            self.assertEqual(
+                int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*) AS c FROM garden_journal_entries
+                        WHERE metadata_json::jsonb ->> 'issue_id' = %s
+                        """,
+                        (issue_id,),
+                    ).fetchone()["c"]
+                ),
+                journal_count,
+            )
+            self.assertEqual(
+                int(
+                    conn.execute(
+                        "SELECT COUNT(*) AS c FROM garden_tasks WHERE rule_source = %s",
+                        (f"auto:issue_followup:{issue_id}",),
+                    ).fetchone()["c"]
+                ),
+                task_count,
+            )
+            self.assertEqual(
+                int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*) AS c FROM notification_events
+                        WHERE (target_type = 'issue' AND target_id = %s)
+                           OR target_id = (
+                               SELECT public_id FROM garden_tasks WHERE rule_source = %s
+                           )
+                        """,
+                        (issue_id, f"auto:issue_followup:{issue_id}"),
+                    ).fetchone()["c"]
+                ),
+                notification_count,
+            )
+        finally:
+            db.return_db(conn)
+
+    def test_issue_delete_expires_only_its_followup_and_clears_notifications(self) -> None:
+        target = self.client.post(
+            "/api/issues",
+            json={"issue_type": "pest", "title": "Delete source"},
+        ).json()["id"]
+        unrelated = self.client.post(
+            "/api/issues",
+            json={"issue_type": "pest", "title": "Keep source"},
+        ).json()["id"]
+        target_task = self._issue_followup_task(target)
+        unrelated_task = self._issue_followup_task(unrelated)
+        conn = db.get_db()
+        try:
+            unrelated_issue = conn.execute(
+                "SELECT metadata_json FROM garden_issues WHERE public_id = %s",
+                (unrelated,),
+            ).fetchone()
+            assert unrelated_issue is not None
+            unrelated_history = json.loads(str(unrelated_issue["metadata_json"]))["history"]
+            create_notification(
+                conn,
+                self._get_default_garden_id(),
+                self._owner_id,
+                "issue_created",
+                "Issue",
+                "Delete source",
+                target_type="issue",
+                target_id=target,
+            )
+            create_notification(
+                conn,
+                self._get_default_garden_id(),
+                self._owner_id,
+                "task_due",
+                "Task",
+                "Delete source follow-up",
+                target_type="task",
+                target_id=str(target_task["public_id"]),
+            )
+        finally:
+            db.return_db(conn)
+
+        deleted = self.client.delete(f"/api/issues/{target}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        conn = db.get_db()
+        try:
+            retired = conn.execute(
+                "SELECT status, metadata_json FROM garden_tasks WHERE public_id = %s",
+                (str(target_task["public_id"]),),
+            ).fetchone()
+            assert retired is not None
+            self.assertEqual(str(retired["status"]), "expired")
+            lifecycle = json.loads(str(retired["metadata_json"]))["lifecycle"]
+            self.assertEqual(lifecycle["reason"], "issue_source_deleted")
+            self.assertTrue(lifecycle["source_deleted"])
+            self.assertEqual(lifecycle["source_issue_id"], target)
+            notifications = conn.execute(
+                """
+                SELECT target_type, cleared_at_ms, clear_reason
+                FROM notification_events
+                WHERE (target_type = 'issue' AND target_id = %s)
+                   OR (target_type = 'task' AND target_id = %s)
+                """,
+                (target, str(target_task["public_id"])),
+            ).fetchall()
+            self.assertTrue(notifications)
+            self.assertTrue(all(row["cleared_at_ms"] is not None for row in notifications))
+            self.assertEqual(
+                {str(row["clear_reason"]) for row in notifications},
+                {"source_deleted", "issue_source_deleted"},
+            )
+            self.assertEqual(
+                str(
+                    conn.execute(
+                        "SELECT status FROM garden_tasks WHERE public_id = %s",
+                        (str(unrelated_task["public_id"]),),
+                    ).fetchone()["status"]
+                ),
+                "pending",
+            )
+            remaining_issue = conn.execute(
+                "SELECT metadata_json FROM garden_issues WHERE public_id = %s",
+                (unrelated,),
+            ).fetchone()
+            assert remaining_issue is not None
+            self.assertEqual(
+                json.loads(str(remaining_issue["metadata_json"]))["history"],
+                unrelated_history,
+            )
+        finally:
+            db.return_db(conn)
 
     def test_issue_followup_task_tracks_due_date_and_resolution(self) -> None:
         resp = self.client.post(

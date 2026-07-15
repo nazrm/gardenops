@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import errno as errno_module
+import logging
 import os
 import secrets
 import tempfile
-import warnings
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -11,7 +12,8 @@ from pathlib import Path
 from fastapi import HTTPException
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from gardenops.db import DbConn
+from gardenops.db import DbConn, current_timestamp_ms
+from gardenops.services.image_safety import pillow_pixel_limit
 
 _ROOT = Path(__file__).resolve().parents[2]
 _ALLOWED_UPLOAD_MIME_TYPES: dict[str, tuple[str, str]] = {
@@ -24,6 +26,7 @@ _FORMAT_TO_MIME = {
     "PNG": "image/png",
     "WEBP": "image/webp",
 }
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,13 @@ class PreparedMediaAsset:
     original_filename: str
     original_bytes: bytes
     preview_bytes: bytes
+
+
+@dataclass(frozen=True)
+class MediaCleanupResult:
+    attempted: int
+    succeeded: int
+    failed: int
 
 
 def media_storage_root() -> Path:
@@ -175,6 +185,22 @@ def _encode_image(image: Image.Image, format_name: str) -> bytes:
     return buffer.getvalue()
 
 
+def _validate_media_dimensions(width: int, height: int) -> None:
+    if width <= 0 or height <= 0:
+        raise HTTPException(status_code=415, detail="Image has invalid dimensions")
+    max_dimension = media_max_dimension()
+    if width > max_dimension or height > max_dimension:
+        raise HTTPException(
+            status_code=413,
+            detail="Image dimensions exceed the configured limit",
+        )
+    if width * height > media_max_pixels():
+        raise HTTPException(
+            status_code=413,
+            detail="Image pixel count exceeds the configured limit",
+        )
+
+
 def prepare_media_asset(
     *,
     payload: bytes,
@@ -187,75 +213,59 @@ def prepare_media_asset(
         raise HTTPException(status_code=413, detail="Image exceeds upload size limit")
 
     mime_type, expected_format = _validate_declared_content_type(declared_content_type)
-    previous_max_pixels = Image.MAX_IMAGE_PIXELS
-    Image.MAX_IMAGE_PIXELS = media_max_pixels()
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            try:
-                with Image.open(BytesIO(payload)) as probe:
-                    actual_format = (probe.format or "").upper()
-                    probe.verify()
-            except Image.DecompressionBombWarning as exc:
-                raise HTTPException(
-                    status_code=413,
-                    detail="Image dimensions are too large",
-                ) from exc
-            except UnidentifiedImageError as exc:
-                raise HTTPException(
-                    status_code=415,
-                    detail="Upload is not a valid image",
-                ) from exc
-            except OSError as exc:
-                raise HTTPException(
-                    status_code=415,
-                    detail="Failed to decode uploaded image",
-                ) from exc
+    with pillow_pixel_limit(media_max_pixels()):
+        try:
+            with Image.open(BytesIO(payload)) as probe:
+                actual_format = (probe.format or "").upper()
+                _validate_media_dimensions(*probe.size)
+                probe.verify()
+        except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+            raise HTTPException(
+                status_code=413,
+                detail="Image dimensions are too large",
+            ) from exc
+        except UnidentifiedImageError as exc:
+            raise HTTPException(
+                status_code=415,
+                detail="Upload is not a valid image",
+            ) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=415,
+                detail="Failed to decode uploaded image",
+            ) from exc
 
-            if actual_format != expected_format:
-                raise HTTPException(
-                    status_code=415,
-                    detail="Image content does not match declared content type",
+        if actual_format != expected_format:
+            raise HTTPException(
+                status_code=415,
+                detail="Image content does not match declared content type",
+            )
+
+        try:
+            with Image.open(BytesIO(payload)) as loaded:
+                _validate_media_dimensions(*loaded.size)
+                normalized = ImageOps.exif_transpose(loaded)
+                normalized.load()
+                width, height = normalized.size
+                _validate_media_dimensions(width, height)
+                safe_original = _normalize_for_format(normalized, expected_format)
+                original_bytes = _encode_image(safe_original, expected_format)
+                preview = safe_original.copy()
+                preview.thumbnail(
+                    (media_preview_max_dimension(), media_preview_max_dimension()),
+                    Image.Resampling.LANCZOS,
                 )
-
-            try:
-                with Image.open(BytesIO(payload)) as loaded:
-                    normalized = ImageOps.exif_transpose(loaded)
-                    normalized.load()
-                    width, height = normalized.size
-                    if width <= 0 or height <= 0:
-                        raise HTTPException(status_code=415, detail="Image has invalid dimensions")
-                    max_dimension = media_max_dimension()
-                    if width > max_dimension or height > max_dimension:
-                        raise HTTPException(
-                            status_code=413,
-                            detail="Image dimensions exceed the configured limit",
-                        )
-                    if width * height > media_max_pixels():
-                        raise HTTPException(
-                            status_code=413,
-                            detail="Image pixel count exceeds the configured limit",
-                        )
-                    safe_original = _normalize_for_format(normalized, expected_format)
-                    original_bytes = _encode_image(safe_original, expected_format)
-                    preview = safe_original.copy()
-                    preview.thumbnail(
-                        (media_preview_max_dimension(), media_preview_max_dimension()),
-                        Image.Resampling.LANCZOS,
-                    )
-                    preview_bytes = _encode_image(preview, expected_format)
-            except Image.DecompressionBombWarning as exc:
-                raise HTTPException(
-                    status_code=413,
-                    detail="Image dimensions are too large",
-                ) from exc
-            except OSError as exc:
-                raise HTTPException(
-                    status_code=415,
-                    detail="Failed to normalize uploaded image",
-                ) from exc
-    finally:
-        Image.MAX_IMAGE_PIXELS = previous_max_pixels
+                preview_bytes = _encode_image(preview, expected_format)
+        except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+            raise HTTPException(
+                status_code=413,
+                detail="Image dimensions are too large",
+            ) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=415,
+                detail="Failed to normalize uploaded image",
+            ) from exc
 
     asset_id = secrets.token_hex(16)
     _, ext = _ALLOWED_UPLOAD_MIME_TYPES[mime_type]
@@ -282,7 +292,10 @@ def _write_bytes_atomic(path: Path, payload: bytes) -> None:
     with tempfile.NamedTemporaryFile(dir=tmp_dir, delete=False) as handle:
         handle.write(payload)
         temp_path = Path(handle.name)
-    os.replace(temp_path, path)
+    try:
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def persist_prepared_media(asset: PreparedMediaAsset) -> None:
@@ -302,6 +315,121 @@ def unlink_storage_keys(*storage_keys: str) -> None:
             resolve_storage_key(storage_key).unlink(missing_ok=True)
         except Exception:
             continue
+
+
+def enqueue_media_cleanup_jobs(
+    db: DbConn,
+    storage_pairs: list[tuple[str, str]] | set[tuple[str, str]],
+) -> None:
+    now_ms = current_timestamp_ms()
+    for storage_key, preview_storage_key in sorted(set(storage_pairs)):
+        if not storage_key and not preview_storage_key:
+            continue
+        db.execute(
+            """
+            INSERT INTO media_cleanup_jobs (
+                storage_key, preview_storage_key, created_at_ms
+            )
+            VALUES (%s, %s, %s)
+            ON CONFLICT(storage_key, preview_storage_key) DO NOTHING
+            """,
+            (storage_key, preview_storage_key, now_ms),
+        )
+
+
+def _bounded_cleanup_error(errors: list[tuple[str, Exception]]) -> str:
+    parts: list[str] = []
+    for storage_key, exc in errors:
+        safe_key = "".join(ch for ch in storage_key if 32 <= ord(ch) <= 126)[:160]
+        category = type(exc).__name__
+        if isinstance(exc, OSError) and exc.errno is not None:
+            errno_name = errno_module.errorcode.get(exc.errno, "UNKNOWN")
+            category = f"{category} errno={errno_name}({exc.errno})"
+        parts.append(f"{safe_key}: {category}")
+    return "; ".join(parts)[:500]
+
+
+def drain_media_cleanup_jobs(
+    db: DbConn,
+    *,
+    storage_pairs: list[tuple[str, str]] | set[tuple[str, str]] | None = None,
+    limit: int = 200,
+) -> MediaCleanupResult:
+    params: list[object] = []
+    where_sql = ""
+    if storage_pairs is not None:
+        pairs = sorted(set(storage_pairs))
+        if not pairs:
+            return MediaCleanupResult(attempted=0, succeeded=0, failed=0)
+        clauses = []
+        for storage_key, preview_storage_key in pairs:
+            clauses.append("(storage_key = %s AND preview_storage_key = %s)")
+            params.extend((storage_key, preview_storage_key))
+        where_sql = f"WHERE {' OR '.join(clauses)}"
+    params.append(max(1, min(limit, 1000)))
+    rows = db.execute(
+        f"""
+        SELECT id, storage_key, preview_storage_key
+        FROM media_cleanup_jobs
+        {where_sql}
+        ORDER BY created_at_ms, id
+        LIMIT %s
+        """,  # noqa: S608 - clauses are fixed SQL fragments
+        params,
+    ).fetchall()
+    succeeded = 0
+    failed = 0
+    for row in rows:
+        errors: list[tuple[str, Exception]] = []
+        for storage_key in (str(row["storage_key"]), str(row["preview_storage_key"])):
+            if not storage_key:
+                continue
+            try:
+                resolve_storage_key(storage_key).unlink(missing_ok=True)
+            except Exception as exc:
+                errors.append((storage_key, exc))
+        if errors:
+            failed += 1
+            db.execute(
+                """
+                UPDATE media_cleanup_jobs
+                SET attempts = attempts + 1,
+                    last_error = %s,
+                    last_attempt_at_ms = %s
+                WHERE id = %s
+                """,
+                (_bounded_cleanup_error(errors), current_timestamp_ms(), int(row["id"])),
+            )
+        else:
+            succeeded += 1
+            db.execute("DELETE FROM media_cleanup_jobs WHERE id = %s", (int(row["id"]),))
+    if rows:
+        db.commit()
+    return MediaCleanupResult(attempted=len(rows), succeeded=succeeded, failed=failed)
+
+
+def drain_media_cleanup_jobs_best_effort(
+    db: DbConn,
+    *,
+    storage_pairs: list[tuple[str, str]] | set[tuple[str, str]],
+) -> MediaCleanupResult:
+    """Try immediate cleanup without changing an already-committed response."""
+    pairs = sorted(set(storage_pairs))
+    if not pairs:
+        return MediaCleanupResult(attempted=0, succeeded=0, failed=0)
+    try:
+        return drain_media_cleanup_jobs(db, storage_pairs=pairs)
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        _log.warning(
+            "Immediate media cleanup failed; durable jobs will retry",
+            extra={"cleanup_job_count": len(pairs)},
+            exc_info=True,
+        )
+        return MediaCleanupResult(attempted=0, succeeded=0, failed=len(pairs))
 
 
 def collect_orphaned_media_storage_keys(
@@ -336,4 +464,8 @@ def collect_orphaned_media_storage_keys(
             f"DELETE FROM media_assets WHERE asset_id IN ({placeholders})",  # noqa: S608
             orphaned_asset_ids,
         )
-    return [(str(row["storage_key"]), str(row["preview_storage_key"])) for row in orphaned_rows]
+    storage_pairs = [
+        (str(row["storage_key"]), str(row["preview_storage_key"])) for row in orphaned_rows
+    ]
+    enqueue_media_cleanup_jobs(db, storage_pairs)
+    return storage_pairs

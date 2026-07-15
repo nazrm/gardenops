@@ -8,6 +8,8 @@ from fastapi import HTTPException
 from PIL import Image
 
 import gardenops.db as db
+from gardenops.routers.media import _enforce_media_quota
+from gardenops.services.media_store import PreparedMediaAsset
 from tests.base import BaseApiTest, strong_password
 
 
@@ -126,6 +128,69 @@ class TestMedia(BaseApiTest):
             else:
                 os.environ["MEDIA_MAX_ASSETS_PER_GARDEN"] = previous
 
+    def test_media_quota_counts_preview_bytes_and_takes_transaction_lock(self) -> None:
+        class FakeDb:
+            def __init__(self) -> None:
+                self.statements: list[str] = []
+
+            def execute(self, sql: str, params: object = None) -> object:
+                self.statements.append(" ".join(sql.split()))
+                if "SELECT COUNT(*)" in sql:
+                    return type(
+                        "Cursor",
+                        (),
+                        {
+                            "fetchone": lambda _self: {
+                                "asset_count": 0,
+                                "total_bytes": 80,
+                                "unknown_preview_count": 0,
+                            }
+                        },
+                    )()
+                return type("Cursor", (), {})()
+
+        fake_db = FakeDb()
+        incoming = PreparedMediaAsset(
+            asset_id="asset",
+            storage_key="original/asset.png",
+            preview_storage_key="preview/asset.png",
+            mime_type="image/png",
+            bytes=15,
+            width=1,
+            height=1,
+            original_filename="asset.png",
+            original_bytes=b"x" * 15,
+            preview_bytes=b"y" * 10,
+        )
+        with patch.dict("os.environ", {"MEDIA_MAX_BYTES_PER_GARDEN": "100"}):
+            with self.assertRaises(HTTPException) as ctx:
+                _enforce_media_quota(fake_db, garden_id=7, incoming_asset=incoming)  # type: ignore[arg-type]
+        self.assertEqual(ctx.exception.status_code, 413)
+        self.assertIn("pg_advisory_xact_lock", fake_db.statements[0])
+        self.assertIn("bytes + preview_bytes", fake_db.statements[1])
+
+    def test_media_upload_persists_preview_size_without_changing_api_bytes(self) -> None:
+        payload = self._image_bytes(fmt="PNG", size=(1600, 1000))
+        uploaded = self.client.post(
+            "/api/media/upload?target_type=plant&target_id=PLT-TEST",
+            content=payload,
+            headers={"content-type": "image/png", "x-upload-filename": "sized.png"},
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        body = uploaded.json()
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                "SELECT bytes, preview_bytes FROM media_assets WHERE asset_id = %s",
+                (body["asset_id"],),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(body["bytes"], int(row["bytes"]))
+        self.assertGreater(int(row["preview_bytes"]), 0)
+
     def test_media_fetch_blocks_cross_garden_access(self) -> None:
         payload = self._image_bytes(fmt="PNG")
         uploaded = self.client.post(
@@ -191,7 +256,8 @@ class TestMedia(BaseApiTest):
                 headers=headers,
                 json={"target_type": "plant", "target_ids": ["PLT-TEST"]},
             )
-            self.assertEqual(summaries.status_code, 403, summaries.text)
+            self.assertEqual(summaries.status_code, 200, summaries.text)
+            self.assertEqual(summaries.json(), {"target_type": "plant", "items": []})
 
             original = client.get(f"/api/media/{asset_id}", headers=headers)
             self.assertEqual(original.status_code, 404, original.text)

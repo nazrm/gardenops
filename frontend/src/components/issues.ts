@@ -18,6 +18,7 @@ const ISSUE_TYPE_ICONS: Record<string, string> = {
 export interface IssueListCallbacks {
   onEdit: (issue: GardenIssue) => void;
   onResolve: (issue: GardenIssue) => void;
+  onReopen: (issue: GardenIssue) => void;
   onDelete: (issue: GardenIssue) => void;
   onPlantClick: (pltId: string) => void;
   onPlotClick: (plotId: string) => void;
@@ -213,16 +214,21 @@ function createIssueCard(
   timestamp.textContent = new Date(issue.created_at_ms).toLocaleDateString();
   footer.appendChild(timestamp);
 
-  if (cbs.canWrite !== false) {
-    const actions = document.createElement("div");
-    actions.className = "issue-card-actions";
+  const actions = document.createElement("div");
+  actions.className = "issue-card-actions";
 
-    const editBtn = document.createElement("button");
-    editBtn.type = "button";
-    editBtn.className = "issue-action-btn";
-    editBtn.textContent = t("common.settings");
-    editBtn.addEventListener("click", () => cbs.onEdit(issue));
-    actions.appendChild(editBtn);
+  const detailsBtn = document.createElement("button");
+  detailsBtn.type = "button";
+  detailsBtn.className = "issue-action-btn issue-action-details";
+  detailsBtn.textContent = t(
+    cbs.canWrite === false
+      ? "issues.action_view_details"
+      : "common.settings",
+  );
+  detailsBtn.addEventListener("click", () => cbs.onEdit(issue));
+  actions.appendChild(detailsBtn);
+
+  if (cbs.canWrite !== false) {
 
     if (issue.status !== "resolved" && issue.status !== "dismissed") {
       const resolveBtn = document.createElement("button");
@@ -231,6 +237,13 @@ function createIssueCard(
       resolveBtn.textContent = t("issues.action_resolve");
       resolveBtn.addEventListener("click", () => cbs.onResolve(issue));
       actions.appendChild(resolveBtn);
+    } else {
+      const reopenBtn = document.createElement("button");
+      reopenBtn.type = "button";
+      reopenBtn.className = "issue-action-btn issue-action-reopen";
+      reopenBtn.textContent = t("issues.action_reopen");
+      reopenBtn.addEventListener("click", () => cbs.onReopen(issue));
+      actions.appendChild(reopenBtn);
     }
 
     const deleteBtn = document.createElement("button");
@@ -239,9 +252,8 @@ function createIssueCard(
     deleteBtn.textContent = t("common.delete");
     deleteBtn.addEventListener("click", () => cbs.onDelete(issue));
     actions.appendChild(deleteBtn);
-
-    footer.appendChild(actions);
   }
+  footer.appendChild(actions);
   card.appendChild(footer);
 
   return card;

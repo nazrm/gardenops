@@ -29,6 +29,9 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PHASE_TWO_ORACLE_PATH = (
     REPOSITORY_ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_two_oracle.json"
 )
+PHASE_THREE_ORACLE_PATH = (
+    REPOSITORY_ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_three_oracle.json"
+)
 
 
 def _load_phase_two_oracle() -> tuple[dict[str, Any], str]:
@@ -47,6 +50,29 @@ def _load_phase_two_oracle() -> tuple[dict[str, Any], str]:
 
 PHASE_TWO_ORACLE, PHASE_TWO_ORACLE_SHA256 = _load_phase_two_oracle()
 PHASE_TWO_ORACLE_FIXTURE = PHASE_TWO_ORACLE["phase_two"]["fixture"]
+
+
+def _load_phase_three_oracle() -> tuple[dict[str, Any], str]:
+    try:
+        raw = PHASE_THREE_ORACLE_PATH.read_bytes()
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Complete journey Phase 3 oracle is unavailable or invalid") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+        raise RuntimeError("Complete journey Phase 3 oracle schema is unsupported")
+    phase_three = payload.get("phase_three")
+    if (
+        not isinstance(phase_three, dict)
+        or not isinstance(phase_three.get("fixture"), dict)
+        or not isinstance(phase_three.get("profile_boundaries"), dict)
+        or not isinstance(phase_three.get("whole_table_mutation_accounting"), dict)
+    ):
+        raise RuntimeError("Complete journey Phase 3 oracle fixture contract is missing")
+    return payload, sha256(raw).hexdigest()
+
+
+PHASE_THREE_ORACLE, PHASE_THREE_ORACLE_SHA256 = _load_phase_three_oracle()
+PHASE_THREE_ORACLE_FIXTURE = PHASE_THREE_ORACLE["phase_three"]["fixture"]
 
 ADMIN_USERNAME = os.environ.get(
     "GARDENOPS_COMPLETE_JOURNEYS_E2E_USERNAME", "complete_journeys_e2e_admin"
@@ -194,6 +220,8 @@ PHASE_TWO_PLANTS = {
     "rain_unplaced": ("COMPLETE-P2-RAIN-UNPLACED", "Phase 2 Rain Unplaced Basil", "H1"),
 }
 PHASE_TWO_MAINTENANCE_EXPECTATIONS = PHASE_TWO_ORACLE["phase_two"]["maintenance"]
+PHASE_THREE_DATE = str(PHASE_THREE_ORACLE_FIXTURE["date"])
+PHASE_THREE_BLOOM_EDIT_DATE = str(PHASE_THREE_ORACLE_FIXTURE["bloom_edit_date"])
 
 
 def _frozen_attention_clock() -> dict[str, Any]:
@@ -3010,6 +3038,410 @@ def _phase_two_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
     }
 
 
+def _phase_three_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
+    alpha = conn.execute(
+        "SELECT id FROM gardens WHERE slug = %s",
+        (optimization_seed.GARDEN_A_SLUG,),
+    ).fetchone()
+    if not alpha:
+        raise RuntimeError("Complete journey Phase 3 garden is missing")
+    garden_id = int(alpha["id"])
+    labels = list(PHASE_THREE_ORACLE_FIXTURE["labels"].values())
+    operation_prefix = "phase-3-%"
+
+    journal_rows = conn.execute(
+        """
+        SELECT e.id, e.public_id, e.event_type, e.occurred_on, e.title, e.notes,
+               e.metadata_json, e.actor_user_id,
+               COALESCE((
+                   SELECT array_agg(link.plt_id ORDER BY link.plt_id)
+                   FROM garden_journal_entry_plants link WHERE link.entry_id = e.id
+               ), ARRAY[]::text[]) AS plant_ids,
+               COALESCE((
+                   SELECT array_agg(link.plot_id ORDER BY link.plot_id)
+                   FROM garden_journal_entry_plots link WHERE link.entry_id = e.id
+               ), ARRAY[]::text[]) AS plot_ids
+        FROM garden_journal_entries e
+        WHERE e.garden_id = %s AND (e.title = ANY(%s) OR e.notes = ANY(%s))
+        ORDER BY e.public_id
+        """,
+        (garden_id, labels, labels),
+    ).fetchall()
+    issue_rows = conn.execute(
+        """
+        SELECT i.id, i.public_id, i.issue_type, i.title, i.description, i.severity,
+               i.status, i.suspected_cause, i.treatment_plan, i.follow_up_on,
+               i.metadata_json, i.resolved_at_ms,
+               COALESCE((
+                   SELECT array_agg(link.plt_id ORDER BY link.plt_id)
+                   FROM garden_issue_plants link WHERE link.issue_id = i.id
+               ), ARRAY[]::text[]) AS plant_ids,
+               COALESCE((
+                   SELECT array_agg(link.plot_id ORDER BY link.plot_id)
+                   FROM garden_issue_plots link WHERE link.issue_id = i.id
+               ), ARRAY[]::text[]) AS plot_ids
+        FROM garden_issues i
+        WHERE i.garden_id = %s AND i.title = ANY(%s)
+        ORDER BY i.public_id
+        """,
+        (garden_id, labels),
+    ).fetchall()
+    harvest_rows = conn.execute(
+        """
+        SELECT h.id, h.public_id, h.occurred_on, h.quantity, h.unit, h.quality,
+               h.notes, h.metadata_json,
+               COALESCE((
+                   SELECT array_agg(link.plt_id ORDER BY link.plt_id)
+                   FROM harvest_entry_plants link WHERE link.entry_id = h.id
+               ), ARRAY[]::text[]) AS plant_ids,
+               COALESCE((
+                   SELECT array_agg(link.plot_id ORDER BY link.plot_id)
+                   FROM harvest_entry_plots link WHERE link.entry_id = h.id
+               ), ARRAY[]::text[]) AS plot_ids
+        FROM harvest_entries h
+        WHERE h.garden_id = %s AND h.notes = ANY(%s)
+        ORDER BY h.public_id
+        """,
+        (garden_id, labels),
+    ).fetchall()
+    target_ids = sorted(
+        {
+            *(str(row["public_id"]) for row in journal_rows),
+            *(str(row["public_id"]) for row in issue_rows),
+            *(str(row["public_id"]) for row in harvest_rows),
+            PHASE_TWO_PLANTS["bloom_desktop"][0],
+            PHASE_TWO_PLANTS["prune_desktop"][0],
+            PHASE_TWO_PLANTS["fertilize_mobile"][0],
+        }
+    )
+    media_rows = conn.execute(
+        """
+        SELECT a.asset_id, a.storage_key, a.preview_storage_key, a.original_filename,
+               a.mime_type, a.bytes, a.preview_bytes, a.width, a.height,
+               l.target_type, l.target_id,
+               l.sort_order
+        FROM media_assets a
+        JOIN media_links l ON l.asset_id = a.asset_id
+        WHERE a.garden_id = %s AND l.target_id = ANY(%s)
+        ORDER BY a.asset_id, l.target_type, l.target_id
+        """,
+        (garden_id, target_ids),
+    ).fetchall()
+    operation_rows = conn.execute(
+        """
+        SELECT endpoint, operation_id, request_fingerprint, target_type, target_id,
+               result_id, created_at_ms, expires_at_ms
+        FROM offline_create_operations
+        WHERE garden_id = %s AND operation_id LIKE %s
+        ORDER BY endpoint, operation_id
+        """,
+        (garden_id, operation_prefix),
+    ).fetchall()
+    cleanup_table = conn.execute(
+        "SELECT to_regclass('public.media_cleanup_jobs') AS table_name"
+    ).fetchone()
+    cleanup_rows = []
+    if cleanup_table and cleanup_table["table_name"]:
+        cleanup_rows = conn.execute(
+            """
+            SELECT storage_key, preview_storage_key, attempts, last_error,
+                   created_at_ms, last_attempt_at_ms
+            FROM media_cleanup_jobs
+            ORDER BY storage_key, preview_storage_key
+            """
+        ).fetchall()
+
+    issue_followup_rows = conn.execute(
+        """
+        SELECT t.public_id, t.title, t.status, t.due_on, t.rule_source, t.metadata_json,
+               COALESCE((
+                   SELECT array_agg(link.plt_id ORDER BY link.plt_id)
+                   FROM garden_task_plants link WHERE link.task_id = t.id
+               ), ARRAY[]::text[]) AS plant_ids,
+               COALESCE((
+                   SELECT array_agg(link.plot_id ORDER BY link.plot_id)
+                   FROM garden_task_plots link WHERE link.task_id = t.id
+               ), ARRAY[]::text[]) AS plot_ids
+        FROM garden_tasks t
+        WHERE t.garden_id = %s AND t.rule_source LIKE 'auto:issue_followup:%%'
+        ORDER BY t.rule_source, t.public_id
+        """,
+        (garden_id,),
+    ).fetchall()
+    issue_source_ids = [
+        str(row["rule_source"]).removeprefix("auto:issue_followup:") for row in issue_followup_rows
+    ]
+    issue_task_ids = [str(row["public_id"]) for row in issue_followup_rows]
+    issue_journal_rows = []
+    issue_notification_rows = []
+    if issue_source_ids:
+        issue_journal_rows = conn.execute(
+            """
+            SELECT e.public_id, e.event_type, e.occurred_on, e.title, e.notes,
+                   e.metadata_json,
+                   COALESCE((
+                       SELECT array_agg(link.plt_id ORDER BY link.plt_id)
+                       FROM garden_journal_entry_plants link WHERE link.entry_id = e.id
+                   ), ARRAY[]::text[]) AS plant_ids,
+                   COALESCE((
+                       SELECT array_agg(link.plot_id ORDER BY link.plot_id)
+                       FROM garden_journal_entry_plots link WHERE link.entry_id = e.id
+                   ), ARRAY[]::text[]) AS plot_ids
+            FROM garden_journal_entries e
+            WHERE e.garden_id = %s
+              AND e.metadata_json::jsonb ->> 'issue_id' = ANY(%s)
+            ORDER BY e.public_id
+            """,
+            (garden_id, issue_source_ids),
+        ).fetchall()
+        issue_notification_rows = conn.execute(
+            """
+            SELECT public_id, notification_type, severity, target_type, target_id,
+                   dismissed, cleared_at_ms, clear_reason, metadata_json
+            FROM notification_events
+            WHERE garden_id = %s
+              AND (
+                  (target_type = 'issue' AND target_id = ANY(%s))
+                  OR (target_type = 'task' AND target_id = ANY(%s))
+              )
+            ORDER BY public_id
+            """,
+            (garden_id, issue_source_ids, issue_task_ids),
+        ).fetchall()
+
+    harvest_rollup_rows = conn.execute(
+        "SELECT key, value FROM app_settings WHERE key LIKE %s ORDER BY key",
+        (f"harvest_rollup:{garden_id}:%",),
+    ).fetchall()
+    harvest_total_rows = conn.execute(
+        """
+        SELECT SUBSTRING(occurred_on FROM 1 FOR 4) AS year, unit,
+               SUM(quantity) AS total_qty, COUNT(*) AS entry_count
+        FROM harvest_entries
+        WHERE garden_id = %s
+        GROUP BY SUBSTRING(occurred_on FROM 1 FOR 4), unit
+        ORDER BY year, unit
+        """,
+        (garden_id,),
+    ).fetchall()
+    seen_rows = conn.execute(
+        """
+        SELECT p.plt_id, p.seen_growing, p.seen_growing_date,
+               pp.plot_id, pp.seen_growing AS assignment_seen_growing,
+               pp.seen_growing_date AS assignment_seen_growing_date
+        FROM plants p
+        LEFT JOIN plot_plants pp
+          ON pp.plt_id = p.plt_id AND pp.plot_id = %s
+        WHERE p.plt_id = ANY(%s)
+        ORDER BY p.plt_id
+        """,
+        (
+            PHASE_TWO_ALPHA_PLOT_ID,
+            [
+                PHASE_TWO_PLANTS["bloom_desktop"][0],
+                PHASE_TWO_PLANTS["prune_desktop"][0],
+                PHASE_TWO_PLANTS["fertilize_mobile"][0],
+            ],
+        ),
+    ).fetchall()
+    identified_plant_count = conn.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM plants p
+        JOIN plant_ownership po ON po.plt_id = p.plt_id
+        WHERE po.garden_id = %s AND p.name = %s
+        """,
+        (garden_id, str(PHASE_THREE_ORACLE_FIXTURE["labels"]["identified_plant"])),
+    ).fetchone()
+    provider_usage_rows = conn.execute(
+        """
+        SELECT usage.usage_day, usage.feature, usage.scope_type, usage.scope_id,
+               usage.request_count, users.username AS scope_username
+        FROM provider_daily_usage usage
+        LEFT JOIN auth_users users
+          ON usage.scope_type = 'user' AND users.id = usage.scope_id
+        WHERE usage.feature IN ('ai-identify', 'ai-diagnose')
+        ORDER BY usage.feature, usage.scope_type, usage.scope_id
+        """
+    ).fetchall()
+
+    def metadata(row: dict[str, Any], label: str) -> dict[str, Any]:
+        return _json_object(row["metadata_json"] or "{}", label=label)
+
+    return {
+        "cleanup_jobs": [dict(row) for row in cleanup_rows],
+        "harvest_rollups": [
+            {"key": str(row["key"]), "value": _json_object(row["value"], label="harvest rollup")}
+            for row in harvest_rollup_rows
+        ],
+        "harvest_totals": [
+            {
+                "entries": int(row["entry_count"]),
+                "total_qty": float(row["total_qty"]),
+                "unit": str(row["unit"]),
+                "year": int(row["year"]),
+            }
+            for row in harvest_total_rows
+        ],
+        "harvests": [
+            {
+                "metadata": metadata(row, "Phase 3 harvest metadata"),
+                "notes": str(row["notes"]),
+                "occurred_on": str(row["occurred_on"]),
+                "plant_ids": [str(value) for value in row["plant_ids"]],
+                "plot_ids": [str(value) for value in row["plot_ids"]],
+                "public_id": str(row["public_id"]),
+                "quality": str(row["quality"]),
+                "quantity": float(row["quantity"]),
+                "unit": str(row["unit"]),
+            }
+            for row in harvest_rows
+        ],
+        "issues": [
+            {
+                "description": str(row["description"]),
+                "follow_up_on": str(row["follow_up_on"] or ""),
+                "issue_type": str(row["issue_type"]),
+                "metadata": metadata(row, "Phase 3 issue metadata"),
+                "plant_ids": [str(value) for value in row["plant_ids"]],
+                "plot_ids": [str(value) for value in row["plot_ids"]],
+                "public_id": str(row["public_id"]),
+                "resolved_at_ms": (
+                    int(row["resolved_at_ms"]) if row["resolved_at_ms"] is not None else None
+                ),
+                "severity": str(row["severity"]),
+                "status": str(row["status"]),
+                "suspected_cause": str(row["suspected_cause"]),
+                "title": str(row["title"]),
+                "treatment_plan": str(row["treatment_plan"]),
+            }
+            for row in issue_rows
+        ],
+        "issue_followups": [
+            {
+                "due_on": str(row["due_on"]),
+                "metadata": metadata(row, "Phase 3 issue follow-up metadata"),
+                "plant_ids": [str(value) for value in row["plant_ids"]],
+                "plot_ids": [str(value) for value in row["plot_ids"]],
+                "public_id": str(row["public_id"]),
+                "rule_source": str(row["rule_source"]),
+                "status": str(row["status"]),
+                "title": str(row["title"]),
+            }
+            for row in issue_followup_rows
+        ],
+        "issue_journals": [
+            {
+                "event_type": str(row["event_type"]),
+                "metadata": metadata(row, "Phase 3 issue journal metadata"),
+                "notes": str(row["notes"]),
+                "occurred_on": str(row["occurred_on"]),
+                "plant_ids": [str(value) for value in row["plant_ids"]],
+                "plot_ids": [str(value) for value in row["plot_ids"]],
+                "public_id": str(row["public_id"]),
+                "title": str(row["title"]),
+            }
+            for row in issue_journal_rows
+        ],
+        "issue_notifications": [
+            {
+                "clear_reason": str(row["clear_reason"] or ""),
+                "cleared": row["cleared_at_ms"] is not None,
+                "dismissed": bool(row["dismissed"]),
+                "metadata": metadata(row, "Phase 3 issue notification metadata"),
+                "notification_type": str(row["notification_type"]),
+                "public_id": str(row["public_id"]),
+                "severity": str(row["severity"]),
+                "target_id": str(row["target_id"]),
+                "target_type": str(row["target_type"]),
+            }
+            for row in issue_notification_rows
+        ],
+        "identified_plant_count": int(identified_plant_count["count"]),
+        "journals": [
+            {
+                "event_type": str(row["event_type"]),
+                "metadata": metadata(row, "Phase 3 journal metadata"),
+                "notes": str(row["notes"]),
+                "occurred_on": str(row["occurred_on"]),
+                "plant_ids": [str(value) for value in row["plant_ids"]],
+                "plot_ids": [str(value) for value in row["plot_ids"]],
+                "public_id": str(row["public_id"]),
+                "title": str(row["title"]),
+            }
+            for row in journal_rows
+        ],
+        "media": [
+            {
+                "asset_id": str(row["asset_id"]),
+                "bytes": int(row["bytes"]),
+                "height": int(row["height"]),
+                "mime_type": str(row["mime_type"]),
+                "original_filename": str(row["original_filename"]),
+                "preview_storage_key": str(row["preview_storage_key"]),
+                "preview_bytes": int(row["preview_bytes"]),
+                "sort_order": int(row["sort_order"]),
+                "storage_key": str(row["storage_key"]),
+                "target_id": str(row["target_id"]),
+                "target_type": str(row["target_type"]),
+                "width": int(row["width"]),
+            }
+            for row in media_rows
+        ],
+        "offline_operations": [dict(row) for row in operation_rows],
+        "provider_usage": [
+            {
+                "feature": str(row["feature"]),
+                "request_count": int(row["request_count"]),
+                "scope_id": int(row["scope_id"]),
+                "scope_type": str(row["scope_type"]),
+                "scope_username": str(row["scope_username"] or ""),
+                "usage_day": str(row["usage_day"]),
+            }
+            for row in provider_usage_rows
+        ],
+        "seen_state": [
+            {
+                "assignment_seen_growing": (
+                    bool(row["assignment_seen_growing"])
+                    if row["assignment_seen_growing"] is not None
+                    else None
+                ),
+                "assignment_seen_growing_date": str(row["assignment_seen_growing_date"] or ""),
+                "plant_id": str(row["plt_id"]),
+                "plot_id": str(row["plot_id"] or ""),
+                "seen_growing": (
+                    bool(row["seen_growing"]) if row["seen_growing"] is not None else None
+                ),
+                "seen_growing_date": str(row["seen_growing_date"] or ""),
+            }
+            for row in seen_rows
+        ],
+    }
+
+
+def _phase_three_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
+    return {
+        "bloom_edit_date": PHASE_THREE_BLOOM_EDIT_DATE,
+        "date": PHASE_THREE_DATE,
+        "labels": dict(PHASE_THREE_ORACLE_FIXTURE["labels"]),
+        "media": dict(PHASE_THREE_ORACLE_FIXTURE["media"]),
+        "operation_slots": dict(PHASE_THREE_ORACLE_FIXTURE["operation_slots"]),
+        "oracle": {
+            "path": "scripts/e2e/fixtures/complete_journeys_phase_three_oracle.json",
+            "schema_version": PHASE_THREE_ORACLE["schema_version"],
+            "sha256": PHASE_THREE_ORACLE_SHA256,
+        },
+        "plant_ids": {
+            "harvest": PHASE_TWO_PLANTS["fertilize_mobile"][0],
+            "issue": PHASE_TWO_PLANTS["prune_desktop"][0],
+            "journal": PHASE_TWO_PLANTS["bloom_desktop"][0],
+        },
+        "plot_ids": {"alpha": PHASE_TWO_ALPHA_PLOT_ID, "beta": PHASE_TWO_BETA_PLOT_ID},
+        "seeded_state": _phase_three_runtime_state(conn, optimization_seed),
+    }
+
+
 def _count(conn, table: str) -> int:
     allowed = {
         "attention_outcomes",
@@ -3307,7 +3739,18 @@ def _audit_state(conn) -> dict[str, Any]:
         value = re.sub(r"/gardens/\d+", "/gardens/{garden_id}", path)
         value = re.sub(r"/(?:mapobj|mapunit|snap)_[a-z0-9]+", "/{public_id}", value)
         value = re.sub(r"/saved-views/\d+", "/saved-views/{saved_view_id}", value)
+        value = re.sub(r"^/api/plants/[^/]+$", "/api/plants/{created_plant_id}", value)
         value = value.replace("/PLT-001", "/{created_plant_id}")
+        value = re.sub(r"^/api/journal/[^/]+$", "/api/journal/{entry_id}", value)
+        value = re.sub(r"^/api/issues/[^/]+/resolve$", "/api/issues/{issue_id}/resolve", value)
+        value = re.sub(r"^/api/issues/[^/]+$", "/api/issues/{issue_id}", value)
+        value = re.sub(r"^/api/harvest/[^/]+$", "/api/harvest/{entry_id}", value)
+        value = re.sub(
+            r"^/api/media/plants/[^/]+/cover$", "/api/media/plants/{plant_id}/cover", value
+        )
+        value = re.sub(r"^/api/media/[^/]+/links$", "/api/media/{asset_id}/links", value)
+        if value != "/api/media/upload":
+            value = re.sub(r"^/api/media/[^/]+$", "/api/media/{asset_id}", value)
         return value
 
     record_rows = conn.execute(
@@ -3409,6 +3852,7 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
             "domain_tables": _domain_table_state(conn),
             "phase_one_state": _phase_one_runtime_state(conn, optimization_seed),
             "phase_two_state": _phase_two_runtime_state(conn, optimization_seed),
+            "phase_three_state": _phase_three_runtime_state(conn, optimization_seed),
         },
         "gardens": {
             "alpha": garden_payload(
@@ -3424,6 +3868,7 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
         "git": _git_state(),
         "phase_one": _phase_one_fixture_state(conn, optimization_seed),
         "phase_two": _phase_two_fixture_state(conn, optimization_seed),
+        "phase_three": _phase_three_fixture_state(conn, optimization_seed),
         "roles": {
             "admin": ADMIN_USERNAME,
             "editor": EDITOR_LOGIN[0],

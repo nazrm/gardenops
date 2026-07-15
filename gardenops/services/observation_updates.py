@@ -130,3 +130,162 @@ def mark_seen_growing_from_observation(
             "WHERE plot_id = %s AND plt_id = %s",
             assignment_updates,
         )
+
+
+def _latest_plant_bloom_date(
+    db: DbConn,
+    *,
+    garden_id: int,
+    plant_id: str,
+) -> str | None:
+    row = db.execute(
+        """
+        SELECT MAX(e.occurred_on) AS occurred_on
+        FROM garden_journal_entries e
+        JOIN garden_journal_entry_plants ep ON ep.entry_id = e.id
+        WHERE e.garden_id = %s
+          AND e.event_type = 'bloomed'
+          AND ep.plt_id = %s
+        """,
+        (garden_id, plant_id),
+    ).fetchone()
+    return str(row["occurred_on"]) if row and row["occurred_on"] else None
+
+
+def _latest_assignment_bloom_date(
+    db: DbConn,
+    *,
+    garden_id: int,
+    plant_id: str,
+    plot_id: str,
+) -> str | None:
+    row = db.execute(
+        """
+        SELECT MAX(e.occurred_on) AS occurred_on
+        FROM garden_journal_entries e
+        JOIN garden_journal_entry_plants ep ON ep.entry_id = e.id
+        WHERE e.garden_id = %s
+          AND e.event_type = 'bloomed'
+          AND ep.plt_id = %s
+          AND (
+              EXISTS (
+                  SELECT 1
+                  FROM garden_journal_entry_plots eplot
+                  WHERE eplot.entry_id = e.id AND eplot.plot_id = %s
+              )
+              OR (
+                  NOT EXISTS (
+                      SELECT 1
+                      FROM garden_journal_entry_plots eplot
+                      WHERE eplot.entry_id = e.id
+                  )
+                  AND 1 = (
+                      SELECT COUNT(*)
+                      FROM plot_plants candidate
+                      LEFT JOIN plot_ownership ownership
+                        ON ownership.plot_id = candidate.plot_id
+                      WHERE candidate.plt_id = ep.plt_id
+                        AND (ownership.garden_id = %s OR ownership.garden_id IS NULL)
+                  )
+              )
+          )
+        """,
+        (garden_id, plant_id, plot_id, garden_id),
+    ).fetchone()
+    return str(row["occurred_on"]) if row and row["occurred_on"] else None
+
+
+def reconcile_seen_growing_after_bloom_change(
+    db: DbConn,
+    *,
+    garden_id: int,
+    previous_plant_ids: list[str],
+    previous_plot_ids: list[str],
+    previous_seen_date: str,
+) -> None:
+    """Reconcile state that can be attributed to a changed bloom observation.
+
+    There is no source foreign key on the legacy seen-growing columns. To avoid
+    overwriting manual state, only values whose date exactly matches the changed
+    observation are treated as derived from it. A newer independent value is
+    therefore preserved.
+    """
+    plant_ids = _dedupe(previous_plant_ids)
+    if not plant_ids:
+        return
+
+    placeholders = ",".join(["%s"] * len(plant_ids))
+    plant_rows = db.execute(
+        f"""
+        SELECT p.plt_id, p.seen_growing_date
+        FROM plants p
+        WHERE p.plt_id IN ({placeholders})
+          AND NOT EXISTS (
+              SELECT 1
+              FROM plant_ownership po
+              WHERE po.plt_id = p.plt_id AND po.garden_id <> %s
+          )
+        """,
+        [*plant_ids, garden_id],
+    ).fetchall()
+    for row in plant_rows:
+        if str(row["seen_growing_date"] or "") != previous_seen_date:
+            continue
+        plant_id = str(row["plt_id"])
+        latest = _latest_plant_bloom_date(db, garden_id=garden_id, plant_id=plant_id)
+        db.execute(
+            "UPDATE plants SET seen_growing = %s, seen_growing_date = %s WHERE plt_id = %s",
+            (1 if latest else None, latest, plant_id),
+        )
+
+    assignment_rows: list[dict] = []
+    plot_ids = _dedupe(previous_plot_ids)
+    if plot_ids:
+        plot_placeholders = ",".join(["%s"] * len(plot_ids))
+        assignment_rows = db.execute(
+            f"""
+            SELECT pp.plot_id, pp.plt_id, pp.seen_growing_date
+            FROM plot_plants pp
+            LEFT JOIN plot_ownership po ON po.plot_id = pp.plot_id
+            WHERE pp.plt_id IN ({placeholders})
+              AND pp.plot_id IN ({plot_placeholders})
+              AND (po.garden_id = %s OR po.garden_id IS NULL)
+            """,
+            [*plant_ids, *plot_ids, garden_id],
+        ).fetchall()
+    else:
+        rows = db.execute(
+            f"""
+            SELECT pp.plot_id, pp.plt_id, pp.seen_growing_date
+            FROM plot_plants pp
+            LEFT JOIN plot_ownership po ON po.plot_id = pp.plot_id
+            WHERE pp.plt_id IN ({placeholders})
+              AND (po.garden_id = %s OR po.garden_id IS NULL)
+            ORDER BY pp.plt_id, pp.plot_id
+            """,
+            [*plant_ids, garden_id],
+        ).fetchall()
+        by_plant: dict[str, list[dict]] = {}
+        for row in rows:
+            by_plant.setdefault(str(row["plt_id"]), []).append(dict(row))
+        assignment_rows = [items[0] for items in by_plant.values() if len(items) == 1]
+
+    for row in assignment_rows:
+        if str(row["seen_growing_date"] or "") != previous_seen_date:
+            continue
+        plant_id = str(row["plt_id"])
+        plot_id = str(row["plot_id"])
+        latest = _latest_assignment_bloom_date(
+            db,
+            garden_id=garden_id,
+            plant_id=plant_id,
+            plot_id=plot_id,
+        )
+        db.execute(
+            """
+            UPDATE plot_plants
+            SET seen_growing = %s, seen_growing_date = %s
+            WHERE plot_id = %s AND plt_id = %s
+            """,
+            (1 if latest else None, latest, plot_id, plant_id),
+        )

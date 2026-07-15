@@ -231,6 +231,72 @@ def sync_issue_followup_task(
     return []
 
 
+def retire_deleted_issue_followup_task(
+    db: DbConn,
+    *,
+    garden_id: int,
+    issue_public_id: str,
+    now_ms: int,
+) -> str | None:
+    """Expire actionable work whose source issue is being deleted."""
+    task = db.execute(
+        """
+        SELECT id, public_id, status, metadata_json
+        FROM garden_tasks
+        WHERE garden_id = %s AND rule_source = %s
+        FOR UPDATE
+        """,
+        (garden_id, f"auto:issue_followup:{issue_public_id}"),
+    ).fetchone()
+    if not task:
+        return None
+
+    status = str(task["status"] or "")
+    if status in {"pending", "snoozed", "skipped", "expired"}:
+        try:
+            metadata = json.loads(str(task["metadata_json"] or "{}"))
+        except json.JSONDecodeError:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        lifecycle = metadata.get("lifecycle")
+        if not isinstance(lifecycle, dict):
+            lifecycle = {}
+        terminal_status = "expired" if status in {"pending", "snoozed"} else status
+        lifecycle.update(
+            {
+                "status": terminal_status,
+                "reason": "issue_source_deleted",
+                "source": "issue",
+                "source_deleted": True,
+                "source_issue_id": issue_public_id,
+                "source_deleted_at_ms": now_ms,
+            }
+        )
+        if terminal_status == "expired":
+            lifecycle["expired_at_ms"] = now_ms
+        metadata["lifecycle"] = lifecycle
+        db.execute(
+            """
+            UPDATE garden_tasks
+            SET status = %s,
+                snoozed_until = NULL,
+                completed_by_user_id = NULL,
+                completed_at_ms = NULL,
+                metadata_json = %s,
+                updated_at_ms = %s
+            WHERE id = %s
+            """,
+            (
+                terminal_status,
+                json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+                now_ms,
+                int(task["id"]),
+            ),
+        )
+    return str(task["public_id"])
+
+
 _WATERING_KEYWORDS = ("regular", "often", "jevnlig", "ofte", "mye", "frequently")
 _WEATHER_TASK_LOCK_SEED = 0x47415244454E4F50
 _RAIN_REASSESSMENT_DELAY_DAYS = 2
@@ -1037,37 +1103,52 @@ def on_harvest_logged(
     Stores aggregated yield summary in app_settings for quick access.
     The harvest_id parameter identifies the triggering entry.
     """
-    _ = harvest_id  # used for traceability, not queried
-    year = date.today().year
+    row = db.execute(
+        "SELECT occurred_on FROM harvest_entries WHERE id = %s AND garden_id = %s",
+        (harvest_id, garden_id),
+    ).fetchone()
+    if not row:
+        return
+    reconcile_harvest_rollups(db, garden_id=garden_id, years=[int(str(row["occurred_on"])[:4])])
 
-    rows = db.execute(
-        """
-        SELECT h.unit,
-               SUM(h.quantity) AS total_qty,
-               COUNT(*) AS entry_count
-        FROM harvest_entries h
-        WHERE h.garden_id = %s AND h.occurred_on ILIKE %s
-        GROUP BY h.unit
-        """,
-        (garden_id, f"{year}-%"),
-    ).fetchall()
 
-    rollup = {
-        "year": year,
-        "garden_id": garden_id,
-        "by_unit": [
-            {
-                "unit": str(r["unit"]),
-                "total_qty": float(r["total_qty"]),
-                "entries": int(r["entry_count"]),
-            }
-            for r in rows
-        ],
-    }
+def reconcile_harvest_rollups(
+    db: DbConn,
+    *,
+    garden_id: int,
+    years: list[int],
+) -> None:
+    """Rebuild cached harvest totals for each explicitly affected year."""
+    for year in sorted(set(years)):
+        rows = db.execute(
+            """
+            SELECT h.unit,
+                   SUM(h.quantity) AS total_qty,
+                   COUNT(*) AS entry_count
+            FROM harvest_entries h
+            WHERE h.garden_id = %s AND h.occurred_on LIKE %s
+            GROUP BY h.unit
+            ORDER BY h.unit
+            """,
+            (garden_id, f"{year}-%"),
+        ).fetchall()
 
-    key = f"harvest_rollup:{garden_id}:{year}"
-    db.execute(
-        "INSERT INTO app_settings (key, value) VALUES (%s, %s)"
-        " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-        (key, json.dumps(rollup)),
-    )
+        rollup = {
+            "year": year,
+            "garden_id": garden_id,
+            "by_unit": [
+                {
+                    "unit": str(r["unit"]),
+                    "total_qty": float(r["total_qty"]),
+                    "entries": int(r["entry_count"]),
+                }
+                for r in rows
+            ],
+        }
+
+        key = f"harvest_rollup:{garden_id}:{year}"
+        db.execute(
+            "INSERT INTO app_settings (key, value) VALUES (%s, %s)"
+            " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (key, json.dumps(rollup, sort_keys=True, separators=(",", ":"))),
+        )

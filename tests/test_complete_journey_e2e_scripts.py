@@ -23,6 +23,9 @@ RUNNER = ROOT / "scripts" / "run_complete_journeys_e2e.sh"
 SEEDER = ROOT / "scripts" / "seed_complete_journeys_e2e.py"
 CHECKER = ROOT / "scripts" / "check_complete_journeys_e2e.cjs"
 ORACLE = ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_two_oracle.json"
+PHASE_THREE_ORACLE = (
+    ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_three_oracle.json"
+)
 EXPECTED_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
 ).stdout.strip()
@@ -55,7 +58,11 @@ def test_phase_zero_complete_journey_files_exist() -> None:
         ROOT / "scripts" / "e2e" / "journeys" / "foundation.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "gardenMapPlants.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs",
+        ROOT / "scripts" / "e2e" / "journeys" / "observationToAction.cjs",
         ORACLE,
+        PHASE_THREE_ORACLE,
+        ROOT / "scripts" / "e2e" / "fixtures" / "media" / "oriented-2x4.jpg.base64",
+        ROOT / "scripts" / "e2e" / "fixtures" / "media" / "reference-3x2.png.base64",
     )
     assert all(path.is_file() for path in expected)
 
@@ -186,7 +193,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
     subprocess.run(["git", "init", "--quiet"], cwd=checkout, check=True, timeout=20)
     runner = checkout / "scripts" / "run_complete_journeys_e2e.sh"
     result = subprocess.run(
-        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "3"],
+        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "4"],
         cwd=checkout,
         capture_output=True,
         check=False,
@@ -684,7 +691,7 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
     runner_source = RUNNER.read_text(encoding="utf-8")
 
-    assert "MAX_IMPLEMENTED_PHASE=2" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=3" in runner_source
     assert "runDailyAttentionWork" in journey_source
     assert 'require("./e2e/journeys/dailyAttentionWork.cjs")' in checker_source
     assert "phaseSelected(2)" in checker_source
@@ -692,6 +699,158 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
     assert '"--prepare-phase-two"' in checker_source
     for journey_id in ("D1", "D2", "D3", "D4", "D5", "R1"):
         assert f'"{journey_id}"' in checker_source
+
+
+def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
+    journey_source = (ROOT / "scripts" / "e2e" / "journeys" / "observationToAction.cjs").read_text(
+        encoding="utf-8"
+    )
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    runner_source = RUNNER.read_text(encoding="utf-8")
+    oracle = json.loads(PHASE_THREE_ORACLE.read_text(encoding="utf-8"))
+
+    assert "MAX_IMPLEMENTED_PHASE=3" in runner_source
+    assert "GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER=1" in runner_source
+    assert "runObservationToAction" in journey_source
+    assert 'require("./e2e/journeys/observationToAction.cjs")' in checker_source
+    assert "phaseSelected(3)" in checker_source
+    assert "assertPhaseThreeMediaGraph" in checker_source
+    assert "assertPhaseThreeBoundaryEvidence" in checker_source
+    assert "phaseThreeExactMutationContract" in checker_source
+    assert oracle["schema_version"] == 2
+    assert list(oracle["phase_three"]["profile_boundaries"]) == [
+        "admin:desktop",
+        "editor:desktop",
+        "admin:mobile",
+        "editor:mobile",
+        "viewer:desktop",
+        "viewer:mobile",
+    ]
+    assert set(oracle["phase_three"]["whole_table_mutation_accounting"]["table_counts"]) == {
+        "garden_issue_plants",
+        "garden_issue_plots",
+        "garden_issues",
+        "garden_journal_entries",
+        "garden_journal_entry_plants",
+        "garden_journal_entry_plots",
+        "garden_task_plants",
+        "garden_task_plots",
+        "garden_tasks",
+        "harvest_entries",
+        "harvest_entry_plants",
+        "harvest_entry_plots",
+        "media_assets",
+        "media_cleanup_jobs",
+        "media_links",
+        "notification_events",
+        "offline_create_operations",
+        "plant_media_covers",
+        "plants",
+        "plot_plants",
+        "provider_daily_usage",
+    }
+    assert oracle["phase_three"]["fixture"]["media"]["oriented_jpeg"] == {
+        "filename": "oriented-2x4.jpg",
+        "normalized_height": 4,
+        "normalized_width": 2,
+        "path": "scripts/e2e/fixtures/media/oriented-2x4.jpg.base64",
+        "sha256": "4ce41bd8be69a5ae99e787869d6919e01a88274cfd6411bd2cc3f032ec776776",
+        "source_sha256": "7c7fb42e73a095e0fdd87a1337e972c20c8266e0a0a58b78e5f710977dcb6365",
+    }
+    for journey_id in ("I2", "I3", "P1", "P2", "P3", "P5"):
+        assert f'"{journey_id}"' in checker_source
+
+
+def test_phase_three_lost_ack_and_reopen_are_real_user_flows() -> None:
+    journey_source = (ROOT / "scripts" / "e2e" / "journeys" / "observationToAction.cjs").read_text(
+        encoding="utf-8"
+    )
+    issue_component = (ROOT / "frontend" / "src" / "components" / "issues.ts").read_text(
+        encoding="utf-8"
+    )
+    issue_tab = (ROOT / "frontend" / "src" / "tabs" / "issuesTab.ts").read_text(encoding="utf-8")
+
+    assert "window.__phaseThreeAckDropped = true" in journey_source
+    assert "journal server commit before simulated acknowledgement loss" in journey_source
+    assert "response_ack_loss_simulated: true" in journey_source
+    generated_id_check = journey_source.index("assertGeneratedOfflineOperationIds(generatedQueued)")
+    deterministic_rewrite = journey_source.index(
+        "assignOfflineOperationSlots(page, phaseThree.operation_slots)"
+    )
+    assert generated_id_check < deterministic_rewrite
+    assert "exerciseDelayedIssueGardenSwitch" in journey_source
+    assert 'await page.route("**/api/issues*", handler)' in journey_source
+    assert "stale_response_rejected_after_garden_switch" in journey_source
+    assert "lost-ack-simulation-not-feasible" not in journey_source
+    assert (
+        journey_source.count('form.locator(".media-file-input").setInputFiles(mediaInput(options))')
+        >= 3
+    )
+    assert 't("issues.action_reopen")' in issue_component
+    assert "onReopen" in issue_component
+    assert "handleReopenIssue" in issue_tab
+    assert 'updateIssueApi(issue.id, { status: "open" })' in issue_tab
+
+
+def test_phase_three_exact_mutation_contract_selects_rollup_baseline_variant() -> None:
+    script = """
+const fs = require('node:fs');
+const {
+  phaseThreeExactMutationContract,
+  phaseThreeOracle,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = { phase_three: { date: '2026-07-11' } };
+const oracle = phaseThreeOracle();
+const missing = phaseThreeExactMutationContract({ harvest_rollups: [] }, fixture, oracle);
+if (missing.rollupVariant !== 'rollup_missing') process.exit(2);
+if (missing.accounting.app_settings.expected_added !== 1
+  || missing.accounting.app_settings.expected_removed !== 0
+  || missing.accounting.app_settings.expected_identity_added !== 1) process.exit(3);
+const present = phaseThreeExactMutationContract(
+  { harvest_rollups: [{ key: 'harvest_rollup:1:2026' }] }, fixture, oracle,
+);
+if (present.rollupVariant !== 'rollup_present') process.exit(4);
+if (present.accounting.app_settings.expected_added !== 1
+  || present.accounting.app_settings.expected_removed !== 1
+  || present.accounting.app_settings.expected_identity_updated !== 1) process.exit(5);
+if (present.allowedTables.size !== 22) process.exit(6);
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_three_boundary_contract_rejects_profile_state_drift() -> None:
+    script = """
+const {
+  assertPhaseThreeBoundaryEvidence,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const profile = 'viewer:desktop';
+const emptyState = {
+  cleanup_jobs: [], harvests: [], identified_plant_count: 0, issue_followups: [],
+  issue_journals: [], issue_notifications: [], issues: [], journals: [], media: [],
+  offline_operations: [], provider_usage: [], seen_state: [{ plant_id: 'PLT-A' }],
+};
+const filesystem = { files: [] };
+const fixture = { gardens: { alpha: { id: 1 } }, roles: { admin: 'admin' } };
+const contract = {
+  cleanup_jobs: 0, filesystem_files: 0, harvests: 0, identified_plant_count: 0,
+  issue_followups: 0, issue_journals: 0, issue_notifications: 0, issues: 0,
+  journals: 0, media: 0, offline_operations: 0,
+  provider_counts: { diagnose: 0, identify: 0 },
+};
+const oracle = { phase_three: { profile_boundaries: { [profile]: contract } } };
+const boundary = { database: structuredClone(emptyState), filesystem, profile };
+assertPhaseThreeBoundaryEvidence([boundary], emptyState, fixture, oracle);
+boundary.database.issues.push({ public_id: 'unexpected' });
+try {
+  assertPhaseThreeBoundaryEvidence([boundary], emptyState, fixture, oracle);
+  process.exit(2);
+} catch (error) {
+  if (!String(error.message).includes('issues count diverged')) process.exit(3);
+}
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_phase_two_d4_provider_boundary_remains_required() -> None:
@@ -4158,15 +4317,30 @@ const attention = sanitizeManifestEvidence({
   database: { audit_projection: attentionAudit },
   profiles: [],
 });
+const assignmentAudit = auditManifestProjection(
+  auditState(`/api/plots/${opaqueRouteId}/plants/${opaqueRouteId}`),
+);
+const assignment = sanitizeManifestEvidence({
+  database: { audit_projection: assignmentAudit },
+  profiles: [],
+});
+const telemetryAudit = auditManifestProjection(auditState('/api/client-errors'));
+const telemetry = sanitizeManifestEvidence({
+  database: { audit_projection: telemetryAudit },
+  profiles: [],
+});
 const taskPath = task.database.audit_projection.events[0].path;
 if (taskPath !== '/api/tasks/{task_id}/action') process.exit(3);
 if (attention.database.audit_projection.events[0].path
     !== '/api/attention/items/{item_id}/snooze') process.exit(4);
+if (assignment.database.audit_projection.events[0].path
+    !== '/api/plots/{plot_id}/plants/{created_plant_id}') process.exit(8);
+if (telemetry.database.audit_projection.events[0].path !== '/api/client-errors') process.exit(9);
 if (task.canonical_projection_digests.audit_snapshot
     === attention.canonical_projection_digests.audit_snapshot) process.exit(5);
 if (task.canonical_projection_digests.final_database
     === attention.canonical_projection_digests.final_database) process.exit(6);
-const serialized = JSON.stringify([task, attention]);
+const serialized = JSON.stringify([task, attention, assignment, telemetry]);
 if (serialized.includes(opaqueRouteId)) process.exit(7);
 """
     result = subprocess.run(
