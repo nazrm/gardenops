@@ -3700,7 +3700,7 @@ function expectedPhaseTwoWeatherLogicalRows(fixture, oracle) {
     name: plant.name,
     plt_id: plant.id,
   }));
-  return ["dry_spell", "heat_wave"].map((alertType) => {
+  const wateringAlerts = ["dry_spell", "heat_wave"].map((alertType) => {
     const specification = specifications[alertType];
     const metadata = {
       days: specification.days,
@@ -3722,6 +3722,35 @@ function expectedPhaseTwoWeatherLogicalRows(fixture, oracle) {
       valid_until: specification.valid_until,
     };
   });
+  const frost = specifications.frost_warning;
+  return [
+    ...wateringAlerts,
+    {
+      alert_type: "frost_warning",
+      created_at_ms: fixture.clock.attention_now_ms,
+      description: frost.description,
+      dismissed: false,
+      garden_id: fixture.gardens.alpha.id,
+      metadata: {
+        coldest: -3,
+        coldest_date: frost.valid_from,
+        forecast_plant_links_authoritative: true,
+        frost_days: [[frost.valid_from, -3]],
+        plant_advice: [{
+          hardiness: "H1",
+          min_safe_temp: 15,
+          name: fixture.phase_two.plant_names.fertilize_mobile,
+          plt_id: fixture.phase_two.plant_ids.fertilize_mobile,
+        }],
+      },
+      plant_ids: [...oracle.phase_two.maintenance.logical_rows.weather_generated_tasks
+        .frost_protect.plant_ids].sort(),
+      severity: frost.severity,
+      title: frost.title,
+      valid_from: frost.valid_from,
+      valid_until: frost.valid_until,
+    },
+  ];
 }
 
 function normalizeMaintenanceWeatherLogicalRow(row) {
@@ -3979,11 +4008,19 @@ function assertPhaseTwoMaintenanceSemanticState(
     preferenceDelivery.delivery_notifications.map((notification) => notification.public_id),
   );
   const taskClearReasons = phaseTwoTaskNotificationClearReasons(profiles, fixture);
-  const viewerMaintenanceAlert = finalRows.weather_alerts.reduce((latest, alert) => (
-    latest === null || alert.row_id > latest.row_id ? alert : latest
-  ), null);
-  assert(viewerMaintenanceAlert,
-    "Phase 2 viewer maintenance weather notification target was missing");
+  const viewerDismissedWeatherIds = new Set((state.item_states || [])
+    .filter((item) => (
+      item.username === fixture.roles.viewer
+      && item.garden_id === fixture.gardens.alpha.id
+      && item.user_state === "dismissed"
+      && /^attn:weather:alert:\d+$/.test(item.item_id)
+    ))
+    .map((item) => Number(item.item_id.split(":").at(-1))));
+  const viewerDismissedWeatherTargets = new Set(finalRows.weather_alerts
+    .filter((alert) => viewerDismissedWeatherIds.has(alert.row_id))
+    .map((alert) => `${alert.alert_type}:${alert.valid_from}`));
+  assert(viewerDismissedWeatherTargets.size === 2,
+    "Phase 2 viewer maintenance weather notification targets were missing");
   for (const table of expectedTables) {
     assert(Array.isArray(finalRows[table]),
       `Final Phase 2 maintenance ${table} projection is missing`);
@@ -4001,7 +4038,7 @@ function assertPhaseTwoMaintenanceSemanticState(
             expected,
             fixture,
             deliveredIds,
-            viewerMaintenanceAlert,
+            viewerDismissedWeatherTargets,
             taskClearReasons,
           ),
         );
@@ -4031,40 +4068,6 @@ function assertMaintenanceMutationPair(pair, table) {
   assert(canonicalJson(before) !== canonicalJson(after),
     `Phase 2 maintenance ${table} mutation did not contain a change`);
   return after;
-}
-
-function expectedPhaseTwoFrostMaintenanceRow(fixture, oracle = phaseTwoOracle()) {
-  const initial = fixture.phase_two.seeded_state.weather_alerts.find((alert) => (
-    alert.garden_id === fixture.gardens.alpha.id && alert.alert_type === "frost_warning"
-  ));
-  assert(initial, "Phase 2 seeded alpha frost alert is missing");
-  const specification = oracle.phase_two.maintenance.logical_rows.weather_alerts.frost_warning;
-  return {
-    alert_type: "frost_warning",
-    created_at_ms: initial.created_at_ms,
-    description: specification.description,
-    dismissed: false,
-    garden_id: fixture.gardens.alpha.id,
-    metadata: {
-      coldest: -3,
-      coldest_date: specification.valid_from,
-      forecast_plant_links_authoritative: true,
-      frost_days: [[specification.valid_from, -3]],
-      plant_advice: [{
-        hardiness: "H1",
-        min_safe_temp: 15,
-        name: fixture.phase_two.plant_names.fertilize_mobile,
-        plt_id: fixture.phase_two.plant_ids.fertilize_mobile,
-      }],
-    },
-    plant_ids: [...oracle.phase_two.maintenance.logical_rows.weather_generated_tasks
-      .frost_protect.plant_ids].sort(),
-    row_id: initial.id,
-    severity: "normal",
-    title: specification.title,
-    valid_from: specification.valid_from,
-    valid_until: specification.valid_until,
-  };
 }
 
 function assertExpectedMaintenanceMutations(createdByTable, fixture, oracle = phaseTwoOracle()) {
@@ -4102,16 +4105,8 @@ function assertExpectedMaintenanceMutations(createdByTable, fixture, oracle = ph
   const weatherMutations = createdByTable.weather_alerts.mutated_existing;
   assert(weatherMutations.length === expectedMutations.weather_alerts,
     "Phase 2 maintenance mutated an unexpected number of existing weather alerts");
-  const weatherMutation = weatherMutations[0];
-  const afterWeather = assertMaintenanceMutationPair(weatherMutation, "weather_alerts");
-  assert(canonicalJson(afterWeather) === canonicalJson(expectedPhaseTwoFrostMaintenanceRow(fixture, oracle)),
-    "Phase 2 maintenance frost alert refresh was unexpected");
-  const changedWeatherFields = Object.keys(afterWeather).filter(
-    (field) => canonicalJson(weatherMutation.before[field]) !== canonicalJson(afterWeather[field]),
-  ).sort();
-  assert(canonicalJson(changedWeatherFields) === canonicalJson([
-    "description", "metadata", "plant_ids", "title", "valid_until",
-  ]), "Phase 2 maintenance changed unexpected frost alert fields");
+  assert(weatherMutations.length === 0,
+    "Phase 2 maintenance overwrote an existing weather forecast");
   return true;
 }
 
@@ -4154,21 +4149,13 @@ function expectedPhaseTwoMaintenanceNotification(
   notification,
   fixture,
   deliveredIds,
-  viewerMaintenanceAlert,
+  viewerDismissedWeatherTargets,
   taskClearReasons = new Map(),
 ) {
   const expected = { ...notification };
   if (deliveredIds.has(notification.public_id)) {
     expected.emailed_at_ms = fixture.clock.attention_now_ms;
   }
-  const seededViewerWeatherAlert = fixture.phase_two.seeded_state.weather_alerts.find((alert) => (
-    alert.garden_id === fixture.gardens.alpha.id
-  ));
-  const viewerDismissedWeatherTargets = new Set(
-    [seededViewerWeatherAlert, viewerMaintenanceAlert]
-      .filter(Boolean)
-      .map((alert) => `${alert.alert_type}:${alert.valid_from}`),
-  );
   if (
     notification.username === fixture.roles.viewer
     && notification.garden_id === fixture.gardens.alpha.id
@@ -4956,11 +4943,14 @@ function assertPhaseTwoDatabaseState(
   assert(rainAlert.metadata?.rain_days === 3 && rainAlert.metadata?.total_mm === 16,
     "Phase 2 rain alert metadata was unexpected");
 
-  const viewerMaintenanceAlertId = Math.max(
-    ...state.maintenance_rows.weather_alerts.map((alert) => alert.row_id),
-  );
-  assert(Number.isSafeInteger(viewerMaintenanceAlertId) && viewerMaintenanceAlertId > 0,
-    "Phase 2 viewer maintenance weather alert identity was missing");
+  const viewerDrySpellAlert = state.weather_alerts.find((alert) => (
+    alert.garden_id === fixture.gardens.alpha.id
+    && alert.alert_type === "dry_spell"
+    && alert.created_at_ms === fixture.clock.attention_now_ms
+    && alert.valid_from === phase.date
+  ));
+  assert(viewerDrySpellAlert,
+    "Phase 2 viewer dry-spell alert identity was missing");
   const viewerGeneratedFrostAlert = state.weather_alerts.find((alert) => (
     alert.garden_id === fixture.gardens.alpha.id
     && alert.alert_type === "frost_warning"
@@ -4985,7 +4975,7 @@ function assertPhaseTwoDatabaseState(
     },
     {
       garden_id: fixture.gardens.alpha.id,
-      item_id: `attn:weather:alert:${viewerMaintenanceAlertId}`,
+      item_id: `attn:weather:alert:${viewerDrySpellAlert.id}`,
       metadata: {},
       reason: "",
       snoozed_until_ms: null,

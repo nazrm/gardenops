@@ -3535,7 +3535,11 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
     assert oracle["phase_two"]["maintenance"]["mutated_existing"] == {
         "notifications": 0,
         "tasks": 1,
-        "weather_alerts": 1,
+        "weather_alerts": 0,
+    }
+    assert oracle["phase_two"]["maintenance"]["created"]["weather_alerts"] == {
+        "by_type": {"dry_spell": 1, "frost_warning": 1, "heat_wave": 1},
+        "total": 3,
     }
     exact_counts = oracle["phase_two"]["whole_table_mutation_accounting"]["exact_counts"]
     assert exact_counts["phase_two_only"]["garden_tasks"] == {
@@ -3556,11 +3560,11 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
     }
     assert exact_counts["phase_two_only"]["weather_alerts"] == {
         "added": 4,
-        "removed": 1,
+        "removed": 0,
     }
     assert exact_counts["cumulative_through_phase_two"]["weather_alerts"] == {
         "added": 4,
-        "removed": 1,
+        "removed": 0,
     }
     exact_identity_counts = oracle["phase_two"]["whole_table_mutation_accounting"][
         "exact_identity_counts"
@@ -3597,7 +3601,7 @@ def test_phase_two_maintenance_notifications_have_exact_post_journey_lifecycle()
     assert 'expected.clear_reason = "weather_dismissed";' in lifecycle
     assert "notification.username === fixture.roles.viewer" in lifecycle
     assert "viewerDismissedWeatherTargets.has(notification.target_id)" in lifecycle
-    assert "viewerMaintenanceAlert" in lifecycle
+    assert "viewerDismissedWeatherTargets" in lifecycle
     assert "taskClearReasons.get(notification.target_id)" in lifecycle
     action_causes = source.split("function phaseTwoTaskNotificationClearReasons", 1)[1].split(
         "function phaseTwoBrowserMutationRecords", 1
@@ -3879,7 +3883,7 @@ def test_phase_two_database_contract_covers_maintenance_and_audit_semantics() ->
         "assertPhaseOneStatePreservedAfterPhaseTwo",
         "phase_one_scoped_state_preserved_after_phase_two",
         "Offline reschedule did not recompute the grouped fertilize recommendation window",
-        "viewerMaintenanceAlertId",
+        "viewerDismissedWeatherTargets",
     ):
         assert marker in checker_source or marker in seed_source
     assert '"before": before_by_id[row_id]' in seed_source
@@ -3936,7 +3940,7 @@ const weatherAfter = {
 const evidence = {
   notifications: { mutated_existing: [] },
   tasks: { mutated_existing: [{ before, after }] },
-  weather_alerts: { mutated_existing: [{ before: weatherBefore, after: weatherAfter }] },
+  weather_alerts: { mutated_existing: [] },
 };
 const fixture = {
   clock: { attention_now_ms: 1783857600000 },
