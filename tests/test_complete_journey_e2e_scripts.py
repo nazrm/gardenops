@@ -554,6 +554,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "role_delayed_surfaces",
     ):
         assert marker in journey_source
+    assert 'waitFor(() => page.locator' not in journey_source
     for substantive_marker in (
         "#onb-garden-name",
         ".onb-validation--error",

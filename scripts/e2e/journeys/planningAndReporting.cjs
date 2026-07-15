@@ -160,7 +160,8 @@ async function createInventoryLedgerThroughUi(page, fixture) {
   const createResponse = await createPending;
   assert(createResponse.status() === 201, "Inventory UI create did not return 201");
   const created = await createResponse.json();
-  await waitFor(() => page.locator(".inventory-modal").count() === 0, "inventory create dialog to close");
+  await waitFor(async () => await page.locator(".inventory-modal").count() === 0,
+    "inventory create dialog to close");
   await visible(
     page.locator("#inventory-table-body tr[data-item-id]").filter({ hasText: spec.label }).first(),
     "created inventory row",
@@ -183,7 +184,7 @@ async function createInventoryLedgerThroughUi(page, fixture) {
     const transactionResponse = await transactionPending;
     assert(transactionResponse.status() === 201,
       `Inventory UI transaction returned ${transactionResponse.status()}`);
-    await waitFor(() => page.locator(".inventory-modal").count() === 0,
+    await waitFor(async () => await page.locator(".inventory-modal").count() === 0,
       "inventory transaction dialog to close");
   }
   const item = await ok(page, gardenId, {
@@ -217,7 +218,7 @@ async function createProcurementLifecycleThroughUi(page, fixture) {
   const createResponse = await createPending;
   assert(createResponse.status() === 201, "Procurement UI create did not return 201");
   const created = await createResponse.json();
-  await waitFor(() => page.locator(".procurement-modal").count() === 0,
+  await waitFor(async () => await page.locator(".procurement-modal").count() === 0,
     "procurement create dialog to close");
 
   const transitionLabels = {
@@ -398,7 +399,7 @@ async function exerciseCatalogue(page, fixture) {
     const utility = page.locator("#mobile-utility-btn:visible");
     if (await utility.count()) {
       await utility.click();
-      await waitFor(() => page.locator("body.mobile-utility-open").count() === 1,
+      await waitFor(async () => await page.locator("body.mobile-utility-open").count() === 1,
         "mobile catalogue search controls");
     }
   }
@@ -411,7 +412,7 @@ async function exerciseCatalogue(page, fixture) {
       "local catalogue search result");
     if (await page.locator("body.mobile-utility-open").count()) {
       await page.locator("#mobile-utility-close-btn").click();
-      await waitFor(() => page.locator("body.mobile-utility-open").count() === 0,
+      await waitFor(async () => await page.locator("body.mobile-utility-open").count() === 0,
         "mobile catalogue controls to close");
     }
   }
@@ -555,7 +556,7 @@ async function exerciseDelayedGardenResponses(page, fixture) {
     const selector = page.locator("#mobile-garden-select");
     if (!await selector.isVisible()) {
       await page.locator("#mobile-utility-btn").click();
-      await waitFor(() => page.locator("body.mobile-utility-open").count(),
+      await waitFor(async () => await page.locator("body.mobile-utility-open").count() === 1,
         `${mode} mobile utility sheet`);
     }
     await visible(selector, `${mode} mobile garden selector`);
@@ -572,7 +573,7 @@ async function exerciseDelayedGardenResponses(page, fixture) {
     await page.waitForLoadState("networkidle");
     if (await page.locator("body.mobile-utility-open").count()) {
       await page.locator("#mobile-utility-btn").click();
-      await waitFor(() => page.locator("body.mobile-utility-open").count() === 0,
+      await waitFor(async () => await page.locator("body.mobile-utility-open").count() === 0,
         `${mode} mobile utility close`);
     }
   }
