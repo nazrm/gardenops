@@ -412,8 +412,11 @@ async function checked(
   return res;
 }
 
-async function apiGet<T>(path: string): Promise<T> {
-  const response = await checked(await apiFetch(path), path);
+async function apiGet<T>(
+  path: string,
+  options?: Pick<ApiRequestOptions, "gardenId">,
+): Promise<T> {
+  const response = await checked(await apiFetch(path, options), path);
   return (await response.json()) as T;
 }
 
@@ -2032,12 +2035,16 @@ export async function deleteMapObjectUnitApi(
   );
 }
 
-export async function getPlants(q = "", category = ""): Promise<Plant[]> {
+export async function getPlants(
+  q = "",
+  category = "",
+  options?: Pick<ApiRequestOptions, "gardenId">,
+): Promise<Plant[]> {
   const params = new URLSearchParams();
   if (q) params.set("q", q);
   if (category) params.set("category", category);
   const suffix = params.toString() ? `?${params.toString()}` : "";
-  return apiGet<Plant[]>(`/api/plants${suffix}`);
+  return apiGet<Plant[]>(`/api/plants${suffix}`, options);
 }
 
 export interface PlantSearchResult {
@@ -2054,6 +2061,7 @@ export async function searchPlantsApi(
   options?: {
     limit?: number;
     includeAssignments?: boolean;
+    gardenId?: number | null;
   },
 ): Promise<PlantSearchResult[]> {
   const params = new URLSearchParams();
@@ -2064,7 +2072,10 @@ export async function searchPlantsApi(
   if (options?.includeAssignments) {
     params.set("include_assignments", "true");
   }
-  return apiGet<PlantSearchResult[]>(`/api/plants/search?${params.toString()}`);
+  return apiGet<PlantSearchResult[]>(
+    `/api/plants/search?${params.toString()}`,
+    options?.gardenId !== undefined ? { gardenId: options.gardenId } : undefined,
+  );
 }
 
 export async function getPlotPlants(plotId: string): Promise<Plant[]> {
@@ -2096,10 +2107,12 @@ export async function addPlantToPlotApi(
   pltId: string,
   quantity = 1,
   roomLabel?: string | null,
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<AddPlantToPlotResult> {
   return apiPost<AddPlantToPlotResult>(
     `/api/plots/${encodeApiPathSegment(plotId)}/plants/${encodeApiPathSegment(pltId)}`,
     { quantity, ...(roomLabel != null ? { room_label: roomLabel } : {}) },
+    options,
   );
 }
 
@@ -2177,8 +2190,14 @@ export async function movePlantBetweenPlotsApi(
   );
 }
 
-export async function getPlantPlots(pltId: string): Promise<string[]> {
-  return apiGet<string[]>(`/api/plants/${encodeApiPathSegment(pltId)}/plots`);
+export async function getPlantPlots(
+  pltId: string,
+  options?: Pick<ApiRequestOptions, "gardenId">,
+): Promise<string[]> {
+  return apiGet<string[]>(
+    `/api/plants/${encodeApiPathSegment(pltId)}/plots`,
+    options,
+  );
 }
 
 export async function updatePlantApi(
@@ -2188,8 +2207,14 @@ export async function updatePlantApi(
   await apiPatch<unknown>(`/api/plants/${encodeApiPathSegment(pltId)}`, fields);
 }
 
-export async function getPlantApi(pltId: string): Promise<Plant> {
-  return apiGet<Plant>(`/api/plants/${encodeApiPathSegment(pltId)}/details`);
+export async function getPlantApi(
+  pltId: string,
+  options?: Pick<ApiRequestOptions, "gardenId">,
+): Promise<Plant> {
+  return apiGet<Plant>(
+    `/api/plants/${encodeApiPathSegment(pltId)}/details`,
+    options,
+  );
 }
 
 export async function getNextPlantIdApi(): Promise<string> {
@@ -2368,6 +2393,7 @@ export interface GeneratedCareResult {
   updated_plant_ids: string[];
   attempted: number;
   has_more: boolean;
+  next_cursor?: string | null;
   error?: string;
 }
 
@@ -2376,11 +2402,14 @@ export async function generateMissingCareInstructionsApi(
     maxPlants?: number;
     regenerate?: boolean;
     timeoutMs?: number;
+    gardenId?: number | null;
+    cursor?: string;
   },
 ): Promise<GeneratedCareResult> {
   const body: {
     max_plants?: number;
     regenerate?: boolean;
+    cursor?: string;
   } = {};
   if (options?.maxPlants !== undefined) {
     body.max_plants = options.maxPlants;
@@ -2388,10 +2417,16 @@ export async function generateMissingCareInstructionsApi(
   if (options?.regenerate) {
     body.regenerate = true;
   }
+  if (options?.cursor) {
+    body.cursor = options.cursor;
+  }
   return apiPost<GeneratedCareResult>(
     "/api/ai/generate-missing-care",
     body,
-    { timeoutMs: options?.timeoutMs ?? 120_000 },
+    {
+      timeoutMs: options?.timeoutMs ?? 120_000,
+      ...(options?.gardenId !== undefined ? { gardenId: options.gardenId } : {}),
+    },
   );
 }
 
@@ -2776,8 +2811,10 @@ export interface StatisticsActions {
   }>;
 }
 
-export async function getStatisticsActionsApi(): Promise<StatisticsActions> {
-  return apiGet<StatisticsActions>("/api/statistics/actions");
+export async function getStatisticsActionsApi(
+  options?: Pick<ApiRequestOptions, "gardenId">,
+): Promise<StatisticsActions> {
+  return apiGet<StatisticsActions>("/api/statistics/actions", options);
 }
 
 export interface AutomationStatusTask {
@@ -2793,8 +2830,10 @@ export interface AutomationStatus {
   total: number;
 }
 
-export async function getAutomationStatusApi(): Promise<AutomationStatus> {
-  return apiGet<AutomationStatus>("/api/statistics/automation-status");
+export async function getAutomationStatusApi(
+  options?: Pick<ApiRequestOptions, "gardenId">,
+): Promise<AutomationStatus> {
+  return apiGet<AutomationStatus>("/api/statistics/automation-status", options);
 }
 
 export interface PlotAlerts {
@@ -2893,8 +2932,10 @@ export interface TodayDashboard {
   forecast_today: TodayForecast | null;
 }
 
-export async function fetchTodayDashboardApi(): Promise<TodayDashboard> {
-  return apiGet<TodayDashboard>("/api/dashboard/today");
+export async function fetchTodayDashboardApi(
+  options?: Pick<ApiRequestOptions, "gardenId">,
+): Promise<TodayDashboard> {
+  return apiGet<TodayDashboard>("/api/dashboard/today", options);
 }
 
 export interface GardenerReportZone {
@@ -2932,9 +2973,13 @@ export interface GardenerReports {
   available_zones: GardenerReportZone[];
   needs_attention: {
     overdue_tasks_count: number;
+    overdue_task_ids: string[];
     due_this_week_count: number;
+    due_this_week_task_ids: string[];
     open_issues_count: number;
+    open_issue_ids: string[];
     overdue_follow_ups_count: number;
+    overdue_follow_up_issue_ids: string[];
     active_weather_alerts_count: number;
     weather_alert_titles: string[];
   };
@@ -2989,6 +3034,7 @@ export interface GardenerReports {
 
 export async function fetchGardenerReportsApi(
   params?: Record<string, string | number>,
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<GardenerReports> {
   const search = new URLSearchParams();
   Object.entries(params ?? {}).forEach(([key, value]) => {
@@ -2996,7 +3042,7 @@ export async function fetchGardenerReportsApi(
     search.set(key, String(value));
   });
   const suffix = search.size > 0 ? `?${search.toString()}` : "";
-  return apiGet<GardenerReports>(`/api/statistics/reports${suffix}`);
+  return apiGet<GardenerReports>(`/api/statistics/reports${suffix}`, options);
 }
 
 // ── Inventory ─────────────────────────────────────────────
@@ -3082,7 +3128,7 @@ export async function listInventoryApi(params?: {
   q?: string;
   limit?: number;
   offset?: number;
-}): Promise<InventoryListResponse> {
+}, options?: Pick<ApiRequestOptions, "gardenId">): Promise<InventoryListResponse> {
   const qs = new URLSearchParams();
   if (params) {
     for (const [k, v] of Object.entries(params)) {
@@ -3092,6 +3138,7 @@ export async function listInventoryApi(params?: {
   const query = qs.toString();
   return apiGet<InventoryListResponse>(
     `/api/inventory${query ? `?${query}` : ""}`,
+    options,
   );
 }
 
@@ -3106,8 +3153,8 @@ export async function createInventoryItemApi(data: {
   label?: string;
   inventory_type?: InventoryType;
   unit?: string;
-}): Promise<{ status: string; id: string }> {
-  return apiPost<{ status: string; id: string }>("/api/inventory", data);
+}, options?: Pick<ApiRequestOptions, "gardenId">): Promise<{ status: string; id: string }> {
+  return apiPost<{ status: string; id: string }>("/api/inventory", data, options);
 }
 
 export async function updateInventoryItemApi(
@@ -3118,19 +3165,22 @@ export async function updateInventoryItemApi(
     inventory_type?: InventoryType;
     unit?: string;
   },
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<{ status: string }> {
-  return apiPatch<{ status: string }>(`/api/inventory/${itemId}`, fields);
+  return apiPatch<{ status: string }>(`/api/inventory/${itemId}`, fields, options);
 }
 
 export async function deleteInventoryItemApi(
   itemId: string,
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<{ status: string }> {
-  return apiDelete<{ status: string }>(`/api/inventory/${itemId}`);
+  return apiDelete<{ status: string }>(`/api/inventory/${itemId}`, options);
 }
 
 export async function listInventoryTransactionsApi(
   itemId: string,
   params?: { limit?: number; offset?: number },
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<InventoryTransactionListResponse> {
   const qs = new URLSearchParams();
   if (params) {
@@ -3140,6 +3190,7 @@ export async function listInventoryTransactionsApi(
   const query = qs.toString();
   return apiGet<InventoryTransactionListResponse>(
     `/api/inventory/${itemId}/transactions${query ? `?${query}` : ""}`,
+    options,
   );
 }
 
@@ -3155,10 +3206,12 @@ export async function addInventoryTransactionApi(
     notes?: string;
     journal_entry_id?: string | null;
   },
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<{ status: string; id: number }> {
   return apiPost<{ status: string; id: number }>(
     `/api/inventory/${itemId}/transactions`,
     data,
+    options,
   );
 }
 
@@ -3243,8 +3296,11 @@ export async function fetchTasksApi(
   return apiGet<TaskListResponse>(`/api/tasks${query ? `?${query}` : ""}`);
 }
 
-export async function fetchTaskApi(taskId: string): Promise<GardenTask> {
-  return apiGet<GardenTask>(`/api/tasks/${taskId}`);
+export async function fetchTaskApi(
+  taskId: string,
+  options?: Pick<ApiRequestOptions, "gardenId">,
+): Promise<GardenTask> {
+  return apiGet<GardenTask>(`/api/tasks/${taskId}`, options);
 }
 
 export async function createTaskApi(body: {
@@ -3426,8 +3482,11 @@ export async function fetchIssuesApi(
   return apiGet<IssueListResponse>(`/api/issues${query ? `?${query}` : ""}`);
 }
 
-export async function fetchIssueApi(issueId: string): Promise<GardenIssue> {
-  return apiGet<GardenIssue>(`/api/issues/${issueId}`);
+export async function fetchIssueApi(
+  issueId: string,
+  options?: Pick<ApiRequestOptions, "gardenId">,
+): Promise<GardenIssue> {
+  return apiGet<GardenIssue>(`/api/issues/${issueId}`, options);
 }
 
 export async function fetchIssueHistoryApi(issueId: string): Promise<IssueHistoryResponse> {
@@ -3674,39 +3733,51 @@ export async function fetchHarvestSummaryApi(
 
 export async function fetchProcurementApi(
   params: Record<string, string | number>,
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<ProcurementListResponse> {
   const query = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v !== "" && v !== undefined) query.set(k, String(v));
   }
   const qs = query.toString();
-  return apiGet<ProcurementListResponse>(`/api/procurement${qs ? `?${qs}` : ""}`);
+  return apiGet<ProcurementListResponse>(
+    `/api/procurement${qs ? `?${qs}` : ""}`,
+    options,
+  );
 }
 
 export async function createProcurementApi(
   body: Record<string, unknown>,
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<{ status: string; id: string }> {
-  return apiPost<{ status: string; id: string }>("/api/procurement", body);
+  return apiPost<{ status: string; id: string }>("/api/procurement", body, options);
 }
 
 export async function updateProcurementApi(
   id: string,
   body: Record<string, unknown>,
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<{ status: string }> {
-  return apiPatch<{ status: string }>(`/api/procurement/${id}`, body);
+  return apiPatch<{ status: string }>(`/api/procurement/${id}`, body, options);
 }
 
 export async function transitionProcurementApi(
   id: string,
   body: { to_status: string; ordered_on?: string; received_on?: string },
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<{ status: string }> {
-  return apiPost<{ status: string }>(`/api/procurement/${id}/transition`, body);
+  return apiPost<{ status: string }>(
+    `/api/procurement/${id}/transition`,
+    body,
+    options,
+  );
 }
 
 export async function deleteProcurementApi(
   id: string,
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<{ status: string }> {
-  return apiDelete<{ status: string }>(`/api/procurement/${id}`);
+  return apiDelete<{ status: string }>(`/api/procurement/${id}`, options);
 }
 
 export async function fetchProcurementSummaryApi(): Promise<ProcurementSummary> {
@@ -3717,6 +3788,7 @@ export async function fetchProcurementSummaryApi(): Promise<ProcurementSummary> 
 
 export async function fetchPlannerSuggestionsApi(
   params?: Record<string, string | number>,
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<PlannerResult> {
   const query = new URLSearchParams();
   if (params) {
@@ -3725,18 +3797,44 @@ export async function fetchPlannerSuggestionsApi(
     }
   }
   const qs = query.toString();
-  return apiGet<PlannerResult>(`/api/planner/suggestions${qs ? `?${qs}` : ""}`);
+  return apiGet<PlannerResult>(
+    `/api/planner/suggestions${qs ? `?${qs}` : ""}`,
+    options,
+  );
 }
 
-export async function fetchGardenProfileApi(): Promise<GardenProfile> {
-  return apiGet<GardenProfile>("/api/planner/garden-profile");
+export async function fetchGardenProfileApi(
+  options?: Pick<ApiRequestOptions, "gardenId">,
+): Promise<GardenProfile> {
+  return apiGet<GardenProfile>("/api/planner/garden-profile", options);
 }
 
 export async function fetchCompanionCheckApi(
   params: { plot_id: string; plt_id: string },
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<CompanionCheck> {
   const qs = new URLSearchParams(params).toString();
-  return apiGet<CompanionCheck>(`/api/planner/companions?${qs}`);
+  return apiGet<CompanionCheck>(`/api/planner/companions?${qs}`, options);
+}
+
+export async function fetchPlannerGoalApi(
+  options?: Pick<ApiRequestOptions, "gardenId">,
+): Promise<string | null> {
+  const result = await apiGet<{ goal: string | null }>("/api/planner/goal", options);
+  return result.goal;
+}
+
+export async function savePlannerGoalApi(
+  goal: string | null,
+  options?: Pick<ApiRequestOptions, "gardenId">,
+): Promise<void> {
+  const request: RequestInit & Pick<ApiRequestOptions, "gardenId"> = {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ goal }),
+  };
+  if (options?.gardenId !== undefined) request.gardenId = options.gardenId;
+  await checked(await apiFetch("/api/planner/goal", request), "/api/planner/goal");
 }
 
 // ── Workflows API ──
@@ -3763,32 +3861,53 @@ export interface StartWorkflowResult {
   workflow_id: string;
 }
 
-export async function fetchAvailableWorkflowsApi(): Promise<AvailableWorkflowsResponse> {
-  return apiGet<AvailableWorkflowsResponse>("/api/workflows/available");
+export async function fetchAvailableWorkflowsApi(
+  options?: Pick<ApiRequestOptions, "gardenId">,
+): Promise<AvailableWorkflowsResponse> {
+  return apiGet<AvailableWorkflowsResponse>("/api/workflows/available", options);
 }
 
 export async function startWorkflowApi(
   workflowId: string,
   selectedSteps: string[],
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<StartWorkflowResult> {
-  return apiPost<StartWorkflowResult>("/api/workflows/start", {
-    workflow_id: workflowId,
-    selected_steps: selectedSteps,
-  });
+  return apiPost<StartWorkflowResult>(
+    "/api/workflows/start",
+    {
+      workflow_id: workflowId,
+      selected_steps: selectedSteps,
+    },
+    options,
+  );
 }
 
 // ── Exports API ──
 
+export type ExportResource =
+  | "plants"
+  | "inventory"
+  | "tasks"
+  | "journal"
+  | "harvest"
+  | "issues"
+  | "procurement"
+  | "seasonal-summary";
+
+export type PrintableExportResource = ExportResource;
+
 export function getExportUrl(
-  resource:
-    | "plants"
-    | "inventory"
-    | "tasks"
-    | "journal"
-    | "harvest"
-    | "issues"
-    | "procurement"
-    | "seasonal-summary",
+  resource: ExportResource,
+  format?: "csv" | "json",
+  params?: Record<string, string>,
+): string;
+export function getExportUrl(
+  resource: PrintableExportResource,
+  format: "html",
+  params?: Record<string, string>,
+): string;
+export function getExportUrl(
+  resource: ExportResource,
   format: "csv" | "json" | "html" = "csv",
   params?: Record<string, string>,
 ): string {
@@ -3801,13 +3920,17 @@ export function getExportUrl(
 
 export async function fetchSeasonalSummary(
   params?: Record<string, string | number>,
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<
   Record<string, unknown>
 > {
   const qs = params ? new URLSearchParams(
     Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
   ).toString() : "";
-  return apiGet<Record<string, unknown>>(`/api/exports/seasonal-summary${qs ? `?${qs}` : ""}`);
+  return apiGet<Record<string, unknown>>(
+    `/api/exports/seasonal-summary${qs ? `?${qs}` : ""}`,
+    options,
+  );
 }
 
 export interface PlotAssignment {

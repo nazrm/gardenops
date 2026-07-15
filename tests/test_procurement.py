@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import gardenops.db as db
 from tests.base import BaseApiTest
@@ -158,30 +159,236 @@ class TestProcurementApi(BaseApiTest):
         self.assertEqual(item["status"], "received")
         self.assertEqual(item["received_on"], "2026-03-14")
 
-        # Invalid transition: received -> ordered (not allowed)
+        # Received records are immutable because their inventory ledger entry is durable.
         resp = self.client.post(
             f"/api/procurement/{item_id}/transition",
             json={"to_status": "ordered"},
         )
-        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.status_code, 409)
 
-        # received -> cancelled
         resp = self.client.post(
             f"/api/procurement/{item_id}/transition",
             json={"to_status": "cancelled"},
         )
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 409)
         item = self.client.get(f"/api/procurement/{item_id}").json()
-        self.assertEqual(item["status"], "cancelled")
+        self.assertEqual(item["status"], "received")
 
-        # cancelled -> wanted (reopen)
-        resp = self.client.post(
-            f"/api/procurement/{item_id}/transition",
-            json={"to_status": "wanted"},
+        self.assertEqual(
+            self.client.patch(f"/api/procurement/{item_id}", json={"notes": "changed"}).status_code,
+            409,
         )
-        self.assertEqual(resp.status_code, 200)
-        item = self.client.get(f"/api/procurement/{item_id}").json()
-        self.assertEqual(item["status"], "wanted")
+        self.assertEqual(self.client.delete(f"/api/procurement/{item_id}").status_code, 409)
+
+    def test_create_and_patch_cannot_bypass_received_transition(self) -> None:
+        direct_create = self.client.post(
+            "/api/procurement",
+            json={"label": "Direct receipt", "status": "received"},
+        )
+        self.assertEqual(direct_create.status_code, 422, direct_create.text)
+
+        created = self.client.post("/api/procurement", json={"label": "Patch receipt"})
+        self.assertEqual(created.status_code, 201, created.text)
+        direct_patch = self.client.patch(
+            f"/api/procurement/{created.json()['id']}",
+            json={"status": "received"},
+        )
+        self.assertEqual(direct_patch.status_code, 422, direct_patch.text)
+
+    def test_decimal_receipt_reconciles_and_records_actor_provenance(self) -> None:
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        try:
+            user = self._create_test_user("receipt_actor", "editorpass", "editor")
+            client, headers = self._authenticated_client("receipt_actor", "editorpass")
+            created = client.post(
+                "/api/procurement",
+                headers=headers,
+                json={
+                    "label": "Bulk soil",
+                    "inventory_type": "other",
+                    "quantity": "2.375",
+                    "unit": "kg",
+                    "cost_minor": 400,
+                },
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            item_id = created.json()["id"]
+            for target in ("ordered", "shipped"):
+                response = client.post(
+                    f"/api/procurement/{item_id}/transition",
+                    headers=headers,
+                    json={"to_status": target},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+            received = client.post(
+                f"/api/procurement/{item_id}/transition",
+                headers=headers,
+                json={"to_status": "received", "received_on": "2026-03-14"},
+            )
+            self.assertEqual(received.status_code, 200, received.text)
+
+            procurement = client.get(f"/api/procurement/{item_id}", headers=headers).json()
+            inventory_id = procurement["metadata"]["inventory_item_id"]
+            inventory = client.get(f"/api/inventory/{inventory_id}", headers=headers).json()
+            ledger = client.get(
+                f"/api/inventory/{inventory_id}/transactions",
+                headers=headers,
+            ).json()["transactions"]
+            self.assertEqual(procurement["quantity"], 2.375)
+            self.assertEqual(inventory["quantity"], 2.375)
+            self.assertEqual(len(ledger), 1)
+            self.assertEqual(ledger[0]["delta"], 2.375)
+            self.assertEqual(ledger[0]["cost_minor"], 950)
+            self.assertEqual(ledger[0]["actor_user_id"], int(user["id"]))
+            self.assertEqual(ledger[0]["actor_username"], "receipt_actor")
+            self.assertGreater(ledger[0]["created_at_ms"], 0)
+
+            conn = db.get_db()
+            try:
+                provenance = conn.execute(
+                    """
+                    SELECT received_by_user_id, received_at_ms,
+                           receipt_inventory_transaction_id
+                    FROM procurement_items
+                    WHERE public_id = %s
+                    """,
+                    (item_id,),
+                ).fetchone()
+                assert provenance is not None
+                self.assertEqual(int(provenance["received_by_user_id"]), int(user["id"]))
+                self.assertEqual(int(provenance["received_at_ms"]), ledger[0]["created_at_ms"])
+                self.assertEqual(
+                    int(provenance["receipt_inventory_transaction_id"]),
+                    ledger[0]["id"],
+                )
+            finally:
+                db.return_db(conn)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_concurrent_repeated_receipt_is_idempotent(self) -> None:
+        created = self.client.post(
+            "/api/procurement",
+            json={"label": "Concurrent receipt", "quantity": "1.5", "unit": "kg"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        item_id = created.json()["id"]
+        for target in ("ordered", "shipped"):
+            response = self.client.post(
+                f"/api/procurement/{item_id}/transition",
+                json={"to_status": target},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+
+        def receive() -> int:
+            client = self._new_client()
+            response = client.post(
+                f"/api/procurement/{item_id}/transition",
+                json={"to_status": "received", "received_on": "2026-03-14"},
+            )
+            return response.status_code
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses = list(pool.map(lambda _: receive(), range(2)))
+
+        self.assertEqual(statuses, [200, 200])
+        procurement = self.client.get(f"/api/procurement/{item_id}").json()
+        inventory_id = procurement["metadata"]["inventory_item_id"]
+        ledger = self.client.get(f"/api/inventory/{inventory_id}/transactions").json()
+        self.assertEqual(ledger["total"], 1)
+        self.assertEqual(ledger["transactions"][0]["delta"], 1.5)
+
+        repeated = self.client.post(
+            f"/api/procurement/{item_id}/transition",
+            json={"to_status": "received", "received_on": "2026-03-15"},
+        )
+        self.assertEqual(repeated.status_code, 200, repeated.text)
+        self.assertEqual(
+            self.client.get(f"/api/inventory/{inventory_id}/transactions").json()["total"],
+            1,
+        )
+        self.assertEqual(self.client.delete(f"/api/inventory/{inventory_id}").status_code, 409)
+
+    def test_receipt_provenance_is_garden_scoped(self) -> None:
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        try:
+            first_garden, second_garden, username, password = self._setup_admin_two_gardens()
+            first_client, first_headers = self._authenticated_client(
+                username,
+                password,
+                garden_id=first_garden,
+            )
+            created = first_client.post(
+                "/api/procurement",
+                headers=first_headers,
+                json={"label": "Scoped receipt", "quantity": "0.75", "unit": "kg"},
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            procurement_id = created.json()["id"]
+            for target in ("ordered", "shipped", "received"):
+                response = first_client.post(
+                    f"/api/procurement/{procurement_id}/transition",
+                    headers=first_headers,
+                    json={"to_status": target},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+            procurement = first_client.get(
+                f"/api/procurement/{procurement_id}",
+                headers=first_headers,
+            ).json()
+            inventory_id = procurement["metadata"]["inventory_item_id"]
+
+            second_client, second_headers = self._authenticated_client(
+                username,
+                password,
+                garden_id=second_garden,
+            )
+            self.assertEqual(
+                second_client.get(
+                    f"/api/procurement/{procurement_id}",
+                    headers=second_headers,
+                ).status_code,
+                404,
+            )
+            self.assertEqual(
+                second_client.get(
+                    f"/api/inventory/{inventory_id}",
+                    headers=second_headers,
+                ).status_code,
+                404,
+            )
+
+            conn = db.get_db()
+            try:
+                provenance = conn.execute(
+                    """
+                    SELECT procurement.garden_id AS procurement_garden_id,
+                           inventory.garden_id AS inventory_garden_id,
+                           transaction.garden_id AS transaction_garden_id
+                    FROM procurement_items AS procurement
+                    JOIN inventory_items AS inventory
+                      ON inventory.id = procurement.receipt_inventory_item_id
+                    JOIN inventory_transactions AS transaction
+                      ON transaction.id = procurement.receipt_inventory_transaction_id
+                    WHERE procurement.public_id = %s
+                    """,
+                    (procurement_id,),
+                ).fetchone()
+                assert provenance is not None
+                self.assertEqual(
+                    {
+                        int(provenance["procurement_garden_id"]),
+                        int(provenance["inventory_garden_id"]),
+                        int(provenance["transaction_garden_id"]),
+                    },
+                    {first_garden},
+                )
+            finally:
+                db.return_db(conn)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
 
     def test_inventory_surfaces_procurement_history(self) -> None:
         resp = self.client.post(

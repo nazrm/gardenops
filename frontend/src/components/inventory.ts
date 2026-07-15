@@ -395,7 +395,7 @@ export interface InventoryItemFormOpts {
     label: string;
     inventory_type: InventoryType;
     unit: string;
-  }) => void;
+  }) => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -456,13 +456,27 @@ export function createInventoryItemForm(opts: InventoryItemFormOpts): HTMLElemen
   btnRow.append(submitBtn, cancelBtn);
   form.appendChild(btnRow);
 
+  let pending = false;
   form.addEventListener("submit", (e) => {
     e.preventDefault();
-    opts.onSubmit({
-      plt_id: plantSelect.value || null,
-      label: labelInput.value.trim(),
-      inventory_type: typeSelect.value as InventoryType,
-      unit: unitInput.value.trim() || "pcs",
+    if (pending) return;
+    pending = true;
+    submitBtn.disabled = true;
+    cancelBtn.disabled = true;
+    form.setAttribute("aria-busy", "true");
+    void Promise.resolve(
+      opts.onSubmit({
+        plt_id: plantSelect.value || null,
+        label: labelInput.value.trim(),
+        inventory_type: typeSelect.value as InventoryType,
+        unit: unitInput.value.trim() || "pcs",
+      }),
+    ).finally(() => {
+      if (!form.isConnected) return;
+      pending = false;
+      submitBtn.disabled = false;
+      cancelBtn.disabled = false;
+      form.removeAttribute("aria-busy");
     });
   });
 
@@ -485,7 +499,7 @@ export interface StockTransactionFormOpts {
     notes: string;
     plot_id?: string;
     create_journal: boolean;
-  }) => void;
+  }) => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -509,7 +523,8 @@ export function createStockTransactionForm(opts: StockTransactionFormOpts): HTML
     "1",
     "inv-tx-qty",
   );
-  qtyInput.min = "1";
+  qtyInput.min = "0.000001";
+  qtyInput.step = "0.000001";
   if (!isAdd && opts.item.quantity > 0) {
     qtyInput.max = String(opts.item.quantity);
   }
@@ -607,10 +622,12 @@ export function createStockTransactionForm(opts: StockTransactionFormOpts): HTML
   btnRow.append(submitBtn, cancelBtn);
   form.appendChild(btnRow);
 
+  let pending = false;
   form.addEventListener("submit", (e) => {
     e.preventDefault();
-    const qty = parseInt(qtyInput.value, 10);
-    if (!qty || qty < 1) return;
+    if (pending) return;
+    const qty = Number(qtyInput.value);
+    if (!Number.isFinite(qty) || qty <= 0) return;
     const costVal = costInput?.value ? parseInt(costInput.value, 10) : null;
     const result: {
       delta: number;
@@ -633,7 +650,17 @@ export function createStockTransactionForm(opts: StockTransactionFormOpts): HTML
       create_journal: journalCheck.checked,
     };
     if (plotSelect?.value) result.plot_id = plotSelect.value;
-    opts.onSubmit(result);
+    pending = true;
+    submitBtn.disabled = true;
+    cancelBtn.disabled = true;
+    form.setAttribute("aria-busy", "true");
+    void Promise.resolve(opts.onSubmit(result)).finally(() => {
+      if (!form.isConnected) return;
+      pending = false;
+      submitBtn.disabled = false;
+      cancelBtn.disabled = false;
+      form.removeAttribute("aria-busy");
+    });
   });
 
   return form;

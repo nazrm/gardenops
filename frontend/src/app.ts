@@ -23,6 +23,7 @@ import {
   handleSearchKeydown,
   hideGlobalSearchDropdowns,
   invalidateSearchCache,
+  resetGlobalSearchForGardenSwitch,
 } from "./components/globalSearch";
 import { getAppShellMarkup } from "./components/layout";
 import {
@@ -116,7 +117,11 @@ import type {
 } from "./core/models";
 import { setStaticTemplateHtml } from "./core/sanitize";
 import { setFeatureGates, isFeatureEnabled } from "./core/featureGates";
-import type { AuthUserProfile, GardenSummary } from "./services/api";
+import type {
+  AuthUserProfile,
+  GardenSummary,
+  PrintableExportResource,
+} from "./services/api";
 import { getExportUrl } from "./services/api";
 import {
   ApiError,
@@ -217,6 +222,7 @@ import type {
 import {
   initProcurementTab,
   loadProcurement,
+  resetProcurementForGardenSwitch,
   setProcurementOffset,
 } from "./tabs/procurementTab";
 import {
@@ -1769,7 +1775,7 @@ function ensureStatisticsTabInitialized(): Promise<StatisticsTabModule> {
   statisticsTabModulePromise ??= import("./tabs/statisticsTab")
     .then((mod) => {
       statisticsTabModule = mod;
-      mod.initStatisticsTab(appContext);
+      mod.initStatisticsTab(appContext, refreshWorkflowStartedSurfaces);
       return mod;
     })
     .catch((err) => {
@@ -1777,6 +1783,13 @@ function ensureStatisticsTabInitialized(): Promise<StatisticsTabModule> {
       throw err;
     });
   return statisticsTabModulePromise;
+}
+
+async function refreshWorkflowStartedSurfaces(): Promise<void> {
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
+  await loadCalendar();
+  if (!isCurrentGardenRequest(gardenId)) return;
 }
 
 async function loadStatistics(): Promise<void> {
@@ -4495,9 +4508,12 @@ function downloadJsonFile(filename: string, payload: unknown): void {
 }
 
 function renderDataExportBars(): void {
-  const openPrintable = (resource: string, params?: Record<string, string>) =>
+  const openPrintable = (
+    resource: PrintableExportResource,
+    params?: Record<string, string>,
+  ) =>
     () => window.open(
-      getExportUrl(resource as Parameters<typeof getExportUrl>[0], "html", params),
+      getExportUrl(resource, "html", params),
       "_blank",
       "noopener,noreferrer",
     );
@@ -4536,7 +4552,12 @@ function renderDataExportBars(): void {
     if (actor) params["actor"] = actor;
     if (dateFrom) params["date_from"] = dateFrom;
     if (dateTo) params["date_to"] = dateTo;
-    renderExportBar(journalBar, "journal", { onPrint: () => window.print() }, exportParams(params));
+    renderExportBar(
+      journalBar,
+      "journal",
+      { onPrint: openPrintable("journal", exportParams(params)) },
+      exportParams(params),
+    );
   }
 
   const inventoryBar = document.getElementById("inventory-export-bar");
@@ -4549,7 +4570,7 @@ function renderDataExportBars(): void {
     renderExportBar(
       inventoryBar,
       "inventory",
-      { onPrint: () => window.print() },
+      { onPrint: openPrintable("inventory", exportParams(params)) },
       exportParams(params),
     );
   }
@@ -4613,7 +4634,7 @@ function renderDataExportBars(): void {
     renderExportBar(
       procurementBar,
       "procurement",
-      { onPrint: () => window.print() },
+      { onPrint: openPrintable("procurement", exportParams(params)) },
       exportParams(params),
     );
   }
@@ -4631,23 +4652,49 @@ function renderDataExportBars(): void {
     summaryBtn.type = "button";
     summaryBtn.className = "btn btn-sm btn-secondary";
     summaryBtn.textContent = t("exports.download_summary");
-    summaryBtn.addEventListener("click", () => {
-      void (async () => {
-        try {
-          const summary = await fetchSeasonalSummary(
-            exportParams(params),
-          );
-          downloadJsonFile("gardenops-seasonal-summary.json", summary);
-        } catch (err) {
-          showToast(getApiErrorMessage(err), "error");
-        }
-      })();
-    });
-
     const printBtn = document.createElement("button");
     printBtn.type = "button";
     printBtn.className = "btn btn-sm btn-secondary";
     printBtn.textContent = t("exports.print");
+
+    const status = document.createElement("span");
+    status.className = "export-bar-status";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+
+    summaryBtn.addEventListener("click", () => {
+      void (async () => {
+        const gardenId = getActiveGardenContext();
+        if (gardenId === null) return;
+        const originalLabel = summaryBtn.textContent ?? "";
+        summaryBtn.disabled = true;
+        printBtn.disabled = true;
+        bar.setAttribute("aria-busy", "true");
+        summaryBtn.textContent = t("common.loading");
+        status.textContent = "";
+        try {
+          const summary = await fetchSeasonalSummary(
+            exportParams(params),
+            { gardenId },
+          );
+          if (!isCurrentGardenRequest(gardenId)) return;
+          downloadJsonFile("gardenops-seasonal-summary.json", summary);
+        } catch (err) {
+          if (!isCurrentGardenRequest(gardenId)) return;
+          const message = getApiErrorMessage(err);
+          status.textContent = message;
+          showToast(message, "error");
+        } finally {
+          if (summaryBtn.isConnected) {
+            summaryBtn.disabled = false;
+            printBtn.disabled = false;
+            summaryBtn.textContent = originalLabel;
+            bar.removeAttribute("aria-busy");
+          }
+        }
+      })();
+    });
+
     printBtn.addEventListener("click", () => {
       const url = getExportUrl(
         "seasonal-summary",
@@ -4657,7 +4704,7 @@ function renderDataExportBars(): void {
       window.open(url, "_blank", "noopener,noreferrer");
     });
 
-    bar.append(summaryBtn, printBtn);
+    bar.append(summaryBtn, printBtn, status);
     statisticsBar.appendChild(bar);
   }
 }
@@ -6939,6 +6986,11 @@ function clearGardenScopedStateForSwitch(): void {
   journalTabModule?.resetJournalForGardenSwitch();
   issuesTabModule?.resetIssuesForGardenSwitch();
   harvestTabModule?.resetHarvestForGardenSwitch();
+  inventoryTabModule?.resetInventoryForGardenSwitch();
+  resetProcurementForGardenSwitch();
+  careTabModule?.resetCareForGardenSwitch();
+  resetStatisticsState();
+  resetGlobalSearchForGardenSwitch();
   weatherLoadedAt = 0;
   weatherLoadPromise = null;
   weatherScheduleSeq += 1;

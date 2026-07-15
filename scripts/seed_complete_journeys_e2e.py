@@ -32,6 +32,9 @@ PHASE_TWO_ORACLE_PATH = (
 PHASE_THREE_ORACLE_PATH = (
     REPOSITORY_ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_three_oracle.json"
 )
+PHASE_FOUR_ORACLE_PATH = (
+    REPOSITORY_ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_four_oracle.json"
+)
 
 
 def _load_phase_two_oracle() -> tuple[dict[str, Any], str]:
@@ -73,6 +76,29 @@ def _load_phase_three_oracle() -> tuple[dict[str, Any], str]:
 
 PHASE_THREE_ORACLE, PHASE_THREE_ORACLE_SHA256 = _load_phase_three_oracle()
 PHASE_THREE_ORACLE_FIXTURE = PHASE_THREE_ORACLE["phase_three"]["fixture"]
+
+
+def _load_phase_four_oracle() -> tuple[dict[str, Any], str]:
+    try:
+        raw = PHASE_FOUR_ORACLE_PATH.read_bytes()
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Complete journey Phase 4 oracle is unavailable or invalid") from exc
+    phase_four = payload.get("phase_four") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 1
+        or not isinstance(phase_four, dict)
+        or not isinstance(phase_four.get("fixture"), dict)
+        or not isinstance(phase_four.get("database_boundaries"), dict)
+        or not isinstance(phase_four.get("support"), dict)
+    ):
+        raise RuntimeError("Complete journey Phase 4 oracle fixture contract is missing")
+    return payload, sha256(raw).hexdigest()
+
+
+PHASE_FOUR_ORACLE, PHASE_FOUR_ORACLE_SHA256 = _load_phase_four_oracle()
+PHASE_FOUR_ORACLE_FIXTURE = PHASE_FOUR_ORACLE["phase_four"]["fixture"]
 
 ADMIN_USERNAME = os.environ.get(
     "GARDENOPS_COMPLETE_JOURNEYS_E2E_USERNAME", "complete_journeys_e2e_admin"
@@ -3442,6 +3468,276 @@ def _phase_three_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
     }
 
 
+def _phase_four_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
+    gardens = {
+        str(row["slug"]): int(row["id"])
+        for row in conn.execute(
+            "SELECT id, slug FROM gardens WHERE slug = ANY(%s)",
+            ([optimization_seed.GARDEN_A_SLUG, optimization_seed.GARDEN_B_SLUG],),
+        ).fetchall()
+    }
+    alpha_id = gardens[optimization_seed.GARDEN_A_SLUG]
+    beta_id = gardens[optimization_seed.GARDEN_B_SLUG]
+    garden_ids = [alpha_id, beta_id]
+
+    inventory_rows = conn.execute(
+        """
+        SELECT item.id, item.public_id, item.garden_id, item.plt_id, item.label,
+               item.inventory_type, item.unit, item.created_at_ms,
+               COALESCE(SUM(tx.delta), 0) AS quantity
+        FROM inventory_items item
+        LEFT JOIN inventory_transactions tx
+          ON tx.item_id = item.id AND tx.garden_id = item.garden_id
+        WHERE item.garden_id = ANY(%s)
+        GROUP BY item.id
+        ORDER BY item.garden_id, item.public_id
+        """,
+        (garden_ids,),
+    ).fetchall()
+    transaction_rows = conn.execute(
+        """
+        SELECT tx.id, tx.item_id, tx.garden_id, item.public_id AS item_public_id,
+               tx.delta, tx.reason, tx.source_name, tx.cost_minor, tx.occurred_on,
+               tx.storage_location, tx.notes, actor.username AS actor_username,
+               journal.public_id AS journal_public_id, tx.created_at_ms
+        FROM inventory_transactions tx
+        JOIN inventory_items item
+          ON item.id = tx.item_id AND item.garden_id = tx.garden_id
+        LEFT JOIN auth_users actor ON actor.id = tx.actor_user_id
+        LEFT JOIN garden_journal_entries journal ON journal.id = tx.journal_entry_id
+        WHERE tx.garden_id = ANY(%s)
+        ORDER BY tx.garden_id, tx.id
+        """,
+        (garden_ids,),
+    ).fetchall()
+    procurement_rows = conn.execute(
+        """
+        SELECT procurement.id, procurement.public_id, procurement.garden_id,
+               procurement.label, procurement.inventory_type, procurement.linked_plt_id,
+               procurement.linked_plot_id, procurement.vendor_name, procurement.vendor_url,
+               procurement.status, procurement.cost_minor, procurement.currency,
+               procurement.quantity, procurement.unit, procurement.ordered_on,
+               procurement.expected_on, procurement.received_on, procurement.notes,
+               procurement.metadata_json, procurement.receipt_inventory_item_id,
+               procurement.receipt_inventory_transaction_id, recipient.username AS received_by,
+               procurement.received_at_ms, creator.username AS created_by,
+               procurement.created_at_ms, procurement.updated_at_ms
+        FROM procurement_items procurement
+        LEFT JOIN auth_users creator ON creator.id = procurement.created_by_user_id
+        LEFT JOIN auth_users recipient ON recipient.id = procurement.received_by_user_id
+        WHERE procurement.garden_id = ANY(%s)
+        ORDER BY procurement.garden_id, procurement.public_id
+        """,
+        (garden_ids,),
+    ).fetchall()
+    goal_rows = conn.execute(
+        """
+        SELECT key, value
+        FROM app_settings
+        WHERE key LIKE 'planner_goal:%'
+        ORDER BY key
+        """
+    ).fetchall()
+    workflow_rows = conn.execute(
+        """
+        SELECT task.id, task.public_id, task.garden_id, task.task_type, task.title,
+               task.description, task.status, task.due_on, task.rule_source,
+               task.metadata_json, creator.username AS created_by,
+               task.created_at_ms, task.updated_at_ms,
+               COALESCE(array_agg(DISTINCT plant.plt_id)
+                 FILTER (WHERE plant.plt_id IS NOT NULL), '{}') AS plant_ids,
+               COALESCE(array_agg(DISTINCT plot.plot_id)
+                 FILTER (WHERE plot.plot_id IS NOT NULL), '{}') AS plot_ids
+        FROM garden_tasks task
+        LEFT JOIN auth_users creator ON creator.id = task.created_by_user_id
+        LEFT JOIN garden_task_plants plant ON plant.task_id = task.id
+        LEFT JOIN garden_task_plots plot ON plot.task_id = task.id
+        WHERE task.garden_id = ANY(%s) AND task.rule_source LIKE 'workflow:%'
+        GROUP BY task.id, creator.username
+        ORDER BY task.garden_id, task.rule_source
+        """,
+        (garden_ids,),
+    ).fetchall()
+
+    def optional_int(value: object) -> int | None:
+        return int(value) if value is not None else None
+
+    return {
+        "garden_ids": {"alpha": alpha_id, "beta": beta_id},
+        "inventory_items": [
+            {
+                "created_at_ms": int(row["created_at_ms"]),
+                "garden_id": int(row["garden_id"]),
+                "inventory_type": str(row["inventory_type"]),
+                "label": str(row["label"] or ""),
+                "plant_id": str(row["plt_id"]) if row["plt_id"] else None,
+                "public_id": str(row["public_id"]),
+                "quantity": str(row["quantity"]),
+                "row_id": int(row["id"]),
+                "unit": str(row["unit"]),
+            }
+            for row in inventory_rows
+        ],
+        "inventory_transactions": [
+            {
+                "actor_username": str(row["actor_username"])
+                if row["actor_username"] is not None
+                else None,
+                "cost_minor": optional_int(row["cost_minor"]),
+                "created_at_ms": int(row["created_at_ms"]),
+                "delta": str(row["delta"]),
+                "garden_id": int(row["garden_id"]),
+                "item_public_id": str(row["item_public_id"]),
+                "journal_public_id": str(row["journal_public_id"])
+                if row["journal_public_id"] is not None
+                else None,
+                "notes": str(row["notes"] or ""),
+                "occurred_on": str(row["occurred_on"]),
+                "reason": str(row["reason"] or ""),
+                "row_id": int(row["id"]),
+                "source_name": str(row["source_name"] or ""),
+                "storage_location": str(row["storage_location"] or ""),
+            }
+            for row in transaction_rows
+        ],
+        "planner_goal_preferences": [
+            {"key": str(row["key"]), "value": str(row["value"])} for row in goal_rows
+        ],
+        "procurement_items": [
+            {
+                "cost_minor": int(row["cost_minor"]),
+                "created_at_ms": int(row["created_at_ms"]),
+                "created_by": str(row["created_by"]) if row["created_by"] else None,
+                "currency": str(row["currency"]),
+                "expected_on": str(row["expected_on"]) if row["expected_on"] else None,
+                "garden_id": int(row["garden_id"]),
+                "inventory_type": str(row["inventory_type"]),
+                "label": str(row["label"]),
+                "linked_plant_id": str(row["linked_plt_id"]) if row["linked_plt_id"] else None,
+                "linked_plot_id": str(row["linked_plot_id"]) if row["linked_plot_id"] else None,
+                "metadata": _json_object(
+                    row["metadata_json"] or "{}", label="Phase 4 procurement metadata"
+                ),
+                "notes": str(row["notes"] or ""),
+                "ordered_on": str(row["ordered_on"]) if row["ordered_on"] else None,
+                "public_id": str(row["public_id"]),
+                "quantity": str(row["quantity"]),
+                "receipt_inventory_item_id": optional_int(row["receipt_inventory_item_id"]),
+                "receipt_inventory_transaction_id": optional_int(
+                    row["receipt_inventory_transaction_id"]
+                ),
+                "received_at_ms": optional_int(row["received_at_ms"]),
+                "received_by": str(row["received_by"]) if row["received_by"] else None,
+                "received_on": str(row["received_on"]) if row["received_on"] else None,
+                "row_id": int(row["id"]),
+                "status": str(row["status"]),
+                "unit": str(row["unit"]),
+                "updated_at_ms": int(row["updated_at_ms"]),
+                "vendor_name": str(row["vendor_name"] or ""),
+                "vendor_url": str(row["vendor_url"] or ""),
+            }
+            for row in procurement_rows
+        ],
+        "report_source_rows": {
+            "harvest": [
+                {
+                    "garden_id": int(row["garden_id"]),
+                    "occurred_on": str(row["occurred_on"]),
+                    "public_id": str(row["public_id"]),
+                    "quantity": str(row["quantity"]),
+                    "unit": str(row["unit"]),
+                }
+                for row in conn.execute(
+                    """SELECT public_id, garden_id, occurred_on, quantity, unit
+                       FROM harvest_entries WHERE garden_id = ANY(%s)
+                       ORDER BY garden_id, public_id""",
+                    (garden_ids,),
+                ).fetchall()
+            ],
+            "issues": [
+                {
+                    "follow_up_on": str(row["follow_up_on"]) if row["follow_up_on"] else None,
+                    "garden_id": int(row["garden_id"]),
+                    "public_id": str(row["public_id"]),
+                    "status": str(row["status"]),
+                }
+                for row in conn.execute(
+                    """SELECT public_id, garden_id, status, follow_up_on
+                       FROM garden_issues WHERE garden_id = ANY(%s)
+                       ORDER BY garden_id, public_id""",
+                    (garden_ids,),
+                ).fetchall()
+            ],
+            "plots": [
+                {
+                    "garden_id": int(row["garden_id"]),
+                    "plot_id": str(row["plot_id"]),
+                    "public_id": str(row["public_id"]),
+                    "zone_code": str(row["zone_code"] or ""),
+                }
+                for row in conn.execute(
+                    """SELECT plot.public_id, ownership.garden_id, plot.plot_id, plot.zone_code
+                       FROM plots plot
+                       JOIN plot_ownership ownership ON ownership.plot_id = plot.plot_id
+                       WHERE ownership.garden_id = ANY(%s)
+                       ORDER BY ownership.garden_id, plot.plot_id""",
+                    (garden_ids,),
+                ).fetchall()
+            ],
+            "tasks": [
+                {
+                    "due_on": str(row["due_on"]),
+                    "garden_id": int(row["garden_id"]),
+                    "public_id": str(row["public_id"]),
+                    "rule_source": str(row["rule_source"] or ""),
+                    "snoozed_until": str(row["snoozed_until"]) if row["snoozed_until"] else None,
+                    "status": str(row["status"]),
+                }
+                for row in conn.execute(
+                    """SELECT public_id, garden_id, status, due_on, snoozed_until, rule_source
+                       FROM garden_tasks WHERE garden_id = ANY(%s)
+                       ORDER BY garden_id, public_id""",
+                    (garden_ids,),
+                ).fetchall()
+            ],
+        },
+        "workflow_tasks": [
+            {
+                "created_at_ms": int(row["created_at_ms"]),
+                "created_by": str(row["created_by"]) if row["created_by"] else None,
+                "description": str(row["description"] or ""),
+                "due_on": str(row["due_on"]),
+                "garden_id": int(row["garden_id"]),
+                "metadata": _json_object(
+                    row["metadata_json"] or "{}", label="Phase 4 workflow metadata"
+                ),
+                "plant_ids": sorted(str(value) for value in row["plant_ids"]),
+                "plot_ids": sorted(str(value) for value in row["plot_ids"]),
+                "public_id": str(row["public_id"]),
+                "row_id": int(row["id"]),
+                "rule_source": str(row["rule_source"]),
+                "status": str(row["status"]),
+                "task_type": str(row["task_type"]),
+                "title": str(row["title"]),
+                "updated_at_ms": int(row["updated_at_ms"]),
+            }
+            for row in workflow_rows
+        ],
+    }
+
+
+def _phase_four_fixture_state() -> dict[str, Any]:
+    return {
+        **PHASE_FOUR_ORACLE_FIXTURE,
+        "oracle": {
+            "path": "scripts/e2e/fixtures/complete_journeys_phase_four_oracle.json",
+            "schema_version": int(PHASE_FOUR_ORACLE["schema_version"]),
+            "sha256": PHASE_FOUR_ORACLE_SHA256,
+        },
+        "support": dict(PHASE_FOUR_ORACLE["phase_four"]["support"]),
+    }
+
+
 def _count(conn, table: str) -> int:
     allowed = {
         "attention_outcomes",
@@ -3853,6 +4149,7 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
             "phase_one_state": _phase_one_runtime_state(conn, optimization_seed),
             "phase_two_state": _phase_two_runtime_state(conn, optimization_seed),
             "phase_three_state": _phase_three_runtime_state(conn, optimization_seed),
+            "phase_four_state": _phase_four_runtime_state(conn, optimization_seed),
         },
         "gardens": {
             "alpha": garden_payload(
@@ -3869,6 +4166,7 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
         "phase_one": _phase_one_fixture_state(conn, optimization_seed),
         "phase_two": _phase_two_fixture_state(conn, optimization_seed),
         "phase_three": _phase_three_fixture_state(conn, optimization_seed),
+        "phase_four": _phase_four_fixture_state(),
         "roles": {
             "admin": ADMIN_USERNAME,
             "editor": EDITOR_LOGIN[0],

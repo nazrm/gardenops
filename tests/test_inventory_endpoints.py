@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from tests.base import BaseApiTest
 
@@ -202,6 +203,88 @@ class TestInventoryTransactions(BaseApiTest):
             },
         )
         self.assertEqual(resp.status_code, 422)
+
+    def test_transaction_rejects_zero_and_insufficient_stock(self) -> None:
+        item_id = self._create_item()
+
+        zero = self.client.post(
+            f"/api/inventory/{item_id}/transactions",
+            json={"delta": 0, "occurred_on": "2026-03-15"},
+        )
+        self.assertEqual(zero.status_code, 422, zero.text)
+
+        insufficient = self.client.post(
+            f"/api/inventory/{item_id}/transactions",
+            json={"delta": -0.25, "occurred_on": "2026-03-15"},
+        )
+        self.assertEqual(insufficient.status_code, 409, insufficient.text)
+        self.assertEqual(self.client.get(f"/api/inventory/{item_id}").json()["quantity"], 0)
+
+    def test_decimal_transactions_reconcile_with_actor_and_timestamp(self) -> None:
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        try:
+            user = self._create_test_user("inventory_decimal", "editorpass", "editor")
+            client, headers = self._authenticated_client("inventory_decimal", "editorpass")
+            created = client.post(
+                "/api/inventory",
+                headers=headers,
+                json={"label": "Compost", "inventory_type": "other", "unit": "kg"},
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            item_id = created.json()["id"]
+
+            for delta in ("2.75", "-0.625"):
+                response = client.post(
+                    f"/api/inventory/{item_id}/transactions",
+                    headers=headers,
+                    json={"delta": delta, "reason": "adjusted", "occurred_on": "2026-03-15"},
+                )
+                self.assertEqual(response.status_code, 201, response.text)
+
+            item = client.get(f"/api/inventory/{item_id}", headers=headers).json()
+            ledger = client.get(
+                f"/api/inventory/{item_id}/transactions",
+                headers=headers,
+            ).json()["transactions"]
+            self.assertEqual(item["quantity"], 2.125)
+            self.assertEqual(sum(transaction["delta"] for transaction in ledger), 2.125)
+            self.assertTrue(
+                all(transaction["actor_user_id"] == int(user["id"]) for transaction in ledger)
+            )
+            self.assertTrue(
+                all(
+                    transaction["actor_username"] == "inventory_decimal"
+                    for transaction in ledger
+                )
+            )
+            self.assertTrue(all(transaction["created_at_ms"] > 0 for transaction in ledger))
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_concurrent_consumption_never_makes_stock_negative(self) -> None:
+        item_id = self._create_item()
+        seeded = self.client.post(
+            f"/api/inventory/{item_id}/transactions",
+            json={"delta": 1, "reason": "purchased", "occurred_on": "2026-03-15"},
+        )
+        self.assertEqual(seeded.status_code, 201, seeded.text)
+
+        def consume() -> int:
+            client = self._new_client()
+            response = client.post(
+                f"/api/inventory/{item_id}/transactions",
+                json={"delta": -1, "reason": "sowed", "occurred_on": "2026-03-16"},
+            )
+            return response.status_code
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses = list(pool.map(lambda _: consume(), range(2)))
+
+        self.assertEqual(sorted(statuses), [201, 409])
+        self.assertEqual(self.client.get(f"/api/inventory/{item_id}").json()["quantity"], 0)
+        ledger = self.client.get(f"/api/inventory/{item_id}/transactions").json()
+        self.assertEqual(ledger["total"], 2)
 
     def test_viewer_denied_write(self) -> None:
         """Viewer role should get 403 on inventory write operations."""

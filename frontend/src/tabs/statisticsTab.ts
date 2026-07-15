@@ -20,6 +20,9 @@ import {
   fetchCompanionCheckApi,
   fetchTodayDashboardApi,
   fetchAvailableWorkflowsApi,
+  fetchPlannerGoalApi,
+  getActiveGardenContext,
+  savePlannerGoalApi,
   startWorkflowApi,
 } from "../services/api";
 import type { AvailableWorkflow } from "../services/api";
@@ -47,11 +50,43 @@ let gardenerReportsZoneCode = "";
 let plannerResult: PlannerResult | null = null;
 let gardenProfile: GardenProfile | null = null;
 let plannerGoal = "";
+let plannerGoalSaveQueue: Promise<void> = Promise.resolve();
+let workflowRefreshHook: (() => Promise<void>) | null = null;
+const statisticsRequestGeneration = {
+  overview: 0,
+  today: 0,
+  reports: 0,
+  planner: 0,
+};
+
+type StatisticsRequestKind = keyof typeof statisticsRequestGeneration;
+
+interface StatisticsRequestContext {
+  gardenId: number;
+  generation: number;
+  kind: StatisticsRequestKind;
+}
+
+function createStatisticsRequest(
+  kind: StatisticsRequestKind,
+): StatisticsRequestContext | null {
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return null;
+  const generation = ++statisticsRequestGeneration[kind];
+  return { gardenId, generation, kind };
+}
+
+function isCurrentStatisticsRequest(request: StatisticsRequestContext): boolean {
+  return request.generation === statisticsRequestGeneration[request.kind]
+    && request.gardenId === getActiveGardenContext();
+}
 
 export function initStatisticsTab(
   appCtx: AppContext,
+  onWorkflowStarted?: () => Promise<void>,
 ): void {
   ctx = appCtx;
+  workflowRefreshHook = onWorkflowStarted ?? null;
   document
     .querySelectorAll<HTMLButtonElement>("[data-stats-mode]")
     .forEach((btn) => {
@@ -95,8 +130,23 @@ export function getStatisticsCallbacks(): StatisticsCallbacks {
 }
 
 export function resetStatisticsState(): void {
+  statisticsRequestGeneration.overview += 1;
+  statisticsRequestGeneration.today += 1;
+  statisticsRequestGeneration.reports += 1;
+  statisticsRequestGeneration.planner += 1;
   statisticsActionsCache = null;
   gardenerReportsZoneCode = "";
+  plannerResult = null;
+  gardenProfile = null;
+  plannerGoal = "";
+  for (const id of [
+    "today-dashboard",
+    "statistics-content",
+    "reports-dashboard",
+    "planner-dashboard",
+  ]) {
+    document.getElementById(id)?.replaceChildren();
+  }
 }
 
 export function getGardenerReportsZoneCode(): string {
@@ -105,15 +155,19 @@ export function getGardenerReportsZoneCode(): string {
 
 export async function loadStatistics(): Promise<void> {
   if (!ctx) return;
+  const request = createStatisticsRequest("overview");
+  if (!request) return;
   if (ctx.state.plantsCache.length === 0) {
     await ctx.ensurePlantsCacheLoaded();
+    if (!isCurrentStatisticsRequest(request)) return;
   }
   let actions: StatisticsActions | null = null;
   try {
-    actions = await getStatisticsActionsApi();
+    actions = await getStatisticsActionsApi({ gardenId: request.gardenId });
   } catch {
     // degrade gracefully
   }
+  if (!isCurrentStatisticsRequest(request)) return;
   statisticsActionsCache = actions;
   const container = document.getElementById(
     "statistics-content",
@@ -136,19 +190,23 @@ export async function loadStatistics(): Promise<void> {
 }
 
 async function loadTodayDashboard(): Promise<void> {
+  const request = createStatisticsRequest("today");
+  if (!request) return;
   const container = document.getElementById(
     "today-dashboard",
   );
   if (!container) return;
   try {
     const data: TodayDashboard =
-      await fetchTodayDashboardApi();
+      await fetchTodayDashboardApi({ gardenId: request.gardenId });
+    if (!isCurrentStatisticsRequest(request)) return;
     renderTodayDashboard(container, data, {
       onTaskClick: async (taskId) => {
         ctx.navigateToSubMode("tasks");
         void loadTasks();
         try {
-          const task = await fetchTaskApi(taskId);
+          const task = await fetchTaskApi(taskId, { gardenId: request.gardenId });
+          if (!isCurrentStatisticsRequest(request)) return;
           await ctx.openTaskForm(task);
         } catch {
           // keep the task list open as fallback
@@ -158,7 +216,8 @@ async function loadTodayDashboard(): Promise<void> {
         ctx.navigateToSubMode("issues");
         void ctx.loadIssues();
         try {
-          const issue = await fetchIssueApi(issueId);
+          const issue = await fetchIssueApi(issueId, { gardenId: request.gardenId });
+          if (!isCurrentStatisticsRequest(request)) return;
           await ctx.openIssueForm(issue);
         } catch {
           // keep the issues list open as fallback
@@ -170,6 +229,7 @@ async function loadTodayDashboard(): Promise<void> {
       },
     });
   } catch {
+    if (!isCurrentStatisticsRequest(request)) return;
     container.replaceChildren();
   }
 }
@@ -177,6 +237,8 @@ async function loadTodayDashboard(): Promise<void> {
 async function loadGardenerReports(
   zoneCode?: string,
 ): Promise<void> {
+  const request = createStatisticsRequest("reports");
+  if (!request) return;
   const container = document.getElementById(
     "reports-dashboard",
   );
@@ -184,22 +246,44 @@ async function loadGardenerReports(
   try {
     const result = await fetchGardenerReportsApi(
       zoneCode ? { zone_code: zoneCode } : undefined,
+      { gardenId: request.gardenId },
     );
+    if (!isCurrentStatisticsRequest(request)) return;
     gardenerReportsZoneCode = result.zone_code ?? "";
     renderGardenerReports(
       container,
       result,
       gardenerReportsCallbacks,
+      {
+        gardenId: request.gardenId,
+        isCurrent: () => isCurrentStatisticsRequest(request),
+      },
     );
+    ctx.renderDataExportBars();
   } catch {
+    if (!isCurrentStatisticsRequest(request)) return;
     container.replaceChildren();
   }
 }
 
 async function loadPlanner(
-  goal?: string,
+  goalOverride?: string,
+  persistGoal = false,
 ): Promise<void> {
+  const request = createStatisticsRequest("planner");
+  if (!request) return;
   try {
+    let goal = goalOverride;
+    if (goal === undefined) {
+      goal = (await fetchPlannerGoalApi({ gardenId: request.gardenId })) ?? "";
+      if (!isCurrentStatisticsRequest(request)) return;
+    } else if (persistGoal) {
+      plannerGoalSaveQueue = plannerGoalSaveQueue
+        .catch(() => undefined)
+        .then(() => savePlannerGoalApi(goal || null, { gardenId: request.gardenId }));
+      await plannerGoalSaveQueue;
+      if (!isCurrentStatisticsRequest(request)) return;
+    }
     const params: Record<string, string | number> = {
       limit: 10,
     };
@@ -210,15 +294,16 @@ async function loadPlanner(
       ).join(",");
     }
     const [result, profile, wfResp] = await Promise.all([
-      fetchPlannerSuggestionsApi(params),
-      fetchGardenProfileApi(),
-      fetchAvailableWorkflowsApi().catch(
+      fetchPlannerSuggestionsApi(params, { gardenId: request.gardenId }),
+      fetchGardenProfileApi({ gardenId: request.gardenId }),
+      fetchAvailableWorkflowsApi({ gardenId: request.gardenId }).catch(
         () => ({ workflows: [] as AvailableWorkflow[] }),
       ),
     ]);
+    if (!isCurrentStatisticsRequest(request)) return;
     plannerResult = result;
     gardenProfile = profile;
-    plannerGoal = goal || "";
+    plannerGoal = goal;
     const container = document.getElementById(
       "planner-dashboard",
     );
@@ -232,7 +317,7 @@ async function loadPlanner(
           void ctx.selectPlot(plotId);
         },
         onRefresh: (newGoal) =>
-          void loadPlanner(newGoal),
+          void loadPlanner(newGoal, true),
         onPreviewCandidate: (plotId, suggestion) => {
           ctx.state.highlightedPlotIds = new Set([
             plotId,
@@ -257,7 +342,8 @@ async function loadPlanner(
                 await fetchCompanionCheckApi({
                   plot_id: plotId,
                   plt_id: suggestion.plt_id,
-                });
+                }, { gardenId: request.gardenId });
+              if (!isCurrentStatisticsRequest(request)) return;
               const companionCopy = fit.companions
                 .map((item) => item.description)
                 .join(" · ");
@@ -295,23 +381,31 @@ async function loadPlanner(
       };
       const wfCbs: WorkflowCallbacks = {
         onStart: (workflowId, selectedSteps) => {
-          void (async () => {
+          return (async () => {
             try {
               const res = await startWorkflowApi(
                 workflowId,
                 selectedSteps,
+                { gardenId: request.gardenId },
               );
+              if (!isCurrentStatisticsRequest(request)) return;
               ctx.showToast(
                 t("workflow.started", {
                   count: res.created,
                 }),
               );
-              void loadPlanner(plannerGoal || undefined);
+              await Promise.allSettled([
+                loadTodayDashboard(),
+                ctx.loadTasks(),
+                ctx.refreshBadgeCounts(),
+                workflowRefreshHook?.() ?? Promise.resolve(),
+              ]);
+              if (!isCurrentStatisticsRequest(request)) return;
+              await loadPlanner(plannerGoal, false);
             } catch (err) {
-              ctx.showToast(
-                getApiErrorMessage(err),
-                "error",
-              );
+              if (isCurrentStatisticsRequest(request)) {
+                ctx.showToast(getApiErrorMessage(err), "error");
+              }
             }
           })();
         },
@@ -324,10 +418,12 @@ async function loadPlanner(
         plannerGoal,
         wfResp.workflows,
         wfCbs,
+        ctx.canWrite(),
       );
     }
   } catch {
-    // Non-critical feature — degrade gracefully
+    if (!isCurrentStatisticsRequest(request)) return;
+    document.getElementById("planner-dashboard")?.replaceChildren();
   }
 }
 
@@ -360,9 +456,10 @@ const gardenerReportsCallbacks: GardenerReportsCallbacks =
   {
     onZoneChange: (zoneCode) => {
       gardenerReportsZoneCode = zoneCode;
+      ctx.renderDataExportBars();
       void loadGardenerReports(zoneCode || undefined);
     },
-    onOpenTasks: (view) => {
+    onOpenTasks: (view, taskIds) => {
       setTasksView(view);
       setTasksOffset(0);
       syncTasksViewButtons();
@@ -373,9 +470,20 @@ const gardenerReportsCallbacks: GardenerReportsCallbacks =
       if (statusFilter)
         statusFilter.value =
           view === "overdue" ? "pending" : "";
-      void loadTasks();
+      void (async () => {
+        await loadTasks();
+        if (taskIds.length !== 1) return;
+        const gardenId = getActiveGardenContext();
+        if (gardenId === null) return;
+        try {
+          const task = await fetchTaskApi(taskIds[0]!, { gardenId });
+          if (gardenId === getActiveGardenContext()) await ctx.openTaskForm(task);
+        } catch {
+          // The scoped task list remains available as fallback.
+        }
+      })();
     },
-    onOpenIssues: (filter) => {
+    onOpenIssues: (filter, issueIds) => {
       ctx.navigateToSubMode("issues");
       const statusFilter = querySelect("issues-filter-status");
       const typeFilter = querySelect("issues-filter-type");
@@ -392,9 +500,19 @@ const gardenerReportsCallbacks: GardenerReportsCallbacks =
         if (typeFilter) typeFilter.value = "";
         if (severityFilter) severityFilter.value = "";
       }
-      void ctx.setIssuesOffset(0).then(() =>
-        ctx.loadIssues(),
-      );
+      void (async () => {
+        await ctx.setIssuesOffset(0);
+        await ctx.loadIssues();
+        if (issueIds.length !== 1) return;
+        const gardenId = getActiveGardenContext();
+        if (gardenId === null) return;
+        try {
+          const issue = await fetchIssueApi(issueIds[0]!, { gardenId });
+          if (gardenId === getActiveGardenContext()) await ctx.openIssueForm(issue);
+        } catch {
+          // The supported issue filters remain available as fallback.
+        }
+      })();
     },
     onOpenWeather: () => {
       ctx.navigateToSubMode("care");

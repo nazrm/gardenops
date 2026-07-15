@@ -163,6 +163,23 @@ journeys:
   - <<: *open_journey
     id: I1
     phase: 4
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    evidence: &phase_four_evidence
+      - scripts/check_complete_journeys_e2e.cjs
+      - scripts/run_complete_journeys_e2e.sh
+      - scripts/seed_complete_journeys_e2e.py
+      - tests/test_complete_journey_e2e_scripts.py
+    offline: not_applicable
+    provider: not_applicable
+    filesystem: not_applicable
+    notes:
+      offline: Plant search and catalogue reads are online-only.
+      provider: The supported local catalogue is proven; the external catalogue returns an explicit empty result and has no provider contract.
+      filesystem: Catalogue search has no supported file workflow.
+      mobile: Pixel 7 opens the mobile search utility and resolves a garden-scoped local catalogue result.
   - <<: *open_journey
     id: I2
     phase: 3
@@ -213,9 +230,34 @@ journeys:
   - <<: *open_journey
     id: L1
     phase: 4
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    evidence: *phase_four_evidence
+    offline: not_applicable
+    provider: not_applicable
+    filesystem: not_applicable
+    notes:
+      offline: Planner goals and workflow starts have no supported offline queue.
+      provider: Planner and seasonal workflow execution are provider-independent.
+      filesystem: Planner and workflow actions do not use files.
+      lifecycle: Phase 4 proves preference load/save/clear and idempotent task creation, not suggestion acceptance or workflow-instance lifecycle.
   - <<: *open_journey
     id: L2
     phase: 4
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    evidence: *phase_four_evidence
+    offline: not_applicable
+    provider: not_applicable
+    filesystem: not_applicable
+    notes:
+      offline: Procurement transitions and inventory reconciliation are online-only.
+      provider: Procurement has no external provider dependency.
+      filesystem: Procurement does not use a supported file workflow.
   - <<: *open_journey
     id: M1
     phase: 1
@@ -323,6 +365,18 @@ journeys:
   - <<: *open_journey
     id: P4
     phase: 4
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    filesystem: proven
+    evidence: *phase_four_evidence
+    offline: not_applicable
+    provider: not_applicable
+    notes:
+      offline: Inventory mutations have no supported offline queue.
+      provider: Inventory and its transaction ledger are provider-independent.
+      filesystem: Visible-browser CSV and JSON downloads are parsed and garden-scoped.
   - <<: *open_journey
     id: P5
     phase: 3
@@ -339,6 +393,20 @@ journeys:
   - <<: *open_journey
     id: P6
     phase: 4
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    evidence: *phase_four_evidence
+    offline: not_applicable
+    provider: required
+    filesystem: not_applicable
+    notes:
+      offline: Care reads are online-only.
+      provider: Phase 4 proves the supported local care/catalogue path only; provider-backed generation remains Phase 7 work.
+      filesystem: Care review has no supported file workflow.
+      mobile: Pixel 7 opens the care surface and verifies its local catalogue context.
+      roles: Editor receives the enabled care generation control while viewers retain read-only care access.
   - <<: *open_journey
     id: R1
     phase: 2
@@ -357,6 +425,32 @@ journeys:
   - <<: *open_journey
     id: R2
     phase: 4
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    evidence: *phase_four_evidence
+    offline: not_applicable
+    provider: not_applicable
+    filesystem: not_applicable
+    notes:
+      offline: Reports and corrective navigation require online data.
+      provider: Known report totals and supported corrective navigation are provider-independent.
+      filesystem: Report review itself does not use files; export evidence belongs to R3.
   - <<: *open_journey
     id: R3
     phase: 4
+    desktop: proven
+    mobile: proven
+    roles: proven
+    database: proven
+    filesystem: proven
+    evidence: *phase_four_evidence
+    offline: not_applicable
+    provider: not_applicable
+    notes:
+      offline: Exports have no offline queue.
+      provider: CSV, JSON, and ICS export generation is provider-independent.
+      filesystem: Visible-browser downloads are parsed structurally for escaping, dates, garden scope, and forbidden internal content.
+      mobile: Pixel 7 downloads and structurally parses the same scoped CSV, JSON, and ICS contracts.
+      unsupported: ZIP, generic import, backup restore, and ICS import are not claimed.

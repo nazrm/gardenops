@@ -104,6 +104,42 @@ class TestStatisticsActions(BaseApiTest):
         unassigned_ids = [p["plt_id"] for p in data["unassigned_plants"]]
         self.assertNotIn("PLT-TEST", unassigned_ids)
 
+    def test_actions_ignore_foreign_garden_assignments(self) -> None:
+        conn = db.get_db()
+        try:
+            second_garden_id = int(
+                conn.execute(
+                    "INSERT INTO gardens (slug, name) VALUES (%s, %s) RETURNING id",
+                    ("statistics-foreign", "Foreign Statistics Garden"),
+                ).fetchone()["id"]
+            )
+            conn.execute(
+                "INSERT INTO plants (plt_id, name, category) VALUES (%s, %s, %s)",
+                ("PLT-STATS-FOREIGN", "Foreign statistics plant", "other"),
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES (%s, %s, %s)
+                """,
+                ("PLT-STATS-FOREIGN", self._owner_id, second_garden_id),
+            )
+            conn.execute(
+                "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES (%s, %s, %s)",
+                ("B1", "PLT-STATS-FOREIGN", 1),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        resp = self.client.get("/api/statistics/actions")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        empty_plot_ids = {
+            plot_id for zone in data["empty_plots_by_zone"] for plot_id in zone["plot_ids"]
+        }
+        self.assertIn("B1", empty_plot_ids)
+
     def test_actions_stale_plants_require_observation_events(self) -> None:
         today = date.today().isoformat()
         watered = self.client.post(
@@ -220,6 +256,14 @@ class TestExportsBackup(BaseApiTest):
         resp = self.client.get("/api/exports/backup")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
+        self.assertEqual(
+            data["backup_contract"],
+            {
+                "format": "gardenops-internal-snapshot",
+                "portable": False,
+                "restore_supported": False,
+            },
+        )
         self.assertIn("garden_id", data)
         self.assertIn("exported_at_ms", data)
         self.assertIn("tasks", data)

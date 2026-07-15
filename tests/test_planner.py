@@ -1,4 +1,5 @@
 from datetime import date
+from unittest.mock import patch
 
 import gardenops.db as db
 from gardenops.router_helpers import generate_public_id
@@ -156,6 +157,131 @@ class TestPlannerApi(BaseApiTest):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertIn("plots", data)
+
+        invalid = self.client.get("/api/planner/suggestions?goal=unsupported")
+        self.assertEqual(invalid.status_code, 422)
+
+    @patch.dict(
+        "os.environ",
+        {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+    )
+    def test_planner_goal_validates_supported_values_and_preserves_clear(self) -> None:
+        self._create_test_user("goal_viewer", "goalviewerpass", role="editor")
+        client, headers = self._authenticated_client("goal_viewer", "goalviewerpass")
+
+        saved = client.put(
+            "/api/planner/goal",
+            headers=headers,
+            json={"goal": "low_maintenance"},
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json(), {"status": "ok", "goal": "low_maintenance"})
+        self.assertEqual(
+            client.get("/api/planner/goal", headers=headers).json(),
+            {"goal": "low_maintenance"},
+        )
+
+        invalid = client.put(
+            "/api/planner/goal",
+            headers=headers,
+            json={"goal": "complete"},
+        )
+        self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(
+            client.get("/api/planner/goal", headers=headers).json(),
+            {"goal": "low_maintenance"},
+        )
+
+        cleared = client.put(
+            "/api/planner/goal",
+            headers=headers,
+            json={"goal": None},
+        )
+        self.assertEqual(cleared.json(), {"status": "ok", "goal": None})
+        self.assertEqual(
+            client.get("/api/planner/goal", headers=headers).json(),
+            {"goal": None},
+        )
+
+    @patch.dict(
+        "os.environ",
+        {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+    )
+    def test_planner_goal_is_isolated_by_user_and_garden(self) -> None:
+        first = self._create_test_user("goal_first", "goalfirstpass", role="editor")
+        self._create_test_user("goal_second", "goalsecondpass", role="editor")
+        first_client, first_headers = self._authenticated_client(
+            "goal_first",
+            "goalfirstpass",
+            garden_id=self.garden_id,
+        )
+        second_client, second_headers = self._authenticated_client(
+            "goal_second",
+            "goalsecondpass",
+            garden_id=self.garden_id,
+        )
+        conn = db.get_db()
+        try:
+            other = conn.execute(
+                """
+                INSERT INTO gardens (slug, name)
+                VALUES ('planner-goal-other', 'Other') RETURNING id
+                """
+            ).fetchone()
+            assert other is not None
+            other_id = int(other["id"])
+            conn.execute(
+                """
+                INSERT INTO garden_memberships (garden_id, user_id, role)
+                VALUES (%s, %s, 'editor')
+                """,
+                (other_id, int(first["id"])),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        other_headers = self._session_headers(
+            first_headers["x-csrf-token"],
+            garden_id=other_id,
+        )
+        self.assertEqual(
+            first_client.put(
+                "/api/planner/goal",
+                headers=first_headers,
+                json={"goal": "shade"},
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            first_client.put(
+                "/api/planner/goal",
+                headers=other_headers,
+                json={"goal": "color"},
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            second_client.put(
+                "/api/planner/goal",
+                headers=second_headers,
+                json={"goal": "edible"},
+            ).status_code,
+            200,
+        )
+
+        self.assertEqual(
+            first_client.get("/api/planner/goal", headers=first_headers).json()["goal"],
+            "shade",
+        )
+        self.assertEqual(
+            first_client.get("/api/planner/goal", headers=other_headers).json()["goal"],
+            "color",
+        )
+        self.assertEqual(
+            second_client.get("/api/planner/goal", headers=second_headers).json()["goal"],
+            "edible",
+        )
 
     def test_planner_companions(self) -> None:
         """Test companion check endpoint."""

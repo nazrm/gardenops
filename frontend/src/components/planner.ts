@@ -4,13 +4,13 @@ import { t } from "../core/i18n";
 import { formatBloomMonth } from "./dataTables";
 
 export interface WorkflowCallbacks {
-  onStart: (workflowId: string, selectedSteps: string[]) => void;
+  onStart: (workflowId: string, selectedSteps: string[]) => void | Promise<void>;
 }
 
 export interface PlannerCallbacks {
   onPlantClick: (pltId: string) => void;
   onPlotClick: (plotId: string) => void;
-  onRefresh: (goal?: string) => void;
+  onRefresh: (goal: string) => void;
   onPreviewCandidate: (plotId: string, suggestion: PlantingSuggestion) => void;
   onInspectCandidate: (plotId: string, suggestion: PlantingSuggestion) => void;
 }
@@ -173,6 +173,7 @@ function createPlotGroup(
 function renderWorkflowSection(
   workflows: AvailableWorkflow[],
   wfCbs: WorkflowCallbacks,
+  canStart: boolean,
 ): HTMLElement {
   const section = document.createElement("section");
   section.className = "planner-section workflow-section";
@@ -214,28 +215,47 @@ function renderWorkflowSection(
     for (const step of wf.steps) {
       const row = document.createElement("label");
       row.className = "workflow-step";
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = true;
-      cb.addEventListener("change", () => {
-        if (cb.checked) selected.add(step.id);
-        else selected.delete(step.id);
-      });
       const span = document.createElement("span");
       span.textContent = step.title;
-      row.append(cb, span);
+      if (canStart) {
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = true;
+        cb.addEventListener("change", () => {
+          if (cb.checked) selected.add(step.id);
+          else selected.delete(step.id);
+        });
+        row.append(cb, span);
+      } else {
+        row.appendChild(span);
+      }
       checklist.appendChild(row);
     }
     card.appendChild(checklist);
 
-    const startBtn = document.createElement("button");
-    startBtn.type = "button";
-    startBtn.className = "btn btn-primary";
-    startBtn.textContent = t("workflow.start");
-    startBtn.addEventListener("click", () => {
-      wfCbs.onStart(wf.id, [...selected]);
-    });
-    card.appendChild(startBtn);
+    if (canStart) {
+      const startBtn = document.createElement("button");
+      startBtn.type = "button";
+      startBtn.className = "btn btn-primary";
+      startBtn.textContent = t("workflow.start");
+      startBtn.addEventListener("click", () => {
+        if (startBtn.disabled || selected.size === 0) return;
+        startBtn.disabled = true;
+        card.setAttribute("aria-busy", "true");
+        checklist.querySelectorAll<HTMLInputElement>("input").forEach((input) => {
+          input.disabled = true;
+        });
+        void Promise.resolve(wfCbs.onStart(wf.id, [...selected])).finally(() => {
+          if (!card.isConnected) return;
+          startBtn.disabled = false;
+          card.removeAttribute("aria-busy");
+          checklist.querySelectorAll<HTMLInputElement>("input").forEach((input) => {
+            input.disabled = false;
+          });
+        });
+      });
+      card.appendChild(startBtn);
+    }
 
     section.appendChild(card);
   }
@@ -251,6 +271,7 @@ export function renderPlannerDashboard(
   activeGoal = "",
   workflows?: AvailableWorkflow[],
   workflowCbs?: WorkflowCallbacks,
+  canStartWorkflows = false,
 ): void {
   container.replaceChildren();
 
@@ -354,7 +375,7 @@ export function renderPlannerDashboard(
     btn.className = "planner-goal-btn";
     if (g.value === activeGoal) btn.classList.add("active");
     btn.textContent = t(g.key);
-    btn.addEventListener("click", () => cbs.onRefresh(g.value || undefined));
+    btn.addEventListener("click", () => cbs.onRefresh(g.value));
     goalsDiv.appendChild(btn);
   }
   goalSection.appendChild(goalsDiv);
@@ -380,7 +401,7 @@ export function renderPlannerDashboard(
   // Seasonal workflows
   if (workflows && workflows.length > 0 && workflowCbs) {
     container.appendChild(
-      renderWorkflowSection(workflows, workflowCbs),
+      renderWorkflowSection(workflows, workflowCbs, canStartWorkflows),
     );
   }
 }

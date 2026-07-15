@@ -11,6 +11,7 @@ import type {
 import type { PlotAssignmentMeaning } from "../services/api";
 import {
   addPlantToPlotApi,
+  getActiveGardenContext,
   getPlantApi,
   getApiErrorMessage,
   searchPlantCatalog,
@@ -52,6 +53,7 @@ function renderLocalResults(
   plants: PlantSearchResult[],
   params: PlantSearchDialogParams,
   closeDialog: () => void,
+  gardenId: number,
 ): void {
   container.replaceChildren();
   if (plants.length === 0) {
@@ -123,6 +125,7 @@ function renderLocalResults(
         plant.plt_id,
         params,
         closeDialog,
+        gardenId,
       );
     });
     actions.appendChild(addBtn);
@@ -134,7 +137,8 @@ function renderLocalResults(
     detailBtn.addEventListener("click", () => {
       void (async () => {
         try {
-          const fullPlant = await getPlantApi(plant.plt_id);
+          const fullPlant = await getPlantApi(plant.plt_id, { gardenId });
+          if (gardenId !== getActiveGardenContext()) return;
           closeDialog();
           params.onEditPlant(fullPlant);
         } catch (err) {
@@ -154,6 +158,7 @@ function showInlinePlotPicker(
   pltId: string,
   params: PlantSearchDialogParams,
   closeDialog: () => void,
+  gardenId: number,
 ): void {
   const existing = anchor.parentElement?.querySelector(
     ".inline-plot-picker",
@@ -180,6 +185,7 @@ function showInlinePlotPicker(
         params.preselectedPlotId!,
         params,
         closeDialog,
+        gardenId,
       );
     });
     picker.appendChild(preBtn);
@@ -202,6 +208,7 @@ function showInlinePlotPicker(
         plot.plot_id,
         params,
         closeDialog,
+        gardenId,
       );
     });
     picker.appendChild(btn);
@@ -215,9 +222,12 @@ async function assignPlantToPlot(
   plotId: string,
   params: PlantSearchDialogParams,
   closeDialog: () => void,
+  gardenId: number,
 ): Promise<void> {
+  if (gardenId !== getActiveGardenContext()) return;
   try {
-    await addPlantToPlotApi(plotId, pltId);
+    await addPlantToPlotApi(plotId, pltId, 1, null, { gardenId });
+    if (gardenId !== getActiveGardenContext()) return;
     showToast(
       t("plants.search_add_to_plot") + `: ${plotId}`,
       "success",
@@ -353,8 +363,11 @@ export function showPlantSearchDialog(
   params: PlantSearchDialogParams,
 ): void {
   if (!params.ctx.ensureWriteAccess()) return;
+  const dialogGardenId = getActiveGardenContext();
+  if (dialogGardenId === null) return;
 
   let disposed = false;
+  let searchGeneration = 0;
   const { dialog, close: rawClose } = createModal(
     t("plants.search_modal_title"),
     `<div class="modal-content plant-search-modal">
@@ -392,6 +405,7 @@ export function showPlantSearchDialog(
   );
   const closeDialog = () => {
     disposed = true;
+    searchGeneration += 1;
     if (debounceTimer !== null) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
@@ -431,6 +445,9 @@ export function showPlantSearchDialog(
 
   let lastLocalCount = 0;
   let catalogSearched = false;
+  let catalogState: "idle" | "loading" | "available" | "empty" | "degraded" = "idle";
+  let catalogError = "";
+  let localError = "";
 
   const doSearch = (query: string) => {
     if (query.length < 2) {
@@ -446,21 +463,33 @@ export function showPlantSearchDialog(
       if (emptySection) emptySection.hidden = true;
       lastLocalCount = 0;
       catalogSearched = false;
+      catalogState = "idle";
+      catalogError = "";
+      localError = "";
       return;
     }
 
+    const generation = ++searchGeneration;
     void searchPlantsApi(query, {
       limit: 10,
       includeAssignments: true,
+      gardenId: dialogGardenId,
     }).then((plants) => {
-      if (disposed || input?.value.trim() !== query) return;
+      if (
+        disposed
+        || generation !== searchGeneration
+        || dialogGardenId !== getActiveGardenContext()
+        || input?.value.trim() !== query
+      ) return;
       lastLocalCount = plants.length;
+      localError = "";
       if (localSection) {
         renderLocalResults(
           localSection,
           plants,
           params,
           closeDialog,
+          dialogGardenId,
         );
       }
 
@@ -476,15 +505,34 @@ export function showPlantSearchDialog(
       }
 
       updateEmptyState(query, plants.length);
+    }).catch((err: unknown) => {
+      if (
+        disposed
+        || generation !== searchGeneration
+        || dialogGardenId !== getActiveGardenContext()
+        || input?.value.trim() !== query
+      ) return;
+      lastLocalCount = 0;
+      localError = getApiErrorMessage(err);
+      updateEmptyState(query, 0, 0);
     });
   };
 
   const doCatalogSearch = async (query: string) => {
     catalogSearched = true;
+    catalogState = "loading";
+    catalogError = "";
+    const generation = searchGeneration;
     if (catalogLinkArea) catalogLinkArea.hidden = true;
     try {
       const results = await searchPlantCatalog(query);
-      if (disposed || input?.value.trim() !== query) return;
+      if (
+        disposed
+        || generation !== searchGeneration
+        || dialogGardenId !== getActiveGardenContext()
+        || input?.value.trim() !== query
+      ) return;
+      catalogState = results.length > 0 ? "available" : "empty";
       if (catalogSection) {
         renderCatalogResults(
           catalogSection,
@@ -494,8 +542,20 @@ export function showPlantSearchDialog(
         );
       }
       updateEmptyState(query, lastLocalCount, results.length);
-    } catch {
-      // Catalog search failure is non-critical
+    } catch (err) {
+      if (
+        disposed
+        || generation !== searchGeneration
+        || dialogGardenId !== getActiveGardenContext()
+        || input?.value.trim() !== query
+      ) return;
+      catalogState = "degraded";
+      catalogError = getApiErrorMessage(err);
+      if (catalogSection) {
+        catalogSection.replaceChildren();
+        catalogSection.hidden = true;
+      }
+      updateEmptyState(query, lastLocalCount, 0);
     }
   };
 
@@ -505,13 +565,18 @@ export function showPlantSearchDialog(
     catalogCount?: number,
   ) => {
     if (!emptySection) return;
-    const totalResults =
-      localCount + (catalogCount ?? (catalogSearched ? 0 : 1));
+    if (catalogState === "loading") {
+      emptySection.hidden = true;
+      return;
+    }
+    const totalResults = localCount + (catalogCount ?? 0);
     if (totalResults === 0 && query.length >= 2) {
       emptySection.hidden = false;
       emptySection.replaceChildren();
       const msg = document.createElement("p");
-      msg.textContent = t("plants.search_no_results", { query });
+      msg.textContent = localError
+        || (catalogState === "degraded" ? catalogError : "")
+        || t("plants.search_no_results", { query });
       emptySection.appendChild(msg);
 
       const btn = document.createElement("button");

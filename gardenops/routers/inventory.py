@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -68,7 +69,7 @@ class UpdateInventoryItemBody(StrictBaseModel):
 
 
 class AddTransactionBody(StrictBaseModel):
-    delta: int
+    delta: Decimal = Field(max_digits=20, decimal_places=6)
     reason: TransactionReason = ""
     source_name: str = Field(default="", max_length=200)
     cost_minor: int | None = None
@@ -125,17 +126,24 @@ def _fetch_item_by_public_id(db: DbConn, item_id: str, garden_id: int) -> dict:
     return dict(row)
 
 
-def _item_quantity(db: DbConn, item_id: int) -> int:
+def _quantity_json(value: object) -> int | float:
+    quantity = Decimal(str(value or 0))
+    if quantity == quantity.to_integral_value():
+        return int(quantity)
+    return float(quantity)
+
+
+def _item_quantity(db: DbConn, item_id: int) -> Decimal:
     row = db.execute(
         "SELECT COALESCE(SUM(delta), 0) AS qty FROM inventory_transactions WHERE item_id = %s",
         (item_id,),
     ).fetchone()
-    return int(row["qty"]) if row else 0
+    return Decimal(str(row["qty"])) if row else Decimal(0)
 
 
 def _serialize_item(
     row: dict,
-    qty: int,
+    qty: Decimal | int | float,
     procurement_history: list[dict] | None = None,
 ) -> dict:
     return {
@@ -145,7 +153,7 @@ def _serialize_item(
         "label": str(row["label"] or ""),
         "inventory_type": str(row["inventory_type"]),
         "unit": str(row["unit"]),
-        "quantity": qty,
+        "quantity": _quantity_json(qty),
         "created_at_ms": int(row["created_at_ms"]),
         "procurement_history": procurement_history or [],
     }
@@ -155,7 +163,7 @@ def _serialize_tx(row: dict) -> dict:
     return {
         "id": int(row["id"]),
         "item_id": str(row["item_public_id"]),
-        "delta": int(row["delta"]),
+        "delta": _quantity_json(row["delta"]),
         "reason": str(row["reason"] or ""),
         "source_name": str(row["source_name"] or ""),
         "cost_minor": (int(row["cost_minor"]) if row["cost_minor"] is not None else None),
@@ -200,7 +208,7 @@ def _serialize_procurement_history(row: dict) -> dict:
         "vendor_name": str(row["vendor_name"] or ""),
         "vendor_url": str(row["vendor_url"] or ""),
         "status": str(row["status"]),
-        "quantity": float(row["quantity"]),
+        "quantity": _quantity_json(row["quantity"]),
         "unit": str(row["unit"] or "pieces"),
         "cost_minor": int(row["cost_minor"] or 0),
         "currency": str(row["currency"] or "NOK"),
@@ -241,9 +249,12 @@ def _load_procurement_history(
     if internal_ids:
         placeholders = ",".join(["%s"] * len(internal_ids))
         conditions.append(
-            f"NULLIF(metadata_json, '')::jsonb ->> 'inventory_item_id' IN ({placeholders})",
+            "("
+            f"NULLIF(metadata_json, '')::jsonb ->> 'inventory_item_id' IN ({placeholders})"
+            f" OR receipt_inventory_item_id IN ({placeholders}))",
         )
         params.extend(internal_ids)
+        params.extend(int(item_id) for item_id in internal_ids)
     if plant_ids:
         placeholders = ",".join(["%s"] * len(plant_ids))
         conditions.append(f"linked_plt_id IN ({placeholders})")
@@ -377,7 +388,7 @@ def list_inventory_items(
 
     items = []
     for d in row_dicts:
-        qty = int(d.pop("_qty", 0))
+        qty = Decimal(str(d.pop("_qty", 0)))
         items.append(_serialize_item(d, qty, procurement_history.get(str(d["public_id"]), [])))
 
     return {"items": items, "total": total}
@@ -469,6 +480,20 @@ def delete_inventory_item(
     _require_write(context)
     garden_id = _active_garden_id(context)
     row = _fetch_item_by_public_id(db, item_id, garden_id)
+    receipt = db.execute(
+        """
+        SELECT 1
+        FROM procurement_items
+        WHERE receipt_inventory_item_id = %s AND garden_id = %s
+        LIMIT 1
+        """,
+        (int(row["id"]), garden_id),
+    ).fetchone()
+    if receipt:
+        raise HTTPException(
+            status_code=409,
+            detail="Inventory received through procurement cannot be deleted",
+        )
 
     db.execute("DELETE FROM inventory_items WHERE id = %s", (int(row["id"]),))
     db.commit()
@@ -531,23 +556,41 @@ def add_transaction(
     row = _fetch_item_by_public_id(db, item_id, garden_id)
     internal_item_id = int(row["id"])
     _validate_date(body.occurred_on)
+    if body.delta == 0:
+        raise HTTPException(status_code=422, detail="Transaction delta must not be zero")
     journal_entry_id = _resolve_journal_entry_id(
         db,
         garden_id=garden_id,
         journal_entry_id=body.journal_entry_id,
     )
 
+    locked_item = db.execute(
+        """
+        SELECT id
+        FROM inventory_items
+        WHERE id = %s AND garden_id = %s
+        FOR UPDATE
+        """,
+        (internal_item_id, garden_id),
+    ).fetchone()
+    if not locked_item:
+        raise HTTPException(status_code=404, detail="Inventory item not found")
+    current_quantity = _item_quantity(db, internal_item_id)
+    if current_quantity + body.delta < 0:
+        raise HTTPException(status_code=409, detail="Transaction would make stock negative")
+
     now_ms = current_timestamp_ms()
     row = db.execute(
         """
         INSERT INTO inventory_transactions
-            (item_id, delta, reason, source_name, cost_minor,
+            (item_id, garden_id, delta, reason, source_name, cost_minor,
              occurred_on, storage_location, notes,
              actor_user_id, journal_entry_id, created_at_ms)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
         """,
         (
             internal_item_id,
+            garden_id,
             body.delta,
             body.reason,
             body.source_name,

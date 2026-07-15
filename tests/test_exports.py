@@ -1,7 +1,9 @@
 import csv
 import io
+import os
 import unittest
 from datetime import date
+from unittest.mock import patch
 
 import gardenops.db as db
 from gardenops.routers.exports import (
@@ -24,6 +26,15 @@ class TestExportCsvHelpers(unittest.TestCase):
         )
         rows = list(csv.DictReader(io.StringIO(response.body.decode("utf-8"))))
         self.assertEqual(rows, [{"name": "'=SUM(1,1)", "notes": ""}])
+
+    def test_csv_response_sanitizes_formula_after_leading_spaces(self) -> None:
+        response = _csv_response(
+            rows=[{"name": "  =SUM(1,1)"}],
+            columns=["name"],
+            filename="test.csv",
+        )
+        rows = list(csv.DictReader(io.StringIO(response.body.decode("utf-8"))))
+        self.assertEqual(rows, [{"name": "'  =SUM(1,1)"}])
 
 
 class TestExportsApi(BaseApiTest):
@@ -77,6 +88,55 @@ class TestExportsApi(BaseApiTest):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertIn("plants", data)
+
+    def test_html_exports_are_html_and_escape_resource_values(self) -> None:
+        issue = self.client.post(
+            "/api/issues",
+            json={
+                "issue_type": "pest",
+                "title": "<script>alert(1)</script>",
+                "severity": "normal",
+            },
+        )
+        self.assertEqual(issue.status_code, 201, issue.text)
+
+        for resource in (
+            "plants",
+            "tasks",
+            "journal",
+            "harvest",
+            "inventory",
+            "issues",
+            "procurement",
+            "seasonal-summary",
+        ):
+            with self.subTest(resource=resource):
+                resp = self.client.get(f"/api/exports/{resource}?format=html")
+                self.assertEqual(resp.status_code, 200, resp.text)
+                self.assertIn("text/html", resp.headers["content-type"])
+                self.assertTrue(resp.text.startswith("<!DOCTYPE html>"))
+
+        issues_html = self.client.get("/api/exports/issues?format=html").text
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", issues_html)
+        self.assertNotIn("<script>alert(1)</script>", issues_html)
+
+    def test_exports_reject_unsupported_formats(self) -> None:
+        for path in (
+            "/api/exports/plants?format=zip",
+            "/api/exports/plants?format=ics",
+            "/api/exports/seasonal-summary?format=csv",
+        ):
+            with self.subTest(path=path):
+                resp = self.client.get(path)
+                self.assertEqual(resp.status_code, 422, resp.text)
+
+    def test_exports_reject_invalid_or_reversed_dates(self) -> None:
+        reversed_range = self.client.get(
+            "/api/exports/journal?format=json&date_from=2026-06-30&date_to=2026-06-01",
+        )
+        self.assertEqual(reversed_range.status_code, 422, reversed_range.text)
+        invalid_year = self.client.get("/api/exports/harvest?format=json&year=0")
+        self.assertEqual(invalid_year.status_code, 422, invalid_year.text)
 
     def test_export_tasks_csv(self) -> None:
         resp = self.client.get("/api/exports/tasks?format=csv")
@@ -203,6 +263,105 @@ class TestExportsApi(BaseApiTest):
         self.assertTrue(any(item["label"] == "Alternate Garden Seeds" for item in scoped_items))
         self.assertFalse(any(item["label"] == "Default Garden Seeds" for item in scoped_items))
 
+    def test_viewer_can_read_public_exports(self) -> None:
+        self._create_test_user("exports_viewer", "exportsviewerpass", role="viewer")
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            client = self._new_client()
+            _, csrf = self._login_session("exports_viewer", "exportsviewerpass", client=client)
+            headers = self._session_headers(csrf)
+            for path in (
+                "/api/exports/plants?format=json",
+                "/api/exports/tasks?format=csv",
+                "/api/exports/issues?format=html",
+                "/api/exports/seasonal-summary?format=json",
+            ):
+                with self.subTest(path=path):
+                    resp = client.get(path, headers=headers)
+                    self.assertEqual(resp.status_code, 200, resp.text)
+
+    def test_task_export_omits_foreign_garden_links(self) -> None:
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "water",
+                "title": "Scoped export task",
+                "due_on": "2026-06-10",
+            },
+        )
+        self.assertEqual(task.status_code, 201, task.text)
+
+        conn = db.get_db()
+        try:
+            second_garden_id = int(
+                conn.execute(
+                    "INSERT INTO gardens (slug, name) VALUES (%s, %s) RETURNING id",
+                    ("exports-links-foreign", "Foreign Link Garden"),
+                ).fetchone()["id"]
+            )
+            conn.execute(
+                "INSERT INTO plants (plt_id, name, category) VALUES (%s, %s, %s)",
+                ("PLT-EXPORT-FOREIGN", "Foreign export plant", "other"),
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES (%s, %s, %s)
+                """,
+                ("PLT-EXPORT-FOREIGN", self._owner_id, second_garden_id),
+            )
+            task_row = conn.execute(
+                "SELECT id FROM garden_tasks WHERE public_id = %s",
+                (task.json()["id"],),
+            ).fetchone()
+            assert task_row is not None
+            conn.execute(
+                "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
+                (int(task_row["id"]), "PLT-EXPORT-FOREIGN"),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        rows = self.client.get("/api/exports/tasks?format=json").json()["tasks"]
+        exported = next(row for row in rows if row["title"] == "Scoped export task")
+        self.assertEqual(exported["plant_ids"], "")
+
+    def test_seasonal_summary_excludes_foreign_garden_bloom_data(self) -> None:
+        conn = db.get_db()
+        try:
+            second_garden_id = int(
+                conn.execute(
+                    "INSERT INTO gardens (slug, name) VALUES (%s, %s) RETURNING id",
+                    ("exports-bloom-foreign", "Foreign Bloom Garden"),
+                ).fetchone()["id"]
+            )
+            conn.execute(
+                """
+                INSERT INTO plants (plt_id, name, category, bloom_month)
+                VALUES (%s, %s, %s, %s)
+                """,
+                ("PLT-BLOOM-FOREIGN", "Foreign bloom secret", "other", "1"),
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES (%s, %s, %s)
+                """,
+                ("PLT-BLOOM-FOREIGN", self._owner_id, second_garden_id),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        response = self.client.get("/api/exports/seasonal-summary?format=json")
+        self.assertEqual(response.status_code, 200, response.text)
+        names = {name for month in response.json()["bloom_calendar"] for name in month["plants"]}
+        self.assertNotIn("Foreign bloom secret", names)
+
     def test_export_procurement_json_with_status_filter(self) -> None:
         create_procurement = self.client.post(
             "/api/procurement",
@@ -312,6 +471,73 @@ class TestExportsApi(BaseApiTest):
         procurements = self.client.get("/api/exports/procurement?format=json").json()["procurement"]
         procurement_row = next(row for row in procurements if row["label"] == "Serializer tray")
         self._assert_public_export_shape(procurement_row, PROCUREMENT_COLUMNS)
+
+    def test_inventory_exports_preserve_decimal_ledger_quantity(self) -> None:
+        created = self.client.post(
+            "/api/inventory",
+            json={"label": "Decimal feed", "inventory_type": "other", "unit": "kg"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        item_id = created.json()["id"]
+        transaction = self.client.post(
+            f"/api/inventory/{item_id}/transactions",
+            json={
+                "delta": 1.375,
+                "occurred_on": "2026-06-10",
+                "reason": "purchased",
+            },
+        )
+        self.assertEqual(transaction.status_code, 201, transaction.text)
+
+        json_rows = self.client.get("/api/exports/inventory?format=json").json()["inventory"]
+        json_row = next(row for row in json_rows if row["id"] == item_id)
+        self.assertEqual(json_row["quantity"], 1.375)
+
+        csv_rows = list(
+            csv.DictReader(io.StringIO(self.client.get("/api/exports/inventory?format=csv").text))
+        )
+        csv_row = next(row for row in csv_rows if row["id"] == item_id)
+        self.assertEqual(csv_row["quantity"], "1.375")
+
+    def test_csv_and_json_task_exports_share_public_structure_without_metadata(self) -> None:
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "water",
+                "title": "Structure task",
+                "due_on": "2026-06-10",
+            },
+        )
+        self.assertEqual(task.status_code, 201, task.text)
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE garden_tasks SET metadata_json = %s WHERE public_id = %s",
+                (
+                    '{"internal_path":"/srv/gardenops/private","token":"secret-value"}',
+                    task.json()["id"],
+                ),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        json_response = self.client.get("/api/exports/tasks?format=json")
+        csv_response = self.client.get("/api/exports/tasks?format=csv")
+        json_row = next(
+            row for row in json_response.json()["tasks"] if row["title"] == "Structure task"
+        )
+        csv_row = next(
+            row
+            for row in csv.DictReader(io.StringIO(csv_response.text))
+            if row["title"] == "Structure task"
+        )
+        self.assertEqual(list(json_row), TASK_COLUMNS)
+        self.assertEqual(list(csv_row), TASK_COLUMNS)
+        self.assertIsInstance(json_row["due_on"], str)
+        for response_text in (json_response.text, csv_response.text):
+            self.assertNotIn("/srv/gardenops/private", response_text)
+            self.assertNotIn("secret-value", response_text)
 
     def test_export_plants_respects_presence_and_focus_filters(self) -> None:
         self.client.post("/api/plots/B1/plants/PLT-TEST", json={"quantity": 1})

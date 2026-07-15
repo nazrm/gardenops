@@ -23,6 +23,7 @@ const { runFoundation } = require("./e2e/journeys/foundation.cjs");
 const { runGardenMapPlants } = require("./e2e/journeys/gardenMapPlants.cjs");
 const { runDailyAttentionWork } = require("./e2e/journeys/dailyAttentionWork.cjs");
 const { runObservationToAction } = require("./e2e/journeys/observationToAction.cjs");
+const { runPlanningAndReporting } = require("./e2e/journeys/planningAndReporting.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const BASE_URL = process.env.BASE_URL || "";
@@ -46,6 +47,13 @@ const PHASE_THREE_ORACLE_PATH = path.join(
   "e2e",
   "fixtures",
   "complete_journeys_phase_three_oracle.json",
+);
+const PHASE_FOUR_ORACLE_PATH = path.join(
+  ROOT,
+  "scripts",
+  "e2e",
+  "fixtures",
+  "complete_journeys_phase_four_oracle.json",
 );
 const CHROMIUM_LAUNCHER = fs.existsSync("/usr/bin/chromium-browser")
   ? "/usr/bin/chromium-browser"
@@ -121,7 +129,7 @@ function assertRunnerEnvironment() {
   assert(isAllowedUrl(BASE_URL, browserOrigins), "Complete journey BASE_URL is not in its browser contract");
   assert(fs.existsSync(CHROMIUM_EXECUTABLE), "System Chromium is required");
   assert(process.env.GARDENOPS_LOGS_DIR, "Complete journey backend log directory is required");
-  assert(PHASE <= 3 && THROUGH_PHASE <= 3, "Requested phase is not implemented");
+  assert(PHASE <= 4 && THROUGH_PHASE <= 4, "Requested phase is not implemented");
 }
 
 function assertExpectedHead() {
@@ -172,6 +180,41 @@ function phaseThreeOracle() {
       && typeof oracle.phase_three.whole_table_mutation_accounting === "object",
   "Phase 3 oracle contract is incomplete");
   return oracle;
+}
+
+function phaseFourOracle() {
+  const oracle = readJson(PHASE_FOUR_ORACLE_PATH);
+  assert(oracle && typeof oracle === "object" && oracle.schema_version === 1,
+    "Phase 4 oracle schema is unsupported");
+  assert(oracle.phase_four && typeof oracle.phase_four === "object"
+    && oracle.phase_four.fixture && typeof oracle.phase_four.fixture === "object"
+    && oracle.phase_four.database_boundaries
+      && typeof oracle.phase_four.database_boundaries === "object"
+    && oracle.phase_four.support && typeof oracle.phase_four.support === "object",
+  "Phase 4 oracle contract is incomplete");
+  return oracle;
+}
+
+function assertPhaseFourFixtureOracleBinding(fixture, oracle) {
+  const binding = fixture?.phase_four?.oracle;
+  assert(binding && typeof binding === "object", "Phase 4 fixture oracle binding is missing");
+  assert(binding.path === "scripts/e2e/fixtures/complete_journeys_phase_four_oracle.json",
+    "Phase 4 fixture oracle path is invalid");
+  assert(binding.schema_version === oracle.schema_version,
+    "Phase 4 fixture oracle schema binding drifted");
+  assert(binding.sha256 === sha256File(PHASE_FOUR_ORACLE_PATH),
+    "Phase 4 fixture oracle digest drifted");
+  assert(canonicalJson({
+    date: fixture.phase_four.date,
+    forbidden_export_fragments: fixture.phase_four.forbidden_export_fragments,
+    inventory: fixture.phase_four.inventory,
+    planner_goal: fixture.phase_four.planner_goal,
+    procurement: fixture.phase_four.procurement,
+  }) === canonicalJson(oracle.phase_four.fixture),
+  "Phase 4 fixture diverged from the independent oracle");
+  assert(canonicalJson(fixture.phase_four.support) === canonicalJson(oracle.phase_four.support),
+    "Phase 4 support matrix diverged from the independent oracle");
+  return { oracle_binding_exact: true, oracle_sha256: binding.sha256 };
 }
 
 function assertPhaseThreeFixtureOracleBinding(fixture, oracle) {
@@ -441,6 +484,223 @@ function assertPhaseThreeProfileEvidence(profiles) {
     `Phase 3 last-completed-step evidence is missing: ${profile.role}:${profile.profile}`);
   }
   return { profile_matrix_enforced: true, profile_order: observed };
+}
+
+function assertPhaseFourProfileEvidence(profiles, oracle) {
+  const observed = profiles.map((profile) => `${profile.role}:${profile.profile}`);
+  assert(canonicalJson(observed) === canonicalJson(oracle.phase_four.profile_order),
+    `Phase 4 profile order was unexpected: ${observed.join(", ")}`);
+  for (const profile of profiles) {
+    assert(profile?.checks?.browser_diagnostics === true,
+      `Phase 4 browser diagnostics evidence is missing: ${profile.role}:${profile.profile}`);
+    assert(Array.isArray(profile?.assertions?.failed) && profile.assertions.failed.length === 0,
+      `Phase 4 profile has failed assertions: ${profile.role}:${profile.profile}`);
+    assert(Array.isArray(profile?.assertions?.skipped) && profile.assertions.skipped.length === 0,
+      `Phase 4 profile has skipped assertions: ${profile.role}:${profile.profile}`);
+    assert(typeof profile?.checks?.last_completed_step === "string",
+      `Phase 4 last-completed-step evidence is missing: ${profile.role}:${profile.profile}`);
+  }
+  const adminDesktop = profiles.find((profile) => (
+    profile.role === "admin" && profile.profile === "desktop"
+  ));
+  const adminMobile = profiles.find((profile) => (
+    profile.role === "admin" && profile.profile === "mobile"
+  ));
+  const viewers = profiles.filter((profile) => profile.role === "viewer");
+  const editorDesktop = profiles.find((profile) => (
+    profile.role === "editor" && profile.profile === "desktop"
+  ));
+  assert(adminDesktop?.checks?.admin_desktop === true
+    && adminDesktop?.checks?.downloads?.csv_rows > 0,
+  "Phase 4 administrator desktop proof is incomplete");
+  assert(adminMobile?.checks?.mobile_dense_controls === true
+    && adminMobile?.checks?.delayed_garden_responses === true,
+  "Phase 4 administrator mobile proof is incomplete");
+  assert(editorDesktop?.checks?.editor_write_boundary === true,
+    "Phase 4 editor write boundary proof is incomplete");
+  assert(viewers.length === 2 && viewers.every((profile) => (
+    profile.checks.viewer_ui_denial === true && profile.checks.viewer_direct_write_denial === true
+  )), "Phase 4 viewer denial proof is incomplete");
+  return { profile_matrix_enforced: true, profile_order: observed };
+}
+
+function rowsForGarden(rows, gardenId) {
+  return (rows || []).filter((row) => row.garden_id === gardenId);
+}
+
+function addedRows(initial, final, key) {
+  const before = new Set((initial || []).map((row) => String(row[key])));
+  return (final || []).filter((row) => !before.has(String(row[key])));
+}
+
+function assertPhaseFourDatabaseState(initial, final, fixture, oracle, profiles) {
+  assert(initial && final, "Phase 4 semantic database boundary is missing");
+  const spec = oracle.phase_four.database_boundaries;
+  const alphaId = fixture.gardens.alpha.id;
+  const betaId = fixture.gardens.beta.id;
+  for (const field of [
+    "inventory_items",
+    "inventory_transactions",
+    "procurement_items",
+    "workflow_tasks",
+  ]) {
+    assert(canonicalJson(rowsForGarden(initial[field], betaId))
+      === canonicalJson(rowsForGarden(final[field], betaId)),
+    `Phase 4 changed cross-garden ${field} rows`);
+  }
+  assert(canonicalJson(initial.report_source_rows.harvest)
+    === canonicalJson(final.report_source_rows.harvest),
+  "Phase 4 changed report harvest source rows");
+  assert(canonicalJson(initial.report_source_rows.issues)
+    === canonicalJson(final.report_source_rows.issues),
+  "Phase 4 changed report issue source rows");
+  assert(canonicalJson(initial.report_source_rows.plots)
+    === canonicalJson(final.report_source_rows.plots),
+  "Phase 4 changed report plot source rows");
+
+  const inventoryItems = addedRows(initial.inventory_items, final.inventory_items, "row_id");
+  const transactions = addedRows(initial.inventory_transactions, final.inventory_transactions, "row_id");
+  const procurement = addedRows(initial.procurement_items, final.procurement_items, "row_id");
+  const workflowTasks = addedRows(initial.workflow_tasks, final.workflow_tasks, "row_id");
+  assert(inventoryItems.length === spec.inventory_items_added,
+    `Phase 4 added ${inventoryItems.length} inventory items`);
+  assert(transactions.length === spec.inventory_transactions_added,
+    `Phase 4 added ${transactions.length} inventory transactions`);
+  assert(procurement.length === spec.procurement_items_added,
+    `Phase 4 added ${procurement.length} procurement rows`);
+
+  const inventorySpec = fixture.phase_four.inventory;
+  const ledgerItem = inventoryItems.find((row) => row.label === inventorySpec.label);
+  assert(ledgerItem && Number(ledgerItem.quantity) === inventorySpec.expected_quantity,
+    "Phase 4 inventory item projection did not retain the exact ledger quantity");
+  const ledgerTransactions = transactions.filter((row) => row.item_public_id === ledgerItem.public_id);
+  assert(ledgerTransactions.length === inventorySpec.transactions.length,
+    "Phase 4 inventory ledger projection has the wrong transaction count");
+  assert(ledgerTransactions.reduce((sum, row) => sum + Number(row.delta), 0)
+    === inventorySpec.expected_quantity,
+  "Phase 4 inventory ledger projection did not sum exactly");
+
+  const procurementSpec = fixture.phase_four.procurement;
+  const received = procurement.find((row) => row.label === procurementSpec.label);
+  assert(received?.status === "received"
+    && Number.isSafeInteger(received.receipt_inventory_item_id)
+    && Number.isSafeInteger(received.receipt_inventory_transaction_id)
+    && received.received_at_ms > 0
+    && received.received_by === fixture.roles.admin,
+  "Phase 4 procurement receipt provenance is incomplete");
+  const receiptTransactions = transactions.filter((row) => (
+    row.row_id === received.receipt_inventory_transaction_id
+  ));
+  assert(receiptTransactions.length === 1
+    && Number(receiptTransactions[0].delta) === procurementSpec.quantity,
+  "Phase 4 procurement repeat created duplicate receipt transactions");
+
+  assert(final.planner_goal_preferences.length === spec.planner_goal_rows_final
+    && canonicalJson(final.planner_goal_preferences)
+      === canonicalJson(initial.planner_goal_preferences),
+  "Phase 4 planner goal save/clear did not restore the exact preference boundary");
+  const adminDesktop = profiles.find((profile) => (
+    profile.role === "admin" && profile.profile === "desktop"
+  ));
+  const selectedSteps = adminDesktop?.checks?.planner?.workflowSteps || [];
+  assert(workflowTasks.length === selectedSteps.length
+    && workflowTasks.length >= spec.workflow_tasks_minimum_added,
+  "Phase 4 workflow did not create exactly one task per selected step");
+  assert(new Set(workflowTasks.map((row) => row.rule_source)).size === workflowTasks.length,
+    "Phase 4 workflow task projection contains duplicate rule provenance");
+
+  const report = adminDesktop?.checks?.planner?.report;
+  assert(report && Array.isArray(report.available_zones),
+    "Phase 4 report response is incomplete");
+  const alphaPlots = rowsForGarden(final.report_source_rows.plots, alphaId);
+  const zoneCounts = new Map();
+  for (const plot of alphaPlots.filter((row) => row.zone_code)) {
+    zoneCounts.set(plot.zone_code, (zoneCounts.get(plot.zone_code) || 0) + 1);
+  }
+  const reportZones = report.available_zones.map((zone) => ({
+    plot_count: zone.plot_count,
+    zone_code: zone.zone_code,
+  })).sort((left, right) => left.zone_code.localeCompare(right.zone_code));
+  const sourceZones = [...zoneCounts].map(([zone_code, plot_count]) => ({
+    plot_count,
+    zone_code,
+  })).sort((left, right) => left.zone_code.localeCompare(right.zone_code));
+  assert(canonicalJson(reportZones) === canonicalJson(sourceZones),
+    "Phase 4 report zone totals diverged from exact garden source rows");
+  const reportTasks = rowsForGarden(final.report_source_rows.tasks, alphaId);
+  const openIssues = rowsForGarden(final.report_source_rows.issues, alphaId)
+    .filter((row) => ["open", "monitoring", "treating"].includes(row.status));
+  assert(report.needs_attention.open_issues_count === openIssues.length,
+    "Phase 4 report open-issue total diverged from source rows");
+  assert(reportTasks.some((row) => row.rule_source.startsWith("workflow:")),
+    "Phase 4 report source projection omitted workflow tasks");
+  if (adminDesktop.checks.planner.scopedReport) {
+    const scoped = adminDesktop.checks.planner.scopedReport;
+    const zonePlots = rowsForGarden(final.report_source_rows.plots, alphaId)
+      .filter((row) => row.zone_code === scoped.zone_code);
+    assert(scoped.plot_use.total_plots === zonePlots.length,
+      "Phase 4 zone report total diverged from exact plot source rows");
+  }
+  return {
+    cross_garden_rows_unchanged: true,
+    inventory_ledger_exact: true,
+    procurement_receipt_exact: true,
+    report_source_totals_exact: true,
+    workflow_tasks_exact: true,
+  };
+}
+
+function normalizePhaseFourMutationPath(pathname) {
+  return pathname
+    .replace(/^\/api\/inventory\/[^/]+$/, "/api/inventory/{item_id}")
+    .replace(/^\/api\/inventory\/[^/]+\/transactions$/, "/api/inventory/{item_id}/transactions")
+    .replace(/^\/api\/procurement\/[^/]+$/, "/api/procurement/{item_id}")
+    .replace(/^\/api\/procurement\/[^/]+\/transition$/, "/api/procurement/{item_id}/transition");
+}
+
+function assertPhaseFourAuditEvents(beforeAudit, finalAudit, profiles, fixture) {
+  const beforeIds = new Set(beforeAudit.records.map((record) => record.id));
+  const events = finalAudit.records.filter((record) => !beforeIds.has(record.id));
+  const ownedPaths = new Set([
+    "/api/inventory",
+    "/api/inventory/{item_id}",
+    "/api/inventory/{item_id}/transactions",
+    "/api/planner/goal",
+    "/api/procurement",
+    "/api/procurement/{item_id}",
+    "/api/procurement/{item_id}/transition",
+    "/api/workflows/start",
+  ]);
+  const requests = profiles.flatMap((profile) => profile.requests.flatMap((request) => {
+    if (!["DELETE", "PATCH", "POST", "PUT"].includes(request.method)) return [];
+    const normalized = normalizePhaseFourMutationPath(request.path);
+    if (!ownedPaths.has(normalized)) return [];
+    assert(Number.isSafeInteger(request.statusCode) && isSafeRequestId(request.requestId),
+      `Phase 4 mutation response evidence is incomplete: ${request.method} ${request.path}`);
+    return [{
+      actor_auth_type: request.actorAuthType,
+      actor_role: request.actorRole,
+      actor_username: request.actorUsername,
+      garden_id: Number(request.gardenId),
+      method: request.method,
+      path: normalized,
+      request_id: request.requestId,
+      status_code: request.statusCode,
+    }];
+  }));
+  const unmatched = [...requests];
+  for (const event of events.filter((row) => ownedPaths.has(normalizePhaseFourMutationPath(row.path)))) {
+    const normalizedEvent = { ...event, path: normalizePhaseFourMutationPath(event.path) };
+    const index = unmatched.findIndex((request) => auditRecordMatchesBrowserMutation(
+      normalizedEvent,
+      request,
+    ));
+    assert(index >= 0, `Phase 4 audit event lacks an exact browser mutation: ${event.path}`);
+    unmatched.splice(index, 1);
+  }
+  assert(unmatched.length === 0,
+    `Phase 4 browser mutations lacked audit events: ${unmatched.map((row) => row.path).join(", ")}`);
+  return { audit_mutations_one_to_one: true, audit_event_count: requests.length };
 }
 
 function assertUniquePhaseThreeRows(rows, key, label) {
@@ -5242,17 +5502,24 @@ function isSafeManifestRequestPath(value) {
     /^\/api\/dashboard\/badge-counts$/,
     /^\/api\/gardens(?:\/\d+\/map-objects(?:\/[^/?]+(?:\/units(?:\/[^/?]+)?)?)?)?$/,
     /^\/api\/journal(?:\/[^/?]+)?$/,
+    /^\/api\/inventory(?:\/[^/?]+(?:\/transactions)?)?$/,
     /^\/api\/layout-state$/,
     /^\/api\/media(?:\/summaries)?$/,
     /^\/api\/notifications(?:\/(?:generate|preferences|read-all|[^/?]+(?:\/(?:dismiss|read))?))?$/,
     /^\/api\/plants(?:\/[^/?]+)?$/,
+    /^\/api\/planner\/(?:goal|garden-profile|suggestions)$/,
     /^\/api\/plots(?:\/(?:alerts|elevations|[^/?]+(?:\/(?:plant-alerts|plants|tasks))?))?$/,
     /^\/api\/security\/csp-report$/,
+    /^\/api\/statistics\/reports$/,
+    /^\/api\/external-plants$/,
+    /^\/api\/exports\/(?:inventory|procurement)$/,
+    /^\/api\/procurement(?:\/[^/?]+(?:\/transition)?)?$/,
     /^\/api\/snapshots$/,
     /^\/api\/saved-views(?:\/presets)?$/,
     /^\/api\/tasks(?:\/(?:batch-action|[^/?]+(?:\/action)?))?$/,
     /^\/api\/version$/,
     /^\/api\/weather\/(?:check|summary|alerts(?:\/\d+\/dismiss)?)$/,
+    /^\/api\/workflows\/(?:available|start)$/,
   ].some((pattern) => pattern.test(requestPath));
 }
 
@@ -5517,6 +5784,7 @@ function assertNoResponseMocks() {
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/gardenMapPlants.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/dailyAttentionWork.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/observationToAction.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/planningAndReporting.cjs"), "utf8"),
   ].join("\n");
   const forbiddenCalls = [
     `route.${"fulfill"}(`,
@@ -5534,6 +5802,7 @@ function assertNoNodeRequestClients() {
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/gardenMapPlants.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/dailyAttentionWork.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/observationToAction.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/planningAndReporting.cjs"), "utf8"),
   ].join("\n");
   for (const forbidden of [
     "context.request",
@@ -5557,6 +5826,11 @@ async function main() {
     fixture,
     phaseThreeOracleSpec,
   );
+  const phaseFourOracleSpec = phaseFourOracle();
+  const phaseFourFixtureOracleEvidence = assertPhaseFourFixtureOracleBinding(
+    fixture,
+    phaseFourOracleSpec,
+  );
   const phaseThreeMediaInputs = phaseSelected(3) ? materializePhaseThreeMedia(fixture) : null;
   assertFixtureAttentionClock(fixture);
   let manifest = {
@@ -5575,6 +5849,7 @@ async function main() {
       ...(phaseSelected(1) ? ["A3", "M1", "M2", "M3", "M4", "CROSS-01"] : []),
       ...(phaseSelected(2) ? ["D1", "D2", "D3", "D4", "D5", "R1"] : []),
       ...(phaseSelected(3) ? ["I2", "I3", "P1", "P2", "P3", "P5"] : []),
+      ...(phaseSelected(4) ? ["P4", "P6", "I1", "L1", "L2", "R2", "R3"] : []),
     ],
     phase: PHASE,
     profiles: [],
@@ -5617,6 +5892,12 @@ async function main() {
   let phaseThreeFilesystemEvidence = null;
   let phaseThreeProfileEvidence = null;
   let phaseThreeProfiles = [];
+  let phaseFourAuditBaseline = null;
+  let phaseFourAuditEvidence = null;
+  let phaseFourDatabaseBaseline = null;
+  let phaseFourDatabaseEvidence = null;
+  let phaseFourProfileEvidence = null;
+  let phaseFourProfiles = [];
   let thrownError = null;
   let currentStage = "runner-startup";
   try {
@@ -5749,6 +6030,24 @@ async function main() {
       });
       phaseThreeProfiles = manifest.profiles.slice(phaseThreeProfileStart);
     }
+    if (phaseSelected(4)) {
+      currentStage = "phase-four-browser";
+      phaseFourDatabaseBaseline = databaseSnapshot();
+      phaseFourAuditBaseline = phaseFourDatabaseBaseline.audit_state;
+      const phaseFourProfileStart = manifest.profiles.length;
+      await runPlanningAndReporting({
+        artifactDir: ARTIFACT_DIR,
+        baseUrl: BASE_URL,
+        browser,
+        devices,
+        fixture,
+        onProfile: (profile) => manifest.profiles.push(profile),
+        oracle: phaseFourOracleSpec,
+        password: PASSWORD,
+        username: USERNAME,
+      });
+      phaseFourProfiles = manifest.profiles.slice(phaseFourProfileStart);
+    }
     currentStage = "final-database-snapshot";
     const finalDatabase = databaseSnapshot();
     currentStage = "cumulative-assertions";
@@ -5759,6 +6058,7 @@ async function main() {
         initial: fixture.database_snapshot.domain_tables,
         phase_one_boundary: phaseOneDatabase?.domain_tables ?? null,
         phase_three_baseline: phaseThreeDatabaseBaseline?.domain_tables ?? null,
+        phase_four_baseline: phaseFourDatabaseBaseline?.domain_tables ?? null,
       },
     };
     const domainTableNames = new Set([
@@ -5772,6 +6072,7 @@ async function main() {
     const phaseOneRan = phaseSelected(1);
     const phaseTwoRan = phaseSelected(2);
     const phaseThreeRan = phaseSelected(3);
+    const phaseFourRan = phaseSelected(4);
     if (phaseOneRan) phaseOneProfileEvidence = assertPhaseOneProfileEvidence(phaseOneProfiles);
     if (phaseTwoRan) {
       assert(phaseTwoDatabase, "Phase 2 database boundary snapshot is missing");
@@ -5842,6 +6143,26 @@ async function main() {
         phaseThreeAuditBaseline,
         finalDatabase.audit_state,
         phaseThreeProfiles,
+        fixture,
+      );
+    }
+    if (phaseFourRan) {
+      assert(phaseFourDatabaseBaseline, "Phase 4 database baseline snapshot is missing");
+      phaseFourProfileEvidence = assertPhaseFourProfileEvidence(
+        phaseFourProfiles,
+        phaseFourOracleSpec,
+      );
+      phaseFourDatabaseEvidence = assertPhaseFourDatabaseState(
+        phaseFourDatabaseBaseline.phase_four_state,
+        finalDatabase.phase_four_state,
+        fixture,
+        phaseFourOracleSpec,
+        phaseFourProfiles,
+      );
+      phaseFourAuditEvidence = assertPhaseFourAuditEvents(
+        phaseFourAuditBaseline,
+        finalDatabase.audit_state,
+        phaseFourProfiles,
         fixture,
       );
     }
@@ -5950,8 +6271,18 @@ async function main() {
       ...phaseTwoSemanticDeltaTables,
       ...phaseThreeMutationContract.allowedTables,
     ]) : phaseTwoSemanticDeltaTables;
+    const phaseFourAllowedTables = new Set([
+      ...phaseFourOracleSpec.phase_four.database_boundaries.owned_tables,
+      "garden_task_plants",
+      "garden_task_plots",
+      "layout_state",
+    ]);
+    const cumulativeSemanticDeltaTables = phaseFourRan ? new Set([
+      ...phaseThreeSemanticDeltaTables,
+      ...phaseFourAllowedTables,
+    ]) : phaseThreeSemanticDeltaTables;
     const forbiddenDomainTables = changedDomainTables.filter(
-      (table) => !phaseThreeSemanticDeltaTables.has(table),
+      (table) => !cumulativeSemanticDeltaTables.has(table),
     );
     assert(
       forbiddenDomainTables.length === 0,
@@ -5960,7 +6291,7 @@ async function main() {
     const wholeTableProjectionEvidence = assertWholeTableProjectionCoverage(
       fixture.database_snapshot.domain_tables,
       finalDatabase.domain_tables,
-      phaseThreeSemanticDeltaTables,
+      cumulativeSemanticDeltaTables,
     );
     const prePhaseThreeAccounting = Object.fromEntries(
       [...phaseTwoSemanticDeltaTables].map((table) => {
@@ -5993,8 +6324,75 @@ async function main() {
         prePhaseThreeAccounting,
       )
       : null;
-    const wholeTableMutationAccounting = phaseThreeRan
+    const phaseFourSelectedSteps = phaseFourProfiles.find((profile) => (
+      profile.role === "admin" && profile.profile === "desktop"
+    ))?.checks?.planner?.workflowSteps || [];
+    const phaseFourAccounting = {
+      garden_task_plants: {
+        allow_row_delta: true,
+        evidence: "phase_four_exact_workflow_task_projection",
+        expected_identity_removed: 0,
+        expected_removed: 0,
+      },
+      garden_task_plots: {
+        allow_row_delta: true,
+        evidence: "phase_four_exact_workflow_task_projection",
+        expected_identity_removed: 0,
+        expected_removed: 0,
+      },
+      garden_tasks: {
+        allow_row_delta: true,
+        evidence: "phase_four_independent_oracle",
+        expected_added: phaseFourSelectedSteps.length,
+        expected_identity_added: phaseFourSelectedSteps.length,
+        expected_identity_removed: 0,
+        expected_identity_updated: 0,
+        expected_removed: 0,
+      },
+      inventory_items: {
+        allow_row_delta: true,
+        evidence: "phase_four_independent_oracle",
+        expected_added: 2,
+        expected_identity_added: 2,
+        expected_identity_removed: 0,
+        expected_identity_updated: 0,
+        expected_removed: 0,
+      },
+      inventory_transactions: {
+        allow_row_delta: true,
+        evidence: "phase_four_independent_oracle",
+        expected_added: 4,
+        expected_identity_added: 4,
+        expected_identity_removed: 0,
+        expected_identity_updated: 0,
+        expected_removed: 0,
+      },
+      layout_state: {
+        allow_row_delta: true,
+        evidence: "phase_four_profile_navigation",
+        expected_identity_added: 0,
+        expected_identity_removed: 0,
+        max_added: phaseFourProfiles.length,
+        max_removed: phaseFourProfiles.length,
+      },
+      procurement_items: {
+        allow_row_delta: true,
+        evidence: "phase_four_independent_oracle",
+        expected_added: 1,
+        expected_identity_added: 1,
+        expected_identity_removed: 0,
+        expected_identity_updated: 0,
+        expected_removed: 0,
+      },
+    };
+    const wholeTableMutationAccounting = phaseFourRan
       ? assertWholeTableMutationAccounting(
+        phaseFourDatabaseBaseline.domain_tables,
+        finalDatabase.domain_tables,
+        phaseFourAllowedTables,
+        phaseFourAccounting,
+      )
+      : phaseThreeRan ? assertWholeTableMutationAccounting(
         phaseThreeDatabaseBaseline.domain_tables,
         finalDatabase.domain_tables,
         phaseThreeMutationContract.allowedTables,
@@ -6003,7 +6401,7 @@ async function main() {
       : phaseTwoWholeTableMutationAccounting || assertWholeTableMutationAccounting(
         fixture.database_snapshot.domain_tables,
         finalDatabase.domain_tables,
-        phaseThreeSemanticDeltaTables,
+        cumulativeSemanticDeltaTables,
         prePhaseThreeAccounting,
       );
     for (const [table, count] of Object.entries(finalDatabase.domain_counts)) {
@@ -6303,7 +6701,7 @@ async function main() {
           + process.env.GARDENOPS_DISPOSABLE_POSTGRES_MARKER,
         )
         .digest("hex"),
-      semantic_delta_tables: [...phaseThreeSemanticDeltaTables].sort(),
+      semantic_delta_tables: [...cumulativeSemanticDeltaTables].sort(),
       whole_table_mutation_accounting: wholeTableMutationAccounting,
       whole_table_projection_coverage: wholeTableProjectionEvidence,
       whole_table_projections: {
@@ -6311,8 +6709,8 @@ async function main() {
         initial: fixture.database_snapshot.domain_tables,
         phase_one_boundary: phaseOneDatabase?.domain_tables ?? null,
       },
-      domain_counts_unchanged: !phaseOneRan && !phaseTwoRan && !phaseThreeRan,
-      domain_digests_unchanged: !phaseOneRan && !phaseTwoRan && !phaseThreeRan,
+      domain_counts_unchanged: !phaseOneRan && !phaseTwoRan && !phaseThreeRan && !phaseFourRan,
+      domain_digests_unchanged: !phaseOneRan && !phaseTwoRan && !phaseThreeRan && !phaseFourRan,
       phase_zero_enforcement: phaseZeroProfileEvidence ? {
         browser_profile_matrix: phaseZeroProfileEvidence.profile_matrix_enforced === true,
         cumulative_before_phase_one: true,
@@ -6369,6 +6767,18 @@ async function main() {
         profile_execution: phaseThreeProfileEvidence,
         whole_table_mutation_accounting: wholeTableMutationAccounting,
       } : null,
+      phase_four_enforcement: phaseFourRan ? {
+        ...phaseFourDatabaseEvidence,
+        ...phaseFourAuditEvidence,
+        browser_profile_matrix: phaseFourProfileEvidence?.profile_matrix_enforced === true,
+        fixture_oracle_binding: phaseFourFixtureOracleEvidence,
+        phase_fixture_scope: PHASE === 4 && THROUGH_PHASE === 4
+          ? "fresh-fixture-phase-four-only"
+          : "fresh-fixture-cumulative-through-phase-four",
+        profile_execution: phaseFourProfileEvidence,
+        support: phaseFourOracleSpec.phase_four.support,
+        whole_table_mutation_accounting: wholeTableMutationAccounting,
+      } : null,
       phase_boundaries: {
         phase_one_audit_total: phaseOneDatabase?.audit_state.total_count ?? null,
         phase_one_profile_count: phaseOneRan
@@ -6379,6 +6789,7 @@ async function main() {
           ? phaseTwoReadOnlyProfiles.length
           : null,
         phase_three_profile_count: phaseThreeRan ? phaseThreeProfiles.length : null,
+        phase_four_profile_count: phaseFourRan ? phaseFourProfiles.length : null,
       },
       final: finalDatabase.domain_counts,
       initial: fixture.database_snapshot.domain_counts,
@@ -6499,6 +6910,10 @@ module.exports = {
   assertPhaseOneProfileEvidence,
   assertPhaseThreeBoundaryEvidence,
   assertPhaseThreeProviderUsage,
+  assertPhaseFourAuditEvents,
+  assertPhaseFourDatabaseState,
+  assertPhaseFourFixtureOracleBinding,
+  assertPhaseFourProfileEvidence,
   assertPhaseTwoAuditEvents,
   assertPhaseTwoBrowserMutationMultiset,
   assertPhaseTwoCalendarLifecycleEvidence,
@@ -6553,6 +6968,7 @@ module.exports = {
   phaseTwoOracle,
   phaseThreeExactMutationContract,
   phaseThreeOracle,
+  phaseFourOracle,
   writeManifestAtomic,
   runPhaseTwoReadOnlyPermutation,
 };

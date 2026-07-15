@@ -4,8 +4,11 @@ import { getAutomationStatusApi } from "../services/api";
 
 export interface GardenerReportsCallbacks {
   onZoneChange: (zoneCode: string) => void;
-  onOpenTasks: (view: "overdue" | "week") => void;
-  onOpenIssues: (filter?: "open" | "overdue_followups") => void;
+  onOpenTasks: (view: "overdue" | "week", taskIds: string[]) => void;
+  onOpenIssues: (
+    filter: "open" | "overdue_followups",
+    issueIds: string[],
+  ) => void;
   onOpenWeather: () => void;
   onOpenPlants: (pltIds: string[]) => void;
   onOpenBatchJournal: (pltIds: string[]) => void;
@@ -104,6 +107,10 @@ export function renderGardenerReports(
   container: HTMLElement,
   data: GardenerReports,
   callbacks: GardenerReportsCallbacks,
+  requestScope?: {
+    gardenId: number;
+    isCurrent: () => boolean;
+  },
 ): void {
   container.replaceChildren();
 
@@ -164,7 +171,7 @@ export function renderGardenerReports(
       data.needs_attention.overdue_tasks_count,
       t("reports.open_tasks"),
       data.needs_attention.overdue_tasks_count === 0,
-      () => callbacks.onOpenTasks("overdue"),
+      () => callbacks.onOpenTasks("overdue", data.needs_attention.overdue_task_ids),
     ),
     createActionButton(
       t("reports.week_tasks_title"),
@@ -172,7 +179,7 @@ export function renderGardenerReports(
       data.needs_attention.due_this_week_count,
       t("reports.open_tasks"),
       data.needs_attention.due_this_week_count === 0,
-      () => callbacks.onOpenTasks("week"),
+      () => callbacks.onOpenTasks("week", data.needs_attention.due_this_week_task_ids),
     ),
     createActionButton(
       t("reports.open_issues_title"),
@@ -180,7 +187,7 @@ export function renderGardenerReports(
       data.needs_attention.open_issues_count,
       t("reports.open_issues"),
       data.needs_attention.open_issues_count === 0,
-      () => callbacks.onOpenIssues("open"),
+      () => callbacks.onOpenIssues("open", data.needs_attention.open_issue_ids),
     ),
     createActionButton(
       t("reports.followups_title"),
@@ -188,7 +195,10 @@ export function renderGardenerReports(
       data.needs_attention.overdue_follow_ups_count,
       t("reports.review_issues"),
       data.needs_attention.overdue_follow_ups_count === 0,
-      () => callbacks.onOpenIssues("overdue_followups"),
+      () => callbacks.onOpenIssues(
+        "overdue_followups",
+        data.needs_attention.overdue_follow_up_issue_ids,
+      ),
     ),
     createActionButton(
       t("reports.weather_alerts_title"),
@@ -396,8 +406,11 @@ export function renderGardenerReports(
   automationSection.appendChild(automationContent);
   grid.appendChild(automationSection);
 
-  getAutomationStatusApi()
+  getAutomationStatusApi(
+    requestScope ? { gardenId: requestScope.gardenId } : undefined,
+  )
     .then((status: AutomationStatus) => {
+      if (requestScope && !requestScope.isCurrent()) return;
       automationContent.textContent = "";
       automationContent.className = "reports-automation-summary";
       if (status.total === 0) {
@@ -409,6 +422,7 @@ export function renderGardenerReports(
       }
     })
     .catch(() => {
+      if (requestScope && !requestScope.isCurrent()) return;
       automationContent.textContent = t("automation.no_recent");
       automationContent.className = "reports-automation-summary";
     });

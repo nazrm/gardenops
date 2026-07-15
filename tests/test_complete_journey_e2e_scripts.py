@@ -26,6 +26,9 @@ ORACLE = ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_two_or
 PHASE_THREE_ORACLE = (
     ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_three_oracle.json"
 )
+PHASE_FOUR_ORACLE = (
+    ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_four_oracle.json"
+)
 EXPECTED_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
 ).stdout.strip()
@@ -193,7 +196,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
     subprocess.run(["git", "init", "--quiet"], cwd=checkout, check=True, timeout=20)
     runner = checkout / "scripts" / "run_complete_journeys_e2e.sh"
     result = subprocess.run(
-        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "4"],
+        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "5"],
         cwd=checkout,
         capture_output=True,
         check=False,
@@ -691,7 +694,7 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
     runner_source = RUNNER.read_text(encoding="utf-8")
 
-    assert "MAX_IMPLEMENTED_PHASE=3" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=4" in runner_source
     assert "runDailyAttentionWork" in journey_source
     assert 'require("./e2e/journeys/dailyAttentionWork.cjs")' in checker_source
     assert "phaseSelected(2)" in checker_source
@@ -709,7 +712,7 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_THREE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=3" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=4" in runner_source
     assert "GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER=1" in runner_source
     assert "runObservationToAction" in journey_source
     assert 'require("./e2e/journeys/observationToAction.cjs")' in checker_source
@@ -851,6 +854,129 @@ try {
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None:
+    journey = ROOT / "scripts" / "e2e" / "journeys" / "planningAndReporting.cjs"
+    journey_source = journey.read_text(encoding="utf-8")
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    seeder_source = SEEDER.read_text(encoding="utf-8")
+    runner_source = RUNNER.read_text(encoding="utf-8")
+    oracle = json.loads(PHASE_FOUR_ORACLE.read_text(encoding="utf-8"))
+
+    assert "MAX_IMPLEMENTED_PHASE=4" in runner_source
+    assert 'require("./e2e/journeys/planningAndReporting.cjs")' in checker_source
+    assert "phaseSelected(4)" in checker_source
+    assert "runPlanningAndReporting" in checker_source
+    assert "assertPhaseFourDatabaseState" in checker_source
+    assert "assertPhaseFourAuditEvents" in checker_source
+    assert "_phase_four_runtime_state" in seeder_source
+    assert "phase_four_state" in seeder_source
+    assert oracle["schema_version"] == 1
+    assert oracle["phase_four"]["profile_order"] == [
+        "admin:desktop",
+        "editor:desktop",
+        "admin:mobile",
+        "viewer:desktop",
+        "viewer:mobile",
+    ]
+    assert oracle["phase_four"]["database_boundaries"]["owned_tables"] == [
+        "app_settings",
+        "garden_tasks",
+        "inventory_items",
+        "inventory_transactions",
+        "procurement_items",
+    ]
+    for journey_id in ("P4", "P6", "I1", "L1", "L2", "R2", "R3"):
+        assert f'"{journey_id}"' in checker_source
+    for contract in (
+        "expected_quantity",
+        "receipt_inventory_transaction_id",
+        "planner_goal_preferences",
+        "report_source_rows",
+        "cross_garden_rows_unchanged",
+    ):
+        assert contract in checker_source or contract in seeder_source
+    assert "exerciseDelayedGardenResponses" in journey_source
+    for marker in (
+        "createInventoryLedgerThroughUi",
+        "createProcurementLifecycleThroughUi",
+        "exercisePlannerAndReportsThroughUi",
+        "waitForApiResponse",
+        '"#inv-tx-qty"',
+        '"#procurement-save-btn"',
+        '"Start workflow"',
+    ):
+        assert marker in journey_source
+    for endpoint in (
+        "**/api/inventory*",
+        "**/api/procurement*",
+        "**/api/planner/suggestions*",
+        "**/api/statistics/reports*",
+    ):
+        assert endpoint in journey_source
+
+
+def test_phase_four_oracle_keeps_unsupported_scope_honest() -> None:
+    oracle = json.loads(PHASE_FOUR_ORACLE.read_text(encoding="utf-8"))["phase_four"]
+    assert oracle["support"] == {
+        "backup_restore": "unsupported",
+        "care_local_catalogue": "proven",
+        "external_catalogue": "not_applicable",
+        "generic_import": "unsupported",
+        "ics_import": "unsupported",
+        "suggestion_acceptance": "unsupported",
+        "workflow_instance_lifecycle": "unsupported",
+        "zip_export": "unsupported",
+    }
+    journey_source = (ROOT / "scripts" / "e2e" / "journeys" / "planningAndReporting.cjs").read_text(
+        encoding="utf-8"
+    )
+    for forbidden_claim in ("restoreBackup", "importIcs", "acceptSuggestion", "downloadZip"):
+        assert forbidden_claim not in journey_source
+
+
+def test_phase_four_csv_parser_preserves_formula_escape_and_quoted_fields() -> None:
+    script = r"""
+const { parseCsv } = require('./scripts/e2e/journeys/planningAndReporting.cjs');
+const rows = parseCsv('label,quantity,date\r\n"\'  =Phase 4, ""Ledger"" seeds",8,2026-07-15\r\n');
+if (rows.length !== 1) process.exit(2);
+if (rows[0].label !== '\'  =Phase 4, "Ledger" seeds') process.exit(3);
+if (rows[0].quantity !== '8' || rows[0].date !== '2026-07-15') process.exit(4);
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_four_static_product_contracts_exist_before_browser_execution() -> None:
+    inventory = (ROOT / "gardenops" / "routers" / "inventory.py").read_text(encoding="utf-8")
+    procurement = (ROOT / "gardenops" / "routers" / "procurement.py").read_text(encoding="utf-8")
+    planner = (ROOT / "gardenops" / "routers" / "planner.py").read_text(encoding="utf-8")
+    workflows = (ROOT / "gardenops" / "routers" / "workflows.py").read_text(encoding="utf-8")
+    statistics = (ROOT / "gardenops" / "routers" / "statistics.py").read_text(encoding="utf-8")
+    statistics_tab = (ROOT / "frontend" / "src" / "tabs" / "statisticsTab.ts").read_text(
+        encoding="utf-8"
+    )
+    inventory_tab = (ROOT / "frontend" / "src" / "tabs" / "inventoryTab.ts").read_text(
+        encoding="utf-8"
+    )
+    procurement_tab = (ROOT / "frontend" / "src" / "tabs" / "procurementTab.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "delta: Decimal" in inventory
+    assert "Transaction would make stock negative" in inventory
+    assert "receipt_inventory_transaction_id" in procurement
+    assert "Received procurement items are immutable" in procurement
+    assert '@router.get("/planner/goal")' in planner
+    assert '@router.put("/planner/goal")' in planner
+    assert "pg_advisory_xact_lock" in workflows
+    assert '@router.get("/statistics/reports")' in statistics
+    assert "fetchPlannerGoalApi" in statistics_tab
+    assert "savePlannerGoalApi" in statistics_tab
+    assert "isCurrentStatisticsRequest" in statistics_tab
+    assert "isCurrentInventoryRequest" in inventory_tab
+    assert "isCurrentProcurementRequest" in procurement_tab
 
 
 def test_phase_two_d4_provider_boundary_remains_required() -> None:

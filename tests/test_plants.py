@@ -497,6 +497,7 @@ class TestPlants(BaseApiTest):
                 "updated_plant_ids": ["PLT-003", "PLT-TEST"],
                 "attempted": 2,
                 "has_more": False,
+                "next_cursor": None,
             },
         )
         mocked_client.messages.create.assert_called_once()
@@ -762,6 +763,7 @@ class TestPlants(BaseApiTest):
                 "updated_plant_ids": ["PLT-CARE-1", "PLT-CARE-2"],
                 "attempted": 2,
                 "has_more": True,
+                "next_cursor": "PLT-CARE-2",
             },
         )
         mocked_client.messages.create.assert_called_once()
@@ -779,6 +781,7 @@ class TestPlants(BaseApiTest):
 
         conn = db.get_db()
         try:
+            conn.execute("UPDATE plants SET care_notes = 'Already documented.'")
             db.executemany(
                 conn,
                 """
@@ -886,6 +889,7 @@ class TestPlants(BaseApiTest):
                 "updated_plant_ids": ["PLT-PART-1"],
                 "attempted": 2,
                 "has_more": False,
+                "next_cursor": None,
                 "error": "provider down",
             },
         )
@@ -985,6 +989,188 @@ class TestPlants(BaseApiTest):
         self.assertEqual(response.json()["detail"], "AI provider request failed")
         mock_generate.assert_called_once()
         mock_notify.assert_not_called()
+
+    @patch.dict(os.environ, _AUTH_ENV, clear=False)
+    def test_generate_missing_care_uses_effective_garden_write_role(self) -> None:
+        garden_id = self._get_default_garden_id()
+        user = self._create_test_user("care_member_editor", "carememberpass", role="viewer")
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                UPDATE garden_memberships SET role = 'editor'
+                WHERE garden_id = %s AND user_id = %s
+                """,
+                (garden_id, int(user["id"])),
+            )
+            conn.execute("UPDATE plants SET care_notes = 'documented' WHERE plt_id = 'PLT-002'")
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        generated = {
+            "PLT-TEST": {
+                "care_watering": "Water deeply.",
+                "care_soil": "Use draining soil.",
+                "care_planting": "Plant after frost.",
+                "care_maintenance": "Remove damaged growth.",
+                "care_notes": "Observe weekly.",
+            }
+        }
+        client, headers = self._authenticated_client(
+            "care_member_editor",
+            "carememberpass",
+            garden_id=garden_id,
+        )
+        with (
+            patch("gardenops.routers.ai.require_ai_provider_configured", return_value="test"),
+            patch("gardenops.routers.ai.generate_care_batch_with_ai", return_value=generated),
+        ):
+            response = client.post(
+                "/api/ai/generate-missing-care",
+                headers=headers,
+                json={},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["updated_plant_ids"], ["PLT-TEST"])
+
+    @patch.dict(os.environ, _AUTH_ENV, clear=False)
+    def test_generate_missing_care_viewer_is_denied(self) -> None:
+        self._create_test_user("care_viewer", "careviewerpass", role="viewer")
+        client, headers = self._authenticated_client("care_viewer", "careviewerpass")
+        with patch(
+            "gardenops.routers.ai.require_ai_provider_configured",
+            return_value="test",
+        ):
+            response = client.post(
+                "/api/ai/generate-missing-care",
+                headers=headers,
+                json={},
+            )
+        self.assertEqual(response.status_code, 403)
+
+    @patch.dict(os.environ, _AUTH_ENV, clear=False)
+    def test_regenerate_care_pages_forward_without_repeating_plants(self) -> None:
+        garden_id = self._get_default_garden_id()
+        self._create_test_user("care_pager", "carepagerpass", role="editor")
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                UPDATE plants
+                SET care_watering = 'old', care_soil = 'old', care_planting = 'old',
+                    care_maintenance = 'old', care_notes = 'old'
+                """
+            )
+            for index in range(6):
+                plt_id = f"PLT-PAGE-{index}"
+                conn.execute(
+                    """
+                    INSERT INTO plants (plt_id, name, category, care_notes)
+                    VALUES (%s, %s, 'frø', 'old')
+                    """,
+                    (plt_id, f"Page plant {index}"),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (plt_id, self._owner_id, garden_id),
+                )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        def generate(batch: list[dict]) -> dict:
+            return {
+                str(plant["plt_id"]): {
+                    "care_watering": "new water",
+                    "care_soil": "new soil",
+                    "care_planting": "new planting",
+                    "care_maintenance": "new maintenance",
+                    "care_notes": "new notes",
+                }
+                for plant in batch
+            }
+
+        client, headers = self._authenticated_client(
+            "care_pager",
+            "carepagerpass",
+            garden_id=garden_id,
+        )
+        seen: list[str] = []
+        cursor = None
+        with (
+            patch("gardenops.routers.ai.require_ai_provider_configured", return_value="test"),
+            patch("gardenops.routers.ai.generate_care_batch_with_ai", side_effect=generate),
+        ):
+            for _ in range(4):
+                body = {"max_plants": 3, "regenerate": True}
+                if cursor is not None:
+                    body["cursor"] = cursor
+                response = client.post(
+                    "/api/ai/generate-missing-care",
+                    headers=headers,
+                    json=body,
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                payload = response.json()
+                self.assertTrue(set(seen).isdisjoint(payload["updated_plant_ids"]))
+                seen.extend(payload["updated_plant_ids"])
+                cursor = payload["next_cursor"]
+                if not payload["has_more"]:
+                    break
+
+        self.assertEqual(len(seen), 8)
+        self.assertEqual(len(set(seen)), 8)
+        self.assertIsNone(cursor)
+
+    @patch.dict(os.environ, _AUTH_ENV, clear=False)
+    def test_missing_care_no_progress_stops_after_one_bounded_page(self) -> None:
+        garden_id = self._get_default_garden_id()
+        self._create_test_user("care_no_progress", "carenoprogresspass", role="editor")
+        conn = db.get_db()
+        try:
+            for index in range(5):
+                plt_id = f"PLT-NOPROGRESS-{index}"
+                conn.execute(
+                    "INSERT INTO plants (plt_id, name, category) VALUES (%s, %s, 'frø')",
+                    (plt_id, f"No progress {index}"),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (plt_id, self._owner_id, garden_id),
+                )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        client, headers = self._authenticated_client(
+            "care_no_progress",
+            "carenoprogresspass",
+            garden_id=garden_id,
+        )
+        with (
+            patch("gardenops.routers.ai.require_ai_provider_configured", return_value="test"),
+            patch("gardenops.routers.ai.generate_care_batch_with_ai", return_value={}),
+        ):
+            response = client.post(
+                "/api/ai/generate-missing-care",
+                headers=headers,
+                json={"max_plants": 6},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["generated"], 0)
+        self.assertEqual(response.json()["attempted"], 6)
+        self.assertEqual(response.json()["remaining_without_care"], 7)
+        self.assertFalse(response.json()["has_more"])
+        self.assertIsNone(response.json()["next_cursor"])
 
     def test_generate_missing_care_daily_budget_counts_plants(self) -> None:
         conn = db.get_db()

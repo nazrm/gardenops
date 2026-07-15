@@ -4,6 +4,7 @@ import csv
 import io
 import json
 from datetime import date
+from decimal import Decimal
 from html import escape as _esc
 from typing import Any, Literal
 
@@ -19,18 +20,15 @@ from gardenops.router_helpers import (
     auth_context as _auth_context,
 )
 from gardenops.router_helpers import (
-    is_local_admin_fallback as _is_local_admin_fallback,
-)
-from gardenops.router_helpers import (
     validate_date as _validate_date,
 )
 from gardenops.routers.plants import list_plants as _list_plants
-from gardenops.security import AuthContext
 from gardenops.services.gardener_reports import _build_scope
 
 router = APIRouter()
 
 ExportFormat = Literal["csv", "json", "html"]
+SeasonalExportFormat = Literal["json", "html"]
 
 
 def _export_filename(kind: str) -> str:
@@ -45,7 +43,8 @@ _CSV_FORMULA_PREFIXES = {"=", "+", "-", "@", "\t", "\r", "\n"}
 
 def _sanitize_csv_value(value: object) -> str:
     text = "" if value is None else str(value)
-    if text and text[0] in _CSV_FORMULA_PREFIXES:
+    first_non_space = text.lstrip(" ")[:1]
+    if first_non_space in _CSV_FORMULA_PREFIXES:
         return f"'{text}"
     return text
 
@@ -81,6 +80,28 @@ def _public_id_export_row(row: Any, columns: list[str]) -> dict[str, Any]:
     mapped = dict(row)
     mapped["id"] = str(mapped.get("public_id") or "")
     return _project_export_row(mapped, columns)
+
+
+def _json_default(value: object) -> str | float:
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    raise TypeError(f"Unsupported export value: {type(value).__name__}")
+
+
+def _decimal_number(value: object) -> int | float:
+    number = Decimal(str(value or 0))
+    if number == number.to_integral_value():
+        return int(number)
+    return float(number)
+
+
+def _json_response(resource: str, rows: list[dict[str, Any]]) -> Response:
+    return Response(
+        content=json.dumps({resource: rows}, default=_json_default),
+        media_type="application/json",
+    )
 
 
 # ── HTML printable helper ──
@@ -147,6 +168,15 @@ def _split_query_values(raw: str | None) -> list[str]:
     if not raw:
         return []
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _validate_date_range(date_from: str | None, date_to: str | None) -> None:
+    if date_from:
+        _validate_date(date_from)
+    if date_to:
+        _validate_date(date_to)
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="date_from must be on or before date_to")
 
 
 def _plant_presence_status(plant: dict[str, Any]) -> str:
@@ -298,10 +328,7 @@ def export_plants(
             ),
         )
     if format == "json":
-        return Response(
-            content=json.dumps({"plants": export_rows}, default=str),
-            media_type="application/json",
-        )
+        return _json_response("plants", export_rows)
 
     filename = _export_filename("plants")
     return _csv_response(export_rows, PLANT_COLUMNS, filename)
@@ -356,7 +383,7 @@ def export_tasks(
     ).fetchall()
 
     task_ids = [int(r["id"]) for r in rows]
-    plant_map, plot_map = _load_task_links(db, task_ids)
+    plant_map, plot_map = _load_task_links(db, garden_id, task_ids)
 
     tasks = []
     for r in rows:
@@ -387,10 +414,7 @@ def export_tasks(
             ),
         )
     if format == "json":
-        return Response(
-            content=json.dumps({"tasks": tasks}, default=str),
-            media_type="application/json",
-        )
+        return _json_response("tasks", tasks)
 
     filename = _export_filename("tasks")
     return _csv_response(tasks, TASK_COLUMNS, filename)
@@ -398,6 +422,7 @@ def export_tasks(
 
 def _load_task_links(
     db: DbConn,
+    garden_id: int,
     task_ids: list[int],
 ) -> tuple[dict[int, list[str]], dict[int, list[str]]]:
     if not task_ids:
@@ -405,15 +430,25 @@ def _load_task_links(
     placeholders = ",".join(["%s"] * len(task_ids))
     plant_map: dict[int, list[str]] = {tid: [] for tid in task_ids}
     for r in db.execute(
-        f"SELECT task_id, plt_id FROM garden_task_plants WHERE task_id IN ({placeholders})",
-        task_ids,
+        f"""
+        SELECT gtp.task_id, gtp.plt_id
+        FROM garden_task_plants gtp
+        JOIN plant_ownership po ON po.plt_id = gtp.plt_id
+        WHERE gtp.task_id IN ({placeholders}) AND po.garden_id = %s
+        """,
+        [*task_ids, garden_id],
     ).fetchall():
         plant_map[int(r["task_id"])].append(str(r["plt_id"]))
 
     plot_map: dict[int, list[str]] = {tid: [] for tid in task_ids}
     for r in db.execute(
-        f"SELECT task_id, plot_id FROM garden_task_plots WHERE task_id IN ({placeholders})",
-        task_ids,
+        f"""
+        SELECT gtp.task_id, gtp.plot_id
+        FROM garden_task_plots gtp
+        JOIN plot_ownership po ON po.plot_id = gtp.plot_id
+        WHERE gtp.task_id IN ({placeholders}) AND po.garden_id = %s
+        """,
+        [*task_ids, garden_id],
     ).fetchall():
         plot_map[int(r["task_id"])].append(str(r["plot_id"]))
 
@@ -462,28 +497,32 @@ def export_journal(
                     SELECT jep.entry_id
                     FROM garden_journal_entry_plants jep
                     JOIN plants p ON p.plt_id = jep.plt_id
-                    WHERE jep.plt_id ILIKE %s
-                       OR p.name ILIKE %s
-                       OR p.latin ILIKE %s
+                    JOIN plant_ownership po ON po.plt_id = jep.plt_id
+                    WHERE po.garden_id = %s
+                      AND (
+                          jep.plt_id ILIKE %s
+                          OR p.name ILIKE %s
+                          OR p.latin ILIKE %s
+                      )
                 )
                 OR e.id IN (
-                    SELECT entry_id
-                    FROM garden_journal_entry_plots
-                    WHERE plot_id ILIKE %s
+                    SELECT jep.entry_id
+                    FROM garden_journal_entry_plots jep
+                    JOIN plot_ownership po ON po.plot_id = jep.plot_id
+                    WHERE po.garden_id = %s AND jep.plot_id ILIKE %s
                 )
             )
             """
         )
-        params.extend([like, like, like, like, like, like])
+        params.extend([like, like, garden_id, like, like, like, garden_id, like])
     if actor:
         conditions.append("u.username ILIKE %s")
         params.append(f"%{actor.strip()}%")
+    _validate_date_range(date_from, date_to)
     if date_from:
-        _validate_date(date_from)
         conditions.append("e.occurred_on >= %s")
         params.append(date_from)
     if date_to:
-        _validate_date(date_to)
         conditions.append("e.occurred_on <= %s")
         params.append(date_to)
     where = " AND ".join(conditions)
@@ -503,11 +542,13 @@ def export_journal(
 
     entries = [_public_id_export_row(r, JOURNAL_COLUMNS) for r in rows]
 
-    if format == "json":
-        return Response(
-            content=json.dumps({"journal": entries}, default=str),
-            media_type="application/json",
+    if format == "html":
+        return _html_response(
+            "Journal",
+            _html_table(entries, JOURNAL_COLUMNS),
         )
+    if format == "json":
+        return _json_response("journal", entries)
 
     filename = _export_filename("journal")
     return _csv_response(entries, JOURNAL_COLUMNS, filename)
@@ -529,7 +570,7 @@ def export_harvest(
     request: Request,
     db: DB,
     format: ExportFormat = Query(default="csv"),
-    year: int | None = Query(default=None),
+    year: int | None = Query(default=None, ge=1, le=9999),
     quality: str | None = Query(default=None),
     date_from: str | None = Query(default=None),
     date_to: str | None = Query(default=None),
@@ -547,12 +588,11 @@ def export_harvest(
     if quality:
         conditions.append("quality = %s")
         params.append(quality)
+    _validate_date_range(date_from, date_to)
     if date_from:
-        _validate_date(date_from)
         conditions.append("occurred_on >= %s")
         params.append(date_from)
     if date_to:
-        _validate_date(date_to)
         conditions.append("occurred_on <= %s")
         params.append(date_to)
 
@@ -587,10 +627,7 @@ def export_harvest(
             ),
         )
     if format == "json":
-        return Response(
-            content=json.dumps({"harvest": entries}, default=str),
-            media_type="application/json",
-        )
+        return _json_response("harvest", entries)
 
     filename = _export_filename("harvest")
     return _csv_response(entries, HARVEST_COLUMNS, filename)
@@ -697,7 +734,7 @@ def _serialize_inventory_export_rows(
                 "label": str(item["label"] or ""),
                 "inventory_type": str(item["inventory_type"]),
                 "unit": str(item["unit"] or ""),
-                "quantity": int(item["_qty"] or 0),
+                "quantity": _decimal_number(item["_qty"]),
                 "procurement_count": len(history),
                 "recent_vendor_name": str(recent.get("vendor_name") or ""),
                 "recent_procurement_status": str(recent.get("status") or ""),
@@ -740,7 +777,9 @@ def export_inventory(
                i.unit, i.created_at_ms,
                COALESCE(sq.qty, 0) AS _qty
         FROM inventory_items i
-        LEFT JOIN plants p ON p.plt_id = i.plt_id
+        LEFT JOIN plant_ownership ipo
+          ON ipo.plt_id = i.plt_id AND ipo.garden_id = i.garden_id
+        LEFT JOIN plants p ON p.plt_id = i.plt_id AND ipo.plt_id IS NOT NULL
         LEFT JOIN (
             SELECT item_id, SUM(delta) AS qty
             FROM inventory_transactions
@@ -754,11 +793,13 @@ def export_inventory(
 
     items = _serialize_inventory_export_rows(db, garden_id, rows)
 
-    if format == "json":
-        return Response(
-            content=json.dumps({"inventory": items}, default=str),
-            media_type="application/json",
+    if format == "html":
+        return _html_response(
+            "Inventory",
+            _html_table(items, INVENTORY_COLUMNS),
         )
+    if format == "json":
+        return _json_response("inventory", items)
 
     filename = _export_filename("inventory")
     return _csv_response(items, INVENTORY_COLUMNS, filename)
@@ -824,11 +865,13 @@ def export_issues(
 
     entries = [_public_id_export_row(r, ISSUE_COLUMNS) for r in rows]
 
-    if format == "json":
-        return Response(
-            content=json.dumps({"issues": entries}, default=str),
-            media_type="application/json",
+    if format == "html":
+        return _html_response(
+            "Issues",
+            _html_table(entries, ISSUE_COLUMNS),
         )
+    if format == "json":
+        return _json_response("issues", entries)
 
     filename = _export_filename("issues")
     return _csv_response(entries, ISSUE_COLUMNS, filename)
@@ -899,11 +942,13 @@ def export_procurement(
 
     items = [_public_id_export_row(row, PROCUREMENT_COLUMNS) for row in rows]
 
-    if format == "json":
-        return Response(
-            content=json.dumps({"procurement": items}, default=str),
-            media_type="application/json",
+    if format == "html":
+        return _html_response(
+            "Procurement",
+            _html_table(items, PROCUREMENT_COLUMNS),
         )
+    if format == "json":
+        return _json_response("procurement", items)
 
     filename = _export_filename("procurement")
     return _csv_response(items, PROCUREMENT_COLUMNS, filename)
@@ -913,7 +958,7 @@ def export_procurement(
 def seasonal_summary(
     request: Request,
     db: DB,
-    format: ExportFormat = Query(default="json"),
+    format: SeasonalExportFormat = Query(default="json"),
     zone_code: str | None = Query(default=None),
 ) -> Response | dict:
     context = _auth_context(request)
@@ -927,7 +972,6 @@ def seasonal_summary(
     scoped_plot_ids = scope.plot_ids if scope.zone_code else None
     bloom_calendar = _build_bloom_calendar(
         db,
-        context,
         garden_id,
         plant_ids=scoped_plant_ids,
     )
@@ -971,37 +1015,24 @@ def seasonal_summary(
 
 def _build_bloom_calendar(
     db: DbConn,
-    context: AuthContext,
     garden_id: int,
     plant_ids: list[str] | None = None,
 ) -> list[dict]:
     normalized_plant_ids = plant_ids or []
-    if _is_local_admin_fallback(context):
-        sql = (
-            "SELECT plt_id, name, bloom_month FROM plants "
-            "WHERE bloom_month IS NOT NULL AND bloom_month != ''"
-        )
-        params: list[object] = []
-        if normalized_plant_ids:
-            placeholders = ",".join(["%s"] * len(normalized_plant_ids))
-            sql += f" AND plt_id IN ({placeholders})"
-            params.extend(normalized_plant_ids)
-        rows = db.execute(sql, params).fetchall()
-    else:
-        sql = """
-            SELECT p.plt_id, p.name, p.bloom_month
-            FROM plants p
-            JOIN plant_ownership po ON po.plt_id = p.plt_id
-            WHERE po.garden_id = %s
-              AND p.bloom_month IS NOT NULL
-              AND p.bloom_month != ''
-            """
-        params: list[object] = [garden_id]
-        if normalized_plant_ids:
-            placeholders = ",".join(["%s"] * len(normalized_plant_ids))
-            sql += f" AND p.plt_id IN ({placeholders})"
-            params.extend(normalized_plant_ids)
-        rows = db.execute(sql, params).fetchall()
+    sql = """
+        SELECT p.plt_id, p.name, p.bloom_month
+        FROM plants p
+        JOIN plant_ownership po ON po.plt_id = p.plt_id
+        WHERE po.garden_id = %s
+          AND p.bloom_month IS NOT NULL
+          AND p.bloom_month != ''
+        """
+    params: list[object] = [garden_id]
+    if normalized_plant_ids:
+        placeholders = ",".join(["%s"] * len(normalized_plant_ids))
+        sql += f" AND p.plt_id IN ({placeholders})"
+        params.extend(normalized_plant_ids)
+    rows = db.execute(sql, params).fetchall()
 
     months: dict[int, list[str]] = {}
     for r in rows:
