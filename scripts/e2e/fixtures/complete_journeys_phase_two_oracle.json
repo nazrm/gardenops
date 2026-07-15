@@ -154,6 +154,8 @@
         "emailed_users": 0,
         "gardens_processed": 1,
         "issues_escalated": 0,
+        "media_cleanup_attempted": 0,
+        "media_cleanup_failed": 0,
         "notifications_created": 51,
         "notifications_marked": 0,
         "notifications_skipped": 3,

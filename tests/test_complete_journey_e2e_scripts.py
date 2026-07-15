@@ -3518,6 +3518,8 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
     assert "PHASE_TWO_MAINTENANCE_EXPECTATIONS" in seed_source
     assert "complete_journeys_phase_two_oracle.json" in seed_source
     assert oracle["phase_two"]["maintenance"]["summary"]["notifications_created"] == 51
+    assert oracle["phase_two"]["maintenance"]["summary"]["media_cleanup_attempted"] == 0
+    assert oracle["phase_two"]["maintenance"]["summary"]["media_cleanup_failed"] == 0
     assert oracle["phase_two"]["maintenance"]["logical_rows"]["weekly_water"]["due_on"] == [
         "2026-07-15",
         "2026-07-22",
