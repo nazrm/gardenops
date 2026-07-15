@@ -226,6 +226,9 @@ class TestGardenDeleteAuditAtomicity(BaseApiTest):
             finally:
                 db.return_db(conn)
 
+        def assert_cleanup_after_commit(*_args: object, **_kwargs: object) -> None:
+            assert_delete_is_committed()
+
         with patch.dict(
             os.environ,
             {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
@@ -240,7 +243,10 @@ class TestGardenDeleteAuditAtomicity(BaseApiTest):
                 ) as notify,
                 patch("gardenops.routers.gardens.record_security_event") as record_security,
                 patch("gardenops.audit.enqueue_security_telemetry") as enqueue_telemetry,
-                patch("gardenops.routers.gardens.unlink_storage_keys") as unlink_storage,
+                patch(
+                    "gardenops.routers.gardens.drain_media_cleanup_jobs_best_effort",
+                    side_effect=assert_cleanup_after_commit,
+                ) as drain_cleanup,
             ):
                 response = client.delete(
                     f"/api/gardens/{garden_id}",
@@ -261,9 +267,10 @@ class TestGardenDeleteAuditAtomicity(BaseApiTest):
         )
         notify.assert_called_once_with()
         enqueue_telemetry.assert_called_once()
-        unlink_storage.assert_called_once_with(
-            garden["storage_key"],
-            garden["preview_storage_key"],
+        drain_cleanup.assert_called_once()
+        self.assertEqual(
+            drain_cleanup.call_args.kwargs["storage_pairs"],
+            [(garden["storage_key"], garden["preview_storage_key"])],
         )
         self.assertEqual(enqueue_telemetry.call_args.args[0], "audit_event")
         self.assertEqual(
