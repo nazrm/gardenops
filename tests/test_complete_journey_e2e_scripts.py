@@ -2532,6 +2532,18 @@ for (const unexpected of [
     assert result.returncode == 0, result.stderr
 
 
+def test_audit_snapshot_preserves_literal_media_routes_before_asset_normalization() -> None:
+    source = (ROOT / "scripts/seed_complete_journeys_e2e.py").read_text(encoding="utf-8")
+    audit_normalizer = source.split("    def normalized_path(path: str) -> str:", maxsplit=1)[
+        1
+    ].split("    record_rows = conn.execute(", maxsplit=1)[0]
+
+    assert '{"/api/media/summaries", "/api/media/upload"}' in audit_normalizer
+    assert audit_normalizer.index("/api/media/summaries") < audit_normalizer.index(
+        'r"^/api/media/[^/]+$"'
+    )
+
+
 def test_phase_two_audit_correlation_requires_exact_actor_auth_garden_and_request_pairing() -> None:
     script = """
 const { assertPhaseTwoAuditEvents } = require('./scripts/check_complete_journeys_e2e.cjs');

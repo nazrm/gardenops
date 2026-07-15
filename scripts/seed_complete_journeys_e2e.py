@@ -4056,7 +4056,7 @@ def _audit_state(conn) -> dict[str, Any]:
             r"^/api/media/plants/[^/]+/cover$", "/api/media/plants/{plant_id}/cover", value
         )
         value = re.sub(r"^/api/media/[^/]+/links$", "/api/media/{asset_id}/links", value)
-        if value != "/api/media/upload":
+        if value not in {"/api/media/summaries", "/api/media/upload"}:
             value = re.sub(r"^/api/media/[^/]+$", "/api/media/{asset_id}", value)
         return value
 
