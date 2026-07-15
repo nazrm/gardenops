@@ -514,8 +514,19 @@ async function exerciseDiagnosisAndIssue(page, profile, options) {
   const phaseThree = phaseThreeFixture(options.fixture);
   const { plantId, plotId } = fixtureTargets(options.fixture, options.role, "issue");
   const title = phaseThree.labels.issue_online;
+  const initialIssuesResponse = page.waitForResponse((response) => (
+    response.request().method() === "GET"
+      && new URL(response.url()).pathname === "/api/issues"
+  ));
   await openActivityMode(page, profile, "issues", "#issues-tab-content");
-  const beforeCount = await page.locator(".issue-card").count();
+  const initialIssues = await initialIssuesResponse;
+  assert(initialIssues.status() === 200, "Initial issue list load failed");
+  const initialIssuePayload = await initialIssues.json();
+  await waitFor(
+    async () => await page.locator(".issue-card").count() === initialIssuePayload.issues.length,
+    "initial issue list rendering",
+  );
+  const beforeCount = initialIssuePayload.issues.length;
   await page.locator("#issues-add-btn").click();
   const issueDialog = page.getByRole("dialog").last();
   await visible(issueDialog, "new issue dialog");
