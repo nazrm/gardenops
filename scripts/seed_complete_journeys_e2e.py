@@ -3552,11 +3552,11 @@ def _phase_four_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         LEFT JOIN auth_users creator ON creator.id = task.created_by_user_id
         LEFT JOIN garden_task_plants plant ON plant.task_id = task.id
         LEFT JOIN garden_task_plots plot ON plot.task_id = task.id
-        WHERE task.garden_id = ANY(%s) AND task.rule_source LIKE 'workflow:%'
+        WHERE task.garden_id = ANY(%s) AND task.rule_source LIKE %s
         GROUP BY task.id, creator.username
         ORDER BY task.garden_id, task.rule_source
         """,
-        (garden_ids,),
+        (garden_ids, "workflow:%"),
     ).fetchall()
 
     def optional_int(value: object) -> int | None:
