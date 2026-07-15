@@ -814,7 +814,7 @@ class TestAttentionMutations(BaseApiTest):
 
         self.assertEqual(response.status_code, 409)
 
-    def test_supported_watering_restore_validates_recovery_action_without_notification_writes(
+    def test_supported_watering_restore_refreshes_task_notification_projection(
         self,
     ) -> None:
         from gardenops.services.attention.outcomes import upsert_attention_outcome
@@ -978,6 +978,17 @@ class TestAttentionMutations(BaseApiTest):
                 """,
                 (garden_id,),
             ).fetchone()
+            restored_notification = conn.execute(
+                """
+                SELECT notification_type, target_type, target_id, dismissed,
+                       cleared_at_ms, metadata_json
+                FROM notification_events
+                WHERE garden_id = %s
+                  AND target_type = 'task'
+                  AND target_id = %s
+                """,
+                (garden_id, str(restored_task["public_id"])),
+            ).fetchone()
         finally:
             db.return_db(conn)
 
@@ -987,7 +998,19 @@ class TestAttentionMutations(BaseApiTest):
         self.assertEqual(restored_plants, ["RESTORE"])
         self.assertEqual(restored_plots, ["B1"])
         self.assertEqual(int(outcome["expires_at_ms"]), 1783180799999)
-        self.assertEqual(dict(after), dict(before))
+        self.assertEqual(int(after["c"]), int(before["c"]) + 1)
+        self.assertEqual(after["dismissed_count"], before["dismissed_count"])
+        self.assertEqual(after["cleared_count"], before["cleared_count"])
+        assert restored_notification is not None
+        self.assertEqual(str(restored_notification["notification_type"]), "task_due")
+        self.assertEqual(str(restored_notification["target_type"]), "task")
+        self.assertEqual(str(restored_notification["target_id"]), str(restored_task["public_id"]))
+        self.assertFalse(bool(restored_notification["dismissed"]))
+        self.assertIsNone(restored_notification["cleared_at_ms"])
+        self.assertEqual(
+            json.loads(str(restored_notification["metadata_json"]))["due_on"],
+            "2026-07-05",
+        )
 
     def test_supported_watering_restore_moves_existing_rescheduled_task_back(
         self,
