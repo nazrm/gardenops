@@ -8,16 +8,16 @@
         "inventory_type": "seed",
         "unit": "kg",
         "transactions": [
-          {"delta": 10.125, "reason": "purchased", "source_name": "Phase 4 receipt"},
-          {"delta": -2.375, "reason": "sowed", "source_name": "Phase 4 consume"},
-          {"delta": 0.25, "reason": "adjusted", "source_name": "Phase 4 correction"}
+          {"delta": "12345678901234.123456", "reason": "purchased", "source_name": "Phase 4 receipt"},
+          {"delta": "-2.000001", "reason": "sowed", "source_name": "Phase 4 consume"},
+          {"delta": "0.000001", "reason": "adjusted", "source_name": "Phase 4 correction"}
         ],
-        "expected_quantity": 8
+        "expected_quantity": "12345678901232.123456"
       },
       "procurement": {
         "label": "Phase 4 procurement bulbs",
         "inventory_type": "bulb",
-        "quantity": 3.5,
+        "quantity": "3.5",
         "unit": "trays",
         "vendor_name": "Phase 4 local supplier",
         "ordered_on": "2026-07-12",

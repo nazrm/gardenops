@@ -533,6 +533,13 @@ function rowsForGarden(rows, gardenId) {
   return (rows || []).filter((row) => row.garden_id === gardenId);
 }
 
+function scaledPhaseFourDecimal(value) {
+  const match = /^([+-]?)(\d+)(?:\.(\d{1,6}))?$/.exec(String(value));
+  assert(match, `Invalid Phase 4 decimal evidence: ${value}`);
+  const scaled = BigInt(`${match[2]}${(match[3] || "").padEnd(6, "0")}`);
+  return match[1] === "-" ? -scaled : scaled;
+}
+
 function addedRows(initial, final, key) {
   const before = new Set((initial || []).map((row) => String(row[key])));
   return (final || []).filter((row) => !before.has(String(row[key])));
@@ -576,13 +583,13 @@ function assertPhaseFourDatabaseState(initial, final, fixture, oracle, profiles)
 
   const inventorySpec = fixture.phase_four.inventory;
   const ledgerItem = inventoryItems.find((row) => row.label === inventorySpec.label);
-  assert(ledgerItem && Number(ledgerItem.quantity) === inventorySpec.expected_quantity,
+  assert(ledgerItem && ledgerItem.quantity === inventorySpec.expected_quantity,
     "Phase 4 inventory item projection did not retain the exact ledger quantity");
   const ledgerTransactions = transactions.filter((row) => row.item_public_id === ledgerItem.public_id);
   assert(ledgerTransactions.length === inventorySpec.transactions.length,
     "Phase 4 inventory ledger projection has the wrong transaction count");
-  assert(ledgerTransactions.reduce((sum, row) => sum + Number(row.delta), 0)
-    === inventorySpec.expected_quantity,
+  assert(ledgerTransactions.reduce((sum, row) => sum + scaledPhaseFourDecimal(row.delta), 0n)
+    === scaledPhaseFourDecimal(inventorySpec.expected_quantity),
   "Phase 4 inventory ledger projection did not sum exactly");
 
   const procurementSpec = fixture.phase_four.procurement;
@@ -597,7 +604,7 @@ function assertPhaseFourDatabaseState(initial, final, fixture, oracle, profiles)
     row.row_id === received.receipt_inventory_transaction_id
   ));
   assert(receiptTransactions.length === 1
-    && Number(receiptTransactions[0].delta) === procurementSpec.quantity,
+    && receiptTransactions[0].delta === procurementSpec.quantity,
   "Phase 4 procurement repeat created duplicate receipt transactions");
 
   assert(final.planner_goal_preferences.length === spec.planner_goal_rows_final

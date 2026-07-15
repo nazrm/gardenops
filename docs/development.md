@@ -393,26 +393,32 @@ Issues, and Harvest clear their cached rows during a garden switch and reject
 late responses from the previous garden before the new content becomes
 interactive.
 
-Phase 4 runs fresh administrator desktop/mobile, editor desktop, and viewer
-desktop/mobile profiles for inventory, procurement, planner/workflows, local
-catalogue behavior, reports, and exports. Its independent oracle fixes the
+Phase 4 runs fresh administrator, editor, and viewer desktop/mobile profiles
+for inventory, procurement, planner/workflows, local catalogue behavior,
+reports, and exports. Its independent oracle fixes the
 decimal inventory ledger, procurement lifecycle, profile order, supported
 surface, and database mutation boundaries. The checker projects inventory
 items and transactions, durable procurement receipt provenance, planner goal
 preferences, workflow tasks and links, report source rows, audit mutations, and
 unchanged Beta-garden rows. Repeating the received transition and workflow
-start must not create duplicate transactions or tasks.
+start must not create duplicate transactions or tasks. Inventory deletion is
+serialized with ledger writes and cannot erase transaction history; planting
+from stock commits its plot assignment, journal event, and stock deduction as
+one idempotent command.
 
 Phase 4 parses visible-browser CSV, JSON, and ICS downloads rather than treating
 download completion as evidence. It checks garden scope, CSV formula/quote
-escaping, exact quantities, calendar dates, and absence of internal paths or
-secret-shaped content. Its primary administrator journey creates inventory,
+escaping, maximum-precision decimal quantities without binary-number coercion,
+calendar dates, and absence of internal paths or secret-shaped content. Its
+primary administrator journey creates inventory,
 enters fractional ledger transactions, receives procurement, selects a planner
-goal, and starts a workflow through the visible UI; direct requests are reserved
-for readback, idempotent replay, and authorization-denial evidence. Pixel 7
-evidence covers dense inventory/procurement
-controls and delayed Alpha/Beta responses for inventory, procurement, planner,
-and reports. External catalogue results are explicitly `not_applicable` while
+goal, starts a workflow, and completes the generated task through the visible
+UI. It also follows the overdue-task report action to the exact pending overdue
+Tasks view; direct requests are reserved for readback, idempotent replay, and
+authorization-denial evidence. Pixel 7 evidence covers dense inventory and
+procurement controls and delayed Alpha/Beta responses for inventory,
+procurement, planner, and reports. External catalogue results are explicitly
+`not_applicable` while
 the endpoint has no public species catalogue. ZIP export, generic import,
 backup restore, ICS import, suggestion acceptance, and workflow-instance
 lifecycle remain unsupported and are not Phase 4 claims. Accessibility remains

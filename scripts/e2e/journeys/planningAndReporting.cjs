@@ -10,6 +10,23 @@ const { assert, assertPageStructure, visible, waitFor } = require("../completeJo
 
 const EDITOR_PASSWORD = "CompleteJourneysEditorE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 const VIEWER_PASSWORD = "CompleteJourneysViewerE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+const DECIMAL_SCALE = 6;
+
+function scaledDecimal(value) {
+  const match = /^([+-]?)(\d+)(?:\.(\d{1,6}))?$/.exec(String(value));
+  assert(match, `Invalid Phase 4 decimal fixture: ${value}`);
+  const scaled = BigInt(`${match[2]}${(match[3] || "").padEnd(DECIMAL_SCALE, "0")}`);
+  return match[1] === "-" ? -scaled : scaled;
+}
+
+function absoluteDecimal(value) {
+  const scaled = scaledDecimal(value);
+  const absolute = scaled < 0n ? -scaled : scaled;
+  const digits = absolute.toString().padStart(DECIMAL_SCALE + 1, "0");
+  const integer = digits.slice(0, -DECIMAL_SCALE);
+  const fraction = digits.slice(-DECIMAL_SCALE).replace(/0+$/, "");
+  return `${integer}${fraction ? `.${fraction}` : ""}`;
+}
 
 function phaseFour(fixture) {
   const value = fixture.phase_four;
@@ -197,10 +214,12 @@ async function createInventoryLedgerThroughUi(page, fixture) {
   for (const transaction of spec.transactions) {
     const row = page.locator("#inventory-table-body tr[data-item-id]")
       .filter({ hasText: spec.label }).first();
-    await row.locator(transaction.delta > 0 ? ".inventory-action-add" : ".inventory-action-use").click();
+    await row.locator(scaledDecimal(transaction.delta) > 0n
+      ? ".inventory-action-add"
+      : ".inventory-action-use").click();
     const transactionDialog = page.locator(".inventory-modal:visible");
     await visible(transactionDialog, "inventory transaction dialog");
-    await transactionDialog.locator("#inv-tx-qty").fill(String(Math.abs(transaction.delta)));
+    await transactionDialog.locator("#inv-tx-qty").fill(absoluteDecimal(transaction.delta));
     await transactionDialog.locator("#inv-tx-reason").selectOption(transaction.reason);
     await transactionDialog.locator("#inv-tx-date").fill(phaseFour(fixture).date);
     const source = transactionDialog.locator("#inv-tx-source");
@@ -222,8 +241,9 @@ async function createInventoryLedgerThroughUi(page, fixture) {
   });
   assert(item.quantity === spec.expected_quantity, "Inventory quantity did not equal the exact ledger sum");
   assert(history.total === 3, "Inventory ledger did not retain exactly three corrections");
-  const sum = history.transactions.reduce((total, row) => total + Number(row.delta), 0);
-  assert(sum === spec.expected_quantity, "Inventory transaction deltas did not sum exactly");
+  const sum = history.transactions.reduce((total, row) => total + scaledDecimal(row.delta), 0n);
+  assert(sum === scaledDecimal(spec.expected_quantity),
+    "Inventory transaction deltas did not sum exactly");
   return created.id;
 }
 
@@ -431,11 +451,11 @@ async function exerciseDownloads(page, diagnostics, fixture) {
   );
   const csvRows = parseCsv(csvText);
   const csvMatch = csvRows.find((row) => row.label === `'${phaseFour(fixture).inventory.label}`);
-  assert(csvMatch && Number(csvMatch.quantity) === phaseFour(fixture).inventory.expected_quantity,
+  assert(csvMatch && csvMatch.quantity === phaseFour(fixture).inventory.expected_quantity,
     "CSV export lost formula escaping, quoting, or exact inventory quantity");
   const receiptRows = csvRows.filter((row) => row.label === phaseFour(fixture).procurement.label);
   assert(receiptRows.length === 1
-    && Number(receiptRows[0].quantity) === phaseFour(fixture).procurement.quantity,
+    && receiptRows[0].quantity === phaseFour(fixture).procurement.quantity,
   "Inventory CSV omitted or duplicated the procurement receipt inventory row");
   assertNoSecrets(csvText, fixture);
 

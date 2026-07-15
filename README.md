@@ -81,9 +81,11 @@ control.
   plot assignments, planting metadata, and custom notes.
 - Inventory, procurement, care, issue, harvest, and indoor-plant workflows for
   tracking what exists, what is needed, what happened, and what needs follow-up.
-- Fractional inventory ledgers prevent negative stock, while procurement receipt
-  transitions add stock atomically and retain their source relationship without
-  duplicating inventory on retries.
+- Fractional inventory ledgers preserve exact quantities and prevent negative
+  stock. Ledger-backed items retain their history instead of being deletable.
+- Planting from stock atomically records the plot assignment, journal event, and
+  stock deduction. Procurement receipts likewise retain their source
+  relationship, and both workflows avoid duplicate records when retried.
 - CSV import/export paths for moving plant and operations data in and out of the
   system.
 - Garden- and zone-scoped planning reports, remembered planner goals, and
