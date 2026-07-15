@@ -67,7 +67,7 @@ async function openSubMode(page, parent, mode, panel) {
 }
 
 async function openInsightsMode(page, mode, panel) {
-  await page.locator("[data-tab='insights']:visible").first().click();
+  await openSubMode(page, "insights", "statistics", "#statistics-view");
   const button = page.locator(`#stats-mode-${mode}:visible`);
   await visible(button, `${mode} statistics mode`);
   await button.click();

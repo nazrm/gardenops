@@ -910,6 +910,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
         '"#inv-tx-qty"',
         '"#procurement-save-btn"',
         '"Start workflow"',
+        'openSubMode(page, "insights", "statistics", "#statistics-view")',
     ):
         assert marker in journey_source
     for endpoint in (
