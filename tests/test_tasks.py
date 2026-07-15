@@ -270,6 +270,7 @@ class TestTasks(BaseApiTest):
             },
         )
         self.assertEqual(r.status_code, 201)
+        next_week_id = r.json()["id"]
 
         # Create a task due far future
         r = self.client.post(
@@ -301,6 +302,18 @@ class TestTasks(BaseApiTest):
         r = self.client.get("/api/tasks?view=month")
         self.assertEqual(r.status_code, 200)
         self.assertGreaterEqual(r.json()["total"], 2)
+
+        completed = self.client.post(
+            f"/api/tasks/{next_week_id}/action",
+            json={"action": "complete"},
+        )
+        self.assertEqual(completed.status_code, 200, completed.text)
+        completed_month = self.client.get("/api/tasks?view=month&status=completed")
+        self.assertEqual(completed_month.status_code, 200, completed_month.text)
+        self.assertIn(
+            next_week_id,
+            {task["id"] for task in completed_month.json()["tasks"]},
+        )
 
         # Overdue: tasks due before today
         r = self.client.post(
