@@ -4961,6 +4961,14 @@ function assertPhaseTwoDatabaseState(
   );
   assert(Number.isSafeInteger(viewerMaintenanceAlertId) && viewerMaintenanceAlertId > 0,
     "Phase 2 viewer maintenance weather alert identity was missing");
+  const viewerGeneratedFrostAlert = state.weather_alerts.find((alert) => (
+    alert.garden_id === fixture.gardens.alpha.id
+    && alert.alert_type === "frost_warning"
+    && alert.created_at_ms === fixture.clock.attention_now_ms
+    && alert.valid_from === phase.date
+  ));
+  assert(viewerGeneratedFrostAlert,
+    "Phase 2 viewer generated frost alert identity was missing");
   assert(state.item_states.length === 3,
     "Phase 2 user-scoped weather dismissal count was unexpected");
   exact(state.item_states.slice().sort((left, right) => (
@@ -4986,9 +4994,7 @@ function assertPhaseTwoDatabaseState(
     },
     {
       garden_id: fixture.gardens.alpha.id,
-      item_id: `attn:weather:alert:${phase.seeded_state.weather_alerts.find((alert) => (
-        alert.garden_id === fixture.gardens.alpha.id
-      )).id}`,
+      item_id: `attn:weather:alert:${viewerGeneratedFrostAlert.id}`,
       metadata: {},
       reason: "",
       snoozed_until_ms: null,

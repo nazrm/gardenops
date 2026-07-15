@@ -3348,6 +3348,8 @@ def test_phase_two_viewer_weather_keeps_personal_dismissal_controls() -> None:
     assert "page.evaluate" not in dismissal
     checker = CHECKER.read_text(encoding="utf-8")
     assert "Phase 2 weather dismissals were not scoped to their users and gardens" in checker
+    assert "viewerGeneratedFrostAlert.id" in checker
+    assert 'alert.valid_from === phase.date' in checker
     assert "username: fixture.roles.viewer" in checker
 
 
