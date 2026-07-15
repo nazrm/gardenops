@@ -6663,8 +6663,12 @@ th.sort-desc::after {
   display: flex;
   justify-content: center;
   align-items: center;
+  width: 100%;
   padding: var(--sp-3) 0;
   min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: inherit;
   cursor: grab;
   touch-action: none;
   flex-shrink: 0;
@@ -6675,6 +6679,14 @@ th.sort-desc::after {
   height: 5px;
   border-radius: 3px;
   background: var(--border);
+}
+
+.sheet-content {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .sheet-header {
@@ -8517,6 +8529,9 @@ td.inventory-qty-zero {
 .task-card.task-completed {
   opacity: 0.6;
 }
+.task-card.task-overdue {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
 .task-card-header {
   display: flex;
   align-items: center;
@@ -8625,6 +8640,10 @@ td.inventory-qty-zero {
   background: color-mix(in srgb, var(--text-3) 14%, transparent);
   color: var(--text-3);
 }
+.task-status-chip.status-overdue {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
 .task-card-tags {
   display: flex;
   flex-wrap: wrap;
@@ -8670,6 +8689,54 @@ td.inventory-qty-zero {
   color: var(--danger);
   border-color: var(--danger);
 }
+.task-offline-status.status-queued {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+.task-offline-status.status-syncing {
+  background: color-mix(in srgb, var(--warning, #8a5a00) 14%, transparent);
+  color: var(--warning, #8a5a00);
+}
+.task-offline-status.status-failed {
+  background: var(--danger-muted);
+  color: var(--danger);
+}
+.task-offline-state {
+  display: grid;
+  gap: var(--sp-1);
+  margin: var(--sp-2) 0;
+  padding: var(--sp-2);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--bg-3));
+  border-radius: var(--r-sm);
+  background: var(--accent-muted);
+  color: var(--text-1);
+  font-size: 0.78rem;
+}
+.task-offline-state--failed {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--bg-3));
+  background: var(--danger-muted);
+}
+.task-offline-error {
+  color: var(--danger);
+}
+.task-offline-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.offline-data-state {
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--accent);
+  background: var(--accent-muted);
+  color: var(--text-1);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+.offline-data-state--unavailable {
+  border-left-color: var(--danger);
+  background: var(--danger-muted);
+}
 
 /* ── Collapsible drawer sections ────────────────────────── */
 .drawer-section {
@@ -8679,6 +8746,12 @@ td.inventory-qty-zero {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
   padding: var(--sp-2) 0;
   user-select: none;
@@ -8986,7 +9059,6 @@ td.inventory-qty-zero {
   gap: var(--sp-2);
   padding: var(--sp-3);
   border-bottom: 1px solid var(--border-subtle);
-  cursor: pointer;
   transition: background 100ms var(--ease);
 }
 .notification-item:hover {
@@ -9006,6 +9078,15 @@ td.inventory-qty-zero {
 .notification-item-content {
   flex: 1;
   min-width: 0;
+}
+.notification-item-main {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 .notification-item-title {
   font-weight: 500;
@@ -9073,6 +9154,43 @@ td.inventory-qty-zero {
 .notification-item-dismiss:hover {
   color: var(--danger);
 }
+
+@media (pointer: coarse) {
+  .notification-mark-all-btn,
+  .notification-settings-btn,
+  .notification-panel-close,
+  .notification-panel-tab,
+  .notification-item-mute,
+  .notification-item-dismiss {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .notification-mark-all-btn,
+  .notification-settings-btn,
+  .notification-panel-close,
+  .notification-item-mute,
+  .notification-item-dismiss {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .notification-panel-header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .notification-panel-header-actions,
+  .notification-item-actions {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .notification-item-main {
+    min-height: 44px;
+  }
+}
 .notification-empty {
   text-align: center;
   padding: var(--sp-8) var(--sp-4);
@@ -9097,6 +9215,15 @@ td.inventory-qty-zero {
 /* Notification preferences form */
 .notification-prefs-form {
   padding: var(--sp-4);
+}
+.notification-prefs-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+.notification-prefs-cancel {
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
 }
 .notification-prefs-row {
   display: flex;
@@ -9204,6 +9331,12 @@ td.inventory-qty-zero {
   }
   .notification-prefs-rule-controls {
     justify-content: flex-start;
+  }
+  .notification-prefs-form button,
+  .notification-prefs-form input,
+  .notification-prefs-form select {
+    min-width: 44px;
+    min-height: 44px;
   }
 }
 
@@ -11005,6 +11138,19 @@ td.inventory-qty-zero {
   flex: 0 0 auto;
 }
 
+@media (pointer: coarse) {
+  .task-completion-list label {
+    min-height: 44px;
+    padding: var(--sp-1) var(--sp-2);
+    flex-direction: row;
+  }
+
+  .task-completion-list input {
+    width: 22px;
+    height: 22px;
+  }
+}
+
 .task-completion-feedback {
   min-height: 1.25rem;
   margin-top: var(--sp-2);
@@ -11046,10 +11192,14 @@ td.inventory-qty-zero {
   opacity: 0;
   transform: translateY(12px);
   transition: opacity 260ms var(--ease), transform 260ms var(--ease);
-  pointer-events: auto;
+  pointer-events: none;
   max-width: 400px;
   text-align: center;
   box-shadow: var(--shadow-md);
+}
+
+.toast-interactive {
+  pointer-events: auto;
 }
 
 .toast-action {
@@ -11080,6 +11230,18 @@ td.inventory-qty-zero {
 
 .toast-error {
   background: var(--danger);
+}
+
+@media (max-width: 600px) {
+  #toast-container {
+    bottom: calc(78px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+@media (max-width: 960px) {
+  body.offline-recovery-open #toast-container {
+    bottom: calc(78px + env(safe-area-inset-bottom, 0px) + var(--offline-recovery-offset, 0px));
+  }
 }
 
 /* ── Elevation editor ──────────────────────────────────── */
@@ -13403,7 +13565,24 @@ td.inventory-qty-zero {
   height: 4px;
   background: var(--bg-3);
   border-radius: 2px;
-  margin: 0 auto var(--sp-3);
+  margin: var(--sp-1) auto;
+}
+
+.mobile-quick-actions-toolbar {
+  position: relative;
+  min-height: 28px;
+  margin-bottom: var(--sp-3);
+}
+
+.mobile-quick-actions-close {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
 }
 
 .quick-action-title {
@@ -13477,6 +13656,24 @@ td.inventory-qty-zero {
   gap: var(--sp-1);
 }
 
+.quick-action-task-search {
+  width: 100%;
+  min-height: 44px;
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--bg-3);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font: inherit;
+}
+
+.quick-action-task-search:focus {
+  border-color: var(--brand);
+  outline: 2px solid color-mix(in srgb, var(--brand) 35%, transparent);
+  outline-offset: 1px;
+}
+
 .quick-action-task-item {
   display: block;
   width: 100%;
@@ -13499,6 +13696,32 @@ td.inventory-qty-zero {
   padding: var(--sp-4);
   color: var(--text-3);
   font-size: 0.85rem;
+}
+
+.quick-action-snooze-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: 0.85rem;
+}
+
+.quick-action-snooze-notice-action {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font: inherit;
+  cursor: pointer;
 }
 
 /* ── Smart gardener reports ─────────────────────────────── */
@@ -14304,6 +14527,11 @@ td.inventory-qty-zero {
   top: var(--sp-2);
   right: var(--sp-2);
   z-index: 9999;
+  display: flex;
+  max-width: min(28rem, calc(100vw - 2 * var(--sp-2)));
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-1);
 }
 
 .offline-indicator {
@@ -14328,6 +14556,16 @@ td.inventory-qty-zero {
   color: #000;
 }
 
+.offline-indicator--pending {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+.offline-indicator--failed {
+  background: var(--danger);
+  color: #fff;
+}
+
 .offline-indicator-count {
   font-weight: 400;
 }
@@ -14345,6 +14583,60 @@ td.inventory-qty-zero {
 
 .offline-sync-btn:hover {
   opacity: 0.8;
+}
+
+.offline-failures {
+  width: min(28rem, calc(100vw - 2 * var(--sp-2)));
+  padding: var(--sp-3);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--bg-3));
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+  color: var(--text-1);
+  font-size: 0.78rem;
+}
+
+.offline-failure-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding-top: var(--sp-2);
+}
+
+.offline-failure-label,
+.offline-failure-error {
+  display: block;
+}
+
+.offline-failure-error {
+  margin-top: 2px;
+  color: var(--danger);
+}
+
+.offline-failure-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-1);
+}
+
+.offline-retry-btn,
+.offline-discard-btn {
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+@media (max-width: 960px) {
+  .offline-indicator-wrapper {
+    top: auto;
+    right: var(--sp-2);
+    bottom: calc(78px + env(safe-area-inset-bottom, 0px) + var(--sp-2));
+    max-height: min(45vh, 24rem);
+    overflow-y: auto;
+  }
 }
 
 /* ── House clickable + Indoor panel ──────────────── */
@@ -15539,6 +15831,16 @@ td.inventory-qty-zero {
 .calendar-root .calendar-status-skipped,
 .calendar-root .calendar-status-expired {
   opacity: 0.62;
+}
+
+.calendar-root .calendar-task-offline-queued {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.calendar-root .calendar-task-offline-failed {
+  outline: 2px solid var(--danger);
+  outline-offset: 1px;
 }
 
 .calendar-root .fc-list-event.calendar-status-completed .calendar-event-agenda-title,

@@ -4,7 +4,7 @@ import os
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import Field
+from pydantic import Field, StrictBool
 
 from gardenops.db import DB, current_timestamp_ms
 from gardenops.models import StrictBaseModel
@@ -22,6 +22,7 @@ from gardenops.router_helpers import (
 )
 from gardenops.services.attention import (
     AttentionService,
+    apply_digest_delivery_capability,
     attention_request_clock,
     load_attention_preferences,
     resolve_attention_preferences,
@@ -31,6 +32,9 @@ from gardenops.services.attention import (
     serialize_attention_preferences,
     set_user_attention_state,
 )
+from gardenops.services.attention.preferences import normalize_attention_preference_payload
+from gardenops.services.attention.service import lock_attention_preferences
+from gardenops.services.notification_service import load_digest_delivery_configuration
 
 router = APIRouter()
 
@@ -39,7 +43,7 @@ class AttentionPreferencesBody(StrictBaseModel):
     preset: Literal["calm", "balanced", "detailed", "custom"] = "balanced"
     rules: dict[str, dict[str, Any]] = Field(default_factory=dict)
     quiet_hours: dict[str, Any] = Field(default_factory=dict)
-    show_no_action_history: bool = True
+    show_no_action_history: StrictBool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -49,7 +53,15 @@ class AttentionSnoozeBody(StrictBaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-def _require_user_id(request: Request) -> tuple[int, int]:
+def _require_personal_state_user_id(request: Request) -> tuple[int, int]:
+    context = _auth_context(request)
+    garden_id = _active_garden_id(context)
+    if context.user_id is None:
+        raise HTTPException(status_code=403, detail="Authentication required")
+    return garden_id, int(context.user_id)
+
+
+def _require_write_user_id(request: Request) -> tuple[int, int]:
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
     _require_write(context)
@@ -61,6 +73,14 @@ def _require_user_id(request: Request) -> tuple[int, int]:
 def _clocked_service() -> tuple[AttentionService, int]:
     now_ms, frozen_date = attention_request_clock(now_ms=current_timestamp_ms())
     return AttentionService(frozen_date=frozen_date), now_ms
+
+
+def _load_digest_delivery(db: DB, context: Any) -> dict[str, Any]:
+    return load_digest_delivery_configuration(
+        db,
+        user_id=context.user_id,
+        subscription_tier=context.subscription_tier,
+    )
 
 
 def _validated_force_degraded_provider(value: str | None) -> str | None:
@@ -101,12 +121,14 @@ def get_attention_today(
     garden_id = _active_garden_id(context)
     force_degraded = _validated_force_degraded_provider(force_degraded_provider)
     service, now_ms = _clocked_service()
+    digest_delivery = _load_digest_delivery(db, context)
     return service.today(
         db,
         garden_id=garden_id,
         user_id=context.user_id,
         now_ms=now_ms,
         force_degraded_provider=force_degraded,
+        digest_delivery=digest_delivery,
     )
 
 
@@ -114,7 +136,10 @@ def get_attention_today(
 def get_attention_preferences(request: Request, db: DB) -> dict[str, Any]:
     context = _auth_context(request)
     preferences = load_attention_preferences(db, context.user_id)
-    return serialize_attention_preferences(preferences)
+    return serialize_attention_preferences(
+        preferences,
+        digest_delivery=_load_digest_delivery(db, context),
+    )
 
 
 @router.put("/attention/preferences")
@@ -125,7 +150,22 @@ def put_attention_preferences(
 ) -> dict[str, Any]:
     context = _auth_context(request)
     _active_garden_id(context)
-    _require_write(context)
+    try:
+        (
+            preset,
+            rules,
+            quiet_hours,
+            show_no_action_history,
+            metadata,
+        ) = normalize_attention_preference_payload(
+            preset=body.preset,
+            rules=body.rules,
+            quiet_hours=body.quiet_hours,
+            show_no_action_history=body.show_no_action_history,
+            metadata=body.metadata,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if context.user_id is None:
         if not _is_local_admin_fallback(context):
             raise HTTPException(status_code=403, detail="Authentication required")
@@ -135,33 +175,56 @@ def put_attention_preferences(
                 legacy_preferences=None,
                 saved_attention_preferences={
                     "user_id": 0,
-                    "preset": body.preset,
-                    "rules": body.rules,
-                    "quiet_hours": body.quiet_hours,
-                    "show_no_action_history": body.show_no_action_history,
-                    "metadata": body.metadata,
+                    "preset": preset,
+                    "rules": rules,
+                    "quiet_hours": quiet_hours,
+                    "show_no_action_history": show_no_action_history,
+                    "metadata": metadata,
                 },
-            )
+            ),
+            digest_delivery=_load_digest_delivery(db, context),
         )
     user_id = int(context.user_id)
+    lock_attention_preferences(db, user_id)
+    digest_delivery = _load_digest_delivery(db, context)
+    if preset == "custom" and not bool(digest_delivery["configured"]):
+        requested_preferences = resolve_attention_preferences(
+            user_id=user_id,
+            legacy_preferences=None,
+            saved_attention_preferences={
+                "user_id": user_id,
+                "preset": preset,
+                "rules": rules,
+                "quiet_hours": quiet_hours,
+                "show_no_action_history": show_no_action_history,
+                "metadata": metadata,
+            },
+        )
+        rules = apply_digest_delivery_capability(
+            requested_preferences,
+            configured=False,
+        ).rules
     now_ms = current_timestamp_ms()
     preferences = save_attention_preferences(
         db,
         user_id=user_id,
-        preset=body.preset,
-        rules=body.rules,
-        quiet_hours=body.quiet_hours,
-        show_no_action_history=body.show_no_action_history,
-        metadata=body.metadata,
+        preset=preset,
+        rules=rules,
+        quiet_hours=quiet_hours,
+        show_no_action_history=show_no_action_history,
+        metadata=metadata,
         now_ms=now_ms,
     )
     db.commit()
-    return serialize_attention_preferences(preferences)
+    return serialize_attention_preferences(
+        preferences,
+        digest_delivery=digest_delivery,
+    )
 
 
 @router.post("/attention/items/{item_id}/read")
 def read_attention_item(item_id: str, request: Request, db: DB) -> dict[str, str]:
-    garden_id, user_id = _require_user_id(request)
+    garden_id, user_id = _require_personal_state_user_id(request)
     service, now_ms = _clocked_service()
     _require_existing_item(
         db,
@@ -185,7 +248,7 @@ def read_attention_item(item_id: str, request: Request, db: DB) -> dict[str, str
 
 @router.post("/attention/items/{item_id}/dismiss")
 def dismiss_attention_item(item_id: str, request: Request, db: DB) -> dict[str, str]:
-    garden_id, user_id = _require_user_id(request)
+    garden_id, user_id = _require_personal_state_user_id(request)
     service, now_ms = _clocked_service()
     _require_existing_item(
         db,
@@ -214,7 +277,7 @@ def snooze_attention_item(
     request: Request,
     db: DB,
 ) -> dict[str, str]:
-    garden_id, user_id = _require_user_id(request)
+    garden_id, user_id = _require_personal_state_user_id(request)
     service, now_ms = _clocked_service()
     _require_existing_item(
         db,
@@ -245,7 +308,7 @@ def restore_attention_outcome_item(
     request: Request,
     db: DB,
 ) -> dict[str, str]:
-    garden_id, user_id = _require_user_id(request)
+    garden_id, user_id = _require_write_user_id(request)
     _service, now_ms = _clocked_service()
     status = restore_attention_outcome(
         db,
@@ -260,7 +323,7 @@ def restore_attention_outcome_item(
 
 @router.post("/attention/items/{item_id}/restore")
 def restore_attention_item(item_id: str, request: Request, db: DB) -> dict[str, str]:
-    garden_id, user_id = _require_user_id(request)
+    garden_id, user_id = _require_personal_state_user_id(request)
     service, now_ms = _clocked_service()
     _require_existing_item(
         db,

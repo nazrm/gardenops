@@ -4,7 +4,11 @@ from gardenops.services.attention.outcomes import (
 )
 from gardenops.services.attention.preferences import (
     AttentionPreferenceSet,
+    apply_digest_delivery_capability,
     apply_preferences,
+    merge_notification_preferences,
+    notification_quiet_hours_from_attention,
+    notification_rules_from_attention,
     resolve_attention_preferences,
 )
 from gardenops.services.attention.providers import (
@@ -62,6 +66,7 @@ __all__ = [
     "NotificationStatusAttentionProvider",
     "TaskAttentionProvider",
     "WeatherAttentionProvider",
+    "apply_digest_delivery_capability",
     "apply_preferences",
     "apply_user_states",
     "attention_request_clock",
@@ -70,7 +75,10 @@ __all__ = [
     "is_generated_watering_task",
     "load_attention_preferences",
     "load_user_attention_states",
+    "merge_notification_preferences",
     "normalize_severity",
+    "notification_quiet_hours_from_attention",
+    "notification_rules_from_attention",
     "rank_attention_items",
     "read_active_attention_outcomes",
     "require_attention_e2e_database",

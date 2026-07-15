@@ -221,7 +221,7 @@ interface RenderMapParams {
   housePosition: { row: number; col: number };
   houseSize: { width: number; height: number };
   northDegrees: number;
-  onPlotClick: (plot: Plot, event: MouseEvent) => void;
+  onPlotClick: (plot: Plot, event: MouseEvent | KeyboardEvent) => void;
   onPlotContextMenu: (plot: Plot, x: number, y: number) => void;
   onPlotDragStart: (plot: Plot, event: DragEvent) => void;
   onPlotDragEnd: () => void;
@@ -520,6 +520,9 @@ function buildPlotCell(
   el.dataset["zone"] = plot.zone_code;
   el.dataset["row"] = String(row);
   el.dataset["col"] = String(col);
+  el.tabIndex = 0;
+  el.setAttribute("role", "button");
+  el.setAttribute("aria-label", `${plot.plot_id}: ${t("popover.view_details")}`);
   el.style.gridRow = String(row);
   el.style.gridColumn = String(col);
 
@@ -639,7 +642,7 @@ export function syncSelectedMapObject(
 
 interface GridCallbacks {
   editMode: boolean;
-  onPlotClick: (plot: Plot, event: MouseEvent) => void;
+  onPlotClick: (plot: Plot, event: MouseEvent | KeyboardEvent) => void;
   onPlotContextMenu: (plot: Plot, x: number, y: number) => void;
   onPlotDragStart: (plot: Plot, event: DragEvent) => void;
   onPlotDragEnd: () => void;
@@ -704,6 +707,14 @@ function wireGridDelegation(
       const cell = cellData(e.target);
       if (cell) state.callbacks.onEmptyCellClick(cell.row, cell.col);
     }
+  });
+
+  grid.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const plot = plotAt(e.target);
+    if (!plot) return;
+    e.preventDefault();
+    state.callbacks.onPlotClick(plot, e);
   });
 
   grid.addEventListener("contextmenu", (e) => {

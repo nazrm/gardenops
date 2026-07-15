@@ -1,14 +1,18 @@
 import type {
   SyncCallbacks,
+  SyncResult,
   SerializedFile,
 } from "../services/offlineQueue";
 import { t } from "../core/i18n";
 import { showToast } from "../components/toast";
 import { renderOfflineIndicator } from "../components/offlineIndicator";
+import { confirmDialog } from "../components/dialogCore";
 import {
   onConnectivityChange,
   onOfflineQueueChange,
-  getPendingCount,
+  getOfflineQueueSnapshot,
+  removeDraft,
+  retryDraft,
   syncAllDrafts,
   isOnline,
   deserializeFiles,
@@ -20,6 +24,7 @@ import {
   createHarvestApi,
   addMediaLinkApi,
   uploadMediaApi,
+  type RevisionedTaskActionRequest,
 } from "../services/api";
 import type { OfflineDraft } from "../core/models";
 
@@ -44,11 +49,26 @@ export interface OfflineMediaHelpers {
 }
 
 let mediaHelpers: OfflineMediaHelpers;
+let onSyncComplete: ((result: SyncResult) => Promise<void> | void) | null = null;
+let canManageDrafts: (() => boolean) | null = null;
+let syncInFlight: Promise<void> | null = null;
+
+function canRetryOfflineDrafts(): boolean {
+  return canManageDrafts?.() ?? true;
+}
+
+export interface OfflineFeatureOptions {
+  canManageDrafts?: () => boolean;
+  onSyncComplete?: (result: SyncResult) => Promise<void> | void;
+}
 
 export function initOfflineFeature(
   helpers: OfflineMediaHelpers,
+  options: OfflineFeatureOptions = {},
 ): void {
   mediaHelpers = helpers;
+  onSyncComplete = options.onSyncComplete ?? null;
+  canManageDrafts = options.canManageDrafts ?? null;
   initOfflineIndicator();
 }
 
@@ -89,8 +109,21 @@ function attachmentOperationIds(
 function taskActionBody(
   payload: Record<string, unknown>,
   action: Parameters<typeof taskActionApi>[1]["action"],
-): Parameters<typeof taskActionApi>[1] {
-  const body: Parameters<typeof taskActionApi>[1] = { action };
+): RevisionedTaskActionRequest {
+  const expectedUpdatedAtMs = payload["expected_updated_at_ms"];
+  if (
+    typeof expectedUpdatedAtMs !== "number"
+    || !Number.isSafeInteger(expectedUpdatedAtMs)
+  ) {
+    throw new Error("Offline task action is missing its expected revision");
+  }
+  const body: RevisionedTaskActionRequest = {
+    action,
+    expected_updated_at_ms: expectedUpdatedAtMs,
+  };
+  if (payload["confirm_outside_window"] === true) {
+    body.confirm_outside_window = true;
+  }
   if (typeof payload["snooze_until"] === "string") {
     body.snooze_until = payload["snooze_until"];
   }
@@ -309,28 +342,108 @@ export async function refreshOfflineIndicator(): Promise<void> {
     "offline-indicator",
   );
   if (!wrapper) return;
-  const count = await getPendingCount();
+  const snapshot = await getOfflineQueueSnapshot();
   renderOfflineIndicator(
     wrapper,
-    count,
-    isOnline(),
     {
-      onSyncNow: () => void triggerOfflineSync(),
+      failedDrafts: snapshot.failedDrafts,
+      canDiscardDrafts: true,
+      canRetryDrafts: canRetryOfflineDrafts(),
+      online: isOnline(),
+      pendingCount: snapshot.pendingCount,
+      syncingCount: snapshot.syncingCount,
     },
+    {
+      onDiscard: (draft) => {
+        void (async () => {
+          const confirmed = await confirmDialog(
+            t("offline.discard_confirm"),
+            t("offline.discard"),
+          );
+          if (!confirmed) return;
+          await removeDraft(draft.id);
+          await refreshOfflineIndicator();
+        })();
+      },
+      onRetry: (draft) => {
+        void (async () => {
+          if (!canRetryOfflineDrafts()) {
+            await refreshOfflineIndicator();
+            return;
+          }
+          const changed = await retryDraft(draft.id);
+          if (changed && isOnline()) {
+            await syncOfflineDraftsNow();
+          } else {
+            await refreshOfflineIndicator();
+          }
+        })();
+      },
+      onSyncNow: () => void syncOfflineDraftsNow(),
+    },
+  );
+  updateToastRecoveryClearance(wrapper, snapshot.failedDrafts.length > 0);
+}
+
+function updateToastRecoveryClearance(
+  wrapper: HTMLElement,
+  hasFailures: boolean,
+): void {
+  const clearance = hasFailures && !wrapper.hidden
+    ? Math.ceil(wrapper.getBoundingClientRect().height + 8)
+    : 0;
+  document.body.classList.toggle("offline-recovery-open", hasFailures);
+  document.documentElement.style.setProperty(
+    "--offline-recovery-offset",
+    `${clearance}px`,
   );
 }
 
-async function triggerOfflineSync(): Promise<void> {
-  const result = await syncAllDrafts(
-    getOfflineSyncCallbacks(),
-  );
-  if (result.synced > 0 && result.remaining === 0) {
-    showToast(
-      t("offline.sync_complete"),
-      "success",
-    );
-  } else if (result.failed > 0) {
-    showToast(t("offline.sync_failed"), "error");
+export async function syncOfflineDraftsNow(): Promise<void> {
+  if (syncInFlight) return syncInFlight;
+  const sync = (async () => {
+    if (!isOnline() || !canRetryOfflineDrafts()) {
+      await refreshOfflineIndicator();
+      return;
+    }
+    try {
+      const result = await syncAllDrafts(
+        getOfflineSyncCallbacks(),
+      );
+      if (result.synced > 0 && result.remaining === 0) {
+        showToast(
+          t("offline.sync_complete"),
+          "success",
+        );
+      } else if (result.failed > 0) {
+        showToast(t("offline.sync_failed"), "error");
+      }
+      if (result.synced > 0) {
+        await onSyncComplete?.(result);
+      }
+    } catch {
+      showToast(t("offline.sync_failed"), "error");
+    } finally {
+      await refreshOfflineIndicator();
+    }
+  })();
+  syncInFlight = sync;
+  try {
+    await sync;
+  } finally {
+    if (syncInFlight === sync) syncInFlight = null;
+  }
+}
+
+async function syncPendingOfflineDrafts(): Promise<void> {
+  if (!isOnline() || !canRetryOfflineDrafts()) {
+    await refreshOfflineIndicator();
+    return;
+  }
+  const snapshot = await getOfflineQueueSnapshot();
+  if (snapshot.pendingCount > 0) {
+    await syncOfflineDraftsNow();
+    return;
   }
   await refreshOfflineIndicator();
 }
@@ -346,12 +459,21 @@ function initOfflineIndicator(): void {
     document.body.appendChild(wrapper);
   }
   void refreshOfflineIndicator();
+  void syncPendingOfflineDrafts();
 
   onConnectivityChange((online) => {
     if (online) {
-      void triggerOfflineSync();
+      void syncPendingOfflineDrafts();
     }
     void refreshOfflineIndicator();
+  });
+  window.addEventListener("focus", () => {
+    void syncPendingOfflineDrafts();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      void syncPendingOfflineDrafts();
+    }
   });
   onOfflineQueueChange(() => {
     void refreshOfflineIndicator();

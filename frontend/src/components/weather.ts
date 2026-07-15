@@ -113,14 +113,14 @@ export function renderWeatherDashboard(
         <div class="weather-section-title">
           ${t("weather.title")}
           <div class="weather-actions">
-            <button type="button" class="btn-secondary weather-check-btn">${t("weather.check")}</button>
+            <button type="button" class="btn-secondary weather-check-btn"${canWriteWeather() ? "" : " hidden"}>${t("weather.check")}</button>
           </div>
         </div>
         <div class="weather-no-data">${t("weather.no_forecast")}</div>
       </div>
     `);
     container.querySelector(".weather-check-btn")?.addEventListener("click", () => {
-      callbacks.onCheckWeather();
+      if (canWriteWeather()) callbacks.onCheckWeather();
     });
     return;
   }
@@ -151,7 +151,7 @@ export function renderWeatherDashboard(
         <div class="weather-section-title">
           ${t("weather.forecast_title")}
           <div class="weather-actions">
-            <button type="button" class="btn-secondary weather-check-btn">${t("weather.refresh")}</button>
+            <button type="button" class="btn-secondary weather-check-btn"${canWriteWeather() ? "" : " hidden"}>${t("weather.refresh")}</button>
           </div>
         </div>
         <div class="forecast-strip">${days}</div>
@@ -162,7 +162,7 @@ export function renderWeatherDashboard(
   // Alert cards
   if (summary.alerts.length > 0) {
     const alertCards = summary.alerts.map((alert) =>
-      createWeatherAlertCardMarkup(alert),
+      createWeatherAlertCardMarkup(alert, true),
     ).join("");
     sections.push(`
       <div class="weather-section">
@@ -202,7 +202,7 @@ export function renderWeatherDashboard(
 
   // Wire event handlers
   container.querySelector(".weather-check-btn")?.addEventListener("click", () => {
-    callbacks.onCheckWeather();
+    if (canWriteWeather()) callbacks.onCheckWeather();
   });
 
   container.querySelectorAll<HTMLButtonElement>(".weather-alert-dismiss").forEach((btn) => {
@@ -221,8 +221,13 @@ export function renderWeatherDashboard(
   });
 }
 
+function canWriteWeather(): boolean {
+  return !document.body.classList.contains("garden-read-only");
+}
+
 function createWeatherAlertCardMarkup(
   alert: WeatherAlert,
+  canDismiss: boolean,
 ): string {
   const icon = ALERT_ICONS[alert.alert_type] ?? "\u26a0\ufe0f";
   const params = alertTemplateParams(alert);
@@ -265,6 +270,12 @@ function createWeatherAlertCardMarkup(
       `<div class="weather-advice generic">${generic}</div>`;
   }
 
+  const dismissAction = canDismiss
+    ? `<div class="weather-alert-footer">
+        <button type="button" class="weather-alert-dismiss" data-alert-id="${alert.id}">${t("weather.dismiss")}</button>
+      </div>`
+    : "";
+
   return `
     <div class="weather-alert-card severity-${alert.severity}">
       <div class="weather-alert-header">
@@ -275,9 +286,7 @@ function createWeatherAlertCardMarkup(
       <div class="weather-alert-description">${descText}</div>
       <div class="weather-alert-dates">${dateRange}</div>
       ${advisoryHtml}
-      <div class="weather-alert-footer">
-        <button type="button" class="weather-alert-dismiss" data-alert-id="${alert.id}">${t("weather.dismiss")}</button>
-      </div>
+      ${dismissAction}
     </div>
   `;
 }

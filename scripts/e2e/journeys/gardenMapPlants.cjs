@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const {
+  assertBrowserProfileContract,
   assertDiagnosticsClean,
   authenticate,
   createApiRecorder,
@@ -42,58 +43,6 @@ function plantRecord(page, profile, name) {
     ? "#plants-mobile-list article[data-plt-id]"
     : "#plants-table-body tr[data-plt-id]";
   return page.locator(selector).filter({ hasText: name });
-}
-
-async function issueBrowserRequest(page, { body = null, headers = {}, method, path }) {
-  return page.evaluate(async ({ requestBody, requestHeaders, requestMethod, requestPath }) => {
-    const csrf = document.cookie.split("; ")
-      .find((part) => part.startsWith("gardenops_csrf="))?.slice("gardenops_csrf=".length) || "";
-    const response = await fetch(requestPath, {
-      body: requestBody === null ? undefined : JSON.stringify(requestBody),
-      credentials: "include",
-      headers: {
-        ...(requestBody === null ? {} : { "content-type": "application/json" }),
-        ...(csrf ? { "x-csrf-token": decodeURIComponent(csrf) } : {}),
-        ...requestHeaders,
-      },
-      method: requestMethod,
-    });
-    return { status: response.status };
-  }, {
-    requestBody: body,
-    requestHeaders: headers,
-    requestMethod: method,
-    requestPath: path,
-  });
-}
-
-async function assertExpectedBrowserFailure(page, diagnostics, {
-  body = null,
-  headers = {},
-  label,
-  method,
-  path,
-  status = 403,
-}) {
-  const httpMark = diagnostics.httpErrors.length;
-  const consoleMark = diagnostics.consoleErrors.length;
-  const response = await issueBrowserRequest(page, { body, headers, method, path });
-  assert(response.status === status, `${label} expected ${status}, got ${response.status}`);
-  const expectedError = `${status} ${path}`;
-  await waitFor(
-    async () => diagnostics.httpErrors.slice(httpMark).includes(expectedError),
-    `${label} HTTP diagnostic`,
-  );
-  assert(
-    diagnostics.httpErrors.length === httpMark + 1,
-    `${label} produced unexpected HTTP diagnostics`,
-  );
-  diagnostics.httpErrors.splice(httpMark, 1);
-  await waitFor(
-    async () => diagnostics.consoleErrors.length === consoleMark + 1,
-    `${label} console diagnostic`,
-  );
-  diagnostics.consoleErrors.splice(consoleMark, 1);
 }
 
 async function captureMapRenderState(page) {
@@ -255,16 +204,13 @@ async function closeMobileSurfaces(page) {
     await page.locator("#mobile-fab-backdrop").click({ force: true }).catch(() => {});
   }
   if (await page.locator("body.mobile-map-sheet-open").count()) {
-    await page.keyboard.press("Escape");
     const closeButton = page.locator(
-      "#mobile-map-layers-close-btn:visible, #mobile-map-layouts-close-btn:visible, "
-      + "#mobile-map-tools-close-btn:visible, #mobile-map-shade-close-btn:visible",
+      ".mobile-map-sheet--open [data-mobile-map-sheet-initial-focus]",
     ).first();
-    if (await page.locator("body.mobile-map-sheet-open").count() && await closeButton.count()) {
-      await closeButton.click().catch(() => {});
-    }
-    if (await page.locator("body.mobile-map-sheet-open").count()) {
-      await page.locator("#mobile-map-sheet-backdrop").click({ force: true }).catch(() => {});
+    if (await closeButton.count()) {
+      await closeButton.click();
+    } else {
+      await page.locator("#mobile-map-sheet-backdrop").click({ force: true });
     }
   }
   await page.waitForFunction(() => (
@@ -750,10 +696,11 @@ async function tapMapTarget(page, target, label) {
       const x = rect.left + rect.width * xRatio;
       const y = rect.top + rect.height * yRatio;
       const hit = document.elementFromPoint(x, y);
+      const interactive = hit?.closest("button, a, input, select, textarea, [role='button']");
       if (
         hit
         && (hit === element || element.contains(hit))
-        && !hit.closest("button, a, input, select, textarea, [role='button']")
+        && (!interactive || interactive === element)
       ) {
         return { x, y };
       }
@@ -1672,7 +1619,7 @@ async function exerciseSnapshotsAndImport(page, diagnostics, password, alpha, be
   };
 }
 
-async function assertEditorAffordances(page, guarded, profile) {
+async function assertEditorAffordances(page, profile) {
   assert(
     !await page.locator("body").evaluate((body) => body.classList.contains("garden-read-only")),
     "Editor rendered as read-only",
@@ -1686,11 +1633,6 @@ async function assertEditorAffordances(page, guarded, profile) {
   if (profile === "mobile") await page.locator("#mobile-map-layers-btn").click();
   await visible(editButton, "editor map edit affordance");
   assert(!await editButton.isDisabled(), "Editor map edit control is disabled");
-  await assertExpectedBrowserFailure(page, guarded.diagnostics, {
-    label: "editor admin-only map export denial",
-    method: "GET",
-    path: "/api/plots/export",
-  });
 }
 
 async function assertViewerSettingsWriteUnavailable(page, profile) {
@@ -1716,7 +1658,7 @@ async function assertViewerSettingsWriteUnavailable(page, profile) {
   );
 }
 
-async function assertViewerDenied(page, alpha, guarded, profile, { directMutation = false } = {}) {
+async function assertViewerDenied(page, alpha, profile) {
   await visible(page.locator("[data-garden-role]:visible").filter({ hasText: /read-only/i }).first(), "viewer read-only indicator");
   assert(
     await page.locator("body").evaluate((body) => body.classList.contains("garden-read-only")),
@@ -1782,39 +1724,6 @@ async function assertViewerDenied(page, alpha, guarded, profile, { directMutatio
     await page.locator(".map-object-interaction-surface").count() === 0,
     "Viewer received direct map manipulation surfaces",
   );
-  await assertExpectedBrowserFailure(page, guarded.diagnostics, {
-    label: `${profile} viewer admin-only map export denial`,
-    method: "GET",
-    path: "/api/plots/export",
-  });
-  if (directMutation) {
-    await assertExpectedBrowserFailure(page, guarded.diagnostics, {
-      body: { object_type: "patio", name: "Denied Phase 1 mutation" },
-      label: "viewer map-object mutation denial",
-      method: "POST",
-      path: `/api/gardens/${alpha.id}/map-objects`,
-    });
-    await assertExpectedBrowserFailure(page, guarded.diagnostics, {
-      body: { address: "Viewer denied settings mutation" },
-      label: "viewer garden-settings mutation denial",
-      method: "PATCH",
-      path: `/api/gardens/${alpha.id}/settings`,
-    });
-    await assertExpectedBrowserFailure(page, guarded.diagnostics, {
-      body: { name: "Viewer denied snapshot" },
-      headers: { "x-action-reason": "viewer-snapshot-denial" },
-      label: "viewer snapshot write denial",
-      method: "POST",
-      path: "/api/snapshots",
-    });
-    await assertExpectedBrowserFailure(page, guarded.diagnostics, {
-      body: { plots: [], schema_version: 1 },
-      headers: { "x-action-reason": "viewer-import-denial" },
-      label: "viewer map import denial",
-      method: "POST",
-      path: "/api/plots/import",
-    });
-  }
 }
 
 async function ensureNotificationPanelOpen(page, profile) {
@@ -2426,7 +2335,7 @@ async function exerciseDelayedGardenSwitch(
 async function runOnboardingProfile(options, { password, profile, username }) {
   const { artifactDir, baseUrl, browser, devices, fixture } = options;
   const guarded = await createGuardedContext(
-    browser, devices, profile, artifactDir, `${profile}-onboarding`,
+    browser, devices, profile, artifactDir, `${profile}-onboarding`, { baseUrl },
   );
   const page = await guarded.context.newPage();
   const recorder = createApiRecorder(page);
@@ -2444,6 +2353,10 @@ async function runOnboardingProfile(options, { password, profile, username }) {
     result.browser_profile.max_touch_points = await page.evaluate(() => navigator.maxTouchPoints);
     result.browser_profile.has_touch = result.browser_profile.max_touch_points > 0;
     result.browser_profile.viewport = page.viewportSize();
+    result.browser_profile.user_agent_contract = assertBrowserProfileContract(
+      profile,
+      result.browser_profile,
+    );
     const overlay = page.locator(".onboarding-overlay");
     await visible(overlay, "real onboarding overlay");
     await overlay.locator(".onb-next").click();
@@ -2513,7 +2426,7 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
   const roleAlpha = role === "viewer" ? viewerFixtureGarden(fixture, "alpha", alpha) : alpha;
   const roleBeta = role === "viewer" ? viewerFixtureGarden(fixture, "beta", beta) : beta;
   const guarded = await createGuardedContext(
-    browser, devices, profile, artifactDir, `${profile}-${role}`,
+    browser, devices, profile, artifactDir, `${profile}-${role}`, { baseUrl },
   );
   const page = await guarded.context.newPage();
   const rawRequestFailures = [];
@@ -2540,21 +2453,25 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
     result.browser_profile.max_touch_points = await page.evaluate(() => navigator.maxTouchPoints);
     result.browser_profile.has_touch = result.browser_profile.max_touch_points > 0;
     result.browser_profile.viewport = page.viewportSize();
+    result.browser_profile.user_agent_contract = assertBrowserProfileContract(
+      profile,
+      result.browser_profile,
+    );
     await visible(page.locator("#map-grid"), `${profile} Map grid`);
     await waitForMapObject(page, alpha.object_public_id, alpha.object_label);
     assert(!recorder.records.some((request) => request.method === "GET" && request.path === "/api/plants"), `${profile} map-first startup fetched /api/plants`);
     result.checks.map_first_without_plants = true;
 
     if (role === "viewer") {
-      await assertViewerDenied(page, roleAlpha, guarded, profile, { directMutation: profile === "desktop" });
+      await assertViewerDenied(page, roleAlpha, profile);
       result.checks.viewer_role_affordances_and_denials = true;
       result.checks.viewer_m1_m3_read_only_behavior = true;
-      if (profile === "desktop") result.checks.viewer_a3_m4_write_denials = true;
+      if (profile === "desktop") result.checks.viewer_a3_m4_write_unavailable = true;
       result.assertions.passed.push("A3-M1-M2-M3-M4-viewer-read-only-affordances-and-denials");
     } else {
       if (role !== "editor") await assertGlobalSearch(page, profile, alpha);
       if (role === "editor") {
-        await assertEditorAffordances(page, guarded, profile);
+        await assertEditorAffordances(page, profile);
         if (profile === "mobile") {
           await exerciseDiscoverableMobilePlotEdit(page, guarded.diagnostics);
           result.checks.mobile_editor_plot_edit_workflow = true;

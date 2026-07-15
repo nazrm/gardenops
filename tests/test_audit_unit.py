@@ -4,9 +4,85 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import gardenops.db as db
-from gardenops.audit import list_audit_events, write_audit_event
+from gardenops.audit import (
+    _insert_audit_event_row,
+    list_audit_events,
+    reserve_mutation_audit_event,
+    write_audit_event,
+    write_required_audit_event,
+)
+from gardenops.observability import (
+    bind_request_context,
+    get_audit_event_id,
+    reset_request_context,
+    set_audit_event_id,
+)
 from gardenops.security import AuthContext
 from tests.base import strong_password
+
+
+class TestAuditIdentityProtocol(unittest.TestCase):
+    def test_finalization_uses_server_row_id_and_client_id_only_as_correlation(self) -> None:
+        values: tuple[object, ...] = (
+            1,
+            "client-correlation-id",
+            None,
+            "anonymous",
+            "anonymous",
+            "none",
+            None,
+            "POST",
+            "/api/tasks/task-1/action",
+            200,
+            "127.0.0.1",
+            "",
+        )
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = {"id": 73}
+        tokens = bind_request_context(
+            request_id="client-correlation-id",
+            path="/api/tasks/task-1/action",
+            method="POST",
+        )
+        try:
+            set_audit_event_id(73)
+            assert _insert_audit_event_row(conn, values) == 73
+        finally:
+            reset_request_context(tokens)
+
+        sql, params = conn.execute.call_args.args
+        self.assertIn("WHERE id = %s", sql)
+        self.assertIn("status_code = 102", sql)
+        self.assertEqual(params[-2:], (73, "client-correlation-id"))
+
+    def test_finalization_fails_closed_when_server_row_id_does_not_match(self) -> None:
+        values: tuple[object, ...] = (
+            1,
+            "reused-client-id",
+            None,
+            "anonymous",
+            "anonymous",
+            "none",
+            None,
+            "DELETE",
+            "/api/tasks/task-1",
+            204,
+            "127.0.0.1",
+            "",
+        )
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = None
+        tokens = bind_request_context(
+            request_id="reused-client-id",
+            path="/api/tasks/task-1",
+            method="DELETE",
+        )
+        try:
+            set_audit_event_id(91)
+            with self.assertRaisesRegex(RuntimeError, "already finalized or unavailable"):
+                _insert_audit_event_row(conn, values)
+        finally:
+            reset_request_context(tokens)
 
 
 def _truncate_all() -> None:
@@ -122,6 +198,162 @@ class TestWriteAuditEvent(unittest.TestCase):
             assert row["actor_auth_type"] == "session"
             assert row["garden_id"] == self._default_garden_id
             assert row["detail"] == "Added plant"
+        finally:
+            db.return_db(conn)
+
+    @patch("gardenops.audit.enqueue_security_telemetry")
+    def test_writes_bound_request_id(self, mock_telemetry: MagicMock) -> None:
+        tokens = bind_request_context(
+            request_id="req_phase2_exact",
+            path="/api/tasks/TASK-1/action",
+            method="POST",
+        )
+        try:
+            write_audit_event(
+                method="POST",
+                path="/api/tasks/TASK-1/action",
+                status_code=200,
+                remote_host="127.0.0.1",
+            )
+        finally:
+            reset_request_context(tokens)
+
+        conn = db.get_db()
+        try:
+            row = conn.execute("SELECT request_id FROM audit_events LIMIT 1").fetchone()
+            assert row is not None
+            assert row["request_id"] == "req_phase2_exact"
+        finally:
+            db.return_db(conn)
+
+        payload = mock_telemetry.call_args.args[1]
+        assert payload["request_id"] == "req_phase2_exact"
+
+    @patch("gardenops.audit.enqueue_security_telemetry")
+    def test_final_audit_finalizes_reserved_server_row(self, mock_telemetry: MagicMock) -> None:
+        tokens = bind_request_context(
+            request_id="req_reserved_mutation",
+            path="/api/tasks/TASK-1/action",
+            method="POST",
+        )
+        try:
+            reserve_mutation_audit_event(
+                method="POST",
+                path="/api/tasks/TASK-1/action",
+                remote_host="127.0.0.1",
+            )
+            write_audit_event(
+                method="POST",
+                path="/api/tasks/TASK-1/action",
+                status_code=200,
+                remote_host="127.0.0.1",
+            )
+        finally:
+            reset_request_context(tokens)
+
+        conn = db.get_db()
+        try:
+            rows = conn.execute(
+                "SELECT request_id, status_code, detail FROM audit_events"
+            ).fetchall()
+            assert len(rows) == 1
+            assert rows[0]["request_id"] == "req_reserved_mutation"
+            assert rows[0]["status_code"] == 200
+            assert rows[0]["detail"] == ""
+        finally:
+            db.return_db(conn)
+
+    @patch("gardenops.audit.enqueue_security_telemetry")
+    def test_reused_client_request_id_reserves_distinct_server_audit_rows(
+        self,
+        _mock_telemetry: MagicMock,
+    ) -> None:
+        reserved_ids: list[int] = []
+        for method, path in (
+            ("POST", "/api/tasks/TASK-1/action"),
+            ("DELETE", "/api/tasks/TASK-2"),
+        ):
+            tokens = bind_request_context(
+                request_id="req_reused_by_client",
+                path=path,
+                method=method,
+            )
+            try:
+                reserve_mutation_audit_event(
+                    method=method,
+                    path=path,
+                    remote_host="127.0.0.1",
+                )
+                audit_event_id = get_audit_event_id()
+                assert audit_event_id is not None
+                reserved_ids.append(audit_event_id)
+                write_audit_event(
+                    method=method,
+                    path=path,
+                    status_code=200,
+                    remote_host="127.0.0.1",
+                )
+            finally:
+                reset_request_context(tokens)
+
+        assert len(set(reserved_ids)) == 2
+
+        conn = db.get_db()
+        try:
+            rows = conn.execute(
+                "SELECT id, method, path, status_code FROM audit_events "
+                "WHERE request_id = %s ORDER BY id",
+                ("req_reused_by_client",),
+            ).fetchall()
+            assert [int(row["id"]) for row in rows] == reserved_ids
+            assert [(row["method"], row["path"], row["status_code"]) for row in rows] == [
+                ("POST", "/api/tasks/TASK-1/action", 200),
+                ("DELETE", "/api/tasks/TASK-2", 200),
+            ]
+        finally:
+            db.return_db(conn)
+
+    def test_required_finalization_rejects_wrong_server_audit_identity(self) -> None:
+        tokens = bind_request_context(
+            request_id="req_server_identity_mismatch",
+            path="/api/gardens/42",
+            method="DELETE",
+        )
+        try:
+            reserve_mutation_audit_event(
+                method="DELETE",
+                path="/api/gardens/42",
+                remote_host="127.0.0.1",
+            )
+            reserved_id = get_audit_event_id()
+            assert reserved_id is not None
+            set_audit_event_id(reserved_id + 1_000_000)
+            conn = db.get_db()
+            try:
+                with self.assertRaisesRegex(RuntimeError, "already finalized or unavailable"):
+                    write_required_audit_event(
+                        method="DELETE",
+                        path="/api/gardens/42",
+                        status_code=200,
+                        remote_host="127.0.0.1",
+                        db=conn,
+                    )
+                conn.rollback()
+            finally:
+                db.return_db(conn)
+        finally:
+            reset_request_context(tokens)
+
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                "SELECT id, status_code, detail FROM audit_events WHERE request_id = %s",
+                ("req_server_identity_mismatch",),
+            ).fetchone()
+            assert row is not None
+            assert int(row["id"]) == reserved_id
+            assert row["status_code"] == 102
+            assert row["detail"] == "mutation_started"
         finally:
             db.return_db(conn)
 

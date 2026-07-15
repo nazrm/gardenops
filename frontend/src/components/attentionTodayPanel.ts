@@ -15,6 +15,8 @@ export interface AttentionTodayPanelOptions {
   fetchToday: () => Promise<AttentionTodayResponse>;
   fetchPreferences: () => Promise<AttentionPreferences>;
   updatePreferences: (preferences: AttentionPreferencesUpdate) => Promise<AttentionPreferences>;
+  getRequestScope?: () => AttentionTodayRequestScope;
+  canWrite?: () => boolean;
   onPrimaryAction?: (
     item: AttentionItem,
     action: AttentionAction,
@@ -27,11 +29,17 @@ export interface AttentionTodayPanelOptions {
   onError?: (message: string) => void;
 }
 
+export interface AttentionTodayRequestScope {
+  gardenId: number | null;
+  version: number;
+}
+
 export interface AttentionTodayPanelController {
   render(feed: AttentionTodayResponse | null): void;
   setLoading(): void;
   setError(message: string): void;
   refresh(): void;
+  invalidate(): void;
   closeMobileSheet(): void;
   destroy(): void;
 }
@@ -81,7 +89,14 @@ const PREFERENCE_RULE_ROWS: PreferenceRuleRow[] = [
   },
   {
     id: "weather-warnings",
-    ruleKeys: ["warning", "weather_alert", "frost_warning", "rain_alert"],
+    ruleKeys: [
+      "warning",
+      "weather_alert",
+      "frost_warning",
+      "rain_alert",
+      "heat_wave",
+      "dry_spell",
+    ],
     labelKey: "attention.preferences.category.weather_warnings",
     helpKey: "attention.preferences.category.weather_warnings_help",
     guardrail: true,
@@ -153,6 +168,10 @@ function actionLabel(action: AttentionAction): string {
   return t("attention.open");
 }
 
+function isAttentionWriteAction(action: AttentionAction): boolean {
+  return action.kind === "restore_attention_outcome";
+}
+
 function itemCount(feed: AttentionTodayResponse | null): number {
   if (!feed) return 0;
   return MOBILE_COUNT_KEYS.reduce((total, key) => total + (feed.counts[key] ?? 0), 0);
@@ -186,15 +205,40 @@ function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
   return { ...value };
 }
 
+function browserTimeZone(): string | null {
+  try {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return timeZone || null;
+  } catch {
+    return null;
+  }
+}
+
 function ruleForRow(
   row: PreferenceRuleRow,
   rules: Record<string, AttentionPreferenceRule>,
 ): AttentionPreferenceRule {
-  for (const key of row.ruleKeys) {
-    const rule = rules[key];
-    if (rule) return { ...rule };
+  const groupedRules = row.ruleKeys
+    .map((key) => rules[key])
+    .filter((rule): rule is AttentionPreferenceRule => Boolean(rule));
+  if (groupedRules.length === 0) {
+    return { panel: true, inbox: false, digest: false, min_severity: "low" };
   }
-  return { panel: true, inbox: false, digest: false, min_severity: "low" };
+  const minSeverity = groupedRules.reduce<AttentionItem["severity"]>(
+    (highest, rule) => {
+      const candidate = rule.min_severity ?? "low";
+      return SEVERITY_OPTIONS.indexOf(candidate) > SEVERITY_OPTIONS.indexOf(highest)
+        ? candidate
+        : highest;
+    },
+    "low",
+  );
+  return {
+    panel: groupedRules.every((rule) => Boolean(rule.panel)),
+    inbox: groupedRules.every((rule) => Boolean(rule.inbox)),
+    digest: groupedRules.every((rule) => Boolean(rule.digest)),
+    min_severity: minSeverity,
+  };
 }
 
 function assignRuleToRow(
@@ -218,7 +262,7 @@ function preferenceMetadataBool(
 
 function quietHourField(
   quietHours: Record<string, unknown>,
-  channel: "digest" | "interruptive",
+  channel: "digest",
   field: "enabled" | "start" | "end",
   fallback: string | boolean,
 ): string | boolean {
@@ -264,6 +308,16 @@ export function initAttentionTodayPanel(
   let preferencesDialog: HTMLElement | null = null;
   let preferencesDialogKeydownBound = false;
   let preferencesReturnFocus: HTMLButtonElement | null = null;
+  let preferencesParentSheet: HTMLElement | null = null;
+
+  function isCurrentRequestScope(
+    requestScope: AttentionTodayRequestScope | undefined,
+  ): boolean {
+    if (!requestScope || !options.getRequestScope) return true;
+    const current = options.getRequestScope();
+    return current.gardenId === requestScope.gardenId
+      && current.version === requestScope.version;
+  }
 
   function mobileSheetOpen(): boolean {
     return mobileHandle instanceof HTMLButtonElement
@@ -351,12 +405,22 @@ export function initAttentionTodayPanel(
   function closePreferencesDialog(focusReturn = true): void {
     const dialog = preferencesDialog;
     if (!(dialog instanceof HTMLElement)) return;
+    const parentSheet = preferencesParentSheet;
     preferencesDialog = null;
+    preferencesParentSheet = null;
     if (preferencesDialogKeydownBound) {
       document.removeEventListener("keydown", trapPreferencesDialogFocus, true);
       preferencesDialogKeydownBound = false;
     }
     dialog.remove();
+    if (
+      parentSheet instanceof HTMLElement
+      && parentSheet === mobileSheet
+      && mobileSheetOpen()
+    ) {
+      parentSheet.setAttribute("aria-hidden", "false");
+      parentSheet.removeAttribute("inert");
+    }
     if (focusReturn) {
       preferencesReturnFocus?.focus();
     }
@@ -424,9 +488,19 @@ export function initAttentionTodayPanel(
   function showPreferencesDialog(
     preferences: AttentionPreferences,
     returnFocus: HTMLButtonElement,
+    requestScope: AttentionTodayRequestScope | undefined,
   ): void {
     closePreferencesDialog(false);
     preferencesReturnFocus = returnFocus;
+    if (
+      mobileSheet instanceof HTMLElement
+      && mobileSheetOpen()
+      && mobileSheet.contains(returnFocus)
+    ) {
+      preferencesParentSheet = mobileSheet;
+      mobileSheet.setAttribute("aria-hidden", "true");
+      mobileSheet.setAttribute("inert", "");
+    }
     const overlay = document.createElement("div");
     overlay.className = "attention-preferences-backdrop";
 
@@ -480,6 +554,10 @@ export function initAttentionTodayPanel(
     const customRadio = fieldset.querySelector<HTMLInputElement>(
       "input[value='custom']",
     );
+    const digestConfigured = preferences.digest_delivery?.configured ?? true;
+    const digestAvailable = preferences.digest_delivery?.available ?? true;
+    const digestDescriptionId = "attention-preferences-digest-availability";
+    const dirtyRuleRows = new Set<string>();
     const selectCustomPreset = (): void => {
       if (customRadio) customRadio.checked = true;
     };
@@ -493,6 +571,19 @@ export function initAttentionTodayPanel(
       t("attention.preferences.delivery_matrix"),
     );
     matrixLegend.id = "attention-preferences-matrix";
+    if (!digestConfigured) {
+      const digestDescription = appendTextElement(
+        matrix,
+        "p",
+        "attention-preferences-delivery-note",
+        t(
+          digestAvailable
+            ? "attention.preferences.digest_setup_required"
+            : "attention.preferences.digest_unavailable",
+        ),
+      );
+      digestDescription.id = digestDescriptionId;
+    }
 
     const matrixHeader = document.createElement("div");
     matrixHeader.className = "attention-preferences-matrix-header";
@@ -520,6 +611,10 @@ export function initAttentionTodayPanel(
 
     PREFERENCE_RULE_ROWS.forEach((rowConfig) => {
       const rule = ruleForRow(rowConfig, preferences.rules);
+      const selectCustomRule = (): void => {
+        dirtyRuleRows.add(rowConfig.id);
+        selectCustomPreset();
+      };
       const row = document.createElement("div");
       row.className = "attention-preferences-rule-row";
       row.setAttribute("data-testid", `attention-preferences-rule-${rowConfig.id}`);
@@ -545,6 +640,11 @@ export function initAttentionTodayPanel(
         toggle.type = "checkbox";
         toggle.name = `attention-rule-${rowConfig.id}-${surface}`;
         toggle.checked = Boolean(rule[surface]);
+        if (surface === "digest" && !digestConfigured) {
+          toggle.checked = false;
+          toggle.disabled = true;
+          toggle.setAttribute("aria-describedby", digestDescriptionId);
+        }
         toggle.setAttribute(
           "aria-label",
           `${t(rowConfig.labelKey)} ${surfaceLabel(surface)}`,
@@ -553,7 +653,7 @@ export function initAttentionTodayPanel(
           "data-testid",
           `attention-preferences-rule-${rowConfig.id}-${surface}`,
         );
-        toggle.addEventListener("change", selectCustomPreset);
+        toggle.addEventListener("change", selectCustomRule);
         surfaceToggle.appendChild(toggle);
         appendTextElement(
           surfaceToggle,
@@ -581,7 +681,7 @@ export function initAttentionTodayPanel(
         if ((rule.min_severity ?? "low") === optionValue) option.selected = true;
         severity.appendChild(option);
       });
-      severity.addEventListener("change", selectCustomPreset);
+      severity.addEventListener("change", selectCustomRule);
       row.appendChild(severity);
       matrix.appendChild(row);
     });
@@ -619,7 +719,7 @@ export function initAttentionTodayPanel(
 
     const quietGrid = document.createElement("div");
     quietGrid.className = "attention-preferences-quiet-grid";
-    (["digest", "interruptive"] as const).forEach((channel) => {
+    (["digest"] as const).forEach((channel) => {
       const quietRow = document.createElement("div");
       quietRow.className = "attention-preferences-quiet-row";
       const enabled = document.createElement("input");
@@ -628,6 +728,11 @@ export function initAttentionTodayPanel(
       enabled.checked = Boolean(
         quietHourField(preferences.quiet_hours, channel, "enabled", false),
       );
+      if (channel === "digest" && !digestConfigured) {
+        enabled.checked = false;
+        enabled.disabled = true;
+        enabled.setAttribute("aria-describedby", digestDescriptionId);
+      }
       enabled.setAttribute(
         "data-testid",
         `attention-preferences-quiet-${channel}-enabled`,
@@ -651,6 +756,7 @@ export function initAttentionTodayPanel(
       start.type = "time";
       start.name = `attention-quiet-${channel}-start`;
       start.value = String(quietHourField(preferences.quiet_hours, channel, "start", "22:00"));
+      start.disabled = channel === "digest" && !digestConfigured;
       start.setAttribute("aria-label", `${text.textContent} ${t("attention.preferences.start")}`);
       start.setAttribute("data-testid", `attention-preferences-quiet-${channel}-start`);
       start.addEventListener("change", selectCustomPreset);
@@ -665,6 +771,7 @@ export function initAttentionTodayPanel(
       end.type = "time";
       end.name = `attention-quiet-${channel}-end`;
       end.value = String(quietHourField(preferences.quiet_hours, channel, "end", "07:00"));
+      end.disabled = channel === "digest" && !digestConfigured;
       end.setAttribute("aria-label", `${text.textContent} ${t("attention.preferences.end")}`);
       end.setAttribute("data-testid", `attention-preferences-quiet-${channel}-end`);
       end.addEventListener("change", selectCustomPreset);
@@ -699,6 +806,7 @@ export function initAttentionTodayPanel(
     function collectCustomRules(): Record<string, AttentionPreferenceRule> {
       const rules = clonePreferenceRules(preferences.rules);
       PREFERENCE_RULE_ROWS.forEach((rowConfig) => {
+        if (!dirtyRuleRows.has(rowConfig.id)) return;
         const rule: AttentionPreferenceRule = {};
         MATRIX_SURFACES.forEach((surface) => {
           rule[surface] = form.querySelector<HTMLInputElement>(
@@ -717,7 +825,12 @@ export function initAttentionTodayPanel(
 
     function collectQuietHours(): Record<string, unknown> {
       const quietHours = cloneRecord(preferences.quiet_hours);
-      (["digest", "interruptive"] as const).forEach((channel) => {
+      ["active", "end", "end_hour", "from", "start", "start_hour", "to"].forEach(
+        (field) => delete quietHours[field],
+      );
+      const timeZone = browserTimeZone();
+      if (timeZone) quietHours["timezone"] = timeZone;
+      (["digest"] as const).forEach((channel) => {
         quietHours[channel] = {
           enabled: form.querySelector<HTMLInputElement>(
             `input[name='attention-quiet-${channel}-enabled']`,
@@ -762,10 +875,12 @@ export function initAttentionTodayPanel(
         metadata: collectMetadata(),
       })
         .then(() => {
-          closePreferencesDialog(true);
-          refresh();
+          if (!isCurrentRequestScope(requestScope)) return;
+          closePreferencesDialog(false);
+          refresh(true);
         })
         .catch((err: unknown) => {
+          if (!isCurrentRequestScope(requestScope)) return;
           const message = err instanceof Error ? err.message : t("attention.preferences.save_failed");
           error.textContent = message;
           error.hidden = false;
@@ -791,12 +906,16 @@ export function initAttentionTodayPanel(
   }
 
   async function openPreferencesDialog(button: HTMLButtonElement): Promise<void> {
+    const requestScope = options.getRequestScope?.();
+    if (requestScope?.gardenId === null) return;
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
     try {
       const preferences = await options.fetchPreferences();
-      showPreferencesDialog(preferences, button);
+      if (!isCurrentRequestScope(requestScope)) return;
+      showPreferencesDialog(preferences, button, requestScope);
     } catch (err) {
+      if (!isCurrentRequestScope(requestScope)) return;
       const message = err instanceof Error ? err.message : t("attention.preferences.load_failed");
       options.onError?.(message);
     } finally {
@@ -857,10 +976,14 @@ export function initAttentionTodayPanel(
     button: HTMLButtonElement,
   ): Promise<void> {
     if (!handler) return;
+    if (isAttentionWriteAction(action) && !(options.canWrite?.() ?? true)) return;
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
     try {
       await handler(item, action);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : t("attention.load_failed");
+      options.onError?.(message);
     } finally {
       button.disabled = false;
       button.setAttribute("aria-busy", "false");
@@ -876,6 +999,8 @@ export function initAttentionTodayPanel(
     button.type = "button";
     button.className = `attention-today-action attention-today-action--${kind}`;
     button.textContent = actionLabel(action);
+    button.dataset["attentionActionKind"] = action.kind;
+    button.dataset["attentionActionTargetId"] = action.target_id;
     button.setAttribute("data-testid", `attention-today-${kind}-action-${safeTestId(item.id)}`);
     button.addEventListener("click", () => {
       const handler = kind === "primary" ? options.onPrimaryAction : options.onSecondaryAction;
@@ -951,11 +1076,22 @@ export function initAttentionTodayPanel(
 
     const actions = document.createElement("div");
     actions.className = "attention-today-actions";
-    if (item.primary_action && item.primary_action.kind !== "open_attention_detail") {
+    const canRenderAttentionAction = (action: AttentionAction): boolean => {
+      if (!isAttentionWriteAction(action)) return true;
+      if (options.canWrite?.() ?? true) return true;
+      return false;
+    };
+    if (
+      item.primary_action
+      && item.primary_action.kind !== "open_attention_detail"
+      && canRenderAttentionAction(item.primary_action)
+    ) {
       actions.appendChild(createActionButton(item, item.primary_action, "primary"));
     }
     item.secondary_actions.forEach((action) => {
-      actions.appendChild(createActionButton(item, action, "secondary"));
+      if (canRenderAttentionAction(action)) {
+        actions.appendChild(createActionButton(item, action, "secondary"));
+      }
     });
     if (actions.childElementCount > 0) {
       article.appendChild(actions);
@@ -1136,19 +1272,45 @@ export function initAttentionTodayPanel(
     }
   }
 
-  function refresh(): void {
+  function focusAttentionSettings(): void {
+    const surface = mobileSheetOpen() ? mobileSheet : desktop;
+    surface?.querySelector<HTMLButtonElement>("[data-testid='attention-today-settings']")?.focus();
+  }
+
+  function refresh(restoreSettingsFocus = false): void {
     if (destroyed) return;
+    const requestScope = options.getRequestScope?.();
     const requestId = ++refreshSequence;
     setLoading();
+    if (requestScope?.gardenId === null) {
+      render(null);
+      if (restoreSettingsFocus) focusAttentionSettings();
+      return;
+    }
     void options.fetchToday()
       .then((feed) => {
-        if (requestId !== refreshSequence || destroyed) return;
+        if (
+          requestId !== refreshSequence
+          || destroyed
+          || !isCurrentRequestScope(requestScope)
+          || (requestScope && feed.garden_id !== requestScope.gardenId)
+        ) {
+          return;
+        }
         render(feed);
+        if (restoreSettingsFocus) focusAttentionSettings();
       })
       .catch((err: unknown) => {
-        if (requestId !== refreshSequence || destroyed) return;
+        if (
+          requestId !== refreshSequence
+          || destroyed
+          || !isCurrentRequestScope(requestScope)
+        ) {
+          return;
+        }
         const message = err instanceof Error ? err.message : t("attention.load_failed");
         setError(message);
+        if (restoreSettingsFocus) focusAttentionSettings();
         options.onError?.(message);
       });
   }
@@ -1159,12 +1321,20 @@ export function initAttentionTodayPanel(
     setMobileOpen(open);
   }
 
-  function destroy(): void {
-    destroyed = true;
+  function invalidate(): void {
+    if (destroyed) return;
     refreshSequence += 1;
     loading = false;
+    currentFeed = null;
     closePreferencesDialog(false);
     setMobileOpen(false);
+    render(null);
+  }
+
+  function destroy(): void {
+    if (destroyed) return;
+    invalidate();
+    destroyed = true;
     if (mobileHandle instanceof HTMLButtonElement) {
       mobileHandle.removeEventListener("click", handleMobileHandleClick);
     }
@@ -1187,6 +1357,7 @@ export function initAttentionTodayPanel(
     setLoading,
     setError,
     refresh,
+    invalidate,
     closeMobileSheet,
     destroy,
   };

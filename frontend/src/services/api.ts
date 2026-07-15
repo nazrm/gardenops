@@ -67,11 +67,46 @@ export class ApiError extends Error {
 
 export interface TaskActionRequest {
   action: "complete" | "skip" | "snooze" | "reschedule";
+  expected_updated_at_ms?: number;
+  confirm_outside_window?: boolean;
   snooze_until?: string;
   reschedule_to?: string;
   notes?: string;
   completed_plant_ids?: string[];
   completion_outcome?: "done" | "not_seen_blooming_this_season";
+}
+
+export type RevisionedTaskActionRequest = TaskActionRequest & {
+  expected_updated_at_ms: number;
+};
+
+export type BatchTaskActionRequest = Omit<
+  TaskActionRequest,
+  "expected_updated_at_ms"
+> & {
+  expected_updated_at_ms_by_task_id: Record<string, number>;
+};
+
+export function withTaskActionRevision(
+  task: Pick<GardenTask, "updated_at_ms">,
+  body: TaskActionRequest,
+): RevisionedTaskActionRequest {
+  return {
+    ...body,
+    expected_updated_at_ms: task.updated_at_ms,
+  };
+}
+
+export function withBatchTaskActionRevisions(
+  tasks: readonly Pick<GardenTask, "id" | "updated_at_ms">[],
+  body: Omit<TaskActionRequest, "expected_updated_at_ms">,
+): BatchTaskActionRequest {
+  return {
+    ...body,
+    expected_updated_at_ms_by_task_id: Object.fromEntries(
+      tasks.map((task) => [task.id, task.updated_at_ms]),
+    ),
+  };
 }
 
 function normalizeApiPath(input: RequestInfo | URL): string {
@@ -3235,13 +3270,17 @@ export async function taskActionApi(
   taskId: string,
   body: TaskActionRequest,
   options?: Pick<ApiRequestOptions, "gardenId" | "operationId">,
-): Promise<{ status: string }> {
-  return apiPost<{ status: string }>(`/api/tasks/${taskId}/action`, body, options);
+): Promise<{ status: string; updated_at_ms: number }> {
+  return apiPost<{ status: string; updated_at_ms: number }>(
+    `/api/tasks/${taskId}/action`,
+    body,
+    options,
+  );
 }
 
 export async function batchTaskActionApi(
   taskIds: string[],
-  body: TaskActionRequest,
+  body: BatchTaskActionRequest,
 ): Promise<{ status: string; updated: number }> {
   return apiPost<{ status: string; updated: number }>("/api/tasks/batch-action", {
     task_ids: taskIds,
@@ -3518,6 +3557,7 @@ export function buildCalendarExportUrl(params: {
     start: params.start,
     end: params.end,
   });
+  if (activeGardenId !== null) query.set("garden_id", String(activeGardenId));
   if (params.preset) query.set("preset", params.preset);
   if (params.visible_sources) query.set("visible_sources", params.visible_sources);
   if (typeof params.include_recent_history === "boolean") {
@@ -3529,9 +3569,6 @@ export function buildCalendarExportUrl(params: {
   if (params.selected_plant_ids) query.set("selected_plant_ids", params.selected_plant_ids);
   if (params.selected_plot_ids) query.set("selected_plot_ids", params.selected_plot_ids);
   if (params.selected_zone_codes) query.set("selected_zone_codes", params.selected_zone_codes);
-  if (!query.has("garden_id") && activeGardenId !== null) {
-    query.set("garden_id", String(activeGardenId));
-  }
   return `/api/calendar/export.ics?${query.toString()}`;
 }
 

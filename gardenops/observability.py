@@ -15,6 +15,10 @@ _request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
     "gardenops_request_id",
     default="",
 )
+_audit_event_id_ctx: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "gardenops_audit_event_id",
+    default=None,
+)
 _request_path_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
     "gardenops_request_path",
     default="",
@@ -27,6 +31,7 @@ _request_method_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
 
 class RequestContextTokens(NamedTuple):
     request_id: contextvars.Token[str]
+    audit_event_id: contextvars.Token[int | None]
     path: contextvars.Token[str]
     method: contextvars.Token[str]
 
@@ -48,6 +53,7 @@ def generate_request_id() -> str:
 def bind_request_context(*, request_id: str, path: str, method: str) -> RequestContextTokens:
     return RequestContextTokens(
         request_id=_request_id_ctx.set(normalize_request_id(request_id)),
+        audit_event_id=_audit_event_id_ctx.set(None),
         path=_request_path_ctx.set(str(path or "")),
         method=_request_method_ctx.set(str(method or "").upper()),
     )
@@ -55,12 +61,24 @@ def bind_request_context(*, request_id: str, path: str, method: str) -> RequestC
 
 def reset_request_context(tokens: RequestContextTokens) -> None:
     _request_id_ctx.reset(tokens.request_id)
+    _audit_event_id_ctx.reset(tokens.audit_event_id)
     _request_path_ctx.reset(tokens.path)
     _request_method_ctx.reset(tokens.method)
 
 
 def get_request_id() -> str:
     return _request_id_ctx.get("")
+
+
+def get_audit_event_id() -> int | None:
+    return _audit_event_id_ctx.get(None)
+
+
+def set_audit_event_id(audit_event_id: int) -> None:
+    value = int(audit_event_id)
+    if value <= 0:
+        raise ValueError("Audit event ID must be positive")
+    _audit_event_id_ctx.set(value)
 
 
 def get_request_path() -> str:
@@ -74,10 +92,13 @@ def get_request_method() -> str:
 def observability_extra(**fields: object) -> dict[str, object]:
     extra: dict[str, object] = {}
     request_id = get_request_id()
+    audit_event_id = get_audit_event_id()
     request_path = get_request_path()
     request_method = get_request_method()
     if request_id and "request_id" not in fields:
         extra["request_id"] = request_id
+    if audit_event_id is not None and "audit_event_id" not in fields:
+        extra["audit_event_id"] = audit_event_id
     if request_path and "path" not in fields:
         extra["path"] = request_path
     if request_method and "method" not in fields:
@@ -99,6 +120,10 @@ class RequestContextFilter(logging.Filter):
             request_id = get_request_id()
             if request_id:
                 record.request_id = request_id
+        if not getattr(record, "audit_event_id", None):
+            audit_event_id = get_audit_event_id()
+            if audit_event_id is not None:
+                record.audit_event_id = audit_event_id
         if not getattr(record, "path", ""):
             path = get_request_path()
             if path:

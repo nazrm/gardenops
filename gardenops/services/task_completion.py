@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import date
 from typing import Any, Literal
 
 from fastapi import HTTPException
@@ -41,7 +40,77 @@ def clear_completion_capture_metadata(task_row: dict[str, Any]) -> dict[str, Any
     metadata = parse_task_metadata(task_row)
     metadata.pop("completion_journal_entries", None)
     metadata.pop("completion_journal_entry_id", None)
+    metadata.pop("completion_capture_original_plant_ids", None)
+    metadata.pop("completion_capture_original_plot_ids", None)
+    metadata.pop("completion_capture_original_title", None)
+    metadata.pop("completion_capture_original_description", None)
+    metadata.pop("completion_capture_original_description_no", None)
+    metadata.pop("completion_capture_original_plant_count", None)
     return metadata
+
+
+def grouped_completion_history_started(task_row: dict[str, Any]) -> bool:
+    """Whether durable completion history fixes a task's original scope."""
+    metadata = parse_task_metadata(task_row)
+    original_plant_ids = metadata.get("completion_capture_original_plant_ids")
+    completion_entries = metadata.get("completion_journal_entries")
+    return (
+        is_completion_capture_task(str(task_row.get("task_type") or ""))
+        and isinstance(original_plant_ids, list)
+        and bool(original_plant_ids)
+        and isinstance(completion_entries, dict)
+        and any(isinstance(entry_id, str) and entry_id for entry_id in completion_entries.values())
+    )
+
+
+def capture_completion_original_task_state(
+    *,
+    task_row: dict[str, Any],
+    metadata: dict[str, Any],
+    linked_plant_ids: list[str],
+    linked_plot_ids: list[str],
+) -> dict[str, Any]:
+    """Keep the pre-partial task presentation stable for completed history."""
+    if not is_completion_capture_task(str(task_row.get("task_type") or "")):
+        return metadata
+
+    if not isinstance(metadata.get("completion_capture_original_plant_ids"), list):
+        metadata["completion_capture_original_plant_ids"] = list(linked_plant_ids)
+    if not isinstance(metadata.get("completion_capture_original_plot_ids"), list):
+        metadata["completion_capture_original_plot_ids"] = list(linked_plot_ids)
+    if not isinstance(metadata.get("completion_capture_original_title"), str):
+        metadata["completion_capture_original_title"] = str(task_row.get("title") or "")
+    if not isinstance(metadata.get("completion_capture_original_description"), str):
+        metadata["completion_capture_original_description"] = str(task_row.get("description") or "")
+    if "completion_capture_original_description_no" not in metadata:
+        metadata["completion_capture_original_description_no"] = metadata.get("description_no")
+    if "completion_capture_original_plant_count" not in metadata:
+        metadata["completion_capture_original_plant_count"] = metadata.get("plant_count")
+    return metadata
+
+
+def restore_completion_capture_original_presentation(
+    *,
+    task_row: dict[str, Any],
+    metadata: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    """Restore the task text and localized metadata captured before partial work."""
+    original_title = metadata.get("completion_capture_original_title")
+    original_description = metadata.get("completion_capture_original_description")
+    original_description_no = metadata.get("completion_capture_original_description_no")
+    original_plant_count = metadata.get("completion_capture_original_plant_count")
+
+    title = original_title if isinstance(original_title, str) else str(task_row.get("title") or "")
+    description = (
+        original_description
+        if isinstance(original_description, str)
+        else str(task_row.get("description") or "")
+    )
+    if isinstance(original_description_no, str):
+        metadata["description_no"] = original_description_no
+    if isinstance(original_plant_count, int) and not isinstance(original_plant_count, bool):
+        metadata["plant_count"] = original_plant_count
+    return title, description, metadata
 
 
 def append_bloom_not_yet_event(
@@ -133,6 +202,48 @@ def update_task_plant_links(
     )
 
 
+def task_plot_ids_for_plant_ids(
+    db: DbConn,
+    *,
+    task_id: int,
+    garden_id: int,
+    plant_ids: list[str],
+) -> list[str]:
+    """Return task-scoped current assignments for selected plants."""
+    if not plant_ids:
+        return []
+    rows = db.execute(
+        """
+        SELECT DISTINCT pp.plot_id
+        FROM garden_task_plots gtp
+        JOIN plot_plants pp ON pp.plot_id = gtp.plot_id
+        JOIN plots p ON p.plot_id = pp.plot_id
+        JOIN plot_ownership po ON po.plot_id = pp.plot_id
+        WHERE gtp.task_id = %s
+          AND p.garden_id = %s
+          AND po.garden_id = %s
+          AND pp.plt_id = ANY(%s)
+        ORDER BY pp.plot_id
+        """,
+        (task_id, garden_id, garden_id, plant_ids),
+    ).fetchall()
+    return [str(row["plot_id"]) for row in rows]
+
+
+def update_task_plot_links(
+    db: DbConn,
+    *,
+    task_id: int,
+    remaining_plot_ids: list[str],
+) -> None:
+    db.execute("DELETE FROM garden_task_plots WHERE task_id = %s", (task_id,))
+    executemany(
+        db,
+        "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, %s)",
+        [(task_id, plot_id) for plot_id in sorted(set(remaining_plot_ids))],
+    )
+
+
 def plant_names_for_ids(db: DbConn, plant_ids: list[str]) -> list[str]:
     if not plant_ids:
         return []
@@ -153,6 +264,44 @@ def refreshed_group_title(task_type: str, remaining_names: list[str]) -> str:
     return f"{prefix} {count} plants"
 
 
+def refreshed_generated_group_description(
+    db: DbConn,
+    *,
+    task_row: dict[str, Any],
+    task_type: str,
+    remaining_plant_ids: list[str],
+    metadata: dict[str, Any],
+) -> tuple[str, dict[str, Any]] | None:
+    """Refresh work-order text after a partial prune or fertilize completion."""
+    rule_source = str(task_row.get("rule_source") or "")
+    if task_type not in {"prune", "fertilize"} or not rule_source.startswith(
+        f"work_order:{task_type}:"
+    ):
+        return None
+    if metadata.get("description_customized"):
+        return None
+
+    # Description inference reads the current task links, which the caller has
+    # already reduced to the remaining plants.
+    from gardenops.services.task_generator import infer_task_description
+
+    description_en, description_no = infer_task_description(db, task_row)
+    if not description_en or not description_no:
+        return None
+
+    refreshed_metadata = dict(metadata)
+    refreshed_metadata.update(
+        {
+            "description_no": description_no,
+            "description_generated": True,
+            "description_source": "work_order",
+            "work_order": True,
+            "plant_count": len(remaining_plant_ids),
+        }
+    )
+    return description_en, refreshed_metadata
+
+
 def validate_completed_plant_ids(
     *,
     task_type: str,
@@ -166,6 +315,10 @@ def validate_completed_plant_ids(
         )
     if not is_completion_capture_task(task_type):
         return []
+    validate_completion_capture_plant_links(
+        task_type=task_type,
+        linked_plant_ids=linked_plant_ids,
+    )
     requested = []
     seen = set()
     for raw in requested_plant_ids or []:
@@ -180,8 +333,6 @@ def validate_completed_plant_ids(
             status_code=422,
             detail=f"completed_plant_ids must be linked to the task: {', '.join(invalid[:5])}",
         )
-    if not linked_plant_ids:
-        return []
     if len(linked_plant_ids) == 1 and requested_plant_ids is None:
         return linked_plant_ids
     if not requested:
@@ -192,7 +343,33 @@ def validate_completed_plant_ids(
     return requested
 
 
-def validate_completion_outcome(*, task_type: str, outcome: CompletionOutcome) -> None:
+def validate_completion_capture_plant_links(
+    *,
+    task_type: str,
+    linked_plant_ids: list[str],
+) -> None:
+    if is_completion_capture_task(task_type) and not linked_plant_ids:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Completion capture requires at least one linked plant. "
+                "Repair the task's plant scope before completing it."
+            ),
+        )
+
+
+def validate_completion_outcome(
+    *,
+    task_type: str,
+    outcome: CompletionOutcome | None,
+) -> CompletionOutcome:
+    if outcome is None:
+        if task_type == "observe_bloom":
+            raise HTTPException(
+                status_code=422,
+                detail="completion_outcome is required for observe_bloom completion",
+            )
+        return "done"
     if outcome == "not_seen_blooming_this_season" and task_type != "observe_bloom":
         raise HTTPException(
             status_code=422,
@@ -201,6 +378,7 @@ def validate_completion_outcome(*, task_type: str, outcome: CompletionOutcome) -
                 "observe_bloom tasks"
             ),
         )
+    return outcome
 
 
 def record_completion_journal_entry(
@@ -213,6 +391,7 @@ def record_completion_journal_entry(
     outcome: CompletionOutcome,
     notes: str | None,
     now_ms: int,
+    occurred_on: str,
 ) -> tuple[str | None, dict[str, Any]]:
     task_type = str(task_row.get("task_type") or "")
     if not selected_plant_ids or not is_completion_capture_task(task_type):
@@ -244,6 +423,7 @@ def record_completion_journal_entry(
         "source_task_type": task_type,
         "outcome": outcome,
         "selected_plant_ids": selected_plant_ids,
+        "selected_plot_ids": selected_plot_ids,
     }
     title = ""
     if outcome == "not_seen_blooming_this_season":
@@ -260,7 +440,7 @@ def record_completion_journal_entry(
             generate_public_id("jrn"),
             int(task_row["garden_id"]),
             event_type,
-            date.today().isoformat(),
+            occurred_on,
             title,
             notes or "",
             json.dumps(entry_metadata, sort_keys=True, separators=(",", ":")),
@@ -277,18 +457,17 @@ def record_completion_journal_entry(
         "INSERT INTO garden_journal_entry_plants (entry_id, plt_id) VALUES (%s, %s)",
         [(entry_id, plant_id) for plant_id in selected_plant_ids],
     )
-    if task_type != "observe_bloom":
-        executemany(
-            db,
-            "INSERT INTO garden_journal_entry_plots (entry_id, plot_id) VALUES (%s, %s)",
-            [(entry_id, plot_id) for plot_id in selected_plot_ids],
-        )
+    executemany(
+        db,
+        "INSERT INTO garden_journal_entry_plots (entry_id, plot_id) VALUES (%s, %s)",
+        [(entry_id, plot_id) for plot_id in selected_plot_ids],
+    )
     if task_type == "observe_bloom" and outcome == "done":
         mark_seen_growing_from_observation(
             db,
             garden_id=int(task_row["garden_id"]),
             plant_ids=selected_plant_ids,
-            seen_date=date.today().isoformat(),
+            seen_date=occurred_on,
             plot_ids=selected_plot_ids,
         )
     completion_records[key] = entry_public_id

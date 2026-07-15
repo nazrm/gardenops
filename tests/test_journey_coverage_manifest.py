@@ -70,6 +70,30 @@ def test_phase_one_manifest_only_marks_enforced_dimensions_proven() -> None:
         assert journey["performance"] == "required"
 
 
+def test_phase_two_manifest_only_marks_enforced_dimensions_proven() -> None:
+    payload = validate_manifest(DEFAULT_MANIFEST, repo_root=ROOT)
+    journeys = {journey["id"]: journey for journey in payload["journeys"]}
+    expected_proven_dimensions = {
+        "D1": {"desktop", "mobile", "provider"},
+        "D2": {"desktop", "mobile", "roles"},
+        "D3": {"desktop", "mobile", "roles", "filesystem"},
+        "D4": {"desktop", "mobile", "roles"},
+        "D5": {"desktop", "mobile", "roles"},
+        "R1": {"desktop", "mobile"},
+    }
+    for journey_id, expected in expected_proven_dimensions.items():
+        journey = journeys[journey_id]
+        actual = {dimension for dimension in DIMENSIONS if journey[dimension] == "proven"}
+        assert actual == expected
+        assert "scripts/check_complete_journeys_e2e.cjs" in journey["evidence"]
+        assert "scripts/e2e/journeys/dailyAttentionWork.cjs" in journey["evidence"]
+        assert "tests/test_complete_journey_e2e_scripts.py" in journey["evidence"]
+        assert journey["accessibility"] == "required"
+        assert journey["performance"] == "required"
+    assert journeys["D2"]["offline"] == "required"
+    assert journeys["D4"]["provider"] == "required"
+
+
 def test_duplicate_journey_id_is_rejected(tmp_path: Path) -> None:
     journeys = _complete_fixture()
     journeys.append(_journey("A1"))

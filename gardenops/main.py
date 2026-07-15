@@ -32,7 +32,7 @@ from starlette.middleware.gzip import GZipMiddleware  # noqa: E402
 from starlette.middleware.trustedhost import TrustedHostMiddleware  # noqa: E402
 from starlette.responses import JSONResponse  # noqa: E402
 
-from gardenops.audit import write_audit_event  # noqa: E402
+from gardenops.audit import reserve_mutation_audit_event, write_audit_event  # noqa: E402
 from gardenops.branding import app_name, app_slug, app_user_agent  # noqa: E402
 from gardenops.constants import (  # noqa: E402
     GRID_COLS,
@@ -425,6 +425,8 @@ def _setup_error_log() -> None:
                     str(record.request_id),
                     80,  # type: ignore[attr-defined]
                 )
+            if hasattr(record, "audit_event_id"):
+                entry["audit_event_id"] = int(record.audit_event_id)  # type: ignore[attr-defined]
             if hasattr(record, "report_request_id"):
                 entry["report_request_id"] = _sanitize_log_str(
                     str(record.report_request_id),
@@ -1141,6 +1143,31 @@ def _forced_password_change_path_allowed(path: str) -> bool:
     }
 
 
+def _is_personal_attention_mutation_path(path: str) -> bool:
+    normalized_path = path.rstrip("/") or "/"
+    if normalized_path in {
+        "/api/attention/preferences",
+        "/api/calendar/preferences",
+        "/api/notifications/preferences",
+        "/api/notifications/read-all",
+    }:
+        return True
+    notification_prefix = "/api/notifications/"
+    if normalized_path.startswith(notification_prefix):
+        notification_action = normalized_path.removeprefix(notification_prefix)
+        if notification_action.endswith("/read"):
+            notification_id = notification_action.removesuffix("/read")
+            return "/" not in notification_id and notification_id.startswith("note_")
+        return "/" not in notification_action and notification_action.startswith("note_")
+    weather_alert_prefix = "/api/weather/alerts/"
+    if normalized_path.startswith(weather_alert_prefix) and normalized_path.endswith("/dismiss"):
+        alert_id = normalized_path.removeprefix(weather_alert_prefix).removesuffix("/dismiss")
+        return alert_id.isdigit()
+    if not normalized_path.startswith("/api/attention/items/"):
+        return False
+    return normalized_path.rsplit("/", 1)[-1] in {"read", "dismiss", "snooze", "restore"}
+
+
 def _csp_report_only() -> bool:
     default = "true" if not _is_internet_exposed() else "false"
     return os.environ.get("CSP_REPORT_ONLY", default).strip().lower() == "true"
@@ -1399,7 +1426,7 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
     remote_host = request.client.host if request.client else ""
 
     def _audit_mutation(status_code: int, detail: str = "") -> None:
-        if request.method not in {"POST", "PATCH", "DELETE"}:
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
             return
         if not path.startswith("/api"):
             return
@@ -1541,6 +1568,7 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
                 and path.startswith("/api")
                 and not path.startswith("/api/auth/")
                 and not path.startswith("/api/ai/")
+                and not _is_personal_attention_mutation_path(path)
                 and not has_write_access(auth_context)
             ):
                 _audit_mutation(403, "Forbidden: write access required")
@@ -1647,6 +1675,30 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
                     content={"detail": "Request body too large"},
                 )
             raise
+    should_reserve_mutation_audit = (
+        request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        and path.startswith("/api")
+        and path not in {"/api/security/csp-report", "/api/client-errors"}
+    )
+    if should_reserve_mutation_audit:
+        try:
+            reserve_mutation_audit_event(
+                method=request.method,
+                path=path,
+                remote_host=remote_host,
+                auth_context=auth_context,
+            )
+        except Exception:
+            logger.error(
+                "Mutation blocked because its audit reservation failed: %s %s",
+                request.method,
+                path,
+                exc_info=True,
+            )
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Mutation audit is temporarily unavailable"},
+            )
     try:
         response = await asyncio.wait_for(
             call_next(request),

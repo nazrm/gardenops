@@ -144,6 +144,7 @@ environment variable read by the public app.
 | `MEDIA_<SETTING>` | Media upload storage directory, byte quotas, asset limits, pixel limits, preview sizing, and upload rate limits. | `MEDIA_MAX_UPLOAD_BYTES=10485760` |
 | `GARDEN_<SETTING>` | Garden invitation, membership, settings, onboarding, and zone-creation rate limits. | `GARDEN_SETTINGS_UPDATE_RATE_LIMIT=10` |
 | `NOTIFICATION_<SETTING>` | Notification generation, delivery, maintenance, digest, and task-scan limits. | `NOTIFICATION_GENERATE_RATE_LIMIT=10` |
+| `GARDENOPS_WEATHER_EXTERNAL_FETCH_ENABLED` | Allows remote weather-provider fetches. Defaults to enabled outside tests and disabled in `APP_ENV=test`; deterministic runners set it to `false` explicitly. | `true` |
 | `GARDENOPS_LOGS_DIR` | Directory for runtime JSONL error logs. | `./logs` |
 | `GARDENOPS_ATTENTION_<SETTING>` | Attention test clock and guarded E2E settings. Keep unset in normal production; use documented values only for deterministic tests and the disposable Attention Today E2E runner. | `GARDENOPS_ATTENTION_FROZEN_DATE=2026-07-05` |
 | `GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER` | Test-only local AI fixture switch. It is honored only when `APP_ENV=test` and the value is exactly `1`; keep it unset in development and production. | unset |

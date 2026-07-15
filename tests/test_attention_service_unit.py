@@ -1,4 +1,5 @@
 import importlib.util
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from gardenops.services.attention import (
     attention_today_date,
     group_attention_items,
     is_generated_watering_task,
+    notification_rules_from_attention,
     rank_attention_items,
     require_attention_e2e_database,
     resolve_attention_preferences,
@@ -446,6 +448,45 @@ def test_guardrail_keeps_critical_system_visible_on_non_email_surface():
     assert visible[0].user_state == "unread"
 
 
+def test_system_notification_bypasses_rules_but_respects_digest_quiet_hours():
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={
+            "system": {
+                "panel": False,
+                "inbox": False,
+                "digest": False,
+                "min_severity": "critical",
+            }
+        },
+        quiet_hours={
+            "timezone": "UTC",
+            "digest": {"enabled": True, "start": "15:00", "end": "17:00"},
+        },
+        show_no_action_history=True,
+    )
+    item = make_item(
+        id="attn:notification:system-digest",
+        provider="notification_status",
+        type="system",
+        category="system",
+        severity="normal",
+        delivery_eligibility=("digest",),
+    )
+
+    assert apply_preferences([item], prefs, surface="digest", now_ms=1783180800000) == []
+    assert [
+        visible.id
+        for visible in apply_preferences(
+            [item],
+            replace(prefs, quiet_hours={}),
+            surface="digest",
+            now_ms=1783180800000,
+        )
+    ] == ["attn:notification:system-digest"]
+
+
 def test_guardrail_still_respects_channel_eligibility():
     prefs = AttentionPreferenceSet(
         user_id=2,
@@ -577,6 +618,35 @@ def test_legacy_notification_policy_keys_map_to_attention_rule_types():
     )
 
 
+def test_grouped_notification_projection_does_not_choose_an_arbitrary_rule():
+    preferences = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={
+            "issue_follow_up_due": {
+                "panel": True,
+                "inbox": True,
+                "digest": True,
+                "min_severity": "low",
+            },
+            "issue_follow_up_overdue": {
+                "panel": True,
+                "inbox": False,
+                "digest": False,
+                "min_severity": "high",
+            },
+        },
+    )
+
+    projected = notification_rules_from_attention(preferences)
+
+    assert projected["issue_created"] == {
+        "in_app_enabled": False,
+        "email_enabled": False,
+        "min_severity": "high",
+    }
+
+
 def test_legacy_rule_without_email_channel_uses_type_enablement_for_digest():
     prefs = resolve_attention_preferences(
         user_id=2,
@@ -675,21 +745,52 @@ def test_scheduled_quiet_hours_suppress_digest_only_inside_window():
         show_no_action_history=True,
     )
     item = make_item(delivery_eligibility=("panel_only", "inbox", "digest"))
-    inside_quiet_hours_ms = int(datetime(2026, 7, 5, 22, 30, tzinfo=UTC).timestamp() * 1000)
-    outside_quiet_hours_ms = int(datetime(2026, 7, 5, 12, 0, tzinfo=UTC).timestamp() * 1000)
+    before_quiet_hours_ms = int(datetime(2026, 7, 5, 21, 29, tzinfo=UTC).timestamp() * 1000)
+    quiet_start_ms = int(datetime(2026, 7, 5, 21, 30, tzinfo=UTC).timestamp() * 1000)
+    quiet_end_minus_one_ms = int(datetime(2026, 7, 6, 6, 14, tzinfo=UTC).timestamp() * 1000)
+    quiet_end_ms = int(datetime(2026, 7, 6, 6, 15, tzinfo=UTC).timestamp() * 1000)
+
+    assert [
+        i.id
+        for i in apply_preferences([item], prefs, surface="digest", now_ms=before_quiet_hours_ms)
+    ] == ["attn:task:task_1"]
+    assert apply_preferences([item], prefs, surface="digest", now_ms=quiet_start_ms) == []
+    assert apply_preferences([item], prefs, surface="digest", now_ms=quiet_end_minus_one_ms) == []
+    assert [
+        i.id for i in apply_preferences([item], prefs, surface="digest", now_ms=quiet_end_ms)
+    ] == ["attn:task:task_1"]
+    assert [
+        i.id for i in apply_preferences([item], prefs, surface="panel", now_ms=quiet_start_ms)
+    ] == ["attn:task:task_1"]
+
+
+def test_legacy_quiet_window_fallback_preserves_minute_precision():
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={
+            "task_due": {
+                "panel": True,
+                "inbox": True,
+                "digest": True,
+                "min_severity": "low",
+            }
+        },
+        quiet_hours={"start": "21:30", "end": "06:15"},
+        show_no_action_history=True,
+    )
+    item = make_item(delivery_eligibility=("panel_only", "inbox", "digest"))
+    inside_quiet_hours_ms = int(datetime(2026, 7, 6, 6, 14, tzinfo=UTC).timestamp() * 1000)
+    outside_quiet_hours_ms = int(datetime(2026, 7, 6, 6, 15, tzinfo=UTC).timestamp() * 1000)
 
     assert apply_preferences([item], prefs, surface="digest", now_ms=inside_quiet_hours_ms) == []
     assert [
         i.id
         for i in apply_preferences([item], prefs, surface="digest", now_ms=outside_quiet_hours_ms)
     ] == ["attn:task:task_1"]
-    assert [
-        i.id
-        for i in apply_preferences([item], prefs, surface="panel", now_ms=inside_quiet_hours_ms)
-    ] == ["attn:task:task_1"]
 
 
-def test_non_configurable_notification_rows_bypass_attention_delivery_filter():
+def test_non_configurable_notification_rows_ignore_attention_delivery_rules():
     from gardenops.services.notification_service import notification_rows_allowed_by_attention
 
     prefs = AttentionPreferenceSet(
@@ -712,7 +813,7 @@ def test_non_configurable_notification_rows_bypass_attention_delivery_filter():
         "garden_id": 1,
         "user_id": 2,
         "notification_type": "system",
-        "notification_subtype": None,
+        "notification_subtype": "backup",
         "severity": "low",
         "title": "System notice",
         "body": "Backup status changed",
@@ -721,13 +822,138 @@ def test_non_configurable_notification_rows_bypass_attention_delivery_filter():
         "created_at_ms": 1,
     }
 
-    assert notification_rows_allowed_by_attention(
+    visible = notification_rows_allowed_by_attention(
         [row],
         preferences=prefs,
         surface="digest",
         garden_id=1,
         user_id=2,
-    ) == [row]
+    )
+
+    assert visible == [row]
+
+
+def test_custom_attention_preferences_reject_truthy_rule_values_and_preset_conflicts():
+    from gardenops.services.attention.preferences import (
+        normalize_attention_preference_payload,
+    )
+
+    with pytest.raises(ValueError, match="Rules can only be supplied"):
+        normalize_attention_preference_payload(
+            preset="balanced",
+            rules={"task_due": {"inbox": False}},
+            quiet_hours={},
+            show_no_action_history=True,
+            metadata={},
+        )
+
+    with pytest.raises(ValueError, match="must be a boolean"):
+        normalize_attention_preference_payload(
+            preset="custom",
+            rules={"task_due": {"inbox": "false"}},
+            quiet_hours={},
+            show_no_action_history=True,
+            metadata={},
+        )
+
+    preset_payload = normalize_attention_preference_payload(
+        preset="balanced",
+        rules={},
+        quiet_hours={},
+        show_no_action_history=True,
+        metadata={},
+    )
+    assert preset_payload[1] == {}
+
+
+def test_quiet_hours_use_persisted_iana_timezone_across_dst():
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={
+            "task_due": {
+                "panel": True,
+                "inbox": True,
+                "digest": True,
+                "min_severity": "low",
+            }
+        },
+        quiet_hours={
+            "timezone": "Europe/Oslo",
+            "digest": {"enabled": True, "start": "22:00", "end": "07:00"},
+        },
+    )
+    item = make_item(delivery_eligibility=("digest",))
+    dst_quiet_ms = int(datetime(2026, 3, 29, 1, 30, tzinfo=UTC).timestamp() * 1000)
+    dst_end_ms = int(datetime(2026, 3, 29, 5, 0, tzinfo=UTC).timestamp() * 1000)
+
+    assert apply_preferences([item], prefs, surface="digest", now_ms=dst_quiet_ms) == []
+    assert [
+        result.id
+        for result in apply_preferences([item], prefs, surface="digest", now_ms=dst_end_ms)
+    ] == ["attn:task:task_1"]
+
+
+def test_legacy_notification_quiet_hours_persist_the_browser_timezone():
+    from gardenops.services.attention.preferences import merge_notification_preferences
+
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="balanced",
+        rules={},
+        quiet_hours={},
+    )
+
+    merged = merge_notification_preferences(
+        prefs,
+        notification_rules={},
+        quiet_hours={"start": "22:00", "end": "07:00", "timezone": "Europe/Oslo"},
+        notification_rule_keys=set(),
+    )
+
+    assert merged.quiet_hours == {
+        "digest": {"enabled": True, "start": "22:00", "end": "07:00"},
+        "timezone": "Europe/Oslo",
+    }
+
+
+def test_legacy_notification_save_preserves_disabled_canonical_quiet_window():
+    from gardenops.services.attention.preferences import merge_notification_preferences
+
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={},
+        quiet_hours={
+            "digest": {"enabled": False, "start": "22:00", "end": "07:00"},
+            "timezone": "Europe/Oslo",
+        },
+    )
+
+    merged = merge_notification_preferences(
+        prefs,
+        notification_rules={},
+        quiet_hours={},
+        notification_rule_keys=set(),
+    )
+
+    assert merged.quiet_hours == prefs.quiet_hours
+
+
+def test_invalid_persisted_quiet_hour_timezone_falls_back_to_utc():
+    prefs = AttentionPreferenceSet(
+        user_id=2,
+        preset="custom",
+        rules={"task_due": {"digest": True, "min_severity": "low"}},
+        quiet_hours={
+            "timezone": "Invalid/Timezone",
+            "digest": {"enabled": True, "start": "21:30", "end": "06:15"},
+        },
+    )
+    item = make_item(delivery_eligibility=("digest",))
+    quiet_start_ms = int(datetime(2026, 7, 5, 21, 30, tzinfo=UTC).timestamp() * 1000)
+
+    assert apply_preferences([item], prefs, surface="digest", now_ms=quiet_start_ms) == []
 
 
 def test_active_provider_items_are_eligible_for_inbox_and_digest_surfaces():
@@ -801,3 +1027,47 @@ def test_active_provider_items_are_eligible_for_inbox_and_digest_surfaces():
     for item in [task_item, weather_alert, issue_item, calendar_item]:
         assert "inbox" in item.delivery_eligibility
         assert "digest" in item.delivery_eligibility
+
+
+def test_weather_attention_provider_maps_alert_types_to_notification_subtypes() -> None:
+    from gardenops.services.attention.providers.weather import WeatherAttentionProvider
+
+    class _Rows:
+        def fetchall(self):
+            return [
+                {
+                    "id": index,
+                    "garden_id": 1,
+                    "alert_type": alert_type,
+                    "severity": "normal",
+                    "title": alert_type,
+                    "description": "",
+                    "valid_from": "2026-07-05",
+                    "valid_until": "2026-07-05",
+                    "metadata_json": "{}",
+                    "created_at_ms": 1,
+                }
+                for index, alert_type in enumerate(
+                    ["frost_warning", "rain_surplus", "heat_wave", "dry_spell", "unknown"],
+                    start=1,
+                )
+            ]
+
+    class _Connection:
+        def execute(self, _query, _params):
+            return _Rows()
+
+    items = WeatherAttentionProvider(frozen_date="2026-07-05")._active_alert_items(
+        _Connection(),
+        garden_id=1,
+        user_id=2,
+        today="2026-07-05",
+    )
+
+    assert {item.metadata["alert_type"]: item.type for item in items} == {
+        "frost_warning": "frost_warning",
+        "rain_surplus": "rain_alert",
+        "heat_wave": "heat_wave",
+        "dry_spell": "dry_spell",
+        "unknown": "weather_alert",
+    }

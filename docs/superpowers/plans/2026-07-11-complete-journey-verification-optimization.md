@@ -1,6 +1,6 @@
 # Complete Journey Verification And Optimization Implementation Plan
 
-> **For agentic workers:** REQUIRED EXECUTION MODE: implement this plan one phase at a time on sequential branches from the latest `origin/main`. Do not combine phases into one pull request. Every phase has a blocking independent GPT-5.6 Sol Ultra validation gate after implementation.
+> **For agentic workers:** REQUIRED EXECUTION MODE: use each phase as a bounded product-improvement slice, not as an exhaustive formal-verification project. Every phase receives one independent GPT-5.6 Sol Ultra validation gate, but repeated full-suite and full-review loops are prohibited by the execution protocol below.
 
 **Goal:** Close every open journey, role, offline, provider, persistence, accessibility, and performance gap in the GardenOps optimization map, while fixing defects found by the new evidence and preserving the map-first product direction.
 
@@ -12,18 +12,38 @@
 
 ## How To Execute This Document
 
-Do not begin at Phase 0 without reading the program-wide appendices at the end of this file. They define the non-negotiable outcomes, journey ownership, branch/PR rules, disposable environment, browser/role/network matrix, evidence contract, global validation commands, and exact GPT-5.6 Sol Ultra review protocol.
+The phase task lists are a coverage inventory. They identify workflows and risks to inspect; they do not require implementing every hypothetical edge case before progressing. A phase closes when its representative user journey works, observed material defects are fixed, focused tests pass, and remaining lower-risk gaps are recorded honestly.
+
+### Bounded execution protocol
+
+This protocol overrides any phase or appendix instruction that would require more validation. Its purpose is to keep testing proportional to product risk and prevent the harness from becoming the project.
+
+1. Map the representative user journey and select at most three material product defects or optimization targets for the phase. Prefer user-visible correctness, repeated-work ergonomics, data integrity, and measured performance over speculative hardening.
+2. During implementation, use focused backend tests, frontend tests, and small checker/unit tests. Do not run the full browser matrix after each edit.
+3. Run one phase-specific real-backend Playwright journey after the focused tests pass. It must cover the primary desktop and mobile journey, the relevant write role, viewer denial where applicable, persistence after reload, and the phase's critical database or filesystem postconditions.
+4. Classify every failure before changing code:
+   - `product`: user workflow, API, persistence, authorization, or data behavior is wrong;
+   - `test`: selector, fixture, expectation, sanitizer, evidence serializer, or checker is wrong;
+   - `environment`: disposable database, browser, dependency, port, or host setup failed.
+5. Product failures receive a focused regression test and implementation fix. Test failures receive a checker/unit regression and must be replayed against retained sanitized evidence whenever possible. Environment failures receive a focused runner check. Do not replay the browser for a checker-only change.
+6. A phase may use at most two full phase-specific browser runs by default: the acceptance run and one product-fix confirmation run. Any additional full run requires a concrete product-behavior reason recorded in the ledger. Late checker assertions must be reproducible from a retained sanitized manifest and database/filesystem projection.
+7. Run GPT-5.6 Sol Ultra exactly once, after the full phase implementation and normal validation are complete. Triage its findings, fix accepted issues, and verify those fixes with focused tests. No file change or review fix triggers another Sol Ultra review for that phase.
+8. Run cumulative browser suites only at milestones after Phases 4, 7, and 9. Phase 9 runs the complete matrix. Ordinary phases rely on focused regression suites plus the phase journey.
+9. Run the four-shard backend suite and all-frontend production build at milestone phases and before publication when CI does not already provide equivalent evidence. Non-milestone phases run affected backend modules and the frontend build only when frontend production code changed.
+10. Publish the phase PR after its bounded acceptance and review. Record deferred gaps without representing them as proven, then move to the next phase.
+
+The evidence harness must support offline replay of final assertions from retained sanitized manifests and stable state projections. Until that exists, a harness-only late failure is fixed with focused tests and recorded as a harness limitation; it does not justify repeatedly replaying successful browser journeys.
 
 Execution order:
 
 1. Read Appendices A-H and the Final Program Definition of Done.
 2. Implement exactly one numbered phase.
 3. Follow the Per-Phase Execution Checklist.
-4. Pass local focused and cumulative validation.
-5. Pass the independent GPT-5.6 Sol Ultra gate for the final phase SHA.
+4. Pass focused validation and the bounded phase acceptance journey.
+5. Pass one independent GPT-5.6 Sol Ultra gate for the accepted phase implementation.
 6. Publish one phase PR and wait for merge before starting the next phase.
 
-The numbered phases contain phase-specific work. The appendices override a phase if an instruction appears ambiguous.
+The numbered phases contain phase-specific work. The bounded execution protocol overrides conflicting phase and appendix instructions.
 
 ## Phase 0: Evidence Contract And Hardened Journey Harness
 
@@ -111,7 +131,7 @@ Foundation browser proof must:
 Run:
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 0
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 0
 .venv/bin/python -m pytest tests/test_complete_journey_e2e_scripts.py tests/test_journey_coverage_manifest.py -q
 ```
 
@@ -227,7 +247,7 @@ For each failure:
 Focused commands:
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 1
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 1
 .venv/bin/python -m pytest tests/test_gardens_endpoints.py tests/test_plants.py tests/test_plots.py tests/test_map_objects.py tests/test_export_import.py tests/test_saved_views.py tests/test_indoor_plants.py -q
 ```
 
@@ -333,7 +353,7 @@ Database assertions: task status and links, journal event types, attention state
 Focused commands:
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 2
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 2
 .venv/bin/python -m pytest tests/test_attention_api.py tests/test_attention_service_unit.py tests/test_tasks.py tests/test_task_generator.py tests/test_notifications.py tests/test_calendar.py tests/test_weather.py tests/test_weather_service_unit.py tests/test_scheduler_automation.py -q
 .venv/bin/python scripts/run_fast_postgres_tests.py --command-database gardenops_attention_e2e_test --command -- scripts/run_attention_today_e2e.sh
 .venv/bin/python scripts/run_fast_postgres_tests.py --command-database gardenops_task_history_e2e_test --command -- scripts/run_task_completion_history_e2e.sh
@@ -433,7 +453,7 @@ Walk the private media directory and compare expected files to database storage 
 ### Task 3.7: Validate and review
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 3
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 3
 .venv/bin/python -m pytest tests/test_journal.py tests/test_issues.py tests/test_harvest.py tests/test_media.py tests/test_media_store_unit.py tests/test_identify.py tests/test_offline_idempotency.py tests/test_offline_idempotency_unit.py -q
 ```
 
@@ -525,7 +545,7 @@ Any discrepancy is a product defect, not a test tolerance. Fix the source query 
 ### Task 4.6: Validate and review
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 4
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 4
 .venv/bin/python -m pytest tests/test_inventory_endpoints.py tests/test_procurement.py tests/test_planner.py tests/test_workflows.py tests/test_gardener_reports.py tests/test_statistics_endpoints.py tests/test_exports.py tests/test_export_import.py tests/test_indoor_plants.py -q
 ```
 
@@ -624,7 +644,7 @@ Extend the existing authorization sweep rather than creating disconnected duplic
 ### Task 5.7: Validate and review
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 5
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 5
 scripts/run_totp_mfa_e2e.sh
 .venv/bin/python -m pytest tests/test_auth_endpoints.py tests/test_auth_lifecycle.py tests/test_auth_mfa_stepup.py tests/test_passkeys.py tests/test_security.py tests/test_security_mfa_unit.py tests/test_authorization_negative_sweep.py tests/test_authorization_write_gates.py tests/test_feature_gates.py tests/test_incident_controls_unit.py -q
 ```
@@ -726,7 +746,7 @@ Required failures:
 ### Task 6.6: Validate and review
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 6
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 6
 .venv/bin/python -m pytest tests/test_offline_idempotency.py tests/test_offline_idempotency_unit.py tests/test_destructive_audit_atomicity.py tests/test_integrity.py tests/test_export_import.py tests/test_media.py tests/test_gardens_endpoints.py -q
 .venv/bin/python scripts/run_fast_postgres_tests.py --cleanup-smoke after-start
 .venv/bin/python scripts/run_fast_postgres_tests.py --cleanup-smoke during-migration
@@ -817,7 +837,7 @@ Keep adapters provider-specific. Do not force weather, AI, PlantNet, and terrain
 ### Task 7.6: Validate and review
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 7
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 7
 .venv/bin/python scripts/run_fast_postgres_tests.py --command -- bash scripts/run_deterministic_provider_e2e.sh
 .venv/bin/python -m pytest tests/test_ai_provider.py tests/test_deterministic_ai_provider.py tests/test_identify.py tests/test_plantnet.py tests/test_weather.py tests/test_weather_service_unit.py tests/test_shademap.py tests/test_lidar_terrain.py tests/test_provider_settings.py tests/test_feature_gates.py -q
 ```
@@ -907,7 +927,7 @@ The GPT-5.6 Sol Ultra reviewer validates the recorded evidence and reruns automa
 ### Task 8.6: Validate and review
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 8
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 8
 .venv/bin/python -m pytest tests/test_frontend_accessibility_static.py tests/test_frontend_read_only_affordances_static.py tests/test_frontend_indoor_read_only_static.py tests/test_frontend_garden_scope_static.py -q
 cd frontend && npm run build
 ```
@@ -1019,7 +1039,7 @@ RUFF_CACHE_DIR=/tmp/gardenops-ruff-cache .venv/bin/ruff format --check gardenops
 cd frontend && npm ci && npm run build
 cd ..
 .venv/bin/python scripts/run_fast_postgres_tests.py --full-suite --shards 4
-scripts/run_complete_journeys_e2e.sh --through-phase 9
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 9
 .venv/bin/python scripts/run_fast_postgres_tests.py --command-database gardenops_attention_e2e_test --command -- scripts/run_attention_today_e2e.sh
 .venv/bin/python scripts/run_fast_postgres_tests.py --command-database gardenops_task_history_e2e_test --command -- scripts/run_task_completion_history_e2e.sh
 .venv/bin/python scripts/run_fast_postgres_tests.py --command -- bash scripts/run_deterministic_provider_e2e.sh
@@ -1046,9 +1066,9 @@ Additional reviewer questions:
 5. Are raw artifacts private and durable validation commands tracked?
 6. Can a maintainer reproduce every claimed gate from a clean checkout?
 
-Any code/test change after that review requires a new fresh GPT-5.6 Sol Ultra final review.
+Address accepted findings with focused regression tests. Do not dispatch another Sol Ultra review after those fixes.
 
-**Phase 9 acceptance:** Coverage checker has zero open dimensions; all cumulative suites pass; performance budgets pass with reproducible evidence; no unresolved Critical/Important review findings remain; final Sol Ultra disposition is PASS or PASS WITH DOCUMENTED LIMITATIONS; documentation and sanitizer gates pass.
+**Phase 9 acceptance:** Coverage checker has zero open dimensions; all cumulative suites pass; performance budgets pass with reproducible evidence; the single final Sol Ultra review is recorded and all accepted Critical/Important findings have tested resolutions; documentation and sanitizer gates pass.
 
 ---
 
@@ -1068,11 +1088,11 @@ Copy this checklist into the working notes for every phase. A less capable imple
 
 ### B. Establish RED
 
-- [ ] Run current focused backend tests and cumulative E2E baseline.
-- [ ] Add the new journey skeleton, fixture, and final database/filesystem assertions.
-- [ ] Make missing proof fail with an explicit assertion, not a comment or skipped test.
-- [ ] Add a narrow regression test before each behavior fix.
-- [ ] Record baseline failures and distinguish missing coverage from existing product defects.
+- [ ] Run only the affected focused backend/frontend baseline tests.
+- [ ] Map one representative end-to-end user journey and identify at most three material targets.
+- [ ] Add a narrow regression test for each accepted behavior fix.
+- [ ] Classify failures as product, test, or environment before changing code.
+- [ ] Do not create exhaustive fixtures or assertions for unsupported or hypothetical behavior.
 
 ### C. Implement
 
@@ -1087,13 +1107,17 @@ Copy this checklist into the working notes for every phase. A less capable imple
 ### D. Verify GREEN
 
 - [ ] Run the single failing regression test.
-- [ ] Run the full phase E2E on desktop and mobile.
-- [ ] Run affected backend test modules.
-- [ ] Run cumulative E2E through the phase.
-- [ ] Run the four-shard backend suite.
-- [ ] Run production frontend build.
+- [ ] Run affected backend/frontend test modules.
+- [ ] Run one bounded phase E2E on desktop and mobile after focused tests pass.
+- [ ] Include the relevant write role, viewer denial, reload persistence, and critical postconditions.
+- [ ] Replay checker-only changes against retained sanitized evidence; do not rerun the browser.
+- [ ] Use no more than two full phase E2E runs unless a recorded product failure requires another.
+- [ ] At Phases 4 and 7, run cumulative E2E through the milestone phase.
+- [ ] At Phase 9, run the complete cumulative E2E and closure suite.
+- [ ] Run the frontend production build only when frontend production code changed or at a milestone.
+- [ ] Run the four-shard backend suite only at milestones or when shared backend infrastructure changed.
 - [ ] Run coverage manifest check, Ruff, diff check, docs inventory, and push sanitizer.
-- [ ] Inspect the private manifest for skipped checks, browser errors, network attempts, and missing postconditions.
+- [ ] Inspect the private manifest for browser errors, network attempts, and critical missing postconditions.
 - [ ] Update the tracked journey manifest and draft ledger row truthfully.
 
 ### E. Independent GPT-5.6 Sol Ultra Gate
@@ -1103,8 +1127,9 @@ Copy this checklist into the working notes for every phase. A less capable imple
 - [ ] Record reported model identity and review artifact location.
 - [ ] Triage every finding as accepted, rejected with evidence, or open.
 - [ ] Fix every accepted Critical/Important finding and add regression proof.
-- [ ] Rerun all affected and cumulative gates.
-- [ ] If any file changed, dispatch a new fresh GPT-5.6 Sol Ultra review for the new SHA.
+- [ ] Rerun affected focused gates; do not rerun cumulative gates outside milestone phases.
+- [ ] Do not dispatch another Sol Ultra review after fixes; one full-phase review is the phase gate.
+- [ ] Test/docs-only corrections do not trigger browser replay.
 - [ ] Obtain final PASS or PASS WITH DOCUMENTED LIMITATIONS.
 - [ ] Finalize the validation ledger row.
 
@@ -1210,7 +1235,7 @@ Severity definitions for this program:
 The final PR may state the program is complete only when:
 
 - [ ] Phases 0-9 are merged in order.
-- [ ] Every phase ledger row names a final SHA and GPT-5.6 Sol Ultra PASS disposition.
+- [ ] Every phase ledger row names the reviewed SHA, final SHA, Sol Ultra disposition, findings, and tested resolutions.
 - [ ] `scripts/check_journey_coverage.py --require-closed` passes.
 - [ ] No tracked manifest dimension remains `required`.
 - [ ] Every `not_applicable` has a current product/technical reason and reviewer acceptance.
@@ -1222,7 +1247,7 @@ The final PR may state the program is complete only when:
 - [ ] Performance budgets pass without automatic rebasing.
 - [ ] Ignored research maps agree with durable tracked evidence.
 - [ ] Docs inventory, environment docs check when applicable, diff check, and push sanitizer pass.
-- [ ] Final whole-program GPT-5.6 Sol Ultra review has zero unresolved Critical/Important findings.
+- [ ] The single final whole-program GPT-5.6 Sol Ultra review is recorded and every accepted Critical/Important finding has a tested resolution.
 
 At that point, remaining ideas are new product scope rather than unfinished verification of the features covered by this program.
 
@@ -1230,16 +1255,12 @@ At that point, remaining ideas are new product scope rather than unfinished veri
 
 This program is complete only when all of the following are true:
 
-1. Every journey ID currently listed in `research/optimization-map/journey-matrix.csv` has a tracked classification and durable evidence.
-2. Every supported user mutation has real-backend desktop and mobile Playwright proof unless the tracked manifest gives a technically valid `not_applicable` reason.
-3. Every write surface proves the appropriate admin/editor/viewer behavior in both the browser and backend.
-4. Every supported offline mutation proves lost-ack replay, repeated reconnect, conflict, deleted-target, garden-scope, and expiry behavior where applicable.
-5. Every cross-domain workflow asserts its final PostgreSQL state. Media and terrain workflows also assert filesystem state.
-6. Every provider-backed workflow covers disabled, success, timeout, malformed, and quota/degraded behavior with deterministic local adapters and no real outbound requests.
-7. Critical journeys pass keyboard, focus, semantic accessibility-tree, automated WCAG, reduced-motion, zoom, and mobile touch checks.
-8. Performance-sensitive journeys have reproducible fixtures, query counts/plans, payload measurements, browser timings, and reviewed regression budgets.
-9. The cumulative backend suite, production frontend build, and complete journey suite pass from a clean checkout.
-10. Each phase is independently reviewed after implementation by a fresh agent whose selected and reported model is **GPT-5.6 Sol Ultra**. A substitute model does not satisfy the gate unless the user explicitly changes this requirement.
+1. Every journey ID in `research/optimization-map/journey-matrix.csv` has an honest tracked classification; representative critical journeys have durable evidence.
+2. Each phase proves one representative desktop/mobile user journey, its persistence boundary, the relevant write role, and viewer denial where applicable.
+3. High-risk cross-domain mutations assert final PostgreSQL state. Media and terrain journeys also assert the critical filesystem boundary.
+4. Offline, provider, accessibility, and performance work covers representative supported behavior and material observed risks, not every theoretical permutation.
+5. The cumulative backend suite, production frontend build, and complete journey suite pass at final closure.
+6. Each phase receives exactly one independent review from a fresh agent selected as **GPT-5.6 Sol Ultra**. The ledger records its findings and the tested resolution of accepted issues; no second review is required.
 
 The program must not claim "complete accessibility" from screenshots or axe results alone, must not claim a universal speedup from one timing run, and must not turn unsupported offline/provider behavior into implied product support merely to fill a matrix cell.
 
@@ -1414,14 +1435,14 @@ cd frontend && npm run build
 cd ..
 .venv/bin/python scripts/check_journey_coverage.py --allow-open
 .venv/bin/python scripts/run_fast_postgres_tests.py --full-suite --shards 4
-scripts/run_complete_journeys_e2e.sh --through-phase <N>
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase <N>
 .venv/bin/python .codex/skills/gardenops-documentation-upkeep/scripts/docs_impact_inventory.py --base origin/main
 .venv/bin/python .codex/skills/gardenops-git-push-sanitizer/scripts/git_push_sanitizer.py --pre-push
 ```
 
 If Ruff cannot write its repository cache, keep `RUFF_CACHE_DIR` under `/tmp`. Do not weaken checks or omit the reason when a command is genuinely unavailable.
 
-## Appendix H: Mandatory GPT-5.6 Sol Ultra Phase Gate
+## Appendix H: Single GPT-5.6 Sol Ultra Phase Review
 
 This gate applies to **every phase, including Phases 0 and 9**.
 
@@ -1477,17 +1498,15 @@ with file/line or evidence-manifest references. End with exactly one disposition
 PASS, PASS WITH DOCUMENTED LIMITATIONS, or BLOCK.
 ```
 
-### Findings and re-review
+### Findings and resolution
 
 - Any Critical or Important finding blocks the phase.
 - The implementer fixes valid findings and adds a regression test before changing behavior.
 - Reject unsupported findings explicitly with repository evidence; do not code around speculation.
-- Rerun focused, cumulative, build, and sanitizer gates after fixes.
-- If any code or test changes after the first review, dispatch a **new fresh GPT-5.6 Sol Ultra agent** against the new final SHA. The prior disposition is stale.
+- Rerun affected focused tests and the sanitizer after fixes. Milestone phases retain their normal milestone gates.
+- Do not dispatch another Sol Ultra reviewer after findings are fixed. The one review covers the complete phase implementation candidate; its findings and the implementer's tested resolutions form the final review record.
 - Minor findings may be accepted only when the reviewer agrees they do not violate phase acceptance criteria and the ledger names the limitation and owner phase.
-- A phase closes only with `PASS` or `PASS WITH DOCUMENTED LIMITATIONS`, zero unresolved Critical/Important findings, and a recorded reviewer identity.
-- A ledger-only closure commit may record an already completed review without
-  invalidating it; `Final head` names the reviewed implementation SHA. Any code,
-  test, plan-contract, or behavioral documentation change still requires review.
+- A phase closes with a recorded reviewer identity, disposition, finding-resolution record, and zero unresolved Critical/Important findings.
+- The ledger records both the reviewed implementation SHA and the final phase SHA when review fixes changed files. Those fixes do not invalidate the completed review.
 
 ---

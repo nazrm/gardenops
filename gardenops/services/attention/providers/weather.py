@@ -13,6 +13,12 @@ from gardenops.services.attention.types import (
 )
 
 _OUTCOME_TYPES = ("watering_covered_by_rain", "watering_rescheduled_by_rain")
+_ALERT_ITEM_TYPES = {
+    "frost_warning": "frost_warning",
+    "rain_surplus": "rain_alert",
+    "heat_wave": "heat_wave",
+    "dry_spell": "dry_spell",
+}
 
 
 def _parse_mapping(value: Any) -> dict[str, Any]:
@@ -85,7 +91,7 @@ class WeatherAttentionProvider:
         items: list[AttentionItem] = []
         for row in rows:
             alert_type = str(row["alert_type"])
-            item_type = "rain_alert" if alert_type == "rain_surplus" else "weather_alert"
+            item_type = _ALERT_ITEM_TYPES.get(alert_type, "weather_alert")
             items.append(
                 AttentionItem(
                     id=f"attn:weather:alert:{row['id']}",
@@ -131,9 +137,31 @@ class WeatherAttentionProvider:
             outcome_types=_OUTCOME_TYPES,
             now_ms=now_ms,
         )
+        restore_sources = sorted(
+            {
+                str(row["source_public_id"])
+                for row in rows
+                if dict(row["recovery_action"]).get("kind") == "restore_generated_watering_task"
+            }
+        )
+        terminal_restore_sources: set[str] = set()
+        if restore_sources:
+            terminal_rows = conn.execute(
+                """
+                SELECT rule_source
+                FROM garden_tasks
+                WHERE garden_id = %s
+                  AND status IN ('completed', 'expired')
+                  AND rule_source = ANY(%s)
+                """,
+                (garden_id, restore_sources),
+            ).fetchall()
+            terminal_restore_sources = {str(row["rule_source"]) for row in terminal_rows}
         items: list[AttentionItem] = []
         for row in rows:
             recovery_action = dict(row["recovery_action"])
+            if str(row["source_public_id"]) in terminal_restore_sources:
+                recovery_action = {}
             secondary_actions: tuple[AttentionAction, ...] = ()
             if recovery_action:
                 secondary_actions = (

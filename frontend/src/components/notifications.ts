@@ -12,9 +12,11 @@ import { t } from "../core/i18n";
 export interface NotificationListCallbacks {
   onClose?: () => void;
   onRead: (notification: NotificationEvent) => void;
-  onDismiss: (notification: NotificationEvent) => void;
+  onDismiss: (notification: NotificationEvent) => void | Promise<void>;
   onNavigate: (notification: NotificationEvent) => void;
-  onMarkAllRead: () => void;
+  onMarkAllRead: () => void | Promise<void>;
+  onActionError?: (error: unknown) => void;
+  isMutationPending?: () => boolean;
   onOpenSettings?: () => void;
   onViewChange?: (view: "inbox" | "log") => void;
   onMuteType?: (notification: NotificationEvent) => void;
@@ -143,19 +145,56 @@ function notificationRuleKey(notification: NotificationEvent): string {
     : notification.notification_type;
 }
 
+function setNotificationActionPending(
+  button: HTMLButtonElement,
+  pending: boolean,
+): void {
+  button.disabled = pending;
+  if (pending) {
+    button.setAttribute("aria-busy", "true");
+  } else {
+    button.removeAttribute("aria-busy");
+  }
+}
+
+async function runNotificationAction(
+  action: () => void | Promise<void>,
+  button: HTMLButtonElement,
+  onError?: (error: unknown) => void,
+): Promise<void> {
+  if (button.disabled) return;
+  setNotificationActionPending(button, true);
+  try {
+    await action();
+  } catch (err) {
+    try {
+      onError?.(err);
+    } catch {
+      // Error reporting must not escape the event handler.
+    }
+  } finally {
+    if (button.isConnected) {
+      setNotificationActionPending(button, false);
+    }
+  }
+}
+
 export function createNotificationItem(
   notification: NotificationEvent,
   cbs: NotificationListCallbacks,
 ): HTMLElement {
   const item = document.createElement("div");
   item.className = `notification-item${notification.read_at_ms ? "" : " unread"}`;
+  item.setAttribute("role", "article");
 
   const icon = document.createElement("span");
   icon.className = "notification-item-icon";
   icon.textContent = TYPE_ICONS[notification.notification_type] ?? "\u2139\uFE0F";
 
-  const content = document.createElement("div");
-  content.className = "notification-item-content";
+  const content = document.createElement("button");
+  content.type = "button";
+  content.className = "notification-item-content notification-item-main";
+  content.addEventListener("click", () => cbs.onNavigate(notification));
 
   const localized = localizeNotification(notification);
 
@@ -188,10 +227,19 @@ export function createNotificationItem(
   dismissBtn.className = "notification-item-dismiss";
   dismissBtn.type = "button";
   dismissBtn.textContent = "\u00D7";
-  dismissBtn.title = t("common.delete") as string;
+  dismissBtn.title = t("notifications.dismiss") as string;
+  dismissBtn.setAttribute("aria-label", t("notifications.dismiss") as string);
+  setNotificationActionPending(
+    dismissBtn,
+    cbs.isMutationPending?.() ?? false,
+  );
   dismissBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    cbs.onDismiss(notification);
+    void runNotificationAction(
+      () => cbs.onDismiss(notification),
+      dismissBtn,
+      cbs.onActionError,
+    );
   });
 
   item.append(icon, content);
@@ -207,7 +255,12 @@ export function createNotificationItem(
     muteBtn.className = "notification-item-mute";
     muteBtn.type = "button";
     muteBtn.textContent = t("notifications.mute_type") as string;
-    muteBtn.title = policyLabel(notificationRuleKey(notification));
+    const ruleLabel = policyLabel(notificationRuleKey(notification));
+    muteBtn.title = ruleLabel;
+    muteBtn.setAttribute(
+      "aria-label",
+      t("notifications.mute_type_label", { type: ruleLabel }) as string,
+    );
     muteBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       cbs.onMuteType!(notification);
@@ -219,10 +272,6 @@ export function createNotificationItem(
   }
   item.append(actions);
 
-  item.addEventListener("click", () => {
-    cbs.onNavigate(notification);
-  });
-
   return item;
 }
 
@@ -233,26 +282,42 @@ export function renderNotificationPanel(
   cbs: NotificationListCallbacks,
 ): void {
   container.replaceChildren();
+  container.setAttribute("role", "dialog");
+  container.setAttribute("aria-modal", "true");
+  container.setAttribute("aria-labelledby", "notification-panel-title");
+  container.removeAttribute("aria-label");
+  const activeView = cbs.view ?? "inbox";
 
-  // Header
   const header = document.createElement("div");
   header.className = "notification-panel-header";
 
   const title = document.createElement("span");
+  title.id = "notification-panel-title";
   title.className = "notification-panel-title";
   title.textContent = t("notifications.title") as string;
 
   const headerActions = document.createElement("div");
+  headerActions.className = "notification-panel-header-actions";
   headerActions.style.display = "flex";
   headerActions.style.alignItems = "center";
   headerActions.style.gap = "var(--sp-2)";
 
-  if ((cbs.view ?? "inbox") === "inbox" && unreadCount > 0) {
+  if (activeView === "inbox" && unreadCount > 0) {
     const markAllBtn = document.createElement("button");
     markAllBtn.className = "notification-mark-all-btn";
     markAllBtn.type = "button";
     markAllBtn.textContent = t("notifications.mark_all_read") as string;
-    markAllBtn.addEventListener("click", () => cbs.onMarkAllRead());
+    setNotificationActionPending(
+      markAllBtn,
+      cbs.isMutationPending?.() ?? false,
+    );
+    markAllBtn.addEventListener("click", () => {
+      void runNotificationAction(
+        () => cbs.onMarkAllRead(),
+        markAllBtn,
+        cbs.onActionError,
+      );
+    });
     headerActions.append(markAllBtn);
   }
 
@@ -262,6 +327,7 @@ export function renderNotificationPanel(
     settingsBtn.type = "button";
     settingsBtn.textContent = "\u2699\uFE0F";
     settingsBtn.title = t("notifications.prefs_title") as string;
+    settingsBtn.setAttribute("aria-label", t("notifications.prefs_title") as string);
     settingsBtn.addEventListener("click", () => cbs.onOpenSettings!());
     headerActions.append(settingsBtn);
   }
@@ -280,21 +346,60 @@ export function renderNotificationPanel(
   header.append(title, headerActions);
   container.append(header);
 
+  const content = document.createElement("div");
+  content.id = "notification-panel-content";
+  content.setAttribute("role", "tabpanel");
+  content.setAttribute("aria-labelledby", `notification-tab-${activeView}`);
+
   if (cbs.onViewChange) {
     const tabs = document.createElement("div");
     tabs.className = "notification-panel-tabs";
-    for (const view of ["inbox", "log"] as const) {
+    tabs.setAttribute("role", "tablist");
+    tabs.setAttribute("aria-label", t("notifications.views") as string);
+    const views = ["inbox", "log"] as const;
+    const tabButtons: HTMLButtonElement[] = [];
+    const requestView = (view: "inbox" | "log"): void => {
+      if (view !== activeView) cbs.onViewChange?.(view);
+    };
+    for (const view of views) {
       const tab = document.createElement("button");
       tab.type = "button";
-      tab.className = `notification-panel-tab${(cbs.view ?? "inbox") === view ? " active" : ""}`;
+      const selected = activeView === view;
+      tab.id = `notification-tab-${view}`;
+      tab.className = `notification-panel-tab${selected ? " active" : ""}`;
       tab.textContent = t(`notifications.tab_${view}`) as string;
-      tab.addEventListener("click", () => cbs.onViewChange!(view));
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", String(selected));
+      tab.setAttribute("aria-controls", content.id);
+      tab.tabIndex = selected ? 0 : -1;
+      tab.addEventListener("click", () => requestView(view));
+      tabButtons.push(tab);
       tabs.append(tab);
     }
+    tabs.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      const currentIndex = tabButtons.findIndex((tab) => tab === document.activeElement);
+      if (currentIndex < 0) return;
+      let nextIndex = currentIndex;
+      if (event.key === "ArrowLeft") {
+        nextIndex = (currentIndex - 1 + tabButtons.length) % tabButtons.length;
+      } else if (event.key === "ArrowRight") {
+        nextIndex = (currentIndex + 1) % tabButtons.length;
+      } else if (event.key === "Home") {
+        nextIndex = 0;
+      } else if (event.key === "End") {
+        nextIndex = tabButtons.length - 1;
+      }
+      const next = tabButtons[nextIndex];
+      if (!next) return;
+      event.preventDefault();
+      next.focus();
+      const view = next.id === "notification-tab-log" ? "log" : "inbox";
+      requestView(view);
+    });
     container.append(tabs);
   }
 
-  // List
   if (notifications.length === 0) {
     const empty = document.createElement("div");
     empty.className = "notification-empty";
@@ -307,26 +412,32 @@ export function renderNotificationPanel(
       cbs.view === "log" ? "notifications.log_empty_hint" : "notifications.empty_hint",
     ) as string;
     empty.append(emptyText, emptyHint);
-    container.append(empty);
-    return;
+    content.append(empty);
+  } else {
+    for (const n of notifications) {
+      content.append(createNotificationItem(n, cbs));
+    }
   }
-
-  for (const n of notifications) {
-    container.append(createNotificationItem(n, cbs));
-  }
+  container.append(content);
 }
 
 export function renderNotificationPreferencesForm(
   container: HTMLElement,
   prefs: NotificationPreferences,
-  onSave: (updated: Partial<NotificationPreferences>) => void,
+  onSave: (updated: Partial<NotificationPreferences>) => void | Promise<void>,
+  onCancel: () => void,
 ): void {
   container.replaceChildren();
+  container.setAttribute("role", "dialog");
+  container.setAttribute("aria-modal", "true");
+  container.setAttribute("aria-labelledby", "notification-preferences-title");
+  container.removeAttribute("aria-label");
 
-  const form = document.createElement("div");
+  const form = document.createElement("form");
   form.className = "notification-prefs-form";
 
   const titleEl = document.createElement("h3");
+  titleEl.id = "notification-preferences-title";
   titleEl.style.marginBottom = "var(--sp-3)";
   titleEl.textContent = t("notifications.prefs_title") as string;
   form.append(titleEl);
@@ -350,9 +461,12 @@ export function renderNotificationPreferencesForm(
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = `notification-prefs-toggle${initialValue ? " active" : ""}`;
+    toggle.setAttribute("aria-label", label);
+    toggle.setAttribute("aria-pressed", String(initialValue));
     toggle.addEventListener("click", () => {
       const current = toggle.classList.contains("active");
       toggle.classList.toggle("active", !current);
+      toggle.setAttribute("aria-pressed", String(!current));
       (state as Record<string, unknown>)[key] = !current;
     });
     row.append(lbl, toggle);
@@ -367,10 +481,12 @@ export function renderNotificationPreferencesForm(
   emailRow.className = "notification-prefs-row";
   emailRow.style.flexDirection = "column";
   emailRow.style.alignItems = "stretch";
-  const emailLabel = document.createElement("span");
+  const emailLabel = document.createElement("label");
   emailLabel.className = "notification-prefs-label";
   emailLabel.textContent = t("notifications.prefs_email_address") as string;
   const emailInput = document.createElement("input");
+  emailInput.id = "notification-prefs-email-address";
+  emailLabel.htmlFor = emailInput.id;
   emailInput.type = "email";
   emailInput.value = prefs.email_address;
   emailInput.style.marginTop = "var(--sp-1)";
@@ -385,10 +501,12 @@ export function renderNotificationPreferencesForm(
   // Digest frequency
   const digestRow = document.createElement("div");
   digestRow.className = "notification-prefs-row";
-  const digestLabel = document.createElement("span");
+  const digestLabel = document.createElement("label");
   digestLabel.className = "notification-prefs-label";
   digestLabel.textContent = t("notifications.prefs_digest") as string;
   const digestSelect = document.createElement("select");
+  digestSelect.id = "notification-prefs-digest-frequency";
+  digestLabel.htmlFor = digestSelect.id;
   digestSelect.style.padding = "var(--sp-1) var(--sp-2)";
   digestSelect.style.fontSize = "0.85rem";
   for (const opt of ["none", "daily", "weekly"] as const) {
@@ -419,27 +537,54 @@ export function renderNotificationPreferencesForm(
   quietInputs.style.marginTop = "var(--sp-1)";
   const qh = (prefs.quiet_hours_json ?? {}) as Record<string, string>;
   const quietStart = document.createElement("input");
+  quietStart.id = "notification-prefs-quiet-start";
   quietStart.type = "time";
   quietStart.value = qh["start"] ?? "";
   quietStart.style.padding = "var(--sp-1)";
   quietStart.style.fontSize = "0.85rem";
+  quietStart.setAttribute(
+    "aria-label",
+    `${quietLabel.textContent} ${t("attention.preferences.start")}`,
+  );
+  const quietStartLabel = document.createElement("label");
+  quietStartLabel.htmlFor = quietStart.id;
+  quietStartLabel.textContent = t("attention.preferences.start") as string;
   const quietSep = document.createElement("span");
   quietSep.textContent = "\u2013";
   const quietEnd = document.createElement("input");
+  quietEnd.id = "notification-prefs-quiet-end";
   quietEnd.type = "time";
   quietEnd.value = qh["end"] ?? "";
   quietEnd.style.padding = "var(--sp-1)";
   quietEnd.style.fontSize = "0.85rem";
+  quietEnd.setAttribute(
+    "aria-label",
+    `${quietLabel.textContent} ${t("attention.preferences.end")}`,
+  );
+  const quietEndLabel = document.createElement("label");
+  quietEndLabel.htmlFor = quietEnd.id;
+  quietEndLabel.textContent = t("attention.preferences.end") as string;
   function updateQuietHours(): void {
     if (quietStart.value && quietEnd.value) {
-      state.quiet_hours_json = { start: quietStart.value, end: quietEnd.value };
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      state.quiet_hours_json = {
+        start: quietStart.value,
+        end: quietEnd.value,
+        ...(timeZone ? { timezone: timeZone } : {}),
+      };
     } else {
       state.quiet_hours_json = {};
     }
   }
   quietStart.addEventListener("change", updateQuietHours);
   quietEnd.addEventListener("change", updateQuietHours);
-  quietInputs.append(quietStart, quietSep, quietEnd);
+  quietInputs.append(
+    quietStartLabel,
+    quietStart,
+    quietSep,
+    quietEndLabel,
+    quietEnd,
+  );
   quietRow.append(quietLabel, quietInputs);
   form.append(quietRow);
 
@@ -499,10 +644,17 @@ export function renderNotificationPreferencesForm(
         const toggle = document.createElement("button");
         toggle.type = "button";
         toggle.className = `notification-prefs-chip${rule[field] ? " active" : ""}`;
-        toggle.textContent = t(labelKey) as string;
+        const channelLabel = t(labelKey) as string;
+        toggle.textContent = channelLabel;
+        toggle.setAttribute(
+          "aria-label",
+          `${policyLabel(policy.key)}: ${channelLabel}`,
+        );
+        toggle.setAttribute("aria-pressed", String(rule[field]));
         toggle.addEventListener("click", () => {
           rule[field] = !rule[field];
           toggle.classList.toggle("active", rule[field]);
+          toggle.setAttribute("aria-pressed", String(rule[field]));
           state.notification_rules = ruleState;
         });
         return toggle;
@@ -516,6 +668,11 @@ export function renderNotificationPreferencesForm(
       if (policy.supports_severity) {
         const select = document.createElement("select");
         select.className = "notification-prefs-severity";
+        select.id = `notification-prefs-severity-${policy.key}`;
+        select.setAttribute(
+          "aria-label",
+          `${policyLabel(policy.key)}: ${t("notifications.prefs_min_severity")}`,
+        );
         for (const severity of ["low", "normal", "high", "critical"] as const) {
           const option = document.createElement("option");
           option.value = severity;
@@ -536,16 +693,37 @@ export function renderNotificationPreferencesForm(
     form.append(groupEl);
   }
 
-  // Save button
+  // Form actions
   const saveRow = document.createElement("div");
+  saveRow.className = "notification-prefs-actions";
   saveRow.style.marginTop = "var(--sp-3)";
   saveRow.style.textAlign = "right";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "notification-prefs-cancel";
+  cancelBtn.textContent = t("common.cancel") as string;
+  cancelBtn.addEventListener("click", onCancel);
   const saveBtn = document.createElement("button");
-  saveBtn.type = "button";
+  saveBtn.type = "submit";
   saveBtn.className = "btn-primary";
   saveBtn.textContent = t("common.save") as string;
-  saveBtn.addEventListener("click", () => onSave(state));
-  saveRow.append(saveBtn);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!form.reportValidity()) return;
+    saveBtn.disabled = true;
+    cancelBtn.disabled = true;
+    form.setAttribute("aria-busy", "true");
+    try {
+      await onSave(state);
+    } finally {
+      if (form.isConnected) {
+        saveBtn.disabled = false;
+        cancelBtn.disabled = false;
+        form.removeAttribute("aria-busy");
+      }
+    }
+  });
+  saveRow.append(cancelBtn, saveBtn);
   form.append(saveRow);
 
   container.append(form);

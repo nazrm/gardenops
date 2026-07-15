@@ -9,9 +9,195 @@ export interface QuickActionCallbacks {
   onIdentifyPlant: () => void;
 }
 
+type QuickActionTask = {
+  id: string;
+  title: string;
+  task_type: string;
+  snooze_label?: string;
+  offline_status?: "queued" | "syncing" | "failed";
+  offline_supported?: boolean;
+};
+
+export type QuickActionDataState = "live" | "cached" | "unavailable";
+
+const QUICK_ACTION_ICONS = {
+  complete: "\u2713",
+  journal: "J",
+  issue: "!",
+  harvest: "+",
+  snooze: "\u21b7",
+  identify: "?",
+} as const;
+
+export interface QuickActionSnoozeNotice {
+  message: string;
+  actionLabel: string;
+  durationMs: number;
+  onChangeDate: () => void;
+}
+
+function appendTaskPicker(
+  container: HTMLElement,
+  tasks: ReadonlyArray<QuickActionTask>,
+  onSelect: (taskId: string) => void,
+  secondaryAction?: {
+    label: string;
+    onSelect: (taskId: string) => void;
+  },
+): void {
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "quick-action-task-search";
+  search.placeholder = t("quick_actions.search_tasks");
+  search.setAttribute("aria-label", t("quick_actions.search_tasks"));
+  search.autocomplete = "off";
+
+  const list = document.createElement("div");
+  list.className = "quick-action-task-list";
+
+  const renderMatches = (): void => {
+    const query = search.value.trim().toLocaleLowerCase();
+    const matches = query
+      ? tasks.filter((task) => task.title.toLocaleLowerCase().includes(query))
+      : tasks;
+    list.replaceChildren();
+    for (const task of matches) {
+      const taskLabel = task.title || `Task #${task.id}`;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "quick-action-task-item";
+      btn.dataset["taskId"] = task.id;
+      const primaryLabel = task.snooze_label
+        ? `${taskLabel}: ${task.snooze_label}`
+        : taskLabel;
+      const stateLabel = task.offline_status
+        ? t(`offline.task_${task.offline_status}`, { action: "" }).trim()
+        : "";
+      const accessibleLabel = stateLabel ? `${primaryLabel}: ${stateLabel}` : primaryLabel;
+      btn.textContent = accessibleLabel;
+      btn.setAttribute("aria-label", accessibleLabel);
+      const unavailableOffline = task.offline_supported === false;
+      btn.disabled = Boolean(task.offline_status) || unavailableOffline;
+      if (unavailableOffline) btn.title = t("offline.indicator_offline");
+      if (task.offline_status) {
+        btn.classList.add(`quick-action-task-item--${task.offline_status}`);
+        btn.dataset["offlineTaskState"] = task.offline_status;
+      }
+      btn.addEventListener("click", () => onSelect(task.id));
+      list.appendChild(btn);
+      if (secondaryAction) {
+        const secondary = document.createElement("button");
+        secondary.type = "button";
+        secondary.className = "quick-action-task-item";
+        secondary.dataset["taskId"] = task.id;
+        secondary.textContent = secondaryAction.label;
+        secondary.setAttribute("aria-label", `${taskLabel}: ${secondaryAction.label}`);
+        secondary.disabled = Boolean(task.offline_status) || unavailableOffline;
+        if (unavailableOffline) secondary.title = t("offline.indicator_offline");
+        secondary.addEventListener("click", () => secondaryAction.onSelect(task.id));
+        list.appendChild(secondary);
+      }
+    }
+    if (matches.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "quick-action-empty";
+      empty.textContent = t("quick_actions.no_matching_tasks");
+      list.appendChild(empty);
+    }
+  };
+
+  search.addEventListener("input", renderMatches);
+  container.append(search, list);
+  renderMatches();
+}
+
+function appendQuickActionDataState(
+  container: HTMLElement,
+  dataState: QuickActionDataState,
+): boolean {
+  if (dataState === "live") return false;
+  const status = document.createElement("div");
+  status.className = `offline-data-state offline-data-state--${dataState}`;
+  status.setAttribute("role", "status");
+  status.textContent = t(
+    dataState === "cached"
+      ? "quick_actions.offline_cached"
+      : "quick_actions.offline_unavailable",
+  );
+  container.appendChild(status);
+  return dataState === "unavailable";
+}
+
+export function appendQuickActionSnoozeNotice(
+  container: HTMLElement,
+  notice: QuickActionSnoozeNotice,
+): void {
+  const element = document.createElement("div");
+  element.className = "quick-action-snooze-notice";
+  element.setAttribute("role", "status");
+  element.setAttribute("aria-live", "polite");
+
+  const message = document.createElement("span");
+  message.textContent = notice.message;
+
+  const action = document.createElement("button");
+  action.type = "button";
+  action.className = "quick-action-snooze-notice-action";
+  action.textContent = notice.actionLabel;
+
+  element.append(message, action);
+  const header = container.querySelector(".quick-action-header");
+  if (header) {
+    header.insertAdjacentElement("afterend", element);
+  } else {
+    container.prepend(element);
+  }
+
+  let remainingMs = notice.durationMs;
+  let startedAt = Date.now();
+  let paused = false;
+  let timeout = window.setTimeout(remove, remainingMs);
+
+  function remove(): void {
+    window.clearTimeout(timeout);
+    element.remove();
+  }
+
+  function pause(): void {
+    if (paused || !element.isConnected) return;
+    paused = true;
+    window.clearTimeout(timeout);
+    remainingMs = Math.max(0, remainingMs - (Date.now() - startedAt));
+  }
+
+  function resume(): void {
+    if (!paused || !element.isConnected) return;
+    paused = false;
+    startedAt = Date.now();
+    timeout = window.setTimeout(remove, remainingMs);
+  }
+
+  action.addEventListener("click", () => {
+    remove();
+    notice.onChangeDate();
+  });
+  element.addEventListener("mouseenter", pause);
+  element.addEventListener("mouseleave", resume);
+  element.addEventListener("focusin", pause);
+  element.addEventListener("focusout", () => {
+    if (!element.contains(document.activeElement)) resume();
+  });
+}
+
+export interface QuickActionSheetOptions {
+  canWrite?: boolean;
+  online?: boolean;
+}
+
 export function renderQuickActionSheet(
   container: HTMLElement,
   cbs: QuickActionCallbacks,
+  options: QuickActionSheetOptions = {},
 ): void {
   container.replaceChildren();
 
@@ -28,20 +214,28 @@ export function renderQuickActionSheet(
     label: string;
     key: string;
     cb: () => void;
+    requiresOnline?: boolean;
+    requiresWrite?: boolean;
   }> = [
-    { icon: "\u2705", label: t("quick_actions.complete_task"), key: "complete-task", cb: cbs.onCompleteTask },
-    { icon: "\uD83D\uDCDD", label: t("quick_actions.log_journal"), key: "log-journal", cb: cbs.onLogJournal },
-    { icon: "\uD83D\uDC1B", label: t("quick_actions.report_issue"), key: "report-issue", cb: cbs.onReportIssue },
-    { icon: "\uD83E\uDDFA", label: t("quick_actions.log_harvest"), key: "log-harvest", cb: cbs.onLogHarvest },
-    { icon: "\u23F0", label: t("quick_actions.snooze_task"), key: "snooze-task", cb: cbs.onSnoozeTask },
-    { icon: "\uD83C\uDF3F", label: t("quick_actions.identify_plant"), key: "identify-plant", cb: cbs.onIdentifyPlant },
+    { icon: QUICK_ACTION_ICONS.complete, label: t("quick_actions.complete_task"), key: "complete-task", cb: cbs.onCompleteTask, requiresWrite: true },
+    { icon: QUICK_ACTION_ICONS.journal, label: t("quick_actions.log_journal"), key: "log-journal", cb: cbs.onLogJournal, requiresWrite: true },
+    { icon: QUICK_ACTION_ICONS.issue, label: t("quick_actions.report_issue"), key: "report-issue", cb: cbs.onReportIssue, requiresWrite: true },
+    { icon: QUICK_ACTION_ICONS.harvest, label: t("quick_actions.log_harvest"), key: "log-harvest", cb: cbs.onLogHarvest, requiresWrite: true },
+    { icon: QUICK_ACTION_ICONS.snooze, label: t("quick_actions.snooze_task"), key: "snooze-task", cb: cbs.onSnoozeTask, requiresWrite: true },
+    { icon: QUICK_ACTION_ICONS.identify, label: t("quick_actions.identify_plant"), key: "identify-plant", cb: cbs.onIdentifyPlant, requiresOnline: true, requiresWrite: true },
   ];
 
   for (const action of actions) {
+    if (action.requiresWrite && options.canWrite === false) continue;
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "quick-action-btn";
     btn.dataset["quickAction"] = action.key;
+    const unavailableOffline = Boolean(
+      action.requiresOnline && options.online === false,
+    );
+    btn.disabled = unavailableOffline;
+    if (unavailableOffline) btn.title = t("offline.indicator_offline");
 
     const icon = document.createElement("span");
     icon.className = "quick-action-icon";
@@ -61,9 +255,10 @@ export function renderQuickActionSheet(
 
 export function renderTaskQuickComplete(
   container: HTMLElement,
-  tasks: ReadonlyArray<{ id: string; title: string; task_type: string }>,
+  tasks: ReadonlyArray<QuickActionTask>,
   onComplete: (taskId: string) => void,
   onBack: () => void,
+  dataState: QuickActionDataState = "live",
 ): void {
   container.replaceChildren();
 
@@ -74,6 +269,7 @@ export function renderTaskQuickComplete(
   backBtn.type = "button";
   backBtn.className = "quick-action-back";
   backBtn.textContent = "\u2190";
+  backBtn.setAttribute("aria-label", t("quick_actions.back"));
   backBtn.addEventListener("click", onBack);
 
   const title = document.createElement("h3");
@@ -83,6 +279,8 @@ export function renderTaskQuickComplete(
   header.append(backBtn, title);
   container.appendChild(header);
 
+  if (appendQuickActionDataState(container, dataState)) return;
+
   if (tasks.length === 0) {
     const empty = document.createElement("p");
     empty.className = "quick-action-empty";
@@ -91,26 +289,16 @@ export function renderTaskQuickComplete(
     return;
   }
 
-  const list = document.createElement("div");
-  list.className = "quick-action-task-list";
-
-  for (const task of tasks) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "quick-action-task-item";
-    btn.textContent = task.title || `Task #${task.id}`;
-    btn.addEventListener("click", () => onComplete(task.id));
-    list.appendChild(btn);
-  }
-
-  container.appendChild(list);
+  appendTaskPicker(container, tasks, onComplete);
 }
 
 export function renderTaskQuickSnooze(
   container: HTMLElement,
-  tasks: ReadonlyArray<{ id: string; title: string; task_type: string }>,
+  tasks: ReadonlyArray<QuickActionTask>,
   onSnooze: (taskId: string) => void,
+  onSnoozeDate: (taskId: string) => void,
   onBack: () => void,
+  dataState: QuickActionDataState = "live",
 ): void {
   container.replaceChildren();
 
@@ -121,6 +309,7 @@ export function renderTaskQuickSnooze(
   backBtn.type = "button";
   backBtn.className = "quick-action-back";
   backBtn.textContent = "\u2190";
+  backBtn.setAttribute("aria-label", t("quick_actions.back"));
   backBtn.addEventListener("click", onBack);
 
   const title = document.createElement("h3");
@@ -130,6 +319,8 @@ export function renderTaskQuickSnooze(
   header.append(backBtn, title);
   container.appendChild(header);
 
+  if (appendQuickActionDataState(container, dataState)) return;
+
   if (tasks.length === 0) {
     const empty = document.createElement("p");
     empty.className = "quick-action-empty";
@@ -138,17 +329,8 @@ export function renderTaskQuickSnooze(
     return;
   }
 
-  const list = document.createElement("div");
-  list.className = "quick-action-task-list";
-
-  for (const task of tasks) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "quick-action-task-item";
-    btn.textContent = task.title || `Task #${task.id}`;
-    btn.addEventListener("click", () => onSnooze(task.id));
-    list.appendChild(btn);
-  }
-
-  container.appendChild(list);
+  appendTaskPicker(container, tasks, onSnooze, {
+    label: t("tasks.snooze_change_date") as string,
+    onSelect: onSnoozeDate,
+  });
 }

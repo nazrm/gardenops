@@ -237,13 +237,17 @@ never fulfill or mock API responses.
 
 The phased complete-journey program extends the broad read map with durable
 desktop/mobile mutation, role, offline, provider, database, filesystem,
-accessibility, and performance evidence. Run one phase or the cumulative set:
+accessibility, and performance evidence. Use `--phase N` for the focused phase
+against a fresh fixture, or `--through-phase N` for the cumulative set from
+Phase 0 through Phase N:
 
 ```bash
-scripts/run_complete_journeys_e2e.sh --phase 0
-scripts/run_complete_journeys_e2e.sh --through-phase 0
-scripts/run_complete_journeys_e2e.sh --phase 1
-scripts/run_complete_journeys_e2e.sh --through-phase 1
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 0
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 0
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 1
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 1
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 2
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 2
 ```
 
 The runner creates its own disposable PostgreSQL child through
@@ -254,14 +258,26 @@ HTTPS, and WebSocket traffic. It refuses unsafe artifact paths and writes privat
 manifests/traces under a unique directory below the gitignored
 `research/optimization-map/runs/complete-journeys/` tree. Successful runs remove
 temporary logs/media/terrain/download state while retaining the ignored evidence
-run; failed runs preserve private logs and artifacts for diagnosis.
+run; failed runs preserve private logs and artifacts for diagnosis. Playwright
+first writes each trace to private staging because it can contain request and
+response payloads, page state, and identifiers. Run closure sanitizes and validates
+that staged trace, deletes the raw staging copy, and retains only the sanitized
+private archive. The public manifest is a sanitized projection; it binds the
+fixture, runtime/browser, and lockfiles by hash and size and includes recomputable
+canonical projection digests. The
+runtime evidence hashes both the Chromium launcher and the resolved ELF browser
+payload that Playwright launches; the reported browser version comes from that
+running process. The audit digest binds a retained aggregate projection of
+method, normalized path, status, and count, rather than raw audit records or a
+null placeholder. Initial and final count/digest projections cover every public
+domain table, including every table allowed to change. The public manifest does
+not contain or replace the retained sanitized trace archive.
 
-Every Phase 1 invocation is cumulative: it first runs the Phase 0 desktop and
-Pixel 7 administrator foundation, then runs independent desktop and Pixel 7
-onboarding accounts plus desktop/mobile administrator, editor, and viewer
-profiles. The foundation proves session login, map-first startup, scoped
-notifications, and an ordinary A/B/A garden switch before the Phase 1 mutation
-work begins.
+The cumulative Phase 1 invocation first runs the Phase 0 desktop and Pixel 7
+administrator foundation, then runs independent desktop and Pixel 7 onboarding
+accounts plus desktop/mobile administrator, editor, and viewer profiles. The
+foundation proves session login, map-first startup, scoped notifications, and
+an ordinary A/B/A garden switch before the Phase 1 mutation work begins.
 
 Phase 1 exercises real mobile map-object and plot edits, plant-assignment
 lifecycle, indoor data, saved views, snapshots, versioned export/import, and
@@ -282,6 +298,69 @@ tables, the profile/device/role matrix, targeted audit histogram, lifecycle
 cleanup, cross-garden absence, backend-error evidence, and empty temporary
 filesystem state. The focused backend suite additionally injects a failure
 during restore and proves the transaction rolls back.
+
+Phase 2 first runs six fresh-browser-context, read-only administrator, editor,
+and viewer probes in a deliberately different desktop/Pixel 7 order. Those
+probes establish profile-local session, device, role, and garden-scoped read
+behavior only. They reject workflow-domain mutation requests, while login,
+session, audit, and read-side media-summary bookkeeping still occurs; they do
+not claim isolated database state or mutation-order independence. The six
+state-changing administrator, editor, and viewer profiles then run as an
+explicitly ordered shared-state choreography: admin desktop, admin mobile,
+editor desktop, editor mobile, viewer desktop, and viewer mobile.
+Later profiles intentionally validate state produced by earlier profiles. A
+focused `--phase 2` run isolates the phase on a fresh fixture, while
+`--through-phase 2` proves the same choreography after Phases 0 and 1.
+
+The browser guard permits only the configured disposable frontend, backend, and
+optional provider origins on literal `127.0.0.1` ports; user mutations use
+visible controls, while the few page-origin fetches remain behind that same
+guard. Expected browser console diagnostics are admitted only after matching a
+specific method, status, path, and probe context; a retained classification
+ledger prevents an unexpected diagnostic from being hidden by removing it from
+the working array. Pixel 7 evidence enforces its viewport, user-agent contract,
+and touch capability, and the persisted private manifest records a hashed trace
+for every mutation profile and read-only permutation probe.
+
+The completed Phase 2 browser coverage exercises Today, task actions, mobile
+partial grouped completion and manual-date snoozing, Calendar lifecycle and
+out-of-range snooze correction, mobile preference mutation and history reload,
+selected editor actions, viewer-owned Attention preferences and item state,
+viewer Today and Weather affordances, notification preference saving, true
+network-offline task replay, nested-modal focus/inert behavior, weather checks,
+and delayed A/B/A stale-DOM checks for Tasks, Calendar, and subscriptions. After
+the desktop
+preference save, the disposable fixture creates one eligible and one ineligible
+issue plus notification, invokes the digest-delivery boundary without rerunning
+scheduler maintenance, and checks Today, inbox, badge, delivery, and the persisted
+rows. The checker also preserves the scoped Phase 1 final state during cumulative
+runs, checks maintenance rows and summary totals against an independently
+declared fixture specification (including semantic histograms), and follows the
+exact maintenance-created task, notification, and alert row identities through
+the final snapshot. Whole-table count/digest projections are retained for every
+allowed domain table, so scoped assertions do not silently omit unrelated extra
+rows. Summary counts, observed-row lengths, and frozen timestamps are not
+accepted as independent expectations.
+
+Phase 2 database coverage remains required in `tests/journey_coverage.yaml`:
+the harness correlates every `POST`, `PUT`, `PATCH`, and `DELETE` browser
+mutation one-to-one with method, path, response status, actor, authentication
+type, garden scope, and the response `X-Request-ID` persisted as correlation on
+the audit row. The database-generated audit row ID, not client-supplied
+`X-Request-ID`, is the unique reservation/finalization identity. Unknown
+successful mutation paths fail the evidence check. The audit writer
+records wall-clock timestamps, so those timestamps remain an explicit
+nondeterministic field and are not used as ordering proof. The same manifest keeps unsupported
+editor/viewer role dimensions required. Phase 8 accessibility and Phase 9
+performance remain explicitly open; the current structural and focus assertions
+are not a substitute for those phase audits.
+
+When Phase 2 follows Phase 1 in a cumulative run, Phase 1's intentional garden
+address update invalidates cached forecasts. The guarded Phase 2 preparation
+mode restores only the two frozen disposable forecast rows before Phase 2; it
+preserves existing row identities, refuses direct use outside the disposable
+test contract, and never enables remote weather fetches. Focused and cumulative
+Phase 2 runs therefore use the same deterministic weather boundary.
 
 The tracked coverage contract is `tests/journey_coverage.yaml`. Validate open
 phases during implementation and require complete closure only in the final

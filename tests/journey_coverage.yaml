@@ -79,18 +79,87 @@ journeys:
   - <<: *open_journey
     id: D1
     phase: 2
+    desktop: proven
+    mobile: proven
+    provider: proven
+    evidence: &phase_two_evidence
+      - scripts/check_complete_journeys_e2e.cjs
+      - scripts/e2e/journeys/dailyAttentionWork.cjs
+      - scripts/e2e/fixtures/complete_journeys_phase_two_oracle.json
+      - scripts/run_complete_journeys_e2e.sh
+      - scripts/seed_complete_journeys_e2e.py
+      - tests/test_complete_journey_e2e_scripts.py
+      - tests/test_task_action_parity_frontend_static.py
+    offline: not_applicable
+    filesystem: not_applicable
+    notes:
+      offline: Attention actions are online-only and have no supported offline queue.
+      filesystem: Today and attention actions do not use a supported file workflow.
+      roles: Editor and viewer Today-specific role evidence remains open.
+      map: Every Phase 2 role/device profile records map geometry, center-point hit testing, overlap absence, and mobile closed-sheet inertness instead of a boolean map-first marker.
+      database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
   - <<: *open_journey
     id: D2
     phase: 2
+    desktop: proven
+    mobile: proven
+    roles: proven
+    offline: required
+    evidence: *phase_two_evidence
+    provider: not_applicable
+    filesystem: not_applicable
+    notes:
+      provider: Core task actions do not require an external provider.
+      offline: Offline task-action replay requires Phase 6 lost-ack and repeated reconnect evidence.
+      filesystem: Task actions and completion history do not use a supported file workflow.
+      audit: Browser mutations, including the viewer's rejected direct write, are correlated one-to-one with audit rows by method, path, status, actor, auth type, and garden where present; audit timestamps remain product wall-clock evidence.
+      database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
   - <<: *open_journey
     id: D3
     phase: 2
+    desktop: proven
+    mobile: proven
+    roles: proven
+    filesystem: proven
+    evidence: *phase_two_evidence
+    offline: not_applicable
+    provider: not_applicable
+    notes:
+      offline: Calendar reads and manual-event mutations are online-only.
+      provider: Calendar events, subscriptions, and ICS exports have no external provider dependency.
+      lifecycle: Admin desktop and mobile evidence records the exact POST, PATCH, and DELETE calendar response status, target identity, request ID, and an independently checked mutation multiset.
+      database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
   - <<: *open_journey
     id: D4
     phase: 2
+    desktop: proven
+    mobile: proven
+    roles: proven
+    provider: required
+    accessibility: required
+    evidence: *phase_two_evidence
+    offline: not_applicable
+    filesystem: not_applicable
+    notes:
+      offline: Notification inbox and preference mutations are online-only.
+      filesystem: Notification preference and delivery workflows do not use a supported file workflow.
+      roles: Personal notification preference persistence is verified for admin, editor, and viewer on desktop and mobile.
+      accessibility: Phase 2 records mobile target geometry only; Phase 8 owns keyboard, focus, semantics, and screen-reader closure.
+      provider: Production notification event handling through an exact local SMTP delivery remains open; Phase 2 does not claim that provider boundary.
+      database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
   - <<: *open_journey
     id: D5
     phase: 2
+    desktop: proven
+    mobile: proven
+    roles: proven
+    evidence: *phase_two_evidence
+    offline: not_applicable
+    filesystem: not_applicable
+    notes:
+      offline: Weather checks and alert actions are online-only.
+      filesystem: Weather checks, tasks, alerts, and outcomes do not use a supported file workflow.
+      database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
   - <<: *open_journey
     id: I1
     phase: 4
@@ -198,6 +267,18 @@ journeys:
   - <<: *open_journey
     id: R1
     phase: 2
+    desktop: proven
+    mobile: proven
+    evidence: *phase_two_evidence
+    offline: not_applicable
+    provider: not_applicable
+    filesystem: not_applicable
+    notes:
+      offline: Historical record review has no supported offline read workflow.
+      provider: Durable garden history review has no external provider dependency.
+      filesystem: History review does not use a supported file workflow.
+      roles: Editor and viewer history reload evidence remains open.
+      database: Phase 2 audit timestamps use the product wall clock; exact database closure needs a supported audit clock.
   - <<: *open_journey
     id: R2
     phase: 4

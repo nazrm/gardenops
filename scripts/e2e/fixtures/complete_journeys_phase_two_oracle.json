@@ -1,0 +1,388 @@
+{
+  "schema_version": 1,
+  "phase_two": {
+    "browser_mutations": {
+      "admin:desktop": [
+        {"method":"DELETE","path":"/api/calendar/manual-events/{event_id}","status_code":200,"count":1},
+        {"method":"DELETE","path":"/api/calendar/subscriptions/{subscription_id}","status_code":200,"count":1},
+        {"method":"PATCH","path":"/api/calendar/manual-events/{event_id}","status_code":200,"count":1},
+        {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":5},
+        {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/calendar/manual-events","status_code":201,"count":1},
+        {"method":"POST","path":"/api/calendar/subscriptions","status_code":201,"count":1},
+        {"method":"POST","path":"/api/media/summaries","status_code":200,"count":2},
+        {"method":"POST","path":"/api/tasks/batch-action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_bloom_desktop/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_plot_drawer/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_prune_desktop/action","status_code":200,"count":1},
+        {"method":"PUT","path":"/api/notifications/preferences","status_code":200,"count":2}
+      ],
+      "admin:mobile": [
+        {"method":"DELETE","path":"/api/calendar/manual-events/{event_id}","status_code":200,"count":1},
+        {"method":"PATCH","path":"/api/calendar/manual-events/{event_id}","status_code":200,"count":1},
+        {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":8},
+        {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/calendar/manual-events","status_code":201,"count":1},
+        {"method":"POST","path":"/api/media/summaries","status_code":200,"count":2},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_bloom_mobile/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_fertilize_grouped/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_fertilize_mobile/action","status_code":200,"count":2},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_snooze_correction/action","status_code":200,"count":2},
+        {"method":"POST","path":"/api/weather/alerts/{alert_id}/dismiss","status_code":200,"count":1},
+        {"method":"POST","path":"/api/weather/check","status_code":200,"count":4},
+        {"method":"PUT","path":"/api/notifications/preferences","status_code":200,"count":2}
+      ],
+      "editor:desktop": [
+        {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":2},
+        {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_editor_prune/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/weather/check","status_code":200,"count":1},
+        {"method":"PUT","path":"/api/notifications/preferences","status_code":200,"count":1}
+      ],
+      "editor:mobile": [
+        {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/media/summaries","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_editor_offline/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_fertilize_grouped/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_prune_desktop/action","status_code":200,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_stale_manual_water/action","status_code":200,"count":1},
+        {"method":"PUT","path":"/api/notifications/preferences","status_code":200,"count":1}
+      ],
+      "viewer:desktop": [
+        {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":2},
+        {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/calendar/manual-events","status_code":403,"count":1},
+        {"method":"POST","path":"/api/calendar/subscriptions","status_code":403,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_viewer_read_only/action","status_code":403,"count":1},
+        {"method":"POST","path":"/api/weather/alerts/{alert_id}/dismiss","status_code":200,"count":1},
+        {"method":"POST","path":"/api/weather/check","status_code":403,"count":1},
+        {"method":"PUT","path":"/api/attention/preferences","status_code":200,"count":1},
+        {"method":"PUT","path":"/api/notifications/preferences","status_code":200,"count":1}
+      ],
+      "viewer:mobile": [
+        {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":2},
+        {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/calendar/manual-events","status_code":403,"count":1},
+        {"method":"POST","path":"/api/calendar/subscriptions","status_code":403,"count":1},
+        {"method":"POST","path":"/api/tasks/tsk_complete_p2_viewer_read_only/action","status_code":403,"count":1},
+        {"method":"POST","path":"/api/weather/alerts/{alert_id}/dismiss","status_code":200,"count":1},
+        {"method":"POST","path":"/api/weather/check","status_code":403,"count":1},
+        {"method":"PUT","path":"/api/attention/preferences","status_code":200,"count":1},
+        {"method":"PUT","path":"/api/notifications/preferences","status_code":200,"count":1}
+      ]
+    },
+    "fixture": {
+      "date": "2026-07-12",
+      "calendar": {
+        "event_public_id": "calevt_complete_p2_seeded",
+        "seeded_description": "Escaped comma, semicolon; backslash \\ and line\nbreak.",
+        "seeded_event_on": "2026-07-13",
+        "seeded_title": "Phase 2 seeded calendar event"
+      },
+      "preference_delivery": {
+        "eligible": {
+          "body": "Phase 2 eligible issue notice after saved preferences.",
+          "issue_public_id": "issue_complete_p2_delivery_eligible",
+          "public_id": "note_complete_p2_delivery_eligible",
+          "severity": "high",
+          "title": "Phase 2 delivery eligible issue notice"
+        },
+        "ineligible": {
+          "body": "Phase 2 low-severity issue notice after saved preferences.",
+          "issue_public_id": "issue_complete_p2_delivery_ineligible",
+          "public_id": "note_complete_p2_delivery_ineligible",
+          "severity": "low",
+          "title": "Phase 2 delivery ineligible issue notice"
+        }
+      },
+      "maintenance_alpha_plants": [
+        {"id": "COMPLETE-P2-BATCH-A", "name": "Phase 2 Batch Thyme"},
+        {"id": "COMPLETE-P2-BATCH-B", "name": "Phase 2 Batch Sage"},
+        {"id": "COMPLETE-P2-BLOOM-DESKTOP", "name": "Phase 2 Desktop Astrantia"},
+        {"id": "COMPLETE-P2-BLOOM-MOBILE", "name": "Phase 2 Mobile Campanula"},
+        {"id": "COMPLETE-P2-EDITOR-OFFLINE", "name": "Phase 2 Offline Parsley"},
+        {"id": "COMPLETE-P2-EDITOR-PRUNE", "name": "Phase 2 Editor Currant"},
+        {"id": "COMPLETE-P2-FERT-A", "name": "Phase 2 Fertilize A"},
+        {"id": "COMPLETE-P2-FERT-B", "name": "Phase 2 Fertilize B"},
+        {"id": "COMPLETE-P2-FERT-MOBILE", "name": "Phase 2 Mobile Tomato"},
+        {"id": "COMPLETE-P2-MANUAL-WATER", "name": "Phase 2 Manual Water Mint"},
+        {"id": "COMPLETE-P2-PLOT-DRAWER", "name": "Phase 2 Plot Drawer Chive"},
+        {"id": "COMPLETE-P2-PRUNE-DESKTOP", "name": "Phase 2 Desktop Rose"},
+        {"id": "COMPLETE-P2-SNOOZE-CORRECTION", "name": "Phase 2 Correction Aster"},
+        {"id": "COMPLETE-P2-STALE-WATER", "name": "Phase 2 Stale Water Mint"},
+        {"id": "COMPLETE-P2-VIEWER", "name": "Phase 2 Viewer Lavender"}
+      ],
+      "due_task_notifications": [
+        {"task_id": "tsk_complete_p2_batch_a", "task_title": "Weed Phase 2 Batch Thyme", "plants": ["Phase 2 Batch Thyme"]},
+        {"task_id": "tsk_complete_p2_batch_b", "task_title": "Weed Phase 2 Batch Sage", "plants": ["Phase 2 Batch Sage"]},
+        {"task_id": "tsk_complete_p2_bloom_desktop", "task_title": "Observe bloom: Phase 2 Desktop Astrantia", "plants": ["Phase 2 Desktop Astrantia"]},
+        {"task_id": "tsk_complete_p2_bloom_mobile", "task_title": "Observe bloom: Phase 2 Mobile Campanula", "plants": ["Phase 2 Mobile Campanula"]},
+        {"task_id": "tsk_complete_p2_editor_offline", "task_title": "Deadhead Phase 2 Offline Parsley", "plants": ["Phase 2 Offline Parsley"]},
+        {"task_id": "tsk_complete_p2_editor_prune", "task_title": "Prune Phase 2 Editor Currant", "plants": ["Phase 2 Editor Currant"]},
+        {"task_id": "tsk_complete_p2_fertilize_grouped", "task_title": "Fertilize Phase 2 pair", "plants": ["Phase 2 Fertilize A", "Phase 2 Fertilize B"]},
+        {"task_id": "tsk_complete_p2_fertilize_mobile", "task_title": "Fertilize Phase 2 Mobile Tomato", "plants": ["Phase 2 Mobile Tomato"]},
+        {"task_id": "tsk_complete_p2_plot_drawer", "task_title": "Deadhead Phase 2 Plot Drawer Chive", "plants": ["Phase 2 Plot Drawer Chive"]},
+        {"task_id": "tsk_complete_p2_prune_desktop", "task_title": "Prune Phase 2 Desktop Rose", "plants": ["Phase 2 Desktop Rose"]},
+        {"task_id": "tsk_complete_p2_snooze_correction", "task_title": "Fertilize Phase 2 correction aster", "plants": ["Phase 2 Correction Aster"]},
+        {"task_id": "tsk_complete_p2_viewer_read_only", "task_title": "Prune Phase 2 Viewer Lavender", "plants": ["Phase 2 Viewer Lavender"]}
+      ],
+      "overdue_task_notifications": [
+        {"due_on": "2026-06-20", "plants": ["Phase 2 Manual Water Mint"], "task_id": "tsk_complete_p2_stale_manual_water", "task_title": "Water Phase 2 manual overdue mint"},
+        {"due_on": "2026-07-10", "plants": ["Optimization A Plant"], "task_id": "tsk_optimization_journeys_a", "task_title": "Water Optimization A Plant"}
+      ],
+      "notification_persistence": {
+        "admin:desktop": {"initial_severity": "low", "saved_severity": "normal"},
+        "admin:mobile": {"initial_severity": "normal", "saved_severity": "low", "restored_severity": "normal"},
+        "editor:desktop": {"initial_severity": "low", "saved_severity": "normal"},
+        "editor:mobile": {"initial_severity": "normal", "saved_severity": "low"},
+        "viewer:desktop": {"initial_severity": "low", "saved_severity": "normal"},
+        "viewer:mobile": {"initial_severity": "normal", "saved_severity": "low"}
+      }
+    },
+    "calendar_lifecycle": {
+      "profiles": ["admin:desktop", "admin:mobile"],
+      "mutations": [
+        {"method": "POST", "path": "/api/calendar/manual-events", "status_code": 201},
+        {"method": "PATCH", "path": "/api/calendar/manual-events/{event_id}", "status_code": 200},
+        {"method": "DELETE", "path": "/api/calendar/manual-events/{event_id}", "status_code": 200}
+      ]
+    },
+    "maintenance": {
+      "summary": {
+        "configured": true,
+        "delivery_skipped_users": 0,
+        "emailed_users": 0,
+        "gardens_processed": 1,
+        "issues_escalated": 0,
+        "notifications_created": 51,
+        "notifications_marked": 0,
+        "notifications_skipped": 3,
+        "processed_users": 0,
+        "tasks_auto_created": 30,
+        "tasks_expired": 1,
+        "weather_alerts_created": 2,
+        "weather_checks": 1,
+        "weather_tasks_created": 31
+      },
+      "created": {
+        "notifications": {
+          "by_role": {"admin": 17, "editor": 17, "viewer": 17},
+          "by_type": {"task_due:": 36, "task_overdue:": 6, "weather_alert:dry_spell": 3, "weather_alert:frost_warning": 3, "weather_alert:heat_wave": 3},
+          "total": 51
+        },
+        "tasks": {
+          "by_rule_family": {"auto": 31, "water": 30},
+          "by_type": {"protect": 16, "water": 45},
+          "total": 61
+        },
+        "weather_alerts": {"by_type": {"dry_spell": 1, "heat_wave": 1}, "total": 2}
+      },
+      "logical_rows": {
+        "weekly_water": {
+          "description_template": "Vann {plant_name} jevnlig i juli. Hvorfor: jevn fuktighet reduserer tørkestress og hjelper planten å holde på bladverk og blomster. Sjekk jordfuktigheten før du vanner godt.",
+          "due_on": ["2026-07-15", "2026-07-22"],
+          "plot_id": "COMPLETE-P2-ALPHA-BED",
+          "title_template": "Water: {plant_name}"
+        },
+        "weather_generated_tasks": {
+          "dry_water": {
+            "description_template": "T\u00f8rkeperiode \u2014 vann {plant_name} jevnlig, sjekk jordfuktighet",
+            "due_on": "2026-07-12",
+            "severity": "normal",
+            "task_type": "water",
+            "title_template": "Water regularly: {plant_name} ({plot_id})",
+            "valid_until": "2026-07-18"
+          },
+          "frost_protect": {
+            "description_template": "Frostvarsel \u2014 dekk til eller flytt {plant_name} i ly",
+            "due_on": "2026-07-12",
+            "plant_ids": ["COMPLETE-P2-FERT-MOBILE"],
+            "severity": "high",
+            "task_type": "protect",
+            "title_template": "Protect from frost: {plant_name} ({plot_id})",
+            "valid_until": "2026-07-12"
+          },
+          "heat_protect": {
+            "description_template": "Heteb\u00f8lge \u2014 gi skygge og ekstra vann til {plant_name}",
+            "due_on": "2026-07-13",
+            "severity": "high",
+            "task_type": "protect",
+            "title_template": "Provide shade: {plant_name} ({plot_id})",
+            "valid_until": "2026-07-15"
+          }
+        },
+        "weather_alerts": {
+          "dry_spell": {
+            "days": 7,
+            "description": "No significant rain expected. Water regularly.",
+            "severity": "high",
+            "title": "Dry spell: 7 days without rain",
+            "valid_from": "2026-07-12",
+            "valid_until": "2026-07-18"
+          },
+          "frost_warning": {
+            "days": 1,
+            "description": "Frost expected on 1 day(s). Coldest: -3.0\u00b0C on 2026-07-12. Protect tender plants.",
+            "severity": "normal",
+            "title": "Frost warning: -3\u00b0C expected",
+            "valid_from": "2026-07-12",
+            "valid_until": "2026-07-12"
+          },
+          "heat_wave": {
+            "days": 3,
+            "description": "3 consecutive hot days (2026-07-13 to 2026-07-15). Increase watering and provide shade for sensitive plants.",
+            "severity": "normal",
+            "peak": 33,
+            "title": "Heat wave: 33\u00b0C peak",
+            "valid_from": "2026-07-13",
+            "valid_until": "2026-07-15"
+          }
+        }
+      },
+      "mutated_existing": {"notifications": 0, "tasks": 1, "weather_alerts": 1}
+    },
+    "whole_table_mutation_accounting": {
+      "phase_two_tables": [
+        "app_settings",
+        "attention_outcomes",
+        "calendar_subscriptions",
+        "garden_calendar_event_plants",
+        "garden_calendar_event_plots",
+        "garden_calendar_events",
+        "garden_issues",
+        "garden_journal_entries",
+        "garden_journal_entry_plants",
+        "garden_journal_entry_plots",
+        "garden_task_plants",
+        "garden_task_plots",
+        "garden_tasks",
+        "notification_events",
+        "offline_create_operations",
+        "plants",
+        "plot_plants",
+        "user_attention_item_state",
+        "user_attention_preferences",
+        "user_calendar_preferences",
+        "user_notification_preferences",
+        "weather_alert_plants",
+        "weather_alerts"
+      ],
+      "exact_counts": {
+        "phase_two_only": {
+          "app_settings": {"added": 2, "removed": 0},
+          "attention_outcomes": {"added": 1, "removed": 0},
+          "calendar_subscriptions": {"added": 1, "removed": 0},
+          "garden_issues": {"added": 2, "removed": 0},
+          "garden_journal_entries": {"added": 5, "removed": 0},
+          "garden_journal_entry_plants": {"added": 5, "removed": 0},
+          "garden_journal_entry_plots": {"added": 5, "removed": 0},
+          "garden_task_plants": {"added": 62, "removed": 1},
+          "garden_task_plots": {"added": 62, "removed": 0},
+          "garden_tasks": {"added": 76, "removed": 14},
+          "notification_events": {"added": 61, "removed": 2},
+          "offline_create_operations": {"added": 4, "removed": 0},
+          "plants": {"added": 1, "removed": 1},
+          "plot_plants": {"added": 1, "removed": 1},
+          "user_attention_item_state": {"added": 3, "removed": 0},
+          "user_attention_preferences": {"added": 3, "removed": 3},
+          "user_calendar_preferences": {"added": 4, "removed": 0},
+          "user_notification_preferences": {"added": 3, "removed": 3},
+          "weather_alert_plants": {"added": 34, "removed": 1},
+          "weather_alerts": {"added": 4, "removed": 1}
+        },
+        "cumulative_through_phase_two": {
+          "app_settings": {"added": 3, "removed": 0},
+          "attention_outcomes": {"added": 1, "removed": 0},
+          "calendar_subscriptions": {"added": 1, "removed": 0},
+          "garden_issues": {"added": 2, "removed": 0},
+          "garden_journal_entries": {"added": 6, "removed": 0},
+          "garden_journal_entry_plants": {"added": 6, "removed": 0},
+          "garden_journal_entry_plots": {"added": 6, "removed": 0},
+          "garden_map_object_units": {"added": 1, "removed": 1},
+          "garden_map_objects": {"added": 1, "removed": 1},
+          "garden_memberships": {"added": 4, "removed": 0},
+          "garden_task_plants": {"added": 62, "removed": 1},
+          "garden_task_plots": {"added": 62, "removed": 0},
+          "garden_tasks": {"added": 76, "removed": 14},
+          "gardens": {"added": 3, "removed": 0},
+          "harvest_entries": {"added": 1, "removed": 0},
+          "harvest_entry_plants": {"added": 1, "removed": 0},
+          "harvest_entry_plots": {"added": 1, "removed": 0},
+          "layout_snapshots": {"added": 1, "removed": 0},
+          "layout_state": {"added": 2, "removed": 0},
+          "notification_events": {"added": 61, "removed": 2},
+          "offline_create_operations": {"added": 4, "removed": 0},
+          "plants": {"added": 1, "removed": 1},
+          "plot_ownership": {"added": 2, "removed": 0},
+          "plot_plants": {"added": 1, "removed": 1},
+          "plots": {"added": 2, "removed": 0},
+          "user_attention_item_state": {"added": 3, "removed": 0},
+          "user_attention_preferences": {"added": 3, "removed": 3},
+          "user_calendar_preferences": {"added": 4, "removed": 0},
+          "user_notification_preferences": {"added": 3, "removed": 3},
+          "weather_alert_plants": {"added": 34, "removed": 1},
+          "weather_alerts": {"added": 4, "removed": 1},
+          "weather_cache": {"added": 1, "removed": 1}
+        }
+      },
+      "exact_identity_counts": {
+        "phase_two_only": {
+          "app_settings": {"added": 2, "removed": 0, "updated": 0},
+          "attention_outcomes": {"added": 1, "removed": 0, "updated": 0},
+          "calendar_subscriptions": {"added": 1, "removed": 0, "updated": 0},
+          "garden_issues": {"added": 2, "removed": 0, "updated": 0},
+          "garden_journal_entries": {"added": 5, "removed": 0, "updated": 0},
+          "garden_journal_entry_plants": {"added": 5, "removed": 0, "updated": 0},
+          "garden_journal_entry_plots": {"added": 5, "removed": 0, "updated": 0},
+          "garden_task_plants": {"added": 62, "removed": 1, "updated": 0},
+          "garden_task_plots": {"added": 62, "removed": 0, "updated": 0},
+          "garden_tasks": {"added": 62, "removed": 0, "updated": 14},
+          "notification_events": {"added": 59, "removed": 0, "updated": 2},
+          "offline_create_operations": {"added": 4, "removed": 0, "updated": 0},
+          "plants": {"added": 0, "removed": 0, "updated": 1},
+          "plot_plants": {"added": 0, "removed": 0, "updated": 1},
+          "user_attention_item_state": {"added": 3, "removed": 0, "updated": 0},
+          "user_attention_preferences": {"added": 0, "removed": 0, "updated": 3},
+          "user_calendar_preferences": {"added": 4, "removed": 0, "updated": 0},
+          "user_notification_preferences": {"added": 0, "removed": 0, "updated": 3},
+          "weather_alert_plants": {"added": 34, "removed": 1, "updated": 0},
+          "weather_alerts": {"added": 3, "removed": 0, "updated": 1}
+        },
+        "cumulative_through_phase_two": {
+          "app_settings": {"added": 3, "removed": 0, "updated": 0},
+          "attention_outcomes": {"added": 1, "removed": 0, "updated": 0},
+          "calendar_subscriptions": {"added": 1, "removed": 0, "updated": 0},
+          "garden_issues": {"added": 2, "removed": 0, "updated": 0},
+          "garden_journal_entries": {"added": 6, "removed": 0, "updated": 0},
+          "garden_journal_entry_plants": {"added": 6, "removed": 0, "updated": 0},
+          "garden_journal_entry_plots": {"added": 6, "removed": 0, "updated": 0},
+          "garden_map_object_units": {"added": 0, "removed": 0, "updated": 1},
+          "garden_map_objects": {"added": 0, "removed": 0, "updated": 1},
+          "garden_memberships": {"added": 4, "removed": 0, "updated": 0},
+          "garden_task_plants": {"added": 62, "removed": 1, "updated": 0},
+          "garden_task_plots": {"added": 62, "removed": 0, "updated": 0},
+          "garden_tasks": {"added": 62, "removed": 0, "updated": 14},
+          "gardens": {"added": 3, "removed": 0, "updated": 0},
+          "harvest_entries": {"added": 1, "removed": 0, "updated": 0},
+          "harvest_entry_plants": {"added": 1, "removed": 0, "updated": 0},
+          "harvest_entry_plots": {"added": 1, "removed": 0, "updated": 0},
+          "layout_snapshots": {"added": 1, "removed": 0, "updated": 0},
+          "layout_state": {"added": 2, "removed": 0, "updated": 0},
+          "notification_events": {"added": 59, "removed": 0, "updated": 2},
+          "offline_create_operations": {"added": 4, "removed": 0, "updated": 0},
+          "plants": {"added": 0, "removed": 0, "updated": 1},
+          "plot_ownership": {"added": 2, "removed": 0, "updated": 0},
+          "plot_plants": {"added": 0, "removed": 0, "updated": 1},
+          "plots": {"added": 2, "removed": 0, "updated": 0},
+          "user_attention_item_state": {"added": 3, "removed": 0, "updated": 0},
+          "user_attention_preferences": {"added": 0, "removed": 0, "updated": 3},
+          "user_calendar_preferences": {"added": 4, "removed": 0, "updated": 0},
+          "user_notification_preferences": {"added": 0, "removed": 0, "updated": 3},
+          "weather_alert_plants": {"added": 34, "removed": 1, "updated": 0},
+          "weather_alerts": {"added": 3, "removed": 0, "updated": 1},
+          "weather_cache": {"added": 0, "removed": 0, "updated": 1}
+        }
+      }
+    }
+  }
+}

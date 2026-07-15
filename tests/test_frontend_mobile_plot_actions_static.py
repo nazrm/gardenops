@@ -16,7 +16,8 @@ def test_mobile_plot_sheet_exposes_labeled_edit_and_delete_buttons_for_writers()
     assert 'editPlotBtn.dataset["editPlot"] = plotId;' in sheet
     assert 'editPlotBtn.textContent = t("common.edit");' in sheet
     assert 'editPlotBtn.setAttribute("aria-label", t("popover.edit_plot"));' in sheet
-    assert "onClose();\n      params.onEditPlot?.();" in sheet
+    assert "dismissBottomSheet(true);\n      onClose();" in sheet
+    assert "window.requestAnimationFrame(() => params.onEditPlot?.());" in sheet
     assert "if (params.canWrite !== false && params.onDeletePlot) {" in sheet
     assert 'deletePlotBtn.dataset["deletePlot"] = plotId;' in sheet
     assert 'deletePlotBtn.textContent = t("common.delete");' in sheet

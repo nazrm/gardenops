@@ -76,6 +76,13 @@ export function createChipInput<T>(options: ChipInputOptions<T>): ChipInputResul
   let focusIndex = -1;
   let blurTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  function closeDropdown(): void {
+    dropdown.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+    focusIndex = -1;
+  }
+
   function renderChips(): void {
     clearChildren(chipsArea);
     for (const key of selectedKeys) {
@@ -153,7 +160,7 @@ export function createChipInput<T>(options: ChipInputOptions<T>): ChipInputResul
     selectedKeys.add(getKey(item));
     input.value = "";
     renderChips();
-    updateDropdown();
+    closeDropdown();
     input.focus();
   }
 
@@ -180,10 +187,7 @@ export function createChipInput<T>(options: ChipInputOptions<T>): ChipInputResul
 
   input.addEventListener("blur", () => {
     blurTimeout = setTimeout(() => {
-      dropdown.hidden = true;
-      input.setAttribute("aria-expanded", "false");
-      input.removeAttribute("aria-activedescendant");
-      focusIndex = -1;
+      closeDropdown();
     }, 150);
   });
 
@@ -205,9 +209,7 @@ export function createChipInput<T>(options: ChipInputOptions<T>): ChipInputResul
         selectItem(filtered[focusIndex] as T);
       }
     } else if (e.key === "Escape") {
-      dropdown.hidden = true;
-      input.setAttribute("aria-expanded", "false");
-      focusIndex = -1;
+      closeDropdown();
     } else if (e.key === "Backspace" && input.value === "") {
       // Remove last chip
       const keys = [...selectedKeys];

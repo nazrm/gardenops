@@ -14,6 +14,7 @@ from gardenops.services.attention.types import (
     normalize_severity,
 )
 from gardenops.services.generated_task_lifecycle import (
+    GENERATED_NON_WATERING_WEATHER_RULE_SOURCE_PATTERNS,
     GENERATED_WATERING_RULE_SOURCE_PATTERNS,
     stale_generated_watering_sql,
 )
@@ -42,10 +43,20 @@ class TaskAttentionProvider:
         today = attention_today_date(now_ms=now_ms, frozen_date=self.frozen_date)
         recent_cutoff_ms = now_ms - _DAY_MS
         rows = self._collect_rows(conn, garden_id, today=today, recent_cutoff_ms=recent_cutoff_ms)
+        rows = self._without_stale_non_watering_weather_rows(
+            conn,
+            garden_id=garden_id,
+            rows=rows,
+            today=today,
+        )
         task_ids = [int(row["id"]) for row in rows]
         plot_ids_by_task_id = self._plot_ids_by_task_id(conn, task_ids)
         plant_ids_by_task_id = self._plant_ids_by_task_id(conn, task_ids)
-        outdoor_task_ids = self._outdoor_task_ids(conn, garden_id, task_ids)
+        outdoor_plant_ids_by_task_id = self._outdoor_plant_ids_by_task_id(
+            conn,
+            garden_id,
+            task_ids,
+        )
         visible_rows = rows
         if suppress_rain_handled_watering:
             handled_watering_targets = self._handled_watering_targets(
@@ -58,9 +69,9 @@ class TaskAttentionProvider:
                 for row in rows
                 if not self._should_suppress_rain_handled_watering(
                     row,
-                    outdoor_task_ids=outdoor_task_ids,
+                    outdoor_plant_ids_by_task_id=outdoor_plant_ids_by_task_id,
                     handled_watering_targets=handled_watering_targets,
-                    plant_ids=plant_ids_by_task_id.get(int(row["id"]), ()),
+                    today=today,
                 )
             ]
         return [
@@ -120,7 +131,9 @@ class TaskAttentionProvider:
             (
                 garden_id,
                 today,
-                *GENERATED_WATERING_RULE_SOURCE_PATTERNS,
+                GENERATED_WATERING_RULE_SOURCE_PATTERNS[0],
+                today,
+                GENERATED_WATERING_RULE_SOURCE_PATTERNS[1],
                 today,
                 _ACTIVE_BUCKET_LIMIT,
             ),
@@ -145,7 +158,9 @@ class TaskAttentionProvider:
             (
                 garden_id,
                 today,
-                *GENERATED_WATERING_RULE_SOURCE_PATTERNS,
+                GENERATED_WATERING_RULE_SOURCE_PATTERNS[0],
+                today,
+                GENERATED_WATERING_RULE_SOURCE_PATTERNS[1],
                 today,
                 _SNOOZED_BUCKET_LIMIT,
             ),
@@ -165,6 +180,46 @@ class TaskAttentionProvider:
             (garden_id, recent_cutoff_ms, recent_cutoff_ms, _TERMINAL_BUCKET_LIMIT),
         ).fetchall()
         return [*active_overdue, *active_due, *snoozed_ready, *terminal]
+
+    @staticmethod
+    def _without_stale_non_watering_weather_rows(
+        conn: Any,
+        *,
+        garden_id: int,
+        rows: list[Any],
+        today: str,
+    ) -> list[Any]:
+        active_task_ids = [
+            int(row["id"]) for row in rows if str(row["status"]) in {"pending", "snoozed"}
+        ]
+        if not active_task_ids:
+            return rows
+        stale_rows = conn.execute(
+            """
+            SELECT t.id
+            FROM garden_tasks t
+            LEFT JOIN weather_alerts wa
+              ON wa.garden_id = t.garden_id
+             AND wa.id = CASE
+                WHEN split_part(t.rule_source, ':', 3) ~ '^[0-9]+$'
+                THEN split_part(t.rule_source, ':', 3)::int ELSE NULL
+             END
+            WHERE t.garden_id = %s
+              AND t.id = ANY(%s)
+              AND t.status IN ('pending', 'snoozed')
+              AND t.task_type <> 'water'
+              AND t.rule_source LIKE ANY(%s)
+              AND (wa.id IS NULL OR wa.dismissed = 1 OR wa.valid_until < %s)
+            """,
+            (
+                garden_id,
+                active_task_ids,
+                list(GENERATED_NON_WATERING_WEATHER_RULE_SOURCE_PATTERNS),
+                today,
+            ),
+        ).fetchall()
+        stale_task_ids = {int(row["id"]) for row in stale_rows}
+        return [row for row in rows if int(row["id"]) not in stale_task_ids]
 
     @staticmethod
     def _plot_ids_by_task_id(conn: Any, task_ids: list[int]) -> dict[int, tuple[str, ...]]:
@@ -205,20 +260,17 @@ class TaskAttentionProvider:
         return {task_id: tuple(ids) for task_id, ids in plant_ids.items()}
 
     @staticmethod
-    def _outdoor_task_ids(conn: Any, garden_id: int, task_ids: list[int]) -> set[int]:
+    def _outdoor_plant_ids_by_task_id(
+        conn: Any,
+        garden_id: int,
+        task_ids: list[int],
+    ) -> dict[int, set[str]]:
         if not task_ids:
-            return set()
+            return {}
         placeholders = ",".join(["%s"] * len(task_ids))
         rows = conn.execute(
             f"""
-            SELECT DISTINCT tp.task_id
-            FROM garden_task_plots tp
-            JOIN plots p ON p.plot_id = tp.plot_id
-            WHERE tp.task_id IN ({placeholders})
-              AND p.garden_id = %s
-              AND p.grid_row IS NOT NULL
-            UNION
-            SELECT DISTINCT gtp.task_id
+            SELECT DISTINCT gtp.task_id, gtp.plt_id
             FROM garden_task_plants gtp
             JOIN plot_plants pp ON pp.plt_id = gtp.plt_id
             JOIN plots p ON p.plot_id = pp.plot_id
@@ -226,9 +278,12 @@ class TaskAttentionProvider:
               AND p.garden_id = %s
               AND p.grid_row IS NOT NULL
             """,
-            [*task_ids, garden_id, *task_ids, garden_id],
+            [*task_ids, garden_id],
         ).fetchall()
-        return {int(row["task_id"]) for row in rows}
+        outdoor_by_task_id: dict[int, set[str]] = {task_id: set() for task_id in task_ids}
+        for row in rows:
+            outdoor_by_task_id[int(row["task_id"])].add(str(row["plt_id"]))
+        return outdoor_by_task_id
 
     @staticmethod
     def _handled_watering_targets(
@@ -236,7 +291,7 @@ class TaskAttentionProvider:
         garden_id: int,
         *,
         now_ms: int,
-    ) -> dict[str, set[str]]:
+    ) -> dict[str, dict[str, dict[str, set[str]]]]:
         outcomes = read_active_attention_outcomes(
             conn,
             garden_id=garden_id,
@@ -245,47 +300,65 @@ class TaskAttentionProvider:
             target_type="plant",
             now_ms=now_ms,
         )
-        handled: dict[str, set[str]] = {}
+        handled: dict[str, dict[str, dict[str, set[str]]]] = {}
         for outcome in outcomes:
             if str(outcome["source_type"]) != "task_generator":
+                continue
+            metadata = TaskAttentionProvider._parse_metadata(outcome["metadata"])
+            lifecycle = TaskAttentionProvider._parse_metadata(metadata.get("lifecycle"))
+            if lifecycle.get("status") in {"automatically_recovered", "superseded"}:
                 continue
             rule_source = str(outcome["source_public_id"])
             target_id = str(outcome["target_id"])
             if not rule_source or not target_id:
                 continue
-            handled.setdefault(rule_source, set()).add(target_id)
+            covered_due_on = str(metadata.get("new_due_on") or metadata.get("due_on") or "")
+            if not covered_due_on:
+                continue
+            outcome_type = str(outcome["outcome_type"])
+            handled.setdefault(rule_source, {}).setdefault(target_id, {}).setdefault(
+                outcome_type,
+                set(),
+            ).add(covered_due_on)
         return handled
 
     @staticmethod
     def _plant_id_from_generated_water_rule(rule_source: str) -> str:
         parts = rule_source.split(":")
-        if len(parts) == 3 and parts[0] == "water":
+        if len(parts) >= 3 and parts[0] == "water":
             return parts[1]
+        if len(parts) >= 4 and parts[:2] == ["auto", "dry_water"]:
+            return parts[-1]
         return ""
 
     @staticmethod
     def _should_suppress_rain_handled_watering(
         row: Any,
         *,
-        outdoor_task_ids: set[int],
-        handled_watering_targets: dict[str, set[str]],
-        plant_ids: tuple[str, ...],
+        outdoor_plant_ids_by_task_id: dict[int, set[str]],
+        handled_watering_targets: dict[str, dict[str, dict[str, set[str]]]],
+        today: str,
     ) -> bool:
         if str(row["status"]) not in {"pending", "snoozed"}:
             return False
         rule_source = str(row["rule_source"] or "")
         if not is_generated_watering_task(str(row["task_type"]), rule_source):
             return False
-        if int(row["id"]) not in outdoor_task_ids:
+        target_id = TaskAttentionProvider._plant_id_from_generated_water_rule(rule_source)
+        if not target_id:
             return False
-        handled_targets = handled_watering_targets.get(rule_source)
-        if not handled_targets:
+        if target_id not in outdoor_plant_ids_by_task_id.get(int(row["id"]), set()):
             return False
-        task_target_ids = set(plant_ids)
-        parsed_plant_id = TaskAttentionProvider._plant_id_from_generated_water_rule(rule_source)
-        if parsed_plant_id:
-            task_target_ids.add(parsed_plant_id)
-        return bool(task_target_ids.intersection(handled_targets))
+        handled_dates = handled_watering_targets.get(rule_source, {}).get(target_id, {})
+        if not handled_dates:
+            return False
+        actionable_on = str(row["snoozed_until"] or row["due_on"])
+        if actionable_on in handled_dates.get("watering_covered_by_rain", set()):
+            return True
+        # Rescheduled watering becomes actionable when its new date arrives.
+        return actionable_on > today and actionable_on in handled_dates.get(
+            "watering_rescheduled_by_rain", set()
+        )
 
     def _item_from_row(
         self,
@@ -333,6 +406,7 @@ class TaskAttentionProvider:
                 else None
             ),
             source_label="Tasks",
+            rank=self._rank(item_type),
             updated_at_ms=int(row["updated_at_ms"] or 0),
             metadata={
                 "status": status,
@@ -380,6 +454,14 @@ class TaskAttentionProvider:
             "task_expired": "Expired",
             "task_skipped": "Skipped",
         }[item_type]
+
+    @staticmethod
+    def _rank(item_type: str) -> int:
+        return {
+            "task_completed": 500,
+            "task_skipped": 520,
+            "task_expired": 600,
+        }.get(item_type, 500)
 
     @staticmethod
     def _domain_state(status: str) -> AttentionDomainState:

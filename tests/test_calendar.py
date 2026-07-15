@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, date, datetime, timedelta
+from unittest.mock import patch
 
 import gardenops.db as db
 from gardenops.db import current_timestamp_ms
@@ -10,6 +11,30 @@ from tests.base import BaseApiTest
 
 
 class TestCalendarApi(BaseApiTest):
+    def test_calendar_ics_uses_latest_stable_content_timestamp(self) -> None:
+        subscription_updated = datetime(2026, 6, 4, 12, 30, tzinfo=UTC)
+        ics, _etag, last_modified = build_calendar_ics(
+            garden_name="Main garden",
+            events=[
+                {
+                    "id": "manual-1",
+                    "kind": "manual_event",
+                    "source_key": "garden_event",
+                    "title": "Older event",
+                    "description": "",
+                    "start_on": "2026-06-05",
+                    "end_on": "2026-06-06",
+                    "updated_at_ms": int(datetime(2026, 6, 1, tzinfo=UTC).timestamp() * 1000),
+                    "plot_ids": [],
+                    "plant_ids": [],
+                },
+            ],
+            generated_at=subscription_updated,
+        )
+
+        self.assertIn("DTSTAMP:20260604T123000Z", ics)
+        self.assertEqual(last_modified, "Thu, 04 Jun 2026 12:30:00 GMT")
+
     def test_calendar_ics_escapes_lone_carriage_returns(self) -> None:
         ics, _etag, _last_modified = build_calendar_ics(
             garden_name="Main garden\rX-WR-RELCALID:evil",
@@ -35,6 +60,38 @@ class TestCalendarApi(BaseApiTest):
         self.assertNotIn("\rORGANIZER", ics)
         self.assertIn(r"Water beds\nATTACH", ics)
 
+    def test_calendar_ics_escapes_text_and_folds_utf8_at_75_octets(self) -> None:
+        title = ("Café, basil; row\\two\nlate " * 8).strip()
+        description = ("First, line; with \\slash\r\nSecond line " * 8).strip()
+        ics, _etag, _last_modified = build_calendar_ics(
+            garden_name="Ångström, herb; garden\\north\nannex",
+            events=[
+                {
+                    "id": "manual-1",
+                    "kind": "manual_event",
+                    "source_key": "garden_event",
+                    "title": title,
+                    "description": description,
+                    "start_on": "2026-06-04",
+                    "end_on": "2026-06-05",
+                    "updated_at_ms": 1_770_000_000_000,
+                    "plot_ids": [],
+                    "plant_ids": [],
+                },
+            ],
+            generated_at=datetime(2026, 6, 4, tzinfo=UTC),
+        )
+
+        unfolded = ics.replace("\r\n ", "")
+        self.assertIn(r"X-WR-CALNAME:Ångström\, herb\; garden\\north\nannex", unfolded)
+        self.assertIn(r"SUMMARY:Café\, basil\; row\\two\nlate", unfolded)
+        self.assertIn(r"DESCRIPTION:First\, line\; with \\slash\nSecond line", unfolded)
+        self.assertIn("DTSTART;VALUE=DATE:20260604\r\n", ics)
+        self.assertIn("DTEND;VALUE=DATE:20260605\r\n", ics)
+        self.assertTrue(any(line.startswith(" ") for line in ics.split("\r\n")))
+        for line in ics.split("\r\n"):
+            self.assertLessEqual(len(line.encode("utf-8")), 75)
+
     def _insert_task(
         self,
         *,
@@ -49,6 +106,7 @@ class TestCalendarApi(BaseApiTest):
         window_kind: str | None = None,
         plant_ids: list[str] | None = None,
         plot_ids: list[str] | None = None,
+        garden_id: int | None = None,
     ) -> None:
         conn = db.get_db()
         try:
@@ -67,7 +125,7 @@ class TestCalendarApi(BaseApiTest):
                 RETURNING id
                 """,
                 (
-                    self._get_default_garden_id(),
+                    garden_id if garden_id is not None else self._get_default_garden_id(),
                     task_type,
                     title,
                     status,
@@ -138,6 +196,40 @@ class TestCalendarApi(BaseApiTest):
         self.assertFalse(data["preferences"]["include_recent_history"])
         self.assertEqual(data["preferences"]["selected_plant_ids"], [])
         self.assertFalse(data["capabilities"]["can_subscribe"])
+
+    def test_viewer_can_persist_personal_calendar_preferences(self) -> None:
+        try:
+            os.environ["AUTH_REQUIRED"] = "true"
+            self._create_test_user("calendar_pref_viewer", "viewerpass", "viewer")
+            viewer_client, viewer_headers = self._authenticated_client(
+                "calendar_pref_viewer",
+                "viewerpass",
+            )
+
+            updated = viewer_client.patch(
+                "/api/calendar/preferences",
+                headers=viewer_headers,
+                json={
+                    "default_view": "agenda",
+                    "include_recent_history": True,
+                    "selected_plot_ids": ["B1"],
+                },
+            )
+            self.assertEqual(updated.status_code, 200, updated.text)
+            self.assertEqual(updated.json()["preferences"]["default_view"], "agenda")
+            self.assertTrue(updated.json()["preferences"]["include_recent_history"])
+            self.assertEqual(updated.json()["preferences"]["selected_plot_ids"], ["B1"])
+
+            loaded = viewer_client.get(
+                "/api/calendar/preferences",
+                headers=viewer_headers,
+            )
+            self.assertEqual(loaded.status_code, 200, loaded.text)
+            self.assertTrue(loaded.json()["persisted"])
+            self.assertEqual(loaded.json()["preferences"], updated.json()["preferences"])
+            self.assertFalse(loaded.json()["capabilities"]["can_subscribe"])
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
 
     def test_calendar_selected_plant_preferences_filter_events_and_export(self) -> None:
         try:
@@ -368,6 +460,64 @@ class TestCalendarApi(BaseApiTest):
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 
+    def test_authenticated_calendar_export_stays_in_active_garden_scope(self) -> None:
+        try:
+            os.environ["AUTH_REQUIRED"] = "true"
+            today = date.today()
+            default_garden_id = self._get_default_garden_id()
+            conn = db.get_db()
+            try:
+                second = conn.execute(
+                    "INSERT INTO gardens (slug, name) "
+                    "VALUES ('calendar-export-g2', 'Calendar Export G2') "
+                    "RETURNING id",
+                ).fetchone()
+                assert second is not None
+                second_garden_id = int(second["id"])
+                conn.execute(
+                    "INSERT INTO garden_memberships (garden_id, user_id, role) "
+                    "VALUES (%s, %s, 'admin')",
+                    (second_garden_id, self._owner_id),
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            self._insert_task(
+                title="Default garden calendar task",
+                task_type="prune",
+                status="pending",
+                due_on=today + timedelta(days=2),
+                garden_id=default_garden_id,
+            )
+            self._insert_task(
+                title="Other garden private calendar task",
+                task_type="prune",
+                status="pending",
+                due_on=today + timedelta(days=2),
+                garden_id=second_garden_id,
+            )
+            client, headers = self._authenticated_client(
+                "test_admin",
+                "testadminpass",
+                garden_id=default_garden_id,
+            )
+
+            response = client.get(
+                (
+                    "/api/calendar/export.ics"
+                    f"?start={today.isoformat()}&end={(today + timedelta(days=14)).isoformat()}"
+                    f"&garden_id={second_garden_id}"
+                ),
+                headers=headers,
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Default garden calendar task", response.text)
+            self.assertNotIn("Other garden private calendar task", response.text)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
     def test_calendar_events_keep_recent_history_opt_in(self) -> None:
         today = date.today()
         completed_at_ms = int(
@@ -446,6 +596,38 @@ class TestCalendarApi(BaseApiTest):
         )
         self.assertEqual(history_export.status_code, 200)
         self.assertIn("Harvest spring rhubarb", history_export.text)
+
+    def test_recent_history_uses_frozen_request_date(self) -> None:
+        frozen_date = date(2020, 1, 10)
+        completed_on = frozen_date - timedelta(days=5)
+        completed_at_ms = int(
+            datetime.combine(completed_on, datetime.min.time(), UTC).timestamp() * 1000
+        )
+        self._insert_task(
+            title="Frozen recent completion",
+            task_type="prune",
+            status="completed",
+            due_on=completed_on,
+            completed_at_ms=completed_at_ms,
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": str(
+                    int(datetime(2020, 1, 10, tzinfo=UTC).timestamp() * 1000)
+                ),
+                "GARDENOPS_ATTENTION_FROZEN_DATE": frozen_date.isoformat(),
+            },
+        ):
+            response = self.client.get(
+                "/api/calendar/events?start=2019-12-01&end=2020-02-01&include_recent_history=true"
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn(
+            "Frozen recent completion",
+            {event["title"] for event in response.json()["events"]},
+        )
 
     def test_calendar_derives_upcoming_window_state_for_future_task(self) -> None:
         today = date.today()
@@ -852,5 +1034,195 @@ class TestCalendarApi(BaseApiTest):
 
             demoted_feed = self.client.get(feed_path)
             self.assertEqual(demoted_feed.status_code, 404)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_subscription_revoke_invalidates_feed_and_hides_raw_token(self) -> None:
+        try:
+            os.environ["AUTH_REQUIRED"] = "true"
+            client, headers = self._authenticated_client(
+                "test_admin",
+                "testadminpass",
+            )
+            create_response = client.post(
+                "/api/calendar/subscriptions",
+                headers=headers,
+                json={"label": "Private calendar feed", "preset_key": "essential"},
+            )
+            self.assertEqual(create_response.status_code, 201)
+            created = create_response.json()
+            feed_path = created["feed_path"]
+            token = feed_path.removeprefix("/calendar/subscriptions/").removesuffix(".ics")
+
+            self.assertEqual(create_response.text.count(token), 1)
+            self.assertNotIn(token, str(created["subscription"]))
+            self.assertNotIn("token_hash", created["subscription"])
+            self.assertEqual(self.client.get(feed_path).status_code, 200)
+
+            list_response = client.get("/api/calendar/subscriptions", headers=headers)
+            self.assertEqual(list_response.status_code, 200)
+            self.assertNotIn(token, list_response.text)
+
+            revoke_response = client.delete(
+                f"/api/calendar/subscriptions/{created['subscription']['id']}",
+                headers=headers,
+            )
+            self.assertEqual(revoke_response.status_code, 200)
+            self.assertNotIn(token, revoke_response.text)
+            self.assertEqual(self.client.get(feed_path).status_code, 404)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_frozen_attention_clock_controls_calendar_timestamps_and_feed_window(self) -> None:
+        frozen_date = date(2032, 2, 3)
+        frozen_now_ms = int(datetime(2032, 2, 3, tzinfo=UTC).timestamp() * 1000)
+        boundary_event_date = frozen_date - timedelta(days=14)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "APP_ENV": "test",
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": str(frozen_now_ms),
+                "GARDENOPS_ATTENTION_FROZEN_DATE": frozen_date.isoformat(),
+            },
+        ):
+            client, headers = self._authenticated_client(
+                "test_admin",
+                "testadminpass",
+            )
+            created_event_response = client.post(
+                "/api/calendar/manual-events",
+                headers=headers,
+                json={
+                    "title": "Frozen feed boundary event",
+                    "event_on": boundary_event_date.isoformat(),
+                    "description": "Visible on the frozen subscription boundary.",
+                    "plant_ids": [],
+                    "plot_ids": [],
+                },
+            )
+            self.assertEqual(created_event_response.status_code, 201)
+            event_id = created_event_response.json()["event"]["target_id"]
+
+            updated_event_response = client.patch(
+                f"/api/calendar/manual-events/{event_id}",
+                headers=headers,
+                json={
+                    "title": "Frozen feed boundary event updated",
+                    "event_on": boundary_event_date.isoformat(),
+                    "description": "Visible on the frozen subscription boundary.",
+                    "plant_ids": [],
+                    "plot_ids": [],
+                },
+            )
+            self.assertEqual(updated_event_response.status_code, 200)
+
+            created_subscription_response = client.post(
+                "/api/calendar/subscriptions",
+                headers=headers,
+                json={"label": "Frozen clock feed", "preset_key": "essential"},
+            )
+            self.assertEqual(created_subscription_response.status_code, 201)
+            subscription = created_subscription_response.json()["subscription"]
+            feed_response = self.client.get(created_subscription_response.json()["feed_path"])
+            self.assertEqual(feed_response.status_code, 200)
+            self.assertIn("Frozen feed boundary event updated", feed_response.text)
+            self.assertIn(
+                f"DTSTAMP:{datetime.fromtimestamp(frozen_now_ms / 1000, tz=UTC):%Y%m%dT%H%M%SZ}",
+                feed_response.text,
+            )
+
+            revoke_response = client.delete(
+                f"/api/calendar/subscriptions/{subscription['id']}",
+                headers=headers,
+            )
+            self.assertEqual(revoke_response.status_code, 200)
+
+        conn = db.get_db()
+        try:
+            event_row = conn.execute(
+                """
+                SELECT created_at_ms, updated_at_ms
+                FROM garden_calendar_events
+                WHERE public_id = %s
+                """,
+                (event_id,),
+            ).fetchone()
+            subscription_row = conn.execute(
+                """
+                SELECT created_at_ms, updated_at_ms, revoked_at_ms
+                FROM calendar_subscriptions
+                WHERE public_id = %s
+                """,
+                (subscription["id"],),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+
+        assert event_row is not None
+        assert subscription_row is not None
+        self.assertEqual(int(event_row["created_at_ms"]), frozen_now_ms)
+        self.assertEqual(int(event_row["updated_at_ms"]), frozen_now_ms)
+        self.assertEqual(int(subscription_row["created_at_ms"]), frozen_now_ms)
+        self.assertEqual(int(subscription_row["updated_at_ms"]), frozen_now_ms)
+        self.assertEqual(int(subscription_row["revoked_at_ms"]), frozen_now_ms)
+
+    def test_subscription_feed_etag_and_dtstamp_are_stable_for_unchanged_content(self) -> None:
+        try:
+            os.environ["AUTH_REQUIRED"] = "true"
+            client, headers = self._authenticated_client(
+                "test_admin",
+                "testadminpass",
+            )
+            event_response = client.post(
+                "/api/calendar/manual-events",
+                headers=headers,
+                json={
+                    "title": "Stable feed event",
+                    "event_on": date.today().isoformat(),
+                    "description": "The event content is unchanged.",
+                    "plant_ids": [],
+                    "plot_ids": [],
+                },
+            )
+            self.assertEqual(event_response.status_code, 201, event_response.text)
+            subscription_response = client.post(
+                "/api/calendar/subscriptions",
+                headers=headers,
+                json={"label": "Stable feed", "preset_key": "essential"},
+            )
+            self.assertEqual(subscription_response.status_code, 201, subscription_response.text)
+            feed_path = subscription_response.json()["feed_path"]
+            feed_date = date.today()
+            clocks = [
+                (0, feed_date, datetime(2032, 2, 3, tzinfo=UTC)),
+                (0, feed_date, datetime(2032, 2, 4, tzinfo=UTC)),
+                (0, feed_date, datetime(2032, 2, 5, tzinfo=UTC)),
+            ]
+            with patch(
+                "gardenops.routers.calendar._calendar_request_clock",
+                side_effect=clocks,
+            ):
+                first = self.client.get(feed_path)
+                second = self.client.get(
+                    feed_path,
+                    headers={"if-none-match": first.headers["etag"]},
+                )
+                third = self.client.get(feed_path)
+
+            self.assertEqual(first.status_code, 200, first.text)
+            self.assertEqual(second.status_code, 304, second.text)
+            self.assertEqual(third.status_code, 200, third.text)
+            self.assertEqual(first.headers["etag"], third.headers["etag"])
+            first_dtstamp = next(
+                line for line in first.text.splitlines() if line.startswith("DTSTAMP:")
+            )
+            third_dtstamp = next(
+                line for line in third.text.splitlines() if line.startswith("DTSTAMP:")
+            )
+            self.assertEqual(first_dtstamp, third_dtstamp)
         finally:
             os.environ["AUTH_REQUIRED"] = "false"

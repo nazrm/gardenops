@@ -21,6 +21,8 @@ from gardenops.services.task_generator import (
 )
 from tests.base import DbTestBase
 
+_JULY_1_2026_MS = 1_782_864_000_000
+
 
 class _ReadCountingConnection:
     def __init__(self, connection: Any) -> None:
@@ -121,6 +123,7 @@ class TestTaskQueryScaling(DbTestBase):
             7,
             2026,
             self._owner_id,
+            now_ms=_JULY_1_2026_MS,
         )
         self.assertEqual(first_result["created"], 4)
 
@@ -134,6 +137,7 @@ class TestTaskQueryScaling(DbTestBase):
             7,
             2026,
             self._owner_id,
+            now_ms=_JULY_1_2026_MS,
         )
 
         self.assertEqual(many_result["created"], 32)
@@ -197,6 +201,7 @@ class TestTaskQueryScaling(DbTestBase):
             7,
             2026,
             self._owner_id,
+            now_ms=_JULY_1_2026_MS,
         )
         self.assertEqual(first_result["created"], 0)
 
@@ -210,6 +215,7 @@ class TestTaskQueryScaling(DbTestBase):
             7,
             2026,
             self._owner_id,
+            now_ms=_JULY_1_2026_MS,
         )
 
         self.assertEqual(many_result["created"], 0)
@@ -221,7 +227,14 @@ class TestTaskQueryScaling(DbTestBase):
     def test_refresh_descriptions_read_queries_stay_flat_as_task_count_grows(self) -> None:
         self._create_outdoor_plot()
         self._add_watering_plant(1)
-        generate_tasks(self.conn, self.garden_id, 7, 2026, self._owner_id)
+        generate_tasks(
+            self.conn,
+            self.garden_id,
+            7,
+            2026,
+            self._owner_id,
+            now_ms=_JULY_1_2026_MS,
+        )
 
         first_connection = _ReadCountingConnection(self.conn)
         first_result = refresh_descriptions(self._refresh_request(), first_connection)
@@ -229,7 +242,14 @@ class TestTaskQueryScaling(DbTestBase):
 
         for number in range(2, 10):
             self._add_watering_plant(number)
-        generate_tasks(self.conn, self.garden_id, 7, 2026, self._owner_id)
+        generate_tasks(
+            self.conn,
+            self.garden_id,
+            7,
+            2026,
+            self._owner_id,
+            now_ms=_JULY_1_2026_MS,
+        )
 
         many_connection = _ReadCountingConnection(self.conn)
         many_result = refresh_descriptions(self._refresh_request(), many_connection)
@@ -273,6 +293,7 @@ class TestTaskQueryScaling(DbTestBase):
                     7,
                     2026,
                     self._owner_id,
+                    now_ms=_JULY_1_2026_MS,
                 )
             finally:
                 db.return_db(connection)

@@ -28,6 +28,7 @@ import { getAppShellMarkup } from "./components/layout";
 import {
   initAttentionTodayPanel,
   type AttentionTodayPanelController,
+  type AttentionTodayRequestScope,
 } from "./components/attentionTodayPanel";
 import {
   renderMapGrid,
@@ -80,6 +81,7 @@ import {
 import {
   initOfflineFeature,
   refreshOfflineIndicator,
+  syncOfflineDraftsNow,
 } from "./features/offlineFeature";
 import { showAuthGate, showForcedPasswordChangeGate } from "./features/authGate";
 import { createPasskey, getPasskey, isPasskeySupported } from "./features/passkeys";
@@ -201,6 +203,7 @@ import {
   enqueueDraft,
   isOnline,
 } from "./services/offlineQueue";
+import type { SyncResult } from "./services/offlineQueue";
 import {
   clearPrimedInviteToken,
   primeInviteTokenFromLocation,
@@ -219,6 +222,7 @@ import {
 import {
   initNotificationsFeature,
   loadNotificationCount,
+  refreshNotificationsForCurrentGarden,
   resetNotificationsForCurrentGarden,
   syncNotificationsForCurrentGarden,
 } from "./features/notificationsFeature";
@@ -1225,6 +1229,28 @@ const WRITE_CONTROL_IDS = [
 ];
 
 let attentionTodayPanel: AttentionTodayPanelController | null = null;
+let attentionTodayScopeGardenId: number | null = null;
+let attentionTodayScopeVersion = 0;
+let weatherMutationRefreshVersion = 0;
+
+function attentionTodayRequestScope(): AttentionTodayRequestScope {
+  return {
+    gardenId: getActiveGardenContext(),
+    version: attentionTodayScopeVersion,
+  };
+}
+
+function invalidateAttentionTodayForCurrentGarden(): void {
+  attentionTodayScopeGardenId = getActiveGardenContext();
+  attentionTodayScopeVersion += 1;
+  attentionTodayPanel?.invalidate();
+}
+
+function syncAttentionTodayScopeForCurrentGarden(): void {
+  if (attentionTodayScopeGardenId !== getActiveGardenContext()) {
+    invalidateAttentionTodayForCurrentGarden();
+  }
+}
 
 // ── AppContext (dependency injection for extracted modules) ──
 const appContext: AppContext = {
@@ -1552,6 +1578,16 @@ async function loadTasksTab(): Promise<void> {
   await mod.loadTasks();
 }
 
+async function openTaskFromAttention(
+  taskId: string,
+  expectedGardenId: number | null,
+): Promise<void> {
+  if (!taskId || !isCurrentGardenRequest(expectedGardenId)) return;
+  const mod = await ensureTasksTabInitialized();
+  if (!isCurrentGardenRequest(expectedGardenId)) return;
+  await mod.openTaskFromAttention(taskId, expectedGardenId);
+}
+
 function ensureHarvestTabInitialized(): Promise<HarvestTabModule> {
   harvestTabModulePromise ??= import("./tabs/harvestTab")
     .then((mod) => {
@@ -1666,6 +1702,27 @@ function ensureCalendarTabInitialized(): Promise<CalendarTabModule> {
 async function loadCalendar(): Promise<void> {
   const mod = await ensureCalendarTabInitialized();
   await mod.loadCalendar();
+}
+
+async function refreshAfterOfflineSync(result: SyncResult): Promise<void> {
+  const syncedTypes = new Set(result.syncedTypes);
+  const refreshes: Promise<unknown>[] = [];
+  const taskTypes = ["task_complete", "task_skip", "task_snooze", "task_reschedule"];
+
+  if (taskTypes.some((type) => syncedTypes.has(type))) {
+    refreshes.push(
+      loadTasksTab(),
+      loadCalendar(),
+      loadJournalEntries(),
+      refreshNotificationsForCurrentGarden(),
+    );
+    attentionTodayPanel?.refresh();
+  }
+  if (syncedTypes.has("journal")) refreshes.push(loadJournalEntries());
+  if (syncedTypes.has("issue_create")) refreshes.push(loadIssues());
+  if (syncedTypes.has("harvest_create")) refreshes.push(loadHarvestTab());
+
+  await Promise.allSettled(refreshes);
 }
 
 async function openCalendarEventComposer(
@@ -1957,7 +2014,9 @@ function ensureGatedFeatureInitializers(): void {
     gatedFeatureInitState.procurement = true;
   }
   if (isFeatureEnabled("weather") && !gatedFeatureInitState.weather) {
-    initWeatherFeature(appContext);
+    initWeatherFeature(appContext, {
+      onWeatherMutation: refreshWeatherMutationSurfaces,
+    });
     gatedFeatureInitState.weather = true;
   }
   if (isFeatureEnabled("planner") && !gatedFeatureInitState.analysis) {
@@ -2008,54 +2067,100 @@ function parsePlotIdInput(raw: string): string[] {
     });
 }
 
+function closeAttentionTodayNavigationOverlays(): void {
+  attentionTodayPanel?.closeMobileSheet();
+  closePanel();
+}
+
+async function openAttentionIssueTarget(
+  item: AttentionItem,
+  action: AttentionAction,
+  requestGardenId: number,
+): Promise<void> {
+  const targetIssueId = action.target_id || item.target_id || "";
+  closeAttentionTodayNavigationOverlays();
+  navigateToSubMode("issues");
+  await loadIssues();
+  if (!isCurrentGardenRequest(requestGardenId)) return;
+  if (targetIssueId) {
+    try {
+      const issue = await fetchIssueApi(targetIssueId);
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      await openIssueForm(issue);
+    } catch (err) {
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      showToast(getApiErrorMessage(err), "error");
+    }
+  }
+  if (!isCurrentGardenRequest(requestGardenId)) return;
+  attentionTodayPanel?.refresh();
+}
+
 async function handleAttentionTodayAction(
   item: AttentionItem,
   action: AttentionAction,
 ): Promise<void> {
-  if (action.kind === "restore_attention_outcome") {
-    await restoreAttentionOutcomeApi(action.target_id);
-    attentionTodayPanel?.refresh();
-    return;
+  const requestGardenId = getActiveGardenContext();
+  if (requestGardenId === null) return;
+  switch (action.kind) {
+    case "restore_attention_outcome":
+      if (!ensureWriteAccess()) return;
+      await restoreAttentionOutcomeApi(action.target_id);
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      attentionTodayPanel?.refresh();
+      return;
+    case "open_attention_detail":
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      attentionTodayPanel?.refresh();
+      return;
+    case "open_issue":
+      await openAttentionIssueTarget(item, action, requestGardenId);
+      return;
+    case "open_task": {
+      const targetTaskId = action.target_id || item.target_id || "";
+      closeAttentionTodayNavigationOverlays();
+      navigateToSubMode("tasks");
+      if (targetTaskId) {
+        await openTaskFromAttention(targetTaskId, requestGardenId);
+      } else {
+        await loadTasksTab();
+      }
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      attentionTodayPanel?.refresh();
+      return;
+    }
+    case "open_weather":
+      closeAttentionTodayNavigationOverlays();
+      navigateToSubMode("care");
+      await loadWeather();
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      attentionTodayPanel?.refresh();
+      return;
+    case "select_plot":
+      if (!action.target_id) return;
+      attentionTodayPanel?.closeMobileSheet();
+      setActiveTab("map");
+      await appContext.selectPlot(action.target_id);
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      attentionTodayPanel?.refresh();
+      return;
+    case "focus_plant": {
+      const targetPlantId = action.target_id || item.target_id || item.plant_ids[0] || "";
+      closeAttentionTodayNavigationOverlays();
+      if (targetPlantId) {
+        focusPlantsInPlantsView([targetPlantId]);
+      } else {
+        navigateToSubMode("plants");
+      }
+      if (!isCurrentGardenRequest(requestGardenId)) return;
+      attentionTodayPanel?.refresh();
+      return;
+    }
   }
-  if (action.kind === "open_attention_detail") {
-    attentionTodayPanel?.refresh();
-    return;
-  }
-  const firstPlotId = item.plot_ids[0];
-  if (firstPlotId) {
-    await appContext.selectPlot(firstPlotId);
-  }
-  if (action.kind === "open_issue" || action.target_type === "issue" || item.target_type === "issue") {
-    navigateToSubMode("issues");
-    await loadIssues();
-    attentionTodayPanel?.refresh();
-    return;
-  }
-  if (action.kind === "open_task" || action.target_type === "task" || item.target_type === "task") {
-    navigateToSubMode("tasks");
-    await loadTasksTab();
-    attentionTodayPanel?.refresh();
-    return;
-  }
-  if (action.kind === "open_weather" || action.target_type === "weather_alert") {
-    navigateToSubMode("care");
-    await loadWeather();
-    attentionTodayPanel?.refresh();
-    return;
-  }
-  if (action.kind === "select_plot" && action.target_id) {
-    await appContext.selectPlot(action.target_id);
-    setActiveTab("map");
-    attentionTodayPanel?.refresh();
-    return;
-  }
-  navigateToSubMode("tasks");
-  await loadTasksTab();
-  attentionTodayPanel?.refresh();
 }
 
 async function handleAttentionTodayViewSection(sectionKey: AttentionSectionKey): Promise<void> {
-  attentionTodayPanel?.closeMobileSheet();
+  closeAttentionTodayNavigationOverlays();
   if (sectionKey === "warnings" || sectionKey === "no_action_needed") {
     navigateToSubMode("care");
     await loadWeather();
@@ -2091,6 +2196,7 @@ function syncAttentionTodayAvailability(): boolean {
 }
 
 function ensureAttentionTodayPanel(): void {
+  syncAttentionTodayScopeForCurrentGarden();
   if (!syncAttentionTodayAvailability()) {
     attentionTodayPanel?.destroy();
     attentionTodayPanel = null;
@@ -2100,7 +2206,13 @@ function ensureAttentionTodayPanel(): void {
     attentionTodayPanel = initAttentionTodayPanel({
       fetchToday: fetchAttentionTodayApi,
       fetchPreferences: fetchAttentionPreferencesApi,
-      updatePreferences: updateAttentionPreferencesApi,
+      updatePreferences: async (preferences) => {
+        const updated = await updateAttentionPreferencesApi(preferences);
+        await refreshNotificationsForCurrentGarden();
+        return updated;
+      },
+      getRequestScope: attentionTodayRequestScope,
+      canWrite: () => canWriteInGarden,
       onPrimaryAction: handleAttentionTodayAction,
       onSecondaryAction: handleAttentionTodayAction,
       onViewSection: handleAttentionTodayViewSection,
@@ -2108,6 +2220,43 @@ function ensureAttentionTodayPanel(): void {
     });
   }
   attentionTodayPanel.refresh();
+}
+
+interface WeatherMutationRefreshRequest {
+  gardenId: number | null;
+  version: number;
+}
+
+function isCurrentWeatherMutationRefresh(
+  request: WeatherMutationRefreshRequest,
+): boolean {
+  return (
+    request.version === weatherMutationRefreshVersion
+    && !gardenSwitchPending
+    && isCurrentGardenRequest(request.gardenId)
+  );
+}
+
+async function refreshWeatherMutationSurfaces(): Promise<void> {
+  const request: WeatherMutationRefreshRequest = {
+    gardenId: getActiveGardenContext(),
+    version: ++weatherMutationRefreshVersion,
+  };
+  if (request.gardenId === null || !isCurrentWeatherMutationRefresh(request)) {
+    return;
+  }
+
+  attentionTodayPanel?.refresh();
+  const refreshes: Promise<void>[] = [refreshNotificationsForCurrentGarden()];
+
+  // Hidden lazy tabs reload on navigation; only wake a visible task/calendar view.
+  if (activeTab === "activity" && subMode === "tasks") {
+    refreshes.push(loadTasksTab());
+  } else if (activeTab === "activity" && subMode === "calendar") {
+    refreshes.push(loadCalendar());
+  }
+
+  await Promise.allSettled(refreshes);
 }
 
 // ── Layout & Setup ─────────────────────────────────────────
@@ -2512,8 +2661,49 @@ function syncSavedViewsAvailability(): void {
     || !supportsSavedViews(subMode);
 }
 
+function renderColdOfflineTasksShell(): void {
+  const container = document.getElementById("tasks-list");
+  if (!(container instanceof HTMLElement)) return;
+  const unavailable = document.createElement("div");
+  unavailable.className = "offline-data-state offline-data-state--unavailable";
+  unavailable.setAttribute("role", "status");
+  unavailable.textContent = t("tasks.offline_unavailable");
+  container.replaceChildren(unavailable);
+  const summary = document.getElementById("tasks-summary");
+  if (summary) summary.textContent = t("tasks.offline_unavailable");
+}
+
+function renderColdOfflineCalendarShell(): void {
+  const status = document.getElementById("calendar-data-state");
+  const root = document.getElementById("calendar-root");
+  if (status instanceof HTMLElement) {
+    status.hidden = false;
+    status.className = "offline-data-state offline-data-state--unavailable";
+    status.textContent = t("calendar.offline_unavailable");
+  }
+  if (root instanceof HTMLElement) root.hidden = true;
+  const summary = document.getElementById("calendar-summary");
+  if (summary) summary.textContent = t("calendar.offline_unavailable");
+}
+
 async function refreshActiveNavigationContent(): Promise<void> {
   if (activeTab === "garden" || activeTab === "activity") {
+    if (!isOnline() && subMode === "tasks") {
+      if (tasksTabModule) {
+        await tasksTabModule.loadTasks();
+      } else {
+        renderColdOfflineTasksShell();
+      }
+      return;
+    }
+    if (!isOnline() && subMode === "calendar") {
+      if (calendarTabModule) {
+        await calendarTabModule.loadCalendar();
+      } else {
+        renderColdOfflineCalendarShell();
+      }
+      return;
+    }
     if (subMode === "plants") {
       await ensurePlantsLoaded();
     } else {
@@ -6338,11 +6528,21 @@ function applyWriteAccessUi(): void {
       el.disabled = !canWriteInGarden;
     }
   }
+  const mobileFab = document.getElementById("mobile-fab");
+  if (mobileFab instanceof HTMLElement) {
+    mobileFab.hidden = !canWriteInGarden;
+  }
   if (!canWriteInGarden && state.editMode) {
     toggleEditMode(state, editCbs);
   }
+  if (!canWriteInGarden) closeQuickActionSheet(false);
   renderMapObjectsPanelView();
   syncMobileCapabilities();
+  if (canWriteInGarden) {
+    void syncOfflineDraftsNow();
+  } else {
+    void refreshOfflineIndicator();
+  }
 }
 
 function ensureWriteAccess(): boolean {
@@ -6729,6 +6929,10 @@ function resetMapLayoutForGardenSwitch(): void {
 function clearGardenScopedStateForSwitch(): void {
   mapRefreshVersion += 1;
   weatherCacheRequestVersion += 1;
+  weatherMutationRefreshVersion += 1;
+  invalidateAttentionTodayForCurrentGarden();
+  tasksTabModule?.resetTasksForGardenSwitch();
+  calendarTabModule?.resetCalendarForGardenSwitch();
   weatherLoadedAt = 0;
   weatherLoadPromise = null;
   weatherScheduleSeq += 1;
@@ -7022,6 +7226,9 @@ async function bootstrapApp(): Promise<void> {
     withoutPendingMediaFiles,
     uploadTargetMediaFiles,
     uploadJournalMediaFiles,
+  }, {
+    canManageDrafts: () => canWriteInGarden,
+    onSyncComplete: refreshAfterOfflineSync,
   });
   await refreshGardenContext({ profile: initialMe });
   if (isAdminMfaSetupRequired()) {

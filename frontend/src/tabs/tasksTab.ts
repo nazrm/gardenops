@@ -5,6 +5,7 @@ import { t } from "../core/i18n";
 import {
   type TaskActionRequest,
   batchTaskActionApi,
+  fetchTaskApi,
   fetchTasksApi,
   createTaskApi,
   updateTaskApi,
@@ -12,18 +13,46 @@ import {
   deleteTaskApi,
   generateTasksApi,
   refreshTaskDescriptionsApi,
+  getActiveGardenContext,
   getApiErrorMessage,
+  withBatchTaskActionRevisions,
+  withTaskActionRevision,
 } from "../services/api";
 import { buildPlantNameMap } from "../core/plantNames";
 import { renderTaskList, createTaskForm } from "../components/tasks";
 import { confirmDialog, createModal } from "../components/dialogCore";
 import { selectPlot } from "../components/plotInteractions";
-import { formatLocalDate, taskSnoozePolicy } from "../features/taskSnoozePolicy";
 import {
+  formatLocalDate,
+  taskSnoozeDateSafety,
+  taskSnoozePolicy,
+  type TaskSnoozeDateSafety,
+} from "../features/taskSnoozePolicy";
+import {
+  getTaskSnoozeCorrectionNotice,
+  openTaskDateDialog,
+} from "../features/taskSnoozeFlow";
+import {
+  canQueueCompletionOffline,
   canQueueDefaultCompletionOffline,
   needsCompletionDialog,
+  offlineTaskActionLabels,
   openTaskCompletionDialog,
 } from "../features/taskCompletionFlow";
+import {
+  enqueueTaskActionBatch,
+  getTaskActionStates,
+  OfflineTaskActionConflictError,
+  onConnectivityChange,
+  onOfflineQueueChange,
+  removeDraft,
+  retryDraft,
+  type OfflineTaskActionState,
+  type TaskActionDraftInput,
+  type TaskActionDraftType,
+} from "../services/offlineQueue";
+import { cacheTaskList, getCachedTaskList } from "../services/taskCache";
+import { syncOfflineDraftsNow } from "../features/offlineFeature";
 
 let ctx: AppContext;
 
@@ -32,12 +61,85 @@ let tasksTotal = 0;
 let tasksOffset = 0;
 let tasksView = "today";
 let selectedTaskIds = new Set<string>();
+let taskOfflineActions = new Map<string, OfflineTaskActionState>();
+let tasksDataState: "live" | "cached" | "unavailable" = "unavailable";
 let taskOperation: "idle" | "generate" | "regenerate" = "idle";
+let tasksRequestGeneration = 0;
+let offlineQueueListenerBound = false;
+let taskConnectivityListenerBound = false;
 const TASKS_PAGE_SIZE = 50;
-type TaskActionExtra = Omit<TaskActionRequest, "action">;
+type TaskActionExtra = Omit<TaskActionRequest, "action" | "expected_updated_at_ms">;
+
+interface TaskActionOptions {
+  allowMissingTask?: boolean;
+  expectedGardenId?: number | null;
+  showSuccessToast?: boolean;
+}
+
+interface SnoozeTaskOptions {
+  allowMissingTask?: boolean;
+}
+
+interface TasksRequestContext {
+  gardenId: number;
+  generation: number;
+}
+
+interface LoadTasksOptions {
+  focusTaskId?: string | undefined;
+  expectedGardenId?: number | null | undefined;
+}
+
+function createTasksRequest(
+  expectedGardenId?: number | null,
+): TasksRequestContext | null {
+  if (
+    expectedGardenId !== undefined
+    && getActiveGardenContext() !== expectedGardenId
+  ) {
+    return null;
+  }
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return null;
+  return {
+    gardenId,
+    generation: ++tasksRequestGeneration,
+  };
+}
+
+function isCurrentTasksRequest(request: TasksRequestContext): boolean {
+  return (
+    request.generation === tasksRequestGeneration
+    && request.gardenId === getActiveGardenContext()
+  );
+}
+
+function isCurrentTask(
+  taskId: string,
+  gardenId = getActiveGardenContext(),
+): boolean {
+  return (
+    gardenId !== null
+    && gardenId === getActiveGardenContext()
+    && taskItems.some((task) => task.id === taskId && task.garden_id === gardenId)
+  );
+}
+
+function isCurrentTaskAction(
+  taskId: string,
+  gardenId: number | null,
+  allowMissingTask = false,
+): boolean {
+  return (
+    gardenId !== null
+    && gardenId === getActiveGardenContext()
+    && (allowMissingTask || isCurrentTask(taskId, gardenId))
+  );
+}
 
 function isBatchActionable(task: GardenTask): boolean {
-  return task.status === "pending" || task.status === "snoozed";
+  return (task.status === "pending" || task.status === "snoozed")
+    && !taskOfflineActions.has(task.id);
 }
 
 function getSelectedVisibleTaskIds(): string[] {
@@ -55,6 +157,16 @@ function reconcileSelectionWithVisibleTasks(): void {
   );
 }
 
+function retireSuccessfulTaskActions(taskIds: readonly string[]): void {
+  const retiredIds = new Set(taskIds);
+  const previousLength = taskItems.length;
+  taskItems = taskItems.filter((task) => !retiredIds.has(task.id));
+  tasksTotal = Math.max(0, tasksTotal - (previousLength - taskItems.length));
+  for (const taskId of retiredIds) selectedTaskIds.delete(taskId);
+  reconcileSelectionWithVisibleTasks();
+  renderTasksView();
+}
+
 function setTaskOperation(next: "idle" | "generate" | "regenerate"): void {
   taskOperation = next;
   syncTaskHeaderButtons();
@@ -64,12 +176,12 @@ function setTaskOperation(next: "idle" | "generate" | "regenerate"): void {
 function syncTaskHeaderButtons(): void {
   const generateBtn = document.getElementById("tasks-generate-btn");
   if (generateBtn instanceof HTMLButtonElement) {
-    generateBtn.disabled = !ctx.canWrite() || taskOperation !== "idle";
+    generateBtn.disabled = !ctx.canWrite() || !ctx.isOnline() || taskOperation !== "idle";
     generateBtn.setAttribute("aria-busy", taskOperation === "generate" ? "true" : "false");
   }
   const regenerateBtn = document.getElementById("tasks-refresh-desc-btn");
   if (regenerateBtn instanceof HTMLButtonElement) {
-    regenerateBtn.disabled = !ctx.canWrite() || taskOperation !== "idle";
+    regenerateBtn.disabled = !ctx.canWrite() || !ctx.isOnline() || taskOperation !== "idle";
     regenerateBtn.setAttribute(
       "aria-busy",
       taskOperation === "regenerate" ? "true" : "false",
@@ -77,7 +189,7 @@ function syncTaskHeaderButtons(): void {
   }
   const addBtn = document.getElementById("tasks-add-btn");
   if (addBtn instanceof HTMLButtonElement) {
-    addBtn.disabled = !ctx.canWrite() || taskOperation !== "idle";
+    addBtn.disabled = !ctx.canWrite() || !ctx.isOnline() || taskOperation !== "idle";
   }
 }
 
@@ -135,8 +247,47 @@ export function syncTasksViewButtons(): void {
     });
 }
 
+export function resetTasksForGardenSwitch(): void {
+  tasksRequestGeneration += 1;
+  taskItems = [];
+  tasksTotal = 0;
+  tasksOffset = 0;
+  tasksView = "today";
+  selectedTaskIds.clear();
+  taskOfflineActions.clear();
+  tasksDataState = "unavailable";
+  taskOperation = "idle";
+  const typeFilter = querySelect("tasks-filter-type");
+  if (typeFilter) typeFilter.value = "";
+  const statusFilter = querySelect("tasks-filter-status");
+  if (statusFilter) statusFilter.value = "";
+  syncTasksViewButtons();
+  if (ctx) renderTasksView();
+}
+
 export function initTasksTab(appCtx: AppContext): void {
   ctx = appCtx;
+
+  if (!offlineQueueListenerBound) {
+    offlineQueueListenerBound = true;
+    onOfflineQueueChange(() => {
+      void refreshTaskOfflineActions(true);
+    });
+  }
+  if (!taskConnectivityListenerBound) {
+    taskConnectivityListenerBound = true;
+    onConnectivityChange((online) => {
+      syncTaskHeaderButtons();
+      renderTasksView();
+      if (
+        online
+        && ctx.getActiveTab() === "activity"
+        && ctx.getSubMode() === "tasks"
+      ) {
+        void loadTasks();
+      }
+    });
+  }
 
   document
     .getElementById("tasks-add-btn")
@@ -186,43 +337,205 @@ export function initTasksTab(appCtx: AppContext): void {
   renderTaskOperationProgress();
 }
 
-export async function loadTasks(): Promise<void> {
+export async function openTaskFromAttention(
+  targetTaskId: string,
+  expectedGardenId: number | null,
+): Promise<void> {
+  if (
+    !targetTaskId
+    || getActiveGardenContext() !== expectedGardenId
+  ) {
+    return;
+  }
+  tasksView = "today";
+  tasksOffset = 0;
+  selectedTaskIds.clear();
+  const typeFilter = querySelect("tasks-filter-type");
+  if (typeFilter) typeFilter.value = "";
+  const statusFilter = querySelect("tasks-filter-status");
+  if (statusFilter) statusFilter.value = "";
+  syncTasksViewButtons();
+  await loadTasks({
+    focusTaskId: targetTaskId,
+    expectedGardenId,
+  });
+}
+
+export async function loadTasks(
+  options: LoadTasksOptions = {},
+): Promise<void> {
   if (!ctx) return;
+  const request = createTasksRequest(options.expectedGardenId);
+  if (!request) return;
+  const params: Record<string, string | number> = {
+    limit: TASKS_PAGE_SIZE,
+    offset: tasksOffset,
+    view: tasksView,
+  };
+  const typeFilter = querySelect("tasks-filter-type")?.value;
+  if (typeFilter) params["task_type"] = typeFilter;
+  const statusFilter = querySelect("tasks-filter-status")?.value;
+  if (statusFilter) params["status"] = statusFilter;
+  if (!ctx.isOnline()) {
+    const cached = getCachedTaskList(request.gardenId, params);
+    if (cached) {
+      taskItems = cached.tasks;
+      tasksTotal = cached.total;
+      tasksDataState = "cached";
+    } else {
+      taskItems = [];
+      tasksTotal = 0;
+      tasksDataState = "unavailable";
+    }
+    await refreshTaskOfflineActions(false, request.gardenId);
+    if (!isCurrentTasksRequest(request)) return;
+    reconcileSelectionWithVisibleTasks();
+    renderTasksView(options.focusTaskId, request);
+    return;
+  }
   try {
-    const params: Record<string, string | number> = {
-      limit: TASKS_PAGE_SIZE,
-      offset: tasksOffset,
-      view: tasksView,
-    };
-    const typeFilter = querySelect("tasks-filter-type")?.value;
-    if (typeFilter) params["task_type"] = typeFilter;
-    const statusFilter = querySelect("tasks-filter-status")?.value;
-    if (statusFilter) params["status"] = statusFilter;
     const result = await fetchTasksApi(params);
+    if (!isCurrentTasksRequest(request)) return;
+    cacheTaskList(request.gardenId, params, result);
     if (result.total > 0 && result.tasks.length === 0 && tasksOffset > 0) {
       tasksOffset = Math.max(
         0,
         Math.floor((result.total - 1) / TASKS_PAGE_SIZE) * TASKS_PAGE_SIZE,
       );
-      await loadTasks();
+      await loadTasks(options);
       return;
     }
-    taskItems = result.tasks;
-    tasksTotal = result.total;
+    let nextTasks = result.tasks;
+    let targetLoadError: unknown | null = null;
+    if (
+      options.focusTaskId
+      && !nextTasks.some((task) => task.id === options.focusTaskId)
+    ) {
+      try {
+        const focusedTask = await fetchTaskApi(options.focusTaskId);
+        if (!isCurrentTasksRequest(request)) return;
+        nextTasks = [
+          focusedTask,
+          ...nextTasks.filter((task) => task.id !== focusedTask.id),
+        ];
+      } catch (err) {
+        if (!isCurrentTasksRequest(request)) return;
+        targetLoadError = err;
+      }
+    }
+    if (!isCurrentTasksRequest(request)) return;
+    taskItems = nextTasks;
+    tasksTotal = Math.max(result.total, nextTasks.length);
+    tasksDataState = "live";
+    await refreshTaskOfflineActions(false, request.gardenId);
+    if (!isCurrentTasksRequest(request)) return;
     reconcileSelectionWithVisibleTasks();
-    renderTasksView();
+    renderTasksView(options.focusTaskId, request);
+    if (targetLoadError) {
+      ctx.showToast(getApiErrorMessage(targetLoadError), "error");
+    }
   } catch (err) {
+    if (!isCurrentTasksRequest(request)) return;
+    if (!ctx.isOnline()) {
+      const cached = getCachedTaskList(request.gardenId, params);
+      if (cached) {
+        taskItems = cached.tasks;
+        tasksTotal = cached.total;
+        tasksDataState = "cached";
+      } else {
+        taskItems = [];
+        tasksTotal = 0;
+        tasksDataState = "unavailable";
+      }
+      await refreshTaskOfflineActions(false, request.gardenId);
+      if (!isCurrentTasksRequest(request)) return;
+      reconcileSelectionWithVisibleTasks();
+      renderTasksView(options.focusTaskId, request);
+      return;
+    }
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
 
-function renderTasksView(): void {
+async function refreshTaskOfflineActions(
+  render = false,
+  gardenId = getActiveGardenContext(),
+): Promise<void> {
+  if (gardenId === null) {
+    taskOfflineActions.clear();
+    if (render) renderTasksView();
+    return;
+  }
+  const states = await getTaskActionStates(gardenId);
+  if (gardenId !== getActiveGardenContext()) return;
+  taskOfflineActions = states;
+  reconcileSelectionWithVisibleTasks();
+  if (render) renderTasksView();
+}
+
+function offlineTaskActionErrorMessage(error: unknown): string {
+  if (error instanceof OfflineTaskActionConflictError) {
+    return t(
+      error.kind === "duplicate"
+        ? "offline.task_duplicate"
+        : "offline.task_conflict",
+    );
+  }
+  return getApiErrorMessage(error);
+}
+
+async function discardOfflineTaskAction(state: OfflineTaskActionState): Promise<void> {
+  const confirmed = await confirmDialog(
+    t("offline.discard_confirm"),
+    t("offline.discard"),
+  );
+  if (!confirmed) return;
+  await removeDraft(state.draftId);
+  await refreshTaskOfflineActions(true);
+  void ctx.refreshOfflineIndicator();
+}
+
+async function retryOfflineTaskAction(state: OfflineTaskActionState): Promise<void> {
+  if (!ctx.ensureWriteAccess()) return;
+  const changed = await retryDraft(state.draftId);
+  if (!changed) return;
+  await refreshTaskOfflineActions(true);
+  if (ctx.isOnline()) {
+    await syncOfflineDraftsNow();
+  } else {
+    ctx.showToast(t("offline.retry_queued"), "success");
+  }
+}
+
+function focusTaskCard(
+  taskId: string,
+  request?: TasksRequestContext,
+): void {
+  window.requestAnimationFrame(() => {
+    if (request && !isCurrentTasksRequest(request)) return;
+    const container = document.getElementById("tasks-list");
+    if (!(container instanceof HTMLElement)) return;
+    const card = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-task-id]"),
+    ).find((candidate) => candidate.dataset["taskId"] === taskId);
+    if (!card) return;
+    card.tabIndex = -1;
+    card.scrollIntoView({ block: "center" });
+    card.focus({ preventScroll: true });
+  });
+}
+
+function renderTasksView(
+  focusTaskId?: string,
+  request?: TasksRequestContext,
+): void {
   const container = document.getElementById("tasks-list");
   if (!container) return;
   const summary = document.getElementById("tasks-summary");
   if (summary) {
-    summary.textContent =
-      tasksTotal === 0
+    summary.textContent = tasksDataState === "unavailable"
+      ? t("tasks.offline_unavailable")
+      : tasksTotal === 0
         ? t("tasks.summary_none")
         : t("tasks.summary_count", { count: tasksTotal });
   }
@@ -234,7 +547,8 @@ function renderTasksView(): void {
   renderTaskList(container, taskItems, {
     onComplete: (task) => completeTask(task),
     onSnooze: (task) => void openSnoozeDialog(task),
-    onSkip: (task) => void handleTaskAction(task.id, "skip"),
+    onSnoozeDate: (task) => openSnoozeDateDialog(task),
+    onSkip: (task) => void handleTaskAction(task, "skip"),
     onReschedule: (task) => void openRescheduleDialog(task),
     onEdit: (task) => void openTaskForm(task),
     onDelete: (task) => void deleteTask(task),
@@ -259,18 +573,25 @@ function renderTasksView(): void {
         renderTasksView();
       }
       : undefined,
+    onDiscardOfflineAction: (state) => void discardOfflineTaskAction(state),
+    onRetryOfflineAction: (state) => void retryOfflineTaskAction(state),
+    offlineTaskActions: taskOfflineActions,
     selectedTaskIds,
-    onEmptyAction: canWrite ? () => void handleGenerateTasks() : undefined,
+    onEmptyAction: canWrite && ctx.isOnline() ? () => void handleGenerateTasks() : undefined,
     canWrite,
+    dataState: tasksDataState,
+    online: ctx.isOnline(),
   }, plantNames);
   ctx.renderDataExportBars();
   renderTasksPagination();
+  if (focusTaskId) focusTaskCard(focusTaskId, request);
 }
 
 function renderTasksPagination(): void {
   const container = document.getElementById("tasks-pagination");
   if (!container) return;
   container.replaceChildren();
+  if (tasksDataState === "unavailable") return;
   if (tasksTotal <= TASKS_PAGE_SIZE) return;
   const page =
     Math.floor(tasksOffset / TASKS_PAGE_SIZE) + 1;
@@ -375,14 +696,26 @@ function renderTaskBatchBar(): void {
     snoozeBtn.className = "task-action-btn";
     snoozeBtn.textContent = t("tasks.action_snooze");
     snoozeBtn.addEventListener("click", () => {
-      const firstSelected = taskItems.find((task) => selectedTaskIds.has(task.id));
-      const policy = firstSelected ? taskSnoozePolicy(firstSelected) : undefined;
-      openDateDialog(
-        t("tasks.snooze_prompt") as string,
-        policy?.defaultDate ?? formatLocalDate(new Date()),
-        (date) => void handleBatchTaskAction("snooze", { snooze_until: date }),
-        policy?.warning,
+      const selectedTasks = taskItems.filter(
+        (task) => isBatchActionable(task) && selectedTaskIds.has(task.id),
       );
+      const policy = batchSnoozePolicy(selectedTasks);
+      if (policy.blockedMessage) {
+        ctx.showToast(policy.blockedMessage, "error");
+        return;
+      }
+      openTaskDateDialog({
+        title: t("tasks.snooze_prompt") as string,
+        defaultDate: policy.defaultDate,
+        onConfirm: (date, confirmOutsideWindow) => handleBatchTaskAction("snooze", {
+          snooze_until: date,
+          ...(confirmOutsideWindow ? { confirm_outside_window: true } : {}),
+        }),
+        warning: policy.warning,
+        requireManualDate: policy.requiresManualDate,
+        maxDate: policy.maxDate,
+        getDateSafety: policy.getDateSafety,
+      });
     });
     bar.appendChild(snoozeBtn);
 
@@ -391,12 +724,13 @@ function renderTaskBatchBar(): void {
     rescheduleBtn.className = "task-action-btn";
     rescheduleBtn.textContent = t("tasks.action_reschedule");
     rescheduleBtn.addEventListener("click", () => {
-      const firstSelected = taskItems.find((task) => selectedTaskIds.has(task.id));
-      openDateDialog(
-        t("tasks.reschedule_prompt") as string,
-        firstSelected?.due_on ?? formatLocalDate(new Date()),
-        (date) => void handleBatchTaskAction("reschedule", { reschedule_to: date }),
-      );
+      const firstSelectedTask = taskItems.find((task) => selectedTaskIds.has(task.id));
+      openTaskDateDialog({
+        title: t("tasks.reschedule_prompt") as string,
+        defaultDate: firstSelectedTask?.due_on ?? formatLocalDate(new Date()),
+        onConfirm: (date) =>
+          handleBatchTaskAction("reschedule", { reschedule_to: date }),
+      });
     });
     bar.appendChild(rescheduleBtn);
   }
@@ -404,66 +738,144 @@ function renderTaskBatchBar(): void {
   container.appendChild(bar);
 }
 
+interface BatchSnoozePolicy {
+  defaultDate: string;
+  warning?: string | undefined;
+  requiresManualDate: boolean;
+  maxDate?: string | undefined;
+  blockedMessage?: string | undefined;
+  getDateSafety: (date: string) => TaskSnoozeDateSafety;
+}
+
+function batchSnoozeDateSafety(
+  selectedTasks: GardenTask[],
+  snoozeUntil: string,
+): TaskSnoozeDateSafety {
+  let confirmation: TaskSnoozeDateSafety | undefined;
+  for (const task of selectedTasks) {
+    const safety = taskSnoozeDateSafety(task, snoozeUntil);
+    if (safety.blocked) return safety;
+    if (!confirmation && safety.confirmationRequired) confirmation = safety;
+  }
+  return confirmation ?? {};
+}
+
+function batchSnoozePolicy(selectedTasks: GardenTask[]): BatchSnoozePolicy {
+  const policies = selectedTasks.map((task) => taskSnoozePolicy(task));
+  const first = policies[0];
+  if (!first) {
+    return {
+      defaultDate: formatLocalDate(new Date()),
+      requiresManualDate: false,
+      getDateSafety: () => ({}),
+    };
+  }
+  const homogeneous = policies.every((policy) => policy.defaultDate === first.defaultDate);
+  const maxDate = policies.reduce<string | undefined>((earliest, policy) => (
+    policy.maxDate && (!earliest || policy.maxDate < earliest)
+      ? policy.maxDate
+      : earliest
+  ), undefined);
+  return {
+    defaultDate: homogeneous ? first.defaultDate : formatLocalDate(new Date()),
+    warning: !homogeneous
+      ? t("tasks.batch_snooze_mixed_warning") as string
+      : policies.find((policy) => policy.manualDateMessage)?.manualDateMessage,
+    requiresManualDate: !homogeneous || policies.some((policy) => policy.requireManualDate),
+    maxDate,
+    blockedMessage: policies.find((policy) => policy.blockedMessage)?.blockedMessage,
+    getDateSafety: (date) => batchSnoozeDateSafety(selectedTasks, date),
+  };
+}
+
 async function enqueueOfflineTaskAction(
-  taskId: string,
+  task: GardenTask,
   action: TaskActionRequest["action"],
   extra?: TaskActionExtra,
 ): Promise<void> {
-  if (action === "complete" && extra?.completed_plant_ids?.length) {
-    throw new Error("Grouped task completion cannot be queued offline.");
-  }
-  const payload: Record<string, unknown> = {
-    task_id: taskId,
+  await enqueueTaskActionBatch([
+    offlineTaskActionInput(action, offlineTaskActionPayload(task, action, extra)),
+  ]);
+}
+
+function offlineTaskActionPayload(
+  task: Pick<GardenTask, "id" | "task_type" | "title" | "updated_at_ms">,
+  action: TaskActionRequest["action"],
+  extra?: TaskActionExtra,
+): Record<string, unknown> {
+  const { action: _action, ...payload } = withTaskActionRevision(task, {
+    action,
     ...extra,
+  });
+  return {
+    task_id: task.id,
+    ...offlineTaskActionLabels(task, action),
+    ...payload,
   };
-  if (action === "complete") {
-    await ctx.enqueueDraft("task_complete", payload);
-    return;
-  }
-  if (action === "skip") {
-    await ctx.enqueueDraft("task_skip", payload);
-    return;
-  }
-  if (action === "snooze") {
-    await ctx.enqueueDraft("task_snooze", payload);
-    return;
-  }
-  if (action === "reschedule") {
-    await ctx.enqueueDraft("task_reschedule", payload);
-    return;
-  }
-  throw new Error(`Unsupported task action: ${action}`);
+}
+
+function offlineTaskActionInput(
+  action: TaskActionRequest["action"],
+  payload: Record<string, unknown>,
+): TaskActionDraftInput {
+  const typeByAction: Record<TaskActionRequest["action"], TaskActionDraftType> = {
+    complete: "task_complete",
+    skip: "task_skip",
+    snooze: "task_snooze",
+    reschedule: "task_reschedule",
+  };
+  return { type: typeByAction[action], payload };
 }
 
 async function handleTaskAction(
-  taskId: string,
+  task: GardenTask,
   action: TaskActionRequest["action"],
   extra?: TaskActionExtra,
-  options: { showSuccessToast?: boolean } = {},
+  options: TaskActionOptions = {},
 ): Promise<boolean> {
+  const taskId = task.id;
+  const requestGardenId = options.expectedGardenId ?? task.garden_id;
+  const actionIsCurrent = (): boolean => isCurrentTaskAction(
+    taskId,
+    requestGardenId,
+    options.allowMissingTask,
+  );
+  if (!actionIsCurrent()) return false;
   if (!ctx.ensureWriteAccess()) return false;
   if (!ctx.isOnline()) {
-    if (action === "complete" && extra?.completed_plant_ids?.length) {
-      ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
+    try {
+      await enqueueOfflineTaskAction(task, action, extra);
+    } catch (err) {
+      ctx.showToast(offlineTaskActionErrorMessage(err), "error");
       return false;
     }
-    await enqueueOfflineTaskAction(taskId, action, extra);
-    ctx.showToast(t("offline.draft_saved"), "success");
+    if (!actionIsCurrent()) return false;
+    await refreshTaskOfflineActions(true, requestGardenId);
+    if (options.showSuccessToast !== false) {
+      ctx.showToast(t("offline.draft_saved"), "success");
+    }
     void ctx.refreshOfflineIndicator();
     return true;
   }
   try {
-    await taskActionApi(taskId, { action, ...extra });
+    const result = await taskActionApi(
+      taskId,
+      withTaskActionRevision(task, { action, ...extra }),
+    );
+    task.updated_at_ms = result.updated_at_ms;
+    if (!actionIsCurrent()) return false;
     if (options.showSuccessToast !== false) {
       ctx.showToast(
         t("tasks.action_success", { action }),
         "success",
       );
     }
+    retireSuccessfulTaskActions([taskId]);
     void ctx.refreshBadgeCounts();
     void loadTasks();
     return true;
   } catch (err) {
+    if (!actionIsCurrent()) return false;
     ctx.showToast(getApiErrorMessage(err), "error");
     return false;
   }
@@ -473,59 +885,85 @@ async function handleBatchTaskAction(
   action: TaskActionRequest["action"],
   extra?: TaskActionExtra,
   taskIdOverride?: string[],
-): Promise<void> {
-  if (!ctx.ensureWriteAccess()) return;
+): Promise<boolean> {
+  const requestGardenId = getActiveGardenContext();
+  if (!ctx.ensureWriteAccess()) return false;
   const taskIds = taskIdOverride ?? getSelectedVisibleTaskIds();
   if (taskIds.length === 0) {
     ctx.showToast(t("tasks.batch_none_selected"), "error");
-    return;
+    return false;
   }
+  if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return false;
   if (!ctx.isOnline()) {
-    for (const taskId of taskIds) {
-      await enqueueOfflineTaskAction(taskId, action, extra);
+    try {
+      await enqueueTaskActionBatch(taskIds.map((taskId) => {
+        const task = taskItems.find((candidate) => candidate.id === taskId);
+        if (!task) throw new Error("Task is no longer available");
+        return offlineTaskActionInput(
+          action,
+          offlineTaskActionPayload(task, action, extra),
+        );
+      }));
+    } catch (err) {
+      ctx.showToast(offlineTaskActionErrorMessage(err), "error");
+      return false;
     }
+    if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return false;
     selectedTaskIds.clear();
-    renderTasksView();
+    await refreshTaskOfflineActions(true, requestGardenId);
     ctx.showToast(
-      t("tasks.batch_result", { count: taskIds.length }),
+      t("tasks.batch_queued", { count: taskIds.length }),
       "success",
     );
     void ctx.refreshOfflineIndicator();
-    return;
+    return true;
+  }
+  const batchTasks: GardenTask[] = [];
+  for (const taskId of taskIds) {
+    const task = taskItems.find((candidate) => candidate.id === taskId);
+    if (!task) return false;
+    batchTasks.push(task);
   }
   try {
-    const result = await batchTaskActionApi(taskIds, { action, ...extra });
+    const result = await batchTaskActionApi(
+      taskIds,
+      withBatchTaskActionRevisions(batchTasks, { action, ...extra }),
+    );
+    if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return false;
     selectedTaskIds.clear();
     ctx.showToast(
       t("tasks.batch_result", { count: result.updated }),
       "success",
     );
+    retireSuccessfulTaskActions(taskIds);
     void ctx.refreshBadgeCounts();
     void loadTasks();
+    return true;
   } catch (err) {
+    if (!taskIds.every((taskId) => isCurrentTask(taskId, requestGardenId))) return false;
     ctx.showToast(getApiErrorMessage(err), "error");
+    return false;
   }
 }
 
 function completeTask(task: GardenTask): void {
   if (!needsCompletionDialog(task)) {
-    void handleTaskAction(task.id, "complete");
+    void handleTaskAction(task, "complete");
     return;
   }
   if (!ctx.isOnline()) {
-    if (canQueueDefaultCompletionOffline(task)) {
-      void handleTaskAction(task.id, "complete");
+    const needsExplicitOutcome = !canQueueDefaultCompletionOffline(task);
+    if (needsExplicitOutcome && !canQueueCompletionOffline(task)) {
+      ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
       return;
     }
-    ctx.showToast(t("tasks.complete_grouped_one_by_one"), "error");
-    return;
   }
   openTaskCompletionDialog(
     task,
     buildPlantNameMap(ctx.getPlants()),
     (body) => {
       const { action: _action, ...extra } = body;
-      void handleTaskAction(task.id, "complete", extra);
+      return handleTaskAction(task, "complete", extra);
     },
   );
 }
@@ -556,107 +994,100 @@ async function handleBatchComplete(): Promise<void> {
   renderTasksView();
 }
 
-async function snoozeTaskWithPolicy(task: GardenTask, snoozeUntil: string): Promise<void> {
+async function snoozeTaskWithPolicy(
+  task: GardenTask,
+  snoozeUntil: string,
+  options: SnoozeTaskOptions = {},
+  confirmOutsideWindow = false,
+): Promise<boolean> {
+  const safety = taskSnoozeDateSafety(task, snoozeUntil);
+  if (safety.blocked) {
+    ctx.showToast(safety.message ?? t("tasks.snooze_prompt"), "error");
+    return false;
+  }
   const online = ctx.isOnline();
   const ok = await handleTaskAction(
-    task.id,
+    task,
     "snooze",
-    { snooze_until: snoozeUntil },
-    online ? { showSuccessToast: false } : {},
+    {
+      snooze_until: snoozeUntil,
+      ...(safety.confirmationRequired && confirmOutsideWindow
+        ? { confirm_outside_window: true }
+        : {}),
+    },
+    {
+      ...(options.allowMissingTask ? { allowMissingTask: true } : {}),
+      expectedGardenId: task.garden_id,
+      showSuccessToast: false,
+    },
   );
-  if (!ok || !online) return;
+  if (!ok) return false;
+  if (!online) {
+    ctx.showToast(t("offline.draft_saved"), "success");
+  }
+  const notice = getTaskSnoozeCorrectionNotice(snoozeUntil, () => {
+    openSnoozeDateDialog(task, snoozeUntil, { allowMissingTask: true });
+  });
   ctx.showToast(
-    t("tasks.snoozed_until_toast", { date: snoozeUntil }),
+    notice.message,
     "success",
     {
       actions: [
         {
-          label: t("tasks.snooze_change_date"),
-          onClick: () => {
-            openSnoozeDateDialog(task, snoozeUntil);
-          },
+          label: notice.actionLabel,
+          onClick: notice.onChangeDate,
         },
       ],
-      durationMs: 5000,
+      durationMs: notice.durationMs,
     },
   );
+  return true;
 }
 
-function openDateDialog(
-  title: string,
-  defaultDate: string,
-  onConfirm: (date: string) => void,
-  warning?: string,
+function openSnoozeDateDialog(
+  task: GardenTask,
+  defaultDate = taskSnoozePolicy(task).defaultDate,
+  options: SnoozeTaskOptions = {},
 ): void {
-  const { dialog, close } = createModal(title, `
-    <div class="modal-content confirm-dialog">
-      <h3></h3>
-      <p class="task-date-dialog-warning" hidden></p>
-      <input type="date" class="prompt-dialog-input" />
-      <div class="button-row">
-        <button type="button" class="confirm-yes"></button>
-        <button type="button" class="confirm-no"></button>
-      </div>
-    </div>
-  `);
-  const heading = dialog.querySelector("h3")!;
-  heading.textContent = title;
-  const warningEl = dialog.querySelector<HTMLElement>(".task-date-dialog-warning")!;
-  if (warning) {
-    warningEl.hidden = false;
-    warningEl.textContent = warning;
+  const policy = taskSnoozePolicy(task);
+  if (policy.blockedMessage) {
+    ctx.showToast(policy.blockedMessage, "error");
+    return;
   }
-  const input = dialog.querySelector<HTMLInputElement>("input[type='date']")!;
-  input.value = defaultDate;
-  input.min = formatLocalDate(new Date());
-  const cancelBtn = dialog.querySelector<HTMLButtonElement>(".confirm-no")!;
-  cancelBtn.textContent = t("common.cancel") as string;
-  cancelBtn.addEventListener("click", close);
-  const okBtn = dialog.querySelector<HTMLButtonElement>(".confirm-yes")!;
-  okBtn.textContent = t("common.save") as string;
-  okBtn.addEventListener("click", () => {
-    if (input.value) {
-      onConfirm(input.value);
-      close();
-    }
-  });
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && input.value) {
-      onConfirm(input.value);
-      close();
-    }
-  });
-  input.focus();
-}
-
-function openSnoozeDateDialog(task: GardenTask, defaultDate: string, warning?: string): void {
-  openDateDialog(
-    t("tasks.snooze_prompt") as string,
+  openTaskDateDialog({
+    title: t("tasks.snooze_prompt") as string,
     defaultDate,
-    (date) =>
-      void snoozeTaskWithPolicy(task, date),
-    warning,
-  );
+    onConfirm: (date, confirmOutsideWindow) =>
+      snoozeTaskWithPolicy(task, date, options, confirmOutsideWindow),
+    warning: policy.manualDateMessage,
+    requireManualDate: policy.requireManualDate,
+    maxDate: policy.maxDate,
+    getDateSafety: (date) => taskSnoozeDateSafety(task, date),
+  });
 }
 
 function openSnoozeDialog(task: GardenTask): void {
   const policy = taskSnoozePolicy(task);
+  if (policy.blockedMessage) {
+    ctx.showToast(policy.blockedMessage, "error");
+    return;
+  }
   if (policy.immediate) {
     void snoozeTaskWithPolicy(task, policy.defaultDate);
     return;
   }
-  openSnoozeDateDialog(task, policy.defaultDate, policy.warning);
+  openSnoozeDateDialog(task, policy.defaultDate);
 }
 
 function openRescheduleDialog(task: GardenTask): void {
-  openDateDialog(
-    t("tasks.reschedule_prompt") as string,
-    task.due_on,
-    (date) =>
-      void handleTaskAction(task.id, "reschedule", {
+  openTaskDateDialog({
+    title: t("tasks.reschedule_prompt") as string,
+    defaultDate: task.due_on,
+    onConfirm: (date) =>
+      handleTaskAction(task, "reschedule", {
         reschedule_to: date,
       }),
-  );
+  });
 }
 
 export function openTaskForm(
@@ -664,6 +1095,10 @@ export function openTaskForm(
 ): void {
   const readOnly = Boolean(existingTask) && !ctx.canWrite();
   if (!existingTask && !ctx.ensureWriteAccess()) return;
+  const { dialog, close } = createModal(
+    t("tasks.form_title"),
+    '<div class="modal-content task-form-dialog"></div>',
+  );
   const form = createTaskForm({
     task: existingTask,
     readOnly,
@@ -687,26 +1122,16 @@ export function openTaskForm(
         if (!existingTask) {
           tasksOffset = 0;
         }
-        overlay.remove();
+        close();
         void loadTasks();
       } catch (err) {
         ctx.showToast(getApiErrorMessage(err), "error");
       }
     },
-    onCancel: () => overlay.remove(),
+    onCancel: close,
   });
-  const overlay = document.createElement("div");
-  overlay.className = "modal";
-  overlay.setAttribute("role", "dialog");
-  overlay.setAttribute("aria-modal", "true");
-  overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-  const dialog = document.createElement("div");
-  dialog.className = "modal-content";
-  dialog.appendChild(form);
-  overlay.appendChild(dialog);
-  document.body.appendChild(overlay);
+  dialog.querySelector(".task-form-dialog")?.appendChild(form);
+  form.querySelector<HTMLElement>("input:not([disabled]), select:not([disabled])")?.focus();
 }
 
 async function deleteTask(task: GardenTask): Promise<void> {

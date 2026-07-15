@@ -180,6 +180,81 @@ async function setupPage(browser, viewport) {
   return { page, browserErrors, resourceLoadFailures };
 }
 
+async function exerciseGenericModalStack(page) {
+  await page.evaluate(async () => {
+    const { createModal, confirmDialog } = await import("/src/components/dialogCore.ts");
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.id = "e2e-modal-stack-trigger";
+    trigger.textContent = "Open generic modal stack";
+    document.body.appendChild(trigger);
+    trigger.focus();
+
+    const { dialog } = createModal("Generic modal stack parent", `
+      <div class="modal-content">
+        <button type="button" id="e2e-modal-stack-open-child">Open child confirmation</button>
+      </div>
+    `);
+    dialog.querySelector("#e2e-modal-stack-open-child")?.addEventListener("click", () => {
+      void confirmDialog("Confirm generic modal stack", "Apply");
+    });
+  });
+
+  const trigger = page.locator("#e2e-modal-stack-trigger");
+  const parent = page.locator('.modal[aria-label="Generic modal stack parent"]');
+  const openChild = parent.getByRole("button", { name: "Open child confirmation" });
+  await waitVisible(parent, "generic createModal parent");
+  await openChild.click();
+  const child = page.getByRole("alertdialog");
+  await waitVisible(child, "generic confirmDialog child");
+  await expectAttribute(parent, "aria-hidden", "true", "generic parent while child is open");
+  assert(
+    await parent.evaluate((element) => element.hasAttribute("inert")),
+    "Generic parent should be inert while confirmDialog is open",
+  );
+
+  await child.getByRole("button", { name: /^Cancel$/i }).click();
+  await child.waitFor({ state: "detached" });
+  assert(await parent.getAttribute("aria-hidden") === null,
+    "Generic parent aria-hidden state should restore after confirmDialog cancel");
+  assert(
+    !(await parent.evaluate((element) => element.hasAttribute("inert"))),
+    "Generic parent inert state should restore after confirmDialog cancel",
+  );
+  await page.waitForFunction(
+    () => document.activeElement?.id === "e2e-modal-stack-open-child",
+    undefined,
+    { timeout: 10000 },
+  );
+
+  await openChild.click();
+  const childAfterSubmit = page.getByRole("alertdialog");
+  await waitVisible(childAfterSubmit, "generic confirmDialog child before submit");
+  await expectAttribute(parent, "aria-hidden", "true", "generic parent before confirmDialog submit");
+  await childAfterSubmit.getByRole("button", { name: /^Apply$/i }).click();
+  await childAfterSubmit.waitFor({ state: "detached" });
+  assert(await parent.getAttribute("aria-hidden") === null,
+    "Generic parent aria-hidden state should restore after confirmDialog submit");
+  assert(
+    !(await parent.evaluate((element) => element.hasAttribute("inert"))),
+    "Generic parent inert state should restore after confirmDialog submit",
+  );
+  await page.waitForFunction(
+    () => document.activeElement?.id === "e2e-modal-stack-open-child",
+    undefined,
+    { timeout: 10000 },
+  );
+
+  await parent.getByRole("button", { name: "Close Generic modal stack parent" }).click();
+  await parent.waitFor({ state: "detached" });
+  await page.waitForFunction(
+    () => document.activeElement?.id === "e2e-modal-stack-trigger",
+    undefined,
+    { timeout: 10000 },
+  );
+  await trigger.evaluate((element) => element.remove());
+}
+
 async function checkDesktop(browser) {
   const notificationRowsBefore = notificationSnapshot();
   assertNoActiveGeneratedWateringNotification(notificationRowsBefore);
@@ -306,6 +381,8 @@ async function checkDesktop(browser) {
   await settingsAfterCustom.waitFor({ state: "detached", timeout: 10000 });
   await waitVisible(todayRegion.getByText("Shown because", { exact: false }), "preference guardrail copy");
 
+  await exerciseGenericModalStack(page);
+
   await page.evaluate(() => {
     window.__attentionMapStagePointerDowns = 0;
     const stageElement = document.querySelector(".map-stage");
@@ -407,10 +484,35 @@ async function checkMobile(browser) {
   await sheet.getByTestId("attention-today-settings").click();
   const settings = page.getByRole("dialog", { name: /attention settings/i });
   await waitVisible(settings, "mobile attention settings dialog");
-  await page.keyboard.press("Escape");
+  await expectAttribute(mobileSheetShell, "aria-hidden", "true", "mobile Today sheet behind settings");
+  assert(
+    await mobileSheetShell.evaluate((element) => element.hasAttribute("inert")),
+    "Mobile Today sheet should be inert while settings is open",
+  );
+  await settings.getByTestId("attention-preferences-cancel").click();
   await settings.waitFor({ state: "detached", timeout: 10000 });
   await expectAttribute(handle, "aria-expanded", "true", "mobile Today handle while settings closes");
   await waitVisible(sheet, "mobile Today sheet after settings Escape");
+  await expectAttribute(mobileSheetShell, "aria-hidden", "false", "mobile Today sheet after settings cancel");
+  assert(
+    !(await mobileSheetShell.evaluate((element) => element.hasAttribute("inert"))),
+    "Mobile Today sheet should leave inert state after settings cancel",
+  );
+  let focusedTestId = await page.evaluate(() => document.activeElement?.getAttribute("data-testid"));
+  assert(focusedTestId === "attention-today-settings", "Cancel should restore focus to Today settings");
+
+  await sheet.getByTestId("attention-today-settings").click();
+  const settingsAfterSubmit = page.getByRole("dialog", { name: /attention settings/i });
+  await waitVisible(settingsAfterSubmit, "mobile attention settings dialog before submit");
+  await settingsAfterSubmit.getByTestId("attention-preferences-save").click();
+  await settingsAfterSubmit.waitFor({ state: "detached", timeout: 10000 });
+  await expectAttribute(mobileSheetShell, "aria-hidden", "false", "mobile Today sheet after settings submit");
+  assert(
+    !(await mobileSheetShell.evaluate((element) => element.hasAttribute("inert"))),
+    "Mobile Today sheet should leave inert state after settings submit",
+  );
+  focusedTestId = await page.evaluate(() => document.activeElement?.getAttribute("data-testid"));
+  assert(focusedTestId === "attention-today-settings", "Submit should restore focus to Today settings");
 
   await page.keyboard.press("Escape");
   await expectAttribute(handle, "aria-expanded", "false", "mobile Today handle after Escape");
@@ -422,7 +524,7 @@ async function checkMobile(browser) {
     await mobileSheetShell.evaluate((element) => element.hasAttribute("inert")),
     "Escape should make the mobile Today sheet inert",
   );
-  const focusedTestId = await page.evaluate(() => document.activeElement?.getAttribute("data-testid"));
+  focusedTestId = await page.evaluate(() => document.activeElement?.getAttribute("data-testid"));
   assert(focusedTestId === "attention-today-mobile-handle", "Focus should return to the mobile Today handle");
 
   await handle.focus();

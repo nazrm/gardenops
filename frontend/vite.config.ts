@@ -39,6 +39,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": apiProxyTarget,
+      "/calendar/subscriptions": apiProxyTarget,
     },
   },
 });

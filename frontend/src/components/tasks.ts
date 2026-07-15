@@ -2,6 +2,10 @@ import type { GardenTask, TaskType } from "../core/models";
 import { getLocale, t } from "../core/i18n";
 import { renderEmptyState } from "./emptyState";
 import { taskSnoozePolicy } from "../features/taskSnoozePolicy";
+import { canQueueCompletionOffline } from "../features/taskCompletionFlow";
+import type { OfflineTaskActionState } from "../services/offlineQueue";
+
+export type TaskListDataState = "live" | "cached" | "unavailable";
 
 const TASK_TYPE_ICONS: Record<TaskType, string> = {
   water: "\u{1F4A7}",
@@ -20,6 +24,7 @@ const TASK_TYPE_ICONS: Record<TaskType, string> = {
 export interface TaskListCallbacks {
   onComplete: (task: GardenTask) => void;
   onSnooze: (task: GardenTask) => void;
+  onSnoozeDate: (task: GardenTask) => void;
   onSkip: (task: GardenTask) => void;
   onReschedule: (task: GardenTask) => void;
   onEdit: (task: GardenTask) => void;
@@ -27,9 +32,14 @@ export interface TaskListCallbacks {
   onPlantClick: (pltId: string) => void;
   onPlotClick: (plotId: string) => void;
   onToggleSelection?: ((task: GardenTask, selected: boolean) => void) | undefined;
+  onDiscardOfflineAction?: ((state: OfflineTaskActionState) => void) | undefined;
+  onRetryOfflineAction?: ((state: OfflineTaskActionState) => void) | undefined;
+  offlineTaskActions?: ReadonlyMap<string, OfflineTaskActionState> | undefined;
   selectedTaskIds?: ReadonlySet<string> | undefined;
   onEmptyAction?: (() => void) | undefined;
   canWrite?: boolean | undefined;
+  dataState?: TaskListDataState | undefined;
+  online?: boolean | undefined;
 }
 
 function isBatchActionable(task: GardenTask): boolean {
@@ -51,6 +61,24 @@ function isOverdue(dueOn: string): boolean {
   today.setHours(0, 0, 0, 0);
   const due = new Date(dueOn + "T00:00:00");
   return due < today;
+}
+
+function presentationDueOn(task: GardenTask): string {
+  return task.status === "snoozed" && task.snoozed_until
+    ? task.snoozed_until
+    : task.due_on;
+}
+
+function isExpiredSnooze(task: GardenTask): boolean {
+  return task.status === "snoozed"
+    && Boolean(task.snoozed_until)
+    && isOverdue(task.snoozed_until!);
+}
+
+function isOverdueForPresentation(task: GardenTask): boolean {
+  if (task.status === "expired") return true;
+  return (task.status === "pending" || task.status === "snoozed")
+    && isOverdue(presentationDueOn(task));
 }
 
 function formatDueDate(dueOn: string): string {
@@ -79,8 +107,15 @@ function createTaskCard(
   cbs: TaskListCallbacks,
   plantNames: Map<string, string>,
 ): HTMLElement {
+  const overdue = isOverdueForPresentation(task);
   const card = document.createElement("div");
-  card.className = `task-card${task.status === "completed" ? " task-completed" : ""}`;
+  card.className = `task-card${task.status === "completed" ? " task-completed" : ""}${overdue ? " task-overdue" : ""}`;
+  card.dataset["taskId"] = task.id;
+  const offlineAction = cbs.offlineTaskActions?.get(task.id);
+  if (offlineAction) {
+    card.classList.add(`task-offline-${offlineAction.status}`);
+    card.dataset["offlineTaskState"] = offlineAction.status;
+  }
   if (cbs.selectedTaskIds?.has(task.id)) {
     card.classList.add("task-card-selected");
   }
@@ -88,7 +123,12 @@ function createTaskCard(
   const header = document.createElement("div");
   header.className = "task-card-header";
 
-  if (cbs.canWrite !== false && cbs.onToggleSelection && isBatchActionable(task)) {
+  if (
+    cbs.canWrite !== false
+    && cbs.onToggleSelection
+    && isBatchActionable(task)
+    && !offlineAction
+  ) {
     const selectionWrap = document.createElement("label");
     selectionWrap.className = "task-card-select";
     const checkbox = document.createElement("input");
@@ -125,18 +165,31 @@ function createTaskCard(
 
   if (task.status !== "pending") {
     const statusChip = document.createElement("span");
-    statusChip.className = `task-status-chip status-${task.status}`;
-    statusChip.textContent = t(`tasks.status_${task.status}`);
+    const expiredSnooze = isExpiredSnooze(task) || task.status === "expired";
+    statusChip.className = `task-status-chip status-${expiredSnooze ? "overdue" : task.status}`;
+    statusChip.textContent = expiredSnooze
+      ? t("tasks.overdue")
+      : t(`tasks.status_${task.status}`);
+    header.appendChild(statusChip);
+  }
+
+  if (offlineAction) {
+    const statusChip = document.createElement("span");
+    statusChip.className = `task-status-chip task-offline-status status-${offlineAction.status}`;
+    statusChip.textContent = t(`offline.task_${offlineAction.status}`, {
+      action: t(`tasks.action_${offlineAction.action}`),
+    });
     header.appendChild(statusChip);
   }
 
   const due = document.createElement("span");
   due.className = "task-card-due";
-  if (task.status === "pending" && isOverdue(task.due_on)) {
+  const dueOn = presentationDueOn(task);
+  if (overdue) {
     due.classList.add("overdue");
-    due.textContent = `${t("tasks.overdue")} \u2014 ${formatDueDate(task.due_on)}`;
+    due.textContent = `${t("tasks.overdue")} \u2014 ${formatDueDate(dueOn)}`;
   } else {
-    due.textContent = formatDueDate(task.due_on);
+    due.textContent = formatDueDate(dueOn);
   }
   header.appendChild(due);
 
@@ -185,6 +238,46 @@ function createTaskCard(
   const footer = document.createElement("div");
   footer.className = "task-card-footer";
 
+  if (offlineAction) {
+    const offlineState = document.createElement("div");
+    offlineState.className = `task-offline-state task-offline-state--${offlineAction.status}`;
+    offlineState.setAttribute("role", offlineAction.status === "failed" ? "alert" : "status");
+    const message = document.createElement("span");
+    message.textContent = t(`offline.task_${offlineAction.status}`, {
+      action: t(`tasks.action_${offlineAction.action}`),
+    });
+    offlineState.appendChild(message);
+    if (offlineAction.status === "failed" && offlineAction.lastError) {
+      const error = document.createElement("span");
+      error.className = "task-offline-error";
+      error.textContent = offlineAction.lastError;
+      offlineState.appendChild(error);
+    }
+    const recovery = document.createElement("div");
+    recovery.className = "task-offline-recovery";
+    if (cbs.canWrite !== false && offlineAction.status === "failed" && cbs.onRetryOfflineAction) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "task-action-btn task-offline-retry";
+      retry.textContent = t("offline.retry");
+      retry.addEventListener("click", () => cbs.onRetryOfflineAction?.(offlineAction));
+      recovery.appendChild(retry);
+    }
+    if (
+      cbs.onDiscardOfflineAction
+      && (cbs.canWrite !== false || offlineAction.status === "failed")
+    ) {
+      const discard = document.createElement("button");
+      discard.type = "button";
+      discard.className = "task-action-btn task-offline-discard";
+      discard.textContent = t("offline.discard");
+      discard.addEventListener("click", () => cbs.onDiscardOfflineAction?.(offlineAction));
+      recovery.appendChild(discard);
+    }
+    offlineState.appendChild(recovery);
+    card.appendChild(offlineState);
+  }
+
   if (task.rule_source) {
     const rule = document.createElement("span");
     rule.className = "task-card-rule";
@@ -195,11 +288,20 @@ function createTaskCard(
   const actions = document.createElement("div");
   actions.className = "task-card-actions";
 
-  if (cbs.canWrite !== false && (task.status === "pending" || task.status === "snoozed")) {
+  if (
+    cbs.canWrite !== false
+    && !offlineAction
+    && (task.status === "pending" || task.status === "snoozed")
+  ) {
+    const offlineUnsupportedCompletion = cbs.online === false && !canQueueCompletionOffline(task);
     const completeBtn = document.createElement("button");
     completeBtn.type = "button";
     completeBtn.className = "task-action-btn task-action-complete";
     completeBtn.textContent = t("tasks.action_complete");
+    completeBtn.disabled = offlineUnsupportedCompletion;
+    if (offlineUnsupportedCompletion) {
+      completeBtn.title = t("offline.indicator_offline");
+    }
     completeBtn.addEventListener("click", () => cbs.onComplete(task));
     actions.appendChild(completeBtn);
 
@@ -210,6 +312,20 @@ function createTaskCard(
     snoozeBtn.addEventListener("click", () => cbs.onSnooze(task));
     actions.appendChild(snoozeBtn);
 
+    const snoozeDateBtn = document.createElement("button");
+    snoozeDateBtn.type = "button";
+    snoozeDateBtn.className = "task-action-btn";
+    snoozeDateBtn.textContent = t("tasks.snooze_change_date");
+    snoozeDateBtn.addEventListener("click", () => cbs.onSnoozeDate(task));
+    actions.appendChild(snoozeDateBtn);
+
+    const rescheduleBtn = document.createElement("button");
+    rescheduleBtn.type = "button";
+    rescheduleBtn.className = "task-action-btn";
+    rescheduleBtn.textContent = t("tasks.action_reschedule");
+    rescheduleBtn.addEventListener("click", () => cbs.onReschedule(task));
+    actions.appendChild(rescheduleBtn);
+
     const skipBtn = document.createElement("button");
     skipBtn.type = "button";
     skipBtn.className = "task-action-btn";
@@ -218,11 +334,14 @@ function createTaskCard(
     actions.appendChild(skipBtn);
   }
 
-  if (cbs.canWrite !== false) {
+  if (cbs.canWrite !== false && !offlineAction) {
+    const offlineUnsupportedMutation = cbs.online === false;
     const editBtn = document.createElement("button");
     editBtn.type = "button";
     editBtn.className = "task-action-btn";
     editBtn.textContent = t("common.edit");
+    editBtn.disabled = offlineUnsupportedMutation;
+    if (offlineUnsupportedMutation) editBtn.title = t("offline.indicator_offline");
     editBtn.addEventListener("click", () => cbs.onEdit(task));
     actions.appendChild(editBtn);
 
@@ -230,6 +349,8 @@ function createTaskCard(
     deleteBtn.type = "button";
     deleteBtn.className = "task-action-btn task-action-delete";
     deleteBtn.textContent = t("common.delete");
+    deleteBtn.disabled = offlineUnsupportedMutation;
+    if (offlineUnsupportedMutation) deleteBtn.title = t("offline.indicator_offline");
     deleteBtn.addEventListener("click", () => cbs.onDelete(task));
     actions.appendChild(deleteBtn);
   }
@@ -250,8 +371,26 @@ export function renderTaskList(
 ): void {
   container.replaceChildren();
 
+  if (cbs.dataState === "unavailable") {
+    const unavailable = document.createElement("div");
+    unavailable.className = "offline-data-state offline-data-state--unavailable";
+    unavailable.setAttribute("role", "status");
+    unavailable.textContent = t("tasks.offline_unavailable");
+    container.appendChild(unavailable);
+    return;
+  }
+  if (cbs.dataState === "cached") {
+    const cached = document.createElement("div");
+    cached.className = "offline-data-state offline-data-state--cached";
+    cached.setAttribute("role", "status");
+    cached.textContent = t("tasks.offline_cached");
+    container.appendChild(cached);
+  }
+
   if (tasks.length === 0) {
-    renderEmptyState(container, {
+    const emptyContainer = document.createElement("div");
+    container.appendChild(emptyContainer);
+    renderEmptyState(emptyContainer, {
       icon: "\u2600\uFE0F",
       headline: t("tasks.empty"),
       hint: t("tasks.empty_hint"),
@@ -269,7 +408,7 @@ export function renderTaskList(
 export interface TaskFormOptions {
   task?: GardenTask | undefined;
   readOnly?: boolean | undefined;
-  onSave: (data: Record<string, unknown>) => void;
+  onSave: (data: Record<string, unknown>) => Promise<void> | void;
   onCancel: () => void;
 }
 
@@ -277,9 +416,10 @@ export function createTaskForm(options: TaskFormOptions): HTMLElement {
   const { task, readOnly = false, onSave, onCancel } = options;
   const form = document.createElement("form");
   form.className = "modal-form";
-  form.addEventListener("submit", (e) => e.preventDefault());
+  form.setAttribute("aria-labelledby", "task-form-title");
 
-  const heading = document.createElement("h3");
+  const heading = document.createElement("h2");
+  heading.id = "task-form-title";
   heading.textContent = t("tasks.form_title");
   form.appendChild(heading);
 
@@ -289,6 +429,8 @@ export function createTaskForm(options: TaskFormOptions): HTMLElement {
   const typeLabel = document.createElement("label");
   typeLabel.textContent = t("tasks.form_type");
   const typeSelect = document.createElement("select");
+  typeSelect.id = "task-form-type";
+  typeLabel.htmlFor = typeSelect.id;
   typeSelect.required = true;
   const taskTypes: Array<[string, string]> = [
     ["water", t("tasks.type_water")],
@@ -320,6 +462,8 @@ export function createTaskForm(options: TaskFormOptions): HTMLElement {
   const titleLabel = document.createElement("label");
   titleLabel.textContent = t("tasks.form_name");
   const titleInput = document.createElement("input");
+  titleInput.id = "task-form-name";
+  titleLabel.htmlFor = titleInput.id;
   titleInput.type = "text";
   titleInput.maxLength = 200;
   titleInput.value = task?.title || "";
@@ -333,6 +477,8 @@ export function createTaskForm(options: TaskFormOptions): HTMLElement {
   const descLabel = document.createElement("label");
   descLabel.textContent = t("tasks.form_description");
   const descInput = document.createElement("textarea");
+  descInput.id = "task-form-description";
+  descLabel.htmlFor = descInput.id;
   descInput.maxLength = 4000;
   descInput.rows = 3;
   descInput.value = task?.description || "";
@@ -346,6 +492,8 @@ export function createTaskForm(options: TaskFormOptions): HTMLElement {
   const sevLabel = document.createElement("label");
   sevLabel.textContent = t("tasks.form_severity");
   const sevSelect = document.createElement("select");
+  sevSelect.id = "task-form-severity";
+  sevLabel.htmlFor = sevSelect.id;
   for (const sev of ["low", "normal", "high"] as const) {
     const opt = document.createElement("option");
     opt.value = sev;
@@ -363,6 +511,8 @@ export function createTaskForm(options: TaskFormOptions): HTMLElement {
   const dueLabel = document.createElement("label");
   dueLabel.textContent = t("tasks.form_due");
   const dueInput = document.createElement("input");
+  dueInput.id = "task-form-due";
+  dueLabel.htmlFor = dueInput.id;
   dueInput.type = "date";
   dueInput.required = true;
   dueInput.value = task?.due_on || new Date().toISOString().slice(0, 10);
@@ -374,10 +524,12 @@ export function createTaskForm(options: TaskFormOptions): HTMLElement {
   const btnRow = document.createElement("div");
   btnRow.className = "form-actions";
   const saveBtn = document.createElement("button");
-  saveBtn.type = "button";
+  saveBtn.type = "submit";
   saveBtn.className = "btn btn-primary";
   saveBtn.textContent = t("common.save");
-  saveBtn.addEventListener("click", () => {
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!form.reportValidity()) return;
     const data: Record<string, unknown> = {
       task_type: typeSelect.value,
       title: titleInput.value,
@@ -385,7 +537,18 @@ export function createTaskForm(options: TaskFormOptions): HTMLElement {
       severity: sevSelect.value,
       due_on: dueInput.value,
     };
-    onSave(data);
+    saveBtn.disabled = true;
+    cancelBtn.disabled = true;
+    form.setAttribute("aria-busy", "true");
+    try {
+      await onSave(data);
+    } finally {
+      if (form.isConnected) {
+        saveBtn.disabled = false;
+        cancelBtn.disabled = false;
+        form.removeAttribute("aria-busy");
+      }
+    }
   });
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";

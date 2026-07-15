@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from gardenops.db import DbConn, current_timestamp_ms
 from gardenops.services.attention.outcomes import upsert_attention_outcome
 from gardenops.services.attention.types import NO_ACTION_RETENTION_DAYS
+from gardenops.services.task_windows import weekly_watering_recurrence_deadline
+from gardenops.services.weather_service import is_frost_vulnerable_at_temperature
 
 _logger = logging.getLogger(__name__)
 
@@ -231,30 +233,63 @@ def sync_issue_followup_task(
 
 _WATERING_KEYWORDS = ("regular", "often", "jevnlig", "ofte", "mye", "frequently")
 _WEATHER_TASK_LOCK_SEED = 0x47415244454E4F50
+_RAIN_REASSESSMENT_DELAY_DAYS = 2
 
-_HARDINESS_SQL = """
+_OUTDOOR_HARDINESS_SQL = """
     SELECT p.plt_id, p.name, p.hardiness
     FROM plants p
     JOIN plant_ownership po ON po.plt_id = p.plt_id
     WHERE po.garden_id = %s
       AND p.hardiness != '' AND p.hardiness IS NOT NULL
+      AND EXISTS (
+          SELECT 1
+          FROM plot_plants pp
+          JOIN plots outdoor_plot ON outdoor_plot.plot_id = pp.plot_id
+          WHERE pp.plt_id = p.plt_id
+            AND outdoor_plot.garden_id = po.garden_id
+            AND outdoor_plot.grid_row IS NOT NULL
+      )
 """
 
-_CARE_WATERING_SQL = """
+_OUTDOOR_CARE_WATERING_SQL = """
     SELECT p.plt_id, p.name, p.care_watering
     FROM plants p
     JOIN plant_ownership po ON po.plt_id = p.plt_id
     WHERE po.garden_id = %s
       AND p.care_watering IS NOT NULL AND p.care_watering != ''
+      AND EXISTS (
+          SELECT 1
+          FROM plot_plants pp
+          JOIN plots outdoor_plot ON outdoor_plot.plot_id = pp.plot_id
+          WHERE pp.plt_id = p.plt_id
+            AND outdoor_plot.garden_id = po.garden_id
+            AND outdoor_plot.grid_row IS NOT NULL
+      )
 """
 
 
-def _is_frost_vulnerable(plant: dict[str, Any]) -> bool:
-    hardiness = str(plant["hardiness"] or "").lower()
-    return not any(h in hardiness for h in ("h7", "h6", "zone 1", "zone 2", "zone 3"))
+def _frost_min_temp_from_alert(alert: Any) -> float | None:
+    try:
+        metadata = json.loads(str(alert["metadata_json"] or "{}"))
+    except TypeError, ValueError, json.JSONDecodeError:
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    try:
+        return float(metadata["coldest"])
+    except KeyError, TypeError, ValueError:
+        return None
 
 
-def _needs_extra_watering(plant: dict[str, Any]) -> bool:
+def _is_frost_vulnerable(plant: dict[str, Any], alert: Any) -> bool:
+    min_temp = _frost_min_temp_from_alert(alert)
+    return min_temp is not None and is_frost_vulnerable_at_temperature(
+        str(plant["hardiness"] or ""),
+        min_temp,
+    )
+
+
+def _needs_extra_watering(plant: dict[str, Any], _alert: Any) -> bool:
     watering = str(plant["care_watering"]).lower()
     return any(kw in watering for kw in _WATERING_KEYWORDS)
 
@@ -274,30 +309,54 @@ def _create_weather_tasks(
     actor_user_id: int | None,
     *,
     plant_sql: str,
-    plant_filter: Callable[[dict[str, Any]], bool],
+    plant_filter: Callable[[dict[str, Any], Any], bool],
     task_type: str,
     rule_prefix: str,
     severity: str,
     title_tpl: str,
     desc_en_tpl: str,
     desc_no_tpl: str,
+    outdoor_plot_links_only: bool = False,
+    now_ms: int | None = None,
 ) -> int:
     """Create weather-alert tasks for matching plants. Returns count created."""
     alert = db.execute(
-        "SELECT valid_from FROM weather_alerts WHERE id = %s AND garden_id = %s",
+        "SELECT valid_from, valid_until, metadata_json "
+        "FROM weather_alerts WHERE id = %s AND garden_id = %s AND dismissed = 0",
         (alert_id, garden_id),
     ).fetchone()
     if not alert:
         return 0
 
     _lock_weather_task_generation(db, garden_id, alert_id)
-    due_on = str(alert["valid_from"])[:10]
-    now_ms = current_timestamp_ms()
+    original_due_on = str(alert["valid_from"])[:10]
+    effective_now_ms = now_ms if now_ms is not None else current_timestamp_ms()
+    today_iso = datetime.fromtimestamp(effective_now_ms / 1000, UTC).date().isoformat()
+    due_on = max(original_due_on, today_iso)
     created = 0
 
     matching_plants = [
-        plant for plant in db.execute(plant_sql, (garden_id,)).fetchall() if plant_filter(plant)
+        plant
+        for plant in db.execute(plant_sql, (garden_id,)).fetchall()
+        if plant_filter(plant, alert)
     ]
+    try:
+        alert_metadata = json.loads(str(alert["metadata_json"] or "{}"))
+    except TypeError, ValueError, json.JSONDecodeError:
+        alert_metadata = {}
+    if isinstance(alert_metadata, dict) and alert_metadata.get(
+        "forecast_plant_links_authoritative"
+    ):
+        linked_plant_ids = {
+            str(row["plt_id"])
+            for row in db.execute(
+                "SELECT plt_id FROM weather_alert_plants WHERE alert_id = %s",
+                (alert_id,),
+            ).fetchall()
+        }
+        matching_plants = [
+            plant for plant in matching_plants if str(plant["plt_id"]) in linked_plant_ids
+        ]
     if not matching_plants:
         return 0
 
@@ -323,18 +382,34 @@ def _create_weather_tasks(
     if not pending_plants:
         return 0
 
+    pending_plant_ids = [plt_id for _, plt_id, _ in pending_plants]
+    if outdoor_plot_links_only:
+        plot_rows = db.execute(
+            """
+            SELECT pp.plt_id, pp.plot_id
+            FROM plot_plants pp
+            JOIN plots p ON p.plot_id = pp.plot_id
+            WHERE p.garden_id = %s
+              AND p.grid_row IS NOT NULL
+              AND pp.plt_id = ANY(%s)
+            ORDER BY pp.plt_id, pp.plot_id
+            """,
+            (garden_id, pending_plant_ids),
+        ).fetchall()
+    else:
+        plot_rows = db.execute(
+            """
+            SELECT pp.plt_id, pp.plot_id
+            FROM plot_plants pp
+            JOIN plot_ownership po ON pp.plot_id = po.plot_id
+            WHERE po.garden_id = %s
+              AND pp.plt_id = ANY(%s)
+            ORDER BY pp.plt_id, pp.plot_id
+            """,
+            (garden_id, pending_plant_ids),
+        ).fetchall()
     plot_ids_by_plant: dict[str, list[str]] = {}
-    for row in db.execute(
-        """
-        SELECT pp.plt_id, pp.plot_id
-        FROM plot_plants pp
-        JOIN plot_ownership po ON pp.plot_id = po.plot_id
-        WHERE po.garden_id = %s
-          AND pp.plt_id = ANY(%s)
-        ORDER BY pp.plt_id, pp.plot_id
-        """,
-        (garden_id, [plt_id for _, plt_id, _ in pending_plants]),
-    ).fetchall():
+    for row in plot_rows:
         plot_ids_by_plant.setdefault(str(row["plt_id"]), []).append(str(row["plot_id"]))
 
     for plant, plt_id, rule_source in pending_plants:
@@ -349,7 +424,15 @@ def _create_weather_tasks(
         else:
             title = title_tpl.format(name=pname)
 
-        meta = json.dumps({"description_no": desc_no_tpl.format(name=pname)})
+        metadata = {
+            "description_no": desc_no_tpl.format(name=pname),
+            "weather_alert_id": alert_id,
+            "weather_valid_from": str(alert["valid_from"]),
+            "weather_valid_until": str(alert["valid_until"]),
+        }
+        if due_on != original_due_on:
+            metadata["generated_original_due_on"] = original_due_on
+        meta = json.dumps(metadata)
         brow = db.execute(
             """INSERT INTO garden_tasks
                (garden_id, task_type, title, description, status,
@@ -367,8 +450,8 @@ def _create_weather_tasks(
                 rule_source,
                 meta,
                 actor_user_id,
-                now_ms,
-                now_ms,
+                effective_now_ms,
+                effective_now_ms,
             ),
         ).fetchone()
         assert brow is not None
@@ -394,6 +477,8 @@ def on_frost_alert(
     garden_id: int,
     alert_id: int,
     actor_user_id: int | None,
+    *,
+    now_ms: int | None = None,
 ) -> int:
     """Generate protection tasks for frost-vulnerable plants."""
     return _create_weather_tasks(
@@ -401,7 +486,7 @@ def on_frost_alert(
         garden_id,
         alert_id,
         actor_user_id,
-        plant_sql=_HARDINESS_SQL,
+        plant_sql=_OUTDOOR_HARDINESS_SQL,
         plant_filter=_is_frost_vulnerable,
         task_type="protect",
         rule_prefix="auto:frost_protect",
@@ -409,6 +494,8 @@ def on_frost_alert(
         title_tpl="Protect from frost: {name}",
         desc_en_tpl="Frost alert \u2014 cover or move {name} to shelter",
         desc_no_tpl="Frostvarsel \u2014 dekk til eller flytt {name} i ly",
+        outdoor_plot_links_only=True,
+        now_ms=now_ms,
     )
 
 
@@ -417,6 +504,8 @@ def on_heat_alert(
     garden_id: int,
     alert_id: int,
     actor_user_id: int | None,
+    *,
+    now_ms: int | None = None,
 ) -> int:
     """Generate shade/water tasks for watering-sensitive plants."""
     return _create_weather_tasks(
@@ -424,7 +513,7 @@ def on_heat_alert(
         garden_id,
         alert_id,
         actor_user_id,
-        plant_sql=_CARE_WATERING_SQL,
+        plant_sql=_OUTDOOR_CARE_WATERING_SQL,
         plant_filter=_needs_extra_watering,
         task_type="protect",
         rule_prefix="auto:heat_protect",
@@ -432,6 +521,8 @@ def on_heat_alert(
         title_tpl="Provide shade: {name}",
         desc_en_tpl="Heat wave \u2014 provide shade and extra water for {name}",
         desc_no_tpl="Heteb\u00f8lge \u2014 gi skygge og ekstra vann til {name}",
+        outdoor_plot_links_only=True,
+        now_ms=now_ms,
     )
 
 
@@ -440,6 +531,8 @@ def on_dry_spell_alert(
     garden_id: int,
     alert_id: int,
     actor_user_id: int | None,
+    *,
+    now_ms: int | None = None,
 ) -> int:
     """Generate watering tasks for watering-sensitive plants during dry spells."""
     return _create_weather_tasks(
@@ -447,7 +540,7 @@ def on_dry_spell_alert(
         garden_id,
         alert_id,
         actor_user_id,
-        plant_sql=_CARE_WATERING_SQL,
+        plant_sql=_OUTDOOR_CARE_WATERING_SQL,
         plant_filter=_needs_extra_watering,
         task_type="water",
         rule_prefix="auto:dry_water",
@@ -455,6 +548,8 @@ def on_dry_spell_alert(
         title_tpl="Water regularly: {name}",
         desc_en_tpl="Dry spell \u2014 water {name} regularly, check soil moisture",
         desc_no_tpl="T\u00f8rkeperiode \u2014 vann {name} jevnlig, sjekk jordfuktighet",
+        outdoor_plot_links_only=True,
+        now_ms=now_ms,
     )
 
 
@@ -463,6 +558,8 @@ def on_rain_alert(
     garden_id: int,
     alert_id: int,
     actor_user_id: int | None,
+    *,
+    now_ms: int | None = None,
 ) -> int:
     """Generate drainage check tasks and reschedule pending watering tasks."""
     created = _create_weather_tasks(
@@ -470,7 +567,7 @@ def on_rain_alert(
         garden_id,
         alert_id,
         actor_user_id,
-        plant_sql=_CARE_WATERING_SQL,
+        plant_sql=_OUTDOOR_CARE_WATERING_SQL,
         plant_filter=_needs_extra_watering,
         task_type="protect",
         rule_prefix="auto:rain_drainage",
@@ -478,8 +575,10 @@ def on_rain_alert(
         title_tpl="Check drainage: {name}",
         desc_en_tpl="Heavy rain \u2014 check drainage around {name}, avoid waterlogging",
         desc_no_tpl="Kraftig regn \u2014 sjekk drenering rundt {name}, unng\u00e5 vannmetning",
+        outdoor_plot_links_only=True,
+        now_ms=now_ms,
     )
-    _reschedule_watering_during_rain(db, garden_id, alert_id)
+    _reschedule_watering_during_rain(db, garden_id, alert_id, now_ms=now_ms)
     return created
 
 
@@ -563,6 +662,8 @@ def _write_watering_rescheduled_by_rain_outcome(
     plant_ids: tuple[str, ...],
     plot_ids: tuple[str, ...],
     now_ms: int,
+    recurrence_deadline: str | None = None,
+    occurrence_expired: bool = False,
 ) -> None:
     rule_source = str(task["rule_source"] or "")
     target_id = plant_ids[0] if plant_ids else _plant_id_from_water_rule(rule_source)
@@ -583,6 +684,10 @@ def _write_watering_rescheduled_by_rain_outcome(
         "alert_valid_until": str(alert["valid_until"]),
         "alert": alert_metadata,
     }
+    if recurrence_deadline:
+        metadata["recurrence_deadline"] = recurrence_deadline
+    if occurrence_expired:
+        metadata["occurrence_expired"] = True
     if rain_mm is not None:
         metadata["rain_mm"] = rain_mm
     upsert_attention_outcome(
@@ -595,11 +700,22 @@ def _write_watering_rescheduled_by_rain_outcome(
         source_public_id=rule_source,
         target_type="plant",
         target_id=target_id,
-        title="Watering rescheduled by rain",
-        explanation=(
-            f"{_format_rain_mm(rain_mm)} moved {task_title} from {old_due_on} to {new_due_on}."
+        title=(
+            "Watering occurrence covered by rain"
+            if occurrence_expired
+            else "Watering rescheduled by rain"
         ),
-        reason="Rain rescheduled watering",
+        explanation=(
+            f"{_format_rain_mm(rain_mm)} covers {task_title} through its weekly "
+            "recurrence; the next occurrence replaces it."
+            if occurrence_expired
+            else f"{_format_rain_mm(rain_mm)} moved {task_title} from {old_due_on} to {new_due_on}."
+        ),
+        reason=(
+            "Rain covers watering through recurrence"
+            if occurrence_expired
+            else "Rain rescheduled watering"
+        ),
         plant_ids=outcome_plant_ids,
         plot_ids=plot_ids,
         metadata=metadata,
@@ -622,6 +738,8 @@ def _reschedule_watering_during_rain(
     db: DbConn,
     garden_id: int,
     alert_id: int,
+    *,
+    now_ms: int | None = None,
 ) -> None:
     """Reschedule seasonal watering tasks that fall within a rain alert window."""
     alert = db.execute(
@@ -640,50 +758,154 @@ def _reschedule_watering_during_rain(
     # not auto-generated drainage tasks ('auto:rain_drainage:').
     rows = db.execute(
         """
-        SELECT id, public_id, title, due_on, rule_source, metadata_json
+        SELECT id, public_id, title, description, due_on, snoozed_until, status,
+               rule_source, metadata_json, COALESCE(snoozed_until, due_on) AS action_on
         FROM garden_tasks
-        WHERE garden_id = %s AND task_type = 'water' AND status = 'pending'
+        WHERE garden_id = %s AND task_type = 'water' AND status IN ('pending', 'snoozed')
           AND rule_source LIKE 'water:%%'
-          AND due_on >= %s AND due_on <= %s
+          AND COALESCE(snoozed_until, due_on) >= %s
+          AND COALESCE(snoozed_until, due_on) <= %s
+          AND EXISTS (
+              SELECT 1
+              FROM garden_task_plants gtp
+              JOIN plot_plants pp ON pp.plt_id = gtp.plt_id
+              JOIN plots p ON p.plot_id = pp.plot_id
+              WHERE gtp.task_id = garden_tasks.id
+                AND gtp.plt_id = split_part(garden_tasks.rule_source, ':', 2)
+                AND p.garden_id = %s
+                AND p.grid_row IS NOT NULL
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM garden_task_plants gtp
+              JOIN plot_plants pp ON pp.plt_id = gtp.plt_id
+              JOIN plots p ON p.plot_id = pp.plot_id
+              WHERE gtp.task_id = garden_tasks.id
+                AND gtp.plt_id = split_part(garden_tasks.rule_source, ':', 2)
+                AND p.garden_id = %s
+                AND p.grid_row IS NULL
+          )
+        FOR UPDATE SKIP LOCKED
         """,
-        (garden_id, valid_from, valid_until),
+        (garden_id, valid_from, valid_until, garden_id, garden_id),
     ).fetchall()
     if not rows:
         return
-    # Reschedule to one day after the rain alert ends
-    new_due = (date.fromisoformat(valid_until) + timedelta(days=1)).isoformat()
-    now_ms = current_timestamp_ms()
+    # Saturated root zones need time to drain. Reassess moisture two days after
+    # the forecast rain ends instead of blindly watering the following day.
+    reassessment_due = (
+        date.fromisoformat(valid_until) + timedelta(days=_RAIN_REASSESSMENT_DELAY_DAYS)
+    ).isoformat()
+    effective_now_ms = now_ms if now_ms is not None else current_timestamp_ms()
+    rescheduled = 0
     for row in rows:
         old_meta = row["metadata_json"] if "metadata_json" in row.keys() else "{}"
         meta = _parse_mapping_json(old_meta)
-        old_due_on = str(row["due_on"])
-        meta["rescheduled_from"] = old_due_on
+        old_action_on = str(row["action_on"])
+        recurrence_deadline = weekly_watering_recurrence_deadline(
+            str(row["rule_source"] or ""),
+        )
+        occurrence_expired = bool(recurrence_deadline and reassessment_due > recurrence_deadline)
+        new_due = reassessment_due
+        meta["rescheduled_from"] = old_action_on
         meta["rescheduled_reason"] = "rain_alert"
+        meta["rescheduled_weather_alert_id"] = int(alert["id"])
+        meta["rescheduled_alert_valid_until"] = str(valid_until)
+        meta["rain_reassessment_policy"] = "check_root_zone_moisture_before_watering"
+        meta["rain_reassessment_delay_days"] = _RAIN_REASSESSMENT_DELAY_DAYS
+        if recurrence_deadline:
+            meta["rain_recurrence_deadline"] = recurrence_deadline
+        if occurrence_expired:
+            meta["rain_occurrence_expired"] = True
+            meta["lifecycle"] = {
+                "status": "expired",
+                "reason": "rain_covered_until_next_recurrence",
+                "action_on": old_action_on,
+                "source": "rain_alert_automation",
+                "expired_at_ms": effective_now_ms,
+            }
+        meta.setdefault("rain_original_title", str(row["title"] or ""))
+        meta.setdefault("rain_original_description", str(row["description"] or ""))
+        current_title = str(row["title"] or "Watering")
+        reassessment_title = (
+            current_title
+            if current_title.startswith("Reassess after rain:")
+            else f"Reassess after rain: {current_title}"
+        )
+        reassessment_description = (
+            "Check root-zone soil moisture after the heavy rain has drained; "
+            "water only if the soil is dry."
+        )
         plant_ids = _plant_ids_for_task(db, int(row["id"]))
         plot_ids = _plot_ids_for_task(db, int(row["id"]))
-        db.execute(
+        update = db.execute(
             """
             UPDATE garden_tasks
-            SET due_on = %s, metadata_json = %s, updated_at_ms = %s
+            SET title = CASE WHEN %s THEN title ELSE %s END,
+                description = CASE WHEN %s THEN description ELSE %s END,
+                status = CASE WHEN %s THEN 'expired' ELSE status END,
+                due_on = CASE
+                    WHEN %s THEN due_on
+                    WHEN status = 'snoozed' THEN due_on
+                    ELSE %s
+                END,
+                snoozed_until = CASE
+                    WHEN %s THEN NULL
+                    WHEN status = 'snoozed' THEN %s
+                    ELSE NULL
+                END,
+                metadata_json = %s,
+                updated_at_ms = %s
             WHERE id = %s
+              AND status = %s
+              AND COALESCE(snoozed_until, due_on) = %s
             """,
-            (new_due, json.dumps(meta, separators=(",", ":")), now_ms, row["id"]),
+            (
+                occurrence_expired,
+                reassessment_title,
+                occurrence_expired,
+                reassessment_description,
+                occurrence_expired,
+                occurrence_expired,
+                new_due,
+                occurrence_expired,
+                new_due,
+                json.dumps(meta, separators=(",", ":")),
+                effective_now_ms,
+                row["id"],
+                row["status"],
+                old_action_on,
+            ),
+        )
+        if update.rowcount != 1:
+            continue
+        rescheduled += 1
+        # Keep task attention consistent in the same transaction as the
+        # weather-driven move. Import locally to avoid the service cycle.
+        from gardenops.services.notification_service import refresh_task_notifications_for_task
+
+        refresh_task_notifications_for_task(
+            db,
+            garden_id=garden_id,
+            task_public_id=str(row["public_id"]),
+            now_ms=effective_now_ms,
         )
         _write_watering_rescheduled_by_rain_outcome(
             db,
             garden_id=garden_id,
             alert=alert,
             task=row,
-            old_due_on=old_due_on,
+            old_due_on=old_action_on,
             new_due_on=new_due,
             plant_ids=plant_ids,
             plot_ids=plot_ids,
-            now_ms=now_ms,
+            now_ms=effective_now_ms,
+            recurrence_deadline=recurrence_deadline,
+            occurrence_expired=occurrence_expired,
         )
     _logger.info(
-        "Rescheduled %d watering tasks to %s due to rain alert %d",
-        len(rows),
-        new_due,
+        "Rescheduled %d watering tasks after rain alert %d",
+        rescheduled,
         alert_id,
     )
 
@@ -700,6 +922,9 @@ def _bump_severity(current: str) -> str:
 def escalate_overdue_follow_ups(
     db: DbConn,
     garden_id: int,
+    *,
+    today_iso: str | None = None,
+    now_ms: int | None = None,
 ) -> dict[str, int]:
     """Escalate issues whose follow-up date has passed.
 
@@ -708,7 +933,8 @@ def escalate_overdue_follow_ups(
 
     Returns dict with count of escalated issues.
     """
-    today_iso = date.today().isoformat()
+    today = date.fromisoformat(today_iso) if today_iso is not None else date.today()
+    effective_today_iso = today.isoformat()
     overdue = db.execute(
         """SELECT id, public_id, title, severity, follow_up_on
            FROM garden_issues
@@ -716,11 +942,11 @@ def escalate_overdue_follow_ups(
              AND status IN ('open', 'monitoring', 'treating')
              AND follow_up_on IS NOT NULL
              AND follow_up_on < %s""",
-        (garden_id, today_iso),
+        (garden_id, effective_today_iso),
     ).fetchall()
 
-    now_ms = current_timestamp_ms()
-    due_on = (date.today() + timedelta(days=3)).isoformat()
+    effective_now_ms = now_ms if now_ms is not None else current_timestamp_ms()
+    due_on = (today + timedelta(days=3)).isoformat()
     count = 0
 
     for issue in overdue:
@@ -739,7 +965,7 @@ def escalate_overdue_follow_ups(
         db.execute(
             "UPDATE garden_issues SET severity = %s, updated_at_ms = %s "
             "WHERE id = %s AND garden_id = %s",
-            (new_severity, now_ms, issue_id, garden_id),
+            (new_severity, effective_now_ms, issue_id, garden_id),
         )
 
         # garden_tasks.severity CHECK allows low/normal/high only
@@ -769,8 +995,8 @@ def escalate_overdue_follow_ups(
                 due_on,
                 rule_source,
                 esc_meta,
-                now_ms,
-                now_ms,
+                effective_now_ms,
+                effective_now_ms,
             ),
         ).fetchone()
         assert crow is not None

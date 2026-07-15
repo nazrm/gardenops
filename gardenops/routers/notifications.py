@@ -7,9 +7,9 @@ import re
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import Field, field_validator
+from pydantic import Field, StrictBool, field_validator
 
-from gardenops.db import DB, current_timestamp_ms
+from gardenops.db import DB
 from gardenops.feature_gates import feature_allowed
 from gardenops.models import StrictBaseModel
 from gardenops.rate_limit import enforce_rate_limit, env_int
@@ -28,11 +28,17 @@ from gardenops.router_helpers import (
 from gardenops.router_helpers import (
     require_write as _require_write,
 )
-from gardenops.services.attention import load_attention_preferences
+from gardenops.services.attention import (
+    load_attention_preferences,
+    merge_notification_preferences,
+    notification_quiet_hours_from_attention,
+    notification_rules_from_attention,
+    save_attention_preferences,
+)
+from gardenops.services.attention.service import lock_attention_preferences
 from gardenops.services.notification_service import (
-    attention_notification_sql_filter,
+    attention_notification_sql_filter_for_user,
     clear_expired_notifications,
-    clear_notifications_hidden_by_preferences,
     clear_stale_informational_notifications,
     clear_stale_task_notifications,
     create_task_due_notifications,
@@ -43,8 +49,10 @@ from gardenops.services.notification_service import (
     mark_read,
     normalize_notification_rules,
     notification_policy_catalog,
+    notification_request_clock,
     notification_rules_json,
     run_notification_maintenance_for_garden,
+    validate_notification_rules,
 )
 
 router = APIRouter()
@@ -58,13 +66,13 @@ _EMAIL_RE = re.compile(
 
 
 class NotificationPreferencesBody(StrictBaseModel):
-    in_app_enabled: bool = True
-    email_enabled: bool = False
+    in_app_enabled: StrictBool = True
+    email_enabled: StrictBool = False
     email_address: str = Field(default="", max_length=320)
     digest_frequency: Literal["none", "daily", "weekly"] = "daily"
     quiet_hours_json: dict = Field(default_factory=dict)
-    task_due_enabled: bool = True
-    task_overdue_enabled: bool = True
+    task_due_enabled: StrictBool = True
+    task_overdue_enabled: StrictBool = True
     notification_rules: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
     @field_validator("email_address")
@@ -145,7 +153,7 @@ def _serialize_preferences(row: dict[str, Any] | None) -> dict:
     ):
         rules_payload = {}
     rules = normalize_notification_rules(rules_payload)
-    if not raw_rules:
+    if not rules_payload:
         rules["task_due"]["in_app_enabled"] = bool(row["task_due_enabled"])
         rules["task_overdue"]["in_app_enabled"] = bool(row["task_overdue_enabled"])
     return {
@@ -161,16 +169,25 @@ def _serialize_preferences(row: dict[str, Any] | None) -> dict:
     }
 
 
-def _explicit_email_rule_enabled(raw_rules: dict[str, dict[str, Any]]) -> bool:
-    for rule in raw_rules.values():
-        if isinstance(rule, dict) and bool(rule.get("email_enabled", False)):
-            return True
-    return False
-
-
 def _require_email_notifications_feature(context) -> None:
     if not feature_allowed(context.subscription_tier, "email_notifications"):
         raise HTTPException(status_code=403, detail="Email notifications require a Pro plan")
+
+
+def _enables_email_rule(
+    submitted_rules: dict[str, dict[str, Any]],
+    current_rules: dict[str, Any],
+) -> bool:
+    """Return whether an explicit rule change turns email delivery on."""
+    for key, submitted_rule in submitted_rules.items():
+        if not isinstance(submitted_rule, dict) or "email_enabled" not in submitted_rule:
+            continue
+        if not bool(submitted_rule["email_enabled"]):
+            continue
+        current_rule = current_rules.get(key)
+        if not isinstance(current_rule, dict) or not bool(current_rule.get("email_enabled", False)):
+            return True
+    return False
 
 
 def _require_notification_delivery_admin(context) -> None:
@@ -202,18 +219,20 @@ def list_notifications(
     garden_id = _active_garden_id(context)
     user_id = context.user_id
 
-    now = current_timestamp_ms()
+    now, frozen_date = notification_request_clock()
     expired = clear_expired_notifications(db, garden_id=garden_id, user_id=user_id, now_ms=now)
     stale_tasks = clear_stale_task_notifications(
         db,
         garden_id=garden_id,
         user_id=user_id,
+        today_iso=frozen_date,
         now_ms=now,
     )
     stale_info = clear_stale_informational_notifications(
         db,
         garden_id=garden_id,
         user_id=user_id,
+        today_iso=frozen_date,
         now_ms=now,
     )
     if expired or stale_tasks or stale_info:
@@ -253,9 +272,8 @@ def list_notifications(
     where = " AND ".join(conditions)
 
     if scope == "inbox" and user_id is not None:
-        preferences = load_attention_preferences(db, user_id)
-        attention_where, attention_params = attention_notification_sql_filter(
-            preferences,
+        attention_where, attention_params = attention_notification_sql_filter_for_user(
+            db,
             surface="inbox",
             garden_id=garden_id,
             user_id=user_id,
@@ -297,24 +315,30 @@ def notification_count(request: Request, db: DB) -> dict:
     """Get unread notification count for badge."""
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
+    now, frozen_date = notification_request_clock()
     expired = clear_expired_notifications(
         db,
         garden_id=garden_id,
         user_id=context.user_id,
+        now_ms=now,
     )
     stale_tasks = clear_stale_task_notifications(
         db,
         garden_id=garden_id,
         user_id=context.user_id,
+        today_iso=frozen_date,
+        now_ms=now,
     )
     stale_info = clear_stale_informational_notifications(
         db,
         garden_id=garden_id,
         user_id=context.user_id,
+        today_iso=frozen_date,
+        now_ms=now,
     )
     if expired or stale_tasks or stale_info:
         db.commit()
-    count = get_unread_count(db, garden_id, context.user_id)
+    count = get_unread_count(db, garden_id, context.user_id, now_ms=now)
     return {"count": count}
 
 
@@ -327,7 +351,8 @@ def mark_notification_read(
     """Mark a single notification as read."""
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
-    updated = mark_read(db, notification_id, context.user_id, garden_id)
+    now, _ = notification_request_clock()
+    updated = mark_read(db, notification_id, context.user_id, garden_id, now_ms=now)
     if not updated:
         raise HTTPException(
             status_code=404,
@@ -341,7 +366,8 @@ def mark_all_notifications_read(request: Request, db: DB) -> dict:
     """Mark all notifications as read for current user in active garden."""
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
-    count = mark_all_read(db, garden_id, context.user_id)
+    now, _ = notification_request_clock()
+    count = mark_all_read(db, garden_id, context.user_id, now_ms=now)
     return {"status": "ok", "updated": count}
 
 
@@ -354,7 +380,8 @@ def dismiss_notification_endpoint(
     """Dismiss (soft-delete) a notification."""
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
-    updated = dismiss_notification(db, notification_id, context.user_id, garden_id)
+    now, _ = notification_request_clock()
+    updated = dismiss_notification(db, notification_id, context.user_id, garden_id, now_ms=now)
     if not updated:
         raise HTTPException(
             status_code=404,
@@ -376,7 +403,26 @@ def get_notification_preferences(request: Request, db: DB) -> dict:
         (user_id,),
     ).fetchone()
 
-    return _serialize_preferences(row)
+    serialized = _serialize_preferences(row)
+    saved_attention = db.execute(
+        "SELECT 1 FROM user_attention_preferences WHERE user_id = %s",
+        (user_id,),
+    ).fetchone()
+    if saved_attention is None:
+        return serialized
+    attention_preferences = load_attention_preferences(db, user_id)
+    for key, projection in notification_rules_from_attention(attention_preferences).items():
+        if key in serialized["notification_rules"]:
+            serialized["notification_rules"][key].update(projection)
+    digest_quiet_hours = notification_quiet_hours_from_attention(attention_preferences)
+    serialized["quiet_hours_json"] = digest_quiet_hours or {}
+    serialized["task_due_enabled"] = bool(
+        serialized["notification_rules"]["task_due"]["in_app_enabled"]
+    )
+    serialized["task_overdue_enabled"] = bool(
+        serialized["notification_rules"]["task_overdue"]["in_app_enabled"]
+    )
+    return serialized
 
 
 @router.put("/notifications/preferences")
@@ -397,14 +443,38 @@ def update_notification_preferences(
     if user_id is None:
         return {"status": "ok"}
 
-    now = current_timestamp_ms()
-    qh_json = json.dumps(body.quiet_hours_json) if body.quiet_hours_json else "{}"
-    if body.email_enabled or _explicit_email_rule_enabled(body.notification_rules):
+    lock_attention_preferences(db, user_id)
+    existing_preference = db.execute(
+        "SELECT * FROM user_notification_preferences WHERE user_id = %s",
+        (user_id,),
+    ).fetchone()
+    saved_attention = db.execute(
+        "SELECT 1 FROM user_attention_preferences WHERE user_id = %s",
+        (user_id,),
+    ).fetchone()
+    existing_attention = load_attention_preferences(db, user_id)
+    current_rules = _serialize_preferences(existing_preference)["notification_rules"]
+    try:
+        validate_notification_rules(body.notification_rules)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if saved_attention is not None:
+        for key, projection in notification_rules_from_attention(existing_attention).items():
+            if key in current_rules:
+                current_rules[key].update(projection)
+    if body.email_enabled or _enables_email_rule(body.notification_rules, current_rules):
         _require_email_notifications_feature(context)
+
+    now, _ = notification_request_clock()
+    qh_json = json.dumps(body.quiet_hours_json) if body.quiet_hours_json else "{}"
+    notification_rule_keys = {
+        str(key) for key, rule in body.notification_rules.items() if isinstance(rule, dict)
+    }
     rules = normalize_notification_rules(body.notification_rules)
     if not body.notification_rules:
         rules["task_due"]["in_app_enabled"] = bool(body.task_due_enabled)
         rules["task_overdue"]["in_app_enabled"] = bool(body.task_overdue_enabled)
+        notification_rule_keys = {"task_due", "task_overdue"}
     rules_json = notification_rules_json(rules)
     task_due_enabled = bool(rules["task_due"]["in_app_enabled"])
     task_overdue_enabled = bool(rules["task_overdue"]["in_app_enabled"])
@@ -442,11 +512,23 @@ def update_notification_preferences(
             now,
         ),
     )
-    clear_notifications_hidden_by_preferences(
+    try:
+        synchronized_attention = merge_notification_preferences(
+            existing_attention,
+            notification_rules=rules,
+            quiet_hours=body.quiet_hours_json,
+            notification_rule_keys=notification_rule_keys,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    save_attention_preferences(
         db,
         user_id=user_id,
-        in_app_enabled=body.in_app_enabled,
-        rules=rules,
+        preset=synchronized_attention.preset,
+        rules=synchronized_attention.rules,
+        quiet_hours=synchronized_attention.quiet_hours,
+        show_no_action_history=synchronized_attention.show_no_action_history,
+        metadata=synchronized_attention.metadata,
         now_ms=now,
     )
     db.commit()
@@ -465,7 +547,8 @@ def generate_notifications(request: Request, db: DB) -> dict:
         window_seconds=60,
     )
     garden_id = _active_garden_id(context)
-    result = create_task_due_notifications(db, garden_id)
+    now, _ = notification_request_clock()
+    result = create_task_due_notifications(db, garden_id, now_ms=now)
     return result
 
 
@@ -482,7 +565,8 @@ def process_notification_delivery(request: Request, db: DB) -> dict:
         window_seconds=60,
     )
     garden_id = _active_garden_id(context)
-    return deliver_pending_email_digests(db, garden_id)
+    now, _ = notification_request_clock()
+    return deliver_pending_email_digests(db, garden_id, now_ms=now)
 
 
 @router.post("/notifications/run-maintenance")
@@ -498,4 +582,5 @@ def run_notification_maintenance(request: Request, db: DB) -> dict:
         window_seconds=60,
     )
     garden_id = _active_garden_id(context)
-    return run_notification_maintenance_for_garden(db, garden_id=garden_id)
+    now, _ = notification_request_clock()
+    return run_notification_maintenance_for_garden(db, garden_id=garden_id, now_ms=now)

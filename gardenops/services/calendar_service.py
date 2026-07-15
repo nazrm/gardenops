@@ -343,6 +343,7 @@ def build_calendar_payload(
     selected_plant_ids: list[str],
     selected_plot_ids: list[str],
     selected_zone_codes: list[str],
+    today: date | None = None,
 ) -> dict[str, Any]:
     events, latest_ms = build_calendar_events(
         conn,
@@ -354,6 +355,7 @@ def build_calendar_payload(
         selected_plant_ids=selected_plant_ids,
         selected_plot_ids=selected_plot_ids,
         selected_zone_codes=selected_zone_codes,
+        today=today,
     )
     return {
         "events": events,
@@ -376,6 +378,7 @@ def build_calendar_events(
     selected_plant_ids: list[str],
     selected_plot_ids: list[str],
     selected_zone_codes: list[str],
+    today: date | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     visible_task_sources = [
         source for source in visible_sources if source not in {"weather_alert", "garden_event"}
@@ -411,6 +414,7 @@ def build_calendar_events(
             end=end,
             task_types=visible_task_sources,
             include_recent_history=include_recent_history,
+            today=today,
         )
         relations = _load_task_relations(
             conn,
@@ -458,9 +462,18 @@ def build_calendar_ics(
     events: list[dict[str, Any]],
     generated_at: datetime | None = None,
 ) -> tuple[str, str, str | None]:
-    now = generated_at or datetime.now(UTC)
-    dtstamp = _ical_datetime(now)
-    latest_dt: datetime | None = None
+    content_timestamps = [
+        datetime.fromtimestamp(int(event["updated_at_ms"]) / 1000, tz=UTC)
+        for event in events
+        if int(event.get("updated_at_ms") or 0) > 0
+    ]
+    if generated_at is not None:
+        content_timestamps.append(generated_at.astimezone(UTC))
+    content_timestamp = max(
+        content_timestamps,
+        default=datetime(1970, 1, 1, tzinfo=UTC),
+    )
+    dtstamp = _ical_datetime(content_timestamp)
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
@@ -473,9 +486,9 @@ def build_calendar_ics(
         start = date.fromisoformat(str(event["start_on"]))
         end = date.fromisoformat(str(event["end_on"]))
         updated_ms = int(event.get("updated_at_ms") or 0)
-        event_dt = datetime.fromtimestamp(updated_ms / 1000, tz=UTC) if updated_ms else now
-        if latest_dt is None or event_dt > latest_dt:
-            latest_dt = event_dt
+        event_dt = (
+            datetime.fromtimestamp(updated_ms / 1000, tz=UTC) if updated_ms else content_timestamp
+        )
         lines.extend(
             [
                 "BEGIN:VEVENT",
@@ -493,11 +506,7 @@ def build_calendar_ics(
     lines.append("END:VCALENDAR")
     body = "\r\n".join(_fold_ical_line(line) for line in lines) + "\r\n"
     etag = '"' + hashlib.sha256(body.encode("utf-8")).hexdigest() + '"'
-    last_modified = (
-        format_datetime((latest_dt or now).astimezone(UTC), usegmt=True)
-        if latest_dt or now
-        else None
-    )
+    last_modified = format_datetime(content_timestamp.astimezone(UTC), usegmt=True)
     return body, etag, last_modified
 
 
@@ -517,6 +526,7 @@ def _load_calendar_tasks(
     end: date,
     task_types: list[str],
     include_recent_history: bool,
+    today: date | None = None,
 ) -> list[dict[str, Any]]:
     type_sql, type_params = _in_clause("t.task_type", task_types)
     params: list[Any] = [garden_id, *type_params, start.isoformat(), end.isoformat()]
@@ -526,7 +536,10 @@ def _load_calendar_tasks(
         " AND COALESCE(t.snoozed_until, t.due_on) < %s)"
     ]
     if include_recent_history:
-        recent_cutoff = max(start, date.today() - timedelta(days=DEFAULT_RECENT_HISTORY_DAYS))
+        recent_cutoff = max(
+            start,
+            (today or date.today()) - timedelta(days=DEFAULT_RECENT_HISTORY_DAYS),
+        )
         params.extend(
             [
                 recent_cutoff.isoformat(),
@@ -980,12 +993,23 @@ def _event_description_for_ics(event: dict[str, Any]) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def _fold_ical_line(line: str, limit: int = 73) -> str:
-    if len(line) <= limit:
+def _fold_ical_line(line: str, limit: int = 75) -> str:
+    """Fold an iCalendar content line without splitting UTF-8 characters."""
+    if not line:
         return line
-    parts = [line[:limit]]
-    rest = line[limit:]
-    while rest:
-        parts.append(" " + rest[: limit - 1])
-        rest = rest[limit - 1 :]
+
+    parts: list[str] = []
+    chunk: list[str] = []
+    chunk_bytes = 0
+    chunk_limit = limit
+    for character in line:
+        character_bytes = len(character.encode("utf-8"))
+        if chunk and chunk_bytes + character_bytes > chunk_limit:
+            parts.append((" " if parts else "") + "".join(chunk))
+            chunk = []
+            chunk_bytes = 0
+            chunk_limit = limit - 1
+        chunk.append(character)
+        chunk_bytes += character_bytes
+    parts.append((" " if parts else "") + "".join(chunk))
     return "\r\n".join(parts)

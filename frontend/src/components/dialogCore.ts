@@ -1,13 +1,72 @@
 import { t } from "../core/i18n";
 import { setReviewedDynamicHtml } from "../core/sanitize";
 
+interface ModalStackEntry {
+  dialog: HTMLElement;
+  parent: HTMLElement | null;
+  parentAriaHidden: string | null;
+  parentWasInert: boolean;
+  returnFocus: HTMLElement | null;
+}
+
+export interface ModalOptions {
+  modalParent?: HTMLElement | null | undefined;
+  onClose?: (() => void) | undefined;
+}
+
+const modalStack: ModalStackEntry[] = [];
+
+function activeModal(): ModalStackEntry | undefined {
+  return modalStack.at(-1);
+}
+
+function pushModal(dialog: HTMLElement, modalParent?: HTMLElement | null): ModalStackEntry {
+  const parent = modalParent ?? activeModal()?.dialog ?? null;
+  const entry: ModalStackEntry = {
+    dialog,
+    parent,
+    parentAriaHidden: parent?.getAttribute("aria-hidden") ?? null,
+    parentWasInert: parent?.hasAttribute("inert") ?? false,
+    returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  };
+  if (parent) {
+    parent.setAttribute("aria-hidden", "true");
+    parent.setAttribute("inert", "");
+  }
+  modalStack.push(entry);
+  return entry;
+}
+
+function popModal(entry: ModalStackEntry): void {
+  const index = modalStack.indexOf(entry);
+  if (index === -1) return;
+  modalStack.splice(index, 1);
+
+  if (entry.parent && !modalStack.some((candidate) => candidate.parent === entry.parent)) {
+    if (entry.parentAriaHidden === null) {
+      entry.parent.removeAttribute("aria-hidden");
+    } else {
+      entry.parent.setAttribute("aria-hidden", entry.parentAriaHidden);
+    }
+    if (entry.parentWasInert) {
+      entry.parent.setAttribute("inert", "");
+    } else {
+      entry.parent.removeAttribute("inert");
+    }
+  }
+
+  if (entry.returnFocus?.isConnected) {
+    entry.returnFocus.focus();
+  }
+}
+
 export function trapFocus(container: HTMLElement): () => void {
   const selector = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
   const handler = (e: KeyboardEvent) => {
     if (e.key !== "Tab") return;
     const focusable = Array.from(
       container.querySelectorAll<HTMLElement>(selector),
-    ).filter((el) => !el.hasAttribute("disabled"));
+    ).filter((el) => !el.hasAttribute("disabled") && !el.closest("[hidden], [inert]") && window.getComputedStyle(el).display !== "none" && window.getComputedStyle(el).visibility !== "hidden");
     if (focusable.length === 0) return;
     const first = focusable[0]!;
     const last = focusable[focusable.length - 1]!;
@@ -23,7 +82,7 @@ export function trapFocus(container: HTMLElement): () => void {
   return () => container.removeEventListener("keydown", handler);
 }
 
-export function createModal(ariaLabel: string, innerMarkup: string): {
+export function createModal(ariaLabel: string, innerMarkup: string, options: ModalOptions = {}): {
   dialog: HTMLDivElement;
   close: () => void;
 } {
@@ -35,15 +94,24 @@ export function createModal(ariaLabel: string, innerMarkup: string): {
   setReviewedDynamicHtml(dialog, innerMarkup);
   document.body.appendChild(dialog);
 
+  const modalEntry = pushModal(dialog, options.modalParent);
   const releaseFocusTrap = trapFocus(dialog);
+  let closed = false;
 
   const onEscape = (e: KeyboardEvent) => {
-    if (e.key === "Escape") close();
+    if (e.key === "Escape" && activeModal()?.dialog === dialog) {
+      e.preventDefault();
+      close();
+    }
   };
   const close = () => {
+    if (closed) return;
+    closed = true;
     releaseFocusTrap();
     dialog.remove();
     window.removeEventListener("keydown", onEscape);
+    popModal(modalEntry);
+    options.onClose?.();
   };
   window.addEventListener("keydown", onEscape);
 
@@ -105,15 +173,23 @@ export function confirmDialog(
     dialog.appendChild(content);
     document.body.appendChild(dialog);
 
+    const modalEntry = pushModal(dialog);
     const removeTrap = trapFocus(dialog);
+    let closed = false;
     const close = (result: boolean) => {
+      if (closed) return;
+      closed = true;
       removeTrap();
       window.removeEventListener("keydown", onKey);
       dialog.remove();
+      popModal(modalEntry);
       resolve(result);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close(false);
+      if (e.key === "Escape" && activeModal()?.dialog === dialog) {
+        e.preventDefault();
+        close(false);
+      }
     };
     window.addEventListener("keydown", onKey);
 

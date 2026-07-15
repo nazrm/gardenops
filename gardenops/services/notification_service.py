@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ from typing import Any, cast
 
 from gardenops.branding import app_name
 from gardenops.db import DbConn, current_timestamp_ms
+from gardenops.feature_gates import feature_allowed
 from gardenops.router_helpers import generate_public_id
 from gardenops.services.attention.preferences import (
     AttentionPreferenceSet,
@@ -22,8 +24,10 @@ from gardenops.services.attention.preferences import (
 )
 from gardenops.services.attention.service import load_attention_preferences
 from gardenops.services.attention.types import (
+    SEVERITY_RANK,
     AttentionCategory,
     AttentionItem,
+    attention_request_clock,
     normalize_severity,
 )
 from gardenops.services.automation import (
@@ -37,22 +41,17 @@ from gardenops.services.generated_task_lifecycle import (
     GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
     expire_stale_generated_tasks,
 )
-from gardenops.services.task_generator import generate_tasks
+from gardenops.services.task_generator import generate_tasks, reconcile_rain_watering_outcomes
 from gardenops.services.weather_service import check_weather_and_generate_alerts
 from gardenops.sql_dates import offset_days_iso
 
 EmailSender = Callable[[str, str, str], None]
 logger = logging.getLogger(__name__)
 _SCHEDULER_LEASE_KEY = "notification_scheduler_lease"
+_TASK_NOTIFICATION_LOCK_SEED = 0x474F504E4F544946
+_DIGEST_DELIVERY_LOCK_SEED = 0x474F504449474553
 
 NotificationRule = dict[str, bool | str]
-
-_SEVERITY_RANK = {
-    "low": 0,
-    "normal": 1,
-    "high": 2,
-    "critical": 3,
-}
 
 _WEATHER_TASK_RULE_SOURCE_PATTERNS = (
     "auto:frost_protect:%",
@@ -60,6 +59,20 @@ _WEATHER_TASK_RULE_SOURCE_PATTERNS = (
     "auto:dry_water:%",
     "auto:rain_drainage:%",
 )
+_DRY_WEATHER_TASK_RULE_SOURCE_PATTERN = "auto:dry_water:%"
+_NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS = tuple(
+    pattern
+    for pattern in _WEATHER_TASK_RULE_SOURCE_PATTERNS
+    if pattern != _DRY_WEATHER_TASK_RULE_SOURCE_PATTERN
+)
+_FORECAST_ALERT_TYPES = frozenset({"frost_warning", "heat_wave", "dry_spell", "rain_surplus"})
+_FORECAST_RECONCILIATION_SCOPE_KEY = "_forecast_reconciliation_scope"
+_WEATHER_TASK_PREFIX_BY_ALERT_TYPE = {
+    "frost_warning": "frost_protect",
+    "heat_wave": "heat_protect",
+    "dry_spell": "dry_water",
+    "rain_surplus": "rain_drainage",
+}
 
 _NOTIFICATION_POLICIES: tuple[dict[str, Any], ...] = (
     {
@@ -182,14 +195,6 @@ def notification_policy_catalog() -> list[dict[str, Any]]:
     return [dict(policy) for policy in _NOTIFICATION_POLICIES]
 
 
-def _policy_key(notification_type: str, notification_subtype: str | None = None) -> str:
-    if notification_subtype:
-        key = f"{notification_type}:{notification_subtype}"
-        if key in _POLICIES_BY_KEY:
-            return key
-    return notification_type
-
-
 def default_notification_rules() -> dict[str, NotificationRule]:
     return {
         str(policy["key"]): {
@@ -213,15 +218,48 @@ def normalize_notification_rules(raw: dict[str, Any] | None) -> dict[str, Notifi
         if not bool(policy["user_configurable"]):
             continue
         rule = dict(rules[key])
-        if "in_app_enabled" in value:
-            rule["in_app_enabled"] = bool(value["in_app_enabled"])
-        if "email_enabled" in value:
-            rule["email_enabled"] = bool(value["email_enabled"])
+        if isinstance(value.get("in_app_enabled"), bool):
+            rule["in_app_enabled"] = value["in_app_enabled"]
+        if isinstance(value.get("email_enabled"), bool):
+            rule["email_enabled"] = value["email_enabled"]
         min_severity = value.get("min_severity")
-        if isinstance(min_severity, str):
+        if isinstance(min_severity, str) and min_severity.strip().lower() in SEVERITY_RANK:
             rule["min_severity"] = _normalize_severity(min_severity)
         rules[key] = rule
     return rules
+
+
+def validate_notification_rules(raw: dict[str, Any]) -> None:
+    """Reject malformed nested notification rules before they can be normalized."""
+    for key, rule in raw.items():
+        if not isinstance(key, str) or key not in _POLICIES_BY_KEY:
+            raise ValueError(f"Unsupported notification rule: {key}")
+        if not isinstance(rule, dict):
+            raise ValueError(f"notification_rules.{key} must be an object")
+        unknown_fields = set(rule) - {"in_app_enabled", "email_enabled", "min_severity"}
+        if unknown_fields:
+            invalid = ", ".join(sorted(str(field) for field in unknown_fields))
+            raise ValueError(f"notification_rules.{key} has unsupported fields: {invalid}")
+        for field in ("in_app_enabled", "email_enabled"):
+            if field in rule and not isinstance(rule[field], bool):
+                raise ValueError(f"notification_rules.{key}.{field} must be a boolean")
+        if "min_severity" in rule:
+            severity = rule["min_severity"]
+            if not isinstance(severity, str) or severity.strip().lower() not in SEVERITY_RANK:
+                raise ValueError(
+                    f"notification_rules.{key}.min_severity must be a supported severity"
+                )
+        if not bool(_POLICIES_BY_KEY[key]["user_configurable"]):
+            default_rule = default_notification_rules()[key]
+            normalized_rule = {
+                "in_app_enabled": rule.get("in_app_enabled", default_rule["in_app_enabled"]),
+                "email_enabled": rule.get("email_enabled", default_rule["email_enabled"]),
+                "min_severity": str(rule.get("min_severity", default_rule["min_severity"]))
+                .strip()
+                .lower(),
+            }
+            if normalized_rule != default_rule:
+                raise ValueError(f"Notification rule is not user configurable: {key}")
 
 
 def notification_rules_json(raw: dict[str, Any] | None) -> str:
@@ -229,75 +267,7 @@ def notification_rules_json(raw: dict[str, Any] | None) -> str:
 
 
 def _normalize_severity(severity: str | None) -> str:
-    value = (severity or "normal").strip().lower()
-    return value if value in _SEVERITY_RANK else "normal"
-
-
-def _parse_rules_json(raw: str | None) -> dict[str, NotificationRule]:
-    defaults = default_notification_rules()
-    if not raw:
-        return defaults
-    try:
-        parsed = json.loads(raw)
-    except (
-        TypeError,
-        json.JSONDecodeError,
-    ):
-        logger.warning("Failed to parse notification rules_json: %r", raw)
-        return defaults
-    if not isinstance(parsed, dict):
-        return defaults
-
-    rules = {key: dict(value) for key, value in defaults.items()}
-    for key, value in parsed.items():
-        if key not in _POLICIES_BY_KEY or not isinstance(value, dict):
-            continue
-        rule = dict(rules[key])
-        if "in_app_enabled" in value:
-            rule["in_app_enabled"] = bool(value["in_app_enabled"])
-        if "email_enabled" in value:
-            rule["email_enabled"] = bool(value["email_enabled"])
-        min_severity = value.get("min_severity")
-        if isinstance(min_severity, str):
-            rule["min_severity"] = _normalize_severity(min_severity)
-        rules[key] = rule
-    return rules
-
-
-def _rules_from_pref_row(row: dict[str, Any] | None) -> dict[str, NotificationRule]:
-    rules = _parse_rules_json(str(row["rules_json"]) if row and row.get("rules_json") else None)
-    if not row:
-        return rules
-
-    # Backward compatibility with the original coarse task preference columns.
-    if not row.get("rules_json"):
-        if "task_due" in rules:
-            rules["task_due"]["in_app_enabled"] = bool(row["task_due_enabled"])
-        if "task_overdue" in rules:
-            rules["task_overdue"]["in_app_enabled"] = bool(row["task_overdue_enabled"])
-    return rules
-
-
-def _notification_allowed_by_rules(
-    rules: dict[str, NotificationRule],
-    notification_type: str,
-    notification_subtype: str | None,
-    severity: str | None,
-    *,
-    channel: str,
-) -> bool:
-    key = _policy_key(notification_type, notification_subtype)
-    policy = _POLICIES_BY_KEY.get(key) or _POLICIES_BY_KEY.get(notification_type)
-    if policy and not bool(policy["user_configurable"]):
-        return True
-    rule = rules.get(key) or rules.get(notification_type)
-    if not rule:
-        rule = default_notification_rules().get(key, {})
-    enabled_key = "email_enabled" if channel == "email" else "in_app_enabled"
-    if not bool(rule.get(enabled_key, True)):
-        return False
-    min_severity = _normalize_severity(str(rule.get("min_severity", "low")))
-    return _SEVERITY_RANK[_normalize_severity(severity)] >= _SEVERITY_RANK[min_severity]
+    return str(normalize_severity(severity))
 
 
 def _attention_type_for_notification(
@@ -309,6 +279,10 @@ def _attention_type_for_notification(
             return "frost_warning"
         if notification_subtype == "rain_surplus":
             return "rain_alert"
+        if notification_subtype == "heat_wave":
+            return "heat_wave"
+        if notification_subtype == "dry_spell":
+            return "dry_spell"
         return "weather_alert"
     if notification_type == "issue_created":
         return "issue_follow_up_due"
@@ -345,6 +319,15 @@ def _attention_item_from_notification_row(
     target_id = str(row.get("target_id") or "") or None
     row_garden_id = row.get("garden_id")
     row_user_id = row.get("user_id")
+    metadata_raw = row.get("metadata") or row.get("metadata_json")
+    if isinstance(metadata_raw, str):
+        try:
+            parsed_metadata = json.loads(metadata_raw)
+        except json.JSONDecodeError:
+            parsed_metadata = {}
+    else:
+        parsed_metadata = metadata_raw
+    metadata = parsed_metadata if isinstance(parsed_metadata, dict) else {}
     return AttentionItem(
         id=f"attn:notification-event:{public_id}",
         provider="notification_status",
@@ -361,6 +344,7 @@ def _attention_item_from_notification_row(
         delivery_eligibility=("panel_only", "inbox", "digest"),
         updated_at_ms=int(row.get("created_at_ms") or 0),
         metadata={
+            **metadata,
             "notification_type": notification_type,
             "notification_subtype": notification_subtype,
         },
@@ -375,27 +359,155 @@ def notification_rows_allowed_by_attention(
     garden_id: int,
     user_id: int,
     now_ms: int | None = None,
+    respect_quiet_hours: bool = True,
 ) -> list[dict[str, Any]]:
     allowed: list[dict[str, Any]] = []
     for row in rows:
-        policy_key = _policy_key(
-            str(row.get("notification_type") or ""),
-            str(row.get("notification_subtype")) if row.get("notification_subtype") else None,
-        )
-        policy = _POLICIES_BY_KEY.get(policy_key) or _POLICIES_BY_KEY.get(
-            str(row.get("notification_type") or "")
-        )
-        if policy and not bool(policy["user_configurable"]):
-            allowed.append(row)
-            continue
         item = _attention_item_from_notification_row(
             row,
             fallback_garden_id=garden_id,
             fallback_user_id=user_id,
         )
-        if apply_preferences([item], preferences, surface=surface, now_ms=now_ms):
+        if apply_preferences(
+            [item],
+            preferences,
+            surface=surface,
+            now_ms=now_ms,
+            respect_quiet_hours=respect_quiet_hours,
+        ):
             allowed.append(row)
     return allowed
+
+
+def notification_request_clock(*, now_ms: int | None = None) -> tuple[int, str | None]:
+    """Return the shared notification/Attention clock, including test freezes."""
+    return attention_request_clock(
+        now_ms=now_ms if now_ms is not None else current_timestamp_ms(),
+    )
+
+
+def _notification_today_iso(*, frozen_date: str | None) -> str:
+    if frozen_date:
+        date.fromisoformat(frozen_date)
+        return frozen_date
+    return date.today().isoformat()
+
+
+def _legacy_in_app_enabled(pref_row: dict[str, Any] | None) -> bool:
+    if pref_row is None:
+        return True
+    return _database_boolean(pref_row.get("in_app_enabled"), default=True)
+
+
+def _database_boolean(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return value == 1
+    return default
+
+
+def digest_delivery_configuration(
+    pref_row: dict[str, Any] | None,
+    *,
+    subscription_tier: str,
+) -> dict[str, Any]:
+    """Return the entitlement and complete global setup for digest delivery."""
+    available = feature_allowed(subscription_tier, "email_notifications")
+    email_enabled = _database_boolean(
+        pref_row.get("email_enabled") if pref_row is not None else None,
+        default=False,
+    )
+    email_address = str(pref_row.get("email_address") or "") if pref_row is not None else ""
+    raw_frequency = (
+        str(pref_row.get("digest_frequency") or "none") if pref_row is not None else "daily"
+    )
+    digest_frequency = raw_frequency if raw_frequency in {"none", "daily", "weekly"} else "none"
+    configured = (
+        available
+        and email_enabled
+        and bool(email_address.strip())
+        and digest_frequency in {"daily", "weekly"}
+    )
+    return {
+        "available": available,
+        "configured": configured,
+        "email_enabled": email_enabled,
+        "email_address": email_address,
+        "digest_frequency": digest_frequency,
+    }
+
+
+def load_digest_delivery_configuration(
+    db: DbConn,
+    *,
+    user_id: int | None,
+    subscription_tier: str,
+) -> dict[str, Any]:
+    row = None
+    if user_id is not None:
+        loaded = db.execute(
+            """
+            SELECT email_enabled, email_address, digest_frequency
+            FROM user_notification_preferences
+            WHERE user_id = %s
+            """,
+            (user_id,),
+        ).fetchone()
+        if loaded is not None:
+            row = dict(loaded)
+    return digest_delivery_configuration(row, subscription_tier=subscription_tier)
+
+
+def _legacy_email_delivery_enabled(pref_row: dict[str, Any] | None) -> bool:
+    if pref_row is None:
+        return False
+    return bool(
+        digest_delivery_configuration(
+            pref_row,
+            subscription_tier=str(pref_row.get("subscription_tier") or "home"),
+        )["configured"]
+    )
+
+
+def _legacy_in_app_enabled_for_user(db: DbConn, user_id: int) -> bool:
+    row = db.execute(
+        "SELECT in_app_enabled FROM user_notification_preferences WHERE user_id = %s",
+        (user_id,),
+    ).fetchone()
+    return _legacy_in_app_enabled(dict(row) if row is not None else None)
+
+
+def notification_rows_allowed_for_user(
+    db: DbConn,
+    rows: list[dict[str, Any]],
+    *,
+    surface: AttentionSurface,
+    garden_id: int,
+    user_id: int,
+    now_ms: int | None = None,
+    preferences: AttentionPreferenceSet | None = None,
+    legacy_in_app_enabled: bool | None = None,
+    respect_quiet_hours: bool = True,
+) -> list[dict[str, Any]]:
+    """Apply canonical Attention eligibility and the legacy channel capability."""
+    if surface == "inbox":
+        in_app_enabled = (
+            _legacy_in_app_enabled_for_user(db, user_id)
+            if legacy_in_app_enabled is None
+            else legacy_in_app_enabled
+        )
+        if not in_app_enabled:
+            return []
+    return notification_rows_allowed_by_attention(
+        rows,
+        preferences=preferences or load_attention_preferences(db, user_id),
+        surface=surface,
+        garden_id=garden_id,
+        user_id=user_id,
+        now_ms=now_ms,
+        respect_quiet_hours=respect_quiet_hours,
+    )
 
 
 def attention_notification_sql_filter(
@@ -414,7 +526,7 @@ def attention_notification_sql_filter(
     """
     clauses: list[str] = []
     params: list[Any] = []
-    severities = tuple(_SEVERITY_RANK.keys())
+    severities = tuple(SEVERITY_RANK.keys())
 
     for policy in _NOTIFICATION_POLICIES:
         notification_type = str(policy["notification_type"])
@@ -466,6 +578,27 @@ def attention_notification_sql_filter(
     if not clauses:
         return "1 = 0", []
     return "(" + " OR ".join(clauses) + ")", params
+
+
+def attention_notification_sql_filter_for_user(
+    db: DbConn,
+    *,
+    surface: AttentionSurface,
+    garden_id: int,
+    user_id: int,
+    now_ms: int | None = None,
+    preferences: AttentionPreferenceSet | None = None,
+) -> tuple[str, list[Any]]:
+    """Return the bounded canonical filter including the legacy channel switch."""
+    if surface == "inbox" and not _legacy_in_app_enabled_for_user(db, user_id):
+        return "1 = 0", []
+    return attention_notification_sql_filter(
+        preferences or load_attention_preferences(db, user_id),
+        surface=surface,
+        garden_id=garden_id,
+        user_id=user_id,
+        now_ms=now_ms,
+    )
 
 
 def _date_start_ms(date_iso: str | None) -> int | None:
@@ -674,6 +807,7 @@ def create_notification(
     notification_subtype: str | None = None,
     severity: str | None = "normal",
     expires_at_ms: int | None = None,
+    now_ms: int | None = None,
 ) -> str:
     """Insert a notification_event and return its public id."""
     notification_id = _insert_notification(
@@ -689,6 +823,7 @@ def create_notification(
         notification_subtype=notification_subtype,
         severity=severity,
         expires_at_ms=expires_at_ms,
+        now_ms=now_ms,
     )
     db.commit()
     return notification_id
@@ -707,9 +842,10 @@ def _insert_notification(
     notification_subtype: str | None = None,
     severity: str | None = "normal",
     expires_at_ms: int | None = None,
+    now_ms: int | None = None,
 ) -> str:
     metadata_json = json.dumps(metadata, separators=(",", ":")) if metadata else None
-    now = current_timestamp_ms()
+    now, _ = notification_request_clock(now_ms=now_ms)
     public_id = generate_public_id("note")
     row = db.execute(
         """
@@ -838,7 +974,7 @@ def _clear_active_task_notifications_for_targets(
 ) -> int:
     if not target_ids:
         return 0
-    now_value = now_ms if now_ms is not None else current_timestamp_ms()
+    now_value, _ = notification_request_clock(now_ms=now_ms)
     placeholders = ",".join(["%s"] * len(target_ids))
     cur = db.execute(
         f"""
@@ -863,8 +999,8 @@ def _stale_generated_task_public_ids(
     garden_id: int,
     today_iso: str,
 ) -> set[str]:
-    weather_pattern_clauses = " OR ".join(
-        ["t.rule_source LIKE %s"] * len(_WEATHER_TASK_RULE_SOURCE_PATTERNS),
+    non_dry_weather_pattern_clauses = " OR ".join(
+        ["t.rule_source LIKE %s"] * len(_NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS),
     )
     weekly_watering_pattern_clauses = " OR ".join(
         ["t.rule_source LIKE %s"] * len(GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS),
@@ -895,10 +1031,18 @@ def _stale_generated_task_public_ids(
               AND COALESCE(t.snoozed_until, t.due_on) < %s
             )
             OR (
-              ({weather_pattern_clauses})
+              t.rule_source LIKE %s
               AND (
-                COALESCE(t.snoozed_until, t.due_on) < %s
-                OR wa.id IS NULL
+                wa.id IS NULL
+                OR wa.dismissed = 1
+                OR wa.valid_until < %s
+              )
+            )
+            OR (
+              ({non_dry_weather_pattern_clauses})
+              AND (
+                wa.id IS NULL
+                OR wa.dismissed = 1
                 OR wa.valid_until < %s
               )
             )
@@ -909,8 +1053,9 @@ def _stale_generated_task_public_ids(
             today_iso,
             *GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
             today_iso,
-            *_WEATHER_TASK_RULE_SOURCE_PATTERNS,
+            _DRY_WEATHER_TASK_RULE_SOURCE_PATTERN,
             today_iso,
+            *_NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS,
             today_iso,
         ],
     ).fetchall()
@@ -926,39 +1071,77 @@ def _load_pref_rows_for_users(
     placeholders = ",".join(["%s"] * len(user_ids))
     rows = db.execute(
         f"""
-        SELECT user_id, in_app_enabled, email_enabled, task_due_enabled,
-               task_overdue_enabled, rules_json
-        FROM user_notification_preferences
-        WHERE user_id IN ({placeholders})
+        SELECT p.user_id, p.in_app_enabled, p.email_enabled, p.email_address,
+               p.digest_frequency, u.subscription_tier
+        FROM user_notification_preferences p
+        JOIN auth_users u ON u.id = p.user_id
+        WHERE p.user_id IN ({placeholders})
         """,  # noqa: S608
         user_ids,
     ).fetchall()
     return {int(row["user_id"]): dict(row) for row in rows}
 
 
-def _rules_for_user(
+def _delivery_allowed_for_user(
+    db: DbConn,
     pref_rows_by_user: dict[int, dict[str, Any]],
-    user_id: int,
-) -> dict[str, NotificationRule]:
-    return _rules_from_pref_row(pref_rows_by_user.get(user_id))
-
-
-def _in_app_allowed_for_user(
-    pref_rows_by_user: dict[int, dict[str, Any]],
+    preferences_by_user: dict[int, AttentionPreferenceSet],
+    *,
+    garden_id: int,
     user_id: int,
     notification_type: str,
+    title: str,
+    body: str,
     notification_subtype: str | None = None,
     severity: str | None = "normal",
+    target_type: str | None = None,
+    target_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    now_ms: int | None = None,
 ) -> bool:
-    pref = pref_rows_by_user.get(user_id)
-    if pref and not bool(pref.get("in_app_enabled", True)):
-        return False
-    return _notification_allowed_by_rules(
-        _rules_for_user(pref_rows_by_user, user_id),
-        notification_type,
-        notification_subtype,
-        severity,
-        channel="in_app",
+    legacy_pref = pref_rows_by_user.get(user_id)
+    preferences = preferences_by_user.get(user_id)
+    if preferences is None:
+        preferences = load_attention_preferences(db, user_id)
+        preferences_by_user[user_id] = preferences
+    candidate = {
+        "garden_id": garden_id,
+        "user_id": user_id,
+        "notification_type": notification_type,
+        "notification_subtype": notification_subtype,
+        "severity": severity,
+        "title": title,
+        "body": body,
+        "target_type": target_type,
+        "target_id": target_id,
+        "metadata": metadata or {},
+        "created_at_ms": now_ms if now_ms is not None else 0,
+    }
+    if _legacy_in_app_enabled(legacy_pref) and notification_rows_allowed_for_user(
+        db,
+        [candidate],
+        preferences=preferences,
+        legacy_in_app_enabled=True,
+        surface="inbox",
+        garden_id=garden_id,
+        user_id=user_id,
+        now_ms=now_ms,
+        respect_quiet_hours=False,
+    ):
+        return True
+    # Generation uses durable channel eligibility. Digest cadence and quiet
+    # hours are applied only while a pending digest is delivered.
+    return _legacy_email_delivery_enabled(legacy_pref) and bool(
+        notification_rows_allowed_for_user(
+            db,
+            [candidate],
+            preferences=preferences,
+            surface="digest",
+            garden_id=garden_id,
+            user_id=user_id,
+            now_ms=now_ms,
+            respect_quiet_hours=False,
+        )
     )
 
 
@@ -975,7 +1158,7 @@ def _clear_active_notifications_for_target(
 ) -> int:
     if not notification_types:
         return 0
-    now_value = now_ms if now_ms is not None else current_timestamp_ms()
+    now_value, _ = notification_request_clock(now_ms=now_ms)
     placeholders = ",".join(["%s"] * len(notification_types))
     user_condition = "user_id = %s" if user_id is not None else "user_id IS NULL"
     params: list[Any] = [
@@ -1006,11 +1189,20 @@ def _clear_active_notifications_for_target(
     return cur.rowcount
 
 
+def _lock_task_notification_projection(db: DbConn, *, garden_id: int) -> None:
+    """Serialize task projection generation and clearing for one garden."""
+    db.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, %s))",
+        (f"gardenops:task-notifications:{garden_id}", _TASK_NOTIFICATION_LOCK_SEED),
+    )
+
+
 def create_task_due_notifications_in_transaction(
     db: DbConn,
     garden_id: int,
     *,
     task_public_ids: set[str] | None = None,
+    now_ms: int | None = None,
 ) -> dict[str, int]:
     """Check garden_tasks for tasks due today or overdue, create notifications.
 
@@ -1018,10 +1210,15 @@ def create_task_due_notifications_in_transaction(
     Deduplicates by (garden_id, user_id, notification_type, target_type, target_id)
     among non-dismissed notifications.
     """
+    # Serialize the check/insert sequence per garden. The notification schema
+    # intentionally keeps delivery history, so a unique active-row constraint
+    # cannot express this lifecycle safely.
+    _lock_task_notification_projection(db, garden_id=garden_id)
     created = 0
     skipped = 0
-    today_iso = offset_days_iso(0)
-    upcoming_end_iso = offset_days_iso(3)
+    now_value, frozen_date = notification_request_clock(now_ms=now_ms)
+    today_iso = _notification_today_iso(frozen_date=frozen_date)
+    upcoming_end_iso = offset_days_iso(3, today=date.fromisoformat(today_iso))
     task_scan_limit = _env_int("NOTIFICATION_TASK_SCAN_LIMIT", 500)
     target_filter = (
         {str(task_id).strip() for task_id in task_public_ids if str(task_id).strip()}
@@ -1036,6 +1233,23 @@ def create_task_due_notifications_in_transaction(
         target_filter_params = sorted(target_filter)
         target_placeholders = ",".join(["%s"] * len(target_filter_params))
         target_filter_clause = f" AND public_id IN ({target_placeholders})"
+    existing_history_clause = """
+        (
+            cleared_at_ms IS NULL
+            OR dismissed = 1
+            OR COALESCE(clear_reason, '') NOT IN ('preference_hidden', 'superseded')
+        )
+    """
+    if target_filter is not None:
+        # An explicit refresh follows a task mutation. Keep user suppression,
+        # but let the changed pending task replace ordinary cleared history.
+        existing_history_clause = """
+            (
+                cleared_at_ms IS NULL
+                OR dismissed = 1
+                OR COALESCE(clear_reason, '') = 'preference_hidden'
+            )
+        """
 
     members = db.execute(
         "SELECT user_id FROM garden_memberships WHERE garden_id = %s",
@@ -1059,6 +1273,7 @@ def create_task_due_notifications_in_transaction(
         garden_id=garden_id,
         target_ids=stale_generated_task_ids,
         reason="expired",
+        now_ms=now_value,
     )
 
     actionable_status_clause = """
@@ -1121,6 +1336,7 @@ def create_task_due_notifications_in_transaction(
 
     today = today_iso
     pref_rows_by_user = _load_pref_rows_for_users(db, member_ids)
+    preferences_by_user: dict[int, AttentionPreferenceSet] = {}
 
     all_task_ids = [r["id"] for r in tasks] + [r["id"] for r in upcoming_tasks]
     task_plants = _batch_task_plant_names(db, all_task_ids)
@@ -1138,11 +1354,7 @@ def create_task_due_notifications_in_transaction(
               AND notification_type IN ('task_due', 'task_overdue', 'task_upcoming')
               AND target_type = 'task'
               AND target_id IN ({target_placeholders})
-              AND (
-                cleared_at_ms IS NULL
-                OR dismissed = 1
-                OR COALESCE(clear_reason, '') NOT IN ('preference_hidden', 'superseded')
-              )
+              AND {existing_history_clause}
             """,  # noqa: S608
             [garden_id, *target_ids],
         ).fetchall()
@@ -1178,7 +1390,20 @@ def create_task_due_notifications_in_transaction(
         meta = _task_metadata(task_title, plant_names, task_due)
 
         for uid in member_ids:
-            if not _in_app_allowed_for_user(pref_rows_by_user, uid, ntype):
+            if not _delivery_allowed_for_user(
+                db,
+                pref_rows_by_user,
+                preferences_by_user,
+                garden_id=garden_id,
+                user_id=uid,
+                notification_type=ntype,
+                title=ntitle,
+                body=nbody,
+                target_type="task",
+                target_id=task_public_id,
+                metadata=meta,
+                now_ms=now_value,
+            ):
                 skipped += 1
                 continue
 
@@ -1200,6 +1425,7 @@ def create_task_due_notifications_in_transaction(
                 metadata=meta,
                 severity="normal",
                 expires_at_ms=expires_at_ms,
+                now_ms=now_value,
             )
             existing_keys.add(notification_key)
             if ntype == "task_due":
@@ -1211,6 +1437,7 @@ def create_task_due_notifications_in_transaction(
                     target_id=task_public_id,
                     notification_types=("task_upcoming",),
                     reason="superseded",
+                    now_ms=now_value,
                 )
             elif ntype == "task_overdue":
                 _clear_active_notifications_for_target(
@@ -1221,6 +1448,7 @@ def create_task_due_notifications_in_transaction(
                     target_id=task_public_id,
                     notification_types=("task_due", "task_upcoming"),
                     reason="superseded",
+                    now_ms=now_value,
                 )
             created += 1
 
@@ -1244,7 +1472,20 @@ def create_task_due_notifications_in_transaction(
         meta = _task_metadata(task_title, plant_names, task_due)
 
         for uid in member_ids:
-            if not _in_app_allowed_for_user(pref_rows_by_user, uid, ntype):
+            if not _delivery_allowed_for_user(
+                db,
+                pref_rows_by_user,
+                preferences_by_user,
+                garden_id=garden_id,
+                user_id=uid,
+                notification_type=ntype,
+                title=ntitle,
+                body=nbody,
+                target_type="task",
+                target_id=task_public_id,
+                metadata=meta,
+                now_ms=now_value,
+            ):
                 skipped += 1
                 continue
 
@@ -1265,6 +1506,7 @@ def create_task_due_notifications_in_transaction(
                 metadata=meta,
                 severity="normal",
                 expires_at_ms=_date_start_ms(task_due),
+                now_ms=now_value,
             )
             existing_keys.add(notification_key)
             created += 1
@@ -1279,6 +1521,8 @@ def create_task_due_notifications_in_transaction(
 def create_task_due_notifications(
     db: DbConn,
     garden_id: int,
+    *,
+    now_ms: int | None = None,
 ) -> dict[str, int]:
     """Check garden_tasks for tasks due today or overdue, create notifications.
 
@@ -1286,7 +1530,11 @@ def create_task_due_notifications(
     Deduplicates by (garden_id, user_id, notification_type, target_type, target_id)
     among non-dismissed notifications.
     """
-    result = create_task_due_notifications_in_transaction(db, garden_id)
+    result = create_task_due_notifications_in_transaction(
+        db,
+        garden_id,
+        now_ms=now_ms,
+    )
     if int(result.get("created", 0)) or int(result.get("cleared", 0)):
         db.commit()
     return {
@@ -1299,13 +1547,14 @@ def get_unread_count(
     db: DbConn,
     garden_id: int,
     user_id: int | None,
+    *,
+    now_ms: int | None = None,
 ) -> int:
     """Count unread, non-dismissed notifications for a user in a garden."""
-    now = current_timestamp_ms()
+    now, _ = notification_request_clock(now_ms=now_ms)
     if user_id is not None:
-        preferences = load_attention_preferences(db, user_id)
-        attention_where, attention_params = attention_notification_sql_filter(
-            preferences,
+        attention_where, attention_params = attention_notification_sql_filter_for_user(
+            db,
             surface="inbox",
             garden_id=garden_id,
             user_id=user_id,
@@ -1355,9 +1604,11 @@ def mark_read(
     notification_id: str,
     user_id: int | None,
     garden_id: int | None = None,
+    *,
+    now_ms: int | None = None,
 ) -> bool:
     """Mark a single notification as read. Returns True if updated."""
-    now = current_timestamp_ms()
+    now, _ = notification_request_clock(now_ms=now_ms)
     conditions = ["public_id = %s", "read_at_ms IS NULL", "cleared_at_ms IS NULL"]
     params: list[int | str] = [now, notification_id]
     if user_id is not None:
@@ -1379,13 +1630,14 @@ def mark_all_read(
     db: DbConn,
     garden_id: int,
     user_id: int | None,
+    *,
+    now_ms: int | None = None,
 ) -> int:
     """Mark all notifications as read for user in garden. Returns count updated."""
-    now = current_timestamp_ms()
+    now, _ = notification_request_clock(now_ms=now_ms)
     if user_id is not None:
-        preferences = load_attention_preferences(db, user_id)
-        attention_where, attention_params = attention_notification_sql_filter(
-            preferences,
+        attention_where, attention_params = attention_notification_sql_filter_for_user(
+            db,
             surface="inbox",
             garden_id=garden_id,
             user_id=user_id,
@@ -1424,10 +1676,13 @@ def dismiss_notification(
     notification_id: str,
     user_id: int | None,
     garden_id: int | None = None,
+    *,
+    now_ms: int | None = None,
 ) -> bool:
     """Dismiss a notification (soft-delete). Returns True if updated."""
     conditions = ["public_id = %s", "dismissed = 0"]
-    params: list[int | str] = [current_timestamp_ms(), "manual_dismiss", notification_id]
+    now, _ = notification_request_clock(now_ms=now_ms)
+    params: list[int | str] = [now, "manual_dismiss", notification_id]
     if user_id is not None:
         conditions.append("user_id = %s")
         params.append(user_id)
@@ -1456,7 +1711,7 @@ def clear_expired_notifications(
     user_id: int | None = None,
     now_ms: int | None = None,
 ) -> int:
-    now_value = now_ms if now_ms is not None else current_timestamp_ms()
+    now_value, _ = notification_request_clock(now_ms=now_ms)
     conditions = [
         "dismissed = 0",
         "cleared_at_ms IS NULL",
@@ -1492,11 +1747,13 @@ def clear_stale_task_notifications(
     now_ms: int | None = None,
 ) -> int:
     """Clear task notifications whose task target is no longer inbox-actionable."""
-    today = today_iso or date.today().isoformat()
-    now_value = now_ms if now_ms is not None else current_timestamp_ms()
+    if garden_id is not None:
+        _lock_task_notification_projection(db, garden_id=garden_id)
+    now_value, frozen_date = notification_request_clock(now_ms=now_ms)
+    today = today_iso or _notification_today_iso(frozen_date=frozen_date)
     today_start_ms = _date_start_ms(today) or now_value
-    weather_pattern_clauses = " OR ".join(
-        ["t.rule_source LIKE %s"] * len(_WEATHER_TASK_RULE_SOURCE_PATTERNS),
+    non_dry_weather_pattern_clauses = " OR ".join(
+        ["t.rule_source LIKE %s"] * len(_NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS),
     )
     weekly_watering_pattern_clauses = " OR ".join(
         ["t.rule_source LIKE %s"] * len(GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS),
@@ -1505,8 +1762,12 @@ def clear_stale_task_notifications(
         "("
         f"(({weekly_watering_pattern_clauses}) AND COALESCE(t.snoozed_until, t.due_on) < %s)"
         " OR "
-        f"(({weather_pattern_clauses}) AND "
-        "(COALESCE(t.snoozed_until, t.due_on) < %s OR wa.valid_until < %s OR wa.id IS NULL))"
+        f"(t.rule_source LIKE %s AND "
+        "(wa.valid_until < %s OR wa.dismissed = 1 OR wa.id IS NULL))"
+        " OR "
+        f"(({non_dry_weather_pattern_clauses}) AND "
+        "(COALESCE(t.snoozed_until, t.due_on) < %s "
+        "OR wa.valid_until < %s OR wa.dismissed = 1 OR wa.id IS NULL))"
         ")"
     )
     conditions = [
@@ -1589,7 +1850,9 @@ def clear_stale_task_notifications(
             today,
             *GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
             today,
-            *_WEATHER_TASK_RULE_SOURCE_PATTERNS,
+            _DRY_WEATHER_TASK_RULE_SOURCE_PATTERN,
+            today,
+            *_NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS,
             today,
             today,
             today,
@@ -1600,7 +1863,9 @@ def clear_stale_task_notifications(
             today,
             *GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
             today,
-            *_WEATHER_TASK_RULE_SOURCE_PATTERNS,
+            _DRY_WEATHER_TASK_RULE_SOURCE_PATTERN,
+            today,
+            *_NON_DRY_WEATHER_TASK_RULE_SOURCE_PATTERNS,
             today,
             today,
             today,
@@ -1621,9 +1886,9 @@ def clear_stale_informational_notifications(
     now_ms: int | None = None,
 ) -> int:
     """Clear informational notifications that are no longer current."""
-    today = today_iso or date.today().isoformat()
-    today_start_ms = _date_start_ms(today) or current_timestamp_ms()
-    now_value = now_ms if now_ms is not None else current_timestamp_ms()
+    now_value, frozen_date = notification_request_clock(now_ms=now_ms)
+    today = today_iso or _notification_today_iso(frozen_date=frozen_date)
+    today_start_ms = _date_start_ms(today) or now_value
     conditions = [
         "dismissed = 0",
         "cleared_at_ms IS NULL",
@@ -1659,7 +1924,8 @@ def clear_task_notifications(
     reason: str,
     now_ms: int | None = None,
 ) -> int:
-    now_value = now_ms if now_ms is not None else current_timestamp_ms()
+    _lock_task_notification_projection(db, garden_id=garden_id)
+    now_value, _ = notification_request_clock(now_ms=now_ms)
     cur = db.execute(
         """
         UPDATE notification_events
@@ -1684,7 +1950,7 @@ def refresh_task_notifications_for_task(
     task_public_id: str,
     now_ms: int | None = None,
 ) -> dict[str, int]:
-    now_value = now_ms if now_ms is not None else current_timestamp_ms()
+    now_value, _ = notification_request_clock(now_ms=now_ms)
     cleared = clear_task_notifications(
         db,
         garden_id=garden_id,
@@ -1696,12 +1962,23 @@ def refresh_task_notifications_for_task(
         db,
         garden_id,
         task_public_ids={task_public_id},
+        now_ms=now_value,
     )
-    return {
+    refresh_result = {
         "cleared": cleared,
         "created": int(result.get("created", 0)),
         "skipped": int(result.get("skipped", 0)),
     }
+    log_refresh = logger.warning if cleared > 0 and refresh_result["created"] == 0 else logger.info
+    log_refresh(
+        "Task notification refresh garden_id=%s target_id=%s cleared=%s created=%s skipped=%s",
+        garden_id,
+        task_public_id,
+        refresh_result["cleared"],
+        refresh_result["created"],
+        refresh_result["skipped"],
+    )
+    return refresh_result
 
 
 def clear_issue_notifications(
@@ -1712,7 +1989,7 @@ def clear_issue_notifications(
     reason: str = "resolved",
     now_ms: int | None = None,
 ) -> int:
-    now_value = now_ms if now_ms is not None else current_timestamp_ms()
+    now_value, _ = notification_request_clock(now_ms=now_ms)
     cur = db.execute(
         """
         UPDATE notification_events
@@ -1730,78 +2007,6 @@ def clear_issue_notifications(
     return cur.rowcount
 
 
-def clear_notifications_hidden_by_preferences(
-    db: DbConn,
-    *,
-    user_id: int,
-    in_app_enabled: bool,
-    rules: dict[str, NotificationRule],
-    now_ms: int | None = None,
-) -> int:
-    now_value = now_ms if now_ms is not None else current_timestamp_ms()
-    total = 0
-    if not in_app_enabled:
-        cur = db.execute(
-            """
-            UPDATE notification_events
-            SET cleared_at_ms = %s,
-                clear_reason = 'preference_hidden'
-            WHERE user_id = %s
-              AND dismissed = 0
-              AND cleared_at_ms IS NULL
-            """,
-            (now_value, user_id),
-        )
-        return cur.rowcount
-
-    for key, policy in _POLICIES_BY_KEY.items():
-        if not bool(policy["user_configurable"]):
-            continue
-        rule = rules.get(key, default_notification_rules().get(key, {}))
-        min_severity = _normalize_severity(str(rule.get("min_severity", "low")))
-        disabled = not bool(rule.get("in_app_enabled", True))
-        severity_floor = _SEVERITY_RANK[min_severity]
-        if not disabled and severity_floor <= _SEVERITY_RANK["low"]:
-            continue
-
-        subtype = policy["notification_subtype"]
-        subtype_sql = (
-            "notification_subtype IS NULL" if subtype is None else "notification_subtype = %s"
-        )
-        params: list[Any] = [
-            now_value,
-            user_id,
-            str(policy["notification_type"]),
-        ]
-        if subtype is not None:
-            params.append(str(subtype))
-        severity_filter = ""
-        if not disabled:
-            allowed = [sev for sev, rank in _SEVERITY_RANK.items() if rank < severity_floor]
-            if not allowed:
-                continue
-            placeholders = ",".join(["%s"] * len(allowed))
-            severity_filter = f" AND COALESCE(severity, 'normal') IN ({placeholders})"
-            params.extend(allowed)
-
-        cur = db.execute(
-            f"""
-            UPDATE notification_events
-            SET cleared_at_ms = %s,
-                clear_reason = 'preference_hidden'
-            WHERE user_id = %s
-              AND notification_type = %s
-              AND {subtype_sql}
-              AND dismissed = 0
-              AND cleared_at_ms IS NULL
-              {severity_filter}
-            """,  # noqa: S608
-            params,
-        )
-        total += cur.rowcount
-    return total
-
-
 def create_garden_member_notifications(
     db: DbConn,
     *,
@@ -1816,6 +2021,7 @@ def create_garden_member_notifications(
     severity: str | None = "normal",
     expires_at_ms: int | None = None,
     exclude_user_id: int | None = None,
+    now_ms: int | None = None,
 ) -> dict[str, int]:
     members = db.execute(
         "SELECT user_id FROM garden_memberships WHERE garden_id = %s",
@@ -1828,6 +2034,8 @@ def create_garden_member_notifications(
         return {"created": 0, "skipped": 0}
 
     pref_rows_by_user = _load_pref_rows_for_users(db, member_ids)
+    preferences_by_user: dict[int, AttentionPreferenceSet] = {}
+    now_value, _ = notification_request_clock(now_ms=now_ms)
     placeholders = ",".join(["%s"] * len(member_ids))
     target_type_key = target_type or ""
     target_id_key = target_id or ""
@@ -1861,12 +2069,21 @@ def create_garden_member_notifications(
         if uid in existing_user_ids:
             skipped += 1
             continue
-        if not _in_app_allowed_for_user(
+        if not _delivery_allowed_for_user(
+            db,
             pref_rows_by_user,
-            uid,
-            notification_type,
-            notification_subtype,
-            severity,
+            preferences_by_user,
+            garden_id=garden_id,
+            user_id=uid,
+            notification_type=notification_type,
+            title=title,
+            body=body,
+            notification_subtype=notification_subtype,
+            severity=severity,
+            target_type=target_type,
+            target_id=target_id,
+            metadata=metadata,
+            now_ms=now_value,
         ):
             skipped += 1
             continue
@@ -1883,6 +2100,7 @@ def create_garden_member_notifications(
             notification_subtype=notification_subtype,
             severity=severity,
             expires_at_ms=expires_at_ms,
+            now_ms=now_value,
         )
         created += 1
     return {"created": created, "skipped": skipped}
@@ -1915,57 +2133,933 @@ def create_issue_created_notifications(
     )
 
 
-def create_weather_alert_notifications(
+def _weather_alert_target_id(alert_type: str, valid_from: str) -> str:
+    return f"{alert_type}:{valid_from}"
+
+
+def _weather_alert_identities(alerts: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    return sorted(
+        {
+            (str(alert.get("alert_type") or ""), str(alert.get("valid_from") or ""))
+            for alert in alerts
+            if alert.get("alert_type") and alert.get("valid_from")
+        }
+    )
+
+
+def _split_forecast_reconciliation_scope(
+    alerts: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], set[str] | None, dict[str, tuple[str, str]] | None]:
+    """Separate private forecast scope metadata from real alerts."""
+    scoped_alerts: list[dict[str, Any]] = []
+    complete_alert_types: set[str] | None = None
+    coverage_bounds: dict[str, tuple[str, str]] | None = None
+    for alert in alerts:
+        marker = alert.get(_FORECAST_RECONCILIATION_SCOPE_KEY)
+        if marker is None:
+            scoped_alerts.append(alert)
+            continue
+        if isinstance(marker, list):
+            complete_alert_types = {
+                str(alert_type) for alert_type in marker if str(alert_type) in _FORECAST_ALERT_TYPES
+            }
+        elif isinstance(marker, dict):
+            raw_types = marker.get("complete_alert_types")
+            complete_alert_types = (
+                {
+                    str(alert_type)
+                    for alert_type in raw_types
+                    if str(alert_type) in _FORECAST_ALERT_TYPES
+                }
+                if isinstance(raw_types, list)
+                else set()
+            )
+            coverage_bounds = _parse_forecast_coverage_bounds(marker.get("coverage_bounds"))
+        else:
+            complete_alert_types = set()
+            coverage_bounds = {}
+    return scoped_alerts, complete_alert_types, coverage_bounds
+
+
+def _parse_forecast_coverage_bounds(value: Any) -> dict[str, tuple[str, str]]:
+    if not isinstance(value, dict):
+        return {}
+    bounds: dict[str, tuple[str, str]] = {}
+    for alert_type, raw_bounds in value.items():
+        if alert_type not in _FORECAST_ALERT_TYPES or not isinstance(raw_bounds, dict):
+            continue
+        start = raw_bounds.get("start")
+        end = raw_bounds.get("end")
+        if not isinstance(start, str) or not isinstance(end, str):
+            continue
+        try:
+            start_date = date.fromisoformat(start)
+            end_date = date.fromisoformat(end)
+        except ValueError:
+            continue
+        if start_date <= end_date:
+            bounds[alert_type] = (start, end)
+    return bounds
+
+
+def _forecast_alert_within_coverage(
+    *,
+    alert_type: str,
+    valid_from: str,
+    valid_until: str,
+    coverage_bounds: dict[str, tuple[str, str]] | None,
+) -> bool:
+    if coverage_bounds is None:
+        return True
+    bounds = coverage_bounds.get(alert_type)
+    if bounds is None:
+        return False
+    try:
+        start = date.fromisoformat(valid_from)
+        end = date.fromisoformat(valid_until)
+        coverage_start = date.fromisoformat(bounds[0])
+        coverage_end = date.fromisoformat(bounds[1])
+    except ValueError:
+        return False
+    return coverage_start <= start <= end <= coverage_end
+
+
+def _parse_weather_lifecycle_metadata(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except TypeError, ValueError, json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _record_weather_lifecycle_transition(
+    metadata: dict[str, Any],
+    transition: dict[str, Any],
+) -> None:
+    current = metadata.get("lifecycle")
+    history = metadata.get("lifecycle_history")
+    transitions = list(history) if isinstance(history, list) else []
+    if isinstance(current, dict) and current != transition:
+        transitions.append(dict(current))
+    if transitions:
+        metadata["lifecycle_history"] = transitions[-20:]
+    metadata["lifecycle"] = transition
+
+
+def _load_weather_alert_for_update(
+    db: DbConn,
+    *,
+    garden_id: int,
+    alert_type: str,
+    valid_from: str,
+) -> dict[str, Any] | None:
+    row = db.execute(
+        """
+        SELECT id, alert_type, severity, title, description, valid_from, valid_until, metadata_json
+        FROM weather_alerts
+        WHERE garden_id = %s
+          AND alert_type = %s
+          AND valid_from = %s
+          AND dismissed = 0
+        FOR UPDATE
+        """,
+        (garden_id, alert_type, valid_from),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def clear_weather_alert_notifications(
+    db: DbConn,
+    *,
+    garden_id: int,
+    user_id: int,
+    alert_type: str,
+    valid_from: str,
+    now_ms: int | None = None,
+) -> int:
+    now_value, _ = notification_request_clock(now_ms=now_ms)
+    cur = db.execute(
+        """
+        UPDATE notification_events
+        SET cleared_at_ms = %s,
+            clear_reason = 'weather_dismissed'
+        WHERE garden_id = %s
+          AND user_id = %s
+          AND notification_type = 'weather_alert'
+          AND target_type = 'weather_alert'
+          AND target_id = %s
+          AND dismissed = 0
+          AND cleared_at_ms IS NULL
+        """,
+        (
+            now_value,
+            garden_id,
+            user_id,
+            _weather_alert_target_id(alert_type, valid_from),
+        ),
+    )
+    return cur.rowcount
+
+
+def _resolve_missing_forecast_alert_work(
     db: DbConn,
     *,
     garden_id: int,
     alerts: list[dict[str, Any]],
+    now_ms: int,
+    complete_alert_types: set[str] | None = None,
+    coverage_bounds: dict[str, tuple[str, str]] | None = None,
 ) -> dict[str, int]:
-    created = 0
-    skipped = 0
-    for alert in alerts:
-        alert_type = str(alert.get("alert_type") or "")
-        valid_from = str(alert.get("valid_from") or "")
-        if not alert_type or not valid_from:
-            skipped += 1
+    """Retire active forecast-owned work absent from the covered forecast run."""
+    current_identities = set(_weather_alert_identities(alerts))
+    rows = db.execute(
+        """
+        SELECT id, alert_type, valid_from, valid_until, metadata_json
+        FROM weather_alerts
+        WHERE garden_id = %s
+          AND dismissed = 0
+          AND alert_type IN ('frost_warning', 'heat_wave', 'dry_spell', 'rain_surplus')
+        FOR UPDATE
+        """,
+        (garden_id,),
+    ).fetchall()
+    resolved_alerts = 0
+    resolved_tasks = 0
+    resolved_notifications = 0
+    for row in rows:
+        alert_type = str(row["alert_type"])
+        if complete_alert_types is not None and alert_type not in complete_alert_types:
             continue
-        alert_row = db.execute(
+        valid_from = str(row["valid_from"])
+        if not _forecast_alert_within_coverage(
+            alert_type=alert_type,
+            valid_from=valid_from,
+            valid_until=str(row["valid_until"]),
+            coverage_bounds=coverage_bounds,
+        ):
+            continue
+        if (alert_type, valid_from) in current_identities:
+            continue
+        metadata = _parse_weather_lifecycle_metadata(row["metadata_json"])
+        _record_weather_lifecycle_transition(
+            metadata,
+            {
+                "status": "resolved",
+                "reason": "absent_from_current_forecast",
+                "resolution_kind": "automatic_forecast",
+                "resolved_at_ms": now_ms,
+                "source": "forecast_reconciliation",
+            },
+        )
+        db.execute(
+            "UPDATE weather_alerts SET dismissed = 1, metadata_json = %s WHERE id = %s",
+            (json.dumps(metadata, sort_keys=True, separators=(",", ":")), int(row["id"])),
+        )
+        resolved_alerts += 1
+        notification = db.execute(
             """
-            SELECT id, valid_until
+            UPDATE notification_events
+            SET cleared_at_ms = %s, clear_reason = 'forecast_resolved'
+            WHERE garden_id = %s
+              AND notification_type = 'weather_alert'
+              AND target_type = 'weather_alert'
+              AND target_id = %s
+              AND dismissed = 0
+              AND cleared_at_ms IS NULL
+            """,
+            (now_ms, garden_id, _weather_alert_target_id(alert_type, valid_from)),
+        )
+        resolved_notifications += notification.rowcount
+        task_rows = db.execute(
+            """
+            SELECT id, public_id, status, due_on, snoozed_until, metadata_json
+            FROM garden_tasks
+            WHERE garden_id = %s
+              AND status IN ('pending', 'snoozed')
+              AND rule_source LIKE ANY(%s)
+              AND split_part(rule_source, ':', 3) = %s
+            FOR UPDATE
+            """,
+            (garden_id, list(_WEATHER_TASK_RULE_SOURCE_PATTERNS), str(row["id"])),
+        ).fetchall()
+        for task_row in task_rows:
+            task_metadata = _parse_weather_lifecycle_metadata(task_row["metadata_json"])
+            _record_weather_lifecycle_transition(
+                task_metadata,
+                {
+                    "status": "resolved",
+                    "reason": "absent_from_current_forecast",
+                    "resolution_kind": "automatic_forecast",
+                    "resolved_at_ms": now_ms,
+                    "source": "forecast_reconciliation",
+                    "weather_alert_id": int(row["id"]),
+                    "previous_status": str(task_row["status"]),
+                    "previous_due_on": str(task_row["due_on"] or ""),
+                    "previous_snoozed_until": str(task_row["snoozed_until"] or ""),
+                },
+            )
+            task_update = db.execute(
+                """
+                UPDATE garden_tasks
+                SET status = 'skipped',
+                    snoozed_until = NULL,
+                    completed_by_user_id = NULL,
+                    completed_at_ms = NULL,
+                    metadata_json = %s,
+                    updated_at_ms = %s
+                WHERE id = %s AND status IN ('pending', 'snoozed')
+                """,
+                (
+                    json.dumps(task_metadata, sort_keys=True, separators=(",", ":")),
+                    now_ms,
+                    int(task_row["id"]),
+                ),
+            )
+            if task_update.rowcount != 1:
+                continue
+            resolved_tasks += 1
+            resolved_notifications += clear_task_notifications(
+                db,
+                garden_id=garden_id,
+                task_public_id=str(task_row["public_id"]),
+                reason="forecast_resolved",
+                now_ms=now_ms,
+            )
+    return {
+        "alerts_resolved": resolved_alerts,
+        "tasks_resolved": resolved_tasks,
+        "notifications_resolved": resolved_notifications,
+    }
+
+
+def _recover_reappeared_forecast_alert_work(
+    db: DbConn,
+    *,
+    garden_id: int,
+    alerts: list[dict[str, Any]],
+    now_ms: int,
+    complete_alert_types: set[str] | None = None,
+    coverage_bounds: dict[str, tuple[str, str]] | None = None,
+) -> int:
+    """Reopen only work automatically retired by forecast reconciliation."""
+    today = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
+    recovered = 0
+    for alert_type, valid_from in _weather_alert_identities(alerts):
+        if complete_alert_types is not None and alert_type not in complete_alert_types:
+            continue
+        alert = db.execute(
+            """
+            SELECT id, valid_from, valid_until
             FROM weather_alerts
             WHERE garden_id = %s
               AND alert_type = %s
               AND valid_from = %s
               AND dismissed = 0
-            ORDER BY id DESC LIMIT 1
+            FOR UPDATE
             """,
             (garden_id, alert_type, valid_from),
         ).fetchone()
-        if not alert_row:
-            skipped += 1
+        if alert is None or str(alert["valid_until"]) < today:
             continue
-        valid_until = str(alert.get("valid_until") or alert_row["valid_until"])
-        result = create_garden_member_notifications(
+        if not _forecast_alert_within_coverage(
+            alert_type=alert_type,
+            valid_from=str(alert["valid_from"]),
+            valid_until=str(alert["valid_until"]),
+            coverage_bounds=coverage_bounds,
+        ):
+            continue
+        task_rows = db.execute(
+            """
+            SELECT id, public_id, task_type, status, due_on, snoozed_until,
+                   rule_source, metadata_json
+            FROM garden_tasks
+            WHERE garden_id = %s
+              AND status = 'skipped'
+              AND rule_source LIKE ANY(%s)
+              AND split_part(rule_source, ':', 3) = %s
+            FOR UPDATE
+            """,
+            (garden_id, list(_WEATHER_TASK_RULE_SOURCE_PATTERNS), str(alert["id"])),
+        ).fetchall()
+        for task in task_rows:
+            metadata = _parse_weather_lifecycle_metadata(task["metadata_json"])
+            lifecycle = metadata.get("lifecycle")
+            if not isinstance(lifecycle, dict):
+                continue
+            if lifecycle.get("reason") != "absent_from_current_forecast":
+                continue
+            if lifecycle.get("resolution_kind") != "automatic_forecast":
+                continue
+            if int(lifecycle.get("weather_alert_id") or 0) != int(alert["id"]):
+                continue
+
+            previous_status = str(lifecycle.get("previous_status") or "pending")
+            previous_snoozed_until = str(lifecycle.get("previous_snoozed_until") or "")
+            restored_status = (
+                "snoozed"
+                if previous_status == "snoozed" and previous_snoozed_until >= today
+                else "pending"
+            )
+            restored_snoozed_until = (
+                previous_snoozed_until if restored_status == "snoozed" else None
+            )
+            previous_due_on = str(lifecycle.get("previous_due_on") or task["due_on"] or valid_from)
+            restored_due_on = max(previous_due_on, today)
+            _record_weather_lifecycle_transition(
+                metadata,
+                {
+                    "status": "active",
+                    "reason": "same_identity_reappeared",
+                    "recovered_at_ms": now_ms,
+                    "source": "forecast_reconciliation",
+                    "weather_alert_id": int(alert["id"]),
+                },
+            )
+            update = db.execute(
+                """
+                UPDATE garden_tasks
+                SET status = %s,
+                    due_on = %s,
+                    snoozed_until = %s,
+                    completed_by_user_id = NULL,
+                    completed_at_ms = NULL,
+                    metadata_json = %s,
+                    updated_at_ms = %s
+                WHERE id = %s AND status = 'skipped'
+                """,
+                (
+                    restored_status,
+                    restored_due_on,
+                    restored_snoozed_until,
+                    json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+                    now_ms,
+                    int(task["id"]),
+                ),
+            )
+            if update.rowcount != 1:
+                continue
+            recovered += 1
+            refresh_task_notifications_for_task(
+                db,
+                garden_id=garden_id,
+                task_public_id=str(task["public_id"]),
+                now_ms=now_ms,
+            )
+    return recovered
+
+
+def _reconcile_authoritative_weather_tasks(
+    db: DbConn,
+    *,
+    garden_id: int,
+    alerts: list[dict[str, Any]],
+    now_ms: int,
+    complete_alert_types: set[str] | None = None,
+    coverage_bounds: dict[str, tuple[str, str]] | None = None,
+) -> int:
+    """Retire stale weather-task projections and keep their validity metadata current."""
+    today = datetime.fromtimestamp(now_ms / 1000, UTC).date().isoformat()
+    retired = 0
+    for alert_type, valid_from in _weather_alert_identities(alerts):
+        if complete_alert_types is not None and alert_type not in complete_alert_types:
+            continue
+        task_prefix = _WEATHER_TASK_PREFIX_BY_ALERT_TYPE.get(alert_type)
+        if task_prefix is None:
+            continue
+        alert = db.execute(
+            """
+            SELECT id, valid_from, valid_until, metadata_json
+            FROM weather_alerts
+            WHERE garden_id = %s
+              AND alert_type = %s
+              AND valid_from = %s
+              AND dismissed = 0
+            FOR UPDATE
+            """,
+            (garden_id, alert_type, valid_from),
+        ).fetchone()
+        if alert is None:
+            continue
+        if not _forecast_alert_within_coverage(
+            alert_type=alert_type,
+            valid_from=str(alert["valid_from"]),
+            valid_until=str(alert["valid_until"]),
+            coverage_bounds=coverage_bounds,
+        ):
+            continue
+        alert_id = int(alert["id"])
+        alert_metadata = _parse_weather_lifecycle_metadata(alert["metadata_json"])
+        plant_links_authoritative = bool(alert_metadata.get("forecast_plant_links_authoritative"))
+        linked_plant_ids: set[str] = set()
+        if plant_links_authoritative:
+            linked_plant_ids = {
+                str(row["plt_id"])
+                for row in db.execute(
+                    "SELECT plt_id FROM weather_alert_plants WHERE alert_id = %s",
+                    (alert_id,),
+                ).fetchall()
+            }
+        task_rows = db.execute(
+            """
+            SELECT id, public_id, status, rule_source, metadata_json
+            FROM garden_tasks
+            WHERE garden_id = %s
+              AND status IN ('pending', 'snoozed')
+              AND rule_source LIKE %s
+            FOR UPDATE
+            """,
+            (garden_id, f"auto:{task_prefix}:{alert_id}:%"),
+        ).fetchall()
+        for task in task_rows:
+            task_metadata = _parse_weather_lifecycle_metadata(task["metadata_json"])
+            task_metadata["weather_alert_id"] = alert_id
+            task_metadata["weather_valid_from"] = str(alert["valid_from"])
+            task_metadata["weather_valid_until"] = str(alert["valid_until"])
+            rule_parts = str(task["rule_source"] or "").split(":", 3)
+            plant_id = rule_parts[3] if len(rule_parts) == 4 else ""
+            terminal_status = ""
+            terminal_reason = ""
+            if plant_links_authoritative and plant_id not in linked_plant_ids:
+                terminal_status = "skipped"
+                terminal_reason = "plant_no_longer_affected_by_current_forecast"
+            elif str(alert["valid_until"]) < today:
+                terminal_status = "expired"
+                terminal_reason = "weather_alert_validity_ended"
+
+            if terminal_status:
+                _record_weather_lifecycle_transition(
+                    task_metadata,
+                    {
+                        "status": terminal_status,
+                        "reason": terminal_reason,
+                        "resolution_kind": "authoritative_forecast",
+                        "resolved_at_ms": now_ms,
+                        "source": "forecast_reconciliation",
+                        "weather_alert_id": alert_id,
+                    },
+                )
+                update = db.execute(
+                    """
+                    UPDATE garden_tasks
+                    SET status = %s,
+                        snoozed_until = NULL,
+                        completed_by_user_id = NULL,
+                        completed_at_ms = NULL,
+                        metadata_json = %s,
+                        updated_at_ms = %s
+                    WHERE id = %s AND status IN ('pending', 'snoozed')
+                    """,
+                    (
+                        terminal_status,
+                        json.dumps(task_metadata, sort_keys=True, separators=(",", ":")),
+                        now_ms,
+                        int(task["id"]),
+                    ),
+                )
+                if update.rowcount != 1:
+                    continue
+                retired += 1
+                clear_task_notifications(
+                    db,
+                    garden_id=garden_id,
+                    task_public_id=str(task["public_id"]),
+                    reason=("forecast_reconciled" if terminal_status == "skipped" else "expired"),
+                    now_ms=now_ms,
+                )
+                continue
+
+            if task_metadata != _parse_weather_lifecycle_metadata(task["metadata_json"]):
+                db.execute(
+                    """
+                    UPDATE garden_tasks
+                    SET metadata_json = %s, updated_at_ms = %s
+                    WHERE id = %s AND status IN ('pending', 'snoozed')
+                    """,
+                    (
+                        json.dumps(task_metadata, sort_keys=True, separators=(",", ":")),
+                        now_ms,
+                        int(task["id"]),
+                    ),
+                )
+    return retired
+
+
+def _refresh_weather_alert_notification(
+    db: DbConn,
+    *,
+    row: dict[str, Any],
+    notification_subtype: str,
+    severity: str,
+    title: str,
+    body: str,
+    metadata_json: str,
+    expires_at_ms: int | None,
+    rearm: bool = False,
+) -> bool:
+    content_changed = (
+        str(row["severity"] or "normal") != severity
+        or str(row["title"] or "") != title
+        or str(row["body"] or "") != body
+        or str(row["metadata_json"] or "") != metadata_json
+        or row["expires_at_ms"] != expires_at_ms
+        or row["cleared_at_ms"] is not None
+        or row["clear_reason"] is not None
+    )
+    if not content_changed and not rearm:
+        return False
+    db.execute(
+        """
+        UPDATE notification_events
+        SET notification_subtype = %s,
+            severity = %s,
+            title = %s,
+            body = %s,
+            metadata_json = %s,
+            expires_at_ms = %s,
+            dismissed = 0,
+            read_at_ms = CASE WHEN %s THEN NULL ELSE read_at_ms END,
+            emailed_at_ms = CASE WHEN %s THEN NULL ELSE emailed_at_ms END,
+            cleared_at_ms = NULL,
+            clear_reason = NULL
+        WHERE id = %s
+        """,
+        (
+            notification_subtype,
+            severity,
+            title,
+            body,
+            metadata_json,
+            expires_at_ms,
+            rearm,
+            rearm,
+            int(row["id"]),
+        ),
+    )
+    return True
+
+
+def create_weather_alert_notifications(
+    db: DbConn,
+    *,
+    garden_id: int,
+    alerts: list[dict[str, Any]],
+    now_ms: int | None = None,
+) -> dict[str, int]:
+    """Reconcile per-user weather notifications while holding each alert row lock."""
+    created = 0
+    skipped = 0
+    now_value, _ = notification_request_clock(now_ms=now_ms)
+    identities = _weather_alert_identities(alerts)
+    skipped += len(alerts) - len(identities)
+    for alert_type, valid_from in identities:
+        alert_row = _load_weather_alert_for_update(
             db,
             garden_id=garden_id,
-            notification_type="weather_alert",
-            notification_subtype=alert_type,
-            severity=str(alert.get("severity") or "normal"),
-            title=str(alert.get("title") or "Weather alert"),
-            body=str(alert.get("description") or ""),
-            target_type="weather_alert",
-            target_id=f"{alert_type}:{valid_from}",
-            expires_at_ms=_date_end_ms(valid_until),
-            metadata={
+            alert_type=alert_type,
+            valid_from=valid_from,
+        )
+        if alert_row is None:
+            skipped += 1
+            continue
+        alert_metadata = _parse_weather_lifecycle_metadata(alert_row["metadata_json"])
+        rearm_from_reappearance = bool(alert_metadata.get("notification_rearm_pending"))
+        members = db.execute(
+            "SELECT user_id FROM garden_memberships WHERE garden_id = %s",
+            (garden_id,),
+        ).fetchall()
+        member_ids = [int(member["user_id"]) for member in members]
+        if not member_ids:
+            if rearm_from_reappearance:
+                alert_metadata["notification_rearm_pending"] = False
+                db.execute(
+                    "UPDATE weather_alerts SET metadata_json = %s WHERE id = %s",
+                    (
+                        json.dumps(alert_metadata, sort_keys=True, separators=(",", ":")),
+                        int(alert_row["id"]),
+                    ),
+                )
+            continue
+
+        target_id = _weather_alert_target_id(alert_type, valid_from)
+        severity = _normalize_severity(str(alert_row["severity"] or "normal"))
+        title = str(alert_row["title"] or "Weather alert")
+        body = str(alert_row["description"] or "")
+        valid_until = str(alert_row["valid_until"])
+        expires_at_ms = _date_end_ms(valid_until)
+        metadata_json = json.dumps(
+            {
+                "alert_id": int(alert_row["id"]),
                 "alert_type": alert_type,
-                "severity": str(alert.get("severity") or "normal"),
+                "severity": severity,
                 "valid_from": valid_from,
                 "valid_until": valid_until,
             },
+            separators=(",", ":"),
         )
-        created += result["created"]
-        skipped += result["skipped"]
+        existing_rows = db.execute(
+            """
+            SELECT user_id, id, notification_subtype, severity, title, body,
+                   metadata_json, expires_at_ms, read_at_ms, emailed_at_ms,
+                   dismissed, cleared_at_ms, clear_reason
+            FROM notification_events
+            WHERE garden_id = %s
+              AND user_id = ANY(%s)
+              AND notification_type = 'weather_alert'
+              AND target_type = 'weather_alert'
+              AND target_id = %s
+            ORDER BY user_id ASC, id DESC
+            FOR UPDATE
+            """,
+            (garden_id, member_ids, target_id),
+        ).fetchall()
+        rows_by_user: dict[int, list[dict[str, Any]]] = {}
+        for row in existing_rows:
+            rows_by_user.setdefault(int(row["user_id"]), []).append(dict(row))
+        dismissed_rows = db.execute(
+            """
+            SELECT user_id
+            FROM user_attention_item_state
+            WHERE garden_id = %s
+              AND user_id = ANY(%s)
+              AND item_id = %s
+              AND user_state = 'dismissed'
+            """,
+            (garden_id, member_ids, f"attn:weather:alert:{int(alert_row['id'])}"),
+        ).fetchall()
+        dismissed_user_ids = {int(row["user_id"]) for row in dismissed_rows}
+        pref_rows_by_user = _load_pref_rows_for_users(db, member_ids)
+        preferences_by_user: dict[int, AttentionPreferenceSet] = {}
+
+        for user_id in member_ids:
+            rows = rows_by_user.get(user_id, [])
+            if user_id in dismissed_user_ids and not rearm_from_reappearance:
+                clear_weather_alert_notifications(
+                    db,
+                    garden_id=garden_id,
+                    user_id=user_id,
+                    alert_type=alert_type,
+                    valid_from=valid_from,
+                    now_ms=now_value,
+                )
+                skipped += 1
+                continue
+
+            active_rows = [
+                row for row in rows if not bool(row["dismissed"]) and row["cleared_at_ms"] is None
+            ]
+            if active_rows:
+                active_row = active_rows[0]
+                severity_escalated = (
+                    SEVERITY_RANK[severity]
+                    > SEVERITY_RANK[_normalize_severity(str(active_row["severity"] or "normal"))]
+                )
+                _refresh_weather_alert_notification(
+                    db,
+                    row=active_row,
+                    notification_subtype=alert_type,
+                    severity=severity,
+                    title=title,
+                    body=body,
+                    metadata_json=metadata_json,
+                    expires_at_ms=expires_at_ms,
+                    rearm=rearm_from_reappearance or severity_escalated,
+                )
+                for duplicate in active_rows[1:]:
+                    db.execute(
+                        """
+                        UPDATE notification_events
+                        SET cleared_at_ms = %s,
+                            clear_reason = 'superseded'
+                        WHERE id = %s
+                        """,
+                        (now_value, int(duplicate["id"])),
+                    )
+                skipped += 1
+                continue
+
+            dismissed_row = next((row for row in rows if bool(row["dismissed"])), None)
+            if dismissed_row is not None:
+                dismissed_severity = _normalize_severity(str(dismissed_row["severity"] or "normal"))
+                severity_escalated = SEVERITY_RANK[severity] > SEVERITY_RANK[dismissed_severity]
+                if not rearm_from_reappearance and not severity_escalated:
+                    skipped += 1
+                    continue
+                _refresh_weather_alert_notification(
+                    db,
+                    row=dismissed_row,
+                    notification_subtype=alert_type,
+                    severity=severity,
+                    title=title,
+                    body=body,
+                    metadata_json=metadata_json,
+                    expires_at_ms=expires_at_ms,
+                    rearm=True,
+                )
+                skipped += 1
+                continue
+
+            if not _delivery_allowed_for_user(
+                db,
+                pref_rows_by_user,
+                preferences_by_user,
+                garden_id=garden_id,
+                user_id=user_id,
+                notification_type="weather_alert",
+                notification_subtype=alert_type,
+                severity=severity,
+                title=title,
+                body=body,
+                target_type="weather_alert",
+                target_id=target_id,
+                metadata=json.loads(metadata_json),
+                now_ms=now_value,
+            ):
+                skipped += 1
+                continue
+
+            if rows:
+                prior_row = rows[0]
+                severity_escalated = (
+                    SEVERITY_RANK[severity]
+                    > SEVERITY_RANK[_normalize_severity(str(prior_row["severity"] or "normal"))]
+                )
+                _refresh_weather_alert_notification(
+                    db,
+                    row=prior_row,
+                    notification_subtype=alert_type,
+                    severity=severity,
+                    title=title,
+                    body=body,
+                    metadata_json=metadata_json,
+                    expires_at_ms=expires_at_ms,
+                    rearm=rearm_from_reappearance or severity_escalated,
+                )
+                skipped += 1
+                continue
+
+            _insert_notification(
+                db,
+                garden_id,
+                user_id,
+                "weather_alert",
+                title,
+                body,
+                target_type="weather_alert",
+                target_id=target_id,
+                metadata=json.loads(metadata_json),
+                notification_subtype=alert_type,
+                severity=severity,
+                expires_at_ms=expires_at_ms,
+                now_ms=now_value,
+            )
+            created += 1
+        if rearm_from_reappearance:
+            alert_metadata["notification_rearm_pending"] = False
+            db.execute(
+                "UPDATE weather_alerts SET metadata_json = %s WHERE id = %s",
+                (
+                    json.dumps(alert_metadata, sort_keys=True, separators=(",", ":")),
+                    int(alert_row["id"]),
+                ),
+            )
     return {"created": created, "skipped": skipped}
+
+
+def reconcile_weather_alert_work(
+    db: DbConn,
+    *,
+    garden_id: int,
+    alerts: list[dict[str, Any]],
+    actor_user_id: int | None,
+    now_ms: int | None = None,
+    replace_forecast_alerts: bool = False,
+) -> dict[str, int]:
+    """Reconcile weather alert notifications and generated tasks in one transaction."""
+    now_value, _ = notification_request_clock(now_ms=now_ms)
+    forecast_alerts, complete_alert_types, coverage_bounds = _split_forecast_reconciliation_scope(
+        alerts
+    )
+    resolution = {
+        "alerts_resolved": 0,
+        "tasks_resolved": 0,
+        "tasks_recovered": 0,
+        "notifications_resolved": 0,
+        "tasks_retired": 0,
+    }
+    if replace_forecast_alerts:
+        resolution = _resolve_missing_forecast_alert_work(
+            db,
+            garden_id=garden_id,
+            alerts=forecast_alerts,
+            now_ms=now_value,
+            complete_alert_types=complete_alert_types,
+            coverage_bounds=coverage_bounds,
+        )
+        resolution["tasks_recovered"] = _recover_reappeared_forecast_alert_work(
+            db,
+            garden_id=garden_id,
+            alerts=forecast_alerts,
+            now_ms=now_value,
+            complete_alert_types=complete_alert_types,
+            coverage_bounds=coverage_bounds,
+        )
+    notifications = create_weather_alert_notifications(
+        db,
+        garden_id=garden_id,
+        alerts=forecast_alerts,
+        now_ms=now_value,
+    )
+    task_handlers = {
+        "frost_warning": on_frost_alert,
+        "heat_wave": on_heat_alert,
+        "dry_spell": on_dry_spell_alert,
+        "rain_surplus": on_rain_alert,
+    }
+    tasks_created = 0
+    for alert_type, valid_from in _weather_alert_identities(forecast_alerts):
+        handler = task_handlers.get(alert_type)
+        if handler is None:
+            continue
+        alert_row = _load_weather_alert_for_update(
+            db,
+            garden_id=garden_id,
+            alert_type=alert_type,
+            valid_from=valid_from,
+        )
+        if alert_row is not None:
+            tasks_created += handler(
+                db,
+                garden_id,
+                int(alert_row["id"]),
+                actor_user_id,
+                now_ms=now_value,
+            )
+    if replace_forecast_alerts:
+        resolution["tasks_retired"] = _reconcile_authoritative_weather_tasks(
+            db,
+            garden_id=garden_id,
+            alerts=forecast_alerts,
+            now_ms=now_value,
+            complete_alert_types=complete_alert_types,
+            coverage_bounds=coverage_bounds,
+        )
+    rain_reconciliation = reconcile_rain_watering_outcomes(
+        db,
+        garden_id=garden_id,
+        now_ms=now_value,
+    )
+    return {
+        "notifications_created": int(notifications["created"]),
+        "notifications_skipped": int(notifications["skipped"]),
+        "tasks_created": tasks_created,
+        "rain_tasks_recovered": rain_reconciliation["recovered"],
+        "rain_tasks_adjusted": rain_reconciliation["adjusted"],
+        **resolution,
+    }
 
 
 def _smtp_settings() -> dict[str, object] | None:
@@ -2019,6 +3113,26 @@ def _default_email_sender(recipient: str, subject: str, body: str) -> None:
         smtp.send_message(message)
 
 
+def _quiet_time_minute(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value * 60 if 0 <= value <= 23 else None
+    if not isinstance(value, str):
+        return None
+    parts = value.strip().split(":")
+    if len(parts) not in {1, 2}:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) == 2 else 0
+    except ValueError:
+        return None
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return None
+    return hour * 60 + minute
+
+
 def _parse_quiet_hours(raw: str | None) -> tuple[int, int] | None:
     if not raw:
         return None
@@ -2034,22 +3148,12 @@ def _parse_quiet_hours(raw: str | None) -> tuple[int, int] | None:
         logger.warning("quiet_hours_json is not a dict: %r", raw)
         return None
 
-    start = data.get("start") or data.get("from")
-    end = data.get("end") or data.get("to")
-    if isinstance(start, str) and isinstance(end, str):
-        try:
-            start_hour = int(start.split(":")[0])
-            end_hour = int(end.split(":")[0])
-            if 0 <= start_hour <= 23 and 0 <= end_hour <= 23:
-                return start_hour, end_hour
-        except Exception:
-            logger.warning("Could not parse quiet hours time strings from: %r", raw)
-            return None
-    if isinstance(data.get("start_hour"), int) and isinstance(data.get("end_hour"), int):
-        start_hour = int(data["start_hour"])
-        end_hour = int(data["end_hour"])
-        if 0 <= start_hour <= 23 and 0 <= end_hour <= 23:
-            return start_hour, end_hour
+    start = data.get("start", data.get("from", data.get("start_hour")))
+    end = data.get("end", data.get("to", data.get("end_hour")))
+    start_minute = _quiet_time_minute(start)
+    end_minute = _quiet_time_minute(end)
+    if start_minute is not None and end_minute is not None:
+        return start_minute, end_minute
     logger.warning("Could not extract valid quiet hours from: %r", raw)
     return None
 
@@ -2058,13 +3162,13 @@ def _is_quiet_hours(now_utc: datetime, raw: str | None) -> bool:
     quiet = _parse_quiet_hours(raw)
     if quiet is None:
         return False
-    start_hour, end_hour = quiet
-    current_hour = now_utc.hour
-    if start_hour == end_hour:
+    start_minute, end_minute = quiet
+    current_minute = now_utc.hour * 60 + now_utc.minute
+    if start_minute == end_minute:
         return False
-    if start_hour < end_hour:
-        return start_hour <= current_hour < end_hour
-    return current_hour >= start_hour or current_hour < end_hour
+    if start_minute < end_minute:
+        return start_minute <= current_minute < end_minute
+    return current_minute >= start_minute or current_minute < end_minute
 
 
 def _digest_interval_ms(frequency: str) -> int | None:
@@ -2097,6 +3201,58 @@ def _build_digest_email_body(notifications: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _lock_pending_email_digest_delivery(
+    db: DbConn,
+    *,
+    garden_id: int,
+    user_id: int,
+) -> None:
+    """Serialize one recipient's digest claim until the enclosing transaction ends."""
+    db.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, %s))",
+        (
+            f"gardenops:digest-delivery:{garden_id}:{user_id}",
+            _DIGEST_DELIVERY_LOCK_SEED,
+        ),
+    )
+
+
+def _load_locked_digest_recipient(
+    db: DbConn,
+    *,
+    garden_id: int,
+    user_id: int,
+) -> dict[str, Any] | None:
+    """Revalidate and pin one recipient's delivery configuration."""
+    row = db.execute(
+        """
+        SELECT p.user_id, p.email_enabled, p.email_address,
+               p.digest_frequency, u.subscription_tier
+        FROM user_notification_preferences p
+        JOIN garden_memberships gm ON gm.user_id = p.user_id
+        JOIN auth_users u ON u.id = p.user_id
+        WHERE gm.garden_id = %s
+          AND p.user_id = %s
+        FOR UPDATE OF p, gm, u
+        """,
+        (garden_id, user_id),
+    ).fetchone()
+    if row is None:
+        return None
+    recipient = dict(row)
+    configuration = digest_delivery_configuration(
+        recipient,
+        subscription_tier=str(recipient.get("subscription_tier") or "home"),
+    )
+    if not bool(configuration["configured"]):
+        return None
+    return {
+        **recipient,
+        "email_address": str(configuration["email_address"]),
+        "digest_frequency": str(configuration["digest_frequency"]),
+    }
+
+
 def deliver_pending_email_digests(
     db: DbConn,
     garden_id: int,
@@ -2104,6 +3260,13 @@ def deliver_pending_email_digests(
     email_sender: EmailSender | None = None,
     now_ms: int | None = None,
 ) -> dict[str, int | bool]:
+    """Deliver pending digests with per-recipient transactional serialization.
+
+    Digest state is marked only after SMTP returns. SMTP cannot participate in
+    the database transaction, so a process crash after successful SMTP but
+    before commit remains an unavoidable at-least-once retry case. Keeping the
+    pre-send rows pending is safer than marking them first and losing a digest.
+    """
     settings = _smtp_settings()
     if email_sender is None:
         if settings is None:
@@ -2116,8 +3279,7 @@ def deliver_pending_email_digests(
             }
         email_sender = _default_email_sender
 
-    now_value = now_ms if now_ms is not None else current_timestamp_ms()
-    now_utc = datetime.fromtimestamp(now_value / 1000, tz=UTC)
+    now_value, _ = notification_request_clock(now_ms=now_ms)
     processed_users = 0
     emailed_users = 0
     notifications_marked = 0
@@ -2126,14 +3288,7 @@ def deliver_pending_email_digests(
 
     recipients = db.execute(
         """
-        SELECT p.user_id,
-               p.email_address,
-               p.digest_frequency,
-               p.quiet_hours_json,
-               p.last_email_digest_at_ms,
-               p.rules_json,
-               p.task_due_enabled,
-               p.task_overdue_enabled
+        SELECT p.user_id
         FROM user_notification_preferences p
         JOIN garden_memberships gm ON gm.user_id = p.user_id
         JOIN auth_users u ON u.id = p.user_id
@@ -2149,17 +3304,36 @@ def deliver_pending_email_digests(
 
     for pref in recipients:
         processed_users += 1
-        digest_frequency = str(pref["digest_frequency"])
+        user_id = int(pref["user_id"])
+        _lock_pending_email_digest_delivery(
+            db,
+            garden_id=garden_id,
+            user_id=user_id,
+        )
+        recipient = _load_locked_digest_recipient(
+            db,
+            garden_id=garden_id,
+            user_id=user_id,
+        )
+        if recipient is None:
+            skipped_users += 1
+            continue
+        digest_frequency = str(recipient["digest_frequency"])
         interval_ms = _digest_interval_ms(digest_frequency)
-        last_sent = pref["last_email_digest_at_ms"]
+        last_sent_row = db.execute(
+            """
+            SELECT MAX(emailed_at_ms) AS last_sent
+            FROM notification_events
+            WHERE garden_id = %s
+              AND user_id = %s
+              AND emailed_at_ms IS NOT NULL
+            """,
+            (garden_id, user_id),
+        ).fetchone()
+        last_sent = last_sent_row["last_sent"] if last_sent_row is not None else None
         if interval_ms is not None and last_sent and now_value - int(last_sent) < interval_ms:
             skipped_users += 1
             continue
-        if _is_quiet_hours(now_utc, pref["quiet_hours_json"]):
-            skipped_users += 1
-            continue
-
-        user_id = int(pref["user_id"])
         attention_preferences = load_attention_preferences(db, user_id)
         attention_where, attention_params = attention_notification_sql_filter(
             attention_preferences,
@@ -2187,18 +3361,6 @@ def deliver_pending_email_digests(
             """,  # noqa: S608
             (garden_id, user_id, now_value, *attention_params, max_events_per_user),
         ).fetchall()
-        rules = _rules_from_pref_row(dict(pref))
-        notifications = [
-            row
-            for row in notifications
-            if _notification_allowed_by_rules(
-                rules,
-                str(row["notification_type"]),
-                str(row["notification_subtype"]) if row["notification_subtype"] else None,
-                str(row["severity"]) if row["severity"] else None,
-                channel="email",
-            )
-        ]
         if not notifications:
             continue
 
@@ -2211,7 +3373,7 @@ def deliver_pending_email_digests(
         subject = f"{app_name()} digest \u2014 {garden_name}: {len(notifications)} update{plural}"
         body = _build_digest_email_body(notifications)
         try:
-            email_sender(str(pref["email_address"]), subject, body)
+            email_sender(str(recipient["email_address"]), subject, body)
         except Exception:
             skipped_users += 1
             logger.warning(
@@ -2233,7 +3395,7 @@ def deliver_pending_email_digests(
             SET last_email_digest_at_ms = %s, updated_at_ms = %s
             WHERE user_id = %s
             """,
-            (now_value, now_value, int(pref["user_id"])),
+            (now_value, now_value, user_id),
         )
         emailed_users += 1
         notifications_marked += len(ids)
@@ -2282,68 +3444,98 @@ def _run_weather_check_if_due(
 
     lat = float(garden["latitude"])
     lon = float(garden["longitude"])
-    result = check_weather_and_generate_alerts(db, garden_id, lat, lon)
-    notification_result = create_weather_alert_notifications(
-        db,
-        garden_id=garden_id,
-        alerts=list(result.get("alerts", [])),
-    )
-
-    alert_type_handlers = {
-        "frost_warning": on_frost_alert,
-        "heat_wave": on_heat_alert,
-        "dry_spell": on_dry_spell_alert,
-        "rain_surplus": on_rain_alert,
-    }
-    for alert in result.get("alerts", []):
-        handler = alert_type_handlers.get(alert.get("alert_type", ""))
-        if not handler:
-            continue
-        alert_row = db.execute(
+    try:
+        result = check_weather_and_generate_alerts(db, garden_id, lat, lon)
+        downstream = reconcile_weather_alert_work(
+            db,
+            garden_id=garden_id,
+            alerts=list(result.get("alerts", [])),
+            actor_user_id=None,
+            now_ms=now_ms,
+            replace_forecast_alerts=bool(result.get("forecast_available")),
+        )
+        db.execute(
             """
-            SELECT id FROM weather_alerts
-            WHERE garden_id = %s AND alert_type = %s
-              AND valid_from = %s AND dismissed = 0
-            ORDER BY id DESC LIMIT 1
+            INSERT INTO app_settings (key, value)
+            VALUES (%s, %s)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """,
-            (garden_id, alert["alert_type"], alert["valid_from"]),
-        ).fetchone()
-        if alert_row:
-            handler(db, garden_id, int(alert_row["id"]), None)
-
-    db.execute(
-        """
-        INSERT INTO app_settings (key, value)
-        VALUES (%s, %s)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        """,
-        (settings_key, str(now_ms)),
-    )
-    db.commit()
+            (settings_key, str(now_ms)),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return {
         "weather_checks": 1,
         "weather_alerts_created": result.get("alerts_created", 0),
-        "weather_notifications_created": notification_result.get("created", 0),
-        "weather_notifications_skipped": notification_result.get("skipped", 0),
+        "weather_tasks_created": downstream["tasks_created"],
+        "weather_notifications_created": downstream["notifications_created"],
+        "weather_notifications_skipped": downstream["notifications_skipped"],
     }
+
+
+def _monthly_rain_generation_signature(
+    db: DbConn,
+    *,
+    garden_id: int,
+    year: int,
+    month: int,
+) -> str:
+    """Fingerprint active rain coverage relevant to one generation month."""
+    month_start = date(year, month, 1)
+    month_end = (date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)) - timedelta(
+        days=1
+    )
+    rows = db.execute(
+        """
+        SELECT id, valid_from, valid_until
+        FROM weather_alerts
+        WHERE garden_id = %s
+          AND alert_type = 'rain_surplus'
+          AND dismissed = 0
+          AND valid_from <= %s
+          AND valid_until >= %s
+        ORDER BY id ASC
+        """,
+        (garden_id, month_end.isoformat(), month_start.isoformat()),
+    ).fetchall()
+    payload = [(int(row["id"]), str(row["valid_from"]), str(row["valid_until"])) for row in rows]
+    return hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    ).hexdigest()[:16]
 
 
 def _auto_generate_monthly_tasks(
     db: DbConn,
     garden_id: int,
     now_ms: int,
+    *,
+    frozen_date: str | None = None,
 ) -> dict[str, int | bool]:
-    """Generate seasonal tasks once per calendar month per garden."""
-    today = datetime.fromtimestamp(now_ms / 1000, tz=UTC).date()
+    """Generate monthly tasks until rain-suppressed watering is recoverable."""
+    today = date.fromisoformat(_notification_today_iso(frozen_date=frozen_date))
     month_key = f"{today.year}-{today.month:02d}"
     settings_key = f"last_task_gen_month:{garden_id}"
+    rain_pending_prefix = f"{month_key}:rain_pending"
 
     row = db.execute(
         "SELECT value FROM app_settings WHERE key = %s",
         (settings_key,),
     ).fetchone()
-    if row and str(row["value"]) == month_key:
-        return {"tasks_skipped": True}
+    if row:
+        marker = str(row["value"])
+        if marker == month_key:
+            return {"tasks_skipped": True}
+        if marker.startswith(f"{rain_pending_prefix}:"):
+            signature = _monthly_rain_generation_signature(
+                db,
+                garden_id=garden_id,
+                year=today.year,
+                month=today.month,
+            )
+            if marker == f"{rain_pending_prefix}:{signature}":
+                return {"tasks_skipped": True, "tasks_rain_pending": True}
 
     result = generate_tasks(
         db,
@@ -2351,7 +3543,18 @@ def _auto_generate_monthly_tasks(
         today.month,
         today.year,
         actor_user_id=None,
+        now_ms=now_ms,
     )
+    rain_suppressed = int(result.get("rain_suppressed", 0))
+    generation_marker = month_key
+    if rain_suppressed:
+        signature = _monthly_rain_generation_signature(
+            db,
+            garden_id=garden_id,
+            year=today.year,
+            month=today.month,
+        )
+        generation_marker = f"{rain_pending_prefix}:{signature}"
 
     db.execute(
         """
@@ -2359,16 +3562,13 @@ def _auto_generate_monthly_tasks(
         VALUES (%s, %s)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """,
-        (settings_key, month_key),
+        (settings_key, generation_marker),
     )
     db.commit()
 
     notification_result = {"created": 0, "skipped": 0}
     if result.get("created", 0) > 0:
-        month_name = datetime.fromtimestamp(
-            now_ms / 1000,
-            tz=UTC,
-        ).strftime("%B %Y")
+        month_name = today.strftime("%B %Y")
         notification_result = create_garden_member_notifications(
             db,
             garden_id=garden_id,
@@ -2382,11 +3582,13 @@ def _auto_generate_monthly_tasks(
                 "created": int(result.get("created", 0)),
             },
             expires_at_ms=_date_end_ms(today.isoformat()),
+            now_ms=now_ms,
         )
 
     return {
         "tasks_created": result.get("created", 0),
         "tasks_skipped_dedup": result.get("skipped", 0),
+        "tasks_rain_suppressed": rain_suppressed,
         "notifications_created": notification_result.get("created", 0),
         "notifications_skipped": notification_result.get("skipped", 0),
     }
@@ -2401,6 +3603,7 @@ def _empty_maintenance_summary() -> dict[str, int | bool]:
         "tasks_expired": 0,
         "weather_checks": 0,
         "weather_alerts_created": 0,
+        "weather_tasks_created": 0,
         "issues_escalated": 0,
         "processed_users": 0,
         "emailed_users": 0,
@@ -2417,7 +3620,7 @@ def _run_notification_maintenance_for_gardens(
     email_sender: EmailSender | None = None,
     now_ms: int | None = None,
 ) -> dict[str, int | bool]:
-    now_value = now_ms if now_ms is not None else current_timestamp_ms()
+    now_value, frozen_date = notification_request_clock(now_ms=now_ms)
     summary = _empty_maintenance_summary()
     for garden_id in garden_ids:
         summary["gardens_processed"] = int(summary["gardens_processed"]) + 1
@@ -2425,11 +3628,12 @@ def _run_notification_maintenance_for_gardens(
         tasks_expired = expire_stale_generated_tasks(
             db,
             garden_id=garden_id,
+            today_iso=frozen_date,
             now_ms=now_value,
         )
         summary["tasks_expired"] = int(summary["tasks_expired"]) + tasks_expired
 
-        generated = create_task_due_notifications(db, garden_id)
+        generated = create_task_due_notifications(db, garden_id, now_ms=now_value)
         summary["notifications_created"] = int(summary["notifications_created"]) + int(
             generated["created"]
         )
@@ -2442,19 +3646,26 @@ def _run_notification_maintenance_for_gardens(
         stale_tasks = clear_stale_task_notifications(
             db,
             garden_id=garden_id,
+            today_iso=frozen_date,
             now_ms=now_value,
         )
         summary["notifications_marked"] = int(summary["notifications_marked"]) + stale_tasks
         stale_info = clear_stale_informational_notifications(
             db,
             garden_id=garden_id,
+            today_iso=frozen_date,
             now_ms=now_value,
         )
         summary["notifications_marked"] = int(summary["notifications_marked"]) + stale_info
         if tasks_expired or expired or stale_tasks or stale_info:
             db.commit()
 
-        gen_result = _auto_generate_monthly_tasks(db, garden_id, now_value)
+        gen_result = _auto_generate_monthly_tasks(
+            db,
+            garden_id,
+            now_value,
+            frozen_date=frozen_date,
+        )
         summary["tasks_auto_created"] = int(summary["tasks_auto_created"]) + int(
             gen_result.get("tasks_created", 0)
         )
@@ -2474,6 +3685,9 @@ def _run_notification_maintenance_for_gardens(
         summary["weather_alerts_created"] = int(summary["weather_alerts_created"]) + int(
             weather_result.get("weather_alerts_created", 0)
         )
+        summary["weather_tasks_created"] = int(summary["weather_tasks_created"]) + int(
+            weather_result.get("weather_tasks_created", 0)
+        )
         summary["notifications_created"] = int(summary["notifications_created"]) + int(
             weather_result.get("weather_notifications_created", 0)
         )
@@ -2481,7 +3695,12 @@ def _run_notification_maintenance_for_gardens(
             weather_result.get("weather_notifications_skipped", 0)
         )
 
-        escalation_result = escalate_overdue_follow_ups(db, garden_id)
+        escalation_result = escalate_overdue_follow_ups(
+            db,
+            garden_id,
+            today_iso=_notification_today_iso(frozen_date=frozen_date),
+            now_ms=now_value,
+        )
         summary["issues_escalated"] = int(summary.get("issues_escalated", 0)) + int(
             escalation_result.get("escalated", 0)
         )
@@ -2490,7 +3709,7 @@ def _run_notification_maintenance_for_gardens(
             db,
             garden_id,
             email_sender=email_sender,
-            now_ms=now_ms,
+            now_ms=now_value,
         )
         summary["configured"] = bool(summary["configured"]) or bool(delivered["configured"])
         summary["processed_users"] = int(summary["processed_users"]) + int(

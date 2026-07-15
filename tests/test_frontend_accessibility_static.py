@@ -116,3 +116,87 @@ def test_calendar_filter_chip_inputs_bind_their_visible_labels() -> None:
     assert "input.id = inputId;" in chip_input
     for label_key, input_id in CALENDAR_FILTER_INPUTS:
         assert f'label: t("{label_key}"),\n    inputId: "{input_id}",' in calendar_tab
+
+
+def test_mobile_toasts_clear_the_primary_navigation() -> None:
+    styles = _read_frontend("style.css")
+    mobile_toast_rule = re.search(
+        r"@media \(max-width: 600px\) \{\s*#toast-container \{\s*"
+        r"bottom: calc\(78px \+ env\(safe-area-inset-bottom, 0px\)\);",
+        styles,
+    )
+
+    assert mobile_toast_rule
+
+
+def test_passive_toasts_do_not_block_garden_controls() -> None:
+    styles = _read_frontend("style.css")
+    toast = _read_frontend("components/toast.ts")
+    toast_rule = styles.rsplit(".toast {", 1)[1].split("}", 1)[0]
+
+    assert "pointer-events: none;" in toast_rule
+    assert ".toast-interactive {\n  pointer-events: auto;" in styles
+    assert 'toast.classList.add("toast-interactive")' in toast
+
+
+def test_coarse_pointer_notification_and_completion_controls_have_row_sized_targets() -> None:
+    styles = _read_frontend("style.css")
+    notifications = _read_frontend("components/notifications.ts")
+
+    assert 'headerActions.className = "notification-panel-header-actions";' in notifications
+    assert "@media (pointer: coarse)" in styles
+    assert ".notification-mark-all-btn," in styles
+    assert ".notification-item-dismiss" in styles
+    assert "min-width: 44px;" in styles
+    assert "min-height: 44px;" in styles
+    assert ".notification-panel-header-actions," in styles
+    assert ".notification-item-actions {\n    flex-direction: row;" in styles
+    assert ".task-completion-list label {\n    min-height: 44px;" in styles
+    assert "flex-direction: row;" in styles
+
+
+def test_task_form_uses_shared_modal_focus_and_explicit_exit_controls() -> None:
+    tasks_tab = _read_frontend("tabs/tasksTab.ts")
+    task_form = _read_frontend("components/tasks.ts")
+
+    assert "createModal(" in tasks_tab
+    assert "onCancel: close" in tasks_tab
+    assert 'form.setAttribute("aria-labelledby", "task-form-title")' in task_form
+    for control_id in (
+        "task-form-type",
+        "task-form-name",
+        "task-form-description",
+        "task-form-severity",
+        "task-form-due",
+    ):
+        assert f'.id = "{control_id}"' in task_form
+    assert "typeLabel.htmlFor = typeSelect.id" in task_form
+    assert 'cancelBtn.addEventListener("click", onCancel)' in task_form
+
+
+def test_plot_drawer_sheet_and_collapsibles_are_keyboard_dialogs() -> None:
+    drawer = _read_frontend("components/drawer.ts")
+    sheet = _read_frontend("components/bottomSheet.ts")
+    map_view = _read_frontend("components/mapView.ts")
+
+    assert 'const header = document.createElement("button")' in drawer
+    assert 'header.setAttribute("aria-controls", bodyId)' in drawer
+    assert 'header.setAttribute("aria-expanded", "true")' in drawer
+    assert "if (body) body.hidden = collapsed" in drawer
+    for source in (drawer, sheet):
+        assert 'setAttribute("role", "dialog")' in source
+        assert 'setAttribute("aria-modal", "true")' in source
+        assert "trapFocus(" in source
+        assert 'e.key !== "Escape"' in source
+        assert "activeReturnFocus" in source
+        assert "activeReturnPlotId" in source
+        assert "document.activeElement !== document.body" in source
+        assert "document.activeElement !== document.documentElement" in source
+        assert '`.plot[data-plot-id="${CSS.escape(returnPlotId)}"]`' in source
+        assert "focusTarget();" in source
+        assert "window.requestAnimationFrame(focusTarget)" in source
+    assert 'const handleBar = document.createElement("button")' in sheet
+    assert 'handleBar.setAttribute("aria-label", t("plot_drawer.resize_sheet"))' in sheet
+    assert "el.tabIndex = 0" in map_view
+    assert 'el.setAttribute("role", "button")' in map_view
+    assert 'e.key !== "Enter" && e.key !== " "' in map_view

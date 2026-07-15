@@ -9,7 +9,10 @@ from fastapi import HTTPException
 
 from gardenops.services.attention.preferences import (
     AttentionPreferenceSet,
+    apply_digest_delivery_capability,
     apply_preferences,
+    normalize_attention_preference_payload,
+    normalize_attention_quiet_hours,
     resolve_attention_preferences,
 )
 from gardenops.services.attention.providers import (
@@ -34,6 +37,7 @@ _VALID_PRESETS: set[str] = {"calm", "balanced", "detailed", "custom"}
 _VALID_USER_STATES: set[str] = {"read", "dismissed", "snoozed", "preference_hidden"}
 _SECTION_KEYS = ("needs_attention", "warnings", "coming_up", "no_action_needed")
 _WEATHER_AWARE_WATERING_METADATA_KEY = "weather_aware_watering_suppression"
+_ATTENTION_PREFERENCE_LOCK_SEED = 0x474F504154544E50
 _SECTION_LIMITS = {
     "needs_attention": 5,
     "warnings": 5,
@@ -66,6 +70,20 @@ def _suppresses_rain_handled_watering(preferences: AttentionPreferenceSet) -> bo
     return value if isinstance(value, bool) else True
 
 
+def _classify_expired_task_snoozes(items: list[AttentionItem]) -> list[AttentionItem]:
+    """Apply one overdue classification across task and attention surfaces."""
+    return [
+        replace(item, type="task_overdue", reason="Overdue")
+        if (
+            item.provider == "task"
+            and item.type == "task_snoozed_active"
+            and item.reason == "Snooze expired"
+        )
+        else item
+        for item in items
+    ]
+
+
 def _serialize_action(action: AttentionAction | None) -> dict[str, Any] | None:
     if action is None:
         return None
@@ -78,15 +96,39 @@ def _serialize_action(action: AttentionAction | None) -> dict[str, Any] | None:
     }
 
 
-def serialize_attention_preferences(preferences: AttentionPreferenceSet) -> dict[str, Any]:
-    return {
-        "user_id": preferences.user_id,
-        "preset": preferences.preset,
-        "rules": preferences.rules,
-        "quiet_hours": preferences.quiet_hours,
-        "show_no_action_history": preferences.show_no_action_history,
-        "metadata": preferences.metadata,
+def serialize_attention_preferences(
+    preferences: AttentionPreferenceSet,
+    *,
+    digest_delivery: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    effective_preferences = preferences
+    if digest_delivery is not None:
+        effective_preferences = apply_digest_delivery_capability(
+            preferences,
+            configured=bool(digest_delivery.get("configured")),
+        )
+    serialized = {
+        "user_id": effective_preferences.user_id,
+        "preset": effective_preferences.preset,
+        "rules": effective_preferences.rules,
+        "quiet_hours": effective_preferences.quiet_hours,
+        "show_no_action_history": effective_preferences.show_no_action_history,
+        "metadata": effective_preferences.metadata,
     }
+    if digest_delivery is not None:
+        serialized["digest_delivery"] = digest_delivery
+    return serialized
+
+
+def lock_attention_preferences(conn: Any, user_id: int) -> None:
+    """Serialize canonical preference updates, including first-row creation."""
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, %s))",
+        (
+            f"gardenops:attention-preferences:{user_id}",
+            _ATTENTION_PREFERENCE_LOCK_SEED,
+        ),
+    )
 
 
 def load_attention_preferences(conn: Any, user_id: int | None) -> AttentionPreferenceSet:
@@ -151,7 +193,13 @@ def load_attention_preferences(conn: Any, user_id: int | None) -> AttentionPrefe
         },
         saved_attention_preferences=None,
     )
-    return replace(preferences, quiet_hours=_parse_mapping(legacy["quiet_hours_json"]))
+    return replace(
+        preferences,
+        quiet_hours=normalize_attention_quiet_hours(
+            _parse_mapping(legacy["quiet_hours_json"]),
+            strict=False,
+        ),
+    )
 
 
 def save_attention_preferences(
@@ -165,10 +213,24 @@ def save_attention_preferences(
     metadata: dict[str, Any] | None = None,
     now_ms: int,
 ) -> AttentionPreferenceSet:
-    normalized_preset = preset.strip().lower()
-    if normalized_preset not in _VALID_PRESETS:
-        raise HTTPException(status_code=422, detail="Invalid attention preference preset")
+    try:
+        (
+            normalized_preset,
+            normalized_rules,
+            normalized_quiet_hours,
+            normalized_show_no_action_history,
+            normalized_metadata,
+        ) = normalize_attention_preference_payload(
+            preset=preset,
+            rules=rules,
+            quiet_hours=quiet_hours,
+            show_no_action_history=show_no_action_history,
+            metadata=metadata or {},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    lock_attention_preferences(conn, user_id)
     conn.execute(
         """
         INSERT INTO user_attention_preferences
@@ -186,15 +248,72 @@ def save_attention_preferences(
         (
             user_id,
             normalized_preset,
-            _dump_json(cast(dict[str, Any], rules)),
-            _dump_json(quiet_hours),
-            int(show_no_action_history),
-            _dump_json(metadata),
+            _dump_json(cast(dict[str, Any], normalized_rules)),
+            _dump_json(normalized_quiet_hours),
+            int(normalized_show_no_action_history),
+            _dump_json(normalized_metadata),
             now_ms,
             now_ms,
         ),
     )
     return load_attention_preferences(conn, user_id)
+
+
+def _normalize_recovery_ids(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return list(dict.fromkeys(str(raw).strip() for raw in value if str(raw).strip()))
+
+
+def _require_current_recovery_scope(
+    conn: Any,
+    *,
+    garden_id: int,
+    plant_ids: list[str],
+    plot_ids: list[str],
+) -> None:
+    if not plant_ids:
+        raise HTTPException(
+            status_code=409,
+            detail="Attention outcome plant scope is no longer available in this garden",
+        )
+    plant_rows = conn.execute(
+        """
+        SELECT plt_id
+        FROM plant_ownership
+        WHERE garden_id = %s
+          AND plt_id = ANY(%s)
+        FOR SHARE
+        """,
+        (garden_id, plant_ids),
+    ).fetchall()
+    owned_plant_ids = {str(item["plt_id"]) for item in plant_rows}
+    if any(plant_id not in owned_plant_ids for plant_id in plant_ids):
+        raise HTTPException(
+            status_code=409,
+            detail="Attention outcome plant scope is no longer available in this garden",
+        )
+
+    if not plot_ids:
+        return
+    plot_rows = conn.execute(
+        """
+        SELECT po.plot_id
+        FROM plot_ownership po
+        JOIN plots p ON p.plot_id = po.plot_id
+        WHERE po.garden_id = %s
+          AND p.garden_id = %s
+          AND po.plot_id = ANY(%s)
+        FOR SHARE OF po, p
+        """,
+        (garden_id, garden_id, plot_ids),
+    ).fetchall()
+    owned_plot_ids = {str(item["plot_id"]) for item in plot_rows}
+    if any(plot_id not in owned_plot_ids for plot_id in plot_ids):
+        raise HTTPException(
+            status_code=409,
+            detail="Attention outcome plot scope is no longer available in this garden",
+        )
 
 
 def load_user_attention_states(
@@ -380,6 +499,7 @@ def serialize_today_response(
     items: list[AttentionItem],
     preferences: AttentionPreferenceSet,
     degraded_providers: list[dict[str, str]],
+    digest_delivery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     buckets: dict[str, list[AttentionItem]] = {key: [] for key in _SECTION_KEYS}
     for item in items:
@@ -407,7 +527,10 @@ def serialize_today_response(
             **counts,
             "total": sum(counts.values()),
         },
-        "preferences": serialize_attention_preferences(preferences),
+        "preferences": serialize_attention_preferences(
+            preferences,
+            digest_delivery=digest_delivery,
+        ),
         "degraded_providers": degraded_providers,
     }
 
@@ -450,20 +573,75 @@ def restore_attention_outcome(
         raise HTTPException(status_code=422, detail="Attention outcome recovery action is invalid")
     if str(recovery_action.get("target_id") or "") != str(row["target_id"]):
         raise HTTPException(status_code=422, detail="Attention outcome recovery action is invalid")
+    if str(row["target_type"]) != "plant":
+        raise HTTPException(status_code=422, detail="Attention outcome recovery action is invalid")
 
     metadata = _parse_mapping(row["metadata_json"])
-    metadata.setdefault("plant_ids", json.loads(str(row["plant_ids_json"] or "[]")))
-    metadata.setdefault("plot_ids", json.loads(str(row["plot_ids_json"] or "[]")))
-    restore_generated_watering_task_from_attention_outcome(
+    outcome_plant_ids = _normalize_recovery_ids(json.loads(str(row["plant_ids_json"] or "[]")))
+    outcome_plot_ids = _normalize_recovery_ids(json.loads(str(row["plot_ids_json"] or "[]")))
+    target_id = str(row["target_id"])
+    recovery_plant_ids = _normalize_recovery_ids(
+        recovery_action.get("plant_ids", outcome_plant_ids or [target_id])
+    )
+    if target_id and target_id not in recovery_plant_ids:
+        recovery_plant_ids.insert(0, target_id)
+    recovery_plot_ids = _normalize_recovery_ids(
+        recovery_action.get("plot_ids", outcome_plot_ids or metadata.get("plot_ids", []))
+    )
+    scope_plant_ids = list(dict.fromkeys([*outcome_plant_ids, *recovery_plant_ids]))
+    scope_plot_ids = list(dict.fromkeys([*outcome_plot_ids, *recovery_plot_ids]))
+    _require_current_recovery_scope(
+        conn,
+        garden_id=garden_id,
+        plant_ids=scope_plant_ids,
+        plot_ids=scope_plot_ids,
+    )
+    recovery_action["plant_ids"] = recovery_plant_ids
+    recovery_action["plot_ids"] = recovery_plot_ids
+    metadata.setdefault("plant_ids", outcome_plant_ids)
+    metadata.setdefault("plot_ids", outcome_plot_ids)
+    restored_task_public_id = restore_generated_watering_task_from_attention_outcome(
         conn,
         garden_id=garden_id,
         outcome_public_id=str(row["public_id"]),
         source_public_id=str(row["source_public_id"]),
-        target_id=str(row["target_id"]),
+        target_id=target_id,
         metadata=metadata,
         recovery_action=recovery_action,
         actor_user_id=user_id,
         now_ms=now_ms,
+    )
+    restored_task = conn.execute(
+        """
+        SELECT id
+        FROM garden_tasks
+        WHERE garden_id = %s
+          AND public_id = %s
+        """,
+        (garden_id, restored_task_public_id),
+    ).fetchone()
+    if restored_task is None:
+        raise HTTPException(status_code=409, detail="Restored watering task is unavailable")
+    task_id = int(restored_task["id"])
+    restored_plant_ids = [
+        str(item["plt_id"])
+        for item in conn.execute(
+            "SELECT plt_id FROM garden_task_plants WHERE task_id = %s ORDER BY plt_id",
+            (task_id,),
+        ).fetchall()
+    ]
+    restored_plot_ids = [
+        str(item["plot_id"])
+        for item in conn.execute(
+            "SELECT plot_id FROM garden_task_plots WHERE task_id = %s ORDER BY plot_id",
+            (task_id,),
+        ).fetchall()
+    ]
+    _require_current_recovery_scope(
+        conn,
+        garden_id=garden_id,
+        plant_ids=restored_plant_ids,
+        plot_ids=restored_plot_ids,
     )
     return "restored"
 
@@ -543,7 +721,7 @@ class AttentionService:
                 else:
                     conn.rollback()
                 degraded_providers.append({"provider": provider.key, "reason": "provider_failed"})
-        return collected, degraded_providers
+        return _classify_expired_task_snoozes(collected), degraded_providers
 
     def collect_provider_items(
         self,
@@ -593,6 +771,7 @@ class AttentionService:
         user_id: int | None,
         now_ms: int,
         force_degraded_provider: str | None = None,
+        digest_delivery: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         preferences = load_attention_preferences(conn, user_id)
         user_states = load_user_attention_states(
@@ -619,4 +798,5 @@ class AttentionService:
             items=ranked,
             preferences=preferences,
             degraded_providers=degraded_providers,
+            digest_delivery=digest_delivery,
         )

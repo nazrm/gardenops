@@ -11,11 +11,21 @@ GENERATED_WATERING_RULE_SOURCE_PATTERNS = (
     *GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS,
     "auto:dry_water:%",
 )
+GENERATED_NON_WATERING_WEATHER_RULE_SOURCE_PATTERNS = (
+    "auto:frost_protect:%",
+    "auto:heat_protect:%",
+    "auto:rain_drainage:%",
+)
 
 
 def is_generated_watering_rule_source(rule_source: str | None) -> bool:
     value = (rule_source or "").strip()
     return value.startswith("water:") or value.startswith("auto:dry_water:")
+
+
+def is_generated_non_watering_weather_rule_source(rule_source: str | None) -> bool:
+    value = (rule_source or "").strip()
+    return value.startswith(("auto:frost_protect:", "auto:heat_protect:", "auto:rain_drainage:"))
 
 
 def is_stale_generated_watering_task(
@@ -24,13 +34,15 @@ def is_stale_generated_watering_task(
     rule_source: str | None,
     action_on: Any,
     today: str,
+    alert_valid_until: Any = None,
+    alert_active: bool = True,
 ) -> bool:
-    return (
-        task_type == "water"
-        and is_generated_watering_rule_source(rule_source)
-        and bool(action_on)
-        and str(action_on) < today
-    )
+    if task_type != "water" or not is_generated_watering_rule_source(rule_source):
+        return False
+    value = (rule_source or "").strip()
+    if value.startswith("auto:dry_water:"):
+        return not alert_active or not alert_valid_until or str(alert_valid_until) < today
+    return bool(action_on) and str(action_on) < today
 
 
 def stale_generated_watering_sql(
@@ -40,11 +52,52 @@ def stale_generated_watering_sql(
     today_sql: str = "%s",
 ) -> str:
     prefix = f"{task_alias}." if task_alias else ""
+    correlation_prefix = prefix or "garden_tasks."
     action_on = action_on_sql or f"COALESCE({prefix}snoozed_until, {prefix}due_on)"
+    action_on_date = f"({action_on})::date"
+    today_date = f"({today_sql})::date"
     return (
         f"({prefix}task_type = 'water' "
-        f"AND ({prefix}rule_source LIKE %s OR {prefix}rule_source LIKE %s) "
-        f"AND {action_on} < {today_sql})"
+        "AND ("
+        f"({prefix}rule_source LIKE %s AND {action_on_date} < {today_date}) "
+        "OR "
+        f"({prefix}rule_source LIKE %s AND NOT EXISTS ("
+        "SELECT 1 FROM weather_alerts lifecycle_weather_alert "
+        f"WHERE lifecycle_weather_alert.garden_id = {correlation_prefix}garden_id "
+        "AND lifecycle_weather_alert.id = CASE "
+        f"WHEN split_part({correlation_prefix}rule_source, ':', 3) ~ '^[0-9]+$' "
+        f"THEN split_part({correlation_prefix}rule_source, ':', 3)::int ELSE NULL END "
+        "AND lifecycle_weather_alert.dismissed = 0 "
+        f"AND lifecycle_weather_alert.valid_until::date >= {today_date}"
+        "))))"
+    )
+
+
+def stale_generated_non_watering_weather_sql(
+    *,
+    task_alias: str = "t",
+    today_sql: str = "%s",
+) -> str:
+    """Return SQL for active weather tasks whose alert no longer applies."""
+    prefix = f"{task_alias}." if task_alias else ""
+    correlation_prefix = prefix or "garden_tasks."
+    pattern_clauses = " OR ".join(
+        f"{prefix}rule_source LIKE %s"
+        for _pattern in GENERATED_NON_WATERING_WEATHER_RULE_SOURCE_PATTERNS
+    )
+    today_date = f"({today_sql})::date"
+    return (
+        f"({prefix}task_type <> 'water' "
+        f"AND ({pattern_clauses}) "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM weather_alerts lifecycle_weather_alert "
+        f"WHERE lifecycle_weather_alert.garden_id = {correlation_prefix}garden_id "
+        "AND lifecycle_weather_alert.id = CASE "
+        f"WHEN split_part({correlation_prefix}rule_source, ':', 3) ~ '^[0-9]+$' "
+        f"THEN split_part({correlation_prefix}rule_source, ':', 3)::int ELSE NULL END "
+        "AND lifecycle_weather_alert.dismissed = 0 "
+        f"AND lifecycle_weather_alert.valid_until::date >= {today_date}"
+        "))"
     )
 
 
@@ -66,9 +119,11 @@ def _parse_metadata(value: Any) -> dict[str, Any]:
     return {}
 
 
-def _expiry_metadata(
+def _terminal_metadata(
     metadata_json: Any,
     *,
+    status: str,
+    reason: str,
     now_ms: int,
     today_iso: str,
     action_on: str,
@@ -79,14 +134,18 @@ def _expiry_metadata(
         lifecycle = {}
     lifecycle.update(
         {
-            "status": "expired",
-            "reason": "stale_generated_watering",
-            "expired_at_ms": now_ms,
-            "expired_on": today_iso,
+            "status": status,
+            "reason": reason,
             "action_on": action_on,
             "source": "generated_task_lifecycle",
         }
     )
+    if status == "expired":
+        lifecycle["expired_at_ms"] = now_ms
+        lifecycle["expired_on"] = today_iso
+    else:
+        lifecycle["skipped_at_ms"] = now_ms
+        lifecycle["skipped_on"] = today_iso
     metadata["lifecycle"] = lifecycle
     return json.dumps(metadata, sort_keys=True, separators=(",", ":"))
 
@@ -105,26 +164,49 @@ def expire_stale_generated_tasks(
         action_on_sql="COALESCE(t.snoozed_until, t.due_on)",
         today_sql="%s",
     )
+    stale_generated_non_watering = stale_generated_non_watering_weather_sql(today_sql="%s")
     rows = db.execute(
         f"""
-        SELECT t.id, t.metadata_json, COALESCE(t.snoozed_until, t.due_on) AS action_on
+        SELECT t.id, t.task_type, t.rule_source, t.metadata_json,
+               COALESCE(t.snoozed_until, t.due_on) AS action_on,
+               weather_alert.id AS weather_alert_id,
+               weather_alert.dismissed AS weather_alert_dismissed
         FROM garden_tasks t
+        LEFT JOIN weather_alerts weather_alert
+          ON weather_alert.garden_id = t.garden_id
+         AND weather_alert.id = CASE
+            WHEN split_part(t.rule_source, ':', 3) ~ '^[0-9]+$'
+            THEN split_part(t.rule_source, ':', 3)::int ELSE NULL
+         END
         WHERE t.garden_id = %s
           AND t.status IN ('pending', 'snoozed')
-          AND {stale_generated_watering}
+          AND ({stale_generated_watering} OR {stale_generated_non_watering})
         ORDER BY t.id ASC
+        FOR UPDATE OF t SKIP LOCKED
         """,  # noqa: S608
         [
             garden_id,
-            *GENERATED_WATERING_RULE_SOURCE_PATTERNS,
+            GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS[0],
+            today,
+            "auto:dry_water:%",
+            today,
+            *GENERATED_NON_WATERING_WEATHER_RULE_SOURCE_PATTERNS,
             today,
         ],
     ).fetchall()
     for row in rows:
+        terminal_status = "expired"
+        terminal_reason = "stale_generated_watering"
+        if is_generated_non_watering_weather_rule_source(str(row["rule_source"] or "")):
+            if row["weather_alert_id"] is None or bool(row["weather_alert_dismissed"]):
+                terminal_status = "skipped"
+                terminal_reason = "weather_alert_resolved"
+            else:
+                terminal_reason = "weather_alert_validity_ended"
         db.execute(
             """
             UPDATE garden_tasks
-            SET status = 'expired',
+            SET status = %s,
                 snoozed_until = NULL,
                 completed_by_user_id = NULL,
                 completed_at_ms = NULL,
@@ -133,8 +215,11 @@ def expire_stale_generated_tasks(
             WHERE id = %s
             """,
             (
-                _expiry_metadata(
+                terminal_status,
+                _terminal_metadata(
                     row["metadata_json"],
+                    status=terminal_status,
+                    reason=terminal_reason,
                     now_ms=now_value,
                     today_iso=today,
                     action_on=str(row["action_on"] or ""),

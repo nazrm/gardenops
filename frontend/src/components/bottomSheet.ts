@@ -3,7 +3,8 @@ import { t } from "../core/i18n";
 import type { MediaAsset } from "../services/api";
 import { renderPlantCard } from "./plantCard";
 import type { PlantAlertType } from "./plantCard";
-import { createCollapsibleSection } from "./drawer";
+import { trapFocus } from "./dialogCore";
+import { createCollapsibleSection, setCollapsibleSectionState } from "./drawer";
 
 type SnapState = "peek" | "half" | "full";
 
@@ -49,6 +50,26 @@ let currentSnap: SnapState = "half";
 let dragStartY = 0;
 let dragStartHeight = 0;
 let cleanupFns: Array<() => void> = [];
+let activeReturnFocus: HTMLElement | null = null;
+let activeReturnPlotId: string | null = null;
+
+function restoreSheetFocus(
+  returnFocus: HTMLElement | null,
+  returnPlotId: string | null,
+): void {
+  const focusTarget = () => {
+    const target = returnFocus?.isConnected
+      ? returnFocus
+      : returnPlotId
+        ? document.querySelector<HTMLElement>(
+          `.plot[data-plot-id="${CSS.escape(returnPlotId)}"]`,
+        )
+        : null;
+    target?.focus();
+  };
+  focusTarget();
+  window.requestAnimationFrame(focusTarget);
+}
 
 function buildBottomSheetPlantsSection(
   params: BottomSheetPlantSectionParams,
@@ -113,6 +134,7 @@ function buildBottomSheetPlantsSection(
     btn.addEventListener("click", () => {
       const pltId = btn.dataset["calendarCreatePlant"];
       if (!pltId || !params.onCreateCalendarEvent) return;
+      dismissBottomSheet();
       params.onClose();
       params.onCreateCalendarEvent({ plant_ids: [pltId] });
     });
@@ -123,6 +145,11 @@ function buildBottomSheetPlantsSection(
 }
 
 export function showBottomSheet(params: BottomSheetParams): void {
+  const focusedBeforeOpen = document.activeElement instanceof HTMLElement
+    && document.activeElement !== document.body
+    && document.activeElement !== document.documentElement
+    ? document.activeElement
+    : null;
   dismissBottomSheet();
 
   const { plotId, plants, mediaPreviewByPlantId, plantAlertsByPlantId, onClose, onSearch, onRemove, onEdit } = params;
@@ -130,18 +157,26 @@ export function showBottomSheet(params: BottomSheetParams): void {
 
   const sheet = document.createElement("div");
   sheet.className = "bottom-sheet";
-  sheet.style.height = SNAP_HEIGHTS[currentSnap];
+  sheet.setAttribute("role", "dialog");
+  sheet.setAttribute("aria-modal", "true");
+  sheet.setAttribute("aria-labelledby", "plot-bottom-sheet-title");
+  sheet.tabIndex = -1;
 
-  const handleBar = document.createElement("div");
+  const handleBar = document.createElement("button");
+  handleBar.type = "button";
   handleBar.className = "sheet-handle-bar";
+  handleBar.setAttribute("aria-label", t("plot_drawer.resize_sheet"));
   const handleIndicator = document.createElement("div");
   handleIndicator.className = "sheet-handle";
+  handleIndicator.setAttribute("aria-hidden", "true");
   handleBar.appendChild(handleIndicator);
+  applySnapState(sheet, handleBar, currentSnap);
 
   const header = document.createElement("div");
   header.className = "sheet-header";
 
   const title = document.createElement("h2");
+  title.id = "plot-bottom-sheet-title";
   title.textContent = plotId;
 
   const closeBtn = document.createElement("button");
@@ -162,8 +197,9 @@ export function showBottomSheet(params: BottomSheetParams): void {
     editPlotBtn.setAttribute("aria-label", t("popover.edit_plot"));
     editPlotBtn.title = t("popover.edit_plot");
     editPlotBtn.addEventListener("click", () => {
+      dismissBottomSheet(true);
       onClose();
-      params.onEditPlot?.();
+      window.requestAnimationFrame(() => params.onEditPlot?.());
     });
     headerActions.appendChild(editPlotBtn);
   }
@@ -198,6 +234,7 @@ export function showBottomSheet(params: BottomSheetParams): void {
     searchInput.id = "sheet-plant-search";
     searchInput.className = "plant-search-input";
     searchInput.placeholder = t("plants.search_placeholder");
+    searchInput.setAttribute("aria-label", t("plants.search_placeholder"));
 
     const searchResults = document.createElement("div");
     searchResults.id = "sheet-search-results";
@@ -211,7 +248,9 @@ export function showBottomSheet(params: BottomSheetParams): void {
       createLink.className = "btn-link create-plant-link";
       createLink.textContent = t("plants.search_create_manual");
       createLink.addEventListener("click", () => {
-        params.onCreatePlant!(plotId);
+        dismissBottomSheet(true);
+        onClose();
+        window.requestAnimationFrame(() => params.onCreatePlant?.(plotId));
       });
       addPlantSection.appendChild(createLink);
     }
@@ -222,8 +261,8 @@ export function showBottomSheet(params: BottomSheetParams): void {
       calendarLink.dataset["createCalendarEventPlot"] = plotId;
       calendarLink.textContent = t("calendar.new_event");
       calendarLink.addEventListener("click", () => {
-        onClose();
         dismissBottomSheet();
+        onClose();
         params.onCreateCalendarEvent?.({ plot_ids: [plotId] });
       });
       addPlantSection.appendChild(calendarLink);
@@ -267,10 +306,18 @@ export function showBottomSheet(params: BottomSheetParams): void {
   if (params.canWrite !== false) {
     body.insertBefore(addPlantSection, tasksPreview);
   }
-  sheet.append(handleBar, header, body);
+  const sheetContent = document.createElement("div");
+  sheetContent.className = "sheet-content";
+  sheetContent.append(header, body);
+  sheet.append(handleBar, sheetContent);
+  applySnapState(sheet, handleBar, currentSnap);
 
   document.body.appendChild(sheet);
   activeSheet = sheet;
+  activeReturnPlotId = plotId;
+  activeReturnFocus = focusedBeforeOpen?.isConnected
+    ? focusedBeforeOpen
+    : document.querySelector<HTMLElement>(`.plot[data-plot-id="${CSS.escape(plotId)}"]`);
 
   requestAnimationFrame(() => sheet.classList.add("sheet-visible"));
 
@@ -284,26 +331,49 @@ export function showBottomSheet(params: BottomSheetParams): void {
     cleanupFns.push(() => window.visualViewport?.removeEventListener("resize", onResize));
   }
 
-  closeBtn?.addEventListener("click", () => {
-    onClose();
+  const close = () => {
+    const returnFocus = activeReturnFocus;
+    const returnPlotId = activeReturnPlotId;
     dismissBottomSheet();
-  });
+    onClose();
+    restoreSheetFocus(returnFocus, returnPlotId);
+  };
+  closeBtn.addEventListener("click", close);
 
   initSwipe(handleBar, sheet);
   searchInput?.addEventListener("input", onSearch);
 
   const onEscape = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      onClose();
-      dismissBottomSheet();
-    }
+    if (e.key !== "Escape") return;
+    const childDialog = Array.from(document.querySelectorAll<HTMLElement>(".modal[aria-modal='true']"))
+      .find((candidate) => candidate.isConnected && !sheet.contains(candidate));
+    if (childDialog) return;
+    e.preventDefault();
+    close();
   };
   window.addEventListener("keydown", onEscape);
-  cleanupFns.push(() => window.removeEventListener("keydown", onEscape));
+  const releaseFocusTrap = trapFocus(sheet);
+  cleanupFns.push(() => {
+    window.removeEventListener("keydown", onEscape);
+    releaseFocusTrap();
+  });
+
+  (searchInput ?? closeBtn).focus();
 }
 
-function initSwipe(handle: HTMLElement, sheet: HTMLElement): void {
+function initSwipe(handle: HTMLButtonElement, sheet: HTMLElement): void {
   let lastDragY = 0;
+  let suppressNextClick = false;
+
+  handle.addEventListener("click", () => {
+    if (suppressNextClick) {
+      suppressNextClick = false;
+      return;
+    }
+    const states: SnapState[] = ["peek", "half", "full"];
+    const nextIndex = (states.indexOf(currentSnap) + 1) % states.length;
+    applySnapState(sheet, handle, states[nextIndex]!);
+  });
 
   handle.addEventListener("pointerdown", (e) => {
     dragStartY = e.clientY;
@@ -325,12 +395,18 @@ function initSwipe(handle: HTMLElement, sheet: HTMLElement): void {
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
       const dy = dragStartY - lastDragY;
+      suppressNextClick = Math.abs(dy) > 8;
+      if (suppressNextClick) {
+        window.setTimeout(() => {
+          suppressNextClick = false;
+        }, 0);
+      }
       const finalHeight = Math.max(40, dragStartHeight + dy);
       sheet.style.transform = "";
       sheet.style.willChange = "";
       sheet.style.height = `${finalHeight}px`;
       sheet.style.transition = "";
-      snapToNearest(sheet);
+      snapToNearest(sheet, handle);
     };
 
     handle.addEventListener("pointermove", onMove);
@@ -338,7 +414,26 @@ function initSwipe(handle: HTMLElement, sheet: HTMLElement): void {
   });
 }
 
-function snapToNearest(sheet: HTMLElement): void {
+function applySnapState(
+  sheet: HTMLElement,
+  handle: HTMLButtonElement,
+  state: SnapState,
+): void {
+  currentSnap = state;
+  sheet.style.height = SNAP_HEIGHTS[currentSnap];
+  sheet.dataset["snapState"] = currentSnap;
+  const isPeek = currentSnap === "peek";
+  handle.setAttribute("aria-expanded", isPeek ? "false" : "true");
+  const content = sheet.querySelector<HTMLElement>(".sheet-content");
+  if (content) {
+    content.hidden = isPeek;
+    content.toggleAttribute("inert", isPeek);
+    content.setAttribute("aria-hidden", isPeek ? "true" : "false");
+  }
+  if (isPeek) handle.focus({ preventScroll: true });
+}
+
+function snapToNearest(sheet: HTMLElement, handle: HTMLButtonElement): void {
   const h = sheet.getBoundingClientRect().height;
   const vh = window.innerHeight;
 
@@ -358,8 +453,7 @@ function snapToNearest(sheet: HTMLElement): void {
     }
   }
 
-  currentSnap = closest.state;
-  sheet.style.height = SNAP_HEIGHTS[currentSnap];
+  applySnapState(sheet, handle, closest.state);
 }
 
 function wireCardDrag(container: HTMLElement): void {
@@ -382,12 +476,19 @@ function wireCardDrag(container: HTMLElement): void {
   });
 }
 
-export function dismissBottomSheet(): void {
+export function dismissBottomSheet(restoreFocus = false): void {
+  const returnFocus = activeReturnFocus;
+  const returnPlotId = activeReturnPlotId;
   for (const fn of cleanupFns) fn();
   cleanupFns = [];
   if (activeSheet) {
     activeSheet.remove();
     activeSheet = null;
+  }
+  activeReturnFocus = null;
+  activeReturnPlotId = null;
+  if (restoreFocus) {
+    restoreSheetFocus(returnFocus, returnPlotId);
   }
 }
 
@@ -404,7 +505,7 @@ export function updateBottomSheetPlantsSection(
     "[data-sheet-plants-section]",
   );
   if (currentSection?.classList.contains("collapsed")) {
-    nextSection.classList.add("collapsed");
+    setCollapsibleSectionState(nextSection, true);
   }
   if (currentSection) {
     currentSection.replaceWith(nextSection);

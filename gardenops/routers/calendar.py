@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -34,6 +34,7 @@ from gardenops.router_helpers import (
 from gardenops.router_helpers import (
     validate_date as _validate_date,
 )
+from gardenops.services.attention.types import attention_request_clock
 from gardenops.services.calendar_service import (
     build_calendar_ics,
     build_calendar_payload,
@@ -57,6 +58,18 @@ from gardenops.services.calendar_service import (
 
 router = APIRouter()
 feed_router = APIRouter()
+
+
+def _calendar_request_clock() -> tuple[int, date, datetime | None]:
+    """Return the live clock, or the explicit frozen attention clock in tests."""
+    now_ms, frozen_date = attention_request_clock(now_ms=current_timestamp_ms())
+    if frozen_date:
+        return (
+            now_ms,
+            date.fromisoformat(frozen_date),
+            datetime.fromtimestamp(now_ms / 1000, tz=UTC),
+        )
+    return now_ms, date.today(), None
 
 
 class UpdateCalendarPreferencesBody(StrictBaseModel):
@@ -393,6 +406,7 @@ def get_calendar_events(
         if selected_zone_codes is not None
         else normalize_selected_zone_codes(preferences["selected_zone_codes"])
     )
+    _now_ms, today, _generated_at = _calendar_request_clock()
     payload = build_calendar_payload(
         conn,
         garden_id=garden_id,
@@ -403,6 +417,7 @@ def get_calendar_events(
         selected_plant_ids=selected_plant_id_list,
         selected_plot_ids=selected_plot_id_list,
         selected_zone_codes=selected_zone_code_list,
+        today=today,
     )
     payload.update(
         {
@@ -465,6 +480,7 @@ def export_calendar_ics(
         if include_recent_history is None
         else bool(include_recent_history)
     )
+    _now_ms, today, generated_at = _calendar_request_clock()
     payload = build_calendar_payload(
         conn,
         garden_id=garden_id,
@@ -475,10 +491,12 @@ def export_calendar_ics(
         selected_plant_ids=selected_plant_id_list,
         selected_plot_ids=selected_plot_id_list,
         selected_zone_codes=selected_zone_code_list,
+        today=today,
     )
     ics, etag, last_modified = build_calendar_ics(
         garden_name=_garden_name(conn, garden_id),
         events=payload["events"],
+        generated_at=generated_at,
     )
     headers = {
         "Content-Disposition": f'attachment; filename="{app_slug()}-calendar.ics"',
@@ -501,7 +519,7 @@ def create_calendar_manual_event(
     _ensure_calendar_plant_ids(conn, garden_id=garden_id, plant_ids=plant_ids)
     _ensure_calendar_plot_ids(conn, garden_id=garden_id, plot_ids=plot_ids)
     public_id = _generate_public_id("calevt")
-    now_ms = current_timestamp_ms()
+    now_ms, _today, _generated_at = _calendar_request_clock()
     row = conn.execute(
         """
         INSERT INTO garden_calendar_events
@@ -566,7 +584,7 @@ def update_calendar_manual_event(
     title, event_on, description, plant_ids, plot_ids = _normalize_manual_event_body(body)
     _ensure_calendar_plant_ids(conn, garden_id=garden_id, plant_ids=plant_ids)
     _ensure_calendar_plot_ids(conn, garden_id=garden_id, plot_ids=plot_ids)
-    now_ms = current_timestamp_ms()
+    now_ms, _today, _generated_at = _calendar_request_clock()
     conn.execute(
         """
         UPDATE garden_calendar_events
@@ -684,7 +702,7 @@ def create_calendar_subscription(
     context, garden_id = _require_subscription_access(request)
     preset_key = normalize_calendar_preset(body.preset_key or "essential")
     source_keys = normalize_visible_sources(body.visible_sources, preset_key=preset_key)
-    now_ms = current_timestamp_ms()
+    now_ms, _today, _generated_at = _calendar_request_clock()
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     token_hint = f"...{token[-6:]}"
@@ -758,7 +776,7 @@ def revoke_calendar_subscription(
     owner_user_id = int(row["owner_user_id"])
     if role != "admin" and int(context.user_id) != owner_user_id:
         raise HTTPException(status_code=403, detail="Cannot revoke another user's calendar feed")
-    now_ms = current_timestamp_ms()
+    now_ms, _today, _generated_at = _calendar_request_clock()
     conn.execute(
         """
         UPDATE calendar_subscriptions
@@ -808,7 +826,8 @@ def get_calendar_subscription_feed(
         scope = {}
     preset_key = normalize_calendar_preset(str(row["preset_key"] or "essential"))
     source_keys = normalize_visible_sources(scope.get("visible_sources"), preset_key=preset_key)
-    start_date, end_date = subscription_window(date.today())
+    _now_ms, today, _generated_at = _calendar_request_clock()
+    start_date, end_date = subscription_window(today)
     payload = build_calendar_payload(
         conn,
         garden_id=int(row["garden_id"]),
@@ -820,9 +839,16 @@ def get_calendar_subscription_feed(
         selected_plot_ids=[],
         selected_zone_codes=[],
     )
+    subscription_updated_at_ms = int(row["updated_at_ms"] or row["created_at_ms"] or 0)
+    subscription_timestamp = (
+        datetime.fromtimestamp(subscription_updated_at_ms / 1000, tz=UTC)
+        if subscription_updated_at_ms
+        else None
+    )
     ics, etag, last_modified = build_calendar_ics(
         garden_name=_garden_name(conn, int(row["garden_id"])),
         events=payload["events"],
+        generated_at=subscription_timestamp,
     )
     if request.headers.get("if-none-match", "").strip() == etag:
         headers = {
