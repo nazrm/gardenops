@@ -924,6 +924,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
         "completeWorkflowTaskThroughUi",
         'entry.id === "midsummer_check"',
         'step.id === "pest_check"',
+        'data-tasks-view="month"',
         'selectOption("completed")',
         'target: "tasks", view: "overdue"',
     ):

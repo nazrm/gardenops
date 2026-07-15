@@ -312,6 +312,13 @@ async function completeWorkflowTaskThroughUi(page, gardenId, task, title) {
   assert(typeof task?.task_id === "string" && task.task_id,
     "Workflow response omitted the task selected for completion");
   await openSubMode(page, "activity", "tasks", "#tasks-tab-content");
+  const monthLoad = page.waitForResponse((response) => (
+    response.request().method() === "GET"
+    && new URL(response.url()).pathname === "/api/tasks"
+    && new URL(response.url()).searchParams.get("view") === "month"
+  ));
+  await page.locator('[data-tasks-view="month"]').click();
+  assert((await monthLoad).status() === 200, "Monthly workflow task view did not load");
   let card = page.locator(`#tasks-list .task-card[data-task-id="${task.task_id}"]`);
   await visible(card, "generated workflow task on Tasks");
   assert((await card.locator(".task-card-title").innerText()).includes(title),
@@ -330,6 +337,14 @@ async function completeWorkflowTaskThroughUi(page, gardenId, task, title) {
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await openSubMode(page, "activity", "tasks", "#tasks-tab-content");
+  const completedMonthLoad = page.waitForResponse((response) => (
+    response.request().method() === "GET"
+    && new URL(response.url()).pathname === "/api/tasks"
+    && new URL(response.url()).searchParams.get("view") === "month"
+  ));
+  await page.locator('[data-tasks-view="month"]').click();
+  assert((await completedMonthLoad).status() === 200,
+    "Monthly workflow task history did not reload");
   const completedLoad = page.waitForResponse((response) => (
     response.request().method() === "GET"
     && new URL(response.url()).pathname === "/api/tasks"
