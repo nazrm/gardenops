@@ -911,6 +911,9 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
         '"#procurement-save-btn"',
         '"Start workflow"',
         'openSubMode(page, "insights", "statistics", "#statistics-view")',
+        'name: "Export CSV"',
+        'name: "Export JSON"',
+        "const [download] = await Promise.all([",
     ):
         assert marker in journey_source
     for endpoint in (

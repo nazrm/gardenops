@@ -129,10 +129,11 @@ async function downloadFrom(page, diagnostics, selector, label) {
   };
   page.on("requestfailed", listener);
   try {
-    const pending = page.waitForEvent("download");
     const control = typeof selector === "string" ? page.locator(selector) : selector;
-    await control.click();
-    const download = await pending;
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      control.click(),
+    ]);
     assert(aborted.length <= 1, `${label} produced duplicate download aborts`);
     return await readDownload(download, label);
   } finally {
@@ -347,7 +348,7 @@ async function exerciseDownloads(page, diagnostics, fixture) {
     "Phase 4 inventory row");
   const csvText = await downloadFrom(
     page, diagnostics,
-    page.locator("#inventory-export-bar").getByRole("button", { name: "Download CSV" }),
+    page.locator("#inventory-export-bar").getByRole("button", { name: "Export CSV" }),
     "inventory CSV",
   );
   const csvRows = parseCsv(csvText);
@@ -360,7 +361,7 @@ async function exerciseDownloads(page, diagnostics, fixture) {
 
   const jsonText = await downloadFrom(
     page, diagnostics,
-    page.locator("#inventory-export-bar").getByRole("button", { name: "Download JSON" }),
+    page.locator("#inventory-export-bar").getByRole("button", { name: "Export JSON" }),
     "inventory JSON",
   );
   const parsed = JSON.parse(jsonText);
