@@ -4390,6 +4390,7 @@ function assertPhaseTwoDatabaseState(
   const rainAlert = rainAlerts[0];
   const expectedRainValidUntil = "2026-07-14";
   const expectedRainReassessmentOn = "2026-07-16";
+  const expectedRainRecurrenceDeadline = "2026-07-18";
   const rainOutdoor = task("rain_outdoor");
   assert(rainAlert.valid_until === expectedRainValidUntil,
     "Phase 2 rain alert validity window was unexpected");
@@ -4405,6 +4406,7 @@ function assertPhaseTwoDatabaseState(
     rain_original_title: "Water Phase 2 Rain Outdoor Basil",
     rain_reassessment_delay_days: 2,
     rain_reassessment_policy: "check_root_zone_moisture_before_watering",
+    rain_recurrence_deadline: expectedRainRecurrenceDeadline,
     rescheduled_alert_valid_until: expectedRainValidUntil,
     rescheduled_from: phase.date,
     rescheduled_reason: "rain_alert",

@@ -3496,8 +3496,10 @@ def test_phase_two_rain_reassessment_expectation_is_horticulturally_explicit() -
 
     assert 'const expectedRainValidUntil = "2026-07-14";' in source
     assert 'const expectedRainReassessmentOn = "2026-07-16";' in source
+    assert 'const expectedRainRecurrenceDeadline = "2026-07-18";' in source
     assert "rain_reassessment_delay_days: 2" in source
     assert 'rain_reassessment_policy: "check_root_zone_moisture_before_watering"' in source
+    assert "rain_recurrence_deadline: expectedRainRecurrenceDeadline" in source
     assert 'rainOutdoor.due_on === "2026-07-15"' not in source
     assert "Phase 2 truncated forecast incorrectly resolved the seeded Beta frost alert" in source
 
