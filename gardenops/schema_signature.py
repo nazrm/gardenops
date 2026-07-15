@@ -404,6 +404,17 @@ REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
         "password_auth_disabled = 1",
         "password_hash is null",
     ),
+    "ck_procurement_receipt_provenance": (
+        "status = 'received'",
+        "status <> 'received'",
+        "receipt_inventory_item_id is not null",
+        "receipt_inventory_item_id is null",
+        "receipt_inventory_transaction_id is not null",
+        "receipt_inventory_transaction_id is null",
+        "received_by_user_id is null",
+        "received_at_ms is not null",
+        "received_at_ms is null",
+    ),
 }
 
 _IGNORED_BOOTSTRAP_TABLES = frozenset({"schema_migrations"})

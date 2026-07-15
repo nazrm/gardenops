@@ -113,6 +113,53 @@ FROM resolved_receipts AS receipt
 WHERE receipt.procurement_id = procurement.id;
 
 DO $$
+DECLARE
+    unresolved_count bigint;
+    unresolved_ids text;
+BEGIN
+    SELECT count(*)
+    INTO unresolved_count
+    FROM public.procurement_items
+    WHERE status = 'received'
+      AND (
+          receipt_inventory_item_id IS NULL
+          OR receipt_inventory_transaction_id IS NULL
+          OR received_at_ms IS NULL
+      );
+
+    IF unresolved_count > 0 THEN
+        SELECT string_agg(id::text, ', ' ORDER BY id)
+        INTO unresolved_ids
+        FROM (
+            SELECT id
+            FROM public.procurement_items
+            WHERE status = 'received'
+              AND (
+                  receipt_inventory_item_id IS NULL
+                  OR receipt_inventory_transaction_id IS NULL
+                  OR received_at_ms IS NULL
+              )
+            ORDER BY id
+            LIMIT 20
+        ) AS unresolved;
+
+        RAISE EXCEPTION USING
+            ERRCODE = '23514',
+            MESSAGE = 'Migration 0027 cannot establish receipt provenance for legacy received procurement items.',
+            DETAIL = format(
+                '%s received procurement item(s) are unresolved. IDs (up to 20): %s',
+                unresolved_count,
+                unresolved_ids
+            ),
+            HINT = 'Correct metadata_json so inventory_item_id identifies an inventory item in the same garden and inventory_transaction_id identifies a transaction for that item, then rerun migration 0027.';
+    END IF;
+END
+$$;
+
+ALTER TABLE public.procurement_items
+    DROP CONSTRAINT IF EXISTS ck_procurement_receipt_provenance;
+
+DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
@@ -147,27 +194,23 @@ BEGIN
             FOREIGN KEY (received_by_user_id) REFERENCES public.auth_users(id)
             ON DELETE SET NULL DEFERRABLE;
     END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'ck_procurement_receipt_provenance'
-          AND conrelid = 'public.procurement_items'::regclass
-    ) THEN
-        ALTER TABLE public.procurement_items
-            ADD CONSTRAINT ck_procurement_receipt_provenance
-            CHECK (
-                (
-                    receipt_inventory_item_id IS NULL
-                    AND receipt_inventory_transaction_id IS NULL
-                    AND received_at_ms IS NULL
-                )
-                OR (
-                    receipt_inventory_item_id IS NOT NULL
-                    AND receipt_inventory_transaction_id IS NOT NULL
-                    AND received_at_ms IS NOT NULL
-                    AND status = 'received'
-                )
-            );
-    END IF;
+    ALTER TABLE public.procurement_items
+        ADD CONSTRAINT ck_procurement_receipt_provenance
+        CHECK (
+            (
+                status = 'received'
+                AND receipt_inventory_item_id IS NOT NULL
+                AND receipt_inventory_transaction_id IS NOT NULL
+                AND received_at_ms IS NOT NULL
+            )
+            OR (
+                status <> 'received'
+                AND receipt_inventory_item_id IS NULL
+                AND receipt_inventory_transaction_id IS NULL
+                AND received_by_user_id IS NULL
+                AND received_at_ms IS NULL
+            )
+        );
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conname = 'ck_procurement_quantity_positive'
