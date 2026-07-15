@@ -3256,7 +3256,7 @@ const overdueSnoozed = expectedPhaseTwoMaintenanceNotification(
   new Map([['task-one', 'snoozed']]),
 );
 if (overdueSnoozed.cleared_at_ms !== 1783857600000) process.exit(10);
-if (overdueSnoozed.clear_reason !== 'expired') process.exit(11);
+if (overdueSnoozed.clear_reason !== 'snoozed') process.exit(11);
 const actionRequest = (taskId, action) => ({
   method: 'POST',
   path: `/api/tasks/${taskId}/action`,
@@ -3288,9 +3288,8 @@ if (reasons.has('untouched-task')) process.exit(9);
     assert "if (notification.cleared_at_ms !== null) return expected;" in lifecycle
     assert "const clearReason = taskClearReasons.get(notification.target_id);" in lifecycle
     assert "if (!clearReason) return expected;" in lifecycle
-    assert 'notification.notification_type === "task_overdue"' in lifecycle
-    assert 'new Set(["rescheduled", "snoozed"]).has(clearReason)' in lifecycle
-    assert ') ? "expired" : clearReason;' in lifecycle
+    assert "expected.clear_reason = clearReason;" in lifecycle
+    assert 'new Set(["rescheduled", "snoozed"])' not in lifecycle
 
 
 def test_phase_two_mobile_quick_action_keeps_manual_date_completion_actionable() -> None:
