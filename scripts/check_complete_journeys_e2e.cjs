@@ -3215,8 +3215,12 @@ function assertPhaseThreeAuditEvents(beforeAudit, finalAudit, profiles, fixture)
     const requestIndex = unmatched.findIndex((request) => (
       auditRecordMatchesBrowserMutation(event, request)
     ));
+    const sameRequestId = unmatched.find((request) => request.request_id === event.request_id);
     assert(requestIndex >= 0,
-      `Phase 3 audit event lacks an exact browser mutation: ${event.method} ${event.path}`);
+      `Phase 3 audit event lacks an exact browser mutation: ${event.method} ${event.path}; ${canonicalJson({
+        event,
+        request: sameRequestId || null,
+      })}`);
     unmatched.splice(requestIndex, 1);
   }
   assert(unmatched.length === 0,
