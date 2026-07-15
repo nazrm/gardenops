@@ -2,6 +2,11 @@
 
 > **For agentic workers:** REQUIRED EXECUTION MODE: use each phase as a bounded product-improvement slice, not as an exhaustive formal-verification project. Every phase receives one independent GPT-5.6 Sol Ultra validation gate, but repeated full-suite and full-review loops are prohibited by the execution protocol below.
 
+> **Reviewer model override (2026-07-15):** For Phase 3 onward, dispatch exactly
+> one independent `gpt-5.6-sol` reviewer at `medium` reasoning after the complete
+> phase implementation and normal validation. This supersedes every Sol Ultra
+> reference below. Do not dispatch Luna agents.
+
 **Goal:** Close every open journey, role, offline, provider, persistence, accessibility, and performance gap in the GardenOps optimization map, while fixing defects found by the new evidence and preserving the map-first product direction.
 
 **Architecture:** Build one hardened, reusable real-backend Playwright journey harness around the existing disposable PostgreSQL runner. Add focused journey modules in dependency order, with deterministic external-provider adapters, explicit database/filesystem postconditions, and a tracked coverage contract. Keep raw screenshots, traces, timings, and reviewer work products under the existing gitignored `research/` tree. Keep durable tests, manifest schemas, commands, and concise validation results in tracked repository files.
