@@ -1,6 +1,7 @@
 import type { ProcurementItem } from "../core/models";
 import { t } from "../core/i18n";
 import { createFieldGroup as _createFieldGroup } from "../core/dom";
+import { canonicalDecimalString, compareDecimalStrings } from "../services/api";
 
 const STATUS_ICONS: Record<string, string> = {
   wanted: "\uD83D\uDCAD",
@@ -341,9 +342,9 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
   const qtyInput = document.createElement("input");
   qtyInput.id = "procurement-quantity";
   qtyInput.type = "number";
-  qtyInput.min = "0.01";
-  qtyInput.step = "0.01";
-  qtyInput.value = String(item?.quantity ?? 1);
+  qtyInput.min = "0.000001";
+  qtyInput.step = "0.000001";
+  qtyInput.value = item?.quantity ?? "1";
   qtyGroup.appendChild(qtyInput);
 
   const unitGroup = createFieldGroup(t("procurement.form_unit"), "procurement-unit");
@@ -440,6 +441,13 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
   saveBtn.addEventListener("click", () => {
     if (pending) return;
     if (!labelInput.value.trim()) return;
+    let quantity: string;
+    try {
+      quantity = canonicalDecimalString(qtyInput.value);
+    } catch {
+      return;
+    }
+    if (compareDecimalStrings(quantity, "0") <= 0) return;
     const costValue = Math.round(parseFloat(costInput.value || "0") * 100);
     const data: Record<string, unknown> = {
       label: labelInput.value.trim(),
@@ -448,7 +456,7 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
       vendor_url: urlInput.value.trim(),
       cost_minor: costValue,
       currency: currInput.value.trim() || "NOK",
-      quantity: parseFloat(qtyInput.value) || 1,
+      quantity,
       unit: unitInput.value.trim() || "pieces",
       notes: notesInput.value.trim(),
     };

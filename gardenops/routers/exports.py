@@ -82,19 +82,20 @@ def _public_id_export_row(row: Any, columns: list[str]) -> dict[str, Any]:
     return _project_export_row(mapped, columns)
 
 
-def _json_default(value: object) -> str | float:
+def _json_default(value: object) -> str:
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, Decimal):
-        return float(value)
+        return _decimal_string(value)
     raise TypeError(f"Unsupported export value: {type(value).__name__}")
 
 
-def _decimal_number(value: object) -> int | float:
+def _decimal_string(value: object) -> str:
     number = Decimal(str(value or 0))
-    if number == number.to_integral_value():
-        return int(number)
-    return float(number)
+    text = format(number, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in {"", "-0"} else text
 
 
 def _json_response(resource: str, rows: list[dict[str, Any]]) -> Response:
@@ -734,7 +735,7 @@ def _serialize_inventory_export_rows(
                 "label": str(item["label"] or ""),
                 "inventory_type": str(item["inventory_type"]),
                 "unit": str(item["unit"] or ""),
-                "quantity": _decimal_number(item["_qty"]),
+                "quantity": _decimal_string(item["_qty"]),
                 "procurement_count": len(history),
                 "recent_vendor_name": str(recent.get("vendor_name") or ""),
                 "recent_procurement_status": str(recent.get("status") or ""),
@@ -941,6 +942,8 @@ def export_procurement(
     ).fetchall()
 
     items = [_public_id_export_row(row, PROCUREMENT_COLUMNS) for row in rows]
+    for item in items:
+        item["quantity"] = _decimal_string(item["quantity"])
 
     if format == "html":
         return _html_response(

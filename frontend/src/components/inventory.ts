@@ -5,6 +5,12 @@ import type {
   InventoryType,
   TransactionReason,
 } from "../services/api";
+import {
+  addDecimalStrings,
+  canonicalDecimalString,
+  compareDecimalStrings,
+  negateDecimalString,
+} from "../services/api";
 import { getLocaleTag, t } from "../core/i18n";
 import { renderEmptyState } from "./emptyState";
 
@@ -122,7 +128,7 @@ function createInventoryCard(
   title.textContent = item.label || t("inventory.untitled");
 
   const qtyBadge = document.createElement("span");
-  qtyBadge.className = `inventory-qty-badge${item.quantity <= 0 ? " inventory-qty-zero" : ""}`;
+  qtyBadge.className = `inventory-qty-badge${compareDecimalStrings(item.quantity, "0") <= 0 ? " inventory-qty-zero" : ""}`;
   qtyBadge.textContent = `${item.quantity} ${item.unit}`;
 
   header.append(icon, title, qtyBadge);
@@ -170,10 +176,13 @@ function createInventoryCard(
   if (cbs.canWrite !== false) {
     const addBtn = createActionButton(t("inventory.action_add_stock"), "inventory-action-add", () => cbs.onAddStock(item));
     const useBtn = createActionButton(t("inventory.action_use_stock"), "inventory-action-use", () => cbs.onConsumeStock(item));
-    const plantBtn = createActionButton(t("inventory.action_plant"), "inventory-action-plant", () => cbs.onPlantFromStock(item));
     const editBtn = createActionButton(t("common.edit"), "inventory-action-edit", () => cbs.onEdit(item));
     const delBtn = createActionButton(t("common.delete"), "inventory-action-delete journal-action-delete", () => cbs.onDelete(item));
-    actions.prepend(addBtn, useBtn, plantBtn);
+    actions.prepend(addBtn, useBtn);
+    if (item.plt_id) {
+      const plantBtn = createActionButton(t("inventory.action_plant"), "inventory-action-plant", () => cbs.onPlantFromStock(item));
+      actions.appendChild(plantBtn);
+    }
     actions.append(editBtn, delBtn);
   }
   card.appendChild(actions);
@@ -268,7 +277,7 @@ export function renderInventoryTable(
 
     // Qty
     const tdQty = document.createElement("td");
-    tdQty.className = item.quantity <= 0 ? "inventory-qty-zero" : "";
+    tdQty.className = compareDecimalStrings(item.quantity, "0") <= 0 ? "inventory-qty-zero" : "";
     tdQty.textContent = `${item.quantity} ${item.unit}`;
     tr.appendChild(tdQty);
 
@@ -283,13 +292,16 @@ export function renderInventoryTable(
       addBtn.title = t("inventory.action_add_stock");
       const useBtn = createActionButton("\u2212", "inventory-action-use", () => cbs.onConsumeStock(item));
       useBtn.title = t("inventory.action_use_stock");
-      const plantBtn = createActionButton("\u{1F331}", "inventory-action-plant", () => cbs.onPlantFromStock(item));
-      plantBtn.title = t("inventory.action_plant");
       const editBtn = createActionButton("\u270F\uFE0F", "inventory-action-edit", () => cbs.onEdit(item));
       editBtn.title = t("inventory.action_edit_item");
       const delBtn = createActionButton("\u{1F5D1}", "inventory-action-delete", () => cbs.onDelete(item));
       delBtn.title = t("inventory.action_delete_item");
-      tdActions.prepend(addBtn, useBtn, plantBtn);
+      tdActions.prepend(addBtn, useBtn);
+      if (item.plt_id) {
+        const plantBtn = createActionButton("\u{1F331}", "inventory-action-plant", () => cbs.onPlantFromStock(item));
+        plantBtn.title = t("inventory.action_plant");
+        tdActions.appendChild(plantBtn);
+      }
       tdActions.append(editBtn, delBtn);
     }
     tr.appendChild(tdActions);
@@ -330,8 +342,9 @@ export function renderTransactionHistory(
     row.className = "inventory-tx-row";
 
     const deltaSpan = document.createElement("span");
-    deltaSpan.className = tx.delta >= 0 ? "inventory-tx-delta-pos" : "inventory-tx-delta-neg";
-    deltaSpan.textContent = tx.delta >= 0 ? `+${tx.delta}` : String(tx.delta);
+    const positive = compareDecimalStrings(tx.delta, "0") >= 0;
+    deltaSpan.className = positive ? "inventory-tx-delta-pos" : "inventory-tx-delta-neg";
+    deltaSpan.textContent = positive ? `+${tx.delta}` : tx.delta;
     row.appendChild(deltaSpan);
 
     const reasonSpan = document.createElement("span");
@@ -490,7 +503,7 @@ export interface StockTransactionFormOpts {
   mode: "add" | "consume" | "plant";
   plots?: Array<{ plot_id: string; zone_code: string }>;
   onSubmit: (data: {
-    delta: number;
+    delta: string;
     reason: TransactionReason;
     source_name: string;
     cost_minor: number | null;
@@ -525,8 +538,8 @@ export function createStockTransactionForm(opts: StockTransactionFormOpts): HTML
   );
   qtyInput.min = "0.000001";
   qtyInput.step = "0.000001";
-  if (!isAdd && opts.item.quantity > 0) {
-    qtyInput.max = String(opts.item.quantity);
+  if (!isAdd && compareDecimalStrings(opts.item.quantity, "0") > 0) {
+    qtyInput.max = opts.item.quantity;
   }
   qtyInput.required = true;
 
@@ -572,13 +585,14 @@ export function createStockTransactionForm(opts: StockTransactionFormOpts): HTML
   notesArea.placeholder = t("inventory.tx_notes_placeholder");
   addFieldWithEl(form, t("inventory.tx_notes"), notesArea);
 
-  // Plant from stock: plot selector + journal checkbox
+  // Plant from stock requires a plot and always creates its linked journal entry.
   let plotSelect: HTMLSelectElement | undefined;
   const supportsPlotAssignment = isPlant && opts.plots && opts.item.plt_id;
   if (supportsPlotAssignment && opts.plots) {
     plotSelect = document.createElement("select");
     plotSelect.id = "inv-tx-plot";
     plotSelect.className = "form-select";
+    plotSelect.required = true;
     const noneOpt = document.createElement("option");
     noneOpt.value = "";
     noneOpt.textContent = t("inventory.tx_no_plot");
@@ -592,16 +606,18 @@ export function createStockTransactionForm(opts: StockTransactionFormOpts): HTML
     addFieldWithEl(form, t("inventory.tx_assign_plot"), plotSelect);
   }
 
-  const journalLabel = document.createElement("label");
-  journalLabel.className = "form-check-label";
   const journalCheck = document.createElement("input");
   journalCheck.type = "checkbox";
   journalCheck.id = "inv-tx-journal";
   journalCheck.checked = true;
-  const journalText = document.createElement("span");
-  journalText.textContent = t("inventory.tx_create_journal");
-  journalLabel.append(journalCheck, journalText);
-  form.appendChild(journalLabel);
+  if (!isPlant) {
+    const journalLabel = document.createElement("label");
+    journalLabel.className = "form-check-label";
+    const journalText = document.createElement("span");
+    journalText.textContent = t("inventory.tx_create_journal");
+    journalLabel.append(journalCheck, journalText);
+    form.appendChild(journalLabel);
+  }
 
   // Buttons
   const btnRow = document.createElement("div");
@@ -626,11 +642,17 @@ export function createStockTransactionForm(opts: StockTransactionFormOpts): HTML
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     if (pending) return;
-    const qty = Number(qtyInput.value);
-    if (!Number.isFinite(qty) || qty <= 0) return;
+    let qty: string;
+    try {
+      qty = canonicalDecimalString(qtyInput.value);
+    } catch {
+      return;
+    }
+    if (compareDecimalStrings(qty, "0") <= 0) return;
+    if (isPlant && !plotSelect?.value) return;
     const costVal = costInput?.value ? parseInt(costInput.value, 10) : null;
     const result: {
-      delta: number;
+      delta: string;
       reason: TransactionReason;
       source_name: string;
       cost_minor: number | null;
@@ -640,7 +662,7 @@ export function createStockTransactionForm(opts: StockTransactionFormOpts): HTML
       plot_id?: string;
       create_journal: boolean;
     } = {
-      delta: isAdd ? qty : -qty,
+      delta: isAdd ? qty : negateDecimalString(qty),
       reason: reasonSelect.value as TransactionReason,
       source_name: sourceInput?.value.trim() ?? "",
       cost_minor: costVal,
@@ -693,7 +715,10 @@ export function renderInventorySourceSummary(
   }
 
   if (items.length > 0) {
-    const totalQty = items.reduce((sum, it) => sum + it.quantity, 0);
+    const totalQty = items.reduce(
+      (sum, it) => addDecimalStrings(sum, it.quantity),
+      "0",
+    );
     const unit = items[0]?.unit ?? "pcs";
 
     const stockLine = document.createElement("div");
@@ -702,7 +727,7 @@ export function renderInventorySourceSummary(
     stockLabel.className = "inventory-summary-label";
     stockLabel.textContent = t("inventory.source_current_stock");
     const stockValue = document.createElement("span");
-    stockValue.className = `inventory-summary-value${totalQty <= 0 ? " inventory-qty-zero" : ""}`;
+    stockValue.className = `inventory-summary-value${compareDecimalStrings(totalQty, "0") <= 0 ? " inventory-qty-zero" : ""}`;
     stockValue.textContent = `${totalQty} ${unit}`;
     stockLine.append(stockLabel, stockValue);
     container.appendChild(stockLine);
@@ -717,7 +742,9 @@ export function renderInventorySourceSummary(
     const txValue = document.createElement("span");
     txValue.className = "inventory-summary-value";
     const reasonLabel = transactionReasonLabel(lastTx.reason);
-    const deltaStr = lastTx.delta >= 0 ? `+${lastTx.delta}` : String(lastTx.delta);
+    const deltaStr = compareDecimalStrings(lastTx.delta, "0") >= 0
+      ? `+${lastTx.delta}`
+      : lastTx.delta;
     txValue.textContent = `${deltaStr} ${reasonLabel} (${formatDate(lastTx.occurred_on)})`;
     txLine.append(txLabel, txValue);
     container.appendChild(txLine);
@@ -781,7 +808,7 @@ function collectPlantProcurementHistory(
       vendor_name: item.vendor_name,
       vendor_url: "",
       status: item.status,
-      quantity: 0,
+      quantity: "0",
       unit: "",
       cost_minor: 0,
       currency: "NOK",

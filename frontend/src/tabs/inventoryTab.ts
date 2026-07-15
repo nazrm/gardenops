@@ -19,7 +19,8 @@ import {
   deleteInventoryItemApi,
   listInventoryTransactionsApi,
   addInventoryTransactionApi,
-  addPlantToPlotApi,
+  absoluteDecimalString,
+  plantFromInventoryApi,
   createJournalEntryApi,
   getActiveGardenContext,
   getApiErrorMessage,
@@ -393,6 +394,7 @@ function openStockModal(
       zone_code: p.zone_code,
     }));
 
+  let plantOperationId: string | null = null;
   const form = createStockTransactionForm({
     item,
     mode,
@@ -402,22 +404,22 @@ function openStockModal(
       if (inventoryPendingActions.has(actionKey) || !isCurrentInventoryGarden(gardenId)) return;
       inventoryPendingActions.add(actionKey);
       try {
-        if (
-          data.plot_id &&
-          item.plt_id &&
-          data.reason === "planted"
-        ) {
-          await addPlantToPlotApi(
-            data.plot_id,
-            item.plt_id,
-            1,
-            null,
-            { gardenId },
+        if (mode === "plant") {
+          if (!data.plot_id) return;
+          plantOperationId ??= crypto.randomUUID();
+          await plantFromInventoryApi(
+            item.id,
+            {
+              quantity: absoluteDecimalString(data.delta),
+              plot_id: data.plot_id,
+              occurred_on: data.occurred_on,
+              notes: data.notes,
+            },
+            { gardenId, operationId: plantOperationId },
           );
-        }
-
-        let journalEntryId: string | null = null;
-        if (data.create_journal && item.plt_id) {
+        } else {
+          let journalEntryId: string | null = null;
+          if (data.create_journal && item.plt_id) {
           const reasonLabel =
             data.reason ||
             (mode === "add" ? "purchased" : "planted");
@@ -438,24 +440,15 @@ function openStockModal(
                 ? t(
                     "inventory.journal_title_added",
                     {
-                      quantity: Math.abs(data.delta),
+                      quantity: absoluteDecimalString(data.delta),
                       unit: item.unit,
                       reason: reasonLabel,
                     },
                   )
-                : mode === "plant"
-                  ? t(
-                      "inventory.journal_title_planted",
-                      {
-                        quantity: Math.abs(data.delta),
-                        unit: item.unit,
-                        reason: reasonLabel,
-                      },
-                    )
-                  : t(
+                : t(
                       "inventory.journal_title_used",
                       {
-                        quantity: Math.abs(data.delta),
+                        quantity: absoluteDecimalString(data.delta),
                         unit: item.unit,
                         reason: reasonLabel,
                       },
@@ -470,22 +463,23 @@ function openStockModal(
           const result =
             await createJournalEntryApi(journalBody, { gardenId });
           journalEntryId = result.id;
-        }
+          }
 
-        await addInventoryTransactionApi(
-          item.id,
-          {
-            delta: data.delta,
-            reason: data.reason,
-            source_name: data.source_name,
-            cost_minor: data.cost_minor,
-            occurred_on: data.occurred_on,
-            storage_location: data.storage_location,
-            notes: data.notes,
-            journal_entry_id: journalEntryId,
-          },
-          { gardenId },
-        );
+          await addInventoryTransactionApi(
+            item.id,
+            {
+              delta: data.delta,
+              reason: data.reason,
+              source_name: data.source_name,
+              cost_minor: data.cost_minor,
+              occurred_on: data.occurred_on,
+              storage_location: data.storage_location,
+              notes: data.notes,
+              journal_entry_id: journalEntryId,
+            },
+            { gardenId },
+          );
+        }
 
         if (!isCurrentInventoryGarden(gardenId)) return;
         ctx.showToast(

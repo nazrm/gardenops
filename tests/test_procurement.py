@@ -36,7 +36,7 @@ class TestProcurementApi(BaseApiTest):
         self.assertEqual(item["inventory_type"], "bulb")
         self.assertEqual(item["vendor_name"], "Plantasjen")
         self.assertEqual(item["cost_minor"], 2500)
-        self.assertAlmostEqual(item["quantity"], 20.0)
+        self.assertEqual(item["quantity"], "20")
         self.assertEqual(item["unit"], "pieces")
         self.assertEqual(item["status"], "wanted")
         self.assertEqual(item["notes"], "Red tulips for zone B")
@@ -235,10 +235,10 @@ class TestProcurementApi(BaseApiTest):
                 f"/api/inventory/{inventory_id}/transactions",
                 headers=headers,
             ).json()["transactions"]
-            self.assertEqual(procurement["quantity"], 2.375)
-            self.assertEqual(inventory["quantity"], 2.375)
+            self.assertEqual(procurement["quantity"], "2.375")
+            self.assertEqual(inventory["quantity"], "2.375")
             self.assertEqual(len(ledger), 1)
-            self.assertEqual(ledger[0]["delta"], 2.375)
+            self.assertEqual(ledger[0]["delta"], "2.375")
             self.assertEqual(ledger[0]["cost_minor"], 950)
             self.assertEqual(ledger[0]["actor_user_id"], int(user["id"]))
             self.assertEqual(ledger[0]["actor_username"], "receipt_actor")
@@ -297,7 +297,7 @@ class TestProcurementApi(BaseApiTest):
         inventory_id = procurement["metadata"]["inventory_item_id"]
         ledger = self.client.get(f"/api/inventory/{inventory_id}/transactions").json()
         self.assertEqual(ledger["total"], 1)
-        self.assertEqual(ledger["transactions"][0]["delta"], 1.5)
+        self.assertEqual(ledger["transactions"][0]["delta"], "1.5")
 
         repeated = self.client.post(
             f"/api/procurement/{item_id}/transition",
@@ -309,6 +309,20 @@ class TestProcurementApi(BaseApiTest):
             1,
         )
         self.assertEqual(self.client.delete(f"/api/inventory/{inventory_id}").status_code, 409)
+
+    def test_precision_round_trip_preserves_full_numeric_scale(self) -> None:
+        precise = "12345678901234.123456"
+        created = self.client.post(
+            "/api/procurement",
+            json={"label": "Precise bulk", "quantity": precise, "unit": "kg"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        item_id = created.json()["id"]
+        response = self.client.get(f"/api/procurement/{item_id}").json()
+        self.assertEqual(response["quantity"], precise)
+        listed = self.client.get("/api/procurement").json()["items"]
+        listed_quantity = next(item for item in listed if item["id"] == item_id)["quantity"]
+        self.assertEqual(listed_quantity, precise)
 
     def test_receipt_provenance_is_garden_scoped(self) -> None:
         os.environ["AUTH_REQUIRED"] = "true"

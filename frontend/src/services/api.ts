@@ -3068,13 +3068,73 @@ export type TransactionReason =
   | "adjusted"
   | "";
 
+export type DecimalString = string;
+
+const DECIMAL_SCALE = 6;
+const DECIMAL_INTEGER_DIGITS = 14;
+const DECIMAL_PATTERN = /^([+-]?)(\d+)(?:\.(\d{1,6}))?$/;
+
+function normalizeDecimalString(value: string, enforceWireBounds: boolean): DecimalString {
+  const match = DECIMAL_PATTERN.exec(value.trim());
+  if (!match) throw new Error("Invalid decimal value");
+  const integer = (match[2] ?? "0").replace(/^0+(?=\d)/, "");
+  const fraction = (match[3] ?? "").replace(/0+$/, "");
+  if (enforceWireBounds && integer.length > DECIMAL_INTEGER_DIGITS) {
+    throw new Error("Decimal value is too large");
+  }
+  const unsigned = fraction ? `${integer}.${fraction}` : integer;
+  return match[1] === "-" && unsigned !== "0" ? `-${unsigned}` : unsigned;
+}
+
+export function canonicalDecimalString(value: string): DecimalString {
+  return normalizeDecimalString(value, true);
+}
+
+function scaledDecimal(value: DecimalString): bigint {
+  const canonical = normalizeDecimalString(value, false);
+  const negative = canonical.startsWith("-");
+  const unsigned = negative ? canonical.slice(1) : canonical;
+  const [integer = "0", fraction = ""] = unsigned.split(".");
+  const scaled = BigInt(`${integer}${fraction.padEnd(DECIMAL_SCALE, "0")}`);
+  return negative ? -scaled : scaled;
+}
+
+function decimalFromScaled(value: bigint): DecimalString {
+  const negative = value < 0n;
+  const digits = (negative ? -value : value).toString().padStart(DECIMAL_SCALE + 1, "0");
+  const integer = digits.slice(0, -DECIMAL_SCALE);
+  const fraction = digits.slice(-DECIMAL_SCALE).replace(/0+$/, "");
+  return `${negative ? "-" : ""}${integer}${fraction ? `.${fraction}` : ""}`;
+}
+
+export function compareDecimalStrings(left: DecimalString, right: DecimalString): number {
+  const difference = scaledDecimal(left) - scaledDecimal(right);
+  return difference < 0n ? -1 : difference > 0n ? 1 : 0;
+}
+
+export function addDecimalStrings(
+  left: DecimalString,
+  right: DecimalString,
+): DecimalString {
+  return decimalFromScaled(scaledDecimal(left) + scaledDecimal(right));
+}
+
+export function negateDecimalString(value: DecimalString): DecimalString {
+  return decimalFromScaled(-scaledDecimal(value));
+}
+
+export function absoluteDecimalString(value: DecimalString): DecimalString {
+  const scaled = scaledDecimal(value);
+  return decimalFromScaled(scaled < 0n ? -scaled : scaled);
+}
+
 export interface InventoryProcurementHistoryEntry {
   id: string;
   label: string;
   vendor_name: string;
   vendor_url: string;
   status: string;
-  quantity: number;
+  quantity: DecimalString;
   unit: string;
   cost_minor: number;
   currency: string;
@@ -3091,7 +3151,7 @@ export interface InventoryItem {
   label: string;
   inventory_type: InventoryType;
   unit: string;
-  quantity: number;
+  quantity: DecimalString;
   created_at_ms: number;
   procurement_history: InventoryProcurementHistoryEntry[];
 }
@@ -3099,7 +3159,7 @@ export interface InventoryItem {
 export interface InventoryTransaction {
   id: number;
   item_id: string;
-  delta: number;
+  delta: DecimalString;
   reason: TransactionReason;
   source_name: string;
   cost_minor: number | null;
@@ -3197,7 +3257,7 @@ export async function listInventoryTransactionsApi(
 export async function addInventoryTransactionApi(
   itemId: string,
   data: {
-    delta: number;
+    delta: DecimalString;
     reason?: TransactionReason;
     source_name?: string;
     cost_minor?: number | null;
@@ -3210,6 +3270,23 @@ export async function addInventoryTransactionApi(
 ): Promise<{ status: string; id: number }> {
   return apiPost<{ status: string; id: number }>(
     `/api/inventory/${itemId}/transactions`,
+    data,
+    options,
+  );
+}
+
+export async function plantFromInventoryApi(
+  itemId: string,
+  data: {
+    quantity: DecimalString;
+    plot_id: string;
+    occurred_on: string;
+    notes?: string;
+  },
+  options: Pick<ApiRequestOptions, "gardenId" | "operationId">,
+): Promise<{ status: string; transaction_id: number; journal_entry_id: string }> {
+  return apiPost<{ status: string; transaction_id: number; journal_entry_id: string }>(
+    `/api/inventory/${itemId}/plant`,
     data,
     options,
   );

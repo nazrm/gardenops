@@ -114,7 +114,7 @@ def _serialize_procurement(row: dict) -> dict:
         "status": str(row["status"]),
         "cost_minor": int(row["cost_minor"]),
         "currency": str(row["currency"] or "NOK"),
-        "quantity": _quantity_json(row["quantity"]),
+        "quantity": _decimal_string(row["quantity"]),
         "unit": str(row["unit"] or "pieces"),
         "ordered_on": str(row["ordered_on"]) if row["ordered_on"] else None,
         "expected_on": str(row["expected_on"]) if row["expected_on"] else None,
@@ -162,11 +162,12 @@ def _inventory_public_id_from_internal_id(
     return str(row["public_id"]) if row else None
 
 
-def _quantity_json(value: object) -> int | float:
+def _decimal_string(value: object) -> str:
     quantity = Decimal(str(value))
-    if quantity == quantity.to_integral_value():
-        return int(quantity)
-    return float(quantity)
+    text = format(quantity, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in {"", "-0"} else text
 
 
 def _receipt_cost_minor(unit_cost_minor: int, quantity: Decimal) -> int:
@@ -312,17 +313,22 @@ def _ensure_received_inventory(
                 db.execute(
                     """
                     UPDATE procurement_items
-                    SET receipt_inventory_item_id = %s,
+                    SET status = 'received',
+                        received_on = %s,
+                        receipt_inventory_item_id = %s,
                         receipt_inventory_transaction_id = %s,
                         received_by_user_id = %s,
-                        received_at_ms = %s
+                        received_at_ms = %s,
+                        updated_at_ms = %s
                     WHERE id = %s AND garden_id = %s
                     """,
                     (
+                        received_on,
                         internal_item_id,
                         int(existing_tx_id),
                         transaction["actor_user_id"],
                         int(transaction["created_at_ms"]),
+                        current_timestamp_ms(),
                         int(item_row["id"]),
                         int(item_row["garden_id"]),
                     ),
@@ -389,7 +395,9 @@ def _ensure_received_inventory(
     db.execute(
         """
         UPDATE procurement_items
-        SET metadata_json = %s,
+        SET status = 'received',
+            received_on = %s,
+            metadata_json = %s,
             receipt_inventory_item_id = %s,
             receipt_inventory_transaction_id = %s,
             received_by_user_id = %s,
@@ -398,6 +406,7 @@ def _ensure_received_inventory(
         WHERE id = %s AND garden_id = %s
         """,
         (
+            received_on,
             _dump_metadata(metadata),
             int(inventory_item["id"]),
             transaction_id,
@@ -768,23 +777,22 @@ def transition_procurement(
         updates.append("received_on = %s")
         params.append(received_on)
 
-    params.extend([internal_item_id, garden_id])
-    db.execute(
-        f"""
-        UPDATE procurement_items
-        SET {", ".join(updates)}
-        WHERE id = %s AND garden_id = %s
-        """,
-        params,
-    )
     if target == "received":
-        refreshed = _fetch_item_by_internal_id(db, internal_item_id, garden_id)
-        received_on = str(refreshed["received_on"] or date.today().isoformat())
         _ensure_received_inventory(
             db,
             context=context,
-            item_row=refreshed,
+            item_row=row,
             received_on=received_on,
+        )
+    else:
+        params.extend([internal_item_id, garden_id])
+        db.execute(
+            f"""
+            UPDATE procurement_items
+            SET {", ".join(updates)}
+            WHERE id = %s AND garden_id = %s
+            """,
+            params,
         )
     db.commit()
     return {"status": "ok"}

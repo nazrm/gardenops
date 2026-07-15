@@ -1,18 +1,31 @@
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from typing import Literal
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import Field
 
 from gardenops.db import DB, DbConn, current_timestamp_ms
 from gardenops.models import StrictBaseModel
+from gardenops.offline_idempotency import (
+    JOURNAL_ENDPOINT,
+    JOURNAL_TARGET,
+    prepare_operation,
+    raise_operation_target_gone,
+    read_operation_id,
+    reserve_operation,
+)
 from gardenops.router_helpers import (
     active_garden_id as _active_garden_id,
 )
 from gardenops.router_helpers import (
     auth_context as _auth_context,
+)
+from gardenops.router_helpers import (
+    generate_public_id as _generate_public_id,
 )
 from gardenops.router_helpers import (
     is_local_admin_fallback as _is_local_admin_fallback,
@@ -29,6 +42,8 @@ from gardenops.router_helpers import (
 from gardenops.security import AuthContext
 
 router = APIRouter()
+
+INVENTORY_PLANT_OPERATION_NAMESPACE = "inventory-plant"
 
 InventoryType = Literal[
     "seed",
@@ -79,6 +94,13 @@ class AddTransactionBody(StrictBaseModel):
     journal_entry_id: str | None = None
 
 
+class PlantFromStockBody(StrictBaseModel):
+    quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=6)
+    plot_id: str = Field(min_length=1, max_length=120)
+    occurred_on: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    notes: str = Field(default="", max_length=2000)
+
+
 def _validate_linked_plant(
     db: DbConn,
     context: AuthContext,
@@ -126,11 +148,12 @@ def _fetch_item_by_public_id(db: DbConn, item_id: str, garden_id: int) -> dict:
     return dict(row)
 
 
-def _quantity_json(value: object) -> int | float:
+def _decimal_string(value: object) -> str:
     quantity = Decimal(str(value or 0))
-    if quantity == quantity.to_integral_value():
-        return int(quantity)
-    return float(quantity)
+    text = format(quantity, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in {"", "-0"} else text
 
 
 def _item_quantity(db: DbConn, item_id: int) -> Decimal:
@@ -153,7 +176,7 @@ def _serialize_item(
         "label": str(row["label"] or ""),
         "inventory_type": str(row["inventory_type"]),
         "unit": str(row["unit"]),
-        "quantity": _quantity_json(qty),
+        "quantity": _decimal_string(qty),
         "created_at_ms": int(row["created_at_ms"]),
         "procurement_history": procurement_history or [],
     }
@@ -163,7 +186,7 @@ def _serialize_tx(row: dict) -> dict:
     return {
         "id": int(row["id"]),
         "item_id": str(row["item_public_id"]),
-        "delta": _quantity_json(row["delta"]),
+        "delta": _decimal_string(row["delta"]),
         "reason": str(row["reason"] or ""),
         "source_name": str(row["source_name"] or ""),
         "cost_minor": (int(row["cost_minor"]) if row["cost_minor"] is not None else None),
@@ -208,7 +231,7 @@ def _serialize_procurement_history(row: dict) -> dict:
         "vendor_name": str(row["vendor_name"] or ""),
         "vendor_url": str(row["vendor_url"] or ""),
         "status": str(row["status"]),
-        "quantity": _quantity_json(row["quantity"]),
+        "quantity": _decimal_string(row["quantity"]),
         "unit": str(row["unit"] or "pieces"),
         "cost_minor": int(row["cost_minor"] or 0),
         "currency": str(row["currency"] or "NOK"),
@@ -479,7 +502,32 @@ def delete_inventory_item(
     context = _auth_context(request)
     _require_write(context)
     garden_id = _active_garden_id(context)
-    row = _fetch_item_by_public_id(db, item_id, garden_id)
+    locked_row = db.execute(
+        """
+        SELECT *
+        FROM inventory_items
+        WHERE public_id = %s AND garden_id = %s
+        FOR UPDATE
+        """,
+        (item_id, garden_id),
+    ).fetchone()
+    if not locked_row:
+        raise HTTPException(404, "Inventory item not found")
+    row = dict(locked_row)
+    ledger = db.execute(
+        """
+        SELECT 1
+        FROM inventory_transactions
+        WHERE item_id = %s AND garden_id = %s
+        LIMIT 1
+        """,
+        (int(row["id"]), garden_id),
+    ).fetchone()
+    if ledger:
+        raise HTTPException(
+            status_code=409,
+            detail="Inventory items with ledger history cannot be deleted",
+        )
     receipt = db.execute(
         """
         SELECT 1
@@ -498,6 +546,207 @@ def delete_inventory_item(
     db.execute("DELETE FROM inventory_items WHERE id = %s", (int(row["id"]),))
     db.commit()
     return {"status": "ok"}
+
+
+def _validate_planting_plot(
+    db: DbConn,
+    *,
+    context: AuthContext,
+    garden_id: int,
+    plot_id: str,
+) -> str:
+    normalized = plot_id.strip()
+    if _is_local_admin_fallback(context):
+        row = db.execute("SELECT 1 FROM plots WHERE plot_id = %s", (normalized,)).fetchone()
+    else:
+        row = db.execute(
+            """
+            SELECT 1
+            FROM plot_ownership
+            WHERE garden_id = %s AND plot_id = %s
+            """,
+            (garden_id, normalized),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Plot not found in active garden")
+    return normalized
+
+
+def _plant_from_stock_response(
+    db: DbConn,
+    *,
+    garden_id: int,
+    journal_entry_id: str,
+) -> dict:
+    row = db.execute(
+        """
+        SELECT t.id AS transaction_id, j.public_id AS journal_entry_id
+        FROM garden_journal_entries j
+        JOIN inventory_transactions t ON t.journal_entry_id = j.id
+        WHERE j.public_id = %s AND j.garden_id = %s
+        """,
+        (journal_entry_id, garden_id),
+    ).fetchone()
+    if not row:
+        raise_operation_target_gone()
+    return {
+        "status": "ok",
+        "transaction_id": int(row["transaction_id"]),
+        "journal_entry_id": str(row["journal_entry_id"]),
+    }
+
+
+@router.post("/inventory/{item_id}/plant", status_code=201)
+def plant_from_stock(
+    request: Request,
+    db: DB,
+    item_id: str,
+    body: PlantFromStockBody,
+) -> dict:
+    context = _auth_context(request)
+    _require_write(context)
+    garden_id = _active_garden_id(context)
+    operation_id = read_operation_id(request)
+    if operation_id is None:
+        raise HTTPException(status_code=400, detail="Plant operation ID is required")
+    try:
+        UUID(operation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Plant operation ID must be a UUID") from exc
+
+    _validate_date(body.occurred_on)
+    item = _fetch_item_by_public_id(db, item_id, garden_id)
+    plant_id = _validate_linked_plant(db, context, item.get("plt_id"))
+    if plant_id is None:
+        raise HTTPException(status_code=409, detail="Inventory item must be linked to a plant")
+    plot_id = _validate_planting_plot(
+        db,
+        context=context,
+        garden_id=garden_id,
+        plot_id=body.plot_id,
+    )
+
+    now_ms = current_timestamp_ms()
+    prepared_operation = prepare_operation(
+        db,
+        request=request,
+        garden_id=garden_id,
+        endpoint=JOURNAL_ENDPOINT,
+        request_payload={"item_id": item_id, **body.model_dump(mode="json")},
+        now_ms=now_ms,
+        operation_namespace=INVENTORY_PLANT_OPERATION_NAMESPACE,
+    )
+    if prepared_operation.replay_target_id is not None:
+        return _plant_from_stock_response(
+            db,
+            garden_id=garden_id,
+            journal_entry_id=prepared_operation.replay_target_id,
+        )
+
+    journal_public_id = _generate_public_id("jrn")
+    assert prepared_operation.operation is not None
+    reservation = reserve_operation(
+        db,
+        operation=prepared_operation.operation,
+        target_type=JOURNAL_TARGET,
+        target_id=journal_public_id,
+        created_at_ms=now_ms,
+    )
+    if not reservation.is_owner:
+        return _plant_from_stock_response(
+            db,
+            garden_id=garden_id,
+            journal_entry_id=reservation.result_id,
+        )
+
+    locked_item = db.execute(
+        """
+        SELECT id, label, unit, plt_id
+        FROM inventory_items
+        WHERE public_id = %s AND garden_id = %s
+        FOR UPDATE
+        """,
+        (item_id, garden_id),
+    ).fetchone()
+    if not locked_item:
+        raise HTTPException(status_code=404, detail="Inventory item not found")
+    if str(locked_item["plt_id"] or "") != plant_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Inventory plant link changed; retry the command",
+        )
+    if _item_quantity(db, int(locked_item["id"])) < body.quantity:
+        raise HTTPException(status_code=409, detail="Insufficient inventory stock")
+
+    db.execute(
+        """
+        INSERT INTO plot_plants (plot_id, plt_id, quantity, room_label)
+        VALUES (%s, %s, 1, NULL)
+        ON CONFLICT (plot_id, plt_id) DO NOTHING
+        """,
+        (plot_id, plant_id),
+    )
+    journal_row = db.execute(
+        """
+        INSERT INTO garden_journal_entries
+            (public_id, garden_id, event_type, occurred_on, title, notes,
+             metadata_json, actor_user_id, created_at_ms, updated_at_ms)
+        VALUES (%s, %s, 'planted', %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            journal_public_id,
+            garden_id,
+            body.occurred_on,
+            f"Planted {_decimal_string(body.quantity)} {locked_item['unit']} from stock",
+            body.notes,
+            json.dumps(
+                {"inventory_item_id": item_id, "inventory_operation_id": operation_id},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            context.user_id,
+            now_ms,
+            now_ms,
+        ),
+    ).fetchone()
+    assert journal_row is not None
+    journal_id = int(journal_row["id"])
+    db.execute(
+        "INSERT INTO garden_journal_entry_plants (entry_id, plt_id) VALUES (%s, %s)",
+        (journal_id, plant_id),
+    )
+    db.execute(
+        "INSERT INTO garden_journal_entry_plots (entry_id, plot_id) VALUES (%s, %s)",
+        (journal_id, plot_id),
+    )
+    tx_row = db.execute(
+        """
+        INSERT INTO inventory_transactions
+            (item_id, garden_id, delta, reason, source_name, cost_minor,
+             occurred_on, storage_location, notes,
+             actor_user_id, journal_entry_id, created_at_ms)
+        VALUES (%s, %s, %s, 'planted', '', NULL, %s, '', %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            int(locked_item["id"]),
+            garden_id,
+            -body.quantity,
+            body.occurred_on,
+            body.notes,
+            context.user_id,
+            journal_id,
+            now_ms,
+        ),
+    ).fetchone()
+    assert tx_row is not None
+    db.commit()
+    return {
+        "status": "ok",
+        "transaction_id": int(tx_row["id"]),
+        "journal_entry_id": journal_public_id,
+    }
 
 
 # ── Transactions ───────────────────────────────────────────

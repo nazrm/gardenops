@@ -76,8 +76,9 @@ def test_phase4_fractional_inventory_and_accessible_procurement_forms() -> None:
 
     assert 'qtyInput.min = "0.000001";' in inventory_component
     assert 'qtyInput.step = "0.000001";' in inventory_component
-    assert "const qty = Number(qtyInput.value);" in inventory_component
-    assert "Number.isFinite(qty)" in inventory_component
+    assert "qty = canonicalDecimalString(qtyInput.value);" in inventory_component
+    assert 'compareDecimalStrings(qty, "0") <= 0' in inventory_component
+    assert "Number(qtyInput.value)" not in inventory_component
     assert "parseInt(qtyInput.value" not in inventory_component
 
     for control_id in (
@@ -89,10 +90,40 @@ def test_phase4_fractional_inventory_and_accessible_procurement_forms() -> None:
         "procurement-ordered-on",
         "procurement-notes",
     ):
-        assert f'createFieldGroup(t("procurement.' in procurement_component
+        assert 'createFieldGroup(t("procurement.' in procurement_component
         assert f'"{control_id}"' in procurement_component
     assert 'setAttribute("for", controlId)' in procurement_component
     assert 'saveBtn.id = "procurement-save-btn";' in procurement_component
+
+
+def test_phase4_inventory_precision_and_atomic_plant_contract() -> None:
+    api = _read("frontend/src/services/api.ts")
+    inventory_tab = _read("frontend/src/tabs/inventoryTab.ts")
+    inventory_component = _read("frontend/src/components/inventory.ts")
+    procurement_component = _read("frontend/src/components/procurement.ts")
+    models = _read("frontend/src/core/models.ts")
+
+    assert "export type DecimalString = string;" in api
+    assert "BigInt(" in api
+    assert "const DECIMAL_INTEGER_DIGITS = 14;" in api
+    assert "enforceWireBounds && integer.length > DECIMAL_INTEGER_DIGITS" in api
+    assert "normalizeDecimalString(value, false)" in api
+    assert "export function addDecimalStrings" in api
+    assert "export function compareDecimalStrings" in api
+    assert "export function absoluteDecimalString" in api
+    assert "quantity: DecimalString;" in api
+    assert "delta: DecimalString;" in api
+    assert "plantFromInventoryApi" in api
+    assert 'operationId: plantOperationId' in inventory_tab
+    assert "addPlantToPlotApi" not in inventory_tab
+    assert "await plantFromInventoryApi(" in inventory_tab
+    assert "quantity: absoluteDecimalString(data.delta)" in inventory_tab
+    assert "addDecimalStrings(sum, it.quantity)" in inventory_component
+    assert "quantity: parseFloat(qtyInput.value)" not in procurement_component
+    assert "quantity," in procurement_component
+    assert "export interface ProcurementItem" in models
+    procurement_model = models.split("export interface ProcurementItem", 1)[1].split("}", 1)[0]
+    assert "quantity: string;" in procurement_model
 
 
 def test_planner_preference_and_workflow_refresh_use_existing_surfaces() -> None:

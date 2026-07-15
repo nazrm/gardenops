@@ -214,11 +214,16 @@ def prepare_operation(
     endpoint: OfflineOperationEndpoint,
     request_payload: Mapping[str, object],
     now_ms: int,
+    operation_namespace: str | None = None,
 ) -> PreparedOfflineOperation:
     _validate_endpoint(endpoint)
     operation_id = read_operation_id(request)
     if operation_id is None:
         return PreparedOfflineOperation(operation=None, replay=None)
+    if operation_namespace:
+        operation_id = f"{operation_namespace}:{operation_id}"
+        if len(operation_id) > OFFLINE_OPERATION_MAX_LENGTH:
+            raise HTTPException(status_code=400, detail="Namespaced operation ID is too long")
 
     operation = OfflineOperation(
         garden_id=garden_id,

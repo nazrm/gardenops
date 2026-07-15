@@ -491,13 +491,44 @@ class TestExportsApi(BaseApiTest):
 
         json_rows = self.client.get("/api/exports/inventory?format=json").json()["inventory"]
         json_row = next(row for row in json_rows if row["id"] == item_id)
-        self.assertEqual(json_row["quantity"], 1.375)
+        self.assertEqual(json_row["quantity"], "1.375")
 
         csv_rows = list(
             csv.DictReader(io.StringIO(self.client.get("/api/exports/inventory?format=csv").text))
         )
         csv_row = next(row for row in csv_rows if row["id"] == item_id)
         self.assertEqual(csv_row["quantity"], "1.375")
+
+    def test_json_exports_preserve_high_precision_decimal_strings(self) -> None:
+        precise = "12345678901234.123456"
+        created = self.client.post(
+            "/api/inventory",
+            json={"label": "Precise stock", "inventory_type": "other", "unit": "kg"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        item_id = created.json()["id"]
+        transaction = self.client.post(
+            f"/api/inventory/{item_id}/transactions",
+            json={"delta": precise, "occurred_on": "2026-06-10", "reason": "purchased"},
+        )
+        self.assertEqual(transaction.status_code, 201, transaction.text)
+
+        procurement = self.client.post(
+            "/api/procurement",
+            json={"label": "Precise order", "quantity": precise, "unit": "kg"},
+        )
+        self.assertEqual(procurement.status_code, 201, procurement.text)
+
+        inventory_rows = self.client.get("/api/exports/inventory?format=json").json()["inventory"]
+        inventory_row = next(row for row in inventory_rows if row["id"] == item_id)
+        self.assertEqual(inventory_row["quantity"], precise)
+        procurement_rows = self.client.get("/api/exports/procurement?format=json").json()[
+            "procurement"
+        ]
+        procurement_row = next(
+            row for row in procurement_rows if row["id"] == procurement.json()["id"]
+        )
+        self.assertEqual(procurement_row["quantity"], precise)
 
     def test_csv_and_json_task_exports_share_public_structure_without_metadata(self) -> None:
         task = self.client.post(
