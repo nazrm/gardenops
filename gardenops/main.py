@@ -159,7 +159,7 @@ from gardenops.security_telemetry import (  # noqa: E402
     stop_security_telemetry_exporter,
 )
 from gardenops.services.garden_layout_lock import lock_garden_layout  # noqa: E402
-from gardenops.services.media_store import unlink_storage_keys  # noqa: E402
+from gardenops.services.media_store import drain_media_cleanup_jobs_best_effort  # noqa: E402
 from gardenops.services.notification_service import (  # noqa: E402
     acquire_notification_scheduler_lease,
     notification_scheduler_enabled,
@@ -1168,6 +1168,11 @@ def _is_personal_attention_mutation_path(path: str) -> bool:
     return normalized_path.rsplit("/", 1)[-1] in {"read", "dismiss", "snooze", "restore"}
 
 
+def _is_read_only_post_path(path: str) -> bool:
+    """Return whether POST is used only to carry a bounded read query body."""
+    return (path.rstrip("/") or "/") == "/api/media/summaries"
+
+
 def _csp_report_only() -> bool:
     default = "true" if not _is_internet_exposed() else "false"
     return os.environ.get("CSP_REPORT_ONLY", default).strip().lower() == "true"
@@ -1569,6 +1574,7 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
                 and not path.startswith("/api/auth/")
                 and not path.startswith("/api/ai/")
                 and not _is_personal_attention_mutation_path(path)
+                and not _is_read_only_post_path(path)
                 and not has_write_access(auth_context)
             ):
                 _audit_mutation(403, "Forbidden: write access required")
@@ -2433,8 +2439,7 @@ def restore_snapshot_data(
         if media_storage_pairs_out is not None:
             media_storage_pairs_out.extend(media_storage_pairs)
         elif manage_transaction:
-            for storage_key, preview_storage_key in media_storage_pairs:
-                unlink_storage_keys(storage_key, preview_storage_key)
+            drain_media_cleanup_jobs_best_effort(db, storage_pairs=media_storage_pairs)
     except Exception:
         if manage_transaction:
             db.rollback()

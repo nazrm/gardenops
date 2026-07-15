@@ -246,6 +246,47 @@ class TestPlants(BaseApiTest):
         self.assertEqual(data[0]["plot_ids"], ["B1"])
         self.assertEqual(data[0]["quantity"], 2)
 
+    def test_editor_can_read_same_garden_peer_plant_assignments(self) -> None:
+        with patch.dict(os.environ, _AUTH_ENV, clear=False):
+            owner = self._create_test_user("assignment_owner", "assignmentownerpass")
+            self._create_test_user("assignment_peer", "assignmentpeerpass")
+            garden_id = self._get_default_garden_id()
+            conn = db.get_db()
+            try:
+                conn.execute(
+                    """
+                    UPDATE plant_ownership
+                    SET owner_user_id = %s
+                    WHERE plt_id = 'PLT-TEST' AND garden_id = %s
+                    """,
+                    (int(owner["id"]), garden_id),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO plot_plants (plot_id, plt_id, quantity)
+                    VALUES ('B1', 'PLT-TEST', 2)
+                    ON CONFLICT (plot_id, plt_id)
+                    DO UPDATE SET quantity = EXCLUDED.quantity
+                    """,
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            client, headers = self._authenticated_client(
+                "assignment_peer",
+                "assignmentpeerpass",
+                garden_id=garden_id,
+            )
+            plots = client.get("/api/plants/PLT-TEST/plots", headers=headers)
+            assignments = client.get("/api/plants/PLT-TEST/assignments", headers=headers)
+
+        self.assertEqual(plots.status_code, 200, plots.text)
+        self.assertEqual(plots.json(), ["B1"])
+        self.assertEqual(assignments.status_code, 200, assignments.text)
+        self.assertEqual(assignments.json()[0]["plot_id"], "B1")
+        self.assertEqual(assignments.json()[0]["quantity"], 2)
+
     def test_get_plant_details_returns_single_plant_shape(self) -> None:
         assign_response = self.client.post(
             "/api/plots/B1/plants/PLT-TEST",

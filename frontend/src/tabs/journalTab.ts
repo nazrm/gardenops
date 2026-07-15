@@ -35,6 +35,7 @@ let ctx: AppContext;
 let journalEntries: JournalEntry[] = [];
 let journalTotal = 0;
 let journalOffset = 0;
+let journalLoadSequence = 0;
 const JOURNAL_PAGE_SIZE = 50;
 const MEDIA_SUMMARY_BATCH_SIZE = 80;
 const journalMediaPreviewById = new Map<
@@ -56,17 +57,29 @@ export function setJournalOffset(
   journalOffset = offset;
 }
 
+export function resetJournalForGardenSwitch(): void {
+  journalLoadSequence += 1;
+  journalMediaPreviewSeq += 1;
+  journalEntries = [];
+  journalTotal = 0;
+  journalOffset = 0;
+  journalMediaPreviewById.clear();
+  renderJournalView();
+}
+
 export function initJournalTab(
   appCtx: AppContext,
 ): void {
   ctx = appCtx;
 
-  document
-    .getElementById("journal-add-btn")
-    ?.addEventListener("click", () => {
+  const addButton = document.getElementById("journal-add-btn");
+  if (addButton) {
+    addButton.hidden = !ctx.canWrite();
+    addButton.addEventListener("click", () => {
       if (!ctx.ensureWriteAccess()) return;
       openJournalComposer();
     });
+  }
   document
     .getElementById("journal-filter-type")
     ?.addEventListener("change", () => {
@@ -133,6 +146,7 @@ export async function loadJournalEntries(
   extra?: Record<string, string | number>,
 ): Promise<void> {
   if (!ctx) return;
+  const sequence = ++journalLoadSequence;
   try {
     const params: Record<string, string | number> = {
       limit: JOURNAL_PAGE_SIZE,
@@ -145,6 +159,7 @@ export async function loadJournalEntries(
     }
     if (extra) Object.assign(params, extra);
     const result = await fetchJournalEntriesApi(params);
+    if (sequence !== journalLoadSequence) return;
     if (result.total > 0 && result.entries.length === 0 && journalOffset > 0) {
       journalOffset = Math.max(
         0,
@@ -157,6 +172,7 @@ export async function loadJournalEntries(
     journalTotal = result.total;
     renderJournalView();
   } catch (err) {
+    if (sequence !== journalLoadSequence) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }

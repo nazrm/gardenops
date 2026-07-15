@@ -119,6 +119,26 @@ class MigrationGuardTests(unittest.TestCase):
         self.assertTrue(diagnostics["can_stamp_migrations"])
         self.assertEqual(diagnostics["stamp_through"], 21)
 
+    def test_pre_0026_bootstrap_signature_stamps_only_through_0025(self) -> None:
+        snapshot = self._complete_schema_snapshot()
+        snapshot.tables.remove("media_cleanup_jobs")
+        snapshot.columns.pop("media_cleanup_jobs")
+        snapshot.columns["media_assets"].remove("preview_bytes")
+        snapshot.indexes.remove("idx_media_cleanup_jobs_created")
+        snapshot.constraints.difference_update(
+            {
+                "media_cleanup_jobs_pkey",
+                "ux_media_cleanup_jobs_storage_keys",
+                "ck_media_cleanup_jobs_attempts_nonnegative",
+            }
+        )
+
+        diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+        self.assertEqual(diagnostics["mode"], "verified-upgrade-baseline")
+        self.assertTrue(diagnostics["can_stamp_migrations"])
+        self.assertEqual(diagnostics["stamp_through"], 25)
+
     def test_untracked_pre_0021_database_is_upgraded_to_current(self) -> None:
         conn = db.get_db()
         try:
@@ -146,7 +166,7 @@ class MigrationGuardTests(unittest.TestCase):
         finally:
             db.return_db(conn)
 
-        self.assertEqual(versions, set(range(1, 26)))
+        self.assertEqual(versions, set(range(1, 27)))
         self.assertEqual(table["name"], "offline_create_operations")
         self.assertEqual(index["name"], "ux_weather_alerts_identity")
 

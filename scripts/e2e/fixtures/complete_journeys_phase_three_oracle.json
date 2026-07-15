@@ -1,0 +1,169 @@
+{
+  "schema_version": 2,
+  "phase_three": {
+    "fixture": {
+      "bloom_edit_date": "2026-07-12",
+      "date": "2026-07-11",
+      "labels": {
+        "harvest_offline": "Phase 3 offline tomato harvest",
+        "harvest_online": "Phase 3 online tomato harvest",
+        "identified_plant": "Phase 3 identified Test rose",
+        "issue_offline": "Phase 3 offline leaf stress",
+        "issue_online": "Phase 3 tracked leaf stress",
+        "journal_offline": "Phase 3 offline bloom observation",
+        "journal_online": "Phase 3 online bloom observation"
+      },
+      "media": {
+        "oriented_jpeg": {
+          "filename": "oriented-2x4.jpg",
+          "normalized_height": 4,
+          "normalized_width": 2,
+          "path": "scripts/e2e/fixtures/media/oriented-2x4.jpg.base64",
+          "sha256": "4ce41bd8be69a5ae99e787869d6919e01a88274cfd6411bd2cc3f032ec776776",
+          "source_sha256": "7c7fb42e73a095e0fdd87a1337e972c20c8266e0a0a58b78e5f710977dcb6365"
+        },
+        "reference_png": {
+          "filename": "reference-3x2.png",
+          "height": 2,
+          "path": "scripts/e2e/fixtures/media/reference-3x2.png.base64",
+          "sha256": "7d1d2b50a71963371667b80d014a5624bf4b432988b1a2475da7fe4ea2089c75",
+          "source_sha256": "be922d44c2c2f19c30e9d38d44dd20c97aae28bec3d19c23e251dac3fc7e1646",
+          "width": 3
+        }
+      },
+      "operation_slots": {
+        "harvest": "phase-3-harvest-offline",
+        "issue": "phase-3-issue-offline",
+        "journal": "phase-3-journal-offline",
+        "media": "phase-3-media-offline"
+      }
+    },
+    "profile_boundaries": {
+      "admin:desktop": {
+        "cleanup_jobs": 0,
+        "filesystem_files": 0,
+        "harvests": 0,
+        "identified_plant_count": 0,
+        "issue_followups": 2,
+        "issue_journals": 5,
+        "issue_notifications": 4,
+        "issues": 0,
+        "journals": 0,
+        "media": 0,
+        "offline_operations": 0,
+        "provider_counts": { "diagnose": 1, "identify": 1 }
+      },
+      "editor:desktop": {
+        "cleanup_jobs": 0,
+        "filesystem_files": 0,
+        "harvests": 0,
+        "identified_plant_count": 0,
+        "issue_followups": 2,
+        "issue_journals": 5,
+        "issue_notifications": 4,
+        "issues": 0,
+        "journals": 0,
+        "media": 0,
+        "offline_operations": 0,
+        "provider_counts": { "diagnose": 1, "identify": 1 }
+      },
+      "admin:mobile": {
+        "cleanup_jobs": 0,
+        "filesystem_files": 0,
+        "harvests": 0,
+        "identified_plant_count": 0,
+        "issue_followups": 4,
+        "issue_journals": 10,
+        "issue_notifications": 8,
+        "issues": 0,
+        "journals": 0,
+        "media": 0,
+        "offline_operations": 0,
+        "provider_counts": { "diagnose": 2, "identify": 1 }
+      },
+      "editor:mobile": {
+        "cleanup_jobs": 0,
+        "filesystem_files": 4,
+        "harvests": 1,
+        "identified_plant_count": 0,
+        "issue_followups": 5,
+        "issue_journals": 11,
+        "issue_notifications": 10,
+        "issues": 1,
+        "journals": 1,
+        "media": 2,
+        "offline_operations": 6,
+        "provider_counts": { "diagnose": 2, "identify": 1 }
+      },
+      "viewer:desktop": {
+        "cleanup_jobs": 0,
+        "filesystem_files": 4,
+        "harvests": 1,
+        "identified_plant_count": 0,
+        "issue_followups": 5,
+        "issue_journals": 11,
+        "issue_notifications": 10,
+        "issues": 1,
+        "journals": 1,
+        "media": 2,
+        "offline_operations": 6,
+        "provider_counts": { "diagnose": 2, "identify": 1 }
+      },
+      "viewer:mobile": {
+        "cleanup_jobs": 0,
+        "filesystem_files": 4,
+        "harvests": 1,
+        "identified_plant_count": 0,
+        "issue_followups": 5,
+        "issue_journals": 11,
+        "issue_notifications": 10,
+        "issues": 1,
+        "journals": 1,
+        "media": 2,
+        "offline_operations": 6,
+        "provider_counts": { "diagnose": 2, "identify": 1 }
+      }
+    },
+    "whole_table_mutation_accounting": {
+      "app_settings_variants": {
+        "rollup_missing": {
+          "added": 1,
+          "identity_added": 1,
+          "identity_removed": 0,
+          "identity_updated": 0,
+          "removed": 0
+        },
+        "rollup_present": {
+          "added": 1,
+          "identity_added": 0,
+          "identity_removed": 0,
+          "identity_updated": 1,
+          "removed": 1
+        }
+      },
+      "table_counts": {
+        "garden_issue_plants": { "added": 1, "identity_added": 1, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "garden_issue_plots": { "added": 1, "identity_added": 1, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "garden_issues": { "added": 1, "identity_added": 1, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "garden_journal_entries": { "added": 12, "identity_added": 12, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "garden_journal_entry_plants": { "added": 10, "identity_added": 10, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "garden_journal_entry_plots": { "added": 10, "identity_added": 10, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "garden_task_plants": { "added": 3, "identity_added": 3, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "garden_task_plots": { "added": 3, "identity_added": 3, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "garden_tasks": { "added": 5, "identity_added": 5, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "harvest_entries": { "added": 1, "identity_added": 1, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "harvest_entry_plants": { "added": 1, "identity_added": 1, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "harvest_entry_plots": { "added": 1, "identity_added": 1, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "media_assets": { "added": 2, "identity_added": 2, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "media_cleanup_jobs": { "added": 0, "identity_added": 0, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "media_links": { "added": 2, "identity_added": 2, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "notification_events": { "added": 10, "identity_added": 10, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "offline_create_operations": { "added": 6, "identity_added": 6, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "plant_media_covers": { "added": 0, "identity_added": 0, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "plants": { "added": 0, "identity_added": 0, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "plot_plants": { "added": 0, "identity_added": 0, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "provider_daily_usage": { "added": 4, "identity_added": 4, "identity_removed": 0, "identity_updated": 0, "removed": 0 }
+      }
+    }
+  }
+}

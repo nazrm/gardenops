@@ -4364,11 +4364,8 @@ function attachReadonlyMediaSection(
       target_type: options.targetType,
       target_id: String(options.targetId),
     });
-    await renderMediaGalleryLazy(container, {
-      assets: result.items,
-      emptyText: options.emptyText,
-      canUpload: false,
-      onDeleteAsset: async (asset) => {
+    const mutationOptions = canWriteInGarden ? {
+      onDeleteAsset: async (asset: MediaAsset) => {
         const ok = await confirmDialog(
           t("media.remove_confirm", {
             name: asset.original_filename || t("media.untitled"),
@@ -4384,7 +4381,7 @@ function attachReadonlyMediaSection(
         showToast(t("media.removed"), "success");
         await renderExisting();
       },
-      onDeleteEverywhereAsset: async (asset) => {
+      onDeleteEverywhereAsset: async (asset: MediaAsset) => {
         const ok = await confirmDialog(
           t("media.delete_everywhere_confirm", {
             name: asset.original_filename || t("media.untitled"),
@@ -4397,6 +4394,12 @@ function attachReadonlyMediaSection(
         await renderExisting();
       },
       deleteEverywhereLabel: t("media.delete_everywhere"),
+    } : {};
+    await renderMediaGalleryLazy(container, {
+      assets: result.items,
+      emptyText: options.emptyText,
+      canUpload: false,
+      ...mutationOptions,
     });
   };
 
@@ -6933,6 +6936,9 @@ function clearGardenScopedStateForSwitch(): void {
   invalidateAttentionTodayForCurrentGarden();
   tasksTabModule?.resetTasksForGardenSwitch();
   calendarTabModule?.resetCalendarForGardenSwitch();
+  journalTabModule?.resetJournalForGardenSwitch();
+  issuesTabModule?.resetIssuesForGardenSwitch();
+  harvestTabModule?.resetHarvestForGardenSwitch();
   weatherLoadedAt = 0;
   weatherLoadPromise = null;
   weatherScheduleSeq += 1;

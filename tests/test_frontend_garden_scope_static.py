@@ -48,6 +48,43 @@ def test_indoor_state_cannot_apply_an_old_garden_request() -> None:
     assert "setIndoorPlotId(indoorPlot.plot_id, requestGardenId);" in app
 
 
+def test_observation_tabs_clear_and_reject_stale_garden_requests() -> None:
+    app = _read("frontend/src/app.ts")
+    journal = _read("frontend/src/tabs/journalTab.ts")
+    issues = _read("frontend/src/tabs/issuesTab.ts")
+    harvest = _read("frontend/src/tabs/harvestTab.ts")
+    clear_body = _function_body(
+        app,
+        "function clearGardenScopedStateForSwitch",
+        "async function switchGarden",
+    )
+
+    for module, reset_name, sequence_name in (
+        (journal, "resetJournalForGardenSwitch", "journalLoadSequence"),
+        (issues, "resetIssuesForGardenSwitch", "issuesLoadSequence"),
+        (harvest, "resetHarvestForGardenSwitch", "harvestLoadSequence"),
+    ):
+        assert f"export function {reset_name}" in module
+        assert f"const sequence = ++{sequence_name};" in module
+        assert f"if (sequence !== {sequence_name}) return;" in module
+        assert f"{reset_name}();" in clear_body
+
+    assert "journalEntries = [];" in journal
+    assert "issueItems = [];" in issues
+    assert "harvestItems = [];" in harvest
+    assert "panel.replaceChildren();" in harvest
+
+
+def test_viewers_can_open_issue_evidence_without_media_mutation_controls() -> None:
+    app = _read("frontend/src/app.ts")
+    issues = _read("frontend/src/components/issues.ts")
+
+    assert '"issues.action_view_details"' in issues
+    assert 'detailsBtn.addEventListener("click", () => cbs.onEdit(issue));' in issues
+    assert "const mutationOptions = canWriteInGarden ?" in app
+    assert "...mutationOptions" in app
+
+
 def test_admin_garden_settings_preserve_drafts_and_reject_same_garden_stale_requests() -> None:
     admin = _read("frontend/src/components/adminPanel.ts")
     load_body = _function_body(

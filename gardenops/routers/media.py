@@ -44,6 +44,8 @@ from gardenops.security_metrics import record_security_event
 from gardenops.services.media_store import (
     PreparedMediaAsset,
     collect_orphaned_media_storage_keys,
+    drain_media_cleanup_jobs_best_effort,
+    enqueue_media_cleanup_jobs,
     media_garden_max_assets,
     media_garden_max_bytes,
     media_upload_max_bytes,
@@ -55,6 +57,7 @@ from gardenops.services.media_store import (
 from gardenops.services.plant_cover_import import discover_cover_from_plant_link
 
 router = APIRouter()
+_MEDIA_QUOTA_LOCK_SEED = 0x4D51554F
 TargetType = Literal["journal_entry", "plant", "plot", "issue", "harvest_entry"]
 MissingCoverStatusCode = Literal["missing_latin", "missing_link", "remote_error"]
 
@@ -327,7 +330,9 @@ def _validate_media_target(
 def _garden_media_usage(db: DbConn, garden_id: int) -> tuple[int, int]:
     row = db.execute(
         """
-        SELECT COUNT(*) AS asset_count, COALESCE(SUM(bytes), 0) AS total_bytes
+        SELECT COUNT(*) AS asset_count,
+               COALESCE(SUM(bytes + preview_bytes), 0) AS total_bytes,
+               COUNT(*) FILTER (WHERE preview_bytes = 0) AS unknown_preview_count
         FROM media_assets
         WHERE garden_id = %s
         """,
@@ -335,7 +340,35 @@ def _garden_media_usage(db: DbConn, garden_id: int) -> tuple[int, int]:
     ).fetchone()
     if not row:
         return 0, 0
-    return int(row["asset_count"] or 0), int(row["total_bytes"] or 0)
+    total_bytes = int(row["total_bytes"] or 0)
+    if int(row["unknown_preview_count"] or 0) > 0:
+        unknown_rows = db.execute(
+            """
+            SELECT asset_id, preview_storage_key
+            FROM media_assets
+            WHERE garden_id = %s AND preview_bytes = 0
+            """,
+            (garden_id,),
+        ).fetchall()
+        for unknown in unknown_rows:
+            try:
+                preview_bytes = (
+                    resolve_storage_key(str(unknown["preview_storage_key"])).stat().st_size
+                )
+            except FileNotFoundError:
+                preview_bytes = 0
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Unable to verify garden media quota",
+                ) from exc
+            total_bytes += preview_bytes
+            if preview_bytes > 0:
+                db.execute(
+                    "UPDATE media_assets SET preview_bytes = %s WHERE asset_id = %s",
+                    (preview_bytes, str(unknown["asset_id"])),
+                )
+    return int(row["asset_count"] or 0), total_bytes
 
 
 def _enforce_media_quota(
@@ -344,11 +377,14 @@ def _enforce_media_quota(
     garden_id: int,
     incoming_asset: PreparedMediaAsset,
 ) -> None:
+    lock_key = (_MEDIA_QUOTA_LOCK_SEED << 32) | (garden_id & 0xFFFFFFFF)
+    db.execute("SELECT pg_advisory_xact_lock(%s)", (lock_key,))
     asset_count, total_bytes = _garden_media_usage(db, garden_id)
     if asset_count >= media_garden_max_assets():
         record_security_event("media_quota_rejections")
         raise HTTPException(status_code=413, detail="Garden media asset quota exceeded")
-    if total_bytes + incoming_asset.bytes > media_garden_max_bytes():
+    incoming_bytes = incoming_asset.bytes + len(incoming_asset.preview_bytes)
+    if total_bytes + incoming_bytes > media_garden_max_bytes():
         record_security_event("media_quota_rejections")
         raise HTTPException(status_code=413, detail="Garden media byte quota exceeded")
 
@@ -599,12 +635,13 @@ def _insert_prepared_asset_link(
             original_filename,
             mime_type,
             bytes,
+            preview_bytes,
             width,
             height,
             created_at_ms,
             actor_user_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             prepared.asset_id,
@@ -614,6 +651,7 @@ def _insert_prepared_asset_link(
             prepared.original_filename,
             prepared.mime_type,
             prepared.bytes,
+            len(prepared.preview_bytes),
             prepared.width,
             prepared.height,
             current_timestamp_ms(),
@@ -1223,12 +1261,14 @@ def delete_media_asset(asset_id: str, request: Request, db: DB) -> dict[str, obj
         asset_id=asset_id,
     ):
         raise HTTPException(status_code=404, detail="Media asset not found")
+    storage_pairs = [(str(row["storage_key"]), str(row["preview_storage_key"]))]
+    enqueue_media_cleanup_jobs(db, storage_pairs)
     db.execute(
         "DELETE FROM media_assets WHERE asset_id = %s AND garden_id = %s",
         (asset_id, garden_id),
     )
     db.commit()
-    unlink_storage_keys(str(row["storage_key"]), str(row["preview_storage_key"]))
+    drain_media_cleanup_jobs_best_effort(db, storage_pairs=storage_pairs)
     return {"status": "ok", "asset_id": asset_id}
 
 
@@ -1279,13 +1319,15 @@ def remove_media_link(
     ).fetchone()
     deleted_asset = remaining is None
     if deleted_asset:
+        storage_pairs = [(str(row["storage_key"]), str(row["preview_storage_key"]))]
+        enqueue_media_cleanup_jobs(db, storage_pairs)
         db.execute(
             "DELETE FROM media_assets WHERE asset_id = %s AND garden_id = %s",
             (asset_id, garden_id),
         )
     db.commit()
     if deleted_asset:
-        unlink_storage_keys(str(row["storage_key"]), str(row["preview_storage_key"]))
+        drain_media_cleanup_jobs_best_effort(db, storage_pairs=storage_pairs)
     return {
         "status": "ok",
         "asset_id": asset_id,

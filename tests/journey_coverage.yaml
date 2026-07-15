@@ -166,9 +166,44 @@ journeys:
   - <<: *open_journey
     id: I2
     phase: 3
+    desktop: proven
+    provider: proven
+    database: proven
+    filesystem: proven
+    evidence: &phase_three_evidence
+      - scripts/check_complete_journeys_e2e.cjs
+      - scripts/e2e/completeJourneyBrowser.cjs
+      - scripts/e2e/fixtures/complete_journeys_phase_three_oracle.json
+      - scripts/e2e/journeys/observationToAction.cjs
+      - scripts/run_complete_journeys_e2e.sh
+      - scripts/seed_complete_journeys_e2e.py
+      - tests/test_complete_journey_e2e_scripts.py
+      - tests/test_frontend_garden_scope_static.py
+      - tests/test_harvest.py
+      - tests/test_issues.py
+      - tests/test_journal.py
+      - tests/test_media.py
+      - tests/test_media_store_unit.py
+    offline: not_applicable
+    notes:
+      offline: Plant identification requires an online provider response and has no supported offline action.
+      mobile: Pixel 7 plant identification remains open.
+      roles: Phase 3 proves the administrator identification flow; editor identification remains open.
+      provider: The deterministic local identification contract is proven; production-provider breadth remains Phase 7 work.
   - <<: *open_journey
     id: I3
     phase: 3
+    desktop: proven
+    mobile: proven
+    provider: proven
+    database: proven
+    filesystem: proven
+    evidence: *phase_three_evidence
+    offline: not_applicable
+    notes:
+      offline: Photo diagnosis requires an online provider response; tracked issue replay is covered by P2.
+      roles: Administrator diagnosis and viewer mutation denial are proven; editor diagnosis remains open.
+      provider: The deterministic local diagnosis contract is proven; production-provider breadth remains Phase 7 work.
   - <<: *open_journey
     id: I4
     phase: 7
@@ -249,18 +284,58 @@ journeys:
   - <<: *open_journey
     id: P1
     phase: 3
+    desktop: proven
+    mobile: proven
+    roles: proven
+    offline: proven
+    database: proven
+    filesystem: proven
+    evidence: *phase_three_evidence
+    provider: not_applicable
+    notes:
+      provider: Journal lifecycle has no external provider dependency.
   - <<: *open_journey
     id: P2
     phase: 3
+    desktop: proven
+    mobile: proven
+    roles: proven
+    offline: proven
+    database: proven
+    filesystem: proven
+    evidence: *phase_three_evidence
+    provider: not_applicable
+    notes:
+      provider: Issue lifecycle is provider-independent; photo diagnosis is tracked separately as I3.
   - <<: *open_journey
     id: P3
     phase: 3
+    desktop: proven
+    mobile: proven
+    roles: proven
+    offline: proven
+    database: proven
+    filesystem: proven
+    evidence: *phase_three_evidence
+    provider: not_applicable
+    notes:
+      provider: Harvest lifecycle has no external provider dependency.
   - <<: *open_journey
     id: P4
     phase: 4
   - <<: *open_journey
     id: P5
     phase: 3
+    desktop: proven
+    mobile: proven
+    roles: proven
+    offline: proven
+    database: proven
+    filesystem: proven
+    evidence: *phase_three_evidence
+    provider: not_applicable
+    notes:
+      provider: Core media storage and replay have no external provider dependency.
   - <<: *open_journey
     id: P6
     phase: 4

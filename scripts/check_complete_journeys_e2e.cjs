@@ -22,6 +22,7 @@ const {
 const { runFoundation } = require("./e2e/journeys/foundation.cjs");
 const { runGardenMapPlants } = require("./e2e/journeys/gardenMapPlants.cjs");
 const { runDailyAttentionWork } = require("./e2e/journeys/dailyAttentionWork.cjs");
+const { runObservationToAction } = require("./e2e/journeys/observationToAction.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const BASE_URL = process.env.BASE_URL || "";
@@ -38,6 +39,13 @@ const PHASE_TWO_ORACLE_PATH = path.join(
   "e2e",
   "fixtures",
   "complete_journeys_phase_two_oracle.json",
+);
+const PHASE_THREE_ORACLE_PATH = path.join(
+  ROOT,
+  "scripts",
+  "e2e",
+  "fixtures",
+  "complete_journeys_phase_three_oracle.json",
 );
 const CHROMIUM_LAUNCHER = fs.existsSync("/usr/bin/chromium-browser")
   ? "/usr/bin/chromium-browser"
@@ -113,7 +121,7 @@ function assertRunnerEnvironment() {
   assert(isAllowedUrl(BASE_URL, browserOrigins), "Complete journey BASE_URL is not in its browser contract");
   assert(fs.existsSync(CHROMIUM_EXECUTABLE), "System Chromium is required");
   assert(process.env.GARDENOPS_LOGS_DIR, "Complete journey backend log directory is required");
-  assert(PHASE <= 2 && THROUGH_PHASE <= 2, "Requested phase is not implemented");
+  assert(PHASE <= 3 && THROUGH_PHASE <= 3, "Requested phase is not implemented");
 }
 
 function assertExpectedHead() {
@@ -150,6 +158,83 @@ function phaseTwoOracle() {
     && oracle.phase_two.maintenance && typeof oracle.phase_two.maintenance === "object",
   "Phase 2 oracle contract is incomplete");
   return oracle;
+}
+
+function phaseThreeOracle() {
+  const oracle = readJson(PHASE_THREE_ORACLE_PATH);
+  assert(oracle && typeof oracle === "object" && oracle.schema_version === 2,
+    "Phase 3 oracle schema is unsupported");
+  assert(oracle.phase_three && typeof oracle.phase_three === "object"
+    && oracle.phase_three.fixture && typeof oracle.phase_three.fixture === "object"
+    && oracle.phase_three.profile_boundaries
+      && typeof oracle.phase_three.profile_boundaries === "object"
+    && oracle.phase_three.whole_table_mutation_accounting
+      && typeof oracle.phase_three.whole_table_mutation_accounting === "object",
+  "Phase 3 oracle contract is incomplete");
+  return oracle;
+}
+
+function assertPhaseThreeFixtureOracleBinding(fixture, oracle) {
+  const binding = fixture?.phase_three?.oracle;
+  assert(binding && typeof binding === "object", "Phase 3 fixture oracle binding is missing");
+  assert(binding.path === "scripts/e2e/fixtures/complete_journeys_phase_three_oracle.json",
+    "Phase 3 fixture oracle path is invalid");
+  assert(binding.schema_version === oracle.schema_version,
+    "Phase 3 fixture oracle schema binding drifted");
+  assert(binding.sha256 === sha256File(PHASE_THREE_ORACLE_PATH),
+    "Phase 3 fixture oracle digest drifted");
+  assert(canonicalJson(fixture.phase_three.labels)
+    === canonicalJson(oracle.phase_three.fixture.labels),
+  "Phase 3 fixture labels diverged from the independent oracle");
+  assert(canonicalJson(fixture.phase_three.media)
+    === canonicalJson(oracle.phase_three.fixture.media),
+  "Phase 3 fixture media contract diverged from the independent oracle");
+  assert(fixture.phase_three.date === oracle.phase_three.fixture.date
+    && fixture.phase_three.bloom_edit_date === oracle.phase_three.fixture.bloom_edit_date,
+  "Phase 3 fixture dates diverged from the independent oracle");
+  assert(canonicalJson(fixture.phase_three.operation_slots)
+    === canonicalJson(oracle.phase_three.fixture.operation_slots),
+  "Phase 3 fixture operation slots diverged from the independent oracle");
+  for (const media of Object.values(fixture.phase_three.media)) {
+    assert(typeof media.path === "string"
+      && media.path.startsWith("scripts/e2e/fixtures/media/")
+      && media.path.endsWith(".base64")
+      && !media.path.split("/").includes(".."),
+    "Phase 3 fixture media path is invalid");
+    const fixturePath = path.join(ROOT, media.path);
+    assert(fs.lstatSync(fixturePath).isFile()
+      && sha256File(fixturePath) === media.source_sha256,
+    `Phase 3 fixture media digest drifted: ${media.path}`);
+  }
+  return { oracle_binding_exact: true, oracle_sha256: binding.sha256 };
+}
+
+function materializePhaseThreeMedia(fixture) {
+  const materialized = {};
+  for (const [key, media] of Object.entries(fixture.phase_three.media)) {
+    assert(/^[a-z_]+$/.test(key)
+      && typeof media.filename === "string"
+      && /^[a-z0-9][a-z0-9.-]{1,80}$/.test(media.filename),
+    `Phase 3 media output name is invalid: ${key}`);
+    const source = fs.readFileSync(path.join(ROOT, media.path), "utf8");
+    assert(!/[^A-Za-z0-9+/=\r\n]/.test(source),
+      `Phase 3 media base64 source contains unsupported characters: ${key}`);
+    const encoded = source.replace(/\s/g, "");
+    assert(encoded.length > 0
+      && encoded.length % 4 === 0
+      && /^[A-Za-z0-9+/]+={0,2}$/.test(encoded),
+    `Phase 3 media base64 is invalid: ${key}`);
+    const decoded = Buffer.from(encoded, "base64");
+    assert(decoded.toString("base64") === encoded && sha256(decoded) === media.sha256,
+      `Phase 3 decoded media digest drifted: ${key}`);
+    const outputPath = path.join(ARTIFACT_DIR, `input-${key}-${media.filename}`);
+    fs.writeFileSync(outputPath, decoded, { flag: "wx", mode: 0o600 });
+    materialized[key] = outputPath;
+  }
+  return {
+    orientedJpeg: materialized.oriented_jpeg,
+    referencePng: materialized.reference_png,
+  };
 }
 
 function assertFixtureOracleBinding(fixture, oracle) {
@@ -295,11 +380,422 @@ function directoryState(directory) {
   };
 }
 
+function mediaDirectoryState(directory) {
+  const root = fs.realpathSync.native(directory);
+  const files = [];
+  const directories = [];
+  function walk(current) {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const candidate = path.join(current, entry.name);
+      const stat = fs.lstatSync(candidate);
+      assert(!stat.isSymbolicLink(), `Media storage contains a symlink: ${entry.name}`);
+      const resolved = fs.realpathSync.native(candidate);
+      const relative = path.relative(root, resolved).split(path.sep).join("/");
+      assert(relative && !relative.startsWith("../") && !path.isAbsolute(relative),
+        `Media storage entry escapes its private root: ${entry.name}`);
+      const top = relative.split("/", 1)[0];
+      assert(["original", "preview", "tmp"].includes(top),
+        `Media storage contains an unexpected top-level path: ${relative}`);
+      if (stat.isDirectory()) {
+        directories.push(relative);
+        walk(candidate);
+      } else {
+        assert(stat.isFile(), `Media storage contains an unsupported entry: ${relative}`);
+        files.push({
+          bytes: stat.size,
+          path: relative,
+          sha256: sha256File(candidate),
+        });
+      }
+    }
+  }
+  walk(root);
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  directories.sort();
+  assert(files.every((file) => !file.path.startsWith("tmp/")),
+    "Media storage retained temporary files");
+  return { directories, empty: files.length === 0, files };
+}
+
+function assertPhaseThreeProfileEvidence(profiles) {
+  const expected = [
+    "admin:desktop",
+    "editor:desktop",
+    "admin:mobile",
+    "editor:mobile",
+    "viewer:desktop",
+    "viewer:mobile",
+  ];
+  const observed = profiles.map((profile) => `${profile.role}:${profile.profile}`);
+  assert(canonicalJson(observed) === canonicalJson(expected),
+    `Phase 3 profile order was unexpected: ${observed.join(", ")}`);
+  for (const profile of profiles) {
+    assert(profile?.checks?.browser_diagnostics === true,
+      `Phase 3 browser diagnostics evidence is missing: ${profile.role}:${profile.profile}`);
+    assert(Array.isArray(profile?.assertions?.failed) && profile.assertions.failed.length === 0,
+      `Phase 3 profile has failed assertions: ${profile.role}:${profile.profile}`);
+    assert(Array.isArray(profile?.assertions?.skipped) && profile.assertions.skipped.length === 0,
+      `Phase 3 profile has skipped assertions: ${profile.role}:${profile.profile}`);
+    assert(typeof profile?.checks?.last_completed_step === "string"
+      && profile.checks.last_completed_step,
+    `Phase 3 last-completed-step evidence is missing: ${profile.role}:${profile.profile}`);
+  }
+  return { profile_matrix_enforced: true, profile_order: observed };
+}
+
+function assertUniquePhaseThreeRows(rows, key, label) {
+  assert(Array.isArray(rows), `Phase 3 ${label} rows are missing`);
+  const values = rows.map((row) => String(row?.[key] || ""));
+  assert(values.every(Boolean) && new Set(values).size === values.length,
+    `Phase 3 ${label} rows contain missing or duplicate ${key}`);
+}
+
+function assertPhaseThreeProviderUsage(rows, fixture, expectedCounts) {
+  assert(Array.isArray(rows), "Phase 3 provider budget usage is missing");
+  const identify = expectedCounts?.identify;
+  const diagnose = expectedCounts?.diagnose;
+  assert(Number.isSafeInteger(identify) && identify >= 0
+    && Number.isSafeInteger(diagnose) && diagnose >= 0,
+  "Phase 3 provider budget expectation is invalid");
+  const usageDays = new Set(rows.map((row) => row.usage_day));
+  assert((rows.length === 0 && usageDays.size === 0) || (usageDays.size === 1
+    && [...usageDays].every((day) => /^\d{4}-\d{2}-\d{2}$/.test(day))),
+  "Phase 3 provider budget usage day was invalid");
+  const expected = [];
+  for (const [feature, requestCount] of [
+    ["ai-diagnose", diagnose],
+    ["ai-identify", identify],
+  ]) {
+    if (requestCount === 0) continue;
+    expected.push(
+      {
+        feature,
+        request_count: requestCount,
+        scope_id: fixture.gardens.alpha.id,
+        scope_type: "garden",
+        scope_username: "",
+      },
+      {
+        feature,
+        request_count: requestCount,
+        scope_id: null,
+        scope_type: "user",
+        scope_username: fixture.roles.admin,
+      },
+    );
+  }
+  const observed = rows.map((row) => ({
+    feature: row.feature,
+    request_count: row.request_count,
+    scope_id: row.scope_type === "garden" ? row.scope_id : null,
+    scope_type: row.scope_type,
+    scope_username: row.scope_type === "user" ? row.scope_username : "",
+  }));
+  assert(canonicalJson(observed) === canonicalJson(expected),
+    "Phase 3 provider budget usage did not match the AI user journeys");
+  return true;
+}
+
+function assertPhaseThreeBoundaryEvidence(boundaries, initial, fixture, oracle) {
+  const expected = oracle?.phase_three?.profile_boundaries;
+  assert(expected && typeof expected === "object" && !Array.isArray(expected),
+    "Phase 3 boundary oracle is missing");
+  assert(canonicalJson(boundaries.map((boundary) => boundary.profile))
+    === canonicalJson(Object.keys(expected)),
+  "Phase 3 boundary order diverged from the independent oracle");
+  const countFields = [
+    "cleanup_jobs",
+    "harvests",
+    "issue_followups",
+    "issue_journals",
+    "issue_notifications",
+    "issues",
+    "journals",
+    "media",
+    "offline_operations",
+  ];
+  const profileChecks = {};
+  for (const boundary of boundaries) {
+    const contract = expected[boundary.profile];
+    assert(contract && typeof contract === "object",
+      `Phase 3 boundary oracle profile is missing: ${boundary.profile}`);
+    const database = boundary.database;
+    assert(database && typeof database === "object",
+      `Phase 3 database boundary is missing: ${boundary.profile}`);
+    for (const field of countFields) {
+      assert(Array.isArray(database[field]),
+        `Phase 3 ${boundary.profile} boundary is missing ${field}`);
+      assert(database[field].length === contract[field],
+        `Phase 3 ${boundary.profile} ${field} count diverged from the independent oracle`);
+    }
+    assert(database.identified_plant_count === contract.identified_plant_count,
+      `Phase 3 ${boundary.profile} identified-plant lifecycle was incomplete`);
+    assert(canonicalJson(database.seen_state) === canonicalJson(initial.seen_state),
+      `Phase 3 ${boundary.profile} changed seeded plant observation state`);
+    assertPhaseThreeProviderUsage(database.provider_usage, fixture, contract.provider_counts);
+    assert(boundary.filesystem?.files?.length === contract.filesystem_files,
+      `Phase 3 ${boundary.profile} media file count diverged from the independent oracle`);
+    assertPhaseThreeMediaGraph(database, boundary.filesystem);
+    assertUniquePhaseThreeRows(database.harvests, "public_id", `${boundary.profile} harvest`);
+    assertUniquePhaseThreeRows(database.issues, "public_id", `${boundary.profile} issue`);
+    assertUniquePhaseThreeRows(database.journals, "public_id", `${boundary.profile} journal`);
+    assertUniquePhaseThreeRows(
+      database.offline_operations,
+      "operation_id",
+      `${boundary.profile} offline operation`,
+    );
+    profileChecks[boundary.profile] = {
+      database_counts_exact: true,
+      media_graph_exact: true,
+      provider_usage_exact: true,
+      seeded_observation_state_preserved: true,
+    };
+  }
+  return {
+    boundaries_semantically_exact: true,
+    boundary_media_graphs_exact: true,
+    profiles: profileChecks,
+  };
+}
+
+function assertPhaseThreeDatabaseState(initial, final, fixture) {
+  assert(initial && final, "Phase 3 database state is missing");
+  for (const key of [
+    "harvests",
+    "issues",
+    "journals",
+    "media",
+    "offline_operations",
+    "provider_usage",
+  ]) {
+    assert(Array.isArray(initial[key]) && initial[key].length === 0,
+      `Phase 3 fixture unexpectedly starts with ${key}`);
+  }
+  assertUniquePhaseThreeRows(final.harvests, "public_id", "harvest");
+  assertUniquePhaseThreeRows(final.issues, "public_id", "issue");
+  assertUniquePhaseThreeRows(final.journals, "public_id", "journal");
+  assertUniquePhaseThreeRows(final.offline_operations, "operation_id", "offline operation");
+  const labels = new Set(Object.values(fixture.phase_three.labels));
+  for (const [rows, field, label] of [
+    [final.harvests, "notes", "harvest"],
+    [final.issues, "title", "issue"],
+    [final.journals, "title", "journal"],
+  ]) {
+    const counts = new Map();
+    for (const row of rows) {
+      const value = String(row[field] || "");
+      if (labels.has(value)) counts.set(value, (counts.get(value) || 0) + 1);
+    }
+    assert([...counts.values()].every((count) => count === 1),
+      `Phase 3 ${label} replay produced duplicate logical rows`);
+  }
+  assert(Array.isArray(final.cleanup_jobs) && final.cleanup_jobs.length === 0,
+    "Phase 3 left unresolved media cleanup jobs");
+  assert(initial.identified_plant_count === 0 && final.identified_plant_count === 0,
+    "Phase 3 identified-plant lifecycle left a plant record behind");
+  assert(canonicalJson(final.seen_state) === canonicalJson(initial.seen_state),
+    "Phase 3 changed seeded plant observation state");
+
+  assertPhaseThreeProviderUsage(final.provider_usage, fixture, { diagnose: 2, identify: 1 });
+
+  const phaseThree = fixture.phase_three;
+  assert(final.harvests.length === 1, `Phase 3 retained ${final.harvests.length} harvests`);
+  const harvest = final.harvests[0];
+  assert(harvest.notes === phaseThree.labels.harvest_offline
+    && harvest.quantity === 0.75
+    && harvest.unit === "kg"
+    && harvest.occurred_on === phaseThree.date
+    && canonicalJson(harvest.plant_ids) === canonicalJson([phaseThree.plant_ids.harvest])
+    && canonicalJson(harvest.plot_ids) === canonicalJson([phaseThree.plot_ids.alpha]),
+  "Phase 3 retained harvest did not match the offline user action");
+
+  assert(final.issues.length === 1, `Phase 3 retained ${final.issues.length} issues`);
+  const issue = final.issues[0];
+  assert(issue.title === phaseThree.labels.issue_offline
+    && issue.status === "open"
+    && issue.follow_up_on === "2026-07-23"
+    && canonicalJson(issue.plant_ids) === canonicalJson([phaseThree.plant_ids.issue])
+    && canonicalJson(issue.plot_ids) === canonicalJson([phaseThree.plot_ids.alpha]),
+  "Phase 3 retained issue did not match the offline user action");
+
+  assert(final.journals.length === 1, `Phase 3 retained ${final.journals.length} scoped journals`);
+  const linkedHarvestJournal = final.journals[0];
+  assert(linkedHarvestJournal.event_type === "harvested"
+    && linkedHarvestJournal.notes === phaseThree.labels.harvest_offline
+    && linkedHarvestJournal.metadata?.source === "auto:harvest"
+    && linkedHarvestJournal.metadata?.linked_harvest_entry_id === harvest.public_id
+    && canonicalJson(linkedHarvestJournal.plant_ids) === canonicalJson(harvest.plant_ids)
+    && canonicalJson(linkedHarvestJournal.plot_ids) === canonicalJson(harvest.plot_ids),
+  "Phase 3 retained harvest journal graph was incomplete");
+
+  const initialFollowupIds = new Set((initial.issue_followups || []).map((row) => row.public_id));
+  const addedFollowups = final.issue_followups.filter((row) => !initialFollowupIds.has(row.public_id));
+  assertUniquePhaseThreeRows(addedFollowups, "rule_source", "issue follow-up");
+  assert(addedFollowups.length === 5,
+    `Phase 3 created ${addedFollowups.length} issue follow-up tasks instead of five`);
+  const followupTitleCounts = new Map();
+  for (const task of addedFollowups) {
+    followupTitleCounts.set(task.title, (followupTitleCounts.get(task.title) || 0) + 1);
+  }
+  assert(canonicalJson(Object.fromEntries([...followupTitleCounts].sort())) === canonicalJson({
+    "Follow up: Dry soil": 2,
+    [`Follow up: ${phaseThree.labels.issue_offline}`]: 1,
+    [`Follow up: ${phaseThree.labels.issue_online}`]: 2,
+  }), "Phase 3 issue follow-up task titles were unexpected");
+  const pendingFollowups = addedFollowups.filter((row) => row.status === "pending");
+  const expiredFollowups = addedFollowups.filter((row) => row.status === "expired");
+  assert(pendingFollowups.length === 1
+    && pendingFollowups[0].rule_source === `auto:issue_followup:${issue.public_id}`,
+  "Phase 3 retained the wrong actionable issue follow-up");
+  assert(expiredFollowups.length === 4 && expiredFollowups.every((task) => (
+    task.metadata?.lifecycle?.reason === "issue_source_deleted"
+      && task.metadata?.lifecycle?.source_deleted === true
+      && task.metadata?.lifecycle?.source_issue_id
+        === task.rule_source.replace("auto:issue_followup:", "")
+  )), "Phase 3 did not retire every deleted issue follow-up with lifecycle provenance");
+  for (const task of addedFollowups) {
+    if (task.title === "Follow up: Dry soil") {
+      assert(task.plant_ids.length === 0 && task.plot_ids.length === 0,
+        "Diagnosis follow-up unexpectedly acquired plant or plot links");
+    } else {
+      assert(task.plant_ids.length === 1 && task.plot_ids.length === 1,
+        "Tracked issue follow-up lost its plant or plot link");
+    }
+  }
+
+  const initialIssueJournalIds = new Set((initial.issue_journals || []).map((row) => row.public_id));
+  const addedIssueJournals = final.issue_journals.filter(
+    (row) => !initialIssueJournalIds.has(row.public_id),
+  );
+  assertUniquePhaseThreeRows(addedIssueJournals, "public_id", "issue journal");
+  const issueEventCounts = new Map();
+  for (const entry of addedIssueJournals) {
+    const event = entry.metadata?.issue_event;
+    issueEventCounts.set(event, (issueEventCounts.get(event) || 0) + 1);
+  }
+  assert(canonicalJson(Object.fromEntries([...issueEventCounts].sort())) === canonicalJson({
+    created: 5,
+    reopened: 2,
+    resolved: 2,
+    updated: 2,
+  }), "Phase 3 issue history journal lifecycle was not exact");
+
+  const expiredSourceIds = new Set(expiredFollowups.map(
+    (task) => task.rule_source.replace("auto:issue_followup:", ""),
+  ));
+  const expiredTaskIds = new Set(expiredFollowups.map((task) => task.public_id));
+  const pendingSourceId = issue.public_id;
+  const pendingTaskId = pendingFollowups[0].public_id;
+  const scopedNotifications = final.issue_notifications.filter((notification) => (
+    expiredSourceIds.has(notification.target_id)
+      || expiredTaskIds.has(notification.target_id)
+      || notification.target_id === pendingSourceId
+      || notification.target_id === pendingTaskId
+  ));
+  assert(scopedNotifications.some((notification) => (
+    notification.target_type === "issue"
+      && notification.target_id === pendingSourceId
+      && !notification.cleared
+  )), "Phase 3 offline issue did not retain an actionable in-app notification");
+  assert(scopedNotifications.filter((notification) => (
+    expiredSourceIds.has(notification.target_id) || expiredTaskIds.has(notification.target_id)
+  )).every((notification) => notification.cleared),
+  "Phase 3 deleted issue or follow-up retained an actionable notification");
+
+  const year = Number(phaseThree.date.slice(0, 4));
+  const expectedRollupUnits = final.harvest_totals
+    .filter((row) => row.year === year)
+    .map((row) => ({ entries: row.entries, total_qty: row.total_qty, unit: row.unit }));
+  const rollup = final.harvest_rollups.find((row) => row.key.endsWith(`:${year}`));
+  assert(rollup && rollup.value?.year === year
+    && rollup.value?.garden_id === fixture.gardens.alpha.id
+    && canonicalJson(rollup.value?.by_unit) === canonicalJson(expectedRollupUnits),
+  "Phase 3 harvest rollup diverged from persisted harvest totals");
+
+  const operationSlots = phaseThree.operation_slots;
+  const expectedOperationIds = [
+    operationSlots.harvest,
+    operationSlots.issue,
+    operationSlots.journal,
+    operationSlots.media,
+    `${operationSlots.media}-harvest`,
+    `${operationSlots.media}-issue`,
+  ].sort();
+  assert(canonicalJson(final.offline_operations.map((row) => row.operation_id).sort())
+    === canonicalJson(expectedOperationIds),
+  "Phase 3 offline operation ledger did not retain the exact create/media identities");
+  const endpointCounts = new Map();
+  for (const operation of final.offline_operations) {
+    endpointCounts.set(operation.endpoint, (endpointCounts.get(operation.endpoint) || 0) + 1);
+  }
+  assert(canonicalJson(Object.fromEntries([...endpointCounts].sort())) === canonicalJson({
+    harvest: 1,
+    issues: 1,
+    journal: 1,
+    media_upload: 3,
+  }), "Phase 3 offline operation endpoint accounting was unexpected");
+
+  assert(new Set(final.media.map((row) => row.asset_id)).size === 2,
+    "Phase 3 retained an unexpected number of media assets");
+  assert(final.media.length === 2
+    && final.media.some((row) => row.target_type === "issue" && row.target_id === issue.public_id)
+    && final.media.some((row) => (
+      row.target_type === "harvest_entry" && row.target_id === harvest.public_id
+    )),
+  "Phase 3 retained media links did not match the live offline records");
+  return {
+    cleanup_jobs_drained: true,
+    harvest_rollup_matches_rows: true,
+    issue_followup_lifecycle_exact: true,
+    issue_history_lifecycle_exact: true,
+    logical_rows_unique: true,
+    offline_operation_count: final.offline_operations.length,
+    offline_operation_ledger_exact: true,
+    provider_budget_usage_exact: true,
+    retained_records_exact: true,
+  };
+}
+
+function assertPhaseThreeMediaGraph(databaseState, mediaState) {
+  const expected = new Set();
+  const expectedBytes = new Map();
+  for (const asset of databaseState.media) {
+    for (const [key, bytes] of [
+      [asset.storage_key, asset.bytes],
+      [asset.preview_storage_key, asset.preview_bytes],
+    ]) {
+      assert(typeof key === "string" && /^(?:original|preview)\//.test(key)
+        && !key.split("/").includes(".."),
+      `Phase 3 database contains an unsafe media storage key: ${String(key)}`);
+      expected.add(key);
+      assert(Number.isSafeInteger(bytes) && bytes > 0,
+        `Phase 3 database contains an invalid media byte count: ${key}`);
+      const previous = expectedBytes.get(key);
+      assert(previous === undefined || previous === bytes,
+        `Phase 3 linked media rows disagree on persisted bytes: ${key}`);
+      expectedBytes.set(key, bytes);
+    }
+  }
+  const actual = mediaState.files.map((file) => file.path);
+  assert(canonicalJson([...expected].sort()) === canonicalJson(actual),
+    `Phase 3 media database/filesystem graph diverged: expected ${[...expected].sort().join(", ")}; found ${actual.join(", ")}`);
+  for (const file of mediaState.files) {
+    assert(file.bytes === expectedBytes.get(file.path),
+      `Phase 3 media byte count diverged for ${file.path}`);
+  }
+  return {
+    database_storage_keys: expected.size,
+    filesystem_files: actual.length,
+    graph_exact: true,
+    temporary_files_absent: true,
+  };
+}
+
 function filesystemState() {
   return {
     artifacts: fs.readdirSync(ARTIFACT_DIR).sort(),
     downloads: directoryState(process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_DOWNLOAD_DIR),
-    media: directoryState(process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_MEDIA_DIR),
+    media: mediaDirectoryState(process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_MEDIA_DIR),
     terrain: directoryState(process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_TERRAIN_DIR),
   };
 }
@@ -629,13 +1125,21 @@ function normalizeAuditProjectionPath(value) {
     return pathname;
   }
   if (new Set([
+    "/api/ai/diagnose-plant",
+    "/api/ai/identify-plant",
     "/api/auth/login",
     "/api/attention/preferences",
     "/api/calendar/preferences",
     "/api/calendar/manual-events",
     "/api/calendar/subscriptions",
+    "/api/client-errors",
+    "/api/harvest",
+    "/api/issues",
+    "/api/journal",
+    "/api/media/upload",
     "/api/notifications",
     "/api/notifications/preferences",
+    "/api/plants",
     "/api/tasks",
     "/api/tasks/batch-action",
     "/api/weather/check",
@@ -670,6 +1174,42 @@ function normalizeAuditProjectionPath(value) {
     [
       /^\/api\/weather\/alerts\/[^/?#]+\/dismiss$/,
       () => "/api/weather/alerts/{alert_id}/dismiss",
+    ],
+    [
+      /^\/api\/plots\/[^/?#]+\/plants\/[^/?#]+$/,
+      () => "/api/plots/{plot_id}/plants/{created_plant_id}",
+    ],
+    [
+      /^\/api\/plants\/[^/?#]+$/,
+      () => "/api/plants/{created_plant_id}",
+    ],
+    [
+      /^\/api\/journal\/[^/?#]+$/,
+      () => "/api/journal/{entry_id}",
+    ],
+    [
+      /^\/api\/issues\/[^/?#]+\/resolve$/,
+      () => "/api/issues/{issue_id}/resolve",
+    ],
+    [
+      /^\/api\/issues\/[^/?#]+$/,
+      () => "/api/issues/{issue_id}",
+    ],
+    [
+      /^\/api\/harvest\/[^/?#]+$/,
+      () => "/api/harvest/{entry_id}",
+    ],
+    [
+      /^\/api\/media\/plants\/[^/?#]+\/cover$/,
+      () => "/api/media/plants/{plant_id}/cover",
+    ],
+    [
+      /^\/api\/media\/[^/?#]+\/links$/,
+      () => "/api/media/{asset_id}/links",
+    ],
+    [
+      /^\/api\/media\/[^/?#]+$/,
+      () => "/api/media/{asset_id}",
     ],
   ];
   for (const [pattern, projection] of parameterizedRoutes) {
@@ -914,6 +1454,71 @@ function assertWholeTableMutationAccounting(initial, final, allowedTables, accou
     changed_tables: changedTables,
     independent_accounting_enforced: true,
   };
+}
+
+function phaseThreeExactMutationContract(initialState, fixture, oracle) {
+  const spec = oracle?.phase_three?.whole_table_mutation_accounting;
+  const tableCounts = spec?.table_counts;
+  const variants = spec?.app_settings_variants;
+  assert(tableCounts && typeof tableCounts === "object" && !Array.isArray(tableCounts)
+    && variants && typeof variants === "object" && !Array.isArray(variants),
+  "Phase 3 whole-table mutation oracle is missing");
+  const expectedTables = [
+    "app_settings",
+    "garden_issue_plants",
+    "garden_issue_plots",
+    "garden_issues",
+    "garden_journal_entries",
+    "garden_journal_entry_plants",
+    "garden_journal_entry_plots",
+    "garden_task_plants",
+    "garden_task_plots",
+    "garden_tasks",
+    "harvest_entries",
+    "harvest_entry_plants",
+    "harvest_entry_plots",
+    "media_assets",
+    "media_cleanup_jobs",
+    "media_links",
+    "notification_events",
+    "offline_create_operations",
+    "plant_media_covers",
+    "plants",
+    "plot_plants",
+    "provider_daily_usage",
+  ];
+  assert(canonicalJson(["app_settings", ...Object.keys(tableCounts)].sort())
+    === canonicalJson([...expectedTables].sort()),
+  "Phase 3 whole-table mutation oracle does not enumerate the exact owned tables");
+  const year = fixture.phase_three.date.slice(0, 4);
+  const rollupPresent = initialState.harvest_rollups.some((row) => row.key.endsWith(`:${year}`));
+  const rollupVariant = rollupPresent ? "rollup_present" : "rollup_missing";
+  const exactCounts = { app_settings: variants[rollupVariant], ...tableCounts };
+  const accounting = {};
+  for (const table of expectedTables) {
+    const counts = exactCounts[table];
+    assert(counts && [
+      "added",
+      "identity_added",
+      "identity_removed",
+      "identity_updated",
+      "removed",
+    ].every((field) => Number.isSafeInteger(counts[field]) && counts[field] >= 0),
+    `Phase 3 whole-table mutation oracle is invalid: ${table}`);
+    assert(counts.identity_added + counts.identity_updated === counts.added
+      && counts.identity_removed + counts.identity_updated === counts.removed,
+    `Phase 3 row and stable-identity counts disagree: ${table}`);
+    accounting[table] = {
+      allow_row_delta: true,
+      evidence: `phase_three_independent_oracle:${rollupVariant}`,
+      expected_added: counts.added,
+      expected_identity_added: counts.identity_added,
+      expected_identity_removed: counts.identity_removed,
+      expected_identity_updated: counts.identity_updated,
+      expected_removed: counts.removed,
+    };
+  }
+  return { accounting, allowedTables: new Set(expectedTables), rollupVariant };
 }
 
 function gitOutput(args) {
@@ -2154,6 +2759,145 @@ function auditRecordMatchesBrowserMutation(event, request) {
     && event.actor_auth_type === request.actor_auth_type
     && event.garden_id === request.garden_id
     && event.request_id === request.request_id;
+}
+
+function normalizePhaseThreeMutationPath(pathname) {
+  return pathname
+    .replace(
+      /^\/api\/plots\/([^/]+)\/plants\/[^/]+$/,
+      "/api/plots/$1/plants/{created_plant_id}",
+    )
+    .replace(/^\/api\/plants\/[^/]+$/, "/api/plants/{created_plant_id}")
+    .replace(/^\/api\/journal\/[^/]+$/, "/api/journal/{entry_id}")
+    .replace(/^\/api\/issues\/[^/]+\/resolve$/, "/api/issues/{issue_id}/resolve")
+    .replace(/^\/api\/issues\/[^/]+$/, "/api/issues/{issue_id}")
+    .replace(/^\/api\/harvest\/[^/]+$/, "/api/harvest/{entry_id}")
+    .replace(/^\/api\/media\/plants\/[^/]+\/cover$/, "/api/media/plants/{plant_id}/cover")
+    .replace(/^\/api\/media\/[^/]+\/links$/, "/api/media/{asset_id}/links")
+    .replace(/^\/api\/media\/(?!upload$)[^/]+$/, "/api/media/{asset_id}");
+}
+
+function isPhaseThreeAuditPath(pathname) {
+  if (/^\/api\/plots\/[^/]+\/plants\/\{created_plant_id\}$/.test(pathname)) return true;
+  return new Set([
+    "/api/ai/diagnose-plant",
+    "/api/ai/identify-plant",
+    "/api/auth/login",
+    "/api/client-errors",
+    "/api/harvest",
+    "/api/harvest/{entry_id}",
+    "/api/issues",
+    "/api/issues/{issue_id}",
+    "/api/issues/{issue_id}/resolve",
+    "/api/journal",
+    "/api/journal/{entry_id}",
+    "/api/media/{asset_id}",
+    "/api/media/{asset_id}/links",
+    "/api/media/plants/{plant_id}/cover",
+    "/api/media/summaries",
+    "/api/media/upload",
+    "/api/plants",
+    "/api/plants/{created_plant_id}",
+  ]).has(pathname);
+}
+
+function phaseThreeBrowserMutationRecords(profiles, fixture) {
+  const mutationMethods = new Set(["DELETE", "PATCH", "POST", "PUT"]);
+  return (profiles || []).flatMap((profile) => (
+    (profile?.requests || []).flatMap((request) => {
+      if (!mutationMethods.has(request?.method)) return [];
+      assert(Number.isSafeInteger(request.statusCode),
+        `Phase 3 mutation response status is missing: ${request.method} ${request.path}`);
+      assert(
+        (request.statusCode >= 200 && request.statusCode < 300)
+          || [403, 409, 410].includes(request.statusCode),
+        `Phase 3 browser mutation had an unexpected response: ${request.method} ${request.path}`,
+      );
+      const normalizedPath = normalizePhaseThreeMutationPath(request.path);
+      assert(isPhaseThreeAuditPath(normalizedPath),
+        `Unknown Phase 3 browser mutation path: ${request.method} ${request.path}`);
+      const isAnonymousAuditPath = new Set([
+        "/api/auth/login",
+        "/api/client-errors",
+      ]).has(request.path);
+      const requestGardenId = request.gardenId === null ? null : Number(request.gardenId);
+      assert(requestGardenId === null
+        || (Number.isSafeInteger(requestGardenId) && requestGardenId > 0),
+        `Phase 3 mutation garden ID is invalid: ${request.method} ${request.path}`);
+      const gardenId = isAnonymousAuditPath ? null : requestGardenId;
+      const expectedActor = isAnonymousAuditPath ? {
+        authType: "none", role: "anonymous", username: "anonymous",
+      } : {
+        authType: "session", role: profile.role, username: fixture.roles[profile.role],
+      };
+      assert(
+        request.actorAuthType === expectedActor.authType
+          && request.actorRole === expectedActor.role
+          && request.actorUsername === expectedActor.username,
+        `Phase 3 browser mutation actor was incomplete: ${request.method} ${request.path}`,
+      );
+      assert(isSafeRequestId(request.requestId),
+        `Phase 3 browser mutation lacks a request ID: ${request.method} ${request.path}`);
+      return [{
+        actor_auth_type: request.actorAuthType,
+        actor_role: request.actorRole,
+        actor_username: request.actorUsername,
+        browser_profile: `${profile.role}:${profile.profile}`,
+        garden_id: gardenId,
+        method: request.method,
+        path: normalizedPath,
+        request_id: request.requestId,
+        status_code: request.statusCode,
+      }];
+    })
+  ));
+}
+
+function assertPhaseThreeAuditEvents(beforeAudit, finalAudit, profiles, fixture) {
+  assert(Array.isArray(beforeAudit?.records), "Phase 3 audit boundary records are missing");
+  assert(Array.isArray(finalAudit?.records), "Final Phase 3 audit records are missing");
+  const beforeById = new Map(beforeAudit.records.map((record) => [record.id, record]));
+  const finalById = new Map(finalAudit.records.map((record) => [record.id, record]));
+  assert(beforeById.size === beforeAudit.records.length,
+    "Phase 3 audit boundary contains duplicate IDs");
+  assert(finalById.size === finalAudit.records.length,
+    "Final Phase 3 audit state contains duplicate IDs");
+  for (const [id, record] of beforeById) {
+    assert(finalById.has(id), `Phase 3 unexpectedly deleted audit record: ${id}`);
+    assert(canonicalJson(finalById.get(id)) === canonicalJson(record),
+      `Phase 3 unexpectedly mutated audit record: ${id}`);
+  }
+  const events = [...finalById.values()]
+    .filter((record) => !beforeById.has(record.id))
+    .sort((left, right) => left.id - right.id);
+  const unmatched = phaseThreeBrowserMutationRecords(profiles, fixture);
+  assert(events.length > 0, "Phase 3 did not persist any audit events");
+  for (const event of events) {
+    assert(Number.isSafeInteger(event?.id) && event.id > 0,
+      "Phase 3 audit event has an invalid ID");
+    assert(Number.isSafeInteger(event.occurred_at_ms) && event.occurred_at_ms > 0,
+      `Phase 3 audit event timestamp was invalid: ${event.id}`);
+    assert(isPhaseThreeAuditPath(event.path),
+      `Unexpected Phase 3 audit event path: ${event.method} ${event.path}`);
+    assert(isSafeRequestId(event.request_id),
+      `Phase 3 audit event lacks a request ID: ${event.id}`);
+    const requestIndex = unmatched.findIndex((request) => (
+      auditRecordMatchesBrowserMutation(event, request)
+    ));
+    assert(requestIndex >= 0,
+      `Phase 3 audit event lacks an exact browser mutation: ${event.method} ${event.path}`);
+    unmatched.splice(requestIndex, 1);
+  }
+  assert(unmatched.length === 0,
+    `Phase 3 browser mutations lacked exactly one audit event: ${unmatched.map((row) => `${row.method} ${row.path}`).join(", ")}`);
+  return {
+    phase_three_audit_event_count: events.length,
+    phase_three_audit_correlation_exact: true,
+    phase_three_audit_events_exact: true,
+    phase_three_audit_mutations_one_to_one: true,
+    phase_three_audit_server_ids_one_to_one: true,
+    phase_three_audit_wall_clock_uncontrolled: true,
+  };
 }
 
 function assertPhaseTwoAuditEvents(beforeAudit, finalAudit, profiles, fixture) {
@@ -4772,6 +5516,7 @@ function assertNoResponseMocks() {
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/foundation.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/gardenMapPlants.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/dailyAttentionWork.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/observationToAction.cjs"), "utf8"),
   ].join("\n");
   const forbiddenCalls = [
     `route.${"fulfill"}(`,
@@ -4788,6 +5533,7 @@ function assertNoNodeRequestClients() {
     fs.readFileSync(path.join(ROOT, "scripts/e2e/completeJourneyBrowser.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/gardenMapPlants.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/dailyAttentionWork.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/observationToAction.cjs"), "utf8"),
   ].join("\n");
   for (const forbidden of [
     "context.request",
@@ -4806,6 +5552,12 @@ async function main() {
   const fixture = readJson(FIXTURE_PATH);
   const oracle = phaseTwoOracle();
   const fixtureOracleEvidence = assertFixtureOracleBinding(fixture, oracle);
+  const phaseThreeOracleSpec = phaseThreeOracle();
+  const phaseThreeFixtureOracleEvidence = assertPhaseThreeFixtureOracleBinding(
+    fixture,
+    phaseThreeOracleSpec,
+  );
+  const phaseThreeMediaInputs = phaseSelected(3) ? materializePhaseThreeMedia(fixture) : null;
   assertFixtureAttentionClock(fixture);
   let manifest = {
     backend_log: null,
@@ -4822,6 +5574,7 @@ async function main() {
       ...(phaseSelected(0) ? ["A1"] : []),
       ...(phaseSelected(1) ? ["A3", "M1", "M2", "M3", "M4", "CROSS-01"] : []),
       ...(phaseSelected(2) ? ["D1", "D2", "D3", "D4", "D5", "R1"] : []),
+      ...(phaseSelected(3) ? ["I2", "I3", "P1", "P2", "P3", "P5"] : []),
     ],
     phase: PHASE,
     profiles: [],
@@ -4845,6 +5598,7 @@ async function main() {
   let phaseOneProfileEvidence = null;
   let phaseOneProfiles = [];
   let phaseTwoDatabaseEvidence = null;
+  let phaseTwoDatabase = null;
   let phaseTwoAuditEvidence = null;
   let phaseTwoAuditBaseline = null;
   let phaseTwoPreparation = null;
@@ -4854,6 +5608,15 @@ async function main() {
   let phaseTwoProfiles = [];
   let phaseTwoReadOnlyPermutationEvidence = null;
   let phaseTwoReadOnlyProfiles = [];
+  let phaseThreeBoundaries = [];
+  let phaseThreeAuditBaseline = null;
+  let phaseThreeAuditEvidence = null;
+  let phaseThreeBoundaryEvidence = null;
+  let phaseThreeDatabaseBaseline = null;
+  let phaseThreeDatabaseEvidence = null;
+  let phaseThreeFilesystemEvidence = null;
+  let phaseThreeProfileEvidence = null;
+  let phaseThreeProfiles = [];
   let thrownError = null;
   let currentStage = "runner-startup";
   try {
@@ -4955,6 +5718,36 @@ async function main() {
       assert(phaseTwoPreferenceDelivery,
         "Phase 2 browser did not run the post-save preference delivery boundary");
       phaseTwoProfiles = manifest.profiles.slice(phaseTwoProfileStart);
+      currentStage = "phase-two-database-boundary";
+      phaseTwoDatabase = databaseSnapshot();
+    }
+    if (phaseSelected(3)) {
+      currentStage = "phase-three-browser";
+      phaseThreeDatabaseBaseline = databaseSnapshot();
+      phaseThreeAuditBaseline = phaseThreeDatabaseBaseline.audit_state;
+      const phaseThreeProfileStart = manifest.profiles.length;
+      await runObservationToAction({
+        artifactDir: ARTIFACT_DIR,
+        baseUrl: BASE_URL,
+        browser,
+        devices,
+        fixture,
+        mediaInputs: phaseThreeMediaInputs,
+        onProfile: (profile) => {
+          manifest.profiles.push(profile);
+          phaseThreeBoundaries.push({
+            database: databaseSnapshot().phase_three_state,
+            filesystem: mediaDirectoryState(
+              process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_MEDIA_DIR,
+            ),
+            profile: `${profile.role}:${profile.profile}`,
+          });
+        },
+        oracle: phaseThreeOracleSpec,
+        password: PASSWORD,
+        username: USERNAME,
+      });
+      phaseThreeProfiles = manifest.profiles.slice(phaseThreeProfileStart);
     }
     currentStage = "final-database-snapshot";
     const finalDatabase = databaseSnapshot();
@@ -4965,6 +5758,7 @@ async function main() {
         final: finalDatabase.domain_tables,
         initial: fixture.database_snapshot.domain_tables,
         phase_one_boundary: phaseOneDatabase?.domain_tables ?? null,
+        phase_three_baseline: phaseThreeDatabaseBaseline?.domain_tables ?? null,
       },
     };
     const domainTableNames = new Set([
@@ -4977,13 +5771,15 @@ async function main() {
     );
     const phaseOneRan = phaseSelected(1);
     const phaseTwoRan = phaseSelected(2);
+    const phaseThreeRan = phaseSelected(3);
     if (phaseOneRan) phaseOneProfileEvidence = assertPhaseOneProfileEvidence(phaseOneProfiles);
     if (phaseTwoRan) {
+      assert(phaseTwoDatabase, "Phase 2 database boundary snapshot is missing");
       phaseTwoProfileEvidence = {
         ...assertPhaseTwoProfileEvidence(phaseTwoProfiles, oracle),
         ...assertPhaseTwoTaskActionRevisionSequence(
           phaseTwoProfiles,
-          finalDatabase.phase_two_state.tasks,
+          phaseTwoDatabase.phase_two_state.tasks,
           fixture,
         ),
         ...assertPhaseTwoBrowserMutationMultiset(
@@ -4994,18 +5790,22 @@ async function main() {
       };
       phaseTwoDatabaseEvidence = {
         ...assertPhaseTwoDatabaseState(
-          finalDatabase.phase_two_state,
+          phaseTwoDatabase.phase_two_state,
           fixture,
           phaseTwoMaintenance,
           phaseTwoPreferenceDelivery,
           oracle,
           phaseTwoProfiles,
         ),
-        ...assertPhaseTwoOfflineOperationReplay(phaseTwoProfiles, finalDatabase.phase_two_state, fixture),
+        ...assertPhaseTwoOfflineOperationReplay(
+          phaseTwoProfiles,
+          phaseTwoDatabase.phase_two_state,
+          fixture,
+        ),
       };
       phaseTwoAuditEvidence = assertPhaseTwoAuditEvents(
         phaseTwoAuditBaseline,
-        finalDatabase.audit_state,
+        phaseTwoDatabase.audit_state,
         [...phaseTwoReadOnlyProfiles, ...phaseTwoProfiles],
         fixture,
       );
@@ -5013,11 +5813,37 @@ async function main() {
         assert(phaseOneDatabase, "Phase 1 database boundary snapshot is missing before Phase 2");
         assertPhaseOneStatePreservedAfterPhaseTwo(
           phaseOneDatabase.phase_one_state,
-          finalDatabase.phase_one_state,
+          phaseTwoDatabase.phase_one_state,
           fixture,
         );
         phaseOneStatePreservedAfterPhaseTwo = true;
       }
+    }
+    if (phaseThreeRan) {
+      assert(phaseThreeDatabaseBaseline, "Phase 3 database baseline snapshot is missing");
+      phaseThreeProfileEvidence = assertPhaseThreeProfileEvidence(phaseThreeProfiles);
+      phaseThreeDatabaseEvidence = assertPhaseThreeDatabaseState(
+        phaseThreeDatabaseBaseline.phase_three_state,
+        finalDatabase.phase_three_state,
+        fixture,
+      );
+      assert(phaseThreeBoundaries.length === phaseThreeProfiles.length,
+        "Phase 3 did not capture one database/filesystem boundary per browser profile");
+      assert(canonicalJson(phaseThreeBoundaries.map((boundary) => boundary.profile))
+        === canonicalJson(phaseThreeProfileEvidence.profile_order),
+      "Phase 3 database/filesystem boundary order diverged from browser execution");
+      phaseThreeBoundaryEvidence = assertPhaseThreeBoundaryEvidence(
+        phaseThreeBoundaries,
+        phaseThreeDatabaseBaseline.phase_three_state,
+        fixture,
+        phaseThreeOracleSpec,
+      );
+      phaseThreeAuditEvidence = assertPhaseThreeAuditEvents(
+        phaseThreeAuditBaseline,
+        finalDatabase.audit_state,
+        phaseThreeProfiles,
+        fixture,
+      );
     }
     const phaseOneSemanticDeltaTables = phaseOneRan ? new Set([
       "app_settings",
@@ -5113,8 +5939,19 @@ async function main() {
         (table) => phaseTwoSemanticDeltaTables.has(table),
       ), `Phase 2 ${phaseTwoMutationScope} mutation counts name an unallowed table`);
     }
+    const phaseThreeMutationContract = phaseThreeRan
+      ? phaseThreeExactMutationContract(
+        phaseThreeDatabaseBaseline.phase_three_state,
+        fixture,
+        phaseThreeOracleSpec,
+      )
+      : null;
+    const phaseThreeSemanticDeltaTables = phaseThreeRan ? new Set([
+      ...phaseTwoSemanticDeltaTables,
+      ...phaseThreeMutationContract.allowedTables,
+    ]) : phaseTwoSemanticDeltaTables;
     const forbiddenDomainTables = changedDomainTables.filter(
-      (table) => !phaseTwoSemanticDeltaTables.has(table),
+      (table) => !phaseThreeSemanticDeltaTables.has(table),
     );
     assert(
       forbiddenDomainTables.length === 0,
@@ -5123,13 +5960,10 @@ async function main() {
     const wholeTableProjectionEvidence = assertWholeTableProjectionCoverage(
       fixture.database_snapshot.domain_tables,
       finalDatabase.domain_tables,
-      phaseTwoSemanticDeltaTables,
+      phaseThreeSemanticDeltaTables,
     );
-    const wholeTableMutationAccounting = assertWholeTableMutationAccounting(
-      fixture.database_snapshot.domain_tables,
-      finalDatabase.domain_tables,
-      phaseTwoSemanticDeltaTables,
-      Object.fromEntries([...phaseTwoSemanticDeltaTables].map((table) => {
+    const prePhaseThreeAccounting = Object.fromEntries(
+      [...phaseTwoSemanticDeltaTables].map((table) => {
         const exact = phaseTwoExactMutationCounts?.[table] || { added: 0, removed: 0 };
         const identity = phaseTwoExactIdentityCounts?.[table]
           || { added: 0, removed: 0, updated: 0 };
@@ -5149,8 +5983,29 @@ async function main() {
             } : {}),
           } : {}),
         }];
-      })),
+      }),
     );
+    const phaseTwoWholeTableMutationAccounting = phaseTwoRan
+      ? assertWholeTableMutationAccounting(
+        fixture.database_snapshot.domain_tables,
+        phaseTwoDatabase.domain_tables,
+        phaseTwoSemanticDeltaTables,
+        prePhaseThreeAccounting,
+      )
+      : null;
+    const wholeTableMutationAccounting = phaseThreeRan
+      ? assertWholeTableMutationAccounting(
+        phaseThreeDatabaseBaseline.domain_tables,
+        finalDatabase.domain_tables,
+        phaseThreeMutationContract.allowedTables,
+        phaseThreeMutationContract.accounting,
+      )
+      : phaseTwoWholeTableMutationAccounting || assertWholeTableMutationAccounting(
+        fixture.database_snapshot.domain_tables,
+        finalDatabase.domain_tables,
+        phaseThreeSemanticDeltaTables,
+        prePhaseThreeAccounting,
+      );
     for (const [table, count] of Object.entries(finalDatabase.domain_counts)) {
       if (Object.hasOwn(finalDatabase.domain_tables, table)) {
         assert(finalDatabase.domain_tables[table].count === count,
@@ -5436,6 +6291,9 @@ async function main() {
         phase_two_audit_events_exact: phaseTwoAuditEvidence?.phase_two_audit_events_exact ?? null,
         phase_two_audit_timestamps_frozen:
           phaseTwoAuditEvidence?.phase_two_audit_timestamps_frozen ?? null,
+        phase_three_audit_event_count: phaseThreeAuditEvidence?.phase_three_audit_event_count ?? 0,
+        phase_three_audit_events_exact: phaseThreeAuditEvidence?.phase_three_audit_events_exact
+          ?? null,
         unexpected_count: phaseOneAuditEvidence?.unexpected_count ?? null,
       },
       cluster_fingerprint: crypto
@@ -5445,7 +6303,7 @@ async function main() {
           + process.env.GARDENOPS_DISPOSABLE_POSTGRES_MARKER,
         )
         .digest("hex"),
-      semantic_delta_tables: [...phaseTwoSemanticDeltaTables].sort(),
+      semantic_delta_tables: [...phaseThreeSemanticDeltaTables].sort(),
       whole_table_mutation_accounting: wholeTableMutationAccounting,
       whole_table_projection_coverage: wholeTableProjectionEvidence,
       whole_table_projections: {
@@ -5453,8 +6311,8 @@ async function main() {
         initial: fixture.database_snapshot.domain_tables,
         phase_one_boundary: phaseOneDatabase?.domain_tables ?? null,
       },
-      domain_counts_unchanged: !phaseOneRan && !phaseTwoRan,
-      domain_digests_unchanged: !phaseOneRan && !phaseTwoRan,
+      domain_counts_unchanged: !phaseOneRan && !phaseTwoRan && !phaseThreeRan,
+      domain_digests_unchanged: !phaseOneRan && !phaseTwoRan && !phaseThreeRan,
       phase_zero_enforcement: phaseZeroProfileEvidence ? {
         browser_profile_matrix: phaseZeroProfileEvidence.profile_matrix_enforced === true,
         cumulative_before_phase_one: true,
@@ -5494,6 +6352,21 @@ async function main() {
         preference_delivery: phaseTwoPreferenceDelivery,
         preparation: phaseTwoPreparation,
         whole_table_projection_coverage: wholeTableProjectionEvidence,
+        whole_table_mutation_accounting: phaseTwoWholeTableMutationAccounting,
+      } : null,
+      phase_three_enforcement: phaseThreeRan ? {
+        ...phaseThreeDatabaseEvidence,
+        ...phaseThreeAuditEvidence,
+        boundary_validation: phaseThreeBoundaryEvidence,
+        browser_profile_matrix: phaseThreeProfileEvidence?.profile_matrix_enforced === true,
+        boundaries: phaseThreeBoundaries,
+        exact_mutation_rollup_variant: phaseThreeMutationContract.rollupVariant,
+        fixture_oracle_binding: phaseThreeFixtureOracleEvidence,
+        filesystem: phaseThreeFilesystemEvidence,
+        phase_fixture_scope: PHASE === 3 && THROUGH_PHASE === 3
+          ? "fresh-fixture-phase-three-only"
+          : "fresh-fixture-cumulative-through-phase-three",
+        profile_execution: phaseThreeProfileEvidence,
         whole_table_mutation_accounting: wholeTableMutationAccounting,
       } : null,
       phase_boundaries: {
@@ -5505,13 +6378,22 @@ async function main() {
         phase_two_read_only_permutation_profile_count: phaseTwoRan
           ? phaseTwoReadOnlyProfiles.length
           : null,
+        phase_three_profile_count: phaseThreeRan ? phaseThreeProfiles.length : null,
       },
       final: finalDatabase.domain_counts,
       initial: fixture.database_snapshot.domain_counts,
     };
     manifest.filesystem = filesystemState();
     assert(manifest.filesystem.downloads.empty, "Browser journey wrote download files");
-    assert(manifest.filesystem.media.empty, "Browser journey wrote media files");
+    if (phaseThreeRan) {
+      phaseThreeFilesystemEvidence = assertPhaseThreeMediaGraph(
+        finalDatabase.phase_three_state,
+        manifest.filesystem.media,
+      );
+      manifest.database.phase_three_enforcement.filesystem = phaseThreeFilesystemEvidence;
+    } else {
+      assert(manifest.filesystem.media.empty, "Browser journey wrote media files");
+    }
     assert(manifest.filesystem.terrain.empty, "Browser journey wrote terrain files");
     manifest.trace_artifacts = assertTraceArtifacts(manifest.profiles);
     manifest.backend_log = backendErrorEvidence();
@@ -5615,6 +6497,8 @@ module.exports = {
   assertPhaseZeroProfileEvidence,
   assertPhaseOneAuditContract,
   assertPhaseOneProfileEvidence,
+  assertPhaseThreeBoundaryEvidence,
+  assertPhaseThreeProviderUsage,
   assertPhaseTwoAuditEvents,
   assertPhaseTwoBrowserMutationMultiset,
   assertPhaseTwoCalendarLifecycleEvidence,
@@ -5667,6 +6551,8 @@ module.exports = {
   resolveChromiumExecutable,
   sourceProvenance,
   phaseTwoOracle,
+  phaseThreeExactMutationContract,
+  phaseThreeOracle,
   writeManifestAtomic,
   runPhaseTwoReadOnlyPermutation,
 };

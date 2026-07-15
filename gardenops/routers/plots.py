@@ -25,7 +25,7 @@ from gardenops.router_helpers import (
 )
 from gardenops.security import AuthContext, create_user, has_write_access, is_auth_required
 from gardenops.services.garden_layout_lock import lock_garden_layout
-from gardenops.services.media_store import unlink_storage_keys
+from gardenops.services.media_store import drain_media_cleanup_jobs_best_effort
 from gardenops.services.planting_planner import check_companions
 from gardenops.services.plot_references import (
     delete_plot_references,
@@ -1053,8 +1053,7 @@ def delete_plot(plot_id: str, db: DB, request: Request) -> None:
         raise HTTPException(status_code=400, detail="Cannot delete the indoor plants collection")
     result = delete_plot_references(db, garden_id=garden_id, plot_id=plot_id)
     db.commit()
-    for storage_key, preview_storage_key in result.media_storage_pairs:
-        unlink_storage_keys(storage_key, preview_storage_key)
+    drain_media_cleanup_jobs_best_effort(db, storage_pairs=result.media_storage_pairs)
     notify_garden_modified()
 
 

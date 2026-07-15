@@ -1,10 +1,74 @@
+import json
 import os
 
+import gardenops.db as db
 from tests.base import BaseApiTest
 
 
 class TestHarvestApi(BaseApiTest):
     """Tests for harvest CRUD and summary endpoints."""
+
+    def _rollup(self, year: int) -> dict:
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = %s",
+                (f"harvest_rollup:{self._get_default_garden_id()}:{year}",),
+            ).fetchone()
+            assert row is not None
+            return json.loads(str(row["value"]))
+        finally:
+            db.return_db(conn)
+
+    def test_harvest_rollups_reconcile_create_update_year_unit_and_delete(self) -> None:
+        first = self.client.post(
+            "/api/harvest",
+            json={"occurred_on": "2025-09-01", "quantity": 2.5, "unit": "kg"},
+        )
+        second = self.client.post(
+            "/api/harvest",
+            json={"occurred_on": "2025-09-02", "quantity": 3, "unit": "pieces"},
+        )
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertEqual(second.status_code, 201, second.text)
+        self.assertEqual(
+            self._rollup(2025)["by_unit"],
+            [
+                {"entries": 1, "total_qty": 2.5, "unit": "kg"},
+                {"entries": 1, "total_qty": 3.0, "unit": "pieces"},
+            ],
+        )
+
+        updated = self.client.patch(
+            f"/api/harvest/{first.json()['id']}",
+            json={"occurred_on": "2026-01-03", "quantity": 4.25, "unit": "pieces"},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(
+            self._rollup(2025)["by_unit"],
+            [{"entries": 1, "total_qty": 3.0, "unit": "pieces"}],
+        )
+        self.assertEqual(
+            self._rollup(2026)["by_unit"],
+            [{"entries": 1, "total_qty": 4.25, "unit": "pieces"}],
+        )
+
+        journal = self.client.get(f"/api/journal/{first.json()['journal_entry_id']}")
+        self.assertEqual(journal.status_code, 200, journal.text)
+        self.assertEqual(journal.json()["occurred_on"], "2026-01-03")
+        self.assertIn("4.25 pieces", journal.json()["title"])
+
+        deleted = self.client.delete(f"/api/harvest/{first.json()['id']}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(self._rollup(2026)["by_unit"], [])
+        self.assertEqual(
+            self._rollup(2025)["by_unit"],
+            [{"entries": 1, "total_qty": 3.0, "unit": "pieces"}],
+        )
+        self.assertEqual(
+            self.client.get(f"/api/journal/{first.json()['journal_entry_id']}").status_code,
+            404,
+        )
 
     def test_harvest_crud_lifecycle(self) -> None:
         """Create, read, update, delete a harvest entry."""

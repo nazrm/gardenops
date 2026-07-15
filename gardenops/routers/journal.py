@@ -41,8 +41,11 @@ from gardenops.router_helpers import (
 )
 from gardenops.routers.media import collect_media_cleanup_for_target
 from gardenops.security import AuthContext
-from gardenops.services.media_store import unlink_storage_keys
-from gardenops.services.observation_updates import mark_seen_growing_from_observation
+from gardenops.services.media_store import drain_media_cleanup_jobs_best_effort
+from gardenops.services.observation_updates import (
+    mark_seen_growing_from_observation,
+    reconcile_seen_growing_after_bloom_change,
+)
 
 router = APIRouter()
 
@@ -565,6 +568,9 @@ def update_journal_entry(
     garden_id = _active_garden_id(context)
     existing_row = _fetch_entry(db, entry_id, garden_id)
     internal_id = int(existing_row["id"])
+    previous_plant_map, previous_plot_map, _ = _load_links(db, [internal_id])
+    previous_plant_ids = previous_plant_map.get(internal_id, [])
+    previous_plot_ids = previous_plot_map.get(internal_id, [])
 
     updates = body.model_dump(exclude_unset=True)
     if not updates:
@@ -613,6 +619,38 @@ def update_journal_entry(
         plant_ids_current = [str(r["plt_id"]) for r in existing_plants]
         _set_links(db, context, internal_id, plant_ids_current, plot_ids_val)
 
+    if any(field in updates for field in ("event_type", "occurred_on", "plant_ids", "plot_ids")):
+        current_row = _fetch_entry(db, entry_id, garden_id)
+        current_plant_map, current_plot_map, _ = _load_links(db, [internal_id])
+        current_plant_ids = current_plant_map.get(internal_id, [])
+        current_plot_ids = current_plot_map.get(internal_id, [])
+        previous_event_type = str(existing_row["event_type"])
+        previous_occurred_on = str(existing_row["occurred_on"])
+        changed = (
+            previous_event_type != str(current_row["event_type"])
+            or previous_occurred_on != str(current_row["occurred_on"])
+            or set(previous_plant_ids) != set(current_plant_ids)
+            or set(previous_plot_ids) != set(current_plot_ids)
+        )
+        if changed and previous_event_type == "bloomed":
+            reconcile_seen_growing_after_bloom_change(
+                db,
+                garden_id=garden_id,
+                previous_plant_ids=previous_plant_ids,
+                previous_plot_ids=previous_plot_ids,
+                previous_seen_date=previous_occurred_on,
+            )
+        if changed:
+            _apply_bloom_side_effects(
+                db,
+                context=context,
+                garden_id=garden_id,
+                event_type=str(current_row["event_type"]),
+                occurred_on=str(current_row["occurred_on"]),
+                plant_ids=current_plant_ids,
+                plot_ids=current_plot_ids,
+            )
+
     db.commit()
     return {"status": "ok"}
 
@@ -625,6 +663,9 @@ def delete_journal_entry(request: Request, db: DB, entry_id: str) -> dict:
     existing_row = _fetch_entry(db, entry_id, garden_id)
     internal_id = int(existing_row["id"])
     public_id = str(existing_row["public_id"])
+    plant_map, plot_map, _ = _load_links(db, [internal_id])
+    previous_plant_ids = plant_map.get(internal_id, [])
+    previous_plot_ids = plot_map.get(internal_id, [])
     media_storage_pairs = collect_media_cleanup_for_target(
         db,
         garden_id=garden_id,
@@ -632,7 +673,14 @@ def delete_journal_entry(request: Request, db: DB, entry_id: str) -> dict:
         target_id=public_id,
     )
     db.execute("DELETE FROM garden_journal_entries WHERE id = %s", (internal_id,))
+    if str(existing_row["event_type"]) == "bloomed":
+        reconcile_seen_growing_after_bloom_change(
+            db,
+            garden_id=garden_id,
+            previous_plant_ids=previous_plant_ids,
+            previous_plot_ids=previous_plot_ids,
+            previous_seen_date=str(existing_row["occurred_on"]),
+        )
     db.commit()
-    for storage_key, preview_storage_key in media_storage_pairs:
-        unlink_storage_keys(storage_key, preview_storage_key)
+    drain_media_cleanup_jobs_best_effort(db, storage_pairs=media_storage_pairs)
     return {"status": "ok"}

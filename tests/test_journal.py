@@ -6,6 +6,41 @@ from tests.base import BaseApiTest, strong_password
 
 
 class TestJournal(BaseApiTest):
+    def _ensure_assignment(self, plant_id: str, plot_id: str) -> None:
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO plot_plants (plot_id, plt_id, quantity)
+                VALUES (%s, %s, 1)
+                ON CONFLICT (plot_id, plt_id) DO NOTHING
+                """,
+                (plot_id, plant_id),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+    def _seen_state(self, plant_id: str, plot_id: str) -> tuple[dict, dict]:
+        conn = db.get_db()
+        try:
+            plant = conn.execute(
+                "SELECT seen_growing, seen_growing_date FROM plants WHERE plt_id = %s",
+                (plant_id,),
+            ).fetchone()
+            assignment = conn.execute(
+                """
+                SELECT seen_growing, seen_growing_date
+                FROM plot_plants
+                WHERE plt_id = %s AND plot_id = %s
+                """,
+                (plant_id, plot_id),
+            ).fetchone()
+            assert plant is not None and assignment is not None
+            return dict(plant), dict(assignment)
+        finally:
+            db.return_db(conn)
+
     def test_journal_crud_lifecycle(self) -> None:
         """Create, read, update, and delete a journal entry."""
         r = self.client.post(
@@ -124,6 +159,119 @@ class TestJournal(BaseApiTest):
         entry = r.json()
         self.assertCountEqual(entry["plant_ids"], ["PLT-TEST", "PLT-002"])
         self.assertCountEqual(entry["plot_ids"], ["B1", "B2"])
+
+    def test_bloom_edit_date_reconciles_plant_and_assignment(self) -> None:
+        self._ensure_assignment("PLT-TEST", "B1")
+        created = self.client.post(
+            "/api/journal",
+            json={
+                "event_type": "bloomed",
+                "occurred_on": "2026-06-20",
+                "plant_ids": ["PLT-TEST"],
+                "plot_ids": ["B1"],
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        updated = self.client.patch(
+            f"/api/journal/{created.json()['id']}",
+            json={"occurred_on": "2026-05-15"},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        plant, assignment = self._seen_state("PLT-TEST", "B1")
+        self.assertEqual(str(plant["seen_growing_date"]), "2026-05-15")
+        self.assertEqual(str(assignment["seen_growing_date"]), "2026-05-15")
+
+    def test_bloom_edit_links_clears_old_and_marks_new_assignment(self) -> None:
+        self._ensure_assignment("PLT-TEST", "B1")
+        self._ensure_assignment("PLT-002", "B2")
+        created = self.client.post(
+            "/api/journal",
+            json={
+                "event_type": "bloomed",
+                "occurred_on": "2026-06-21",
+                "plant_ids": ["PLT-TEST"],
+                "plot_ids": ["B1"],
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        updated = self.client.patch(
+            f"/api/journal/{created.json()['id']}",
+            json={"plant_ids": ["PLT-002"], "plot_ids": ["B2"]},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        old_plant, old_assignment = self._seen_state("PLT-TEST", "B1")
+        new_plant, new_assignment = self._seen_state("PLT-002", "B2")
+        self.assertIsNone(old_plant["seen_growing_date"])
+        self.assertIsNone(old_assignment["seen_growing_date"])
+        self.assertEqual(str(new_plant["seen_growing_date"]), "2026-06-21")
+        self.assertEqual(str(new_assignment["seen_growing_date"]), "2026-06-21")
+
+    def test_bloom_edit_type_removes_stale_derived_state(self) -> None:
+        self._ensure_assignment("PLT-TEST", "B1")
+        created = self.client.post(
+            "/api/journal",
+            json={
+                "event_type": "bloomed",
+                "occurred_on": "2026-06-22",
+                "plant_ids": ["PLT-TEST"],
+                "plot_ids": ["B1"],
+            },
+        )
+        updated = self.client.patch(
+            f"/api/journal/{created.json()['id']}",
+            json={"event_type": "observed"},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        plant, assignment = self._seen_state("PLT-TEST", "B1")
+        self.assertIsNone(plant["seen_growing"])
+        self.assertIsNone(plant["seen_growing_date"])
+        self.assertIsNone(assignment["seen_growing"])
+        self.assertIsNone(assignment["seen_growing_date"])
+
+    def test_bloom_delete_uses_latest_remaining_and_preserves_newer_manual_state(self) -> None:
+        self._ensure_assignment("PLT-TEST", "B1")
+        older = self.client.post(
+            "/api/journal",
+            json={
+                "event_type": "bloomed",
+                "occurred_on": "2026-05-01",
+                "plant_ids": ["PLT-TEST"],
+                "plot_ids": ["B1"],
+            },
+        )
+        newer = self.client.post(
+            "/api/journal",
+            json={
+                "event_type": "bloomed",
+                "occurred_on": "2026-06-01",
+                "plant_ids": ["PLT-TEST"],
+                "plot_ids": ["B1"],
+            },
+        )
+        deleted = self.client.delete(f"/api/journal/{newer.json()['id']}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        plant, assignment = self._seen_state("PLT-TEST", "B1")
+        self.assertEqual(str(plant["seen_growing_date"]), "2026-05-01")
+        self.assertEqual(str(assignment["seen_growing_date"]), "2026-05-01")
+
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE plants SET seen_growing = 1, seen_growing_date = '2026-07-01' "
+                "WHERE plt_id = 'PLT-TEST'"
+            )
+            conn.execute(
+                "UPDATE plot_plants SET seen_growing = 1, seen_growing_date = '2026-07-01' "
+                "WHERE plt_id = 'PLT-TEST' AND plot_id = 'B1'"
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        deleted = self.client.delete(f"/api/journal/{older.json()['id']}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        plant, assignment = self._seen_state("PLT-TEST", "B1")
+        self.assertEqual(str(plant["seen_growing_date"]), "2026-07-01")
+        self.assertEqual(str(assignment["seen_growing_date"]), "2026-07-01")
 
     def test_bloom_observation_does_not_update_shared_global_plant(self) -> None:
         os.environ["AUTH_REQUIRED"] = "true"

@@ -24,21 +24,32 @@ let ctx: AppContext;
 let issueItems: GardenIssue[] = [];
 let issuesTotal = 0;
 let issuesOffset = 0;
+let issuesLoadSequence = 0;
 const ISSUES_PAGE_SIZE = 50;
 
 export function setIssuesOffset(offset: number): void {
   issuesOffset = offset;
 }
 
+export function resetIssuesForGardenSwitch(): void {
+  issuesLoadSequence += 1;
+  issueItems = [];
+  issuesTotal = 0;
+  issuesOffset = 0;
+  renderIssuesView();
+}
+
 export function initIssuesTab(appCtx: AppContext): void {
   ctx = appCtx;
 
-  document
-    .getElementById("issues-add-btn")
-    ?.addEventListener("click", () => {
+  const addButton = document.getElementById("issues-add-btn");
+  if (addButton) {
+    addButton.hidden = !ctx.canWrite();
+    addButton.addEventListener("click", () => {
       if (!ctx.ensureWriteAccess()) return;
       openIssueForm();
     });
+  }
   document
     .getElementById("issues-filter-status")
     ?.addEventListener("change", () => {
@@ -61,6 +72,7 @@ export function initIssuesTab(appCtx: AppContext): void {
 
 export async function loadIssues(): Promise<void> {
   if (!ctx) return;
+  const sequence = ++issuesLoadSequence;
   try {
     const params: Record<string, string | number> = {
       limit: ISSUES_PAGE_SIZE,
@@ -73,6 +85,7 @@ export async function loadIssues(): Promise<void> {
     const severityFilter = querySelect("issues-filter-severity")?.value;
     if (severityFilter) params["severity"] = severityFilter;
     const result = await fetchIssuesApi(params);
+    if (sequence !== issuesLoadSequence) return;
     if (result.total > 0 && result.issues.length === 0 && issuesOffset > 0) {
       issuesOffset = Math.max(
         0,
@@ -85,6 +98,7 @@ export async function loadIssues(): Promise<void> {
     issuesTotal = result.total;
     renderIssuesView();
   } catch (err) {
+    if (sequence !== issuesLoadSequence) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
@@ -104,6 +118,7 @@ function renderIssuesView(): void {
   renderIssueList(container, issueItems, {
     onEdit: (issue) => void openIssueForm(issue),
     onResolve: (issue) => void handleResolveIssue(issue),
+    onReopen: (issue) => void handleReopenIssue(issue),
     onDelete: (issue) => void handleDeleteIssue(issue),
     onEmptyAction: canWrite ? () => openIssueForm() : undefined,
     onPlantClick: (pltId) => {
@@ -422,6 +437,17 @@ async function handleResolveIssue(
   try {
     await resolveIssueApi(issue.id);
     ctx.showToast(t("issues.resolved"), "success");
+    void loadIssues();
+  } catch (err) {
+    ctx.showToast(getApiErrorMessage(err), "error");
+  }
+}
+
+async function handleReopenIssue(issue: GardenIssue): Promise<void> {
+  if (!ctx.ensureWriteAccess()) return;
+  try {
+    await updateIssueApi(issue.id, { status: "open" });
+    ctx.showToast(t("issues.reopened"), "success");
     void loadIssues();
   } catch (err) {
     ctx.showToast(getApiErrorMessage(err), "error");

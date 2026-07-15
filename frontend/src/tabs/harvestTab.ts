@@ -24,21 +24,37 @@ let ctx: AppContext;
 let harvestItems: HarvestEntry[] = [];
 let harvestTotal = 0;
 let harvestOffset = 0;
+let harvestLoadSequence = 0;
 const HARVEST_PAGE_SIZE = 50;
 
 export function setHarvestOffset(offset: number): void {
   harvestOffset = offset;
 }
 
+export function resetHarvestForGardenSwitch(): void {
+  harvestLoadSequence += 1;
+  harvestItems = [];
+  harvestTotal = 0;
+  harvestOffset = 0;
+  renderHarvestView();
+  const panel = document.getElementById("harvest-summary-panel");
+  if (panel instanceof HTMLElement) {
+    panel.hidden = true;
+    panel.replaceChildren();
+  }
+}
+
 export function initHarvestTab(appCtx: AppContext): void {
   ctx = appCtx;
 
-  document
-    .getElementById("harvest-add-btn")
-    ?.addEventListener("click", () => {
+  const addButton = document.getElementById("harvest-add-btn");
+  if (addButton) {
+    addButton.hidden = !ctx.canWrite();
+    addButton.addEventListener("click", () => {
       if (!ctx.ensureWriteAccess()) return;
       openHarvestForm();
     });
+  }
   document
     .getElementById("harvest-summary-btn")
     ?.addEventListener("click", () =>
@@ -66,6 +82,7 @@ export function initHarvestTab(appCtx: AppContext): void {
 
 export async function loadHarvest(): Promise<void> {
   if (!ctx) return;
+  const sequence = ++harvestLoadSequence;
   try {
     const params: Record<string, string | number> = {
       limit: HARVEST_PAGE_SIZE,
@@ -78,6 +95,7 @@ export async function loadHarvest(): Promise<void> {
     const dateTo = queryInput("harvest-filter-to")?.value;
     if (dateTo) params["date_to"] = dateTo;
     const result = await fetchHarvestApi(params);
+    if (sequence !== harvestLoadSequence) return;
     if (result.total > 0 && result.entries.length === 0 && harvestOffset > 0) {
       harvestOffset = Math.max(
         0,
@@ -91,6 +109,7 @@ export async function loadHarvest(): Promise<void> {
     renderHarvestView();
     void refreshHarvestSummaryIfOpen();
   } catch (err) {
+    if (sequence !== harvestLoadSequence) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
@@ -298,6 +317,7 @@ async function handleDeleteHarvest(
 
 function showHarvestSummary(): Promise<void> {
   return (async () => {
+    const sequence = harvestLoadSequence;
     const panel = document.getElementById(
       "harvest-summary-panel",
     );
@@ -310,6 +330,7 @@ function showHarvestSummary(): Promise<void> {
       const summary = await fetchHarvestSummaryApi(
         readHarvestSummaryFilters(),
       );
+      if (sequence !== harvestLoadSequence) return;
       renderHarvestSummary(panel, summary);
       panel.hidden = false;
     } catch (err) {
@@ -319,6 +340,7 @@ function showHarvestSummary(): Promise<void> {
 }
 
 async function refreshHarvestSummaryIfOpen(): Promise<void> {
+  const sequence = harvestLoadSequence;
   const panel = document.getElementById(
     "harvest-summary-panel",
   );
@@ -327,6 +349,7 @@ async function refreshHarvestSummaryIfOpen(): Promise<void> {
     const summary = await fetchHarvestSummaryApi(
       readHarvestSummaryFilters(),
     );
+    if (sequence !== harvestLoadSequence) return;
     renderHarvestSummary(panel, summary);
   } catch (err) {
     ctx.showToast(getApiErrorMessage(err), "error");
@@ -334,6 +357,7 @@ async function refreshHarvestSummaryIfOpen(): Promise<void> {
 }
 
 export async function openHarvestSummaryPanel(): Promise<void> {
+  const sequence = harvestLoadSequence;
   const panel = document.getElementById(
     "harvest-summary-panel",
   );
@@ -341,6 +365,7 @@ export async function openHarvestSummaryPanel(): Promise<void> {
   const summary = await fetchHarvestSummaryApi(
     readHarvestSummaryFilters(),
   );
+  if (sequence !== harvestLoadSequence) return;
   renderHarvestSummary(panel, summary);
   panel.hidden = false;
 }
