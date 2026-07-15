@@ -5,7 +5,7 @@ ALTER TABLE public.procurement_items
     ALTER COLUMN quantity TYPE numeric(20, 6) USING quantity::numeric;
 
 ALTER TABLE public.inventory_transactions
-    ADD COLUMN garden_id bigint;
+    ADD COLUMN IF NOT EXISTS garden_id bigint;
 
 UPDATE public.inventory_transactions AS tx
 SET garden_id = item.garden_id
@@ -16,25 +16,61 @@ WHERE item.id = tx.item_id
 ALTER TABLE public.inventory_transactions
     ALTER COLUMN garden_id SET NOT NULL;
 
-ALTER TABLE public.inventory_items
-    ADD CONSTRAINT ux_inventory_items_id_garden UNIQUE (id, garden_id);
-
-ALTER TABLE public.inventory_transactions
-    ADD CONSTRAINT ux_inventory_tx_id_item_garden UNIQUE (id, item_id, garden_id),
-    ADD CONSTRAINT fk_inventory_tx_garden
-        FOREIGN KEY (garden_id) REFERENCES public.gardens(id)
-        ON DELETE CASCADE DEFERRABLE,
-    ADD CONSTRAINT fk_inventory_tx_item_garden
-        FOREIGN KEY (item_id, garden_id)
-        REFERENCES public.inventory_items(id, garden_id)
-        ON DELETE CASCADE DEFERRABLE,
-    ADD CONSTRAINT ck_inventory_tx_delta_nonzero CHECK (delta <> 0) NOT VALID;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ux_inventory_items_id_garden'
+          AND conrelid = 'public.inventory_items'::regclass
+    ) THEN
+        ALTER TABLE public.inventory_items
+            ADD CONSTRAINT ux_inventory_items_id_garden UNIQUE (id, garden_id);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ux_inventory_tx_id_item_garden'
+          AND conrelid = 'public.inventory_transactions'::regclass
+    ) THEN
+        ALTER TABLE public.inventory_transactions
+            ADD CONSTRAINT ux_inventory_tx_id_item_garden UNIQUE (id, item_id, garden_id);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'fk_inventory_tx_garden'
+          AND conrelid = 'public.inventory_transactions'::regclass
+    ) THEN
+        ALTER TABLE public.inventory_transactions
+            ADD CONSTRAINT fk_inventory_tx_garden
+            FOREIGN KEY (garden_id) REFERENCES public.gardens(id)
+            ON DELETE CASCADE DEFERRABLE;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'fk_inventory_tx_item_garden'
+          AND conrelid = 'public.inventory_transactions'::regclass
+    ) THEN
+        ALTER TABLE public.inventory_transactions
+            ADD CONSTRAINT fk_inventory_tx_item_garden
+            FOREIGN KEY (item_id, garden_id)
+            REFERENCES public.inventory_items(id, garden_id)
+            ON DELETE CASCADE DEFERRABLE;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_inventory_tx_delta_nonzero'
+          AND conrelid = 'public.inventory_transactions'::regclass
+    ) THEN
+        ALTER TABLE public.inventory_transactions
+            ADD CONSTRAINT ck_inventory_tx_delta_nonzero CHECK (delta <> 0) NOT VALID;
+    END IF;
+END
+$$;
 
 ALTER TABLE public.procurement_items
-    ADD COLUMN receipt_inventory_item_id bigint,
-    ADD COLUMN receipt_inventory_transaction_id bigint,
-    ADD COLUMN received_by_user_id bigint,
-    ADD COLUMN received_at_ms bigint;
+    ADD COLUMN IF NOT EXISTS receipt_inventory_item_id bigint,
+    ADD COLUMN IF NOT EXISTS receipt_inventory_transaction_id bigint,
+    ADD COLUMN IF NOT EXISTS received_by_user_id bigint,
+    ADD COLUMN IF NOT EXISTS received_at_ms bigint;
 
 WITH receipt_metadata AS (
     SELECT
@@ -76,31 +112,69 @@ SET receipt_inventory_item_id = receipt.inventory_item_id,
 FROM resolved_receipts AS receipt
 WHERE receipt.procurement_id = procurement.id;
 
-ALTER TABLE public.procurement_items
-    ADD CONSTRAINT ux_procurement_receipt_transaction
-        UNIQUE (receipt_inventory_transaction_id),
-    ADD CONSTRAINT fk_procurement_receipt_inventory
-        FOREIGN KEY (
-            receipt_inventory_transaction_id,
-            receipt_inventory_item_id,
-            garden_id
-        ) REFERENCES public.inventory_transactions(id, item_id, garden_id)
-        DEFERRABLE,
-    ADD CONSTRAINT fk_procurement_received_by_user
-        FOREIGN KEY (received_by_user_id) REFERENCES public.auth_users(id)
-        ON DELETE SET NULL DEFERRABLE,
-    ADD CONSTRAINT ck_procurement_receipt_provenance
-        CHECK (
-            (
-                receipt_inventory_item_id IS NULL
-                AND receipt_inventory_transaction_id IS NULL
-                AND received_at_ms IS NULL
-            )
-            OR (
-                receipt_inventory_item_id IS NOT NULL
-                AND receipt_inventory_transaction_id IS NOT NULL
-                AND received_at_ms IS NOT NULL
-                AND status = 'received'
-            )
-        ),
-    ADD CONSTRAINT ck_procurement_quantity_positive CHECK (quantity > 0) NOT VALID;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ux_procurement_receipt_transaction'
+          AND conrelid = 'public.procurement_items'::regclass
+    ) THEN
+        ALTER TABLE public.procurement_items
+            ADD CONSTRAINT ux_procurement_receipt_transaction
+            UNIQUE (receipt_inventory_transaction_id);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'fk_procurement_receipt_inventory'
+          AND conrelid = 'public.procurement_items'::regclass
+    ) THEN
+        ALTER TABLE public.procurement_items
+            ADD CONSTRAINT fk_procurement_receipt_inventory
+            FOREIGN KEY (
+                receipt_inventory_transaction_id,
+                receipt_inventory_item_id,
+                garden_id
+            ) REFERENCES public.inventory_transactions(id, item_id, garden_id)
+            DEFERRABLE;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'fk_procurement_received_by_user'
+          AND conrelid = 'public.procurement_items'::regclass
+    ) THEN
+        ALTER TABLE public.procurement_items
+            ADD CONSTRAINT fk_procurement_received_by_user
+            FOREIGN KEY (received_by_user_id) REFERENCES public.auth_users(id)
+            ON DELETE SET NULL DEFERRABLE;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_procurement_receipt_provenance'
+          AND conrelid = 'public.procurement_items'::regclass
+    ) THEN
+        ALTER TABLE public.procurement_items
+            ADD CONSTRAINT ck_procurement_receipt_provenance
+            CHECK (
+                (
+                    receipt_inventory_item_id IS NULL
+                    AND receipt_inventory_transaction_id IS NULL
+                    AND received_at_ms IS NULL
+                )
+                OR (
+                    receipt_inventory_item_id IS NOT NULL
+                    AND receipt_inventory_transaction_id IS NOT NULL
+                    AND received_at_ms IS NOT NULL
+                    AND status = 'received'
+                )
+            );
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_procurement_quantity_positive'
+          AND conrelid = 'public.procurement_items'::regclass
+    ) THEN
+        ALTER TABLE public.procurement_items
+            ADD CONSTRAINT ck_procurement_quantity_positive CHECK (quantity > 0) NOT VALID;
+    END IF;
+END
+$$;
