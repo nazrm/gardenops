@@ -604,7 +604,8 @@ function assertPhaseFourDatabaseState(initial, final, fixture, oracle, profiles)
     row.row_id === received.receipt_inventory_transaction_id
   ));
   assert(receiptTransactions.length === 1
-    && receiptTransactions[0].delta === procurementSpec.quantity,
+    && scaledPhaseFourDecimal(receiptTransactions[0].delta)
+      === scaledPhaseFourDecimal(procurementSpec.quantity),
   "Phase 4 procurement repeat created duplicate receipt transactions");
 
   assert(final.planner_goal_preferences.length === spec.planner_goal_rows_final
