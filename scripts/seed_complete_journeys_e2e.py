@@ -3672,11 +3672,10 @@ def _phase_four_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
                 {
                     "garden_id": int(row["garden_id"]),
                     "plot_id": str(row["plot_id"]),
-                    "public_id": str(row["public_id"]),
                     "zone_code": str(row["zone_code"] or ""),
                 }
                 for row in conn.execute(
-                    """SELECT plot.public_id, ownership.garden_id, plot.plot_id, plot.zone_code
+                    """SELECT ownership.garden_id, plot.plot_id, plot.zone_code
                        FROM plots plot
                        JOIN plot_ownership ownership ON ownership.plot_id = plot.plot_id
                        WHERE ownership.garden_id = ANY(%s)

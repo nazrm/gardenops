@@ -874,6 +874,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
     assert "phase_four_state" in seeder_source
     assert 'task.rule_source LIKE %s' in seeder_source
     assert '(garden_ids, "workflow:%")' in seeder_source
+    assert "SELECT plot.public_id" not in seeder_source
     assert oracle["schema_version"] == 1
     assert oracle["phase_four"]["profile_order"] == [
         "admin:desktop",
