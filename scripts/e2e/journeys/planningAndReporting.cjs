@@ -75,12 +75,19 @@ async function openSubMode(page, parent, mode, panel) {
   await visible(page.locator(panel), `${mode} panel`);
 }
 
-async function openInsightsMode(page, mode, panel) {
+async function openInsightsMode(page, mode, panel, options = {}) {
   await openSubMode(page, "insights", "statistics", "#statistics-view");
   const button = page.locator(`#stats-mode-${mode}:visible`);
   await visible(button, `${mode} statistics mode`);
   await button.click();
-  await visible(page.locator(panel), `${mode} statistics panel`);
+  await waitFor(async () => await button.getAttribute("aria-selected") === "true",
+    `${mode} statistics mode selection`);
+  if (options.requireContent === false) {
+    await waitFor(async () => !await page.locator(panel).evaluate((element) => element.hidden),
+      `${mode} statistics panel enabled`);
+  } else {
+    await visible(page.locator(panel), `${mode} statistics panel`);
+  }
 }
 
 async function openMobileUtilityIfPresent(page, label) {
@@ -571,7 +578,7 @@ async function exerciseDelayedGardenResponses(page, fixture) {
       await route.continue();
     });
     if (parent === "garden") await openSubMode(page, parent, mode, panel);
-    else await openInsightsMode(page, mode, panel);
+    else await openInsightsMode(page, mode, panel, { requireContent: false });
     await waitFor(() => captured, `${mode} delayed Alpha request`);
     const selector = page.locator("#mobile-garden-select");
     await openMobileUtilityIfPresent(page, `${mode} mobile utility sheet`);

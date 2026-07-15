@@ -919,6 +919,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
         "openMobileUtilityIfPresent",
         'page.locator("#mobile-global-plant-search")',
         "waitForGardenRefresh",
+        "{ requireContent: false }",
     ):
         assert marker in journey_source
     for endpoint in (
