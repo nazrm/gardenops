@@ -37,6 +37,7 @@
       "admin:desktop",
       "editor:desktop",
       "admin:mobile",
+      "editor:mobile",
       "viewer:desktop",
       "viewer:mobile"
     ],

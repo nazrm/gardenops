@@ -288,6 +288,43 @@ async function createProcurementLifecycleThroughUi(page, fixture) {
   return created.id;
 }
 
+async function completeWorkflowTaskThroughUi(page, gardenId, task, title) {
+  assert(typeof task?.task_id === "string" && task.task_id,
+    "Workflow response omitted the task selected for completion");
+  await openSubMode(page, "activity", "tasks", "#tasks-tab-content");
+  let card = page.locator(`#tasks-list .task-card[data-task-id="${task.task_id}"]`);
+  await visible(card, "generated workflow task on Tasks");
+  assert((await card.locator(".task-card-title").innerText()).includes(title),
+    "Generated workflow task title diverged from its selected step");
+  const actionPath = `/api/tasks/${encodeURIComponent(task.task_id)}/action`;
+  const completionPending = waitForApiResponse(page, "POST", actionPath);
+  await card.locator(".task-action-complete").click();
+  const completionResponse = await completionPending;
+  assert(completionResponse.status() === 200,
+    `Workflow task completion returned ${completionResponse.status()}`);
+  const persisted = await ok(page, gardenId, {
+    path: `/api/tasks/${encodeURIComponent(task.task_id)}`,
+  });
+  assert(persisted.status === "completed" && persisted.title === title,
+    "Workflow task completion did not persist exactly");
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await openSubMode(page, "activity", "tasks", "#tasks-tab-content");
+  const completedLoad = page.waitForResponse((response) => (
+    response.request().method() === "GET"
+    && new URL(response.url()).pathname === "/api/tasks"
+    && new URL(response.url()).searchParams.get("status") === "completed"
+  ));
+  await page.locator("#tasks-filter-status").selectOption("completed");
+  const completedResponse = await completedLoad;
+  assert(completedResponse.status() === 200, "Completed task history did not reload");
+  card = page.locator(`#tasks-list .task-card[data-task-id="${task.task_id}"]`);
+  await visible(card, "completed workflow task history after reload");
+  assert(await card.locator(".task-card-actions button").count() === 0,
+    "Completed workflow task retained active action controls");
+  return { status: persisted.status, taskId: task.task_id, title };
+}
+
 async function exercisePlannerAndReportsThroughUi(page, fixture) {
   const gardenId = fixture.gardens.alpha.id;
   const goal = phaseFour(fixture).planner_goal;
@@ -312,14 +349,18 @@ async function exercisePlannerAndReportsThroughUi(page, fixture) {
   const available = await ok(page, gardenId, { path: "/api/workflows/available" });
   assert(Array.isArray(available.workflows) && available.workflows.length > 0,
     "No supported seasonal workflow was available");
-  const workflow = available.workflows[0];
-  const selected = workflow.steps.slice(0, Math.min(2, workflow.steps.length)).map((step) => step.id);
-  assert(selected.length > 0, "Supported workflow did not expose selectable steps");
+  const workflow = available.workflows.find((entry) => entry.id === "midsummer_check");
+  assert(workflow, "Deterministic midsummer workflow was unavailable");
+  const selectedStep = workflow.steps.find((step) => step.id === "pest_check");
+  assert(selectedStep, "Midsummer workflow omitted its deterministic pest check step");
+  const selected = [selectedStep.id];
   const workflowCard = page.locator(".workflow-card").filter({ hasText: workflow.name }).first();
   await visible(workflowCard, "supported seasonal workflow");
   const checkboxes = workflowCard.locator("input[type='checkbox']");
-  for (let index = selected.length; index < await checkboxes.count(); index += 1) {
-    await checkboxes.nth(index).uncheck();
+  for (let index = 0; index < await checkboxes.count(); index += 1) {
+    const checkbox = checkboxes.nth(index);
+    const label = (await checkbox.locator("xpath=..").innerText()).trim();
+    if (label !== selectedStep.title) await checkbox.uncheck();
   }
   const workflowPending = waitForApiResponse(page, "POST", "/api/workflows/start");
   await workflowCard.getByRole("button", { name: "Start workflow", exact: true }).click();
@@ -334,6 +375,8 @@ async function exercisePlannerAndReportsThroughUi(page, fixture) {
     "First workflow start did not create each selected task exactly once");
   assert(second.created === 0 && second.skipped === selected.length,
     "Repeated workflow start was not idempotent");
+  const workflowTask = first.tasks.find((task) => task.step_id === selectedStep.id);
+  assert(workflowTask, "Workflow response omitted its created pest check task");
 
   const reports = await ok(page, gardenId, { path: "/api/statistics/reports" });
   for (const key of ["overdue_tasks_count", "due_this_week_count", "open_issues_count"]) {
@@ -360,7 +403,14 @@ async function exercisePlannerAndReportsThroughUi(page, fixture) {
   assert(clearResponse.status() === 200, "Planner goal UI clear did not return 200");
   const cleared = await ok(page, gardenId, { path: "/api/planner/goal" });
   assert(cleared.goal === null, "Planner goal clear did not persist");
+  const completedWorkflow = await completeWorkflowTaskThroughUi(
+    page,
+    gardenId,
+    workflowTask,
+    selectedStep.title,
+  );
   return {
+    completedWorkflow,
     report: reports,
     scopedReport,
     workflowId: workflow.id,
@@ -447,14 +497,18 @@ async function exerciseCatalogue(page, fixture) {
 
 async function exerciseCorrectiveNavigation(page) {
   await openInsightsMode(page, "reports", "#reports-dashboard");
-  const action = page.locator(".report-action-card:not(.is-disabled):not([disabled])").first();
-  if (await action.count() === 0) return { supported: false };
+  const action = page.locator(".report-action-card:not(.is-disabled):not([disabled])").filter({
+    has: page.locator(".report-action-title").getByText("Overdue tasks", { exact: true }),
+  });
+  await visible(action, "overdue-task report action");
   await action.click();
-  await waitFor(async () => (
-    await page.locator("#tasks-tab-content:visible, #issues-tab-content:visible, #care-view:visible, #map-view:visible")
-      .count()
-  ) > 0, "report corrective navigation target");
-  return { supported: true };
+  await visible(page.locator("#tasks-tab-content:visible"), "overdue-task corrective destination");
+  const overdueView = page.locator("[data-tasks-view='overdue']");
+  await waitFor(async () => await overdueView.evaluate((element) => element.classList.contains("active")),
+    "overdue-task corrective view");
+  assert(await page.locator("#tasks-filter-status").inputValue() === "pending",
+    "Overdue-task corrective navigation did not preserve its pending filter");
+  return { status: "pending", supported: true, target: "tasks", view: "overdue" };
 }
 
 async function exerciseEditorWriteBoundary(page, fixture) {
@@ -687,6 +741,7 @@ async function runPlanningAndReporting(options, profileRunner = runProfile) {
     ["admin", "desktop"],
     ["editor", "desktop"],
     ["admin", "mobile"],
+    ["editor", "mobile"],
     ["viewer", "desktop"],
     ["viewer", "mobile"],
   ];

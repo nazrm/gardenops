@@ -881,6 +881,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
         "admin:desktop",
         "editor:desktop",
         "admin:mobile",
+        "editor:mobile",
         "viewer:desktop",
         "viewer:mobile",
     ]
@@ -920,6 +921,11 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
         'page.locator("#mobile-global-plant-search")',
         "waitForGardenRefresh",
         "{ requireContent: false }",
+        "completeWorkflowTaskThroughUi",
+        'entry.id === "midsummer_check"',
+        'step.id === "pest_check"',
+        'selectOption("completed")',
+        'target: "tasks", view: "overdue"',
     ):
         assert marker in journey_source
     for endpoint in (

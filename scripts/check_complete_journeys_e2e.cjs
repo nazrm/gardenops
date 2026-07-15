@@ -510,6 +510,9 @@ function assertPhaseFourProfileEvidence(profiles, oracle) {
   const editorDesktop = profiles.find((profile) => (
     profile.role === "editor" && profile.profile === "desktop"
   ));
+  const editorMobile = profiles.find((profile) => (
+    profile.role === "editor" && profile.profile === "mobile"
+  ));
   assert(adminDesktop?.checks?.admin_desktop === true
     && adminDesktop?.checks?.downloads?.csv_rows > 0,
   "Phase 4 administrator desktop proof is incomplete");
@@ -518,6 +521,8 @@ function assertPhaseFourProfileEvidence(profiles, oracle) {
   "Phase 4 administrator mobile proof is incomplete");
   assert(editorDesktop?.checks?.editor_write_boundary === true,
     "Phase 4 editor write boundary proof is incomplete");
+  assert(editorMobile?.checks?.editor_write_boundary === true,
+    "Phase 4 editor mobile write boundary proof is incomplete");
   assert(viewers.length === 2 && viewers.every((profile) => (
     profile.checks.viewer_ui_denial === true && profile.checks.viewer_direct_write_denial === true
   )), "Phase 4 viewer denial proof is incomplete");
@@ -608,6 +613,12 @@ function assertPhaseFourDatabaseState(initial, final, fixture, oracle, profiles)
   "Phase 4 workflow did not create exactly one task per selected step");
   assert(new Set(workflowTasks.map((row) => row.rule_source)).size === workflowTasks.length,
     "Phase 4 workflow task projection contains duplicate rule provenance");
+  const completedWorkflow = adminDesktop?.checks?.planner?.completedWorkflow;
+  const completedWorkflowRow = workflowTasks.find((row) => row.public_id === completedWorkflow?.taskId);
+  assert(completedWorkflow?.status === "completed"
+    && completedWorkflowRow?.status === "completed"
+    && completedWorkflowRow?.title === completedWorkflow.title,
+  "Phase 4 workflow task did not complete through the Tasks UI and persist");
 
   const report = adminDesktop?.checks?.planner?.report;
   assert(report && Array.isArray(report.available_zones),
@@ -655,7 +666,8 @@ function normalizePhaseFourMutationPath(pathname) {
     .replace(/^\/api\/inventory\/[^/]+$/, "/api/inventory/{item_id}")
     .replace(/^\/api\/inventory\/[^/]+\/transactions$/, "/api/inventory/{item_id}/transactions")
     .replace(/^\/api\/procurement\/[^/]+$/, "/api/procurement/{item_id}")
-    .replace(/^\/api\/procurement\/[^/]+\/transition$/, "/api/procurement/{item_id}/transition");
+    .replace(/^\/api\/procurement\/[^/]+\/transition$/, "/api/procurement/{item_id}/transition")
+    .replace(/^\/api\/tasks\/[^/]+\/action$/, "/api/tasks/{task_id}/action");
 }
 
 function assertPhaseFourAuditEvents(beforeAudit, finalAudit, profiles, fixture) {
@@ -669,6 +681,7 @@ function assertPhaseFourAuditEvents(beforeAudit, finalAudit, profiles, fixture) 
     "/api/procurement",
     "/api/procurement/{item_id}",
     "/api/procurement/{item_id}/transition",
+    "/api/tasks/{task_id}/action",
     "/api/workflows/start",
   ]);
   const requests = profiles.flatMap((profile) => profile.requests.flatMap((request) => {
