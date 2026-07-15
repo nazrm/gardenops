@@ -2628,6 +2628,31 @@ def test_phase_two_and_three_boundaries_require_recorded_audit_request_ids() -> 
     assert '"Phase 3 database boundary",\n        phaseThreeAuditRequestIds' in source
 
 
+def test_cumulative_assertions_preserve_private_replay_state_before_validation() -> None:
+    source = CHECKER.read_text(encoding="utf-8")
+    checkpoint = source.split("function writePrivateAssertionCheckpoint", 1)[1].split(
+        "function preparePhaseTwoFixtures", 1
+    )[0]
+    main = source.split('currentStage = "final-database-snapshot";', 1)[1].split(
+        "manifest.database = {", 1
+    )[0]
+
+    assert "process.env.GARDENOPS_LOGS_DIR" in checkpoint
+    assert '"complete-journeys-assertion-state.json"' in checkpoint
+    assert 'flag: "wx"' in checkpoint
+    assert "mode: 0o600" in checkpoint
+    assert "writePrivateAssertionCheckpoint({" in main
+    for snapshot in (
+        "finalDatabase",
+        "phaseFourDatabaseBaseline",
+        "phaseOneDatabase",
+        "phaseThreeDatabase",
+        "phaseThreeDatabaseBaseline",
+        "phaseTwoDatabase",
+    ):
+        assert snapshot in main
+
+
 def test_phase_two_audit_correlation_requires_exact_actor_auth_garden_and_request_pairing() -> None:
     script = """
 const { assertPhaseTwoAuditEvents } = require('./scripts/check_complete_journeys_e2e.cjs');

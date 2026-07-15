@@ -345,6 +345,18 @@ async function settledDatabaseSnapshot(label, requiredRequestIds = [], options =
     `${label} audit state did not settle; ${missingIds.length} browser request IDs remain unpersisted`);
 }
 
+function writePrivateAssertionCheckpoint(state) {
+  const logDirectory = path.resolve(process.env.GARDENOPS_LOGS_DIR || "");
+  assert(logDirectory !== path.parse(logDirectory).root,
+    "Complete journey private log directory is missing");
+  const checkpointPath = path.join(logDirectory, "complete-journeys-assertion-state.json");
+  fs.writeFileSync(checkpointPath, `${JSON.stringify(state)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+}
+
 function preparePhaseTwoFixtures() {
   const output = execFileSync(
     path.join(ROOT, ".venv", "bin", "python"),
@@ -6138,6 +6150,14 @@ async function main() {
     currentStage = "final-database-snapshot";
     const finalDatabase = await settledDatabaseSnapshot("Final database boundary");
     currentStage = "cumulative-assertions";
+    writePrivateAssertionCheckpoint({
+      finalDatabase,
+      phaseFourDatabaseBaseline,
+      phaseOneDatabase,
+      phaseThreeDatabase,
+      phaseThreeDatabaseBaseline,
+      phaseTwoDatabase,
+    });
     manifest.database = {
       audit_projection: auditManifestProjection(finalDatabase.audit_state),
       whole_table_projections: {
