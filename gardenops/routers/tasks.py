@@ -1339,21 +1339,13 @@ def list_tasks(
     params: list = [garden_id]
 
     if view == "today":
-        conditions.append(
-            f"({view_status_clause} AND {view_date} <= {date_expr['today']})"
-        )
+        conditions.append(f"({view_status_clause} AND {view_date} <= {date_expr['today']})")
     elif view == "week":
-        conditions.append(
-            f"{view_status_clause} AND {view_date} <= {date_expr['plus_7_days']}"
-        )
+        conditions.append(f"{view_status_clause} AND {view_date} <= {date_expr['plus_7_days']}")
     elif view == "month":
-        conditions.append(
-            f"{view_status_clause} AND {view_date} <= {date_expr['plus_30_days']}"
-        )
+        conditions.append(f"{view_status_clause} AND {view_date} <= {date_expr['plus_30_days']}")
     elif view == "overdue":
-        conditions.append(
-            f"{view_status_clause} AND {view_date} < {date_expr['today']}"
-        )
+        conditions.append(f"{view_status_clause} AND {view_date} < {date_expr['today']}")
     if view in {"today", "week", "month", "overdue"} or status in {
         None,
         "pending",

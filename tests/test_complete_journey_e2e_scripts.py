@@ -554,7 +554,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "role_delayed_surfaces",
     ):
         assert marker in journey_source
-    assert 'waitFor(() => page.locator' not in journey_source
+    assert "waitFor(() => page.locator" not in journey_source
     for substantive_marker in (
         "#onb-garden-name",
         ".onb-validation--error",
@@ -873,7 +873,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
     assert "assertPhaseFourAuditEvents" in checker_source
     assert "_phase_four_runtime_state" in seeder_source
     assert "phase_four_state" in seeder_source
-    assert 'task.rule_source LIKE %s' in seeder_source
+    assert "task.rule_source LIKE %s" in seeder_source
     assert '(garden_ids, "workflow:%")' in seeder_source
     assert "SELECT plot.public_id" not in seeder_source
     assert oracle["schema_version"] == 1
@@ -3469,7 +3469,7 @@ def test_phase_two_viewer_weather_keeps_personal_dismissal_controls() -> None:
     checker = CHECKER.read_text(encoding="utf-8")
     assert "Phase 2 weather dismissals were not scoped to their users and gardens" in checker
     assert "viewerGeneratedFrostAlert.id" in checker
-    assert 'alert.valid_from === phase.date' in checker
+    assert "alert.valid_from === phase.date" in checker
     assert "username: fixture.roles.viewer" in checker
 
 

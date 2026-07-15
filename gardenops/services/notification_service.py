@@ -563,9 +563,7 @@ def attention_notification_sql_filter(
             continue
 
         subtype_sql = (
-            "1 = 1"
-            if bool(policy.get("_match_any_subtype"))
-            else "notification_subtype IS NULL"
+            "1 = 1" if bool(policy.get("_match_any_subtype")) else "notification_subtype IS NULL"
         )
         policy_params: list[Any] = [notification_type]
         if notification_subtype is not None:

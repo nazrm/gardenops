@@ -296,10 +296,7 @@ class TestInventoryTransactions(BaseApiTest):
                 all(transaction["actor_user_id"] == int(user["id"]) for transaction in ledger)
             )
             self.assertTrue(
-                all(
-                    transaction["actor_username"] == "inventory_decimal"
-                    for transaction in ledger
-                )
+                all(transaction["actor_username"] == "inventory_decimal" for transaction in ledger)
             )
             self.assertTrue(all(transaction["created_at_ms"] > 0 for transaction in ledger))
         finally:

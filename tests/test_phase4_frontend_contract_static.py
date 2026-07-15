@@ -114,7 +114,7 @@ def test_phase4_inventory_precision_and_atomic_plant_contract() -> None:
     assert "quantity: DecimalString;" in api
     assert "delta: DecimalString;" in api
     assert "plantFromInventoryApi" in api
-    assert 'operationId: plantOperationId' in inventory_tab
+    assert "operationId: plantOperationId" in inventory_tab
     assert "addPlantToPlotApi" not in inventory_tab
     assert "await plantFromInventoryApi(" in inventory_tab
     assert "quantity: absoluteDecimalString(data.delta)" in inventory_tab
