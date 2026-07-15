@@ -258,18 +258,20 @@ HTTPS, and WebSocket traffic. It refuses unsafe artifact paths and writes privat
 manifests/traces under a unique directory below the gitignored
 `research/optimization-map/runs/complete-journeys/` tree. Successful runs remove
 temporary logs/media/terrain/download state while retaining the ignored evidence
-run; failed runs preserve private logs and artifacts for diagnosis. Raw Playwright
-traces are private, sensitive evidence: they can contain request and response
-payloads, page state, and identifiers. The public manifest is a
-sanitized projection only; it binds the fixture, runtime/browser, and lockfiles
-by hash and size and includes recomputable canonical projection digests. The
+run; failed runs preserve private logs and artifacts for diagnosis. Playwright
+first writes each trace to private staging because it can contain request and
+response payloads, page state, and identifiers. Run closure sanitizes and validates
+that staged trace, deletes the raw staging copy, and retains only the sanitized
+private archive. The public manifest is a sanitized projection; it binds the
+fixture, runtime/browser, and lockfiles by hash and size and includes recomputable
+canonical projection digests. The
 runtime evidence hashes both the Chromium launcher and the resolved ELF browser
 payload that Playwright launches; the reported browser version comes from that
 running process. The audit digest binds a retained aggregate projection of
 method, normalized path, status, and count, rather than raw audit records or a
 null placeholder. Initial and final count/digest projections cover every public
-domain table, including every table allowed to change. The manifest does not
-sanitize or replace the raw trace archive.
+domain table, including every table allowed to change. The public manifest does
+not contain or replace the retained sanitized trace archive.
 
 The cumulative Phase 1 invocation first runs the Phase 0 desktop and Pixel 7
 administrator foundation, then runs independent desktop and Pixel 7 onboarding

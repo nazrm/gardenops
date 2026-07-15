@@ -662,6 +662,8 @@ def _write_watering_rescheduled_by_rain_outcome(
     plant_ids: tuple[str, ...],
     plot_ids: tuple[str, ...],
     now_ms: int,
+    recurrence_deadline: str | None = None,
+    occurrence_expired: bool = False,
 ) -> None:
     rule_source = str(task["rule_source"] or "")
     target_id = plant_ids[0] if plant_ids else _plant_id_from_water_rule(rule_source)
@@ -682,6 +684,10 @@ def _write_watering_rescheduled_by_rain_outcome(
         "alert_valid_until": str(alert["valid_until"]),
         "alert": alert_metadata,
     }
+    if recurrence_deadline:
+        metadata["recurrence_deadline"] = recurrence_deadline
+    if occurrence_expired:
+        metadata["occurrence_expired"] = True
     if rain_mm is not None:
         metadata["rain_mm"] = rain_mm
     upsert_attention_outcome(
@@ -694,11 +700,22 @@ def _write_watering_rescheduled_by_rain_outcome(
         source_public_id=rule_source,
         target_type="plant",
         target_id=target_id,
-        title="Watering rescheduled by rain",
-        explanation=(
-            f"{_format_rain_mm(rain_mm)} moved {task_title} from {old_due_on} to {new_due_on}."
+        title=(
+            "Watering occurrence covered by rain"
+            if occurrence_expired
+            else "Watering rescheduled by rain"
         ),
-        reason="Rain rescheduled watering",
+        explanation=(
+            f"{_format_rain_mm(rain_mm)} covers {task_title} through its weekly "
+            "recurrence; the next occurrence replaces it."
+            if occurrence_expired
+            else f"{_format_rain_mm(rain_mm)} moved {task_title} from {old_due_on} to {new_due_on}."
+        ),
+        reason=(
+            "Rain covers watering through recurrence"
+            if occurrence_expired
+            else "Rain rescheduled watering"
+        ),
         plant_ids=outcome_plant_ids,
         plot_ids=plot_ids,
         metadata=metadata,
@@ -788,17 +805,25 @@ def _reschedule_watering_during_rain(
         recurrence_deadline = weekly_watering_recurrence_deadline(
             str(row["rule_source"] or ""),
         )
-        new_due = (
-            min(reassessment_due, recurrence_deadline) if recurrence_deadline else reassessment_due
-        )
+        occurrence_expired = bool(recurrence_deadline and reassessment_due > recurrence_deadline)
+        new_due = reassessment_due
         meta["rescheduled_from"] = old_action_on
         meta["rescheduled_reason"] = "rain_alert"
         meta["rescheduled_weather_alert_id"] = int(alert["id"])
         meta["rescheduled_alert_valid_until"] = str(valid_until)
         meta["rain_reassessment_policy"] = "check_root_zone_moisture_before_watering"
         meta["rain_reassessment_delay_days"] = _RAIN_REASSESSMENT_DELAY_DAYS
-        if recurrence_deadline and new_due != reassessment_due:
-            meta["rain_reassessment_capped_by_recurrence"] = recurrence_deadline
+        if recurrence_deadline:
+            meta["rain_recurrence_deadline"] = recurrence_deadline
+        if occurrence_expired:
+            meta["rain_occurrence_expired"] = True
+            meta["lifecycle"] = {
+                "status": "expired",
+                "reason": "rain_covered_until_next_recurrence",
+                "action_on": old_action_on,
+                "source": "rain_alert_automation",
+                "expired_at_ms": effective_now_ms,
+            }
         meta.setdefault("rain_original_title", str(row["title"] or ""))
         meta.setdefault("rain_original_description", str(row["description"] or ""))
         current_title = str(row["title"] or "Watering")
@@ -816,10 +841,19 @@ def _reschedule_watering_during_rain(
         update = db.execute(
             """
             UPDATE garden_tasks
-            SET title = %s,
-                description = %s,
-                due_on = CASE WHEN status = 'snoozed' THEN due_on ELSE %s END,
-                snoozed_until = CASE WHEN status = 'snoozed' THEN %s ELSE NULL END,
+            SET title = CASE WHEN %s THEN title ELSE %s END,
+                description = CASE WHEN %s THEN description ELSE %s END,
+                status = CASE WHEN %s THEN 'expired' ELSE status END,
+                due_on = CASE
+                    WHEN %s THEN due_on
+                    WHEN status = 'snoozed' THEN due_on
+                    ELSE %s
+                END,
+                snoozed_until = CASE
+                    WHEN %s THEN NULL
+                    WHEN status = 'snoozed' THEN %s
+                    ELSE NULL
+                END,
                 metadata_json = %s,
                 updated_at_ms = %s
             WHERE id = %s
@@ -827,9 +861,14 @@ def _reschedule_watering_during_rain(
               AND COALESCE(snoozed_until, due_on) = %s
             """,
             (
+                occurrence_expired,
                 reassessment_title,
+                occurrence_expired,
                 reassessment_description,
+                occurrence_expired,
+                occurrence_expired,
                 new_due,
+                occurrence_expired,
                 new_due,
                 json.dumps(meta, separators=(",", ":")),
                 effective_now_ms,
@@ -861,6 +900,8 @@ def _reschedule_watering_during_rain(
             plant_ids=plant_ids,
             plot_ids=plot_ids,
             now_ms=effective_now_ms,
+            recurrence_deadline=recurrence_deadline,
+            occurrence_expired=occurrence_expired,
         )
     _logger.info(
         "Rescheduled %d watering tasks after rain alert %d",

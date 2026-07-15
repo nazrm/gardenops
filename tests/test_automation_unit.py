@@ -794,7 +794,7 @@ class TestWeatherTaskTyping(DbTestBase):
         assert int(outcome["created_at_ms"]) == frozen_now_ms
         assert int(outcome["updated_at_ms"]) == frozen_now_ms
 
-    def test_rain_reschedule_stops_before_next_weekly_watering_recurrence(self) -> None:
+    def test_rain_reschedule_expires_occurrence_crossing_weekly_recurrence(self) -> None:
         self._insert_plant("RNCAP", "Rain recurrence cap", care_watering="Water regularly")
         self._place_outdoors("RNCAP", "RNCAP-OUT")
         task = self.conn.execute(
@@ -834,7 +834,7 @@ class TestWeatherTaskTyping(DbTestBase):
 
         task_after = self.conn.execute(
             """
-            SELECT due_on, metadata_json FROM garden_tasks
+            SELECT due_on, status, metadata_json FROM garden_tasks
             WHERE public_id = 'task_rain_recurrence_cap'
             """
         ).fetchone()
@@ -849,13 +849,15 @@ class TestWeatherTaskTyping(DbTestBase):
         ).fetchone()
 
         assert task_after is not None
-        assert str(task_after["due_on"]) == "2026-07-24"
-        assert (
-            json.loads(str(task_after["metadata_json"]))["rain_reassessment_capped_by_recurrence"]
-            == "2026-07-24"
-        )
+        assert str(task_after["due_on"]) == "2026-07-18"
+        assert str(task_after["status"]) == "expired"
+        task_metadata = json.loads(str(task_after["metadata_json"]))
+        assert task_metadata["rain_recurrence_deadline"] == "2026-07-24"
+        assert task_metadata["rain_occurrence_expired"] is True
         assert outcome is not None
-        assert json.loads(str(outcome["metadata_json"]))["new_due_on"] == "2026-07-24"
+        outcome_metadata = json.loads(str(outcome["metadata_json"]))
+        assert outcome_metadata["new_due_on"] == "2026-07-27"
+        assert outcome_metadata["occurrence_expired"] is True
 
     def test_rain_alert_only_reschedules_watering_for_outdoor_target_plants(self) -> None:
         for plant_id, name in (
@@ -1011,7 +1013,7 @@ class TestWeatherTaskTyping(DbTestBase):
 
         tasks = self.conn.execute(
             """
-            SELECT public_id, due_on, snoozed_until
+            SELECT public_id, due_on, snoozed_until, status
             FROM garden_tasks
             WHERE public_id IN ('task_rain_snoozed', 'task_rain_mixed')
             ORDER BY public_id
@@ -1019,7 +1021,8 @@ class TestWeatherTaskTyping(DbTestBase):
         ).fetchall()
         by_id = {str(row["public_id"]): row for row in tasks}
         assert str(by_id["task_rain_snoozed"]["due_on"]) == "2026-07-10"
-        assert str(by_id["task_rain_snoozed"]["snoozed_until"]) == "2026-07-16"
+        assert by_id["task_rain_snoozed"]["snoozed_until"] is None
+        assert str(by_id["task_rain_snoozed"]["status"]) == "expired"
         assert str(by_id["task_rain_mixed"]["due_on"]) == "2026-07-15"
 
     def test_rain_contraction_restores_rescheduled_watering_as_reassessment(self) -> None:
@@ -1096,7 +1099,7 @@ class TestWeatherTaskTyping(DbTestBase):
         ).fetchone()
         assert result["recovered"] == 1
         assert task_after is not None
-        assert str(task_after["due_on"]) == "2026-07-18"
+        assert str(task_after["due_on"]) == "2026-07-19"
         assert str(task_after["title"]) == "Reassess watering: Rain shrink"
         assert "water only if" in str(task_after["description"])
         assert outcome is not None
@@ -1104,7 +1107,7 @@ class TestWeatherTaskTyping(DbTestBase):
         assert outcome_metadata["lifecycle"]["status"] == "automatically_recovered"
         assert json.loads(str(outcome["recovery_action_json"])) == {}
 
-    def test_rain_lifecycle_reconciliation_stops_before_next_weekly_recurrence(self) -> None:
+    def test_rain_lifecycle_expires_occurrence_crossing_weekly_recurrence(self) -> None:
         self._insert_plant("RLCAP", "Rain lifecycle cap", care_watering="Water regularly")
         self._place_outdoors("RLCAP", "RLCAP-OUT")
         task = self.conn.execute(
@@ -1153,7 +1156,7 @@ class TestWeatherTaskTyping(DbTestBase):
         )
 
         task_after = self.conn.execute(
-            "SELECT due_on FROM garden_tasks WHERE public_id = 'task_rain_lifecycle_cap'",
+            "SELECT due_on, status FROM garden_tasks WHERE public_id = 'task_rain_lifecycle_cap'",
         ).fetchone()
         outcome = self.conn.execute(
             """
@@ -1167,9 +1170,12 @@ class TestWeatherTaskTyping(DbTestBase):
 
         assert result["adjusted"] == 1
         assert task_after is not None
-        assert str(task_after["due_on"]) == "2026-07-24"
+        assert str(task_after["due_on"]) == "2026-07-22"
+        assert str(task_after["status"]) == "expired"
         assert outcome is not None
-        assert json.loads(str(outcome["metadata_json"]))["new_due_on"] == "2026-07-24"
+        outcome_metadata = json.loads(str(outcome["metadata_json"]))
+        assert outcome_metadata["new_due_on"] == "2026-07-27"
+        assert outcome_metadata["occurrence_expired"] is True
 
     def test_late_dry_spell_generation_uses_today_not_a_stale_due_date(self) -> None:
         self._insert_plant("RDRY", "Late dry spell", care_watering="Water regularly")

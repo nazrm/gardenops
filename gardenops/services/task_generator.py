@@ -953,12 +953,10 @@ def _record_task_lifecycle_transition(
     metadata["lifecycle"] = transition
 
 
-def _rain_reassessment_due_on(alert_valid_until: str, *, rule_source: str) -> str:
-    reassessment_due = (
+def _rain_reassessment_due_on(alert_valid_until: str) -> str:
+    return (
         date.fromisoformat(alert_valid_until) + timedelta(days=_RAIN_REASSESSMENT_DELAY_DAYS)
     ).isoformat()
-    recurrence_deadline = weekly_watering_recurrence_deadline(rule_source)
-    return min(reassessment_due, recurrence_deadline) if recurrence_deadline else reassessment_due
 
 
 def _update_rain_outcome_lifecycle(
@@ -1016,11 +1014,12 @@ def _recover_rain_outcome_task(
     metadata: dict[str, Any],
     now_ms: int,
     today_iso: str,
+    not_before_on: str = "",
 ) -> tuple[str, str] | None:
     source_public_id = str(outcome["source_public_id"] or "")
     target_id = str(outcome["target_id"] or "")
     original_due_on = str(metadata.get("due_on") or source_public_id.rsplit(":", 1)[-1])
-    due_on = max(original_due_on, today_iso)
+    due_on = max(original_due_on, today_iso, not_before_on)
     plant_ids = _parse_string_list(outcome["plant_ids_json"])
     if target_id and target_id not in plant_ids:
         plant_ids.insert(0, target_id)
@@ -1208,10 +1207,7 @@ def reconcile_rain_watering_outcomes(
             expected_action_on = str(metadata.get("new_due_on") or "")
             if expected_action_on and str(task["action_on"]) != expected_action_on:
                 continue
-            new_due_on = _rain_reassessment_due_on(
-                str(covering_alert["valid_until"]),
-                rule_source=str(task["rule_source"] or ""),
-            )
+            new_due_on = _rain_reassessment_due_on(str(covering_alert["valid_until"]))
             if str(task["action_on"]) == new_due_on:
                 continue
             task_metadata = _parse_mapping_json(task["metadata_json"])
@@ -1219,17 +1215,47 @@ def reconcile_rain_watering_outcomes(
             task_metadata["rescheduled_weather_alert_id"] = int(covering_alert["id"])
             task_metadata["rain_reassessment_delay_days"] = _RAIN_REASSESSMENT_DELAY_DAYS
             task_metadata["rain_reassessment_policy"] = "check_root_zone_moisture_before_watering"
+            recurrence_deadline = weekly_watering_recurrence_deadline(
+                str(task["rule_source"] or ""),
+            )
+            occurrence_expired = bool(recurrence_deadline and new_due_on > recurrence_deadline)
+            if recurrence_deadline:
+                task_metadata["rain_recurrence_deadline"] = recurrence_deadline
+            if occurrence_expired:
+                task_metadata["rain_occurrence_expired"] = True
+                _record_task_lifecycle_transition(
+                    task_metadata,
+                    {
+                        "status": "expired",
+                        "reason": "rain_covered_until_next_recurrence",
+                        "action_on": str(task["action_on"]),
+                        "source": "rain_forecast_reconciliation",
+                        "expired_at_ms": now_ms,
+                    },
+                )
             db.execute(
                 """
                 UPDATE garden_tasks
-                SET due_on = CASE WHEN status = 'snoozed' THEN due_on ELSE %s END,
-                    snoozed_until = CASE WHEN status = 'snoozed' THEN %s ELSE NULL END,
+                SET status = CASE WHEN %s THEN 'expired' ELSE status END,
+                    due_on = CASE
+                        WHEN %s THEN due_on
+                        WHEN status = 'snoozed' THEN due_on
+                        ELSE %s
+                    END,
+                    snoozed_until = CASE
+                        WHEN %s THEN NULL
+                        WHEN status = 'snoozed' THEN %s
+                        ELSE NULL
+                    END,
                     metadata_json = %s,
                     updated_at_ms = %s
                 WHERE id = %s AND status IN ('pending', 'snoozed')
                 """,
                 (
+                    occurrence_expired,
+                    occurrence_expired,
                     new_due_on,
+                    occurrence_expired,
                     new_due_on,
                     json.dumps(task_metadata, sort_keys=True, separators=(",", ":")),
                     now_ms,
@@ -1239,10 +1265,16 @@ def reconcile_rain_watering_outcomes(
             metadata["new_due_on"] = new_due_on
             metadata["weather_alert_id"] = str(covering_alert["id"])
             metadata["alert_valid_until"] = str(covering_alert["valid_until"])
+            if recurrence_deadline:
+                metadata["recurrence_deadline"] = recurrence_deadline
+            if occurrence_expired:
+                metadata["occurrence_expired"] = True
             db.execute(
                 """
                 UPDATE attention_outcomes
                 SET source_id = %s,
+                    title = %s,
+                    reason = %s,
                     explanation = %s,
                     metadata_json = %s,
                     updated_at_ms = %s
@@ -1250,8 +1282,23 @@ def reconcile_rain_watering_outcomes(
                 """,
                 (
                     str(covering_alert["id"]),
-                    "Heavy rain moved watering to a later soil-moisture reassessment on "
-                    f"{new_due_on}.",
+                    (
+                        "Watering occurrence covered by rain"
+                        if occurrence_expired
+                        else "Watering rescheduled by rain"
+                    ),
+                    (
+                        "Rain covers watering through recurrence"
+                        if occurrence_expired
+                        else "Rain rescheduled watering"
+                    ),
+                    (
+                        "Heavy rain covers this watering through its weekly recurrence; "
+                        "the next occurrence replaces it."
+                        if occurrence_expired
+                        else "Heavy rain moved watering to a later soil-moisture "
+                        f"reassessment on {new_due_on}."
+                    ),
                     json.dumps(metadata, sort_keys=True, separators=(",", ":")),
                     now_ms,
                     int(outcome["id"]),
@@ -1298,6 +1345,20 @@ def reconcile_rain_watering_outcomes(
                 closed += 1
                 continue
 
+        source_alert_id = str(outcome["source_id"] or "")
+        current_alert = None
+        if source_alert_id.isdigit():
+            current_alert = db.execute(
+                """
+                SELECT valid_until
+                FROM weather_alerts
+                WHERE garden_id = %s AND id = %s AND dismissed = 0
+                """,
+                (garden_id, int(source_alert_id)),
+            ).fetchone()
+        not_before_on = ""
+        if current_alert is not None:
+            not_before_on = _rain_reassessment_due_on(str(current_alert["valid_until"]))
         recovered_task = _recover_rain_outcome_task(
             db,
             garden_id=garden_id,
@@ -1305,6 +1366,7 @@ def reconcile_rain_watering_outcomes(
             metadata=metadata,
             now_ms=now_ms,
             today_iso=today,
+            not_before_on=not_before_on,
         )
         if recovered_task is None:
             _update_rain_outcome_lifecycle(
