@@ -8,6 +8,7 @@ import {
   updateProcurementApi,
   transitionProcurementApi,
   deleteProcurementApi,
+  getActiveGardenContext,
   getApiErrorMessage,
 } from "../services/api";
 import {
@@ -23,7 +24,45 @@ let ctx: AppContext;
 let procurementItems: ProcurementItem[] = [];
 let procurementTotal = 0;
 let procurementOffset = 0;
+let procurementRequestGeneration = 0;
+const procurementPendingActions = new Set<string>();
 const PROCUREMENT_PAGE_SIZE = 50;
+
+interface ProcurementRequestContext {
+  gardenId: number;
+  generation: number;
+}
+
+function createProcurementRequest(): ProcurementRequestContext | null {
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return null;
+  return { gardenId, generation: ++procurementRequestGeneration };
+}
+
+function isCurrentProcurementRequest(request: ProcurementRequestContext): boolean {
+  return request.generation === procurementRequestGeneration
+    && request.gardenId === getActiveGardenContext();
+}
+
+function isCurrentProcurementGarden(gardenId: number): boolean {
+  return gardenId === getActiveGardenContext();
+}
+
+export function resetProcurementForGardenSwitch(): void {
+  procurementRequestGeneration += 1;
+  procurementItems = [];
+  procurementTotal = 0;
+  procurementOffset = 0;
+  procurementPendingActions.clear();
+  document.getElementById("procurement-summary")?.replaceChildren();
+  document.getElementById("procurement-list")?.replaceChildren();
+  document.getElementById("procurement-pagination")?.replaceChildren();
+  const statusFilter = querySelect("procurement-filter-status");
+  const typeFilter = querySelect("procurement-filter-type");
+  if (statusFilter) statusFilter.value = "";
+  if (typeFilter) typeFilter.value = "";
+  document.querySelectorAll(".procurement-modal").forEach((modal) => modal.remove());
+}
 
 export function setProcurementOffset(
   offset: number,
@@ -58,6 +97,8 @@ export function initProcurementTab(
 
 export async function loadProcurement(): Promise<void> {
   if (!ctx) return;
+  const request = createProcurementRequest();
+  if (!request) return;
   try {
     const params: Record<string, string | number> = {
       limit: PROCUREMENT_PAGE_SIZE,
@@ -68,7 +109,8 @@ export async function loadProcurement(): Promise<void> {
     const typeFilter = querySelect("procurement-filter-type")?.value;
     if (typeFilter)
       params["inventory_type"] = typeFilter;
-    const result = await fetchProcurementApi(params);
+    const result = await fetchProcurementApi(params, { gardenId: request.gardenId });
+    if (!isCurrentProcurementRequest(request)) return;
     if (result.total > 0 && result.items.length === 0 && procurementOffset > 0) {
       procurementOffset = Math.max(
         0,
@@ -81,6 +123,7 @@ export async function loadProcurement(): Promise<void> {
     procurementTotal = result.total;
     renderProcurementView();
   } catch (err) {
+    if (!isCurrentProcurementRequest(request)) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
@@ -103,10 +146,10 @@ function renderProcurementView(): void {
   }
   const plantNames = buildPlantNameMap(ctx.getPlants());
   renderProcurementList(container, procurementItems, {
-    onEdit: (item) => void openProcurementForm(item),
+    onEdit: (item) => openProcurementForm(item),
     onTransition: (item, toStatus) =>
-      void handleProcurementTransition(item, toStatus),
-    onDelete: (item) => void deleteProcurement(item),
+      handleProcurementTransition(item, toStatus),
+    onDelete: (item) => deleteProcurement(item),
     onPlantClick: (pltId) => {
       ctx.focusPlantsInPlantsView([pltId]);
     },
@@ -171,6 +214,11 @@ function openProcurementForm(
   existingItem?: ProcurementItem,
 ): void {
   if (!ctx.ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  if (
+    gardenId === null
+    || (existingItem && existingItem.garden_id !== gardenId)
+  ) return;
   const form = createProcurementForm({
     item: existingItem,
     availablePlants: ctx.getPlants().map((p) => ({
@@ -182,15 +230,23 @@ function openProcurementForm(
       .map((p) => p.plot_id)
       .sort(),
     onSave: async (data) => {
+      const actionKey = existingItem ? `update:${existingItem.id}` : "create";
+      if (
+        procurementPendingActions.has(actionKey)
+        || !isCurrentProcurementGarden(gardenId)
+      ) return;
+      procurementPendingActions.add(actionKey);
       try {
         if (existingItem) {
           await updateProcurementApi(
             existingItem.id,
             data,
+            { gardenId },
           );
         } else {
-          await createProcurementApi(data);
+          await createProcurementApi(data, { gardenId });
         }
+        if (!isCurrentProcurementGarden(gardenId)) return;
         ctx.showToast(
           t(
             existingItem
@@ -203,15 +259,19 @@ function openProcurementForm(
           procurementOffset = 0;
         }
         overlay.remove();
-        void loadProcurement();
+        await loadProcurement();
       } catch (err) {
-        ctx.showToast(getApiErrorMessage(err), "error");
+        if (isCurrentProcurementGarden(gardenId)) {
+          ctx.showToast(getApiErrorMessage(err), "error");
+        }
+      } finally {
+        procurementPendingActions.delete(actionKey);
       }
     },
     onCancel: () => overlay.remove(),
   });
   const overlay = document.createElement("div");
-  overlay.className = "modal";
+  overlay.className = "modal procurement-modal";
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
   overlay.addEventListener("click", (e) => {
@@ -229,17 +289,32 @@ async function handleProcurementTransition(
   toStatus: string,
 ): Promise<void> {
   if (!ctx.ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  const actionKey = `transition:${item.id}`;
+  if (
+    gardenId === null
+    || item.garden_id !== gardenId
+    || procurementPendingActions.has(actionKey)
+  ) return;
+  procurementPendingActions.add(actionKey);
   try {
-    await transitionProcurementApi(item.id, {
-      to_status: toStatus,
-    });
+    await transitionProcurementApi(
+      item.id,
+      { to_status: toStatus },
+      { gardenId },
+    );
+    if (!isCurrentProcurementGarden(gardenId)) return;
     ctx.showToast(
       t("procurement.transitioned"),
       "success",
     );
-    void loadProcurement();
+    await loadProcurement();
   } catch (err) {
-    ctx.showToast(getApiErrorMessage(err), "error");
+    if (isCurrentProcurementGarden(gardenId)) {
+      ctx.showToast(getApiErrorMessage(err), "error");
+    }
+  } finally {
+    procurementPendingActions.delete(actionKey);
   }
 }
 
@@ -247,16 +322,29 @@ async function deleteProcurement(
   item: ProcurementItem,
 ): Promise<void> {
   if (!ctx.ensureWriteAccess()) return;
-  const ok = await confirmDialog(
-    t("procurement.confirm_delete"),
-    t("common.delete"),
-  );
-  if (!ok) return;
+  const gardenId = getActiveGardenContext();
+  const actionKey = `delete:${item.id}`;
+  if (
+    gardenId === null
+    || item.garden_id !== gardenId
+    || procurementPendingActions.has(actionKey)
+  ) return;
+  procurementPendingActions.add(actionKey);
   try {
-    await deleteProcurementApi(item.id);
+    const ok = await confirmDialog(
+      t("procurement.confirm_delete"),
+      t("common.delete"),
+    );
+    if (!ok || !isCurrentProcurementGarden(gardenId)) return;
+    await deleteProcurementApi(item.id, { gardenId });
+    if (!isCurrentProcurementGarden(gardenId)) return;
     ctx.showToast(t("procurement.deleted"), "success");
-    void loadProcurement();
+    await loadProcurement();
   } catch (err) {
-    ctx.showToast(getApiErrorMessage(err), "error");
+    if (isCurrentProcurementGarden(gardenId)) {
+      ctx.showToast(getApiErrorMessage(err), "error");
+    }
+  } finally {
+    procurementPendingActions.delete(actionKey);
   }
 }

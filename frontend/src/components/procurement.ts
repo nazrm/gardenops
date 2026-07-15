@@ -1,6 +1,7 @@
 import type { ProcurementItem } from "../core/models";
 import { t } from "../core/i18n";
 import { createFieldGroup as _createFieldGroup } from "../core/dom";
+import { canonicalDecimalString, compareDecimalStrings } from "../services/api";
 
 const STATUS_ICONS: Record<string, string> = {
   wanted: "\uD83D\uDCAD",
@@ -20,8 +21,8 @@ const NEXT_TRANSITION: Record<string, { to: string; labelKey: string } | null> =
 
 export interface ProcurementListCallbacks {
   onEdit: (item: ProcurementItem) => void;
-  onTransition: (item: ProcurementItem, toStatus: string) => void;
-  onDelete: (item: ProcurementItem) => void;
+  onTransition: (item: ProcurementItem, toStatus: string) => void | Promise<void>;
+  onDelete: (item: ProcurementItem) => void | Promise<void>;
   onPlantClick: (pltId: string) => void;
   onPlotClick: (plotId: string) => void;
   canWrite?: boolean | undefined;
@@ -178,6 +179,23 @@ function createProcurementCard(
   if (cbs.canWrite !== false) {
     const actions = document.createElement("div");
     actions.className = "procurement-card-actions";
+    let pending = false;
+    const runMutation = (action: () => void | Promise<void>) => {
+      if (pending) return;
+      pending = true;
+      card.setAttribute("aria-busy", "true");
+      actions.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+        button.disabled = true;
+      });
+      void Promise.resolve(action()).finally(() => {
+        if (!card.isConnected) return;
+        pending = false;
+        card.removeAttribute("aria-busy");
+        actions.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+          button.disabled = false;
+        });
+      });
+    };
 
     const nextTransition = NEXT_TRANSITION[item.status];
     if (nextTransition) {
@@ -185,7 +203,9 @@ function createProcurementCard(
       transBtn.type = "button";
       transBtn.className = "procurement-action-btn procurement-action-transition";
       transBtn.textContent = t(nextTransition.labelKey);
-      transBtn.addEventListener("click", () => cbs.onTransition(item, nextTransition.to));
+      transBtn.addEventListener("click", () => {
+        runMutation(() => cbs.onTransition(item, nextTransition.to));
+      });
       actions.appendChild(transBtn);
     }
 
@@ -194,7 +214,9 @@ function createProcurementCard(
       cancelBtn.type = "button";
       cancelBtn.className = "procurement-action-btn procurement-action-delete";
       cancelBtn.textContent = t("procurement.transition_cancel");
-      cancelBtn.addEventListener("click", () => cbs.onTransition(item, "cancelled"));
+      cancelBtn.addEventListener("click", () => {
+        runMutation(() => cbs.onTransition(item, "cancelled"));
+      });
       actions.appendChild(cancelBtn);
     }
 
@@ -209,7 +231,9 @@ function createProcurementCard(
     deleteBtn.type = "button";
     deleteBtn.className = "procurement-action-btn procurement-action-delete";
     deleteBtn.textContent = t("common.delete");
-    deleteBtn.addEventListener("click", () => cbs.onDelete(item));
+    deleteBtn.addEventListener("click", () => {
+      runMutation(() => cbs.onDelete(item));
+    });
     actions.appendChild(deleteBtn);
 
     card.appendChild(actions);
@@ -221,7 +245,7 @@ export interface ProcurementFormOptions {
   item: ProcurementItem | undefined;
   availablePlants?: Array<{ plt_id: string; name: string }>;
   availablePlots?: string[];
-  onSave: (data: Record<string, unknown>) => void;
+  onSave: (data: Record<string, unknown>) => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -236,8 +260,9 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
   form.appendChild(title);
 
   // Label
-  const labelGroup = createFieldGroup(t("procurement.form_label"));
+  const labelGroup = createFieldGroup(t("procurement.form_label"), "procurement-label");
   const labelInput = document.createElement("input");
+  labelInput.id = "procurement-label";
   labelInput.type = "text";
   labelInput.maxLength = 200;
   labelInput.required = true;
@@ -246,8 +271,9 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
   form.appendChild(labelGroup);
 
   // Inventory type
-  const typeGroup = createFieldGroup(t("procurement.form_type"));
+  const typeGroup = createFieldGroup(t("procurement.form_type"), "procurement-type");
   const typeSelect = document.createElement("select");
+  typeSelect.id = "procurement-type";
   for (const opt of ["seed", "bulb", "tuber", "division", "bare_root", "nursery", "cutting", "other"]) {
     const option = document.createElement("option");
     option.value = opt;
@@ -260,8 +286,9 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
   form.appendChild(typeGroup);
 
   // Vendor name
-  const vendorGroup = createFieldGroup(t("procurement.form_vendor"));
+  const vendorGroup = createFieldGroup(t("procurement.form_vendor"), "procurement-vendor");
   const vendorInput = document.createElement("input");
+  vendorInput.id = "procurement-vendor";
   vendorInput.type = "text";
   vendorInput.maxLength = 200;
   vendorInput.value = item?.vendor_name || "";
@@ -269,8 +296,9 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
   form.appendChild(vendorGroup);
 
   // Vendor URL
-  const urlGroup = createFieldGroup(t("procurement.form_vendor_url"));
+  const urlGroup = createFieldGroup(t("procurement.form_vendor_url"), "procurement-vendor-url");
   const urlInput = document.createElement("input");
+  urlInput.id = "procurement-vendor-url";
   urlInput.type = "url";
   urlInput.maxLength = 500;
   urlInput.value = item?.vendor_url || "";
@@ -282,18 +310,20 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
   costRow.style.display = "flex";
   costRow.style.gap = "var(--sp-2)";
 
-  const costGroup = createFieldGroup(t("procurement.form_cost"));
+  const costGroup = createFieldGroup(t("procurement.form_cost"), "procurement-cost");
   costGroup.style.flex = "1";
   const costInput = document.createElement("input");
+  costInput.id = "procurement-cost";
   costInput.type = "number";
   costInput.min = "0";
   costInput.step = "0.01";
   costInput.value = item ? (item.cost_minor / 100).toFixed(2) : "0.00";
   costGroup.appendChild(costInput);
 
-  const currGroup = createFieldGroup(t("procurement.form_currency"));
+  const currGroup = createFieldGroup(t("procurement.form_currency"), "procurement-currency");
   currGroup.style.width = "80px";
   const currInput = document.createElement("input");
+  currInput.id = "procurement-currency";
   currInput.type = "text";
   currInput.maxLength = 10;
   currInput.value = item?.currency || "NOK";
@@ -307,18 +337,20 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
   qtyRow.style.display = "flex";
   qtyRow.style.gap = "var(--sp-2)";
 
-  const qtyGroup = createFieldGroup(t("procurement.form_quantity"));
+  const qtyGroup = createFieldGroup(t("procurement.form_quantity"), "procurement-quantity");
   qtyGroup.style.flex = "1";
   const qtyInput = document.createElement("input");
+  qtyInput.id = "procurement-quantity";
   qtyInput.type = "number";
-  qtyInput.min = "0.01";
-  qtyInput.step = "0.01";
-  qtyInput.value = String(item?.quantity ?? 1);
+  qtyInput.min = "0.000001";
+  qtyInput.step = "0.000001";
+  qtyInput.value = item?.quantity ?? "1";
   qtyGroup.appendChild(qtyInput);
 
-  const unitGroup = createFieldGroup(t("procurement.form_unit"));
+  const unitGroup = createFieldGroup(t("procurement.form_unit"), "procurement-unit");
   unitGroup.style.width = "100px";
   const unitInput = document.createElement("input");
+  unitInput.id = "procurement-unit";
   unitInput.type = "text";
   unitInput.maxLength = 50;
   unitInput.value = item?.unit || "pieces";
@@ -328,24 +360,27 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
   form.appendChild(qtyRow);
 
   // Ordered on
-  const orderedGroup = createFieldGroup(t("procurement.form_ordered"));
+  const orderedGroup = createFieldGroup(t("procurement.form_ordered"), "procurement-ordered-on");
   const orderedInput = document.createElement("input");
+  orderedInput.id = "procurement-ordered-on";
   orderedInput.type = "date";
   orderedInput.value = item?.ordered_on || "";
   orderedGroup.appendChild(orderedInput);
   form.appendChild(orderedGroup);
 
   // Expected on
-  const expectedGroup = createFieldGroup(t("procurement.form_expected"));
+  const expectedGroup = createFieldGroup(t("procurement.form_expected"), "procurement-expected-on");
   const expectedInput = document.createElement("input");
+  expectedInput.id = "procurement-expected-on";
   expectedInput.type = "date";
   expectedInput.value = item?.expected_on || "";
   expectedGroup.appendChild(expectedInput);
   form.appendChild(expectedGroup);
 
   // Linked plant ID
-  const plantGroup = createFieldGroup(t("procurement.form_plant"));
+  const plantGroup = createFieldGroup(t("procurement.form_plant"), "procurement-plant");
   const plantInput = document.createElement("input");
+  plantInput.id = "procurement-plant";
   plantInput.type = "text";
   plantInput.value = item?.linked_plt_id || "";
   if (options.availablePlants && options.availablePlants.length > 0) {
@@ -364,8 +399,9 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
   form.appendChild(plantGroup);
 
   // Linked plot ID
-  const plotGroup = createFieldGroup(t("procurement.form_plot"));
+  const plotGroup = createFieldGroup(t("procurement.form_plot"), "procurement-plot");
   const plotInput = document.createElement("input");
+  plotInput.id = "procurement-plot";
   plotInput.type = "text";
   plotInput.value = item?.linked_plot_id || "";
   if (options.availablePlots && options.availablePlots.length > 0) {
@@ -383,8 +419,9 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
   form.appendChild(plotGroup);
 
   // Notes
-  const notesGroup = createFieldGroup(t("procurement.form_notes"));
+  const notesGroup = createFieldGroup(t("procurement.form_notes"), "procurement-notes");
   const notesInput = document.createElement("textarea");
+  notesInput.id = "procurement-notes";
   notesInput.maxLength = 2000;
   notesInput.rows = 3;
   notesInput.value = item?.notes || "";
@@ -396,11 +433,21 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
   btnRow.className = "overlay-btn-row";
 
   const saveBtn = document.createElement("button");
+  saveBtn.id = "procurement-save-btn";
   saveBtn.type = "button";
   saveBtn.className = "btn btn-primary";
   saveBtn.textContent = t("common.save");
+  let pending = false;
   saveBtn.addEventListener("click", () => {
+    if (pending) return;
     if (!labelInput.value.trim()) return;
+    let quantity: string;
+    try {
+      quantity = canonicalDecimalString(qtyInput.value);
+    } catch {
+      return;
+    }
+    if (compareDecimalStrings(quantity, "0") <= 0) return;
     const costValue = Math.round(parseFloat(costInput.value || "0") * 100);
     const data: Record<string, unknown> = {
       label: labelInput.value.trim(),
@@ -409,7 +456,7 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
       vendor_url: urlInput.value.trim(),
       cost_minor: costValue,
       currency: currInput.value.trim() || "NOK",
-      quantity: parseFloat(qtyInput.value) || 1,
+      quantity,
       unit: unitInput.value.trim() || "pieces",
       notes: notesInput.value.trim(),
     };
@@ -421,7 +468,17 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
     const plotId = plotInput.value.trim();
     if (plotId) data["linked_plot_id"] = plotId;
     else data["linked_plot_id"] = null;
-    onSave(data);
+    pending = true;
+    saveBtn.disabled = true;
+    cancelBtn.disabled = true;
+    form.setAttribute("aria-busy", "true");
+    void Promise.resolve(onSave(data)).finally(() => {
+      if (!form.isConnected) return;
+      pending = false;
+      saveBtn.disabled = false;
+      cancelBtn.disabled = false;
+      form.removeAttribute("aria-busy");
+    });
   });
 
   const cancelBtn = document.createElement("button");
@@ -436,6 +493,8 @@ export function createProcurementForm(options: ProcurementFormOptions): HTMLElem
   return form;
 }
 
-function createFieldGroup(label: string): HTMLElement {
-  return _createFieldGroup(label, "overlay-field-group");
+function createFieldGroup(label: string, controlId: string): HTMLElement {
+  const group = _createFieldGroup(label, "overlay-field-group");
+  group.querySelector("label")?.setAttribute("for", controlId);
+  return group;
 }

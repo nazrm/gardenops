@@ -1,8 +1,11 @@
 """Tests for integrity layer: health endpoints, FK enforcement, consistency."""
 
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import psycopg
 
 import gardenops.db as db
 from gardenops.schema_signature import (
@@ -15,6 +18,7 @@ from gardenops.schema_signature import (
     REQUIRED_TABLES,
     SchemaSnapshot,
     bootstrap_schema_diagnostics_from_snapshot,
+    collect_schema_snapshot,
     missing_schema_parts,
 )
 
@@ -68,6 +72,87 @@ class MigrationGuardTests(unittest.TestCase):
         snapshot.constraints.difference_update(
             {name for name in snapshot.constraints if "offline_create_operations" in name}
         )
+
+    @staticmethod
+    def _migration_0027_sql() -> str:
+        return (
+            Path(__file__).parents[1] / "migrations/0027_inventory_procurement_integrity.sql"
+        ).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _remove_migration_0027_surface(conn: db.DbConn) -> None:
+        conn.execute("""
+            ALTER TABLE procurement_items
+                DROP CONSTRAINT IF EXISTS ux_procurement_receipt_transaction,
+                DROP CONSTRAINT IF EXISTS fk_procurement_receipt_inventory,
+                DROP CONSTRAINT IF EXISTS fk_procurement_received_by_user,
+                DROP CONSTRAINT IF EXISTS ck_procurement_receipt_provenance,
+                DROP CONSTRAINT IF EXISTS ck_procurement_quantity_positive,
+                DROP COLUMN IF EXISTS receipt_inventory_item_id,
+                DROP COLUMN IF EXISTS receipt_inventory_transaction_id,
+                DROP COLUMN IF EXISTS received_by_user_id,
+                DROP COLUMN IF EXISTS received_at_ms;
+            ALTER TABLE inventory_transactions
+                DROP CONSTRAINT IF EXISTS ux_inventory_tx_id_item_garden,
+                DROP CONSTRAINT IF EXISTS fk_inventory_tx_garden,
+                DROP CONSTRAINT IF EXISTS fk_inventory_tx_item_garden,
+                DROP CONSTRAINT IF EXISTS ck_inventory_tx_delta_nonzero,
+                DROP COLUMN IF EXISTS garden_id;
+            ALTER TABLE inventory_items
+                DROP CONSTRAINT IF EXISTS ux_inventory_items_id_garden;
+        """)
+
+    @staticmethod
+    def _insert_legacy_receipt(conn: db.DbConn, *, slug: str, resolvable: bool) -> dict[str, int]:
+        garden_id = int(
+            conn.execute(
+                "INSERT INTO gardens (slug, name) VALUES (%s, %s) RETURNING id",
+                (slug, "Migration 0027 test"),
+            ).fetchone()["id"]
+        )
+        item = conn.execute(
+            """
+            INSERT INTO inventory_items (garden_id, label, created_at_ms)
+            VALUES (%s, %s, %s)
+            RETURNING id, public_id
+            """,
+            (garden_id, "Legacy receipt stock", 1_700_000_000_000),
+        ).fetchone()
+        transaction_id = int(
+            conn.execute(
+                """
+                INSERT INTO inventory_transactions (
+                    item_id, delta, occurred_on, created_at_ms
+                ) VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (item["id"], 2.5, "2026-07-15", 1_700_000_000_123),
+            ).fetchone()["id"]
+        )
+        metadata = json.dumps(
+            {
+                "inventory_item_id": item["public_id"],
+                "inventory_transaction_id": transaction_id if resolvable else "missing",
+            },
+            separators=(",", ":"),
+        )
+        procurement_id = int(
+            conn.execute(
+                """
+                INSERT INTO procurement_items (
+                    garden_id, label, status, metadata_json, created_at_ms, updated_at_ms
+                ) VALUES (%s, %s, 'received', %s, %s, %s)
+                RETURNING id
+                """,
+                (garden_id, "Legacy received item", metadata, 1_700_000_000_000, 1_700_000_000_123),
+            ).fetchone()["id"]
+        )
+        return {
+            "garden_id": garden_id,
+            "inventory_item_id": int(item["id"]),
+            "inventory_transaction_id": transaction_id,
+            "procurement_id": procurement_id,
+        }
 
     def test_run_migrations_idempotent(self) -> None:
         """Re-running run_migrations must not crash."""
@@ -166,9 +251,157 @@ class MigrationGuardTests(unittest.TestCase):
         finally:
             db.return_db(conn)
 
-        self.assertEqual(versions, set(range(1, 27)))
+        self.assertEqual(versions, set(range(1, 28)))
         self.assertEqual(table["name"], "offline_create_operations")
         self.assertEqual(index["name"], "ux_weather_alerts_identity")
+
+    def test_0027_upgrades_resolvable_legacy_received_procurement(self) -> None:
+        conn = db.get_db()
+        try:
+            self._remove_migration_0027_surface(conn)
+            receipt = self._insert_legacy_receipt(
+                conn,
+                slug="migration-0027-resolvable",
+                resolvable=True,
+            )
+
+            conn.execute(self._migration_0027_sql())
+            provenance = conn.execute(
+                """
+                SELECT receipt_inventory_item_id,
+                       receipt_inventory_transaction_id,
+                       received_at_ms
+                FROM procurement_items
+                WHERE id = %s
+                """,
+                (receipt["procurement_id"],),
+            ).fetchone()
+
+            self.assertEqual(
+                int(provenance["receipt_inventory_item_id"]),
+                receipt["inventory_item_id"],
+            )
+            self.assertEqual(
+                int(provenance["receipt_inventory_transaction_id"]),
+                receipt["inventory_transaction_id"],
+            )
+            self.assertEqual(int(provenance["received_at_ms"]), 1_700_000_000_123)
+
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                with conn.transaction():
+                    conn.execute(
+                        """
+                        UPDATE procurement_items
+                        SET received_at_ms = NULL
+                        WHERE id = %s
+                        """,
+                        (receipt["procurement_id"],),
+                    )
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                with conn.transaction():
+                    conn.execute(
+                        "UPDATE procurement_items SET status = 'ordered' WHERE id = %s",
+                        (receipt["procurement_id"],),
+                    )
+
+            self.assertNotIn(
+                {
+                    "kind": "constraint-definition",
+                    "object": "ck_procurement_receipt_provenance",
+                },
+                missing_schema_parts(collect_schema_snapshot(conn)),
+            )
+            conn.execute(self._migration_0027_sql())
+        finally:
+            conn.rollback()
+            db.return_db(conn)
+
+    def test_0027_unresolved_legacy_received_row_rolls_back_then_reruns(self) -> None:
+        conn = db.get_db()
+        migration_sql = self._migration_0027_sql()
+        receipt: dict[str, int] | None = None
+        try:
+            self._remove_migration_0027_surface(conn)
+            receipt = self._insert_legacy_receipt(
+                conn,
+                slug="migration-0027-unresolvable",
+                resolvable=False,
+            )
+            conn.commit()
+
+            with self.assertRaises(psycopg.errors.CheckViolation) as raised:
+                conn.execute(migration_sql)
+            self.assertIn("cannot establish receipt provenance", str(raised.exception))
+            self.assertIn(
+                "Correct metadata_json",
+                raised.exception.diag.message_hint or "",
+            )
+            conn.rollback()
+
+            columns = {
+                str(row["column_name"])
+                for row in conn.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'procurement_items'
+                    """
+                ).fetchall()
+            }
+            self.assertNotIn("receipt_inventory_item_id", columns)
+            legacy = conn.execute(
+                "SELECT status, metadata_json FROM procurement_items WHERE id = %s",
+                (receipt["procurement_id"],),
+            ).fetchone()
+            self.assertEqual(legacy["status"], "received")
+            self.assertIn('"inventory_transaction_id":"missing"', legacy["metadata_json"])
+
+            conn.execute(
+                """
+                UPDATE procurement_items
+                SET metadata_json = jsonb_set(
+                    metadata_json::jsonb,
+                    '{inventory_transaction_id}',
+                    to_jsonb(%s::text)
+                )::text
+                WHERE id = %s
+                """,
+                (receipt["inventory_transaction_id"], receipt["procurement_id"]),
+            )
+            conn.commit()
+
+            conn.execute(migration_sql)
+            conn.commit()
+            provenance = conn.execute(
+                """
+                SELECT receipt_inventory_item_id,
+                       receipt_inventory_transaction_id,
+                       received_at_ms
+                FROM procurement_items
+                WHERE id = %s
+                """,
+                (receipt["procurement_id"],),
+            ).fetchone()
+            self.assertEqual(
+                (
+                    int(provenance["receipt_inventory_item_id"]),
+                    int(provenance["receipt_inventory_transaction_id"]),
+                    int(provenance["received_at_ms"]),
+                ),
+                (
+                    receipt["inventory_item_id"],
+                    receipt["inventory_transaction_id"],
+                    1_700_000_000_123,
+                ),
+            )
+        finally:
+            conn.rollback()
+            if receipt is not None:
+                conn.execute("DELETE FROM gardens WHERE id = %s", (receipt["garden_id"],))
+            conn.execute(migration_sql)
+            conn.commit()
+            db.return_db(conn)
 
     def test_passkey_schema_signature_covers_migration_surface(self) -> None:
         self.assertTrue(
@@ -398,6 +631,21 @@ class MigrationGuardTests(unittest.TestCase):
             "CREATE UNIQUE INDEX ux_auth_users_passkey_user_handle ON auth_users (id)"
         )
         snapshot.constraint_definitions["ck_auth_users_password_auth_state"] = "CHECK (true)"
+        snapshot.constraint_definitions["ck_procurement_receipt_provenance"] = """
+            CHECK (
+                (
+                    receipt_inventory_item_id IS NULL
+                    AND receipt_inventory_transaction_id IS NULL
+                    AND received_at_ms IS NULL
+                )
+                OR (
+                    receipt_inventory_item_id IS NOT NULL
+                    AND receipt_inventory_transaction_id IS NOT NULL
+                    AND received_at_ms IS NOT NULL
+                    AND status = 'received'
+                )
+            )
+        """
 
         missing = missing_schema_parts(snapshot)
 
@@ -411,6 +659,10 @@ class MigrationGuardTests(unittest.TestCase):
         )
         self.assertIn(
             {"kind": "constraint-definition", "object": "ck_auth_users_password_auth_state"},
+            missing,
+        )
+        self.assertIn(
+            {"kind": "constraint-definition", "object": "ck_procurement_receipt_provenance"},
             missing,
         )
 

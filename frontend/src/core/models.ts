@@ -640,7 +640,7 @@ export interface ProcurementItem {
   status: ProcurementStatus;
   cost_minor: number;
   currency: string;
-  quantity: number;
+  quantity: string;
   unit: string;
   ordered_on: string | null;
   expected_on: string | null;

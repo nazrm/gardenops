@@ -267,11 +267,11 @@ def _care_candidates_for_context(
                   WHERE other_po.plt_id = p.plt_id
                     AND other_po.garden_id <> %s
               )
-            ORDER BY p.name
+            ORDER BY p.plt_id
             """,
             (int(context.garden_id), int(context.garden_id)),
         ).fetchall()
-    elif context.role == "admin":
+    elif has_write_access(context):
         rows = db.execute(
             f"""
             SELECT {fields}
@@ -284,27 +284,12 @@ def _care_candidates_for_context(
                   WHERE other_po.plt_id = p.plt_id
                     AND other_po.garden_id <> %s
               )
-            ORDER BY p.name
+            ORDER BY p.plt_id
             """,
             (int(context.garden_id), int(context.garden_id)),
         ).fetchall()
     else:
-        rows = db.execute(
-            f"""
-            SELECT {fields}
-            FROM plants p
-            JOIN plant_ownership po ON po.plt_id = p.plt_id
-            WHERE po.garden_id = %s AND po.owner_user_id = %s
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM plant_ownership other_po
-                  WHERE other_po.plt_id = p.plt_id
-                    AND other_po.garden_id <> %s
-              )
-            ORDER BY p.name
-            """,
-            (int(context.garden_id), int(context.user_id or 0), int(context.garden_id)),
-        ).fetchall()
+        return []
     return [dict(row) for row in rows]
 
 
@@ -315,6 +300,7 @@ class LookupRequest(StrictBaseModel):
 class GenerateMissingCareRequest(StrictBaseModel):
     max_plants: int | None = Field(default=None, ge=1, le=50)
     regenerate: bool = False
+    cursor: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 @router.post("/ai/plant-lookup")
@@ -429,6 +415,7 @@ def generate_missing_care(
                 "updated_plant_ids": [],
                 "attempted": 0,
                 "has_more": False,
+                "next_cursor": None,
             }
 
     request_limit = body.max_plants
@@ -438,11 +425,18 @@ def generate_missing_care(
             CARE_REQUEST_PLANT_LIMIT_DEFAULT,
         )
     request_limit = max(1, min(int(request_limit), 50))
-    selected_missing = selected[:request_limit]
+    if body.cursor is not None:
+        selected = [plant for plant in selected if str(plant["plt_id"]) > body.cursor]
+    selected_page = selected[:request_limit]
+    page_has_more = len(selected) > len(selected_page)
 
     limits = provider_limit_profile("ai-care-instructions")
     updated_ids: list[str] = []
-    total_selected = len(selected)
+    missing_ids = {str(plant["plt_id"]) for plant in missing}
+
+    def remaining_missing_count() -> int:
+        updated_missing = sum(1 for plt_id in updated_ids if plt_id in missing_ids)
+        return max(0, missing_before - updated_missing)
 
     def partial_response(detail: object) -> dict[str, Any]:
         notify_garden_modified()
@@ -450,13 +444,11 @@ def generate_missing_care(
             "status": "partial",
             "generated": len(updated_ids),
             "missing_before": missing_before,
-            "remaining_without_care": max(
-                0,
-                total_selected - len(updated_ids),
-            ),
+            "remaining_without_care": remaining_missing_count(),
             "updated_plant_ids": updated_ids,
-            "attempted": len(selected_missing),
+            "attempted": len(selected_page),
             "has_more": False,
+            "next_cursor": None,
             "error": str(detail),
         }
 
@@ -465,7 +457,7 @@ def generate_missing_care(
             bucket="ai-care-instructions",
             limit=int(limits["concurrency_limit"]),
         ):
-            for batch in _chunk_plants(selected_missing, _care_batch_size()):
+            for batch in _chunk_plants(selected_page, _care_batch_size()):
                 reserve_daily_provider_budget(
                     db,
                     feature="ai-care-instructions",
@@ -540,17 +532,17 @@ def generate_missing_care(
 
     if updated_ids:
         notify_garden_modified()
+    made_progress = bool(updated_ids)
+    has_more = page_has_more and made_progress
     return {
         "status": "ok",
         "generated": len(updated_ids),
         "missing_before": missing_before,
-        "remaining_without_care": max(
-            0,
-            total_selected - len(updated_ids),
-        ),
+        "remaining_without_care": remaining_missing_count(),
         "updated_plant_ids": updated_ids,
-        "attempted": len(selected_missing),
-        "has_more": total_selected > len(updated_ids),
+        "attempted": len(selected_page),
+        "has_more": has_more,
+        "next_cursor": str(selected_page[-1]["plt_id"]) if has_more else None,
     }
 
 

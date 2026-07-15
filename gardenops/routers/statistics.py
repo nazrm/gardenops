@@ -21,6 +21,7 @@ from gardenops.services.notification_service import (
     clear_stale_informational_notifications,
     clear_stale_task_notifications,
     get_unread_count,
+    notification_request_clock,
 )
 from gardenops.sql_dates import offset_months_iso
 
@@ -88,12 +89,18 @@ def get_statistics_actions(db: DB, request: Request) -> dict:
         SELECT p.plt_id, p.name
         FROM plants p
         JOIN plant_ownership po ON po.plt_id = p.plt_id
-        LEFT JOIN plot_plants pp ON pp.plt_id = p.plt_id
-        WHERE po.garden_id = %s AND pp.plot_id IS NULL
+        WHERE po.garden_id = %s
+          AND NOT EXISTS (
+              SELECT 1
+              FROM plot_plants pp
+              JOIN plot_ownership assignment_po ON assignment_po.plot_id = pp.plot_id
+              WHERE pp.plt_id = p.plt_id
+                AND assignment_po.garden_id = %s
+          )
         ORDER BY p.name
         LIMIT 50
         """,
-        (garden_id,),
+        (garden_id, garden_id),
     ).fetchall()
     unassigned_plants = [{"plt_id": r["plt_id"], "name": r["name"]} for r in unassigned]
 
@@ -103,11 +110,17 @@ def get_statistics_actions(db: DB, request: Request) -> dict:
         SELECT pl.plot_id, pl.zone_code
         FROM plots pl
         JOIN plot_ownership pwo ON pwo.plot_id = pl.plot_id
-        LEFT JOIN plot_plants pp ON pp.plot_id = pl.plot_id
-        WHERE pwo.garden_id = %s AND pp.plt_id IS NULL
+        WHERE pwo.garden_id = %s
+          AND NOT EXISTS (
+              SELECT 1
+              FROM plot_plants pp
+              JOIN plant_ownership assignment_po ON assignment_po.plt_id = pp.plt_id
+              WHERE pp.plot_id = pl.plot_id
+                AND assignment_po.garden_id = %s
+          )
         ORDER BY pl.zone_code, pl.plot_id
         """,
-        (garden_id,),
+        (garden_id, garden_id),
     ).fetchall()
     zone_empties: dict[str, list[str]] = {}
     for r in empty_rows:
@@ -254,7 +267,7 @@ def get_statistics_reports(
 
 @router.get("/exports/backup")
 def export_backup(request: Request, db: DB) -> dict:
-    """Full garden data backup as JSON."""
+    """Internal, nonportable garden snapshot. No restore contract is provided."""
     context = _auth_context(request)
     if not has_write_access(context):
         raise HTTPException(status_code=403, detail="Write access required")
@@ -277,6 +290,11 @@ def export_backup(request: Request, db: DB) -> dict:
     }
 
     backup: dict = {
+        "backup_contract": {
+            "format": "gardenops-internal-snapshot",
+            "portable": False,
+            "restore_supported": False,
+        },
         "garden_id": garden_id,
         "exported_at_ms": current_timestamp_ms(),
     }
@@ -308,7 +326,8 @@ def get_badge_counts(db: DB, request: Request) -> dict:
     """Lightweight counts for tab badge indicators."""
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
-    today_iso = date.today().isoformat()
+    now_ms, frozen_date = notification_request_clock()
+    today_iso = frozen_date or date.today().isoformat()
     actionable_task_clause = (
         "(status = 'pending' OR "
         "(status = 'snoozed' AND snoozed_until IS NOT NULL AND snoozed_until <= %s))"
@@ -341,7 +360,6 @@ def get_badge_counts(db: DB, request: Request) -> dict:
     ).fetchone()
     assert active_alerts_row is not None
     active_alerts = active_alerts_row["c"]
-    now_ms = current_timestamp_ms()
     expired = clear_expired_notifications(
         db,
         garden_id=garden_id,

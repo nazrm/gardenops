@@ -1331,26 +1331,21 @@ def list_tasks(
         f"(t.status = 'snoozed' AND {date_expr['snoozed_until']} <= {date_expr['today']}))"
     )
     actionable_date = f"COALESCE({date_expr['snoozed_until']}, {date_expr['due_on']})"
+    history_status = status not in {None, "pending", "snoozed"}
+    view_status_clause = "TRUE" if history_status else actionable_status_clause
+    view_date = date_expr["due_on"] if history_status else actionable_date
 
     conditions = ["t.garden_id = %s"]
     params: list = [garden_id]
 
     if view == "today":
-        conditions.append(
-            f"({actionable_status_clause} AND {actionable_date} <= {date_expr['today']})"
-        )
+        conditions.append(f"({view_status_clause} AND {view_date} <= {date_expr['today']})")
     elif view == "week":
-        conditions.append(
-            f"{actionable_status_clause} AND {actionable_date} <= {date_expr['plus_7_days']}"
-        )
+        conditions.append(f"{view_status_clause} AND {view_date} <= {date_expr['plus_7_days']}")
     elif view == "month":
-        conditions.append(
-            f"{actionable_status_clause} AND {actionable_date} <= {date_expr['plus_30_days']}"
-        )
+        conditions.append(f"{view_status_clause} AND {view_date} <= {date_expr['plus_30_days']}")
     elif view == "overdue":
-        conditions.append(
-            f"{actionable_status_clause} AND {actionable_date} < {date_expr['today']}"
-        )
+        conditions.append(f"{view_status_clause} AND {view_date} < {date_expr['today']}")
     if view in {"today", "week", "month", "overdue"} or status in {
         None,
         "pending",

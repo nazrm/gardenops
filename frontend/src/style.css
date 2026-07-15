@@ -14304,9 +14304,33 @@ td.inventory-qty-zero {
 /* ── Export bar ── */
 .export-bar {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--sp-2);
   align-items: center;
   padding: var(--sp-2) 0;
+}
+
+.export-bar .btn {
+  min-height: 40px;
+}
+
+.export-bar-status {
+  flex: 1 1 100%;
+  min-width: 0;
+  color: var(--danger);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.export-bar-status:empty {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .export-bar .btn {
+    flex: 1 1 auto;
+    min-height: 44px;
+  }
 }
 
 /* ── Print styles ── */

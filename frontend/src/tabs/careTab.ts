@@ -18,6 +18,7 @@ import {
 } from "../components/careTable";
 import {
   generateMissingCareInstructionsApi,
+  getActiveGardenContext,
   getApiErrorMessage,
   getPlants,
 } from "../services/api";
@@ -29,9 +30,35 @@ let careSortDir: CareSortDir = "asc";
 let generatingMissingCare = false;
 let generatingMissingCareCompleted = 0;
 let generatingMissingCareTotal = 0;
+let careGenerationMessage = "";
+let careRequestGeneration = 0;
 const CARE_GENERATION_REQUEST_BATCH_SIZE = 6;
+const CARE_GENERATION_MAX_REQUESTS = 20;
 let careTableHeadInitialized = false;
 let careRenderSignature = "";
+
+function isCurrentCareGarden(gardenId: number): boolean {
+  return gardenId === getActiveGardenContext();
+}
+
+export function resetCareForGardenSwitch(): void {
+  careRequestGeneration += 1;
+  generatingMissingCare = false;
+  generatingMissingCareCompleted = 0;
+  generatingMissingCareTotal = 0;
+  careGenerationMessage = "";
+  careRenderSignature = "";
+  const tableBody = document.getElementById("care-table-body");
+  const mobileList = document.getElementById("care-mobile-list");
+  if (tableBody) clearCareTableBody(tableBody);
+  if (mobileList) clearCareMobileCards(mobileList);
+  document.getElementById("care-summary")?.replaceChildren();
+  const search = queryInput("care-search");
+  const category = querySelect("care-category");
+  if (search) search.value = "";
+  if (category) category.value = "";
+  renderCareGenerationProgress();
+}
 
 export function initCareTab(appCtx: AppContext): void {
   ctx = appCtx;
@@ -66,7 +93,11 @@ export function initCareTab(appCtx: AppContext): void {
 
 export async function loadCare(): Promise<void> {
   if (!ctx) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
+  const generation = ++careRequestGeneration;
   await ctx.ensurePlantsCacheLoaded();
+  if (generation !== careRequestGeneration || !isCurrentCareGarden(gardenId)) return;
   renderCareView();
 }
 
@@ -173,11 +204,11 @@ function renderCareGenerationProgress(): void {
     !generatingMissingCare ||
     generatingMissingCareTotal <= 0
   ) {
-    container.hidden = true;
+    container.hidden = careGenerationMessage.length === 0;
     bar.max = 1;
     bar.value = 0;
-    label.textContent = t("care.progress_preparing");
-    count.textContent = "0 / 0";
+    label.textContent = careGenerationMessage || t("care.progress_preparing");
+    count.textContent = "";
     return;
   }
   const completed = Math.max(
@@ -323,6 +354,9 @@ function updateCareSortIndicators(): void {
 async function generateMissingCareInstructions(): Promise<void> {
   if (generatingMissingCare) return;
   if (!ctx.ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
+  const generation = ++careRequestGeneration;
 
   const plants = ctx.getPlants();
   const initialMissingCount = plants.filter(
@@ -336,13 +370,17 @@ async function generateMissingCareInstructions(): Promise<void> {
   generatingMissingCare = true;
   generatingMissingCareCompleted = 0;
   generatingMissingCareTotal = totalToProcess;
+  careGenerationMessage = "";
   renderCareView();
   try {
+    let requestCount = 1;
     let result =
       await generateMissingCareInstructionsApi({
         maxPlants: CARE_GENERATION_REQUEST_BATCH_SIZE,
         regenerate,
+        gardenId,
       });
+    if (generation !== careRequestGeneration || !isCurrentCareGarden(gardenId)) return;
     let totalGenerated = result.generated;
     generatingMissingCareTotal = Math.max(
       totalToProcess,
@@ -353,19 +391,32 @@ async function generateMissingCareInstructions(): Promise<void> {
       result.remaining_without_care;
     renderCareView();
 
-    while (result.has_more) {
+    while (result.has_more && requestCount < CARE_GENERATION_MAX_REQUESTS) {
+      const previousRemaining = result.remaining_without_care;
+      const cursor = result.next_cursor ?? undefined;
       if (
-        result.generated === 0 &&
-        result.attempted === 0
+        result.generated === 0
+        || !cursor
       ) {
         throw new Error(
           "Care generation did not process any plants.",
         );
       }
+      requestCount += 1;
       result = await generateMissingCareInstructionsApi({
         maxPlants: CARE_GENERATION_REQUEST_BATCH_SIZE,
         regenerate,
+        gardenId,
+        cursor,
       });
+      if (generation !== careRequestGeneration || !isCurrentCareGarden(gardenId)) return;
+      if (
+        result.has_more
+        && result.remaining_without_care >= previousRemaining
+        && result.generated === 0
+      ) {
+        throw new Error("Care generation made no progress.");
+      }
       totalGenerated += result.generated;
       generatingMissingCareTotal = Math.max(
         generatingMissingCareTotal,
@@ -377,17 +428,26 @@ async function generateMissingCareInstructions(): Promise<void> {
       renderCareView();
     }
 
+    if (result.has_more) {
+      careGenerationMessage = t("care.generated_partial", {
+        generated: totalGenerated,
+        remaining: Math.max(0, totalToProcess - totalGenerated),
+      });
+    }
+
     ctx.invalidatePlantsCache();
-    ctx.setPlantsCache(await getPlants());
+    const refreshedPlants = await getPlants("", "", { gardenId });
+    if (generation !== careRequestGeneration || !isCurrentCareGarden(gardenId)) return;
+    ctx.setPlantsCache(refreshedPlants);
     const remainingCount = result.remaining_without_care;
-    if (result.status === "partial") {
-      ctx.showToast(
-        t("care.generated_partial_failure", {
-          generated: totalGenerated,
-          remaining: remainingCount,
-        }),
-        "error",
-      );
+    if (result.has_more) {
+      ctx.showToast(careGenerationMessage, "error");
+    } else if (result.status === "partial") {
+      careGenerationMessage = t("care.generated_partial_failure", {
+        generated: totalGenerated,
+        remaining: remainingCount,
+      });
+      ctx.showToast(careGenerationMessage, "error");
     } else if (totalGenerated === 0) {
       ctx.showToast(
         t("care.all_already_generated"),
@@ -410,8 +470,12 @@ async function generateMissingCareInstructions(): Promise<void> {
       );
     }
   } catch (err) {
-    ctx.showToast(getApiErrorMessage(err), "error");
+    if (generation === careRequestGeneration && isCurrentCareGarden(gardenId)) {
+      careGenerationMessage = getApiErrorMessage(err);
+      ctx.showToast(careGenerationMessage, "error");
+    }
   } finally {
+    if (generation !== careRequestGeneration || !isCurrentCareGarden(gardenId)) return;
     generatingMissingCare = false;
     generatingMissingCareCompleted = 0;
     generatingMissingCareTotal = 0;

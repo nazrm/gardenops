@@ -30,6 +30,11 @@ let timerHandle: ReturnType<typeof setTimeout> | null = null;
 const RECENT_KEY_TTL_MS = 60_000;
 const recentKeys = new Map<string, number>();
 
+function scheduleFlush(): void {
+  if (timerHandle || queue.length === 0 || navigator.onLine === false) return;
+  timerHandle = setTimeout(flush, BATCH_INTERVAL_MS);
+}
+
 function pruneRecentKeys(now: number): void {
   for (const [key, seenAt] of recentKeys.entries()) {
     if (now - seenAt > RECENT_KEY_TTL_MS) recentKeys.delete(key);
@@ -55,14 +60,12 @@ function enqueue(entry: ErrorEntry): void {
   recentKeys.set(key, now);
   if (queue.length >= MAX_QUEUE_SIZE) return;
   queue.push(entry);
-  if (!timerHandle) {
-    timerHandle = setTimeout(flush, BATCH_INTERVAL_MS);
-  }
+  scheduleFlush();
 }
 
 function flush(): void {
   timerHandle = null;
-  if (queue.length === 0) return;
+  if (queue.length === 0 || navigator.onLine === false) return;
   const batch = queue.splice(0, MAX_QUEUE_SIZE);
   for (const entry of batch) {
     try {
@@ -74,6 +77,7 @@ function flush(): void {
 }
 
 export function initErrorReporter(): void {
+  window.addEventListener("online", scheduleFlush);
   window.addEventListener("error", (e) => {
     enqueue({
       message: e.message || "Unknown error",

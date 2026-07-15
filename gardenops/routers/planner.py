@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Body, Query, Request
 
 from gardenops.db import DB
@@ -19,6 +21,9 @@ from gardenops.services.planting_planner import (
 
 router = APIRouter()
 
+PlannerGoal = Literal["shade", "color", "edible", "deer", "low_maintenance"]
+PlannerGoalInput = PlannerGoal | Literal[""] | None
+
 
 # ── Endpoints ──
 
@@ -28,7 +33,7 @@ def planner_suggestions(
     request: Request,
     conn: DB,
     plot_id: str | None = Query(None),
-    goal: str | None = Query(None),
+    goal: PlannerGoal | None = Query(None),
     limit: int = Query(10, ge=1, le=50),
     sunlit_plot_ids: str | None = Query(None),
 ) -> dict:
@@ -90,21 +95,22 @@ def get_planner_goal(request: Request, conn: DB) -> dict:
 def save_planner_goal(
     request: Request,
     conn: DB,
-    goal: str | None = Body(None, embed=True),
+    goal: PlannerGoalInput = Body(None, embed=True),
 ) -> dict:
     """Save planner goal for current user/garden."""
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
     user_id = context.user_id
     key = f"planner_goal:{user_id}:{garden_id}"
-    if goal:
+    normalized_goal: PlannerGoal | None = goal or None
+    if normalized_goal:
         conn.execute(
             """INSERT INTO app_settings (key, value)
                VALUES (%s, %s)
                ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
-            (key, goal),
+            (key, normalized_goal),
         )
     else:
         conn.execute("DELETE FROM app_settings WHERE key = %s", (key,))
     conn.commit()
-    return {"status": "ok", "goal": goal}
+    return {"status": "ok", "goal": normalized_goal}

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "phase_four": {
+    "fixture": {
+      "date": "2026-07-15",
+      "inventory": {
+        "label": "=Phase 4, \"Ledger\" seeds",
+        "inventory_type": "seed",
+        "unit": "kg",
+        "transactions": [
+          {"delta": "12345678901234.123456", "reason": "purchased", "source_name": "Phase 4 receipt"},
+          {"delta": "-2.000001", "reason": "sowed", "source_name": "Phase 4 consume"},
+          {"delta": "0.000001", "reason": "adjusted", "source_name": "Phase 4 correction"}
+        ],
+        "expected_quantity": "12345678901232.123456"
+      },
+      "procurement": {
+        "label": "Phase 4 procurement bulbs",
+        "inventory_type": "bulb",
+        "quantity": "3.5",
+        "unit": "trays",
+        "vendor_name": "Phase 4 local supplier",
+        "ordered_on": "2026-07-12",
+        "received_on": "2026-07-15",
+        "transitions": ["ordered", "shipped", "received", "received"]
+      },
+      "planner_goal": "edible",
+      "forbidden_export_fragments": [
+        "/opt/gardenops",
+        "postgresql://",
+        "password=",
+        "secret=",
+        "token="
+      ]
+    },
+    "profile_order": [
+      "admin:desktop",
+      "editor:desktop",
+      "admin:mobile",
+      "editor:mobile",
+      "viewer:desktop",
+      "viewer:mobile"
+    ],
+    "database_boundaries": {
+      "owned_tables": [
+        "app_settings",
+        "garden_tasks",
+        "inventory_items",
+        "inventory_transactions",
+        "procurement_items"
+      ],
+      "inventory_items_added": 2,
+      "inventory_transactions_added": 4,
+      "procurement_items_added": 1,
+      "workflow_tasks_minimum_added": 1,
+      "planner_goal_rows_final": 0
+    },
+    "support": {
+      "care_local_catalogue": "proven",
+      "external_catalogue": "not_applicable",
+      "generic_import": "unsupported",
+      "backup_restore": "unsupported",
+      "ics_import": "unsupported",
+      "suggestion_acceptance": "unsupported",
+      "workflow_instance_lifecycle": "unsupported",
+      "zip_export": "unsupported"
+    }
+  }
+}

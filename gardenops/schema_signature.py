@@ -32,6 +32,9 @@ REQUIRED_TABLES = (
     "garden_journal_entry_plots",
     "harvest_entries",
     "harvest_entry_plots",
+    "inventory_items",
+    "inventory_transactions",
+    "procurement_items",
     "garden_calendar_events",
     "garden_calendar_event_plots",
     "media_assets",
@@ -160,6 +163,26 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     "garden_journal_entry_plots": ("entry_id", "plot_id"),
     "harvest_entries": ("id", "garden_id", "actor_user_id"),
     "harvest_entry_plots": ("entry_id", "plot_id"),
+    "inventory_items": ("id", "public_id", "garden_id"),
+    "inventory_transactions": (
+        "id",
+        "item_id",
+        "garden_id",
+        "delta",
+        "actor_user_id",
+        "created_at_ms",
+    ),
+    "procurement_items": (
+        "id",
+        "public_id",
+        "garden_id",
+        "status",
+        "quantity",
+        "receipt_inventory_item_id",
+        "receipt_inventory_transaction_id",
+        "received_by_user_id",
+        "received_at_ms",
+    ),
     "garden_calendar_events": ("id", "garden_id"),
     "garden_calendar_event_plots": ("event_id", "plot_id"),
     "media_assets": ("asset_id", "garden_id", "actor_user_id", "preview_bytes"),
@@ -294,6 +317,16 @@ REQUIRED_CONSTRAINTS = (
     "fk_garden_map_object_units_object_garden",
     "plants_pkey",
     "plant_ownership_pkey",
+    "ux_inventory_items_id_garden",
+    "ux_inventory_tx_id_item_garden",
+    "fk_inventory_tx_garden",
+    "fk_inventory_tx_item_garden",
+    "ck_inventory_tx_delta_nonzero",
+    "ux_procurement_receipt_transaction",
+    "fk_procurement_receipt_inventory",
+    "fk_procurement_received_by_user",
+    "ck_procurement_receipt_provenance",
+    "ck_procurement_quantity_positive",
     "media_links_pkey",
     "media_cleanup_jobs_pkey",
     "ux_media_cleanup_jobs_storage_keys",
@@ -330,6 +363,7 @@ REQUIRED_COLUMN_NULLABILITY: dict[str, bool] = {
     "auth_users.passkey_prompt_dismissed_until_ms": False,
     "auth_password_reset_tokens.purpose": False,
     "auth_passkey_challenges.invitation_user_handle": True,
+    "inventory_transactions.garden_id": False,
 }
 
 REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
@@ -369,6 +403,17 @@ REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
         "length(password_hash) > 0",
         "password_auth_disabled = 1",
         "password_hash is null",
+    ),
+    "ck_procurement_receipt_provenance": (
+        "status = 'received'",
+        "status <> 'received'",
+        "receipt_inventory_item_id is not null",
+        "receipt_inventory_item_id is null",
+        "receipt_inventory_transaction_id is not null",
+        "receipt_inventory_transaction_id is null",
+        "received_by_user_id is null",
+        "received_at_ms is not null",
+        "received_at_ms is null",
     ),
 }
 
@@ -517,6 +562,25 @@ _MIGRATION_0026_CONSTRAINTS = {
     "ux_media_cleanup_jobs_storage_keys",
     "ck_media_cleanup_jobs_attempts_nonnegative",
 }
+_MIGRATION_0027_COLUMNS = {
+    "inventory_transactions.garden_id",
+    "procurement_items.receipt_inventory_item_id",
+    "procurement_items.receipt_inventory_transaction_id",
+    "procurement_items.received_by_user_id",
+    "procurement_items.received_at_ms",
+}
+_MIGRATION_0027_CONSTRAINTS = {
+    "ux_inventory_items_id_garden",
+    "ux_inventory_tx_id_item_garden",
+    "fk_inventory_tx_garden",
+    "fk_inventory_tx_item_garden",
+    "ck_inventory_tx_delta_nonzero",
+    "ux_procurement_receipt_transaction",
+    "fk_procurement_receipt_inventory",
+    "fk_procurement_received_by_user",
+    "ck_procurement_receipt_provenance",
+    "ck_procurement_quantity_positive",
+}
 _MIGRATION_0022_CONSTRAINTS = {
     constraint
     for constraint in REQUIRED_CONSTRAINTS
@@ -591,6 +655,27 @@ def _migration_0026_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
     )
 
 
+def _is_migration_0027_part(part: Mapping[str, object]) -> bool:
+    obj = str(part.get("object", ""))
+    return obj in _MIGRATION_0027_COLUMNS or obj in _MIGRATION_0027_CONSTRAINTS
+
+
+def _migration_0027_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
+    return (
+        "garden_id" not in snapshot.columns.get("inventory_transactions", set())
+        and not (
+            {
+                "receipt_inventory_item_id",
+                "receipt_inventory_transaction_id",
+                "received_by_user_id",
+                "received_at_ms",
+            }
+            & snapshot.columns.get("procurement_items", set())
+        )
+        and not (_MIGRATION_0027_CONSTRAINTS & snapshot.constraints)
+    )
+
+
 def bootstrap_schema_diagnostics_from_snapshot(
     snapshot: SchemaSnapshot,
 ) -> dict[str, object]:
@@ -609,16 +694,23 @@ def bootstrap_schema_diagnostics_from_snapshot(
         missing_offline_operations = _migration_0022_schema_is_absent(snapshot)
         missing_audit_request_id = _migration_0023_schema_is_absent(snapshot)
         missing_media_cleanup = _migration_0026_schema_is_absent(snapshot)
+        missing_inventory_integrity = _migration_0027_schema_is_absent(snapshot)
         if (
-            missing_offline_operations or missing_audit_request_id or missing_media_cleanup
+            missing_offline_operations
+            or missing_audit_request_id
+            or missing_media_cleanup
+            or missing_inventory_integrity
         ) and all(
             (missing_offline_operations and _is_migration_0022_part(part))
             or (missing_audit_request_id and _is_migration_0023_part(part))
             or (missing_weather_identity and _is_migration_0021_part(part))
             or (missing_media_cleanup and _is_migration_0026_part(part))
+            or (missing_inventory_integrity and _is_migration_0027_part(part))
             for part in missing
         ):
-            stamp_through = 25
+            stamp_through = 26
+            if missing_media_cleanup:
+                stamp_through = 25
             if missing_audit_request_id:
                 stamp_through = 22
             if missing_offline_operations:

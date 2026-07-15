@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from unittest.mock import patch
 
@@ -27,6 +28,10 @@ class TestWorkflowEndpoints(BaseApiTest):
                 role="editor",
             )
             user_id = int(user["id"])
+            conn.execute(
+                "UPDATE auth_users SET subscription_tier = 'pro' WHERE id = %s",
+                (user_id,),
+            )
 
             # PLT-TEST (category=fro) and PLT-002 (category=busker)
             # are seeded by BaseApiTest._seed_data
@@ -163,6 +168,207 @@ class TestWorkflowEndpoints(BaseApiTest):
         self.assertEqual(r2.status_code, 200)
         self.assertEqual(r2.json()["created"], 0)
         self.assertEqual(r2.json()["skipped"], 2)
+        self.assertEqual(r2.json()["tasks"], r1.json()["tasks"])
+
+    @patch("gardenops.routers.workflows.date")
+    @patch("gardenops.services.workflow_service.date")
+    @patch.dict(
+        "os.environ",
+        {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+    )
+    def test_concurrent_starts_create_each_rule_once(
+        self,
+        mock_svc_date,
+        mock_router_date,
+    ) -> None:
+        self._seed_owned_plants()
+        fake_today = date(2026, 3, 15)
+        mock_router_date.today.return_value = fake_today
+        mock_svc_date.today.return_value = fake_today
+        client_one, headers_one = self._authenticated_client("wf_user", "wf_pass1")
+        client_two, headers_two = self._authenticated_client("wf_user", "wf_pass1")
+        body = {
+            "workflow_id": "spring_prep",
+            "selected_steps": ["assess_damage", "prune"],
+        }
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    client.post,
+                    "/api/workflows/start",
+                    headers=headers,
+                    json=body,
+                )
+                for client, headers in (
+                    (client_one, headers_one),
+                    (client_two, headers_two),
+                )
+            ]
+            responses = [future.result() for future in futures]
+
+        self.assertTrue(
+            all(response.status_code == 200 for response in responses),
+            [(response.status_code, response.text) for response in responses],
+        )
+        payloads = [response.json() for response in responses]
+        self.assertEqual(sum(payload["created"] for payload in payloads), 2)
+        self.assertEqual(sum(payload["skipped"] for payload in payloads), 2)
+        self.assertEqual(payloads[0]["tasks"], payloads[1]["tasks"])
+
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS count, COUNT(DISTINCT rule_source) AS rules
+                FROM garden_tasks
+                WHERE rule_source LIKE 'workflow:spring_prep:%:2026'
+                """
+            ).fetchone()
+            assert row is not None
+            self.assertEqual(int(row["count"]), 2)
+            self.assertEqual(int(row["rules"]), 2)
+        finally:
+            db.return_db(conn)
+
+    @patch.dict(
+        "os.environ",
+        {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+    )
+    def test_start_workflow_requires_write_role_and_tasks_are_garden_visible(self) -> None:
+        garden_id = self._seed_owned_plants()
+        viewer = self._create_test_user("wf_viewer", "wfviewerpass", role="viewer")
+        self._create_test_user("wf_admin", "wfadminpass", role="admin")
+        editor_client, editor_headers = self._authenticated_client("wf_user", "wf_pass1")
+        viewer_client, viewer_headers = self._authenticated_client(
+            "wf_viewer",
+            "wfviewerpass",
+        )
+        admin_client, admin_headers = self._authenticated_client("wf_admin", "wfadminpass")
+        body = {"workflow_id": "spring_prep", "selected_steps": ["assess_damage"]}
+
+        denied = viewer_client.post(
+            "/api/workflows/start",
+            headers=viewer_headers,
+            json=body,
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        with patch("gardenops.routers.workflows.date") as mock_date:
+            mock_date.today.return_value = date(2026, 3, 15)
+            created = editor_client.post(
+                "/api/workflows/start",
+                headers=editor_headers,
+                json=body,
+            )
+        self.assertEqual(created.status_code, 200, created.text)
+        stable_task = created.json()["tasks"][0]
+        repeated = admin_client.post(
+            "/api/workflows/start",
+            headers=admin_headers,
+            json=body,
+        )
+        self.assertEqual(repeated.status_code, 200, repeated.text)
+        self.assertEqual(repeated.json()["tasks"], created.json()["tasks"])
+
+        visible = viewer_client.get("/api/tasks", headers=viewer_headers).json()["tasks"]
+        self.assertEqual(
+            [task["id"] for task in visible if task["rule_source"] == stable_task["rule_source"]],
+            [stable_task["task_id"]],
+        )
+
+        conn = db.get_db()
+        try:
+            other = conn.execute(
+                "INSERT INTO gardens (slug, name) VALUES ('wf-other', 'WF Other') RETURNING id"
+            ).fetchone()
+            assert other is not None
+            other_id = int(other["id"])
+            conn.execute(
+                """
+                INSERT INTO garden_memberships (garden_id, user_id, role)
+                VALUES (%s, %s, 'viewer')
+                """,
+                (other_id, int(viewer["id"])),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        isolated_headers = self._session_headers(
+            viewer_headers["x-csrf-token"],
+            garden_id=other_id,
+        )
+        isolated = viewer_client.get("/api/tasks", headers=isolated_headers).json()["tasks"]
+        self.assertEqual(isolated, [])
+        self.assertGreater(garden_id, 0)
+
+    def test_start_workflow_rejects_unknown_and_duplicate_steps(self) -> None:
+        self._seed_owned_plants()
+        for selected_steps in (["missing"], ["prune", "prune"]):
+            with self.subTest(selected_steps=selected_steps):
+                response = self.client.post(
+                    "/api/workflows/start",
+                    json={
+                        "workflow_id": "spring_prep",
+                        "selected_steps": selected_steps,
+                    },
+                )
+                self.assertEqual(response.status_code, 422)
+
+        conn = db.get_db()
+        try:
+            count = conn.execute("SELECT COUNT(*) AS count FROM garden_tasks").fetchone()
+            assert count is not None
+            self.assertEqual(int(count["count"]), 0)
+        finally:
+            db.return_db(conn)
+
+    def test_start_workflow_rejects_target_links_outside_active_garden(self) -> None:
+        self._seed_owned_plants()
+        conn = db.get_db()
+        try:
+            other = conn.execute(
+                "INSERT INTO gardens (slug, name) VALUES ('wf-target-other', 'Other') RETURNING id"
+            ).fetchone()
+            assert other is not None
+            conn.execute(
+                """
+                INSERT INTO plants (plt_id, name, category)
+                VALUES ('PLT-WF-OTHER', 'Other', 'busker')
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES ('PLT-WF-OTHER', %s, %s)
+                """,
+                (self._owner_id, int(other["id"])),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch(
+            "gardenops.routers.workflows.resolve_scope",
+            return_value=(["PLT-WF-OTHER"], []),
+        ):
+            response = self.client.post(
+                "/api/workflows/start",
+                json={
+                    "workflow_id": "spring_prep",
+                    "selected_steps": ["prune"],
+                },
+            )
+
+        self.assertEqual(response.status_code, 409)
+        conn = db.get_db()
+        try:
+            row = conn.execute("SELECT COUNT(*) AS count FROM garden_tasks").fetchone()
+            assert row is not None
+            self.assertEqual(int(row["count"]), 0)
+        finally:
+            db.return_db(conn)
 
     @patch("gardenops.routers.workflows.date")
     @patch("gardenops.services.workflow_service.date")

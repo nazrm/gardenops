@@ -182,6 +182,53 @@ _HARVESTABLE_CATEGORIES = {"baerbusker", "fr\u00f8", "tr\u00e6r"}
 _PERENNIAL_CATEGORIES = {"busker", "baerbusker"}
 _WATER_KEYWORDS = {"regular", "often", "jevnlig", "ofte", "mye"}
 _HARDINESS_FROST_VULNERABLE = {"H1", "H2", "H3", "H4", "H5"}
+WORKFLOW_SCOPES = {
+    "none",
+    "all",
+    "empty_plots",
+    "woody",
+    "blooming",
+    "harvestable",
+    "water_sensitive",
+    "fertilize_sensitive",
+    "frost_vulnerable",
+    "bulbs",
+    "perennials",
+}
+
+
+def validated_workflow_steps(template: dict, selected_steps: list[str]) -> list[dict]:
+    """Return selected template steps in template order after strict validation."""
+    if not selected_steps:
+        raise ValueError("At least one workflow step is required")
+    if len(selected_steps) != len(set(selected_steps)):
+        raise ValueError("Workflow steps must be unique")
+
+    steps = template.get("steps")
+    if not isinstance(steps, list) or not steps:
+        raise RuntimeError("Workflow template has no usable steps")
+
+    step_by_id: dict[str, dict] = {}
+    for raw_step in steps:
+        if not isinstance(raw_step, dict):
+            raise RuntimeError("Workflow template contains an invalid step")
+        step_id = raw_step.get("id")
+        if not isinstance(step_id, str) or not step_id or step_id in step_by_id:
+            raise RuntimeError("Workflow template contains an invalid step id")
+        required_text = ("title", "task_type", "scope")
+        if any(
+            not isinstance(raw_step.get(key), str) or not raw_step[key] for key in required_text
+        ):
+            raise RuntimeError(f"Workflow step '{step_id}' is not usable")
+        if raw_step["scope"] not in WORKFLOW_SCOPES:
+            raise RuntimeError(f"Workflow step '{step_id}' has an unsupported scope")
+        step_by_id[step_id] = raw_step
+
+    unknown = sorted(set(selected_steps) - set(step_by_id))
+    if unknown:
+        raise ValueError(f"Unknown workflow step: {unknown[0]}")
+    selected = set(selected_steps)
+    return [step for step in steps if step["id"] in selected]
 
 
 def _all_plot_ids(db: DbConn, garden_id: int) -> list[str]:

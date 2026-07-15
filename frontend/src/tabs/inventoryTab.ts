@@ -19,8 +19,10 @@ import {
   deleteInventoryItemApi,
   listInventoryTransactionsApi,
   addInventoryTransactionApi,
-  addPlantToPlotApi,
+  absoluteDecimalString,
+  plantFromInventoryApi,
   createJournalEntryApi,
+  getActiveGardenContext,
   getApiErrorMessage,
 } from "../services/api";
 import { loadJournalEntries } from "../tabs/journalTab";
@@ -30,7 +32,46 @@ let ctx: AppContext;
 let inventoryItems: InventoryItem[] = [];
 let inventoryTotal = 0;
 let inventoryOffset = 0;
+let inventoryRequestGeneration = 0;
+const inventoryPendingActions = new Set<string>();
 const INVENTORY_PAGE_SIZE = 50;
+
+interface InventoryRequestContext {
+  gardenId: number;
+  generation: number;
+}
+
+function createInventoryRequest(): InventoryRequestContext | null {
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return null;
+  return { gardenId, generation: ++inventoryRequestGeneration };
+}
+
+function isCurrentInventoryRequest(request: InventoryRequestContext): boolean {
+  return request.generation === inventoryRequestGeneration
+    && request.gardenId === getActiveGardenContext();
+}
+
+function isCurrentInventoryGarden(gardenId: number): boolean {
+  return gardenId === getActiveGardenContext();
+}
+
+export function resetInventoryForGardenSwitch(): void {
+  inventoryRequestGeneration += 1;
+  inventoryItems = [];
+  inventoryTotal = 0;
+  inventoryOffset = 0;
+  inventoryPendingActions.clear();
+  document.getElementById("inventory-summary")?.replaceChildren();
+  document.getElementById("inventory-mobile-list")?.replaceChildren();
+  document.getElementById("inventory-table-body")?.replaceChildren();
+  document.getElementById("inventory-pagination")?.replaceChildren();
+  const typeFilter = querySelect("inventory-type-filter");
+  const search = queryInput("inventory-search");
+  if (typeFilter) typeFilter.value = "";
+  if (search) search.value = "";
+  document.querySelectorAll(".inventory-modal").forEach((modal) => modal.remove());
+}
 
 export function setInventoryOffset(
   offset: number,
@@ -65,6 +106,8 @@ export function initInventoryTab(
 
 export async function loadInventoryItems(): Promise<void> {
   if (!ctx) return;
+  const request = createInventoryRequest();
+  if (!request) return;
   const typeFilter = querySelect("inventory-type-filter")?.value || "";
   const search = queryInput("inventory-search")?.value || "";
   try {
@@ -79,7 +122,8 @@ export async function loadInventoryItems(): Promise<void> {
     };
     if (typeFilter) params.inventory_type = typeFilter;
     if (search) params.q = search;
-    const result = await listInventoryApi(params);
+    const result = await listInventoryApi(params, { gardenId: request.gardenId });
+    if (!isCurrentInventoryRequest(request)) return;
     if (result.total > 0 && result.items.length === 0 && inventoryOffset > 0) {
       inventoryOffset = Math.max(
         0,
@@ -92,6 +136,7 @@ export async function loadInventoryItems(): Promise<void> {
     inventoryTotal = result.total;
     renderInventoryView();
   } catch (err) {
+    if (!isCurrentInventoryRequest(request)) return;
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
@@ -221,8 +266,10 @@ function openInventoryItemForm(
   existing?: InventoryItem,
 ): void {
   if (!ctx.ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null || (existing && existing.garden_id !== gardenId)) return;
   const modal = document.createElement("div");
-  modal.className = "modal";
+  modal.className = "modal inventory-modal";
   modal.setAttribute("role", "dialog");
   modal.setAttribute("aria-modal", "true");
   const content = document.createElement("div");
@@ -258,25 +305,35 @@ function openInventoryItemForm(
   >[0] = {
     plants,
     onSubmit: async (data) => {
+      const actionKey = existing ? `update:${existing.id}` : "create";
+      if (inventoryPendingActions.has(actionKey) || !isCurrentInventoryGarden(gardenId)) return;
+      inventoryPendingActions.add(actionKey);
       try {
         if (existing) {
           await updateInventoryItemApi(
             existing.id,
             data,
+            { gardenId },
           );
-          ctx.showToast(t("inventory.item_updated"));
+          if (isCurrentInventoryGarden(gardenId)) {
+            ctx.showToast(t("inventory.item_updated"));
+          }
         } else {
-          await createInventoryItemApi(data);
-          ctx.showToast(t("inventory.item_created"));
+          await createInventoryItemApi(data, { gardenId });
+          if (isCurrentInventoryGarden(gardenId)) {
+            ctx.showToast(t("inventory.item_created"));
+          }
           inventoryOffset = 0;
         }
+        if (!isCurrentInventoryGarden(gardenId)) return;
         closeModal();
-        void loadInventoryItems();
+        await loadInventoryItems();
       } catch (err) {
-        ctx.showToast(
-          getApiErrorMessage(err),
-          "error",
-        );
+        if (isCurrentInventoryGarden(gardenId)) {
+          ctx.showToast(getApiErrorMessage(err), "error");
+        }
+      } finally {
+        inventoryPendingActions.delete(actionKey);
       }
     },
     onCancel: closeModal,
@@ -294,8 +351,10 @@ function openStockModal(
   mode: "add" | "consume" | "plant",
 ): void {
   if (!ctx.ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null || item.garden_id !== gardenId) return;
   const modal = document.createElement("div");
-  modal.className = "modal";
+  modal.className = "modal inventory-modal";
   modal.setAttribute("role", "dialog");
   modal.setAttribute("aria-modal", "true");
   const content = document.createElement("div");
@@ -335,25 +394,32 @@ function openStockModal(
       zone_code: p.zone_code,
     }));
 
+  let plantOperationId: string | null = null;
   const form = createStockTransactionForm({
     item,
     mode,
     plots,
     onSubmit: async (data) => {
+      const actionKey = `transaction:${item.id}`;
+      if (inventoryPendingActions.has(actionKey) || !isCurrentInventoryGarden(gardenId)) return;
+      inventoryPendingActions.add(actionKey);
       try {
-        if (
-          data.plot_id &&
-          item.plt_id &&
-          data.reason === "planted"
-        ) {
-          await addPlantToPlotApi(
-            data.plot_id,
-            item.plt_id,
+        if (mode === "plant") {
+          if (!data.plot_id) return;
+          plantOperationId ??= crypto.randomUUID();
+          await plantFromInventoryApi(
+            item.id,
+            {
+              quantity: absoluteDecimalString(data.delta),
+              plot_id: data.plot_id,
+              occurred_on: data.occurred_on,
+              notes: data.notes,
+            },
+            { gardenId, operationId: plantOperationId },
           );
-        }
-
-        let journalEntryId: string | null = null;
-        if (data.create_journal && item.plt_id) {
+        } else {
+          let journalEntryId: string | null = null;
+          if (data.create_journal && item.plt_id) {
           const reasonLabel =
             data.reason ||
             (mode === "add" ? "purchased" : "planted");
@@ -374,24 +440,15 @@ function openStockModal(
                 ? t(
                     "inventory.journal_title_added",
                     {
-                      quantity: Math.abs(data.delta),
+                      quantity: absoluteDecimalString(data.delta),
                       unit: item.unit,
                       reason: reasonLabel,
                     },
                   )
-                : mode === "plant"
-                  ? t(
-                      "inventory.journal_title_planted",
-                      {
-                        quantity: Math.abs(data.delta),
-                        unit: item.unit,
-                        reason: reasonLabel,
-                      },
-                    )
-                  : t(
+                : t(
                       "inventory.journal_title_used",
                       {
-                        quantity: Math.abs(data.delta),
+                        quantity: absoluteDecimalString(data.delta),
                         unit: item.unit,
                         reason: reasonLabel,
                       },
@@ -404,21 +461,27 @@ function openStockModal(
           if (data.notes)
             journalBody.notes = data.notes;
           const result =
-            await createJournalEntryApi(journalBody);
+            await createJournalEntryApi(journalBody, { gardenId });
           journalEntryId = result.id;
+          }
+
+          await addInventoryTransactionApi(
+            item.id,
+            {
+              delta: data.delta,
+              reason: data.reason,
+              source_name: data.source_name,
+              cost_minor: data.cost_minor,
+              occurred_on: data.occurred_on,
+              storage_location: data.storage_location,
+              notes: data.notes,
+              journal_entry_id: journalEntryId,
+            },
+            { gardenId },
+          );
         }
 
-        await addInventoryTransactionApi(item.id, {
-          delta: data.delta,
-          reason: data.reason,
-          source_name: data.source_name,
-          cost_minor: data.cost_minor,
-          occurred_on: data.occurred_on,
-          storage_location: data.storage_location,
-          notes: data.notes,
-          journal_entry_id: journalEntryId,
-        });
-
+        if (!isCurrentInventoryGarden(gardenId)) return;
         ctx.showToast(
           mode === "add"
             ? t("inventory.stock_added")
@@ -427,14 +490,15 @@ function openStockModal(
               : t("inventory.stock_used"),
         );
         closeModal();
-        void loadInventoryItems();
+        await loadInventoryItems();
         if (data.create_journal)
           void loadJournalEntries();
       } catch (err) {
-        ctx.showToast(
-          getApiErrorMessage(err),
-          "error",
-        );
+        if (isCurrentInventoryGarden(gardenId)) {
+          ctx.showToast(getApiErrorMessage(err), "error");
+        }
+      } finally {
+        inventoryPendingActions.delete(actionKey);
       }
     },
     onCancel: closeModal,
@@ -448,8 +512,10 @@ function openStockModal(
 async function openTransactionHistory(
   item: InventoryItem,
 ): Promise<void> {
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null || item.garden_id !== gardenId) return;
   const modal = document.createElement("div");
-  modal.className = "modal";
+  modal.className = "modal inventory-modal";
   modal.setAttribute("role", "dialog");
   modal.setAttribute("aria-modal", "true");
   const content = document.createElement("div");
@@ -495,12 +561,14 @@ async function openTransactionHistory(
     const result =
       await listInventoryTransactionsApi(item.id, {
         limit: 100,
-      });
+      }, { gardenId });
+    if (!isCurrentInventoryGarden(gardenId) || !modal.isConnected) return;
     renderTransactionHistory(
       histContainer,
       result.transactions,
     );
   } catch (err) {
+    if (!isCurrentInventoryGarden(gardenId) || !modal.isConnected) return;
     histContainer.textContent = t(
       "inventory.history_load_failed",
     );
@@ -512,18 +580,31 @@ async function deleteInventoryItem(
   item: InventoryItem,
 ): Promise<void> {
   if (!ctx.ensureWriteAccess()) return;
-  const ok = await ctx.confirmDialog(
-    t("inventory.delete_confirm", {
-      label: item.label,
-    }),
-    t("common.delete"),
-  );
-  if (!ok) return;
+  const gardenId = getActiveGardenContext();
+  const actionKey = `delete:${item.id}`;
+  if (
+    gardenId === null
+    || item.garden_id !== gardenId
+    || inventoryPendingActions.has(actionKey)
+  ) return;
+  inventoryPendingActions.add(actionKey);
   try {
-    await deleteInventoryItemApi(item.id);
+    const ok = await ctx.confirmDialog(
+      t("inventory.delete_confirm", {
+        label: item.label,
+      }),
+      t("common.delete"),
+    );
+    if (!ok) return;
+    await deleteInventoryItemApi(item.id, { gardenId });
+    if (!isCurrentInventoryGarden(gardenId)) return;
     ctx.showToast(t("inventory.item_deleted"));
-    void loadInventoryItems();
+    await loadInventoryItems();
   } catch (err) {
-    ctx.showToast(getApiErrorMessage(err), "error");
+    if (isCurrentInventoryGarden(gardenId)) {
+      ctx.showToast(getApiErrorMessage(err), "error");
+    }
+  } finally {
+    inventoryPendingActions.delete(actionKey);
   }
 }

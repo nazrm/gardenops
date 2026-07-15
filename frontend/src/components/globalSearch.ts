@@ -1,9 +1,15 @@
 import type { AppState } from "../core/models";
 import { t } from "../core/i18n";
-import { getPlantPlots, searchPlantsApi } from "../services/api";
+import {
+  getActiveGardenContext,
+  getApiErrorMessage,
+  getPlantPlots,
+  searchPlantsApi,
+} from "../services/api";
 
 let searchTimer: number | null = null;
 let searchSeq = 0;
+let highlightSeq = 0;
 
 let cachedSearchInputs: HTMLInputElement[] | null = null;
 let cachedSearchDropdowns: HTMLElement[] | null = null;
@@ -55,6 +61,21 @@ export function hideGlobalSearchDropdowns(): void {
   });
 }
 
+export function resetGlobalSearchForGardenSwitch(): void {
+  searchSeq += 1;
+  highlightSeq += 1;
+  if (searchTimer !== null) {
+    window.clearTimeout(searchTimer);
+    searchTimer = null;
+  }
+  syncSearchInputs("");
+  getSearchDropdowns().forEach((dropdown) => {
+    dropdown.replaceChildren();
+    dropdown.hidden = true;
+  });
+  document.getElementById("highlight-badge")?.remove();
+}
+
 export function handleGlobalSearch(
   state: AppState,
   renderPlots: () => void,
@@ -77,10 +98,31 @@ export function handleGlobalSearch(
     window.clearTimeout(searchTimer);
   }
   const seq = ++searchSeq;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
   searchTimer = window.setTimeout(() => {
     void (async () => {
-      const results = await searchPlantsApi(query, { limit: 8 });
-      if (seq !== searchSeq || input.value.trim() !== query) return;
+      let results;
+      try {
+        results = await searchPlantsApi(query, { limit: 8, gardenId });
+      } catch (err) {
+        if (
+          seq !== searchSeq
+          || gardenId !== getActiveGardenContext()
+          || input.value.trim() !== query
+        ) return;
+        const error = document.createElement("div");
+        error.className = "dropdown-empty";
+        error.textContent = getApiErrorMessage(err);
+        dropdown.replaceChildren(error);
+        dropdown.hidden = false;
+        return;
+      }
+      if (
+        seq !== searchSeq
+        || gardenId !== getActiveGardenContext()
+        || input.value.trim() !== query
+      ) return;
       hideOtherDropdowns(dropdown);
       if (results.length === 0) {
         const empty = document.createElement("div");
@@ -180,7 +222,11 @@ export async function highlightPlantPlots(
   name: string,
   renderPlots: () => void,
 ): Promise<void> {
-  const plotIds = await getPlantPlots(pltId);
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
+  const seq = ++highlightSeq;
+  const plotIds = await getPlantPlots(pltId, { gardenId });
+  if (seq !== highlightSeq || gardenId !== getActiveGardenContext()) return;
   state.highlightedPlotIds = new Set(plotIds);
   state.highlightedPlantName = name;
 

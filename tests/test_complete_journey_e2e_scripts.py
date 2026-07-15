@@ -26,6 +26,9 @@ ORACLE = ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_two_or
 PHASE_THREE_ORACLE = (
     ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_three_oracle.json"
 )
+PHASE_FOUR_ORACLE = (
+    ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_four_oracle.json"
+)
 EXPECTED_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
 ).stdout.strip()
@@ -193,7 +196,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
     subprocess.run(["git", "init", "--quiet"], cwd=checkout, check=True, timeout=20)
     runner = checkout / "scripts" / "run_complete_journeys_e2e.sh"
     result = subprocess.run(
-        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "4"],
+        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "5"],
         cwd=checkout,
         capture_output=True,
         check=False,
@@ -551,6 +554,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "role_delayed_surfaces",
     ):
         assert marker in journey_source
+    assert "waitFor(() => page.locator" not in journey_source
     for substantive_marker in (
         "#onb-garden-name",
         ".onb-validation--error",
@@ -691,7 +695,7 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
     runner_source = RUNNER.read_text(encoding="utf-8")
 
-    assert "MAX_IMPLEMENTED_PHASE=3" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=4" in runner_source
     assert "runDailyAttentionWork" in journey_source
     assert 'require("./e2e/journeys/dailyAttentionWork.cjs")' in checker_source
     assert "phaseSelected(2)" in checker_source
@@ -709,7 +713,7 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_THREE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=3" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=4" in runner_source
     assert "GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER=1" in runner_source
     assert "runObservationToAction" in journey_source
     assert 'require("./e2e/journeys/observationToAction.cjs")' in checker_source
@@ -851,6 +855,149 @@ try {
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None:
+    journey = ROOT / "scripts" / "e2e" / "journeys" / "planningAndReporting.cjs"
+    journey_source = journey.read_text(encoding="utf-8")
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    seeder_source = SEEDER.read_text(encoding="utf-8")
+    runner_source = RUNNER.read_text(encoding="utf-8")
+    oracle = json.loads(PHASE_FOUR_ORACLE.read_text(encoding="utf-8"))
+
+    assert "MAX_IMPLEMENTED_PHASE=4" in runner_source
+    assert 'require("./e2e/journeys/planningAndReporting.cjs")' in checker_source
+    assert "phaseSelected(4)" in checker_source
+    assert "runPlanningAndReporting" in checker_source
+    assert "assertPhaseFourDatabaseState" in checker_source
+    assert "assertPhaseFourAuditEvents" in checker_source
+    assert "_phase_four_runtime_state" in seeder_source
+    assert "phase_four_state" in seeder_source
+    assert "task.rule_source LIKE %s" in seeder_source
+    assert '(garden_ids, "workflow:%")' in seeder_source
+    assert "SELECT plot.public_id" not in seeder_source
+    assert oracle["schema_version"] == 1
+    assert oracle["phase_four"]["profile_order"] == [
+        "admin:desktop",
+        "editor:desktop",
+        "admin:mobile",
+        "editor:mobile",
+        "viewer:desktop",
+        "viewer:mobile",
+    ]
+    assert oracle["phase_four"]["database_boundaries"]["owned_tables"] == [
+        "app_settings",
+        "garden_tasks",
+        "inventory_items",
+        "inventory_transactions",
+        "procurement_items",
+    ]
+    for journey_id in ("P4", "P6", "I1", "L1", "L2", "R2", "R3"):
+        assert f'"{journey_id}"' in checker_source
+    for contract in (
+        "expected_quantity",
+        "receipt_inventory_transaction_id",
+        "planner_goal_preferences",
+        "report_source_rows",
+        "cross_garden_rows_unchanged",
+    ):
+        assert contract in checker_source or contract in seeder_source
+    assert "exerciseDelayedGardenResponses" in journey_source
+    for marker in (
+        "createInventoryLedgerThroughUi",
+        "createProcurementLifecycleThroughUi",
+        "exercisePlannerAndReportsThroughUi",
+        "waitForApiResponse",
+        '"#inv-tx-qty"',
+        '"#procurement-save-btn"',
+        '"Start workflow"',
+        'openSubMode(page, "insights", "statistics", "#statistics-view")',
+        'name: "Export CSV"',
+        'name: "Export JSON"',
+        "const [download] = await Promise.all([",
+        "procurement receipt inventory row",
+        '"#inventory-table-body:visible tr, #inventory-mobile-list:visible .inventory-card"',
+        "openMobileUtilityIfPresent",
+        'page.locator("#mobile-global-plant-search")',
+        "waitForGardenRefresh",
+        "{ requireContent: false }",
+        "completeWorkflowTaskThroughUi",
+        'entry.id === "midsummer_check"',
+        'step.id === "pest_check"',
+        'data-tasks-view="month"',
+        'selectOption("completed")',
+        'target: "tasks", view: "overdue"',
+    ):
+        assert marker in journey_source
+    for endpoint in (
+        "**/api/inventory*",
+        "**/api/procurement*",
+        "**/api/planner/suggestions*",
+        "**/api/statistics/reports*",
+    ):
+        assert endpoint in journey_source
+
+
+def test_phase_four_oracle_keeps_unsupported_scope_honest() -> None:
+    oracle = json.loads(PHASE_FOUR_ORACLE.read_text(encoding="utf-8"))["phase_four"]
+    assert oracle["support"] == {
+        "backup_restore": "unsupported",
+        "care_local_catalogue": "proven",
+        "external_catalogue": "not_applicable",
+        "generic_import": "unsupported",
+        "ics_import": "unsupported",
+        "suggestion_acceptance": "unsupported",
+        "workflow_instance_lifecycle": "unsupported",
+        "zip_export": "unsupported",
+    }
+    journey_source = (ROOT / "scripts" / "e2e" / "journeys" / "planningAndReporting.cjs").read_text(
+        encoding="utf-8"
+    )
+    for forbidden_claim in ("restoreBackup", "importIcs", "acceptSuggestion", "downloadZip"):
+        assert forbidden_claim not in journey_source
+
+
+def test_phase_four_csv_parser_preserves_formula_escape_and_quoted_fields() -> None:
+    script = r"""
+const { parseCsv } = require('./scripts/e2e/journeys/planningAndReporting.cjs');
+const rows = parseCsv('label,quantity,date\r\n"\'  =Phase 4, ""Ledger"" seeds",8,2026-07-15\r\n');
+if (rows.length !== 1) process.exit(2);
+if (rows[0].label !== '\'  =Phase 4, "Ledger" seeds') process.exit(3);
+if (rows[0].quantity !== '8' || rows[0].date !== '2026-07-15') process.exit(4);
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_four_static_product_contracts_exist_before_browser_execution() -> None:
+    inventory = (ROOT / "gardenops" / "routers" / "inventory.py").read_text(encoding="utf-8")
+    procurement = (ROOT / "gardenops" / "routers" / "procurement.py").read_text(encoding="utf-8")
+    planner = (ROOT / "gardenops" / "routers" / "planner.py").read_text(encoding="utf-8")
+    workflows = (ROOT / "gardenops" / "routers" / "workflows.py").read_text(encoding="utf-8")
+    statistics = (ROOT / "gardenops" / "routers" / "statistics.py").read_text(encoding="utf-8")
+    statistics_tab = (ROOT / "frontend" / "src" / "tabs" / "statisticsTab.ts").read_text(
+        encoding="utf-8"
+    )
+    inventory_tab = (ROOT / "frontend" / "src" / "tabs" / "inventoryTab.ts").read_text(
+        encoding="utf-8"
+    )
+    procurement_tab = (ROOT / "frontend" / "src" / "tabs" / "procurementTab.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "delta: Decimal" in inventory
+    assert "Transaction would make stock negative" in inventory
+    assert "receipt_inventory_transaction_id" in procurement
+    assert "Received procurement items are immutable" in procurement
+    assert '@router.get("/planner/goal")' in planner
+    assert '@router.put("/planner/goal")' in planner
+    assert "pg_advisory_xact_lock" in workflows
+    assert '@router.get("/statistics/reports")' in statistics
+    assert "fetchPlannerGoalApi" in statistics_tab
+    assert "savePlannerGoalApi" in statistics_tab
+    assert "isCurrentStatisticsRequest" in statistics_tab
+    assert "isCurrentInventoryRequest" in inventory_tab
+    assert "isCurrentProcurementRequest" in procurement_tab
 
 
 def test_phase_two_d4_provider_boundary_remains_required() -> None:
@@ -2392,6 +2539,120 @@ for (const unexpected of [
     assert result.returncode == 0, result.stderr
 
 
+def test_audit_snapshot_preserves_literal_media_routes_before_asset_normalization() -> None:
+    source = (ROOT / "scripts/seed_complete_journeys_e2e.py").read_text(encoding="utf-8")
+    audit_normalizer = source.split("    def normalized_path(path: str) -> str:", maxsplit=1)[
+        1
+    ].split("    record_rows = conn.execute(", maxsplit=1)[0]
+
+    assert '{"/api/media/summaries", "/api/media/upload"}' in audit_normalizer
+    assert audit_normalizer.index("/api/media/summaries") < audit_normalizer.index(
+        'r"^/api/media/[^/]+$"'
+    )
+
+
+def test_phase_three_browser_audit_normalizer_preserves_literal_media_routes() -> None:
+    script = """
+const { normalizePhaseThreeMutationPath } = require('./scripts/check_complete_journeys_e2e.cjs');
+if (
+  normalizePhaseThreeMutationPath('/api/media/summaries') !== '/api/media/summaries'
+) process.exit(3);
+if (normalizePhaseThreeMutationPath('/api/media/upload') !== '/api/media/upload') process.exit(4);
+if (
+  normalizePhaseThreeMutationPath('/api/media/asset-1') !== '/api/media/{asset_id}'
+) process.exit(5);
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_three_audit_uses_its_boundary_not_later_phase_mutations() -> None:
+    source = CHECKER.read_text(encoding="utf-8")
+    phase_three_run = source.split("if (phaseSelected(3)) {", maxsplit=1)[1].split(
+        "if (phaseSelected(4)) {", maxsplit=1
+    )[0]
+    phase_three_assertions = source.split("if (phaseThreeRan) {", maxsplit=1)[1].split(
+        "if (phaseFourRan) {", maxsplit=1
+    )[0]
+
+    assert 'currentStage = "phase-three-database-boundary";' in phase_three_run
+    assert "phaseThreeDatabase = await settledDatabaseSnapshot(" in phase_three_run
+    assert "phaseThreeDatabase.phase_three_state" in phase_three_assertions
+    assert "phaseThreeDatabase.audit_state" in phase_three_assertions
+    assert "finalDatabase.audit_state" not in phase_three_assertions
+
+
+def test_database_boundaries_wait_for_required_audit_requests_and_stable_reads() -> None:
+    script = """
+const { settledDatabaseSnapshot } = require('./scripts/check_complete_journeys_e2e.cjs');
+const snapshots = [
+  { audit_state: { records: [{ id: 1, request_id: 'earlier' }] } },
+  { audit_state: { records: [
+    { id: 1, request_id: 'earlier' },
+    { id: 2, request_id: 'required' },
+  ] } },
+  { audit_state: { records: [
+    { id: 1, request_id: 'earlier' },
+    { id: 2, request_id: 'required' },
+  ] } },
+  { audit_state: { records: [
+    { id: 1, request_id: 'earlier' },
+    { id: 2, request_id: 'required' },
+  ] } },
+];
+let reads = 0;
+settledDatabaseSnapshot('test boundary', ['required'], {
+  readSnapshot: () => snapshots[Math.min(reads++, snapshots.length - 1)],
+  wait: async () => {},
+}).then((snapshot) => {
+  if (reads !== 4) process.exit(3);
+  if (snapshot.audit_state.records.length !== 2) process.exit(4);
+}).catch((error) => {
+  console.error(error);
+  process.exit(5);
+});
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_and_three_boundaries_require_recorded_audit_request_ids() -> None:
+    source = CHECKER.read_text(encoding="utf-8")
+    assert "const phaseTwoAuditRequestIds = phaseTwoBrowserMutationRecords(" in source
+    assert '"Phase 2 database boundary",\n        phaseTwoAuditRequestIds' in source
+    assert "const phaseThreeAuditRequestIds = phaseThreeBrowserMutationRecords(" in source
+    assert '"Phase 3 database boundary",\n        phaseThreeAuditRequestIds' in source
+
+
+def test_cumulative_assertions_preserve_private_replay_state_before_validation() -> None:
+    source = CHECKER.read_text(encoding="utf-8")
+    checkpoint = source.split("function writePrivateAssertionCheckpoint", 1)[1].split(
+        "function preparePhaseTwoFixtures", 1
+    )[0]
+    main = source.split('currentStage = "final-database-snapshot";', 1)[1].split(
+        "manifest.database = {", 1
+    )[0]
+
+    assert "process.env.GARDENOPS_LOGS_DIR" in checkpoint
+    assert '"complete-journeys-assertion-state.json"' in checkpoint
+    assert 'flag: "wx"' in checkpoint
+    assert "mode: 0o600" in checkpoint
+    assert "writePrivateAssertionCheckpoint({" in main
+    for snapshot in (
+        "finalDatabase",
+        "phaseFourDatabaseBaseline",
+        "phaseOneDatabase",
+        "phaseThreeDatabase",
+        "phaseThreeDatabaseBaseline",
+        "phaseTwoDatabase",
+    ):
+        assert snapshot in main
+
+
 def test_phase_two_audit_correlation_requires_exact_actor_auth_garden_and_request_pairing() -> None:
     script = """
 const { assertPhaseTwoAuditEvents } = require('./scripts/check_complete_journeys_e2e.cjs');
@@ -3116,7 +3377,7 @@ const overdueSnoozed = expectedPhaseTwoMaintenanceNotification(
   new Map([['task-one', 'snoozed']]),
 );
 if (overdueSnoozed.cleared_at_ms !== 1783857600000) process.exit(10);
-if (overdueSnoozed.clear_reason !== 'expired') process.exit(11);
+if (overdueSnoozed.clear_reason !== 'snoozed') process.exit(11);
 const actionRequest = (taskId, action) => ({
   method: 'POST',
   path: `/api/tasks/${taskId}/action`,
@@ -3148,9 +3409,8 @@ if (reasons.has('untouched-task')) process.exit(9);
     assert "if (notification.cleared_at_ms !== null) return expected;" in lifecycle
     assert "const clearReason = taskClearReasons.get(notification.target_id);" in lifecycle
     assert "if (!clearReason) return expected;" in lifecycle
-    assert 'notification.notification_type === "task_overdue"' in lifecycle
-    assert 'new Set(["rescheduled", "snoozed"]).has(clearReason)' in lifecycle
-    assert ') ? "expired" : clearReason;' in lifecycle
+    assert "expected.clear_reason = clearReason;" in lifecycle
+    assert 'new Set(["rescheduled", "snoozed"])' not in lifecycle
 
 
 def test_phase_two_mobile_quick_action_keeps_manual_date_completion_actionable() -> None:
@@ -3208,6 +3468,8 @@ def test_phase_two_viewer_weather_keeps_personal_dismissal_controls() -> None:
     assert "page.evaluate" not in dismissal
     checker = CHECKER.read_text(encoding="utf-8")
     assert "Phase 2 weather dismissals were not scoped to their users and gardens" in checker
+    assert "viewerGeneratedFrostAlert.id" in checker
+    assert "alert.valid_from === phase.date" in checker
     assert "username: fixture.roles.viewer" in checker
 
 
@@ -3332,6 +3594,12 @@ def test_phase_two_viewer_calendar_preference_matches_patch_request() -> None:
 
 def test_phase_two_notification_projection_uses_exact_identities_not_magic_count() -> None:
     source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+    grouped_projection = source.split(
+        "Phase 2 grouped-task notification users were unexpected", maxsplit=1
+    )[1].split(
+        "Phase 2 task and seeded notification projection identities were unexpected",
+        maxsplit=1,
+    )[0]
 
     assert "state.notifications.length === 43" not in source
     assert "Phase 2 task and seeded notification projection identities were unexpected" in source
@@ -3339,8 +3607,8 @@ def test_phase_two_notification_projection_uses_exact_identities_not_magic_count
     assert "groupedTaskNotificationUsers" in source
     assert "!afterMaintenanceNotificationIds.has(notification.public_id)" in source
     assert "Phase 2 grouped-task notification clear reasons were unexpected" in source
-    assert 'clear_reason: "expired"' in source
-    assert 'clear_reason: "rescheduled"' in source
+    assert grouped_projection.count('clear_reason: "rescheduled"') == 3
+    assert 'clear_reason: "expired"' not in grouped_projection
 
 
 def test_phase_two_weather_projection_uses_exact_identities_not_magic_count() -> None:
@@ -3356,8 +3624,10 @@ def test_phase_two_rain_reassessment_expectation_is_horticulturally_explicit() -
 
     assert 'const expectedRainValidUntil = "2026-07-14";' in source
     assert 'const expectedRainReassessmentOn = "2026-07-16";' in source
+    assert 'const expectedRainRecurrenceDeadline = "2026-07-18";' in source
     assert "rain_reassessment_delay_days: 2" in source
     assert 'rain_reassessment_policy: "check_root_zone_moisture_before_watering"' in source
+    assert "rain_recurrence_deadline: expectedRainRecurrenceDeadline" in source
     assert 'rainOutdoor.due_on === "2026-07-15"' not in source
     assert "Phase 2 truncated forecast incorrectly resolved the seeded Beta frost alert" in source
 
@@ -3374,6 +3644,8 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
     assert "PHASE_TWO_MAINTENANCE_EXPECTATIONS" in seed_source
     assert "complete_journeys_phase_two_oracle.json" in seed_source
     assert oracle["phase_two"]["maintenance"]["summary"]["notifications_created"] == 51
+    assert oracle["phase_two"]["maintenance"]["summary"]["media_cleanup_attempted"] == 0
+    assert oracle["phase_two"]["maintenance"]["summary"]["media_cleanup_failed"] == 0
     assert oracle["phase_two"]["maintenance"]["logical_rows"]["weekly_water"]["due_on"] == [
         "2026-07-15",
         "2026-07-22",
@@ -3391,7 +3663,11 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
     assert oracle["phase_two"]["maintenance"]["mutated_existing"] == {
         "notifications": 0,
         "tasks": 1,
-        "weather_alerts": 1,
+        "weather_alerts": 0,
+    }
+    assert oracle["phase_two"]["maintenance"]["created"]["weather_alerts"] == {
+        "by_type": {"dry_spell": 1, "frost_warning": 1, "heat_wave": 1},
+        "total": 3,
     }
     exact_counts = oracle["phase_two"]["whole_table_mutation_accounting"]["exact_counts"]
     assert exact_counts["phase_two_only"]["garden_tasks"] == {
@@ -3412,11 +3688,11 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
     }
     assert exact_counts["phase_two_only"]["weather_alerts"] == {
         "added": 4,
-        "removed": 1,
+        "removed": 0,
     }
     assert exact_counts["cumulative_through_phase_two"]["weather_alerts"] == {
         "added": 4,
-        "removed": 1,
+        "removed": 0,
     }
     exact_identity_counts = oracle["phase_two"]["whole_table_mutation_accounting"][
         "exact_identity_counts"
@@ -3430,6 +3706,11 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
         "added": 59,
         "removed": 0,
         "updated": 2,
+    }
+    assert exact_identity_counts["cumulative_through_phase_two"]["weather_cache"] == {
+        "added": 1,
+        "removed": 1,
+        "updated": 0,
     }
     assert "expectedPhaseTwoUpdatedTaskIdentityDigests" in source
     assert '"rain_outdoor"' in source
@@ -3448,12 +3729,12 @@ def test_phase_two_maintenance_notifications_have_exact_post_journey_lifecycle()
         "function assertPhaseTwoDatabaseState", 1
     )[0]
     assert "if (notification.cleared_at_ms !== null) return expected;" in lifecycle
-    assert 'notification.notification_type === "task_overdue"' in lifecycle
-    assert 'new Set(["rescheduled", "snoozed"]).has(clearReason)' in lifecycle
+    assert "expected.clear_reason = clearReason;" in lifecycle
+    assert 'new Set(["rescheduled", "snoozed"])' not in lifecycle
     assert 'expected.clear_reason = "weather_dismissed";' in lifecycle
     assert "notification.username === fixture.roles.viewer" in lifecycle
     assert "viewerDismissedWeatherTargets.has(notification.target_id)" in lifecycle
-    assert "viewerMaintenanceAlert" in lifecycle
+    assert "viewerDismissedWeatherTargets" in lifecycle
     assert "taskClearReasons.get(notification.target_id)" in lifecycle
     action_causes = source.split("function phaseTwoTaskNotificationClearReasons", 1)[1].split(
         "function phaseTwoBrowserMutationRecords", 1
@@ -3735,7 +4016,7 @@ def test_phase_two_database_contract_covers_maintenance_and_audit_semantics() ->
         "assertPhaseOneStatePreservedAfterPhaseTwo",
         "phase_one_scoped_state_preserved_after_phase_two",
         "Offline reschedule did not recompute the grouped fertilize recommendation window",
-        "viewerMaintenanceAlertId",
+        "viewerDismissedWeatherTargets",
     ):
         assert marker in checker_source or marker in seed_source
     assert '"before": before_by_id[row_id]' in seed_source
@@ -3792,7 +4073,7 @@ const weatherAfter = {
 const evidence = {
   notifications: { mutated_existing: [] },
   tasks: { mutated_existing: [{ before, after }] },
-  weather_alerts: { mutated_existing: [{ before: weatherBefore, after: weatherAfter }] },
+  weather_alerts: { mutated_existing: [] },
 };
 const fixture = {
   clock: { attention_now_ms: 1783857600000 },
@@ -4329,6 +4610,12 @@ const telemetry = sanitizeManifestEvidence({
   database: { audit_projection: telemetryAudit },
   profiles: [],
 });
+const inventoryAudit = auditManifestProjection(
+  auditState(`/api/inventory/${opaqueRouteId}/transactions`),
+);
+const procurementAudit = auditManifestProjection(
+  auditState(`/api/procurement/${opaqueRouteId}/transition`),
+);
 const taskPath = task.database.audit_projection.events[0].path;
 if (taskPath !== '/api/tasks/{task_id}/action') process.exit(3);
 if (attention.database.audit_projection.events[0].path
@@ -4336,6 +4623,8 @@ if (attention.database.audit_projection.events[0].path
 if (assignment.database.audit_projection.events[0].path
     !== '/api/plots/{plot_id}/plants/{created_plant_id}') process.exit(8);
 if (telemetry.database.audit_projection.events[0].path !== '/api/client-errors') process.exit(9);
+if (inventoryAudit.events[0].path !== '/api/inventory/{item_id}/transactions') process.exit(10);
+if (procurementAudit.events[0].path !== '/api/procurement/{item_id}/transition') process.exit(11);
 if (task.canonical_projection_digests.audit_snapshot
     === attention.canonical_projection_digests.audit_snapshot) process.exit(5);
 if (task.canonical_projection_digests.final_database

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import math
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -44,7 +44,7 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     "wanted": {"ordered", "cancelled"},
     "ordered": {"shipped", "cancelled"},
     "shipped": {"received", "cancelled"},
-    "received": {"cancelled"},
+    "received": set(),
     "cancelled": {"wanted"},
 }
 
@@ -59,7 +59,7 @@ class CreateProcurementBody(StrictBaseModel):
     status: ProcurementStatus = "wanted"
     cost_minor: int = Field(default=0, ge=0)
     currency: str = Field(default="NOK", max_length=10)
-    quantity: float = Field(default=1, gt=0)
+    quantity: Decimal = Field(default=Decimal(1), gt=0, max_digits=20, decimal_places=6)
     unit: str = Field(default="pieces", max_length=50)
     ordered_on: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     expected_on: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
@@ -76,7 +76,7 @@ class UpdateProcurementBody(StrictBaseModel):
     status: ProcurementStatus | None = None
     cost_minor: int | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, max_length=10)
-    quantity: float | None = Field(default=None, gt=0)
+    quantity: Decimal | None = Field(default=None, gt=0, max_digits=20, decimal_places=6)
     unit: str | None = Field(default=None, max_length=50)
     ordered_on: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     expected_on: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
@@ -114,7 +114,7 @@ def _serialize_procurement(row: dict) -> dict:
         "status": str(row["status"]),
         "cost_minor": int(row["cost_minor"]),
         "currency": str(row["currency"] or "NOK"),
-        "quantity": float(row["quantity"]),
+        "quantity": _decimal_string(row["quantity"]),
         "unit": str(row["unit"] or "pieces"),
         "ordered_on": str(row["ordered_on"]) if row["ordered_on"] else None,
         "expected_on": str(row["expected_on"]) if row["expected_on"] else None,
@@ -162,8 +162,16 @@ def _inventory_public_id_from_internal_id(
     return str(row["public_id"]) if row else None
 
 
-def _inventory_delta(quantity: float) -> int:
-    return max(1, int(math.ceil(quantity)))
+def _decimal_string(value: object) -> str:
+    quantity = Decimal(str(value))
+    text = format(quantity, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in {"", "-0"} else text
+
+
+def _receipt_cost_minor(unit_cost_minor: int, quantity: Decimal) -> int:
+    return int((Decimal(unit_cost_minor) * quantity).quantize(Decimal(1), ROUND_HALF_UP))
 
 
 def _validate_linked_plant_id(
@@ -257,20 +265,75 @@ def _ensure_received_inventory(
     item_row: dict,
     received_on: str,
 ) -> tuple[str, int]:
+    durable_tx_id = item_row.get("receipt_inventory_transaction_id")
+    durable_item_id = item_row.get("receipt_inventory_item_id")
+    if durable_tx_id is not None and durable_item_id is not None:
+        public_id = _inventory_public_id_from_internal_id(
+            db,
+            garden_id=int(item_row["garden_id"]),
+            item_id=int(durable_item_id),
+        )
+        if public_id:
+            return public_id, int(durable_tx_id)
+
     metadata = _parse_metadata(item_row.get("metadata_json"))
     existing_tx_id = metadata.get("inventory_transaction_id")
     existing_item_id = metadata.get("inventory_item_id")
     if existing_tx_id and existing_item_id:
+        internal_item_id: int | None = None
         if isinstance(existing_item_id, str):
-            return existing_item_id, int(existing_tx_id)
-        if isinstance(existing_item_id, int):
-            public_id = _inventory_public_id_from_internal_id(
+            inventory_row = db.execute(
+                """
+                SELECT id, public_id
+                FROM inventory_items
+                WHERE public_id = %s AND garden_id = %s
+                """,
+                (existing_item_id, int(item_row["garden_id"])),
+            ).fetchone()
+            if inventory_row:
+                internal_item_id = int(inventory_row["id"])
+                existing_item_id = str(inventory_row["public_id"])
+        elif isinstance(existing_item_id, int):
+            internal_item_id = existing_item_id
+            existing_item_id = _inventory_public_id_from_internal_id(
                 db,
                 garden_id=int(item_row["garden_id"]),
                 item_id=existing_item_id,
             )
-            if public_id:
-                return public_id, int(existing_tx_id)
+        if internal_item_id is not None and existing_item_id:
+            transaction = db.execute(
+                """
+                SELECT actor_user_id, created_at_ms
+                FROM inventory_transactions
+                WHERE id = %s AND item_id = %s AND garden_id = %s
+                """,
+                (int(existing_tx_id), internal_item_id, int(item_row["garden_id"])),
+            ).fetchone()
+            if transaction:
+                db.execute(
+                    """
+                    UPDATE procurement_items
+                    SET status = 'received',
+                        received_on = %s,
+                        receipt_inventory_item_id = %s,
+                        receipt_inventory_transaction_id = %s,
+                        received_by_user_id = %s,
+                        received_at_ms = %s,
+                        updated_at_ms = %s
+                    WHERE id = %s AND garden_id = %s
+                    """,
+                    (
+                        received_on,
+                        internal_item_id,
+                        int(existing_tx_id),
+                        transaction["actor_user_id"],
+                        int(transaction["created_at_ms"]),
+                        current_timestamp_ms(),
+                        int(item_row["id"]),
+                        int(item_row["garden_id"]),
+                    ),
+                )
+                return str(existing_item_id), int(existing_tx_id)
 
     garden_id = int(item_row["garden_id"])
     inventory_item = _find_existing_inventory_item(
@@ -302,28 +365,22 @@ def _ensure_received_inventory(
         inventory_item = {"id": int(irow["id"]), "public_id": str(irow["public_id"])}
 
     transaction_notes = str(item_row["notes"] or "")
-    if not float(item_row["quantity"]).is_integer():
-        rounded = _inventory_delta(float(item_row["quantity"]))
-        extra = (
-            f"Ordered quantity {item_row['quantity']}"
-            f" {item_row['unit']} rounded to"
-            f" {rounded} units for inventory."
-        )
-        transaction_notes = f"{transaction_notes}\n{extra}".strip()
+    quantity = Decimal(str(item_row["quantity"]))
 
     trow = db.execute(
         """
         INSERT INTO inventory_transactions
-            (item_id, delta, reason, source_name, cost_minor,
+            (item_id, garden_id, delta, reason, source_name, cost_minor,
              occurred_on, storage_location, notes,
              actor_user_id, journal_entry_id, created_at_ms)
-        VALUES (%s, %s, 'purchased', %s, %s, %s, '', %s, %s, NULL, %s) RETURNING id
+        VALUES (%s, %s, %s, 'purchased', %s, %s, %s, '', %s, %s, NULL, %s) RETURNING id
         """,
         (
             int(inventory_item["id"]),
-            _inventory_delta(float(item_row["quantity"])),
+            garden_id,
+            quantity,
             str(item_row["vendor_name"] or ""),
-            int(item_row["cost_minor"]) * _inventory_delta(float(item_row["quantity"])),
+            _receipt_cost_minor(int(item_row["cost_minor"]), quantity),
             received_on,
             transaction_notes,
             context.user_id,
@@ -338,10 +395,27 @@ def _ensure_received_inventory(
     db.execute(
         """
         UPDATE procurement_items
-        SET metadata_json = %s, updated_at_ms = %s
+        SET status = 'received',
+            received_on = %s,
+            metadata_json = %s,
+            receipt_inventory_item_id = %s,
+            receipt_inventory_transaction_id = %s,
+            received_by_user_id = %s,
+            received_at_ms = %s,
+            updated_at_ms = %s
         WHERE id = %s AND garden_id = %s
         """,
-        (_dump_metadata(metadata), now_ms, int(item_row["id"]), garden_id),
+        (
+            received_on,
+            _dump_metadata(metadata),
+            int(inventory_item["id"]),
+            transaction_id,
+            context.user_id,
+            now_ms,
+            now_ms,
+            int(item_row["id"]),
+            garden_id,
+        ),
     )
     return str(inventory_item["public_id"]), transaction_id
 
@@ -359,7 +433,7 @@ def procurement_summary(
 
     rows = db.execute(
         """
-        SELECT status, COUNT(*) AS c, SUM(cost_minor * quantity) AS total_cost
+        SELECT status, COUNT(*) AS c, SUM(ROUND(cost_minor * quantity)) AS total_cost
         FROM procurement_items
         WHERE garden_id = %s
         GROUP BY status
@@ -428,9 +502,15 @@ def list_procurement(
         params.extend([like, like, like])
     if inventory_item_id is not None:
         conditions.append(
-            "NULLIF(metadata_json, '')::jsonb ->> 'inventory_item_id' = %s",
+            """(
+                NULLIF(metadata_json, '')::jsonb ->> 'inventory_item_id' = %s
+                OR receipt_inventory_item_id = (
+                    SELECT id FROM inventory_items
+                    WHERE public_id = %s AND garden_id = %s
+                )
+            )""",
         )
-        params.append(inventory_item_id)
+        params.extend([inventory_item_id, inventory_item_id, garden_id])
 
     where = " AND ".join(conditions)
 
@@ -487,6 +567,12 @@ def create_procurement(
     context = _auth_context(request)
     _require_write(context)
     garden_id = _active_garden_id(context)
+
+    if body.status == "received":
+        raise HTTPException(
+            status_code=422,
+            detail="Received items must use the transition endpoint",
+        )
 
     if body.ordered_on:
         _validate_date(body.ordered_on)
@@ -558,12 +644,32 @@ def update_procurement(
     _require_write(context)
     garden_id = _active_garden_id(context)
 
-    row = _fetch_item(db, item_id, garden_id)
+    row = db.execute(
+        """
+        SELECT * FROM procurement_items
+        WHERE public_id = %s AND garden_id = %s
+        FOR UPDATE
+        """,
+        (item_id, garden_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Procurement item not found")
+    row = dict(row)
     internal_item_id = int(row["id"])
 
     updates: list[str] = []
     params: list[object] = []
     data = body.model_dump(exclude_unset=True)
+    if "status" in data:
+        raise HTTPException(
+            status_code=422,
+            detail="Status changes must use the transition endpoint",
+        )
+    if str(row["status"]) == "received" or row.get("receipt_inventory_transaction_id"):
+        raise HTTPException(
+            status_code=409,
+            detail="Received procurement items are immutable",
+        )
 
     for field_name, value in data.items():
         if field_name in ("ordered_on", "expected_on", "received_on") and value:
@@ -616,10 +722,38 @@ def transition_procurement(
     _require_write(context)
     garden_id = _active_garden_id(context)
 
-    row = _fetch_item(db, item_id, garden_id)
+    row = db.execute(
+        """
+        SELECT * FROM procurement_items
+        WHERE public_id = %s AND garden_id = %s
+        FOR UPDATE
+        """,
+        (item_id, garden_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Procurement item not found")
+    row = dict(row)
     internal_item_id = int(row["id"])
     current_status = str(row["status"])
     target = body.to_status
+
+    if current_status == target:
+        if target == "received" and row.get("receipt_inventory_transaction_id") is None:
+            received_on = str(row["received_on"] or body.received_on or date.today().isoformat())
+            _validate_date(received_on)
+            _ensure_received_inventory(
+                db,
+                context=context,
+                item_row=row,
+                received_on=received_on,
+            )
+            db.commit()
+        return {"status": "ok"}
+    if current_status == "received" or row.get("receipt_inventory_transaction_id"):
+        raise HTTPException(
+            status_code=409,
+            detail="Received procurement items cannot change status",
+        )
 
     allowed = VALID_TRANSITIONS.get(current_status, set())
     if target not in allowed:
@@ -643,23 +777,22 @@ def transition_procurement(
         updates.append("received_on = %s")
         params.append(received_on)
 
-    params.extend([internal_item_id, garden_id])
-    db.execute(
-        f"""
-        UPDATE procurement_items
-        SET {", ".join(updates)}
-        WHERE id = %s AND garden_id = %s
-        """,
-        params,
-    )
     if target == "received":
-        refreshed = _fetch_item_by_internal_id(db, internal_item_id, garden_id)
-        received_on = str(refreshed["received_on"] or date.today().isoformat())
         _ensure_received_inventory(
             db,
             context=context,
-            item_row=refreshed,
+            item_row=row,
             received_on=received_on,
+        )
+    else:
+        params.extend([internal_item_id, garden_id])
+        db.execute(
+            f"""
+            UPDATE procurement_items
+            SET {", ".join(updates)}
+            WHERE id = %s AND garden_id = %s
+            """,
+            params,
         )
     db.commit()
     return {"status": "ok"}
@@ -675,7 +808,22 @@ def delete_procurement(
     _require_write(context)
     garden_id = _active_garden_id(context)
 
-    row = _fetch_item(db, item_id, garden_id)
+    row = db.execute(
+        """
+        SELECT * FROM procurement_items
+        WHERE public_id = %s AND garden_id = %s
+        FOR UPDATE
+        """,
+        (item_id, garden_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Procurement item not found")
+    row = dict(row)
+    if str(row["status"]) == "received" or row.get("receipt_inventory_transaction_id"):
+        raise HTTPException(
+            status_code=409,
+            detail="Received procurement items cannot be deleted",
+        )
     db.execute(
         "DELETE FROM procurement_items WHERE id = %s AND garden_id = %s",
         (int(row["id"]), garden_id),

@@ -250,6 +250,8 @@ scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --p
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 2
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 3
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 3
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 4
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 4
 ```
 
 The runner creates its own disposable PostgreSQL child through
@@ -390,6 +392,47 @@ storage keys, original files, and previews to match without orphans. Journal,
 Issues, and Harvest clear their cached rows during a garden switch and reject
 late responses from the previous garden before the new content becomes
 interactive.
+
+Phase 4 runs fresh administrator, editor, and viewer desktop/mobile profiles
+for inventory, procurement, planner/workflows, local catalogue behavior,
+reports, and exports. Its independent oracle fixes the
+decimal inventory ledger, procurement lifecycle, profile order, supported
+surface, and database mutation boundaries. The checker projects inventory
+items and transactions, durable procurement receipt provenance, planner goal
+preferences, workflow tasks and links, report source rows, audit mutations, and
+unchanged Beta-garden rows. Repeating the received transition and workflow
+start must not create duplicate transactions or tasks. Inventory deletion is
+serialized with ledger writes and cannot erase transaction history; planting
+from stock commits its plot assignment, journal event, and stock deduction as
+one idempotent command.
+
+Phase 4 parses visible-browser CSV, JSON, and ICS downloads rather than treating
+download completion as evidence. It checks garden scope, CSV formula/quote
+escaping, maximum-precision decimal quantities without binary-number coercion,
+calendar dates, and absence of internal paths or secret-shaped content. Its
+primary administrator journey creates inventory,
+enters fractional ledger transactions, receives procurement, selects a planner
+goal, starts a workflow, and completes the generated task through the visible
+UI. It also follows the overdue-task report action to the exact pending overdue
+Tasks view; direct requests are reserved for readback, idempotent replay, and
+authorization-denial evidence. Pixel 7 evidence covers dense inventory and
+procurement controls and delayed Alpha/Beta responses for inventory,
+procurement, planner, and reports. External catalogue results are explicitly
+`not_applicable` while
+the endpoint has no public species catalogue. ZIP export, generic import,
+backup restore, ICS import, suggestion acceptance, and workflow-instance
+lifecycle remain unsupported and are not Phase 4 claims. Accessibility remains
+open for Phase 8 and performance remains open for Phase 9.
+
+Before coordinating a real Phase 4 browser run, validate its static harness and
+coverage contracts:
+
+```bash
+.venv/bin/pytest -q tests/test_complete_journey_e2e_scripts.py -k phase_four
+.venv/bin/python scripts/check_journey_coverage.py --allow-open
+node --check scripts/e2e/journeys/planningAndReporting.cjs
+node --check scripts/check_complete_journeys_e2e.cjs
+```
 
 The tracked coverage contract is `tests/journey_coverage.yaml`. Validate open
 phases during implementation and require complete closure only in the final

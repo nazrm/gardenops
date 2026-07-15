@@ -1158,6 +1158,46 @@ class TestNotifications(BaseApiTest):
         self.assertNotIn("total", body)
         self.assertEqual(len(body["notifications"]), 1)
 
+    def test_notification_list_includes_non_configurable_system_subtypes(self) -> None:
+        from gardenops.services.notification_service import create_notification as _create_notif
+
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        try:
+            client = self._new_client()
+            _, csrf = self._login_session("test_admin", "testadminpass", client=client)
+            headers = self._session_headers(csrf)
+
+            conn = db.get_db()
+            try:
+                garden = conn.execute(
+                    "SELECT id FROM gardens WHERE slug = 'default' LIMIT 1",
+                ).fetchone()
+                user = conn.execute(
+                    "SELECT id FROM auth_users WHERE username = 'test_admin'",
+                ).fetchone()
+                notification_id = _create_notif(
+                    conn,
+                    int(garden["id"]),
+                    int(user["id"]),
+                    "system",
+                    "Backup status changed",
+                    "The latest backup completed.",
+                    notification_subtype="backup",
+                    severity="low",
+                )
+            finally:
+                db.return_db(conn)
+
+            response = client.get("/api/notifications", headers=headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertIn(
+                notification_id,
+                [notification["id"] for notification in response.json()["notifications"]],
+            )
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
     def test_expired_weather_notification_moves_to_log(self) -> None:
         from gardenops.services.notification_service import create_notification as _create_notif
 

@@ -212,12 +212,18 @@ def _build_scope(
                 COALESCE(SUM(pp.quantity), 0) AS total_quantity
             FROM plots pl
             JOIN plot_ownership pwo ON pwo.plot_id = pl.plot_id
-            LEFT JOIN plot_plants pp ON pp.plot_id = pl.plot_id
+            LEFT JOIN (
+                SELECT assignments.plot_id, assignments.plt_id, assignments.quantity
+                FROM plot_plants assignments
+                JOIN plant_ownership assigned_po
+                  ON assigned_po.plt_id = assignments.plt_id
+                WHERE assigned_po.garden_id = %s
+            ) pp ON pp.plot_id = pl.plot_id
             WHERE pwo.garden_id = %s{zone_sql}
             GROUP BY pl.plot_id, pl.zone_code, pl.zone_name
             ORDER BY pl.zone_code, pl.plot_id
             """,
-            plot_params,
+            [garden_id, *plot_params],
         ).fetchall()
     ]
     plot_ids = [str(row["plot_id"]) for row in plot_rows]
@@ -315,51 +321,55 @@ def _build_needs_attention(
             plant_ids=scope.plant_ids,
         )
 
-    overdue_tasks_row = db.execute(
+    overdue_task_rows = db.execute(
         f"""
-        SELECT COUNT(*) AS c
+        SELECT t.public_id
         FROM garden_tasks t
         WHERE t.garden_id = %s AND t.status = 'pending' AND t.due_on < %s
         {task_scope_sql}
+        ORDER BY t.due_on, t.public_id
         """,
         [garden_id, today_iso, *task_scope_params],
-    ).fetchone()
-    due_this_week_row = db.execute(
+    ).fetchall()
+    due_this_week_rows = db.execute(
         f"""
-        SELECT COUNT(*) AS c
+        SELECT t.public_id
         FROM garden_tasks t
         WHERE t.garden_id = %s
           AND t.status = 'pending'
           AND t.due_on >= %s
           AND t.due_on <= %s
         {task_scope_sql}
+        ORDER BY t.due_on, t.public_id
         """,
         [garden_id, today_iso, week_end_iso, *task_scope_params],
-    ).fetchone()
+    ).fetchall()
 
     unresolved_statuses = ("open", "monitoring", "treating")
     unresolved_placeholders = ",".join(["%s"] * len(unresolved_statuses))
-    open_issues_row = db.execute(
+    open_issue_rows = db.execute(
         f"""
-        SELECT COUNT(*) AS c
+        SELECT i.public_id
         FROM garden_issues i
         WHERE i.garden_id = %s AND i.status IN ({unresolved_placeholders})
         {issue_scope_sql}
+        ORDER BY i.created_at_ms DESC, i.public_id
         """,
         [garden_id, *unresolved_statuses, *issue_scope_params],
-    ).fetchone()
-    overdue_followups_row = db.execute(
+    ).fetchall()
+    overdue_followup_rows = db.execute(
         f"""
-        SELECT COUNT(*) AS c
+        SELECT i.public_id
         FROM garden_issues i
         WHERE i.garden_id = %s
           AND i.status IN ({unresolved_placeholders})
           AND i.follow_up_on IS NOT NULL
           AND i.follow_up_on < %s
         {issue_scope_sql}
+        ORDER BY i.follow_up_on, i.public_id
         """,
         [garden_id, *unresolved_statuses, today_iso, *issue_scope_params],
-    ).fetchone()
+    ).fetchall()
 
     alert_scope_sql = ""
     alert_scope_params: list[str] = []
@@ -407,13 +417,16 @@ def _build_needs_attention(
     ).fetchall()
 
     return {
-        "overdue_tasks_count": int(overdue_tasks_row["c"]) if overdue_tasks_row else 0,
-        "due_this_week_count": int(due_this_week_row["c"]) if due_this_week_row else 0,
-        "open_issues_count": int(open_issues_row["c"]) if open_issues_row else 0,
-        "overdue_follow_ups_count": (
-            int(overdue_followups_row["c"]) if overdue_followups_row else 0
-        ),
+        "overdue_tasks_count": len(overdue_task_rows),
+        "overdue_task_ids": [str(row["public_id"]) for row in overdue_task_rows],
+        "due_this_week_count": len(due_this_week_rows),
+        "due_this_week_task_ids": [str(row["public_id"]) for row in due_this_week_rows],
+        "open_issues_count": len(open_issue_rows),
+        "open_issue_ids": [str(row["public_id"]) for row in open_issue_rows],
+        "overdue_follow_ups_count": len(overdue_followup_rows),
+        "overdue_follow_up_issue_ids": [str(row["public_id"]) for row in overdue_followup_rows],
         "active_weather_alerts_count": len(alert_rows),
+        "active_weather_alert_ids": [int(row["id"]) for row in alert_rows],
         "weather_alert_titles": [str(row["title"]) for row in alert_rows[:3]],
     }
 
@@ -613,8 +626,14 @@ def _build_yield_summary(
             FROM harvest_entries he
             JOIN harvest_entry_plots hep ON hep.entry_id = he.id
             WHERE {where_sql}
+              AND EXISTS (
+                  SELECT 1
+                  FROM plot_ownership harvest_plot_ownership
+                  WHERE harvest_plot_ownership.plot_id = hep.plot_id
+                    AND harvest_plot_ownership.garden_id = %s
+              )
             """,
-            params,
+            [*params, garden_id],
         ).fetchone()
     if harvested_plot_count_row:
         harvested_plot_count = int(harvested_plot_count_row["c"])
@@ -648,10 +667,16 @@ def _build_yield_summary(
         JOIN harvest_entry_plants hep ON hep.entry_id = he.id
         LEFT JOIN plants p ON p.plt_id = hep.plt_id
         WHERE {where_sql}
+          AND EXISTS (
+              SELECT 1
+              FROM plant_ownership harvest_plant_ownership
+              WHERE harvest_plant_ownership.plt_id = hep.plt_id
+                AND harvest_plant_ownership.garden_id = %s
+          )
         GROUP BY hep.plt_id, p.name, he.unit
         ORDER BY COUNT(*) DESC, SUM(he.quantity) DESC, name ASC
         """,
-        params,
+        [*params, garden_id],
     ).fetchall()
     producer_map: dict[str, dict[str, object]] = {}
     for row in producer_rows:

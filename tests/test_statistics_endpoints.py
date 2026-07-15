@@ -104,6 +104,42 @@ class TestStatisticsActions(BaseApiTest):
         unassigned_ids = [p["plt_id"] for p in data["unassigned_plants"]]
         self.assertNotIn("PLT-TEST", unassigned_ids)
 
+    def test_actions_ignore_foreign_garden_assignments(self) -> None:
+        conn = db.get_db()
+        try:
+            second_garden_id = int(
+                conn.execute(
+                    "INSERT INTO gardens (slug, name) VALUES (%s, %s) RETURNING id",
+                    ("statistics-foreign", "Foreign Statistics Garden"),
+                ).fetchone()["id"]
+            )
+            conn.execute(
+                "INSERT INTO plants (plt_id, name, category) VALUES (%s, %s, %s)",
+                ("PLT-STATS-FOREIGN", "Foreign statistics plant", "other"),
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES (%s, %s, %s)
+                """,
+                ("PLT-STATS-FOREIGN", self._owner_id, second_garden_id),
+            )
+            conn.execute(
+                "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES (%s, %s, %s)",
+                ("B1", "PLT-STATS-FOREIGN", 1),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        resp = self.client.get("/api/statistics/actions")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        empty_plot_ids = {
+            plot_id for zone in data["empty_plots_by_zone"] for plot_id in zone["plot_ids"]
+        }
+        self.assertIn("B1", empty_plot_ids)
+
     def test_actions_stale_plants_require_observation_events(self) -> None:
         today = date.today().isoformat()
         watered = self.client.post(
@@ -191,6 +227,64 @@ class TestBadgeCounts(BaseApiTest):
         self.assertIsInstance(data["active_alerts"], int)
         self.assertIsInstance(data["unread_notifications"], int)
 
+    def test_badge_counts_uses_shared_attention_clock_for_cleanup(self) -> None:
+        frozen_now_ms = 946_814_400_000
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO garden_tasks
+                    (public_id, garden_id, task_type, title, status, severity,
+                     due_on, rule_source, metadata_json, created_at_ms, updated_at_ms)
+                VALUES ('task_badge_frozen_clock', %s, 'water', 'Frozen clock task',
+                        'pending', 'normal', '2000-01-01', 'manual:test', '{}', %s, %s)
+                """,
+                (garden_id, frozen_now_ms, frozen_now_ms),
+            )
+            conn.execute(
+                """
+                INSERT INTO notification_events
+                    (public_id, garden_id, user_id, notification_type, severity,
+                     title, body, target_type, target_id, metadata_json, dismissed,
+                     created_at_ms, expires_at_ms)
+                VALUES ('note_badge_frozen_clock', %s, %s, 'task_overdue', 'normal',
+                        'Frozen overdue task', 'Due on 2000-01-01', 'task',
+                        'task_badge_frozen_clock', '{}', 0, %s, 946857599999)
+                """,
+                (garden_id, self._owner_id, frozen_now_ms),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "test",
+                "GARDENOPS_ATTENTION_FROZEN_NOW_MS": str(frozen_now_ms),
+                "GARDENOPS_ATTENTION_FROZEN_DATE": "2000-01-02",
+            },
+            clear=False,
+        ):
+            resp = self.client.get("/api/dashboard/badge-counts")
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                """
+                SELECT cleared_at_ms, clear_reason
+                FROM notification_events
+                WHERE public_id = 'note_badge_frozen_clock'
+                """,
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        assert row is not None
+        self.assertIsNone(row["cleared_at_ms"])
+        self.assertIsNone(row["clear_reason"])
+
 
 class TestTodayDashboard(BaseApiTest):
     """Tests for GET /api/dashboard/today."""
@@ -220,6 +314,14 @@ class TestExportsBackup(BaseApiTest):
         resp = self.client.get("/api/exports/backup")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
+        self.assertEqual(
+            data["backup_contract"],
+            {
+                "format": "gardenops-internal-snapshot",
+                "portable": False,
+                "restore_supported": False,
+            },
+        )
         self.assertIn("garden_id", data)
         self.assertIn("exported_at_ms", data)
         self.assertIn("tasks", data)

@@ -313,6 +313,22 @@ class TestGardenerReportsApi(BaseApiTest):
         self.assertEqual(data["needs_attention"]["open_issues_count"], 1)
         self.assertEqual(data["needs_attention"]["overdue_follow_ups_count"], 1)
         self.assertEqual(data["needs_attention"]["active_weather_alerts_count"], 2)
+        for count_key, ids_key in (
+            ("overdue_tasks_count", "overdue_task_ids"),
+            ("due_this_week_count", "due_this_week_task_ids"),
+            ("open_issues_count", "open_issue_ids"),
+            ("overdue_follow_ups_count", "overdue_follow_up_issue_ids"),
+            ("active_weather_alerts_count", "active_weather_alert_ids"),
+        ):
+            self.assertEqual(
+                data["needs_attention"][count_key], len(data["needs_attention"][ids_key])
+            )
+        self.assertTrue(
+            all(value.startswith("tsk_") for value in data["needs_attention"]["overdue_task_ids"])
+        )
+        self.assertTrue(
+            all(value.startswith("iss_") for value in data["needs_attention"]["open_issue_ids"])
+        )
 
         self.assertIn("PLT-MARCH", data["bloom_now"]["plant_ids"])
         self.assertIn("PLT-APRIL", data["bloom_next"]["plant_ids"])
@@ -393,6 +409,72 @@ class TestGardenerReportsApi(BaseApiTest):
         self.assertEqual(lawn_data["plot_use"]["empty_plot_ids"], [])
         self.assertEqual(lawn_data["plot_use"]["underused_plot_ids"], [])
         self.assertIn("PLT-APRIL", lawn_data["bloom_next"]["plant_ids"])
+
+        self.assertTrue(
+            set(bed_data["needs_attention"]["overdue_task_ids"]).isdisjoint(
+                lawn_data["needs_attention"]["due_this_week_task_ids"],
+            )
+        )
+
+    def test_statistics_reports_ignore_foreign_garden_links_in_zone_scope(self) -> None:
+        conn = db.get_db()
+        try:
+            second_garden_id = int(
+                conn.execute(
+                    "INSERT INTO gardens (slug, name) VALUES (%s, %s) RETURNING id",
+                    ("reports-foreign", "Foreign Reports Garden"),
+                ).fetchone()["id"]
+            )
+            conn.execute(
+                "INSERT INTO plants (plt_id, name, category) VALUES (%s, %s, %s)",
+                ("PLT-FOREIGN", "Foreign only", "other"),
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES (%s, %s, %s)
+                """,
+                ("PLT-FOREIGN", self._owner_id, second_garden_id),
+            )
+            conn.execute(
+                "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES (%s, %s, %s)",
+                ("B2", "PLT-FOREIGN", 1),
+            )
+            foreign_linked_task_id = int(
+                conn.execute(
+                    """
+                    INSERT INTO garden_tasks (
+                        garden_id, task_type, title, description, status, severity,
+                        due_on, rule_source, metadata_json, created_at_ms, updated_at_ms
+                    ) VALUES (%s, 'water', 'Foreign linked task', '', 'pending', 'normal',
+                              %s, '', '{}', %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        self._get_default_garden_id(),
+                        (date.today() - timedelta(days=1)).isoformat(),
+                        db.current_timestamp_ms(),
+                        db.current_timestamp_ms(),
+                    ),
+                ).fetchone()["id"]
+            )
+            conn.execute(
+                "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
+                (foreign_linked_task_id, "PLT-FOREIGN"),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        response = self.client.get("/api/statistics/reports?zone_code=B")
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertIn("B2", data["plot_use"]["empty_plot_ids"])
+        self.assertEqual(data["needs_attention"]["overdue_tasks_count"], 1)
+        self.assertEqual(
+            data["needs_attention"]["overdue_tasks_count"],
+            len(data["needs_attention"]["overdue_task_ids"]),
+        )
 
     def test_statistics_reports_reject_unknown_zone(self) -> None:
         response = self.client.get("/api/statistics/reports?zone_code=Z")

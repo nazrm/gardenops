@@ -180,6 +180,7 @@ _NOTIFICATION_POLICIES: tuple[dict[str, Any], ...] = (
         "group": "system",
         "notification_type": "system",
         "notification_subtype": None,
+        "_match_any_subtype": True,
         "default_in_app_enabled": True,
         "default_email_enabled": True,
         "supports_severity": True,
@@ -193,7 +194,10 @@ _POLICIES_BY_KEY = {str(policy["key"]): policy for policy in _NOTIFICATION_POLIC
 
 def notification_policy_catalog() -> list[dict[str, Any]]:
     """Return user-facing notification policy metadata for settings UI."""
-    return [dict(policy) for policy in _NOTIFICATION_POLICIES]
+    return [
+        {key: value for key, value in policy.items() if not key.startswith("_")}
+        for policy in _NOTIFICATION_POLICIES
+    ]
 
 
 def default_notification_rules() -> dict[str, NotificationRule]:
@@ -558,7 +562,9 @@ def attention_notification_sql_filter(
         if not allowed_severities:
             continue
 
-        subtype_sql = "notification_subtype IS NULL"
+        subtype_sql = (
+            "1 = 1" if bool(policy.get("_match_any_subtype")) else "notification_subtype IS NULL"
+        )
         policy_params: list[Any] = [notification_type]
         if notification_subtype is not None:
             subtype_sql = "notification_subtype = %s"
