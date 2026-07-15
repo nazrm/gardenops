@@ -5902,6 +5902,7 @@ async function main() {
   let phaseThreeAuditBaseline = null;
   let phaseThreeAuditEvidence = null;
   let phaseThreeBoundaryEvidence = null;
+  let phaseThreeDatabase = null;
   let phaseThreeDatabaseBaseline = null;
   let phaseThreeDatabaseEvidence = null;
   let phaseThreeFilesystemEvidence = null;
@@ -6044,6 +6045,8 @@ async function main() {
         username: USERNAME,
       });
       phaseThreeProfiles = manifest.profiles.slice(phaseThreeProfileStart);
+      currentStage = "phase-three-database-boundary";
+      phaseThreeDatabase = databaseSnapshot();
     }
     if (phaseSelected(4)) {
       currentStage = "phase-four-browser";
@@ -6073,6 +6076,7 @@ async function main() {
         initial: fixture.database_snapshot.domain_tables,
         phase_one_boundary: phaseOneDatabase?.domain_tables ?? null,
         phase_three_baseline: phaseThreeDatabaseBaseline?.domain_tables ?? null,
+        phase_three_boundary: phaseThreeDatabase?.domain_tables ?? null,
         phase_four_baseline: phaseFourDatabaseBaseline?.domain_tables ?? null,
       },
     };
@@ -6137,10 +6141,11 @@ async function main() {
     }
     if (phaseThreeRan) {
       assert(phaseThreeDatabaseBaseline, "Phase 3 database baseline snapshot is missing");
+      assert(phaseThreeDatabase, "Phase 3 database boundary snapshot is missing");
       phaseThreeProfileEvidence = assertPhaseThreeProfileEvidence(phaseThreeProfiles);
       phaseThreeDatabaseEvidence = assertPhaseThreeDatabaseState(
         phaseThreeDatabaseBaseline.phase_three_state,
-        finalDatabase.phase_three_state,
+        phaseThreeDatabase.phase_three_state,
         fixture,
       );
       assert(phaseThreeBoundaries.length === phaseThreeProfiles.length,
@@ -6156,7 +6161,7 @@ async function main() {
       );
       phaseThreeAuditEvidence = assertPhaseThreeAuditEvents(
         phaseThreeAuditBaseline,
-        finalDatabase.audit_state,
+        phaseThreeDatabase.audit_state,
         phaseThreeProfiles,
         fixture,
       );

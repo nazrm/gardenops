@@ -2544,6 +2544,22 @@ def test_audit_snapshot_preserves_literal_media_routes_before_asset_normalizatio
     )
 
 
+def test_phase_three_audit_uses_its_boundary_not_later_phase_mutations() -> None:
+    source = CHECKER.read_text(encoding="utf-8")
+    phase_three_run = source.split("if (phaseSelected(3)) {", maxsplit=1)[1].split(
+        "if (phaseSelected(4)) {", maxsplit=1
+    )[0]
+    phase_three_assertions = source.split("if (phaseThreeRan) {", maxsplit=1)[1].split(
+        "if (phaseFourRan) {", maxsplit=1
+    )[0]
+
+    assert 'currentStage = "phase-three-database-boundary";' in phase_three_run
+    assert "phaseThreeDatabase = databaseSnapshot();" in phase_three_run
+    assert "phaseThreeDatabase.phase_three_state" in phase_three_assertions
+    assert "phaseThreeDatabase.audit_state" in phase_three_assertions
+    assert "finalDatabase.audit_state" not in phase_three_assertions
+
+
 def test_phase_two_audit_correlation_requires_exact_actor_auth_garden_and_request_pairing() -> None:
     script = """
 const { assertPhaseTwoAuditEvents } = require('./scripts/check_complete_journeys_e2e.cjs');
