@@ -1399,10 +1399,14 @@ function normalizeAuditProjectionPath(value) {
     "/api/media/upload",
     "/api/notifications",
     "/api/notifications/preferences",
+    "/api/inventory",
+    "/api/planner/goal",
     "/api/plants",
+    "/api/procurement",
     "/api/tasks",
     "/api/tasks/batch-action",
     "/api/weather/check",
+    "/api/workflows/start",
   ]).has(pathname)) {
     return pathname;
   }
@@ -1470,6 +1474,22 @@ function normalizeAuditProjectionPath(value) {
     [
       /^\/api\/media\/[^/?#]+$/,
       () => "/api/media/{asset_id}",
+    ],
+    [
+      /^\/api\/inventory\/[^/?#]+\/transactions$/,
+      () => "/api/inventory/{item_id}/transactions",
+    ],
+    [
+      /^\/api\/inventory\/[^/?#]+$/,
+      () => "/api/inventory/{item_id}",
+    ],
+    [
+      /^\/api\/procurement\/[^/?#]+\/transition$/,
+      () => "/api/procurement/{item_id}/transition",
+    ],
+    [
+      /^\/api\/procurement\/[^/?#]+$/,
+      () => "/api/procurement/{item_id}",
     ],
   ];
   for (const [pattern, projection] of parameterizedRoutes) {

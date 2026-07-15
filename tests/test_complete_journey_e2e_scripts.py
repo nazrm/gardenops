@@ -4469,6 +4469,12 @@ const telemetry = sanitizeManifestEvidence({
   database: { audit_projection: telemetryAudit },
   profiles: [],
 });
+const inventoryAudit = auditManifestProjection(
+  auditState(`/api/inventory/${opaqueRouteId}/transactions`),
+);
+const procurementAudit = auditManifestProjection(
+  auditState(`/api/procurement/${opaqueRouteId}/transition`),
+);
 const taskPath = task.database.audit_projection.events[0].path;
 if (taskPath !== '/api/tasks/{task_id}/action') process.exit(3);
 if (attention.database.audit_projection.events[0].path
@@ -4476,6 +4482,8 @@ if (attention.database.audit_projection.events[0].path
 if (assignment.database.audit_projection.events[0].path
     !== '/api/plots/{plot_id}/plants/{created_plant_id}') process.exit(8);
 if (telemetry.database.audit_projection.events[0].path !== '/api/client-errors') process.exit(9);
+if (inventoryAudit.events[0].path !== '/api/inventory/{item_id}/transactions') process.exit(10);
+if (procurementAudit.events[0].path !== '/api/procurement/{item_id}/transition') process.exit(11);
 if (task.canonical_projection_digests.audit_snapshot
     === attention.canonical_projection_digests.audit_snapshot) process.exit(5);
 if (task.canonical_projection_digests.final_database

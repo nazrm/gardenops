@@ -4041,6 +4041,18 @@ def _audit_state(conn) -> dict[str, Any]:
         value = re.sub(r"^/api/issues/[^/]+$", "/api/issues/{issue_id}", value)
         value = re.sub(r"^/api/harvest/[^/]+$", "/api/harvest/{entry_id}", value)
         value = re.sub(
+            r"^/api/inventory/[^/]+/transactions$",
+            "/api/inventory/{item_id}/transactions",
+            value,
+        )
+        value = re.sub(r"^/api/inventory/[^/]+$", "/api/inventory/{item_id}", value)
+        value = re.sub(
+            r"^/api/procurement/[^/]+/transition$",
+            "/api/procurement/{item_id}/transition",
+            value,
+        )
+        value = re.sub(r"^/api/procurement/[^/]+$", "/api/procurement/{item_id}", value)
+        value = re.sub(
             r"^/api/media/plants/[^/]+/cover$", "/api/media/plants/{plant_id}/cover", value
         )
         value = re.sub(r"^/api/media/[^/]+/links$", "/api/media/{asset_id}/links", value)
