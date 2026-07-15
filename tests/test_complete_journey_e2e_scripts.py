@@ -3474,6 +3474,12 @@ def test_phase_two_viewer_calendar_preference_matches_patch_request() -> None:
 
 def test_phase_two_notification_projection_uses_exact_identities_not_magic_count() -> None:
     source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
+    grouped_projection = source.split(
+        "Phase 2 grouped-task notification users were unexpected", maxsplit=1
+    )[1].split(
+        "Phase 2 task and seeded notification projection identities were unexpected",
+        maxsplit=1,
+    )[0]
 
     assert "state.notifications.length === 43" not in source
     assert "Phase 2 task and seeded notification projection identities were unexpected" in source
@@ -3481,8 +3487,8 @@ def test_phase_two_notification_projection_uses_exact_identities_not_magic_count
     assert "groupedTaskNotificationUsers" in source
     assert "!afterMaintenanceNotificationIds.has(notification.public_id)" in source
     assert "Phase 2 grouped-task notification clear reasons were unexpected" in source
-    assert 'clear_reason: "expired"' in source
-    assert 'clear_reason: "rescheduled"' in source
+    assert grouped_projection.count('clear_reason: "rescheduled"') == 3
+    assert 'clear_reason: "expired"' not in grouped_projection
 
 
 def test_phase_two_weather_projection_uses_exact_identities_not_magic_count() -> None:

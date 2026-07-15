@@ -4735,13 +4735,13 @@ function assertPhaseTwoDatabaseState(
     groupedTaskNotificationRows.sort((left, right) => left.username.localeCompare(right.username)),
     [
       {
-        clear_reason: "expired",
+        clear_reason: "rescheduled",
         cleared: true,
         notification_type: "task_due",
         username: fixture.roles.admin,
       },
       {
-        clear_reason: "expired",
+        clear_reason: "rescheduled",
         cleared: true,
         notification_type: "task_due",
         username: fixture.roles.editor,
