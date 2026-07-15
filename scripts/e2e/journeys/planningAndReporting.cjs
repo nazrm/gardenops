@@ -344,7 +344,9 @@ async function exercisePlannerAndReportsThroughUi(page, fixture) {
 
 async function exerciseDownloads(page, diagnostics, fixture) {
   await openSubMode(page, "garden", "inventory", "#inventory-tab-content");
-  await visible(page.locator("#inventory-table-body").getByText(phaseFour(fixture).inventory.label),
+  await visible(page.locator(
+    "#inventory-table-body:visible tr, #inventory-mobile-list:visible .inventory-card",
+  ).filter({ hasText: phaseFour(fixture).inventory.label }).first(),
     "Phase 4 inventory row");
   const csvText = await downloadFrom(
     page, diagnostics,
