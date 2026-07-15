@@ -2551,6 +2551,23 @@ def test_audit_snapshot_preserves_literal_media_routes_before_asset_normalizatio
     )
 
 
+def test_phase_three_browser_audit_normalizer_preserves_literal_media_routes() -> None:
+    script = """
+const { normalizePhaseThreeMutationPath } = require('./scripts/check_complete_journeys_e2e.cjs');
+if (
+  normalizePhaseThreeMutationPath('/api/media/summaries') !== '/api/media/summaries'
+) process.exit(3);
+if (normalizePhaseThreeMutationPath('/api/media/upload') !== '/api/media/upload') process.exit(4);
+if (
+  normalizePhaseThreeMutationPath('/api/media/asset-1') !== '/api/media/{asset_id}'
+) process.exit(5);
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_phase_three_audit_uses_its_boundary_not_later_phase_mutations() -> None:
     source = CHECKER.read_text(encoding="utf-8")
     phase_three_run = source.split("if (phaseSelected(3)) {", maxsplit=1)[1].split(

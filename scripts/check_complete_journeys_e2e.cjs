@@ -3105,7 +3105,7 @@ function normalizePhaseThreeMutationPath(pathname) {
     .replace(/^\/api\/harvest\/[^/]+$/, "/api/harvest/{entry_id}")
     .replace(/^\/api\/media\/plants\/[^/]+\/cover$/, "/api/media/plants/{plant_id}/cover")
     .replace(/^\/api\/media\/[^/]+\/links$/, "/api/media/{asset_id}/links")
-    .replace(/^\/api\/media\/(?!upload$)[^/]+$/, "/api/media/{asset_id}");
+    .replace(/^\/api\/media\/(?!(?:summaries|upload)$)[^/]+$/, "/api/media/{asset_id}");
 }
 
 function isPhaseThreeAuditPath(pathname) {
@@ -7052,6 +7052,7 @@ module.exports = {
   evidenceBinding,
   isElfExecutable,
   normalizedNodeDependencyTree,
+  normalizePhaseThreeMutationPath,
   resolveChromiumExecutable,
   settledDatabaseSnapshot,
   sourceProvenance,
