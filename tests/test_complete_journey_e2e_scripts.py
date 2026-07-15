@@ -3682,6 +3682,11 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
         "removed": 0,
         "updated": 2,
     }
+    assert exact_identity_counts["cumulative_through_phase_two"]["weather_cache"] == {
+        "added": 1,
+        "removed": 1,
+        "updated": 0,
+    }
     assert "expectedPhaseTwoUpdatedTaskIdentityDigests" in source
     assert '"rain_outdoor"' in source
     assert "expected_added: exact.added" in source
