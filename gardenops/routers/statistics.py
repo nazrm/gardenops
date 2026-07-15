@@ -21,6 +21,7 @@ from gardenops.services.notification_service import (
     clear_stale_informational_notifications,
     clear_stale_task_notifications,
     get_unread_count,
+    notification_request_clock,
 )
 from gardenops.sql_dates import offset_months_iso
 
@@ -325,7 +326,8 @@ def get_badge_counts(db: DB, request: Request) -> dict:
     """Lightweight counts for tab badge indicators."""
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
-    today_iso = date.today().isoformat()
+    now_ms, frozen_date = notification_request_clock()
+    today_iso = frozen_date or date.today().isoformat()
     actionable_task_clause = (
         "(status = 'pending' OR "
         "(status = 'snoozed' AND snoozed_until IS NOT NULL AND snoozed_until <= %s))"
@@ -358,7 +360,6 @@ def get_badge_counts(db: DB, request: Request) -> dict:
     ).fetchone()
     assert active_alerts_row is not None
     active_alerts = active_alerts_row["c"]
-    now_ms = current_timestamp_ms()
     expired = clear_expired_notifications(
         db,
         garden_id=garden_id,
