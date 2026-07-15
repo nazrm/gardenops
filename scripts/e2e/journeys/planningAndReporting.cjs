@@ -355,8 +355,10 @@ async function exerciseDownloads(page, diagnostics, fixture) {
   const csvMatch = csvRows.find((row) => row.label === `'${phaseFour(fixture).inventory.label}`);
   assert(csvMatch && Number(csvMatch.quantity) === phaseFour(fixture).inventory.expected_quantity,
     "CSV export lost formula escaping, quoting, or exact inventory quantity");
-  assert(csvRows.every((row) => !String(row.label).includes(phaseFour(fixture).procurement.label)),
-    "Inventory CSV included an unrelated resource row");
+  const receiptRows = csvRows.filter((row) => row.label === phaseFour(fixture).procurement.label);
+  assert(receiptRows.length === 1
+    && Number(receiptRows[0].quantity) === phaseFour(fixture).procurement.quantity,
+  "Inventory CSV omitted or duplicated the procurement receipt inventory row");
   assertNoSecrets(csvText, fixture);
 
   const jsonText = await downloadFrom(

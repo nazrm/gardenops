@@ -914,6 +914,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
         'name: "Export CSV"',
         'name: "Export JSON"',
         "const [download] = await Promise.all([",
+        "procurement receipt inventory row",
     ):
         assert marker in journey_source
     for endpoint in (
