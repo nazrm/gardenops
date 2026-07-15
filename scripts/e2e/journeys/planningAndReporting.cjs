@@ -74,6 +74,16 @@ async function openInsightsMode(page, mode, panel) {
   await visible(page.locator(panel), `${mode} statistics panel`);
 }
 
+async function openMobileUtilityIfPresent(page, label) {
+  const utility = page.locator("#mobile-utility-btn:visible");
+  if (await utility.count() === 0) return false;
+  if (await page.locator("body.mobile-utility-open").count() === 0) {
+    await utility.click();
+    await waitFor(async () => await page.locator("body.mobile-utility-open").count() === 1, label);
+  }
+  return true;
+}
+
 async function readDownload(download, label) {
   const stream = await download.createReadStream();
   assert(stream, `${label} download stream is unavailable`);
@@ -400,22 +410,18 @@ async function exerciseCatalogue(page, fixture) {
   await openSubMode(page, "insights", "care", "#care-view");
   await visible(page.locator("#care-view:visible"), "care surface");
 
-  if (!await page.locator(".global-search-input:visible").count()) {
-    const utility = page.locator("#mobile-utility-btn:visible");
-    if (await utility.count()) {
-      await utility.click();
-      await waitFor(async () => await page.locator("body.mobile-utility-open").count() === 1,
-        "mobile catalogue search controls");
-    }
-  }
-  const search = page.locator(".global-search-input:visible").first();
+  const mobileUtility = await openMobileUtilityIfPresent(page, "mobile catalogue search controls");
+  const search = mobileUtility
+    ? page.locator("#mobile-global-plant-search")
+    : page.locator(".global-search-input:visible").first();
   if (await search.count()) {
+    await visible(search, "catalogue search input");
     const dropdownId = await search.getAttribute("data-dropdown-id");
     assert(dropdownId, "Visible catalogue search omitted its dropdown target");
     await search.fill(fixture.gardens.alpha.plant_name);
     await visible(page.locator(`#${dropdownId} .dropdown-item`).first(),
       "local catalogue search result");
-    if (await page.locator("body.mobile-utility-open").count()) {
+    if (mobileUtility) {
       await page.locator("#mobile-utility-close-btn").click();
       await waitFor(async () => await page.locator("body.mobile-utility-open").count() === 0,
         "mobile catalogue controls to close");
@@ -559,11 +565,7 @@ async function exerciseDelayedGardenResponses(page, fixture) {
     else await openInsightsMode(page, mode, panel);
     await waitFor(() => captured, `${mode} delayed Alpha request`);
     const selector = page.locator("#mobile-garden-select");
-    if (!await selector.isVisible()) {
-      await page.locator("#mobile-utility-btn").click();
-      await waitFor(async () => await page.locator("body.mobile-utility-open").count() === 1,
-        `${mode} mobile utility sheet`);
-    }
+    await openMobileUtilityIfPresent(page, `${mode} mobile utility sheet`);
     await visible(selector, `${mode} mobile garden selector`);
     await selector.selectOption(betaId);
     release();
@@ -577,7 +579,7 @@ async function exerciseDelayedGardenResponses(page, fixture) {
     await selector.selectOption(alphaId);
     await page.waitForLoadState("networkidle");
     if (await page.locator("body.mobile-utility-open").count()) {
-      await page.locator("#mobile-utility-btn").click();
+      await page.locator("#mobile-utility-close-btn").click();
       await waitFor(async () => await page.locator("body.mobile-utility-open").count() === 0,
         `${mode} mobile utility close`);
     }

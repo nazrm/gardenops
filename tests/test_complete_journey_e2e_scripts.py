@@ -916,6 +916,8 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
         "const [download] = await Promise.all([",
         "procurement receipt inventory row",
         '"#inventory-table-body:visible tr, #inventory-mobile-list:visible .inventory-card"',
+        "openMobileUtilityIfPresent",
+        'page.locator("#mobile-global-plant-search")',
     ):
         assert marker in journey_source
     for endpoint in (
