@@ -355,8 +355,8 @@ async function completeWorkflowTaskThroughUi(page, gardenId, task, title) {
   assert(completedResponse.status() === 200, "Completed task history did not reload");
   card = page.locator(`#tasks-list .task-card[data-task-id="${task.task_id}"]`);
   await visible(card, "completed workflow task history after reload");
-  assert(await card.locator(".task-card-actions button").count() === 0,
-    "Completed workflow task retained active action controls");
+  assert(await card.locator(".task-action-complete").count() === 0,
+    "Completed workflow task retained its completion action");
   return { status: persisted.status, taskId: task.task_id, title };
 }
 
