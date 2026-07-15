@@ -4170,7 +4170,8 @@ function expectedPhaseTwoMaintenanceNotification(
     return expected;
   }
   if (notification.cleared_at_ms !== null) return expected;
-  const clearReason = taskClearReasons.get(notification.target_id);
+  const clearReason = taskClearReasons.get(notification.target_id)
+    || (notification.notification_type === "task_overdue" ? "expired" : null);
   if (!clearReason) return expected;
   expected.cleared_at_ms = fixture.clock.attention_now_ms;
   expected.clear_reason = (

@@ -3257,6 +3257,15 @@ const overdueSnoozed = expectedPhaseTwoMaintenanceNotification(
 );
 if (overdueSnoozed.cleared_at_ms !== 1783857600000) process.exit(10);
 if (overdueSnoozed.clear_reason !== 'expired') process.exit(11);
+const overdueExpired = expectedPhaseTwoMaintenanceNotification(
+  { ...active, notification_type: 'task_overdue' },
+  fixture,
+  new Set(),
+  null,
+  new Map(),
+);
+if (overdueExpired.cleared_at_ms !== 1783857600000) process.exit(12);
+if (overdueExpired.clear_reason !== 'expired') process.exit(13);
 const actionRequest = (taskId, action) => ({
   method: 'POST',
   path: `/api/tasks/${taskId}/action`,
@@ -3286,7 +3295,8 @@ if (reasons.has('untouched-task')) process.exit(9);
         "function assertPhaseTwoDatabaseState", 1
     )[0]
     assert "if (notification.cleared_at_ms !== null) return expected;" in lifecycle
-    assert "const clearReason = taskClearReasons.get(notification.target_id);" in lifecycle
+    assert "const clearReason = taskClearReasons.get(notification.target_id)" in lifecycle
+    assert '|| (notification.notification_type === "task_overdue" ? "expired" : null);' in lifecycle
     assert "if (!clearReason) return expected;" in lifecycle
     assert 'notification.notification_type === "task_overdue"' in lifecycle
     assert 'new Set(["rescheduled", "snoozed"]).has(clearReason)' in lifecycle
