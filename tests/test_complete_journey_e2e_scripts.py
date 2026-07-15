@@ -2561,10 +2561,54 @@ def test_phase_three_audit_uses_its_boundary_not_later_phase_mutations() -> None
     )[0]
 
     assert 'currentStage = "phase-three-database-boundary";' in phase_three_run
-    assert "phaseThreeDatabase = databaseSnapshot();" in phase_three_run
+    assert "phaseThreeDatabase = await settledDatabaseSnapshot(" in phase_three_run
     assert "phaseThreeDatabase.phase_three_state" in phase_three_assertions
     assert "phaseThreeDatabase.audit_state" in phase_three_assertions
     assert "finalDatabase.audit_state" not in phase_three_assertions
+
+
+def test_database_boundaries_wait_for_required_audit_requests_and_stable_reads() -> None:
+    script = """
+const { settledDatabaseSnapshot } = require('./scripts/check_complete_journeys_e2e.cjs');
+const snapshots = [
+  { audit_state: { records: [{ id: 1, request_id: 'earlier' }] } },
+  { audit_state: { records: [
+    { id: 1, request_id: 'earlier' },
+    { id: 2, request_id: 'required' },
+  ] } },
+  { audit_state: { records: [
+    { id: 1, request_id: 'earlier' },
+    { id: 2, request_id: 'required' },
+  ] } },
+  { audit_state: { records: [
+    { id: 1, request_id: 'earlier' },
+    { id: 2, request_id: 'required' },
+  ] } },
+];
+let reads = 0;
+settledDatabaseSnapshot('test boundary', ['required'], {
+  readSnapshot: () => snapshots[Math.min(reads++, snapshots.length - 1)],
+  wait: async () => {},
+}).then((snapshot) => {
+  if (reads !== 4) process.exit(3);
+  if (snapshot.audit_state.records.length !== 2) process.exit(4);
+}).catch((error) => {
+  console.error(error);
+  process.exit(5);
+});
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_and_three_boundaries_require_recorded_audit_request_ids() -> None:
+    source = CHECKER.read_text(encoding="utf-8")
+    assert "const phaseTwoAuditRequestIds = phaseTwoBrowserMutationRecords(" in source
+    assert '"Phase 2 database boundary",\n        phaseTwoAuditRequestIds' in source
+    assert "const phaseThreeAuditRequestIds = phaseThreeBrowserMutationRecords(" in source
+    assert '"Phase 3 database boundary",\n        phaseThreeAuditRequestIds' in source
 
 
 def test_phase_two_audit_correlation_requires_exact_actor_auth_garden_and_request_pairing() -> None:

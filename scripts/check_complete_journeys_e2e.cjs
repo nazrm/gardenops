@@ -315,6 +315,36 @@ function databaseSnapshot() {
   return JSON.parse(output.trim()).database_snapshot;
 }
 
+async function settledDatabaseSnapshot(label, requiredRequestIds = [], options = {}) {
+  const readSnapshot = options.readSnapshot || databaseSnapshot;
+  const wait = options.wait || ((milliseconds) => new Promise(
+    (resolve) => setTimeout(resolve, milliseconds),
+  ));
+  const maxAttempts = options.maxAttempts || 30;
+  const pollMs = options.pollMs || 100;
+  const requiredIds = new Set(requiredRequestIds);
+  let previousSignature = null;
+  let stableReads = 0;
+  let missingIds = [...requiredIds];
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const snapshot = readSnapshot();
+    const records = snapshot?.audit_state?.records;
+    assert(Array.isArray(records), `${label} audit records are missing while settling`);
+    const observedIds = new Set(records.map((record) => record.request_id));
+    missingIds = [...requiredIds].filter((requestId) => !observedIds.has(requestId));
+    const signature = canonicalJson(records);
+    stableReads = missingIds.length === 0 && signature === previousSignature
+      ? stableReads + 1
+      : 0;
+    if (stableReads >= 2) return snapshot;
+    previousSignature = signature;
+    await wait(pollMs);
+  }
+  assert(false,
+    `${label} audit state did not settle; ${missingIds.length} browser request IDs remain unpersisted`);
+}
+
 function preparePhaseTwoFixtures() {
   const output = execFileSync(
     path.join(ROOT, ".venv", "bin", "python"),
@@ -5982,7 +6012,7 @@ async function main() {
       });
       phaseOneProfiles = manifest.profiles.slice(phaseOneProfileStart);
       currentStage = "phase-one-database-boundary";
-      phaseOneDatabase = databaseSnapshot();
+      phaseOneDatabase = await settledDatabaseSnapshot("Phase 1 database boundary");
     }
     if (phaseSelected(2)) {
       currentStage = "phase-two-prerequisites";
@@ -6037,11 +6067,18 @@ async function main() {
         "Phase 2 browser did not run the post-save preference delivery boundary");
       phaseTwoProfiles = manifest.profiles.slice(phaseTwoProfileStart);
       currentStage = "phase-two-database-boundary";
-      phaseTwoDatabase = databaseSnapshot();
+      const phaseTwoAuditRequestIds = phaseTwoBrowserMutationRecords(
+        [...phaseTwoReadOnlyProfiles, ...phaseTwoProfiles],
+        fixture,
+      ).map((request) => request.request_id);
+      phaseTwoDatabase = await settledDatabaseSnapshot(
+        "Phase 2 database boundary",
+        phaseTwoAuditRequestIds,
+      );
     }
     if (phaseSelected(3)) {
       currentStage = "phase-three-browser";
-      phaseThreeDatabaseBaseline = databaseSnapshot();
+      phaseThreeDatabaseBaseline = await settledDatabaseSnapshot("Phase 3 database baseline");
       phaseThreeAuditBaseline = phaseThreeDatabaseBaseline.audit_state;
       const phaseThreeProfileStart = manifest.profiles.length;
       await runObservationToAction({
@@ -6067,11 +6104,18 @@ async function main() {
       });
       phaseThreeProfiles = manifest.profiles.slice(phaseThreeProfileStart);
       currentStage = "phase-three-database-boundary";
-      phaseThreeDatabase = databaseSnapshot();
+      const phaseThreeAuditRequestIds = phaseThreeBrowserMutationRecords(
+        phaseThreeProfiles,
+        fixture,
+      ).map((request) => request.request_id);
+      phaseThreeDatabase = await settledDatabaseSnapshot(
+        "Phase 3 database boundary",
+        phaseThreeAuditRequestIds,
+      );
     }
     if (phaseSelected(4)) {
       currentStage = "phase-four-browser";
-      phaseFourDatabaseBaseline = databaseSnapshot();
+      phaseFourDatabaseBaseline = await settledDatabaseSnapshot("Phase 4 database baseline");
       phaseFourAuditBaseline = phaseFourDatabaseBaseline.audit_state;
       const phaseFourProfileStart = manifest.profiles.length;
       await runPlanningAndReporting({
@@ -6088,7 +6132,7 @@ async function main() {
       phaseFourProfiles = manifest.profiles.slice(phaseFourProfileStart);
     }
     currentStage = "final-database-snapshot";
-    const finalDatabase = databaseSnapshot();
+    const finalDatabase = await settledDatabaseSnapshot("Final database boundary");
     currentStage = "cumulative-assertions";
     manifest.database = {
       audit_projection: auditManifestProjection(finalDatabase.audit_state),
@@ -7005,6 +7049,7 @@ module.exports = {
   isElfExecutable,
   normalizedNodeDependencyTree,
   resolveChromiumExecutable,
+  settledDatabaseSnapshot,
   sourceProvenance,
   phaseTwoOracle,
   phaseThreeExactMutationContract,
