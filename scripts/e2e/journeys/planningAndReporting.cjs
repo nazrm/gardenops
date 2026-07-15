@@ -58,6 +58,15 @@ function waitForApiResponse(page, method, path) {
   ));
 }
 
+function waitForGardenRefresh(page, gardenId) {
+  return page.waitForResponse((response) => (
+    response.request().method() === "GET"
+    && new URL(response.url()).pathname === "/api/plots"
+    && response.request().headers()["x-garden-id"] === String(gardenId)
+    && response.status() === 200
+  ));
+}
+
 async function openSubMode(page, parent, mode, panel) {
   await page.locator(`[data-tab='${parent}']:visible`).first().click();
   const button = page.locator(`[data-sub-mode='${mode}']:visible`).first();
@@ -567,17 +576,20 @@ async function exerciseDelayedGardenResponses(page, fixture) {
     const selector = page.locator("#mobile-garden-select");
     await openMobileUtilityIfPresent(page, `${mode} mobile utility sheet`);
     await visible(selector, `${mode} mobile garden selector`);
+    const betaRefresh = waitForGardenRefresh(page, betaId);
     await selector.selectOption(betaId);
     release();
+    await betaRefresh;
     await waitFor(async () => await selector.inputValue() === betaId, `${mode} Beta selection`);
-    await page.waitForLoadState("networkidle");
     const text = await page.locator(panel).innerText();
     assert(!text.includes(phaseFour(fixture).inventory.label)
       && !text.includes(phaseFour(fixture).procurement.label),
     `${mode} delayed Alpha response replaced current Beta state`);
     await page.unroute(pattern);
+    const alphaRefresh = waitForGardenRefresh(page, alphaId);
     await selector.selectOption(alphaId);
-    await page.waitForLoadState("networkidle");
+    await alphaRefresh;
+    await waitFor(async () => await selector.inputValue() === alphaId, `${mode} Alpha selection`);
     if (await page.locator("body.mobile-utility-open").count()) {
       await page.locator("#mobile-utility-close-btn").click();
       await waitFor(async () => await page.locator("body.mobile-utility-open").count() === 0,
