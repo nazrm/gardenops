@@ -14,6 +14,24 @@ function fixtureGarden(fixture, key) {
   return garden;
 }
 
+async function dismissProactivePasskeyPrompt(page) {
+  const dialog = page.locator(".modal[data-passkey-prompt-ready='true']:visible").filter({
+    has: page.locator(".passkey-prompt-modal"),
+  }).last();
+  try {
+    await dialog.waitFor({ state: "visible", timeout: 5_000 });
+  } catch {
+    return;
+  }
+  const dismissed = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/auth/passkeys/prompt/dismiss"
+  ));
+  await dialog.locator(".confirm-no").click();
+  assert((await dismissed).ok(), "Foundation passkey prompt dismissal failed");
+  await dialog.waitFor({ state: "detached" });
+}
+
 async function assertActiveGardenHeading(page, profile, garden) {
   const selector = page.locator(profile === "mobile" ? "#mobile-garden-select" : "#garden-select");
   await visible(selector, `${profile} active garden control`);
@@ -112,6 +130,7 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
     const profileData = await authenticate(page, username, password);
     guarded.markAuthenticated();
     assert(profileData.role === "admin", "Foundation fixture user is not an administrator");
+    await dismissProactivePasskeyPrompt(page);
     result.browser_profile.user_agent = await page.evaluate(() => navigator.userAgent);
     result.browser_profile.max_touch_points = await page.evaluate(() => navigator.maxTouchPoints);
     result.browser_profile.viewport = page.viewportSize();
