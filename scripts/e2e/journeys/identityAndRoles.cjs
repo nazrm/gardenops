@@ -724,6 +724,11 @@ async function exerciseSessionRevocation(options, page) {
     "secondary-admin-session",
   );
   const secondaryPage = await secondary.context.newPage();
+  const recorder = createApiRecorder(secondaryPage, {
+    authType: "session",
+    role: "admin",
+    username: options.username,
+  });
   let closed = false;
   try {
     await secondaryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
@@ -746,8 +751,10 @@ async function exerciseSessionRevocation(options, page) {
       await fetch("/api/auth/me", { credentials: "include" })
     ).status);
     assert(revokedStatus === 401, "Revoked browser session remained authorized");
+    await recorder.settle();
     await secondary.close("passed");
     closed = true;
+    return recorder.records;
   } finally {
     if (!closed) await secondary.context.close().catch(() => undefined);
     fs.rmSync(temporary, { force: true, recursive: true });
@@ -777,6 +784,7 @@ async function exerciseSessionExpiry(options) {
     { mode: "idle", password: VIEWER_PASSWORD, username: options.fixture.roles.viewer }, // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
     { mode: "absolute", password: EDITOR_PASSWORD, username: options.fixture.roles.editor }, // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
   ];
+  const records = [];
   for (const expiry of cases) {
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), `gardenops-phase-five-${expiry.mode}-`));
     const guarded = await createGuardedContext(
@@ -787,6 +795,11 @@ async function exerciseSessionExpiry(options) {
       `${expiry.mode}-session-expiry`,
     );
     const expiryPage = await guarded.context.newPage();
+    const recorder = createApiRecorder(expiryPage, {
+      authType: "session",
+      role: expiry.mode === "idle" ? "viewer" : "editor",
+      username: expiry.username,
+    });
     let closed = false;
     try {
       await expiryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
@@ -800,6 +813,8 @@ async function exerciseSessionExpiry(options) {
       );
       assert(expiredSession?.status() === 401,
         `${expiry.mode} session remained authorized after its expiry boundary`);
+      await recorder.settle();
+      records.push(...recorder.records);
       await guarded.close("passed");
       closed = true;
     } finally {
@@ -807,6 +822,7 @@ async function exerciseSessionExpiry(options) {
       fs.rmSync(temporary, { force: true, recursive: true });
     }
   }
+  return records;
 }
 
 async function exerciseLiveRoleRefresh(options, page) {
@@ -819,6 +835,11 @@ async function exerciseLiveRoleRefresh(options, page) {
     "secondary-editor-role-refresh",
   );
   const secondaryPage = await secondary.context.newPage();
+  const recorder = createApiRecorder(secondaryPage, {
+    authType: "session",
+    role: "editor",
+    username: options.fixture.roles.editor,
+  });
   let closed = false;
   try {
     await secondaryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
@@ -871,8 +892,10 @@ async function exerciseLiveRoleRefresh(options, page) {
     assert(refreshed.status === 200 && refreshed.body.role === "editor",
       "Restored role remained stale after returning to the app");
     await signOut(secondaryPage, "role-refresh secondary session", secondary);
+    await recorder.settle();
     await secondary.close("passed");
     closed = true;
+    return recorder.records;
   } finally {
     if (!closed) await secondary.context.close().catch(() => undefined);
     fs.rmSync(temporary, { force: true, recursive: true });
@@ -1094,6 +1117,7 @@ async function runProfile(options, shared) {
         ? phaseFive(fixture).viewer_invitee_username
         : role === "editor" ? fixture.roles.editor : fixture.roles.viewer;
   const recorder = createApiRecorder(page, { authType: "session", role, username });
+  const supplementalRequests = [];
   const result = {
     assertions: { failed: [], passed: [], skipped: [] },
     browser_profile: guarded.profile,
@@ -1130,11 +1154,11 @@ async function runProfile(options, shared) {
       result.checks.invitation_lifecycle = true;
       await exerciseSettings(page, fixture);
       result.checks.settings_persistence = true;
-      await exerciseSessionRevocation(options, page);
+      supplementalRequests.push(...await exerciseSessionRevocation(options, page));
       result.checks.session_revocation = true;
-      await exerciseLiveRoleRefresh(options, page);
+      supplementalRequests.push(...await exerciseLiveRoleRefresh(options, page));
       result.checks.live_role_refresh = true;
-      await exerciseSessionExpiry(options);
+      supplementalRequests.push(...await exerciseSessionExpiry(options));
       result.checks.idle_and_absolute_session_expiry = true;
       await exerciseTotp(page, options.username, options.password, guarded);
       result.checks.totp_lifecycle = true;
@@ -1202,7 +1226,8 @@ async function runProfile(options, shared) {
     result.checks.browser_diagnostics = true;
     result.checks.last_completed_step = `${role}-${profile}-complete`;
     result.assertions.passed.push("phase-five-profile-contract", "browser-diagnostics-clean");
-    result.requests = recorder.records;
+    await recorder.settle();
+    result.requests = [...recorder.records, ...supplementalRequests];
     status = "passed";
   } catch (error) {
     caughtError = error;
