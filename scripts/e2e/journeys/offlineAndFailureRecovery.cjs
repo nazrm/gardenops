@@ -126,6 +126,34 @@ async function enqueueOfflineJournal(page, fixture, title) {
   return (await readDrafts(page))[0];
 }
 
+function diagnosticMarks(diagnostics) {
+  return {
+    classified: diagnostics.classifiedConsoleDiagnostics.length,
+    console: diagnostics.consoleErrors.length,
+    request: diagnostics.requestFailures.length,
+  };
+}
+
+async function consumeExpectedNetworkFailure(diagnostics, marks, expected, label) {
+  await waitFor(() => (
+    diagnostics.requestFailures.length === marks.request + 1
+      && diagnostics.consoleErrors.length === marks.console + 1
+      && diagnostics.classifiedConsoleDiagnostics.length === marks.classified + 1
+  ), `${label} diagnostic accounting`);
+  const requestFailure = diagnostics.requestFailures.splice(marks.request, 1)[0] || "";
+  const consoleFailure = diagnostics.consoleErrors.splice(marks.console, 1)[0] || "";
+  const classified = diagnostics.classifiedConsoleDiagnostics.splice(marks.classified, 1)[0];
+  assert(requestFailure.includes(expected.path) && requestFailure.includes(expected.error),
+    `${label} produced an unrelated request failure`);
+  assert(consoleFailure.includes("unclassified-console-error"),
+    `${label} did not produce the expected Chromium console failure`);
+  assert(classified?.context === "unclassified-console-error"
+    && classified.method === "UNKNOWN"
+    && classified.path === "unknown"
+    && classified.status == null,
+  `${label} console failure was unexpectedly classified as an HTTP response`);
+}
+
 async function runOfflineProfile(options) {
   const guarded = await createGuardedContext(
     options.browser,
@@ -162,7 +190,14 @@ async function runOfflineProfile(options) {
     await selectGarden(page, options.fixture.gardens.alpha.id);
 
     const title = options.oracle.phase_six.fixture.journal_title;
+    const offlineQueueFailureMarks = diagnosticMarks(guarded.diagnostics);
     const queued = await enqueueOfflineJournal(page, options.fixture, title);
+    await consumeExpectedNetworkFailure(
+      guarded.diagnostics,
+      offlineQueueFailureMarks,
+      { error: "ERR_INTERNET_DISCONNECTED", path: "/api/media/summaries" },
+      "Phase 6 offline journal refresh",
+    );
     assert(queued.garden_id === options.fixture.gardens.alpha.id,
       "Phase 6 queued draft lost its source garden");
     assert(/^[0-9a-f-]{36}$/.test(queued.operation_id),
@@ -199,6 +234,7 @@ async function runOfflineProfile(options) {
       await route.continue();
     };
     await page.route("**/api/journal", lostAckRoute);
+    const lostAckFailureMarks = diagnosticMarks(guarded.diagnostics);
     await page.context().setOffline(false);
     await firstSeen;
     await waitFor(async () => (await readDrafts(page))[0]?.status === "syncing",
@@ -220,6 +256,12 @@ async function runOfflineProfile(options) {
       "Phase 6 Garden A draft replayed into Garden B");
     releaseReplay();
     await waitFor(async () => (await readDrafts(page)).length === 0, "Phase 6 replay queue drain");
+    await consumeExpectedNetworkFailure(
+      guarded.diagnostics,
+      lostAckFailureMarks,
+      { error: "ERR_FAILED", path: "/api/journal" },
+      "Phase 6 lost acknowledgement",
+    );
     await page.unroute("**/api/journal", lostAckRoute);
 
     for (let reconnect = 0; reconnect < 2; reconnect += 1) {
@@ -269,6 +311,23 @@ async function runOfflineProfile(options) {
       return recovered?.status === "pending"
         && recovered.operation_id !== conflictBefore.operation_id;
     }, "Phase 6 explicit retry-as-new identity renewal");
+    await page.context().setOffline(false);
+    await waitFor(async () => (await readDrafts(page)).length === 4,
+      "Phase 6 retry-as-new replacement delivery");
+    const betaReplacement = await browserJson(
+      page,
+      "/api/journal?limit=100",
+      options.fixture.gardens.beta.id,
+    );
+    const betaReplacementEntries = betaReplacement.body?.entries
+      || betaReplacement.body?.items
+      || betaReplacement.body
+      || [];
+    assert(betaReplacement.status === 200
+      && betaReplacementEntries.filter((entry) => (
+        entry.title === "Conflicting journal observation"
+      )).length === 1,
+    "Phase 6 retry-as-new did not create exactly one replacement in its source garden");
     await waitFor(async () => await failures.count() === 4,
       "Phase 6 recovered draft removal from failed work");
     const rerenderedFailureToggle = page.locator("#offline-indicator .offline-indicator-toggle");
@@ -284,25 +343,8 @@ async function runOfflineProfile(options) {
     await signOut.click();
     await visible(page.locator("#auth-gate-form"), "Phase 6 sign-in after queue clear");
     assert((await readDrafts(page)).length === 0, "Phase 6 logout retained another account's drafts");
-    await page.context().setOffline(false);
     await authenticate(page, options.username, options.password);
     guarded.markAuthenticated();
-
-    const lostAckFailureIndex = guarded.diagnostics.requestFailures.findIndex((value) => (
-      value.includes("/api/journal") && value.includes("ERR_FAILED")
-    ));
-    if (lostAckFailureIndex >= 0) guarded.diagnostics.requestFailures.splice(lostAckFailureIndex, 1);
-    const lostAckConsoleIndex = guarded.diagnostics.consoleErrors.findIndex((value) => (
-      value.includes("Failed to fetch") || value.includes("ERR_FAILED")
-    ));
-    if (lostAckConsoleIndex >= 0) guarded.diagnostics.consoleErrors.splice(lostAckConsoleIndex, 1);
-    const lostAckClassifiedIndex = guarded.diagnostics.classifiedConsoleDiagnostics.findIndex((entry) => (
-      entry.context === "unclassified-console-error"
-        && (entry.diagnostic.includes("Failed to fetch") || entry.diagnostic.includes("ERR_FAILED"))
-    ));
-    if (lostAckClassifiedIndex >= 0) {
-      guarded.diagnostics.classifiedConsoleDiagnostics.splice(lostAckClassifiedIndex, 1);
-    }
 
     result.structure = await assertPageStructure(page, "Phase 6 admin:desktop");
     assertDiagnosticsClean(guarded.diagnostics, "Phase 6 admin:desktop");
@@ -316,6 +358,7 @@ async function runOfflineProfile(options) {
       operation_id: queued.operation_id,
       reconnect_count: 3,
       replay_delivery_count: deliveryCount,
+      retry_as_new_replacement_count: 1,
       retry_as_new_identity_renewed: true,
       terminal_statuses: [409, 410],
     };

@@ -1113,14 +1113,17 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
         "media_upload",
     ]
     assert oracle["phase_six"]["browser_contract"]["recovery_collapsed_by_default"] is True
+    assert oracle["phase_six"]["browser_contract"]["retry_as_new_replacement_count"] == 1
     for marker in (
         "route.fetch()",
         'route.abort("failed")',
+        "consumeExpectedNetworkFailure",
         "setOffline(true)",
         "setOffline(false)",
         "independent postcondition",
         "Retry as new",
         "failed-work recovery was not collapsed by default",
+        "retry-as-new did not create exactly one replacement",
         "logout retained another account's drafts",
         "Garden A draft replayed into Garden B",
     ):

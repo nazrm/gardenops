@@ -16,6 +16,7 @@
         "media_upload"
       ],
       "recovery_collapsed_by_default": true,
+      "retry_as_new_replacement_count": 1,
       "minimum_reconnect_count": 3,
       "terminal_statuses": [
         409,
