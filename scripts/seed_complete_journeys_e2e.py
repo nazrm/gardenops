@@ -4314,13 +4314,15 @@ def _auth_state(conn) -> dict[str, Any]:
           AND passkey_prompt_dismissed_until_ms > 0
         ORDER BY username
         """,
-        ([
-            ADMIN_USERNAME,
-            EDITOR_LOGIN[0],
-            VIEWER_LOGIN[0],
-            ONBOARDING_LOGIN[0],
-            MOBILE_ONBOARDING_LOGIN[0],
-        ],),
+        (
+            [
+                ADMIN_USERNAME,
+                EDITOR_LOGIN[0],
+                VIEWER_LOGIN[0],
+                ONBOARDING_LOGIN[0],
+                MOBILE_ONBOARDING_LOGIN[0],
+            ],
+        ),
     ).fetchall()
     session_rows = conn.execute(
         """
