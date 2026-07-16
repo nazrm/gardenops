@@ -4,7 +4,7 @@ import { t as authT } from "../core/authI18n";
 import { buildInvitationLink } from "../core/urlSecurity";
 import { queryInput, querySelect, queryTextArea } from "../core/dom";
 import { getApiErrorMessage } from "../services/api";
-import { featuresLostOnDowngrade } from "../core/featureGates";
+import { featuresLostOnDowngrade, isFeatureEnabled } from "../core/featureGates";
 import { confirmDialog, promptDialog, promptPasswordDialog } from "./dialogCore";
 import { showToast } from "./toast";
 import { clearOfflineQueue } from "../services/offlineQueue";
@@ -1150,7 +1150,7 @@ function renderGardenSection(): string {
   const lidarUpdated = lidarStatus?.updated_at_ms
     ? `<p class="adm-section-desc">${t("admin.garden.lidar_updated", { date: fmtDate(lidarStatus.updated_at_ms) })}</p>`
     : "";
-  const lidarCard = `
+  const lidarCard = isFeatureEnabled("shade_map") ? `
     <div class="adm-card adm-card--form">
       <h3 class="adm-card-title">${t("admin.garden.lidar_title")}</h3>
       <p class="adm-section-desc">${t("admin.garden.lidar_desc")}</p>
@@ -1168,7 +1168,7 @@ function renderGardenSection(): string {
         <button type="button" id="adm-garden-lidar-remove" class="adm-btn adm-btn--ghost"${lidarStatus?.uploaded && !state.gardenLidarUploading ? "" : " disabled"}>${t("admin.garden.lidar_remove")}</button>
       </div>
     </div>
-  `;
+  ` : "";
   return `
     <div class="adm-section-header">
       <div>
@@ -2049,7 +2049,9 @@ async function loadGardenSettings(): Promise<boolean> {
   try {
     const [settings, lidarStatus] = await Promise.all([
       getGardenSettingsApi(requestGardenId),
-      getGardenLidarApi(requestGardenId),
+      isFeatureEnabled("shade_map")
+        ? getGardenLidarApi(requestGardenId)
+        : Promise.resolve(null),
     ]);
     if (!isCurrentRequest()) return false;
     applyGardenSettingsBaseline(settings);
