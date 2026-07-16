@@ -728,10 +728,11 @@ async function exerciseLiveRoleRefresh(options, page) {
     });
     assert(downgraded.status === 200 && downgraded.body.role === "viewer",
       "Live editor downgrade failed");
-    const downgradedSession = await secondary.context.request.get(
+    const downgradedSession = await secondaryPage.goto(
       new URL("/api/auth/me", options.baseUrl).href,
+      { waitUntil: "domcontentloaded" },
     );
-    assert(downgradedSession.status() === 401,
+    assert(downgradedSession?.status() === 401,
       "Downgraded account retained its pre-change browser session");
     await secondaryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
     const viewer = await authenticate(secondaryPage, options.fixture.roles.editor, EDITOR_PASSWORD);
@@ -745,10 +746,11 @@ async function exerciseLiveRoleRefresh(options, page) {
     });
     assert(restored.status === 200 && restored.body.role === "editor",
       "Live editor role restoration failed");
-    const restoredSession = await secondary.context.request.get(
+    const restoredSession = await secondaryPage.goto(
       new URL("/api/auth/me", options.baseUrl).href,
+      { waitUntil: "domcontentloaded" },
     );
-    assert(restoredSession.status() === 401,
+    assert(restoredSession?.status() === 401,
       "Restored account retained its pre-change browser session");
     await secondaryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
     const refreshed = await authenticate(
