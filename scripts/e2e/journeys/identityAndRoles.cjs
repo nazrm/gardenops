@@ -250,14 +250,27 @@ async function exerciseSettings(page, fixture) {
   await row.locator(".adm-plot-meaning-description").fill(
     phaseFive(fixture).settings_description,
   );
+  const authRefreshes = [];
+  const captureAuthRefresh = (response) => {
+    if (response.request().method() === "GET"
+      && new URL(response.url()).pathname === "/api/auth/me") {
+      authRefreshes.push(response);
+    }
+  };
+  page.on("response", captureAuthRefresh);
   const pending = responseFor(page, "PUT", "/api/auth/me/settings");
-  await page.locator("#adm-plot-meaning-save").click();
-  assert((await pending).ok(), "Identity settings save failed");
-  await visible(
-    page.locator(".toast-success").filter({ hasText: "Custom plot meanings saved" }).last(),
-    "settled identity settings save",
-  );
-  await page.waitForLoadState("networkidle");
+  try {
+    await page.locator("#adm-plot-meaning-save").click();
+    assert((await pending).ok(), "Identity settings save failed");
+    await visible(
+      page.locator(".toast-success").filter({ hasText: "Custom plot meanings saved" }).last(),
+      "settled identity settings save",
+    );
+    await waitFor(() => authRefreshes.length >= 2, "post-save identity refreshes");
+    await Promise.all(authRefreshes.map((response) => response.finished()));
+  } finally {
+    page.off("response", captureAuthRefresh);
+  }
   await page.reload({ waitUntil: "domcontentloaded" });
   await openAdminSection(page, "desktop", "settings");
   const persisted = page.locator(".adm-plot-meaning-row").filter({
