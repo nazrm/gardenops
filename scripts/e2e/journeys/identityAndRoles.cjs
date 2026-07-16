@@ -462,8 +462,17 @@ async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticat
     );
   }
   assert(await gate.isVisible(), "Rejected user verification left the sign-in gate");
+  const retryMarks = diagnosticMarks(diagnostics);
   await page.reload({ waitUntil: "domcontentloaded" });
   await visible(gate, "user-verification retry gate");
+  await discardExpectedUiFailure(
+    page,
+    diagnostics,
+    retryMarks,
+    "GET",
+    "/api/auth/me",
+    401,
+  );
   await gate.locator("input[name='username']").fill(fixture.roles.admin);
   await gate.locator("button[type='submit']").click();
   passkeyAction = gate.locator("button[type='submit']").filter({ hasText: "Use passkey" });
@@ -750,15 +759,15 @@ async function exerciseLiveRoleRefresh(options, page) {
       new URL("/api/auth/me", options.baseUrl).href,
       { waitUntil: "domcontentloaded" },
     );
-    assert(restoredSession?.status() === 401,
-      "Restored account retained its pre-change browser session");
+    assert(restoredSession?.status() === 200,
+      "Restored role did not refresh on the surviving browser session");
+    const restoredProfile = await restoredSession.json();
+    assert(restoredProfile.role === "editor",
+      "Restored browser session retained the viewer role");
     await secondaryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
-    const refreshed = await authenticate(
-      secondaryPage,
-      options.fixture.roles.editor,
-      EDITOR_PASSWORD,
-    );
-    assert(refreshed.role === "editor", "Restored role remained stale after sign-in");
+    const refreshed = await browserFetch(secondaryPage, { path: "/api/auth/me" });
+    assert(refreshed.status === 200 && refreshed.body.role === "editor",
+      "Restored role remained stale after returning to the app");
     await signOut(secondaryPage, "role-refresh secondary session");
     await secondary.close("passed");
     closed = true;
