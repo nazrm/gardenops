@@ -7034,6 +7034,7 @@ async function main() {
     ]) : phaseTwoSemanticDeltaTables;
     const phaseFourAllowedTables = new Set([
       ...phaseFourOracleSpec.phase_four.database_boundaries.owned_tables,
+      "auth_passkey_challenges",
       "garden_task_plants",
       "garden_task_plots",
       "layout_state",
@@ -7098,6 +7099,15 @@ async function main() {
       profile.role === "admin" && profile.profile === "desktop"
     ))?.checks?.planner?.workflowSteps || [];
     const phaseFourAccounting = {
+      auth_passkey_challenges: {
+        allow_row_delta: true,
+        evidence: "phase_four_public_authentication_options",
+        expected_added: phaseFourProfiles.length,
+        expected_identity_added: phaseFourProfiles.length,
+        expected_identity_removed: 0,
+        expected_identity_updated: 0,
+        expected_removed: 0,
+      },
       garden_task_plants: {
         allow_row_delta: true,
         evidence: "phase_four_exact_workflow_task_projection",
@@ -7169,16 +7179,21 @@ async function main() {
       plots: 1,
       security_runtime_flags: 2,
     };
+    const phaseFiveExpectedRemoved = {
+      auth_passkey_challenges:
+        phaseFiveDatabaseEvidence?.expired_baseline_challenge_cleanup_count ?? 0,
+    };
     const phaseFiveAccounting = Object.fromEntries([...phaseFiveAllowedTables].map((table) => {
       const expectedAdded = phaseFiveExpectedAdded[table] ?? 0;
+      const expectedRemoved = phaseFiveExpectedRemoved[table] ?? 0;
       return [table, {
         allow_row_delta: true,
         evidence: "phase_five_exact_identity_projection",
         expected_added: expectedAdded,
         expected_identity_added: expectedAdded,
-        expected_identity_removed: 0,
+        expected_identity_removed: expectedRemoved,
         expected_identity_updated: 0,
-        expected_removed: 0,
+        expected_removed: expectedRemoved,
       }];
     }));
     const wholeTableMutationAccounting = phaseFiveRan
