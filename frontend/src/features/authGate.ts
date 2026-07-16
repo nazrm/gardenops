@@ -712,10 +712,12 @@ function renderLoginFlow(
   passwordFallbackBtn.hidden = true;
 
   const passkeyAvailable = !bootstrapRequired && passkeysEnabled && isPasskeySupported();
-  type LoginStep = "username" | "passkey" | "password";
+  type LoginStep = "username" | "passkey-ready" | "passkey" | "password";
   let loginStep: LoginStep = bootstrapRequired ? "password" : "username";
   let passkeyAttempt = 0;
   let passkeyAbortController: AbortController | null = null;
+  let pendingPasskeyOptions: PasskeyOptionsResponse | null = null;
+  let pendingPasskeyUsername = "";
 
   // Load policy and init checklist if bootstrap
   if (bootstrapRequired) {
@@ -760,12 +762,18 @@ function renderLoginFlow(
 
     passwordLabel.hidden = true;
     passwordInput.required = false;
-    passwordFallbackBtn.hidden = step !== "passkey";
+    passwordFallbackBtn.hidden = step !== "passkey-ready";
 
     if (step === "username") {
       passwordInput.value = "";
       submitBtn.disabled = false;
       submitBtn.textContent = t("auth.enter_action");
+      return;
+    }
+
+    if (step === "passkey-ready") {
+      submitBtn.disabled = false;
+      submitBtn.textContent = t("auth.use_passkey");
       return;
     }
 
@@ -815,14 +823,15 @@ function renderLoginFlow(
   };
 
   const revealPasswordFallback = (): void => {
-    if (loginStep !== "passkey") return;
+    if (loginStep !== "passkey-ready") return;
     passkeyAttempt += 1;
     const abortController = passkeyAbortController;
     passkeyAbortController = null;
+    pendingPasskeyOptions = null;
+    pendingPasskeyUsername = "";
     revealPasswordLogin();
     abortController?.abort();
   };
-  passwordFallbackBtn.addEventListener("pointerdown", revealPasswordFallback);
   passwordFallbackBtn.addEventListener("click", revealPasswordFallback);
 
   const startPasskeyLogin = async (
@@ -858,8 +867,9 @@ function renderLoginFlow(
 
     try {
       if (passkeyAvailable) {
-        const options = await beginPasskeyLoginApi(username);
-        await startPasskeyLogin(options, username);
+        pendingPasskeyOptions = await beginPasskeyLoginApi(username);
+        pendingPasskeyUsername = username;
+        setLoginStep("passkey-ready");
         return;
       }
       revealPasswordLogin();
@@ -904,6 +914,18 @@ function renderLoginFlow(
     }
     if (!bootstrapRequired && loginStep === "username") {
       await resolveUsernameLoginStep(username);
+      return;
+    }
+    if (!bootstrapRequired && loginStep === "passkey-ready") {
+      const options = pendingPasskeyOptions;
+      const passkeyUsername = pendingPasskeyUsername;
+      pendingPasskeyOptions = null;
+      pendingPasskeyUsername = "";
+      if (!options || !passkeyUsername) {
+        revealPasswordLogin();
+        return;
+      }
+      await startPasskeyLogin(options, passkeyUsername);
       return;
     }
     if (!bootstrapRequired && loginStep === "passkey") {

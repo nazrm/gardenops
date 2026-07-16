@@ -278,8 +278,8 @@ function main() {
   if (authGateText.includes("allowCredentials?.length")) {
     fail("auth gate must not branch on public allowCredentials because that leaks passkey enrollment");
   }
-  if (!authGateText.includes("passwordFallbackBtn.hidden = step !== \"passkey\"")) {
-    fail("passkey-first login must expose password fallback only while a passkey ceremony is active");
+  if (!authGateText.includes("passwordFallbackBtn.hidden = step !== \"passkey-ready\"")) {
+    fail("passkey-first login must expose password fallback before the blocking browser ceremony");
   }
   if (!authGateText.includes("passkeyAttempt += 1") || !authGateText.includes("attempt !== passkeyAttempt")) {
     fail("password fallback must invalidate any pending passkey ceremony result");
@@ -290,11 +290,15 @@ function main() {
   if (!authGateText.includes("auth.login_action")) {
     fail("password fallback after username resolution must expose a Login action");
   }
-  if (!authGateText.includes("startPasskeyLogin")) {
-    fail("passkey-first login must auto-start passkey authentication after username resolution");
+  if (!authGateText.includes("submitBtn.textContent = t(\"auth.use_passkey\")")) {
+    fail("passkey-first login must expose an explicit passkey action after username resolution");
   }
-  if (!authGateText.includes("await startPasskeyLogin(options, username)")) {
-    fail("username-resolved passkey options must immediately start passkey login");
+  if (
+    !authGateText.includes("pendingPasskeyOptions = await beginPasskeyLoginApi(username)")
+    || !authGateText.includes("setLoginStep(\"passkey-ready\")")
+    || !authGateText.includes("await startPasskeyLogin(options, passkeyUsername)")
+  ) {
+    fail("username-resolved passkey options must wait for the explicit passkey action");
   }
   if (!authGateText.includes("auth-gate-identity-label auth-gate-username-label")) {
     fail("username-first login must render the username control as an identity row");

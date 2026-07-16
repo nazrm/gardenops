@@ -62,9 +62,7 @@ class FrontendSecurityStaticTests(unittest.TestCase):
             )
 
     def test_password_fallback_reveals_before_aborting_passkey(self) -> None:
-        gate = (ROOT / "frontend" / "src" / "features" / "authGate.ts").read_text(
-            encoding="utf-8"
-        )
+        gate = (ROOT / "frontend" / "src" / "features" / "authGate.ts").read_text(encoding="utf-8")
         handler = re.search(
             r"const revealPasswordFallback = \(\): void => \{(?P<body>.*?)\n  \};",
             gate,
@@ -76,10 +74,8 @@ class FrontendSecurityStaticTests(unittest.TestCase):
             body.index("revealPasswordLogin();"),
             body.index("abortController?.abort();"),
         )
-        self.assertIn(
-            'passwordFallbackBtn.addEventListener("pointerdown", revealPasswordFallback)',
-            gate,
-        )
+        self.assertIn('setLoginStep("passkey-ready")', gate)
+        self.assertIn('step === "passkey-ready"', gate)
         self.assertIn(
             'passwordFallbackBtn.addEventListener("click", revealPasswordFallback)',
             gate,

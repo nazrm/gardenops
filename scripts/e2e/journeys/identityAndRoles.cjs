@@ -333,6 +333,11 @@ async function exercisePasskeys(page, fixture, adminPassword) {
   await gate.locator("input[name='username']").fill(fixture.roles.admin);
   const loginPending = responseFor(page, "POST", "/api/auth/passkeys/login/verify");
   await gate.locator("button[type='submit']").click();
+  await visible(
+    gate.locator("button[type='submit']").filter({ hasText: "Use passkey" }),
+    "explicit passwordless passkey action",
+  );
+  await gate.locator("button[type='submit']").click();
   assert((await loginPending).ok(), "Passwordless passkey sign-in failed");
   await waitFor(() => page.locator(".auth-gate").count().then((count) => count === 0),
     "passwordless sign-in completion");
