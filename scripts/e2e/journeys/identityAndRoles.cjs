@@ -333,6 +333,7 @@ async function exerciseTotp(page) {
   const cancelPending = responseFor(page, "POST", "/api/auth/mfa/totp/cancel");
   await page.locator("#adm-mfa-cancel").click();
   await confirmVisibleDialog(page);
+  await answerPrompt(page, "phase-five-totp-enrollment-cancel");
   assert((await cancelPending).ok(), "TOTP enrollment cancel failed");
 
   const secondStart = responseFor(page, "POST", "/api/auth/mfa/totp/start");
