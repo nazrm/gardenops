@@ -1799,7 +1799,11 @@ async function triggerGardenRaceSurface(page, profile, surface) {
       : null);
   if (!selector) return "automatic";
   const trigger = page.locator(selector);
-  if (!await gardenSwitchIsPending(page) && await trigger.isVisible().catch(() => false)) {
+  const switchPending = await gardenSwitchIsPending(page);
+  if (!switchPending && profile === "mobile" && surface === "notifications") {
+    await openMobileUtility(page);
+  }
+  if (!switchPending && await trigger.isVisible().catch(() => false)) {
     await trigger.click();
     return "physical";
   }
