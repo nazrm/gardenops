@@ -21,6 +21,8 @@ password authentication is available.
 First passkey enrollment does not itself unlock protected administrator actions.
 The clients immediately authenticate with the newly bound passkey before
 resuming protected application reads.
+Enrolled editors and viewers also advertise passkey step-up capability so
+passwordless users can safely manage backup credentials without a password.
 
 Sensitive session-auth actions treat failed password, TOTP, recovery-code, and
 passkey reauthentication as a rejected action and keep the operation available

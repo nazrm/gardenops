@@ -850,13 +850,14 @@ def _current_user_mfa_settings(
     status = get_user_mfa_status(db, user_id)
     if role is not None and role != "admin":
         status["setup_required"] = False
-    elif role == "admin" and passkeys.passkeys_configured():
+    if passkeys.passkeys_configured():
         row = db.execute(
             "SELECT COUNT(*) AS count FROM auth_passkeys WHERE user_id = %s",
             (user_id,),
         ).fetchone()
         if row and int(row["count"] or 0) > 0:
-            status["setup_required"] = False
+            if role == "admin":
+                status["setup_required"] = False
             methods = list(cast(list[str], status.get("methods") or []))
             if "passkey" not in methods:
                 methods.append("passkey")

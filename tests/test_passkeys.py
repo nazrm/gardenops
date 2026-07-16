@@ -331,6 +331,7 @@ class TestPasskeyRegistration(PasskeyApiTest):
         self.assertEqual(me.json()["username"], "invite_passkey_user")
         self.assertTrue(me.json()["passkey_enrolled"])
         self.assertTrue(me.json()["password_auth_disabled"])
+        self.assertIn("passkey", me.json()["mfa_methods"])
 
         password_login = self.client.post(
             "/api/auth/login",
