@@ -71,13 +71,16 @@ export async function createPasskey(
 
 export async function getPasskey(
   publicKey: unknown,
+  signal?: AbortSignal,
 ): Promise<PasskeyAuthenticationCredentialJson> {
   if (!isPasskeySupported()) {
     throw new Error("Passkeys are not supported by this browser.");
   }
-  const credential = await navigator.credentials.get({
+  const request: CredentialRequestOptions = {
     publicKey: decodeRequestOptions(publicKey),
-  });
+  };
+  if (signal) request.signal = signal;
+  const credential = await navigator.credentials.get(request);
   if (!(credential instanceof PublicKeyCredential)) {
     throw new Error("Passkey sign-in did not return a credential.");
   }

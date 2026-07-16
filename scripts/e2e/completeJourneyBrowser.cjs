@@ -480,6 +480,11 @@ async function authenticate(page, username, password) {
   await form.locator("input[name='username']").fill(username);
   await form.locator("button[type='submit']").click();
   const passwordInput = form.locator("input[name='password']");
+  if (!(await passwordInput.isVisible())) {
+    const passwordFallback = form.locator("#auth-gate-use-password");
+    await visible(passwordFallback, "session sign-in password fallback");
+    await passwordFallback.click();
+  }
   await visible(passwordInput, "session sign-in password field");
   await passwordInput.fill(password);
   await form.locator("button[type='submit']").click();

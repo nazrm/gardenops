@@ -704,10 +704,18 @@ function renderLoginFlow(
   submitBtn.textContent = bootstrapRequired
     ? t("auth.create_account")
     : t("auth.sign_in_action");
+  const passwordFallbackBtn = document.createElement("button");
+  passwordFallbackBtn.type = "button";
+  passwordFallbackBtn.id = "auth-gate-use-password";
+  passwordFallbackBtn.className = "auth-gate-secondary-action";
+  passwordFallbackBtn.textContent = t("auth.use_password_instead");
+  passwordFallbackBtn.hidden = true;
 
   const passkeyAvailable = !bootstrapRequired && passkeysEnabled && isPasskeySupported();
   type LoginStep = "username" | "passkey" | "password";
   let loginStep: LoginStep = bootstrapRequired ? "password" : "username";
+  let passkeyAttempt = 0;
+  let passkeyAbortController: AbortController | null = null;
 
   // Load policy and init checklist if bootstrap
   if (bootstrapRequired) {
@@ -738,6 +746,7 @@ function renderLoginFlow(
     checklistContainer,
     mfaWrap,
     submitBtn,
+    passwordFallbackBtn,
   );
 
   const setLoginStep = (step: LoginStep): void => {
@@ -751,6 +760,7 @@ function renderLoginFlow(
 
     passwordLabel.hidden = true;
     passwordInput.required = false;
+    passwordFallbackBtn.hidden = step !== "passkey";
 
     if (step === "username") {
       passwordInput.value = "";
@@ -804,21 +814,36 @@ function renderLoginFlow(
     passwordInput.focus();
   };
 
+  passwordFallbackBtn.addEventListener("click", () => {
+    passkeyAttempt += 1;
+    passkeyAbortController?.abort();
+    passkeyAbortController = null;
+    revealPasswordLogin();
+  });
+
   const startPasskeyLogin = async (
     options: PasskeyOptionsResponse,
     username: string,
   ): Promise<void> => {
+    const attempt = ++passkeyAttempt;
+    const abortController = new AbortController();
+    passkeyAbortController?.abort();
+    passkeyAbortController = abortController;
     setLoginStep("passkey");
     try {
-      const credential = await getPasskey(options.publicKey);
+      const credential = await getPasskey(options.publicKey, abortController.signal);
+      if (attempt !== passkeyAttempt || loginStep !== "passkey") return;
       if (usernameInput.value.trim() !== username) {
         revealPasswordLogin();
         return;
       }
       await finishPasskeySignIn(options.challenge_token, credential);
     } catch (err) {
+      if (attempt !== passkeyAttempt || loginStep !== "passkey") return;
       showPasskeyError(err, true);
       revealPasswordLogin();
+    } finally {
+      if (passkeyAbortController === abortController) passkeyAbortController = null;
     }
   };
 
