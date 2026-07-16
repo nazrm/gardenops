@@ -990,6 +990,11 @@ async function exercisePasswordlessPasskeyRedundancy(
       "passwordless backup passkey registration");
 
     const row = page.locator("[data-passkey-id]").first();
+    const removeButton = row.locator(".adm-passkey-remove");
+    await visible(removeButton, "redundant passkey removal control");
+    assert(!await removeButton.isDisabled(), "Redundant passkey removal was disabled");
+    await removeButton.click();
+    await confirmVisibleDialog(page);
     const deletePending = page.waitForResponse((response) => (
       response.request().method() === "DELETE"
       && /^\/api\/auth\/passkeys\/\d+$/.test(new URL(response.url()).pathname)
@@ -999,8 +1004,6 @@ async function exercisePasswordlessPasskeyRedundancy(
       "POST",
       "/api/auth/reauthenticate/passkey/verify",
     );
-    await row.locator(".adm-passkey-remove").click();
-    await confirmVisibleDialog(page);
     await answerPrompt(page, "phase-five-passwordless-backup-revoke");
     assert((await removalReauthPending).ok(), "Passwordless removal step-up failed");
     assert((await deletePending).ok(), "Passwordless redundant passkey removal failed");
