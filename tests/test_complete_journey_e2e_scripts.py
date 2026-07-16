@@ -1425,6 +1425,42 @@ def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None
     assert '"feed_url":' not in seed_source
 
 
+def test_phase_one_passkey_challenges_have_a_separate_exact_boundary() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+
+    assert "const phaseOneBoundaryDeltaTables" in checker_source
+    assert '"auth_passkey_challenges"' in checker_source
+    assert "phaseOneBoundaryDeltaTables.has(table)" in checker_source
+    assert "phaseFiveChallengeStarts(profiles)" in checker_source
+    assert "browser_challenge_starts_exact: true" in checker_source
+    assert "passkey_challenge_projection: phaseOneChallengeEvidence" in checker_source
+
+    script = r"""
+const { assertPhaseOneChallengeProjection } = require('./scripts/check_complete_journeys_e2e.cjs');
+const row = (identity, digest) => ({ identity_digest: identity.repeat(64), row_digest: digest.repeat(64) });
+const tables = (rows) => ({ auth_passkey_challenges: { row_projections: rows } });
+const profiles = [{ requests: [{
+  method: 'POST', path: '/api/auth/passkeys/login/options', statusCode: 200,
+}] }];
+const evidence = assertPhaseOneChallengeProjection(tables([]), tables([row('a', 'b')]), profiles);
+if (evidence.added_count !== 1 || evidence.removed_count !== 0 || evidence.updated_count !== 0) {
+  process.exit(2);
+}
+try {
+  assertPhaseOneChallengeProjection(
+    tables([]), tables([row('a', 'b'), row('c', 'd')]), profiles,
+  );
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('diverged from browser challenge starts')) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_phase_two_subscription_probe_is_wired_to_classified_diagnostics() -> None:
     journey_path = ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs"
     journey_source = journey_path.read_text(encoding="utf-8")

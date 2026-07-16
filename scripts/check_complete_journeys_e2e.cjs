@@ -961,6 +961,33 @@ function phaseFiveChallengeStarts(profiles) {
   return starts;
 }
 
+function assertPhaseOneChallengeProjection(initialTables, finalTables, profiles) {
+  const initial = initialTables?.auth_passkey_challenges;
+  const final = finalTables?.auth_passkey_challenges;
+  assert(Array.isArray(initial?.row_projections) && Array.isArray(final?.row_projections),
+    "Phase 1 passkey challenge whole-table projection is missing");
+  const challengeDelta = stableRowIdentityDelta(
+    initial.row_projections,
+    final.row_projections,
+  );
+  const expectedChallengeStarts = phaseFiveChallengeStarts(profiles).login;
+  assert(challengeDelta.added.length === expectedChallengeStarts
+    && challengeDelta.removed.length === 0
+    && challengeDelta.updated.length === 0,
+  `Phase 1 passkey challenge rows diverged from browser challenge starts: ${canonicalJson({
+    added: challengeDelta.added.length,
+    expected: expectedChallengeStarts,
+    removed: challengeDelta.removed.length,
+    updated: challengeDelta.updated.length,
+  })}`);
+  return {
+    added_count: challengeDelta.added.length,
+    browser_challenge_starts_exact: true,
+    removed_count: challengeDelta.removed.length,
+    updated_count: challengeDelta.updated.length,
+  };
+}
+
 function assertPhaseFiveChallengeProjection(initial, final, profiles, oracle) {
   const delta = exactProjectionDelta(
     initial.challenge_projection,
@@ -6554,6 +6581,7 @@ async function main() {
   let phaseZeroProfileEvidence = null;
   let phaseZeroProfiles = [];
   let phaseOneAuditEvidence = null;
+  let phaseOneChallengeEvidence = null;
   let phaseOneDatabase = null;
   let phaseOneStatePreservedAfterPhaseTwo = false;
   let phaseOneProfileEvidence = null;
@@ -6945,6 +6973,10 @@ async function main() {
       "plots",
       "weather_cache",
     ]) : new Set();
+    const phaseOneBoundaryDeltaTables = phaseOneRan ? new Set([
+      ...phaseOneSemanticDeltaTables,
+      "auth_passkey_challenges",
+    ]) : phaseOneSemanticDeltaTables;
     const phaseOneChangedDomainTables = phaseOneRan ? [...new Set([
       ...Object.keys(fixture.database_snapshot.domain_tables),
       ...Object.keys(phaseOneDatabase?.domain_tables || {}),
@@ -6953,12 +6985,19 @@ async function main() {
         !== JSON.stringify(fixture.database_snapshot.domain_tables[table]),
     ) : [];
     const phaseOneForbiddenDomainTables = phaseOneChangedDomainTables.filter(
-      (table) => !phaseOneSemanticDeltaTables.has(table),
+      (table) => !phaseOneBoundaryDeltaTables.has(table),
     );
     assert(
       phaseOneForbiddenDomainTables.length === 0,
       `Phase 1 changed forbidden domain tables: ${phaseOneForbiddenDomainTables.join(", ")}`,
     );
+    if (phaseOneRan) {
+      phaseOneChallengeEvidence = assertPhaseOneChallengeProjection(
+        fixture.database_snapshot.domain_tables,
+        phaseOneDatabase.domain_tables,
+        [...phaseZeroProfiles, ...phaseOneProfiles],
+      );
+    }
     const phaseTwoOracleTables = oracle.phase_two?.whole_table_mutation_accounting?.phase_two_tables;
     assert(Array.isArray(phaseTwoOracleTables) && phaseTwoOracleTables.length > 0
       && phaseTwoOracleTables.every((table) => /^[a-z_]+$/.test(String(table))),
@@ -7563,6 +7602,7 @@ async function main() {
       phase_one_enforcement: phaseOneRan ? {
         assignments_and_lifecycle: true,
         browser_profile_matrix: phaseOneProfileEvidence?.profile_matrix_enforced === true,
+        passkey_challenge_projection: phaseOneChallengeEvidence,
         cross_garden_links_absent: true,
         mobile_snapshot_garden_owned: true,
         nested_unit_parent_cascade: true,
@@ -7768,6 +7808,7 @@ module.exports = {
   assertNoUnexpectedBackendErrors,
   assertPhaseZeroProfileEvidence,
   assertPhaseOneAuditContract,
+  assertPhaseOneChallengeProjection,
   assertPhaseOneProfileEvidence,
   assertPhaseThreeBoundaryEvidence,
   assertPhaseThreeProviderUsage,
