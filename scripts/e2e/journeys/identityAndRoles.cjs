@@ -65,7 +65,7 @@ async function confirmVisibleDialog(page) {
   await dialog.locator(".confirm-yes").click();
 }
 
-async function waitForProactivePasskeyPrompt(page, timeout = 2_000) {
+async function waitForProactivePasskeyPrompt(page, timeout = 5_000) {
   const dialog = page.locator(".modal[data-passkey-prompt-ready='true']:visible").filter({
     has: page.locator(".passkey-prompt-modal"),
   }).last();
@@ -75,6 +75,30 @@ async function waitForProactivePasskeyPrompt(page, timeout = 2_000) {
   } catch {
     return null;
   }
+}
+
+async function completeInvitationOnboarding(page, expectedRole) {
+  if (expectedRole !== "editor") return;
+  const overlay = page.locator(".onboarding-overlay");
+  await visible(overlay, "invited editor onboarding");
+  await overlay.locator(".onb-next").click();
+  await overlay.locator("#onb-garden-name").fill("Phase 5 invited editor garden");
+  await overlay.locator(".onb-next").click();
+  await overlay.locator("#onb-cols").fill("12");
+  await overlay.locator("#onb-rows").fill("12");
+  await overlay.locator(".onb-next").click();
+  await overlay.locator("#onb-house-row").fill("2");
+  await overlay.locator("#onb-house-col").fill("2");
+  await overlay.locator("#onb-house-w").fill("3");
+  await overlay.locator("#onb-house-h").fill("3");
+  await overlay.locator(".onb-next").click();
+  await overlay.locator("#onb-address").fill("Phase 5 invitation onboarding address");
+  await overlay.locator("#onb-lat").fill("59.91");
+  await overlay.locator("#onb-lon").fill("10.75");
+  await overlay.locator(".onb-next").click();
+  await overlay.locator(".onb-next").click();
+  await overlay.locator(".onb-finish").click();
+  await overlay.waitFor({ state: "detached", timeout: 20_000 });
 }
 
 async function dismissProactivePasskeyPrompt(page) {
@@ -494,6 +518,7 @@ async function acceptInvitation(page, guarded, inviteLink, password, expectedRol
   await waitFor(() => page.locator(".auth-gate").count().then((count) => count === 0),
     `${expectedRole} invitation sign-in`);
   guarded.markAuthenticated();
+  await completeInvitationOnboarding(page, expectedRole);
   await dismissProactivePasskeyPrompt(page);
   const me = await browserFetch(page, { path: "/api/auth/me" });
   assert(me.status === 200 && me.body.role === expectedRole,

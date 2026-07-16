@@ -2501,7 +2501,10 @@ function setupLayout(): void {
         setActiveGardenContext(garden.id);
         await refreshGardenContext();
         const needsOnboarding = await checkOnboardingNeeded();
-        if (!needsOnboarding) refreshDataAfterAuthChange();
+        if (!needsOnboarding) {
+          schedulePasskeyPrompt(authProfile);
+          refreshDataAfterAuthChange();
+        }
       } catch (err) {
         showToast(getApiErrorMessage(err), "error");
       }
@@ -6782,7 +6785,6 @@ async function refreshGardenContext(options?: {
   authProfile = me;
   setFeatureGates(me.subscription_tier ?? "home", me.allowed_features ?? []);
   applyFeatureGateUi();
-  schedulePasskeyPrompt(me);
   showSecurityWarnings(me);
   if (me.language && me.language !== getLocale()) {
     setLocale(me.language);
@@ -7104,12 +7106,20 @@ async function handleAuthButton(): Promise<void> {
     setActiveGardenContext(null);
     await showAuthGateFromCurrentStatus();
     await refreshGardenContext();
-    refreshDataAfterAuthChange();
+    const needsOnboarding = await checkOnboardingNeeded();
+    if (!needsOnboarding) {
+      schedulePasskeyPrompt(authProfile);
+      refreshDataAfterAuthChange();
+    }
   } else {
     // Not signed in — use the login gate
     await showAuthGateFromCurrentStatus();
     await refreshGardenContext();
-    refreshDataAfterAuthChange();
+    const needsOnboarding = await checkOnboardingNeeded();
+    if (!needsOnboarding) {
+      schedulePasskeyPrompt(authProfile);
+      refreshDataAfterAuthChange();
+    }
   }
 }
 
@@ -7316,6 +7326,7 @@ async function bootstrapApp(): Promise<void> {
   // Check if active garden needs onboarding.
   const needsOnboarding = await checkOnboardingNeeded();
   if (needsOnboarding) return;
+  schedulePasskeyPrompt(authProfile);
 
   await Promise.all([
     refreshMapState(),
@@ -7348,6 +7359,7 @@ async function checkOnboardingNeeded(): Promise<boolean> {
         if (activeTab === "map" && shouldLoadShadeMapPanelNow()) {
           await ensureShadeMapPanelLoaded();
         }
+        schedulePasskeyPrompt(authProfile);
         resolve(true);
       })();
     };
