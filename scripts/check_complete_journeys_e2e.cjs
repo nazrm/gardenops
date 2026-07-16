@@ -967,8 +967,16 @@ function assertPhaseFiveChallengeProjection(initial, final, profiles, oracle) {
     final.challenge_projection,
     "Phase 5 passkey challenge",
   );
-  assert(delta.removed.length === 0 && delta.updated.length === 0,
-    "Phase 5 changed or removed a pre-existing passkey challenge");
+  assert(delta.updated.length === 0,
+    "Phase 5 changed a pre-existing passkey challenge");
+  if (delta.removed.length > 0) {
+    assert(Number.isSafeInteger(final.snapshot_at_ms) && final.snapshot_at_ms > 0,
+      "Phase 5 challenge cleanup lacks a final snapshot timestamp");
+    assert(delta.removed.every((row) => (
+      Number.isSafeInteger(row.expires_at_ms)
+      && row.expires_at_ms <= final.snapshot_at_ms
+    )), "Phase 5 removed a passkey challenge before its expiry");
+  }
   const allowedFlows = new Set(oracle.phase_five.challenge_projection.allowed_flows);
   for (const row of delta.added) {
     assert(allowedFlows.has(row.flow), `Phase 5 challenge has an unexpected flow: ${row.flow}`);
@@ -1007,6 +1015,7 @@ function assertPhaseFiveChallengeProjection(initial, final, profiles, oracle) {
     challenge_added_identity_digests: delta.added.map((row) => row.identity_digest),
     challenge_attribution_exact: true,
     challenge_count_derived_from_profiles: true,
+    expired_baseline_challenge_cleanup_count: delta.removed.length,
   };
 }
 

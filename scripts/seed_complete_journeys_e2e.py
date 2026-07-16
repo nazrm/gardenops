@@ -16,7 +16,7 @@ from typing import Any
 
 from psycopg import sql
 
-from gardenops.db import close_pool, get_db, return_db
+from gardenops.db import close_pool, current_timestamp_ms, get_db, return_db
 from gardenops.routers.map_objects import snapshot_map_objects
 from gardenops.routers.shademap import (
     get_shademap_calibration,
@@ -3775,6 +3775,7 @@ def _phase_four_fixture_state() -> dict[str, Any]:
 
 
 def _phase_five_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
+    snapshot_at_ms = current_timestamp_ms()
     tracked_usernames = [
         ADMIN_USERNAME,
         EDITOR_LOGIN[0],
@@ -4011,6 +4012,7 @@ def _phase_five_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
                     else "consumed_invalid"
                 ),
                 "flow": str(row["flow"]),
+                "expires_at_ms": expires_at_ms,
                 "identity_digest": opaque_identity("passkey-challenge", row["token_hash"]),
                 "invitation_binding_present": invitation_bound,
                 "invitation_scope": (str(row["invitation_scope"]) if invitation_bound else None),
@@ -4064,6 +4066,7 @@ def _phase_five_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             for row in passkey_rows
         ],
         "runtime_flags": {str(row["key"]): str(row["value"]) for row in runtime_flag_rows},
+        "snapshot_at_ms": snapshot_at_ms,
         "session_counts_by_user": sorted(
             session_counts.values(), key=lambda row: str(row["user_identity_digest"])
         ),

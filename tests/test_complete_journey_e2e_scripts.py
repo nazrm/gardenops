@@ -1184,6 +1184,7 @@ const {
 } = require('./scripts/check_complete_journeys_e2e.cjs');
 const row = (id, values) => ({
   consumed_state: 'consumed_valid',
+  expires_at_ms: 2000,
   flow: 'registration',
   identity_digest: id.repeat(64),
   invitation_binding_present: false,
@@ -1198,7 +1199,7 @@ const profiles = [{ requests: [
   { method: 'POST', path: '/api/auth/passkeys/login/options', statusCode: 200 },
   { method: 'POST', path: '/api/auth/invitations/passkey/register/options', statusCode: 200 },
 ] }];
-const initial = { challenge_projection: [] };
+const initial = { challenge_projection: [], snapshot_at_ms: 1000 };
 const final = { challenge_projection: [
   row('a', {}),
   row('b', {
@@ -1209,7 +1210,7 @@ const final = { challenge_projection: [
     invitation_binding_present: true, invitation_scope: 'personal_garden',
     owner_category: 'phase_five_editor_invitee', session_binding_present: false,
   }),
-] };
+], snapshot_at_ms: 1500 };
 assertPhaseFiveChallengeProjection(initial, final, profiles, phaseFiveOracle());
 for (const mutate of [
   (value) => { value.challenge_projection[0].lifetime_valid = false; },
@@ -1223,6 +1224,27 @@ for (const mutate of [
     assertPhaseFiveChallengeProjection(initial, changed, profiles, phaseFiveOracle());
     process.exit(3);
   } catch { /* expected */ }
+}
+const expired = row('d', {
+  consumed_state: 'unused', expires_at_ms: 1400, flow: 'authentication_denied',
+  owner_category: 'unbound', session_binding_present: false,
+});
+assertPhaseFiveChallengeProjection(
+  { challenge_projection: [expired], snapshot_at_ms: 1300 },
+  { challenge_projection: [], snapshot_at_ms: 1500 },
+  [],
+  phaseFiveOracle(),
+);
+try {
+  assertPhaseFiveChallengeProjection(
+    { challenge_projection: [{ ...expired, expires_at_ms: 1600 }], snapshot_at_ms: 1300 },
+    { challenge_projection: [], snapshot_at_ms: 1500 },
+    [],
+    phaseFiveOracle(),
+  );
+  process.exit(4);
+} catch (error) {
+  if (!String(error.message).includes('before its expiry')) process.exit(5);
 }
 """
     result = subprocess.run(
