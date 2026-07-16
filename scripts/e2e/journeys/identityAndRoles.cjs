@@ -66,7 +66,7 @@ async function confirmVisibleDialog(page) {
 }
 
 async function waitForProactivePasskeyPrompt(page, timeout = 2_000) {
-  const dialog = page.locator(".modal:visible").filter({
+  const dialog = page.locator(".modal[data-passkey-prompt-ready='true']:visible").filter({
     has: page.locator(".passkey-prompt-modal"),
   }).last();
   try {

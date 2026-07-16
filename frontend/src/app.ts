@@ -6728,6 +6728,7 @@ async function showPasskeyPrompt(): Promise<void> {
       showToast(getApiErrorMessage(err), "error");
     }
   });
+  dialog.dataset["passkeyPromptReady"] = "true";
 }
 
 async function refreshGardenContext(options?: {
