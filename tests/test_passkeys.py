@@ -947,7 +947,12 @@ class TestPasskeyRegistration(PasskeyApiTest):
             },
         )
 
-        for response in (listed, deleted, registered):
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(len(listed.json()["passkeys"]), 1)
+        self.assertNotIn("credential_id", listed.json()["passkeys"][0])
+        self.assertNotIn("credential_public_key", listed.json()["passkeys"][0])
+
+        for response in (deleted, registered):
             self.assertEqual(response.status_code, 403, response.text)
             self.assertEqual(
                 response.json()["detail"],

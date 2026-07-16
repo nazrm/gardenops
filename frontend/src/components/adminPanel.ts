@@ -555,10 +555,28 @@ function canManageActiveGardenInvitations(): boolean {
   return isPlatformAdmin();
 }
 
+function adminStrongAuthPending(): boolean {
+  const me = state.me;
+  return Boolean(
+    me
+    && me.role === "admin"
+    && me.auth_type === "session"
+    && !me.mfa_setup_required
+    && !me.mfa_authenticated
+    && (me.mfa_enabled || me.mfa_methods.includes("passkey")),
+  );
+}
+
+function canLoadProtectedAdminSettings(): boolean {
+  if (!isPlatformAdmin()) return false;
+  if (state.me?.auth_type !== "session") return true;
+  return !state.me.mfa_setup_required && !adminStrongAuthPending();
+}
+
 function getVisibleSections(): AdminSection[] {
   const sections: AdminSection[] = ["settings"];
+  if (state.me?.mfa_setup_required || adminStrongAuthPending()) return sections;
   if (canEditActiveGarden()) sections.push("garden");
-  if (state.me?.mfa_setup_required) return sections;
   if (canManageActiveGardenInvitations()) sections.push("invitations");
   if (isPlatformAdmin()) {
     sections.push("users", "sessions", "audit", "system");
@@ -567,8 +585,11 @@ function getVisibleSections(): AdminSection[] {
 }
 
 function defaultSection(): AdminSection {
+  if (state.me?.mfa_setup_required || adminStrongAuthPending()) return "settings";
   if (canEditActiveGarden()) return "garden";
-  if (isPlatformAdmin() && !state.me?.mfa_setup_required) return "users";
+  if (isPlatformAdmin() && !state.me?.mfa_setup_required && !adminStrongAuthPending()) {
+    return "users";
+  }
   return "settings";
 }
 
@@ -1958,7 +1979,8 @@ async function loadSettings(): Promise<void> {
   try {
     state.me = await getAuthMeApi();
   } catch { /* non-fatal */ }
-  if (isPlatformAdmin()) {
+  const protectedAdminSettingsAvailable = canLoadProtectedAdminSettings();
+  if (protectedAdminSettingsAvailable) {
     try {
       state.providerSettings = await getProviderSettingsApi();
     } catch (err) {
@@ -1968,7 +1990,7 @@ async function loadSettings(): Promise<void> {
   } else {
     state.providerSettings = null;
   }
-  if (state.me?.mfa_setup_required) {
+  if (state.me?.mfa_setup_required || adminStrongAuthPending()) {
     state.section = "settings";
   }
   try {
@@ -1984,8 +2006,13 @@ async function loadSettings(): Promise<void> {
   } catch {
     state.passkeys = [];
   }
-  await loadSessions();
-  if (isPlatformAdmin()) {
+  if (!isPlatformAdmin() || protectedAdminSettingsAvailable) {
+    await loadSessions();
+  } else {
+    state.sessions = [];
+    state.sessionsAvailable = false;
+  }
+  if (protectedAdminSettingsAvailable) {
     try {
       state.emergencyReadOnly = await getEmergencyReadOnlyApi();
     } catch {
