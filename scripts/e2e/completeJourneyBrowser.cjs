@@ -539,6 +539,8 @@ function createApiRecorder(page, actor = {}) {
   const records = [];
   const recordsByRequest = new Map();
   const pendingResponseReads = new Set();
+  let currentGardenId = Number.isSafeInteger(Number(actor.gardenId))
+    && Number(actor.gardenId) > 0 ? String(Number(actor.gardenId)) : null;
   const taskActions = new Set(["complete", "reschedule", "skip", "snooze"]);
   const safeRevision = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
   const taskActionEvidence = (request, pathname) => {
@@ -588,7 +590,7 @@ function createApiRecorder(page, actor = {}) {
         actorAuthType: isAnonymousAuditPath ? "none" : (actor.authType || null),
         actorRole: isAnonymousAuditPath ? "anonymous" : (actor.role || null),
         actorUsername: isAnonymousAuditPath ? "anonymous" : (actor.username || null),
-        gardenId: headers["x-garden-id"] || null,
+        gardenId: headers["x-garden-id"] || currentGardenId,
         method: request.method(),
         operationId: headers["x-offline-operation-id"] || null,
         path: parsed.pathname,
@@ -604,6 +606,23 @@ function createApiRecorder(page, actor = {}) {
       if (record) {
         record.requestId = response.headers()["x-request-id"] || null;
         record.statusCode = response.status();
+        if (new Set([
+          "/api/auth/invitations/accept",
+          "/api/auth/invitations/passkey/register/verify",
+        ]).has(record.path) && response.status() < 400) {
+          const responseRead = Promise.resolve()
+            .then(() => response.json())
+            .then((body) => {
+              const gardenId = Number(body?.garden_id);
+              if (Number.isSafeInteger(gardenId) && gardenId > 0) {
+                record.gardenId = String(gardenId);
+                currentGardenId = String(gardenId);
+              }
+            })
+            .catch(() => {})
+            .finally(() => pendingResponseReads.delete(responseRead));
+          pendingResponseReads.add(responseRead);
+        }
         if (record.taskAction) {
           const responseRead = Promise.resolve()
             .then(() => response.json())
@@ -630,6 +649,11 @@ function createApiRecorder(page, actor = {}) {
     attachPage,
     mark: () => records.length,
     records,
+    setGardenId(value) {
+      const gardenId = Number(value);
+      currentGardenId = Number.isSafeInteger(gardenId) && gardenId > 0
+        ? String(gardenId) : null;
+    },
     settle: async () => {
       while (pendingResponseReads.size > 0) {
         await Promise.all([...pendingResponseReads]);

@@ -1198,10 +1198,8 @@ function assertPhaseFiveAuditEvents(
     const invitationAcceptance = normalizedPath === "/api/auth/invitations/accept"
       || normalizedPath === "/api/auth/invitations/passkey/register/verify";
     const invitationGardenId = invitationAcceptance
-      && fixture
-      && request.actorUsername === fixture.phase_five.viewer_invitee_username
-      ? Number(fixture.gardens.alpha.id)
-      : null;
+      && request.gardenId !== null && request.gardenId !== undefined
+      ? Number(request.gardenId) : null;
     return [{
       actor_auth_type: publicAuthRequest ? "none" : request.actorAuthType,
       actor_role: publicAuthRequest ? "anonymous" : request.actorRole,

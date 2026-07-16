@@ -732,7 +732,8 @@ async function exerciseSessionRevocation(options, page) {
   let closed = false;
   try {
     await secondaryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
-    await authenticate(secondaryPage, options.username, options.password);
+    const auth = await authenticate(secondaryPage, options.username, options.password);
+    recorder.setGardenId(auth.garden_id);
     secondary.markAuthenticated();
     await openAdminSection(page, "desktop", "sessions");
     assert(!await page.locator("#admin-view").innerText().then((text) => text.includes("token_hash")),
@@ -803,7 +804,8 @@ async function exerciseSessionExpiry(options) {
     let closed = false;
     try {
       await expiryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
-      await authenticate(expiryPage, expiry.username, expiry.password);
+      const auth = await authenticate(expiryPage, expiry.username, expiry.password);
+      recorder.setGardenId(auth.garden_id);
       guarded.markAuthenticated();
       await expiryPage.goto("about:blank");
       ageDisposableSession(expiry.username, expiry.mode);
@@ -844,6 +846,7 @@ async function exerciseLiveRoleRefresh(options, page) {
   try {
     await secondaryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
     const initial = await authenticate(secondaryPage, options.fixture.roles.editor, EDITOR_PASSWORD);
+    recorder.setGardenId(initial.garden_id);
     assert(initial.role === "editor", "Role-refresh fixture did not start as editor");
     secondary.markAuthenticated();
     const users = await browserFetch(page, { path: "/api/auth/users" });
@@ -939,6 +942,7 @@ async function acceptInvitation(
   expectedRole,
   expectedGardenId,
   virtualAuthenticator = null,
+  recorder = null,
 ) {
   assert(inviteLink, `Missing ${expectedRole} invitation link`);
   await page.goto(inviteLink, { waitUntil: "domcontentloaded" });
@@ -957,13 +961,19 @@ async function acceptInvitation(
       "/api/auth/invitations/passkey/register/verify",
     );
     await passkeyButton.click();
-    assert((await acceptPending).status() === 201,
+    const accepted = await acceptPending;
+    assert(accepted.status() === 201,
       `${expectedRole} passwordless invitation acceptance failed`);
+    const acceptedBody = await accepted.json();
+    recorder?.setGardenId(acceptedBody?.garden_id);
   } else {
     await form.locator("input[name='password']").fill(password);
     const acceptPending = responseFor(page, "POST", "/api/auth/invitations/accept");
     await form.locator("button[type='submit']").click();
-    assert((await acceptPending).ok(), `${expectedRole} invitation acceptance failed`);
+    const accepted = await acceptPending;
+    assert(accepted.ok(), `${expectedRole} invitation acceptance failed`);
+    const acceptedBody = await accepted.json();
+    recorder?.setGardenId(acceptedBody?.garden_id);
   }
   const continueButton = page.locator(".auth-gate button").filter({ hasText: /Continue/i });
   await visible(continueButton, `${expectedRole} invitation continuation`);
@@ -980,6 +990,7 @@ async function acceptInvitation(
     assert(me.body.garden_id === expectedGardenId,
       `${expectedRole} invitation selected the wrong garden`);
   }
+  return me.body;
 }
 
 async function exerciseEditorAuthorizationDenials(page, diagnostics, fixture) {
@@ -1135,7 +1146,8 @@ async function runProfile(options, shared) {
     if (role === "admin" && profile === "desktop") {
       virtualAuthenticator = await enableVirtualAuthenticator(guarded.context, page);
       await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-      await authenticate(page, options.username, options.password);
+      const auth = await authenticate(page, options.username, options.password);
+      recorder.setGardenId(auth.garden_id);
       guarded.markAuthenticated();
       await exercisePasskeys(
         page,
@@ -1176,6 +1188,7 @@ async function runProfile(options, shared) {
         "editor",
         null,
         virtualAuthenticator,
+        recorder,
       );
       await exercisePasswordlessPasskeyRedundancy(
         page,
@@ -1196,6 +1209,8 @@ async function runProfile(options, shared) {
         VIEWER_INVITEE_PASSWORD,
         "viewer",
         fixture.gardens.alpha.id,
+        null,
+        recorder,
       );
       await exerciseRoleSurface(page, profile, role);
       result.checks.viewer_identity_surface = true;
@@ -1205,6 +1220,7 @@ async function runProfile(options, shared) {
       const password = role === "admin" ? options.password
         : role === "editor" ? EDITOR_PASSWORD : VIEWER_PASSWORD;
       const auth = await authenticate(page, username, password);
+      recorder.setGardenId(auth.garden_id);
       guarded.markAuthenticated();
       assert(auth.role === role, `Phase 5 ${role} fixture role drifted`);
       await dismissProactivePasskeyPrompt(page);

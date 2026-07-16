@@ -4840,6 +4840,49 @@ if (recorder.records[1].requestId !== 'peer-request-id-1') process.exit(5);
     assert result.returncode == 0, result.stderr
 
 
+def test_browser_api_recorder_binds_session_and_invitation_garden_context() -> None:
+    script = """
+const { createApiRecorder } = require('./scripts/e2e/completeJourneyBrowser.cjs');
+const handlers = new Map();
+const page = {
+  emit(event, value) { for (const handler of handlers.get(event) || []) handler(value); },
+  on(event, handler) { handlers.set(event, [...(handlers.get(event) || []), handler]); },
+};
+const request = (path) => ({
+  headers: () => ({}), method: () => 'POST', url: () => `http://127.0.0.1${path}`,
+});
+const response = (value, body) => ({
+  headers: () => ({ 'x-request-id': 'request-id-1' }),
+  json: async () => body,
+  request: () => value,
+  status: () => 201,
+});
+const recorder = createApiRecorder(page, {
+  authType: 'session', role: 'admin', username: 'admin',
+});
+recorder.setGardenId(7);
+const authenticated = request('/api/auth/passkeys/42');
+page.emit('request', authenticated);
+page.emit('response', response(authenticated, {}));
+if (recorder.records[0].gardenId !== '7') process.exit(3);
+recorder.setGardenId(null);
+const invitation = request('/api/auth/invitations/passkey/register/verify');
+page.emit('request', invitation);
+page.emit('response', response(invitation, { garden_id: 9, token: 'response-secret' }));
+recorder.settle().then(() => {
+  if (recorder.records[1].gardenId !== '9') process.exit(4);
+  const following = request('/api/auth/me/settings');
+  page.emit('request', following);
+  if (recorder.records[2].gardenId !== '9') process.exit(5);
+  if (JSON.stringify(recorder.records).includes('response-secret')) process.exit(6);
+}).catch(() => process.exit(7));
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_browser_api_recorder_retains_only_task_revision_evidence() -> None:
     script = """
 const { createApiRecorder } = require('./scripts/e2e/completeJourneyBrowser.cjs');
