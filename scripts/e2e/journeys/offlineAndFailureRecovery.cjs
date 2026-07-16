@@ -45,7 +45,7 @@ async function readDrafts(page) {
   });
 }
 
-async function insertFailedDrafts(page, gardenId, occurredOn) {
+async function insertFailedDrafts(page, gardenId, journalPayload) {
   await page.evaluate(async ({ activeGardenId, rows }) => {
     const database = await new Promise((resolve, reject) => {
       const request = indexedDB.open("gardenops-offline");
@@ -84,8 +84,8 @@ async function insertFailedDrafts(page, gardenId, occurredOn) {
         type: "journal",
         last_status: 409,
         payload: {
+          ...journalPayload,
           notes: "Phase 6 explicit retry-as-new observation.",
-          occurred_on: occurredOn,
           title: "Conflicting journal observation",
         },
       },
@@ -304,7 +304,7 @@ async function runOfflineProfile(options) {
     assert(deliveryCount === 2, "Phase 6 repeated reconnect duplicated the journal mutation");
 
     const failedGarden = options.fixture.gardens.beta.id;
-    await insertFailedDrafts(page, failedGarden, options.fixture.clock.attention_date);
+    await insertFailedDrafts(page, failedGarden, queued.payload);
     const failureToggle = page.locator("#offline-indicator .offline-indicator-toggle");
     await visible(failureToggle, "Phase 6 compact failed-work toggle");
     assert(await failureToggle.getAttribute("aria-expanded") === "false",
