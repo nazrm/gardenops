@@ -145,13 +145,20 @@ async function enableVirtualAuthenticator(context, page) {
       automaticPresenceSimulation: true,
       hasResidentKey: true,
       hasUserVerification: true,
-      isUserConsenting: true,
       isUserVerified: true,
       protocol: "ctap2",
-      transport: "internal",
+      transport: "usb",
     },
   });
   assert(result.authenticatorId, "Virtual WebAuthn authenticator was not created");
+  await client.send("WebAuthn.setAutomaticPresenceSimulation", {
+    authenticatorId: result.authenticatorId,
+    enabled: true,
+  });
+  await client.send("WebAuthn.setUserVerified", {
+    authenticatorId: result.authenticatorId,
+    isUserVerified: true,
+  });
   return { authenticatorId: result.authenticatorId, client };
 }
 
@@ -490,9 +497,10 @@ async function runProfile(options, shared) {
   };
   let caughtError = null;
   let status = "failed";
+  let virtualAuthenticator = null;
   try {
     if (role === "admin" && profile === "desktop") {
-      await enableVirtualAuthenticator(guarded.context, page);
+      virtualAuthenticator = await enableVirtualAuthenticator(guarded.context, page);
       await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
       await authenticate(page, options.username, options.password);
       guarded.markAuthenticated();
@@ -570,6 +578,11 @@ async function runProfile(options, shared) {
     result.failure = "profile journey failed; see top-level sanitized failure";
     result.assertions.failed.push(result.failure);
   } finally {
+    if (virtualAuthenticator) {
+      await virtualAuthenticator.client.send("WebAuthn.removeVirtualAuthenticator", {
+        authenticatorId: virtualAuthenticator.authenticatorId,
+      }).catch(() => undefined);
+    }
     result.diagnostics = guarded.diagnostics;
     try { result.trace = await guarded.close(status); } catch (error) { if (!caughtError) caughtError = error; }
   }
