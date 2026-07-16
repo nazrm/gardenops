@@ -27,6 +27,8 @@ from gardenops.services.weather_service import (
     check_weather_and_generate_alerts,
     find_frost_vulnerable_plants,
     find_watering_sensitive_plants,
+    forecast_cache_status,
+    forecast_without_cache_status,
     get_cached_forecast,
     get_or_fetch_forecast,
 )
@@ -79,6 +81,17 @@ def _serialize_alert(row: dict[str, Any], plant_ids: list[str]) -> dict:
         "dismissed": bool(row["dismissed"]),
         "created_at_ms": int(row["created_at_ms"]),
         "plant_ids": plant_ids,
+    }
+
+
+def _forecast_trust_fields(forecast: dict | None) -> dict[str, object]:
+    status = forecast_cache_status(forecast)
+    return {
+        "forecast_source": status.get("source"),
+        "forecast_fetched_at_ms": status.get("fetched_at_ms"),
+        "forecast_age_ms": status.get("age_ms"),
+        "forecast_stale": bool(status.get("stale")),
+        "forecast_fallback": bool(status.get("fallback")),
     }
 
 
@@ -163,7 +176,11 @@ def get_forecast(request: Request, db: DB) -> dict:
         raise
     if not forecast or "daily" not in forecast:
         return {"forecast_available": False, "daily": {}}
-    return {"forecast_available": True, **forecast}
+    return {
+        "forecast_available": True,
+        **forecast_without_cache_status(forecast),
+        **_forecast_trust_fields(forecast),
+    }
 
 
 @router.get("/weather/alerts")
@@ -269,10 +286,17 @@ def get_summary(request: Request, db: DB) -> dict:
             "alerts": [],
             "frost_vulnerable_plants": [],
             "watering_sensitive_plants": [],
+            **_forecast_trust_fields(None),
         }
 
     # Use cached forecast only (don't trigger fetch on read)
-    forecast = get_cached_forecast(db, garden_id)
+    forecast = get_cached_forecast(
+        db,
+        garden_id,
+        allow_stale=True,
+        latitude=float(row["latitude"]),
+        longitude=float(row["longitude"]),
+    )
     forecast_days: list[dict] = []
     if forecast and "daily" in forecast:
         daily = forecast["daily"]
@@ -318,4 +342,5 @@ def get_summary(request: Request, db: DB) -> dict:
         "alerts": alerts,
         "frost_vulnerable_plants": frost_plants,
         "watering_sensitive_plants": watering_plants,
+        **_forecast_trust_fields(forecast),
     }

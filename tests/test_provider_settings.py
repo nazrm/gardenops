@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from collections.abc import Sequence
 from unittest.mock import patch
@@ -14,6 +15,7 @@ from gardenops.provider_settings import (
     get_ai_runtime_config,
     get_provider_settings_summary,
 )
+from tests.base import BaseApiTest
 
 
 class _Cursor:
@@ -213,6 +215,60 @@ class ProviderSettingsTests(unittest.TestCase):
                     actor_user_id=7,
                 )
 
+    def test_secret_rotation_and_delete_return_only_redacted_metadata(self) -> None:
+        conn = _FakeConn()
+        fernet_key = Fernet.generate_key().decode()
+        environment = {
+            "APP_SECRETS_ENCRYPTION_KEY": fernet_key,
+            "OPENAI_API_KEY": "",
+            "ANTHROPIC_API_KEY": "",
+            "PLANTNET_API_KEY": "",
+            "SHADEMAP": "",
+            "SHADEMAP_API_KEY": "",
+            "SHADEMAP_KEY": "",
+        }
+
+        with patch.dict("os.environ", environment, clear=False):
+            first_summary, _ = apply_provider_settings_update(
+                conn,
+                settings={},
+                secret_values={
+                    "openai_api_key": "first-secret-1111"
+                },  # push-sanitizer: allow SECRET_ASSIGNMENT - fixed test fixture
+                clear_secret_keys=(),
+                actor_user_id=7,
+            )
+            rotated_summary, rotated_changes = apply_provider_settings_update(
+                conn,
+                settings={},
+                secret_values={
+                    "openai_api_key": "rotated-secret-2222"
+                },  # push-sanitizer: allow SECRET_ASSIGNMENT - fixed test fixture
+                clear_secret_keys=(),
+                actor_user_id=7,
+            )
+            deleted_summary, deleted_changes = apply_provider_settings_update(
+                conn,
+                settings={},
+                secret_values={},
+                clear_secret_keys=("openai_api_key",),
+                actor_user_id=7,
+            )
+
+        first = first_summary["secrets"]["openai_api_key"]
+        rotated = rotated_summary["secrets"]["openai_api_key"]
+        deleted = deleted_summary["secrets"]["openai_api_key"]
+        self.assertEqual(first["last4"], "1111")
+        self.assertEqual(rotated["last4"], "2222")
+        self.assertEqual(rotated_changes.set_secrets, ("openai_api_key",))
+        self.assertFalse(deleted["configured"])
+        self.assertEqual(deleted["source"], "none")
+        self.assertIsNone(deleted["last4"])
+        self.assertEqual(deleted_changes.cleared_secrets, ("openai_api_key",))
+        combined = repr((first_summary, rotated_summary, deleted_summary))
+        self.assertNotIn("first-secret", combined)
+        self.assertNotIn("rotated-secret", combined)
+
     def test_summary_reports_env_fallback_without_plaintext(self) -> None:
         conn = _FakeConn()
 
@@ -226,6 +282,34 @@ class ProviderSettingsTests(unittest.TestCase):
         self.assertEqual(anthropic["source"], "env")
         self.assertEqual(anthropic["last4"], "9999")
         self.assertNotIn("env-ant-key", repr(summary))
+
+
+class ProviderSettingsAuthorizationTests(BaseApiTest):
+    def test_editor_and_viewer_cannot_read_or_mutate_provider_secrets(self) -> None:
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        try:
+            for role in ("editor", "viewer"):
+                username = f"provider_{role}"
+                password = f"provider-{role}-pass"
+                self._create_test_user(username, password, role)
+                client, headers = self._authenticated_client(username, password)
+
+                read_response = client.get("/api/admin/provider-settings", headers=headers)
+                write_response = client.put(
+                    "/api/admin/provider-settings",
+                    headers=headers,
+                    json={
+                        "openai_api_key": "must-not-be-stored",
+                        "action_reason": f"deny-{role}",
+                    },
+                )
+
+                self.assertEqual(read_response.status_code, 403)
+                self.assertEqual(write_response.status_code, 403)
+                self.assertNotIn("must-not-be-stored", write_response.text)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
 
 
 if __name__ == "__main__":

@@ -7,12 +7,16 @@ import json
 import logging
 import os
 from typing import Any, Literal, cast
+from urllib.parse import urlsplit
 
 from anthropic import Anthropic
 from anthropic import APITimeoutError as AnthropicAPITimeoutError
+from anthropic import RateLimitError as AnthropicRateLimitError
 from openai import APITimeoutError as OpenAIAPITimeoutError
 from openai import OpenAI
+from openai import RateLimitError as OpenAIRateLimitError
 
+from gardenops.e2e_fixture import complete_journey_loopback_fixture_enabled
 from gardenops.provider_settings import (
     SUPPORTED_AI_PROVIDERS,
     env_ai_provider_value,
@@ -28,6 +32,8 @@ _SUPPORTED_PROVIDERS = frozenset({"anthropic", "openai"})
 _DETERMINISTIC_PROVIDER = "deterministic"
 _DETERMINISTIC_AI_PROVIDER_ENV = "GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER"
 _DETERMINISTIC_MODEL = "gardenops-deterministic-e2e"
+_LOOPBACK_PROVIDER_ENV = "GARDENOPS_E2E_LOOPBACK_PROVIDER"
+_LOOPBACK_PROVIDER_URL_ENV = "GARDENOPS_E2E_PROVIDER_URL"
 
 
 class AIProviderNotConfigured(Exception):
@@ -65,12 +71,51 @@ class AIProviderTimeout(AIProviderError):
         super().__init__(detail, provider=provider)
 
 
+class AIProviderRateLimited(AIProviderError):
+    """Raised when an upstream provider rejects a request for quota or rate limits."""
+
+    def __init__(
+        self,
+        detail: str = "AI provider rate limit reached",
+        *,
+        provider: str,
+    ) -> None:
+        super().__init__(detail, provider=provider)
+
+
 def _deterministic_ai_provider_enabled() -> bool:
     """Allow the local fixture provider only in an explicitly marked test process."""
     return (
         os.environ.get("APP_ENV") == "test"
         and os.environ.get(_DETERMINISTIC_AI_PROVIDER_ENV) == "1"
     )
+
+
+def _loopback_openai_base_url() -> str | None:
+    """Return the explicitly opt-in test fixture URL, never a production override."""
+    if not complete_journey_loopback_fixture_enabled():
+        return None
+    raw_url = os.environ.get(_LOOPBACK_PROVIDER_URL_ENV, "").strip()
+    if not raw_url:
+        return None
+    try:
+        parsed = urlsplit(raw_url)
+        port = parsed.port
+    except ValueError as exc:
+        raise AIProviderNotConfigured("Invalid loopback AI fixture URL", provider="openai") from exc
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or port is None
+        or port == 5432
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path.rstrip("/") != "/v1"
+    ):
+        raise AIProviderNotConfigured("Invalid loopback AI fixture URL", provider="openai")
+    return raw_url.rstrip("/")
 
 
 def configured_provider() -> AIProvider:
@@ -166,13 +211,17 @@ def _openai_client(
     *,
     timeout_seconds: float | None = None,
 ) -> OpenAI:
-    return OpenAI(
-        api_key=provider_api_key,
-        timeout=timeout_seconds
+    options: dict[str, Any] = {
+        "api_key": provider_api_key,
+        "timeout": timeout_seconds
         if timeout_seconds is not None
         else float(env_int("OPENAI_API_TIMEOUT_SECONDS", 25)),
-        max_retries=env_nonneg_int("OPENAI_API_MAX_RETRIES", 1),
-    )
+        "max_retries": env_nonneg_int("OPENAI_API_MAX_RETRIES", 1),
+    }
+    base_url = _loopback_openai_base_url()
+    if base_url is not None:
+        options["base_url"] = base_url
+    return OpenAI(**options)
 
 
 def _extract_anthropic_tool_input(response: Any, tool_name: str) -> dict[str, Any]:
@@ -855,21 +904,27 @@ def chat_with_ai(
                 system=system,
                 messages=cast(Any, messages),
             )
-            return _extract_anthropic_text(response)
-        return _openai_text_call(
-            api_key=api_key,
-            system=system,
-            messages=messages,
-            max_tokens=max_tokens,
-            model=openai_fast_model() if use_fast_model else None,
-            timeout_seconds=timeout_seconds,
-        )
+            reply = _extract_anthropic_text(response)
+        else:
+            reply = _openai_text_call(
+                api_key=api_key,
+                system=system,
+                messages=messages,
+                max_tokens=max_tokens,
+                model=openai_fast_model() if use_fast_model else None,
+                timeout_seconds=timeout_seconds,
+            )
+        if not reply.strip():
+            raise AIProviderError("AI provider did not return text output", provider=provider)
+        return reply
     except AIProviderNotConfigured:
         raise
     except AIProviderError:
         raise
     except (AnthropicAPITimeoutError, OpenAIAPITimeoutError) as exc:
         raise AIProviderTimeout(provider=provider) from exc
+    except (AnthropicRateLimitError, OpenAIRateLimitError) as exc:
+        raise AIProviderRateLimited(provider=provider) from exc
     except Exception as exc:  # noqa: BLE001
         raise AIProviderError(provider=provider) from exc
 
@@ -920,6 +975,8 @@ def identify_plant_with_ai(image_bytes: bytes, organ: str) -> list[dict[str, Any
         raise
     except AIProviderError:
         raise
+    except (AnthropicAPITimeoutError, OpenAIAPITimeoutError) as exc:
+        raise AIProviderTimeout(provider=provider) from exc
     except Exception as exc:  # noqa: BLE001
         raise AIProviderError(provider=provider) from exc
 
@@ -964,6 +1021,8 @@ def diagnose_plant_with_ai(image_bytes: bytes, prompt_text: str) -> list[dict[st
         raise
     except AIProviderError:
         raise
+    except (AnthropicAPITimeoutError, OpenAIAPITimeoutError) as exc:
+        raise AIProviderTimeout(provider=provider) from exc
     except Exception as exc:  # noqa: BLE001
         raise AIProviderError(provider=provider) from exc
 

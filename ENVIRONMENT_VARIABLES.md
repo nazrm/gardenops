@@ -59,6 +59,7 @@ not secrets.
 |---|---|---|
 | `VITE_APP_NAME` | Public product name shown by the frontend. | `GardenOps` |
 | `VITE_APP_SLUG` | Public slug used by the frontend for generated labels and filenames. | `gardenops` |
+| `VITE_SHADEMAP_BASEMAP_URL` | Optional browser-safe XYZ basemap template for the ShadeMap panel. Leave unset to use the production default. | `https://tiles.example.com/{z}/{x}/{y}.png` |
 
 ## Optional Providers
 
@@ -103,6 +104,12 @@ terrain setup, and production cautions.
 | `SHADEMAP_PUBLIC_API_KEY` | Browser-safe ShadeMap key returned to authenticated clients by `/api/shademap/config`. Required to enable the panel. | `change-me` |
 | `SHADEMAP_PUBLIC_KEY` | Alternative client/public ShadeMap key. | `change-me` |
 | `SHADEMAP_CLIENT_KEY` | Alternative client/public ShadeMap key. | `change-me` |
+| `SHADEMAP_RUNTIME_SCRIPT_URL` | Optional HTTPS URL for a licensed, self-contained ShadeMap runtime JavaScript file. GardenOps validates its allowed public host and proxies it only to authenticated same-origin browsers at `/shademap/runtime.js`; the browser never receives this upstream URL. Leave unset to retain the non-rendering panel fallback. | `https://shademap.app/path/to/runtime.js` |
+| `SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT` | Per-identity requests per minute for the authenticated ShadeMap runtime proxy. | `20` |
+| `SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_USER` | Per-user requests per minute for the authenticated ShadeMap runtime proxy. | `20` |
+| `SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_GARDEN` | Per-garden requests per minute for the authenticated ShadeMap runtime proxy. | `40` |
+| `SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_GLOBAL` | Process-wide requests per minute for the authenticated ShadeMap runtime proxy. | `200` |
+| `SHADEMAP_RUNTIME_SCRIPT_CONCURRENCY_LIMIT` | Maximum simultaneous upstream runtime-script fetches per process; cached responses do not consume a slot. | `2` |
 | `SHADEMAP_TILE_SIGNING_SECRET` | GardenOps HMAC secret for signed same-origin terrain tile URLs. This is not a ShadeMap key. Must be a unique random value in production. | unset |
 | `SHADEMAP_TILE_TOKEN_TTL_SECONDS` | Terrain tile token lifetime. Clamped by the app. | `600` |
 | `SHADEMAP_TERRAIN_URL_TEMPLATE` | Optional remote Terrarium-compatible PNG terrain tile URL template with `{z}`, `{x}`, and `{y}` placeholders. This is for remote tile fetching, not a local file path. | unset |
@@ -150,6 +157,16 @@ environment variable read by the public app.
 | `GARDENOPS_LOGS_DIR` | Directory for runtime JSONL error logs. | `./logs` |
 | `GARDENOPS_ATTENTION_<SETTING>` | Attention test clock and guarded E2E settings. Keep unset in normal production; use documented values only for deterministic tests and the disposable Attention Today E2E runner. | `GARDENOPS_ATTENTION_FROZEN_DATE=2026-07-05` |
 | `GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER` | Test-only local AI fixture switch. It is honored only when `APP_ENV=test` and the value is exactly `1`; keep it unset in development and production. | unset |
+| `GARDENOPS_E2E_LOOPBACK_PROVIDER` | Test-only Phase 7 provider and ShadeMap fixture switch. It is honored only in the runner-issued `APP_ENV=test` disposable child, with the matching database URL, PostgreSQL marker, expected commit, and private artifact directory. Keep it unset outside that runner. | unset |
+| `GARDENOPS_E2E_PROVIDER_URL` | Test-only loopback provider base URL. The runner-bound override accepts only `http://127.0.0.1` with a non-PostgreSQL port and the exact `/v1` path. | `http://127.0.0.1:19001/v1` |
+| `GARDENOPS_E2E_SHADEMAP_ESTIMATE_CSV` | Test-only Phase 7 monthly sun-estimate fixture path. It is accepted only with the fully runner-bound loopback fixture switch and within the private complete-journey artifact directory. | unset |
+| `GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR` | Private ignored artifact directory for the disposable complete-journey runner. It is not a normal runtime media or terrain directory. | unset |
+| `GARDENOPS_COMPLETE_JOURNEYS_E2E_CHILD` | Runner-issued marker for the disposable complete-journey child process. It must be exactly `1` before a local provider fixture can be used. | unset |
+| `GARDENOPS_COMPLETE_JOURNEYS_E2E_ALLOW_TRUNCATE` | Runner-issued destructive-test acknowledgement for the disposable complete-journey child. It must be exactly `1`; never set it in a normal app process. | unset |
+| `GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD` | Runner-issued 40-character commit identifier binding private complete-journey artifacts and loopback fixtures to the reviewed source revision. | unset |
+| `GARDENOPS_DISPOSABLE_POSTGRES_URL` | Runner-issued disposable PostgreSQL URL. The complete-journey child requires it to equal `DATABASE_URL` before local provider fixtures are enabled. | unset |
+| `GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER` | Runner-issued numeric PostgreSQL cluster identifier used to bind the disposable database marker. | unset |
+| `GARDENOPS_DISPOSABLE_POSTGRES_MARKER` | Runner-issued database marker beginning with the matching disposable PostgreSQL system identifier. | unset |
 | `GARDENOPS_NOTIFICATION_SCHEDULER_<SETTING>` | Background notification scheduler enablement, poll interval, and lease duration. | `GARDENOPS_NOTIFICATION_SCHEDULER_ENABLED=auto` |
 | `GARDENOPS_SMTP_<SETTING>` | SMTP host, port, sender, username, password, and TLS settings for notification email. | `GARDENOPS_SMTP_HOST=smtp.example.com` |
 | `SHADEMAP_<SETTING>` | ShadeMap keys, location defaults, terrain, Overpass, token, rate-limit, quota, distinct-bound, and local terrain settings. | `SHADEMAP_TILE_TOKEN_TTL_SECONDS=600` |

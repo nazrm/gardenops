@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -14,7 +15,10 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+import laspy
+import numpy as np
 from psycopg import sql
+from pyproj import CRS, Transformer
 
 from gardenops.db import close_pool, current_timestamp_ms, get_db, return_db
 from gardenops.routers.map_objects import snapshot_map_objects
@@ -40,6 +44,9 @@ PHASE_FIVE_ORACLE_PATH = (
 )
 PHASE_SIX_ORACLE_PATH = (
     REPOSITORY_ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_six_oracle.json"
+)
+PHASE_SEVEN_ORACLE_PATH = (
+    REPOSITORY_ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_seven_oracle.json"
 )
 
 
@@ -154,6 +161,32 @@ def _load_phase_six_oracle() -> tuple[dict[str, Any], str]:
 
 
 PHASE_SIX_ORACLE, PHASE_SIX_ORACLE_SHA256 = _load_phase_six_oracle()
+
+
+def _load_phase_seven_oracle() -> tuple[dict[str, Any], str]:
+    try:
+        raw = PHASE_SEVEN_ORACLE_PATH.read_bytes()
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Complete journey Phase 7 oracle is unavailable or invalid") from exc
+    phase_seven = payload.get("phase_seven") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 1
+        or not isinstance(phase_seven, dict)
+        or not isinstance(phase_seven.get("fixture"), dict)
+        or not isinstance(phase_seven.get("browser_contract"), dict)
+        or not isinstance(phase_seven.get("database_boundaries"), dict)
+        or not isinstance(phase_seven.get("support"), dict)
+        or not isinstance(phase_seven["fixture"].get("weather"), dict)
+        or not isinstance(phase_seven["fixture"]["weather"].get("stale_age_ms"), int)
+        or int(phase_seven["fixture"]["weather"]["stale_age_ms"]) <= 0
+    ):
+        raise RuntimeError("Complete journey Phase 7 oracle contract is missing")
+    return payload, sha256(raw).hexdigest()
+
+
+PHASE_SEVEN_ORACLE, PHASE_SEVEN_ORACLE_SHA256 = _load_phase_seven_oracle()
 
 ADMIN_USERNAME = os.environ.get(
     "GARDENOPS_COMPLETE_JOURNEYS_E2E_USERNAME", "complete_journeys_e2e_admin"
@@ -900,6 +933,32 @@ def _reset_phase_two_weather_cache(
         "fetched_at_ms": PHASE_TWO_NOW_MS,
         "garden_ids": garden_ids,
         "weather_cache_rows": 2,
+    }
+
+
+def _prepare_phase_seven_weather(conn, optimization_seed: Any) -> dict[str, Any]:
+    """Age the selected garden forecast immediately before Phase 7 browser proof."""
+    weather_fixture = PHASE_SEVEN_ORACLE["phase_seven"]["fixture"]["weather"]
+    stale_age_ms = int(weather_fixture["stale_age_ms"])
+    row = conn.execute(
+        "SELECT id FROM gardens WHERE slug = %s",
+        (optimization_seed.GARDEN_A_SLUG,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("Complete journey Phase 7 garden is missing")
+    garden_id = int(row["id"])
+    fetched_at_ms = PHASE_TWO_NOW_MS - stale_age_ms
+    updated = conn.execute(
+        "UPDATE weather_cache SET fetched_at_ms = %s WHERE garden_id = %s",
+        (fetched_at_ms, garden_id),
+    )
+    if updated.rowcount != 1:
+        raise RuntimeError("Complete journey Phase 7 weather cache is incomplete")
+    conn.commit()
+    return {
+        "fetched_at_ms": fetched_at_ms,
+        "garden_id": garden_id,
+        "stale_age_ms": stale_age_ms,
     }
 
 
@@ -4147,6 +4206,73 @@ def _phase_six_fixture_state() -> dict[str, Any]:
     }
 
 
+def _phase_seven_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
+    gardens = {
+        str(row["slug"]): int(row["id"])
+        for row in conn.execute(
+            "SELECT id, slug FROM gardens WHERE slug = ANY(%s)",
+            ([optimization_seed.GARDEN_A_SLUG, optimization_seed.GARDEN_B_SLUG],),
+        ).fetchall()
+    }
+    alpha_id = gardens[optimization_seed.GARDEN_A_SLUG]
+    beta_id = gardens[optimization_seed.GARDEN_B_SLUG]
+    usage_rows = conn.execute(
+        """
+        SELECT usage.feature, usage.scope_type, usage.scope_id, usage.request_count,
+               users.username AS scope_username
+        FROM provider_daily_usage usage
+        LEFT JOIN auth_users users
+          ON usage.scope_type = 'user' AND users.id = usage.scope_id
+        WHERE usage.feature = 'ai-garden-chat'
+        ORDER BY usage.scope_type, usage.scope_id
+        """
+    ).fetchall()
+    weather_row = conn.execute(
+        "SELECT fetched_at_ms, forecast_json FROM weather_cache WHERE garden_id = %s",
+        (alpha_id,),
+    ).fetchone()
+    if weather_row is None:
+        raise RuntimeError("Complete journey Phase 7 weather cache is missing")
+    return {
+        "alpha": {
+            "calibration": get_shademap_calibration(conn, garden_id=alpha_id),
+            "obstacles": list_shademap_obstacles(conn, garden_id=alpha_id),
+            "state": get_shademap_state(conn, garden_id=alpha_id),
+            "weather": {
+                "fetched_at_ms": int(weather_row["fetched_at_ms"]),
+                "forecast_json": str(weather_row["forecast_json"]),
+            },
+        },
+        "beta": {
+            "calibration": get_shademap_calibration(conn, garden_id=beta_id),
+            "obstacles": list_shademap_obstacles(conn, garden_id=beta_id),
+            "state": get_shademap_state(conn, garden_id=beta_id),
+        },
+        "provider_usage": [
+            {
+                "feature": str(row["feature"]),
+                "request_count": int(row["request_count"]),
+                "scope_id": int(row["scope_id"]),
+                "scope_type": str(row["scope_type"]),
+                "scope_username": str(row["scope_username"] or ""),
+            }
+            for row in usage_rows
+        ],
+    }
+
+
+def _phase_seven_fixture_state() -> dict[str, Any]:
+    return {
+        "fixture": dict(PHASE_SEVEN_ORACLE["phase_seven"]["fixture"]),
+        "oracle": {
+            "path": "scripts/e2e/fixtures/complete_journeys_phase_seven_oracle.json",
+            "schema_version": PHASE_SEVEN_ORACLE["schema_version"],
+            "sha256": PHASE_SEVEN_ORACLE_SHA256,
+        },
+        "support": dict(PHASE_SEVEN_ORACLE["phase_seven"]["support"]),
+    }
+
+
 def _count(conn, table: str) -> int:
     allowed = {
         "attention_outcomes",
@@ -4594,6 +4720,7 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
             "phase_three_state": _phase_three_runtime_state(conn, optimization_seed),
             "phase_four_state": _phase_four_runtime_state(conn, optimization_seed),
             "phase_five_state": _phase_five_runtime_state(conn, optimization_seed),
+            "phase_seven_state": _phase_seven_runtime_state(conn, optimization_seed),
         },
         "gardens": {
             "alpha": garden_payload(
@@ -4613,6 +4740,7 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
         "phase_four": _phase_four_fixture_state(),
         "phase_five": _phase_five_fixture_state(),
         "phase_six": _phase_six_fixture_state(),
+        "phase_seven": _phase_seven_fixture_state(),
         "roles": {
             "admin": ADMIN_USERNAME,
             "editor": EDITOR_LOGIN[0],
@@ -4649,6 +4777,108 @@ def _write_json_exclusive(output_path: Path, payload: dict[str, Any]) -> None:
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
+
+
+def _write_phase_seven_terrain_fixture() -> Path:
+    """Create a small, CRS-bearing LAS input inside the private runner artifact directory."""
+    artifact_raw = os.environ.get("GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR", "")
+    if not artifact_raw:
+        raise RuntimeError("Complete journey artifact directory is required")
+    artifact_dir = Path(artifact_raw).resolve(strict=True)
+    if not artifact_dir.is_dir() or artifact_dir.is_symlink():
+        raise RuntimeError("Complete journey artifact directory is unsafe")
+    terrain = PHASE_SEVEN_ORACLE["phase_seven"]["fixture"]["terrain"]
+    filename = str(terrain["filename"])
+    if filename != "phase-seven-terrain.las":
+        raise RuntimeError("Phase 7 terrain fixture filename is invalid")
+    output_path = artifact_dir / filename
+    if output_path.parent != artifact_dir or output_path.exists() or output_path.is_symlink():
+        raise RuntimeError("Phase 7 terrain fixture path is unsafe")
+
+    crs = CRS.from_user_input(str(terrain["crs"]))
+    longitude = float(terrain["longitude"])
+    latitude = float(terrain["latitude"])
+    x0, y0 = Transformer.from_crs(4326, crs, always_xy=True).transform(longitude, latitude)
+    elevations = np.asarray(terrain["elevations_m"], dtype=np.float64)
+    if elevations.shape != (int(terrain["point_count"]),):
+        raise RuntimeError("Phase 7 terrain fixture point count is invalid")
+    extent_m = float(terrain["extent_m"])
+    if not 100.0 <= extent_m <= 500.0:
+        raise RuntimeError("Phase 7 terrain fixture extent is invalid")
+    offsets = np.asarray(
+        (
+            (-extent_m, -extent_m),
+            (extent_m, -extent_m),
+            (-extent_m, extent_m),
+            (extent_m, extent_m),
+        ),
+    )
+    if len(offsets) != len(elevations):
+        raise RuntimeError("Phase 7 terrain fixture geometry is invalid")
+    header = laspy.LasHeader(point_format=3, version="1.2")
+    header.add_crs(crs)
+    header.creation_date = date(2026, 7, 12)
+    dataset = laspy.LasData(header)
+    dataset.x = x0 + offsets[:, 0]
+    dataset.y = y0 + offsets[:, 1]
+    dataset.z = elevations
+    dataset.classification = np.full(len(elevations), 2, dtype=np.uint8)
+    buffer = io.BytesIO()
+    dataset.write(buffer, do_compress=False)
+    payload = buffer.getvalue()
+    if not payload:
+        raise RuntimeError("Phase 7 terrain fixture was empty")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(output_path, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+    return output_path
+
+
+def _write_phase_seven_estimated_sun_fixture() -> Path:
+    """Write the small sun-data input used by the Phase 7 browser journey."""
+    artifact_raw = os.environ.get("GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR", "")
+    if not artifact_raw:
+        raise RuntimeError("Complete journey artifact directory is required")
+    artifact_dir = Path(artifact_raw).resolve(strict=True)
+    if not artifact_dir.is_dir() or artifact_dir.is_symlink():
+        raise RuntimeError("Complete journey artifact directory is unsafe")
+    fixture = PHASE_SEVEN_ORACLE["phase_seven"]["fixture"]
+    filename = str(fixture.get("estimated_sun_csv_filename", ""))
+    if filename != "phase-seven-sun.csv":
+        raise RuntimeError("Phase 7 estimated sun fixture filename is invalid")
+    output_path = artifact_dir / filename
+    if output_path.parent != artifact_dir or output_path.exists() or output_path.is_symlink():
+        raise RuntimeError("Phase 7 estimated sun fixture path is unsafe")
+    payload = "\n".join(
+        (
+            "dag;dato;sol_opp;sol_ned;timer_sol;estimert;kommentar",
+            "1;2026-07-12;04:00;22:00;18,00;TRUE;phase-seven-fixture",
+            "2;2026-07-16;04:03;21:57;17,90;TRUE;phase-seven-fixture",
+            "",
+        ),
+    ).encode("utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(output_path, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+    return output_path
 
 
 def _phase_two_maintenance_semantic_rows(conn, garden_id: int) -> dict[str, list[dict[str, Any]]]:
@@ -5127,6 +5357,7 @@ def main() -> None:
     optimization_seed.require_optimization_journeys_e2e_database(database_url)
     snapshot_only = sys.argv[1:] == ["--snapshot"]
     prepare_phase_two = sys.argv[1:] == ["--prepare-phase-two"]
+    prepare_phase_seven = sys.argv[1:] == ["--prepare-phase-seven"]
     phase_two_maintenance = sys.argv[1:] == ["--phase-two-maintenance"]
     phase_two_preference_delivery = sys.argv[1:] == ["--phase-two-preference-delivery"]
     output_path = Path(sys.argv[2]) if len(sys.argv) == 3 and sys.argv[1] == "--output" else None
@@ -5134,13 +5365,14 @@ def main() -> None:
         sys.argv[1:]
         and not snapshot_only
         and not prepare_phase_two
+        and not prepare_phase_seven
         and not phase_two_maintenance
         and not phase_two_preference_delivery
         and output_path is None
     ):
         raise SystemExit(
             "Usage: seed_complete_journeys_e2e.py "
-            "[--snapshot | --prepare-phase-two | --phase-two-maintenance "
+            "[--snapshot | --prepare-phase-two | --prepare-phase-seven | --phase-two-maintenance "
             "| --phase-two-preference-delivery | --output PATH]"
         )
 
@@ -5153,6 +5385,15 @@ def main() -> None:
                 print(
                     json.dumps(
                         _prepare_phase_two(conn, optimization_seed),
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+                return
+            if prepare_phase_seven:
+                print(
+                    json.dumps(
+                        _prepare_phase_seven_weather(conn, optimization_seed),
                         separators=(",", ":"),
                         sort_keys=True,
                     )
@@ -5204,6 +5445,8 @@ def main() -> None:
                 )
                 _seed_phase_two_fixtures(conn, optimization_seed)
                 conn.commit()
+                _write_phase_seven_terrain_fixture()
+                _write_phase_seven_estimated_sun_fixture()
             result = _snapshot(conn, optimization_seed)
             if output_path is not None:
                 _write_json_exclusive(output_path, result)

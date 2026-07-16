@@ -9,7 +9,7 @@ fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT_DIR"
-MAX_IMPLEMENTED_PHASE=6
+MAX_IMPLEMENTED_PHASE=7
 
 die() {
   printf 'Complete journey E2E: %s\n' "$1" >&2
@@ -147,7 +147,7 @@ write_isolated_vite_config() {
     "const envDir = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_ENV_DIR;" \
     "const outDir = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_DIST_DIR;" \
     "const proxyTarget = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_PROXY_TARGET;" \
-    "const proxy = { '/api': proxyTarget, '/calendar/subscriptions': proxyTarget };" \
+    "const proxy = { '/api': proxyTarget, '/calendar/subscriptions': proxyTarget, '/shademap': proxyTarget };" \
     "export default async (configEnv) => {" \
     "  const resolved = typeof baseConfig === 'function' ? await baseConfig(configEnv) : baseConfig;" \
     "  return { ...resolved, root, envDir, build: { ...(resolved.build || {}), emptyOutDir: true, outDir }, preview: { ...(resolved.preview || {}), proxy }, server: { ...(resolved.server || {}), proxy } };" \
@@ -167,6 +167,7 @@ vite_environment() {
     GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_DIST_DIR="$VITE_DIST_DIR" \
     GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
     GARDENOPS_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
+    VITE_SHADEMAP_BASEMAP_URL="$VITE_SHADEMAP_BASEMAP_URL" \
     "$@"
 }
 
@@ -232,12 +233,24 @@ finish_private_dir() {
 wait_for_url() {
   local url="$1" pid="$2" label="$3" attempt
   for ((attempt = 0; attempt < 120; attempt++)); do
-    kill -0 "$pid" 2>/dev/null || die "$label exited before readiness"
+    if ! kill -0 "$pid" 2>/dev/null; then
+      if [[ -n "${LOG_DIR:-}" && -d "$LOG_DIR" ]]; then
+        printf 'label=%s\nurl=%s\nattempt=%s\nevent=process-exited\n' "$label" "$url" "$attempt" \
+          > "$LOG_DIR/readiness-failure.log"
+        chmod 600 "$LOG_DIR/readiness-failure.log"
+      fi
+      die "$label exited before readiness"
+    fi
     if curl -fsS "$url" >/dev/null 2>&1; then
       return
     fi
     sleep 0.25
   done
+  if [[ -n "${LOG_DIR:-}" && -d "$LOG_DIR" ]]; then
+    printf 'label=%s\nurl=%s\nattempts=%s\n' "$label" "$url" "$attempt" \
+      > "$LOG_DIR/readiness-failure.log"
+    chmod 600 "$LOG_DIR/readiness-failure.log"
+  fi
   die "timed out waiting for $label"
 }
 
@@ -365,8 +378,10 @@ export AUTH_LOGIN_RATE_LIMIT=200
 export AUTH_LOGIN_USERNAME_RATE_LIMIT=100
 export AUTH_LOGIN_ADMIN_USERNAME_RATE_LIMIT=100
 export AUTH_LOGIN_ADMIN_HOST_RATE_LIMIT=200
-export AI_PROVIDER=disabled
-export GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER=1
+export AI_PROVIDER=openai
+export OPENAI_API_KEY="complete-journeys-loopback-provider-key" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+export GARDENOPS_E2E_LOOPBACK_PROVIDER=1
+unset GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER
 export GARDENOPS_NOTIFICATION_SCHEDULER_ENABLED=false
 export GARDENOPS_ATTENTION_FROZEN_NOW_MS=1783857600000
 export GARDENOPS_ATTENTION_FROZEN_DATE=2026-07-12
@@ -387,6 +402,8 @@ export GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR="$ARTIFACT_DIR"
 export GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD="$EXPECTED_HEAD"
 export GARDENOPS_COMPLETE_JOURNEYS_E2E_FRONTEND_MODE=production-preview
 export PYTHON_DOTENV_DISABLED=1
+# A data URL keeps the browser journey local while the product default remains OpenStreetMap.
+VITE_SHADEMAP_BASEMAP_URL="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
 
 PRIVATE_DIR="$(mktemp -d /tmp/gardenops-complete-journeys.XXXXXX)"
 
@@ -430,6 +447,11 @@ FRONTEND_PORT="${GARDENOPS_COMPLETE_JOURNEYS_E2E_FRONTEND_PORT:-$(pick_loopback_
 PROVIDER_PORT="${GARDENOPS_COMPLETE_JOURNEYS_E2E_PROVIDER_PORT:-$(pick_loopback_port)}"
 validate_distinct_ports "$BACKEND_PORT" "$FRONTEND_PORT" "$PROVIDER_PORT"
 export GARDENOPS_VITE_PROXY_TARGET="http://127.0.0.1:${BACKEND_PORT}"
+export GARDENOPS_E2E_PROVIDER_URL="http://127.0.0.1:${PROVIDER_PORT}/v1"
+export GARDENOPS_COMPLETE_JOURNEYS_E2E_PROVIDER_URL="$GARDENOPS_E2E_PROVIDER_URL"
+export SHADEMAP="complete-journeys-loopback-shademap-key" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+export SHADEMAP_PUBLIC_API_KEY="complete-journeys-loopback-shademap-public-key" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+export SHADEMAP_TILE_SIGNING_SECRET="complete-journeys-loopback-terrain-signing-key" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 export AUTH_PASSKEY_RP_ID="localhost"
 export AUTH_PASSKEY_ORIGINS="http://localhost:${FRONTEND_PORT}"
 
@@ -437,6 +459,7 @@ FIXTURE_PATH="$ARTIFACT_DIR/fixture.json"
 export GARDENOPS_COMPLETE_JOURNEYS_E2E_FIXTURE_PATH="$FIXTURE_PATH"
 BACKEND_PID=""
 FRONTEND_PID=""
+PROVIDER_PID=""
 
 cleanup() {
   local status=$?
@@ -444,6 +467,7 @@ cleanup() {
   set +e
   stop_process_group "$FRONTEND_PID"
   stop_process_group "$BACKEND_PID"
+  stop_process_group "$PROVIDER_PID"
   if [[ "$status" -ne 0 ]]; then
     printf 'Private failure artifacts: %s and %s\n' "$ARTIFACT_DIR" "$PRIVATE_DIR" >&2
     finish_private_dir "$status" "$PRIVATE_DIR"
@@ -465,6 +489,13 @@ write_isolated_vite_config
 "$ROOT_DIR/.venv/bin/python" scripts/seed_complete_journeys_e2e.py \
   --output "$FIXTURE_PATH"
 chmod 600 "$FIXTURE_PATH"
+export GARDENOPS_E2E_SHADEMAP_ESTIMATE_CSV="$ARTIFACT_DIR/phase-seven-sun.csv"
+
+setsid node "$ROOT_DIR/scripts/e2e/providers/deterministicLoopbackProvider.cjs" \
+  --port "$PROVIDER_PORT" \
+  --scenario success \
+  > "$LOG_DIR/provider-fixture.log" 2>&1 &
+PROVIDER_PID=$!
 
 setsid "$ROOT_DIR/.venv/bin/uvicorn" gardenops.main:app \
   --host 127.0.0.1 --port "$BACKEND_PORT" > "$LOG_DIR/backend.log" 2>&1 &
@@ -482,12 +513,14 @@ setsid env -i \
   GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_DIST_DIR="$VITE_DIST_DIR" \
   GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
   GARDENOPS_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
+  VITE_SHADEMAP_BASEMAP_URL="$VITE_SHADEMAP_BASEMAP_URL" \
   "$ROOT_DIR/frontend/node_modules/.bin/vite" preview \
     --config "$VITE_CONFIG_PATH" --host localhost --port "$FRONTEND_PORT" --strictPort \
     > "$LOG_DIR/frontend.log" 2>&1 &
 FRONTEND_PID=$!
 
 wait_for_url "http://127.0.0.1:${BACKEND_PORT}/api/health" "$BACKEND_PID" "FastAPI"
+wait_for_url "http://127.0.0.1:${PROVIDER_PORT}/healthz" "$PROVIDER_PID" "loopback provider"
 wait_for_url "http://localhost:${FRONTEND_PORT}/" "$FRONTEND_PID" "production frontend preview"
 
 BASE_URL="http://localhost:${FRONTEND_PORT}" \

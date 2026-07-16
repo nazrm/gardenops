@@ -37,6 +37,7 @@ from gardenops.security_metrics import record_security_event
 from gardenops.services.ai_provider import (
     AIProviderError,
     AIProviderNotConfigured,
+    AIProviderRateLimited,
     AIProviderTimeout,
     chat_with_ai,
     diagnose_plant_with_ai,
@@ -324,20 +325,19 @@ def ai_plant_lookup(body: LookupRequest, request: Request, db: DB) -> dict:
 
     auth_context = resolve_request_auth_context(request)
     limits = provider_limit_profile("ai-plant-lookup")
-    reserve_daily_provider_budget(
-        db,
-        feature="ai-plant-lookup",
-        user_id=auth_context.user_id,
-        garden_id=auth_context.garden_id,
-        user_limit=int(limits["user_limit"]),
-        garden_limit=int(limits["garden_limit"]),
-    )
-
     try:
         with acquire_concurrency_slot(
             bucket="ai-plant-lookup",
             limit=int(limits["concurrency_limit"]),
         ):
+            reserve_daily_provider_budget(
+                db,
+                feature="ai-plant-lookup",
+                user_id=auth_context.user_id,
+                garden_id=auth_context.garden_id,
+                user_limit=int(limits["user_limit"]),
+                garden_limit=int(limits["garden_limit"]),
+            )
             data = lookup_plant_with_ai(body.query)
     except AIProviderNotConfigured as exc:
         raise HTTPException(503, exc.detail) from exc
@@ -797,14 +797,6 @@ def garden_chat(body: ChatRequest, db: DB, request: Request) -> dict:
 
     auth_context = resolve_request_auth_context(request)
     limits = provider_limit_profile("ai-garden-chat")
-    reserve_daily_provider_budget(
-        db,
-        feature="ai-garden-chat",
-        user_id=auth_context.user_id,
-        garden_id=auth_context.garden_id,
-        user_limit=int(limits["user_limit"]),
-        garden_limit=int(limits["garden_limit"]),
-    )
     context = get_cached_context(db, auth_context)
     system = CHAT_SYSTEM_TEMPLATE.format(context=context)
     context_chars = len(context)
@@ -820,6 +812,14 @@ def garden_chat(body: ChatRequest, db: DB, request: Request) -> dict:
             bucket="ai-garden-chat",
             limit=int(limits["concurrency_limit"]),
         ):
+            reserve_daily_provider_budget(
+                db,
+                feature="ai-garden-chat",
+                user_id=auth_context.user_id,
+                garden_id=auth_context.garden_id,
+                user_limit=int(limits["user_limit"]),
+                garden_limit=int(limits["garden_limit"]),
+            )
             reply = chat_with_ai(
                 system,
                 messages,
@@ -829,6 +829,25 @@ def garden_chat(body: ChatRequest, db: DB, request: Request) -> dict:
             )
     except AIProviderNotConfigured as exc:
         raise HTTPException(503, exc.detail) from exc
+    except AIProviderRateLimited as exc:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        _log_provider_failure(
+            "AI garden chat rate limited",
+            upstream=exc.provider,
+            feature_area="ai-garden-chat",
+            error_kind="upstream_rate_limited",
+            garden_id=auth_context.garden_id,
+            user_id=auth_context.user_id,
+            duration_ms=duration_ms,
+            context_chars=context_chars,
+            history_count=len(body.history),
+            message_count=len(messages),
+            max_output_tokens=max_output_tokens,
+            provider_timeout_seconds=provider_timeout_seconds,
+        )
+        record_security_event("ai_provider_failures")
+        record_security_event("ai_provider_failures_garden_chat")
+        raise HTTPException(429, "AI provider rate limit reached") from exc
     except AIProviderTimeout as exc:
         duration_ms = int((time.perf_counter() - started) * 1000)
         _log_provider_failure(
@@ -848,6 +867,8 @@ def garden_chat(body: ChatRequest, db: DB, request: Request) -> dict:
         record_security_event("ai_provider_failures")
         record_security_event("ai_provider_failures_garden_chat")
         raise HTTPException(504, _AI_CHAT_TIMEOUT_DETAIL) from exc
+    except HTTPException:
+        raise
     except AIProviderError as exc:
         duration_ms = int((time.perf_counter() - started) * 1000)
         _log_provider_failure(
@@ -986,17 +1007,9 @@ async def identify_plant(
     if not plantnet_api_key and not is_ai_provider_configured():
         raise HTTPException(503, "No identification API configured")
 
-    reserve_daily_provider_budget(
-        db,
-        feature="ai-identify",
-        user_id=auth_context.user_id,
-        garden_id=auth_context.garden_id,
-        user_limit=int(limits["user_limit"]),
-        garden_limit=int(limits["garden_limit"]),
-    )
-
     candidates: list[dict[str, Any]] = []
     plantnet_remaining: int | None = None
+    provider_warnings: list[str] = []
     confidence_threshold = float(
         os.environ.get("PLANTNET_CONFIDENCE_THRESHOLD", "0.40"),
     )
@@ -1009,6 +1022,14 @@ async def identify_plant(
                 bucket="ai-identify",
                 limit=int(limits["concurrency_limit"]),
             ):
+                reserve_daily_provider_budget(
+                    db,
+                    feature="ai-identify",
+                    user_id=auth_context.user_id,
+                    garden_id=auth_context.garden_id,
+                    user_limit=int(limits["user_limit"]),
+                    garden_limit=int(limits["garden_limit"]),
+                )
                 result = plantnet_identify(
                     image_bytes,
                     organ,
@@ -1043,6 +1064,7 @@ async def identify_plant(
             )
             record_security_event("ai_provider_failures")
             record_security_event("ai_provider_failures_identify_plantnet")
+            provider_warnings.append("plantnet_unavailable")
 
     # Configured AI enrichment/fallback
     needs_ai_fallback = not candidates or (
@@ -1050,10 +1072,19 @@ async def identify_plant(
     )
     if needs_ai_fallback:
         try:
+            require_ai_provider_configured()
             with acquire_concurrency_slot(
                 bucket="ai-identify",
                 limit=int(limits["concurrency_limit"]),
             ):
+                reserve_daily_provider_budget(
+                    db,
+                    feature="ai-identify",
+                    user_id=auth_context.user_id,
+                    garden_id=auth_context.garden_id,
+                    user_limit=int(limits["user_limit"]),
+                    garden_limit=int(limits["garden_limit"]),
+                )
                 ai_candidates = identify_plant_with_ai(image_bytes, organ)
             existing_latins = {c["latin"].lower() for c in candidates}
             for cc in ai_candidates:
@@ -1062,6 +1093,21 @@ async def identify_plant(
         except AIProviderNotConfigured as exc:
             if not candidates:
                 raise HTTPException(503, exc.detail) from exc
+            provider_warnings.append("ai_enrichment_not_configured")
+        except AIProviderTimeout as exc:
+            _log_provider_failure(
+                "AI identify fallback timed out",
+                upstream=exc.provider,
+                feature_area="ai-identify",
+                error_kind="upstream_timeout",
+                garden_id=auth_context.garden_id,
+                user_id=auth_context.user_id,
+            )
+            record_security_event("ai_provider_failures")
+            record_security_event("ai_provider_failures_identify_ai")
+            if not candidates:
+                raise HTTPException(504, "Identification service timed out") from exc
+            provider_warnings.append("ai_enrichment_timed_out")
         except AIProviderError as exc:
             _log_provider_failure(
                 "AI identify fallback failed",
@@ -1074,15 +1120,24 @@ async def identify_plant(
             record_security_event("ai_provider_failures_identify_ai")
             if not candidates:
                 raise HTTPException(502, "Identification service unavailable") from exc
+            provider_warnings.append("ai_enrichment_unavailable")
+        except HTTPException:
+            if not candidates:
+                raise
+            provider_warnings.append("ai_enrichment_budget_or_capacity_unavailable")
 
     if not candidates:
         raise HTTPException(502, "Identification service unavailable")
 
     candidates.sort(key=lambda c: c["confidence"], reverse=True)
     return {
+        "status": "partial" if provider_warnings else "success",
         "candidates": candidates[:5],
         "attribution": _identify_attribution(candidates[:5]),
         "plantnet_remaining": plantnet_remaining,
+        "warnings": provider_warnings,
+        "advisory": True,
+        "durable_mutation_performed": False,
     }
 
 
@@ -1290,26 +1345,37 @@ async def diagnose_plant(
     plant_context = _load_diagnosis_context(db, auth_context, plt_id, plot_id)
     prompt_text = _build_diagnosis_prompt(plant_context, symptoms)
 
-    reserve_daily_provider_budget(
-        db,
-        feature="ai-diagnose",
-        user_id=auth_context.user_id,
-        garden_id=auth_context.garden_id,
-        user_limit=int(limits["user_limit"]),
-        garden_limit=int(limits["garden_limit"]),
-    )
-
     # Call configured AI provider
     try:
         with acquire_concurrency_slot(
             bucket="ai-diagnose",
             limit=int(limits["concurrency_limit"]),
         ):
+            reserve_daily_provider_budget(
+                db,
+                feature="ai-diagnose",
+                user_id=auth_context.user_id,
+                garden_id=auth_context.garden_id,
+                user_limit=int(limits["user_limit"]),
+                garden_limit=int(limits["garden_limit"]),
+            )
             diagnoses = diagnose_plant_with_ai(image_bytes, prompt_text)
     except HTTPException:
         raise
     except AIProviderNotConfigured as exc:
         raise HTTPException(503, exc.detail) from exc
+    except AIProviderTimeout as exc:
+        _log_provider_failure(
+            "AI diagnose timed out",
+            upstream=exc.provider,
+            feature_area="ai-diagnose",
+            error_kind="upstream_timeout",
+            garden_id=auth_context.garden_id,
+            user_id=auth_context.user_id,
+        )
+        record_security_event("ai_provider_failures")
+        record_security_event("ai_provider_failures_diagnose")
+        raise HTTPException(504, "Diagnosis service timed out") from exc
     except AIProviderError as exc:
         _log_provider_failure(
             "AI diagnose failed",
@@ -1334,6 +1400,7 @@ async def diagnose_plant(
         raise HTTPException(502, "Diagnosis service unavailable") from exc
 
     return {
+        "status": "success",
         "diagnoses": diagnoses,
         "context_used": {
             "plant_name": plant_context.get("plant_name", ""),
@@ -1344,6 +1411,8 @@ async def diagnose_plant(
             "This is an AI-assisted assessment, not a definitive diagnosis. "
             "Consider consulting a local garden center for confirmation."
         ),
+        "advisory": True,
+        "durable_mutation_performed": False,
     }
 
 

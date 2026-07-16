@@ -1,14 +1,14 @@
-"""Local LiDAR-backed terrain sampling for ShadeMap terrain tiles."""
+"""Local LiDAR terrain ingestion and sampling, not a local shadow solver."""
 
 from __future__ import annotations
 
 import math
 import os
 import secrets
-import tempfile
 import threading
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
 from typing import Final
@@ -25,6 +25,7 @@ TILE_SIZE: Final[int] = 256
 LOCAL_TERRAIN_SCAN_PATTERN: Final[str] = "*.laz"
 DEFAULT_MAX_TERRAIN_GRID_CELLS: Final[int] = 4_000_000
 DEFAULT_MAX_TERRAIN_POINTS: Final[int] = 2_000_000
+GRID_EDGE_TOLERANCE: Final[float] = 1e-6
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class LocalTerrainDataset:
 
 
 _DATASET_LOCK = threading.Lock()
+_UPLOAD_LOCK = threading.RLock()
 _DATASET_CACHE: dict[str, LocalTerrainDataset] = {}
 _ALLOWED_UPLOAD_SUFFIXES: Final[set[str]] = {".las", ".laz"}
 
@@ -67,6 +69,13 @@ GridCacheSave = Callable[[str, LocalTerrainDataset], None]
 
 _grid_cache_load: GridCacheLoad | None = None
 _grid_cache_save: GridCacheSave | None = None
+
+
+@contextmanager
+def uploaded_terrain_mutation_lock() -> Iterator[None]:
+    """Serialize activation and removal of the shared uploaded terrain source."""
+    with _UPLOAD_LOCK:
+        yield
 
 
 def set_grid_cache_callbacks(
@@ -246,30 +255,147 @@ def uploaded_terrain_storage_keys(garden_id: int) -> list[str]:
     return sorted(keys)
 
 
-def save_uploaded_terrain(
-    garden_id: int, payload: bytes, original_filename: str
-) -> dict[str, object]:
+@dataclass
+class PreparedTerrainUpload:
+    garden_id: int
+    target: Path
+    pending: Path
+    dataset: LocalTerrainDataset
+    backups: dict[Path, Path]
+    activated: bool = False
+    _lock_held: bool = False
+
+    def activate(self) -> dict[str, object]:
+        if self.activated:
+            raise RuntimeError("Terrain upload is already active")
+        _UPLOAD_LOCK.acquire()
+        self._lock_held = True
+        try:
+            for suffix in _ALLOWED_UPLOAD_SUFFIXES:
+                existing = self.target.with_suffix(suffix)
+                if not existing.is_file():
+                    continue
+                backup = existing.with_name(f".{existing.name}-{secrets.token_hex(8)}.backup")
+                existing.replace(backup)
+                self.backups[existing] = backup
+            self.pending.replace(self.target)
+            self.activated = True
+            clear_local_terrain_cache()
+            signature = local_terrain_signature(self.garden_id)
+            if signature is None:
+                raise RuntimeError("Activated terrain has no storage signature")
+            active_dataset = replace(
+                self.dataset,
+                path=self.target,
+                signature=signature,
+            )
+            with _DATASET_LOCK:
+                _DATASET_CACHE[signature] = active_dataset
+            if _grid_cache_save is not None:
+                _grid_cache_save(signature, active_dataset)
+            return local_terrain_storage_info(self.garden_id)
+        except Exception:
+            self.rollback()
+            raise
+
+    def finalize(self) -> tuple[Path, ...]:
+        """Best-effort cleanup after the replacement has become durable.
+
+        Activation and its database invalidation have already committed by the
+        time this runs. A cleanup failure must not turn that successful
+        replacement into a failed request.
+        """
+        failed: list[Path] = []
+        try:
+            for backup in self.backups.values():
+                try:
+                    backup.unlink(missing_ok=True)
+                except OSError:
+                    failed.append(backup)
+            self.backups.clear()
+            try:
+                self.pending.unlink(missing_ok=True)
+            except OSError:
+                failed.append(self.pending)
+            return tuple(failed)
+        finally:
+            self._release_lock()
+
+    def rollback(self) -> None:
+        try:
+            if self.activated:
+                self.target.unlink(missing_ok=True)
+            for original, backup in self.backups.items():
+                if backup.exists():
+                    backup.replace(original)
+            self.backups.clear()
+            self.pending.unlink(missing_ok=True)
+            self.activated = False
+            clear_local_terrain_cache()
+        finally:
+            self._release_lock()
+
+    def _release_lock(self) -> None:
+        if self._lock_held:
+            self._lock_held = False
+            _UPLOAD_LOCK.release()
+
+
+def _validate_upload_identity(garden_id: int, original_filename: str) -> str:
+    if type(garden_id) is not int or garden_id <= 0:
+        raise ValueError("Garden id must be a positive integer")
+    filename = original_filename.strip()
+    if not filename or Path(filename).name != filename or "/" in filename or "\\" in filename:
+        raise ValueError("LiDAR upload filename must not contain a path")
     suffix = Path(original_filename or "").suffix.lower()
     if suffix not in _ALLOWED_UPLOAD_SUFFIXES:
         raise ValueError("LiDAR upload must be a .las or .laz file")
+    return suffix
+
+
+def prepare_uploaded_terrain(
+    garden_id: int, payload: bytes, original_filename: str
+) -> PreparedTerrainUpload:
+    suffix = _validate_upload_identity(garden_id, original_filename)
     if not payload:
         raise ValueError("LiDAR upload is empty")
     max_bytes = lidar_upload_max_bytes()
     if len(payload) > max_bytes:
         raise ValueError("LiDAR upload exceeds size limit")
 
-    _validate_uploaded_terrain_payload(payload, suffix)
-
     target_dir = _uploaded_terrain_dir(garden_id)
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"terrain{suffix}"
-    tmp = target_dir / f".terrain-{secrets.token_hex(8)}.tmp"
-    tmp.write_bytes(payload)
-    tmp.replace(target)
-    for other_suffix in _ALLOWED_UPLOAD_SUFFIXES - {suffix}:
-        (target_dir / f"terrain{other_suffix}").unlink(missing_ok=True)
-    clear_local_terrain_cache()
-    return local_terrain_storage_info(garden_id)
+    pending = target_dir / f".terrain-{secrets.token_hex(8)}{suffix}"
+    try:
+        pending.write_bytes(payload)
+        dataset = _build_dataset(pending, "prepared")
+    except ValueError:
+        pending.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        pending.unlink(missing_ok=True)
+        raise ValueError("LiDAR upload is not a readable LAS/LAZ file") from exc
+    return PreparedTerrainUpload(
+        garden_id=garden_id,
+        target=target,
+        pending=pending,
+        dataset=dataset,
+        backups={},
+    )
+
+
+def save_uploaded_terrain(
+    garden_id: int, payload: bytes, original_filename: str
+) -> dict[str, object]:
+    prepared = prepare_uploaded_terrain(garden_id, payload, original_filename)
+    try:
+        status = prepared.activate()
+    except Exception:
+        prepared.rollback()
+        raise
+    prepared.finalize()
+    return status
 
 
 def clear_uploaded_terrain(garden_id: int) -> dict[str, object]:
@@ -367,12 +493,12 @@ def _terrain_grid_dimensions(
     *,
     resolution_m: float,
 ) -> tuple[int, int, float, float, float, float]:
-    min_x, min_y, _ = map(float, reader.header.mins)
-    max_x, max_y, _ = map(float, reader.header.maxs)
-    bounds = (min_x, max_x, min_y, max_y)
+    min_x, min_y, min_z = map(float, reader.header.mins)
+    max_x, max_y, max_z = map(float, reader.header.maxs)
+    bounds = (min_x, max_x, min_y, max_y, min_z, max_z)
     if not all(math.isfinite(value) for value in bounds):
         raise ValueError("LiDAR bounds must be finite")
-    if max_x < min_x or max_y < min_y:
+    if max_x < min_x or max_y < min_y or max_z < min_z:
         raise ValueError("LiDAR bounds are invalid")
     cols = int(math.ceil((max_x - min_x) / resolution_m)) + 1
     rows = int(math.ceil((max_y - min_y) / resolution_m)) + 1
@@ -385,26 +511,6 @@ def _terrain_grid_dimensions(
             f"({rows * cols} cells; limit {max_cells})"
         )
     return rows, cols, min_x, max_x, min_y, max_y
-
-
-def _validate_uploaded_terrain_payload(payload: bytes, suffix: str) -> None:
-    with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
-        tmp.write(payload)
-        tmp.flush()
-        try:
-            with laspy.open(tmp.name) as reader:
-                if reader.header.parse_crs() is None:
-                    raise ValueError("LiDAR upload is missing CRS metadata")
-                _enforce_point_count_limit(_reader_point_count(reader))
-                _terrain_grid_dimensions(reader, resolution_m=_resolution_meters())
-                observed_points = 0
-                for _points in reader.chunk_iterator(1_000_000):
-                    observed_points += len(_points)
-                    _enforce_point_count_limit(observed_points)
-        except ValueError:
-            raise
-        except Exception as exc:
-            raise ValueError("LiDAR upload is not a readable LAS/LAZ file") from exc
 
 
 def _accumulate_average_grid(
@@ -424,6 +530,7 @@ def _accumulate_average_grid(
     all_count = np.zeros((rows, cols), dtype=np.uint32)
 
     observed_points = 0
+    observed_finite_points = 0
     for points in reader.chunk_iterator(1_000_000):
         observed_points += len(points)
         _enforce_point_count_limit(observed_points)
@@ -432,9 +539,11 @@ def _accumulate_average_grid(
         z = np.asarray(points.z, dtype=np.float64)
         col = np.floor((x - min_x) / resolution_m).astype(np.int32)
         row = np.floor((max_y - y) / resolution_m).astype(np.int32)
-        valid = (row >= 0) & (row < rows) & (col >= 0) & (col < cols) & np.isfinite(z)
+        finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        valid = (row >= 0) & (row < rows) & (col >= 0) & (col < cols) & finite
         if not np.any(valid):
             continue
+        observed_finite_points += int(np.count_nonzero(valid))
 
         valid_row = row[valid]
         valid_col = col[valid]
@@ -449,6 +558,11 @@ def _accumulate_average_grid(
             g_cols = valid_col[ground_mask]
             np.add.at(ground_sum, (g_rows, g_cols), valid_z[ground_mask])
             np.add.at(ground_count, (g_rows, g_cols), 1)
+
+    if observed_points == 0:
+        raise ValueError("LiDAR upload contains no points")
+    if observed_finite_points == 0:
+        raise ValueError("LiDAR upload contains no finite points within its bounds")
 
     use_ground = bool(np.any(ground_count > 0))
     total_sum = ground_sum if use_ground else all_sum
@@ -563,7 +677,10 @@ def _sample_bilinear(
     row_f = (dataset.max_y - proj_y) / dataset.resolution_m
 
     coverage_mask = (
-        (col_f >= 0.0) & (col_f <= dataset.cols - 1) & (row_f >= 0.0) & (row_f <= dataset.rows - 1)
+        (col_f >= -GRID_EDGE_TOLERANCE)
+        & (col_f <= dataset.cols - 1 + GRID_EDGE_TOLERANCE)
+        & (row_f >= -GRID_EDGE_TOLERANCE)
+        & (row_f <= dataset.rows - 1 + GRID_EDGE_TOLERANCE)
     )
 
     col_f = np.clip(col_f, 0.0, dataset.cols - 1)

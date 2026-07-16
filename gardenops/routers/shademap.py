@@ -41,6 +41,7 @@ from gardenops.db import (
     default_shademap_state,
     return_db,
 )
+from gardenops.e2e_fixture import complete_journey_loopback_fixture_enabled
 from gardenops.models import (
     ShadeMapCalibrationBody,
     ShadeMapObstacleBody,
@@ -99,6 +100,10 @@ DEFAULT_OVERPASS_URLS: Final[tuple[str, ...]] = (
     "https://overpass.private.coffee/api/interpreter",
 )
 SDK_LOAD_URL: Final[str] = "https://shademap.app/sdk/load"
+_LOOPBACK_PROVIDER_ENV: Final[str] = "GARDENOPS_E2E_LOOPBACK_PROVIDER"
+_LOOPBACK_PROVIDER_URL_ENV: Final[str] = "GARDENOPS_E2E_PROVIDER_URL"
+_LOOPBACK_SDK_LOAD_PATH: Final[str] = "/shademap/sdk/load"
+_LOOPBACK_RUNTIME_SCRIPT_PATH: Final[str] = "/shademap/runtime.js"
 UPSTREAM_MAX_BYTES: Final[int] = 5 * 1024 * 1024
 _ALLOWED_UPSTREAM_HOST_SUFFIXES: Final[tuple[str, ...]] = (
     "shademap.app",
@@ -109,6 +114,7 @@ _ALLOWED_UPSTREAM_HOST_SUFFIXES: Final[tuple[str, ...]] = (
     "overpass.private.coffee",
 )
 SDK_CACHE_TTL_MS: Final[int] = 12 * 60 * 60 * 1000
+RUNTIME_SCRIPT_CACHE_TTL_MS: Final[int] = 5 * 60 * 1000
 FEATURE_CACHE_TTL_MS: Final[int] = 7 * 24 * 60 * 60 * 1000
 FEATURE_CACHE_MAX_ROWS: Final[int] = 4000
 TERRAIN_MAX_ZOOM: Final[int] = 15
@@ -123,6 +129,9 @@ SDK_CACHE_MAX_ROWS: Final[int] = 64
 DEFAULT_BUILDING_HEIGHT_METERS: Final[float] = 3.0
 DEFAULT_HOUSE_HEIGHT_METERS: Final[float] = 9.0
 DEFAULT_TREE_HEIGHT_METERS: Final[float] = 4.5
+
+_RUNTIME_SCRIPT_CACHE_LOCK = threading.Lock()
+_RUNTIME_SCRIPT_CACHE: dict[str, tuple[int, bytes, str]] = {}
 MIN_TREE_CANOPY_RADIUS_METERS: Final[float] = 1.2
 MAX_TREE_CANOPY_RADIUS_METERS: Final[float] = 3.5
 TREE_CANOPY_SIDES: Final[int] = 8
@@ -145,6 +154,9 @@ MONTH_LABELS: Final[tuple[str, ...]] = (
 MONTHLY_ESTIMATE_CSV_PATH: Final[Path] = (
     Path(__file__).resolve().parents[2] / "soltider_estimated.csv"
 )
+_E2E_MONTHLY_ESTIMATE_CSV_ENV: Final[str] = "GARDENOPS_E2E_SHADEMAP_ESTIMATE_CSV"
+_E2E_ARTIFACT_DIR_ENV: Final[str] = "GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR"
+_E2E_MONTHLY_ESTIMATE_FILENAME: Final[str] = "phase-seven-sun.csv"
 _CARDINALITY_LOCK = threading.Lock()
 _DISTINCT_SIGNATURES: dict[str, dict[str, float]] = {}
 
@@ -491,15 +503,69 @@ def _validate_upstream_url(raw_url: str) -> str:
     return raw_url
 
 
-def _request_bytes(
-    url: str,
+def _loopback_sdk_validation_url() -> str | None:
+    """Return the strict, test-only ShadeMap fixture endpoint when opted in."""
+    origin = _loopback_provider_origin()
+    if origin is None:
+        return None
+
+    return f"{origin}{_LOOPBACK_SDK_LOAD_PATH}"
+
+
+def _loopback_provider_origin() -> str | None:
+    """Return the runner-bound local provider origin when explicitly enabled."""
+    if not complete_journey_loopback_fixture_enabled():
+        return None
+
+    raw_url = os.environ.get(_LOOPBACK_PROVIDER_URL_ENV, "").strip()
+    if not raw_url:
+        raise HTTPException(status_code=503, detail="Invalid ShadeMap loopback fixture URL")
+    try:
+        parsed = urlsplit(raw_url)
+        port = parsed.port
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Invalid ShadeMap loopback fixture URL",
+        ) from exc
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or port is None
+        or port <= 0
+        or port == 5432
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path != "/v1"
+        or parsed.query
+        or parsed.fragment
+        or "?" in raw_url
+        or "#" in raw_url
+    ):
+        raise HTTPException(status_code=503, detail="Invalid ShadeMap loopback fixture URL")
+    return f"http://127.0.0.1:{port}"
+
+
+def _runtime_script_upstream_url() -> str | None:
+    """Return the allowlisted licensed ShadeMap runtime script, if configured."""
+    loopback_origin = _loopback_provider_origin()
+    if loopback_origin is not None:
+        return f"{loopback_origin}{_LOOPBACK_RUNTIME_SCRIPT_PATH}"
+    raw_url = os.environ.get("SHADEMAP_RUNTIME_SCRIPT_URL", "").strip()
+    if not raw_url:
+        return None
+    return _validate_upstream_url(raw_url)
+
+
+def _request_validated_bytes(
+    safe_url: str,
     *,
     method: str = "GET",
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = 20.0,
 ) -> tuple[bytes, str]:
-    safe_url = _validate_upstream_url(url)
+    """Request an already-validated upstream URL."""
     request_headers = {
         "User-Agent": app_user_agent("shademap-client"),
         **(headers or {}),
@@ -556,6 +622,24 @@ def _request_bytes(
         raise HTTPException(status_code=502, detail="Request timed out") from exc
 
 
+def _request_bytes(
+    url: str,
+    *,
+    method: str = "GET",
+    body: bytes | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 20.0,
+) -> tuple[bytes, str]:
+    safe_url = _validate_upstream_url(url)
+    return _request_validated_bytes(
+        safe_url,
+        method=method,
+        body=body,
+        headers=headers,
+        timeout=timeout,
+    )
+
+
 def _validate_remote_terrain_content_type(content_type: str) -> str:
     media_type = content_type.split(";", 1)[0].strip().lower()
     if media_type != "image/png":
@@ -576,15 +660,50 @@ def _parse_decimal(raw: str) -> float | None:
         return None
 
 
+def _monthly_estimate_csv_path() -> Path:
+    """Use a generated sun-data fixture only inside the explicit loopback E2E mode."""
+    if not complete_journey_loopback_fixture_enabled():
+        return MONTHLY_ESTIMATE_CSV_PATH
+
+    raw_path = os.environ.get(_E2E_MONTHLY_ESTIMATE_CSV_ENV, "")
+    raw_artifact_dir = os.environ.get(_E2E_ARTIFACT_DIR_ENV, "")
+    if not raw_path or not raw_artifact_dir:
+        return MONTHLY_ESTIMATE_CSV_PATH
+
+    candidate = Path(raw_path)
+    artifact_dir = Path(raw_artifact_dir)
+    if (
+        not candidate.is_absolute()
+        or candidate.name != _E2E_MONTHLY_ESTIMATE_FILENAME
+        or candidate.is_symlink()
+        or artifact_dir.is_symlink()
+    ):
+        return MONTHLY_ESTIMATE_CSV_PATH
+    try:
+        resolved_artifact_dir = artifact_dir.resolve(strict=True)
+        resolved_candidate = candidate.resolve(strict=True)
+    except OSError:
+        return MONTHLY_ESTIMATE_CSV_PATH
+    if (
+        not resolved_artifact_dir.is_dir()
+        or candidate.parent != resolved_artifact_dir
+        or resolved_candidate.parent != resolved_artifact_dir
+        or not resolved_candidate.is_file()
+    ):
+        return MONTHLY_ESTIMATE_CSV_PATH
+    return resolved_candidate
+
+
 def _load_monthly_estimated_sun() -> dict[str, object]:
-    if not MONTHLY_ESTIMATE_CSV_PATH.exists():
+    csv_path = _monthly_estimate_csv_path()
+    if not csv_path.exists():
         raise HTTPException(status_code=503, detail="soltider_estimated.csv not found")
 
     monthly_totals = [0.0] * 12
     monthly_counts = [0] * 12
     source_dates: list[str] = []
 
-    with MONTHLY_ESTIMATE_CSV_PATH.open("r", encoding="utf-8-sig", newline="") as handle:
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle, delimiter=";")
         for row in reader:
             date_value = str(row.get("dato", "")).strip()
@@ -630,7 +749,7 @@ def _load_monthly_estimated_sun() -> dict[str, object]:
         )
 
     return {
-        "source_name": MONTHLY_ESTIMATE_CSV_PATH.name,
+        "source_name": csv_path.name,
         "source_date_start": min(source_dates),
         "source_date_end": max(source_dates),
         "values": values,
@@ -640,13 +759,23 @@ def _load_monthly_estimated_sun() -> dict[str, object]:
 def _perform_sdk_validation(api_key: str) -> None:
     payload = json.dumps({"api_key": api_key}).encode("utf-8")
     try:
-        _request_bytes(
-            SDK_LOAD_URL,
-            method="POST",
-            body=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=15.0,
-        )
+        loopback_url = _loopback_sdk_validation_url()
+        if loopback_url is None:
+            _request_bytes(
+                SDK_LOAD_URL,
+                method="POST",
+                body=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=15.0,
+            )
+        else:
+            _request_validated_bytes(
+                loopback_url,
+                method="POST",
+                body=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=15.0,
+            )
     except HTTPException as exc:
         status = 503 if "invalid" in exc.detail.lower() or "key" in exc.detail.lower() else 502
         raise HTTPException(
@@ -659,7 +788,7 @@ def _ensure_sdk_ready(
     db: DbConn,
     garden_id: int,
     request: FastAPIRequest | None = None,
-) -> None:
+) -> tuple[str, str]:
     api_key = _read_api_key(request, db)
     if not api_key:
         raise HTTPException(status_code=503, detail="SHADEMAP API key not configured")
@@ -667,9 +796,22 @@ def _ensure_sdk_ready(
     cache_key = _sdk_cache_key(api_key)
     cached = _cache_get(db, garden_id, "sdk-load", cache_key)
     if _cache_fresh(cached, SDK_CACHE_TTL_MS):
-        return
+        return "ready", "hit"
 
-    _perform_sdk_validation(api_key)
+    try:
+        _perform_sdk_validation(api_key)
+    except HTTPException as exc:
+        if exc.status_code == 502 and cached and cached["payload_text"] == "ok":
+            logger.warning(
+                "ShadeMap SDK validation failed; using stale validated cache",
+                extra=observability_extra(
+                    error_kind="stale_cache_fallback",
+                    upstream="shademap",
+                    feature_area="shademap-sdk",
+                ),
+            )
+            return "degraded", "stale-fallback"
+        raise
     _cache_put(
         db,
         garden_id,
@@ -679,6 +821,7 @@ def _ensure_sdk_ready(
         payload_text="ok",
     )
     db.commit()
+    return "ready", "miss"
 
 
 def _override_signature(db: DbConn, garden_id: int) -> str:
@@ -2134,7 +2277,8 @@ def get_shademap_config(db: DB, request: FastAPIRequest) -> dict[str, object]:
     if not api_key:
         raise HTTPException(status_code=503, detail="SHADEMAP public API key not configured")
     garden_id = _active_garden_id(request)
-    _ensure_sdk_ready(db, garden_id, request)
+    provider_state, sdk_cache_status = _ensure_sdk_ready(db, garden_id, request)
+    runtime_script_url = _runtime_script_upstream_url()
     latitude, longitude = _garden_coordinates(db, garden_id)
     terrain_max_zoom = 18 if local_terrain_available(garden_id) else TERRAIN_MAX_ZOOM
     try:
@@ -2156,7 +2300,84 @@ def get_shademap_config(db: DB, request: FastAPIRequest) -> dict[str, object]:
         "terrain_max_zoom": terrain_max_zoom,
         "terrain_tile_size": TERRAIN_TILE_SIZE,
         "features_min_zoom": FEATURES_MIN_ZOOM,
+        "provider_state": provider_state,
+        "sdk_cache_status": sdk_cache_status,
+        "runtime_script_url": "/shademap/runtime.js" if runtime_script_url else None,
     }
+
+
+@asset_router.get("/shademap/runtime.js")
+def get_shademap_runtime_script(request: FastAPIRequest, db: DB) -> Response:
+    """Serve the configured licensed runtime through the GardenOps origin."""
+    # Keep the upstream runtime behind the same garden-auth boundary as terrain
+    # tiles. The browser needs no direct vendor URL or credential.
+    _active_garden_id(request)
+    record_security_event("shademap_runtime_script_requests_total")
+    enforce_layered_rate_limit(
+        request,
+        bucket="shademap-runtime-script",
+        identity_limit=env_int("SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT", 20),
+        window_seconds=60,
+        user_limit=env_nonneg_int("SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_USER", 20),
+        garden_limit=env_nonneg_int("SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_GARDEN", 40),
+        global_limit=env_nonneg_int("SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_GLOBAL", 200),
+    )
+    upstream_url = _runtime_script_upstream_url()
+    if upstream_url is None:
+        raise HTTPException(status_code=404, detail="ShadeMap runtime script is not configured")
+    cached = _runtime_script_cache_get(upstream_url)
+    if cached is None:
+        with acquire_concurrency_slot(
+            bucket="shademap-runtime-script",
+            limit=env_int("SHADEMAP_RUNTIME_SCRIPT_CONCURRENCY_LIMIT", 2),
+        ):
+            cached = _runtime_script_cache_get(upstream_url)
+            if cached is None:
+                if upstream_url.startswith("http://127.0.0.1:"):
+                    payload, content_type = _request_validated_bytes(upstream_url, timeout=20)
+                else:
+                    payload, content_type = _request_bytes(upstream_url, timeout=20)
+                cached = _runtime_script_cache_put(upstream_url, payload, content_type)
+    payload, content_type = cached
+    return Response(
+        content=payload,
+        media_type="application/javascript",
+        headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+def _runtime_script_cache_get(upstream_url: str) -> tuple[bytes, str] | None:
+    now_ms = int(time.time() * 1000)
+    with _RUNTIME_SCRIPT_CACHE_LOCK:
+        entry = _RUNTIME_SCRIPT_CACHE.get(upstream_url)
+        if entry is None or now_ms - entry[0] >= RUNTIME_SCRIPT_CACHE_TTL_MS:
+            return None
+        return entry[1], entry[2]
+
+
+def _runtime_script_cache_put(
+    upstream_url: str,
+    payload: bytes,
+    content_type: str,
+) -> tuple[bytes, str]:
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if media_type not in {
+        "application/javascript",
+        "application/ecmascript",
+        "text/javascript",
+    }:
+        raise HTTPException(
+            status_code=502, detail="ShadeMap runtime returned a non-JavaScript response"
+        )
+    with _RUNTIME_SCRIPT_CACHE_LOCK:
+        _RUNTIME_SCRIPT_CACHE[upstream_url] = (int(time.time() * 1000), payload, content_type)
+    return payload, content_type
+
+
+def _clear_runtime_script_cache() -> None:
+    """Clear the process-local runtime cache for test isolation."""
+    with _RUNTIME_SCRIPT_CACHE_LOCK:
+        _RUNTIME_SCRIPT_CACHE.clear()
 
 
 @router.get("/shademap/monthly-estimated-sun")
@@ -2170,13 +2391,14 @@ def get_shademap_sun_window(
     day: int = Query(..., ge=1, le=31),
 ) -> dict[str, str | None]:
     """Return sol_opp/sol_ned for a given month-day from soltider_estimated.csv."""
-    if not MONTHLY_ESTIMATE_CSV_PATH.exists():
+    csv_path = _monthly_estimate_csv_path()
+    if not csv_path.exists():
         raise HTTPException(
             status_code=503,
             detail="soltider_estimated.csv not found",
         )
 
-    with MONTHLY_ESTIMATE_CSV_PATH.open("r", encoding="utf-8-sig", newline="") as handle:
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle, delimiter=";")
         for row in reader:
             date_value = str(row.get("dato", "")).strip()

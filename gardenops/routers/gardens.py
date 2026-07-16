@@ -37,7 +37,8 @@ from gardenops.services.lidar_terrain import (
     clear_local_terrain_cache,
     lidar_upload_max_bytes,
     local_terrain_storage_info,
-    save_uploaded_terrain,
+    prepare_uploaded_terrain,
+    uploaded_terrain_mutation_lock,
     uploaded_terrain_storage_keys,
 )
 from gardenops.services.media_store import (
@@ -1525,11 +1526,19 @@ async def upload_garden_lidar(
     payload = await read_body_limited(request, max_bytes)
     filename = request.headers.get("x-upload-filename", "").strip()
     try:
-        status = save_uploaded_terrain(garden_id, payload, filename)
+        prepared = prepare_uploaded_terrain(garden_id, payload, filename)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _invalidate_garden_terrain_state(db, garden_id)
-    db.commit()
+    with uploaded_terrain_mutation_lock():
+        try:
+            status = prepared.activate()
+            _invalidate_garden_terrain_state(db, garden_id)
+            db.commit()
+        except Exception:
+            db.rollback()
+            prepared.rollback()
+            raise
+        cleanup_failed = bool(prepared.finalize())
     notify_garden_modified()
     _audit_membership_change(
         request,
@@ -1538,7 +1547,11 @@ async def upload_garden_lidar(
         garden_id=garden_id,
         db=db,
     )
-    return {"garden_id": garden_id, **status}
+    return {
+        "garden_id": garden_id,
+        **status,
+        "file_cleanup": "pending" if cleanup_failed else "complete",
+    }
 
 
 @router.delete("/gardens/{garden_id}/lidar")
@@ -1549,13 +1562,16 @@ def delete_garden_lidar(
 ) -> dict[str, object]:
     context = _auth_context(request)
     _require_membership_editor(db, context=context, garden_id=garden_id)
-    storage_pairs = [(storage_key, "") for storage_key in uploaded_terrain_storage_keys(garden_id)]
-    enqueue_media_cleanup_jobs(db, storage_pairs)
-    _invalidate_garden_terrain_state(db, garden_id)
-    db.commit()
-    cleanup = drain_media_cleanup_jobs_best_effort(db, storage_pairs=storage_pairs)
-    clear_local_terrain_cache()
-    status = local_terrain_storage_info(garden_id)
+    with uploaded_terrain_mutation_lock():
+        storage_pairs = [
+            (storage_key, "") for storage_key in uploaded_terrain_storage_keys(garden_id)
+        ]
+        enqueue_media_cleanup_jobs(db, storage_pairs)
+        _invalidate_garden_terrain_state(db, garden_id)
+        db.commit()
+        cleanup = drain_media_cleanup_jobs_best_effort(db, storage_pairs=storage_pairs)
+        clear_local_terrain_cache()
+        status = local_terrain_storage_info(garden_id)
     notify_garden_modified()
     _audit_membership_change(
         request,

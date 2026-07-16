@@ -11,6 +11,7 @@ import type {
   ShadeMapMonthlyEstimateValue,
   ShadeMapObstacle,
   ShadeMapObstacleInput,
+  ShadeMapMode,
   ShadeMapPreset,
   SunWindow,
 } from "../services/api";
@@ -210,6 +211,83 @@ class ShadeMap {
   }
 }
 
+/** The production bundle has a non-rendering fallback when no licensed runtime is configured. */
+function createShadeMapRuntime(options: ShadeMapOptions): ShadeMap {
+  const RuntimeShadeMap = externalShadeMapRuntime();
+  if (RuntimeShadeMap) {
+    return new RuntimeShadeMap(options);
+  }
+  return new ShadeMap(options);
+}
+
+let shadeMapRuntimeScriptUrl: string | null = null;
+let shadeMapRuntimeScriptPromise: Promise<void> | null = null;
+let shadeMapRuntimeTrustedTypesPolicy: {
+  createScriptURL: (url: string) => unknown;
+} | null = null;
+
+function externalShadeMapRuntime(): (new (options: ShadeMapOptions) => ShadeMap) | null {
+  const candidate = (globalThis as typeof globalThis & { GardenOpsShadeMap?: unknown })
+    .GardenOpsShadeMap;
+  return typeof candidate === "function"
+    ? candidate as new (options: ShadeMapOptions) => ShadeMap
+    : null;
+}
+
+function trustedShadeMapRuntimeScriptUrl(runtimeScriptUrl: string): string {
+  const trustedTypes = (globalThis as typeof globalThis & {
+    trustedTypes?: {
+      createPolicy: (
+        name: string,
+        rules: { createScriptURL: (url: string) => string },
+      ) => { createScriptURL: (url: string) => unknown };
+    };
+  }).trustedTypes;
+  if (!trustedTypes) return runtimeScriptUrl;
+  if (!shadeMapRuntimeTrustedTypesPolicy) {
+    shadeMapRuntimeTrustedTypesPolicy = trustedTypes.createPolicy("gardenops-html", {
+      createScriptURL: (url: string) => {
+        if (url !== "/shademap/runtime.js") {
+          throw new TypeError("ShadeMap runtime URL is not a GardenOps asset path");
+        }
+        return url;
+      },
+    });
+  }
+  return shadeMapRuntimeTrustedTypesPolicy.createScriptURL(runtimeScriptUrl) as string;
+}
+
+async function loadShadeMapRuntime(runtimeScriptUrl: string | null): Promise<void> {
+  if (externalShadeMapRuntime() || !runtimeScriptUrl) return;
+  if (runtimeScriptUrl !== "/shademap/runtime.js") {
+    throw new Error("ShadeMap runtime URL is not a GardenOps asset path");
+  }
+  if (shadeMapRuntimeScriptPromise && shadeMapRuntimeScriptUrl === runtimeScriptUrl) {
+    return shadeMapRuntimeScriptPromise;
+  }
+
+  shadeMapRuntimeScriptUrl = runtimeScriptUrl;
+  shadeMapRuntimeScriptPromise = new Promise<void>((resolve, reject) => {
+    const script = document.createElement("script");
+    script.async = true;
+    script.src = trustedShadeMapRuntimeScriptUrl(runtimeScriptUrl);
+    script.onload = () => {
+      if (externalShadeMapRuntime()) {
+        resolve();
+      } else {
+        reject(new Error("ShadeMap runtime did not register GardenOpsShadeMap"));
+      }
+    };
+    script.onerror = () => reject(new Error("ShadeMap runtime could not be loaded"));
+    document.head.append(script);
+  }).catch((error: unknown) => {
+    shadeMapRuntimeScriptPromise = null;
+    shadeMapRuntimeScriptUrl = null;
+    throw error;
+  });
+  return shadeMapRuntimeScriptPromise;
+}
+
 const HOUSE_TARGET_ID = "house";
 const SVG_NS = "http://www.w3.org/2000/svg";
 const EARTH_RADIUS_METERS = 6378137;
@@ -232,6 +310,9 @@ const PLOT_SAMPLE_OFFSETS: ReadonlyArray<{ x: number; y: number }> = [
 const CENTER_SAMPLE_WEIGHT = 2;
 const SUN_CLASSIFY_MIN_PERCENT = 60;
 const SUNLIGHT_SNAPSHOT_DEBOUNCE_MS = 120;
+const DEFAULT_BASEMAP_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+const BASEMAP_TILE_URL = import.meta.env["VITE_SHADEMAP_BASEMAP_URL"]?.trim()
+  || DEFAULT_BASEMAP_TILE_URL;
 const TARGET_MARKER_STYLE = {
   radius: 7,
   weight: 3,
@@ -629,6 +710,8 @@ export class ShadePanelController {
 
   private activePreset: ShadeMapPreset = "now";
 
+  private activeMode: ShadeMapMode = "shadow";
+
   private controlsWired = false;
 
   private estimatedComparisonLoaded = false;
@@ -673,6 +756,14 @@ export class ShadePanelController {
 
   private applyingShadeSettings = false;
 
+  private gardenContextEpoch = 0;
+
+  private shadeSettingsEpoch = 0;
+
+  private renderRevision = 0;
+
+  private writeAccessObserver: MutationObserver | null = null;
+
   private readonly idleHandler = () => {
     if (this.applyingShadeSettings) return;
     if (this.tryRefreshReadyLayer()) return;
@@ -689,6 +780,7 @@ export class ShadePanelController {
 
   init(): void {
     installTerrainImageRecovery();
+    this.ensureModeControl();
     this.wireControls();
     this.syncInputs();
     this.syncPlaybackControls();
@@ -696,6 +788,9 @@ export class ShadePanelController {
     this.setDebugMessage("");
     this.renderComparisonStatus(t("shade.comparison_loading"));
     this.renderComparison([]);
+    this.writeAccessObserver = new MutationObserver(() => this.syncWriteAccess());
+    this.writeAccessObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    this.syncWriteAccess();
   }
 
   async load(
@@ -704,7 +799,9 @@ export class ShadePanelController {
     calibration?: ShadeMapCalibration,
     obstacles?: ShadeMapObstacle[],
   ): Promise<void> {
+    await loadShadeMapRuntime(config.runtime_script_url);
     this.config = config;
+    this.publishRenderState("loading");
     setTerrainImageRecoverer((url) => this.resolveTerrainImageUrl(url));
     if (persistedState) {
       this.applyPersistedState(persistedState);
@@ -719,6 +816,7 @@ export class ShadePanelController {
     this.syncTargetOptions();
     this.renderCalibrationEditor();
     this.renderObstacleEditor();
+    this.syncWriteAccess();
     this.updateTargetMarker();
     void this.loadEstimatedComparison();
     this.pendingVisibleLayerBuild = true;
@@ -745,8 +843,12 @@ export class ShadePanelController {
       return this.terrainConfigRefreshPromise;
     }
 
+    const contextEpoch = this.gardenContextEpoch;
     const refreshPromise = getShadeMapConfigApi()
       .then((refreshed) => {
+        if (contextEpoch !== this.gardenContextEpoch) {
+          throw new Error("Stale ShadeMap terrain config response rejected");
+        }
         if (this.config) {
           Object.assign(this.config, refreshed);
           return this.config;
@@ -801,6 +903,8 @@ export class ShadePanelController {
   }
 
   setGardenContext(context: GardenContext): void {
+    this.gardenContextEpoch += 1;
+    this.terrainConfigRefreshPromise = null;
     this.cancelSunlightSnapshotSchedule(false);
     this.garden = {
       plots: [...context.plots],
@@ -845,8 +949,7 @@ export class ShadePanelController {
     if (!this.estimatedComparisonLoaded && !this.estimatedComparisonLoading) {
       this.renderComparisonStatus(t("shade.comparison_unavailable_short"));
     }
-    const root = this.getRoot();
-    if (root) root.dataset["state"] = "error";
+    this.publishRenderState("error", message);
   }
 
   invalidateSize(): void {
@@ -867,7 +970,7 @@ export class ShadePanelController {
         zoomControl: true,
         attributionControl: true,
       });
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      L.tileLayer(BASEMAP_TILE_URL, {
         maxZoom: 20,
         attribution: "&copy; OpenStreetMap contributors",
       }).addTo(this.map);
@@ -938,7 +1041,8 @@ export class ShadePanelController {
     if (!this.map) return;
     this.destroyShadeLayer();
     this.shadeLayerReady = false;
-    const layer = new ShadeMap({
+    const contextEpoch = this.gardenContextEpoch;
+    const layer = createShadeMapRuntime({
       apiKey: config.api_key,
       date: this.currentDate,
       color: "#1e293b",
@@ -977,6 +1081,7 @@ export class ShadePanelController {
             west: bounds.getWest(),
             zoom,
           });
+          if (contextEpoch !== this.gardenContextEpoch) return [];
           const house = features.find((f) => {
             const rec = f as Record<string, unknown>;
             const p = rec["properties"] as Record<string, unknown> | undefined;
@@ -1009,6 +1114,7 @@ export class ShadePanelController {
   }
 
   private applyPersistedState(state: PersistedShadeMapState): void {
+    this.activeMode = state.mode;
     this.activePreset = state.preset;
     this.activeTargetId = state.selected_plot_id
       ? plotTargetId(state.selected_plot_id)
@@ -1021,7 +1127,7 @@ export class ShadePanelController {
 
   private buildPersistedState(): PersistedShadeMapState {
     return {
-      mode: "shadow",
+      mode: this.activeMode,
       selected_plot_id: this.activeTargetId === HOUSE_TARGET_ID
         ? null
         : this.activeTargetId.slice("plot:".length),
@@ -1031,7 +1137,9 @@ export class ShadePanelController {
   }
 
   private emitStateChange(): void {
-    this.onStateChanged?.(this.buildPersistedState());
+    if (this.canWrite()) {
+      this.onStateChanged?.(this.buildPersistedState());
+    }
   }
 
   private emitSunlightSnapshot(plotIds: string[]): void {
@@ -1169,6 +1277,36 @@ export class ShadePanelController {
     this._wireCalibrationControls();
     this._wireObstacleControls();
     this._wirePresetControls();
+    this._wireModeControls();
+  }
+
+  private ensureModeControl(): void {
+    if (document.getElementById("shade-mode-select")) return;
+    const group = document.querySelector<HTMLElement>("#shade-panel .shade-time-group");
+    if (!group) return;
+    const select = document.createElement("select");
+    select.id = "shade-mode-select";
+    select.dataset["testid"] = "shade-mode-select";
+    select.setAttribute("aria-label", "Shade display mode");
+    const shadow = document.createElement("option");
+    shadow.value = "shadow";
+    shadow.textContent = "Shadow";
+    const sunHours = document.createElement("option");
+    sunHours.value = "sun-hours";
+    sunHours.textContent = "Sun hours";
+    select.append(shadow, sunHours);
+    group.prepend(select);
+  }
+
+  private _wireModeControls(): void {
+    const select = querySelect("shade-mode-select");
+    select?.addEventListener("change", () => {
+      if (select.value !== "shadow" && select.value !== "sun-hours") return;
+      this.stopPlayback();
+      this.activeMode = select.value;
+      this.emitStateChange();
+      void this.applyShadeSettings();
+    });
   }
 
   private _wireDateTimeControls(): void {
@@ -1376,6 +1514,7 @@ export class ShadePanelController {
   }
 
   private async saveCalibrationFromInputs(): Promise<void> {
+    if (!this.canWrite()) return;
     try {
       const saved = await updateShadeMapCalibrationApi(this.readCalibrationInputs(true));
       this.calibration = saved;
@@ -1389,6 +1528,7 @@ export class ShadePanelController {
   }
 
   private async resetCalibration(): Promise<void> {
+    if (!this.canWrite()) return;
     try {
       const saved = await updateShadeMapCalibrationApi(defaultCalibration());
       this.calibration = saved;
@@ -1461,7 +1601,7 @@ export class ShadePanelController {
     setInputValue("shade-obstacle-lat", current.latitude.toFixed(6));
     setInputValue("shade-obstacle-lng", current.longitude.toFixed(6));
     if (activeCheckbox) activeCheckbox.checked = current.active;
-    if (deleteBtn) deleteBtn.disabled = this.activeObstacleId == null;
+    if (deleteBtn) deleteBtn.disabled = !this.canWrite() || this.activeObstacleId == null;
 
     const status = document.getElementById("shade-obstacle-status");
     if (status) {
@@ -1509,6 +1649,7 @@ export class ShadePanelController {
   }
 
   private async saveObstacleFromInputs(): Promise<void> {
+    if (!this.canWrite()) return;
     try {
       const body = this.readObstacleInputs();
       const saved = this.activeObstacleId == null
@@ -1532,6 +1673,7 @@ export class ShadePanelController {
   }
 
   private async deleteActiveObstacle(): Promise<void> {
+    if (!this.canWrite()) return;
     if (this.activeObstacleId == null) return;
     try {
       await deleteShadeMapObstacleApi(this.activeObstacleId);
@@ -1569,9 +1711,10 @@ export class ShadePanelController {
   private async applyShadeSettings(): Promise<void> {
     const shadeLayer = this.shadeLayer;
     if (!shadeLayer) return;
+    const settingsEpoch = ++this.shadeSettingsEpoch;
     this.syncPlaybackControls();
-    const root = this.getRoot();
-    if (root) root.dataset["state"] = "loading";
+    this.renderRevision += 1;
+    this.publishRenderState("loading");
     this.shadeLayerReady = false;
     this.applyingShadeSettings = true;
     const target = this.getActiveTarget();
@@ -1580,14 +1723,14 @@ export class ShadePanelController {
     let applyError: unknown = null;
     try {
       shadeLayer.setDate(this.currentDate);
-      await shadeLayer.setSunExposure(false);
+      await shadeLayer.setSunExposure(this.activeMode === "sun-hours");
     } catch (error) {
       applyError = error;
     } finally {
-      if (this.shadeLayer !== shadeLayer) return;
+      if (this.shadeLayer !== shadeLayer || settingsEpoch !== this.shadeSettingsEpoch) return;
       this.applyingShadeSettings = false;
     }
-    if (this.shadeLayer !== shadeLayer) return;
+    if (this.shadeLayer !== shadeLayer || settingsEpoch !== this.shadeSettingsEpoch) return;
     if (applyError) {
       const message = applyError instanceof Error ? applyError.message : String(applyError);
       console.error("ShadeMap apply settings failed", applyError);
@@ -1700,8 +1843,7 @@ export class ShadePanelController {
             target: target.label,
           }));
         this.setDebugMessage(t("shade.debug_simulator_unavailable"));
-        const root = this.getRoot();
-        if (root) root.dataset["state"] = "ready";
+        this.publishRenderState("ready");
         this.cancelSunlightSnapshotSchedule(true);
         if (this.playbackActive) this.scheduleNextPlaybackStep();
         return;
@@ -1731,8 +1873,7 @@ export class ShadePanelController {
           state: sunLabel,
         }));
       this.setDebugMessage("");
-      const root = this.getRoot();
-      if (root) root.dataset["state"] = "ready";
+      this.publishRenderState("ready");
       this.scheduleSunlightSnapshot();
       if (this.playbackActive) this.scheduleNextPlaybackStep();
     } catch (error) {
@@ -1750,6 +1891,8 @@ export class ShadePanelController {
     const localeTag = getLocaleTag();
     if (dateInput) dateInput.lang = localeTag;
     if (timeInput) timeInput.lang = localeTag;
+    const modeSelect = querySelect("shade-mode-select");
+    if (modeSelect) modeSelect.value = this.activeMode;
     this.syncPlaybackControls();
   }
 
@@ -2505,6 +2648,63 @@ export class ShadePanelController {
     const trimmed = message.trim();
     debug.textContent = trimmed;
     debug.hidden = trimmed.length === 0;
+  }
+
+  private canWrite(): boolean {
+    return !document.body.classList.contains("garden-read-only");
+  }
+
+  private syncWriteAccess(): void {
+    const canWrite = this.canWrite();
+    const root = this.getRoot();
+    if (root) root.dataset["writeAccess"] = canWrite ? "write" : "read-only";
+    const editorIds = [
+      "shade-cal-house-nw-lat", "shade-cal-house-nw-lng",
+      "shade-cal-house-ne-lat", "shade-cal-house-ne-lng",
+      "shade-cal-house-se-lat", "shade-cal-house-se-lng",
+      "shade-cal-house-sw-lat", "shade-cal-house-sw-lng",
+      "shade-calibration-fill-btn", "shade-calibration-save-btn", "shade-calibration-reset-btn",
+      "shade-obstacle-label", "shade-obstacle-kind", "shade-obstacle-plot",
+      "shade-obstacle-height", "shade-obstacle-radius", "shade-obstacle-lat",
+      "shade-obstacle-lng", "shade-obstacle-active", "shade-obstacle-fill-target-btn",
+      "shade-obstacle-save-btn", "shade-obstacle-delete-btn",
+    ];
+    for (const id of editorIds) {
+      const control = document.getElementById(id);
+      if (control instanceof HTMLButtonElement
+        || control instanceof HTMLInputElement
+        || control instanceof HTMLSelectElement) {
+        control.disabled = !canWrite;
+      }
+    }
+  }
+
+  private publishRenderState(state: "loading" | "ready" | "error", error = ""): void {
+    const root = this.getRoot();
+    if (!root) return;
+    const canvas = this.getShadeRuntime()?._canvas;
+    const mapEl = this.getMapElement();
+    root.dataset["state"] = state;
+    root.dataset["mode"] = this.activeMode;
+    root.dataset["preset"] = this.activePreset;
+    root.dataset["analysisTimestampMs"] = String(this.currentDate.getTime());
+    root.dataset["targetId"] = this.activeTargetId;
+    root.dataset["renderRevision"] = String(this.renderRevision);
+    root.dataset["simulator"] = this.shadeLayer == null
+      ? "pending"
+      : this.shadeSimulationUnavailable() ? "unavailable" : "external";
+    root.dataset["providerState"] = this.config?.provider_state ?? "unknown";
+    root.dataset["sdkCacheStatus"] = this.config?.sdk_cache_status ?? "unknown";
+    root.dataset["terrainTokenExpiresAtMs"] = String(this.config?.terrain_token_expires_at_ms ?? 0);
+    root.dataset["canvasWidth"] = String(canvas?.width ?? 0);
+    root.dataset["canvasHeight"] = String(canvas?.height ?? 0);
+    root.dataset["mapWidth"] = String(mapEl?.clientWidth ?? 0);
+    root.dataset["mapHeight"] = String(mapEl?.clientHeight ?? 0);
+    root.dataset["renderError"] = error;
+    root.dispatchEvent(new CustomEvent("gardenops:shade-render-state", {
+      bubbles: true,
+      detail: { ...root.dataset },
+    }));
   }
 
   private getRoot(): HTMLElement | null {

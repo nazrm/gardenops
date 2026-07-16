@@ -256,6 +256,8 @@ scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --p
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 5
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 6
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 6
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 7
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 7
 ```
 
 The runner creates its own disposable PostgreSQL child through
@@ -505,6 +507,32 @@ frontend recovery contracts:
 .venv/bin/pytest -q tests/test_complete_journey_e2e_scripts.py -k phase_six
 .venv/bin/python -m unittest tests.test_offline_replay_frontend_static
 node --check scripts/e2e/journeys/offlineAndFailureRecovery.cjs
+node --check scripts/check_complete_journeys_e2e.cjs
+```
+
+Phase 7 proves the provider, weather, ShadeMap, and uploaded-terrain seams as
+one shared-state sequence. Administrator, editor, and viewer desktop profiles,
+plus the administrator Pixel 7 profile, use visible controls against real local
+GardenOps routes. The test-only provider adapter is a separately bound,
+loopback-only process, not a browser response mock: it exercises successful
+garden chat, a provider quota response, the GardenOps runtime-script proxy,
+signed terrain tile rendering, uploaded LiDAR lifecycle, saved Shade state,
+calibration, obstacles, and read-only role boundaries. It visibly labels a
+stale forecast and verifies that refresh leaves alert generation at zero; the
+degraded cache itself is unchanged. The loopback runtime proves GardenOps'
+same-origin loading and rendering integration, not vendor simulation accuracy.
+The final database audit projection is exact, and temporary LiDAR, generated
+terrain, media, and download state are empty at teardown. It retains sanitized
+private traces and a manifest only under the ignored complete-journey evidence
+directory.
+
+Before coordinating a real Phase 7 browser run, validate its static harness and
+provider/terrain contracts:
+
+```bash
+.venv/bin/pytest -q tests/test_complete_journey_e2e_scripts.py -k phase_seven
+node --check scripts/e2e/providers/deterministicLoopbackProvider.cjs
+node --check scripts/e2e/journeys/providersAndTerrain.cjs
 node --check scripts/check_complete_journeys_e2e.cjs
 ```
 

@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import gardenops.db as db
 from gardenops.security import create_user
+from gardenops.services.weather_service import CACHE_TTL_MS
 from tests.base import BaseApiTest, strong_password
 
 
@@ -323,6 +324,71 @@ class TestWeather(BaseApiTest):
             check.json(),
             {"forecast_available": False, "alerts_created": 0, "alerts_skipped": 0},
         )
+        mock_urlopen.assert_not_called()
+
+    @patch("gardenops.services.weather_service.urllib.request.urlopen")
+    def test_stale_cache_age_and_fallback_are_exposed_without_egress(
+        self,
+        mock_urlopen,
+    ) -> None:
+        now_ms = 1_959_379_200_000
+        fetched_at_ms = now_ms - CACHE_TTL_MS - 120_000
+        forecast = {
+            "daily": {
+                "time": ["2032-02-03"],
+                "temperature_2m_min": [2.0],
+                "temperature_2m_max": [8.0],
+                "precipitation_sum": [0.5],
+                "precipitation_probability_max": [20.0],
+                "wind_speed_10m_max": [4.0],
+            },
+        }
+        conn = db.get_db()
+        try:
+            garden = conn.execute(
+                """
+                UPDATE gardens
+                SET latitude = 59.91, longitude = 10.75
+                WHERE slug = 'default'
+                RETURNING id
+                """,
+            ).fetchone()
+            assert garden is not None
+            conn.execute(
+                """
+                INSERT INTO weather_cache
+                    (garden_id, fetched_at_ms, forecast_json, latitude, longitude)
+                VALUES (%s, %s, %s, 59.91, 10.75)
+                """,
+                (int(garden["id"]), fetched_at_ms, json.dumps(forecast)),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with (
+            patch(
+                "gardenops.services.weather_service._weather_timestamp_ms",
+                return_value=now_ms,
+            ),
+            patch.dict(
+                "os.environ",
+                {"GARDENOPS_WEATHER_EXTERNAL_FETCH_ENABLED": "false"},
+            ),
+        ):
+            summary = self.client.get("/api/weather/summary")
+            fallback = self.client.get("/api/weather/forecast")
+
+        self.assertEqual(summary.status_code, 200)
+        self.assertTrue(summary.json()["forecast_available"])
+        self.assertEqual(summary.json()["forecast_source"], "cache")
+        self.assertEqual(summary.json()["forecast_age_ms"], CACHE_TTL_MS + 120_000)
+        self.assertTrue(summary.json()["forecast_stale"])
+        self.assertFalse(summary.json()["forecast_fallback"])
+        self.assertEqual(fallback.status_code, 200)
+        self.assertTrue(fallback.json()["forecast_fallback"])
+        self.assertTrue(fallback.json()["forecast_stale"])
+        self.assertNotIn("_weather_cache_status", fallback.json())
         mock_urlopen.assert_not_called()
 
     def test_weather_alerts_empty(self) -> None:
