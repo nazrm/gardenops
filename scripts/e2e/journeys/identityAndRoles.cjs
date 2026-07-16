@@ -250,14 +250,18 @@ async function exerciseSettings(page, fixture) {
   await row.locator(".adm-plot-meaning-description").fill(
     phaseFive(fixture).settings_description,
   );
-  const authRefreshes = [];
-  const captureAuthRefresh = (response) => {
-    if (response.request().method() === "GET"
-      && new URL(response.url()).pathname === "/api/auth/me") {
-      authRefreshes.push(response);
-    }
+  const pendingRefreshRequests = new Set();
+  let appRefreshStarted = false;
+  const captureRefreshRequest = (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() !== "GET" || !pathname.startsWith("/api/")) return;
+    pendingRefreshRequests.add(request);
+    if (pathname === "/api/gardens") appRefreshStarted = true;
   };
-  page.on("response", captureAuthRefresh);
+  const settleRefreshRequest = (request) => pendingRefreshRequests.delete(request);
+  page.on("request", captureRefreshRequest);
+  page.on("requestfinished", settleRefreshRequest);
+  page.on("requestfailed", settleRefreshRequest);
   const pending = responseFor(page, "PUT", "/api/auth/me/settings");
   try {
     await page.locator("#adm-plot-meaning-save").click();
@@ -266,10 +270,12 @@ async function exerciseSettings(page, fixture) {
       page.locator(".toast-success").filter({ hasText: "Custom plot meanings saved" }).last(),
       "settled identity settings save",
     );
-    await waitFor(() => authRefreshes.length >= 2, "post-save identity refreshes");
-    await Promise.all(authRefreshes.map((response) => response.finished()));
+    await waitFor(() => appRefreshStarted, "post-save app refresh");
+    await waitFor(() => pendingRefreshRequests.size === 0, "settled post-save app refresh");
   } finally {
-    page.off("response", captureAuthRefresh);
+    page.off("request", captureRefreshRequest);
+    page.off("requestfinished", settleRefreshRequest);
+    page.off("requestfailed", settleRefreshRequest);
   }
   await page.reload({ waitUntil: "domcontentloaded" });
   await openAdminSection(page, "desktop", "settings");
