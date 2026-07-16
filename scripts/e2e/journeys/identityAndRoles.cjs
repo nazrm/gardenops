@@ -80,9 +80,13 @@ async function waitForProactivePasskeyPrompt(page, timeout = 2_000) {
 async function dismissProactivePasskeyPrompt(page) {
   const dialog = await waitForProactivePasskeyPrompt(page);
   if (!dialog) return;
-  const dismissed = responseFor(page, "POST", "/api/auth/passkeys/prompt/dismiss");
-  await dialog.locator(".confirm-no").click();
-  assert((await dismissed).ok(), "Passkey prompt dismissal failed");
+  const dismissButton = dialog.locator(".confirm-no");
+  await visible(dismissButton, "proactive passkey dismissal");
+  const [dismissed] = await Promise.all([
+    responseFor(page, "POST", "/api/auth/passkeys/prompt/dismiss"),
+    dismissButton.click({ timeout: 5_000 }),
+  ]);
+  assert(dismissed.ok(), "Passkey prompt dismissal failed");
   await dialog.waitFor({ state: "detached" });
 }
 
