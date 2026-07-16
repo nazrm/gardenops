@@ -75,7 +75,7 @@ def test_phase_two_manifest_only_marks_enforced_dimensions_proven() -> None:
     journeys = {journey["id"]: journey for journey in payload["journeys"]}
     expected_proven_dimensions = {
         "D1": {"desktop", "mobile", "provider"},
-        "D2": {"desktop", "mobile", "roles"},
+        "D2": {"desktop", "mobile", "roles", "offline"},
         "D3": {"desktop", "mobile", "roles", "filesystem"},
         "D4": {"desktop", "mobile", "roles"},
         "D5": {"desktop", "mobile", "roles"},
@@ -90,7 +90,7 @@ def test_phase_two_manifest_only_marks_enforced_dimensions_proven() -> None:
         assert "tests/test_complete_journey_e2e_scripts.py" in journey["evidence"]
         assert journey["accessibility"] == "required"
         assert journey["performance"] == "required"
-    assert journeys["D2"]["offline"] == "required"
+    assert journeys["D2"]["offline"] == "proven"
     assert journeys["D4"]["provider"] == "required"
 
 
