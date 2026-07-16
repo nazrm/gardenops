@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "phase_seven": {
+    "profile_order": [
+      "admin:desktop",
+      "admin:mobile",
+      "editor:desktop",
+      "viewer:desktop"
+    ],
+    "fixture": {
+      "chat_reply": "Deterministic test reply: Check soil moisture before watering.",
+      "estimated_sun_csv_filename": "phase-seven-sun.csv",
+      "weather": {
+        "stale_age_ms": 10860000
+      },
+      "terrain": {
+        "crs": "EPSG:32632",
+        "elevations_m": [101.0, 102.5, 103.0, 104.5],
+        "extent_m": 220.0,
+        "filename": "phase-seven-terrain.las",
+        "latitude": 59.9139,
+        "longitude": 10.7522,
+        "point_count": 4
+      }
+    },
+    "audit_contract": {
+      "events": [
+        { "actor": "admin", "count": 2, "garden": "alpha", "method": "POST", "path": "/api/ai/garden-chat", "status_code": 200 },
+        { "actor": "admin", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/ai/garden-chat", "status_code": 429 },
+        { "actor": "anonymous", "count": 4, "garden": null, "method": "POST", "path": "/api/auth/login", "status_code": 200 },
+        { "actor": "anonymous", "count": 4, "garden": null, "method": "POST", "path": "/api/auth/passkeys/login/options", "status_code": 200 },
+        { "actor": "admin", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/auth/passkeys/prompt/dismiss", "status_code": 200 },
+        { "actor": "editor", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/auth/passkeys/prompt/dismiss", "status_code": 200 },
+        { "actor": "viewer", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/auth/passkeys/prompt/dismiss", "status_code": 200 },
+        { "actor": "admin", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/gardens/{garden_id}/lidar", "status_code": 200 },
+        { "actor": "admin", "count": 1, "garden": "alpha", "method": "DELETE", "path": "/api/gardens/{garden_id}/lidar", "status_code": 200 },
+        { "actor": "admin", "count": 2, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/calibration", "status_code": 200 },
+        { "actor": "editor", "count": 1, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/calibration", "status_code": 200 },
+        { "actor": "admin", "count": 2, "garden": "alpha", "method": "POST", "path": "/api/shademap/obstacles", "status_code": 201 },
+        { "actor": "editor", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/shademap/obstacles", "status_code": 201 },
+        { "actor": "admin", "count": 2, "garden": "alpha", "method": "DELETE", "path": "/api/shademap/obstacles/{obstacle_id}", "status_code": 200 },
+        { "actor": "editor", "count": 1, "garden": "alpha", "method": "DELETE", "path": "/api/shademap/obstacles/{obstacle_id}", "status_code": 200 },
+        { "actor": "viewer", "count": 1, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/calibration", "status_code": 403 },
+        { "actor": "viewer", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/shademap/obstacles", "status_code": 403 },
+        { "actor": "viewer", "count": 1, "garden": "alpha", "method": "DELETE", "path": "/api/shademap/obstacles/{obstacle_id}", "status_code": 403 },
+        { "actor": "viewer", "count": 1, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/state", "status_code": 403 },
+        { "actor": "admin", "count": 6, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/state", "status_code": 200 },
+        { "actor": "editor", "count": 3, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/state", "status_code": 200 },
+        { "actor": "admin", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/weather/check", "status_code": 200 }
+      ]
+    },
+    "browser_contract": {
+      "external_shade_runtime": true,
+      "provider_scenarios": ["success", "quota"],
+      "signed_terrain_tile": true,
+      "stale_weather_non_authoritative": true,
+      "shademap_runtime_asset_loaded": true,
+      "viewer_read_only": true
+    },
+    "database_boundaries": {
+      "owned_tables": [
+        "auth_passkey_challenges",
+        "lidar_grid_cache",
+        "provider_daily_usage",
+        "shademap_cache",
+        "shademap_calibration",
+        "shademap_obstacles",
+        "shademap_state",
+        "weather_cache"
+      ]
+    },
+    "support": {
+      "ai_chat_success_and_quota": "browser_and_loopback_provider_proven",
+      "provider_fixture_redaction": "browser_fixture_state_proven",
+      "shade_external_runtime": "browser_canvas_and_pixel_proven",
+      "signed_local_terrain_tile": "browser_real_upload_and_tile_proven",
+      "stale_weather_refresh": "browser_stale_marker_and_non_authoritative_refresh_proven",
+      "viewer_shade_boundary": "browser_proven"
+    }
+  }
+}

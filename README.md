@@ -137,13 +137,14 @@ control.
 - Optional AI-assisted plant lookup, plant identification, issue diagnosis, and
   garden-aware chat when provider keys are supplied. Identification and
   diagnosis remain advisory until the user explicitly adds a plant or tracks
-  an issue.
+  an issue; provider timeouts and quota limits leave garden records unchanged.
 
 ### Sun, Shade, And Terrain
 
 - Optional ShadeMap-backed sun and shade panel with saved state, seasonal
   presets, calibration, obstacles, building features, terrain tile signing, and
-  monthly estimated sun values.
+  monthly estimated sun values. Uploaded LiDAR is validated before activation,
+  and derived terrain tiles are cleared when that uploaded source is removed.
 - ShadeMap is a paid third-party service; GardenOps does not provide access,
   subscriptions, billing, or API keys.
 - Local terrain support is available for operators who keep terrain datasets

@@ -83,6 +83,8 @@ _FORECAST_RECONCILIATION_MIN_DAYS = {
 }
 _FORECAST_RECONCILIATION_SCOPE_KEY = "_forecast_reconciliation_scope"
 _DAILY_COVERAGE_KEY = "daily_coverage"
+_CACHE_STATUS_KEY = "_weather_cache_status"
+_CACHE_LOCK_NAMESPACE = 1_465_145_172
 
 
 def _parse_hardiness(raw: str) -> str | None:
@@ -256,31 +258,176 @@ def fetch_forecast(latitude: float, longitude: float) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
-        return _aggregate_met_timeseries(raw)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        forecast = _aggregate_met_timeseries(raw)
+        if not _is_valid_forecast_payload(forecast):
+            _logger.warning("MET Norway forecast response was malformed")
+            return {}
+        return forecast
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        json.JSONDecodeError,
+        AttributeError,
+        IndexError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
         _logger.warning("MET Norway forecast fetch failed: %s", exc)
         return {}
 
 
-def get_cached_forecast(db: DbConn, garden_id: int) -> dict | None:
-    """Return cached forecast if fresh enough, else None."""
-    now = _weather_timestamp_ms()
+def _is_valid_forecast_payload(forecast: object) -> bool:
+    """Return whether a provider forecast is safe to display and cache."""
+    if not isinstance(forecast, dict):
+        return False
+    daily = forecast.get("daily")
+    dates = _validated_contiguous_forecast_dates(forecast)
+    if not isinstance(daily, dict) or dates is None or len(dates) > 7:
+        return False
+
+    numeric_fields = (
+        "temperature_2m_min",
+        "temperature_2m_max",
+        "precipitation_sum",
+        "precipitation_probability_max",
+        "wind_speed_10m_max",
+    )
+    normalized: dict[str, list[float | None]] = {}
+    for field in numeric_fields:
+        values = daily.get(field)
+        if not isinstance(values, list) or len(values) != len(dates):
+            return False
+        field_values: list[float | None] = []
+        for value in values:
+            if value is None:
+                field_values.append(None)
+                continue
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                return False
+            numeric_value = float(value)
+            if not math.isfinite(numeric_value):
+                return False
+            field_values.append(numeric_value)
+        normalized[field] = field_values
+
+    minimums = normalized["temperature_2m_min"]
+    maximums = normalized["temperature_2m_max"]
+    if not any(value is not None for value in minimums + maximums):
+        return False
+    if any(
+        minimum is not None and maximum is not None and minimum > maximum
+        for minimum, maximum in zip(minimums, maximums)
+    ):
+        return False
+    if any(
+        value is not None and value < 0
+        for field in ("precipitation_sum", "wind_speed_10m_max")
+        for value in normalized[field]
+    ):
+        return False
+    if any(
+        value is not None and not 0 <= value <= 100
+        for value in normalized["precipitation_probability_max"]
+    ):
+        return False
+    return True
+
+
+def _cached_forecast_entry(
+    db: DbConn,
+    garden_id: int,
+    *,
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> tuple[dict, int] | None:
+    """Load the latest valid cache entry for the current garden location."""
     row = db.execute(
         """
-        SELECT forecast_json, fetched_at_ms FROM weather_cache
+        SELECT forecast_json, fetched_at_ms, latitude, longitude
+        FROM weather_cache
         WHERE garden_id = %s ORDER BY fetched_at_ms DESC LIMIT 1
         """,
         (garden_id,),
     ).fetchone()
-    if row and (now - row["fetched_at_ms"]) < CACHE_TTL_MS:
-        try:
-            return json.loads(row["forecast_json"])  # type: ignore[no-any-return]
-        except (
-            json.JSONDecodeError,
-            TypeError,
+    if not row:
+        return None
+    if latitude is not None and longitude is not None:
+        if (
+            abs(float(row["latitude"]) - latitude) > 0.000_001
+            or abs(float(row["longitude"]) - longitude) > 0.000_001
         ):
             return None
-    return None
+    try:
+        forecast = json.loads(row["forecast_json"])
+    except json.JSONDecodeError, TypeError:
+        return None
+    if not _is_valid_forecast_payload(forecast):
+        return None
+    return forecast, int(row["fetched_at_ms"])
+
+
+def _with_cache_status(
+    forecast: dict,
+    *,
+    fetched_at_ms: int,
+    now_ms: int,
+    source: str,
+    fallback: bool,
+) -> dict:
+    result = dict(forecast)
+    age_ms = max(0, now_ms - fetched_at_ms)
+    result[_CACHE_STATUS_KEY] = {
+        "source": source,
+        "fetched_at_ms": fetched_at_ms,
+        "age_ms": age_ms,
+        "stale": age_ms >= CACHE_TTL_MS,
+        "fallback": fallback,
+    }
+    return result
+
+
+def forecast_cache_status(forecast: dict | None) -> dict[str, object]:
+    """Return cache trust metadata carried by a loaded forecast."""
+    if not isinstance(forecast, dict):
+        return {}
+    status = forecast.get(_CACHE_STATUS_KEY)
+    return dict(status) if isinstance(status, dict) else {}
+
+
+def forecast_without_cache_status(forecast: dict) -> dict:
+    """Return provider data without internal cache bookkeeping."""
+    return {key: value for key, value in forecast.items() if key != _CACHE_STATUS_KEY}
+
+
+def get_cached_forecast(
+    db: DbConn,
+    garden_id: int,
+    *,
+    allow_stale: bool = False,
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> dict | None:
+    """Return a valid cached forecast, optionally including stale display data."""
+    now = _weather_timestamp_ms()
+    cached = _cached_forecast_entry(
+        db,
+        garden_id,
+        latitude=latitude,
+        longitude=longitude,
+    )
+    if cached is None:
+        return None
+    forecast, fetched_at_ms = cached
+    if not allow_stale and now - fetched_at_ms >= CACHE_TTL_MS:
+        return None
+    return _with_cache_status(
+        forecast,
+        fetched_at_ms=fetched_at_ms,
+        now_ms=now,
+        source="cache",
+        fallback=False,
+    )
 
 
 def save_forecast_cache(
@@ -292,13 +439,23 @@ def save_forecast_cache(
 ) -> None:
     """Save forecast to cache, removing old entries."""
     now = _weather_timestamp_ms()
+    db.execute(
+        "SELECT pg_advisory_xact_lock(%s, %s)",
+        (_CACHE_LOCK_NAMESPACE, garden_id),
+    )
     db.execute("DELETE FROM weather_cache WHERE garden_id = %s", (garden_id,))
     db.execute(
         """
         INSERT INTO weather_cache (garden_id, fetched_at_ms, forecast_json, latitude, longitude)
         VALUES (%s, %s, %s, %s, %s)
         """,
-        (garden_id, now, json.dumps(forecast), latitude, longitude),
+        (
+            garden_id,
+            now,
+            json.dumps(forecast_without_cache_status(forecast)),
+            latitude,
+            longitude,
+        ),
     )
 
 
@@ -308,17 +465,55 @@ def get_or_fetch_forecast(
     latitude: float,
     longitude: float,
 ) -> dict:
-    """Get forecast from cache or fetch fresh."""
-    cached = get_cached_forecast(db, garden_id)
+    """Get a fresh forecast, falling back to valid stale display data."""
+    cached = get_cached_forecast(
+        db,
+        garden_id,
+        latitude=latitude,
+        longitude=longitude,
+    )
     if cached:
         return cached
+    stale = get_cached_forecast(
+        db,
+        garden_id,
+        allow_stale=True,
+        latitude=latitude,
+        longitude=longitude,
+    )
     if not _external_forecast_fetch_allowed():
         _logger.info("Weather forecast unavailable because external network access is disabled")
+        if stale:
+            status = forecast_cache_status(stale)
+            return _with_cache_status(
+                forecast_without_cache_status(stale),
+                fetched_at_ms=int(status["fetched_at_ms"]),
+                now_ms=_weather_timestamp_ms(),
+                source="cache",
+                fallback=True,
+            )
         return {}
     forecast = fetch_forecast(latitude, longitude)
-    if forecast and "daily" in forecast:
+    if _is_valid_forecast_payload(forecast):
         save_forecast_cache(db, garden_id, latitude, longitude, forecast)
-    return forecast
+        now = _weather_timestamp_ms()
+        return _with_cache_status(
+            forecast,
+            fetched_at_ms=now,
+            now_ms=now,
+            source="provider",
+            fallback=False,
+        )
+    if stale:
+        status = forecast_cache_status(stale)
+        return _with_cache_status(
+            forecast_without_cache_status(stale),
+            fetched_at_ms=int(status["fetched_at_ms"]),
+            now_ms=_weather_timestamp_ms(),
+            source="cache",
+            fallback=True,
+        )
+    return {}
 
 
 def _validated_contiguous_forecast_dates(forecast: dict) -> list[str] | None:
@@ -917,6 +1112,18 @@ def check_weather_and_generate_alerts(
             "alerts_created": 0,
             "alerts_skipped": 0,
             "alerts": [],
+            "forecast_complete_alert_types": [],
+            "frost_vulnerable_plants": [],
+            "watering_sensitive_plants": [],
+        }
+
+    cache_status = forecast_cache_status(forecast)
+    if bool(cache_status.get("fallback")) or bool(cache_status.get("stale")):
+        return {
+            "forecast_available": True,
+            "alerts_created": 0,
+            "alerts_skipped": 0,
+            "alerts": [_forecast_reconciliation_scope_marker(set(), {})],
             "forecast_complete_alert_types": [],
             "frost_vulnerable_plants": [],
             "watering_sensitive_plants": [],

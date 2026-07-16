@@ -557,7 +557,6 @@ export function getAppShellMarkup(): string {
           </div>
             </div>
           </div>
-          <div id="shade-mobile-backdrop" class="shade-mobile-backdrop" aria-hidden="true"></div>
         </section>
 
         <section id="plants-view" class="view" role="tabpanel" aria-labelledby="top-tab-garden top-tab-activity" hidden>

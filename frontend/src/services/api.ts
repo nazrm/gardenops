@@ -1796,6 +1796,9 @@ export interface ShadeMapConfig {
   terrain_max_zoom: number;
   terrain_tile_size: number;
   features_min_zoom: number;
+  provider_state: "ready" | "degraded";
+  sdk_cache_status: "hit" | "miss" | "stale-fallback";
+  runtime_script_url: string | null;
 }
 
 export interface PersistedShadeMapState {

@@ -269,6 +269,11 @@ OpenAI:
 - Continue disabling real provider calls in tests.
 - Document that LLM diagnosis is advisory and not a definitive plant-health
   diagnosis.
+- Keep provider results non-mutating: identification, diagnosis, and chat may
+  inform a later user decision but must not create plants, issues, or care work.
+- Return provider timeouts as a recoverable `504` and upstream garden-chat
+  quota/rate-limit responses as a recoverable `429`; log only redacted
+  provider, feature, and timing metadata.
 
 ## Rollout Plan
 

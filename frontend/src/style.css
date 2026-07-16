@@ -2372,21 +2372,6 @@ textarea {
   z-index: 1;
 }
 
-.shade-mobile-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(13, 11, 8, 0.42);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 180ms var(--ease);
-  z-index: 54;
-}
-
-.shade-mobile-backdrop--visible {
-  opacity: 1;
-  pointer-events: auto;
-}
-
 .shade-panel-header {
   display: flex;
   align-items: flex-start;
@@ -6737,8 +6722,7 @@ th.sort-desc::after {
   .mobile-utility-backdrop,
   .mobile-map-actionbar,
   .mobile-map-sheet,
-  .mobile-map-sheet-backdrop,
-  .shade-mobile-backdrop {
+  .mobile-map-sheet-backdrop {
     display: none !important;
   }
 

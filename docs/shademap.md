@@ -51,6 +51,7 @@ GardenOps expects two kinds of ShadeMap key material:
 |---|---|---|
 | Server-side ShadeMap API validation | Platform-admin provider settings, or fallback env vars `SHADEMAP`, `SHADEMAP_API_KEY`, or `SHADEMAP_KEY` | Secret; stays on the server |
 | Browser/client ShadeMap SDK access | `SHADEMAP_PUBLIC_API_KEY`, `SHADEMAP_PUBLIC_KEY`, or `SHADEMAP_CLIENT_KEY` | Sent to the authenticated browser by `/api/shademap/config` |
+| Licensed runtime script | `SHADEMAP_RUNTIME_SCRIPT_URL` | Server-side HTTPS source; proxied as authenticated same-origin `/shademap/runtime.js` |
 
 Depending on your ShadeMap account, these may be separate values or the same
 provider-issued value. Treat anything named secret/private as server-only, and
@@ -68,6 +69,7 @@ APP_SECRETS_ENCRYPTION_KEY=change-me
 SHADEMAP=change-me
 SHADEMAP_PUBLIC_API_KEY=change-me
 SHADEMAP_TILE_SIGNING_SECRET=<generate-a-unique-random-secret>
+SHADEMAP_RUNTIME_SCRIPT_URL=https://shademap.app/path/to/runtime.js
 SHADEMAP_SHARE_URL=
 SHADEMAP_LAT=51.50095
 SHADEMAP_LNG=-0.12448
@@ -86,6 +88,16 @@ describe your site.
 HMAC secret used to sign expiring same-origin terrain tile URLs. Use a unique
 random value per deployment and keep it private.
 
+`SHADEMAP_RUNTIME_SCRIPT_URL` is required for rendered shade output. It must be
+a licensed, self-contained classic JavaScript runtime hosted at an allowlisted
+HTTPS ShadeMap endpoint. GardenOps validates and fetches that URL server-side,
+then serves it only to authenticated browser sessions as
+`/shademap/runtime.js`; the upstream URL is not put in browser configuration.
+If it is unset or cannot load, the panel remains available for map context and
+saved settings but intentionally does not claim to calculate shade. Relative
+module imports are not supported by this proxy path, so use a runtime with
+absolute dependencies or a single-file distribution.
+
 ## How Requests Flow
 
 1. The browser opens the GardenOps ShadeMap panel.
@@ -94,10 +106,11 @@ random value per deployment and keep it private.
 4. GardenOps validates that server-side ShadeMap access is configured, caching a
    successful SDK validation for a limited time.
 5. GardenOps returns public config to the authenticated browser: client key,
-   default location, share URL, zoom, and a signed same-origin terrain URL
-   template.
-6. The browser renders the ShadeMap layer and calls GardenOps routes for
-   features, terrain tiles, saved state, calibration, and obstacles.
+   default location, share URL, zoom, an optional same-origin runtime path, and
+   a signed same-origin terrain URL template.
+6. If configured, the browser loads the runtime only from
+   `/shademap/runtime.js`, then calls GardenOps routes for features, terrain
+   tiles, saved state, calibration, and obstacles.
 
 The browser should call GardenOps routes, not arbitrary upstream services.
 GardenOps controls the upstream allowlist, request limits, cache behavior, and
@@ -239,6 +252,11 @@ terrain source.
 Uploaded LAS/LAZ terrain is checked for CRS metadata, grid size, byte size, and
 point count before storage and processing. Lower
 `SHADEMAP_LOCAL_TERRAIN_MAX_POINTS` if your host has limited CPU or memory.
+GardenOps validates an upload before replacing the active terrain source, then
+commits the source change and cache invalidation together. A failed upload or
+database update leaves the previous active terrain usable. Removing uploaded
+terrain also clears its derived tile cache; do not rely on generated tiles as a
+separate durable terrain archive.
 
 ## Rate Limits And Budgets
 

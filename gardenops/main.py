@@ -1399,7 +1399,11 @@ async def edge_origin_guard(request: Request, call_next):  # type: ignore[no-unt
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
     path = request.url.path
-    protected = path.startswith("/api") or path.startswith("/shademap/terrain/")
+    protected = (
+        path.startswith("/api")
+        or path.startswith("/shademap/terrain/")
+        or path == "/shademap/runtime.js"
+    )
     public_auth_paths = {
         "/api/health",
         "/api/version",
@@ -1496,7 +1500,9 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
                     else:
                         auth_context = validate_request_auth(request)
                     if path != "/api/security/csp-report" and (
-                        path.startswith("/api") or path.startswith("/shademap/terrain/")
+                        path.startswith("/api")
+                        or path.startswith("/shademap/terrain/")
+                        or path == "/shademap/runtime.js"
                     ):
                         if conn is None:
                             conn = get_db()

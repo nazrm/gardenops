@@ -1157,10 +1157,10 @@ function renderGardenSection(): string {
       <p class="adm-section-desc">${esc(lidarMeta)}</p>
       ${lidarUpdated}
       ${state.gardenLidarUploading ? `
-        <div class="adm-progress-track" aria-hidden="true">
+        <div class="adm-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${lidarProgress}">
           <div class="adm-progress-fill" style="width:${lidarProgress}%"></div>
         </div>
-        <p class="adm-section-desc">${t("media.upload_progress", { percent: lidarProgress })}</p>
+        <p class="adm-section-desc" aria-live="polite">${lidarProgress >= 100 ? t("common.loading") : t("media.upload_progress", { percent: lidarProgress })}</p>
       ` : ""}
       <input id="adm-garden-lidar-input" type="file" accept=".las,.laz" hidden />
       <div class="adm-btn-group">

@@ -8,6 +8,7 @@ import numpy as np
 from fastapi import HTTPException
 
 import gardenops.db as db
+import gardenops.routers.shademap as shademap_router
 from gardenops.security import create_user
 from tests.base import BaseApiTest, strong_password
 
@@ -33,6 +34,24 @@ _LARGE_FEATURE_BOUNDS = {
     "west": -0.5,
     "zoom": 17,
 }
+
+
+def _complete_journey_fixture_env(artifact_dir: Path) -> dict[str, str]:
+    """Return the runner-issued contract required for local provider overrides."""
+    database_url = "postgresql://gardenops-test@127.0.0.1:19452/gardenops_test"
+    return {
+        "APP_ENV": "test",
+        "DATABASE_URL": database_url,
+        "GARDENOPS_COMPLETE_JOURNEYS_E2E_ALLOW_TRUNCATE": "1",
+        "GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR": str(artifact_dir),
+        "GARDENOPS_COMPLETE_JOURNEYS_E2E_CHILD": "1",
+        "GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD": "a" * 40,
+        "GARDENOPS_DISPOSABLE_POSTGRES_MARKER": "123.fixture",
+        "GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER": "123",
+        "GARDENOPS_DISPOSABLE_POSTGRES_URL": database_url,
+        "GARDENOPS_E2E_LOOPBACK_PROVIDER": "1",
+        "GARDENOPS_E2E_PROVIDER_URL": "http://127.0.0.1:19451/v1",
+    }
 
 
 class TestShademap(BaseApiTest):
@@ -166,6 +185,29 @@ class TestShademap(BaseApiTest):
         self.assertEqual(fetched.status_code, 200)
         self.assertEqual(fetched.json(), payload)
 
+    def test_invalid_house_calibration_is_rejected_without_persistence(self) -> None:
+        rejected = self.client.patch(
+            "/api/shademap/calibration",
+            json={
+                "enabled": True,
+                "calibration_type": "house-corners",
+                "house_nw_latitude": 51.50096,
+                "house_nw_longitude": -0.12443,
+                "house_ne_latitude": 51.50096,
+                "house_ne_longitude": -0.12443,
+                "house_se_latitude": 51.50090,
+                "house_se_longitude": -0.12462,
+                "house_sw_latitude": 51.50089,
+                "house_sw_longitude": -0.12445,
+            },
+        )
+
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(rejected.json()["detail"], "House calibration corners must be distinct")
+        fetched = self.client.get("/api/shademap/calibration")
+        self.assertEqual(fetched.status_code, 200)
+        self.assertFalse(fetched.json()["enabled"])
+
     def test_shademap_house_corner_calibration_round_trip(self) -> None:
         payload = {
             "enabled": True,
@@ -274,6 +316,9 @@ class TestShademap(BaseApiTest):
         self.assertEqual(payload["terrain_max_zoom"], 15)
         self.assertEqual(payload["terrain_tile_size"], 256)
         self.assertEqual(payload["features_min_zoom"], 15)
+        self.assertEqual(payload["provider_state"], "ready")
+        self.assertEqual(payload["sdk_cache_status"], "miss")
+        self.assertIsNone(payload["runtime_script_url"])
         self.assertEqual(
             payload["terrain_token_expires_at_ms"],
             1_777_777_777_000 + 600_000,
@@ -288,6 +333,136 @@ class TestShademap(BaseApiTest):
             f"{payload['terrain_token_expires_at_ms']}:{self._get_default_garden_id()}",
         )
         validate_mock.assert_called_once_with("shade-test-key")
+
+    def test_shademap_config_reports_sdk_cache_hit_after_validation(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SHADEMAP": "shade-private-key",
+                    "SHADEMAP_PUBLIC_API_KEY": "shade-public-key",
+                    "SHADEMAP_TILE_SIGNING_SECRET": "shade-tile-secret",
+                },
+                clear=False,
+            ),
+            patch("gardenops.routers.shademap._perform_sdk_validation") as validate_mock,
+            patch("gardenops.routers.shademap.local_terrain_available", return_value=False),
+        ):
+            first = self.client.get("/api/shademap/config")
+            second = self.client.get("/api/shademap/config")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["sdk_cache_status"], "miss")
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["sdk_cache_status"], "hit")
+        validate_mock.assert_called_once_with("shade-private-key")
+
+    def test_shademap_config_uses_stale_validated_cache_on_timeout(self) -> None:
+        garden_id = self._get_default_garden_id()
+        cache_key = shademap_router._sdk_cache_key("shade-private-key")
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO shademap_cache (
+                    garden_id, cache_kind, cache_key, fetched_at_ms,
+                    content_type, payload_text
+                ) VALUES (%s, 'sdk-load', %s, %s, 'text/plain', 'ok')
+                """,
+                (garden_id, cache_key, 1_000),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SHADEMAP": "shade-private-key",
+                    "SHADEMAP_PUBLIC_API_KEY": "shade-public-key",
+                    "SHADEMAP_TILE_SIGNING_SECRET": "shade-tile-secret",
+                },
+                clear=False,
+            ),
+            patch(
+                "gardenops.routers.shademap.current_timestamp_ms",
+                return_value=shademap_router.SDK_CACHE_TTL_MS + 2_000,
+            ),
+            patch(
+                "gardenops.routers.shademap._perform_sdk_validation",
+                side_effect=HTTPException(status_code=502, detail="Request timed out"),
+            ),
+            patch("gardenops.routers.shademap.local_terrain_available", return_value=False),
+        ):
+            response = self.client.get("/api/shademap/config")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["provider_state"], "degraded")
+        self.assertEqual(response.json()["sdk_cache_status"], "stale-fallback")
+
+    def test_shademap_config_cold_timeout_remains_retryable_error(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SHADEMAP": "shade-cold-timeout-key",
+                    "SHADEMAP_PUBLIC_API_KEY": "shade-public-key",
+                    "SHADEMAP_TILE_SIGNING_SECRET": "shade-tile-secret",
+                },
+                clear=False,
+            ),
+            patch(
+                "gardenops.routers.shademap._perform_sdk_validation",
+                side_effect=HTTPException(status_code=502, detail="Request timed out"),
+            ),
+        ):
+            response = self.client.get("/api/shademap/config")
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["detail"], "Request timed out")
+
+    def test_shademap_config_does_not_use_stale_cache_for_invalid_key(self) -> None:
+        garden_id = self._get_default_garden_id()
+        cache_key = shademap_router._sdk_cache_key("shade-invalid-key")
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO shademap_cache (
+                    garden_id, cache_kind, cache_key, fetched_at_ms,
+                    content_type, payload_text
+                ) VALUES (%s, 'sdk-load', %s, 1000, 'text/plain', 'ok')
+                """,
+                (garden_id, cache_key),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SHADEMAP": "shade-invalid-key",
+                    "SHADEMAP_PUBLIC_API_KEY": "shade-public-key",
+                    "SHADEMAP_TILE_SIGNING_SECRET": "shade-tile-secret",
+                },
+                clear=False,
+            ),
+            patch(
+                "gardenops.routers.shademap.current_timestamp_ms",
+                return_value=shademap_router.SDK_CACHE_TTL_MS + 2_000,
+            ),
+            patch(
+                "gardenops.routers.shademap._perform_sdk_validation",
+                side_effect=HTTPException(status_code=503, detail="API key invalid"),
+            ),
+        ):
+            response = self.client.get("/api/shademap/config")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "API key invalid")
 
     def test_shademap_config_requires_dedicated_tile_signing_secret(self) -> None:
         with (
@@ -371,6 +546,141 @@ class TestShademap(BaseApiTest):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["detail"], "SHADEMAP public API key not configured")
 
+    def test_shademap_loopback_sdk_fixture_url_is_test_only_and_adapter_specific(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture_env = _complete_journey_fixture_env(Path(tmp))
+            with patch.dict(os.environ, fixture_env, clear=False):
+                self.assertEqual(
+                    shademap_router._loopback_sdk_validation_url(),
+                    "http://127.0.0.1:19451/shademap/sdk/load",
+                )
+                self.assertEqual(
+                    shademap_router._runtime_script_upstream_url(),
+                    "http://127.0.0.1:19451/shademap/runtime.js",
+                )
+
+            invalid_urls = (
+                "",
+                "https://127.0.0.1:19451/v1",
+                "http://localhost:19451/v1",
+                "http://127.0.0.1/v1",
+                "http://127.0.0.1:0/v1",
+                "http://127.0.0.1:5432/v1",
+                "http://127.0.0.1:19451",
+                "http://127.0.0.1:19451/v1/",
+                "http://127.0.0.1:19451/not-v1",
+                "http://127.0.0.1:not-a-port/v1",
+                "http://user:pass@127.0.0.1:19451/v1",
+                "http://127.0.0.1:19451/v1?scenario=success",
+                "http://127.0.0.1:19451/v1#fragment",
+            )
+            for value in invalid_urls:
+                with (
+                    self.subTest(value=value),
+                    patch.dict(
+                        os.environ,
+                        {**fixture_env, "GARDENOPS_E2E_PROVIDER_URL": value},
+                        clear=False,
+                    ),
+                ):
+                    with self.assertRaises(HTTPException) as raised:
+                        shademap_router._loopback_sdk_validation_url()
+                    self.assertEqual(raised.exception.status_code, 503)
+                    self.assertEqual(
+                        raised.exception.detail,
+                        "Invalid ShadeMap loopback fixture URL",
+                    )
+
+            with patch.dict(
+                os.environ,
+                {**fixture_env, "APP_ENV": "production"},
+                clear=False,
+            ):
+                self.assertIsNone(shademap_router._loopback_sdk_validation_url())
+            with patch.dict(
+                os.environ,
+                {**fixture_env, "GARDENOPS_COMPLETE_JOURNEYS_E2E_CHILD": ""},
+                clear=False,
+            ):
+                self.assertIsNone(shademap_router._loopback_sdk_validation_url())
+
+    def test_shademap_sdk_validation_posts_to_loopback_fixture_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(
+                    os.environ,
+                    _complete_journey_fixture_env(Path(tmp)),
+                    clear=False,
+                ),
+                patch(
+                    "gardenops.routers.shademap._request_validated_bytes",
+                    return_value=(b"{}", "application/json"),
+                ) as fixture_request,
+                patch("gardenops.routers.shademap._request_bytes") as production_request,
+            ):
+                shademap_router._perform_sdk_validation("shade-test-key")
+
+            fixture_request.assert_called_once_with(
+                "http://127.0.0.1:19451/shademap/sdk/load",
+                method="POST",
+                body=b'{"api_key": "shade-test-key"}',
+                headers={"Content-Type": "application/json"},
+                timeout=15.0,
+            )
+            production_request.assert_not_called()
+
+    def test_shademap_runtime_script_is_authenticated_and_proxy_served(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(
+                    os.environ,
+                    _complete_journey_fixture_env(Path(tmp)),
+                    clear=False,
+                ),
+                patch(
+                    "gardenops.routers.shademap._request_validated_bytes",
+                    return_value=(b"window.GardenOpsShadeMap = function () {};", "text/javascript"),
+                ) as fixture_request,
+            ):
+                response = self.client.get("/shademap/runtime.js")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["content-type"], "application/javascript")
+            self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+            self.assertIn("GardenOpsShadeMap", response.text)
+            fixture_request.assert_called_once_with(
+                "http://127.0.0.1:19451/shademap/runtime.js",
+                timeout=20,
+            )
+
+    def test_shademap_sdk_validation_ignores_loopback_override_in_production(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "APP_ENV": "production",
+                    "GARDENOPS_E2E_LOOPBACK_PROVIDER": "1",
+                    "GARDENOPS_E2E_PROVIDER_URL": "https://attacker.invalid/v1?ignored=1",
+                },
+                clear=False,
+            ),
+            patch(
+                "gardenops.routers.shademap._request_bytes",
+                return_value=(b"{}", "application/json"),
+            ) as production_request,
+            patch("gardenops.routers.shademap._request_validated_bytes") as fixture_request,
+        ):
+            shademap_router._perform_sdk_validation("shade-test-key")
+
+        production_request.assert_called_once_with(
+            shademap_router.SDK_LOAD_URL,
+            method="POST",
+            body=b'{"api_key": "shade-test-key"}',
+            headers={"Content-Type": "application/json"},
+            timeout=15.0,
+        )
+        fixture_request.assert_not_called()
+
     def test_shademap_monthly_estimated_sun_aggregates_csv_by_month(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = Path(tmp) / "soltider_estimated.csv"
@@ -404,6 +714,32 @@ class TestShademap(BaseApiTest):
         self.assertEqual(payload["values"][1]["sample_days"], 2)
         self.assertAlmostEqual(payload["values"][2]["hours"], 0.0)
         self.assertEqual(payload["values"][2]["sample_days"], 0)
+
+    def test_loopback_monthly_estimate_fixture_requires_explicit_test_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_dir = Path(tmp)
+            fixture_path = artifact_dir / "phase-seven-sun.csv"
+            fixture_path.write_text(
+                "dag;dato;sol_opp;sol_ned;timer_sol;estimert;kommentar\n"
+                "1;2026-07-12;04:00;22:00;18,00;TRUE;fixture\n",
+                encoding="utf-8",
+            )
+            fixture_env = {
+                **_complete_journey_fixture_env(artifact_dir),
+                "GARDENOPS_E2E_SHADEMAP_ESTIMATE_CSV": str(fixture_path),
+            }
+            with patch.dict(os.environ, fixture_env, clear=False):
+                self.assertEqual(shademap_router._monthly_estimate_csv_path(), fixture_path)
+
+            with patch.dict(
+                os.environ,
+                {**fixture_env, "APP_ENV": "production"},
+                clear=False,
+            ):
+                self.assertEqual(
+                    shademap_router._monthly_estimate_csv_path(),
+                    shademap_router.MONTHLY_ESTIMATE_CSV_PATH,
+                )
 
     def test_shademap_feature_results_are_cached_in_db(self) -> None:
         expected = [
@@ -1518,3 +1854,180 @@ class TestShademap(BaseApiTest):
             )
         finally:
             db.return_db(conn)
+
+    def test_expired_terrain_token_is_rejected_before_tile_fetch(self) -> None:
+        garden_id = self._get_default_garden_id()
+        with (
+            patch.dict(
+                os.environ,
+                {"SHADEMAP_TILE_SIGNING_SECRET": "shade-tile-secret"},
+                clear=False,
+            ),
+            patch("gardenops.routers.shademap.current_timestamp_ms", return_value=10_000),
+        ):
+            token, expires_at_ms = shademap_router._tile_token(garden_id=garden_id)
+
+        with (
+            patch.dict(
+                os.environ,
+                {"SHADEMAP_TILE_SIGNING_SECRET": "shade-tile-secret"},
+                clear=False,
+            ),
+            patch(
+                "gardenops.routers.shademap.current_timestamp_ms",
+                return_value=expires_at_ms + 1,
+            ),
+            patch("gardenops.routers.shademap._request_bytes") as fetch_mock,
+        ):
+            response = self.client.get(
+                "/shademap/terrain/1/0/0.png",
+                params={"token": token},
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["detail"], "ShadeMap terrain token expired")
+        fetch_mock.assert_not_called()
+
+    def test_editor_can_write_shademap_state_while_viewer_is_read_only(self) -> None:
+        self._create_test_user("shade_editor", "shade-editor-pass", role="editor")
+        self._create_test_user("shade_viewer", "shade-viewer-pass", role="viewer")
+        auth_env = {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""}
+        with patch.dict(os.environ, auth_env, clear=False):
+            editor_client, editor_headers = self._authenticated_client(
+                "shade_editor",
+                "shade-editor-pass",
+            )
+            viewer_client, viewer_headers = self._authenticated_client(
+                "shade_viewer",
+                "shade-viewer-pass",
+            )
+            saved = editor_client.patch(
+                "/api/shademap/state",
+                headers=editor_headers,
+                json={
+                    "mode": "sun-hours",
+                    "selected_plot_id": None,
+                    "analysis_timestamp_ms": 1_772_443_603_995,
+                    "preset": "winter",
+                },
+            )
+            viewed = viewer_client.get("/api/shademap/state", headers=viewer_headers)
+            denied_state = viewer_client.patch(
+                "/api/shademap/state",
+                headers=viewer_headers,
+                json={
+                    "mode": "shadow",
+                    "selected_plot_id": None,
+                    "analysis_timestamp_ms": 1_772_443_603_996,
+                    "preset": "summer",
+                },
+            )
+            calibration_before = viewer_client.get(
+                "/api/shademap/calibration",
+                headers=viewer_headers,
+            )
+            obstacles_before = viewer_client.get(
+                "/api/shademap/obstacles",
+                headers=viewer_headers,
+            )
+            denied_calibration = viewer_client.patch(
+                "/api/shademap/calibration",
+                headers=viewer_headers,
+                json={
+                    "enabled": True,
+                    "calibration_type": "house-corners",
+                    "origin_grid_col": None,
+                    "origin_grid_row": None,
+                    "origin_latitude": None,
+                    "origin_longitude": None,
+                    "axis_grid_col": None,
+                    "axis_grid_row": None,
+                    "axis_latitude": None,
+                    "axis_longitude": None,
+                    "house_nw_latitude": 51.50110,
+                    "house_nw_longitude": -0.12490,
+                    "house_ne_latitude": 51.50110,
+                    "house_ne_longitude": -0.12410,
+                    "house_se_latitude": 51.50070,
+                    "house_se_longitude": -0.12410,
+                    "house_sw_latitude": 51.50070,
+                    "house_sw_longitude": -0.12490,
+                },
+            )
+            denied_obstacle_create = viewer_client.post(
+                "/api/shademap/obstacles",
+                headers=viewer_headers,
+                json={
+                    "label": "Viewer must not add this",
+                    "kind": "tree",
+                    "linked_plot_id": None,
+                    "latitude": 51.50090,
+                    "longitude": -0.12440,
+                    "height_m": 4.8,
+                    "crown_radius_m": 2.4,
+                    "active": True,
+                },
+            )
+            denied_obstacle_delete = viewer_client.delete(
+                "/api/shademap/obstacles/999999",
+                headers=viewer_headers,
+            )
+            state_after = viewer_client.get("/api/shademap/state", headers=viewer_headers)
+            calibration_after = viewer_client.get(
+                "/api/shademap/calibration",
+                headers=viewer_headers,
+            )
+            obstacles_after = viewer_client.get(
+                "/api/shademap/obstacles",
+                headers=viewer_headers,
+            )
+
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(viewed.status_code, 200)
+        self.assertEqual(viewed.json()["mode"], "sun-hours")
+        for denied in (
+            denied_state,
+            denied_calibration,
+            denied_obstacle_create,
+            denied_obstacle_delete,
+        ):
+            self.assertEqual(denied.status_code, 403)
+        self.assertEqual(state_after.json(), viewed.json())
+        self.assertEqual(calibration_after.json(), calibration_before.json())
+        self.assertEqual(obstacles_after.json(), obstacles_before.json())
+
+    def test_shade_panel_exposes_deterministic_mode_and_render_proof_hooks(self) -> None:
+        source = (
+            Path(__file__).parents[1] / "frontend" / "src" / "components" / "shadePanel.ts"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('select.id = "shade-mode-select"', source)
+        self.assertIn("mode: this.activeMode", source)
+        self.assertIn('setSunExposure(this.activeMode === "sun-hours")', source)
+        self.assertIn('root.dataset["renderRevision"]', source)
+        self.assertIn('root.dataset["canvasWidth"]', source)
+        self.assertIn('"gardenops:shade-render-state"', source)
+        self.assertIn("contextEpoch !== this.gardenContextEpoch", source)
+        self.assertIn('root.dataset["writeAccess"]', source)
+        self.assertIn("DEFAULT_BASEMAP_TILE_URL", source)
+        self.assertIn("VITE_SHADEMAP_BASEMAP_URL", source)
+        self.assertIn("loadShadeMapRuntime", source)
+        self.assertIn("runtime_script_url", source)
+        self.assertIn('"/shademap/runtime.js"', source)
+        self.assertIn("trustedShadeMapRuntimeScriptUrl", source)
+        self.assertIn('createPolicy("gardenops-html"', source)
+
+    def test_shade_token_retry_and_mobile_sheet_recovery_contracts(self) -> None:
+        root = Path(__file__).parents[1]
+        panel_source = (root / "frontend" / "src" / "components" / "shadePanel.ts").read_text(
+            encoding="utf-8",
+        )
+        app_source = (root / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")
+
+        self.assertIn("initial.status !== 401 && initial.status !== 403", panel_source)
+        self.assertIn("const refreshedConfig = await this.refreshTerrainConfig()", panel_source)
+        self.assertIn("const retry = await this.fetchTerrainTileImage(retryUrl)", panel_source)
+        self.assertIn('sheet.toggleAttribute("inert", !isOpen)', app_source)
+        self.assertIn("restoreMobileMapSheetFocus()", app_source)
+        self.assertIn("requestAnimationFrame(() => cameraCtrl?.fitAll())", app_source)
+        self.assertIn("loadEpoch !== shadeMapPanelLoadEpoch", app_source)

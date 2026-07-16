@@ -33,6 +33,9 @@ PHASE_FIVE_ORACLE = (
     ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_five_oracle.json"
 )
 PHASE_SIX_ORACLE = ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_six_oracle.json"
+PHASE_SEVEN_ORACLE = (
+    ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_seven_oracle.json"
+)
 EXPECTED_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
 ).stdout.strip()
@@ -66,8 +69,10 @@ def test_phase_zero_complete_journey_files_exist() -> None:
         ROOT / "scripts" / "e2e" / "journeys" / "gardenMapPlants.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "observationToAction.cjs",
+        ROOT / "scripts" / "e2e" / "journeys" / "providersAndTerrain.cjs",
         ORACLE,
         PHASE_THREE_ORACLE,
+        PHASE_SEVEN_ORACLE,
         ROOT / "scripts" / "e2e" / "fixtures" / "media" / "oriented-2x4.jpg.base64",
         ROOT / "scripts" / "e2e" / "fixtures" / "media" / "reference-3x2.png.base64",
     )
@@ -200,7 +205,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
     subprocess.run(["git", "init", "--quiet"], cwd=checkout, check=True, timeout=20)
     runner = checkout / "scripts" / "run_complete_journeys_e2e.sh"
     result = subprocess.run(
-        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "7"],
+        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "8"],
         cwd=checkout,
         capture_output=True,
         check=False,
@@ -704,7 +709,7 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
     runner_source = RUNNER.read_text(encoding="utf-8")
 
-    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
     assert "runDailyAttentionWork" in journey_source
     assert 'require("./e2e/journeys/dailyAttentionWork.cjs")' in checker_source
     assert "phaseSelected(2)" in checker_source
@@ -722,8 +727,12 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_THREE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
-    assert "GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER=1" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "GARDENOPS_E2E_LOOPBACK_PROVIDER=1" in runner_source
+    assert "GARDENOPS_E2E_SHADEMAP_ESTIMATE_CSV" in runner_source
+    assert "'/shademap': proxyTarget" in runner_source
+    assert "VITE_SHADEMAP_BASEMAP_URL" in runner_source
+    assert "readiness-failure.log" in runner_source
     assert "runObservationToAction" in journey_source
     assert 'require("./e2e/journeys/observationToAction.cjs")' in checker_source
     assert "phaseSelected(3)" in checker_source
@@ -874,7 +883,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FOUR_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
     assert 'require("./e2e/journeys/planningAndReporting.cjs")' in checker_source
     assert "phaseSelected(4)" in checker_source
     assert "runPlanningAndReporting" in checker_source
@@ -938,6 +947,11 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
         'target: "tasks", view: "overdue"',
     ):
         assert marker in journey_source
+    shade_panel_source = (ROOT / "frontend" / "src" / "components" / "shadePanel.ts").read_text(
+        encoding="utf-8",
+    )
+    assert "DEFAULT_BASEMAP_TILE_URL" in shade_panel_source
+    assert "VITE_SHADEMAP_BASEMAP_URL" in shade_panel_source
     for endpoint in (
         "**/api/inventory*",
         "**/api/procurement*",
@@ -1017,7 +1031,7 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FIVE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
     assert 'require("./e2e/journeys/identityAndRoles.cjs")' in checker_source
     assert "phaseSelected(5)" in checker_source
     assert "runIdentityAndRoles" in checker_source
@@ -1093,7 +1107,7 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_SIX_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
     assert 'require("./e2e/journeys/offlineAndFailureRecovery.cjs")' in checker_source
     assert "phaseSelected(6)" in checker_source
     assert "runOfflineAndFailureRecovery" in checker_source
@@ -1132,6 +1146,81 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
         assert marker in journey_source
     for forbidden in ("route.fulfill(", "page.setContent("):
         assert forbidden not in journey_source
+
+
+def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> None:
+    journey = ROOT / "scripts" / "e2e" / "journeys" / "providersAndTerrain.cjs"
+    fixture = ROOT / "scripts" / "e2e" / "providers" / "deterministicLoopbackProvider.cjs"
+    journey_source = journey.read_text(encoding="utf-8")
+    fixture_source = fixture.read_text(encoding="utf-8")
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    seeder_source = SEEDER.read_text(encoding="utf-8")
+    runner_source = RUNNER.read_text(encoding="utf-8")
+    oracle = json.loads(PHASE_SEVEN_ORACLE.read_text(encoding="utf-8"))
+
+    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "GARDENOPS_E2E_LOOPBACK_PROVIDER=1" in runner_source
+    assert 'require("./e2e/journeys/providersAndTerrain.cjs")' in checker_source
+    assert "phaseSelected(7)" in checker_source
+    assert "runProvidersAndTerrain" in checker_source
+    assert "assertPhaseSevenDatabaseState" in checker_source
+    assert "assertPhaseSevenAuditEvents" in checker_source
+    assert "assertPhaseSevenProfileEvidence" in checker_source
+    assert "preparePhaseSevenFixtures" in checker_source
+    assert "_load_phase_seven_oracle" in seeder_source
+    assert "_prepare_phase_seven_weather" in seeder_source
+    assert '"phase_seven": _phase_seven_fixture_state()' in seeder_source
+    assert "_write_phase_seven_terrain_fixture" in seeder_source
+    assert "_write_phase_seven_estimated_sun_fixture" in seeder_source
+    assert oracle["schema_version"] == 1
+    assert oracle["phase_seven"]["profile_order"] == [
+        "admin:desktop",
+        "admin:mobile",
+        "editor:desktop",
+        "viewer:desktop",
+    ]
+    assert oracle["phase_seven"]["fixture"]["terrain"]["filename"] == "phase-seven-terrain.las"
+    assert oracle["phase_seven"]["fixture"]["terrain"]["extent_m"] == 220.0
+    assert oracle["phase_seven"]["fixture"]["estimated_sun_csv_filename"] == "phase-seven-sun.csv"
+    assert oracle["phase_seven"]["fixture"]["weather"]["stale_age_ms"] > 0
+    assert {"auth_passkey_challenges", "lidar_grid_cache"}.issubset(
+        oracle["phase_seven"]["database_boundaries"]["owned_tables"]
+    )
+    assert any(
+        event["path"] == "/api/ai/garden-chat" and event["status_code"] == 429
+        for event in oracle["phase_seven"]["audit_contract"]["events"]
+    )
+    assert any(
+        event["path"] == "/api/weather/check" and event["status_code"] == 200
+        for event in oracle["phase_seven"]["audit_contract"]["events"]
+    )
+    for marker in (
+        "data-phase-seven-simulator",
+        "data-phase-seven-terrain",
+        "signed terrain tile",
+        "provider_fixture_redacted",
+        "exerciseStaleWeather",
+        "assertViewerShadeBoundary",
+        "consumeExpectedViewerShadeDiagnostics",
+        '"/shademap/runtime.js"',
+        'page.once("dialog"',
+        "inset overlay is mode-dependent",
+    ):
+        assert marker in journey_source
+    for marker in (
+        '"127.0.0.1"',
+        '"timeout"',
+        '"malformed"',
+        '"quota"',
+        '"unauthorized"',
+        '"partial"',
+        '"/shademap/runtime.js"',
+        '"/__fixture__/state"',
+    ):
+        assert marker in fixture_source
+    for forbidden in ("route.fulfill(", "context.addCookies(", "page.setContent("):
+        assert forbidden not in journey_source
+    assert "addInitScript(" not in journey_source
 
 
 def test_phase_six_audit_contract_rejects_scope_tampering() -> None:

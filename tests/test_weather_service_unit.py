@@ -7,12 +7,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import pytest
 
 import gardenops.db as db
 from gardenops.routers.weather import _load_active_alerts
 from gardenops.services.weather_service import (
+    CACHE_TTL_MS,
     _aggregate_met_timeseries,
     _min_temp_for_hardiness,
     _parse_hardiness,
@@ -20,11 +22,27 @@ from gardenops.services.weather_service import (
     check_weather_and_generate_alerts,
     fetch_forecast,
     find_frost_vulnerable_plants,
+    forecast_cache_status,
+    forecast_without_cache_status,
+    get_cached_forecast,
     get_or_fetch_forecast,
     save_forecast_cache,
     save_weather_alerts,
 )
 from tests.base import DbTestBase, strong_password
+
+
+def _valid_forecast(day: str = "2032-02-03", *, minimum: float = 3.0) -> dict:
+    return {
+        "daily": {
+            "time": [day],
+            "temperature_2m_min": [minimum],
+            "temperature_2m_max": [minimum + 7.0],
+            "precipitation_sum": [0.5],
+            "precipitation_probability_max": [20.0],
+            "wind_speed_10m_max": [4.0],
+        },
+    }
 
 
 class _ReadCountingConnection:
@@ -294,6 +312,74 @@ class TestFetchForecast(unittest.TestCase):
             "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=60.1235&lon=5.9877"
         )
         assert request.get_header("User-agent") == "gardenops/1.0 weather-service"
+
+    @patch.dict(
+        "os.environ",
+        {"GARDENOPS_WEATHER_EXTERNAL_FETCH_ENABLED": "true"},
+    )
+    @patch("gardenops.services.weather_service.urllib.request.urlopen")
+    def test_timeout_degrades_without_raising(
+        self,
+        mock_urlopen: unittest.mock.MagicMock,
+    ) -> None:
+        mock_urlopen.side_effect = TimeoutError("provider timed out")
+
+        assert fetch_forecast(59.91, 10.75) == {}
+
+    @patch.dict(
+        "os.environ",
+        {"GARDENOPS_WEATHER_EXTERNAL_FETCH_ENABLED": "true"},
+    )
+    @patch("gardenops.services.weather_service.urllib.request.urlopen")
+    def test_quota_response_degrades_without_raising(
+        self,
+        mock_urlopen: unittest.mock.MagicMock,
+    ) -> None:
+        mock_urlopen.side_effect = HTTPError(
+            "https://api.met.no/weatherapi/locationforecast/2.0/compact",
+            429,
+            "quota exceeded",
+            {},
+            None,
+        )
+
+        assert fetch_forecast(59.91, 10.75) == {}
+
+    @patch.dict(
+        "os.environ",
+        {"GARDENOPS_WEATHER_EXTERNAL_FETCH_ENABLED": "true"},
+    )
+    @patch("gardenops.services.weather_service.urllib.request.urlopen")
+    def test_malformed_numeric_values_are_rejected(
+        self,
+        mock_urlopen: unittest.mock.MagicMock,
+    ) -> None:
+        response = unittest.mock.MagicMock()
+        response.read.return_value = json.dumps(
+            {
+                "properties": {
+                    "timeseries": [
+                        {
+                            "time": "2032-02-03T12:00:00Z",
+                            "data": {
+                                "instant": {
+                                    "details": {
+                                        "air_temperature": "hot",
+                                        "wind_speed": 4.0,
+                                    },
+                                },
+                                "next_1_hours": {
+                                    "details": {"precipitation_amount": 0.5},
+                                },
+                            },
+                        },
+                    ],
+                },
+            },
+        ).encode()
+        mock_urlopen.return_value.__enter__.return_value = response
+
+        assert fetch_forecast(59.91, 10.75) == {}
 
 
 class TestAnalyzeForecast(unittest.TestCase):
@@ -588,6 +674,267 @@ class TestForecastEgressGuard(_WeatherDbTestBase):
             self.conn.commit()
             assert get_or_fetch_forecast(self.conn, self.garden_id, 59.91, 10.75) == {}
         mock_urlopen.assert_not_called()
+
+
+class TestForecastCacheFallback(_WeatherDbTestBase):
+    def _insert_cache(
+        self,
+        forecast: dict,
+        *,
+        fetched_at_ms: int,
+        latitude: float = 59.91,
+        longitude: float = 10.75,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO weather_cache
+                (garden_id, fetched_at_ms, forecast_json, latitude, longitude)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                self.garden_id,
+                fetched_at_ms,
+                json.dumps(forecast),
+                latitude,
+                longitude,
+            ),
+        )
+        self.conn.commit()
+
+    def test_valid_provider_forecast_is_cached_with_deterministic_status(self) -> None:
+        now_ms = 1_959_379_200_000
+        forecast = _valid_forecast()
+        with (
+            patch(
+                "gardenops.services.weather_service._weather_timestamp_ms",
+                return_value=now_ms,
+            ),
+            patch(
+                "gardenops.services.weather_service.fetch_forecast",
+                return_value=forecast,
+            ) as fetch,
+            patch.dict(
+                "os.environ",
+                {"GARDENOPS_WEATHER_EXTERNAL_FETCH_ENABLED": "true"},
+            ),
+        ):
+            provider_result = get_or_fetch_forecast(
+                self.conn,
+                self.garden_id,
+                59.91,
+                10.75,
+            )
+            self.conn.commit()
+            cache_result = get_or_fetch_forecast(
+                self.conn,
+                self.garden_id,
+                59.91,
+                10.75,
+            )
+
+        assert forecast_without_cache_status(provider_result) == forecast
+        assert forecast_cache_status(provider_result) == {
+            "source": "provider",
+            "fetched_at_ms": now_ms,
+            "age_ms": 0,
+            "stale": False,
+            "fallback": False,
+        }
+        assert forecast_cache_status(cache_result)["source"] == "cache"
+        assert fetch.call_count == 1
+
+    def test_provider_failure_returns_stale_cache_without_replacing_it(self) -> None:
+        now_ms = 1_959_379_200_000
+        fetched_at_ms = now_ms - CACHE_TTL_MS - 60_000
+        cached = _valid_forecast(minimum=-2.0)
+        self._insert_cache(cached, fetched_at_ms=fetched_at_ms)
+        malformed = {
+            "daily": {
+                "time": ["2032-02-03"],
+                "temperature_2m_min": ["cold"],
+            },
+        }
+
+        with (
+            patch(
+                "gardenops.services.weather_service._weather_timestamp_ms",
+                return_value=now_ms,
+            ),
+            patch(
+                "gardenops.services.weather_service.fetch_forecast",
+                return_value=malformed,
+            ),
+            patch.dict(
+                "os.environ",
+                {"GARDENOPS_WEATHER_EXTERNAL_FETCH_ENABLED": "true"},
+            ),
+        ):
+            result = get_or_fetch_forecast(
+                self.conn,
+                self.garden_id,
+                59.91,
+                10.75,
+            )
+
+        row = self.conn.execute(
+            """
+            SELECT fetched_at_ms, forecast_json
+            FROM weather_cache WHERE garden_id = %s
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert row is not None
+        assert forecast_without_cache_status(result) == cached
+        assert forecast_cache_status(result) == {
+            "source": "cache",
+            "fetched_at_ms": fetched_at_ms,
+            "age_ms": CACHE_TTL_MS + 60_000,
+            "stale": True,
+            "fallback": True,
+        }
+        assert int(row["fetched_at_ms"]) == fetched_at_ms
+        assert json.loads(str(row["forecast_json"])) == cached
+
+    def test_disabled_provider_can_use_stale_cache_without_egress(self) -> None:
+        now_ms = 1_959_379_200_000
+        self._insert_cache(
+            _valid_forecast(),
+            fetched_at_ms=now_ms - CACHE_TTL_MS - 1,
+        )
+        with (
+            patch(
+                "gardenops.services.weather_service._weather_timestamp_ms",
+                return_value=now_ms,
+            ),
+            patch(
+                "gardenops.services.weather_service.urllib.request.urlopen",
+            ) as urlopen,
+            patch.dict(
+                "os.environ",
+                {"GARDENOPS_WEATHER_EXTERNAL_FETCH_ENABLED": "false"},
+            ),
+        ):
+            result = get_or_fetch_forecast(
+                self.conn,
+                self.garden_id,
+                59.91,
+                10.75,
+            )
+
+        assert forecast_cache_status(result)["fallback"] is True
+        urlopen.assert_not_called()
+
+    def test_cache_from_previous_location_is_not_used_as_fallback(self) -> None:
+        now_ms = 1_959_379_200_000
+        self._insert_cache(
+            _valid_forecast(),
+            fetched_at_ms=now_ms - CACHE_TTL_MS - 1,
+            latitude=60.0,
+            longitude=11.0,
+        )
+        with (
+            patch(
+                "gardenops.services.weather_service._weather_timestamp_ms",
+                return_value=now_ms,
+            ),
+            patch.dict(
+                "os.environ",
+                {"GARDENOPS_WEATHER_EXTERNAL_FETCH_ENABLED": "false"},
+            ),
+        ):
+            result = get_or_fetch_forecast(
+                self.conn,
+                self.garden_id,
+                59.91,
+                10.75,
+            )
+
+        assert result == {}
+
+    def test_stale_fallback_is_not_authoritative_for_alert_work(self) -> None:
+        from gardenops.services.notification_service import reconcile_weather_alert_work
+
+        now_ms = 1_959_379_200_000
+        self._insert_cache(
+            _valid_forecast(minimum=-8.0),
+            fetched_at_ms=now_ms - CACHE_TTL_MS - 1,
+        )
+        existing = self.conn.execute(
+            """
+            INSERT INTO weather_alerts
+                (garden_id, alert_type, severity, title, description,
+                 valid_from, valid_until, metadata_json, created_at_ms)
+            VALUES (%s, 'frost_warning', 'normal', 'Existing frost', 'Protect plants',
+                    '2032-02-03', '2032-02-03', '{}', 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert existing is not None
+        with (
+            patch(
+                "gardenops.services.weather_service._weather_timestamp_ms",
+                return_value=now_ms,
+            ),
+            patch.dict(
+                "os.environ",
+                {"GARDENOPS_WEATHER_EXTERNAL_FETCH_ENABLED": "false"},
+            ),
+        ):
+            result = check_weather_and_generate_alerts(
+                self.conn,
+                self.garden_id,
+                59.91,
+                10.75,
+            )
+        downstream = reconcile_weather_alert_work(
+            self.conn,
+            garden_id=self.garden_id,
+            alerts=list(result["alerts"]),
+            actor_user_id=None,
+            now_ms=now_ms,
+            replace_forecast_alerts=True,
+        )
+
+        marker = result["alerts"][0]["_forecast_reconciliation_scope"]
+        alert_after = self.conn.execute(
+            "SELECT dismissed FROM weather_alerts WHERE id = %s",
+            (int(existing["id"]),),
+        ).fetchone()
+        assert result["forecast_available"] is True
+        assert result["alerts_created"] == 0
+        assert marker == {"complete_alert_types": [], "coverage_bounds": {}}
+        assert downstream["alerts_resolved"] == 0
+        assert alert_after is not None and not bool(alert_after["dismissed"])
+
+    def test_concurrent_cache_replacements_leave_one_valid_entry(self) -> None:
+        forecasts = [_valid_forecast(minimum=2.0), _valid_forecast(minimum=5.0)]
+
+        def save_once(forecast: dict) -> None:
+            conn = db.get_db()
+            try:
+                save_forecast_cache(conn, self.garden_id, 59.91, 10.75, forecast)
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(save_once, forecasts))
+
+        rows = self.conn.execute(
+            "SELECT forecast_json FROM weather_cache WHERE garden_id = %s",
+            (self.garden_id,),
+        ).fetchall()
+        assert len(rows) == 1
+        assert json.loads(str(rows[0]["forecast_json"])) in forecasts
+
+    def test_get_cached_forecast_rejects_malformed_legacy_cache(self) -> None:
+        self._insert_cache(
+            {"daily": {"time": ["2032-02-03"], "temperature_2m_min": [float("nan")]}},
+            fetched_at_ms=1,
+        )
+
+        assert get_cached_forecast(self.conn, self.garden_id, allow_stale=True) is None
 
 
 class TestFindFrostVulnerablePlants(_WeatherDbTestBase):

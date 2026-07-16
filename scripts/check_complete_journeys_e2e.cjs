@@ -26,6 +26,7 @@ const { runObservationToAction } = require("./e2e/journeys/observationToAction.c
 const { runPlanningAndReporting } = require("./e2e/journeys/planningAndReporting.cjs");
 const { runIdentityAndRoles } = require("./e2e/journeys/identityAndRoles.cjs");
 const { runOfflineAndFailureRecovery } = require("./e2e/journeys/offlineAndFailureRecovery.cjs");
+const { runProvidersAndTerrain } = require("./e2e/journeys/providersAndTerrain.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const BASE_URL = process.env.BASE_URL || "";
@@ -70,6 +71,13 @@ const PHASE_SIX_ORACLE_PATH = path.join(
   "e2e",
   "fixtures",
   "complete_journeys_phase_six_oracle.json",
+);
+const PHASE_SEVEN_ORACLE_PATH = path.join(
+  ROOT,
+  "scripts",
+  "e2e",
+  "fixtures",
+  "complete_journeys_phase_seven_oracle.json",
 );
 const CHROMIUM_LAUNCHER = fs.existsSync("/usr/bin/chromium-browser")
   ? "/usr/bin/chromium-browser"
@@ -154,7 +162,7 @@ function assertRunnerEnvironment() {
   assert(isAllowedUrl(BASE_URL, browserOrigins), "Complete journey BASE_URL is not in its browser contract");
   assert(fs.existsSync(CHROMIUM_EXECUTABLE), "System Chromium is required");
   assert(process.env.GARDENOPS_LOGS_DIR, "Complete journey backend log directory is required");
-  assert(PHASE <= 6 && THROUGH_PHASE <= 6, "Requested phase is not implemented");
+  assert(PHASE <= 7 && THROUGH_PHASE <= 7, "Requested phase is not implemented");
 }
 
 function assertExpectedHead() {
@@ -254,6 +262,20 @@ function phaseSixOracle() {
   return oracle;
 }
 
+function phaseSevenOracle() {
+  const oracle = readJson(PHASE_SEVEN_ORACLE_PATH);
+  assert(oracle && typeof oracle === "object" && oracle.schema_version === 1,
+    "Phase 7 oracle schema is unsupported");
+  assert(oracle.phase_seven && typeof oracle.phase_seven === "object"
+    && oracle.phase_seven.fixture && typeof oracle.phase_seven.fixture === "object"
+    && oracle.phase_seven.browser_contract && typeof oracle.phase_seven.browser_contract === "object"
+    && oracle.phase_seven.database_boundaries
+      && typeof oracle.phase_seven.database_boundaries === "object"
+    && oracle.phase_seven.support && typeof oracle.phase_seven.support === "object",
+  "Phase 7 oracle contract is incomplete");
+  return oracle;
+}
+
 function assertPhaseFiveFixtureOracleBinding(fixture, oracle) {
   const binding = fixture?.phase_five?.oracle;
   assert(binding && typeof binding === "object", "Phase 5 fixture oracle binding is missing");
@@ -294,6 +316,22 @@ function assertPhaseSixFixtureOracleBinding(fixture, oracle) {
   return { oracle_binding_exact: true, oracle_sha256: binding.sha256 };
 }
 
+function assertPhaseSevenFixtureOracleBinding(fixture, oracle) {
+  const binding = fixture?.phase_seven?.oracle;
+  assert(binding && typeof binding === "object", "Phase 7 fixture oracle binding is missing");
+  assert(binding.path === "scripts/e2e/fixtures/complete_journeys_phase_seven_oracle.json",
+    "Phase 7 fixture oracle path is invalid");
+  assert(binding.schema_version === oracle.schema_version,
+    "Phase 7 fixture oracle schema binding drifted");
+  assert(binding.sha256 === sha256File(PHASE_SEVEN_ORACLE_PATH),
+    "Phase 7 fixture oracle digest drifted");
+  assert(canonicalJson(fixture.phase_seven.fixture) === canonicalJson(oracle.phase_seven.fixture),
+    "Phase 7 fixture diverged from the independent oracle");
+  assert(canonicalJson(fixture.phase_seven.support) === canonicalJson(oracle.phase_seven.support),
+    "Phase 7 support matrix diverged from the independent oracle");
+  return { oracle_binding_exact: true, oracle_sha256: binding.sha256 };
+}
+
 function assertPhaseSixProfileEvidence(profiles, oracle = phaseSixOracle()) {
   assert(Array.isArray(profiles) && profiles.length === 1,
     "Phase 6 must execute exactly one browser profile");
@@ -331,6 +369,122 @@ function assertPhaseSixProfileEvidence(profiles, oracle = phaseSixOracle()) {
     replay_delivery_count: checks.replay_delivery_count,
     terminal_recovery: true,
   };
+}
+
+function assertPhaseSevenProfileEvidence(profiles, oracle = phaseSevenOracle()) {
+  const expected = oracle.phase_seven.profile_order;
+  const observed = profiles.map((profile) => `${profile.role}:${profile.profile}`);
+  assert(canonicalJson(observed) === canonicalJson(expected),
+    `Phase 7 browser profile order drifted: ${observed.join(", ")}`);
+  const adminDesktop = profiles.find((profile) => profile.role === "admin" && profile.profile === "desktop");
+  const adminMobile = profiles.find((profile) => profile.role === "admin" && profile.profile === "mobile");
+  const editor = profiles.find((profile) => profile.role === "editor" && profile.profile === "desktop");
+  const viewer = profiles.find((profile) => profile.role === "viewer" && profile.profile === "desktop");
+  assert(adminDesktop?.checks?.chat_success?.success === true
+    && adminDesktop?.checks?.chat_quota?.recoverable === true
+    && adminDesktop?.checks?.weather?.stale_forecast_visible === true
+    && adminDesktop?.checks?.weather?.stale_refresh_non_authoritative === true,
+  "Phase 7 administrator desktop provider matrix is incomplete");
+  assert(adminDesktop?.checks?.shade?.external_canvas === true
+    && adminDesktop?.checks?.shade?.pixel_change === true
+    && adminDesktop?.checks?.terrain?.upload_and_cleanup === true,
+  "Phase 7 administrator desktop ShadeMap or terrain proof is incomplete");
+  assert(adminMobile?.checks?.chat_success?.success === true
+    && adminMobile?.checks?.shade?.external_canvas === true,
+  "Phase 7 administrator mobile proof is incomplete");
+  assert(editor?.checks?.shade?.external_canvas === true,
+    "Phase 7 editor ShadeMap proof is incomplete");
+  assert(viewer?.checks?.shade?.viewer_read_only === true
+    && viewer?.checks?.shade?.viewer_controls_disabled === true,
+    "Phase 7 viewer ShadeMap boundary is incomplete");
+  assert(profiles.every((profile) => profile.checks?.provider_fixture_redacted === true
+    && profile.checks?.browser_diagnostics === true
+    && profile.checks?.shademap_runtime_loaded === true),
+  "Phase 7 fixture redaction or browser diagnostics proof is incomplete");
+  return { profile_matrix_enforced: true, profile_order: observed };
+}
+
+function assertPhaseSevenDatabaseState(initial, final, fixture) {
+  assert(initial && final, "Phase 7 database state is missing");
+  assert(canonicalJson(initial.beta) === canonicalJson(final.beta),
+    "Phase 7 changed the non-selected garden ShadeMap state");
+  assert(final.alpha?.calibration?.enabled === true,
+    "Phase 7 calibration did not persist for the selected garden");
+  assert(Array.isArray(final.alpha?.obstacles) && final.alpha.obstacles.length === 0,
+    "Phase 7 temporary obstacle was not removed");
+  assert(canonicalJson(initial.alpha?.weather) === canonicalJson(final.alpha?.weather),
+    "Phase 7 stale weather refresh changed the degraded forecast cache");
+  const usage = final.provider_usage || [];
+  assert(usage.length === 2 && usage.every((row) => (
+    row.feature === "ai-garden-chat" && row.request_count >= 1
+      && ((row.scope_type === "garden" && row.scope_id === fixture.gardens.alpha.id)
+        || (row.scope_type === "user" && row.scope_username === fixture.roles.admin))
+  )), "Phase 7 provider budget usage was not scoped to the selected admin and garden");
+  return {
+    calibration_persisted: true,
+    provider_budget_scoped: true,
+    stale_weather_preserved: true,
+    temporary_obstacle_removed: true,
+  };
+}
+
+function assertPhaseSevenAuditEvents(baseline, final, fixture, oracle = phaseSevenOracle()) {
+  assert(Array.isArray(baseline?.records) && Array.isArray(final?.records),
+    "Phase 7 audit records are missing");
+  const contract = oracle.phase_seven.audit_contract;
+  assert(contract && Array.isArray(contract.events), "Phase 7 audit oracle is invalid");
+  const actorByKind = {
+    admin: {
+      actor_auth_type: "session",
+      actor_role: "admin",
+      actor_username: fixture.roles.admin,
+    },
+    anonymous: {
+      actor_auth_type: "none",
+      actor_role: "anonymous",
+      actor_username: "anonymous",
+    },
+    editor: {
+      actor_auth_type: "session",
+      actor_role: "editor",
+      actor_username: fixture.roles.editor,
+    },
+    viewer: {
+      actor_auth_type: "session",
+      actor_role: "viewer",
+      actor_username: fixture.roles.viewer,
+    },
+  };
+  const baselineIds = new Set(baseline.records.map((record) => record.id));
+  const actual = final.records.filter((record) => !baselineIds.has(record.id)).map((record) => ({
+    actor_auth_type: record.actor_auth_type,
+    actor_role: record.actor_role,
+    actor_username: record.actor_username,
+    garden_id: record.garden_id,
+    method: record.method,
+    path: normalizeAuditProjectionPath(record.path),
+    status_code: record.status_code,
+  }));
+  const expected = contract.events.flatMap((event) => {
+    assert(Number.isSafeInteger(event.count) && event.count > 0,
+      "Phase 7 audit oracle count is invalid");
+    assert(Object.hasOwn(actorByKind, event.actor), "Phase 7 audit oracle actor is invalid");
+    assert(event.garden === null || event.garden === "alpha",
+      "Phase 7 audit oracle garden is invalid");
+    return Array.from({ length: event.count }, () => ({
+      ...actorByKind[event.actor],
+      garden_id: event.garden === null ? null : fixture.gardens.alpha.id,
+      method: event.method,
+      path: event.path,
+      status_code: event.status_code,
+    }));
+  });
+  const sortProjection = (records) => records
+    .map((record) => canonicalJson(record))
+    .sort((left, right) => left.localeCompare(right));
+  assert(canonicalJson(sortProjection(actual)) === canonicalJson(sortProjection(expected)),
+    "Phase 7 audit delta diverged from its independent oracle");
+  return { audit_event_count: actual.length, audit_events_exact: true };
 }
 
 function assertPhaseSixAuditEvents(baseline, final, fixture, oracle = phaseSixOracle()) {
@@ -567,6 +721,15 @@ function preparePhaseTwoFixtures() {
   return JSON.parse(output.trim());
 }
 
+function preparePhaseSevenFixtures() {
+  const output = execFileSync(
+    path.join(ROOT, ".venv", "bin", "python"),
+    [path.join(ROOT, "scripts", "seed_complete_journeys_e2e.py"), "--prepare-phase-seven"],
+    { cwd: ROOT, encoding: "utf8", env: process.env },
+  );
+  return JSON.parse(output.trim());
+}
+
 function runPhaseTwoMaintenance() {
   const output = execFileSync(
     path.join(ROOT, ".venv", "bin", "python"),
@@ -682,7 +845,7 @@ function mediaDirectoryState(directory) {
       assert(relative && !relative.startsWith("../") && !path.isAbsolute(relative),
         `Media storage entry escapes its private root: ${entry.name}`);
       const top = relative.split("/", 1)[0];
-      assert(["original", "preview", "tmp"].includes(top),
+      assert(["lidar", "original", "preview", "tmp"].includes(top),
         `Media storage contains an unexpected top-level path: ${relative}`);
       if (stat.isDirectory()) {
         directories.push(relative);
@@ -2165,6 +2328,7 @@ function normalizeAuditProjectionPath(value) {
   }
   if (new Set([
     "/api/ai/diagnose-plant",
+    "/api/ai/garden-chat",
     "/api/ai/identify-plant",
     "/api/auth/login",
     "/api/attention/preferences",
@@ -2172,6 +2336,7 @@ function normalizeAuditProjectionPath(value) {
     "/api/calendar/manual-events",
     "/api/calendar/subscriptions",
     "/api/client-errors",
+    "/api/gardens/{garden_id}/lidar",
     "/api/harvest",
     "/api/issues",
     "/api/journal",
@@ -2182,6 +2347,9 @@ function normalizeAuditProjectionPath(value) {
     "/api/planner/goal",
     "/api/plants",
     "/api/procurement",
+    "/api/shademap/calibration",
+    "/api/shademap/obstacles",
+    "/api/shademap/state",
     "/api/tasks",
     "/api/tasks/batch-action",
     "/api/weather/check",
@@ -2269,6 +2437,10 @@ function normalizeAuditProjectionPath(value) {
     [
       /^\/api\/procurement\/[^/?#]+$/,
       () => "/api/procurement/{item_id}",
+    ],
+    [
+      /^\/api\/shademap\/obstacles\/[^/?#]+$/,
+      () => "/api/shademap/obstacles/{obstacle_id}",
     ],
   ];
   for (const [pattern, projection] of parameterizedRoutes) {
@@ -6644,6 +6816,8 @@ function assertNoResponseMocks() {
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/observationToAction.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/planningAndReporting.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/identityAndRoles.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/offlineAndFailureRecovery.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/providersAndTerrain.cjs"), "utf8"),
   ].join("\n");
   const forbiddenCalls = [
     `route.${"fulfill"}(`,
@@ -6663,6 +6837,8 @@ function assertNoNodeRequestClients() {
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/observationToAction.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/planningAndReporting.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/identityAndRoles.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/offlineAndFailureRecovery.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/providersAndTerrain.cjs"), "utf8"),
   ].join("\n");
   for (const forbidden of [
     "context.request",
@@ -6701,6 +6877,11 @@ async function main() {
     fixture,
     phaseSixOracleSpec,
   );
+  const phaseSevenOracleSpec = phaseSevenOracle();
+  const phaseSevenFixtureOracleEvidence = assertPhaseSevenFixtureOracleBinding(
+    fixture,
+    phaseSevenOracleSpec,
+  );
   const phaseThreeMediaInputs = phaseSelected(3) ? materializePhaseThreeMedia(fixture) : null;
   assertFixtureAttentionClock(fixture);
   let manifest = {
@@ -6722,6 +6903,7 @@ async function main() {
       ...(phaseSelected(4) ? ["P4", "P6", "I1", "L1", "L2", "R2", "R3"] : []),
       ...(phaseSelected(5) ? ["A1", "A2", "A4", "C1", "C3", "C5", "CROSS-02"] : []),
       ...(phaseSelected(6) ? ["OFF-01"] : []),
+      ...(phaseSelected(7) ? ["M5", "I2", "I3", "I4", "C4", "C6"] : []),
     ],
     phase: PHASE,
     profiles: [],
@@ -6783,6 +6965,12 @@ async function main() {
   let phaseSixAuditEvidence = null;
   let phaseSixProfileSummary = null;
   let phaseSixProfiles = [];
+  let phaseSevenDatabaseBaseline = null;
+  let phaseSevenAuditEvidence = null;
+  let phaseSevenDatabaseEvidence = null;
+  let phaseSevenPreparation = null;
+  let phaseSevenProfileEvidence = null;
+  let phaseSevenProfiles = [];
   let thrownError = null;
   let currentStage = "runner-startup";
   try {
@@ -6984,6 +7172,41 @@ async function main() {
       });
       phaseSixProfiles = manifest.profiles.slice(phaseSixProfileStart);
     }
+    if (phaseSelected(7)) {
+      currentStage = "phase-seven-prerequisites";
+      phaseSevenPreparation = preparePhaseSevenFixtures();
+      const staleAgeMs = phaseSevenOracleSpec.phase_seven.fixture.weather.stale_age_ms;
+      assert(
+        canonicalJson(phaseSevenPreparation) === canonicalJson({
+          fetched_at_ms: fixture.clock.attention_now_ms - staleAgeMs,
+          garden_id: fixture.gardens.alpha.id,
+          stale_age_ms: staleAgeMs,
+        }),
+        "Phase 7 deterministic stale-weather preparation was unexpected",
+      );
+      currentStage = "phase-seven-browser";
+      phaseSevenDatabaseBaseline = await settledDatabaseSnapshot("Phase 7 database baseline");
+      const terrainName = fixture?.phase_seven?.fixture?.terrain?.filename;
+      assert(typeof terrainName === "string" && terrainName === path.basename(terrainName),
+        "Phase 7 terrain fixture filename is invalid");
+      const terrainFile = path.join(ARTIFACT_DIR, terrainName);
+      const terrainStat = fs.lstatSync(terrainFile);
+      assert(terrainStat.isFile() && !terrainStat.isSymbolicLink() && terrainStat.size > 0,
+        "Phase 7 terrain fixture is unavailable");
+      const phaseSevenProfileStart = manifest.profiles.length;
+      await runProvidersAndTerrain({
+        artifactDir: ARTIFACT_DIR,
+        baseUrl: BASE_URL,
+        browser,
+        devices,
+        fixture,
+        onProfile: (profile) => manifest.profiles.push(profile),
+        password: PASSWORD,
+        terrainFile,
+        username: USERNAME,
+      });
+      phaseSevenProfiles = manifest.profiles.slice(phaseSevenProfileStart);
+    }
     currentStage = "final-database-snapshot";
     const finalDatabase = await settledDatabaseSnapshot("Final database boundary");
     currentStage = "cumulative-assertions";
@@ -6992,6 +7215,7 @@ async function main() {
       phaseFourDatabaseBaseline,
       phaseFiveDatabaseBaseline,
       phaseSixDatabaseBaseline,
+      phaseSevenDatabaseBaseline,
       phaseOneDatabase,
       phaseThreeDatabase,
       phaseThreeDatabaseBaseline,
@@ -7008,6 +7232,7 @@ async function main() {
         phase_four_baseline: phaseFourDatabaseBaseline?.domain_tables ?? null,
         phase_five_baseline: phaseFiveDatabaseBaseline?.domain_tables ?? null,
         phase_six_baseline: phaseSixDatabaseBaseline?.domain_tables ?? null,
+        phase_seven_baseline: phaseSevenDatabaseBaseline?.domain_tables ?? null,
       },
     };
     const domainTableNames = new Set([
@@ -7024,6 +7249,7 @@ async function main() {
     const phaseFourRan = phaseSelected(4);
     const phaseFiveRan = phaseSelected(5);
     const phaseSixRan = phaseSelected(6);
+    const phaseSevenRan = phaseSelected(7);
     if (phaseOneRan) phaseOneProfileEvidence = assertPhaseOneProfileEvidence(phaseOneProfiles);
     if (phaseTwoRan) {
       assert(phaseTwoDatabase, "Phase 2 database boundary snapshot is missing");
@@ -7161,6 +7387,24 @@ async function main() {
         finalDatabase.audit_state,
         fixture,
         phaseSixOracleSpec,
+      );
+    }
+    if (phaseSevenRan) {
+      assert(phaseSevenDatabaseBaseline, "Phase 7 database baseline snapshot is missing");
+      phaseSevenProfileEvidence = assertPhaseSevenProfileEvidence(
+        phaseSevenProfiles,
+        phaseSevenOracleSpec,
+      );
+      phaseSevenDatabaseEvidence = assertPhaseSevenDatabaseState(
+        phaseSevenDatabaseBaseline.phase_seven_state,
+        finalDatabase.phase_seven_state,
+        fixture,
+      );
+      phaseSevenAuditEvidence = assertPhaseSevenAuditEvents(
+        phaseSevenDatabaseBaseline.audit_state,
+        finalDatabase.audit_state,
+        fixture,
+        phaseSevenOracleSpec,
       );
     }
     const phaseOneSemanticDeltaTables = phaseOneRan ? new Set([
@@ -7304,10 +7548,19 @@ async function main() {
         Object.hasOwn(finalDatabase.domain_tables, table)
       )),
     );
-    const cumulativeSemanticDeltaTables = phaseSixRan ? new Set([
+    const throughPhaseSixSemanticDeltaTables = phaseSixRan ? new Set([
       ...throughPhaseFiveSemanticDeltaTables,
       ...phaseSixAllowedTables,
     ]) : throughPhaseFiveSemanticDeltaTables;
+    const phaseSevenAllowedTables = new Set(
+      phaseSevenOracleSpec.phase_seven.database_boundaries.owned_tables.filter((table) => (
+        Object.hasOwn(finalDatabase.domain_tables, table)
+      )),
+    );
+    const cumulativeSemanticDeltaTables = phaseSevenRan ? new Set([
+      ...throughPhaseSixSemanticDeltaTables,
+      ...phaseSevenAllowedTables,
+    ]) : throughPhaseSixSemanticDeltaTables;
     const forbiddenDomainTables = changedDomainTables.filter(
       (table) => !cumulativeSemanticDeltaTables.has(table),
     );
@@ -7476,7 +7729,21 @@ async function main() {
         evidence: "phase_six_browser_and_backend_boundary",
       },
     ]));
-    const wholeTableMutationAccounting = phaseSixRan
+    const phaseSevenAccounting = Object.fromEntries([...phaseSevenAllowedTables].map((table) => [
+      table,
+      {
+        allow_row_delta: true,
+        evidence: "phase_seven_browser_provider_shade_terrain_boundary",
+      },
+    ]));
+    const wholeTableMutationAccounting = phaseSevenRan
+      ? assertWholeTableMutationAccounting(
+        phaseSevenDatabaseBaseline.domain_tables,
+        finalDatabase.domain_tables,
+        phaseSevenAllowedTables,
+        phaseSevenAccounting,
+      )
+      : phaseSixRan
       ? assertWholeTableMutationAccounting(
         phaseSixDatabaseBaseline.domain_tables,
         finalDatabase.domain_tables,
@@ -7845,11 +8112,12 @@ async function main() {
         final: finalDatabase.domain_tables,
         initial: fixture.database_snapshot.domain_tables,
         phase_one_boundary: phaseOneDatabase?.domain_tables ?? null,
+        phase_seven_baseline: phaseSevenDatabaseBaseline?.domain_tables ?? null,
       },
       domain_counts_unchanged: !phaseOneRan && !phaseTwoRan && !phaseThreeRan
-        && !phaseFourRan && !phaseFiveRan && !phaseSixRan,
+        && !phaseFourRan && !phaseFiveRan && !phaseSixRan && !phaseSevenRan,
       domain_digests_unchanged: !phaseOneRan && !phaseTwoRan && !phaseThreeRan
-        && !phaseFourRan && !phaseFiveRan && !phaseSixRan,
+        && !phaseFourRan && !phaseFiveRan && !phaseSixRan && !phaseSevenRan,
       phase_zero_enforcement: phaseZeroProfileEvidence ? {
         browser_profile_matrix: phaseZeroProfileEvidence.profile_matrix_enforced === true,
         cumulative_before_phase_one: true,
@@ -7943,6 +8211,19 @@ async function main() {
         support: phaseSixOracleSpec.phase_six.support,
         whole_table_mutation_accounting: wholeTableMutationAccounting,
       } : null,
+      phase_seven_enforcement: phaseSevenRan ? {
+        ...phaseSevenAuditEvidence,
+        ...phaseSevenDatabaseEvidence,
+        browser_profile_matrix: phaseSevenProfileEvidence?.profile_matrix_enforced === true,
+        fixture_oracle_binding: phaseSevenFixtureOracleEvidence,
+        phase_fixture_scope: PHASE === 7 && THROUGH_PHASE === 7
+          ? "fresh-fixture-phase-seven-only"
+          : "fresh-fixture-cumulative-through-phase-seven",
+        profile_execution: phaseSevenProfileEvidence,
+        preparation: phaseSevenPreparation,
+        support: phaseSevenOracleSpec.phase_seven.support,
+        whole_table_mutation_accounting: wholeTableMutationAccounting,
+      } : null,
       phase_boundaries: {
         phase_one_audit_total: phaseOneDatabase?.audit_state.total_count ?? null,
         phase_one_profile_count: phaseOneRan
@@ -7956,6 +8237,7 @@ async function main() {
         phase_four_profile_count: phaseFourRan ? phaseFourProfiles.length : null,
         phase_five_profile_count: phaseFiveRan ? phaseFiveProfiles.length : null,
         phase_six_profile_count: phaseSixRan ? phaseSixProfiles.length : null,
+        phase_seven_profile_count: phaseSevenRan ? phaseSevenProfiles.length : null,
       },
       final: finalDatabase.domain_counts,
       initial: fixture.database_snapshot.domain_counts,
@@ -8092,7 +8374,11 @@ module.exports = {
   assertPhaseFiveProfileEvidence,
   assertPhaseSixFixtureOracleBinding,
   assertPhaseSixAuditEvents,
+  assertPhaseSevenAuditEvents,
   assertPhaseSixProfileEvidence,
+  assertPhaseSevenDatabaseState,
+  assertPhaseSevenFixtureOracleBinding,
+  assertPhaseSevenProfileEvidence,
   assertPhaseTwoAuditEvents,
   assertPhaseTwoBrowserMutationMultiset,
   assertPhaseTwoCalendarLifecycleEvidence,
@@ -8153,6 +8439,7 @@ module.exports = {
   phaseFourOracle,
   phaseFiveOracle,
   phaseSixOracle,
+  phaseSevenOracle,
   writeManifestAtomic,
   runPhaseTwoReadOnlyPermutation,
 };

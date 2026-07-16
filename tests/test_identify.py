@@ -222,6 +222,9 @@ class TestIdentifyPlant(BaseApiTest):
         self.assertEqual(data["candidates"][0]["source"], "plantnet")
         self.assertIn("attribution", data)
         self.assertEqual(data["plantnet_remaining"], 498)
+        self.assertEqual(data["status"], "success")
+        self.assertTrue(data["advisory"])
+        self.assertFalse(data["durable_mutation_performed"])
 
     @patch("gardenops.routers.ai.identify_plant_with_ai")
     @patch("gardenops.services.plantnet.identify")
@@ -344,6 +347,62 @@ class TestIdentifyPlant(BaseApiTest):
         self.assertIn("plantnet", sources)
         self.assertIn("anthropic", sources)
 
+    @patch("gardenops.routers.ai.reserve_daily_provider_budget")
+    @patch("gardenops.routers.ai.identify_plant_with_ai")
+    @patch("gardenops.services.plantnet.identify")
+    def test_identify_budget_counts_each_attempted_provider_call(
+        self,
+        mock_pn: MagicMock,
+        mock_ai: MagicMock,
+        mock_reserve: MagicMock,
+    ) -> None:
+        mock_pn.return_value = _plantnet_result_low_confidence()
+        mock_ai.return_value = _CLAUDE_IDENTIFY_RESPONSE
+
+        with patch.dict(os.environ, _IDENTIFY_ENV):
+            resp = self.client.post(
+                "/api/ai/identify-plant?organ=leaf",
+                content=_make_jpeg(),
+                headers={"Content-Type": "image/jpeg"},
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(mock_reserve.call_count, 2)
+        self.assertEqual(mock_pn.call_count, 1)
+        self.assertEqual(mock_ai.call_count, 1)
+
+    @patch("gardenops.routers.ai.reserve_daily_provider_budget")
+    @patch("gardenops.routers.ai.identify_plant_with_ai")
+    @patch("gardenops.services.plantnet.identify")
+    def test_identify_does_not_reserve_for_unconfigured_ai_enrichment(
+        self,
+        mock_pn: MagicMock,
+        mock_ai: MagicMock,
+        mock_reserve: MagicMock,
+    ) -> None:
+        mock_pn.return_value = _plantnet_result_low_confidence()
+
+        with patch.dict(
+            os.environ,
+            {
+                "AI_PROVIDER": "disabled",
+                "PLANTNET_API_KEY": "test-plantnet-key",
+                "ANTHROPIC_API_KEY": "",
+                "OPENAI_API_KEY": "",
+            },
+        ):
+            resp = self.client.post(
+                "/api/ai/identify-plant?organ=leaf",
+                content=_make_jpeg(),
+                headers={"Content-Type": "image/jpeg"},
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()["status"], "partial")
+        self.assertIn("ai_enrichment_not_configured", resp.json()["warnings"])
+        self.assertEqual(mock_reserve.call_count, 1)
+        mock_ai.assert_not_called()
+
     @patch("gardenops.routers.ai.identify_plant_with_ai")
     @patch("gardenops.services.plantnet.identify")
     def test_duplicate_latin_deduplication(
@@ -423,8 +482,13 @@ class TestIdentifyPlant(BaseApiTest):
         self.assertEqual(resp.json()["candidates"][0]["source"], "plantnet")
         mock_ai.assert_not_called()
 
+    @patch("gardenops.routers.ai.reserve_daily_provider_budget")
     @patch("gardenops.routers.ai.identify_plant_with_ai")
-    def test_ai_fallback_respects_identify_concurrency_limit(self, mock_ai: MagicMock) -> None:
+    def test_ai_fallback_respects_identify_concurrency_limit(
+        self,
+        mock_ai: MagicMock,
+        mock_reserve: MagicMock,
+    ) -> None:
         mock_ai.return_value = _CLAUDE_IDENTIFY_RESPONSE
 
         with (
@@ -449,6 +513,7 @@ class TestIdentifyPlant(BaseApiTest):
         self.assertEqual(resp.status_code, 429, resp.text)
         self.assertIn("Concurrent request limit exceeded", resp.json()["detail"])
         mock_ai.assert_not_called()
+        mock_reserve.assert_not_called()
 
 
 class TestDiagnosePlant(BaseApiTest):
@@ -490,6 +555,26 @@ class TestDiagnosePlant(BaseApiTest):
         self.assertEqual(len(data["diagnoses"]), 1)
         self.assertEqual(data["diagnoses"][0]["issue_type"], "fungal")
         self.assertEqual(data["diagnoses"][0]["confidence"], "high")
+        self.assertTrue(data["advisory"])
+        self.assertFalse(data["durable_mutation_performed"])
+
+    @patch("gardenops.routers.ai.diagnose_plant_with_ai")
+    def test_diagnosis_timeout_returns_retryable_gateway_timeout(
+        self,
+        mock_diagnose: MagicMock,
+    ) -> None:
+        from gardenops.services.ai_provider import AIProviderTimeout
+
+        mock_diagnose.side_effect = AIProviderTimeout(provider="anthropic")
+        with patch.dict(os.environ, _DIAGNOSE_ENV):
+            resp = self.client.post(
+                "/api/ai/diagnose-plant",
+                content=_make_jpeg(),
+                headers={"Content-Type": "image/jpeg"},
+            )
+
+        self.assertEqual(resp.status_code, 504)
+        self.assertEqual(resp.json()["detail"], "Diagnosis service timed out")
 
     @patch("gardenops.routers.ai.diagnose_plant_with_ai")
     def test_diagnosis_context_omits_journal_notes_by_default(

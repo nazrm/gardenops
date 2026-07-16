@@ -806,22 +806,10 @@ function syncMobileViewportOffset(): void {
   );
 }
 
-function syncMobileShadeDisclosureState(): void {
-  const backdrop = document.getElementById("shade-mobile-backdrop");
-  if (!(backdrop instanceof HTMLElement)) return;
-  const hasOpenDisclosure = isMobile()
-    && activeTab === "map"
-    && getTopLevelShadeDisclosures().some((details) => details.open);
-  backdrop.classList.toggle("shade-mobile-backdrop--visible", hasOpenDisclosure);
-  backdrop.setAttribute("aria-hidden", hasOpenDisclosure ? "false" : "true");
-  document.body.classList.toggle("shade-mobile-disclosure-open", hasOpenDisclosure);
-}
-
 function closeMobileShadeDisclosures(): void {
   getTopLevelShadeDisclosures().forEach((details) => {
     if (details.open) details.open = false;
   });
-  syncMobileShadeDisclosureState();
 }
 
 function maybeCenterFocusedMobileField(target: EventTarget | null): void {
@@ -2356,7 +2344,6 @@ function setupLayout(): void {
   const mobileMapToolsCloseBtn = queryButton("mobile-map-tools-close-btn");
   const mobileMapSheetBackdrop = document.getElementById("mobile-map-sheet-backdrop");
   const mobileMapLayoutsSaveBtn = queryButton("mobile-map-layouts-save-btn");
-  const shadeMobileBackdrop = document.getElementById("shade-mobile-backdrop");
 
   mapEditBtn?.addEventListener("click", () => {
     if (!ensureWriteAccess()) return;
@@ -2412,7 +2399,6 @@ function setupLayout(): void {
   mobileMapLayoutsCloseBtn?.addEventListener("click", () => setMobileMapSheetOpen(null));
   mobileMapToolsCloseBtn?.addEventListener("click", () => setMobileMapSheetOpen(null));
   mobileMapSheetBackdrop?.addEventListener("click", () => setMobileMapSheetOpen(null));
-  shadeMobileBackdrop?.addEventListener("click", () => closeMobileShadeDisclosures());
   mobileMapLayoutsSaveBtn?.addEventListener("click", () => {
     void (async () => {
       const saved = await saveLayout();
@@ -2443,14 +2429,12 @@ function setupLayout(): void {
     details.addEventListener("toggle", () => {
       if (details.open && isMobile()) {
         setMobileUtilityOpen(false);
-        setMobileMapSheetOpen(null);
         getTopLevelShadeDisclosures().forEach((other) => {
           if (other !== details && other.open) {
             other.open = false;
           }
         });
       }
-      syncMobileShadeDisclosureState();
     });
   });
 
@@ -2606,7 +2590,6 @@ function setupLayout(): void {
   ensureGatedFeatureInitializers();
   syncMobileCapabilities();
   updateMapDirectionControlVisibility();
-  syncMobileShadeDisclosureState();
   syncMobileViewportOffset();
 }
 
@@ -2969,7 +2952,6 @@ function applyNavigationState(opts: { triggerLoads?: boolean } = {}): void {
   }
   if (isMobile()) {
     setMobileUtilityOpen(false);
-    syncMobileShadeDisclosureState();
   }
   if (triggerLoads) {
     scheduleActiveNavigationContentLoad();
@@ -7307,7 +7289,6 @@ window.addEventListener("resize", () => {
     setMobileMapSheetOpen(null);
     closeMobileShadeDisclosures();
   }
-  syncMobileShadeDisclosureState();
   syncMobileViewportOffset();
   syncMapLayersCollapsedFromStorage();
   syncDataLayoutModeAfterResize();

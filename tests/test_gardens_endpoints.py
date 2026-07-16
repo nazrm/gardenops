@@ -1,9 +1,27 @@
+import io
 import os
 from pathlib import Path
 from unittest.mock import patch
 
+import laspy
+import numpy as np
+from pyproj import CRS
+
 import gardenops.db as db
 from tests.base import BaseApiTest
+
+
+def _valid_laz_bytes(*, elevation_offset: float = 0.0) -> bytes:
+    header = laspy.LasHeader(point_format=3, version="1.2")
+    header.add_crs(CRS.from_epsg(32632))
+    terrain = laspy.LasData(header)
+    terrain.x = np.array([500_000.0, 500_001.0, 500_000.0, 500_001.0])
+    terrain.y = np.array([6_640_000.0, 6_640_000.0, 6_640_001.0, 6_640_001.0])
+    terrain.z = np.array([10.0, 20.0, 30.0, 40.0]) + elevation_offset
+    terrain.classification = np.full(4, 2)
+    output = io.BytesIO()
+    terrain.write(output, do_compress=True)
+    return output.getvalue()
 
 
 class TestGardensList(BaseApiTest):
@@ -175,16 +193,16 @@ class TestGardenSettings(BaseApiTest):
             finally:
                 db.return_db(conn)
 
-            with patch("gardenops.services.lidar_terrain._validate_uploaded_terrain_payload"):
-                upload = client.post(
-                    f"/api/gardens/{garden_id}/lidar",
-                    headers={
-                        **headers,
-                        "content-type": "application/octet-stream",
-                        "x-upload-filename": "terrain.laz",
-                    },
-                    content=b"fake-laz-data",
-                )
+            payload = _valid_laz_bytes()
+            upload = client.post(
+                f"/api/gardens/{garden_id}/lidar",
+                headers={
+                    **headers,
+                    "content-type": "application/octet-stream",
+                    "x-upload-filename": "terrain.laz",
+                },
+                content=payload,
+            )
             self.assertEqual(upload.status_code, 201, upload.text)
             upload_body = upload.json()
             self.assertTrue(upload_body["available"])
@@ -193,7 +211,7 @@ class TestGardenSettings(BaseApiTest):
 
             stored = self.test_media_dir / "lidar" / f"garden-{garden_id}" / "terrain.laz"
             self.assertTrue(stored.exists())
-            self.assertEqual(stored.read_bytes(), b"fake-laz-data")
+            self.assertEqual(stored.read_bytes(), payload)
 
             status = client.get(f"/api/gardens/{garden_id}/lidar", headers=headers)
             self.assertEqual(status.status_code, 200, status.text)
@@ -234,6 +252,111 @@ class TestGardenSettings(BaseApiTest):
             self.assertFalse(deleted.json()["uploaded"])
             self.assertEqual(deleted.json()["file_cleanup"], "complete")
             self.assertFalse(stored.exists())
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_garden_lidar_db_failure_restores_previous_active_file(self) -> None:
+        try:
+            client, headers, garden_id = self._create_garden_with_admin()
+            original = _valid_laz_bytes()
+            first = client.post(
+                f"/api/gardens/{garden_id}/lidar",
+                headers={**headers, "x-upload-filename": "terrain.laz"},
+                content=original,
+            )
+            self.assertEqual(first.status_code, 201, first.text)
+            stored = self.test_media_dir / "lidar" / f"garden-{garden_id}" / "terrain.laz"
+
+            with patch(
+                "gardenops.routers.gardens._invalidate_garden_terrain_state",
+                side_effect=RuntimeError("database invalidation failed"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "database invalidation failed"):
+                    client.post(
+                        f"/api/gardens/{garden_id}/lidar",
+                        headers={**headers, "x-upload-filename": "replacement.laz"},
+                        content=_valid_laz_bytes(elevation_offset=100.0),
+                    )
+
+            self.assertEqual(stored.read_bytes(), original)
+            self.assertEqual(list(stored.parent.glob(".terrain-*")), [])
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_garden_lidar_viewer_editor_and_garden_boundaries(self) -> None:
+        try:
+            admin_client, admin_headers, garden_id = self._create_garden_with_admin()
+            editor = self._create_test_user("lidar_editor", "editorpass", "editor")
+            viewer = self._create_test_user("lidar_viewer", "viewerpass", "viewer")
+            foreign = self._create_test_user("lidar_foreign", "foreignpass", "editor")
+            conn = db.get_db()
+            try:
+                foreign_garden_id = int(
+                    conn.execute(
+                        "INSERT INTO gardens (slug, name) VALUES (%s, %s) RETURNING id",
+                        ("lidar-foreign", "LiDAR Foreign"),
+                    ).fetchone()["id"]
+                )
+                conn.execute(
+                    "INSERT INTO garden_memberships (garden_id, user_id, role) "
+                    "VALUES (%s, %s, 'editor'), (%s, %s, 'viewer'), (%s, %s, 'editor')",
+                    (
+                        garden_id,
+                        int(editor["id"]),
+                        garden_id,
+                        int(viewer["id"]),
+                        foreign_garden_id,
+                        int(foreign["id"]),
+                    ),
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            editor_client, editor_headers = self._authenticated_client(
+                "lidar_editor", "editorpass", garden_id=garden_id
+            )
+            viewer_client, viewer_headers = self._authenticated_client(
+                "lidar_viewer", "viewerpass", garden_id=garden_id
+            )
+            foreign_client, foreign_headers = self._authenticated_client(
+                "lidar_foreign", "foreignpass", garden_id=foreign_garden_id
+            )
+
+            upload = editor_client.post(
+                f"/api/gardens/{garden_id}/lidar",
+                headers={**editor_headers, "x-upload-filename": "terrain.laz"},
+                content=_valid_laz_bytes(),
+            )
+            self.assertEqual(upload.status_code, 201, upload.text)
+            self.assertEqual(
+                viewer_client.get(
+                    f"/api/gardens/{garden_id}/lidar", headers=viewer_headers
+                ).status_code,
+                200,
+            )
+            self.assertEqual(
+                viewer_client.delete(
+                    f"/api/gardens/{garden_id}/lidar", headers=viewer_headers
+                ).status_code,
+                403,
+            )
+            self.assertEqual(
+                foreign_client.get(
+                    f"/api/gardens/{garden_id}/lidar", headers=foreign_headers
+                ).status_code,
+                404,
+            )
+            self.assertEqual(
+                foreign_client.post(
+                    f"/api/gardens/{garden_id}/lidar",
+                    headers={**foreign_headers, "x-upload-filename": "terrain.laz"},
+                    content=_valid_laz_bytes(),
+                ).status_code,
+                404,
+            )
+            removed = admin_client.delete(f"/api/gardens/{garden_id}/lidar", headers=admin_headers)
+            self.assertEqual(removed.status_code, 200, removed.text)
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 

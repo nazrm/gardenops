@@ -127,8 +127,8 @@ export function renderWeatherDashboard(
 
   const sections: string[] = [];
 
-  // Forecast strip
   if (summary.forecast_days.length > 0) {
+    const trustMarkup = forecastTrustMarkup(summary);
     const days = summary.forecast_days.map((day) => {
       const isFrost = day.temp_min !== null && day.temp_min <= 0;
       const tempStr = day.temp_min !== null && day.temp_max !== null
@@ -150,6 +150,7 @@ export function renderWeatherDashboard(
       <div class="weather-section">
         <div class="weather-section-title">
           ${t("weather.forecast_title")}
+          ${trustMarkup}
           <div class="weather-actions">
             <button type="button" class="btn-secondary weather-check-btn"${canWriteWeather() ? "" : " hidden"}>${t("weather.refresh")}</button>
           </div>
@@ -159,7 +160,6 @@ export function renderWeatherDashboard(
     `);
   }
 
-  // Alert cards
   if (summary.alerts.length > 0) {
     const alertCards = summary.alerts.map((alert) =>
       createWeatherAlertCardMarkup(alert, true),
@@ -289,4 +289,32 @@ function createWeatherAlertCardMarkup(
       ${dismissAction}
     </div>
   `;
+}
+
+type WeatherSummaryWithTrust = WeatherSummary & {
+  forecast_source?: "provider" | "cache" | null;
+  forecast_fetched_at_ms?: number | null;
+  forecast_age_ms?: number | null;
+  forecast_stale?: boolean;
+  forecast_fallback?: boolean;
+};
+
+function forecastTrustMarkup(summary: WeatherSummary): string {
+  const trust = summary as WeatherSummaryWithTrust;
+  if (
+    typeof trust.forecast_age_ms !== "number"
+    || !Number.isFinite(trust.forecast_age_ms)
+  ) {
+    return "";
+  }
+  const minutes = Math.max(0, Math.floor(trust.forecast_age_ms / 60_000));
+  const age = t("notifications.time_ago", { minutes });
+  const isDegraded = trust.forecast_stale === true
+    || trust.forecast_fallback === true;
+  const icon = isDegraded ? "\u26a0\ufe0f" : "\u23f1";
+  return `<span class="weather-alert-dates weather-forecast-age"`
+    + ` data-forecast-source="${escapeHtml(trust.forecast_source ?? "unknown")}"`
+    + ` data-forecast-stale="${String(trust.forecast_stale === true)}"`
+    + ` data-forecast-fallback="${String(trust.forecast_fallback === true)}"`
+    + ` title="${escapeHtml(age)}"><span aria-hidden="true">${icon}</span> ${escapeHtml(age)}</span>`;
 }
