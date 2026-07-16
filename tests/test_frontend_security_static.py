@@ -6,6 +6,71 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FrontendSecurityStaticTests(unittest.TestCase):
+    def test_identity_session_ui_never_renders_token_hashes(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
+            encoding="utf-8"
+        )
+        auth_api = (ROOT / "frontend" / "src" / "services" / "authApi.ts").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("token_hash", panel)
+        self.assertNotIn('session["token_hash"]', auth_api)
+        self.assertIn('session["session_id"] ?? session["id"]', auth_api)
+        self.assertIn('session["current"] === true', auth_api)
+        self.assertIn("session.device_label", panel)
+
+    def test_phase_five_identity_mutations_use_scoped_contracts(self) -> None:
+        auth_api = (ROOT / "frontend" / "src" / "services" / "authApi.ts").read_text(
+            encoding="utf-8"
+        )
+        expected_contracts = (
+            "apiPatch(`/api/auth/passkeys/${passkeyId}`",
+            "apiDelete(`/api/auth/sessions/${encodedId}`",
+            'apiPost("/api/auth/mfa/totp/cancel"',
+            'apiPost("/api/auth/mfa/totp/confirm"',
+        )
+        for contract in expected_contracts:
+            self.assertIn(contract, auth_api)
+        self.assertIn('headers["x-garden-id"]', auth_api)
+        self.assertIn("sessionStorage.setItem(ACTIVE_GARDEN_STORAGE_KEY", auth_api)
+
+    def test_phase_five_identity_actions_have_confirmation_and_live_feedback(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
+            encoding="utf-8"
+        )
+        gate = (ROOT / "frontend" / "src" / "features" / "authGate.ts").read_text(encoding="utf-8")
+        for key in (
+            "identity.passkeys.last_revoke_warning",
+            "identity.sessions.revoke_confirm",
+            "identity.mfa.cancel_confirm",
+            "identity.mfa.regenerate_confirm",
+            "identity.mfa.disable_confirm",
+        ):
+            self.assertIn(key, panel)
+        self.assertIn('role="${state.identityNotice.error ? "alert" : "status"}"', panel)
+        self.assertIn('error.setAttribute("role", "alert")', gate)
+        self.assertIn('error.setAttribute("aria-live", "assertive")', gate)
+
+    def test_membership_mutations_refresh_capabilities(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("async function refreshIdentityCapabilities", panel)
+        self.assertIsNotNone(
+            re.search(
+                r"upsertGardenMembershipApi\(.*?refreshIdentityCapabilities\(\)",
+                panel,
+                flags=re.DOTALL,
+            )
+        )
+        self.assertIsNotNone(
+            re.search(
+                r"deleteGardenMembershipApi\(.*?refreshIdentityCapabilities\(\)",
+                panel,
+                flags=re.DOTALL,
+            )
+        )
+
     def test_auth_expiry_clears_offline_queue(self) -> None:
         app_ts = (ROOT / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")
         match = re.search(

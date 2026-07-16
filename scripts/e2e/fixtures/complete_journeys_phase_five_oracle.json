@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "phase_five": {
+    "profile_order": [
+      "admin:desktop",
+      "admin:mobile",
+      "editor:desktop",
+      "editor:mobile",
+      "viewer:desktop",
+      "viewer:mobile"
+    ],
+      "fixture": {
+        "invitee_username": "complete_journeys_e2e_phase_five_invitee",
+        "viewer_invitee_username": "complete_journeys_e2e_phase_five_viewer_invitee",
+      "passkey_nickname": "Phase 5 garden key",
+      "passkey_renamed_nickname": "Phase 5 renamed garden key",
+      "settings_pattern": "phase-five-*",
+      "settings_label": "Phase 5 bed",
+      "settings_description": "Phase 5 active-garden identity preference"
+    },
+    "database_boundaries": {
+      "owned_tables": [
+        "auth_mfa_pending_enrollments",
+        "auth_mfa_recovery_codes",
+        "auth_passkeys",
+        "auth_sessions",
+        "auth_user_invitations",
+        "auth_users",
+        "garden_memberships",
+        "garden_invitations",
+        "auth_user_plot_assignment_meanings"
+      ],
+      "forbidden_manifest_fields": [
+        "credential_id",
+        "credential_public_key",
+        "invite_token",
+        "mfa_totp_secret",
+        "password_hash",
+        "token_hash"
+      ]
+    },
+    "support": {
+      "absolute_session_expiry": "backend_proven",
+      "invitation_lifecycle": "browser_and_backend_proven",
+      "passkey_ceremony": "browser_and_backend_proven",
+      "role_refresh": "browser_and_backend_proven",
+      "session_revocation": "browser_and_backend_proven",
+      "totp_recovery": "browser_and_backend_proven"
+    }
+  }
+}

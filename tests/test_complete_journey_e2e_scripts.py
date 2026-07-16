@@ -29,6 +29,9 @@ PHASE_THREE_ORACLE = (
 PHASE_FOUR_ORACLE = (
     ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_four_oracle.json"
 )
+PHASE_FIVE_ORACLE = (
+    ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_five_oracle.json"
+)
 EXPECTED_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
 ).stdout.strip()
@@ -196,7 +199,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
     subprocess.run(["git", "init", "--quiet"], cwd=checkout, check=True, timeout=20)
     runner = checkout / "scripts" / "run_complete_journeys_e2e.sh"
     result = subprocess.run(
-        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "5"],
+        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "6"],
         cwd=checkout,
         capture_output=True,
         check=False,
@@ -695,7 +698,7 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
     runner_source = RUNNER.read_text(encoding="utf-8")
 
-    assert "MAX_IMPLEMENTED_PHASE=4" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
     assert "runDailyAttentionWork" in journey_source
     assert 'require("./e2e/journeys/dailyAttentionWork.cjs")' in checker_source
     assert "phaseSelected(2)" in checker_source
@@ -713,7 +716,7 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_THREE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=4" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
     assert "GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER=1" in runner_source
     assert "runObservationToAction" in journey_source
     assert 'require("./e2e/journeys/observationToAction.cjs")' in checker_source
@@ -865,7 +868,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FOUR_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=4" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
     assert 'require("./e2e/journeys/planningAndReporting.cjs")' in checker_source
     assert "phaseSelected(4)" in checker_source
     assert "runPlanningAndReporting" in checker_source
@@ -998,6 +1001,64 @@ def test_phase_four_static_product_contracts_exist_before_browser_execution() ->
     assert "isCurrentStatisticsRequest" in statistics_tab
     assert "isCurrentInventoryRequest" in inventory_tab
     assert "isCurrentProcurementRequest" in procurement_tab
+
+
+def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None:
+    journey = ROOT / "scripts" / "e2e" / "journeys" / "identityAndRoles.cjs"
+    journey_source = journey.read_text(encoding="utf-8")
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    seeder_source = SEEDER.read_text(encoding="utf-8")
+    runner_source = RUNNER.read_text(encoding="utf-8")
+    oracle = json.loads(PHASE_FIVE_ORACLE.read_text(encoding="utf-8"))
+
+    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
+    assert 'require("./e2e/journeys/identityAndRoles.cjs")' in checker_source
+    assert "phaseSelected(5)" in checker_source
+    assert "runIdentityAndRoles" in checker_source
+    assert "assertPhaseFiveDatabaseState" in checker_source
+    assert "assertPhaseFiveAuditEvents" in checker_source
+    assert "_phase_five_runtime_state" in seeder_source
+    assert "phase_five_state" in seeder_source
+    assert oracle["schema_version"] == 1
+    assert oracle["phase_five"]["profile_order"] == [
+        "admin:desktop",
+        "admin:mobile",
+        "editor:desktop",
+        "editor:mobile",
+        "viewer:desktop",
+        "viewer:mobile",
+    ]
+    for journey_id in ("A1", "A2", "A4", "C1", "C3", "C5", "CROSS-02"):
+        assert f'"{journey_id}"' in checker_source
+    for marker in (
+        'client.send("WebAuthn.enable")',
+        'client.send("WebAuthn.addVirtualAuthenticator"',
+        "createUserInvitation",
+        "createGardenInvitation",
+        "acceptInvitation",
+        "exerciseInvalidInvitation",
+        "exercisePasskeys",
+        "exerciseTotp",
+        "exerciseSessionRevocation",
+        "exerciseIncidentControl",
+        "exerciseRoleSurface",
+        "Passwordless passkey sign-in failed",
+        "Revoked browser session remained authorized",
+        "Invalid invitation attempt changed account or invitation counts",
+    ):
+        assert marker in journey_source
+    for forbidden in ("route.fulfill(", "context.addCookies(", "page.setContent("):
+        assert forbidden not in journey_source
+
+
+def test_phase_five_totp_generator_matches_rfc_vector() -> None:
+    script = r"""
+const { currentTotp } = require('./scripts/e2e/journeys/identityAndRoles.cjs');
+const secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+if (currentTotp(secret, 59000) !== '287082') process.exit(2);
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_phase_two_d4_provider_boundary_remains_required() -> None:

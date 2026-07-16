@@ -252,6 +252,8 @@ scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --p
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 3
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 4
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 4
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 5
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 5
 ```
 
 The runner creates its own disposable PostgreSQL child through
@@ -431,6 +433,29 @@ coverage contracts:
 .venv/bin/pytest -q tests/test_complete_journey_e2e_scripts.py -k phase_four
 .venv/bin/python scripts/check_journey_coverage.py --allow-open
 node --check scripts/e2e/journeys/planningAndReporting.cjs
+node --check scripts/check_complete_journeys_e2e.cjs
+```
+
+Phase 5 verifies invitation acceptance, role boundaries, passkey enrollment,
+rename, passwordless login, and revocation, plus TOTP enrollment cancellation,
+confirmation, recovery-code regeneration, and disable. It also proves safe
+session inventory and revocation from a second browser context, personal
+settings persistence, and emergency read-only enable/block/disable behavior on
+desktop and Pixel 7 profiles. Invitation and authentication secrets are scrubbed
+before traces become retained evidence.
+
+Session deployments have two independent limits. `AUTH_SESSION_TTL_HOURS`
+defaults to a 12-hour idle timeout; `AUTH_SESSION_ABSOLUTE_TTL_HOURS` defaults to
+168 hours and prevents activity from renewing a session forever. Focused auth
+tests should cover both boundaries whenever session renewal changes.
+
+Before coordinating a real Phase 5 browser run, validate its static harness and
+coverage contracts:
+
+```bash
+.venv/bin/pytest -q tests/test_complete_journey_e2e_scripts.py -k phase_five
+.venv/bin/python scripts/check_journey_coverage.py --allow-open
+node --check scripts/e2e/journeys/identityAndRoles.cjs
 node --check scripts/check_complete_journeys_e2e.cjs
 ```
 

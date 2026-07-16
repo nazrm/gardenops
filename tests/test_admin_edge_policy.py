@@ -76,6 +76,7 @@ class TestAdminEdgePolicy(unittest.TestCase):
             "/api/auth/mfa/",
             "/api/auth/users/",
             "/api/auth/user-invitations/",
+            "/api/auth/sessions/",
             "/api/gardens/{garden_id}/",
             "/api/media/plants/",
         )

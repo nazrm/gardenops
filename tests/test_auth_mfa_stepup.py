@@ -66,3 +66,31 @@ class TestAuthMfaStepUp(BaseApiTest):
 
         self.assertEqual(response.status_code, 403, response.text)
         self.assertEqual(response.json()["detail"], "Recent reauthentication required")
+
+    def test_pending_totp_enrollment_can_be_cancelled(self) -> None:
+        with patch.dict("os.environ", AUTH_MFA_ENV, clear=False):
+            client, headers = self._admin_client("cancel_totp_admin")
+            start = client.post("/api/auth/mfa/totp/start", headers=headers)
+            self.assertEqual(start.status_code, 200, start.text)
+
+            cancelled = client.post(
+                "/api/auth/mfa/totp/cancel",
+                headers=headers,
+                json={"action_reason": "enrollment-abandoned"},
+            )
+
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        self.assertFalse(cancelled.json()["mfa"]["pending_enrollment"])
+        conn = db.get_db()
+        try:
+            pending = conn.execute(
+                "SELECT COUNT(*) AS count FROM auth_mfa_pending_enrollments",
+            ).fetchone()
+            audit = conn.execute(
+                "SELECT detail FROM audit_events WHERE path = %s ORDER BY id DESC LIMIT 1",
+                ("/api/auth/mfa/totp/cancel",),
+            ).fetchone()
+            self.assertEqual(int(pending["count"]), 0)
+            self.assertIn("auth.mfa.totp.cancel", str(audit["detail"]))
+        finally:
+            db.return_db(conn)

@@ -1041,6 +1041,46 @@ class TestPasskeyRegistration(PasskeyApiTest):
         self.assertEqual(int(row["sign_count"]), 1)
         self.assertEqual(int(used_challenges["count"]), 1)
 
+    def test_rename_list_and_revoke_use_safe_identifier_and_revoked_key_cannot_login(self) -> None:
+        client, headers, passkey_id = self._register_passkey()
+
+        renamed = client.patch(
+            f"/api/auth/passkeys/{passkey_id}",
+            headers=headers,
+            json={"nickname": "Work laptop", "action_reason": "identify-device"},
+        )
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        self.assertEqual(renamed.json()["passkey"]["nickname"], "Work laptop")
+
+        listed = client.get("/api/auth/passkeys")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        serialized = listed.json()["passkeys"][0]
+        self.assertEqual(serialized["id"], passkey_id)
+        self.assertNotIn("credential_id", serialized)
+        self.assertNotIn("credential_public_key", serialized)
+
+        revoked = client.request(
+            "DELETE",
+            f"/api/auth/passkeys/{passkey_id}",
+            headers=headers,
+            json={"action_reason": "lost-device"},
+        )
+        self.assertEqual(revoked.status_code, 200, revoked.text)
+
+        options = client.post(
+            "/api/auth/passkeys/login/options",
+            json={"username": "passkey_user"},
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+        denied = client.post(
+            "/api/auth/passkeys/login/verify",
+            json={
+                "challenge_token": options.json()["challenge_token"],
+                "credential": _fake_authentication_credential(),
+            },
+        )
+        self.assertEqual(denied.status_code, 401)
+
     def test_register_verify_rejects_challenge_replay(self) -> None:
         self._create_test_user("replay_passkey_user", "replay-pass", "editor")
         client, headers = self._authenticated_client("replay_passkey_user", "replay-pass")

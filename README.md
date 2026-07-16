@@ -365,6 +365,8 @@ APP_ENV=production
 INTERNET_EXPOSED=true
 AUTH_REQUIRED=true
 AUTH_MODE=session
+AUTH_SESSION_TTL_HOURS=12
+AUTH_SESSION_ABSOLUTE_TTL_HOURS=168
 ALLOW_INSECURE_REMOTE=false
 CORS_ALLOW_ORIGINS=https://gardenops.example.com
 ALLOWED_HOSTS=gardenops.example.com
@@ -390,6 +392,12 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
 Paste the output as the value.
+
+`AUTH_SESSION_TTL_HOURS` is the idle-session limit and defaults to 12 hours;
+activity can renew a session only within `AUTH_SESSION_ABSOLUTE_TTL_HOURS`,
+which defaults to 168 hours (seven days). Keep the absolute limit longer than
+the idle limit so normal use remains convenient without creating indefinitely
+renewable sessions.
 
 If an older deployment copied the previous public placeholder value, rotate it
 while the service is private: start a maintenance instance with

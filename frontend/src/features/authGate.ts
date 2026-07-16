@@ -36,6 +36,15 @@ function isPasskeyUserCancelled(err: unknown): boolean {
   return err instanceof DOMException && err.name === "NotAllowedError";
 }
 
+function createAuthGateError(message: string): HTMLDivElement {
+  const error = document.createElement("div");
+  error.className = "auth-gate-error";
+  error.setAttribute("role", "alert");
+  error.setAttribute("aria-live", "assertive");
+  error.textContent = message;
+  return error;
+}
+
 function activateAuthGate(resolve: () => void): () => void {
   document.body.classList.add(AUTH_GATE_ACTIVE_CLASS);
   let settled = false;
@@ -266,10 +275,7 @@ function renderForcedPasswordChangeForm(
     } catch (err) {
       submitBtn.disabled = false;
       submitBtn.textContent = t("auth.change_password");
-      const errDiv = document.createElement("div");
-      errDiv.className = "auth-gate-error";
-      errDiv.textContent = getApiErrorMessage(err);
-      form.appendChild(errDiv);
+      form.appendChild(createAuthGateError(getApiErrorMessage(err)));
     }
   });
 }
@@ -535,10 +541,7 @@ function renderInviteForm(
       );
       passkeyBtn.textContent = t("auth.use_passkey");
       if (isPasskeyUserCancelled(err)) return;
-      const errDiv = document.createElement("div");
-      errDiv.className = "auth-gate-error";
-      errDiv.textContent = getApiErrorMessage(err);
-      form.appendChild(errDiv);
+      form.appendChild(createAuthGateError(getApiErrorMessage(err)));
     }
   });
 
@@ -583,10 +586,7 @@ function renderInviteForm(
         "gated",
         !checklist.allPassed(),
       );
-      const errDiv = document.createElement("div");
-      errDiv.className = "auth-gate-error";
-      errDiv.textContent = getApiErrorMessage(err);
-      form.appendChild(errDiv);
+      form.appendChild(createAuthGateError(getApiErrorMessage(err)));
     }
   });
 }
@@ -792,11 +792,9 @@ function renderLoginFlow(
     if (isCancelled && !showCancelled) {
       return;
     }
-    const errDiv = document.createElement("div");
-    errDiv.className = "auth-gate-error";
-    errDiv.textContent = isCancelled
+    const errDiv = createAuthGateError(isCancelled
       ? t("auth.passkey_cancelled")
-      : getApiErrorMessage(err);
+      : getApiErrorMessage(err));
     form.appendChild(errDiv);
   };
 
@@ -859,10 +857,7 @@ function renderLoginFlow(
     ) {
       await logoutApi().catch(() => undefined);
       clearStoredAuthToken();
-      const errDiv = document.createElement("div");
-      errDiv.className = "auth-gate-error";
-      errDiv.textContent = t("auth.passkey_password_change_required");
-      form.appendChild(errDiv);
+      form.appendChild(createAuthGateError(t("auth.passkey_password_change_required")));
       revealPasswordLogin();
       return;
     }
@@ -943,10 +938,7 @@ function renderLoginFlow(
       } else {
         setLoginStep(loginStep);
       }
-      const errDiv = document.createElement("div");
-      errDiv.className = "auth-gate-error";
-      errDiv.textContent = getApiErrorMessage(err);
-      form.appendChild(errDiv);
+      form.appendChild(createAuthGateError(getApiErrorMessage(err)));
     }
   });
 

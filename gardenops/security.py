@@ -366,6 +366,16 @@ def _session_ttl_ms() -> int:
     return hours * 60 * 60 * 1000
 
 
+def _session_absolute_ttl_ms() -> int:
+    raw = os.environ.get("AUTH_SESSION_ABSOLUTE_TTL_HOURS", "").strip()
+    try:
+        hours = int(raw) if raw else 24 * 7
+    except ValueError:
+        hours = 24 * 7
+    hours = max(1, min(hours, 24 * 365))
+    return hours * 60 * 60 * 1000
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name, "").strip().lower()
     if raw in {"1", "true", "yes", "on"}:
@@ -790,6 +800,7 @@ def _authenticate_session_token(
             SELECT
                 s.user_id,
                 s.expires_at_ms,
+                s.created_at_ms,
                 s.reauthenticated_at_ms,
                 s.mfa_authenticated_at_ms,
                 s.mfa_setup_required,
@@ -819,7 +830,8 @@ def _authenticate_session_token(
             conn.commit()
             return None
         expires_at_ms = int(row["expires_at_ms"])
-        if expires_at_ms <= now_ms:
+        absolute_expires_at_ms = int(row["created_at_ms"]) + _session_absolute_ttl_ms()
+        if expires_at_ms <= now_ms or absolute_expires_at_ms <= now_ms:
             conn.execute("DELETE FROM auth_sessions WHERE token_hash = %s", (token_hash,))
             conn.commit()
             return None
@@ -837,7 +849,7 @@ def _authenticate_session_token(
         ttl = _session_ttl_ms()
         remaining = expires_at_ms - now_ms
         if remaining < ttl // 2:
-            expires_at_ms = now_ms + ttl
+            expires_at_ms = min(now_ms + ttl, absolute_expires_at_ms)
             conn.execute(
                 "UPDATE auth_sessions SET last_seen_at_ms = %s, expires_at_ms = %s "
                 "WHERE token_hash = %s",
@@ -882,11 +894,13 @@ def create_session_for_user(
     *,
     mfa_authenticated: bool = False,
     mfa_setup_required: bool = False,
+    device_label: str = "",
+    location_hint: str = "",
 ) -> tuple[str, int]:
     token = secrets.token_urlsafe(48)
     token_hash = _hash_token(token)
     now_ms = current_timestamp_ms()
-    expires_at_ms = now_ms + _session_ttl_ms()
+    expires_at_ms = now_ms + min(_session_ttl_ms(), _session_absolute_ttl_ms())
     conn = get_db()
     try:
         conn.execute(
@@ -900,9 +914,11 @@ def create_session_for_user(
                     last_seen_at_ms,
                     reauthenticated_at_ms,
                     mfa_authenticated_at_ms,
-                    mfa_setup_required
+                    mfa_setup_required,
+                    device_label,
+                    location_hint
                 )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 token_hash,
@@ -913,6 +929,8 @@ def create_session_for_user(
                 now_ms,
                 now_ms if mfa_authenticated else 0,
                 int(bool(mfa_setup_required)),
+                device_label.strip()[:120],
+                location_hint.strip()[:80],
             ),
         )
         conn.execute(

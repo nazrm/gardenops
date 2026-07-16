@@ -3,6 +3,7 @@
 import gardenops.db as db
 from gardenops.incident_controls import (
     get_emergency_read_only_status,
+    get_runtime_flag,
     is_emergency_read_only,
     set_emergency_read_only,
     set_runtime_flag,
@@ -45,7 +46,7 @@ class TestSetAndGetEmergencyReadOnly(BaseApiTest):
 
 
 class TestTtlAutoExpiry(BaseApiTest):
-    """TTL auto-expiry behavior — expired flag auto-disables."""
+    """TTL expiry is effective without a hidden status-read mutation."""
 
     def test_expired_flag_auto_disables(self) -> None:
         past_ms = db.current_timestamp_ms() - 1000
@@ -66,6 +67,11 @@ class TestTtlAutoExpiry(BaseApiTest):
             status = get_emergency_read_only_status(conn)
             self.assertFalse(status["enabled"])
             self.assertIsNone(status["expires_at_ms"])
+            self.assertEqual(get_runtime_flag(conn, "emergency_read_only"), "1")
+            self.assertEqual(
+                get_runtime_flag(conn, "emergency_read_only_expires_at_ms"),
+                str(past_ms),
+            )
         finally:
             db.return_db(conn)
 
