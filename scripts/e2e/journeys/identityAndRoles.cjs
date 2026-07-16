@@ -191,6 +191,33 @@ async function expectedHttpFailure(page, diagnostics, request, expectedStatus) {
   return result;
 }
 
+async function assertExpectedSilentDiagnostic(
+  diagnostics,
+  marks,
+  context,
+  method,
+  pathname,
+  expectedStatus,
+) {
+  await waitFor(
+    () => diagnostics.classifiedConsoleDiagnostics.length === marks.classified + 1,
+    `classified diagnostic for ${pathname}`,
+  );
+  const classified = diagnostics.classifiedConsoleDiagnostics.at(-1);
+  assert(
+    classified?.context === context
+      && classified.method === method
+      && classified.path === pathname
+      && classified.status === expectedStatus,
+    `Unexpected silent diagnostic for ${pathname}`,
+  );
+  assert(
+    diagnostics.httpErrors.length === marks.http
+      && diagnostics.consoleErrors.length === marks.console,
+    `Silent diagnostic for ${pathname} entered an error collection`,
+  );
+}
+
 async function enableVirtualAuthenticator(context, page) {
   const client = await context.newCDPSession(page);
   await client.send("WebAuthn.enable");
@@ -468,10 +495,10 @@ async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticat
   const retryMarks = diagnosticMarks(diagnostics);
   await page.reload({ waitUntil: "domcontentloaded" });
   await visible(gate, "user-verification retry gate");
-  await discardExpectedUiFailure(
-    page,
+  await assertExpectedSilentDiagnostic(
     diagnostics,
     retryMarks,
+    "postauth-signout",
     "GET",
     "/api/auth/me",
     401,
