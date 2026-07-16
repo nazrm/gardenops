@@ -758,9 +758,9 @@ function renderSettingsSection(): string {
         ${plotAssignmentMeanings.length > 0
           ? plotAssignmentMeanings.map((meaning, index) => `
             <div class="adm-plot-meaning-row" data-index="${index}">
-              <input type="text" class="adm-input adm-plot-meaning-pattern" placeholder="${t("admin.settings.plot_meanings_pattern")}" value="${esc(meaning.pattern)}" />
-              <input type="text" class="adm-input adm-plot-meaning-label" placeholder="${t("admin.settings.plot_meanings_label")}" value="${esc(meaning.label)}" />
-              <input type="text" class="adm-input adm-plot-meaning-description" placeholder="${t("admin.settings.plot_meanings_description")}" value="${esc(meaning.description)}" />
+              <input type="text" class="adm-input adm-plot-meaning-pattern" aria-label="${t("admin.settings.plot_meanings_pattern")}" placeholder="${t("admin.settings.plot_meanings_pattern")}" value="${esc(meaning.pattern)}" />
+              <input type="text" class="adm-input adm-plot-meaning-label" aria-label="${t("admin.settings.plot_meanings_label")}" placeholder="${t("admin.settings.plot_meanings_label")}" value="${esc(meaning.label)}" />
+              <input type="text" class="adm-input adm-plot-meaning-description" aria-label="${t("admin.settings.plot_meanings_description")}" placeholder="${t("admin.settings.plot_meanings_description")}" value="${esc(meaning.description)}" />
               <button type="button" class="adm-btn adm-btn--ghost adm-plot-meaning-delete">${t("admin.settings.plot_meanings_remove")}</button>
             </div>
           `).join("")

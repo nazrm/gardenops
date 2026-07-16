@@ -51,6 +51,16 @@ class FrontendSecurityStaticTests(unittest.TestCase):
         self.assertIn('error.setAttribute("role", "alert")', gate)
         self.assertIn('error.setAttribute("aria-live", "assertive")', gate)
 
+    def test_plot_meaning_inputs_have_accessible_names(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
+            encoding="utf-8"
+        )
+        for field in ("pattern", "label", "description"):
+            self.assertIn(
+                f'class="adm-input adm-plot-meaning-{field}" aria-label="${{t(',
+                panel,
+            )
+
     def test_membership_mutations_refresh_capabilities(self) -> None:
         panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
             encoding="utf-8"
