@@ -81,6 +81,11 @@ class FrontendSecurityStaticTests(unittest.TestCase):
             gate,
         )
 
+    def test_personal_settings_navigation_is_not_subscription_gated(self) -> None:
+        app = (ROOT / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")
+        self.assertIn('if (tab === "admin") return true;', app)
+        self.assertIn('mobileAdminBtn.hidden = !isTabEnabled("admin")', app)
+
     def test_membership_mutations_refresh_capabilities(self) -> None:
         panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
             encoding="utf-8"

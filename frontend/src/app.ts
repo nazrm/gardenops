@@ -375,7 +375,7 @@ function defaultSubModeForTab(tab: PrimaryContentTab): SubMode {
 
 function isTabEnabled(tab: AppTab): boolean {
   if (tab === "map") return true;
-  if (tab === "admin") return isFeatureEnabled("admin_panel");
+  if (tab === "admin") return true;
   return getSubModesForTab(tab).some((mode) => isSubModeEnabled(mode));
 }
 
@@ -6921,7 +6921,7 @@ function applyFeatureGateUi(): void {
   });
 
   const mobileAdminBtn = document.getElementById("mobile-admin-btn");
-  if (mobileAdminBtn) mobileAdminBtn.hidden = !isFeatureEnabled("admin_panel");
+  if (mobileAdminBtn) mobileAdminBtn.hidden = !isTabEnabled("admin");
 
   const mobileNotifBtn = document.getElementById("mobile-notification-btn");
   if (mobileNotifBtn) mobileNotifBtn.hidden = !isFeatureEnabled("notifications");
