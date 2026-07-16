@@ -1432,27 +1432,46 @@ def test_phase_one_passkey_challenges_have_a_separate_exact_boundary() -> None:
     assert '"auth_passkey_challenges"' in checker_source
     assert "phaseOneBoundaryDeltaTables.has(table)" in checker_source
     assert "phaseFiveChallengeStarts(profiles)" in checker_source
-    assert "browser_challenge_starts_exact: true" in checker_source
+    assert "cleaned_before_boundary_count" in checker_source
+    assert "retained_rows_exact: true" in checker_source
     assert "passkey_challenge_projection: phaseOneChallengeEvidence" in checker_source
 
     script = r"""
 const { assertPhaseOneChallengeProjection } = require('./scripts/check_complete_journeys_e2e.cjs');
-const row = (identity, digest) => ({ identity_digest: identity.repeat(64), row_digest: digest.repeat(64) });
-const tables = (rows) => ({ auth_passkey_challenges: { row_projections: rows } });
+const row = (identity, expiresAt) => ({
+  consumed_state: 'unused',
+  expires_at_ms: expiresAt,
+  flow: 'authentication_denied',
+  identity_digest: identity.repeat(64),
+  invitation_binding_present: false,
+  invitation_scope: null,
+  lifetime_valid: true,
+  owner_category: 'unbound',
+  session_binding_present: false,
+});
+const state = (rows, snapshot = 100) => ({ challenge_projection: rows, snapshot_at_ms: snapshot });
 const profiles = [{ requests: [{
   method: 'POST', path: '/api/auth/passkeys/login/options', statusCode: 200,
 }] }];
-const evidence = assertPhaseOneChallengeProjection(tables([]), tables([row('a', 'b')]), profiles);
-if (evidence.added_count !== 1 || evidence.removed_count !== 0 || evidence.updated_count !== 0) {
+const evidence = assertPhaseOneChallengeProjection(state([]), state([row('a', 200)]), profiles);
+if (evidence.retained_count !== 1 || evidence.cleaned_before_boundary_count !== 0) {
   process.exit(2);
 }
 try {
   assertPhaseOneChallengeProjection(
-    tables([]), tables([row('a', 'b'), row('c', 'd')]), profiles,
+    state([]), state([row('a', 200), row('c', 200)]), profiles,
   );
   process.exit(3);
 } catch (error) {
   if (!String(error.message).includes('diverged from browser challenge starts')) process.exit(4);
+}
+try {
+  assertPhaseOneChallengeProjection(
+    state([]), state([{ ...row('a', 200), owner_category: 'tracked_user' }]), profiles,
+  );
+  process.exit(5);
+} catch (error) {
+  if (!String(error.message).includes('retained an invalid')) process.exit(6);
 }
 """
     result = subprocess.run(

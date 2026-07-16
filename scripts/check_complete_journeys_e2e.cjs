@@ -961,30 +961,40 @@ function phaseFiveChallengeStarts(profiles) {
   return starts;
 }
 
-function assertPhaseOneChallengeProjection(initialTables, finalTables, profiles) {
-  const initial = initialTables?.auth_passkey_challenges;
-  const final = finalTables?.auth_passkey_challenges;
-  assert(Array.isArray(initial?.row_projections) && Array.isArray(final?.row_projections),
-    "Phase 1 passkey challenge whole-table projection is missing");
-  const challengeDelta = stableRowIdentityDelta(
-    initial.row_projections,
-    final.row_projections,
+function assertPhaseOneChallengeProjection(initialState, finalState, profiles) {
+  const challengeDelta = exactProjectionDelta(
+    initialState?.challenge_projection,
+    finalState?.challenge_projection,
+    "Phase 1 passkey challenge",
   );
   const expectedChallengeStarts = phaseFiveChallengeStarts(profiles).login;
-  assert(challengeDelta.added.length === expectedChallengeStarts
-    && challengeDelta.removed.length === 0
-    && challengeDelta.updated.length === 0,
+  assert(Number.isSafeInteger(finalState?.snapshot_at_ms) && finalState.snapshot_at_ms > 0,
+    "Phase 1 passkey challenge boundary lacks a snapshot timestamp");
+  assert(challengeDelta.added.length <= expectedChallengeStarts
+    && challengeDelta.removed.length === 0 && challengeDelta.updated.length === 0,
   `Phase 1 passkey challenge rows diverged from browser challenge starts: ${canonicalJson({
-    added: challengeDelta.added.length,
-    expected: expectedChallengeStarts,
+    retained: challengeDelta.added.length,
+    starts: expectedChallengeStarts,
     removed: challengeDelta.removed.length,
     updated: challengeDelta.updated.length,
   })}`);
+  assert(challengeDelta.added.every((row) => (
+    row.flow === "authentication_denied"
+    && row.owner_category === "unbound"
+    && row.session_binding_present === false
+    && row.invitation_binding_present === false
+    && row.consumed_state === "unused"
+    && row.lifetime_valid === true
+    && Number.isSafeInteger(row.expires_at_ms)
+  )), "Phase 1 retained an invalid, bound, or consumed passkey challenge");
   return {
-    added_count: challengeDelta.added.length,
-    browser_challenge_starts_exact: true,
-    removed_count: challengeDelta.removed.length,
-    updated_count: challengeDelta.updated.length,
+    browser_challenge_start_count: expectedChallengeStarts,
+    cleaned_before_boundary_count: expectedChallengeStarts - challengeDelta.added.length,
+    retained_count: challengeDelta.added.length,
+    retained_expired_count: challengeDelta.added.filter(
+      (row) => row.expires_at_ms <= finalState.snapshot_at_ms,
+    ).length,
+    retained_rows_exact: true,
   };
 }
 
@@ -6993,8 +7003,8 @@ async function main() {
     );
     if (phaseOneRan) {
       phaseOneChallengeEvidence = assertPhaseOneChallengeProjection(
-        fixture.database_snapshot.domain_tables,
-        phaseOneDatabase.domain_tables,
+        fixture.database_snapshot.phase_five_state,
+        phaseOneDatabase.phase_five_state,
         [...phaseZeroProfiles, ...phaseOneProfiles],
       );
     }
