@@ -1628,6 +1628,33 @@ function auditManifestProjection(auditState) {
 
 function normalizeAuditProjectionPath(value) {
   const pathname = String(value || "");
+  const normalizedPhaseFivePath = normalizePhaseFiveMutationPath(pathname);
+  if (new Set([
+    "/api/auth/emergency-read-only",
+    "/api/auth/invitations/accept",
+    "/api/auth/invitations/peek",
+    "/api/auth/logout",
+    "/api/auth/me/settings",
+    "/api/auth/mfa/disable",
+    "/api/auth/mfa/recovery-codes/regenerate",
+    "/api/auth/mfa/totp/cancel",
+    "/api/auth/mfa/totp/confirm",
+    "/api/auth/mfa/totp/start",
+    "/api/auth/passkeys/{passkey_id}",
+    "/api/auth/passkeys/login/options",
+    "/api/auth/passkeys/login/verify",
+    "/api/auth/passkeys/prompt/dismiss",
+    "/api/auth/passkeys/register/options",
+    "/api/auth/passkeys/register/verify",
+    "/api/auth/reauthenticate/passkey/options",
+    "/api/auth/reauthenticate/passkey/verify",
+    "/api/auth/sessions/{session_id}",
+    "/api/auth/user-invitations",
+    "/api/gardens/{garden_id}/complete-onboarding",
+    "/api/gardens/{garden_id}/invitations",
+  ]).has(normalizedPhaseFivePath)) {
+    return normalizedPhaseFivePath;
+  }
   if (
     pathname === "/api/media/summaries"
     || phaseOneAuditExpectedEvents(0).some((event) => event.path === pathname)

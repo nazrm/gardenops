@@ -4678,6 +4678,10 @@ const inventoryAudit = auditManifestProjection(
 const procurementAudit = auditManifestProjection(
   auditState(`/api/procurement/${opaqueRouteId}/transition`),
 );
+const passkeyAudit = auditManifestProjection(auditState('/api/auth/passkeys/42'));
+const sessionAudit = auditManifestProjection(
+  auditState(`/api/auth/sessions/${opaqueRouteId}`),
+);
 const taskPath = task.database.audit_projection.events[0].path;
 if (taskPath !== '/api/tasks/{task_id}/action') process.exit(3);
 if (attention.database.audit_projection.events[0].path
@@ -4687,11 +4691,15 @@ if (assignment.database.audit_projection.events[0].path
 if (telemetry.database.audit_projection.events[0].path !== '/api/client-errors') process.exit(9);
 if (inventoryAudit.events[0].path !== '/api/inventory/{item_id}/transactions') process.exit(10);
 if (procurementAudit.events[0].path !== '/api/procurement/{item_id}/transition') process.exit(11);
+if (passkeyAudit.events[0].path !== '/api/auth/passkeys/{passkey_id}') process.exit(12);
+if (sessionAudit.events[0].path !== '/api/auth/sessions/{session_id}') process.exit(13);
 if (task.canonical_projection_digests.audit_snapshot
     === attention.canonical_projection_digests.audit_snapshot) process.exit(5);
 if (task.canonical_projection_digests.final_database
     === attention.canonical_projection_digests.final_database) process.exit(6);
-const serialized = JSON.stringify([task, attention, assignment, telemetry]);
+const serialized = JSON.stringify([
+  task, attention, assignment, telemetry, passkeyAudit, sessionAudit,
+]);
 if (serialized.includes(opaqueRouteId)) process.exit(7);
 """
     result = subprocess.run(
