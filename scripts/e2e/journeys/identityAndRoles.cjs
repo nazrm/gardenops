@@ -54,13 +54,19 @@ async function openAdminSection(page, profile, section) {
 async function answerPrompt(page, value, beforeConfirm = null) {
   const dialog = page.locator(".modal:visible").last();
   await visible(dialog, "identity prompt");
+  const dialogHandle = await dialog.elementHandle();
+  assert(dialogHandle, "Identity prompt element was not available");
   const input = dialog.locator(".prompt-dialog-input");
   await visible(input, "identity prompt input");
   if (value !== undefined) await input.fill(value);
   const pending = beforeConfirm?.() ?? null;
-  await dialog.locator(".confirm-yes").click();
-  await dialog.waitFor({ state: "detached" });
-  return pending;
+  try {
+    await dialog.locator(".confirm-yes").click();
+    await page.waitForFunction((element) => !element.isConnected, dialogHandle);
+    return pending;
+  } finally {
+    await dialogHandle.dispose();
+  }
 }
 
 async function confirmVisibleDialog(page) {
