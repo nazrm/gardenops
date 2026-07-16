@@ -225,10 +225,11 @@ async function enableVirtualAuthenticator(context, page) {
   };
 }
 
-async function signOut(page, label) {
+async function signOut(page, label, guarded) {
   const control = page.locator("#auth-btn:visible, #mobile-auth-btn:visible").first();
   await visible(control, `${label} sign-out control`);
   const pending = responseFor(page, "POST", "/api/auth/logout");
+  guarded.markSignedOut();
   await control.click();
   assert((await pending).ok(), `${label} logout failed`);
   await visible(page.locator("#auth-gate-form"), `${label} sign-in gate`);
@@ -399,7 +400,9 @@ async function exerciseSettings(page, fixture) {
   await visible(persisted.first(), "persisted identity setting");
 }
 
-async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticator, diagnostics) {
+async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticator, guarded) {
+  const diagnostics = guarded.diagnostics;
+  await page.waitForLoadState("networkidle");
   const proactivePrompt = await waitForProactivePasskeyPrompt(page);
   const registerPending = responseFor(page, "POST", "/api/auth/passkeys/register/verify");
   if (proactivePrompt) {
@@ -429,7 +432,7 @@ async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticat
   }).first();
   await visible(row, "renamed passkey");
 
-  await signOut(page, "passkey test");
+  await signOut(page, "passkey test", guarded);
   const gate = page.locator("#auth-gate-form");
   await gate.locator("input[name='username']").fill(fixture.roles.admin);
   await gate.locator("button[type='submit']").click();
@@ -484,9 +487,11 @@ async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticat
   assert((await loginPending).ok(), "Passwordless passkey sign-in failed");
   await waitFor(() => page.locator(".auth-gate").count().then((count) => count === 0),
     "passwordless sign-in completion");
+  guarded.markAuthenticated();
 }
 
-async function revokePasskey(page, fixture, diagnostics, adminPassword) {
+async function revokePasskey(page, fixture, guarded, adminPassword) {
+  const diagnostics = guarded.diagnostics;
   await openAdminSection(page, "desktop", "settings");
   const row = page.locator("[data-passkey-id]").filter({
     hasText: phaseFive(fixture).passkey_renamed_nickname,
@@ -503,7 +508,7 @@ async function revokePasskey(page, fixture, diagnostics, adminPassword) {
   await waitFor(() => page.locator("[data-passkey-id]").count().then((count) => count === 0),
     "revoked passkey removal");
 
-  await signOut(page, "revoked passkey");
+  await signOut(page, "revoked passkey", guarded);
   const gate = page.locator("#auth-gate-form");
   await gate.locator("input[name='username']").fill(fixture.roles.admin);
   await gate.locator("button[type='submit']").click();
@@ -523,15 +528,22 @@ async function revokePasskey(page, fixture, diagnostics, adminPassword) {
     401,
   );
   assert(await gate.isVisible(), "Revoked passkey denial left the sign-in gate");
-  await gate.locator("#auth-gate-use-password").click();
-  await gate.locator("input[name='password']").fill(adminPassword);
+  const passwordInput = gate.locator("input[name='password']");
+  await visible(
+    gate.locator("input[name='password']:visible, #auth-gate-use-password:visible").first(),
+    "revoked passkey password fallback",
+  );
+  if (!(await passwordInput.isVisible())) await gate.locator("#auth-gate-use-password").click();
+  await visible(passwordInput, "revoked passkey password field");
+  await passwordInput.fill(adminPassword);
   const loginPending = responseFor(page, "POST", "/api/auth/login");
   await gate.locator("button[type='submit']").click();
   assert((await loginPending).ok(), "Password recovery after revoked passkey failed");
   await gate.waitFor({ state: "detached", timeout: 15_000 });
+  guarded.markAuthenticated();
 }
 
-async function exerciseTotp(page, username, password) {
+async function exerciseTotp(page, username, password, guarded) {
   await openAdminSection(page, "desktop", "settings");
   const firstStart = responseFor(page, "POST", "/api/auth/mfa/totp/start");
   await page.locator("#adm-mfa-start").click();
@@ -578,7 +590,7 @@ async function exerciseTotp(page, username, password) {
     .then((value) => value.split(/\r?\n/).map((line) => line.trim()).find(Boolean));
   assert(recoveryCode, "Regenerated recovery codes were empty");
 
-  await signOut(page, "recovery-code use");
+  await signOut(page, "recovery-code use", guarded);
   let mfaForm = await enterPasswordLoginStage(page, username, password);
   await mfaForm.locator("input[name='recovery_code']").fill(oldRecoveryCode);
   let loginPending = responseFor(page, "POST", "/api/auth/login");
@@ -595,8 +607,9 @@ async function exerciseTotp(page, username, password) {
   assert(recovered.ok() && recoveredBody.status !== "mfa_required",
     "Recovery-code sign-in failed");
   await mfaForm.waitFor({ state: "detached", timeout: 15_000 });
+  guarded.markAuthenticated();
 
-  await signOut(page, "recovery-code reuse");
+  await signOut(page, "recovery-code reuse", guarded);
   mfaForm = await enterPasswordLoginStage(page, username, password);
   await mfaForm.locator("input[name='recovery_code']").fill(recoveryCode);
   loginPending = responseFor(page, "POST", "/api/auth/login");
@@ -613,6 +626,7 @@ async function exerciseTotp(page, username, password) {
   await mfaForm.locator("button[type='submit']").click();
   assert((await loginPending).ok(), "TOTP fallback after recovery-code reuse failed");
   await mfaForm.waitFor({ state: "detached", timeout: 15_000 });
+  guarded.markAuthenticated();
   await openAdminSection(page, "desktop", "settings");
 
   const disablePending = responseFor(page, "POST", "/api/auth/mfa/disable");
@@ -779,7 +793,7 @@ async function exerciseLiveRoleRefresh(options, page) {
     const refreshed = await browserFetch(secondaryPage, { path: "/api/auth/me" });
     assert(refreshed.status === 200 && refreshed.body.role === "editor",
       "Restored role remained stale after returning to the app");
-    await signOut(secondaryPage, "role-refresh secondary session");
+    await signOut(secondaryPage, "role-refresh secondary session", secondary);
     await secondary.close("passed");
     closed = true;
   } finally {
@@ -990,7 +1004,7 @@ async function runProfile(options, shared) {
         fixture,
         options.password,
         virtualAuthenticator,
-        guarded.diagnostics,
+        guarded,
       );
       result.checks.passkey_lifecycle = true;
       shared.editorInvite = await createUserInvitation(page, fixture);
@@ -1008,11 +1022,11 @@ async function runProfile(options, shared) {
       result.checks.live_role_refresh = true;
       await exerciseSessionExpiry(options);
       result.checks.idle_and_absolute_session_expiry = true;
-      await exerciseTotp(page, options.username, options.password);
+      await exerciseTotp(page, options.username, options.password, guarded);
       result.checks.totp_lifecycle = true;
       await exerciseIncidentControl(page, guarded.diagnostics, fixture);
       result.checks.incident_control = true;
-      await revokePasskey(page, fixture, guarded.diagnostics, options.password);
+      await revokePasskey(page, fixture, guarded, options.password);
       result.checks.revoked_passkey_denial = true;
     } else if (role === "editor" && profile === "desktop") {
       virtualAuthenticator = await enableVirtualAuthenticator(guarded.context, page);

@@ -273,6 +273,7 @@ def test_runner_uses_isolated_production_preview_and_locked_dependency_gate() ->
     assert "state.added !== 0 || state.changed !== 0 || state.removed !== 0" in source
     assert 'export HOME="$PRIVATE_DIR/home"' in source
     assert 'export XDG_CONFIG_HOME="$PRIVATE_DIR/xdg-config"' in source
+    assert "export AUTH_FAIL_RATE_LIMIT=200" in source
     assert "export AUTH_LOGIN_RATE_LIMIT=200" in source
     assert "export AUTH_LOGIN_USERNAME_RATE_LIMIT=100" in source
     assert "export AUTH_LOGIN_ADMIN_USERNAME_RATE_LIMIT=100" in source
@@ -1569,8 +1570,16 @@ const {
 const classify = (authenticated, method, path, status) => expectedHttpDiagnosticContext({
   authenticated, method, path, status,
 });
+const classifyState = (authState, method, path, status) => expectedHttpDiagnosticContext({
+  authState, authenticated: authState === 'authenticated', method, path, status,
+});
 if (classify(false, 'GET', '/api/auth/me', 401) !== 'preauth-session-probe') process.exit(3);
 if (classify(true, 'GET', '/api/auth/me', 401) !== 'unexpected-http-response') process.exit(4);
+if (classifyState('signed-out', 'GET', '/api/auth/me', 401) !== 'postauth-signout') {
+  process.exit(11);
+}
+if (classifyState('signed-out', 'POST', '/api/tasks/task-1/action', 401)
+    !== 'unexpected-http-response') process.exit(12);
 if (classify(true, 'POST', '/api/tasks/task-1/action', 403) !== 'viewer-task-write-denied') {
   process.exit(5);
 }
@@ -1591,6 +1600,8 @@ assertDiagnosticsClean({
   ...base,
   classifiedConsoleDiagnostics: [{
     context: 'preauth-session-probe', method: 'GET', path: '/api/auth/me', status: 401,
+  }, {
+    context: 'postauth-signout', method: 'GET', path: '/api/auth/sessions', status: 401,
   }],
 }, 'valid');
 try {

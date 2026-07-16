@@ -360,6 +360,7 @@ export AUTH_PASSWORD_CHECK_HIBP=false
 export AUTH_PASSWORD_HASH_FAST_FOR_TESTS=true
 export AUTH_CSRF_SECRET="complete-journeys-e2e-csrf-only" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 export AUTH_MFA_SECRET_KEY="complete-journeys-e2e-mfa-key-only" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+export AUTH_FAIL_RATE_LIMIT=200
 export AUTH_LOGIN_RATE_LIMIT=200
 export AUTH_LOGIN_USERNAME_RATE_LIMIT=100
 export AUTH_LOGIN_ADMIN_USERNAME_RATE_LIMIT=100

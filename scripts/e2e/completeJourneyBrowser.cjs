@@ -17,6 +17,7 @@ const EXPECTED_CONSOLE_DIAGNOSTIC_CONTEXTS = new Set([
   "calendar-feed-revoked",
   "map-import-rejected",
   "network-guard-probe",
+  "postauth-signout",
   "preauth-session-probe",
   "viewer-calendar-event-write-denied",
   "viewer-calendar-subscription-write-denied",
@@ -130,8 +131,22 @@ function safeUrl(rawUrl) {
   }
 }
 
-function expectedHttpDiagnosticContext({ authenticated, method, path: pathname, status }) {
-  if (!authenticated && method === "GET" && pathname === "/api/auth/me" && status === 401) {
+function expectedHttpDiagnosticContext({ authState, authenticated, method, path: pathname, status }) {
+  if (
+    authState === "signed-out"
+    && method === "GET"
+    && pathname.startsWith("/api/")
+    && status === 401
+  ) {
+    return "postauth-signout";
+  }
+  if (
+    authState !== "signed-out"
+    && !authenticated
+    && method === "GET"
+    && pathname === "/api/auth/me"
+    && status === 401
+  ) {
     return "preauth-session-probe";
   }
   if (method === "POST" && pathname === "/api/plots/import" && [409, 413, 422].includes(status)) {
@@ -264,7 +279,7 @@ async function createGuardedContext(
   const pendingHttpConsoleDiagnostics = [];
   const pendingBlockedConsoleDiagnostics = [];
   let diagnosticSequence = 0;
-  let authenticated = false;
+  let authState = "initial";
   let traceStarted = false;
   const startTracing = async () => {
     if (traceStarted) return;
@@ -347,7 +362,8 @@ async function createGuardedContext(
       const parsed = new URL(response.url());
       const method = response.request().method();
       const context = expectedHttpDiagnosticContext({
-        authenticated,
+        authState,
+        authenticated: authState === "authenticated",
         method,
         path: parsed.pathname,
         status: response.status(),
@@ -384,7 +400,10 @@ async function createGuardedContext(
     context,
     diagnostics,
     markAuthenticated() {
-      authenticated = true;
+      authState = "authenticated";
+    },
+    markSignedOut() {
+      authState = "signed-out";
     },
     profile: {
       device: profileName === "mobile" ? "Pixel 7" : "Desktop Chromium",
