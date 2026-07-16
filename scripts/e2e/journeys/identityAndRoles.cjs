@@ -257,6 +257,7 @@ async function exerciseSettings(page, fixture) {
     page.locator(".toast-success").filter({ hasText: "Custom plot meanings saved" }).last(),
     "settled identity settings save",
   );
+  await page.waitForLoadState("networkidle");
   await page.reload({ waitUntil: "domcontentloaded" });
   await openAdminSection(page, "desktop", "settings");
   const persisted = page.locator(".adm-plot-meaning-row").filter({
