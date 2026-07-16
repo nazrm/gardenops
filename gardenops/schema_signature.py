@@ -779,10 +779,7 @@ def _is_migration_0028_part(part: Mapping[str, object]) -> bool:
 
 
 def _migration_0028_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
-    return not (
-        {"device_label", "location_hint"}
-        & snapshot.columns.get("auth_sessions", set())
-    )
+    return not ({"device_label", "location_hint"} & snapshot.columns.get("auth_sessions", set()))
 
 
 def bootstrap_schema_diagnostics_from_snapshot(

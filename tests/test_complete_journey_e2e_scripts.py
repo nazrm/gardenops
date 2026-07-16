@@ -32,9 +32,7 @@ PHASE_FOUR_ORACLE = (
 PHASE_FIVE_ORACLE = (
     ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_five_oracle.json"
 )
-PHASE_SIX_ORACLE = (
-    ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_six_oracle.json"
-)
+PHASE_SIX_ORACLE = ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_six_oracle.json"
 EXPECTED_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
 ).stdout.strip()
@@ -1116,9 +1114,7 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     assert oracle["phase_six"]["browser_contract"]["recovery_collapsed_by_default"] is True
     assert oracle["phase_six"]["browser_contract"]["retry_as_new_replacement_count"] == 1
     assert oracle["phase_six"]["audit_contract"]["additional_login_count"] == 1
-    assert sum(
-        event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]
-    ) == 13
+    assert sum(event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]) == 13
     for marker in (
         "route.fetch()",
         'route.abort("failed")',

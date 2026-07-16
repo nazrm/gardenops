@@ -612,9 +612,7 @@ def _delete_garden_related_state(
         if count:
             remaining_scoped_rows[table_name] = count
     if remaining_scoped_rows:
-        detail = ", ".join(
-            f"{table}={count}" for table, count in remaining_scoped_rows.items()
-        )
+        detail = ", ".join(f"{table}={count}" for table, count in remaining_scoped_rows.items())
         raise RuntimeError(f"Garden deletion left scoped rows: {detail}")
     return (
         {
@@ -1551,9 +1549,7 @@ def delete_garden_lidar(
 ) -> dict[str, object]:
     context = _auth_context(request)
     _require_membership_editor(db, context=context, garden_id=garden_id)
-    storage_pairs = [
-        (storage_key, "") for storage_key in uploaded_terrain_storage_keys(garden_id)
-    ]
+    storage_pairs = [(storage_key, "") for storage_key in uploaded_terrain_storage_keys(garden_id)]
     enqueue_media_cleanup_jobs(db, storage_pairs)
     _invalidate_garden_terrain_state(db, garden_id)
     db.commit()

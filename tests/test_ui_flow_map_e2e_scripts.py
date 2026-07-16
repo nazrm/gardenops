@@ -403,10 +403,7 @@ def test_disposable_runner_uses_a_non_secret_inherited_environment_allowlist(
     assert env["PATH"] == run_fast_postgres_tests.TEST_SUBPROCESS_PATH
     assert env["LANG"] == "C.UTF-8"
     assert env["GARDENOPS_DISPOSABLE_POSTGRES_MARKER"] == DISPOSABLE_MARKER
-    assert (
-        env["GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER"]
-        == DISPOSABLE_SYSTEM_IDENTIFIER
-    )
+    assert env["GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER"] == DISPOSABLE_SYSTEM_IDENTIFIER
     for name in hostile_environment:
         assert name not in env
     assert set(run_fast_postgres_tests.INHERITED_ENV_ALLOWLIST) == {

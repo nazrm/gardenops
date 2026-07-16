@@ -216,9 +216,7 @@ class MigrationGuardTests(unittest.TestCase):
         db.run_migrations()
         conn = db.get_db()
         try:
-            diagnostics = bootstrap_schema_diagnostics_from_snapshot(
-                collect_schema_snapshot(conn)
-            )
+            diagnostics = bootstrap_schema_diagnostics_from_snapshot(collect_schema_snapshot(conn))
         finally:
             db.return_db(conn)
 
@@ -236,9 +234,7 @@ class MigrationGuardTests(unittest.TestCase):
                     "SELECT version FROM schema_migrations ORDER BY version"
                 ).fetchall()
             ]
-            diagnostics = bootstrap_schema_diagnostics_from_snapshot(
-                collect_schema_snapshot(conn)
-            )
+            diagnostics = bootstrap_schema_diagnostics_from_snapshot(collect_schema_snapshot(conn))
         finally:
             db.return_db(conn)
 
@@ -307,9 +303,7 @@ class MigrationGuardTests(unittest.TestCase):
                 db.run_migrations()
             conn = db.get_db()
             try:
-                versions = conn.execute(
-                    "SELECT version FROM schema_migrations"
-                ).fetchall()
+                versions = conn.execute("SELECT version FROM schema_migrations").fetchall()
                 columns = {
                     str(row["column_name"])
                     for row in conn.execute(
@@ -445,9 +439,7 @@ class MigrationGuardTests(unittest.TestCase):
 
     def test_pre_0028_bootstrap_signature_stamps_only_through_0027(self) -> None:
         snapshot = self._complete_schema_snapshot()
-        snapshot.columns["auth_sessions"].difference_update(
-            {"device_label", "location_hint"}
-        )
+        snapshot.columns["auth_sessions"].difference_update({"device_label", "location_hint"})
         for column in (
             "auth_sessions.device_label",
             "auth_sessions.location_hint",

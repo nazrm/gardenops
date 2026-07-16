@@ -396,9 +396,10 @@ def _run_migrations(cluster: Cluster, database: str, *, print_failure: bool = Tr
 
 def _issue_disposable_marker(cluster: Cluster, database: str) -> str:
     """Bind destructive test work to this temporary cluster and database."""
-    is_shard = database.startswith(f"{TEST_DB}_shard") and database.removeprefix(
-        f"{TEST_DB}_shard"
-    ).isdigit()
+    is_shard = (
+        database.startswith(f"{TEST_DB}_shard")
+        and database.removeprefix(f"{TEST_DB}_shard").isdigit()
+    )
     if database not in COMMAND_DATABASES and not is_shard:
         raise RuntimeError(f"unsupported disposable command database: {database}")
     if not cluster.system_identifier:
