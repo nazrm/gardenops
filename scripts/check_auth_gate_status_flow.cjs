@@ -229,7 +229,18 @@ function main() {
   }
 
   const statusGateCalls = collectCalls(authButton, isShowCurrentStatusCall);
-  if (statusGateCalls.length !== 2) {
+  const signedOutState = findFunction(appSource, "completeSignedOutState");
+  const delegatedStatusGateCalls = signedOutState
+    ? collectCalls(signedOutState, isShowCurrentStatusCall)
+    : [];
+  const completionCalls = collectCalls(authButton, (node) => (
+    ts.isCallExpression(node) && isIdentifier(node.expression, "completeSignedOutState")
+  ));
+  const directBothBranches = statusGateCalls.length === 2;
+  const delegatedSignedOutBranch = statusGateCalls.length === 1
+    && completionCalls.length === 1
+    && delegatedStatusGateCalls.length === 1;
+  if (!directBothBranches && !delegatedSignedOutBranch) {
     fail("handleAuthButton must show the login gate from fresh auth status in both auth branches");
   }
 
