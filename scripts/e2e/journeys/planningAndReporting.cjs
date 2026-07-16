@@ -487,6 +487,10 @@ async function exerciseDownloads(page, diagnostics, fixture) {
   assertNoSecrets(jsonText, fixture);
 
   await openSubMode(page, "activity", "calendar", "#calendar-tab-content");
+  await visible(
+    page.locator("#calendar-export-btn[data-calendar-export-ready='true']"),
+    "calendar export readiness",
+  );
   const icsText = await downloadFrom(
     page, diagnostics, "#calendar-export-btn", "calendar ICS",
   );

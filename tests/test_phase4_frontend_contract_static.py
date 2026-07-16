@@ -150,6 +150,7 @@ def test_care_catalog_and_export_states_are_bounded_and_honest() -> None:
     export_bar = _read("frontend/src/components/exportBar.ts")
     app = _read("frontend/src/app.ts")
     styles = _read("frontend/src/style.css")
+    calendar = _read("frontend/src/tabs/calendarTab.ts")
 
     assert "CARE_GENERATION_MAX_REQUESTS" in care
     assert "result.next_cursor" in care
@@ -169,3 +170,5 @@ def test_care_catalog_and_export_states_are_bounded_and_honest() -> None:
     assert "window.print()" not in app
     assert "flex-wrap: wrap" in styles
     assert "min-height: 44px" in styles
+    assert 'removeAttribute("data-calendar-export-ready")' in calendar
+    assert 'setAttribute("data-calendar-export-ready", "true")' in calendar
