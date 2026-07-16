@@ -5,6 +5,7 @@ const {
   authenticate,
   createApiRecorder,
   createGuardedContext,
+  dismissProactivePasskeyPrompt,
 } = require("../completeJourneyBrowser.cjs");
 const { assert, assertPageStructure, visible, waitFor } = require("../completeJourneyAssertions.cjs");
 
@@ -487,6 +488,10 @@ async function exerciseDownloads(page, diagnostics, fixture) {
   assertNoSecrets(jsonText, fixture);
 
   await openSubMode(page, "activity", "calendar", "#calendar-tab-content");
+  await visible(
+    page.locator("#calendar-export-btn[data-calendar-export-ready='true']"),
+    "calendar export readiness",
+  );
   const icsText = await downloadFrom(
     page, diagnostics, "#calendar-export-btn", "calendar ICS",
   );
@@ -723,6 +728,7 @@ async function runProfile(options) {
     const auth = await authenticate(page, login[0], login[1]);
     guarded.markAuthenticated();
     assert(auth.role === role, `Phase 4 ${role} fixture role drifted`);
+    await dismissProactivePasskeyPrompt(page);
     if (role === "admin" && profile === "desktop") {
       result.checks.inventory_item_id = await createInventoryLedgerThroughUi(page, fixture);
       result.checks.procurement_item_id = await createProcurementLifecycleThroughUi(page, fixture);

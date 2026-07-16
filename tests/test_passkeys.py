@@ -186,6 +186,47 @@ class TestPasskeyRegistration(PasskeyApiTest):
             db.return_db(conn)
         return token
 
+    def _register_passwordless_user(
+        self,
+        *,
+        username: str,
+        role: str,
+        credential_id: bytes,
+    ) -> tuple[TestClient, dict[str, str], int]:
+        token = self._insert_personal_invitation(
+            invitee_username=username,
+            role=role,
+            token=f"{username}-invitation-token",
+        )
+        client = self._new_client()
+        options = client.post(
+            "/api/auth/invitations/passkey/register/options",
+            json={"token": token, "username": username},
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+        with patch(
+            "gardenops.passkeys.verify_registration_credential",
+            return_value=VerifiedPasskeyRegistration(
+                credential_id=credential_id,
+                credential_public_key=b"passwordless-public-key",
+                sign_count=1,
+                credential_device_type="multi_device",
+                credential_backed_up=True,
+            ),
+        ):
+            verified = client.post(
+                "/api/auth/invitations/passkey/register/verify",
+                json={
+                    "challenge_token": str(options.json()["challenge_token"]),
+                    "nickname": "Primary passkey",
+                    "credential": _fake_registration_credential(credential_id),
+                },
+            )
+        self.assertEqual(verified.status_code, 201, verified.text)
+        csrf = client.cookies.get("gardenops_csrf") or ""
+        self.assertTrue(csrf)
+        return client, self._session_headers(csrf), int(verified.json()["passkey"]["id"])
+
     def test_auth_status_reports_passkey_capability(self) -> None:
         enabled = self.client.get("/api/auth/status")
         self.assertEqual(enabled.status_code, 200, enabled.text)
@@ -216,6 +257,17 @@ class TestPasskeyRegistration(PasskeyApiTest):
         )
         self.assertEqual(dismissed.status_code, 200, dismissed.text)
         self.assertGreater(dismissed.json()["passkey_prompt_dismissed_until_ms"], 0)
+
+        conn = db.get_db()
+        try:
+            audit = conn.execute(
+                "SELECT detail FROM audit_events WHERE path = %s ORDER BY id DESC LIMIT 1",
+                ("/api/auth/passkeys/prompt/dismiss",),
+            ).fetchone()
+            self.assertIsNotNone(audit)
+            self.assertIn("auth.passkey.prompt-dismiss", str(audit["detail"]))
+        finally:
+            db.return_db(conn)
 
         muted = client.get("/api/auth/me", headers=headers)
         self.assertEqual(muted.status_code, 200, muted.text)
@@ -279,6 +331,7 @@ class TestPasskeyRegistration(PasskeyApiTest):
         self.assertEqual(me.json()["username"], "invite_passkey_user")
         self.assertTrue(me.json()["passkey_enrolled"])
         self.assertTrue(me.json()["password_auth_disabled"])
+        self.assertIn("passkey", me.json()["mfa_methods"])
 
         password_login = self.client.post(
             "/api/auth/login",
@@ -731,6 +784,129 @@ class TestPasskeyRegistration(PasskeyApiTest):
             db.return_db(conn)
         self.assertEqual(int(row["count"]), 0)
 
+    def test_passwordless_user_can_add_second_passkey_after_passkey_reauthentication(self) -> None:
+        username = "passwordless_second_passkey_user"
+        client, headers, _first_passkey_id = self._register_passwordless_user(
+            username=username,
+            role="editor",
+            credential_id=b"passwordless-primary-credential",
+        )
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE auth_sessions SET reauthenticated_at_ms = 1 WHERE user_id = "
+                "(SELECT id FROM auth_users WHERE username = %s)",
+                (username,),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        stale = client.post(
+            "/api/auth/passkeys/register/options",
+            headers=headers,
+            json={"nickname": "Backup passkey"},
+        )
+        self.assertEqual(stale.status_code, 403)
+        self.assertEqual(stale.json()["detail"], "Recent reauthentication required")
+
+        reauth_options = client.post(
+            "/api/auth/reauthenticate/passkey/options",
+            headers=headers,
+            json={},
+        )
+        self.assertEqual(reauth_options.status_code, 200, reauth_options.text)
+        with patch(
+            "gardenops.passkeys.verify_authentication_credential",
+            return_value=VerifiedPasskeyAuthentication(
+                new_sign_count=2,
+                credential_device_type="multi_device",
+                credential_backed_up=True,
+            ),
+        ):
+            reauthenticated = client.post(
+                "/api/auth/reauthenticate/passkey/verify",
+                headers=headers,
+                json={
+                    "challenge_token": str(reauth_options.json()["challenge_token"]),
+                    "credential": _fake_authentication_credential(
+                        b"passwordless-primary-credential",
+                    ),
+                },
+            )
+        self.assertEqual(reauthenticated.status_code, 200, reauthenticated.text)
+        headers = self._session_headers(str(reauthenticated.json()["csrf_token"]))
+
+        registration_options = client.post(
+            "/api/auth/passkeys/register/options",
+            headers=headers,
+            json={"nickname": "Backup passkey"},
+        )
+        self.assertEqual(registration_options.status_code, 200, registration_options.text)
+        with patch(
+            "gardenops.passkeys.verify_registration_credential",
+            return_value=VerifiedPasskeyRegistration(
+                credential_id=b"passwordless-backup-credential",
+                credential_public_key=b"passwordless-backup-public-key",
+                sign_count=1,
+                credential_device_type="multi_device",
+                credential_backed_up=True,
+            ),
+        ):
+            registered = client.post(
+                "/api/auth/passkeys/register/verify",
+                headers=headers,
+                json={
+                    "challenge_token": str(registration_options.json()["challenge_token"]),
+                    "nickname": "Backup passkey",
+                    "credential": _fake_registration_credential(
+                        b"passwordless-backup-credential",
+                    ),
+                },
+            )
+        self.assertEqual(registered.status_code, 201, registered.text)
+        listed = client.get("/api/auth/passkeys", headers=headers)
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(len(listed.json()["passkeys"]), 2)
+
+        removed = client.request(
+            "DELETE",
+            f"/api/auth/passkeys/{_first_passkey_id}",
+            headers=headers,
+            json={"action_reason": "redundant-passkey-established"},
+        )
+        self.assertEqual(removed.status_code, 200, removed.text)
+        remaining = client.get("/api/auth/passkeys", headers=headers)
+        self.assertEqual(remaining.status_code, 200, remaining.text)
+        self.assertEqual(len(remaining.json()["passkeys"]), 1)
+
+    def test_passwordless_editor_and_viewer_cannot_remove_final_passkey(self) -> None:
+        for role in ("editor", "viewer"):
+            with self.subTest(role=role):
+                username = f"passwordless_final_factor_{role}"
+                client, headers, passkey_id = self._register_passwordless_user(
+                    username=username,
+                    role=role,
+                    credential_id=f"passwordless-{role}-credential".encode(),
+                )
+
+                removed = client.request(
+                    "DELETE",
+                    f"/api/auth/passkeys/{passkey_id}",
+                    headers=headers,
+                    json={"action_reason": "final-factor-lockout-test"},
+                )
+
+                self.assertEqual(removed.status_code, 409, removed.text)
+                self.assertEqual(
+                    removed.json()["detail"],
+                    "Cannot remove the final login factor. Add another passkey or enable "
+                    "password authentication first.",
+                )
+                listed = client.get("/api/auth/passkeys", headers=headers)
+                self.assertEqual(listed.status_code, 200, listed.text)
+                self.assertEqual(len(listed.json()["passkeys"]), 1)
+
     def test_register_options_bad_current_password_is_rate_limited_without_challenge(self) -> None:
         os.environ["AUTH_PASSKEY_REGISTER_RATE_LIMIT"] = "1"
         self._create_test_user("bad_password_passkey_user", "bad-current-pass", "editor")
@@ -936,7 +1112,12 @@ class TestPasskeyRegistration(PasskeyApiTest):
             },
         )
 
-        for response in (listed, deleted, registered):
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(len(listed.json()["passkeys"]), 1)
+        self.assertNotIn("credential_id", listed.json()["passkeys"][0])
+        self.assertNotIn("credential_public_key", listed.json()["passkeys"][0])
+
+        for response in (deleted, registered):
             self.assertEqual(response.status_code, 403, response.text)
             self.assertEqual(
                 response.json()["detail"],
@@ -1040,6 +1221,46 @@ class TestPasskeyRegistration(PasskeyApiTest):
         self.assertEqual(row["credential_public_key"], _b64url(b"public-key"))
         self.assertEqual(int(row["sign_count"]), 1)
         self.assertEqual(int(used_challenges["count"]), 1)
+
+    def test_rename_list_and_revoke_use_safe_identifier_and_revoked_key_cannot_login(self) -> None:
+        client, headers, passkey_id = self._register_passkey()
+
+        renamed = client.patch(
+            f"/api/auth/passkeys/{passkey_id}",
+            headers=headers,
+            json={"nickname": "Work laptop", "action_reason": "identify-device"},
+        )
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        self.assertEqual(renamed.json()["passkey"]["nickname"], "Work laptop")
+
+        listed = client.get("/api/auth/passkeys")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        serialized = listed.json()["passkeys"][0]
+        self.assertEqual(serialized["id"], passkey_id)
+        self.assertNotIn("credential_id", serialized)
+        self.assertNotIn("credential_public_key", serialized)
+
+        revoked = client.request(
+            "DELETE",
+            f"/api/auth/passkeys/{passkey_id}",
+            headers=headers,
+            json={"action_reason": "lost-device"},
+        )
+        self.assertEqual(revoked.status_code, 200, revoked.text)
+
+        options = client.post(
+            "/api/auth/passkeys/login/options",
+            json={"username": "passkey_user"},
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+        denied = client.post(
+            "/api/auth/passkeys/login/verify",
+            json={
+                "challenge_token": options.json()["challenge_token"],
+                "credential": _fake_authentication_credential(),
+            },
+        )
+        self.assertEqual(denied.status_code, 401)
 
     def test_register_verify_rejects_challenge_replay(self) -> None:
         self._create_test_user("replay_passkey_user", "replay-pass", "editor")

@@ -219,7 +219,15 @@ ADMIN_EDGE_ROUTE_MANIFEST: Final[tuple[AdminEdgeRoute, ...]] = (
         method="GET",
         path_template="/api/auth/sessions",
         bucket="admin_read",
-        rationale="Session inventory is admin-only read access.",
+        rationale="Session inventory includes admin cross-user access.",
+    ),
+    AdminEdgeRoute(
+        method="DELETE",
+        path_template="/api/auth/sessions/{session_id}",
+        bucket="admin_write",
+        rationale=(
+            "Session revocation can target another user's session when invoked by an admin."
+        ),
     ),
     AdminEdgeRoute(
         method="POST",
@@ -514,7 +522,13 @@ ADMIN_EDGE_LOCATION_RULES: Final[tuple[AdminEdgeLocationRule, ...]] = (
         match_kind="exact",
         pattern="/api/auth/sessions",
         bucket="admin_read",
-        rationale="Session inventory read path.",
+        rationale="Session inventory includes admin cross-user access.",
+    ),
+    AdminEdgeLocationRule(
+        match_kind="prefix",
+        pattern="/api/auth/sessions/",
+        bucket="admin_write",
+        rationale="Per-session revocation path.",
     ),
     AdminEdgeLocationRule(
         match_kind="exact",

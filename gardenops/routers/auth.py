@@ -14,13 +14,19 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import Field, field_validator
 
 import gardenops.passkeys as passkeys
-from gardenops.audit import list_audit_events, write_audit_event
+from gardenops.audit import (
+    enqueue_audit_event_telemetry,
+    list_audit_events,
+    write_audit_event,
+    write_required_audit_event,
+)
 from gardenops.db import DB, DbConn, current_timestamp_ms, executemany
 from gardenops.feature_gates import TIER_ORDER, features_for_tier
 from gardenops.incident_controls import (
     get_emergency_read_only_status,
     list_active_sessions,
     revoke_all_sessions,
+    revoke_session_by_public_id,
     revoke_sessions_by_user,
     set_emergency_read_only,
 )
@@ -32,6 +38,7 @@ from gardenops.security import (
     AUTH_ROLES,
     AuthContext,
     _admin_mfa_enforced_for_role,
+    _session_absolute_ttl_ms,
     admin_mfa_required,
     api_key_auth_enabled,
     auth_mode,
@@ -48,6 +55,7 @@ from gardenops.security import (
     hash_password,
     is_auth_required,
     is_loopback_client,
+    password_needs_rehash,
     resolve_request_auth_context,
     revoke_session_token,
     session_auth_enabled,
@@ -67,6 +75,7 @@ from gardenops.security_metrics import (
     security_metrics_snapshot,
 )
 from gardenops.security_mfa import (
+    cancel_totp_enrollment,
     confirm_totp_enrollment,
     disable_totp_mfa,
     get_user_mfa_status,
@@ -190,6 +199,11 @@ class PasskeyActionBody(StrictBaseModel):
     action_reason: str = Field(default="", max_length=400)
 
 
+class PasskeyRenameBody(StrictBaseModel):
+    nickname: str = Field(min_length=1, max_length=80)
+    action_reason: str = Field(default="", max_length=400)
+
+
 class ConfirmTotpEnrollmentBody(StrictBaseModel):
     code: str = Field(min_length=6, max_length=32)
 
@@ -272,6 +286,51 @@ def _require_admin_context(request: Request):
 
 def _remote_host(request: Request) -> str:
     return request.client.host if request.client and request.client.host else "unknown"
+
+
+def _session_device_label(request: Request) -> str:
+    user_agent = re.sub(r"[\x00-\x1f\x7f]+", " ", request.headers.get("user-agent", ""))
+    user_agent = user_agent.strip()[:200]
+    if not user_agent:
+        return "Unknown device"
+    platform = next(
+        (
+            label
+            for marker, label in (
+                ("Android", "Android"),
+                ("iPhone", "iPhone"),
+                ("iPad", "iPad"),
+                ("Windows", "Windows"),
+                ("Macintosh", "macOS"),
+                ("Linux", "Linux"),
+            )
+            if marker in user_agent
+        ),
+        "",
+    )
+    browser = next(
+        (
+            label
+            for marker, label in (
+                ("Edg/", "Edge"),
+                ("Firefox/", "Firefox"),
+                ("Chrome/", "Chrome"),
+                ("Safari/", "Safari"),
+            )
+            if marker in user_agent
+        ),
+        "",
+    )
+    if browser and platform:
+        return f"{browser} on {platform}"
+    return user_agent[:120]
+
+
+def _session_location_hint(request: Request) -> str:
+    remote_host = _remote_host(request).strip()[:80]
+    if remote_host in {"127.0.0.1", "::1", "testclient"}:
+        return "Local device"
+    return remote_host
 
 
 def _hashed_rate_limit_key(prefix: str, raw: str, *, casefold: bool = True) -> str:
@@ -407,6 +466,34 @@ def _audit_user_lifecycle_event(
         garden_id=garden_id,
         db=db,
     )
+
+
+def _commit_required_lifecycle_event(
+    request: Request,
+    *,
+    auth_context: AuthContext | None,
+    status_code: int,
+    detail: str,
+    db: DbConn,
+    garden_id: int | None = None,
+) -> None:
+    request.state.audited_by_handler = True
+    try:
+        audit_values = write_required_audit_event(
+            method=request.method,
+            path=request.url.path,
+            status_code=status_code,
+            remote_host=_remote_host(request),
+            detail=detail,
+            auth_context=auth_context,
+            garden_id=garden_id,
+            db=db,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    enqueue_audit_event_telemetry(audit_values, db=db)
 
 
 def _normalize_action_reason(
@@ -556,6 +643,32 @@ def _authorize_passkey_registration(
     context: AuthContext,
     current_password: str,
 ) -> None:
+    if context.user_id is None:
+        raise HTTPException(status_code=400, detail="Session auth user is required")
+    password_state = db.execute(
+        """
+        SELECT password_hash, password_auth_disabled, is_active
+        FROM auth_users
+        WHERE id = %s
+        LIMIT 1
+        """,
+        (context.user_id,),
+    ).fetchone()
+    if not password_state or int(password_state["is_active"]) != 1:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    password_available = (
+        int(password_state["password_auth_disabled"]) != 1
+        and password_state["password_hash"] is not None
+    )
+    if not password_available:
+        if not _user_has_passkey(db, context.user_id):
+            raise HTTPException(status_code=403, detail="Passkey authentication is not available")
+        if int(context.mfa_authenticated_at_ms or 0) <= 0:
+            raise HTTPException(
+                status_code=403,
+                detail="Passkey reauthentication is required to add another passkey",
+            )
+        return
     _verify_current_password_for_context(
         db,
         context=context,
@@ -737,13 +850,14 @@ def _current_user_mfa_settings(
     status = get_user_mfa_status(db, user_id)
     if role is not None and role != "admin":
         status["setup_required"] = False
-    elif role == "admin" and passkeys.passkeys_configured():
+    if passkeys.passkeys_configured():
         row = db.execute(
             "SELECT COUNT(*) AS count FROM auth_passkeys WHERE user_id = %s",
             (user_id,),
         ).fetchone()
         if row and int(row["count"] or 0) > 0:
-            status["setup_required"] = False
+            if role == "admin":
+                status["setup_required"] = False
             methods = list(cast(list[str], status.get("methods") or []))
             if "passkey" not in methods:
                 methods.append("passkey")
@@ -1170,19 +1284,6 @@ def _accept_invitation_atomically(
 ) -> None:
     invitation_role = str(membership_role or invitation["role"])
     if invitation_scope == "garden":
-        db.execute(
-            """
-            INSERT INTO garden_memberships (garden_id, user_id, role)
-            VALUES (%s, %s, %s)
-            ON CONFLICT(garden_id, user_id) DO UPDATE SET
-                role = excluded.role
-            """,
-            (
-                int(invitation["garden_id"]),
-                user_id,
-                invitation_role,
-            ),
-        )
         accepted = db.execute(
             """
             UPDATE garden_invitations
@@ -1224,6 +1325,20 @@ def _accept_invitation_atomically(
         ).fetchone()
     if not accepted:
         _raise_invalid_invitation_token()
+    if invitation_scope == "garden":
+        db.execute(
+            """
+            INSERT INTO garden_memberships (garden_id, user_id, role)
+            VALUES (%s, %s, %s)
+            ON CONFLICT(garden_id, user_id) DO UPDATE SET
+                role = excluded.role
+            """,
+            (
+                int(invitation["garden_id"]),
+                user_id,
+                invitation_role,
+            ),
+        )
 
 
 @router.get("/auth/status")
@@ -1375,6 +1490,8 @@ def auth_login(
         user_id,
         mfa_authenticated=bool(second_factor_method),
         mfa_setup_required=session_requires_setup,
+        device_label=_session_device_label(request),
+        location_hint=_session_location_hint(request),
     )
     db.execute(
         "UPDATE auth_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
@@ -1557,13 +1674,12 @@ def auth_passkey_register_verify(
         "UPDATE auth_sessions SET mfa_setup_required = 0 WHERE token_hash = %s",
         (context.session_token_hash,),
     )
-    db.commit()
     request.state.auth_context = replace(
         context,
         mfa_setup_required=False,
         passkey_enrolled=True,
     )
-    _audit_user_lifecycle_event(
+    _commit_required_lifecycle_event(
         request,
         auth_context=context,
         status_code=201,
@@ -1601,7 +1717,17 @@ def auth_passkey_prompt_dismiss(
         """,
         (dismissed_until_ms, context.user_id),
     )
-    db.commit()
+    _commit_required_lifecycle_event(
+        request,
+        auth_context=context,
+        status_code=200,
+        detail=_lifecycle_detail(
+            "auth.passkey.prompt-dismiss",
+            user_id=context.user_id,
+            dismissed_until_ms=dismissed_until_ms,
+        ),
+        db=db,
+    )
     request.state.auth_context = replace(
         context,
         passkey_prompt_dismissed_until_ms=dismissed_until_ms,
@@ -1621,6 +1747,39 @@ def auth_passkey_delete(
 ) -> dict[str, object]:
     context = _require_recent_session_context(request)
     action_reason = _normalize_action_reason(request, body_reason=body.action_reason)
+    user_row = db.execute(
+        """
+        SELECT password_hash, password_auth_disabled
+        FROM auth_users
+        WHERE id = %s
+        FOR UPDATE
+        """,
+        (context.user_id,),
+    ).fetchone()
+    if not user_row:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    passkey_row = db.execute(
+        "SELECT id FROM auth_passkeys WHERE id = %s AND user_id = %s",
+        (passkey_id, context.user_id),
+    ).fetchone()
+    if not passkey_row:
+        raise HTTPException(status_code=404, detail="Passkey not found")
+    passkey_count_row = db.execute(
+        "SELECT COUNT(*) AS count FROM auth_passkeys WHERE user_id = %s",
+        (context.user_id,),
+    ).fetchone()
+    passkey_count = int(passkey_count_row["count"] if passkey_count_row else 0)
+    password_available = (
+        int(user_row["password_auth_disabled"]) != 1 and user_row["password_hash"] is not None
+    )
+    if passkey_count <= 1 and not password_available:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot remove the final login factor. Add another passkey or enable password "
+                "authentication first."
+            ),
+        )
     row = db.execute(
         """
         DELETE FROM auth_passkeys
@@ -1660,7 +1819,6 @@ def auth_passkey_delete(
                 """,
                 (now_ms, context.session_token_hash),
             )
-    db.commit()
     if current_requires_setup:
         request.state.auth_context = replace(
             context,
@@ -1668,7 +1826,7 @@ def auth_passkey_delete(
             mfa_setup_required=True,
             reauthenticated_at_ms=now_ms,
         )
-    _audit_user_lifecycle_event(
+    _commit_required_lifecycle_event(
         request,
         auth_context=context,
         status_code=200,
@@ -1681,6 +1839,45 @@ def auth_passkey_delete(
         db=db,
     )
     return {"status": "ok", "passkey_id": passkey_id}
+
+
+@router.patch("/auth/passkeys/{passkey_id}")
+def auth_passkey_rename(
+    passkey_id: int,
+    body: PasskeyRenameBody,
+    request: Request,
+    db: DB,
+) -> dict[str, object]:
+    context = _require_recent_session_context(request)
+    nickname = body.nickname.strip()
+    if not nickname:
+        raise HTTPException(status_code=422, detail="Passkey nickname is required")
+    action_reason = _normalize_action_reason(request, body_reason=body.action_reason)
+    row = db.execute(
+        """
+        UPDATE auth_passkeys
+        SET nickname = %s, updated_at_ms = %s
+        WHERE id = %s AND user_id = %s
+        RETURNING id, nickname, created_at_ms, last_used_at_ms, transports,
+                  credential_device_type, credential_backed_up
+        """,
+        (nickname, current_timestamp_ms(), passkey_id, context.user_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Passkey not found")
+    _commit_required_lifecycle_event(
+        request,
+        auth_context=context,
+        status_code=200,
+        detail=_lifecycle_detail(
+            "auth.passkey.rename",
+            user_id=context.user_id,
+            passkey_id=passkey_id,
+            action_reason=action_reason,
+        ),
+        db=db,
+    )
+    return {"status": "ok", "passkey": passkeys.serialize_passkey(dict(row))}
 
 
 @router.post("/auth/passkeys/login/options")
@@ -1769,6 +1966,8 @@ def auth_passkey_login_verify(
         user_id,
         mfa_authenticated=True,
         mfa_setup_required=False,
+        device_label=_session_device_label(request),
+        location_hint=_session_location_hint(request),
     )
     db.execute(
         "UPDATE auth_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
@@ -1874,6 +2073,8 @@ def auth_passkey_reauthenticate_verify(
         context.user_id,
         mfa_authenticated=True,
         mfa_setup_required=False,
+        device_label=_session_device_label(request),
+        location_hint=_session_location_hint(request),
     )
     now_ms = current_timestamp_ms()
     new_token_hash = sha256(new_token.encode("utf-8")).hexdigest()
@@ -2229,8 +2430,7 @@ def auth_mfa_totp_start(request: Request, db: DB) -> dict[str, object]:
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    db.commit()
-    _audit_user_lifecycle_event(
+    _commit_required_lifecycle_event(
         request,
         auth_context=context,
         status_code=200,
@@ -2288,7 +2488,6 @@ def auth_mfa_totp_confirm(
         """,
         (now_ms, now_ms, context.session_token_hash),
     )
-    db.commit()
     request.state.auth_context = replace(
         context,
         mfa_enabled=True,
@@ -2296,7 +2495,7 @@ def auth_mfa_totp_confirm(
         mfa_setup_required=False,
         reauthenticated_at_ms=now_ms,
     )
-    _audit_user_lifecycle_event(
+    _commit_required_lifecycle_event(
         request,
         auth_context=context,
         status_code=200,
@@ -2335,31 +2534,34 @@ def auth_mfa_disable(
         user_id=context.user_id,
         except_token_hash=context.session_token_hash,
     )
+    passkey_enrolled = passkeys.passkeys_configured() and _user_has_passkey(db, context.user_id)
+    setup_required = admin_mfa_required() and not passkey_enrolled
+    mfa_authenticated_at_ms = int(context.mfa_authenticated_at_ms or 0) if passkey_enrolled else 0
     if context.session_token_hash:
         db.execute(
             """
             UPDATE auth_sessions
             SET
-                mfa_authenticated_at_ms = 0,
+                mfa_authenticated_at_ms = %s,
                 mfa_setup_required = %s,
                 reauthenticated_at_ms = %s
             WHERE token_hash = %s
             """,
             (
-                1 if admin_mfa_required() else 0,
+                mfa_authenticated_at_ms,
+                1 if setup_required else 0,
                 current_timestamp_ms(),
                 context.session_token_hash,
             ),
         )
-    db.commit()
     request.state.auth_context = replace(
         context,
         mfa_enabled=False,
-        mfa_authenticated_at_ms=0,
-        mfa_setup_required=admin_mfa_required(),
+        mfa_authenticated_at_ms=mfa_authenticated_at_ms,
+        mfa_setup_required=setup_required,
     )
     _record_destructive_admin_action("disable_mfa")
-    _audit_user_lifecycle_event(
+    _commit_required_lifecycle_event(
         request,
         auth_context=context,
         status_code=200,
@@ -2375,6 +2577,42 @@ def auth_mfa_disable(
         "mfa": _current_user_mfa_settings(
             db,
             user_id=context.user_id,
+            role=context.role,
+        ),
+    }
+
+
+@router.post("/auth/mfa/totp/cancel")
+def auth_mfa_totp_cancel(
+    body: MfaActionBody,
+    request: Request,
+    db: DB,
+) -> dict[str, object]:
+    context = _require_recent_session_context(request, allow_mfa_setup=True)
+    if context.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="MFA enrollment is available for platform admins only",
+        )
+    if not cancel_totp_enrollment(db, user_id=int(context.user_id)):
+        raise HTTPException(status_code=404, detail="No pending MFA enrollment")
+    action_reason = _normalize_action_reason(request, body_reason=body.action_reason)
+    _commit_required_lifecycle_event(
+        request,
+        auth_context=context,
+        status_code=200,
+        detail=_lifecycle_detail(
+            "auth.mfa.totp.cancel",
+            user_id=context.user_id,
+            action_reason=action_reason,
+        ),
+        db=db,
+    )
+    return {
+        "status": "ok",
+        "mfa": _current_user_mfa_settings(
+            db,
+            user_id=int(context.user_id),
             role=context.role,
         ),
     }
@@ -2396,8 +2634,7 @@ def auth_mfa_regenerate_recovery_codes(
         recovery_codes = regenerate_recovery_codes(db, user_id=context.user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    db.commit()
-    _audit_user_lifecycle_event(
+    _commit_required_lifecycle_event(
         request,
         auth_context=context,
         status_code=200,
@@ -3130,6 +3367,8 @@ def auth_reauthenticate(
         int(user_row["id"]),
         mfa_authenticated=bool(second_factor_method),
         mfa_setup_required=False,
+        device_label=_session_device_label(request),
+        location_hint=_session_location_hint(request),
     )
     now_ms = current_timestamp_ms()
     new_token_hash = sha256(new_token.encode("utf-8")).hexdigest()
@@ -3765,28 +4004,7 @@ def auth_invitation_passkey_register_verify(
         now_ms=now_ms,
         membership_role=created_role,
     )
-    db.commit()
-    session_established = True
-    session_message = ""
-    expires_at_ms: int | None = None
-    try:
-        token, expires_at_ms = create_session_for_user(
-            user_id,
-            mfa_authenticated=True,
-            mfa_setup_required=False,
-        )
-        db.execute(
-            "UPDATE auth_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
-            (user_id,),
-        )
-        db.commit()
-        _set_session_cookies(response, token=token, expires_at_ms=expires_at_ms)
-    except Exception:
-        logger.exception("Passwordless invitation created account but session creation failed")
-        db.rollback()
-        session_established = False
-        session_message = "Sign in to continue."
-    _audit_user_lifecycle_event(
+    _commit_required_lifecycle_event(
         request,
         auth_context=None,
         status_code=201,
@@ -3800,11 +4018,33 @@ def auth_invitation_passkey_register_verify(
             role=str(invitation["role"]),
             created_user=True,
             passkey_id=int(row["id"]),
-            session_established=session_established,
+            session_establishment_pending=True,
         ),
         garden_id=(int(invitation["garden_id"]) if invitation_scope == "garden" else None),
         db=db,
     )
+    session_established = True
+    session_message = ""
+    expires_at_ms: int | None = None
+    try:
+        token, expires_at_ms = create_session_for_user(
+            user_id,
+            mfa_authenticated=True,
+            mfa_setup_required=False,
+            device_label=_session_device_label(request),
+            location_hint=_session_location_hint(request),
+        )
+        db.execute(
+            "UPDATE auth_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
+            (user_id,),
+        )
+        db.commit()
+        _set_session_cookies(response, token=token, expires_at_ms=expires_at_ms)
+    except Exception:
+        logger.exception("Passwordless invitation created account but session creation failed")
+        db.rollback()
+        session_established = False
+        session_message = "Sign in to continue."
     return {
         "status": "ok",
         "expires_at_ms": expires_at_ms,
@@ -3888,15 +4128,16 @@ def auth_accept_invitation(
         if int(user_row["password_auth_disabled"]) == 1 or user_row["password_hash"] is None:
             _record_invalid_invitation_attempt()
             raise HTTPException(status_code=401, detail="Invalid invitation credentials")
-        if not verify_password_and_upgrade(
-            db,
-            user_id=int(user_row["id"]),
-            password=body.password,
-            password_hash=str(user_row["password_hash"]),
-        ):
+        password_hash = str(user_row["password_hash"])
+        if not verify_password(body.password, password_hash):
             _record_invalid_invitation_attempt()
             raise HTTPException(status_code=401, detail="Invalid invitation credentials")
         user_id = int(user_row["id"])
+        if password_needs_rehash(password_hash):
+            db.execute(
+                "UPDATE auth_users SET password_hash = %s WHERE id = %s",
+                (hash_password(body.password), user_id),
+            )
     else:
         created_role = cast(
             Literal["viewer", "editor", "admin"],
@@ -3943,8 +4184,7 @@ def auth_accept_invitation(
         user_id=user_id,
         now_ms=now_ms,
     )
-    db.commit()
-    _audit_user_lifecycle_event(
+    _commit_required_lifecycle_event(
         request,
         auth_context=None,
         status_code=200,
@@ -4016,8 +4256,77 @@ def auth_security_alerts(request: Request) -> dict[str, object]:
 
 @router.get("/auth/sessions")
 def auth_sessions(request: Request, db: DB) -> dict[str, object]:
-    _require_admin_context(request)
-    return {"sessions": list_active_sessions(db)}
+    context = resolve_request_auth_context(request)
+    if context.role == "admin":
+        context = _require_admin_context(request)
+        user_id = None
+    else:
+        context = _require_session_context(request)
+        user_id = int(context.user_id)
+    return {
+        "sessions": list_active_sessions(
+            db,
+            user_id=user_id,
+            current_token_hash=context.session_token_hash or "",
+            absolute_ttl_ms=_session_absolute_ttl_ms(),
+        )
+    }
+
+
+@router.delete("/auth/sessions/{session_id}")
+def auth_revoke_session(
+    session_id: str,
+    body: PasskeyActionBody,
+    request: Request,
+    db: DB,
+) -> dict[str, object]:
+    context = _require_session_context(request)
+    visible_sessions = list_active_sessions(
+        db,
+        user_id=None if context.role == "admin" else int(context.user_id),
+        current_token_hash=context.session_token_hash or "",
+        absolute_ttl_ms=_session_absolute_ttl_ms(),
+    )
+    target = next(
+        (session for session in visible_sessions if session["session_id"] == session_id),
+        None,
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if bool(target["current"]):
+        raise HTTPException(
+            status_code=409,
+            detail="Current session cannot be revoked here; use logout",
+        )
+
+    target_user_id = int(target["user_id"])
+    action_reason = _normalize_action_reason(request, body_reason=body.action_reason)
+    if target_user_id != int(context.user_id):
+        context, action_reason = enforce_destructive_admin_controls(
+            request,
+            body_reason=body.action_reason,
+        )
+    revoked = revoke_session_by_public_id(
+        db,
+        session_id=session_id,
+        owner_user_id=target_user_id,
+    )
+    if revoked is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _commit_required_lifecycle_event(
+        request,
+        auth_context=context,
+        status_code=200,
+        detail=_lifecycle_detail(
+            "auth.sessions.revoke",
+            target_user_id=target_user_id,
+            target_username=str(revoked["username"]),
+            current_session=False,
+            action_reason=action_reason,
+        ),
+        db=db,
+    )
+    return {"status": "ok", "session_id": session_id, "current_session": False}
 
 
 @router.post("/auth/revoke-user-sessions")
@@ -4031,9 +4340,8 @@ def auth_revoke_user_sessions(
         body_reason=body.action_reason,
     )
     revoked = revoke_sessions_by_user(db, body.username)
-    db.commit()
     _record_destructive_admin_action("revoke_user_sessions")
-    _audit_user_lifecycle_event(
+    _commit_required_lifecycle_event(
         request,
         auth_context=context,
         status_code=200,
@@ -4059,9 +4367,8 @@ def auth_revoke_all_sessions(
         body_reason=body.action_reason,
     )
     revoked = revoke_all_sessions(db, except_token_hash=_current_token_hash(request))
-    db.commit()
     _record_destructive_admin_action("revoke_all_sessions")
-    _audit_user_lifecycle_event(
+    _commit_required_lifecycle_event(
         request,
         auth_context=context,
         status_code=200,
@@ -4109,6 +4416,7 @@ def auth_check_hibp(
 def auth_set_emergency_read_only(
     body: EmergencyReadOnlyBody,
     request: Request,
+    db: DB,
 ) -> dict[str, object]:
     context, action_reason = enforce_destructive_admin_controls(
         request,
@@ -4120,9 +4428,10 @@ def auth_set_emergency_read_only(
     status = set_emergency_read_only(
         body.enabled,
         expires_at_ms=expires_at_ms,
+        conn=db,
     )
     _record_destructive_admin_action("emergency_read_only")
-    _audit_user_lifecycle_event(
+    _commit_required_lifecycle_event(
         request,
         auth_context=context,
         status_code=200,
@@ -4132,6 +4441,7 @@ def auth_set_emergency_read_only(
             expires_at_ms=status["expires_at_ms"],
             action_reason=action_reason,
         ),
+        db=db,
     )
     return {
         "enabled": bool(status["enabled"]),

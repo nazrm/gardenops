@@ -252,6 +252,8 @@ scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --p
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 3
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 4
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 4
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 5
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 5
 ```
 
 The runner creates its own disposable PostgreSQL child through
@@ -266,7 +268,10 @@ run; failed runs preserve private logs and artifacts for diagnosis. Playwright
 first writes each trace to private staging because it can contain request and
 response payloads, page state, and identifiers. Run closure sanitizes and validates
 that staged trace, deletes the raw staging copy, and retains only the sanitized
-private archive. The public manifest is a sanitized projection; it binds the
+private archive. Sanitization is fail-closed: retained traces exclude DOM/page
+snapshots, screencast frames, response resources, and unknown archive members,
+and redact invitation, challenge, TOTP, recovery-code, credential, session, and
+CSRF fields from the remaining event metadata. The public manifest is a sanitized projection; it binds the
 fixture, runtime/browser, and lockfiles by hash and size and includes recomputable
 canonical projection digests. The
 runtime evidence hashes both the Chromium launcher and the resolved ELF browser
@@ -317,9 +322,11 @@ focused `--phase 2` run isolates the phase on a fresh fixture, while
 `--through-phase 2` proves the same choreography after Phases 0 and 1.
 
 The browser guard permits only the configured disposable frontend, backend, and
-optional provider origins on literal `127.0.0.1` ports; user mutations use
-visible controls, while the few page-origin fetches remain behind that same
-guard. Expected browser console diagnostics are admitted only after matching a
+optional provider origins. The frontend uses `localhost` so its WebAuthn RP ID
+is valid; backend and provider services remain on literal `127.0.0.1`. Every
+origin has a dynamic non-5432 port. User mutations use visible controls, while
+the few page-origin fetches remain behind that same guard. Expected browser
+console diagnostics are admitted only after matching a
 specific method, status, path, and probe context; a retained classification
 ledger prevents an unexpected diagnostic from being hidden by removing it from
 the working array. Pixel 7 evidence enforces its viewport, user-agent contract,
@@ -431,6 +438,35 @@ coverage contracts:
 .venv/bin/pytest -q tests/test_complete_journey_e2e_scripts.py -k phase_four
 .venv/bin/python scripts/check_journey_coverage.py --allow-open
 node --check scripts/e2e/journeys/planningAndReporting.cjs
+node --check scripts/check_complete_journeys_e2e.cjs
+```
+
+Phase 5 verifies invitation acceptance, role boundaries, passkey enrollment,
+rename, passwordless login, user-verification rejection, revoked-credential
+denial, passwordless backup enrollment, and final-factor lockout. It covers TOTP
+enrollment cancellation, confirmation, recovery-code regeneration, one-time use,
+reuse denial, fallback, and disable. It also proves safe session inventory,
+second-browser revocation, idle and absolute expiry, live role refresh, personal
+settings persistence, stale-CSRF and cross-garden denials, and emergency
+read-only enable/block/disable behavior across the six desktop/Pixel role
+profiles. Invitation and authentication secrets are removed before traces
+become retained evidence. The disposable runner raises only its local login and
+failed-authentication ceilings so deliberate credential-recovery and signed-out
+probes remain deterministic; normal deployment limits and their focused backend
+tests are unchanged.
+
+Session deployments have two independent limits. `AUTH_SESSION_TTL_HOURS`
+defaults to a 12-hour idle timeout; `AUTH_SESSION_ABSOLUTE_TTL_HOURS` defaults to
+168 hours and prevents activity from renewing a session forever. Focused auth
+tests should cover both boundaries whenever session renewal changes.
+
+Before coordinating a real Phase 5 browser run, validate its static harness and
+coverage contracts:
+
+```bash
+.venv/bin/pytest -q tests/test_complete_journey_e2e_scripts.py -k phase_five
+.venv/bin/python scripts/check_journey_coverage.py --allow-open
+node --check scripts/e2e/journeys/identityAndRoles.cjs
 node --check scripts/check_complete_journeys_e2e.cjs
 ```
 

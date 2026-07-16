@@ -2,6 +2,7 @@
 
 import base64
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import gardenops.db as db
@@ -9,6 +10,7 @@ from gardenops.security import create_user
 from gardenops.security_mfa import (
     _totp_at,
     _totp_period_seconds,
+    cancel_totp_enrollment,
     confirm_totp_enrollment,
     decrypt_mfa_secret,
     disable_totp_mfa,
@@ -18,6 +20,7 @@ from gardenops.security_mfa import (
     get_user_mfa_status,
     normalize_recovery_code,
     normalize_totp_code,
+    regenerate_recovery_codes,
     start_totp_enrollment,
     totp_provisioning_uri,
     verify_totp,
@@ -374,6 +377,39 @@ class TestEnrollmentFlow(BaseApiTest):
         finally:
             db.return_db(conn)
 
+    def test_cancel_pending_enrollment_clears_secret_state(self) -> None:
+        user_id, username = self._make_user()
+        conn = db.get_db()
+        try:
+            start_totp_enrollment(conn, user_id=user_id, username=username)
+            self.assertTrue(cancel_totp_enrollment(conn, user_id=user_id))
+            conn.commit()
+            status = get_user_mfa_status(conn, user_id)
+            self.assertFalse(status["pending_enrollment"])
+            self.assertFalse(status["enabled"])
+        finally:
+            db.return_db(conn)
+
+    def test_expired_pending_enrollment_is_removed_deterministically(self) -> None:
+        user_id, username = self._make_user()
+        start_ms = 1_800_000_000_000
+        conn = db.get_db()
+        try:
+            with patch(
+                "gardenops.security_mfa.current_timestamp_ms",
+                return_value=start_ms,
+            ):
+                enrollment = start_totp_enrollment(conn, user_id=user_id, username=username)
+            with patch(
+                "gardenops.security_mfa.current_timestamp_ms",
+                return_value=int(enrollment["expires_at_ms"]),
+            ):
+                status = get_user_mfa_status(conn, user_id)
+            self.assertFalse(status["pending_enrollment"])
+            self.assertFalse(cancel_totp_enrollment(conn, user_id=user_id))
+        finally:
+            db.return_db(conn)
+
 
 class TestDisableTotpMfa(BaseApiTest):
     """disable_totp_mfa clears MFA state."""
@@ -530,6 +566,28 @@ class TestVerifyUserSecondFactor(BaseApiTest):
                 recovery_code=code,
             )
             self.assertFalse(ok2)
+        finally:
+            db.return_db(conn)
+
+    def test_regeneration_invalidates_old_unused_recovery_codes(self) -> None:
+        user_id, _, old_codes = self._enroll_mfa()
+        conn = db.get_db()
+        try:
+            new_codes = regenerate_recovery_codes(conn, user_id=user_id)
+            conn.commit()
+            old_ok, _ = verify_user_second_factor(
+                conn,
+                user_id=user_id,
+                recovery_code=old_codes[-1],
+            )
+            new_ok, method = verify_user_second_factor(
+                conn,
+                user_id=user_id,
+                recovery_code=new_codes[0],
+            )
+            self.assertFalse(old_ok)
+            self.assertTrue(new_ok)
+            self.assertEqual(method, "recovery_code")
         finally:
             db.return_db(conn)
 

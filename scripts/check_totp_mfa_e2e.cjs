@@ -166,6 +166,16 @@ async function completePrompt(page, value) {
   await dialogHandle.dispose();
 }
 
+async function acceptSensitiveConfirmation(page) {
+  const dialog = page.locator(".modal").last();
+  await visible(dialog, "a sensitive-action confirmation");
+  const dialogHandle = await dialog.elementHandle();
+  assert(dialogHandle, "Sensitive-action confirmation disappeared unexpectedly");
+  await dialog.locator(".confirm-yes").click();
+  await page.waitForFunction((element) => !element.isConnected, dialogHandle, { timeout: TIMEOUT_MS });
+  await dialogHandle.dispose();
+}
+
 async function recoveryDisplaySummary(page) {
   const output = page.locator("#adm-mfa-recovery-output");
   await visible(output, "displayed recovery codes");
@@ -204,6 +214,7 @@ async function cancelSensitiveAction(page, regenerate) {
 async function denyWithWrongTotp(page, regenerate, secret) {
   const recoveryDisplayCount = await page.locator("#adm-mfa-recovery-codes").count();
   await regenerate.click();
+  await acceptSensitiveConfirmation(page);
   await completePrompt(page, "totp-mfa-e2e-denial");
   await completePrompt(page, E2E_PASSWORD);
   const deniedResponse = page.waitForResponse((response) => (
@@ -224,6 +235,7 @@ async function denyWithWrongTotp(page, regenerate, secret) {
 async function regenerateWithFreshTotp(page, regenerate, secret, acceptedCounter) {
   const fresh = await freshTotpAfter(secret, acceptedCounter);
   await regenerate.click();
+  await acceptSensitiveConfirmation(page);
   await completePrompt(page, "totp-mfa-e2e-regeneration");
   await completePrompt(page, E2E_PASSWORD);
   await completePrompt(page, fresh.code);

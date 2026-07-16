@@ -15,7 +15,14 @@ registration uses short-lived server challenges. Passwordless passkey account
 creation is invitation-gated, rejects existing usernames, and does not allow
 platform-admin passwordless invitations. Passkey-only accounts require an
 explicit `passwordless_recovery` reset token before password authentication can
-be restored.
+be restored. A passkey-only user may add a backup passkey after passkey-backed
+reauthentication, but cannot remove the final passkey until another passkey or
+password authentication is available.
+First passkey enrollment does not itself unlock protected administrator actions.
+The clients immediately authenticate with the newly bound passkey before
+resuming protected application reads.
+Enrolled editors and viewers also advertise passkey step-up capability so
+passwordless users can safely manage backup credentials without a password.
 
 Sensitive session-auth actions treat failed password, TOTP, recovery-code, and
 passkey reauthentication as a rejected action and keep the operation available

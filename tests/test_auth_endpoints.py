@@ -471,17 +471,79 @@ class TestAuthSessions(BaseApiTest):
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 
-    def test_list_sessions_non_admin_denied(self) -> None:
+    def test_list_sessions_non_admin_is_owner_scoped_and_safe(self) -> None:
         os.environ["AUTH_REQUIRED"] = "true"
         os.environ["AUTH_MODE"] = "session"
         try:
             self._create_test_user("sess_viewer", "viewerpass", "viewer")
+            self._create_test_user("sess_other", "otherpass", "editor")
+            other_client, _ = self._authenticated_client("sess_other", "otherpass")
             client, headers = self._authenticated_client(
                 "sess_viewer",
                 "viewerpass",
             )
             resp = client.get("/api/auth/sessions", headers=headers)
-            self.assertEqual(resp.status_code, 403)
+            self.assertEqual(resp.status_code, 200, resp.text)
+            sessions = resp.json()["sessions"]
+            self.assertEqual({session["username"] for session in sessions}, {"sess_viewer"})
+            self.assertTrue(any(session["current"] for session in sessions))
+            for session in sessions:
+                self.assertEqual(
+                    set(session),
+                    {
+                        "session_id",
+                        "user_id",
+                        "username",
+                        "role",
+                        "device_label",
+                        "location_hint",
+                        "expires_at_ms",
+                        "absolute_expires_at_ms",
+                        "created_at_ms",
+                        "last_seen_at_ms",
+                        "reauthenticated_at_ms",
+                        "mfa_authenticated_at_ms",
+                        "mfa_setup_required",
+                        "current",
+                    },
+                )
+                self.assertTrue(session["session_id"].startswith("session_"))
+                self.assertTrue(session["device_label"])
+                self.assertEqual(session["location_hint"], "Local device")
+                self.assertNotIn("token", " ".join(session).lower())
+            other_client.close()
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_owner_can_revoke_another_session_but_not_current(self) -> None:
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        try:
+            self._create_test_user("sess_owner", "ownerpass", "editor")
+            first_client, first_headers = self._authenticated_client("sess_owner", "ownerpass")
+            second_client, _ = self._authenticated_client("sess_owner", "ownerpass")
+
+            sessions = first_client.get("/api/auth/sessions").json()["sessions"]
+            current = next(session for session in sessions if session["current"])
+            other = next(session for session in sessions if not session["current"])
+
+            current_response = first_client.request(
+                "DELETE",
+                f"/api/auth/sessions/{current['session_id']}",
+                headers=first_headers,
+                json={"action_reason": "current-session-contract"},
+            )
+            self.assertEqual(current_response.status_code, 409)
+
+            revoked = first_client.request(
+                "DELETE",
+                f"/api/auth/sessions/{other['session_id']}",
+                headers=first_headers,
+                json={"action_reason": "remove-old-session"},
+            )
+            self.assertEqual(revoked.status_code, 200, revoked.text)
+            self.assertFalse(revoked.json()["current_session"])
+            self.assertEqual(second_client.get("/api/auth/me").status_code, 401)
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 
@@ -572,6 +634,53 @@ class TestAuthEmergencyReadOnly(BaseApiTest):
             )
             self.assertEqual(resp.status_code, 200)
             self.assertFalse(resp.json()["enabled"])
+            conn = db.get_db()
+            try:
+                audit_rows = conn.execute(
+                    """
+                    SELECT detail FROM audit_events
+                    WHERE path = '/api/auth/emergency-read-only'
+                    ORDER BY id
+                    """,
+                ).fetchall()
+                self.assertEqual(len(audit_rows), 2)
+                self.assertTrue(
+                    all("auth.emergency-read-only" in row["detail"] for row in audit_rows)
+                )
+            finally:
+                db.return_db(conn)
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_emergency_read_only_rolls_back_when_required_audit_fails(self) -> None:
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["AUTH_MODE"] = "session"
+        try:
+            self._create_test_user("ero_audit_failure", "adminpasswd", "admin")
+            client, headers = self._authenticated_client(
+                "ero_audit_failure",
+                "adminpasswd",
+            )
+            with (
+                patch(
+                    "gardenops.routers.auth.write_required_audit_event",
+                    side_effect=RuntimeError("audit unavailable"),
+                ),
+                self.assertRaises(RuntimeError),
+            ):
+                client.patch(
+                    "/api/auth/emergency-read-only",
+                    headers=headers,
+                    json={"enabled": True, "action_reason": "audit-failure-test"},
+                )
+            conn = db.get_db()
+            try:
+                status = conn.execute(
+                    "SELECT value FROM security_runtime_flags WHERE key = 'emergency_read_only'",
+                ).fetchone()
+                self.assertTrue(status is None or status["value"] == "0")
+            finally:
+                db.return_db(conn)
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 

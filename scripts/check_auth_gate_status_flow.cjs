@@ -239,8 +239,11 @@ function main() {
   if (passkeysText.includes("isConditionalPasskeyLoginSupported")) {
     fail("passkeys feature must not expose conditional username-less login for this app");
   }
-  if (passkeysText.includes("mediation") || passkeysText.includes("signal")) {
-    fail("passkey login must not request conditional mediation or keep abort-only conditional plumbing");
+  if (passkeysText.includes("mediation")) {
+    fail("passkey login must not request conditional mediation");
+  }
+  if (!passkeysText.includes("signal?: AbortSignal") || !passkeysText.includes("request.signal = signal")) {
+    fail("passkey login must accept an abort signal for the visible password fallback");
   }
   if (authGateText.includes("beginPasskeyLoginApi(\"\")")) {
     fail("auth gate must not start passkey login options with an empty username");
@@ -275,17 +278,27 @@ function main() {
   if (authGateText.includes("allowCredentials?.length")) {
     fail("auth gate must not branch on public allowCredentials because that leaks passkey enrollment");
   }
-  if (authGateText.includes("auth.use_password_instead")) {
-    fail("passkey-first login must auto-start passkey authentication instead of showing a password fallback button first");
+  if (!authGateText.includes("passwordFallbackBtn.hidden = step !== \"passkey-ready\"")) {
+    fail("passkey-first login must expose password fallback before the blocking browser ceremony");
+  }
+  if (!authGateText.includes("passkeyAttempt += 1") || !authGateText.includes("attempt !== passkeyAttempt")) {
+    fail("password fallback must invalidate any pending passkey ceremony result");
+  }
+  if (!authGateText.includes("passkeyAbortController?.abort()") || !authGateText.includes("abortController.signal")) {
+    fail("password fallback must abort the pending passkey ceremony");
   }
   if (!authGateText.includes("auth.login_action")) {
     fail("password fallback after username resolution must expose a Login action");
   }
-  if (!authGateText.includes("startPasskeyLogin")) {
-    fail("passkey-first login must auto-start passkey authentication after username resolution");
+  if (!authGateText.includes("submitBtn.textContent = t(\"auth.use_passkey\")")) {
+    fail("passkey-first login must expose an explicit passkey action after username resolution");
   }
-  if (!authGateText.includes("await startPasskeyLogin(options, username)")) {
-    fail("username-resolved passkey options must immediately start passkey login");
+  if (
+    !authGateText.includes("pendingPasskeyOptions = await beginPasskeyLoginApi(username)")
+    || !authGateText.includes("setLoginStep(\"passkey-ready\")")
+    || !authGateText.includes("await startPasskeyLogin(options, passkeyUsername)")
+  ) {
+    fail("username-resolved passkey options must wait for the explicit passkey action");
   }
   if (!authGateText.includes("auth-gate-identity-label auth-gate-username-label")) {
     fail("username-first login must render the username control as an identity row");

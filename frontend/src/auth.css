@@ -10,7 +10,7 @@
   --sp-6: 24px;
   --sp-8: 32px;
   --r-sm: 6px;
-  --r-xl: 24px;
+  --r-xl: 8px;
   --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
   --bg-0: #f0ebe3;
   --text-1: #2b261e;
@@ -67,10 +67,7 @@ body.auth-gate-active {
   justify-content: center;
   overflow: auto;
   padding: clamp(24px, 5vh, 56px) var(--sp-4);
-  background:
-    radial-gradient(circle at top, rgba(95, 130, 92, 0.22), transparent 34%),
-    radial-gradient(circle at bottom right, rgba(176, 111, 74, 0.18), transparent 30%),
-    #151915;
+  background: #151915;
   z-index: 2000;
 }
 
@@ -264,6 +261,81 @@ body.auth-gate-active {
   color: #d5e6c3;
 }
 
+.auth-gate-card button:focus-visible,
+.auth-gate-card input:focus-visible {
+  outline: 2px solid #c7df91;
+  outline-offset: 2px;
+}
+
+.adm-identity-status {
+  min-height: 20px;
+  margin: 0 0 12px;
+  color: #46703f;
+  font-weight: 600;
+}
+
+.adm-identity-status--error {
+  color: #a9362a;
+}
+
+.adm-incident-status {
+  border-inline-start: 4px solid #7d8b78;
+}
+
+.adm-incident-status--active {
+  border-inline-start-color: #c43d2f;
+  background: rgba(196, 61, 47, 0.06);
+}
+
+.adm-identity-session-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.adm-identity-session {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(220px, auto) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(80, 91, 76, 0.2);
+}
+
+.adm-identity-session:last-child {
+  border-bottom: 0;
+}
+
+.adm-identity-session-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.adm-identity-session-meta {
+  display: flex;
+  gap: 16px;
+  margin: 0;
+}
+
+.adm-identity-session-meta div {
+  display: grid;
+  gap: 2px;
+}
+
+.adm-identity-session-meta dt {
+  color: #687064;
+  font-size: 11px;
+}
+
+.adm-identity-session-meta dd {
+  margin: 0;
+  white-space: nowrap;
+}
+
 @media (max-width: 520px) {
   .auth-gate {
     align-items: flex-start;
@@ -283,6 +355,20 @@ body.auth-gate-active {
 
   .auth-gate-card {
     padding: var(--sp-6) var(--sp-5);
+  }
+
+  .adm-identity-session {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .adm-identity-session-meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .adm-identity-session .adm-btn {
+    width: 100%;
   }
 }
 

@@ -169,11 +169,6 @@ class TestAuthorizationNegativeSweep(BaseApiTest):
                     auth.auth_security_alerts,
                 ),
                 (
-                    "/api/auth/sessions",
-                    "GET",
-                    lambda request: auth.auth_sessions(request, conn),
-                ),
-                (
                     "/api/auth/emergency-read-only",
                     "GET",
                     lambda request: auth.auth_get_emergency_read_only(request, conn),

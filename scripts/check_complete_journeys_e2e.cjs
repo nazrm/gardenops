@@ -24,6 +24,7 @@ const { runGardenMapPlants } = require("./e2e/journeys/gardenMapPlants.cjs");
 const { runDailyAttentionWork } = require("./e2e/journeys/dailyAttentionWork.cjs");
 const { runObservationToAction } = require("./e2e/journeys/observationToAction.cjs");
 const { runPlanningAndReporting } = require("./e2e/journeys/planningAndReporting.cjs");
+const { runIdentityAndRoles } = require("./e2e/journeys/identityAndRoles.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const BASE_URL = process.env.BASE_URL || "";
@@ -55,6 +56,13 @@ const PHASE_FOUR_ORACLE_PATH = path.join(
   "fixtures",
   "complete_journeys_phase_four_oracle.json",
 );
+const PHASE_FIVE_ORACLE_PATH = path.join(
+  ROOT,
+  "scripts",
+  "e2e",
+  "fixtures",
+  "complete_journeys_phase_five_oracle.json",
+);
 const CHROMIUM_LAUNCHER = fs.existsSync("/usr/bin/chromium-browser")
   ? "/usr/bin/chromium-browser"
   : "/usr/bin/chromium";
@@ -75,6 +83,15 @@ const PHASE_TWO_READ_ONLY_PERMUTATION_ORDER = [
   "admin:mobile",
   "editor:desktop",
 ];
+
+function isPhaseTwoReadOnlyProbeMutation(request) {
+  return ["DELETE", "PATCH", "POST", "PUT"].includes(request.method)
+    && ![
+      "/api/auth/login",
+      "/api/auth/passkeys/login/options",
+      "/api/media/summaries",
+    ].includes(request.path);
+}
 const PHASE_TWO_EDITOR_PASSWORD = "CompleteJourneysEditorE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 const PHASE_TWO_VIEWER_PASSWORD = "CompleteJourneysViewerE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 
@@ -129,7 +146,7 @@ function assertRunnerEnvironment() {
   assert(isAllowedUrl(BASE_URL, browserOrigins), "Complete journey BASE_URL is not in its browser contract");
   assert(fs.existsSync(CHROMIUM_EXECUTABLE), "System Chromium is required");
   assert(process.env.GARDENOPS_LOGS_DIR, "Complete journey backend log directory is required");
-  assert(PHASE <= 4 && THROUGH_PHASE <= 4, "Requested phase is not implemented");
+  assert(PHASE <= 5 && THROUGH_PHASE <= 5, "Requested phase is not implemented");
 }
 
 function assertExpectedHead() {
@@ -193,6 +210,47 @@ function phaseFourOracle() {
     && oracle.phase_four.support && typeof oracle.phase_four.support === "object",
   "Phase 4 oracle contract is incomplete");
   return oracle;
+}
+
+function phaseFiveOracle() {
+  const oracle = readJson(PHASE_FIVE_ORACLE_PATH);
+  assert(oracle && typeof oracle === "object" && oracle.schema_version === 2,
+    "Phase 5 oracle schema is unsupported");
+  assert(oracle.phase_five && typeof oracle.phase_five === "object"
+    && oracle.phase_five.fixture && typeof oracle.phase_five.fixture === "object"
+    && oracle.phase_five.database_boundaries
+      && typeof oracle.phase_five.database_boundaries === "object"
+    && oracle.phase_five.auth_state && typeof oracle.phase_five.auth_state === "object"
+    && oracle.phase_five.challenge_projection
+      && typeof oracle.phase_five.challenge_projection === "object"
+    && oracle.phase_five.audit_scope && typeof oracle.phase_five.audit_scope === "object"
+    && oracle.phase_five.support && typeof oracle.phase_five.support === "object",
+  "Phase 5 oracle contract is incomplete");
+  return oracle;
+}
+
+function assertPhaseFiveFixtureOracleBinding(fixture, oracle) {
+  const binding = fixture?.phase_five?.oracle;
+  assert(binding && typeof binding === "object", "Phase 5 fixture oracle binding is missing");
+  assert(binding.path === "scripts/e2e/fixtures/complete_journeys_phase_five_oracle.json",
+    "Phase 5 fixture oracle path is invalid");
+  assert(binding.schema_version === oracle.schema_version,
+    "Phase 5 fixture oracle schema binding drifted");
+  assert(binding.sha256 === sha256File(PHASE_FIVE_ORACLE_PATH),
+    "Phase 5 fixture oracle digest drifted");
+  assert(canonicalJson({
+    invitee_username: fixture.phase_five.invitee_username,
+    viewer_invitee_username: fixture.phase_five.viewer_invitee_username,
+    passkey_nickname: fixture.phase_five.passkey_nickname,
+    passkey_renamed_nickname: fixture.phase_five.passkey_renamed_nickname,
+    settings_pattern: fixture.phase_five.settings_pattern,
+    settings_label: fixture.phase_five.settings_label,
+    settings_description: fixture.phase_five.settings_description,
+  }) === canonicalJson(oracle.phase_five.fixture),
+  "Phase 5 fixture diverged from the independent oracle");
+  assert(canonicalJson(fixture.phase_five.support) === canonicalJson(oracle.phase_five.support),
+    "Phase 5 support matrix diverged from the independent oracle");
+  return { oracle_binding_exact: true, oracle_sha256: binding.sha256 };
 }
 
 function assertPhaseFourFixtureOracleBinding(fixture, oracle) {
@@ -403,6 +461,8 @@ function phaseOneAuditExpectedEvents(loginCount) {
     [1, "PATCH", "/api/plots/P1MOBILEPLOT", 200],
     [4, "PATCH", "/api/plots/COMPLETE-PHASE-ONE-INDOOR/plants/COMPLETE-PHASE-ONE-BASIL", 200],
     [loginCount, "POST", "/api/auth/login", 200],
+    [loginCount, "POST", "/api/auth/passkeys/login/options", 200],
+    [3, "POST", "/api/auth/passkeys/prompt/dismiss", 200],
     [9, "POST", "/api/auth/reauthenticate", 200],
     [2, "POST", "/api/gardens/{garden_id}/complete-onboarding", 200],
     [10, "POST", "/api/gardens/{garden_id}/map-objects", 201],
@@ -764,6 +824,487 @@ function assertPhaseFourAuditEvents(beforeAudit, finalAudit, profiles, fixture) 
   assert(unmatched.length === 0,
     `Phase 4 browser mutations lacked audit events: ${unmatched.map((row) => row.path).join(", ")}`);
   return { audit_mutations_one_to_one: true, audit_event_count: requests.length };
+}
+
+function assertPhaseFiveProfileEvidence(profiles, oracle) {
+  const observed = profiles.map((profile) => `${profile.role}:${profile.profile}`);
+  assert(canonicalJson(observed) === canonicalJson(oracle.phase_five.profile_order),
+    `Phase 5 profile order was unexpected: ${observed.join(", ")}`);
+  for (const profile of profiles) {
+    assert(profile?.checks?.browser_diagnostics === true,
+      `Phase 5 browser diagnostics evidence is missing: ${profile.role}:${profile.profile}`);
+    assert(Array.isArray(profile?.assertions?.failed) && profile.assertions.failed.length === 0,
+      `Phase 5 profile has failed assertions: ${profile.role}:${profile.profile}`);
+    assert(Array.isArray(profile?.assertions?.skipped) && profile.assertions.skipped.length === 0,
+      `Phase 5 profile has skipped assertions: ${profile.role}:${profile.profile}`);
+    assert(typeof profile?.checks?.last_completed_step === "string"
+      && profile.checks.last_completed_step,
+    `Phase 5 last-completed-step evidence is missing: ${profile.role}:${profile.profile}`);
+  }
+  const adminDesktop = profiles.find((profile) => (
+    profile.role === "admin" && profile.profile === "desktop"
+  ));
+  const adminMobile = profiles.find((profile) => (
+    profile.role === "admin" && profile.profile === "mobile"
+  ));
+  const editors = profiles.filter((profile) => profile.role === "editor");
+  const viewers = profiles.filter((profile) => profile.role === "viewer");
+  for (const check of [
+    "idle_and_absolute_session_expiry",
+    "invitation_lifecycle",
+    "live_role_refresh",
+    "passkey_lifecycle",
+    "revoked_passkey_denial",
+    "totp_lifecycle",
+    "session_revocation",
+    "settings_persistence",
+    "incident_control",
+  ]) {
+    assert(adminDesktop?.checks?.[check] === true,
+      `Phase 5 administrator desktop ${check} proof is incomplete`);
+  }
+  assert(adminMobile?.checks?.mobile_identity_settings === true,
+    "Phase 5 administrator mobile identity settings proof is incomplete");
+  const editorDesktop = profiles.find((profile) => (
+    profile.role === "editor" && profile.profile === "desktop"
+  ));
+  for (const check of [
+    "cross_garden_and_stale_csrf_denials",
+    "passwordless_invitation",
+    "passwordless_passkey_redundancy",
+  ]) {
+    assert(editorDesktop?.checks?.[check] === true,
+      `Phase 5 editor desktop ${check} proof is incomplete`);
+  }
+  assert(editors.length === 2 && editors.every((profile) => (
+    profile.checks.editor_identity_surface === true
+  )), "Phase 5 editor identity surface proof is incomplete");
+  assert(viewers.length === 2 && viewers.every((profile) => (
+    profile.checks.viewer_identity_surface === true
+    && profile.checks.viewer_admin_controls_absent === true
+  )), "Phase 5 viewer identity boundary proof is incomplete");
+  return { profile_matrix_enforced: true, profile_order: observed };
+}
+
+function exactProjectionDelta(initialRows, finalRows, label) {
+  assert(Array.isArray(initialRows) && Array.isArray(finalRows), `${label} projection is missing`);
+  const index = (rows, boundary) => {
+    const result = new Map();
+    for (const row of rows) {
+      assert(row && typeof row === "object" && /^[a-f0-9]{64}$/.test(row.identity_digest),
+        `${label} ${boundary} row has an invalid opaque identity`);
+      assert(!result.has(row.identity_digest),
+        `${label} ${boundary} projection duplicated an opaque identity`);
+      result.set(row.identity_digest, row);
+    }
+    return result;
+  };
+  const before = index(initialRows, "initial");
+  const after = index(finalRows, "final");
+  const added = [];
+  const removed = [];
+  const updated = [];
+  for (const [identity, row] of after) {
+    if (!before.has(identity)) added.push(row);
+    else if (canonicalJson(before.get(identity)) !== canonicalJson(row)) {
+      updated.push({ after: row, before: before.get(identity) });
+    }
+  }
+  for (const [identity, row] of before) {
+    if (!after.has(identity)) removed.push(row);
+  }
+  const byIdentity = (left, right) => left.identity_digest.localeCompare(right.identity_digest);
+  added.sort(byIdentity);
+  removed.sort(byIdentity);
+  updated.sort((left, right) => byIdentity(left.after, right.after));
+  return { added, removed, updated };
+}
+
+function assertPhaseFiveSessionCounts(state, label) {
+  assert(Array.isArray(state.auth_users_projection)
+    && Array.isArray(state.auth_sessions_projection)
+    && Array.isArray(state.session_counts_by_user),
+  `Phase 5 ${label} auth/session projections are missing`);
+  const users = new Map(state.auth_users_projection.map((row) => [row.identity_digest, row]));
+  const actual = new Map([...users].map(([identity, row]) => [identity, {
+    category: row.category,
+    count: 0,
+    user_identity_digest: identity,
+  }]));
+  for (const session of state.auth_sessions_projection) {
+    assert(actual.has(session.user_identity_digest),
+      `Phase 5 ${label} session references an unknown opaque user identity`);
+    const count = actual.get(session.user_identity_digest);
+    assert(session.category === count.category,
+      `Phase 5 ${label} session owner category disagrees with its user projection`);
+    count.count += 1;
+  }
+  const expected = [...actual.values()].sort((left, right) => (
+    left.user_identity_digest.localeCompare(right.user_identity_digest)
+  ));
+  assert(canonicalJson(state.session_counts_by_user) === canonicalJson(expected),
+    `Phase 5 ${label} per-user session counts diverged from exact session rows`);
+}
+
+function phaseFiveChallengeStarts(profiles) {
+  const starts = { login: 0, reauthentication: 0, registration: 0 };
+  for (const request of profiles.flatMap((profile) => profile.requests || [])) {
+    if (request.method !== "POST" || request.statusCode >= 400) continue;
+    if (request.path === "/api/auth/passkeys/login/options") starts.login += 1;
+    else if (request.path === "/api/auth/reauthenticate/passkey/options") {
+      starts.reauthentication += 1;
+    } else if (request.path === "/api/auth/passkeys/register/options"
+      || request.path === "/api/auth/invitations/passkey/register/options") {
+      starts.registration += 1;
+    }
+  }
+  return starts;
+}
+
+function assertPhaseOneChallengeProjection(initialState, finalState, profiles, label = "Phase 1") {
+  const challengeDelta = exactProjectionDelta(
+    initialState?.challenge_projection,
+    finalState?.challenge_projection,
+    `${label} passkey challenge`,
+  );
+  const expectedChallengeStarts = phaseFiveChallengeStarts(profiles).login;
+  assert(Number.isSafeInteger(finalState?.snapshot_at_ms) && finalState.snapshot_at_ms > 0,
+    `${label} passkey challenge boundary lacks a snapshot timestamp`);
+  assert(challengeDelta.added.length <= expectedChallengeStarts
+    && challengeDelta.removed.length === 0 && challengeDelta.updated.length === 0,
+  `${label} passkey challenge rows diverged from browser challenge starts: ${canonicalJson({
+    retained: challengeDelta.added.length,
+    starts: expectedChallengeStarts,
+    removed: challengeDelta.removed.length,
+    updated: challengeDelta.updated.length,
+  })}`);
+  assert(challengeDelta.added.every((row) => (
+    row.flow === "authentication_denied"
+    && row.owner_category === "unbound"
+    && row.session_binding_present === false
+    && row.invitation_binding_present === false
+    && row.consumed_state === "unused"
+    && row.lifetime_valid === true
+    && Number.isSafeInteger(row.expires_at_ms)
+  )), `${label} retained an invalid, bound, or consumed passkey challenge`);
+  return {
+    browser_challenge_start_count: expectedChallengeStarts,
+    cleaned_before_boundary_count: expectedChallengeStarts - challengeDelta.added.length,
+    retained_count: challengeDelta.added.length,
+    retained_expired_count: challengeDelta.added.filter(
+      (row) => row.expires_at_ms <= finalState.snapshot_at_ms,
+    ).length,
+    retained_rows_exact: true,
+  };
+}
+
+function assertPhaseFiveChallengeProjection(initial, final, profiles, oracle) {
+  const delta = exactProjectionDelta(
+    initial.challenge_projection,
+    final.challenge_projection,
+    "Phase 5 passkey challenge",
+  );
+  assert(delta.updated.length === 0,
+    "Phase 5 changed a pre-existing passkey challenge");
+  if (delta.removed.length > 0) {
+    assert(Number.isSafeInteger(final.snapshot_at_ms) && final.snapshot_at_ms > 0,
+      "Phase 5 challenge cleanup lacks a final snapshot timestamp");
+    assert(delta.removed.every((row) => (
+      Number.isSafeInteger(row.expires_at_ms)
+      && row.expires_at_ms <= final.snapshot_at_ms
+    )), "Phase 5 removed a passkey challenge before its expiry");
+  }
+  const allowedFlows = new Set(oracle.phase_five.challenge_projection.allowed_flows);
+  for (const row of delta.added) {
+    assert(allowedFlows.has(row.flow), `Phase 5 challenge has an unexpected flow: ${row.flow}`);
+    assert(row.lifetime_valid === true && row.consumed_state !== "consumed_invalid",
+      "Phase 5 challenge has an invalid lifetime or consumed state");
+    assert(row.owner_category !== "untracked_user",
+      "Phase 5 challenge is attributed to an untracked user");
+    if (row.flow === "registration" && row.invitation_binding_present) {
+      assert(row.session_binding_present === false
+        && ["garden", "personal_garden"].includes(row.invitation_scope)
+        && row.owner_category.startsWith("phase_five_"),
+      "Phase 5 invitation registration challenge attribution is invalid");
+    } else if (row.flow === "registration" || row.flow === "reauthentication") {
+      assert(row.session_binding_present === true
+        && row.invitation_binding_present === false
+        && row.owner_category !== "unbound",
+      `Phase 5 ${row.flow} challenge attribution is invalid`);
+    } else {
+      assert(row.session_binding_present === false && row.invitation_binding_present === false,
+        `Phase 5 ${row.flow} challenge unexpectedly retained a binding`);
+      assert((row.flow === "authentication_denied") === (row.owner_category === "unbound"),
+        `Phase 5 ${row.flow} challenge owner attribution is invalid`);
+    }
+  }
+  const starts = phaseFiveChallengeStarts(profiles);
+  const actual = {
+    login: delta.added.filter((row) => (
+      row.flow === "authentication" || row.flow === "authentication_denied"
+    )).length,
+    reauthentication: delta.added.filter((row) => row.flow === "reauthentication").length,
+    registration: delta.added.filter((row) => row.flow === "registration").length,
+  };
+  assert(canonicalJson(actual) === canonicalJson(starts),
+    `Phase 5 challenge rows diverged from browser challenge starts: ${canonicalJson({ actual, starts })}`);
+  return {
+    challenge_added_identity_digests: delta.added.map((row) => row.identity_digest),
+    challenge_attribution_exact: true,
+    challenge_count_derived_from_profiles: true,
+    expired_baseline_challenge_cleanup_count: delta.removed.length,
+  };
+}
+
+function assertPhaseFiveExactAuthState(initial, final, profiles, oracle) {
+  assertPhaseFiveSessionCounts(initial, "initial");
+  assertPhaseFiveSessionCounts(final, "final");
+  const userDelta = exactProjectionDelta(
+    initial.auth_users_projection,
+    final.auth_users_projection,
+    "Phase 5 auth user",
+  );
+  const expectedAdded = [...oracle.phase_five.auth_state.expected_added_user_categories].sort();
+  assert(canonicalJson(userDelta.added.map((row) => row.category).sort())
+    === canonicalJson(expectedAdded),
+  "Phase 5 auth user additions diverged from the independent oracle");
+  assert(userDelta.removed.length === 0, "Phase 5 unexpectedly removed an auth user");
+  const profileCategories = new Set(oracle.phase_five.auth_state.profile_user_categories);
+  assert(userDelta.updated.every(({ after }) => profileCategories.has(after.category)),
+    "Phase 5 updated an auth user outside the six-profile identity set");
+
+  const sessionDelta = exactProjectionDelta(
+    initial.auth_sessions_projection,
+    final.auth_sessions_projection,
+    "Phase 5 auth session",
+  );
+  assert([...sessionDelta.added, ...sessionDelta.removed, ...sessionDelta.updated.map((row) => row.after)]
+    .every((row) => profileCategories.has(row.category)),
+  "Phase 5 changed a session outside the six-profile identity set");
+  const initialCounts = new Map(initial.session_counts_by_user.map((row) => [
+    row.user_identity_digest, row.count,
+  ]));
+  const finalCounts = new Map(final.session_counts_by_user.map((row) => [
+    row.user_identity_digest, row.count,
+  ]));
+  for (const identity of new Set([...initialCounts.keys(), ...finalCounts.keys()])) {
+    const added = sessionDelta.added.filter((row) => row.user_identity_digest === identity).length;
+    const removed = sessionDelta.removed.filter((row) => row.user_identity_digest === identity).length;
+    assert((finalCounts.get(identity) || 0) - (initialCounts.get(identity) || 0)
+      === added - removed,
+    "Phase 5 per-user session count delta disagreed with exact session identities");
+  }
+  const successfulSessionCreators = profiles.flatMap((profile) => profile.requests || []).filter(
+    (request) => request.statusCode < 400 && request.method === "POST" && new Set([
+      "/api/auth/login",
+      "/api/auth/invitations/accept",
+      "/api/auth/invitations/passkey/register/verify",
+      "/api/auth/passkeys/login/verify",
+    ]).has(request.path),
+  ).length;
+  assert(sessionDelta.added.length <= successfulSessionCreators,
+    "Phase 5 added more sessions than successful browser authentication requests");
+  return {
+    auth_session_added_identity_digests: sessionDelta.added.map((row) => row.identity_digest),
+    auth_session_removed_identity_digests: sessionDelta.removed.map((row) => row.identity_digest),
+    auth_session_updated_identity_digests: sessionDelta.updated.map((row) => row.after.identity_digest),
+    auth_sessions_exact: true,
+    auth_user_added_identity_digests: userDelta.added.map((row) => row.identity_digest),
+    auth_user_removed_identity_digests: userDelta.removed.map((row) => row.identity_digest),
+    auth_user_updated_identity_digests: userDelta.updated.map((row) => row.after.identity_digest),
+    auth_users_exact: true,
+    per_user_session_counts_exact: true,
+  };
+}
+
+function assertPhaseFiveDatabaseState(initial, final, fixture, profiles, oracle) {
+  assert(initial && final, "Phase 5 semantic database boundary is missing");
+  const invitee = fixture.phase_five.invitee_username;
+  const viewerInvitee = fixture.phase_five.viewer_invitee_username;
+  const invitation = final.invitations.find((row) => row.invitee_username === invitee);
+  const invitedUser = final.users.find((row) => row.username === invitee);
+  const viewerInvitation = final.invitations.find((row) => row.invitee_username === viewerInvitee);
+  const invitedViewer = final.users.find((row) => row.username === viewerInvitee);
+  assert(!initial.users.some((row) => row.username === invitee)
+    && invitedUser?.is_active === true
+    && invitedUser.role === "editor",
+  "Phase 5 invitation did not create the expected active editor account");
+  assert(invitation?.accepted_username === invitee
+    && invitation.accepted_at_ms > 0
+    && invitation.revoked_at_ms === null,
+  "Phase 5 invitation acceptance state is incomplete");
+  assert(!initial.users.some((row) => row.username === viewerInvitee)
+    && invitedViewer?.is_active === true
+    && invitedViewer.role === "viewer"
+    && viewerInvitation?.accepted_username === viewerInvitee
+    && viewerInvitation.accepted_at_ms > 0,
+  "Phase 5 viewer invitation acceptance state is incomplete");
+  assert(final.memberships.some((row) => (
+    row.username === invitee && row.role === "editor"
+  )), "Phase 5 invitee lacks its expected garden membership");
+  assert(final.memberships.filter((row) => row.username === invitee).length === 2
+    && final.memberships.some((row) => (
+      row.username === invitee && row.role === "admin"
+    )), "Phase 5 personal invite did not retain editor access and create one owned garden");
+  assert(final.memberships.some((row) => (
+    row.username === viewerInvitee
+    && row.role === "viewer"
+    && row.garden_slug === fixture.gardens.alpha.slug
+  )), "Phase 5 viewer invitee lacks its expected garden membership");
+  const admin = final.users.find((row) => row.username === fixture.roles.admin);
+  assert(admin?.mfa_enabled === false
+    && admin.pending_enrollment_count === 0
+    && admin.unused_recovery_count === 0,
+  "Phase 5 TOTP disable did not clear active and pending MFA state");
+  assert(!final.passkeys.some((row) => row.username === fixture.roles.admin),
+    "Phase 5 revoked administrator passkey still exists");
+  assert(initial.passkeys.length === 0
+    && final.passkeys.length === 1
+    && final.passkeys[0].username === invitee,
+  "Phase 5 passwordless invitation passkey state is not exact");
+  const authEvidence = assertPhaseFiveExactAuthState(initial, final, profiles, oracle);
+  const challengeEvidence = assertPhaseFiveChallengeProjection(initial, final, profiles, oracle);
+  assert(canonicalJson(final.runtime_flags) === canonicalJson({
+    emergency_read_only: "0",
+    emergency_read_only_expires_at_ms: "0",
+  }), "Phase 5 emergency read-only control was not restored to disabled state");
+  assert(final.settings.some((row) => (
+    row.username === fixture.roles.admin
+    && row.pattern === fixture.phase_five.settings_pattern.toUpperCase()
+    && row.label === fixture.phase_five.settings_label
+    && row.description === fixture.phase_five.settings_description
+  )), "Phase 5 user settings did not persist after reload");
+  const adminDesktop = profiles.find((profile) => (
+    profile.role === "admin" && profile.profile === "desktop"
+  ));
+  assert(adminDesktop?.checks?.invalid_invitation_side_effects === 0,
+    "Phase 5 invalid invitation attempts created side effects");
+  return {
+    ...authEvidence,
+    ...challengeEvidence,
+    invitation_acceptance_exact: true,
+    incident_control_restored_exact: true,
+    mfa_cleanup_exact: true,
+    passkey_challenge_retention_exact: true,
+    passkey_added_count: final.passkeys.length - initial.passkeys.length,
+    passkey_revocation_exact: true,
+    settings_persistence_exact: true,
+  };
+}
+
+function normalizePhaseFiveMutationPath(pathname) {
+  return pathname
+    .replace(/^\/api\/auth\/passkeys\/\d+$/, "/api/auth/passkeys/{passkey_id}")
+    .replace(/^\/api\/auth\/sessions\/[^/]+$/, "/api/auth/sessions/{session_id}")
+    .replace(/^\/api\/auth\/user-invitations\/\d+$/, "/api/auth/user-invitations/{invitation_id}")
+    .replace(/^\/api\/auth\/users\/\d+$/, "/api/auth/users/{user_id}")
+    .replace(/^\/api\/gardens\/\d+\/members\/\d+$/, "/api/gardens/{garden_id}/members/{user_id}");
+}
+
+function assertPhaseFiveAuditEvents(
+  beforeAudit,
+  finalAudit,
+  profiles,
+  oracle = phaseFiveOracle(),
+  fixture = null,
+) {
+  assert(Array.isArray(beforeAudit?.records) && Array.isArray(finalAudit?.records),
+    "Phase 5 audit boundary records are missing");
+  const beforeById = new Map(beforeAudit.records.map((record) => [record.id, record]));
+  const finalById = new Map(finalAudit.records.map((record) => [record.id, record]));
+  assert(beforeById.size === beforeAudit.records.length
+    && finalById.size === finalAudit.records.length,
+  "Phase 5 audit boundary contains duplicate event identities");
+  for (const [id, record] of beforeById) {
+    assert(finalById.has(id), `Phase 5 unexpectedly removed audit event ${id}`);
+    assert(canonicalJson(finalById.get(id)) === canonicalJson(record),
+      `Phase 5 unexpectedly changed audit event ${id}`);
+  }
+  const events = finalAudit.records.filter((record) => !beforeById.has(record.id));
+  const scope = oracle.phase_five.audit_scope;
+  const inScope = (pathname) => scope.exact_paths.includes(pathname)
+    || scope.prefixes.some((prefix) => pathname.startsWith(prefix));
+  const normalize = (record) => ({
+    actor_auth_type: record.actor_auth_type,
+    actor_role: record.actor_role,
+    actor_username: record.actor_username,
+    garden_id: record.garden_id === null || record.garden_id === undefined
+      ? null : Number(record.garden_id),
+    method: record.method,
+    path: normalizePhaseFiveMutationPath(record.path),
+    request_id: record.request_id,
+    status_code: record.status_code,
+  });
+  const requests = profiles.flatMap((profile) => (profile.requests || []).flatMap((request) => {
+    const normalizedPath = normalizePhaseFiveMutationPath(request.path);
+    const isIncident = request.method === scope.incident.method
+      && normalizedPath === scope.incident.path
+      && request.statusCode === scope.incident.status_code;
+    if (!["DELETE", "PATCH", "POST", "PUT"].includes(request.method)
+      || (!isIncident && (!inScope(normalizedPath) || request.statusCode >= 400))) return [];
+    assert(isSafeRequestId(request.requestId),
+      `Phase 5 mutation lacks a safe request ID: ${request.method} ${normalizedPath}`);
+    const publicAuthRequest = new Set([
+      "/api/auth/invitations/accept",
+      "/api/auth/invitations/passkey/register/options",
+      "/api/auth/invitations/passkey/register/verify",
+      "/api/auth/login",
+      "/api/auth/passkeys/login/options",
+      "/api/auth/passkeys/login/verify",
+    ]).has(normalizedPath);
+    const invitationAcceptance = normalizedPath === "/api/auth/invitations/accept"
+      || normalizedPath === "/api/auth/invitations/passkey/register/verify";
+    const invitationGardenId = invitationAcceptance
+      && request.gardenId !== null && request.gardenId !== undefined
+      ? Number(request.gardenId) : null;
+    return [{
+      actor_auth_type: publicAuthRequest ? "none" : request.actorAuthType,
+      actor_role: publicAuthRequest ? "anonymous" : request.actorRole,
+      actor_username: publicAuthRequest ? "anonymous" : request.actorUsername,
+      garden_id: publicAuthRequest ? invitationGardenId : (
+        request.gardenId === null || request.gardenId === undefined
+          ? null : Number(request.gardenId)
+      ),
+      method: request.method,
+      path: normalizedPath,
+      request_id: request.requestId,
+      status_code: request.statusCode,
+    }];
+  }));
+  const expectedIncidentCount = requests.filter((request) => (
+    request.method === scope.incident.method
+    && request.path === scope.incident.path
+    && request.status_code === scope.incident.status_code
+  )).length;
+  assert(expectedIncidentCount === 1,
+    "Phase 5 incident control did not record exactly one expected 503 request");
+  const relevantEvents = events.map(normalize).filter((event) => (
+    (inScope(event.path) && event.status_code < 400)
+    || (event.method === scope.incident.method
+      && event.path === scope.incident.path
+      && event.status_code === scope.incident.status_code)
+  ));
+  const unmatched = [...requests];
+  for (const event of relevantEvents) {
+    assert(isSafeRequestId(event.request_id),
+      `Phase 5 audit event lacks a safe request ID: ${event.method} ${event.path}`);
+    const index = unmatched.findIndex((request) => auditRecordMatchesBrowserMutation(
+      event,
+      request,
+    ));
+    assert(index >= 0,
+      `Unexpected Phase 5 in-scope audit event: ${canonicalJson(event)}`);
+    unmatched.splice(index, 1);
+  }
+  assert(unmatched.length === 0,
+    `Phase 5 browser mutations lacked exact audit events: ${canonicalJson(unmatched)}`);
+  return {
+    audit_event_count: requests.length,
+    audit_incident_503_correlated: true,
+    audit_mutations_bound_to_requests: true,
+    audit_mutations_one_to_one: true,
+    audit_normalized_equality_exact: true,
+  };
 }
 
 function assertUniquePhaseThreeRows(rows, key, label) {
@@ -1441,6 +1982,38 @@ function auditManifestProjection(auditState) {
 
 function normalizeAuditProjectionPath(value) {
   const pathname = String(value || "");
+  const normalizedPhaseFivePath = normalizePhaseFiveMutationPath(pathname);
+  if (new Set([
+    "/api/auth/emergency-read-only",
+    "/api/auth/invitations/accept",
+    "/api/auth/invitations/passkey/register/options",
+    "/api/auth/invitations/passkey/register/verify",
+    "/api/auth/invitations/peek",
+    "/api/auth/logout",
+    "/api/auth/me/settings",
+    "/api/auth/mfa/disable",
+    "/api/auth/mfa/recovery-codes/regenerate",
+    "/api/auth/mfa/totp/cancel",
+    "/api/auth/mfa/totp/confirm",
+    "/api/auth/mfa/totp/start",
+    "/api/auth/passkeys/{passkey_id}",
+    "/api/auth/passkeys/login/options",
+    "/api/auth/passkeys/login/verify",
+    "/api/auth/passkeys/prompt/dismiss",
+    "/api/auth/passkeys/register/options",
+    "/api/auth/passkeys/register/verify",
+    "/api/auth/reauthenticate/passkey/options",
+    "/api/auth/reauthenticate/passkey/verify",
+    "/api/auth/sessions/{session_id}",
+    "/api/auth/user-invitations",
+    "/api/auth/user-invitations/{invitation_id}",
+    "/api/auth/users/{user_id}",
+    "/api/gardens/{garden_id}/members/{user_id}",
+    "/api/gardens/{garden_id}/complete-onboarding",
+    "/api/gardens/{garden_id}/invitations",
+  ]).has(normalizedPhaseFivePath)) {
+    return normalizedPhaseFivePath;
+  }
   if (
     pathname === "/api/media/summaries"
     || phaseOneAuditExpectedEvents(0).some((event) => event.path === pathname)
@@ -2067,8 +2640,22 @@ function assertTraceArtifacts(profiles, artifactDirectory = ARTIFACT_DIR) {
   });
 }
 
-function backendErrorEvidence(logDirectory = process.env.GARDENOPS_LOGS_DIR || "") {
+function backendErrorEvidence(
+  logDirectory = process.env.GARDENOPS_LOGS_DIR || "",
+  expectedStructuredErrors = [],
+) {
   assert(logDirectory, "Complete journey backend log directory is required");
+  assert(Array.isArray(expectedStructuredErrors), "Expected backend error contract is invalid");
+  const expected = expectedStructuredErrors.map((entry) => {
+    assert(entry && typeof entry === "object"
+      && ["DELETE", "PATCH", "POST", "PUT"].includes(entry.method)
+      && isSafeManifestRequestPath(entry.path)
+      && Number.isSafeInteger(entry.status_code)
+      && entry.status_code >= 400 && entry.status_code <= 599
+      && isSafeRequestId(entry.request_id),
+    "Expected backend error entry is invalid");
+    return { ...entry, matched: false };
+  });
   const backendLogPath = path.join(logDirectory, "backend.log");
   const structuredLogPath = path.join(logDirectory, "errors.jsonl");
   assert(fs.existsSync(backendLogPath), "Complete journey backend log is missing");
@@ -2081,13 +2668,29 @@ function backendErrorEvidence(logDirectory = process.env.GARDENOPS_LOGS_DIR || "
       }
       return counts;
     }, { CRITICAL: 0, ERROR: 0, FATAL: 0 });
+  let expectedStructuredEntries = 0;
   const structuredLevels = fs.readFileSync(structuredLogPath, "utf8")
     .split(/\r?\n/)
     .filter(Boolean)
     .reduce((counts, line) => {
       try {
-        const level = String(JSON.parse(line).level || "").toUpperCase();
-        if (["ERROR", "CRITICAL", "FATAL"].includes(level)) counts[level] += 1;
+        const record = JSON.parse(line);
+        const level = String(record.level || "").toUpperCase();
+        if (["ERROR", "CRITICAL", "FATAL"].includes(level)) {
+          const expectedEntry = expected.find((entry) => (
+            !entry.matched
+            && entry.method === record.method
+            && entry.path === record.path
+            && entry.status_code === record.status_code
+            && entry.request_id === record.request_id
+          ));
+          if (expectedEntry) {
+            expectedEntry.matched = true;
+            expectedStructuredEntries += 1;
+          } else {
+            counts[level] += 1;
+          }
+        }
       } catch {
         counts.ERROR += 1;
       }
@@ -2097,12 +2700,33 @@ function backendErrorEvidence(logDirectory = process.env.GARDENOPS_LOGS_DIR || "
     backend_critical_lines: backendLevels.CRITICAL,
     backend_error_lines: backendLevels.ERROR,
     backend_fatal_lines: backendLevels.FATAL,
+    expected_structured_error_entries: expectedStructuredEntries,
+    missing_expected_error_entries: expected.filter((entry) => !entry.matched).length,
     structured_critical_entries: structuredLevels.CRITICAL,
     structured_error_entries: structuredLevels.ERROR,
     structured_fatal_entries: structuredLevels.FATAL,
     unexpected_error_count: Object.values(backendLevels).reduce((sum, count) => sum + count, 0)
-      + Object.values(structuredLevels).reduce((sum, count) => sum + count, 0),
+      + Object.values(structuredLevels).reduce((sum, count) => sum + count, 0)
+      + expected.filter((entry) => !entry.matched).length,
   };
+}
+
+function phaseFiveExpectedBackendErrors(profiles) {
+  const errors = profiles.flatMap((profile) => profile.requests.filter((request) => (
+    profile.role === "admin"
+    && profile.profile === "desktop"
+    && request.method === "POST"
+    && request.path === "/api/journal"
+    && request.statusCode === 503
+  )).map((request) => ({
+    method: request.method,
+    path: request.path,
+    request_id: request.requestId,
+    status_code: request.statusCode,
+  })));
+  assert(errors.length === 1,
+    "Phase 5 incident control did not produce one exact blocked-write response");
+  return errors;
 }
 
 function assertNoUnexpectedBackendErrors(logDirectory, evidence = backendErrorEvidence(logDirectory)) {
@@ -2535,13 +3159,9 @@ async function runPhaseTwoReadOnlyPermutation({
       }, fixture.gardens.alpha.id);
       assert(canonicalJson(scopedReads) === canonicalJson([200, 200]),
         `Phase 2 read-only scoped probes failed: ${key}`);
-      const unexpectedMutationRequests = recorder.records.filter((request) => (
-        ["DELETE", "PATCH", "POST", "PUT"].includes(request.method)
-        && ![
-          "/api/auth/login",
-          "/api/media/summaries",
-        ].includes(request.path)
-      ));
+      const unexpectedMutationRequests = recorder.records.filter(
+        isPhaseTwoReadOnlyProbeMutation,
+      );
       assert(unexpectedMutationRequests.length === 0,
         `Phase 2 read-surface probe issued a domain mutation request: ${key}`);
       assertDiagnosticsClean(guarded.diagnostics, `${key} Phase 2 read-only permutation`);
@@ -2869,6 +3489,7 @@ function assertPhaseTwoProfileEvidence(profiles, oracle = phaseTwoOracle()) {
 function isPhaseTwoAuditPath(pathname) {
   return [
     /^\/api\/auth\/login$/,
+    /^\/api\/auth\/passkeys\/login\/options$/,
     /^\/api\/attention\/(?:preferences|items\/[^/]+\/(?:read|dismiss|snooze|restore)|outcomes\/[^/]+\/restore)$/,
     /^\/api\/calendar\/(?:preferences|manual-events(?:\/[^/]+)?|subscriptions(?:\/[^/]+)?)$/,
     /^\/api\/media\/summaries$/,
@@ -3021,11 +3642,15 @@ function phaseTwoBrowserMutationRecords(profiles, fixture) {
       }
       assert(isPhaseTwoAuditPath(request.path),
         `Unknown Phase 2 browser mutation path: ${request.method} ${request.path}`);
-      const isLogin = request.path === "/api/auth/login";
-      const gardenId = isLogin ? null : (request.gardenId === null ? null : Number(request.gardenId));
+      const isPublicAuth = new Set([
+        "/api/auth/login",
+        "/api/auth/passkeys/login/options",
+      ]).has(request.path);
+      const gardenId = isPublicAuth
+        ? null : (request.gardenId === null ? null : Number(request.gardenId));
       assert(gardenId === null || (Number.isSafeInteger(gardenId) && gardenId > 0),
         `Phase 2 mutation garden ID is invalid: ${request.method} ${request.path}`);
-      const expectedActor = isLogin ? {
+      const expectedActor = isPublicAuth ? {
         authType: "none", role: "anonymous", username: "anonymous",
       } : {
         authType: "session", role: profile.role, username: fixture.roles[profile.role],
@@ -3126,6 +3751,7 @@ function isPhaseThreeAuditPath(pathname) {
     "/api/ai/diagnose-plant",
     "/api/ai/identify-plant",
     "/api/auth/login",
+    "/api/auth/passkeys/login/options",
     "/api/client-errors",
     "/api/harvest",
     "/api/harvest/{entry_id}",
@@ -3161,6 +3787,7 @@ function phaseThreeBrowserMutationRecords(profiles, fixture) {
         `Unknown Phase 3 browser mutation path: ${request.method} ${request.path}`);
       const isAnonymousAuditPath = new Set([
         "/api/auth/login",
+        "/api/auth/passkeys/login/options",
         "/api/client-errors",
       ]).has(request.path);
       const requestGardenId = request.gardenId === null ? null : Number(request.gardenId);
@@ -5647,6 +6274,12 @@ function sanitizeManifestEvidence(manifest) {
       backend_critical_lines: safeNonnegativeInteger(manifest.backend_log?.backend_critical_lines),
       backend_error_lines: safeNonnegativeInteger(manifest.backend_log?.backend_error_lines),
       backend_fatal_lines: safeNonnegativeInteger(manifest.backend_log?.backend_fatal_lines),
+      expected_structured_error_entries: safeNonnegativeInteger(
+        manifest.backend_log?.expected_structured_error_entries,
+      ),
+      missing_expected_error_entries: safeNonnegativeInteger(
+        manifest.backend_log?.missing_expected_error_entries,
+      ),
       structured_critical_entries: safeNonnegativeInteger(
         manifest.backend_log?.structured_critical_entries,
       ),
@@ -5867,6 +6500,7 @@ function assertNoResponseMocks() {
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/dailyAttentionWork.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/observationToAction.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/planningAndReporting.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/identityAndRoles.cjs"), "utf8"),
   ].join("\n");
   const forbiddenCalls = [
     `route.${"fulfill"}(`,
@@ -5885,6 +6519,7 @@ function assertNoNodeRequestClients() {
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/dailyAttentionWork.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/observationToAction.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/planningAndReporting.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/identityAndRoles.cjs"), "utf8"),
   ].join("\n");
   for (const forbidden of [
     "context.request",
@@ -5913,6 +6548,11 @@ async function main() {
     fixture,
     phaseFourOracleSpec,
   );
+  const phaseFiveOracleSpec = phaseFiveOracle();
+  const phaseFiveFixtureOracleEvidence = assertPhaseFiveFixtureOracleBinding(
+    fixture,
+    phaseFiveOracleSpec,
+  );
   const phaseThreeMediaInputs = phaseSelected(3) ? materializePhaseThreeMedia(fixture) : null;
   assertFixtureAttentionClock(fixture);
   let manifest = {
@@ -5932,6 +6572,7 @@ async function main() {
       ...(phaseSelected(2) ? ["D1", "D2", "D3", "D4", "D5", "R1"] : []),
       ...(phaseSelected(3) ? ["I2", "I3", "P1", "P2", "P3", "P5"] : []),
       ...(phaseSelected(4) ? ["P4", "P6", "I1", "L1", "L2", "R2", "R3"] : []),
+      ...(phaseSelected(5) ? ["A1", "A2", "A4", "C1", "C3", "C5", "CROSS-02"] : []),
     ],
     phase: PHASE,
     profiles: [],
@@ -5950,11 +6591,13 @@ async function main() {
   let phaseZeroProfileEvidence = null;
   let phaseZeroProfiles = [];
   let phaseOneAuditEvidence = null;
+  let phaseOneChallengeEvidence = null;
   let phaseOneDatabase = null;
   let phaseOneStatePreservedAfterPhaseTwo = false;
   let phaseOneProfileEvidence = null;
   let phaseOneProfiles = [];
   let phaseTwoDatabaseEvidence = null;
+  let phaseTwoChallengeEvidence = null;
   let phaseTwoDatabase = null;
   let phaseTwoAuditEvidence = null;
   let phaseTwoAuditBaseline = null;
@@ -5981,6 +6624,12 @@ async function main() {
   let phaseFourDatabaseEvidence = null;
   let phaseFourProfileEvidence = null;
   let phaseFourProfiles = [];
+  let phaseFiveAuditBaseline = null;
+  let phaseFiveAuditEvidence = null;
+  let phaseFiveDatabaseBaseline = null;
+  let phaseFiveDatabaseEvidence = null;
+  let phaseFiveProfileEvidence = null;
+  let phaseFiveProfiles = [];
   let thrownError = null;
   let currentStage = "runner-startup";
   try {
@@ -6147,12 +6796,31 @@ async function main() {
       });
       phaseFourProfiles = manifest.profiles.slice(phaseFourProfileStart);
     }
+    if (phaseSelected(5)) {
+      currentStage = "phase-five-browser";
+      phaseFiveDatabaseBaseline = await settledDatabaseSnapshot("Phase 5 database baseline");
+      phaseFiveAuditBaseline = phaseFiveDatabaseBaseline.audit_state;
+      const phaseFiveProfileStart = manifest.profiles.length;
+      await runIdentityAndRoles({
+        artifactDir: ARTIFACT_DIR,
+        baseUrl: BASE_URL,
+        browser,
+        devices,
+        fixture,
+        onProfile: (profile) => manifest.profiles.push(profile),
+        oracle: phaseFiveOracleSpec,
+        password: PASSWORD,
+        username: USERNAME,
+      });
+      phaseFiveProfiles = manifest.profiles.slice(phaseFiveProfileStart);
+    }
     currentStage = "final-database-snapshot";
     const finalDatabase = await settledDatabaseSnapshot("Final database boundary");
     currentStage = "cumulative-assertions";
     writePrivateAssertionCheckpoint({
       finalDatabase,
       phaseFourDatabaseBaseline,
+      phaseFiveDatabaseBaseline,
       phaseOneDatabase,
       phaseThreeDatabase,
       phaseThreeDatabaseBaseline,
@@ -6167,6 +6835,7 @@ async function main() {
         phase_three_baseline: phaseThreeDatabaseBaseline?.domain_tables ?? null,
         phase_three_boundary: phaseThreeDatabase?.domain_tables ?? null,
         phase_four_baseline: phaseFourDatabaseBaseline?.domain_tables ?? null,
+        phase_five_baseline: phaseFiveDatabaseBaseline?.domain_tables ?? null,
       },
     };
     const domainTableNames = new Set([
@@ -6181,6 +6850,7 @@ async function main() {
     const phaseTwoRan = phaseSelected(2);
     const phaseThreeRan = phaseSelected(3);
     const phaseFourRan = phaseSelected(4);
+    const phaseFiveRan = phaseSelected(5);
     if (phaseOneRan) phaseOneProfileEvidence = assertPhaseOneProfileEvidence(phaseOneProfiles);
     if (phaseTwoRan) {
       assert(phaseTwoDatabase, "Phase 2 database boundary snapshot is missing");
@@ -6217,6 +6887,17 @@ async function main() {
         phaseTwoDatabase.audit_state,
         [...phaseTwoReadOnlyProfiles, ...phaseTwoProfiles],
         fixture,
+      );
+      phaseTwoChallengeEvidence = assertPhaseOneChallengeProjection(
+        fixture.database_snapshot.phase_five_state,
+        phaseTwoDatabase.phase_five_state,
+        [
+          ...phaseZeroProfiles,
+          ...phaseOneProfiles,
+          ...phaseTwoReadOnlyProfiles,
+          ...phaseTwoProfiles,
+        ],
+        "Phase 2 cumulative",
       );
       if (phaseOneRan) {
         assert(phaseOneDatabase, "Phase 1 database boundary snapshot is missing before Phase 2");
@@ -6275,6 +6956,27 @@ async function main() {
         fixture,
       );
     }
+    if (phaseFiveRan) {
+      assert(phaseFiveDatabaseBaseline, "Phase 5 database baseline snapshot is missing");
+      phaseFiveProfileEvidence = assertPhaseFiveProfileEvidence(
+        phaseFiveProfiles,
+        phaseFiveOracleSpec,
+      );
+      phaseFiveDatabaseEvidence = assertPhaseFiveDatabaseState(
+        phaseFiveDatabaseBaseline.phase_five_state,
+        finalDatabase.phase_five_state,
+        fixture,
+        phaseFiveProfiles,
+        phaseFiveOracleSpec,
+      );
+      phaseFiveAuditEvidence = assertPhaseFiveAuditEvents(
+        phaseFiveAuditBaseline,
+        finalDatabase.audit_state,
+        phaseFiveProfiles,
+        phaseFiveOracleSpec,
+        fixture,
+      );
+    }
     const phaseOneSemanticDeltaTables = phaseOneRan ? new Set([
       "app_settings",
       "garden_journal_entries",
@@ -6293,6 +6995,10 @@ async function main() {
       "plots",
       "weather_cache",
     ]) : new Set();
+    const phaseOneBoundaryDeltaTables = phaseOneRan ? new Set([
+      ...phaseOneSemanticDeltaTables,
+      "auth_passkey_challenges",
+    ]) : phaseOneSemanticDeltaTables;
     const phaseOneChangedDomainTables = phaseOneRan ? [...new Set([
       ...Object.keys(fixture.database_snapshot.domain_tables),
       ...Object.keys(phaseOneDatabase?.domain_tables || {}),
@@ -6301,12 +7007,19 @@ async function main() {
         !== JSON.stringify(fixture.database_snapshot.domain_tables[table]),
     ) : [];
     const phaseOneForbiddenDomainTables = phaseOneChangedDomainTables.filter(
-      (table) => !phaseOneSemanticDeltaTables.has(table),
+      (table) => !phaseOneBoundaryDeltaTables.has(table),
     );
     assert(
       phaseOneForbiddenDomainTables.length === 0,
       `Phase 1 changed forbidden domain tables: ${phaseOneForbiddenDomainTables.join(", ")}`,
     );
+    if (phaseOneRan) {
+      phaseOneChallengeEvidence = assertPhaseOneChallengeProjection(
+        fixture.database_snapshot.phase_five_state,
+        phaseOneDatabase.phase_five_state,
+        [...phaseZeroProfiles, ...phaseOneProfiles],
+      );
+    }
     const phaseTwoOracleTables = oracle.phase_two?.whole_table_mutation_accounting?.phase_two_tables;
     assert(Array.isArray(phaseTwoOracleTables) && phaseTwoOracleTables.length > 0
       && phaseTwoOracleTables.every((table) => /^[a-z_]+$/.test(String(table))),
@@ -6361,9 +7074,9 @@ async function main() {
       );
     }
     const phaseTwoSemanticDeltaTables = phaseTwoRan ? new Set([
-      ...phaseOneSemanticDeltaTables,
+      ...phaseOneBoundaryDeltaTables,
       ...phaseTwoOracleTables,
-    ]) : phaseOneSemanticDeltaTables;
+    ]) : phaseOneBoundaryDeltaTables;
     if (phaseTwoRan) {
       assert(Object.keys(phaseTwoExactMutationCounts).every(
         (table) => phaseTwoSemanticDeltaTables.has(table),
@@ -6382,14 +7095,24 @@ async function main() {
     ]) : phaseTwoSemanticDeltaTables;
     const phaseFourAllowedTables = new Set([
       ...phaseFourOracleSpec.phase_four.database_boundaries.owned_tables,
+      "auth_passkey_challenges",
       "garden_task_plants",
       "garden_task_plots",
       "layout_state",
     ]);
-    const cumulativeSemanticDeltaTables = phaseFourRan ? new Set([
+    const throughPhaseFourSemanticDeltaTables = phaseFourRan ? new Set([
       ...phaseThreeSemanticDeltaTables,
       ...phaseFourAllowedTables,
     ]) : phaseThreeSemanticDeltaTables;
+    const phaseFiveAllowedTables = new Set([
+      ...phaseFiveOracleSpec.phase_five.database_boundaries.owned_tables.filter((table) => (
+        Object.hasOwn(finalDatabase.domain_tables, table)
+      )),
+    ]);
+    const cumulativeSemanticDeltaTables = phaseFiveRan ? new Set([
+      ...throughPhaseFourSemanticDeltaTables,
+      ...phaseFiveAllowedTables,
+    ]) : throughPhaseFourSemanticDeltaTables;
     const forbiddenDomainTables = changedDomainTables.filter(
       (table) => !cumulativeSemanticDeltaTables.has(table),
     );
@@ -6404,6 +7127,21 @@ async function main() {
     );
     const prePhaseThreeAccounting = Object.fromEntries(
       [...phaseTwoSemanticDeltaTables].map((table) => {
+        if (table === "auth_passkey_challenges") {
+          const evidence = phaseTwoRan ? phaseTwoChallengeEvidence : phaseOneChallengeEvidence;
+          assert(evidence, "Cumulative passkey challenge accounting evidence is missing");
+          return [table, {
+            allow_row_delta: true,
+            evidence: phaseTwoRan
+              ? "phase_two_cumulative_browser_challenge_projection"
+              : "phase_one_browser_challenge_projection",
+            expected_added: evidence.retained_count,
+            expected_identity_added: evidence.retained_count,
+            expected_identity_removed: 0,
+            expected_identity_updated: 0,
+            expected_removed: 0,
+          }];
+        }
         const exact = phaseTwoExactMutationCounts?.[table] || { added: 0, removed: 0 };
         const identity = phaseTwoExactIdentityCounts?.[table]
           || { added: 0, removed: 0, updated: 0 };
@@ -6437,6 +7175,15 @@ async function main() {
       profile.role === "admin" && profile.profile === "desktop"
     ))?.checks?.planner?.workflowSteps || [];
     const phaseFourAccounting = {
+      auth_passkey_challenges: {
+        allow_row_delta: true,
+        evidence: "phase_four_public_authentication_options",
+        expected_added: phaseFourProfiles.length,
+        expected_identity_added: phaseFourProfiles.length,
+        expected_identity_removed: 0,
+        expected_identity_updated: 0,
+        expected_removed: 0,
+      },
       garden_task_plants: {
         allow_row_delta: true,
         evidence: "phase_four_exact_workflow_task_projection",
@@ -6494,7 +7241,47 @@ async function main() {
         expected_removed: 0,
       },
     };
-    const wholeTableMutationAccounting = phaseFourRan
+    // Cumulative onboarding already created the legacy default garden reused by the viewer invite.
+    const phaseFiveExpectedGardenAdditions = phaseOneRan ? 1 : 2;
+    const phaseFiveExpectedAdded = {
+      auth_passkey_challenges:
+        phaseFiveDatabaseEvidence?.challenge_added_identity_digests?.length ?? 0,
+      auth_passkeys: phaseFiveDatabaseEvidence?.passkey_added_count ?? 0,
+      auth_user_invitations: 1,
+      auth_user_plot_assignment_meanings: 1,
+      garden_invitations: 1,
+      garden_memberships: 4,
+      gardens: phaseFiveExpectedGardenAdditions,
+      layout_state: 1,
+      plot_ownership: 1,
+      plots: 1,
+      security_runtime_flags: 2,
+    };
+    const phaseFiveExpectedRemoved = {
+      auth_passkey_challenges:
+        phaseFiveDatabaseEvidence?.expired_baseline_challenge_cleanup_count ?? 0,
+    };
+    const phaseFiveAccounting = Object.fromEntries([...phaseFiveAllowedTables].map((table) => {
+      const expectedAdded = phaseFiveExpectedAdded[table] ?? 0;
+      const expectedRemoved = phaseFiveExpectedRemoved[table] ?? 0;
+      return [table, {
+        allow_row_delta: true,
+        evidence: "phase_five_exact_identity_projection",
+        expected_added: expectedAdded,
+        expected_identity_added: expectedAdded,
+        expected_identity_removed: expectedRemoved,
+        expected_identity_updated: 0,
+        expected_removed: expectedRemoved,
+      }];
+    }));
+    const wholeTableMutationAccounting = phaseFiveRan
+      ? assertWholeTableMutationAccounting(
+        phaseFiveDatabaseBaseline.domain_tables,
+        finalDatabase.domain_tables,
+        phaseFiveAllowedTables,
+        phaseFiveAccounting,
+      )
+      : phaseFourRan
       ? assertWholeTableMutationAccounting(
         phaseFourDatabaseBaseline.domain_tables,
         finalDatabase.domain_tables,
@@ -6523,30 +7310,53 @@ async function main() {
       fixture.database_snapshot.auth_state.admin_session_count === 0,
       "Foundation fixture unexpectedly started with an administrator session",
     );
-    assert(
-      finalDatabase.auth_state.admin_session_count
-        === manifest.profiles.filter((profile) => profile.role === "admin").length,
-      "Administrator session count did not match browser profiles",
-    );
+    if (!phaseFiveRan) {
+      assert(
+        finalDatabase.auth_state.admin_session_count
+          === manifest.profiles.filter((profile) => profile.role === "admin").length,
+        "Administrator session count did not match browser profiles",
+      );
+    } else {
+      assert(finalDatabase.auth_state.admin_session_count >= 1,
+        "Phase 5 removed every administrator session");
+    }
     assert(
       finalDatabase.auth_state.invalid_session_count === 0,
       "Foundation login created an invalid session row",
     );
-    assert(
-      finalDatabase.auth_state.users_expected_digest
-        === fixture.database_snapshot.auth_state.users_expected_digest,
-      "Browser login changed auth user state beyond last_login_at",
-    );
+    if (!phaseFiveRan) {
+      assert(
+        finalDatabase.auth_state.users_expected_digest
+          === fixture.database_snapshot.auth_state.users_expected_digest,
+        "Browser login changed auth user state beyond expected login and prompt fields",
+      );
+      assert(
+        canonicalJson(fixture.database_snapshot.auth_state.passkey_prompt_dismissed_usernames)
+          === canonicalJson([]),
+        "Complete journey fixture unexpectedly starts with dismissed passkey prompts",
+      );
+      const expectedPromptDismissals = [...new Set(manifest.profiles.flatMap((profile) => (
+        ["admin", "editor", "viewer"].includes(profile.role)
+          ? [fixture.roles[profile.role]] : []
+      )))].sort();
+      assert(
+        canonicalJson(finalDatabase.auth_state.passkey_prompt_dismissed_usernames)
+          === canonicalJson(expectedPromptDismissals),
+        "Browser journeys did not persist the exact expected passkey prompt dismissals",
+      );
+    }
     const expectedSessionCounts = expectedSessionUserCounts(
       fixture,
       manifest.profiles,
       phaseOneRan,
     );
-    assert(
-      JSON.stringify(finalDatabase.auth_state.session_user_counts)
-        === JSON.stringify(expectedSessionCounts),
-      `Browser login created unexpected user sessions: ${JSON.stringify(finalDatabase.auth_state.session_user_counts)}`,
-    );
+    if (!phaseFiveRan) {
+      assert(
+        JSON.stringify(finalDatabase.auth_state.session_user_counts)
+          === JSON.stringify(expectedSessionCounts),
+        `Browser login created unexpected user sessions: ${JSON.stringify(finalDatabase.auth_state.session_user_counts)}`,
+      );
+    }
     assert(
       fixture.database_snapshot.auth_state.admin_last_login_at === null
         && finalDatabase.auth_state.admin_last_login_at !== null,
@@ -6557,7 +7367,9 @@ async function main() {
       "Foundation fixture unexpectedly started with audit events",
     );
     assert(
-      finalDatabase.audit_state.expected_login_count === manifest.profiles.length,
+      phaseFiveRan
+        ? finalDatabase.audit_state.expected_login_count >= manifest.profiles.length
+        : finalDatabase.audit_state.expected_login_count === manifest.profiles.length,
       `Browser journey login audit count was unexpected: ${JSON.stringify(finalDatabase.audit_state)}`,
     );
     if (phaseOneRan) {
@@ -6784,6 +7596,8 @@ async function main() {
       auth_expected_writes: {
         admin_last_login_updated: true,
         auth_users_other_fields_unchanged: true,
+        passkey_prompt_dismissed_usernames:
+          finalDatabase.auth_state.passkey_prompt_dismissed_usernames,
         session_rows_valid: true,
         session_count_after: finalDatabase.auth_state.admin_session_count,
         session_count_before: fixture.database_snapshot.auth_state.admin_session_count,
@@ -6827,6 +7641,7 @@ async function main() {
       phase_one_enforcement: phaseOneRan ? {
         assignments_and_lifecycle: true,
         browser_profile_matrix: phaseOneProfileEvidence?.profile_matrix_enforced === true,
+        passkey_challenge_projection: phaseOneChallengeEvidence,
         cross_garden_links_absent: true,
         mobile_snapshot_garden_owned: true,
         nested_unit_parent_cascade: true,
@@ -6847,6 +7662,7 @@ async function main() {
         ?? finalDatabase.phase_one_state.mobile_snapshot_count,
       phase_two_enforcement: phaseTwoRan ? {
         ...phaseTwoDatabaseEvidence,
+        passkey_challenge_projection: phaseTwoChallengeEvidence,
         ...phaseTwoAuditEvidence,
         browser_profile_matrix: phaseTwoProfileEvidence?.profile_matrix_enforced === true,
         fixture_oracle_binding: fixtureOracleEvidence,
@@ -6888,6 +7704,18 @@ async function main() {
         support: phaseFourOracleSpec.phase_four.support,
         whole_table_mutation_accounting: wholeTableMutationAccounting,
       } : null,
+      phase_five_enforcement: phaseFiveRan ? {
+        ...phaseFiveDatabaseEvidence,
+        ...phaseFiveAuditEvidence,
+        browser_profile_matrix: phaseFiveProfileEvidence?.profile_matrix_enforced === true,
+        fixture_oracle_binding: phaseFiveFixtureOracleEvidence,
+        phase_fixture_scope: PHASE === 5 && THROUGH_PHASE === 5
+          ? "fresh-fixture-phase-five-only"
+          : "fresh-fixture-cumulative-through-phase-five",
+        profile_execution: phaseFiveProfileEvidence,
+        support: phaseFiveOracleSpec.phase_five.support,
+        whole_table_mutation_accounting: wholeTableMutationAccounting,
+      } : null,
       phase_boundaries: {
         phase_one_audit_total: phaseOneDatabase?.audit_state.total_count ?? null,
         phase_one_profile_count: phaseOneRan
@@ -6899,6 +7727,7 @@ async function main() {
           : null,
         phase_three_profile_count: phaseThreeRan ? phaseThreeProfiles.length : null,
         phase_four_profile_count: phaseFourRan ? phaseFourProfiles.length : null,
+        phase_five_profile_count: phaseFiveRan ? phaseFiveProfiles.length : null,
       },
       final: finalDatabase.domain_counts,
       initial: fixture.database_snapshot.domain_counts,
@@ -6916,7 +7745,10 @@ async function main() {
     }
     assert(manifest.filesystem.terrain.empty, "Browser journey wrote terrain files");
     manifest.trace_artifacts = assertTraceArtifacts(manifest.profiles);
-    manifest.backend_log = backendErrorEvidence();
+    manifest.backend_log = backendErrorEvidence(
+      undefined,
+      phaseFiveRan ? phaseFiveExpectedBackendErrors(phaseFiveProfiles) : [],
+    );
     assertNoUnexpectedBackendErrors(undefined, manifest.backend_log);
     await browser.close();
     browser = null;
@@ -7016,6 +7848,7 @@ module.exports = {
   assertNoUnexpectedBackendErrors,
   assertPhaseZeroProfileEvidence,
   assertPhaseOneAuditContract,
+  assertPhaseOneChallengeProjection,
   assertPhaseOneProfileEvidence,
   assertPhaseThreeBoundaryEvidence,
   assertPhaseThreeProviderUsage,
@@ -7023,6 +7856,12 @@ module.exports = {
   assertPhaseFourDatabaseState,
   assertPhaseFourFixtureOracleBinding,
   assertPhaseFourProfileEvidence,
+  assertPhaseFiveAuditEvents,
+  assertPhaseFiveChallengeProjection,
+  assertPhaseFiveDatabaseState,
+  assertPhaseFiveExactAuthState,
+  assertPhaseFiveFixtureOracleBinding,
+  assertPhaseFiveProfileEvidence,
   assertPhaseTwoAuditEvents,
   assertPhaseTwoBrowserMutationMultiset,
   assertPhaseTwoCalendarLifecycleEvidence,
@@ -7056,6 +7895,7 @@ module.exports = {
   isSafeManifestRequestPath,
   isSafeRequestId,
   isPhaseTwoAuditPath,
+  isPhaseTwoReadOnlyProbeMutation,
   phaseTwoBrowserMutationRecords,
   phaseTwoTaskNotificationClearReasons,
   phaseOneAuditExpectedEvents,
@@ -7080,6 +7920,7 @@ module.exports = {
   phaseThreeExactMutationContract,
   phaseThreeOracle,
   phaseFourOracle,
+  phaseFiveOracle,
   writeManifestAtomic,
   runPhaseTwoReadOnlyPermutation,
 };

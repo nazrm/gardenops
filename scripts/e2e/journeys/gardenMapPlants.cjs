@@ -7,6 +7,7 @@ const {
   authenticate,
   createApiRecorder,
   createGuardedContext,
+  dismissProactivePasskeyPrompt,
 } = require("../completeJourneyBrowser.cjs");
 const { assert, assertPageStructure, visible, waitFor } = require("../completeJourneyAssertions.cjs");
 
@@ -1798,7 +1799,11 @@ async function triggerGardenRaceSurface(page, profile, surface) {
       : null);
   if (!selector) return "automatic";
   const trigger = page.locator(selector);
-  if (!await gardenSwitchIsPending(page) && await trigger.isVisible().catch(() => false)) {
+  const switchPending = await gardenSwitchIsPending(page);
+  if (!switchPending && profile === "mobile" && surface === "notifications") {
+    await openMobileUtility(page);
+  }
+  if (!switchPending && await trigger.isVisible().catch(() => false)) {
     await trigger.click();
     return "physical";
   }
@@ -2449,6 +2454,7 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
     const profileData = await authenticate(page, username, password);
     guarded.markAuthenticated();
     assert(profileData.role === role, `Fixture role mismatch: expected ${role}`);
+    await dismissProactivePasskeyPrompt(page);
     result.browser_profile.user_agent = await page.evaluate(() => navigator.userAgent);
     result.browser_profile.max_touch_points = await page.evaluate(() => navigator.maxTouchPoints);
     result.browser_profile.has_touch = result.browser_profile.max_touch_points > 0;

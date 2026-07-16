@@ -17,6 +17,7 @@ const EXPECTED_CONSOLE_DIAGNOSTIC_CONTEXTS = new Set([
   "calendar-feed-revoked",
   "map-import-rejected",
   "network-guard-probe",
+  "postauth-signout",
   "preauth-session-probe",
   "viewer-calendar-event-write-denied",
   "viewer-calendar-subscription-write-denied",
@@ -26,6 +27,10 @@ const EXPECTED_CONSOLE_DIAGNOSTIC_CONTEXTS = new Set([
   "viewer-media-write-denied",
   "viewer-task-write-denied",
   "viewer-weather-refresh-denied",
+]);
+const EXPECTED_SILENT_HTTP_CONTEXTS = new Set([
+  "postauth-signout",
+  "preauth-session-probe",
 ]);
 const EXPECTED_ABORTED_REQUEST_PATHS = new Set([
   "/api/calendar/export.ics",
@@ -62,8 +67,9 @@ function isLoopbackHostname(hostname) {
     && Number(octets[0]) === 127;
 }
 
-function isDisposableLoopbackHostname(hostname) {
-  return hostname.replace(/^\[|\]$/g, "").toLowerCase() === "127.0.0.1";
+function isDisposableLoopbackHostname(hostname, { allowLocalhost = false } = {}) {
+  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return normalized === "127.0.0.1" || (allowLocalhost && normalized === "localhost");
 }
 
 function normalizedNetworkOrigin(parsed) {
@@ -81,7 +87,10 @@ function disposableOrigin(rawUrl, label) {
     throw new Error(`${label} must be an absolute URL`);
   }
   assert(["http:", "https:"].includes(parsed.protocol), `${label} must use HTTP(S)`);
-  assert(isDisposableLoopbackHostname(parsed.hostname), `${label} must use 127.0.0.1`);
+  assert(
+    isDisposableLoopbackHostname(parsed.hostname, { allowLocalhost: label === "BASE_URL" }),
+    `${label} must use its dedicated loopback hostname`,
+  );
   assert(parsed.port && /^\d+$/.test(parsed.port), `${label} must include an explicit port`);
   assert(Number(parsed.port) !== 5432, `${label} must not use PostgreSQL port 5432`);
   assert(!parsed.username && !parsed.password, `${label} must not include credentials`);
@@ -126,8 +135,22 @@ function safeUrl(rawUrl) {
   }
 }
 
-function expectedHttpDiagnosticContext({ authenticated, method, path: pathname, status }) {
-  if (!authenticated && method === "GET" && pathname === "/api/auth/me" && status === 401) {
+function expectedHttpDiagnosticContext({ authState, authenticated, method, path: pathname, status }) {
+  if (
+    authState === "signed-out"
+    && method === "GET"
+    && pathname.startsWith("/api/")
+    && status === 401
+  ) {
+    return "postauth-signout";
+  }
+  if (
+    authState !== "signed-out"
+    && !authenticated
+    && method === "GET"
+    && pathname === "/api/auth/me"
+    && status === 401
+  ) {
     return "preauth-session-probe";
   }
   if (method === "POST" && pathname === "/api/plots/import" && [409, 413, 422].includes(status)) {
@@ -171,6 +194,10 @@ function expectedHttpDiagnosticContext({ authenticated, method, path: pathname, 
   return "unexpected-http-response";
 }
 
+function isExpectedSilentHttpContext(context) {
+  return EXPECTED_SILENT_HTTP_CONTEXTS.has(context);
+}
+
 function consoleStatus(text) {
   const match = /\b([1-5]\d{2})\s+\([^)]+\)/.exec(String(text || ""));
   return match ? Number(match[1]) : null;
@@ -188,7 +215,10 @@ function assertLoopbackBaseUrl(baseUrl) {
     throw new Error("Complete journey BASE_URL must be an absolute URL");
   }
   assert(["http:", "https:"].includes(parsed.protocol), "BASE_URL must use HTTP(S)");
-  assert(isDisposableLoopbackHostname(parsed.hostname), "BASE_URL must use literal 127.0.0.1");
+  assert(
+    isDisposableLoopbackHostname(parsed.hostname, { allowLocalhost: true }),
+    "BASE_URL must use localhost or literal 127.0.0.1",
+  );
   assert(parsed.port && /^\d+$/.test(parsed.port), "BASE_URL must include an explicit port");
   assert(Number(parsed.port) !== 5432, "BASE_URL must not use PostgreSQL port 5432");
   assert(!parsed.username && !parsed.password, "BASE_URL must not include credentials");
@@ -257,7 +287,7 @@ async function createGuardedContext(
   const pendingHttpConsoleDiagnostics = [];
   const pendingBlockedConsoleDiagnostics = [];
   let diagnosticSequence = 0;
-  let authenticated = false;
+  let authState = "initial";
   let traceStarted = false;
   const startTracing = async () => {
     if (traceStarted) return;
@@ -328,8 +358,10 @@ async function createGuardedContext(
         status: pending?.status ?? status,
       };
       diagnostics.classifiedConsoleDiagnostics.push(event);
-      if (event.context === "preauth-session-probe") {
-        diagnostics.ignoredAuth401ConsoleErrors += 1;
+      if (isExpectedSilentHttpContext(event.context)) {
+        if (event.context === "preauth-session-probe") {
+          diagnostics.ignoredAuth401ConsoleErrors += 1;
+        }
         return;
       }
       diagnostics.consoleErrors.push(diagnosticLabel(event));
@@ -340,7 +372,8 @@ async function createGuardedContext(
       const parsed = new URL(response.url());
       const method = response.request().method();
       const context = expectedHttpDiagnosticContext({
-        authenticated,
+        authState,
+        authenticated: authState === "authenticated",
         method,
         path: parsed.pathname,
         status: response.status(),
@@ -351,8 +384,8 @@ async function createGuardedContext(
         path: parsed.pathname,
         status: response.status(),
       });
-      if (context === "preauth-session-probe") {
-        diagnostics.expectedAuth401Responses += 1;
+      if (isExpectedSilentHttpContext(context)) {
+        if (context === "preauth-session-probe") diagnostics.expectedAuth401Responses += 1;
         return;
       }
       diagnostics.httpErrors.push(`${response.status()} ${parsed.pathname}`);
@@ -377,7 +410,10 @@ async function createGuardedContext(
     context,
     diagnostics,
     markAuthenticated() {
-      authenticated = true;
+      authState = "authenticated";
+    },
+    markSignedOut() {
+      authState = "signed-out";
     },
     profile: {
       device: profileName === "mobile" ? "Pixel 7" : "Desktop Chromium",
@@ -473,6 +509,15 @@ async function authenticate(page, username, password) {
   await form.locator("input[name='username']").fill(username);
   await form.locator("button[type='submit']").click();
   const passwordInput = form.locator("input[name='password']");
+  const passwordFallback = form.locator("#auth-gate-use-password");
+  await visible(
+    form.locator("input[name='password']:visible, #auth-gate-use-password:visible").first(),
+    "session sign-in recovery control",
+  );
+  if (!(await passwordInput.isVisible())) {
+    await visible(passwordFallback, "session sign-in password fallback");
+    await passwordFallback.click();
+  }
   await visible(passwordInput, "session sign-in password field");
   await passwordInput.fill(password);
   await form.locator("button[type='submit']").click();
@@ -490,10 +535,31 @@ async function authenticate(page, username, password) {
   return profile.body;
 }
 
+async function dismissProactivePasskeyPrompt(page, timeout = 5_000) {
+  const dialog = page.locator(".modal[data-passkey-prompt-ready='true']:visible").filter({
+    has: page.locator(".passkey-prompt-modal"),
+  }).last();
+  try {
+    await dialog.waitFor({ state: "visible", timeout });
+  } catch {
+    return false;
+  }
+  const dismissed = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/auth/passkeys/prompt/dismiss"
+  ));
+  await dialog.locator(".confirm-no").click();
+  assert((await dismissed).ok(), "Passkey prompt dismissal failed");
+  await dialog.waitFor({ state: "detached" });
+  return true;
+}
+
 function createApiRecorder(page, actor = {}) {
   const records = [];
   const recordsByRequest = new Map();
   const pendingResponseReads = new Set();
+  let currentGardenId = Number.isSafeInteger(Number(actor.gardenId))
+    && Number(actor.gardenId) > 0 ? String(Number(actor.gardenId)) : null;
   const taskActions = new Set(["complete", "reschedule", "skip", "snooze"]);
   const safeRevision = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
   const taskActionEvidence = (request, pathname) => {
@@ -536,14 +602,20 @@ function createApiRecorder(page, actor = {}) {
       if (!parsed.pathname.startsWith("/api/")) return;
       const headers = request.headers();
       const isAnonymousAuditPath = new Set([
+        "/api/auth/invitations/accept",
+        "/api/auth/invitations/passkey/register/options",
+        "/api/auth/invitations/passkey/register/verify",
+        "/api/auth/invitations/peek",
         "/api/auth/login",
+        "/api/auth/passkeys/login/options",
+        "/api/auth/passkeys/login/verify",
         "/api/client-errors",
       ]).has(parsed.pathname);
       const record = {
         actorAuthType: isAnonymousAuditPath ? "none" : (actor.authType || null),
         actorRole: isAnonymousAuditPath ? "anonymous" : (actor.role || null),
         actorUsername: isAnonymousAuditPath ? "anonymous" : (actor.username || null),
-        gardenId: headers["x-garden-id"] || null,
+        gardenId: headers["x-garden-id"] || currentGardenId,
         method: request.method(),
         operationId: headers["x-offline-operation-id"] || null,
         path: parsed.pathname,
@@ -559,6 +631,23 @@ function createApiRecorder(page, actor = {}) {
       if (record) {
         record.requestId = response.headers()["x-request-id"] || null;
         record.statusCode = response.status();
+        if (new Set([
+          "/api/auth/invitations/accept",
+          "/api/auth/invitations/passkey/register/verify",
+        ]).has(record.path) && response.status() < 400) {
+          const responseRead = Promise.resolve()
+            .then(() => response.json())
+            .then((body) => {
+              const gardenId = Number(body?.garden_id);
+              if (Number.isSafeInteger(gardenId) && gardenId > 0) {
+                record.gardenId = String(gardenId);
+                currentGardenId = String(gardenId);
+              }
+            })
+            .catch(() => {})
+            .finally(() => pendingResponseReads.delete(responseRead));
+          pendingResponseReads.add(responseRead);
+        }
         if (record.taskAction) {
           const responseRead = Promise.resolve()
             .then(() => response.json())
@@ -585,6 +674,11 @@ function createApiRecorder(page, actor = {}) {
     attachPage,
     mark: () => records.length,
     records,
+    setGardenId(value) {
+      const gardenId = Number(value);
+      currentGardenId = Number.isSafeInteger(gardenId) && gardenId > 0
+        ? String(gardenId) : null;
+    },
     settle: async () => {
       while (pendingResponseReads.size > 0) {
         await Promise.all([...pendingResponseReads]);
@@ -602,8 +696,10 @@ module.exports = {
   authenticate,
   createApiRecorder,
   createGuardedContext,
+  dismissProactivePasskeyPrompt,
   expectedHttpDiagnosticContext,
   isAllowedUrl,
+  isExpectedSilentHttpContext,
   redactTokenShapedSecrets,
   sanitizeDiagnostic,
 };

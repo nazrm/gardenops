@@ -375,7 +375,7 @@ function defaultSubModeForTab(tab: PrimaryContentTab): SubMode {
 
 function isTabEnabled(tab: AppTab): boolean {
   if (tab === "map") return true;
-  if (tab === "admin") return isFeatureEnabled("admin_panel");
+  if (tab === "admin") return true;
   return getSubModesForTab(tab).some((mode) => isSubModeEnabled(mode));
 }
 
@@ -2501,7 +2501,10 @@ function setupLayout(): void {
         setActiveGardenContext(garden.id);
         await refreshGardenContext();
         const needsOnboarding = await checkOnboardingNeeded();
-        if (!needsOnboarding) refreshDataAfterAuthChange();
+        if (!needsOnboarding) {
+          schedulePasskeyPrompt(authProfile);
+          refreshDataAfterAuthChange();
+        }
       } catch (err) {
         showToast(getApiErrorMessage(err), "error");
       }
@@ -6656,6 +6659,18 @@ async function refreshAuthProfileAfterPasskeyChange(): Promise<void> {
   }
 }
 
+async function reauthenticateAdminAfterPasskeyEnrollment(): Promise<void> {
+  if (authProfile?.role !== "admin" || authProfile.mfa_authenticated) return;
+  const options = await beginPasskeyReauthenticationApi();
+  const credential = await getPasskey(options.publicKey);
+  await finishPasskeyReauthenticationApi(options.challenge_token, credential);
+  authProfile = {
+    ...authProfile,
+    mfa_authenticated: true,
+    mfa_setup_required: false,
+  };
+}
+
 async function showPasskeyPrompt(): Promise<void> {
   if (
     !authProfile
@@ -6716,18 +6731,27 @@ async function showPasskeyPrompt(): Promise<void> {
     finish();
     const currentPassword = await promptPasswordDialog(t("auth.current_password"));
     if (!currentPassword) return;
+    let registrationCompleted = false;
     try {
       const nickname = t("auth.passkey_default_name");
       const options = await beginPasskeyRegistrationApi(nickname, currentPassword);
       const credential = await createPasskey(options.publicKey);
       await finishPasskeyRegistrationApi(options.challenge_token, nickname, credential);
+      registrationCompleted = true;
+      await reauthenticateAdminAfterPasskeyEnrollment();
       await refreshAuthProfileAfterPasskeyChange();
       showToast(t("auth.passkey_added"), "success");
     } catch (err) {
+      if (registrationCompleted && authProfile?.role === "admin") {
+        showToast(getApiErrorMessage(err), "error");
+        await handleAuthButton();
+        return;
+      }
       if (isPasskeyUserCancelled(err)) return;
       showToast(getApiErrorMessage(err), "error");
     }
   });
+  dialog.dataset["passkeyPromptReady"] = "true";
 }
 
 async function refreshGardenContext(options?: {
@@ -6781,7 +6805,6 @@ async function refreshGardenContext(options?: {
   authProfile = me;
   setFeatureGates(me.subscription_tier ?? "home", me.allowed_features ?? []);
   applyFeatureGateUi();
-  schedulePasskeyPrompt(me);
   showSecurityWarnings(me);
   if (me.language && me.language !== getLocale()) {
     setLocale(me.language);
@@ -6918,7 +6941,7 @@ function applyFeatureGateUi(): void {
   });
 
   const mobileAdminBtn = document.getElementById("mobile-admin-btn");
-  if (mobileAdminBtn) mobileAdminBtn.hidden = !isFeatureEnabled("admin_panel");
+  if (mobileAdminBtn) mobileAdminBtn.hidden = !isTabEnabled("admin");
 
   const mobileNotifBtn = document.getElementById("mobile-notification-btn");
   if (mobileNotifBtn) mobileNotifBtn.hidden = !isFeatureEnabled("notifications");
@@ -7103,12 +7126,20 @@ async function handleAuthButton(): Promise<void> {
     setActiveGardenContext(null);
     await showAuthGateFromCurrentStatus();
     await refreshGardenContext();
-    refreshDataAfterAuthChange();
+    const needsOnboarding = await checkOnboardingNeeded();
+    if (!needsOnboarding) {
+      schedulePasskeyPrompt(authProfile);
+      refreshDataAfterAuthChange();
+    }
   } else {
     // Not signed in — use the login gate
     await showAuthGateFromCurrentStatus();
     await refreshGardenContext();
-    refreshDataAfterAuthChange();
+    const needsOnboarding = await checkOnboardingNeeded();
+    if (!needsOnboarding) {
+      schedulePasskeyPrompt(authProfile);
+      refreshDataAfterAuthChange();
+    }
   }
 }
 
@@ -7315,6 +7346,7 @@ async function bootstrapApp(): Promise<void> {
   // Check if active garden needs onboarding.
   const needsOnboarding = await checkOnboardingNeeded();
   if (needsOnboarding) return;
+  schedulePasskeyPrompt(authProfile);
 
   await Promise.all([
     refreshMapState(),
@@ -7347,6 +7379,7 @@ async function checkOnboardingNeeded(): Promise<boolean> {
         if (activeTab === "map" && shouldLoadShadeMapPanelNow()) {
           await ensureShadeMapPanelLoaded();
         }
+        schedulePasskeyPrompt(authProfile);
         resolve(true);
       })();
     };

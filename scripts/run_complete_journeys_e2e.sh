@@ -9,7 +9,7 @@ fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT_DIR"
-MAX_IMPLEMENTED_PHASE=4
+MAX_IMPLEMENTED_PHASE=5
 
 die() {
   printf 'Complete journey E2E: %s\n' "$1" >&2
@@ -359,6 +359,12 @@ export AUTH_ADMIN_MFA_REQUIRED=false
 export AUTH_PASSWORD_CHECK_HIBP=false
 export AUTH_PASSWORD_HASH_FAST_FOR_TESTS=true
 export AUTH_CSRF_SECRET="complete-journeys-e2e-csrf-only" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+export AUTH_MFA_SECRET_KEY="complete-journeys-e2e-mfa-key-only" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+export AUTH_FAIL_RATE_LIMIT=200
+export AUTH_LOGIN_RATE_LIMIT=200
+export AUTH_LOGIN_USERNAME_RATE_LIMIT=100
+export AUTH_LOGIN_ADMIN_USERNAME_RATE_LIMIT=100
+export AUTH_LOGIN_ADMIN_HOST_RATE_LIMIT=200
 export AI_PROVIDER=disabled
 export GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER=1
 export GARDENOPS_NOTIFICATION_SCHEDULER_ENABLED=false
@@ -424,6 +430,8 @@ FRONTEND_PORT="${GARDENOPS_COMPLETE_JOURNEYS_E2E_FRONTEND_PORT:-$(pick_loopback_
 PROVIDER_PORT="${GARDENOPS_COMPLETE_JOURNEYS_E2E_PROVIDER_PORT:-$(pick_loopback_port)}"
 validate_distinct_ports "$BACKEND_PORT" "$FRONTEND_PORT" "$PROVIDER_PORT"
 export GARDENOPS_VITE_PROXY_TARGET="http://127.0.0.1:${BACKEND_PORT}"
+export AUTH_PASSKEY_RP_ID="localhost"
+export AUTH_PASSKEY_ORIGINS="http://localhost:${FRONTEND_PORT}"
 
 FIXTURE_PATH="$ARTIFACT_DIR/fixture.json"
 export GARDENOPS_COMPLETE_JOURNEYS_E2E_FIXTURE_PATH="$FIXTURE_PATH"
@@ -475,14 +483,14 @@ setsid env -i \
   GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
   GARDENOPS_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
   "$ROOT_DIR/frontend/node_modules/.bin/vite" preview \
-    --config "$VITE_CONFIG_PATH" --host 127.0.0.1 --port "$FRONTEND_PORT" --strictPort \
+    --config "$VITE_CONFIG_PATH" --host localhost --port "$FRONTEND_PORT" --strictPort \
     > "$LOG_DIR/frontend.log" 2>&1 &
 FRONTEND_PID=$!
 
 wait_for_url "http://127.0.0.1:${BACKEND_PORT}/api/health" "$BACKEND_PID" "FastAPI"
-wait_for_url "http://127.0.0.1:${FRONTEND_PORT}/" "$FRONTEND_PID" "production frontend preview"
+wait_for_url "http://localhost:${FRONTEND_PORT}/" "$FRONTEND_PID" "production frontend preview"
 
-BASE_URL="http://127.0.0.1:${FRONTEND_PORT}" \
+BASE_URL="http://localhost:${FRONTEND_PORT}" \
   node scripts/check_complete_journeys_e2e.cjs
 chmod 600 "$ARTIFACT_DIR/complete-journeys-manifest.json"
 find "$ARTIFACT_DIR" -maxdepth 1 -type f -name '*.zip' -exec chmod 600 {} +

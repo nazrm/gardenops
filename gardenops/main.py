@@ -1107,8 +1107,8 @@ def _admin_mfa_setup_path_allowed(path: str) -> bool:
         "/api/auth/me",
         "/api/auth/me/settings",
         "/api/auth/logout",
-        "/api/auth/reauthenticate",
         "/api/auth/passkeys",
+        "/api/auth/reauthenticate",
         "/api/auth/passkeys/register/options",
         "/api/auth/passkeys/register/verify",
     } or path.startswith("/api/auth/mfa")
@@ -1120,6 +1120,7 @@ def _admin_strong_auth_path_allowed(path: str) -> bool:
         "/api/auth/me",
         "/api/auth/me/settings",
         "/api/auth/logout",
+        "/api/auth/passkeys",
         "/api/auth/reauthenticate",
         "/api/auth/reauthenticate/passkey/options",
         "/api/auth/reauthenticate/passkey/verify",

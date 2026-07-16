@@ -16,7 +16,7 @@ from typing import Any
 
 from psycopg import sql
 
-from gardenops.db import close_pool, get_db, return_db
+from gardenops.db import close_pool, current_timestamp_ms, get_db, return_db
 from gardenops.routers.map_objects import snapshot_map_objects
 from gardenops.routers.shademap import (
     get_shademap_calibration,
@@ -34,6 +34,9 @@ PHASE_THREE_ORACLE_PATH = (
 )
 PHASE_FOUR_ORACLE_PATH = (
     REPOSITORY_ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_four_oracle.json"
+)
+PHASE_FIVE_ORACLE_PATH = (
+    REPOSITORY_ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_five_oracle.json"
 )
 
 
@@ -100,6 +103,32 @@ def _load_phase_four_oracle() -> tuple[dict[str, Any], str]:
 PHASE_FOUR_ORACLE, PHASE_FOUR_ORACLE_SHA256 = _load_phase_four_oracle()
 PHASE_FOUR_ORACLE_FIXTURE = PHASE_FOUR_ORACLE["phase_four"]["fixture"]
 
+
+def _load_phase_five_oracle() -> tuple[dict[str, Any], str]:
+    try:
+        raw = PHASE_FIVE_ORACLE_PATH.read_bytes()
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Complete journey Phase 5 oracle is unavailable or invalid") from exc
+    phase_five = payload.get("phase_five") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 2
+        or not isinstance(phase_five, dict)
+        or not isinstance(phase_five.get("fixture"), dict)
+        or not isinstance(phase_five.get("database_boundaries"), dict)
+        or not isinstance(phase_five.get("auth_state"), dict)
+        or not isinstance(phase_five.get("challenge_projection"), dict)
+        or not isinstance(phase_five.get("audit_scope"), dict)
+        or not isinstance(phase_five.get("support"), dict)
+    ):
+        raise RuntimeError("Complete journey Phase 5 oracle fixture contract is missing")
+    return payload, sha256(raw).hexdigest()
+
+
+PHASE_FIVE_ORACLE, PHASE_FIVE_ORACLE_SHA256 = _load_phase_five_oracle()
+PHASE_FIVE_ORACLE_FIXTURE = PHASE_FIVE_ORACLE["phase_five"]["fixture"]
+
 ADMIN_USERNAME = os.environ.get(
     "GARDENOPS_COMPLETE_JOURNEYS_E2E_USERNAME", "complete_journeys_e2e_admin"
 )
@@ -116,6 +145,14 @@ ONBOARDING_LOGIN = (
 MOBILE_ONBOARDING_LOGIN = (
     "complete_journeys_e2e_onboarding_mobile",
     "CompleteJourneysMobileOnboardingE2E!Passphrase2026",
+)
+PHASE_FIVE_INVITEE_LOGIN = (
+    str(PHASE_FIVE_ORACLE_FIXTURE["invitee_username"]),
+    "CompleteJourneysPhaseFiveInvitee!Passphrase2026",
+)
+PHASE_FIVE_VIEWER_INVITEE_LOGIN = (
+    str(PHASE_FIVE_ORACLE_FIXTURE["viewer_invitee_username"]),
+    "CompleteJourneysPhaseFiveViewer!Passphrase2026",
 )
 
 PHASE_ONE_LARGE_GARDEN_SLUG = "complete-journeys-phase-one-large"
@@ -3737,6 +3774,341 @@ def _phase_four_fixture_state() -> dict[str, Any]:
     }
 
 
+def _phase_five_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
+    snapshot_at_ms = current_timestamp_ms()
+    tracked_usernames = [
+        ADMIN_USERNAME,
+        EDITOR_LOGIN[0],
+        VIEWER_LOGIN[0],
+        PHASE_FIVE_INVITEE_LOGIN[0],
+        PHASE_FIVE_VIEWER_INVITEE_LOGIN[0],
+    ]
+    user_rows = conn.execute(
+        """
+        SELECT users.id, users.username, users.role, users.is_active,
+               users.password_auth_disabled, users.mfa_totp_enabled,
+               users.must_change_password,
+               COUNT(DISTINCT passkeys.id) AS passkey_count,
+               COUNT(DISTINCT sessions.token_hash) AS session_count,
+               COUNT(DISTINCT recovery.id) FILTER (WHERE recovery.used_at_ms IS NULL)
+                   AS unused_recovery_count,
+               COUNT(DISTINCT pending.user_id) AS pending_enrollment_count
+        FROM auth_users users
+        LEFT JOIN auth_passkeys passkeys ON passkeys.user_id = users.id
+        LEFT JOIN auth_sessions sessions ON sessions.user_id = users.id
+        LEFT JOIN auth_mfa_recovery_codes recovery ON recovery.user_id = users.id
+        LEFT JOIN auth_mfa_pending_enrollments pending ON pending.user_id = users.id
+        WHERE users.username = ANY(%s)
+        GROUP BY users.id
+        ORDER BY users.username
+        """,
+        (tracked_usernames,),
+    ).fetchall()
+    auth_user_projection_rows = conn.execute(
+        """
+        SELECT users.username, creator.username AS creator_username, users.role,
+               users.is_active, users.password_hash IS NOT NULL AS has_password,
+               users.password_auth_disabled,
+               users.passkey_user_handle IS NOT NULL AS has_passkey_handle,
+               users.passkey_prompt_dismissed_until_ms, users.must_change_password,
+               users.deactivated_at, users.deactivated_reason, users.created_at,
+               users.last_login_at, users.mfa_totp_secret IS NOT NULL AS has_mfa_secret,
+               users.mfa_totp_enabled, users.mfa_enrolled_at, users.language,
+               users.last_totp_counter, users.subscription_tier
+        FROM auth_users users
+        LEFT JOIN auth_users creator ON creator.id = users.created_by_user_id
+        ORDER BY users.username
+        """
+    ).fetchall()
+    auth_session_projection_rows = conn.execute(
+        """
+        SELECT sessions.token_hash, users.username, sessions.expires_at_ms,
+               sessions.created_at_ms, sessions.last_seen_at_ms,
+               sessions.reauthenticated_at_ms, sessions.mfa_authenticated_at_ms,
+               sessions.mfa_setup_required, sessions.device_label, sessions.location_hint
+        FROM auth_sessions sessions
+        JOIN auth_users users ON users.id = sessions.user_id
+        ORDER BY users.username, sessions.created_at_ms, sessions.token_hash
+        """
+    ).fetchall()
+    invitation_rows = conn.execute(
+        """
+        SELECT 'personal_garden' AS scope, NULL::text AS garden_slug,
+               invitation.id, invitation.invitee_username, invitation.role,
+               invitation.created_at_ms, invitation.expires_at_ms,
+               invitation.accepted_at_ms, invitation.revoked_at_ms,
+               accepted.username AS accepted_username
+        FROM auth_user_invitations invitation
+        LEFT JOIN auth_users accepted ON accepted.id = invitation.accepted_user_id
+        WHERE invitation.invitee_username LIKE 'complete_journeys_e2e_phase_five%%'
+        UNION ALL
+        SELECT 'garden' AS scope, gardens.slug AS garden_slug,
+               invitation.id, invitation.invitee_username, invitation.role,
+               invitation.created_at_ms, invitation.expires_at_ms,
+               invitation.accepted_at_ms, invitation.revoked_at_ms,
+               accepted.username AS accepted_username
+        FROM garden_invitations invitation
+        JOIN gardens ON gardens.id = invitation.garden_id
+        LEFT JOIN auth_users accepted ON accepted.id = invitation.accepted_user_id
+        WHERE invitation.invitee_username LIKE 'complete_journeys_e2e_phase_five%%'
+        ORDER BY scope, id
+        """
+    ).fetchall()
+    passkey_rows = conn.execute(
+        """
+        SELECT passkeys.id, users.username, passkeys.nickname,
+               passkeys.credential_device_type, passkeys.credential_backed_up,
+               passkeys.created_at_ms, passkeys.updated_at_ms, passkeys.last_used_at_ms
+        FROM auth_passkeys passkeys
+        JOIN auth_users users ON users.id = passkeys.user_id
+        WHERE users.username = ANY(%s)
+        ORDER BY users.username, passkeys.id
+        """,
+        (tracked_usernames,),
+    ).fetchall()
+    membership_rows = conn.execute(
+        """
+        SELECT gardens.slug, users.username, memberships.role
+        FROM garden_memberships memberships
+        JOIN gardens ON gardens.id = memberships.garden_id
+        JOIN auth_users users ON users.id = memberships.user_id
+        WHERE users.username = ANY(%s)
+        ORDER BY gardens.slug, users.username
+        """,
+        (tracked_usernames,),
+    ).fetchall()
+    setting_rows = conn.execute(
+        """
+        SELECT users.username, meanings.pattern, meanings.label, meanings.description
+        FROM auth_user_plot_assignment_meanings meanings
+        JOIN auth_users users ON users.id = meanings.user_id
+        WHERE users.username = ANY(%s)
+        ORDER BY users.username, meanings.pattern
+        """,
+        (tracked_usernames,),
+    ).fetchall()
+    challenge_rows = conn.execute(
+        """
+        SELECT challenges.token_hash, challenges.flow, users.username,
+               challenges.session_token_hash IS NOT NULL AS has_session_binding,
+               challenges.invitation_token_hash IS NOT NULL AS has_invitation_binding,
+               challenges.invitation_scope, challenges.invitee_username,
+               challenges.created_at_ms, challenges.expires_at_ms, challenges.used_at_ms
+        FROM auth_passkey_challenges challenges
+        LEFT JOIN auth_users users ON users.id = challenges.user_id
+        ORDER BY challenges.id
+        """
+    ).fetchall()
+    runtime_flag_rows = conn.execute(
+        """
+        SELECT key, value
+        FROM security_runtime_flags
+        WHERE key IN ('emergency_read_only', 'emergency_read_only_expires_at_ms')
+        ORDER BY key
+        """
+    ).fetchall()
+    alpha_id = int(
+        conn.execute(
+            "SELECT id FROM gardens WHERE slug = %s",
+            (optimization_seed.GARDEN_A_SLUG,),
+        ).fetchone()["id"]
+    )
+
+    def optional_int(value: object) -> int | None:
+        return int(value) if value is not None else None
+
+    user_categories = {
+        ADMIN_USERNAME: "fixture_admin",
+        EDITOR_LOGIN[0]: "fixture_editor",
+        VIEWER_LOGIN[0]: "fixture_viewer",
+        ONBOARDING_LOGIN[0]: "fixture_onboarding",
+        MOBILE_ONBOARDING_LOGIN[0]: "fixture_onboarding_mobile",
+        PHASE_FIVE_INVITEE_LOGIN[0]: "phase_five_editor_invitee",
+        PHASE_FIVE_VIEWER_INVITEE_LOGIN[0]: "phase_five_viewer_invitee",
+    }
+
+    def opaque_identity(namespace: str, value: object) -> str:
+        return sha256(f"{namespace}:{value}".encode()).hexdigest()
+
+    def user_category(username: object) -> str:
+        if username is None:
+            return "unbound"
+        return user_categories.get(str(username), "untracked_user")
+
+    def optional_text(value: object) -> str | None:
+        return str(value) if value is not None else None
+
+    auth_users_projection = [
+        {
+            "category": user_category(row["username"]),
+            "created_at": str(row["created_at"]),
+            "creator_identity_digest": (
+                opaque_identity("auth-user", row["creator_username"])
+                if row["creator_username"] is not None
+                else None
+            ),
+            "deactivated_at": optional_text(row["deactivated_at"]),
+            "deactivated_reason": optional_text(row["deactivated_reason"]),
+            "has_mfa_secret": bool(row["has_mfa_secret"]),
+            "has_passkey_handle": bool(row["has_passkey_handle"]),
+            "has_password": bool(row["has_password"]),
+            "identity_digest": opaque_identity("auth-user", row["username"]),
+            "is_active": bool(row["is_active"]),
+            "language": str(row["language"]),
+            "last_login_at": optional_text(row["last_login_at"]),
+            "last_totp_counter": int(row["last_totp_counter"]),
+            "mfa_enrolled_at": optional_text(row["mfa_enrolled_at"]),
+            "mfa_totp_enabled": bool(row["mfa_totp_enabled"]),
+            "must_change_password": bool(row["must_change_password"]),
+            "passkey_prompt_dismissed_until_ms": int(row["passkey_prompt_dismissed_until_ms"]),
+            "password_auth_disabled": bool(row["password_auth_disabled"]),
+            "role": str(row["role"]),
+            "subscription_tier": str(row["subscription_tier"]),
+        }
+        for row in auth_user_projection_rows
+    ]
+    auth_sessions_projection = [
+        {
+            "category": user_category(row["username"]),
+            "created_at_ms": int(row["created_at_ms"]),
+            "device_label": str(row["device_label"] or ""),
+            "expires_at_ms": int(row["expires_at_ms"]),
+            "identity_digest": opaque_identity("auth-session", row["token_hash"]),
+            "last_seen_at_ms": int(row["last_seen_at_ms"]),
+            "location_hint": str(row["location_hint"] or ""),
+            "mfa_authenticated_at_ms": int(row["mfa_authenticated_at_ms"]),
+            "mfa_setup_required": bool(row["mfa_setup_required"]),
+            "reauthenticated_at_ms": int(row["reauthenticated_at_ms"]),
+            "user_identity_digest": opaque_identity("auth-user", row["username"]),
+        }
+        for row in auth_session_projection_rows
+    ]
+    session_counts: dict[str, dict[str, object]] = {
+        row["identity_digest"]: {
+            "category": row["category"],
+            "count": 0,
+            "user_identity_digest": row["identity_digest"],
+        }
+        for row in auth_users_projection
+    }
+    for row in auth_sessions_projection:
+        session_counts[row["user_identity_digest"]]["count"] = (
+            int(session_counts[row["user_identity_digest"]]["count"]) + 1
+        )
+    challenge_projection = []
+    for row in challenge_rows:
+        invitation_bound = bool(row["has_invitation_binding"])
+        owner_name = row["username"] if row["username"] is not None else row["invitee_username"]
+        used_at_ms = optional_int(row["used_at_ms"])
+        created_at_ms = int(row["created_at_ms"])
+        expires_at_ms = int(row["expires_at_ms"])
+        challenge_projection.append(
+            {
+                "consumed_state": (
+                    "unused"
+                    if used_at_ms is None
+                    else "consumed_valid"
+                    if created_at_ms <= used_at_ms < expires_at_ms
+                    else "consumed_invalid"
+                ),
+                "flow": str(row["flow"]),
+                "expires_at_ms": expires_at_ms,
+                "identity_digest": opaque_identity("passkey-challenge", row["token_hash"]),
+                "invitation_binding_present": invitation_bound,
+                "invitation_scope": (str(row["invitation_scope"]) if invitation_bound else None),
+                "lifetime_valid": expires_at_ms > created_at_ms,
+                "owner_category": user_category(owner_name),
+                "session_binding_present": bool(row["has_session_binding"]),
+            }
+        )
+
+    return {
+        "alpha_garden_id": alpha_id,
+        "auth_sessions_projection": auth_sessions_projection,
+        "auth_users_projection": auth_users_projection,
+        "challenge_projection": challenge_projection,
+        "invitations": [
+            {
+                "accepted_at_ms": optional_int(row["accepted_at_ms"]),
+                "accepted_username": (
+                    str(row["accepted_username"]) if row["accepted_username"] is not None else None
+                ),
+                "created_at_ms": int(row["created_at_ms"]),
+                "expires_at_ms": int(row["expires_at_ms"]),
+                "garden_slug": str(row["garden_slug"]) if row["garden_slug"] else None,
+                "invitee_username": str(row["invitee_username"]),
+                "revoked_at_ms": optional_int(row["revoked_at_ms"]),
+                "role": str(row["role"]),
+                "row_id": int(row["id"]),
+                "scope": str(row["scope"]),
+            }
+            for row in invitation_rows
+        ],
+        "memberships": [
+            {
+                "garden_slug": str(row["slug"]),
+                "role": str(row["role"]),
+                "username": str(row["username"]),
+            }
+            for row in membership_rows
+        ],
+        "passkeys": [
+            {
+                "backed_up": bool(row["credential_backed_up"]),
+                "created_at_ms": int(row["created_at_ms"]),
+                "device_type": str(row["credential_device_type"] or ""),
+                "last_used_at_ms": optional_int(row["last_used_at_ms"]),
+                "nickname": str(row["nickname"]),
+                "row_id": int(row["id"]),
+                "updated_at_ms": int(row["updated_at_ms"]),
+                "username": str(row["username"]),
+            }
+            for row in passkey_rows
+        ],
+        "runtime_flags": {str(row["key"]): str(row["value"]) for row in runtime_flag_rows},
+        "snapshot_at_ms": snapshot_at_ms,
+        "session_counts_by_user": sorted(
+            session_counts.values(), key=lambda row: str(row["user_identity_digest"])
+        ),
+        "settings": [
+            {
+                "description": str(row["description"] or ""),
+                "label": str(row["label"]),
+                "pattern": str(row["pattern"]),
+                "username": str(row["username"]),
+            }
+            for row in setting_rows
+        ],
+        "users": [
+            {
+                "is_active": bool(row["is_active"]),
+                "mfa_enabled": bool(row["mfa_totp_enabled"]),
+                "must_change_password": bool(row["must_change_password"]),
+                "passkey_count": int(row["passkey_count"]),
+                "password_auth_disabled": bool(row["password_auth_disabled"]),
+                "pending_enrollment_count": int(row["pending_enrollment_count"]),
+                "role": str(row["role"]),
+                "session_count": int(row["session_count"]),
+                "unused_recovery_count": int(row["unused_recovery_count"]),
+                "username": str(row["username"]),
+            }
+            for row in user_rows
+        ],
+    }
+
+
+def _phase_five_fixture_state() -> dict[str, Any]:
+    return {
+        **PHASE_FIVE_ORACLE_FIXTURE,
+        "oracle": {
+            "path": "scripts/e2e/fixtures/complete_journeys_phase_five_oracle.json",
+            "schema_version": int(PHASE_FIVE_ORACLE["schema_version"]),
+            "sha256": PHASE_FIVE_ORACLE_SHA256,
+        },
+        "support": dict(PHASE_FIVE_ORACLE["phase_five"]["support"]),
+    }
+
+
 def _count(conn, table: str) -> int:
     allowed = {
         "attention_outcomes",
@@ -3897,8 +4269,8 @@ def _auth_state(conn) -> dict[str, Any]:
     ).fetchone()
     digest = conn.execute(
         """
-        SELECT md5(COALESCE(
-            string_agg(
+        WITH normalized AS (
+            SELECT jsonb_set(
                 jsonb_set(
                     to_jsonb(user_value),
                     '{last_login_at}',
@@ -3906,19 +4278,20 @@ def _auth_state(conn) -> dict[str, Any]:
                         WHEN username IN (%s, %s, %s, %s, %s) THEN 'null'::jsonb
                         ELSE COALESCE(to_jsonb(last_login_at), 'null'::jsonb)
                     END
-                )::text,
-                E'\\n' ORDER BY jsonb_set(
-                    to_jsonb(user_value),
-                    '{last_login_at}',
-                    CASE
-                        WHEN username IN (%s, %s, %s, %s, %s) THEN 'null'::jsonb
-                        ELSE COALESCE(to_jsonb(last_login_at), 'null'::jsonb)
-                    END
-                )::text
-            ),
+                ),
+                '{passkey_prompt_dismissed_until_ms}',
+                CASE
+                    WHEN username IN (%s, %s, %s, %s, %s) THEN '0'::jsonb
+                    ELSE to_jsonb(passkey_prompt_dismissed_until_ms)
+                END
+            ) AS value
+            FROM auth_users AS user_value
+        )
+        SELECT md5(COALESCE(
+            string_agg(value::text, E'\\n' ORDER BY value::text),
             ''
         )) AS digest
-        FROM auth_users AS user_value
+        FROM normalized
         """,
         (
             ADMIN_USERNAME,
@@ -3933,6 +4306,24 @@ def _auth_state(conn) -> dict[str, Any]:
             MOBILE_ONBOARDING_LOGIN[0],
         ),
     ).fetchone()
+    dismissed_prompt_rows = conn.execute(
+        """
+        SELECT username
+        FROM auth_users
+        WHERE username = ANY(%s)
+          AND passkey_prompt_dismissed_until_ms > 0
+        ORDER BY username
+        """,
+        (
+            [
+                ADMIN_USERNAME,
+                EDITOR_LOGIN[0],
+                VIEWER_LOGIN[0],
+                ONBOARDING_LOGIN[0],
+                MOBILE_ONBOARDING_LOGIN[0],
+            ],
+        ),
+    ).fetchall()
     session_rows = conn.execute(
         """
         SELECT users.username, COUNT(sessions.token_hash) AS count
@@ -3987,6 +4378,9 @@ def _auth_state(conn) -> dict[str, Any]:
                 "reauthenticated_before_created",
             )
         },
+        "passkey_prompt_dismissed_usernames": [
+            str(row["username"]) for row in dismissed_prompt_rows
+        ],
         "session_user_counts": {str(row["username"]): int(row["count"]) for row in session_rows},
         "users_expected_digest": str(digest["digest"] if digest else ""),
     }
@@ -4161,6 +4555,7 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
             "phase_two_state": _phase_two_runtime_state(conn, optimization_seed),
             "phase_three_state": _phase_three_runtime_state(conn, optimization_seed),
             "phase_four_state": _phase_four_runtime_state(conn, optimization_seed),
+            "phase_five_state": _phase_five_runtime_state(conn, optimization_seed),
         },
         "gardens": {
             "alpha": garden_payload(
@@ -4178,6 +4573,7 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
         "phase_two": _phase_two_fixture_state(conn, optimization_seed),
         "phase_three": _phase_three_fixture_state(conn, optimization_seed),
         "phase_four": _phase_four_fixture_state(),
+        "phase_five": _phase_five_fixture_state(),
         "roles": {
             "admin": ADMIN_USERNAME,
             "editor": EDITOR_LOGIN[0],

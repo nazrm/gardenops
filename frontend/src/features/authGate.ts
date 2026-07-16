@@ -36,6 +36,15 @@ function isPasskeyUserCancelled(err: unknown): boolean {
   return err instanceof DOMException && err.name === "NotAllowedError";
 }
 
+function createAuthGateError(message: string): HTMLDivElement {
+  const error = document.createElement("div");
+  error.className = "auth-gate-error";
+  error.setAttribute("role", "alert");
+  error.setAttribute("aria-live", "assertive");
+  error.textContent = message;
+  return error;
+}
+
 function activateAuthGate(resolve: () => void): () => void {
   document.body.classList.add(AUTH_GATE_ACTIVE_CLASS);
   let settled = false;
@@ -266,10 +275,7 @@ function renderForcedPasswordChangeForm(
     } catch (err) {
       submitBtn.disabled = false;
       submitBtn.textContent = t("auth.change_password");
-      const errDiv = document.createElement("div");
-      errDiv.className = "auth-gate-error";
-      errDiv.textContent = getApiErrorMessage(err);
-      form.appendChild(errDiv);
+      form.appendChild(createAuthGateError(getApiErrorMessage(err)));
     }
   });
 }
@@ -535,10 +541,7 @@ function renderInviteForm(
       );
       passkeyBtn.textContent = t("auth.use_passkey");
       if (isPasskeyUserCancelled(err)) return;
-      const errDiv = document.createElement("div");
-      errDiv.className = "auth-gate-error";
-      errDiv.textContent = getApiErrorMessage(err);
-      form.appendChild(errDiv);
+      form.appendChild(createAuthGateError(getApiErrorMessage(err)));
     }
   });
 
@@ -583,10 +586,7 @@ function renderInviteForm(
         "gated",
         !checklist.allPassed(),
       );
-      const errDiv = document.createElement("div");
-      errDiv.className = "auth-gate-error";
-      errDiv.textContent = getApiErrorMessage(err);
-      form.appendChild(errDiv);
+      form.appendChild(createAuthGateError(getApiErrorMessage(err)));
     }
   });
 }
@@ -704,10 +704,20 @@ function renderLoginFlow(
   submitBtn.textContent = bootstrapRequired
     ? t("auth.create_account")
     : t("auth.sign_in_action");
+  const passwordFallbackBtn = document.createElement("button");
+  passwordFallbackBtn.type = "button";
+  passwordFallbackBtn.id = "auth-gate-use-password";
+  passwordFallbackBtn.className = "auth-gate-secondary-action";
+  passwordFallbackBtn.textContent = t("auth.use_password_instead");
+  passwordFallbackBtn.hidden = true;
 
   const passkeyAvailable = !bootstrapRequired && passkeysEnabled && isPasskeySupported();
-  type LoginStep = "username" | "passkey" | "password";
+  type LoginStep = "username" | "passkey-ready" | "passkey" | "password";
   let loginStep: LoginStep = bootstrapRequired ? "password" : "username";
+  let passkeyAttempt = 0;
+  let passkeyAbortController: AbortController | null = null;
+  let pendingPasskeyOptions: PasskeyOptionsResponse | null = null;
+  let pendingPasskeyUsername = "";
 
   // Load policy and init checklist if bootstrap
   if (bootstrapRequired) {
@@ -738,6 +748,7 @@ function renderLoginFlow(
     checklistContainer,
     mfaWrap,
     submitBtn,
+    passwordFallbackBtn,
   );
 
   const setLoginStep = (step: LoginStep): void => {
@@ -751,11 +762,18 @@ function renderLoginFlow(
 
     passwordLabel.hidden = true;
     passwordInput.required = false;
+    passwordFallbackBtn.hidden = step !== "passkey-ready";
 
     if (step === "username") {
       passwordInput.value = "";
       submitBtn.disabled = false;
       submitBtn.textContent = t("auth.enter_action");
+      return;
+    }
+
+    if (step === "passkey-ready") {
+      submitBtn.disabled = false;
+      submitBtn.textContent = t("auth.use_passkey");
       return;
     }
 
@@ -792,11 +810,9 @@ function renderLoginFlow(
     if (isCancelled && !showCancelled) {
       return;
     }
-    const errDiv = document.createElement("div");
-    errDiv.className = "auth-gate-error";
-    errDiv.textContent = isCancelled
+    const errDiv = createAuthGateError(isCancelled
       ? t("auth.passkey_cancelled")
-      : getApiErrorMessage(err);
+      : getApiErrorMessage(err));
     form.appendChild(errDiv);
   };
 
@@ -806,21 +822,41 @@ function renderLoginFlow(
     passwordInput.focus();
   };
 
+  const revealPasswordFallback = (): void => {
+    if (loginStep !== "passkey-ready") return;
+    passkeyAttempt += 1;
+    const abortController = passkeyAbortController;
+    passkeyAbortController = null;
+    pendingPasskeyOptions = null;
+    pendingPasskeyUsername = "";
+    revealPasswordLogin();
+    abortController?.abort();
+  };
+  passwordFallbackBtn.addEventListener("click", revealPasswordFallback);
+
   const startPasskeyLogin = async (
     options: PasskeyOptionsResponse,
     username: string,
   ): Promise<void> => {
+    const attempt = ++passkeyAttempt;
+    const abortController = new AbortController();
+    passkeyAbortController?.abort();
+    passkeyAbortController = abortController;
     setLoginStep("passkey");
     try {
-      const credential = await getPasskey(options.publicKey);
+      const credential = await getPasskey(options.publicKey, abortController.signal);
+      if (attempt !== passkeyAttempt || loginStep !== "passkey") return;
       if (usernameInput.value.trim() !== username) {
         revealPasswordLogin();
         return;
       }
       await finishPasskeySignIn(options.challenge_token, credential);
     } catch (err) {
+      if (attempt !== passkeyAttempt || loginStep !== "passkey") return;
       showPasskeyError(err, true);
       revealPasswordLogin();
+    } finally {
+      if (passkeyAbortController === abortController) passkeyAbortController = null;
     }
   };
 
@@ -831,8 +867,9 @@ function renderLoginFlow(
 
     try {
       if (passkeyAvailable) {
-        const options = await beginPasskeyLoginApi(username);
-        await startPasskeyLogin(options, username);
+        pendingPasskeyOptions = await beginPasskeyLoginApi(username);
+        pendingPasskeyUsername = username;
+        setLoginStep("passkey-ready");
         return;
       }
       revealPasswordLogin();
@@ -859,10 +896,7 @@ function renderLoginFlow(
     ) {
       await logoutApi().catch(() => undefined);
       clearStoredAuthToken();
-      const errDiv = document.createElement("div");
-      errDiv.className = "auth-gate-error";
-      errDiv.textContent = t("auth.passkey_password_change_required");
-      form.appendChild(errDiv);
+      form.appendChild(createAuthGateError(t("auth.passkey_password_change_required")));
       revealPasswordLogin();
       return;
     }
@@ -880,6 +914,18 @@ function renderLoginFlow(
     }
     if (!bootstrapRequired && loginStep === "username") {
       await resolveUsernameLoginStep(username);
+      return;
+    }
+    if (!bootstrapRequired && loginStep === "passkey-ready") {
+      const options = pendingPasskeyOptions;
+      const passkeyUsername = pendingPasskeyUsername;
+      pendingPasskeyOptions = null;
+      pendingPasskeyUsername = "";
+      if (!options || !passkeyUsername) {
+        revealPasswordLogin();
+        return;
+      }
+      await startPasskeyLogin(options, passkeyUsername);
       return;
     }
     if (!bootstrapRequired && loginStep === "passkey") {
@@ -943,10 +989,7 @@ function renderLoginFlow(
       } else {
         setLoginStep(loginStep);
       }
-      const errDiv = document.createElement("div");
-      errDiv.className = "auth-gate-error";
-      errDiv.textContent = getApiErrorMessage(err);
-      form.appendChild(errDiv);
+      form.appendChild(createAuthGateError(getApiErrorMessage(err)));
     }
   });
 

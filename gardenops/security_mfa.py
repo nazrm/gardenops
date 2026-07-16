@@ -455,6 +455,14 @@ def disable_totp_mfa(conn: DbConn, *, user_id: int) -> None:
     conn.execute("DELETE FROM auth_mfa_recovery_codes WHERE user_id = %s", (user_id,))
 
 
+def cancel_totp_enrollment(conn: DbConn, *, user_id: int) -> bool:
+    deleted = conn.execute(
+        "DELETE FROM auth_mfa_pending_enrollments WHERE user_id = %s",
+        (user_id,),
+    )
+    return int(deleted.rowcount) > 0
+
+
 def regenerate_recovery_codes(conn: DbConn, *, user_id: int) -> list[str]:
     status = get_user_mfa_status(conn, user_id)
     if not bool(status["enabled"]):

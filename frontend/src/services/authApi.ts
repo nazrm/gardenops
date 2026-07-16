@@ -91,6 +91,40 @@ export interface PasskeyOptionsResponse {
   publicKey: unknown;
 }
 
+export interface IdentitySession {
+  id: string | null;
+  user_id: number;
+  username: string;
+  role: "viewer" | "editor" | "admin";
+  device_label: string;
+  location_hint: string;
+  is_current: boolean;
+  created_at_ms: number;
+  last_seen_at_ms: number;
+  expires_at_ms: number;
+  absolute_expires_at_ms: number;
+  reauthenticated_at_ms: number;
+  mfa_authenticated_at_ms: number;
+  mfa_setup_required: boolean;
+}
+
+export interface AuthMfaState {
+  enabled: boolean;
+  setup_required: boolean;
+  enrolled_at: string | null;
+  pending_enrollment: boolean;
+  pending_expires_at_ms: number | null;
+  recovery_codes_remaining: number;
+  methods: string[];
+}
+
+export interface TotpEnrollment {
+  status: string;
+  secret: string;
+  provisioning_uri: string;
+  expires_at_ms: number;
+}
+
 function normalizeApiPath(input: RequestInfo | URL): string {
   if (typeof input === "string") return input;
   if (input instanceof URL) return `${input.pathname}${input.search}`;
@@ -306,6 +340,27 @@ async function apiPost<T>(
   return (await response.json()) as T;
 }
 
+async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  const response = await checked(await apiFetch(path, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }), path);
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
+}
+
+async function apiDelete<T>(path: string, body?: unknown): Promise<T> {
+  const init: RequestInit = { method: "DELETE" };
+  if (body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(body);
+  }
+  const response = await checked(await apiFetch(path, init), path);
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
+}
+
 const ERROR_MAP: Record<string, string> = {
   "Write access required": "error.write_access",
   "Forbidden: write access required": "error.write_access",
@@ -447,4 +502,84 @@ export async function peekInvitationApi(token: string): Promise<{ username: stri
 
 export async function checkHibpApi(password: string): Promise<{ breached: boolean }> {
   return apiPost<{ breached: boolean }>("/api/auth/check-hibp", { password });
+}
+
+function safeNumber(value: unknown): number {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function safeRole(value: unknown): IdentitySession["role"] {
+  return value === "admin" || value === "editor" ? value : "viewer";
+}
+
+function normalizeIdentitySession(value: unknown): IdentitySession | null {
+  if (!value || typeof value !== "object") return null;
+  const session = value as Record<string, unknown>;
+  const rawId = session["session_id"] ?? session["id"];
+  const id = typeof rawId === "string" || typeof rawId === "number"
+    ? String(rawId).trim() || null
+    : null;
+  return {
+    id,
+    user_id: safeNumber(session["user_id"]),
+    username: typeof session["username"] === "string" ? session["username"] : "",
+    role: safeRole(session["role"]),
+    device_label: typeof session["device_label"] === "string" ? session["device_label"] : "",
+    location_hint: typeof session["location_hint"] === "string" ? session["location_hint"] : "",
+    is_current: session["current"] === true || session["is_current"] === true,
+    created_at_ms: safeNumber(session["created_at_ms"]),
+    last_seen_at_ms: safeNumber(session["last_seen_at_ms"]),
+    expires_at_ms: safeNumber(session["expires_at_ms"]),
+    absolute_expires_at_ms: safeNumber(session["absolute_expires_at_ms"]),
+    reauthenticated_at_ms: safeNumber(session["reauthenticated_at_ms"]),
+    mfa_authenticated_at_ms: safeNumber(session["mfa_authenticated_at_ms"]),
+    mfa_setup_required: session["mfa_setup_required"] === true,
+  };
+}
+
+export async function getIdentitySessionsApi(): Promise<IdentitySession[]> {
+  const body = await apiGet<{ sessions?: unknown[] }>("/api/auth/sessions");
+  if (!Array.isArray(body.sessions)) return [];
+  return body.sessions
+    .map(normalizeIdentitySession)
+    .filter((session): session is IdentitySession => session !== null);
+}
+
+export async function revokeIdentitySessionApi(
+  sessionId: string,
+  actionReason = "ui-session-revoke",
+): Promise<void> {
+  const encodedId = encodeURIComponent(sessionId.trim());
+  if (!encodedId) throw new Error("A session identifier is required.");
+  await apiDelete(`/api/auth/sessions/${encodedId}`, { action_reason: actionReason });
+}
+
+export async function renamePasskeyApi(
+  passkeyId: number,
+  nickname: string,
+  actionReason = "ui-passkey-rename",
+): Promise<void> {
+  await apiPatch(`/api/auth/passkeys/${passkeyId}`, {
+    nickname: nickname.trim(),
+    action_reason: actionReason,
+  });
+}
+
+export async function startTotpEnrollmentApi(): Promise<TotpEnrollment> {
+  return apiPost<TotpEnrollment>("/api/auth/mfa/totp/start", {});
+}
+
+export async function confirmTotpEnrollmentApi(code: string): Promise<{
+  status: string;
+  recovery_codes: string[];
+  mfa: AuthMfaState;
+}> {
+  return apiPost("/api/auth/mfa/totp/confirm", { code: code.trim() });
+}
+
+export async function cancelTotpEnrollmentApi(
+  actionReason = "ui-totp-enrollment-cancel",
+): Promise<void> {
+  await apiPost("/api/auth/mfa/totp/cancel", { action_reason: actionReason });
 }

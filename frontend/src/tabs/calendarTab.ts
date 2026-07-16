@@ -2189,6 +2189,8 @@ export function openCalendarManualEventComposer(
 }
 
 export async function loadCalendar(): Promise<void> {
+  const exportButton = queryButton("calendar-export-btn");
+  exportButton?.removeAttribute("data-calendar-export-ready");
   calendarRequestGeneration += 1;
   const request = createCalendarRequest();
   if (!isCurrentCalendarRequest(request)) return;
@@ -2233,6 +2235,7 @@ export async function loadCalendar(): Promise<void> {
       instance.refetchEvents();
     }
     instance.updateSize();
+    exportButton?.setAttribute("data-calendar-export-ready", "true");
     await refreshCalendarTaskActions(false);
     if (!offline) await refreshSubscriptions(request);
   } catch (err) {

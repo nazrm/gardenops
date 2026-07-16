@@ -6,6 +6,169 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FrontendSecurityStaticTests(unittest.TestCase):
+    def test_identity_session_ui_never_renders_token_hashes(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
+            encoding="utf-8"
+        )
+        auth_api = (ROOT / "frontend" / "src" / "services" / "authApi.ts").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("token_hash", panel)
+        self.assertNotIn('session["token_hash"]', auth_api)
+        self.assertIn('session["session_id"] ?? session["id"]', auth_api)
+        self.assertIn('session["current"] === true', auth_api)
+        self.assertIn("session.device_label", panel)
+
+    def test_phase_five_identity_mutations_use_scoped_contracts(self) -> None:
+        auth_api = (ROOT / "frontend" / "src" / "services" / "authApi.ts").read_text(
+            encoding="utf-8"
+        )
+        expected_contracts = (
+            "apiPatch(`/api/auth/passkeys/${passkeyId}`",
+            "apiDelete(`/api/auth/sessions/${encodedId}`",
+            'apiPost("/api/auth/mfa/totp/cancel"',
+            'apiPost("/api/auth/mfa/totp/confirm"',
+        )
+        for contract in expected_contracts:
+            self.assertIn(contract, auth_api)
+        self.assertIn('headers["x-garden-id"]', auth_api)
+        self.assertIn("sessionStorage.setItem(ACTIVE_GARDEN_STORAGE_KEY", auth_api)
+
+    def test_phase_five_identity_actions_have_confirmation_and_live_feedback(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
+            encoding="utf-8"
+        )
+        gate = (ROOT / "frontend" / "src" / "features" / "authGate.ts").read_text(encoding="utf-8")
+        for key in (
+            "identity.passkeys.last_revoke_warning",
+            "identity.sessions.revoke_confirm",
+            "identity.mfa.cancel_confirm",
+            "identity.mfa.regenerate_confirm",
+            "identity.mfa.disable_confirm",
+        ):
+            self.assertIn(key, panel)
+        self.assertIn('role="${state.identityNotice.error ? "alert" : "status"}"', panel)
+        self.assertIn('error.setAttribute("role", "alert")', gate)
+        self.assertIn('error.setAttribute("aria-live", "assertive")', gate)
+
+    def test_passwordless_passkey_management_uses_step_up_and_blocks_final_factor_removal(
+        self,
+    ) -> None:
+        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("if (state.me?.password_auth_disabled)", panel)
+        self.assertIsNotNone(
+            re.search(
+                r"beginPasskeyReauthenticationApi\(\).*?finishPasskeyReauthenticationApi\("
+                r".*?beginPasskeyRegistrationApi\(nickname, currentPassword\)",
+                panel,
+                flags=re.DOTALL,
+            )
+        )
+        self.assertIn("state.me?.password_auth_disabled && state.passkeys.length === 1", panel)
+        self.assertIn('authT("identity.passkeys.final_factor_required")', panel)
+        self.assertIsNotNone(
+            re.search(
+                r"adm-passkey-remove.*?finalPasskeyRemovalBlocked.*?disabled",
+                panel,
+                flags=re.DOTALL,
+            )
+        )
+
+    def test_first_admin_passkey_requires_bound_credential_step_up(self) -> None:
+        app = (ROOT / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")
+        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("reauthenticateAdminAfterPasskeyEnrollment", app)
+        self.assertIsNotNone(
+            re.search(
+                r"finishPasskeyRegistrationApi\(.*?"
+                r"reauthenticateAdminAfterPasskeyEnrollment\(\).*?"
+                r"refreshAuthProfileAfterPasskeyChange\(\)",
+                app,
+                flags=re.DOTALL,
+            )
+        )
+        self.assertIn("requiresAdminStepUp", panel)
+        self.assertIsNotNone(
+            re.search(
+                r"finishPasskeyRegistrationApi\(.*?requiresAdminStepUp.*?"
+                r"beginPasskeyReauthenticationApi\(\).*?"
+                r"finishPasskeyReauthenticationApi\(",
+                panel,
+                flags=re.DOTALL,
+            )
+        )
+
+    def test_plot_meaning_inputs_have_accessible_names(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
+            encoding="utf-8"
+        )
+        for field in ("pattern", "label", "description"):
+            self.assertIn(
+                f'class="adm-input adm-plot-meaning-{field}" aria-label="${{t(',
+                panel,
+            )
+
+    def test_password_fallback_reveals_before_aborting_passkey(self) -> None:
+        gate = (ROOT / "frontend" / "src" / "features" / "authGate.ts").read_text(encoding="utf-8")
+        handler = re.search(
+            r"const revealPasswordFallback = \(\): void => \{(?P<body>.*?)\n  \};",
+            gate,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(handler)
+        body = handler.group("body")
+        self.assertLess(
+            body.index("revealPasswordLogin();"),
+            body.index("abortController?.abort();"),
+        )
+        self.assertIn('setLoginStep("passkey-ready")', gate)
+        self.assertIn('step === "passkey-ready"', gate)
+        self.assertIn(
+            'passwordFallbackBtn.addEventListener("click", revealPasswordFallback)',
+            gate,
+        )
+
+    def test_personal_settings_navigation_is_not_subscription_gated(self) -> None:
+        app = (ROOT / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")
+        self.assertIn('if (tab === "admin") return true;', app)
+        self.assertIn('mobileAdminBtn.hidden = !isTabEnabled("admin")', app)
+
+    def test_garden_settings_do_not_fetch_gated_lidar(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('const lidarCard = isFeatureEnabled("shade_map") ?', panel)
+        self.assertRegex(
+            panel,
+            r'isFeatureEnabled\("shade_map"\)\s*\? getGardenLidarApi\(requestGardenId\)'
+            r"\s*: Promise\.resolve\(null\)",
+        )
+
+    def test_membership_mutations_refresh_capabilities(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("async function refreshIdentityCapabilities", panel)
+        self.assertIsNotNone(
+            re.search(
+                r"upsertGardenMembershipApi\(.*?refreshIdentityCapabilities\(\)",
+                panel,
+                flags=re.DOTALL,
+            )
+        )
+        self.assertIsNotNone(
+            re.search(
+                r"deleteGardenMembershipApi\(.*?refreshIdentityCapabilities\(\)",
+                panel,
+                flags=re.DOTALL,
+            )
+        )
+
     def test_auth_expiry_clears_offline_queue(self) -> None:
         app_ts = (ROOT / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")
         match = re.search(

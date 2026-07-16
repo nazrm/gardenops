@@ -66,3 +66,96 @@ class TestAuthMfaStepUp(BaseApiTest):
 
         self.assertEqual(response.status_code, 403, response.text)
         self.assertEqual(response.json()["detail"], "Recent reauthentication required")
+
+    def test_pending_totp_enrollment_can_be_cancelled(self) -> None:
+        with patch.dict("os.environ", AUTH_MFA_ENV, clear=False):
+            client, headers = self._admin_client("cancel_totp_admin")
+            start = client.post("/api/auth/mfa/totp/start", headers=headers)
+            self.assertEqual(start.status_code, 200, start.text)
+
+            cancelled = client.post(
+                "/api/auth/mfa/totp/cancel",
+                headers=headers,
+                json={"action_reason": "enrollment-abandoned"},
+            )
+
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        self.assertFalse(cancelled.json()["mfa"]["pending_enrollment"])
+        conn = db.get_db()
+        try:
+            pending = conn.execute(
+                "SELECT COUNT(*) AS count FROM auth_mfa_pending_enrollments",
+            ).fetchone()
+            audit = conn.execute(
+                "SELECT detail FROM audit_events WHERE path = %s ORDER BY id DESC LIMIT 1",
+                ("/api/auth/mfa/totp/cancel",),
+            ).fetchone()
+            self.assertEqual(int(pending["count"]), 0)
+            self.assertIn("auth.mfa.totp.cancel", str(audit["detail"]))
+        finally:
+            db.return_db(conn)
+
+    def test_disabling_totp_preserves_passkey_backed_admin_access(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                **AUTH_MFA_ENV,
+                "AUTH_PASSKEY_RP_ID": "testserver",
+                "AUTH_PASSKEY_ORIGINS": "http://testserver",
+            },
+            clear=False,
+        ):
+            client, headers = self._admin_client("passkey_totp_admin")
+            start = client.post("/api/auth/mfa/totp/start", headers=headers)
+            self.assertEqual(start.status_code, 200, start.text)
+            confirmed = client.post(
+                "/api/auth/mfa/totp/confirm",
+                headers=headers,
+                json={"code": self._totp_code(str(start.json()["secret"]))},
+            )
+            self.assertEqual(confirmed.status_code, 200, confirmed.text)
+
+            conn = db.get_db()
+            try:
+                user = conn.execute(
+                    "SELECT id FROM auth_users WHERE username = %s",
+                    ("passkey_totp_admin",),
+                ).fetchone()
+                self.assertIsNotNone(user)
+                now_ms = db.current_timestamp_ms()
+                conn.execute(
+                    """
+                    INSERT INTO auth_passkeys (
+                        user_id, credential_id, credential_public_key, nickname,
+                        created_at_ms, updated_at_ms
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        int(user["id"]),
+                        "passkey-totp-admin-credential",
+                        "passkey-totp-admin-public-key",
+                        "Security key",
+                        now_ms,
+                        now_ms,
+                    ),
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            disabled = client.post(
+                "/api/auth/mfa/disable",
+                headers=headers,
+                json={"action_reason": "remove-redundant-totp"},
+            )
+            self.assertEqual(disabled.status_code, 200, disabled.text)
+            self.assertFalse(disabled.json()["mfa"]["enabled"])
+            self.assertFalse(disabled.json()["mfa"]["setup_required"])
+            self.assertIn("passkey", disabled.json()["mfa"]["methods"])
+
+            me = client.get("/api/auth/me")
+            self.assertEqual(me.status_code, 200, me.text)
+            self.assertTrue(me.json()["mfa_authenticated"])
+            self.assertFalse(me.json()["mfa_setup_required"])
+            self.assertEqual(client.get("/api/auth/users", headers=headers).status_code, 200)

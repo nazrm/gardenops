@@ -1,22 +1,56 @@
 version: 1
 journeys:
-  - &open_journey
-    id: A2
+  - id: A2
     phase: 5
-    desktop: required
+    <<: &open_journey
+      desktop: required
+      mobile: required
+      roles: required
+      offline: required
+      provider: required
+      database: required
+      filesystem: required
+      accessibility: required
+      performance: required
+      evidence: []
+      notes: {}
+    desktop: proven
     mobile: required
-    roles: required
-    offline: required
-    provider: required
-    database: required
-    filesystem: required
+    roles: proven
+    offline: not_applicable
+    provider: not_applicable
+    database: proven
+    filesystem: not_applicable
     accessibility: required
-    performance: required
-    evidence: []
-    notes: {}
+    performance: not_applicable
+    evidence: &phase_five_evidence
+      - scripts/check_complete_journeys_e2e.cjs
+      - scripts/e2e/fixtures/complete_journeys_phase_five_oracle.json
+      - scripts/e2e/journeys/identityAndRoles.cjs
+      - scripts/run_complete_journeys_e2e.sh
+      - scripts/seed_complete_journeys_e2e.py
+      - tests/test_complete_journey_e2e_scripts.py
+    notes: &phase_five_notes
+      offline: Identity ceremonies require an online authentication boundary.
+      provider: Identity journeys do not call an external provider.
+      filesystem: Phase 5 identity actions have no supported file side effect.
+      mobile: Phase 8 owns identity variants that do not yet have direct responsive proof.
+      accessibility: Phase 8 owns keyboard, focus, semantic-tree, and screen-reader closure.
+      performance: Phase 9 owns quantitative performance budgets.
   - <<: *open_journey
     id: A1
     phase: 5
+    desktop: proven
+    mobile: proven
+    roles: proven
+    offline: not_applicable
+    provider: not_applicable
+    database: proven
+    filesystem: not_applicable
+    accessibility: required
+    performance: not_applicable
+    evidence: *phase_five_evidence
+    notes: *phase_five_notes
   - <<: *open_journey
     id: A3
     phase: 1
@@ -40,21 +74,65 @@ journeys:
   - <<: *open_journey
     id: A4
     phase: 5
+    desktop: proven
+    mobile: proven
+    roles: proven
+    offline: not_applicable
+    provider: not_applicable
+    database: proven
+    filesystem: not_applicable
+    accessibility: required
+    performance: not_applicable
+    evidence: *phase_five_evidence
+    notes: *phase_five_notes
   - <<: *open_journey
     id: C1
     phase: 5
+    desktop: proven
+    mobile: required
+    roles: proven
+    offline: not_applicable
+    provider: not_applicable
+    database: proven
+    filesystem: not_applicable
+    accessibility: required
+    performance: not_applicable
+    evidence: *phase_five_evidence
+    notes: *phase_five_notes
   - <<: *open_journey
     id: C2
     phase: 6
   - <<: *open_journey
     id: C3
     phase: 5
+    desktop: proven
+    mobile: proven
+    roles: proven
+    offline: not_applicable
+    provider: not_applicable
+    database: proven
+    filesystem: not_applicable
+    accessibility: required
+    performance: not_applicable
+    evidence: *phase_five_evidence
+    notes: *phase_five_notes
   - <<: *open_journey
     id: C4
     phase: 7
   - <<: *open_journey
     id: C5
     phase: 5
+    desktop: proven
+    mobile: required
+    roles: proven
+    offline: not_applicable
+    provider: not_applicable
+    database: proven
+    filesystem: not_applicable
+    accessibility: required
+    performance: not_applicable
+    evidence: *phase_five_evidence
+    notes: *phase_five_notes
   - <<: *open_journey
     id: C6
     phase: 7
@@ -76,6 +154,17 @@ journeys:
   - <<: *open_journey
     id: CROSS-02
     phase: 5
+    desktop: proven
+    mobile: required
+    roles: proven
+    offline: not_applicable
+    provider: not_applicable
+    database: proven
+    filesystem: not_applicable
+    accessibility: required
+    performance: not_applicable
+    evidence: *phase_five_evidence
+    notes: *phase_five_notes
   - <<: *open_journey
     id: D1
     phase: 2

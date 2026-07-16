@@ -21,7 +21,13 @@ from gardenops.main import (
 )
 from gardenops.redaction import redact_external_log_text
 from gardenops.routers.ai import _validate_plant_link, build_garden_context
-from gardenops.security import AuthContext, _legacy_pbkdf2_hash_password, create_user
+from gardenops.security import (
+    AuthContext,
+    _authenticate_session_token,
+    _legacy_pbkdf2_hash_password,
+    create_session_for_user,
+    create_user,
+)
 from gardenops.security_metrics import record_security_event
 from gardenops.security_telemetry import (
     drain_security_telemetry_once,
@@ -32,6 +38,39 @@ from tests.base import BaseApiTest, strong_password
 
 
 class TestSecurity(BaseApiTest):
+    def test_session_absolute_lifetime_caps_sliding_idle_expiry(self) -> None:
+        user = self._create_test_user("absolute_session_user", "absolute-pass", "editor")
+        start_ms = 1_800_000_000_000
+        with patch.dict(
+            os.environ,
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_SESSION_TTL_HOURS": "2",
+                "AUTH_SESSION_ABSOLUTE_TTL_HOURS": "4",
+            },
+            clear=False,
+        ):
+            with patch("gardenops.security.current_timestamp_ms", return_value=start_ms):
+                token, initial_expiry = create_session_for_user(int(user["id"]))
+            self.assertEqual(initial_expiry, start_ms + (2 * 60 * 60 * 1000))
+
+            with patch(
+                "gardenops.security.current_timestamp_ms",
+                return_value=start_ms + (90 * 60 * 1000),
+            ):
+                self.assertIsNotNone(_authenticate_session_token(token))
+            with patch(
+                "gardenops.security.current_timestamp_ms",
+                return_value=start_ms + (3 * 60 * 60 * 1000),
+            ):
+                self.assertIsNotNone(_authenticate_session_token(token))
+            with patch(
+                "gardenops.security.current_timestamp_ms",
+                return_value=start_ms + (4 * 60 * 60 * 1000),
+            ):
+                self.assertIsNone(_authenticate_session_token(token))
+
     class _DummyResponse:
         def __init__(self, *, status: int = 200, body: bytes = b"ok") -> None:
             self.status = status
@@ -2364,6 +2403,73 @@ class TestSecurity(BaseApiTest):
             self.assertIsNotNone(audit_row)
             assert audit_row is not None
             self.assertEqual(int(audit_row["garden_id"]), garden_id)
+        finally:
+            db.return_db(conn)
+
+    def test_invalid_invitation_states_create_no_user_or_membership_side_effects(self) -> None:
+        now_ms = db.current_timestamp_ms()
+        cases = {
+            "used-invitation-token": {"accepted_at_ms": now_ms, "revoked_at_ms": None},
+            "expired-invitation-token": {"accepted_at_ms": None, "revoked_at_ms": None},
+            "revoked-invitation-token": {"accepted_at_ms": None, "revoked_at_ms": now_ms},
+        }
+        conn = db.get_db()
+        try:
+            garden_id = int(
+                conn.execute(
+                    "SELECT id FROM gardens WHERE slug = 'default'",
+                ).fetchone()["id"]
+            )
+            for token, state in cases.items():
+                username = token.replace("-token", "-user")
+                conn.execute(
+                    """
+                    INSERT INTO garden_invitations (
+                        garden_id, invitee_username, role, token_hash,
+                        created_at_ms, expires_at_ms, accepted_at_ms, revoked_at_ms
+                    )
+                    VALUES (%s, %s, 'viewer', %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        garden_id,
+                        username,
+                        hashlib.sha256(token.encode()).hexdigest(),
+                        now_ms - 10_000,
+                        now_ms - 1 if token.startswith("expired") else now_ms + 60_000,
+                        state["accepted_at_ms"],
+                        state["revoked_at_ms"],
+                    ),
+                )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        attempts = [*cases, "malformed-token-value"]
+        for token in attempts:
+            response = self.client.post(
+                "/api/auth/invitations/accept",
+                json={"token": token, "password": strong_password(f"{token}-password")},
+            )
+            self.assertEqual(response.status_code, 400, response.text)
+
+        conn = db.get_db()
+        try:
+            usernames = [token.replace("-token", "-user") for token in cases]
+            user_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM auth_users WHERE username = ANY(%s)",
+                (usernames,),
+            ).fetchone()
+            membership_count = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM garden_memberships gm
+                JOIN auth_users u ON u.id = gm.user_id
+                WHERE u.username = ANY(%s)
+                """,
+                (usernames,),
+            ).fetchone()
+            self.assertEqual(int(user_count["count"]), 0)
+            self.assertEqual(int(membership_count["count"]), 0)
         finally:
             db.return_db(conn)
 

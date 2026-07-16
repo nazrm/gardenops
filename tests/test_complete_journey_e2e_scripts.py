@@ -29,6 +29,9 @@ PHASE_THREE_ORACLE = (
 PHASE_FOUR_ORACLE = (
     ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_four_oracle.json"
 )
+PHASE_FIVE_ORACLE = (
+    ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_five_oracle.json"
+)
 EXPECTED_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
 ).stdout.strip()
@@ -196,7 +199,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
     subprocess.run(["git", "init", "--quiet"], cwd=checkout, check=True, timeout=20)
     runner = checkout / "scripts" / "run_complete_journeys_e2e.sh"
     result = subprocess.run(
-        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "5"],
+        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "6"],
         cwd=checkout,
         capture_output=True,
         check=False,
@@ -270,6 +273,11 @@ def test_runner_uses_isolated_production_preview_and_locked_dependency_gate() ->
     assert "state.added !== 0 || state.changed !== 0 || state.removed !== 0" in source
     assert 'export HOME="$PRIVATE_DIR/home"' in source
     assert 'export XDG_CONFIG_HOME="$PRIVATE_DIR/xdg-config"' in source
+    assert "export AUTH_FAIL_RATE_LIMIT=200" in source
+    assert "export AUTH_LOGIN_RATE_LIMIT=200" in source
+    assert "export AUTH_LOGIN_USERNAME_RATE_LIMIT=100" in source
+    assert "export AUTH_LOGIN_ADMIN_USERNAME_RATE_LIMIT=100" in source
+    assert "export AUTH_LOGIN_ADMIN_HOST_RATE_LIMIT=200" in source
     assert "tail -n 100" not in source
     assert "PYTHON_DOTENV_DISABLED=1" in source
     assert "VITE_ENV_DIR" in source
@@ -695,7 +703,7 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
     runner_source = RUNNER.read_text(encoding="utf-8")
 
-    assert "MAX_IMPLEMENTED_PHASE=4" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
     assert "runDailyAttentionWork" in journey_source
     assert 'require("./e2e/journeys/dailyAttentionWork.cjs")' in checker_source
     assert "phaseSelected(2)" in checker_source
@@ -713,7 +721,7 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_THREE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=4" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
     assert "GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER=1" in runner_source
     assert "runObservationToAction" in journey_source
     assert 'require("./e2e/journeys/observationToAction.cjs")' in checker_source
@@ -865,7 +873,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FOUR_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=4" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
     assert 'require("./e2e/journeys/planningAndReporting.cjs")' in checker_source
     assert "phaseSelected(4)" in checker_source
     assert "runPlanningAndReporting" in checker_source
@@ -1000,6 +1008,317 @@ def test_phase_four_static_product_contracts_exist_before_browser_execution() ->
     assert "isCurrentProcurementRequest" in procurement_tab
 
 
+def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None:
+    journey = ROOT / "scripts" / "e2e" / "journeys" / "identityAndRoles.cjs"
+    journey_source = journey.read_text(encoding="utf-8")
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    seeder_source = SEEDER.read_text(encoding="utf-8")
+    runner_source = RUNNER.read_text(encoding="utf-8")
+    oracle = json.loads(PHASE_FIVE_ORACLE.read_text(encoding="utf-8"))
+
+    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
+    assert 'require("./e2e/journeys/identityAndRoles.cjs")' in checker_source
+    assert "phaseSelected(5)" in checker_source
+    assert "runIdentityAndRoles" in checker_source
+    assert "assertPhaseFiveDatabaseState" in checker_source
+    assert "assertPhaseFiveAuditEvents" in checker_source
+    assert "_phase_five_runtime_state" in seeder_source
+    assert "phase_five_state" in seeder_source
+    assert "AUTH_MFA_SECRET_KEY" in runner_source
+    assert "complete-journeys-e2e-mfa-key-only" in runner_source
+    assert oracle["schema_version"] == 2
+    assert oracle["phase_five"]["profile_order"] == [
+        "admin:desktop",
+        "admin:mobile",
+        "editor:desktop",
+        "editor:mobile",
+        "viewer:desktop",
+        "viewer:mobile",
+    ]
+    assert {
+        "auth_passkey_challenges",
+        "gardens",
+        "layout_state",
+        "plots",
+        "plot_ownership",
+        "security_runtime_flags",
+    }.issubset(oracle["phase_five"]["database_boundaries"]["owned_tables"])
+    for marker in (
+        "phaseFiveExpectedAdded",
+        "phaseFiveExpectedGardenAdditions",
+        "passkey_challenge_retention_exact",
+        "incident_control_restored_exact",
+        "auth_users_exact",
+        "audit_incident_503_correlated",
+        "challenge_count_derived_from_profiles",
+        "idle_and_absolute_session_expiry",
+        "live_role_refresh",
+        "revoked_passkey_denial",
+        "passwordless_invitation",
+        "passwordless_passkey_redundancy",
+        "cross_garden_and_stale_csrf_denials",
+    ):
+        assert marker in checker_source
+    for journey_id in ("A1", "A2", "A4", "C1", "C3", "C5", "CROSS-02"):
+        assert f'"{journey_id}"' in checker_source
+    for marker in (
+        'client.send("WebAuthn.enable")',
+        'client.send("WebAuthn.addVirtualAuthenticator"',
+        "createUserInvitation",
+        "createGardenInvitation",
+        "acceptInvitation",
+        "exerciseInvalidInvitation",
+        "exercisePasskeys",
+        "exerciseTotp",
+        "exerciseSessionRevocation",
+        "exerciseIncidentControl",
+        "exerciseRoleSurface",
+        "backupAuthenticatorId",
+        "holdRegistrationOptions",
+        "Passwordless passkey sign-in failed",
+        "Revoked browser session remained authorized",
+        "Invalid invitation attempt changed account or invitation counts",
+    ):
+        assert marker in journey_source
+    for forbidden in ("route.fulfill(", "context.addCookies(", "page.setContent("):
+        assert forbidden not in journey_source
+
+
+def test_phase_five_totp_generator_matches_rfc_vector() -> None:
+    script = r"""
+const { currentTotp } = require('./scripts/e2e/journeys/identityAndRoles.cjs');
+const secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+if (currentTotp(secret, 59000) !== '287082') process.exit(2);
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_five_exact_auth_projection_rejects_unrelated_substitutions_and_sessions() -> None:
+    script = r"""
+const {
+  assertPhaseFiveExactAuthState,
+  phaseFiveOracle,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const identity = (character) => character.repeat(64);
+const user = (id, category, state = 'initial') => ({
+  category, identity_digest: identity(id), state,
+});
+const session = (id, owner) => ({
+  category: owner.category,
+  identity_digest: identity(id),
+  state: 'active',
+  user_identity_digest: owner.identity_digest,
+});
+const state = (users, sessions) => ({
+  auth_sessions_projection: sessions,
+  auth_users_projection: users,
+  challenge_projection: [],
+  session_counts_by_user: users.map((row) => ({
+    category: row.category,
+    count: sessions.filter((entry) => entry.user_identity_digest === row.identity_digest).length,
+    user_identity_digest: row.identity_digest,
+  })).sort((left, right) => left.user_identity_digest.localeCompare(right.user_identity_digest)),
+});
+const admin = user('a', 'fixture_admin');
+const editor = user('b', 'fixture_editor');
+const viewer = user('c', 'fixture_viewer');
+const unrelated = user('d', 'untracked_user');
+const initial = state([admin, editor, viewer, unrelated], []);
+const finalAdmin = { ...admin, state: 'logged-in' };
+const invitedEditor = user('e', 'phase_five_editor_invitee', 'created');
+const invitedViewer = user('f', 'phase_five_viewer_invitee', 'created');
+const adminSession = session('1', finalAdmin);
+const final = state(
+  [finalAdmin, editor, viewer, unrelated, invitedEditor, invitedViewer],
+  [adminSession],
+);
+const profiles = [{
+  profile: 'desktop', role: 'admin', requests: [{
+    method: 'POST', path: '/api/auth/login', statusCode: 200,
+  }],
+}];
+assertPhaseFiveExactAuthState(initial, final, profiles, phaseFiveOracle());
+
+const withUnrelatedSession = structuredClone(final);
+withUnrelatedSession.auth_sessions_projection.push(session('2', unrelated));
+withUnrelatedSession.session_counts_by_user.find(
+  (row) => row.user_identity_digest === unrelated.identity_digest,
+).count += 1;
+try {
+  assertPhaseFiveExactAuthState(initial, withUnrelatedSession, profiles, phaseFiveOracle());
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('outside the six-profile')) process.exit(4);
+}
+
+const substitutedUser = structuredClone(final);
+substitutedUser.auth_users_projection = substitutedUser.auth_users_projection.filter(
+  (row) => row.identity_digest !== invitedViewer.identity_digest,
+);
+substitutedUser.auth_users_projection.push(user('9', 'untracked_user', 'created'));
+substitutedUser.session_counts_by_user = substitutedUser.auth_users_projection.map((row) => ({
+  category: row.category,
+  count: substitutedUser.auth_sessions_projection.filter(
+    (entry) => entry.user_identity_digest === row.identity_digest,
+  ).length,
+  user_identity_digest: row.identity_digest,
+})).sort((left, right) => left.user_identity_digest.localeCompare(right.user_identity_digest));
+try {
+  assertPhaseFiveExactAuthState(initial, substitutedUser, profiles, phaseFiveOracle());
+  process.exit(5);
+} catch (error) {
+  if (!String(error.message).includes('additions diverged')) process.exit(6);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_five_challenge_projection_rejects_substitutions_and_extras() -> None:
+    script = r"""
+const {
+  assertPhaseFiveChallengeProjection,
+  phaseFiveOracle,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const row = (id, values) => ({
+  consumed_state: 'consumed_valid',
+  expires_at_ms: 2000,
+  flow: 'registration',
+  identity_digest: id.repeat(64),
+  invitation_binding_present: false,
+  invitation_scope: null,
+  lifetime_valid: true,
+  owner_category: 'fixture_admin',
+  session_binding_present: true,
+  ...values,
+});
+const profiles = [{ requests: [
+  { method: 'POST', path: '/api/auth/passkeys/register/options', statusCode: 200 },
+  { method: 'POST', path: '/api/auth/passkeys/login/options', statusCode: 200 },
+  { method: 'POST', path: '/api/auth/invitations/passkey/register/options', statusCode: 200 },
+] }];
+const initial = { challenge_projection: [], snapshot_at_ms: 1000 };
+const final = { challenge_projection: [
+  row('a', {}),
+  row('b', {
+    flow: 'authentication', invitation_binding_present: false,
+    owner_category: 'fixture_admin', session_binding_present: false,
+  }),
+  row('c', {
+    invitation_binding_present: true, invitation_scope: 'personal_garden',
+    owner_category: 'phase_five_editor_invitee', session_binding_present: false,
+  }),
+], snapshot_at_ms: 1500 };
+assertPhaseFiveChallengeProjection(initial, final, profiles, phaseFiveOracle());
+for (const mutate of [
+  (value) => { value.challenge_projection[0].lifetime_valid = false; },
+  (value) => { value.challenge_projection[1].owner_category = 'untracked_user'; },
+  (value) => { value.challenge_projection[2].session_binding_present = true; },
+  (value) => { value.challenge_projection.push(row('d', {})); },
+]) {
+  const changed = structuredClone(final);
+  mutate(changed);
+  try {
+    assertPhaseFiveChallengeProjection(initial, changed, profiles, phaseFiveOracle());
+    process.exit(3);
+  } catch { /* expected */ }
+}
+const expired = row('d', {
+  consumed_state: 'unused', expires_at_ms: 1400, flow: 'authentication_denied',
+  owner_category: 'unbound', session_binding_present: false,
+});
+assertPhaseFiveChallengeProjection(
+  { challenge_projection: [expired], snapshot_at_ms: 1300 },
+  { challenge_projection: [], snapshot_at_ms: 1500 },
+  [],
+  phaseFiveOracle(),
+);
+try {
+  assertPhaseFiveChallengeProjection(
+    { challenge_projection: [{ ...expired, expires_at_ms: 1600 }], snapshot_at_ms: 1300 },
+    { challenge_projection: [], snapshot_at_ms: 1500 },
+    [],
+    phaseFiveOracle(),
+  );
+  process.exit(4);
+} catch (error) {
+  if (!String(error.message).includes('before its expiry')) process.exit(5);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_five_audit_correlation_rejects_substitutions_extras_and_mismatches() -> None:
+    script = r"""
+const { assertPhaseFiveAuditEvents, phaseFiveOracle } = require(
+  './scripts/check_complete_journeys_e2e.cjs'
+);
+const requestId = (suffix) => `123e4567-e89b-42d3-a456-4266141740${suffix}`;
+const request = {
+  actorAuthType: 'session', actorRole: 'admin', actorUsername: 'admin', gardenId: '7',
+  method: 'PATCH', path: '/api/auth/users/42', requestId: requestId('01'), statusCode: 200,
+};
+const incident = {
+  actorAuthType: 'session', actorRole: 'admin', actorUsername: 'admin', gardenId: '7',
+  method: 'POST', path: '/api/journal', requestId: requestId('02'), statusCode: 503,
+};
+const event = (id, value) => ({
+  actor_auth_type: value.actorAuthType,
+  actor_role: value.actorRole,
+  actor_username: value.actorUsername,
+  garden_id: Number(value.gardenId),
+  id,
+  method: value.method,
+  occurred_at_ms: 1000 + id,
+  path: value.path,
+  request_id: value.requestId,
+  status_code: value.statusCode,
+});
+const before = { records: [] };
+const profiles = [{ requests: [request, incident] }];
+const final = { records: [event(1, request), event(2, incident)] };
+assertPhaseFiveAuditEvents(before, final, profiles, phaseFiveOracle());
+for (const field of [
+  'request_id', 'method', 'path', 'status_code', 'actor_username',
+  'actor_auth_type', 'actor_role', 'garden_id',
+]) {
+  const changed = structuredClone(final);
+  changed.records[0][field] = field === 'status_code' || field === 'garden_id'
+    ? 201 : `mismatch-${field}`;
+  try {
+    assertPhaseFiveAuditEvents(before, changed, profiles, phaseFiveOracle());
+    process.exit(3);
+  } catch { /* expected */ }
+}
+const extra = structuredClone(final);
+extra.records.push({ ...event(3, request), request_id: requestId('03') });
+try {
+  assertPhaseFiveAuditEvents(before, extra, profiles, phaseFiveOracle());
+  process.exit(4);
+} catch (error) {
+  if (!String(error.message).includes('Unexpected Phase 5')) process.exit(5);
+}
+try {
+  assertPhaseFiveAuditEvents(
+    before, { records: [event(2, incident)] }, profiles, phaseFiveOracle(),
+  );
+  process.exit(6);
+} catch (error) {
+  if (!String(error.message).includes('lacked exact audit events')) process.exit(7);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_phase_two_d4_provider_boundary_remains_required() -> None:
     coverage = (ROOT / "tests" / "journey_coverage.yaml").read_text(encoding="utf-8")
     d4 = coverage.split("    id: D4\n", 1)[1].split("    id: D5\n", 1)[0]
@@ -1105,6 +1424,73 @@ def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None
         assert marker in seed_source
     assert '"token":' not in seed_source
     assert '"feed_url":' not in seed_source
+
+
+def test_phase_one_passkey_challenges_have_a_separate_exact_boundary() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+
+    assert "const phaseOneBoundaryDeltaTables" in checker_source
+    assert '"auth_passkey_challenges"' in checker_source
+    assert "phaseOneBoundaryDeltaTables.has(table)" in checker_source
+    assert "phaseFiveChallengeStarts(profiles)" in checker_source
+    assert "cleaned_before_boundary_count" in checker_source
+    assert "retained_rows_exact: true" in checker_source
+    assert "passkey_challenge_projection: phaseOneChallengeEvidence" in checker_source
+    assert "phase_two_cumulative_browser_challenge_projection" in checker_source
+    assert "passkey_challenge_projection: phaseTwoChallengeEvidence" in checker_source
+
+    script = r"""
+const { assertPhaseOneChallengeProjection } = require('./scripts/check_complete_journeys_e2e.cjs');
+const row = (identity, expiresAt) => ({
+  consumed_state: 'unused',
+  expires_at_ms: expiresAt,
+  flow: 'authentication_denied',
+  identity_digest: identity.repeat(64),
+  invitation_binding_present: false,
+  invitation_scope: null,
+  lifetime_valid: true,
+  owner_category: 'unbound',
+  session_binding_present: false,
+});
+const state = (rows, snapshot = 100) => ({ challenge_projection: rows, snapshot_at_ms: snapshot });
+const profiles = [{ requests: [{
+  method: 'POST', path: '/api/auth/passkeys/login/options', statusCode: 200,
+}] }];
+const evidence = assertPhaseOneChallengeProjection(state([]), state([row('a', 200)]), profiles);
+if (evidence.retained_count !== 1 || evidence.cleaned_before_boundary_count !== 0) {
+  process.exit(2);
+}
+const cumulativeEvidence = assertPhaseOneChallengeProjection(
+  state([]),
+  state([row('a', 200)]),
+  [...profiles, ...profiles],
+  'Phase 2 cumulative',
+);
+if (cumulativeEvidence.retained_count !== 1
+    || cumulativeEvidence.cleaned_before_boundary_count !== 1) {
+  process.exit(7);
+}
+try {
+  assertPhaseOneChallengeProjection(
+    state([]), state([row('a', 200), row('c', 200)]), profiles,
+  );
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('diverged from browser challenge starts')) process.exit(4);
+}
+try {
+  assertPhaseOneChallengeProjection(
+    state([]), state([{ ...row('a', 200), owner_category: 'tracked_user' }]), profiles,
+  );
+  process.exit(5);
+} catch (error) {
+  if (!String(error.message).includes('retained an invalid')) process.exit(6);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_phase_two_subscription_probe_is_wired_to_classified_diagnostics() -> None:
@@ -1272,12 +1658,23 @@ def test_console_diagnostics_require_specific_request_status_and_context() -> No
 const {
   assertDiagnosticsClean,
   expectedHttpDiagnosticContext,
+  isExpectedSilentHttpContext,
 } = require('./scripts/e2e/completeJourneyBrowser.cjs');
 const classify = (authenticated, method, path, status) => expectedHttpDiagnosticContext({
   authenticated, method, path, status,
 });
+const classifyState = (authState, method, path, status) => expectedHttpDiagnosticContext({
+  authState, authenticated: authState === 'authenticated', method, path, status,
+});
 if (classify(false, 'GET', '/api/auth/me', 401) !== 'preauth-session-probe') process.exit(3);
 if (classify(true, 'GET', '/api/auth/me', 401) !== 'unexpected-http-response') process.exit(4);
+if (classifyState('signed-out', 'GET', '/api/auth/me', 401) !== 'postauth-signout') {
+  process.exit(11);
+}
+if (classifyState('signed-out', 'POST', '/api/tasks/task-1/action', 401)
+    !== 'unexpected-http-response') process.exit(12);
+if (!isExpectedSilentHttpContext('postauth-signout')) process.exit(13);
+if (isExpectedSilentHttpContext('unexpected-http-response')) process.exit(14);
 if (classify(true, 'POST', '/api/tasks/task-1/action', 403) !== 'viewer-task-write-denied') {
   process.exit(5);
 }
@@ -1298,6 +1695,8 @@ assertDiagnosticsClean({
   ...base,
   classifiedConsoleDiagnostics: [{
     context: 'preauth-session-probe', method: 'GET', path: '/api/auth/me', status: 401,
+  }, {
+    context: 'postauth-signout', method: 'GET', path: '/api/auth/sessions', status: 401,
   }],
 }, 'valid');
 try {
@@ -1745,6 +2144,34 @@ try {
     assert result.returncode == 0, result.stderr
 
 
+def test_phase_two_read_only_probe_excludes_only_authentication_and_read_requests() -> None:
+    script = """
+const {
+  isPhaseTwoReadOnlyProbeMutation,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+for (const request of [
+  { method: 'GET', path: '/api/tasks' },
+  { method: 'POST', path: '/api/auth/login' },
+  { method: 'POST', path: '/api/auth/passkeys/login/options' },
+  { method: 'POST', path: '/api/media/summaries' },
+]) {
+  if (isPhaseTwoReadOnlyProbeMutation(request)) process.exit(3);
+}
+for (const request of [
+  { method: 'POST', path: '/api/tasks/batch-action' },
+  { method: 'PATCH', path: '/api/attention/preferences' },
+  { method: 'PUT', path: '/api/notifications/preferences' },
+  { method: 'DELETE', path: '/api/plants/plant-id' },
+]) {
+  if (!isPhaseTwoReadOnlyProbeMutation(request)) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_phase_one_snapshot_and_restore_import_graph_contracts_are_exact() -> None:
     script = """
 const {
@@ -1964,6 +2391,32 @@ try {{
     'Unexpected backend ERROR, CRITICAL, or FATAL log entries; inspect private runner logs'
   )) process.exit(5);
 }}
+fs.writeFileSync(`${{directory}}/backend.log`, 'INFO: backend ready\\n');
+fs.writeFileSync(`${{directory}}/errors.jsonl`, JSON.stringify({{
+  level: 'ERROR',
+  method: 'POST',
+  path: '/api/journal',
+  request_id: '0123456789abcdef0123456789abcdef',
+  status_code: 503,
+}}) + '\\n');
+const expected = backendErrorEvidence(directory, [{{
+  method: 'POST',
+  path: '/api/journal',
+  request_id: '0123456789abcdef0123456789abcdef',
+  status_code: 503,
+}}]);
+if (expected.expected_structured_error_entries !== 1
+  || expected.missing_expected_error_entries !== 0
+  || expected.unexpected_error_count !== 0) process.exit(6);
+const missing = backendErrorEvidence(directory, [{{
+  method: 'POST',
+  path: '/api/journal',
+  request_id: 'fedcba9876543210fedcba9876543210',
+  status_code: 503,
+}}]);
+if (missing.expected_structured_error_entries !== 0
+  || missing.missing_expected_error_entries !== 1
+  || missing.unexpected_error_count !== 2) process.exit(7);
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -2276,15 +2729,16 @@ const {
 } = require('./scripts/e2e/completeJourneyBrowser.cjs');
 const origins = allowedBrowserOrigins({
   backendUrl: 'http://127.0.0.1:43102',
-  baseUrl: 'http://127.0.0.1:43101',
+  baseUrl: 'http://localhost:43101',
   providerUrl: 'http://127.0.0.1:43103',
 });
-if (!isAllowedUrl('http://127.0.0.1:43101/api/tasks', origins)) process.exit(3);
-if (!isAllowedUrl('ws://127.0.0.1:43101/vite', origins)) process.exit(4);
+if (!isAllowedUrl('http://localhost:43101/api/tasks', origins)) process.exit(3);
+if (!isAllowedUrl('ws://localhost:43101/vite', origins)) process.exit(4);
 for (const url of [
   'http://127.0.0.1:43104/api/tasks',
   'http://127.0.0.2:43101/api/tasks',
-  'http://localhost:43101/api/tasks',
+  'http://127.0.0.1:43101/api/tasks',
+  'http://localhost:43102/api/tasks',
 ]) {
   if (isAllowedUrl(url, origins)) process.exit(5);
 }
@@ -3882,32 +4336,14 @@ def test_playwright_trace_validator_rejects_and_sanitizes_secret_material(tmp_pa
     assert subprocess.run([sys.executable, validator, sanitized], check=False).returncode == 0
 
 
-def test_playwright_trace_validator_sanitizes_opaque_binary_resource_secrets(
+def test_playwright_trace_validator_drops_opaque_binary_resources(
     tmp_path: Path,
 ) -> None:
     validator = ROOT / "scripts" / "validate_playwright_trace.py"
     source = tmp_path / "source.zip"
     sanitized = tmp_path / "sanitized.zip"
     resource_name_canary = "unsafe-resource-name-canary"
-    canaries = {
-        "authorization": "binary-bearer-canary",
-        "cookie": "binary-session-canary",
-        "csrf_cookie": "binary-csrf-canary",
-        "sensitive_field": "binary-subscription-field-canary",
-        "subscription_path": "binary-subscription-path-canary",
-        "sensitive_query": "binary-query-canary",
-    }
-    binary_resource = (
-        b"\x89PLAYWRIGHT\x00\xff\n"
-        + (
-            f"Authorization: Bearer {canaries['authorization']}\n"
-            f"Cookie: gardenops_session={canaries['cookie']}; "
-            f"gardenops_csrf={canaries['csrf_cookie']}\n"
-            f'{{"subscription_token":"{canaries["sensitive_field"]}"}}\n'
-            f"/calendar/subscriptions/{canaries['subscription_path']}.ics\n"
-            f"https://example.invalid/?csrf_token={canaries['sensitive_query']}\n"
-        ).encode()
-    )
+    binary_resource = b"\x89PNG\r\n\x1a\n\x00opaque-visible-secret-image-bytes\xff"
     with zipfile.ZipFile(source, "w") as archive:
         archive.writestr("trace.trace", "trace")
         archive.writestr("trace.network", "network")
@@ -3917,17 +4353,8 @@ def test_playwright_trace_validator_sanitizes_opaque_binary_resource_secrets(
         [sys.executable, validator, source], capture_output=True, check=False, text=True
     )
     assert rejected.returncode == 1
-    assert "resources/<member>[" in rejected.stderr
-    for category in (
-        "binary:authorization",
-        "binary:cookie",
-        "binary:sensitive-field",
-        "binary:sensitive-query",
-        "binary:subscription-token",
-    ):
-        assert category in rejected.stderr
+    assert "unsafe resource or unknown members" in rejected.stderr
     assert resource_name_canary not in rejected.stderr
-    assert all(canary not in rejected.stderr for canary in canaries.values())
 
     scrubbed = subprocess.run(
         [sys.executable, validator, "--sanitize", source, sanitized],
@@ -3937,10 +4364,138 @@ def test_playwright_trace_validator_sanitizes_opaque_binary_resource_secrets(
     )
     assert scrubbed.returncode == 0, scrubbed.stderr
     with zipfile.ZipFile(sanitized) as archive:
-        retained_resource = archive.read(f"resources/{resource_name_canary}")
-    assert len(retained_resource) == len(binary_resource)
-    assert retained_resource.startswith(b"\x89PLAYWRIGHT\x00\xff\n")
-    assert all(canary.encode() not in retained_resource for canary in canaries.values())
+        assert f"resources/{resource_name_canary}" not in archive.namelist()
+        retained = b"\n".join(archive.read(name) for name in archive.namelist())
+    assert binary_resource not in retained
+    assert subprocess.run([sys.executable, validator, sanitized], check=False).returncode == 0
+
+
+def test_playwright_trace_archive_sanitizer_removes_phase_five_canaries(
+    tmp_path: Path,
+) -> None:
+    validator = ROOT / "scripts" / "validate_playwright_trace.py"
+    source = tmp_path / "phase-five-source.zip"
+    sanitized = tmp_path / "phase-five-sanitized.zip"
+    canaries = {
+        "invite": "invite-canary-7F4A",
+        "challenge": "challenge-canary-8B5C",
+        "totp": "JBSWY3DPEHPK3PXP",
+        "recovery_one": "RECOVERY-CANARY-91D6",
+        "recovery_two": "RECOVERY-CANARY-A2E7",
+        "dom_input": "DOM-INPUT-CANARY-B3F8",
+        "image": "OPAQUE-IMAGE-CANARY-C409",
+    }
+    trace_events = [
+        {
+            "type": "context-options",
+            "browserName": "chromium",
+            "viewport": {"width": 1440, "height": 900},
+        },
+        {
+            "type": "before",
+            "method": "Page.goto",
+            "params": {
+                "challengeToken": canaries["challenge"],
+                "challenge_token": canaries["challenge"],
+                "inviteToken": canaries["invite"],
+                "invite_token": canaries["invite"],
+                "recoveryCodes": [canaries["recovery_one"]],
+                "recovery_codes": [canaries["recovery_two"]],
+                "totpSecret": canaries["totp"],
+                "totp_secret": canaries["totp"],
+                "url": f"http://127.0.0.1:4173/#invite={canaries['invite']}",
+            },
+        },
+        {
+            "type": "frame-snapshot",
+            "snapshot": {
+                "html": [
+                    "HTML",
+                    {},
+                    ["BODY", {}, f"Recovery code {canaries['recovery_one']}"],
+                    ["INPUT", {"value": canaries["dom_input"]}],
+                ]
+            },
+        },
+        {"type": "screencast-frame", "sha1": "opaque-image-resource"},
+        {"type": "after", "method": "Page.goto", "result": {"status": 200}},
+    ]
+    network_events = [
+        {
+            "type": "resource-snapshot",
+            "snapshot": {
+                "request": {
+                    "url": f"http://127.0.0.1:8000/api/auth/invitations/peek?inviteToken={canaries['invite']}",
+                    "postData": {
+                        "mimeType": "application/json",
+                        "text": json.dumps(
+                            {
+                                "challengeToken": canaries["challenge"],
+                                "invite_token": canaries["invite"],
+                            }
+                        ),
+                    },
+                },
+                "response": {
+                    "status": 200,
+                    "content": {
+                        "mimeType": "application/json",
+                        "text": json.dumps(
+                            {
+                                "otpauthUrl": (
+                                    "otpauth://totp/GardenOps:user?"
+                                    f"secret={canaries['totp']}&issuer=GardenOps"  # noqa: E501  # push-sanitizer: allow SECRET_ASSIGNMENT - synthetic trace canary
+                                ),
+                                "recoveryCodes": [
+                                    canaries["recovery_one"],
+                                    canaries["recovery_two"],
+                                ],
+                            }
+                        ),
+                    },
+                },
+            },
+        }
+    ]
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("trace.trace", "\n".join(map(json.dumps, trace_events)) + "\n")
+        archive.writestr("trace.network", "\n".join(map(json.dumps, network_events)) + "\n")
+        archive.writestr(
+            "resources/opaque-image-resource",
+            b"\x89PNG\r\n\x1a\n" + canaries["image"].encode() + b"\x00\xff",
+        )
+
+    result = subprocess.run(
+        [sys.executable, validator, "--sanitize", source, sanitized],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    with zipfile.ZipFile(sanitized) as archive:
+        assert set(archive.namelist()) == {"trace.trace", "trace.network"}
+        trace_text = archive.read("trace.trace").decode()
+        network_text = archive.read("trace.network").decode()
+        retained = (trace_text + network_text).encode()
+    assert all(canary.encode() not in retained for canary in canaries.values())
+    assert "frame-snapshot" not in trace_text
+    assert "screencast-frame" not in trace_text
+    assert "context-options" in trace_text
+    assert '"browserName":"chromium"' in trace_text
+    assert '"status":200' in trace_text
+    for field in (
+        "challengeToken",
+        "challenge_token",
+        "inviteToken",
+        "invite_token",
+        "recoveryCodes",
+        "recovery_codes",
+        "totpSecret",
+        "totp_secret",
+    ):
+        assert f'"{field}":"[redacted]"' in trace_text
+    assert '"type":"resource-snapshot"' in network_text
+    assert "[redacted]" in network_text
     assert subprocess.run([sys.executable, validator, sanitized], check=False).returncode == 0
 
 
@@ -4324,6 +4879,28 @@ try {
     assert result.returncode == 0, result.stderr
 
 
+def test_phase_two_correlates_passkey_options_as_public_authentication() -> None:
+    script = """
+const { phaseTwoBrowserMutationRecords } = require('./scripts/check_complete_journeys_e2e.cjs');
+const records = phaseTwoBrowserMutationRecords([{
+  profile: 'mobile', role: 'viewer', requests: [{
+    actorAuthType: 'none', actorRole: 'anonymous', actorUsername: 'anonymous', gardenId: null,
+    method: 'POST', path: '/api/auth/passkeys/login/options',
+    requestId: 'passkey-options-request-1', statusCode: 200,
+  }],
+}], { roles: { viewer: 'viewer' } });
+if (records.length !== 1) process.exit(3);
+if (records[0].actor_auth_type !== 'none') process.exit(4);
+if (records[0].actor_role !== 'anonymous') process.exit(5);
+if (records[0].actor_username !== 'anonymous') process.exit(6);
+if (records[0].garden_id !== null) process.exit(7);
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_phase_two_audit_correlation_rejects_request_id_tampering_from_peer_pages() -> None:
     script = """
 const { assertPhaseTwoAuditEvents } = require('./scripts/check_complete_journeys_e2e.cjs');
@@ -4396,6 +4973,49 @@ peer.emit('response', response(peerRequest, 'peer-request-id-1'));
 if (recorder.records.length !== 2) process.exit(3);
 if (recorder.records[0].requestId !== 'primary-request-id-1') process.exit(4);
 if (recorder.records[1].requestId !== 'peer-request-id-1') process.exit(5);
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_browser_api_recorder_binds_session_and_invitation_garden_context() -> None:
+    script = """
+const { createApiRecorder } = require('./scripts/e2e/completeJourneyBrowser.cjs');
+const handlers = new Map();
+const page = {
+  emit(event, value) { for (const handler of handlers.get(event) || []) handler(value); },
+  on(event, handler) { handlers.set(event, [...(handlers.get(event) || []), handler]); },
+};
+const request = (path) => ({
+  headers: () => ({}), method: () => 'POST', url: () => `http://127.0.0.1${path}`,
+});
+const response = (value, body) => ({
+  headers: () => ({ 'x-request-id': 'request-id-1' }),
+  json: async () => body,
+  request: () => value,
+  status: () => 201,
+});
+const recorder = createApiRecorder(page, {
+  authType: 'session', role: 'admin', username: 'admin',
+});
+recorder.setGardenId(7);
+const authenticated = request('/api/auth/passkeys/42');
+page.emit('request', authenticated);
+page.emit('response', response(authenticated, {}));
+if (recorder.records[0].gardenId !== '7') process.exit(3);
+recorder.setGardenId(null);
+const invitation = request('/api/auth/invitations/passkey/register/verify');
+page.emit('request', invitation);
+page.emit('response', response(invitation, { garden_id: 9, token: 'response-secret' }));
+recorder.settle().then(() => {
+  if (recorder.records[1].gardenId !== '9') process.exit(4);
+  const following = request('/api/auth/me/settings');
+  page.emit('request', following);
+  if (recorder.records[2].gardenId !== '9') process.exit(5);
+  if (JSON.stringify(recorder.records).includes('response-secret')) process.exit(6);
+}).catch(() => process.exit(7));
 """
     result = subprocess.run(
         ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
@@ -4616,6 +5236,23 @@ const inventoryAudit = auditManifestProjection(
 const procurementAudit = auditManifestProjection(
   auditState(`/api/procurement/${opaqueRouteId}/transition`),
 );
+const passkeyAudit = auditManifestProjection(auditState('/api/auth/passkeys/42'));
+const sessionAudit = auditManifestProjection(
+  auditState(`/api/auth/sessions/${opaqueRouteId}`),
+);
+const userInvitationAudit = auditManifestProjection(
+  auditState('/api/auth/user-invitations/42'),
+);
+const userAudit = auditManifestProjection(auditState('/api/auth/users/42'));
+const gardenMemberAudit = auditManifestProjection(
+  auditState('/api/gardens/7/members/42'),
+);
+const invitationPasskeyOptionsAudit = auditManifestProjection(
+  auditState('/api/auth/invitations/passkey/register/options'),
+);
+const invitationPasskeyVerifyAudit = auditManifestProjection(
+  auditState('/api/auth/invitations/passkey/register/verify'),
+);
 const taskPath = task.database.audit_projection.events[0].path;
 if (taskPath !== '/api/tasks/{task_id}/action') process.exit(3);
 if (attention.database.audit_projection.events[0].path
@@ -4625,11 +5262,26 @@ if (assignment.database.audit_projection.events[0].path
 if (telemetry.database.audit_projection.events[0].path !== '/api/client-errors') process.exit(9);
 if (inventoryAudit.events[0].path !== '/api/inventory/{item_id}/transactions') process.exit(10);
 if (procurementAudit.events[0].path !== '/api/procurement/{item_id}/transition') process.exit(11);
+if (passkeyAudit.events[0].path !== '/api/auth/passkeys/{passkey_id}') process.exit(12);
+if (sessionAudit.events[0].path !== '/api/auth/sessions/{session_id}') process.exit(13);
+if (userInvitationAudit.events[0].path
+    !== '/api/auth/user-invitations/{invitation_id}') process.exit(14);
+if (userAudit.events[0].path !== '/api/auth/users/{user_id}') process.exit(15);
+if (gardenMemberAudit.events[0].path
+    !== '/api/gardens/{garden_id}/members/{user_id}') process.exit(16);
+if (invitationPasskeyOptionsAudit.events[0].path
+    !== '/api/auth/invitations/passkey/register/options') process.exit(17);
+if (invitationPasskeyVerifyAudit.events[0].path
+    !== '/api/auth/invitations/passkey/register/verify') process.exit(18);
 if (task.canonical_projection_digests.audit_snapshot
     === attention.canonical_projection_digests.audit_snapshot) process.exit(5);
 if (task.canonical_projection_digests.final_database
     === attention.canonical_projection_digests.final_database) process.exit(6);
-const serialized = JSON.stringify([task, attention, assignment, telemetry]);
+const serialized = JSON.stringify([
+  task, attention, assignment, telemetry, passkeyAudit, sessionAudit,
+  userInvitationAudit, userAudit, gardenMemberAudit,
+  invitationPasskeyOptionsAudit, invitationPasskeyVerifyAudit,
+]);
 if (serialized.includes(opaqueRouteId)) process.exit(7);
 """
     result = subprocess.run(

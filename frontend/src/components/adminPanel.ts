@@ -1,14 +1,14 @@
 import { escapeHtml, sanitizeUrl, setReviewedDynamicHtml } from "../core/sanitize";
 import { getLocaleTag, t } from "../core/i18n";
+import { t as authT } from "../core/authI18n";
 import { buildInvitationLink } from "../core/urlSecurity";
 import { queryInput, querySelect, queryTextArea } from "../core/dom";
 import { getApiErrorMessage } from "../services/api";
-import { featuresLostOnDowngrade } from "../core/featureGates";
+import { featuresLostOnDowngrade, isFeatureEnabled } from "../core/featureGates";
 import { confirmDialog, promptDialog, promptPasswordDialog } from "./dialogCore";
 import { showToast } from "./toast";
 import { clearOfflineQueue } from "../services/offlineQueue";
 import type {
-  ActiveSession,
   AdminSystemHealth,
   AuditEvent,
   AuditEventPage,
@@ -35,7 +35,6 @@ import type {
 import {
   beginPasskeyReauthenticationApi,
   beginPasskeyRegistrationApi,
-  confirmAuthTotpEnrollmentApi,
   createAuthUserApi,
   deleteAuthUserApi,
   deletePasskeyApi,
@@ -47,7 +46,6 @@ import {
   getAuthMeSettingsApi,
   getAuthStatusApi,
   getSecurityAlertsApi,
-  getAuthSessionsApi,
   getSecurityMetricsApi,
   getAuthUsersApi,
   getEmergencyReadOnlyApi,
@@ -71,7 +69,6 @@ import {
   revokeUserInvitationApi,
   revokeUserSessionsByIdApi,
   setEmergencyReadOnlyApi,
-  startAuthTotpEnrollmentApi,
   getGardenSettingsApi,
   getGardenLidarApi,
   getMissingPlantCoversApi,
@@ -80,12 +77,22 @@ import {
   populateMissingPlantCoversApi,
   updateAuthMeSettingsApi,
   updateGardenSettingsApi,
+  upsertGardenMembershipApi,
   uploadGardenLidarApi,
   updateAuthUserApi,
   updateProviderSettingsApi,
   updateUserTierApi,
   createUserInvitationApi,
 } from "../services/api";
+import {
+  cancelTotpEnrollmentApi,
+  confirmTotpEnrollmentApi,
+  getIdentitySessionsApi,
+  renamePasskeyApi,
+  revokeIdentitySessionApi,
+  startTotpEnrollmentApi,
+  type IdentitySession,
+} from "../services/authApi";
 import { createPasskey, getPasskey, isPasskeySupported } from "../features/passkeys";
 
 const esc = escapeHtml;
@@ -113,7 +120,8 @@ export interface AdminMapSetupState {
 interface AdminState {
   section: AdminSection;
   users: AuthManagedUser[];
-  sessions: ActiveSession[];
+  sessions: IdentitySession[];
+  sessionsAvailable: boolean;
   audit: AuditEventPage | null;
   auditOffset: number;
   invitations: GardenInvitation[];
@@ -135,6 +143,7 @@ interface AdminState {
     expires_at_ms: number;
   } | null;
   latestRecoveryCodes: string[];
+  identityNotice: { message: string; error: boolean } | null;
   emergencyReadOnly: EmergencyReadOnlyStatus;
   systemHealth: AdminSystemHealth | null;
   securityMetrics: SecurityMetrics | null;
@@ -166,6 +175,7 @@ const state: AdminState = {
   section: "settings",
   users: [],
   sessions: [],
+  sessionsAvailable: true,
   audit: null,
   auditOffset: 0,
   invitations: [],
@@ -183,6 +193,7 @@ const state: AdminState = {
   gardenLidarProgress: 0,
   mfaEnrollment: null,
   latestRecoveryCodes: [],
+  identityNotice: null,
   emergencyReadOnly: { enabled: false, expires_at_ms: null },
   systemHealth: null,
   securityMetrics: null,
@@ -419,12 +430,76 @@ function renderPasskeyDevice(passkey: PasskeySummary): string {
   return parts.length ? parts.join(" · ") : t("common.na");
 }
 
+function setIdentityNotice(message: string, error = false): void {
+  state.identityNotice = { message, error };
+  showToast(message, error ? "error" : "success");
+}
+
+function renderIdentityNotice(): string {
+  if (!state.identityNotice) {
+    return `<p id="adm-identity-status" class="adm-identity-status" role="status" aria-live="polite"></p>`;
+  }
+  return `<p id="adm-identity-status" class="adm-identity-status${state.identityNotice.error ? " adm-identity-status--error" : ""}" role="${state.identityNotice.error ? "alert" : "status"}" aria-live="${state.identityNotice.error ? "assertive" : "polite"}">${esc(state.identityNotice.message)}</p>`;
+}
+
+function identitySessionDevice(session: IdentitySession): string {
+  return session.device_label.trim() || authT("identity.sessions.unknown_device");
+}
+
+function identitySessionExpiry(session: IdentitySession): number {
+  const expiries = [session.expires_at_ms, session.absolute_expires_at_ms]
+    .filter((value) => Number.isFinite(value) && value > 0);
+  return expiries.length > 0 ? Math.min(...expiries) : 0;
+}
+
+function renderPersonalSessionsCard(): string {
+  const username = state.me?.username ?? "";
+  const sessions = state.sessions.filter((session) => session.username === username);
+  const content = !state.sessionsAvailable
+    ? `<p class="adm-empty">${authT("identity.sessions.unavailable")}</p>`
+    : sessions.length === 0
+      ? `<p class="adm-empty">${authT("identity.sessions.none")}</p>`
+      : `<ul class="adm-identity-session-list">${sessions.map((session) => {
+        const device = identitySessionDevice(session);
+        return `<li class="adm-identity-session" data-session-id="${esc(session.id ?? "")}">
+          <div class="adm-identity-session-main">
+            <strong>${esc(device)}</strong>
+            ${session.is_current ? `<span class="adm-badge adm-badge--green">${authT("identity.sessions.current")}</span>` : ""}
+            ${session.location_hint ? `<span class="adm-meta">${esc(session.location_hint)}</span>` : ""}
+          </div>
+          <dl class="adm-identity-session-meta">
+            <div><dt>${authT("identity.sessions.last_seen")}</dt><dd>${esc(fmtDate(session.last_seen_at_ms))}</dd></div>
+            <div><dt>${authT("identity.sessions.expires")}</dt><dd>${esc(fmtDate(identitySessionExpiry(session)))}</dd></div>
+          </dl>
+          ${session.id && !session.is_current
+            ? `<button type="button" class="adm-btn adm-btn--danger adm-session-revoke-one" aria-label="${esc(`${authT("identity.sessions.revoke")}: ${device}`)}">${authT("identity.sessions.revoke")}</button>`
+            : ""}
+        </li>`;
+      }).join("")}</ul>`;
+  return `<div class="adm-card adm-card--form">
+    <h3 class="adm-card-title">${authT("identity.sessions.title")}</h3>
+    <p class="adm-section-desc">${authT("identity.sessions.description")}</p>
+    ${content}
+  </div>`;
+}
+
+function renderIncidentStatusCard(): string {
+  if (!isPlatformAdmin()) return "";
+  const emergency = state.emergencyReadOnly;
+  return `<div class="adm-card adm-card--form adm-incident-status${emergency.enabled ? " adm-incident-status--active" : ""}">
+    <h3 class="adm-card-title">${authT("identity.incident.title")}</h3>
+    <p class="adm-section-desc">${emergency.enabled ? authT("identity.incident.active") : authT("identity.incident.inactive")}</p>
+    ${emergency.enabled && emergency.expires_at_ms
+      ? `<p class="adm-section-desc">${esc(authT("identity.incident.expires", { date: fmtDate(emergency.expires_at_ms) }))}</p>`
+      : ""}
+  </div>`;
+}
+
 function renderPasskeysCard(): string {
   const browserSupported = isPasskeySupported();
   const addDisabled = !state.passkeysEnabled || !browserSupported;
-  const unavailableText = !state.passkeysEnabled
-    ? t("admin.passkeys.unavailable")
-    : (!browserSupported ? t("admin.passkeys.browser_unsupported") : "");
+  const finalPasskeyRemovalBlocked = Boolean(state.me?.password_auth_disabled && state.passkeys.length === 1);
+  const unavailableText = !state.passkeysEnabled ? t("admin.passkeys.unavailable") : (!browserSupported ? t("admin.passkeys.browser_unsupported") : "");
   const rows = state.passkeys.map((passkey) => `
     <tr data-passkey-id="${passkey.id}">
       <td>${esc(passkeyDisplayName(passkey))}</td>
@@ -432,7 +507,8 @@ function renderPasskeysCard(): string {
       <td>${esc(passkey.last_used_at_ms ? fmtDate(passkey.last_used_at_ms) : t("admin.passkeys.never_used"))}</td>
       <td>${esc(renderPasskeyDevice(passkey))}</td>
       <td>
-        <button type="button" class="adm-btn adm-btn--ghost adm-passkey-remove">${t("admin.passkeys.remove")}</button>
+        <button type="button" class="adm-btn adm-btn--ghost adm-passkey-rename">${authT("identity.passkeys.rename")}</button>
+        <button type="button" class="adm-btn adm-btn--ghost adm-passkey-remove"${finalPasskeyRemovalBlocked ? ` disabled title="${esc(authT("identity.passkeys.final_factor_required"))}"` : ""}>${t("admin.passkeys.remove")}</button>
       </td>
     </tr>
   `).join("");
@@ -441,6 +517,7 @@ function renderPasskeysCard(): string {
       <h3 class="adm-card-title">${t("admin.passkeys.title")}</h3>
       <p class="adm-section-desc">${t("admin.passkeys.desc")}</p>
       ${unavailableText ? `<p class="adm-section-desc">${unavailableText}</p>` : ""}
+      ${finalPasskeyRemovalBlocked ? `<p class="adm-section-desc">${esc(authT("identity.passkeys.final_factor_required"))}</p>` : ""}
       ${state.passkeys.length > 0 ? `
         <div class="adm-table-wrap">
           <table class="adm-table">
@@ -478,10 +555,28 @@ function canManageActiveGardenInvitations(): boolean {
   return isPlatformAdmin();
 }
 
+function adminStrongAuthPending(): boolean {
+  const me = state.me;
+  return Boolean(
+    me
+    && me.role === "admin"
+    && me.auth_type === "session"
+    && !me.mfa_setup_required
+    && !me.mfa_authenticated
+    && (me.mfa_enabled || me.mfa_methods.includes("passkey")),
+  );
+}
+
+function canLoadProtectedAdminSettings(): boolean {
+  if (!isPlatformAdmin()) return false;
+  if (state.me?.auth_type !== "session") return true;
+  return !state.me.mfa_setup_required && !adminStrongAuthPending();
+}
+
 function getVisibleSections(): AdminSection[] {
   const sections: AdminSection[] = ["settings"];
+  if (state.me?.mfa_setup_required || adminStrongAuthPending()) return sections;
   if (canEditActiveGarden()) sections.push("garden");
-  if (state.me?.mfa_setup_required) return sections;
   if (canManageActiveGardenInvitations()) sections.push("invitations");
   if (isPlatformAdmin()) {
     sections.push("users", "sessions", "audit", "system");
@@ -490,8 +585,11 @@ function getVisibleSections(): AdminSection[] {
 }
 
 function defaultSection(): AdminSection {
+  if (state.me?.mfa_setup_required || adminStrongAuthPending()) return "settings";
   if (canEditActiveGarden()) return "garden";
-  if (isPlatformAdmin() && !state.me?.mfa_setup_required) return "users";
+  if (isPlatformAdmin() && !state.me?.mfa_setup_required && !adminStrongAuthPending()) {
+    return "users";
+  }
   return "settings";
 }
 
@@ -650,6 +748,8 @@ function renderSettingsSection(): string {
         <p class="adm-section-desc">${t("admin.settings.signed_in_as")} <strong>${esc(me?.username ?? "unknown")}</strong> (${esc(me?.role ?? "unknown")})</p>
       </div>
     </div>
+    ${renderIdentityNotice()}
+    ${renderIncidentStatusCard()}
     ${renderProviderSettingsCard()}
     <div class="adm-card adm-card--form">
       <h3 class="adm-card-title">${t("admin.settings.plot_meanings_title")}</h3>
@@ -658,9 +758,9 @@ function renderSettingsSection(): string {
         ${plotAssignmentMeanings.length > 0
           ? plotAssignmentMeanings.map((meaning, index) => `
             <div class="adm-plot-meaning-row" data-index="${index}">
-              <input type="text" class="adm-input adm-plot-meaning-pattern" placeholder="${t("admin.settings.plot_meanings_pattern")}" value="${esc(meaning.pattern)}" />
-              <input type="text" class="adm-input adm-plot-meaning-label" placeholder="${t("admin.settings.plot_meanings_label")}" value="${esc(meaning.label)}" />
-              <input type="text" class="adm-input adm-plot-meaning-description" placeholder="${t("admin.settings.plot_meanings_description")}" value="${esc(meaning.description)}" />
+              <input type="text" class="adm-input adm-plot-meaning-pattern" aria-label="${t("admin.settings.plot_meanings_pattern")}" placeholder="${t("admin.settings.plot_meanings_pattern")}" value="${esc(meaning.pattern)}" />
+              <input type="text" class="adm-input adm-plot-meaning-label" aria-label="${t("admin.settings.plot_meanings_label")}" placeholder="${t("admin.settings.plot_meanings_label")}" value="${esc(meaning.label)}" />
+              <input type="text" class="adm-input adm-plot-meaning-description" aria-label="${t("admin.settings.plot_meanings_description")}" placeholder="${t("admin.settings.plot_meanings_description")}" value="${esc(meaning.description)}" />
               <button type="button" class="adm-btn adm-btn--ghost adm-plot-meaning-delete">${t("admin.settings.plot_meanings_remove")}</button>
             </div>
           `).join("")
@@ -672,6 +772,7 @@ function renderSettingsSection(): string {
       </div>
     </div>
     ${renderPasskeysCard()}
+    ${renderPersonalSessionsCard()}
     <div class="adm-card adm-card--form">
       <h3 class="adm-card-title">${t("admin.mfa.title")}</h3>
       <p class="adm-section-desc">
@@ -706,6 +807,7 @@ function renderSettingsSection(): string {
             <p class="adm-section-desc">${t("admin.mfa.pending_expires", { date: fmtDate(enrollment.expires_at_ms) })}</p>
             <div class="adm-btn-group">
               <button type="button" id="adm-mfa-confirm" class="adm-btn adm-btn--primary">${t("admin.mfa.enable")}</button>
+              <button type="button" id="adm-mfa-cancel" class="adm-btn adm-btn--ghost">${authT("identity.mfa.cancel")}</button>
             </div>
           </div>
         ` : ""}
@@ -860,10 +962,15 @@ function renderGardenSection(): string {
                         <span class="adm-username">${esc(membership.username)}</span>
                       </div>
                     </td>
-                    <td>${badge(membership.role, membership.role === "admin" ? "green" : "muted")}</td>
+                    <td>
+                      <select class="adm-select adm-select--sm adm-garden-member-role" aria-label="${esc(`${t("common.role")}: ${membership.username}`)}">
+                        ${(["viewer", "editor", "admin"] as const).map((role) => `<option value="${role}"${membership.role === role ? " selected" : ""}>${role}</option>`).join("")}
+                      </select>
+                    </td>
                     <td class="adm-cell-date">${fmtDate(membership.created_at)}</td>
                     <td>
                       <div class="adm-cell-actions">
+                        <button type="button" class="adm-btn adm-btn--sm adm-act-save-garden-member">${t("common.save")}</button>
                         <button type="button" class="adm-btn adm-btn--sm adm-btn--danger adm-act-remove-garden-member">${t("common.remove")}</button>
                       </div>
                     </td>
@@ -1043,7 +1150,7 @@ function renderGardenSection(): string {
   const lidarUpdated = lidarStatus?.updated_at_ms
     ? `<p class="adm-section-desc">${t("admin.garden.lidar_updated", { date: fmtDate(lidarStatus.updated_at_ms) })}</p>`
     : "";
-  const lidarCard = `
+  const lidarCard = isFeatureEnabled("shade_map") ? `
     <div class="adm-card adm-card--form">
       <h3 class="adm-card-title">${t("admin.garden.lidar_title")}</h3>
       <p class="adm-section-desc">${t("admin.garden.lidar_desc")}</p>
@@ -1061,7 +1168,7 @@ function renderGardenSection(): string {
         <button type="button" id="adm-garden-lidar-remove" class="adm-btn adm-btn--ghost"${lidarStatus?.uploaded && !state.gardenLidarUploading ? "" : " disabled"}>${t("admin.garden.lidar_remove")}</button>
       </div>
     </div>
-  `;
+  ` : "";
   return `
     <div class="adm-section-header">
       <div>
@@ -1314,49 +1421,58 @@ function renderUsersSection(): string {
 
 function renderSessionsSection(): string {
   const sorted = [...state.sessions].sort((a, b) => b.last_seen_at_ms - a.last_seen_at_ms);
-  const rows = sorted.map(s => `
-    <tr class="adm-row">
+  const rows = sorted.map((session) => {
+    const device = identitySessionDevice(session);
+    return `<tr class="adm-row" data-session-id="${esc(session.id ?? "")}">
       <td class="adm-cell-user">
-        <span class="adm-username">${esc(s.username)}</span>
-        <span class="adm-meta">uid ${s.user_id}</span>
+        <span class="adm-username">${esc(session.username)}</span>
+        <span class="adm-meta">uid ${session.user_id}</span>
       </td>
-      <td>${badge(s.role, s.role === "admin" ? "amber" : "muted")}</td>
+      <td>${badge(session.role, session.role === "admin" ? "amber" : "muted")}</td>
       <td>
-        ${s.mfa_setup_required ? badge(t("admin_panel.badge_setup_required"), "red") : (s.mfa_authenticated_at_ms > 0 ? badge(t("admin_panel.badge_mfa"), "green") : badge(t("admin_panel.badge_no_mfa"), "muted"))}
+        ${session.mfa_setup_required ? badge(t("admin_panel.badge_setup_required"), "red") : (session.mfa_authenticated_at_ms > 0 ? badge(t("admin_panel.badge_mfa"), "green") : badge(t("admin_panel.badge_no_mfa"), "muted"))}
       </td>
-      <td class="adm-cell-date">${fmtDate(s.created_at_ms)}</td>
-      <td class="adm-cell-date">${fmtDate(s.last_seen_at_ms)}</td>
-      <td class="adm-cell-date">${fmtDate(s.expires_at_ms)}</td>
-      <td class="adm-cell-mono">${esc(s.token_hash.slice(0, 16))}\u2026</td>
+      <td class="adm-cell-date">${fmtDate(session.created_at_ms)}</td>
+      <td class="adm-cell-date">${fmtDate(session.last_seen_at_ms)}</td>
+      <td class="adm-cell-date">${fmtDate(identitySessionExpiry(session))}</td>
+      <td>${esc(device)}${session.location_hint ? `<span class="adm-meta">${esc(session.location_hint)}</span>` : ""}${session.is_current ? badge(authT("identity.sessions.current"), "green") : ""}</td>
+      <td>${session.id && !session.is_current ? `<button type="button" class="adm-btn adm-btn--sm adm-btn--danger adm-session-revoke-one">${authT("identity.sessions.revoke")}</button>` : ""}</td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
 
-  const cards = sorted.map(s => `
-    <div class="adm-user-card">
+  const cards = sorted.map(session => `
+    <div class="adm-user-card" data-session-id="${esc(session.id ?? "")}">
       <div class="adm-user-card-header">
         <div class="adm-user-card-name">
-          <span class="adm-username">${esc(s.username)}</span>
-          <span class="adm-meta">uid ${s.user_id}</span>
+          <span class="adm-username">${esc(session.username)}</span>
+          <span class="adm-meta">uid ${session.user_id}</span>
         </div>
         <div class="adm-user-card-badges">
-          ${badge(s.role, s.role === "admin" ? "amber" : "muted")}
-          ${s.mfa_setup_required ? badge(t("admin_panel.badge_setup_required"), "red") : (s.mfa_authenticated_at_ms > 0 ? badge(t("admin_panel.badge_mfa"), "green") : badge(t("admin_panel.badge_no_mfa"), "muted"))}
+          ${badge(session.role, session.role === "admin" ? "amber" : "muted")}
+          ${session.is_current ? badge(authT("identity.sessions.current"), "green") : ""}
+          ${session.mfa_setup_required ? badge(t("admin_panel.badge_setup_required"), "red") : (session.mfa_authenticated_at_ms > 0 ? badge(t("admin_panel.badge_mfa"), "green") : badge(t("admin_panel.badge_no_mfa"), "muted"))}
         </div>
       </div>
       <div class="adm-user-card-meta">
         <div class="adm-user-card-meta-item">
           <span class="adm-user-card-meta-label">${t("admin_panel.label_created")}</span>
-          <span class="adm-user-card-meta-value">${fmtDate(s.created_at_ms)}</span>
+          <span class="adm-user-card-meta-value">${fmtDate(session.created_at_ms)}</span>
         </div>
         <div class="adm-user-card-meta-item">
           <span class="adm-user-card-meta-label">${t("admin_panel.label_last_seen")}</span>
-          <span class="adm-user-card-meta-value">${fmtDate(s.last_seen_at_ms)}</span>
+          <span class="adm-user-card-meta-value">${fmtDate(session.last_seen_at_ms)}</span>
         </div>
         <div class="adm-user-card-meta-item">
           <span class="adm-user-card-meta-label">${t("admin_panel.label_expires")}</span>
-          <span class="adm-user-card-meta-value">${fmtDate(s.expires_at_ms)}</span>
+          <span class="adm-user-card-meta-value">${fmtDate(identitySessionExpiry(session))}</span>
+        </div>
+        <div class="adm-user-card-meta-item adm-user-card-meta-item--full">
+          <span class="adm-user-card-meta-label">${authT("identity.sessions.device")}</span>
+          <span class="adm-user-card-meta-value">${esc(identitySessionDevice(session))}${session.location_hint ? ` · ${esc(session.location_hint)}` : ""}</span>
         </div>
       </div>
+      ${session.id && !session.is_current ? `<div class="adm-user-card-actions"><button type="button" class="adm-btn adm-btn--sm adm-btn--danger adm-session-revoke-one">${authT("identity.sessions.revoke")}</button></div>` : ""}
     </div>
   `).join("");
 
@@ -1385,10 +1501,11 @@ function renderSessionsSection(): string {
               <th style="width:160px">${t("admin_panel.label_created")}</th>
               <th style="width:160px">${t("admin_panel.label_last_seen")}</th>
               <th style="width:160px">${t("admin_panel.label_expires")}</th>
-              <th style="width:180px">${t("admin_panel.th_token_hash")}</th>
+              <th>${authT("identity.sessions.device")}</th>
+              <th>${t("common.actions")}</th>
             </tr>
           </thead>
-          <tbody>${rows || `<tr><td colspan="7" class="adm-empty">${t("admin_panel.no_active_sessions")}</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td colspan="8" class="adm-empty">${t("admin_panel.no_active_sessions")}</td></tr>`}</tbody>
         </table>
       </div>
     </div>
@@ -1824,9 +1941,12 @@ async function loadUsers(): Promise<void> {
 
 async function loadSessions(): Promise<void> {
   try {
-    state.sessions = await getAuthSessionsApi();
+    state.sessions = await getIdentitySessionsApi();
+    state.sessionsAvailable = true;
   } catch (err) {
-    showToast(getApiErrorMessage(err), "error");
+    state.sessions = [];
+    state.sessionsAvailable = false;
+    if (state.section === "sessions") showToast(authT("identity.sessions.unavailable"), "error");
   }
 }
 
@@ -1859,7 +1979,8 @@ async function loadSettings(): Promise<void> {
   try {
     state.me = await getAuthMeApi();
   } catch { /* non-fatal */ }
-  if (isPlatformAdmin()) {
+  const protectedAdminSettingsAvailable = canLoadProtectedAdminSettings();
+  if (protectedAdminSettingsAvailable) {
     try {
       state.providerSettings = await getProviderSettingsApi();
     } catch (err) {
@@ -1869,7 +1990,7 @@ async function loadSettings(): Promise<void> {
   } else {
     state.providerSettings = null;
   }
-  if (state.me?.mfa_setup_required) {
+  if (state.me?.mfa_setup_required || adminStrongAuthPending()) {
     state.section = "settings";
   }
   try {
@@ -1885,9 +2006,27 @@ async function loadSettings(): Promise<void> {
   } catch {
     state.passkeys = [];
   }
+  if (!isPlatformAdmin() || protectedAdminSettingsAvailable) {
+    await loadSessions();
+  } else {
+    state.sessions = [];
+    state.sessionsAvailable = false;
+  }
+  if (protectedAdminSettingsAvailable) {
+    try {
+      state.emergencyReadOnly = await getEmergencyReadOnlyApi();
+    } catch {
+      state.emergencyReadOnly = { enabled: false, expires_at_ms: null };
+    }
+  }
   if (!state.meSettings?.mfa.pending_enrollment) {
     state.mfaEnrollment = null;
   }
+}
+
+async function refreshIdentityCapabilities(): Promise<void> {
+  state.me = await getAuthMeApi();
+  onAuthStateChanged?.();
 }
 
 async function loadGardenSettings(): Promise<boolean> {
@@ -1910,7 +2049,9 @@ async function loadGardenSettings(): Promise<boolean> {
   try {
     const [settings, lidarStatus] = await Promise.all([
       getGardenSettingsApi(requestGardenId),
-      getGardenLidarApi(requestGardenId),
+      isFeatureEnabled("shade_map")
+        ? getGardenLidarApi(requestGardenId)
+        : Promise.resolve(null),
     ]);
     if (!isCurrentRequest()) return false;
     applyGardenSettingsBaseline(settings);
@@ -2033,6 +2174,7 @@ export function resetAdminPanelSensitiveState(): void {
   gardenSettingsDrafts.clear();
   state.users = [];
   state.sessions = [];
+  state.sessionsAvailable = true;
   state.audit = null;
   state.auditOffset = 0;
   state.invitations = [];
@@ -2046,6 +2188,8 @@ export function resetAdminPanelSensitiveState(): void {
   state.gardenSettings = null;
   state.mfaEnrollment = null;
   state.latestRecoveryCodes = [];
+  state.identityNotice = null;
+  state.emergencyReadOnly = { enabled: false, expires_at_ms: null };
   state.systemHealth = null;
   state.securityMetrics = null;
   state.securityAlerts = null;
@@ -2408,6 +2552,37 @@ function wireSection(): void {
     }
   });
 
+  container.querySelectorAll<HTMLButtonElement>(".adm-act-save-garden-member").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const ctx = gardenContextFn?.();
+      const row = btn.closest<HTMLElement>("[data-garden-member-id]");
+      const userId = Number(row?.dataset["gardenMemberId"]);
+      const membership = state.gardenMemberships.find((item) => item.user_id === userId);
+      const role = row?.querySelector<HTMLSelectElement>(".adm-garden-member-role")?.value as "viewer" | "editor" | "admin" | undefined;
+      if (!ctx?.activeGardenId || !membership || !role) return;
+      if (role === membership.role) return;
+      if (!(await confirmDialog(authT("identity.capabilities.role_confirm", {
+        username: membership.username,
+        from: membership.role,
+        to: role,
+      })))) return;
+      const actionReason = await authorizeSensitiveAdminAction(
+        "Update garden member role",
+        `garden-membership-role:${ctx.activeGardenId}:${userId}:${role}`,
+      );
+      if (!actionReason) return;
+      try {
+        await upsertGardenMembershipApi(ctx.activeGardenId, membership.username, role, actionReason);
+        await Promise.all([loadGardenSettings(), refreshIdentityCapabilities()]);
+        setIdentityNotice(authT("identity.capabilities.refreshed"));
+        repaintFull();
+      } catch (err) {
+        setIdentityNotice(getApiErrorMessage(err), true);
+        repaint();
+      }
+    });
+  });
+
   container.querySelectorAll<HTMLButtonElement>(".adm-act-remove-garden-member").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const ctx = gardenContextFn?.();
@@ -2433,9 +2608,9 @@ function wireSection(): void {
       if (!actionReason) return;
       try {
         await deleteGardenMembershipApi(ctx.activeGardenId, userId, actionReason);
-        showToast(t("admin.toast.removed_garden_member", { username }), "success");
-        await loadGardenSettings();
-        repaint();
+        await Promise.all([loadGardenSettings(), refreshIdentityCapabilities()]);
+        setIdentityNotice(t("admin.toast.removed_garden_member", { username }));
+        repaintFull();
       } catch (err) {
         showToast(getApiErrorMessage(err), "error");
       }
@@ -2609,9 +2784,23 @@ function wireSection(): void {
     );
     if (nicknameValue === null) return;
     const nickname = nicknameValue.trim();
-    const currentPassword = await promptPasswordDialog(t("auth.current_password"));
-    if (currentPassword === null || !currentPassword) return;
+    let currentPassword = "";
+    const requiresAdminStepUp = Boolean(
+      state.me?.role === "admin" && !state.me.mfa_authenticated,
+    );
     try {
+      if (state.me?.password_auth_disabled) {
+        const reauthOptions = await beginPasskeyReauthenticationApi();
+        const reauthCredential = await getPasskey(reauthOptions.publicKey);
+        await finishPasskeyReauthenticationApi(
+          reauthOptions.challenge_token,
+          reauthCredential,
+        );
+        state.me = { ...state.me, mfa_authenticated: true };
+      } else {
+        currentPassword = await promptPasswordDialog(t("auth.current_password")) ?? ""; // push-sanitizer: allow SECRET_ASSIGNMENT - user-entered value is held only for this request
+        if (!currentPassword) return;
+      }
       const options = await beginPasskeyRegistrationApi(nickname, currentPassword);
       const credential = await createPasskey(options.publicKey);
       await finishPasskeyRegistrationApi(
@@ -2619,9 +2808,24 @@ function wireSection(): void {
         nickname,
         credential,
       );
+      if (requiresAdminStepUp) {
+        const reauthOptions = await beginPasskeyReauthenticationApi();
+        const reauthCredential = await getPasskey(reauthOptions.publicKey);
+        await finishPasskeyReauthenticationApi(
+          reauthOptions.challenge_token,
+          reauthCredential,
+        );
+        if (state.me) {
+          state.me = {
+            ...state.me,
+            mfa_authenticated: true,
+            mfa_setup_required: false,
+          };
+        }
+      }
       await loadSettings();
       onAuthStateChanged?.();
-      showToast(t("admin.passkeys.added"), "success");
+      setIdentityNotice(t("admin.passkeys.added"));
       repaint();
     } catch (err) {
       showToast(
@@ -2632,6 +2836,34 @@ function wireSection(): void {
       );
     }
   });
+  container.querySelectorAll<HTMLButtonElement>(".adm-passkey-rename").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const row = btn.closest<HTMLElement>("[data-passkey-id]");
+      const passkeyId = Number(row?.dataset["passkeyId"]);
+      const passkey = state.passkeys.find((item) => item.id === passkeyId);
+      if (!passkey || !Number.isFinite(passkeyId)) return;
+      const nicknameValue = await promptDialog(
+        authT("identity.passkeys.rename_prompt"),
+        passkeyDisplayName(passkey),
+      );
+      const nickname = nicknameValue?.trim() ?? "";
+      if (!nickname || nickname === passkey.nickname) return;
+      const actionReason = await authorizeSensitiveAdminAction(
+        authT("identity.passkeys.rename"),
+        `passkey-rename:${passkeyId}`,
+      );
+      if (!actionReason) return;
+      try {
+        await renamePasskeyApi(passkeyId, nickname, actionReason);
+        await loadSettings();
+        setIdentityNotice(authT("identity.passkeys.renamed"));
+        repaint();
+      } catch {
+        setIdentityNotice(authT("identity.passkeys.change_failed"), true);
+        repaint();
+      }
+    });
+  });
   container.querySelectorAll<HTMLButtonElement>(".adm-passkey-remove").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const row = btn.closest<HTMLElement>("[data-passkey-id]");
@@ -2639,27 +2871,36 @@ function wireSection(): void {
       if (!Number.isFinite(passkeyId)) return;
       const passkey = state.passkeys.find((item) => item.id === passkeyId);
       const name = passkey ? passkeyDisplayName(passkey) : t("admin.passkeys.default_name");
-      if (!(await confirmDialog(t("admin.passkeys.remove_confirm", { name })))) {
+      const warningKey = state.passkeys.length === 1
+        ? "identity.passkeys.last_revoke_warning"
+        : "identity.passkeys.revoke_warning";
+      if (!(await confirmDialog(authT(warningKey, { name })))) {
         return;
       }
+      const actionReason = await authorizeSensitiveAdminAction(
+        t("admin.passkeys.remove"),
+        `passkey-revoke:${passkeyId}`,
+      );
+      if (!actionReason) return;
       try {
-        await deletePasskeyApi(passkeyId, "ui-passkey-delete");
+        await deletePasskeyApi(passkeyId, actionReason);
         await loadSettings();
         onAuthStateChanged?.();
-        showToast(t("admin.passkeys.removed"), "success");
+        setIdentityNotice(t("admin.passkeys.removed"));
         repaint();
-      } catch (err) {
-        showToast(getApiErrorMessage(err), "error");
+      } catch {
+        setIdentityNotice(authT("identity.passkeys.change_failed"), true);
+        repaint();
       }
     });
   });
   container.querySelector("#adm-mfa-start")?.addEventListener("click", async () => {
     try {
-      state.mfaEnrollment = await startAuthTotpEnrollmentApi();
+      state.mfaEnrollment = await startTotpEnrollmentApi();
       state.latestRecoveryCodes = [];
       await loadSettings();
       repaint();
-    } catch (err) { showToast(getApiErrorMessage(err), "error"); }
+    } catch { setIdentityNotice(authT("identity.mfa.change_failed"), true); repaint(); }
   });
   container.querySelector("#adm-mfa-confirm")?.addEventListener("click", async () => {
     const code = queryInput("adm-mfa-code")?.value.trim() ?? "";
@@ -2668,17 +2909,37 @@ function wireSection(): void {
       return;
     }
     try {
-      const result = await confirmAuthTotpEnrollmentApi(code);
+      const result = await confirmTotpEnrollmentApi(code);
       state.latestRecoveryCodes = result.recovery_codes;
       state.mfaEnrollment = null;
       await loadSettings();
       state.me = await getAuthMeApi();
       onAuthStateChanged?.();
-      showToast(t("admin.toast.mfa_enabled"), "success");
+      setIdentityNotice(t("admin.toast.mfa_enabled"));
       repaint();
-    } catch (err) { showToast(getApiErrorMessage(err), "error"); }
+    } catch { setIdentityNotice(authT("identity.mfa.change_failed"), true); repaint(); }
+  });
+  container.querySelector("#adm-mfa-cancel")?.addEventListener("click", async () => {
+    if (!(await confirmDialog(authT("identity.mfa.cancel_confirm")))) return;
+    const actionReason = await authorizeSensitiveAdminAction(
+      authT("identity.mfa.cancel"),
+      "totp-enrollment-cancel",
+    );
+    if (!actionReason) return;
+    try {
+      await cancelTotpEnrollmentApi(actionReason);
+      state.mfaEnrollment = null;
+      state.latestRecoveryCodes = [];
+      await loadSettings();
+      setIdentityNotice(authT("identity.mfa.cancelled"));
+      repaint();
+    } catch {
+      setIdentityNotice(authT("identity.mfa.change_failed"), true);
+      repaint();
+    }
   });
   container.querySelector("#adm-mfa-disable")?.addEventListener("click", async () => {
+    if (!(await confirmDialog(authT("identity.mfa.disable_confirm")))) return;
     const actionReason = await authorizeSensitiveAdminAction(
       t("admin_panel.action_disable_mfa"),
       "disable-platform-admin-mfa",
@@ -2691,11 +2952,12 @@ function wireSection(): void {
       await loadSettings();
       state.me = await getAuthMeApi();
       onAuthStateChanged?.();
-      showToast(t("admin.toast.mfa_disabled"), "success");
+      setIdentityNotice(t("admin.toast.mfa_disabled"));
       repaint();
-    } catch (err) { showToast(getApiErrorMessage(err), "error"); }
+    } catch { setIdentityNotice(authT("identity.mfa.change_failed"), true); repaint(); }
   });
   container.querySelector("#adm-mfa-regenerate")?.addEventListener("click", async () => {
+    if (!(await confirmDialog(authT("identity.mfa.regenerate_confirm")))) return;
     const actionReason = await authorizeSensitiveAdminAction(
       t("admin_panel.action_regenerate_mfa"),
       "regenerate-platform-admin-recovery-codes",
@@ -2705,9 +2967,9 @@ function wireSection(): void {
       const result = await regenerateAuthMfaRecoveryCodesApi(actionReason);
       state.latestRecoveryCodes = result.recovery_codes;
       await loadSettings();
-      showToast(t("admin.toast.recovery_regenerated"), "success");
+      setIdentityNotice(t("admin.toast.recovery_regenerated"));
       repaint();
-    } catch (err) { showToast(getApiErrorMessage(err), "error"); }
+    } catch { setIdentityNotice(authT("identity.mfa.change_failed"), true); repaint(); }
   });
   container.querySelector("#adm-mfa-copy-recovery")?.addEventListener("click", () => {
     const output = queryTextArea("adm-mfa-recovery-output");
@@ -2799,8 +3061,8 @@ function wireSection(): void {
           action_reason: actionReason,
         });
         showToast(t("admin.user_updated"), "success");
-        await loadUsers();
-        repaint();
+        await Promise.all([loadUsers(), refreshIdentityCapabilities()]);
+        repaintFull();
       } catch (err) { showToast(getApiErrorMessage(err), "error"); }
     }
 
@@ -2988,6 +3250,34 @@ function wireSection(): void {
   }, { once: false });
 
   // Sessions section
+  container.querySelectorAll<HTMLButtonElement>(".adm-session-revoke-one").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const row = btn.closest<HTMLElement>("[data-session-id]");
+      const sessionId = row?.dataset["sessionId"]?.trim() ?? "";
+      const session = state.sessions.find((item) => item.id === sessionId);
+      if (!sessionId || !session || session.is_current) return;
+      const device = identitySessionDevice(session);
+      if (!(await confirmDialog(authT("identity.sessions.revoke_confirm", { device })))) return;
+      let actionReason = "ui-self-session-revoke";
+      if (isPlatformAdmin() && session.username !== state.me?.username) {
+        const authorizedReason = await authorizeSensitiveAdminAction(
+          authT("identity.sessions.revoke"),
+          `session-revoke:${sessionId}`,
+        );
+        if (!authorizedReason) return;
+        actionReason = authorizedReason;
+      }
+      try {
+        await revokeIdentitySessionApi(sessionId, actionReason);
+        await loadSessions();
+        setIdentityNotice(authT("identity.sessions.revoked"));
+        repaint();
+      } catch {
+        setIdentityNotice(authT("identity.sessions.change_failed"), true);
+        repaint();
+      }
+    });
+  });
   container.querySelector("#adm-refresh-sessions")?.addEventListener("click", () => {
     void loadSessions().then(repaint);
   });
@@ -3127,11 +3417,12 @@ function wireSection(): void {
         ? { actionReason }
         : { actionReason, expiresInMinutes };
       state.emergencyReadOnly = await setEmergencyReadOnlyApi(next, options);
+      await refreshIdentityCapabilities();
       showToast(
         t("admin.ero_toggled", { state: state.emergencyReadOnly.enabled ? t("admin.enabled") : t("admin.disabled") }),
         "success",
       );
-      repaint();
+      repaintFull();
     } catch (err) { showToast(getApiErrorMessage(err), "error"); }
   });
 }
