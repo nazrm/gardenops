@@ -1072,6 +1072,8 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
         "exerciseSessionRevocation",
         "exerciseIncidentControl",
         "exerciseRoleSurface",
+        "backupAuthenticatorId",
+        "holdRegistrationOptions",
         "Passwordless passkey sign-in failed",
         "Revoked browser session remained authorized",
         "Invalid invitation attempt changed account or invitation counts",

@@ -218,12 +218,10 @@ async function assertExpectedSilentDiagnostic(
   );
 }
 
-async function enableVirtualAuthenticator(context, page) {
-  const client = await context.newCDPSession(page);
-  await client.send("WebAuthn.enable");
+async function addVirtualAuthenticator(client, automaticPresenceSimulation) {
   const result = await client.send("WebAuthn.addVirtualAuthenticator", {
     options: {
-      automaticPresenceSimulation: true,
+      automaticPresenceSimulation,
       hasResidentKey: true,
       hasUserVerification: true,
       isUserVerified: true,
@@ -234,18 +232,39 @@ async function enableVirtualAuthenticator(context, page) {
   assert(result.authenticatorId, "Virtual WebAuthn authenticator was not created");
   await client.send("WebAuthn.setAutomaticPresenceSimulation", {
     authenticatorId: result.authenticatorId,
-    enabled: true,
+    enabled: automaticPresenceSimulation,
   });
   await client.send("WebAuthn.setUserVerified", {
     authenticatorId: result.authenticatorId,
     isUserVerified: true,
   });
+  return result.authenticatorId;
+}
+
+async function enableVirtualAuthenticator(context, page) {
+  const client = await context.newCDPSession(page);
+  await client.send("WebAuthn.enable");
+  const authenticatorId = await addVirtualAuthenticator(client, true);
   return {
-    authenticatorId: result.authenticatorId,
+    authenticatorId,
     client,
+    async addAuthenticator(automaticPresenceSimulation = false) {
+      return addVirtualAuthenticator(client, automaticPresenceSimulation);
+    },
+    async removeAuthenticator(targetAuthenticatorId) {
+      await client.send("WebAuthn.removeVirtualAuthenticator", {
+        authenticatorId: targetAuthenticatorId,
+      });
+    },
+    async setAutomaticPresence(enabled, targetAuthenticatorId = authenticatorId) {
+      await client.send("WebAuthn.setAutomaticPresenceSimulation", {
+        authenticatorId: targetAuthenticatorId,
+        enabled,
+      });
+    },
     async setUserVerified(isUserVerified) {
       await client.send("WebAuthn.setUserVerified", {
-        authenticatorId: result.authenticatorId,
+        authenticatorId,
         isUserVerified,
       });
     },
@@ -933,46 +952,70 @@ async function exercisePasswordlessPasskeyRedundancy(
   await waitFor(() => initialRows.count().then((count) => count === 1),
     "passwordless primary passkey");
 
-  const reauthPending = responseFor(page, "POST", "/api/auth/reauthenticate/passkey/verify");
-  const registerPending = responseFor(page, "POST", "/api/auth/passkeys/register/verify");
-  await page.locator("#adm-passkey-add").click();
-  await answerPrompt(page, "Phase 5 backup garden key");
-  assert((await reauthPending).ok(), "Passwordless passkey step-up failed");
-  assert((await registerPending).status() === 201,
-    "Passwordless backup passkey registration failed");
-  await waitFor(() => page.locator("[data-passkey-id]").count().then((count) => count === 2),
-    "passwordless backup passkey registration");
+  const backupAuthenticatorId = await virtualAuthenticator.addAuthenticator(false);
+  try {
+    const registrationOptionsPattern = "**/api/auth/passkeys/register/options";
+    let optionsHeld = false;
+    let releaseOptions = null;
+    const holdRegistrationOptions = async (route) => {
+      optionsHeld = true;
+      await new Promise((resolve) => { releaseOptions = resolve; });
+      await route.fallback();
+    };
+    await page.route(registrationOptionsPattern, holdRegistrationOptions);
+    try {
+      const reauthPending = responseFor(page, "POST", "/api/auth/reauthenticate/passkey/verify");
+      const registerPending = responseFor(page, "POST", "/api/auth/passkeys/register/verify");
+      await page.locator("#adm-passkey-add").click();
+      await answerPrompt(page, "Phase 5 backup garden key");
+      assert((await reauthPending).ok(), "Passwordless passkey step-up failed");
+      await waitFor(() => Promise.resolve(optionsHeld), "backup passkey registration options");
+      await virtualAuthenticator.setAutomaticPresence(false);
+      await virtualAuthenticator.setAutomaticPresence(true, backupAuthenticatorId);
+      releaseOptions();
+      releaseOptions = null;
+      assert((await registerPending).status() === 201,
+        "Passwordless backup passkey registration failed");
+    } finally {
+      releaseOptions?.();
+      await page.unroute(registrationOptionsPattern, holdRegistrationOptions);
+    }
+    await waitFor(() => page.locator("[data-passkey-id]").count().then((count) => count === 2),
+      "passwordless backup passkey registration");
 
-  const row = page.locator("[data-passkey-id]").first();
-  const deletePending = page.waitForResponse((response) => (
-    response.request().method() === "DELETE"
-    && /^\/api\/auth\/passkeys\/\d+$/.test(new URL(response.url()).pathname)
-  ));
-  const removalReauthPending = responseFor(
-    page,
-    "POST",
-    "/api/auth/reauthenticate/passkey/verify",
-  );
-  await row.locator(".adm-passkey-remove").click();
-  await confirmVisibleDialog(page);
-  await answerPrompt(page, "phase-five-passwordless-backup-revoke");
-  assert((await removalReauthPending).ok(), "Passwordless removal step-up failed");
-  assert((await deletePending).ok(), "Passwordless redundant passkey removal failed");
-  await waitFor(() => page.locator("[data-passkey-id]").count().then((count) => count === 1),
-    "passwordless redundant passkey removal");
+    const row = page.locator("[data-passkey-id]").first();
+    const deletePending = page.waitForResponse((response) => (
+      response.request().method() === "DELETE"
+      && /^\/api\/auth\/passkeys\/\d+$/.test(new URL(response.url()).pathname)
+    ));
+    const removalReauthPending = responseFor(
+      page,
+      "POST",
+      "/api/auth/reauthenticate/passkey/verify",
+    );
+    await row.locator(".adm-passkey-remove").click();
+    await confirmVisibleDialog(page);
+    await answerPrompt(page, "phase-five-passwordless-backup-revoke");
+    assert((await removalReauthPending).ok(), "Passwordless removal step-up failed");
+    assert((await deletePending).ok(), "Passwordless redundant passkey removal failed");
+    await waitFor(() => page.locator("[data-passkey-id]").count().then((count) => count === 1),
+      "passwordless redundant passkey removal");
 
-  const finalRow = page.locator("[data-passkey-id]").first();
-  const finalRemove = finalRow.locator(".adm-passkey-remove");
-  assert(await finalRemove.isDisabled(), "Passwordless final passkey removal remained enabled");
-  const finalPasskeyId = await finalRow.getAttribute("data-passkey-id");
-  assert(/^\d+$/.test(finalPasskeyId || ""), "Passwordless final passkey ID is invalid");
-  await expectedHttpFailure(page, diagnostics, {
-    body: { action_reason: "phase-five-final-factor-lockout" },
-    method: "DELETE",
-    path: `/api/auth/passkeys/${finalPasskeyId}`,
-  }, 409);
-  assert(await finalRemove.isDisabled(), "Final-factor denial changed the passkey controls");
-  await virtualAuthenticator.setUserVerified(true);
+    const finalRow = page.locator("[data-passkey-id]").first();
+    const finalRemove = finalRow.locator(".adm-passkey-remove");
+    assert(await finalRemove.isDisabled(), "Passwordless final passkey removal remained enabled");
+    const finalPasskeyId = await finalRow.getAttribute("data-passkey-id");
+    assert(/^\d+$/.test(finalPasskeyId || ""), "Passwordless final passkey ID is invalid");
+    await expectedHttpFailure(page, diagnostics, {
+      body: { action_reason: "phase-five-final-factor-lockout" },
+      method: "DELETE",
+      path: `/api/auth/passkeys/${finalPasskeyId}`,
+    }, 409);
+    assert(await finalRemove.isDisabled(), "Final-factor denial changed the passkey controls");
+  } finally {
+    await virtualAuthenticator.setAutomaticPresence(true).catch(() => undefined);
+    await virtualAuthenticator.removeAuthenticator(backupAuthenticatorId).catch(() => undefined);
+  }
 }
 
 async function exerciseRoleSurface(page, profile, role) {
