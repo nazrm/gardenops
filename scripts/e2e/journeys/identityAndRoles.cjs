@@ -531,7 +531,7 @@ async function revokePasskey(page, fixture, diagnostics, adminPassword) {
   await gate.waitFor({ state: "detached", timeout: 15_000 });
 }
 
-async function exerciseTotp(page, diagnostics, username, password) {
+async function exerciseTotp(page, username, password) {
   await openAdminSection(page, "desktop", "settings");
   const firstStart = responseFor(page, "POST", "/api/auth/mfa/totp/start");
   await page.locator("#adm-mfa-start").click();
@@ -558,6 +558,10 @@ async function exerciseTotp(page, diagnostics, username, password) {
   await page.locator("#adm-mfa-confirm").click();
   assert((await confirmPending).ok(), "TOTP enrollment confirmation failed");
   await visible(page.locator("#adm-mfa-recovery-output"), "TOTP recovery codes");
+  const initialRecoveryCodes = await page.locator("#adm-mfa-recovery-output").inputValue();
+  const oldRecoveryCode = initialRecoveryCodes.split(/\r?\n/)
+    .map((line) => line.trim()).find(Boolean);
+  assert(oldRecoveryCode, "Initial recovery codes were empty");
 
   const regeneratePending = responseFor(page, "POST", "/api/auth/mfa/recovery-codes/regenerate");
   await page.locator("#adm-mfa-regenerate").click();
@@ -565,34 +569,42 @@ async function exerciseTotp(page, diagnostics, username, password) {
   await answerPrompt(page, "phase-five-recovery-regeneration");
   assert((await regeneratePending).ok(), "TOTP recovery regeneration failed");
   await visible(page.locator("#adm-mfa-recovery-output"), "regenerated TOTP recovery codes");
+  await waitFor(
+    () => page.locator("#adm-mfa-recovery-output").inputValue()
+      .then((value) => value !== initialRecoveryCodes),
+    "regenerated TOTP recovery-code repaint",
+  );
   const recoveryCode = await page.locator("#adm-mfa-recovery-output").inputValue()
     .then((value) => value.split(/\r?\n/).map((line) => line.trim()).find(Boolean));
   assert(recoveryCode, "Regenerated recovery codes were empty");
 
   await signOut(page, "recovery-code use");
   let mfaForm = await enterPasswordLoginStage(page, username, password);
-  await mfaForm.locator("input[name='recovery_code']").fill(recoveryCode);
+  await mfaForm.locator("input[name='recovery_code']").fill(oldRecoveryCode);
   let loginPending = responseFor(page, "POST", "/api/auth/login");
   await mfaForm.locator("button[type='submit']").click();
-  assert((await loginPending).ok(), "Recovery-code sign-in failed");
+  const invalidated = await loginPending;
+  const invalidatedBody = await invalidated.json();
+  assert(invalidated.status() === 200 && invalidatedBody.status === "mfa_required",
+    "Pre-regeneration recovery code was not invalidated");
+  await mfaForm.locator("input[name='recovery_code']").fill(recoveryCode);
+  loginPending = responseFor(page, "POST", "/api/auth/login");
+  await mfaForm.locator("button[type='submit']").click();
+  const recovered = await loginPending;
+  const recoveredBody = await recovered.json();
+  assert(recovered.ok() && recoveredBody.status !== "mfa_required",
+    "Recovery-code sign-in failed");
   await mfaForm.waitFor({ state: "detached", timeout: 15_000 });
 
   await signOut(page, "recovery-code reuse");
   mfaForm = await enterPasswordLoginStage(page, username, password);
   await mfaForm.locator("input[name='recovery_code']").fill(recoveryCode);
-  const reuseMarks = diagnosticMarks(diagnostics);
   loginPending = responseFor(page, "POST", "/api/auth/login");
   await mfaForm.locator("button[type='submit']").click();
   const reused = await loginPending;
-  assert(reused.status() === 401, `Reused recovery code returned ${reused.status()}`);
-  await discardExpectedUiFailure(
-    page,
-    diagnostics,
-    reuseMarks,
-    "POST",
-    "/api/auth/login",
-    401,
-  );
+  const reusedBody = await reused.json();
+  assert(reused.status() === 200 && reusedBody.status === "mfa_required",
+    "Reused recovery code was not rejected by the MFA challenge");
   await mfaForm.locator("input[name='recovery_code']").fill("");
   await mfaForm.locator("input[name='mfa_code']").fill(
     await freshTotpAfter(secret, enrollmentCode),
@@ -996,7 +1008,7 @@ async function runProfile(options, shared) {
       result.checks.live_role_refresh = true;
       await exerciseSessionExpiry(options);
       result.checks.idle_and_absolute_session_expiry = true;
-      await exerciseTotp(page, guarded.diagnostics, options.username, options.password);
+      await exerciseTotp(page, options.username, options.password);
       result.checks.totp_lifecycle = true;
       await exerciseIncidentControl(page, guarded.diagnostics, fixture);
       result.checks.incident_control = true;
