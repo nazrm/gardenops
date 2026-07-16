@@ -13,12 +13,11 @@
         { "actor": "anonymous", "count": 2, "garden": null, "method": "POST", "path": "/api/auth/passkeys/login/options", "status_code": 200 },
         { "actor": "anonymous", "count": 2, "garden": null, "method": "POST", "path": "/api/auth/login", "status_code": 200 },
         { "actor": "admin", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/auth/passkeys/prompt/dismiss", "status_code": 200 },
-        { "actor": "admin", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/media/summaries", "status_code": 200 },
+        { "actor": "admin", "count": 2, "garden": "alpha", "method": "POST", "path": "/api/media/summaries", "status_code": 200 },
         { "actor": "admin", "count": 2, "garden": "beta", "method": "POST", "path": "/api/media/summaries", "status_code": 200 },
         { "actor": "admin", "count": 2, "garden": "alpha", "method": "POST", "path": "/api/journal", "status_code": 201 },
         { "actor": "admin", "count": 1, "garden": "beta", "method": "POST", "path": "/api/journal", "status_code": 201 },
-        { "actor": "admin", "count": 1, "garden": "beta", "method": "POST", "path": "/api/auth/logout", "status_code": 200 },
-        { "actor": "anonymous", "count": 2, "garden": null, "method": "POST", "path": "/api/client-errors", "status_code": 204 }
+        { "actor": "admin", "count": 1, "garden": "beta", "method": "POST", "path": "/api/auth/logout", "status_code": 200 }
       ]
     },
     "browser_contract": {

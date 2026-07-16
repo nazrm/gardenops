@@ -120,7 +120,20 @@ async function browserJson(page, path, gardenId) {
 }
 
 async function enqueueOfflineJournal(page, fixture, title) {
+  const journalLoaded = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === "GET"
+      && url.pathname === "/api/journal"
+      && response.status() === 200;
+  });
+  const mediaPreviewsLoaded = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === "POST"
+      && url.pathname === "/api/media/summaries"
+      && response.status() === 200;
+  });
   await openJournal(page);
+  await Promise.all([journalLoaded, mediaPreviewsLoaded]);
   await page.context().setOffline(true);
   await page.locator("#journal-add-btn").click();
   const form = page.locator(".journal-composer");
@@ -220,13 +233,13 @@ async function runOfflineProfile(options) {
     const offlineQueueFailureMarks = diagnosticMarks(guarded.diagnostics);
     const offlineQueueFailureCapture = captureNetworkFailures(page);
     const queued = await enqueueOfflineJournal(page, options.fixture, title);
-    await consumeExpectedNetworkFailure(
-      guarded.diagnostics,
-      offlineQueueFailureMarks,
-      offlineQueueFailureCapture,
-      { error: "ERR_INTERNET_DISCONNECTED", method: "POST", path: "/api/media/summaries" },
-      "Phase 6 offline journal refresh",
-    );
+    await page.waitForTimeout(200);
+    offlineQueueFailureCapture.stop();
+    assert(guarded.diagnostics.requestFailures.length === offlineQueueFailureMarks.request
+      && guarded.diagnostics.consoleErrors.length === offlineQueueFailureMarks.console
+      && guarded.diagnostics.classifiedConsoleDiagnostics.length === offlineQueueFailureMarks.classified
+      && offlineQueueFailureCapture.failures.length === 0,
+    "Phase 6 offline queue attempted a network request");
     assert(queued.garden_id === options.fixture.gardens.alpha.id,
       "Phase 6 queued draft lost its source garden");
     assert(/^[0-9a-f-]{36}$/.test(queued.operation_id),

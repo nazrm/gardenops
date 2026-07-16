@@ -1118,7 +1118,7 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     assert oracle["phase_six"]["audit_contract"]["additional_login_count"] == 1
     assert sum(
         event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]
-    ) == 14
+    ) == 13
     for marker in (
         "route.fetch()",
         'route.abort("failed")',
@@ -1169,7 +1169,7 @@ const evidence = assertPhaseSixAuditEvents(
   fixture,
   oracle,
 );
-if (!evidence.audit_events_exact || evidence.audit_event_count !== 14) process.exit(3);
+if (!evidence.audit_events_exact || evidence.audit_event_count !== 13) process.exit(3);
 const tampered = structuredClone(records);
 tampered.at(-1).garden_id = 999;
 try {
