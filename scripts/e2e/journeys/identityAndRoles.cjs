@@ -51,13 +51,15 @@ async function openAdminSection(page, profile, section) {
   await waitForAdminIdle(page, `${section} settings load`);
 }
 
-async function answerPrompt(page, value) {
+async function answerPrompt(page, value, beforeConfirm = null) {
   const dialog = page.locator(".modal:visible").last();
   await visible(dialog, "identity prompt");
   const input = dialog.locator(".prompt-dialog-input");
   await visible(input, "identity prompt input");
   if (value !== undefined) await input.fill(value);
+  const pending = beforeConfirm?.() ?? null;
   await dialog.locator(".confirm-yes").click();
+  return pending;
 }
 
 async function confirmVisibleDialog(page) {
@@ -995,18 +997,24 @@ async function exercisePasswordlessPasskeyRedundancy(
     assert(!await removeButton.isDisabled(), "Redundant passkey removal was disabled");
     await removeButton.click();
     await confirmVisibleDialog(page);
-    const deletePending = page.waitForResponse((response) => (
-      response.request().method() === "DELETE"
-      && /^\/api\/auth\/passkeys\/\d+$/.test(new URL(response.url()).pathname)
-    ));
-    const removalReauthPending = responseFor(
+    const removalPending = await answerPrompt(
       page,
-      "POST",
-      "/api/auth/reauthenticate/passkey/verify",
+      "phase-five-passwordless-backup-revoke",
+      () => ({
+        deletion: page.waitForResponse((response) => (
+          response.request().method() === "DELETE"
+          && /^\/api\/auth\/passkeys\/\d+$/.test(new URL(response.url()).pathname)
+        )),
+        reauthentication: responseFor(
+          page,
+          "POST",
+          "/api/auth/reauthenticate/passkey/verify",
+        ),
+      }),
     );
-    await answerPrompt(page, "phase-five-passwordless-backup-revoke");
-    assert((await removalReauthPending).ok(), "Passwordless removal step-up failed");
-    assert((await deletePending).ok(), "Passwordless redundant passkey removal failed");
+    assert(removalPending, "Passwordless removal response capture was not armed");
+    assert((await removalPending.reauthentication).ok(), "Passwordless removal step-up failed");
+    assert((await removalPending.deletion).ok(), "Passwordless redundant passkey removal failed");
     await waitFor(() => page.locator("[data-passkey-id]").count().then((count) => count === 1),
       "passwordless redundant passkey removal");
 
