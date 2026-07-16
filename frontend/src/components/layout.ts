@@ -145,7 +145,7 @@ export function getAppShellMarkup(): string {
         </button>
       </header>
 
-      <header class="top-nav desktop-top-nav" role="tablist" aria-label="${t("nav.main_sections")}" data-i18n-aria-label="nav.main_sections">
+      <nav class="top-nav desktop-top-nav" aria-label="${t("nav.main_sections")}" data-i18n-aria-label="nav.main_sections">
         <div class="nav-tabs" id="nav-tabs">
           <button class="app-brand" type="button" data-brand-home aria-label="${t("nav.map")}" title="${t("nav.map")}">
             <img
@@ -158,10 +158,10 @@ export function getAppShellMarkup(): string {
             />
             <span class="app-brand-name">${appTitle}</span>
           </button>
-          <button id="top-tab-map" class="top-tab active" data-tab="map" role="tab" aria-selected="true" aria-controls="map-view" tabindex="0" data-i18n="nav.map">${t("nav.map")}</button>
-          <button id="top-tab-garden" class="top-tab" data-tab="garden" role="tab" aria-selected="false" aria-controls="plants-view" tabindex="-1" data-i18n="nav.garden">${t("nav.garden")}</button>
-          <button id="top-tab-activity" class="top-tab" data-tab="activity" role="tab" aria-selected="false" aria-controls="plants-view" tabindex="-1" data-i18n="nav.activity"><span data-tab-label>${t("nav.activity")}</span><span class="tab-badge" id="tab-badge-activity" hidden></span></button>
-          <button id="top-tab-insights" class="top-tab" data-tab="insights" role="tab" aria-selected="false" aria-controls="care-view" tabindex="-1" data-i18n="nav.insights"><span data-tab-label>${t("nav.insights")}</span><span class="tab-badge" id="tab-badge-insights" hidden></span></button>
+          <button id="top-tab-map" class="top-tab active" data-tab="map" aria-current="page" data-i18n="nav.map">${t("nav.map")}</button>
+          <button id="top-tab-garden" class="top-tab" data-tab="garden" data-i18n="nav.garden">${t("nav.garden")}</button>
+          <button id="top-tab-activity" class="top-tab" data-tab="activity" data-i18n="nav.activity"><span data-tab-label>${t("nav.activity")}</span><span class="tab-badge" id="tab-badge-activity" hidden></span></button>
+          <button id="top-tab-insights" class="top-tab" data-tab="insights" data-i18n="nav.insights"><span data-tab-label>${t("nav.insights")}</span><span class="tab-badge" id="tab-badge-insights" hidden></span></button>
           <div class="top-search global-search-shell">
             <input
               id="global-plant-search"
@@ -184,7 +184,7 @@ export function getAppShellMarkup(): string {
             <span id="garden-role-chip" class="garden-role-chip" data-garden-role hidden></span>
           </div>
           ${getLocaleSwitchMarkup("desktop")}
-          <button id="top-tab-admin" class="top-tab top-tab--right" data-tab="admin" role="tab" aria-selected="false" aria-controls="admin-view" tabindex="-1">${t("nav.settings_user")}</button>
+          <button id="top-tab-admin" class="top-tab top-tab--right" data-tab="admin">${t("nav.settings_user")}</button>
           <button id="auth-btn" class="auth-btn" data-auth-trigger title="${t("nav.sign_in")}">${t("nav.sign_in")}</button>
           <span class="notification-bell-wrapper">
             <button id="notification-bell" class="notification-bell" type="button" aria-label="${t("notifications.bell_label")}" title="${t("notifications.bell_label")}">
@@ -195,7 +195,7 @@ export function getAppShellMarkup(): string {
           <button id="theme-toggle" class="theme-toggle" data-theme-toggle aria-label="${t("nav.toggle_theme")}" title="${t("nav.toggle_theme")}"></button>
           <span class="top-meta app-clock" id="top-clock"></span>
         </div>
-      </header>
+      </nav>
 
       <div id="notification-panel" class="notification-panel" role="dialog" aria-label="${t("notifications.title")}" hidden></div>
 
@@ -217,7 +217,7 @@ export function getAppShellMarkup(): string {
         >
           <span>${t("common.loading")}</span>
         </div>
-        <section id="map-view" class="view view-map active" role="tabpanel" aria-labelledby="top-tab-map">
+        <section id="map-view" class="view view-map active" aria-labelledby="top-tab-map">
           <div class="map-shell">
             <aside id="map-layers-panel" class="map-layers-panel" aria-labelledby="map-layers-title" inert>
               <div class="map-layers-header">
@@ -559,7 +559,7 @@ export function getAppShellMarkup(): string {
           </div>
         </section>
 
-        <section id="plants-view" class="view" role="tabpanel" aria-labelledby="top-tab-garden top-tab-activity" hidden>
+        <section id="plants-view" class="view" aria-labelledby="top-tab-garden top-tab-activity" hidden>
           <div class="plants-sub-header">
             <div class="plants-mode-groups">
               <div class="plants-mode-toggle" data-parent-tab-group="garden" role="tablist" aria-label="${t("nav.garden")}" data-i18n-aria-label="nav.garden">
@@ -950,7 +950,7 @@ export function getAppShellMarkup(): string {
           <div id="indoor-tab-content" hidden></div>
         </section>
 
-        <section id="care-view" class="view" role="tabpanel" aria-labelledby="top-tab-insights" hidden>
+        <section id="care-view" class="view" aria-labelledby="top-tab-insights" hidden>
           ${getInsightsModeToggleMarkup()}
           <div id="weather-dashboard" class="weather-dashboard"></div>
           <div class="data-view-header">
@@ -1005,7 +1005,7 @@ export function getAppShellMarkup(): string {
           </div>
         </section>
 
-        <section id="analysis-view" class="view" role="tabpanel" aria-labelledby="top-tab-insights" hidden>
+        <section id="analysis-view" class="view" aria-labelledby="top-tab-insights" hidden>
           ${getInsightsModeToggleMarkup()}
           <div class="analysis-shell">
             <div class="analysis-header">
@@ -1029,7 +1029,7 @@ export function getAppShellMarkup(): string {
           </div>
         </section>
 
-        <section id="statistics-view" class="view" role="tabpanel" aria-labelledby="top-tab-insights" hidden>
+        <section id="statistics-view" class="view" aria-labelledby="top-tab-insights" hidden>
           ${getInsightsModeToggleMarkup()}
           <div class="statistics-mode-toggle" role="tablist" aria-label="${t("stats.mode_label")}" data-i18n-aria-label="stats.mode_label">
             <button role="tab" aria-selected="true" data-stats-mode="today" id="stats-mode-today" data-i18n="stats.mode_today">${t("stats.mode_today")}</button>

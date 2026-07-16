@@ -2882,8 +2882,11 @@ function applyNavigationState(opts: { triggerLoads?: boolean } = {}): void {
   document.querySelectorAll<HTMLButtonElement>(".top-tab").forEach((btn) => {
     const isActive = btn.dataset["tab"] === activeTab;
     btn.classList.toggle("active", isActive);
-    btn.setAttribute("aria-selected", isActive ? "true" : "false");
-    btn.tabIndex = isActive ? 0 : -1;
+    if (isActive) {
+      btn.setAttribute("aria-current", "page");
+    } else {
+      btn.removeAttribute("aria-current");
+    }
   });
   document.querySelectorAll<HTMLButtonElement>(".mobile-tab-btn").forEach((btn) => {
     const isActive = btn.dataset["tab"] === activeTab;

@@ -91,7 +91,7 @@ async function assertAxeState(page, stateId) {
     script.textContent = source;
     document.head.append(script);
   }, axeSource);
-  const summary = await page.evaluate(async (id) => {
+  const raw = await page.evaluate(async (id) => {
     const result = await window.axe.run(document);
     return {
       state: id,
@@ -99,19 +99,23 @@ async function assertAxeState(page, stateId) {
         impact: violation.impact,
         nodeCount: violation.nodes.length,
         rule: violation.id,
+        targets: violation.nodes.map((node) => node.target.join(" ")),
       })),
     };
   }, stateId);
-  const blocking = summary.violations.filter((violation) => (
+  const blocking = raw.violations.filter((violation) => (
     violation.impact === "critical" || violation.impact === "serious"
   ));
   assert(
     blocking.length === 0,
     `${stateId} has axe serious/critical violations: ${blocking.map((item) => (
-      `${item.rule} (${item.impact}, ${item.nodeCount} nodes)`
+      `${item.rule} (${item.impact}, ${item.nodeCount} nodes: ${item.targets.join(", ")})`
     )).join("; ")}`,
   );
-  return summary;
+  return {
+    state: raw.state,
+    violations: raw.violations.map(({ impact, nodeCount, rule }) => ({ impact, nodeCount, rule })),
+  };
 }
 
 async function chromiumAXTree(page) {

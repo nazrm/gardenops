@@ -111,6 +111,21 @@ def test_invitation_loading_and_chat_failures_expose_live_semantics() -> None:
     assert 'errBubble.setAttribute("aria-live", "assertive")' in analysis
 
 
+def test_primary_navigation_uses_standard_navigation_semantics() -> None:
+    layout = _read_frontend("components/layout.ts")
+    tabs = _read_frontend("components/tabs.ts")
+    app = _read_frontend("app.ts")
+
+    assert '<nav class="top-nav desktop-top-nav" aria-label="${t("nav.main_sections")}"' in layout
+    assert 'role="tablist" aria-label="${t("nav.main_sections")}"' not in layout
+    assert 'id="top-tab-map" class="top-tab active" data-tab="map" aria-current="page"' in layout
+    assert 'id="top-tab-garden" class="top-tab" data-tab="garden" data-i18n="nav.garden"' in layout
+    assert 'role="tabpanel" aria-labelledby="top-tab-map"' not in layout
+    assert 'btn.setAttribute("aria-current", "page")' in app
+    assert 'btn.removeAttribute("aria-current")' in app
+    assert 'addEventListener("keydown"' not in tabs
+
+
 def test_static_filter_inputs_have_localized_accessible_names() -> None:
     layout = _read_frontend("components/layout.ts")
 

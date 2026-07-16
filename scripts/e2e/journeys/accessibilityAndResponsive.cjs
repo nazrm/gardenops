@@ -75,10 +75,10 @@ async function exerciseMapAndToday(page, options, result) {
   const label = profileLabel(options);
   const map = await activateTab(page, "map", label);
   const nextTab = tabButton(page, "garden");
-  await map.press("ArrowRight");
+  await page.keyboard.press("Tab");
   await waitFor(async () => await nextTab.evaluate((element) => document.activeElement === element),
-    `${label} primary navigation arrow-key order`);
-  await assertFocusVisibleAndUnobscured(page, nextTab, `${label} Garden tab after arrow-key navigation`);
+    `${label} primary navigation tab order`);
+  await assertFocusVisibleAndUnobscured(page, nextTab, `${label} Garden navigation control after keyboard traversal`);
   await nextTab.press("Enter");
   await visible(page.locator("#plants-view"), `${label} Garden tab panel`);
   await map.focus();
