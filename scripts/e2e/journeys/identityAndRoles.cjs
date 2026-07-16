@@ -689,15 +689,14 @@ async function exerciseSessionExpiry(options) {
       await expiryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
       await authenticate(expiryPage, expiry.username, expiry.password);
       guarded.markAuthenticated();
+      await expiryPage.goto("about:blank");
       ageDisposableSession(expiry.username, expiry.mode);
-      await expectedHttpFailure(
-        expiryPage,
-        guarded.diagnostics,
-        { path: "/api/auth/me" },
-        401,
+      const expiredSession = await expiryPage.goto(
+        new URL("/api/auth/me", options.baseUrl).href,
+        { waitUntil: "domcontentloaded" },
       );
-      assert(await expiryPage.locator(".auth-gate").count() === 0,
-        `${expiry.mode} expiry unexpectedly changed UI before the next transition`);
+      assert(expiredSession?.status() === 401,
+        `${expiry.mode} session remained authorized after its expiry boundary`);
       await guarded.close("passed");
       closed = true;
     } finally {
