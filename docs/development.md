@@ -258,6 +258,8 @@ scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --p
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 6
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 7
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 7
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 8
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 8
 ```
 
 The runner creates its own disposable PostgreSQL child through
@@ -533,6 +535,24 @@ provider/terrain contracts:
 .venv/bin/pytest -q tests/test_complete_journey_e2e_scripts.py -k phase_seven
 node --check scripts/e2e/providers/deterministicLoopbackProvider.cjs
 node --check scripts/e2e/journeys/providersAndTerrain.cjs
+node --check scripts/check_complete_journeys_e2e.cjs
+```
+
+Phase 8 adds the tracked accessibility-state inventory, pinned `axe-core` scans
+for serious and critical violations, Chromium accessibility-tree assertions,
+keyboard/focus checks, Pixel 7 and tablet layouts, reduced-motion rendering,
+and a 200% reflow-equivalent viewport. It preserves the existing map-first
+interaction and uses the same disposable backend, loopback network guard, and
+private trace lifecycle as every complete journey. Automated checks are not a
+screen-reader audit: record the separate operator-assisted smoke before marking
+the phase closed.
+
+Before coordinating a real Phase 8 browser run, validate its static and
+browser-harness contracts:
+
+```bash
+.venv/bin/pytest -q tests/test_frontend_accessibility_static.py tests/test_complete_journey_e2e_scripts.py -k phase_eight
+node --check scripts/e2e/journeys/accessibilityAndResponsive.cjs
 node --check scripts/check_complete_journeys_e2e.cjs
 ```
 

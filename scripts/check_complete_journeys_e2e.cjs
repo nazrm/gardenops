@@ -27,6 +27,7 @@ const { runPlanningAndReporting } = require("./e2e/journeys/planningAndReporting
 const { runIdentityAndRoles } = require("./e2e/journeys/identityAndRoles.cjs");
 const { runOfflineAndFailureRecovery } = require("./e2e/journeys/offlineAndFailureRecovery.cjs");
 const { runProvidersAndTerrain } = require("./e2e/journeys/providersAndTerrain.cjs");
+const { runAccessibilityAndResponsive } = require("./e2e/journeys/accessibilityAndResponsive.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const BASE_URL = process.env.BASE_URL || "";
@@ -162,7 +163,7 @@ function assertRunnerEnvironment() {
   assert(isAllowedUrl(BASE_URL, browserOrigins), "Complete journey BASE_URL is not in its browser contract");
   assert(fs.existsSync(CHROMIUM_EXECUTABLE), "System Chromium is required");
   assert(process.env.GARDENOPS_LOGS_DIR, "Complete journey backend log directory is required");
-  assert(PHASE <= 7 && THROUGH_PHASE <= 7, "Requested phase is not implemented");
+  assert(PHASE <= 8 && THROUGH_PHASE <= 8, "Requested phase is not implemented");
 }
 
 function assertExpectedHead() {
@@ -402,6 +403,69 @@ function assertPhaseSevenProfileEvidence(profiles, oracle = phaseSevenOracle()) 
     && profile.checks?.shademap_runtime_loaded === true),
   "Phase 7 fixture redaction or browser diagnostics proof is incomplete");
   return { profile_matrix_enforced: true, profile_order: observed };
+}
+
+function assertPhaseEightProfileEvidence(profiles) {
+  const expected = [
+    "admin:desktop",
+    "admin:mobile",
+    "admin:tablet",
+    "admin:desktop-reduced-motion",
+    "admin:mobile-reduced-motion",
+    "admin:desktop-reflow-200",
+    "viewer:desktop",
+  ];
+  const observed = profiles.map((profile) => `${profile.role}:${profile.profile}`);
+  assert(canonicalJson(observed) === canonicalJson(expected),
+    `Phase 8 browser profile order drifted: ${observed.join(", ")}`);
+  const byProfile = new Map(profiles.map((profile) => [`${profile.role}:${profile.profile}`, profile]));
+  const adminDesktop = byProfile.get("admin:desktop");
+  const adminMobile = byProfile.get("admin:mobile");
+  const adminTablet = byProfile.get("admin:tablet");
+  const reducedDesktop = byProfile.get("admin:desktop-reduced-motion");
+  const reducedMobile = byProfile.get("admin:mobile-reduced-motion");
+  const reflow = byProfile.get("admin:desktop-reflow-200");
+  const viewer = byProfile.get("viewer:desktop");
+  assert(adminDesktop?.checks?.map_populated === true
+    && adminDesktop?.checks?.today_disclosure === true
+    && adminDesktop?.checks?.task_completion_validation === true
+    && adminDesktop?.checks?.notifications_keyboard === true
+    && adminDesktop?.checks?.notifications_focus_return === true,
+  "Phase 8 desktop keyboard and dialog proof is incomplete");
+  assert(adminMobile?.checks?.map_populated === true
+    && adminMobile?.checks?.today_focus_return === true
+    && Array.isArray(adminMobile?.touch_targets) && adminMobile.touch_targets.length >= 2,
+  "Phase 8 mobile responsive and touch proof is incomplete");
+  assert(adminTablet?.checks?.map_populated === true
+    && adminTablet?.checks?.task_completion_validation === true
+    && adminTablet?.browser_profile?.user_agent_contract === "ipad-gen-7",
+  "Phase 8 tablet proof is incomplete");
+  assert(reducedDesktop?.checks?.today_disclosure === true
+    && reducedDesktop?.browser_profile?.prefers_reduced_motion === true,
+  "Phase 8 desktop reduced-motion proof is incomplete");
+  assert(reducedMobile?.checks?.today_disclosure === true
+    && reducedMobile?.browser_profile?.prefers_reduced_motion === true,
+  "Phase 8 mobile reduced-motion proof is incomplete");
+  assert(reflow?.checks?.map_populated === true
+    && reflow?.browser_profile?.user_agent_contract === "desktop-reflow-equivalent-200",
+  "Phase 8 200% reflow-equivalent proof is incomplete");
+  assert(viewer?.checks?.viewer_read_only === true,
+    "Phase 8 viewer read-only proof is incomplete");
+  assert(profiles.every((profile) => (
+    profile.checks?.browser_diagnostics === true
+    && Array.isArray(profile.axe)
+    && profile.axe.length > 0
+    && profile.axe.every((scan) => scan.violations.every((violation) => (
+      violation.impact !== "critical" && violation.impact !== "serious"
+    )))
+  )), "Phase 8 axe or browser-diagnostic proof is incomplete");
+  return { profile_matrix_enforced: true, profile_order: observed };
+}
+
+function assertPhaseEightDatabaseState(initial, final) {
+  assert(canonicalJson(initial) === canonicalJson(final),
+    "Phase 8 accessibility journey changed durable domain data");
+  return { domain_state_unchanged: true };
 }
 
 function assertPhaseSevenDatabaseState(initial, final, fixture) {
@@ -6904,6 +6968,7 @@ async function main() {
       ...(phaseSelected(5) ? ["A1", "A2", "A4", "C1", "C3", "C5", "CROSS-02"] : []),
       ...(phaseSelected(6) ? ["OFF-01"] : []),
       ...(phaseSelected(7) ? ["M5", "I2", "I3", "I4", "C4", "C6"] : []),
+      ...(phaseSelected(8) ? ["A1", "A3", "M1", "D1", "D2", "P1", "P2", "C3", "CROSS-01"] : []),
     ],
     phase: PHASE,
     profiles: [],
@@ -6971,6 +7036,10 @@ async function main() {
   let phaseSevenPreparation = null;
   let phaseSevenProfileEvidence = null;
   let phaseSevenProfiles = [];
+  let phaseEightDatabaseBaseline = null;
+  let phaseEightDatabaseEvidence = null;
+  let phaseEightProfileEvidence = null;
+  let phaseEightProfiles = [];
   let thrownError = null;
   let currentStage = "runner-startup";
   try {
@@ -7207,6 +7276,22 @@ async function main() {
       });
       phaseSevenProfiles = manifest.profiles.slice(phaseSevenProfileStart);
     }
+    if (phaseSelected(8)) {
+      currentStage = "phase-eight-browser";
+      phaseEightDatabaseBaseline = await settledDatabaseSnapshot("Phase 8 database baseline");
+      const phaseEightProfileStart = manifest.profiles.length;
+      await runAccessibilityAndResponsive({
+        artifactDir: ARTIFACT_DIR,
+        baseUrl: BASE_URL,
+        browser,
+        devices,
+        fixture,
+        onProfile: (profile) => manifest.profiles.push(profile),
+        password: PASSWORD,
+        username: USERNAME,
+      });
+      phaseEightProfiles = manifest.profiles.slice(phaseEightProfileStart);
+    }
     currentStage = "final-database-snapshot";
     const finalDatabase = await settledDatabaseSnapshot("Final database boundary");
     currentStage = "cumulative-assertions";
@@ -7250,6 +7335,7 @@ async function main() {
     const phaseFiveRan = phaseSelected(5);
     const phaseSixRan = phaseSelected(6);
     const phaseSevenRan = phaseSelected(7);
+    const phaseEightRan = phaseSelected(8);
     if (phaseOneRan) phaseOneProfileEvidence = assertPhaseOneProfileEvidence(phaseOneProfiles);
     if (phaseTwoRan) {
       assert(phaseTwoDatabase, "Phase 2 database boundary snapshot is missing");
@@ -7405,6 +7491,14 @@ async function main() {
         finalDatabase.audit_state,
         fixture,
         phaseSevenOracleSpec,
+      );
+    }
+    if (phaseEightRan) {
+      assert(phaseEightDatabaseBaseline, "Phase 8 database baseline snapshot is missing");
+      phaseEightProfileEvidence = assertPhaseEightProfileEvidence(phaseEightProfiles);
+      phaseEightDatabaseEvidence = assertPhaseEightDatabaseState(
+        phaseEightDatabaseBaseline.domain_tables,
+        finalDatabase.domain_tables,
       );
     }
     const phaseOneSemanticDeltaTables = phaseOneRan ? new Set([
@@ -8113,6 +8207,7 @@ async function main() {
         initial: fixture.database_snapshot.domain_tables,
         phase_one_boundary: phaseOneDatabase?.domain_tables ?? null,
         phase_seven_baseline: phaseSevenDatabaseBaseline?.domain_tables ?? null,
+        phase_eight_baseline: phaseEightDatabaseBaseline?.domain_tables ?? null,
       },
       domain_counts_unchanged: !phaseOneRan && !phaseTwoRan && !phaseThreeRan
         && !phaseFourRan && !phaseFiveRan && !phaseSixRan && !phaseSevenRan,
@@ -8224,6 +8319,16 @@ async function main() {
         support: phaseSevenOracleSpec.phase_seven.support,
         whole_table_mutation_accounting: wholeTableMutationAccounting,
       } : null,
+      phase_eight_enforcement: phaseEightRan ? {
+        ...phaseEightDatabaseEvidence,
+        browser_profile_matrix: phaseEightProfileEvidence?.profile_matrix_enforced === true,
+        phase_fixture_scope: PHASE === 8 && THROUGH_PHASE === 8
+          ? "fresh-fixture-phase-eight-only"
+          : "fresh-fixture-cumulative-through-phase-eight",
+        profile_execution: phaseEightProfileEvidence,
+        screen_reader_boundary: "operator-assisted smoke required before phase closure",
+        whole_table_mutation_accounting: wholeTableMutationAccounting,
+      } : null,
       phase_boundaries: {
         phase_one_audit_total: phaseOneDatabase?.audit_state.total_count ?? null,
         phase_one_profile_count: phaseOneRan
@@ -8238,6 +8343,7 @@ async function main() {
         phase_five_profile_count: phaseFiveRan ? phaseFiveProfiles.length : null,
         phase_six_profile_count: phaseSixRan ? phaseSixProfiles.length : null,
         phase_seven_profile_count: phaseSevenRan ? phaseSevenProfiles.length : null,
+        phase_eight_profile_count: phaseEightRan ? phaseEightProfiles.length : null,
       },
       final: finalDatabase.domain_counts,
       initial: fixture.database_snapshot.domain_counts,
@@ -8440,6 +8546,8 @@ module.exports = {
   phaseFiveOracle,
   phaseSixOracle,
   phaseSevenOracle,
+  assertPhaseEightDatabaseState,
+  assertPhaseEightProfileEvidence,
   writeManifestAtomic,
   runPhaseTwoReadOnlyPermutation,
 };

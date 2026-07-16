@@ -11,6 +11,8 @@ const ROOT = path.resolve(__dirname, "..", "..");
 const NETWORK_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:"]);
 const LOCAL_PROTOCOLS = new Set(["about:", "blob:", "data:"]);
 const PIXEL_7_VIEWPORT = Object.freeze({ height: 839, width: 412 });
+const IPAD_GEN_7_VIEWPORT = Object.freeze({ height: 1080, width: 810 });
+const REFLOW_200_VIEWPORT = Object.freeze({ height: 450, width: 720 });
 const ROUTE_GUARD_PROBE_URL = "http://192.0.2.1/api/complete-journey-route-guard";
 const TRACE_CONTROLS = new WeakMap();
 const EXPECTED_CONSOLE_DIAGNOSTIC_CONTEXTS = new Set([
@@ -234,6 +236,28 @@ function browserProfile(devices, name) {
     assert(pixel, "Playwright Pixel 7 device profile is unavailable");
     return { ...pixel };
   }
+  if (name === "tablet") {
+    const tablet = devices["iPad (gen 7)"];
+    assert(tablet, "Playwright iPad (gen 7) device profile is unavailable");
+    return { ...tablet };
+  }
+  if (name === "desktop-reduced-motion") {
+    return { reducedMotion: "reduce", viewport: { width: 1440, height: 900 } };
+  }
+  if (name === "mobile-reduced-motion") {
+    const pixel = devices["Pixel 7"];
+    assert(pixel, "Playwright Pixel 7 device profile is unavailable");
+    return { ...pixel, reducedMotion: "reduce" };
+  }
+  if (name === "desktop-reflow-200") {
+    return {
+      deviceScaleFactor: 2,
+      hasTouch: false,
+      isMobile: false,
+      screen: { height: 900, width: 1440 },
+      viewport: { ...REFLOW_200_VIEWPORT },
+    };
+  }
   throw new Error(`Unknown complete journey browser profile: ${name}`);
 }
 
@@ -249,12 +273,50 @@ function assertBrowserProfileContract(profileName, runtime) {
       "Pixel 7 runtime user agent was unexpected");
     return "pixel-7";
   }
-  assert(profileName === "desktop", `Unknown complete journey profile contract: ${profileName}`);
+  if (profileName === "tablet") {
+    assert(runtime?.is_mobile === true && runtime?.has_touch === true && runtime?.max_touch_points > 0,
+      "Tablet runtime must expose mobile touch input");
+    assert(viewport.width === IPAD_GEN_7_VIEWPORT.width && viewport.height === IPAD_GEN_7_VIEWPORT.height,
+      "Tablet runtime viewport was unexpected");
+    assert(/\biPad\b/i.test(String(runtime?.user_agent || "")),
+      "Tablet runtime user agent was unexpected");
+    return "ipad-gen-7";
+  }
+  if (profileName === "desktop-reflow-200") {
+    assert(runtime?.is_mobile === false && runtime?.has_touch === false,
+      "200% reflow runtime unexpectedly exposes mobile touch input");
+    assert(viewport.width === REFLOW_200_VIEWPORT.width && viewport.height === REFLOW_200_VIEWPORT.height,
+      "200% reflow runtime viewport was unexpected");
+    assert(runtime?.device_pixel_ratio === 2,
+      "200% reflow runtime device pixel ratio was unexpected");
+    return "desktop-reflow-equivalent-200";
+  }
+  const reducedMotion = profileName.endsWith("-reduced-motion");
+  const desktopReduced = profileName === "desktop-reduced-motion";
+  const mobileReduced = profileName === "mobile-reduced-motion";
+  assert(profileName === "desktop" || desktopReduced || mobileReduced,
+    `Unknown complete journey profile contract: ${profileName}`);
+  if (mobileReduced) {
+    assert(runtime?.is_mobile === true && runtime?.has_touch === true && runtime?.max_touch_points > 0,
+      "Reduced-motion Pixel 7 runtime must expose touch input");
+    assert(viewport.width === PIXEL_7_VIEWPORT.width && viewport.height === PIXEL_7_VIEWPORT.height,
+      "Reduced-motion Pixel 7 runtime viewport was unexpected");
+    assert(/\bPixel 7\b/i.test(String(runtime?.user_agent || "")),
+      "Reduced-motion Pixel 7 runtime user agent was unexpected");
+    assert(runtime?.prefers_reduced_motion === true,
+      "Reduced-motion Pixel 7 runtime did not report reduced motion");
+    return "pixel-7-reduced-motion";
+  }
   assert(runtime?.is_mobile === false, "Desktop runtime unexpectedly reports mobile mode");
   assert(runtime?.has_touch === false && runtime?.max_touch_points === 0,
     "Desktop runtime unexpectedly exposes touch input");
   assert(viewport.width === 1440 && viewport.height === 900,
     "Desktop runtime viewport was unexpected");
+  if (reducedMotion) {
+    assert(runtime?.prefers_reduced_motion === true,
+      "Reduced-motion desktop runtime did not report reduced motion");
+    return "desktop-chromium-reduced-motion";
+  }
   return "desktop-chromium";
 }
 
@@ -416,9 +478,11 @@ async function createGuardedContext(
       authState = "signed-out";
     },
     profile: {
-      device: profileName === "mobile" ? "Pixel 7" : "Desktop Chromium",
-      has_touch: profileName === "mobile",
-      is_mobile: profileName === "mobile",
+      device: profileName === "mobile" || profileName === "mobile-reduced-motion"
+        ? "Pixel 7"
+        : (profileName === "tablet" ? "iPad (gen 7)" : "Desktop Chromium"),
+      has_touch: Boolean(profile.hasTouch),
+      is_mobile: Boolean(profile.isMobile),
       name: profileName,
       viewport: profile.viewport,
     },

@@ -1,0 +1,63 @@
+version: 1
+purpose: >
+  Phase 8 browser state inventory. Automated axe and Chromium accessibility-tree checks
+  cover the marked states; the operator screen-reader smoke remains separately required.
+states:
+  - id: authenticated-map
+    surfaces: [map, plants, garden-switch]
+    variants: [populated, keyboard, desktop, mobile, tablet, reduced-motion, reflow-200]
+    route: authenticate, activate Map, select active garden
+    focus: primary navigation retains a visible, unobscured focus indicator
+    automated_scan: true
+  - id: today-attention
+    surfaces: [map, attention]
+    variants: [populated, collapsible, mobile-sheet, reduced-motion, reflow-200]
+    route: Map, open Today surface, expand no-action-needed history
+    focus: Today trigger or summary remains focused and the sheet is modal when present
+    automated_scan: true
+  - id: task-completion-validation
+    surfaces: [tasks, attention]
+    variants: [dialog, validation-error, busy-capable]
+    route: Activity, Tasks, grouped fertilize task, Complete, Clear selection
+    focus: dialog contains focus; selection feedback is polite and confirmation is disabled
+    automated_scan: true
+  - id: notification-panel
+    surfaces: [notifications, preferences]
+    variants: [dialog, tablist, keyboard, focus-return]
+    route: Map, notification bell, Inbox/Log tabs
+    focus: panel is modal; Escape restores focus to its trigger
+    automated_scan: true
+  - id: read-only-map-and-tasks
+    surfaces: [map, tasks, issues]
+    variants: [read-only, keyboard]
+    route: authenticate viewer, Map, Activity, Tasks
+    focus: readable controls remain available while mutation controls are absent or disabled
+    automated_scan: true
+  - id: invitation-loading-and-retry
+    surfaces: [authentication]
+    variants: [busy, recoverable-error]
+    route: invitation hash route with deterministic request delay/failure
+    focus: retry remains reachable and loading is announced
+    automated_scan: false
+    follow_up: Uses a seeded invitation token and deterministic failure route in the screen-reader smoke.
+  - id: journal-and-issue-composers
+    surfaces: [journal, issues, media]
+    variants: [populated, empty, validation-error, dialog]
+    route: Activity, Journal or Issues, create composer
+    focus: form labels, validation, close, and focus return are included in the shared dialog contract
+    automated_scan: false
+    follow_up: Existing Phase 3 complete journey proves mutation lifecycle; Phase 8 checks shared modal semantics.
+  - id: offline-terminal-recovery
+    surfaces: [offline-recovery]
+    variants: [recoverable-error, mobile]
+    route: seeded Phase 6 failed-work queue, open recovery panel
+    focus: each recovery action has a name and the panel tracks expanded state
+    automated_scan: false
+    follow_up: Existing Phase 6 browser journey owns deterministic offline queue setup and recovery mutation proof.
+  - id: provider-chat-recovery
+    surfaces: [analysis, provider]
+    variants: [busy, recoverable-error]
+    route: Insights, Analysis, submit deterministic provider request
+    focus: busy and error messages are announced without moving focus away from the input
+    automated_scan: false
+    follow_up: Existing Phase 7 deterministic provider journey owns quota/error fixture control.

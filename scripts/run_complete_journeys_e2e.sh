@@ -9,7 +9,7 @@ fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT_DIR"
-MAX_IMPLEMENTED_PHASE=7
+MAX_IMPLEMENTED_PHASE=8
 
 die() {
   printf 'Complete journey E2E: %s\n' "$1" >&2

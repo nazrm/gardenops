@@ -1,7 +1,10 @@
 import re
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
+ACCESSIBILITY_INVENTORY = ROOT / "tests" / "accessibility_expectations.yaml"
 
 LAYOUT_INPUT_KEYS = {
     "plants-search": "plants.search_placeholder",
@@ -67,6 +70,45 @@ def test_all_reported_accessibility_name_defects_are_covered() -> None:
         + len(PROVIDER_SECRET_KEYS) * 2
         + len(CALENDAR_FILTER_INPUTS)
     ) == 29
+
+
+def test_phase_eight_state_inventory_is_complete_and_machine_readable() -> None:
+    payload = yaml.safe_load(ACCESSIBILITY_INVENTORY.read_text(encoding="utf-8"))
+    assert payload["version"] == 1
+    states = payload["states"]
+    assert isinstance(states, list) and len(states) >= 9
+    required_variants = {
+        "populated",
+        "empty",
+        "validation-error",
+        "busy",
+        "recoverable-error",
+        "dialog",
+        "read-only",
+        "mobile",
+    }
+    observed_variants = {variant for state in states for variant in state["variants"]}
+    assert required_variants <= observed_variants
+    for state in states:
+        assert state["id"]
+        assert state["surfaces"]
+        assert state["route"]
+        assert state["focus"]
+        assert isinstance(state["automated_scan"], bool)
+
+
+def test_invitation_loading_and_chat_failures_expose_live_semantics() -> None:
+    auth_gate = _read_frontend("features/authGate.ts")
+    analysis = _read_frontend("tabs/analysisTab.ts")
+
+    assert 'loadingDiv.setAttribute("role", "status")' in auth_gate
+    assert 'loadingDiv.setAttribute("aria-live", "polite")' in auth_gate
+    assert 'loadingDiv.setAttribute("aria-busy", "true")' in auth_gate
+    assert 'spinner.setAttribute("aria-hidden", "true")' in auth_gate
+    assert 'loading.setAttribute("role", "status")' in analysis
+    assert 'loading.setAttribute("aria-live", "polite")' in analysis
+    assert 'errBubble.setAttribute("role", "alert")' in analysis
+    assert 'errBubble.setAttribute("aria-live", "assertive")' in analysis
 
 
 def test_static_filter_inputs_have_localized_accessible_names() -> None:

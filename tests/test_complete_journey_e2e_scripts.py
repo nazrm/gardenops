@@ -70,6 +70,7 @@ def test_phase_zero_complete_journey_files_exist() -> None:
         ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "observationToAction.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "providersAndTerrain.cjs",
+        ROOT / "scripts" / "e2e" / "journeys" / "accessibilityAndResponsive.cjs",
         ORACLE,
         PHASE_THREE_ORACLE,
         PHASE_SEVEN_ORACLE,
@@ -205,7 +206,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
     subprocess.run(["git", "init", "--quiet"], cwd=checkout, check=True, timeout=20)
     runner = checkout / "scripts" / "run_complete_journeys_e2e.sh"
     result = subprocess.run(
-        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "8"],
+        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "9"],
         cwd=checkout,
         capture_output=True,
         check=False,
@@ -709,7 +710,7 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
     runner_source = RUNNER.read_text(encoding="utf-8")
 
-    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
     assert "runDailyAttentionWork" in journey_source
     assert 'require("./e2e/journeys/dailyAttentionWork.cjs")' in checker_source
     assert "phaseSelected(2)" in checker_source
@@ -727,7 +728,7 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_THREE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
     assert "GARDENOPS_E2E_LOOPBACK_PROVIDER=1" in runner_source
     assert "GARDENOPS_E2E_SHADEMAP_ESTIMATE_CSV" in runner_source
     assert "'/shademap': proxyTarget" in runner_source
@@ -883,7 +884,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FOUR_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
     assert 'require("./e2e/journeys/planningAndReporting.cjs")' in checker_source
     assert "phaseSelected(4)" in checker_source
     assert "runPlanningAndReporting" in checker_source
@@ -1031,7 +1032,7 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FIVE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
     assert 'require("./e2e/journeys/identityAndRoles.cjs")' in checker_source
     assert "phaseSelected(5)" in checker_source
     assert "runIdentityAndRoles" in checker_source
@@ -1107,7 +1108,7 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_SIX_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
     assert 'require("./e2e/journeys/offlineAndFailureRecovery.cjs")' in checker_source
     assert "phaseSelected(6)" in checker_source
     assert "runOfflineAndFailureRecovery" in checker_source
@@ -1158,7 +1159,7 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_SEVEN_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
     assert "GARDENOPS_E2E_LOOPBACK_PROVIDER=1" in runner_source
     assert 'require("./e2e/journeys/providersAndTerrain.cjs")' in checker_source
     assert "phaseSelected(7)" in checker_source
@@ -1225,6 +1226,50 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
     for forbidden in ("route.fulfill(", "context.addCookies(", "page.setContent("):
         assert forbidden not in journey_source
     assert "addInitScript(" not in journey_source
+
+
+def test_phase_eight_accessibility_responsive_journey_and_harness_are_registered() -> None:
+    journey = ROOT / "scripts" / "e2e" / "journeys" / "accessibilityAndResponsive.cjs"
+    inventory = ROOT / "tests" / "accessibility_expectations.yaml"
+    journey_source = journey.read_text(encoding="utf-8")
+    inventory_source = inventory.read_text(encoding="utf-8")
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    runner_source = RUNNER.read_text(encoding="utf-8")
+
+    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
+    assert 'require("./e2e/journeys/accessibilityAndResponsive.cjs")' in checker_source
+    assert "phaseSelected(8)" in checker_source
+    assert "runAccessibilityAndResponsive" in checker_source
+    assert "assertPhaseEightProfileEvidence" in checker_source
+    assert "assertPhaseEightDatabaseState" in checker_source
+    assert "screen_reader_boundary" in checker_source
+    for marker in (
+        "assertAxeState",
+        "chromiumAXTree",
+        "assertFocusVisibleAndUnobscured",
+        "assertTouchTargets",
+        "desktop-reflow-200",
+        "desktop-reduced-motion",
+        "mobile-reduced-motion",
+        "task-completion-validation",
+        "notification-panel",
+        "read-only-map-and-tasks",
+    ):
+        assert marker in journey_source
+    for state_id in (
+        "authenticated-map",
+        "today-attention",
+        "task-completion-validation",
+        "notification-panel",
+        "read-only-map-and-tasks",
+        "invitation-loading-and-retry",
+        "journal-and-issue-composers",
+        "offline-terminal-recovery",
+        "provider-chat-recovery",
+    ):
+        assert f"id: {state_id}" in inventory_source
+    for forbidden in ("route.fulfill(", "context.addCookies(", "page.setContent("):
+        assert forbidden not in journey_source
 
 
 def test_phase_six_audit_contract_rejects_scope_tampering() -> None:

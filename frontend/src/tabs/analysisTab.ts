@@ -100,6 +100,8 @@ async function sendAnalysisMessage(
 
   const loading = document.createElement("div");
   loading.className = "chat-bubble chat-ai chat-loading";
+  loading.setAttribute("role", "status");
+  loading.setAttribute("aria-live", "polite");
   loading.textContent = t("analysis.thinking");
   messages.appendChild(loading);
   updateAnalysisClearButtonState();
@@ -134,6 +136,8 @@ async function sendAnalysisMessage(
 
     const errBubble = document.createElement("div");
     errBubble.className = "chat-bubble chat-ai chat-error";
+    errBubble.setAttribute("role", "alert");
+    errBubble.setAttribute("aria-live", "assertive");
     errBubble.textContent = getApiErrorMessage(err);
     messages.appendChild(errBubble);
   } finally {
