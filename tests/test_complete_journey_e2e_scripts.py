@@ -273,6 +273,10 @@ def test_runner_uses_isolated_production_preview_and_locked_dependency_gate() ->
     assert "state.added !== 0 || state.changed !== 0 || state.removed !== 0" in source
     assert 'export HOME="$PRIVATE_DIR/home"' in source
     assert 'export XDG_CONFIG_HOME="$PRIVATE_DIR/xdg-config"' in source
+    assert "export AUTH_LOGIN_RATE_LIMIT=200" in source
+    assert "export AUTH_LOGIN_USERNAME_RATE_LIMIT=100" in source
+    assert "export AUTH_LOGIN_ADMIN_USERNAME_RATE_LIMIT=100" in source
+    assert "export AUTH_LOGIN_ADMIN_HOST_RATE_LIMIT=200" in source
     assert "tail -n 100" not in source
     assert "PYTHON_DOTENV_DISABLED=1" in source
     assert "VITE_ENV_DIR" in source

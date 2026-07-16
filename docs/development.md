@@ -450,7 +450,9 @@ second-browser revocation, idle and absolute expiry, live role refresh, personal
 settings persistence, stale-CSRF and cross-garden denials, and emergency
 read-only enable/block/disable behavior across the six desktop/Pixel role
 profiles. Invitation and authentication secrets are removed before traces
-become retained evidence.
+become retained evidence. The disposable runner raises only its local login
+ceilings so deliberate credential-recovery retries remain deterministic; normal
+deployment limits and their focused backend tests are unchanged.
 
 Session deployments have two independent limits. `AUTH_SESSION_TTL_HOURS`
 defaults to a 12-hour idle timeout; `AUTH_SESSION_ABSOLUTE_TTL_HOURS` defaults to
