@@ -3856,6 +3856,35 @@ def _phase_five_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         """,
         (tracked_usernames,),
     ).fetchall()
+    challenge_summary = conn.execute(
+        """
+        SELECT COUNT(*) AS total_count,
+               COUNT(*) FILTER (WHERE used_at_ms IS NOT NULL) AS used_count,
+               COUNT(*) FILTER (WHERE used_at_ms IS NULL) AS unused_count,
+               COUNT(*) FILTER (
+                   WHERE flow NOT IN (
+                       'authentication',
+                       'authentication_denied',
+                       'reauthentication',
+                       'registration'
+                   )
+               ) AS invalid_flow_count,
+               COUNT(*) FILTER (WHERE expires_at_ms <= created_at_ms) AS invalid_lifetime_count,
+               COUNT(*) FILTER (
+                   WHERE used_at_ms IS NOT NULL
+                     AND (used_at_ms < created_at_ms OR used_at_ms >= expires_at_ms)
+               ) AS invalid_used_timestamp_count
+        FROM auth_passkey_challenges
+        """
+    ).fetchone()
+    runtime_flag_rows = conn.execute(
+        """
+        SELECT key, value
+        FROM security_runtime_flags
+        WHERE key IN ('emergency_read_only', 'emergency_read_only_expires_at_ms')
+        ORDER BY key
+        """
+    ).fetchall()
     alpha_id = int(
         conn.execute(
             "SELECT id FROM gardens WHERE slug = %s",
@@ -3868,6 +3897,17 @@ def _phase_five_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
 
     return {
         "alpha_garden_id": alpha_id,
+        "challenge_summary": {
+            key: int(challenge_summary[key] if challenge_summary else 0)
+            for key in (
+                "invalid_flow_count",
+                "invalid_lifetime_count",
+                "invalid_used_timestamp_count",
+                "total_count",
+                "unused_count",
+                "used_count",
+            )
+        },
         "invitations": [
             {
                 "accepted_at_ms": optional_int(row["accepted_at_ms"]),
@@ -3906,6 +3946,7 @@ def _phase_five_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             }
             for row in passkey_rows
         ],
+        "runtime_flags": {str(row["key"]): str(row["value"]) for row in runtime_flag_rows},
         "settings": [
             {
                 "description": str(row["description"] or ""),

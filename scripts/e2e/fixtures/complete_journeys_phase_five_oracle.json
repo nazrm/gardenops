@@ -22,13 +22,19 @@
       "owned_tables": [
         "auth_mfa_pending_enrollments",
         "auth_mfa_recovery_codes",
+        "auth_passkey_challenges",
         "auth_passkeys",
         "auth_sessions",
         "auth_user_invitations",
         "auth_users",
+        "gardens",
         "garden_memberships",
         "garden_invitations",
-        "auth_user_plot_assignment_meanings"
+        "auth_user_plot_assignment_meanings",
+        "layout_state",
+        "plots",
+        "plot_ownership",
+        "security_runtime_flags"
       ],
       "forbidden_manifest_fields": [
         "credential_id",

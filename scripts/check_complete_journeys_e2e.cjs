@@ -882,6 +882,10 @@ function assertPhaseFiveDatabaseState(initial, final, fixture, profiles) {
   assert(final.memberships.some((row) => (
     row.username === invitee && row.role === "editor"
   )), "Phase 5 invitee lacks its expected garden membership");
+  assert(final.memberships.filter((row) => row.username === invitee).length === 2
+    && final.memberships.some((row) => (
+      row.username === invitee && row.role === "admin"
+    )), "Phase 5 personal invite did not retain editor access and create one owned garden");
   assert(final.memberships.some((row) => (
     row.username === viewerInvitee
     && row.role === "viewer"
@@ -894,6 +898,16 @@ function assertPhaseFiveDatabaseState(initial, final, fixture, profiles) {
   "Phase 5 TOTP disable did not clear active and pending MFA state");
   assert(!final.passkeys.some((row) => row.username === fixture.roles.admin),
     "Phase 5 revoked administrator passkey still exists");
+  assert(final.challenge_summary.total_count === 16
+    && final.challenge_summary.used_count + final.challenge_summary.unused_count === 16
+    && final.challenge_summary.invalid_flow_count === 0
+    && final.challenge_summary.invalid_lifetime_count === 0
+    && final.challenge_summary.invalid_used_timestamp_count === 0,
+  "Phase 5 passkey challenge retention state is invalid");
+  assert(canonicalJson(final.runtime_flags) === canonicalJson({
+    emergency_read_only: "0",
+    emergency_read_only_expires_at_ms: "0",
+  }), "Phase 5 emergency read-only control was not restored to disabled state");
   assert(final.settings.some((row) => (
     row.username === fixture.roles.admin
     && row.pattern === fixture.phase_five.settings_pattern.toUpperCase()
@@ -907,7 +921,9 @@ function assertPhaseFiveDatabaseState(initial, final, fixture, profiles) {
     "Phase 5 invalid invitation attempts created side effects");
   return {
     invitation_acceptance_exact: true,
+    incident_control_restored_exact: true,
     mfa_cleanup_exact: true,
+    passkey_challenge_retention_exact: true,
     passkey_revocation_exact: true,
     settings_persistence_exact: true,
   };
@@ -2281,8 +2297,22 @@ function assertTraceArtifacts(profiles, artifactDirectory = ARTIFACT_DIR) {
   });
 }
 
-function backendErrorEvidence(logDirectory = process.env.GARDENOPS_LOGS_DIR || "") {
+function backendErrorEvidence(
+  logDirectory = process.env.GARDENOPS_LOGS_DIR || "",
+  expectedStructuredErrors = [],
+) {
   assert(logDirectory, "Complete journey backend log directory is required");
+  assert(Array.isArray(expectedStructuredErrors), "Expected backend error contract is invalid");
+  const expected = expectedStructuredErrors.map((entry) => {
+    assert(entry && typeof entry === "object"
+      && ["DELETE", "PATCH", "POST", "PUT"].includes(entry.method)
+      && isSafeManifestRequestPath(entry.path)
+      && Number.isSafeInteger(entry.status_code)
+      && entry.status_code >= 400 && entry.status_code <= 599
+      && isSafeRequestId(entry.request_id),
+    "Expected backend error entry is invalid");
+    return { ...entry, matched: false };
+  });
   const backendLogPath = path.join(logDirectory, "backend.log");
   const structuredLogPath = path.join(logDirectory, "errors.jsonl");
   assert(fs.existsSync(backendLogPath), "Complete journey backend log is missing");
@@ -2295,13 +2325,29 @@ function backendErrorEvidence(logDirectory = process.env.GARDENOPS_LOGS_DIR || "
       }
       return counts;
     }, { CRITICAL: 0, ERROR: 0, FATAL: 0 });
+  let expectedStructuredEntries = 0;
   const structuredLevels = fs.readFileSync(structuredLogPath, "utf8")
     .split(/\r?\n/)
     .filter(Boolean)
     .reduce((counts, line) => {
       try {
-        const level = String(JSON.parse(line).level || "").toUpperCase();
-        if (["ERROR", "CRITICAL", "FATAL"].includes(level)) counts[level] += 1;
+        const record = JSON.parse(line);
+        const level = String(record.level || "").toUpperCase();
+        if (["ERROR", "CRITICAL", "FATAL"].includes(level)) {
+          const expectedEntry = expected.find((entry) => (
+            !entry.matched
+            && entry.method === record.method
+            && entry.path === record.path
+            && entry.status_code === record.status_code
+            && entry.request_id === record.request_id
+          ));
+          if (expectedEntry) {
+            expectedEntry.matched = true;
+            expectedStructuredEntries += 1;
+          } else {
+            counts[level] += 1;
+          }
+        }
       } catch {
         counts.ERROR += 1;
       }
@@ -2311,12 +2357,33 @@ function backendErrorEvidence(logDirectory = process.env.GARDENOPS_LOGS_DIR || "
     backend_critical_lines: backendLevels.CRITICAL,
     backend_error_lines: backendLevels.ERROR,
     backend_fatal_lines: backendLevels.FATAL,
+    expected_structured_error_entries: expectedStructuredEntries,
+    missing_expected_error_entries: expected.filter((entry) => !entry.matched).length,
     structured_critical_entries: structuredLevels.CRITICAL,
     structured_error_entries: structuredLevels.ERROR,
     structured_fatal_entries: structuredLevels.FATAL,
     unexpected_error_count: Object.values(backendLevels).reduce((sum, count) => sum + count, 0)
-      + Object.values(structuredLevels).reduce((sum, count) => sum + count, 0),
+      + Object.values(structuredLevels).reduce((sum, count) => sum + count, 0)
+      + expected.filter((entry) => !entry.matched).length,
   };
+}
+
+function phaseFiveExpectedBackendErrors(profiles) {
+  const errors = profiles.flatMap((profile) => profile.requests.filter((request) => (
+    profile.role === "admin"
+    && profile.profile === "desktop"
+    && request.method === "POST"
+    && request.path === "/api/journal"
+    && request.statusCode === 503
+  )).map((request) => ({
+    method: request.method,
+    path: request.path,
+    request_id: request.requestId,
+    status_code: request.statusCode,
+  })));
+  assert(errors.length === 1,
+    "Phase 5 incident control did not produce one exact blocked-write response");
+  return errors;
 }
 
 function assertNoUnexpectedBackendErrors(logDirectory, evidence = backendErrorEvidence(logDirectory)) {
@@ -5861,6 +5928,12 @@ function sanitizeManifestEvidence(manifest) {
       backend_critical_lines: safeNonnegativeInteger(manifest.backend_log?.backend_critical_lines),
       backend_error_lines: safeNonnegativeInteger(manifest.backend_log?.backend_error_lines),
       backend_fatal_lines: safeNonnegativeInteger(manifest.backend_log?.backend_fatal_lines),
+      expected_structured_error_entries: safeNonnegativeInteger(
+        manifest.backend_log?.expected_structured_error_entries,
+      ),
+      missing_expected_error_entries: safeNonnegativeInteger(
+        manifest.backend_log?.missing_expected_error_entries,
+      ),
       structured_critical_entries: safeNonnegativeInteger(
         manifest.backend_log?.structured_critical_entries,
       ),
@@ -6661,8 +6734,6 @@ async function main() {
       ...phaseFiveOracleSpec.phase_five.database_boundaries.owned_tables.filter((table) => (
         Object.hasOwn(finalDatabase.domain_tables, table)
       )),
-      "gardens",
-      "layout_state",
     ]);
     const cumulativeSemanticDeltaTables = phaseFiveRan ? new Set([
       ...throughPhaseFourSemanticDeltaTables,
@@ -6772,10 +6843,30 @@ async function main() {
         expected_removed: 0,
       },
     };
-    const phaseFiveAccounting = Object.fromEntries([...phaseFiveAllowedTables].map((table) => [
-      table,
-      { allow_row_delta: true, evidence: "phase_five_exact_identity_projection" },
-    ]));
+    const phaseFiveExpectedAdded = {
+      auth_passkey_challenges: 16,
+      auth_user_invitations: 1,
+      auth_user_plot_assignment_meanings: 1,
+      garden_invitations: 1,
+      garden_memberships: 4,
+      gardens: 2,
+      layout_state: 1,
+      plot_ownership: 1,
+      plots: 1,
+      security_runtime_flags: 2,
+    };
+    const phaseFiveAccounting = Object.fromEntries([...phaseFiveAllowedTables].map((table) => {
+      const expectedAdded = phaseFiveExpectedAdded[table] ?? 0;
+      return [table, {
+        allow_row_delta: true,
+        evidence: "phase_five_exact_identity_projection",
+        expected_added: expectedAdded,
+        expected_identity_added: expectedAdded,
+        expected_identity_removed: 0,
+        expected_identity_updated: 0,
+        expected_removed: 0,
+      }];
+    }));
     const wholeTableMutationAccounting = phaseFiveRan
       ? assertWholeTableMutationAccounting(
         phaseFiveDatabaseBaseline.domain_tables,
@@ -7229,7 +7320,10 @@ async function main() {
     }
     assert(manifest.filesystem.terrain.empty, "Browser journey wrote terrain files");
     manifest.trace_artifacts = assertTraceArtifacts(manifest.profiles);
-    manifest.backend_log = backendErrorEvidence();
+    manifest.backend_log = backendErrorEvidence(
+      undefined,
+      phaseFiveRan ? phaseFiveExpectedBackendErrors(phaseFiveProfiles) : [],
+    );
     assertNoUnexpectedBackendErrors(undefined, manifest.backend_log);
     await browser.close();
     browser = null;

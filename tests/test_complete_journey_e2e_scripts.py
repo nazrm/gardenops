@@ -1019,6 +1019,8 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
     assert "assertPhaseFiveAuditEvents" in checker_source
     assert "_phase_five_runtime_state" in seeder_source
     assert "phase_five_state" in seeder_source
+    assert "AUTH_MFA_SECRET_KEY" in runner_source
+    assert "complete-journeys-e2e-mfa-key-only" in runner_source
     assert oracle["schema_version"] == 1
     assert oracle["phase_five"]["profile_order"] == [
         "admin:desktop",
@@ -1028,6 +1030,20 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
         "viewer:desktop",
         "viewer:mobile",
     ]
+    assert {
+        "auth_passkey_challenges",
+        "gardens",
+        "layout_state",
+        "plots",
+        "plot_ownership",
+        "security_runtime_flags",
+    }.issubset(oracle["phase_five"]["database_boundaries"]["owned_tables"])
+    for marker in (
+        "phaseFiveExpectedAdded",
+        "passkey_challenge_retention_exact",
+        "incident_control_restored_exact",
+    ):
+        assert marker in checker_source
     for journey_id in ("A1", "A2", "A4", "C1", "C3", "C5", "CROSS-02"):
         assert f'"{journey_id}"' in checker_source
     for marker in (
@@ -2025,6 +2041,32 @@ try {{
     'Unexpected backend ERROR, CRITICAL, or FATAL log entries; inspect private runner logs'
   )) process.exit(5);
 }}
+fs.writeFileSync(`${{directory}}/backend.log`, 'INFO: backend ready\\n');
+fs.writeFileSync(`${{directory}}/errors.jsonl`, JSON.stringify({{
+  level: 'ERROR',
+  method: 'POST',
+  path: '/api/journal',
+  request_id: '0123456789abcdef0123456789abcdef',
+  status_code: 503,
+}}) + '\\n');
+const expected = backendErrorEvidence(directory, [{{
+  method: 'POST',
+  path: '/api/journal',
+  request_id: '0123456789abcdef0123456789abcdef',
+  status_code: 503,
+}}]);
+if (expected.expected_structured_error_entries !== 1
+  || expected.missing_expected_error_entries !== 0
+  || expected.unexpected_error_count !== 0) process.exit(6);
+const missing = backendErrorEvidence(directory, [{{
+  method: 'POST',
+  path: '/api/journal',
+  request_id: 'fedcba9876543210fedcba9876543210',
+  status_code: 503,
+}}]);
+if (missing.expected_structured_error_entries !== 0
+  || missing.missing_expected_error_entries !== 1
+  || missing.unexpected_error_count !== 2) process.exit(7);
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

@@ -359,6 +359,7 @@ export AUTH_ADMIN_MFA_REQUIRED=false
 export AUTH_PASSWORD_CHECK_HIBP=false
 export AUTH_PASSWORD_HASH_FAST_FOR_TESTS=true
 export AUTH_CSRF_SECRET="complete-journeys-e2e-csrf-only" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+export AUTH_MFA_SECRET_KEY="complete-journeys-e2e-mfa-key-only" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 export AI_PROVIDER=disabled
 export GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER=1
 export GARDENOPS_NOTIFICATION_SCHEDULER_ENABLED=false
