@@ -1021,7 +1021,7 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
     assert "phase_five_state" in seeder_source
     assert "AUTH_MFA_SECRET_KEY" in runner_source
     assert "complete-journeys-e2e-mfa-key-only" in runner_source
-    assert oracle["schema_version"] == 1
+    assert oracle["schema_version"] == 2
     assert oracle["phase_five"]["profile_order"] == [
         "admin:desktop",
         "admin:mobile",
@@ -1042,6 +1042,15 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
         "phaseFiveExpectedAdded",
         "passkey_challenge_retention_exact",
         "incident_control_restored_exact",
+        "auth_users_exact",
+        "audit_incident_503_correlated",
+        "challenge_count_derived_from_profiles",
+        "idle_and_absolute_session_expiry",
+        "live_role_refresh",
+        "revoked_passkey_denial",
+        "passwordless_invitation",
+        "passwordless_passkey_redundancy",
+        "cross_garden_and_stale_csrf_denials",
     ):
         assert marker in checker_source
     for journey_id in ("A1", "A2", "A4", "C1", "C3", "C5", "CROSS-02"):
@@ -1074,6 +1083,209 @@ const secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
 if (currentTotp(secret, 59000) !== '287082') process.exit(2);
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_five_exact_auth_projection_rejects_unrelated_substitutions_and_sessions() -> None:
+    script = r"""
+const {
+  assertPhaseFiveExactAuthState,
+  phaseFiveOracle,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const identity = (character) => character.repeat(64);
+const user = (id, category, state = 'initial') => ({
+  category, identity_digest: identity(id), state,
+});
+const session = (id, owner) => ({
+  category: owner.category,
+  identity_digest: identity(id),
+  state: 'active',
+  user_identity_digest: owner.identity_digest,
+});
+const state = (users, sessions) => ({
+  auth_sessions_projection: sessions,
+  auth_users_projection: users,
+  challenge_projection: [],
+  session_counts_by_user: users.map((row) => ({
+    category: row.category,
+    count: sessions.filter((entry) => entry.user_identity_digest === row.identity_digest).length,
+    user_identity_digest: row.identity_digest,
+  })).sort((left, right) => left.user_identity_digest.localeCompare(right.user_identity_digest)),
+});
+const admin = user('a', 'fixture_admin');
+const editor = user('b', 'fixture_editor');
+const viewer = user('c', 'fixture_viewer');
+const unrelated = user('d', 'untracked_user');
+const initial = state([admin, editor, viewer, unrelated], []);
+const finalAdmin = { ...admin, state: 'logged-in' };
+const invitedEditor = user('e', 'phase_five_editor_invitee', 'created');
+const invitedViewer = user('f', 'phase_five_viewer_invitee', 'created');
+const adminSession = session('1', finalAdmin);
+const final = state(
+  [finalAdmin, editor, viewer, unrelated, invitedEditor, invitedViewer],
+  [adminSession],
+);
+const profiles = [{
+  profile: 'desktop', role: 'admin', requests: [{
+    method: 'POST', path: '/api/auth/login', statusCode: 200,
+  }],
+}];
+assertPhaseFiveExactAuthState(initial, final, profiles, phaseFiveOracle());
+
+const withUnrelatedSession = structuredClone(final);
+withUnrelatedSession.auth_sessions_projection.push(session('2', unrelated));
+withUnrelatedSession.session_counts_by_user.find(
+  (row) => row.user_identity_digest === unrelated.identity_digest,
+).count += 1;
+try {
+  assertPhaseFiveExactAuthState(initial, withUnrelatedSession, profiles, phaseFiveOracle());
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('outside the six-profile')) process.exit(4);
+}
+
+const substitutedUser = structuredClone(final);
+substitutedUser.auth_users_projection = substitutedUser.auth_users_projection.filter(
+  (row) => row.identity_digest !== invitedViewer.identity_digest,
+);
+substitutedUser.auth_users_projection.push(user('9', 'untracked_user', 'created'));
+substitutedUser.session_counts_by_user = substitutedUser.auth_users_projection.map((row) => ({
+  category: row.category,
+  count: substitutedUser.auth_sessions_projection.filter(
+    (entry) => entry.user_identity_digest === row.identity_digest,
+  ).length,
+  user_identity_digest: row.identity_digest,
+})).sort((left, right) => left.user_identity_digest.localeCompare(right.user_identity_digest));
+try {
+  assertPhaseFiveExactAuthState(initial, substitutedUser, profiles, phaseFiveOracle());
+  process.exit(5);
+} catch (error) {
+  if (!String(error.message).includes('additions diverged')) process.exit(6);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_five_challenge_projection_rejects_substitutions_and_extras() -> None:
+    script = r"""
+const {
+  assertPhaseFiveChallengeProjection,
+  phaseFiveOracle,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const row = (id, values) => ({
+  consumed_state: 'consumed_valid',
+  flow: 'registration',
+  identity_digest: id.repeat(64),
+  invitation_binding_present: false,
+  invitation_scope: null,
+  lifetime_valid: true,
+  owner_category: 'fixture_admin',
+  session_binding_present: true,
+  ...values,
+});
+const profiles = [{ requests: [
+  { method: 'POST', path: '/api/auth/passkeys/register/options', statusCode: 200 },
+  { method: 'POST', path: '/api/auth/passkeys/login/options', statusCode: 200 },
+  { method: 'POST', path: '/api/auth/invitations/passkey/register/options', statusCode: 200 },
+] }];
+const initial = { challenge_projection: [] };
+const final = { challenge_projection: [
+  row('a', {}),
+  row('b', {
+    flow: 'authentication', invitation_binding_present: false,
+    owner_category: 'fixture_admin', session_binding_present: false,
+  }),
+  row('c', {
+    invitation_binding_present: true, invitation_scope: 'personal_garden',
+    owner_category: 'phase_five_editor_invitee', session_binding_present: false,
+  }),
+] };
+assertPhaseFiveChallengeProjection(initial, final, profiles, phaseFiveOracle());
+for (const mutate of [
+  (value) => { value.challenge_projection[0].lifetime_valid = false; },
+  (value) => { value.challenge_projection[1].owner_category = 'untracked_user'; },
+  (value) => { value.challenge_projection[2].session_binding_present = true; },
+  (value) => { value.challenge_projection.push(row('d', {})); },
+]) {
+  const changed = structuredClone(final);
+  mutate(changed);
+  try {
+    assertPhaseFiveChallengeProjection(initial, changed, profiles, phaseFiveOracle());
+    process.exit(3);
+  } catch { /* expected */ }
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_five_audit_correlation_rejects_substitutions_extras_and_mismatches() -> None:
+    script = r"""
+const { assertPhaseFiveAuditEvents, phaseFiveOracle } = require(
+  './scripts/check_complete_journeys_e2e.cjs'
+);
+const requestId = (suffix) => `123e4567-e89b-42d3-a456-4266141740${suffix}`;
+const request = {
+  actorAuthType: 'session', actorRole: 'admin', actorUsername: 'admin', gardenId: '7',
+  method: 'PATCH', path: '/api/auth/users/42', requestId: requestId('01'), statusCode: 200,
+};
+const incident = {
+  actorAuthType: 'session', actorRole: 'admin', actorUsername: 'admin', gardenId: '7',
+  method: 'POST', path: '/api/journal', requestId: requestId('02'), statusCode: 503,
+};
+const event = (id, value) => ({
+  actor_auth_type: value.actorAuthType,
+  actor_role: value.actorRole,
+  actor_username: value.actorUsername,
+  garden_id: Number(value.gardenId),
+  id,
+  method: value.method,
+  occurred_at_ms: 1000 + id,
+  path: value.path,
+  request_id: value.requestId,
+  status_code: value.statusCode,
+});
+const before = { records: [] };
+const profiles = [{ requests: [request, incident] }];
+const final = { records: [event(1, request), event(2, incident)] };
+assertPhaseFiveAuditEvents(before, final, profiles, phaseFiveOracle());
+for (const field of [
+  'request_id', 'method', 'path', 'status_code', 'actor_username',
+  'actor_auth_type', 'actor_role', 'garden_id',
+]) {
+  const changed = structuredClone(final);
+  changed.records[0][field] = field === 'status_code' || field === 'garden_id'
+    ? 201 : `mismatch-${field}`;
+  try {
+    assertPhaseFiveAuditEvents(before, changed, profiles, phaseFiveOracle());
+    process.exit(3);
+  } catch { /* expected */ }
+}
+const extra = structuredClone(final);
+extra.records.push({ ...event(3, request), request_id: requestId('03') });
+try {
+  assertPhaseFiveAuditEvents(before, extra, profiles, phaseFiveOracle());
+  process.exit(4);
+} catch (error) {
+  if (!String(error.message).includes('Unexpected Phase 5')) process.exit(5);
+}
+try {
+  assertPhaseFiveAuditEvents(
+    before, { records: [event(2, incident)] }, profiles, phaseFiveOracle(),
+  );
+  process.exit(6);
+} catch (error) {
+  if (!String(error.message).includes('lacked exact audit events')) process.exit(7);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
     assert result.returncode == 0, result.stderr
 
 
@@ -3986,32 +4198,14 @@ def test_playwright_trace_validator_rejects_and_sanitizes_secret_material(tmp_pa
     assert subprocess.run([sys.executable, validator, sanitized], check=False).returncode == 0
 
 
-def test_playwright_trace_validator_sanitizes_opaque_binary_resource_secrets(
+def test_playwright_trace_validator_drops_opaque_binary_resources(
     tmp_path: Path,
 ) -> None:
     validator = ROOT / "scripts" / "validate_playwright_trace.py"
     source = tmp_path / "source.zip"
     sanitized = tmp_path / "sanitized.zip"
     resource_name_canary = "unsafe-resource-name-canary"
-    canaries = {
-        "authorization": "binary-bearer-canary",
-        "cookie": "binary-session-canary",
-        "csrf_cookie": "binary-csrf-canary",
-        "sensitive_field": "binary-subscription-field-canary",
-        "subscription_path": "binary-subscription-path-canary",
-        "sensitive_query": "binary-query-canary",
-    }
-    binary_resource = (
-        b"\x89PLAYWRIGHT\x00\xff\n"
-        + (
-            f"Authorization: Bearer {canaries['authorization']}\n"
-            f"Cookie: gardenops_session={canaries['cookie']}; "
-            f"gardenops_csrf={canaries['csrf_cookie']}\n"
-            f'{{"subscription_token":"{canaries["sensitive_field"]}"}}\n'
-            f"/calendar/subscriptions/{canaries['subscription_path']}.ics\n"
-            f"https://example.invalid/?csrf_token={canaries['sensitive_query']}\n"
-        ).encode()
-    )
+    binary_resource = b"\x89PNG\r\n\x1a\n\x00opaque-visible-secret-image-bytes\xff"
     with zipfile.ZipFile(source, "w") as archive:
         archive.writestr("trace.trace", "trace")
         archive.writestr("trace.network", "network")
@@ -4021,17 +4215,8 @@ def test_playwright_trace_validator_sanitizes_opaque_binary_resource_secrets(
         [sys.executable, validator, source], capture_output=True, check=False, text=True
     )
     assert rejected.returncode == 1
-    assert "resources/<member>[" in rejected.stderr
-    for category in (
-        "binary:authorization",
-        "binary:cookie",
-        "binary:sensitive-field",
-        "binary:sensitive-query",
-        "binary:subscription-token",
-    ):
-        assert category in rejected.stderr
+    assert "unsafe resource or unknown members" in rejected.stderr
     assert resource_name_canary not in rejected.stderr
-    assert all(canary not in rejected.stderr for canary in canaries.values())
 
     scrubbed = subprocess.run(
         [sys.executable, validator, "--sanitize", source, sanitized],
@@ -4041,10 +4226,138 @@ def test_playwright_trace_validator_sanitizes_opaque_binary_resource_secrets(
     )
     assert scrubbed.returncode == 0, scrubbed.stderr
     with zipfile.ZipFile(sanitized) as archive:
-        retained_resource = archive.read(f"resources/{resource_name_canary}")
-    assert len(retained_resource) == len(binary_resource)
-    assert retained_resource.startswith(b"\x89PLAYWRIGHT\x00\xff\n")
-    assert all(canary.encode() not in retained_resource for canary in canaries.values())
+        assert f"resources/{resource_name_canary}" not in archive.namelist()
+        retained = b"\n".join(archive.read(name) for name in archive.namelist())
+    assert binary_resource not in retained
+    assert subprocess.run([sys.executable, validator, sanitized], check=False).returncode == 0
+
+
+def test_playwright_trace_archive_sanitizer_removes_phase_five_canaries(
+    tmp_path: Path,
+) -> None:
+    validator = ROOT / "scripts" / "validate_playwright_trace.py"
+    source = tmp_path / "phase-five-source.zip"
+    sanitized = tmp_path / "phase-five-sanitized.zip"
+    canaries = {
+        "invite": "invite-canary-7F4A",
+        "challenge": "challenge-canary-8B5C",
+        "totp": "JBSWY3DPEHPK3PXP",
+        "recovery_one": "RECOVERY-CANARY-91D6",
+        "recovery_two": "RECOVERY-CANARY-A2E7",
+        "dom_input": "DOM-INPUT-CANARY-B3F8",
+        "image": "OPAQUE-IMAGE-CANARY-C409",
+    }
+    trace_events = [
+        {
+            "type": "context-options",
+            "browserName": "chromium",
+            "viewport": {"width": 1440, "height": 900},
+        },
+        {
+            "type": "before",
+            "method": "Page.goto",
+            "params": {
+                "challengeToken": canaries["challenge"],
+                "challenge_token": canaries["challenge"],
+                "inviteToken": canaries["invite"],
+                "invite_token": canaries["invite"],
+                "recoveryCodes": [canaries["recovery_one"]],
+                "recovery_codes": [canaries["recovery_two"]],
+                "totpSecret": canaries["totp"],
+                "totp_secret": canaries["totp"],
+                "url": f"http://127.0.0.1:4173/#invite={canaries['invite']}",
+            },
+        },
+        {
+            "type": "frame-snapshot",
+            "snapshot": {
+                "html": [
+                    "HTML",
+                    {},
+                    ["BODY", {}, f"Recovery code {canaries['recovery_one']}"],
+                    ["INPUT", {"value": canaries["dom_input"]}],
+                ]
+            },
+        },
+        {"type": "screencast-frame", "sha1": "opaque-image-resource"},
+        {"type": "after", "method": "Page.goto", "result": {"status": 200}},
+    ]
+    network_events = [
+        {
+            "type": "resource-snapshot",
+            "snapshot": {
+                "request": {
+                    "url": f"http://127.0.0.1:8000/api/auth/invitations/peek?inviteToken={canaries['invite']}",
+                    "postData": {
+                        "mimeType": "application/json",
+                        "text": json.dumps(
+                            {
+                                "challengeToken": canaries["challenge"],
+                                "invite_token": canaries["invite"],
+                            }
+                        ),
+                    },
+                },
+                "response": {
+                    "status": 200,
+                    "content": {
+                        "mimeType": "application/json",
+                        "text": json.dumps(
+                            {
+                                "otpauthUrl": (
+                                    "otpauth://totp/GardenOps:user?"
+                                    f"secret={canaries['totp']}&issuer=GardenOps"  # noqa: E501  # push-sanitizer: allow SECRET_ASSIGNMENT - synthetic trace canary
+                                ),
+                                "recoveryCodes": [
+                                    canaries["recovery_one"],
+                                    canaries["recovery_two"],
+                                ],
+                            }
+                        ),
+                    },
+                },
+            },
+        }
+    ]
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("trace.trace", "\n".join(map(json.dumps, trace_events)) + "\n")
+        archive.writestr("trace.network", "\n".join(map(json.dumps, network_events)) + "\n")
+        archive.writestr(
+            "resources/opaque-image-resource",
+            b"\x89PNG\r\n\x1a\n" + canaries["image"].encode() + b"\x00\xff",
+        )
+
+    result = subprocess.run(
+        [sys.executable, validator, "--sanitize", source, sanitized],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    with zipfile.ZipFile(sanitized) as archive:
+        assert set(archive.namelist()) == {"trace.trace", "trace.network"}
+        trace_text = archive.read("trace.trace").decode()
+        network_text = archive.read("trace.network").decode()
+        retained = (trace_text + network_text).encode()
+    assert all(canary.encode() not in retained for canary in canaries.values())
+    assert "frame-snapshot" not in trace_text
+    assert "screencast-frame" not in trace_text
+    assert "context-options" in trace_text
+    assert '"browserName":"chromium"' in trace_text
+    assert '"status":200' in trace_text
+    for field in (
+        "challengeToken",
+        "challenge_token",
+        "inviteToken",
+        "invite_token",
+        "recoveryCodes",
+        "recovery_codes",
+        "totpSecret",
+        "totp_secret",
+    ):
+        assert f'"{field}":"[redacted]"' in trace_text
+    assert '"type":"resource-snapshot"' in network_text
+    assert "[redacted]" in network_text
     assert subprocess.run([sys.executable, validator, sanitized], check=False).returncode == 0
 
 

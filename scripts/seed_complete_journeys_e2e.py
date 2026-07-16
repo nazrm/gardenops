@@ -113,10 +113,13 @@ def _load_phase_five_oracle() -> tuple[dict[str, Any], str]:
     phase_five = payload.get("phase_five") if isinstance(payload, dict) else None
     if (
         not isinstance(payload, dict)
-        or payload.get("schema_version") != 1
+        or payload.get("schema_version") != 2
         or not isinstance(phase_five, dict)
         or not isinstance(phase_five.get("fixture"), dict)
         or not isinstance(phase_five.get("database_boundaries"), dict)
+        or not isinstance(phase_five.get("auth_state"), dict)
+        or not isinstance(phase_five.get("challenge_projection"), dict)
+        or not isinstance(phase_five.get("audit_scope"), dict)
         or not isinstance(phase_five.get("support"), dict)
     ):
         raise RuntimeError("Complete journey Phase 5 oracle fixture contract is missing")
@@ -3800,6 +3803,33 @@ def _phase_five_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         """,
         (tracked_usernames,),
     ).fetchall()
+    auth_user_projection_rows = conn.execute(
+        """
+        SELECT users.username, creator.username AS creator_username, users.role,
+               users.is_active, users.password_hash IS NOT NULL AS has_password,
+               users.password_auth_disabled,
+               users.passkey_user_handle IS NOT NULL AS has_passkey_handle,
+               users.passkey_prompt_dismissed_until_ms, users.must_change_password,
+               users.deactivated_at, users.deactivated_reason, users.created_at,
+               users.last_login_at, users.mfa_totp_secret IS NOT NULL AS has_mfa_secret,
+               users.mfa_totp_enabled, users.mfa_enrolled_at, users.language,
+               users.last_totp_counter, users.subscription_tier
+        FROM auth_users users
+        LEFT JOIN auth_users creator ON creator.id = users.created_by_user_id
+        ORDER BY users.username
+        """
+    ).fetchall()
+    auth_session_projection_rows = conn.execute(
+        """
+        SELECT sessions.token_hash, users.username, sessions.expires_at_ms,
+               sessions.created_at_ms, sessions.last_seen_at_ms,
+               sessions.reauthenticated_at_ms, sessions.mfa_authenticated_at_ms,
+               sessions.mfa_setup_required, sessions.device_label, sessions.location_hint
+        FROM auth_sessions sessions
+        JOIN auth_users users ON users.id = sessions.user_id
+        ORDER BY users.username, sessions.created_at_ms, sessions.token_hash
+        """
+    ).fetchall()
     invitation_rows = conn.execute(
         """
         SELECT 'personal_garden' AS scope, NULL::text AS garden_slug,
@@ -3856,27 +3886,18 @@ def _phase_five_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         """,
         (tracked_usernames,),
     ).fetchall()
-    challenge_summary = conn.execute(
+    challenge_rows = conn.execute(
         """
-        SELECT COUNT(*) AS total_count,
-               COUNT(*) FILTER (WHERE used_at_ms IS NOT NULL) AS used_count,
-               COUNT(*) FILTER (WHERE used_at_ms IS NULL) AS unused_count,
-               COUNT(*) FILTER (
-                   WHERE flow NOT IN (
-                       'authentication',
-                       'authentication_denied',
-                       'reauthentication',
-                       'registration'
-                   )
-               ) AS invalid_flow_count,
-               COUNT(*) FILTER (WHERE expires_at_ms <= created_at_ms) AS invalid_lifetime_count,
-               COUNT(*) FILTER (
-                   WHERE used_at_ms IS NOT NULL
-                     AND (used_at_ms < created_at_ms OR used_at_ms >= expires_at_ms)
-               ) AS invalid_used_timestamp_count
-        FROM auth_passkey_challenges
+        SELECT challenges.token_hash, challenges.flow, users.username,
+               challenges.session_token_hash IS NOT NULL AS has_session_binding,
+               challenges.invitation_token_hash IS NOT NULL AS has_invitation_binding,
+               challenges.invitation_scope, challenges.invitee_username,
+               challenges.created_at_ms, challenges.expires_at_ms, challenges.used_at_ms
+        FROM auth_passkey_challenges challenges
+        LEFT JOIN auth_users users ON users.id = challenges.user_id
+        ORDER BY challenges.id
         """
-    ).fetchone()
+    ).fetchall()
     runtime_flag_rows = conn.execute(
         """
         SELECT key, value
@@ -3895,19 +3916,115 @@ def _phase_five_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
     def optional_int(value: object) -> int | None:
         return int(value) if value is not None else None
 
+    user_categories = {
+        ADMIN_USERNAME: "fixture_admin",
+        EDITOR_LOGIN[0]: "fixture_editor",
+        VIEWER_LOGIN[0]: "fixture_viewer",
+        ONBOARDING_LOGIN[0]: "fixture_onboarding",
+        MOBILE_ONBOARDING_LOGIN[0]: "fixture_onboarding_mobile",
+        PHASE_FIVE_INVITEE_LOGIN[0]: "phase_five_editor_invitee",
+        PHASE_FIVE_VIEWER_INVITEE_LOGIN[0]: "phase_five_viewer_invitee",
+    }
+
+    def opaque_identity(namespace: str, value: object) -> str:
+        return sha256(f"{namespace}:{value}".encode()).hexdigest()
+
+    def user_category(username: object) -> str:
+        if username is None:
+            return "unbound"
+        return user_categories.get(str(username), "untracked_user")
+
+    def optional_text(value: object) -> str | None:
+        return str(value) if value is not None else None
+
+    auth_users_projection = [
+        {
+            "category": user_category(row["username"]),
+            "created_at": str(row["created_at"]),
+            "creator_identity_digest": (
+                opaque_identity("auth-user", row["creator_username"])
+                if row["creator_username"] is not None
+                else None
+            ),
+            "deactivated_at": optional_text(row["deactivated_at"]),
+            "deactivated_reason": optional_text(row["deactivated_reason"]),
+            "has_mfa_secret": bool(row["has_mfa_secret"]),
+            "has_passkey_handle": bool(row["has_passkey_handle"]),
+            "has_password": bool(row["has_password"]),
+            "identity_digest": opaque_identity("auth-user", row["username"]),
+            "is_active": bool(row["is_active"]),
+            "language": str(row["language"]),
+            "last_login_at": optional_text(row["last_login_at"]),
+            "last_totp_counter": int(row["last_totp_counter"]),
+            "mfa_enrolled_at": optional_text(row["mfa_enrolled_at"]),
+            "mfa_totp_enabled": bool(row["mfa_totp_enabled"]),
+            "must_change_password": bool(row["must_change_password"]),
+            "passkey_prompt_dismissed_until_ms": int(row["passkey_prompt_dismissed_until_ms"]),
+            "password_auth_disabled": bool(row["password_auth_disabled"]),
+            "role": str(row["role"]),
+            "subscription_tier": str(row["subscription_tier"]),
+        }
+        for row in auth_user_projection_rows
+    ]
+    auth_sessions_projection = [
+        {
+            "category": user_category(row["username"]),
+            "created_at_ms": int(row["created_at_ms"]),
+            "device_label": str(row["device_label"] or ""),
+            "expires_at_ms": int(row["expires_at_ms"]),
+            "identity_digest": opaque_identity("auth-session", row["token_hash"]),
+            "last_seen_at_ms": int(row["last_seen_at_ms"]),
+            "location_hint": str(row["location_hint"] or ""),
+            "mfa_authenticated_at_ms": int(row["mfa_authenticated_at_ms"]),
+            "mfa_setup_required": bool(row["mfa_setup_required"]),
+            "reauthenticated_at_ms": int(row["reauthenticated_at_ms"]),
+            "user_identity_digest": opaque_identity("auth-user", row["username"]),
+        }
+        for row in auth_session_projection_rows
+    ]
+    session_counts: dict[str, dict[str, object]] = {
+        row["identity_digest"]: {
+            "category": row["category"],
+            "count": 0,
+            "user_identity_digest": row["identity_digest"],
+        }
+        for row in auth_users_projection
+    }
+    for row in auth_sessions_projection:
+        session_counts[row["user_identity_digest"]]["count"] = (
+            int(session_counts[row["user_identity_digest"]]["count"]) + 1
+        )
+    challenge_projection = []
+    for row in challenge_rows:
+        invitation_bound = bool(row["has_invitation_binding"])
+        owner_name = row["username"] if row["username"] is not None else row["invitee_username"]
+        used_at_ms = optional_int(row["used_at_ms"])
+        created_at_ms = int(row["created_at_ms"])
+        expires_at_ms = int(row["expires_at_ms"])
+        challenge_projection.append(
+            {
+                "consumed_state": (
+                    "unused"
+                    if used_at_ms is None
+                    else "consumed_valid"
+                    if created_at_ms <= used_at_ms < expires_at_ms
+                    else "consumed_invalid"
+                ),
+                "flow": str(row["flow"]),
+                "identity_digest": opaque_identity("passkey-challenge", row["token_hash"]),
+                "invitation_binding_present": invitation_bound,
+                "invitation_scope": (str(row["invitation_scope"]) if invitation_bound else None),
+                "lifetime_valid": expires_at_ms > created_at_ms,
+                "owner_category": user_category(owner_name),
+                "session_binding_present": bool(row["has_session_binding"]),
+            }
+        )
+
     return {
         "alpha_garden_id": alpha_id,
-        "challenge_summary": {
-            key: int(challenge_summary[key] if challenge_summary else 0)
-            for key in (
-                "invalid_flow_count",
-                "invalid_lifetime_count",
-                "invalid_used_timestamp_count",
-                "total_count",
-                "unused_count",
-                "used_count",
-            )
-        },
+        "auth_sessions_projection": auth_sessions_projection,
+        "auth_users_projection": auth_users_projection,
+        "challenge_projection": challenge_projection,
         "invitations": [
             {
                 "accepted_at_ms": optional_int(row["accepted_at_ms"]),
@@ -3947,6 +4064,9 @@ def _phase_five_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             for row in passkey_rows
         ],
         "runtime_flags": {str(row["key"]): str(row["value"]) for row in runtime_flag_rows},
+        "session_counts_by_user": sorted(
+            session_counts.values(), key=lambda row: str(row["user_identity_digest"])
+        ),
         "settings": [
             {
                 "description": str(row["description"] or ""),

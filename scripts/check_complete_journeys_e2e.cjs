@@ -205,12 +205,16 @@ function phaseFourOracle() {
 
 function phaseFiveOracle() {
   const oracle = readJson(PHASE_FIVE_ORACLE_PATH);
-  assert(oracle && typeof oracle === "object" && oracle.schema_version === 1,
+  assert(oracle && typeof oracle === "object" && oracle.schema_version === 2,
     "Phase 5 oracle schema is unsupported");
   assert(oracle.phase_five && typeof oracle.phase_five === "object"
     && oracle.phase_five.fixture && typeof oracle.phase_five.fixture === "object"
     && oracle.phase_five.database_boundaries
       && typeof oracle.phase_five.database_boundaries === "object"
+    && oracle.phase_five.auth_state && typeof oracle.phase_five.auth_state === "object"
+    && oracle.phase_five.challenge_projection
+      && typeof oracle.phase_five.challenge_projection === "object"
+    && oracle.phase_five.audit_scope && typeof oracle.phase_five.audit_scope === "object"
     && oracle.phase_five.support && typeof oracle.phase_five.support === "object",
   "Phase 5 oracle contract is incomplete");
   return oracle;
@@ -835,8 +839,11 @@ function assertPhaseFiveProfileEvidence(profiles, oracle) {
   const editors = profiles.filter((profile) => profile.role === "editor");
   const viewers = profiles.filter((profile) => profile.role === "viewer");
   for (const check of [
+    "idle_and_absolute_session_expiry",
     "invitation_lifecycle",
+    "live_role_refresh",
     "passkey_lifecycle",
+    "revoked_passkey_denial",
     "totp_lifecycle",
     "session_revocation",
     "settings_persistence",
@@ -847,6 +854,17 @@ function assertPhaseFiveProfileEvidence(profiles, oracle) {
   }
   assert(adminMobile?.checks?.mobile_identity_settings === true,
     "Phase 5 administrator mobile identity settings proof is incomplete");
+  const editorDesktop = profiles.find((profile) => (
+    profile.role === "editor" && profile.profile === "desktop"
+  ));
+  for (const check of [
+    "cross_garden_and_stale_csrf_denials",
+    "passwordless_invitation",
+    "passwordless_passkey_redundancy",
+  ]) {
+    assert(editorDesktop?.checks?.[check] === true,
+      `Phase 5 editor desktop ${check} proof is incomplete`);
+  }
   assert(editors.length === 2 && editors.every((profile) => (
     profile.checks.editor_identity_surface === true
   )), "Phase 5 editor identity surface proof is incomplete");
@@ -857,7 +875,192 @@ function assertPhaseFiveProfileEvidence(profiles, oracle) {
   return { profile_matrix_enforced: true, profile_order: observed };
 }
 
-function assertPhaseFiveDatabaseState(initial, final, fixture, profiles) {
+function exactProjectionDelta(initialRows, finalRows, label) {
+  assert(Array.isArray(initialRows) && Array.isArray(finalRows), `${label} projection is missing`);
+  const index = (rows, boundary) => {
+    const result = new Map();
+    for (const row of rows) {
+      assert(row && typeof row === "object" && /^[a-f0-9]{64}$/.test(row.identity_digest),
+        `${label} ${boundary} row has an invalid opaque identity`);
+      assert(!result.has(row.identity_digest),
+        `${label} ${boundary} projection duplicated an opaque identity`);
+      result.set(row.identity_digest, row);
+    }
+    return result;
+  };
+  const before = index(initialRows, "initial");
+  const after = index(finalRows, "final");
+  const added = [];
+  const removed = [];
+  const updated = [];
+  for (const [identity, row] of after) {
+    if (!before.has(identity)) added.push(row);
+    else if (canonicalJson(before.get(identity)) !== canonicalJson(row)) {
+      updated.push({ after: row, before: before.get(identity) });
+    }
+  }
+  for (const [identity, row] of before) {
+    if (!after.has(identity)) removed.push(row);
+  }
+  const byIdentity = (left, right) => left.identity_digest.localeCompare(right.identity_digest);
+  added.sort(byIdentity);
+  removed.sort(byIdentity);
+  updated.sort((left, right) => byIdentity(left.after, right.after));
+  return { added, removed, updated };
+}
+
+function assertPhaseFiveSessionCounts(state, label) {
+  assert(Array.isArray(state.auth_users_projection)
+    && Array.isArray(state.auth_sessions_projection)
+    && Array.isArray(state.session_counts_by_user),
+  `Phase 5 ${label} auth/session projections are missing`);
+  const users = new Map(state.auth_users_projection.map((row) => [row.identity_digest, row]));
+  const actual = new Map([...users].map(([identity, row]) => [identity, {
+    category: row.category,
+    count: 0,
+    user_identity_digest: identity,
+  }]));
+  for (const session of state.auth_sessions_projection) {
+    assert(actual.has(session.user_identity_digest),
+      `Phase 5 ${label} session references an unknown opaque user identity`);
+    const count = actual.get(session.user_identity_digest);
+    assert(session.category === count.category,
+      `Phase 5 ${label} session owner category disagrees with its user projection`);
+    count.count += 1;
+  }
+  const expected = [...actual.values()].sort((left, right) => (
+    left.user_identity_digest.localeCompare(right.user_identity_digest)
+  ));
+  assert(canonicalJson(state.session_counts_by_user) === canonicalJson(expected),
+    `Phase 5 ${label} per-user session counts diverged from exact session rows`);
+}
+
+function phaseFiveChallengeStarts(profiles) {
+  const starts = { login: 0, reauthentication: 0, registration: 0 };
+  for (const request of profiles.flatMap((profile) => profile.requests || [])) {
+    if (request.method !== "POST" || request.statusCode >= 400) continue;
+    if (request.path === "/api/auth/passkeys/login/options") starts.login += 1;
+    else if (request.path === "/api/auth/reauthenticate/passkey/options") {
+      starts.reauthentication += 1;
+    } else if (request.path === "/api/auth/passkeys/register/options"
+      || request.path === "/api/auth/invitations/passkey/register/options") {
+      starts.registration += 1;
+    }
+  }
+  return starts;
+}
+
+function assertPhaseFiveChallengeProjection(initial, final, profiles, oracle) {
+  const delta = exactProjectionDelta(
+    initial.challenge_projection,
+    final.challenge_projection,
+    "Phase 5 passkey challenge",
+  );
+  assert(delta.removed.length === 0 && delta.updated.length === 0,
+    "Phase 5 changed or removed a pre-existing passkey challenge");
+  const allowedFlows = new Set(oracle.phase_five.challenge_projection.allowed_flows);
+  for (const row of delta.added) {
+    assert(allowedFlows.has(row.flow), `Phase 5 challenge has an unexpected flow: ${row.flow}`);
+    assert(row.lifetime_valid === true && row.consumed_state !== "consumed_invalid",
+      "Phase 5 challenge has an invalid lifetime or consumed state");
+    assert(row.owner_category !== "untracked_user",
+      "Phase 5 challenge is attributed to an untracked user");
+    if (row.flow === "registration" && row.invitation_binding_present) {
+      assert(row.session_binding_present === false
+        && ["garden", "personal_garden"].includes(row.invitation_scope)
+        && row.owner_category.startsWith("phase_five_"),
+      "Phase 5 invitation registration challenge attribution is invalid");
+    } else if (row.flow === "registration" || row.flow === "reauthentication") {
+      assert(row.session_binding_present === true
+        && row.invitation_binding_present === false
+        && row.owner_category !== "unbound",
+      `Phase 5 ${row.flow} challenge attribution is invalid`);
+    } else {
+      assert(row.session_binding_present === false && row.invitation_binding_present === false,
+        `Phase 5 ${row.flow} challenge unexpectedly retained a binding`);
+      assert((row.flow === "authentication_denied") === (row.owner_category === "unbound"),
+        `Phase 5 ${row.flow} challenge owner attribution is invalid`);
+    }
+  }
+  const starts = phaseFiveChallengeStarts(profiles);
+  const actual = {
+    login: delta.added.filter((row) => (
+      row.flow === "authentication" || row.flow === "authentication_denied"
+    )).length,
+    reauthentication: delta.added.filter((row) => row.flow === "reauthentication").length,
+    registration: delta.added.filter((row) => row.flow === "registration").length,
+  };
+  assert(canonicalJson(actual) === canonicalJson(starts),
+    `Phase 5 challenge rows diverged from browser challenge starts: ${canonicalJson({ actual, starts })}`);
+  return {
+    challenge_added_identity_digests: delta.added.map((row) => row.identity_digest),
+    challenge_attribution_exact: true,
+    challenge_count_derived_from_profiles: true,
+  };
+}
+
+function assertPhaseFiveExactAuthState(initial, final, profiles, oracle) {
+  assertPhaseFiveSessionCounts(initial, "initial");
+  assertPhaseFiveSessionCounts(final, "final");
+  const userDelta = exactProjectionDelta(
+    initial.auth_users_projection,
+    final.auth_users_projection,
+    "Phase 5 auth user",
+  );
+  const expectedAdded = [...oracle.phase_five.auth_state.expected_added_user_categories].sort();
+  assert(canonicalJson(userDelta.added.map((row) => row.category).sort())
+    === canonicalJson(expectedAdded),
+  "Phase 5 auth user additions diverged from the independent oracle");
+  assert(userDelta.removed.length === 0, "Phase 5 unexpectedly removed an auth user");
+  const profileCategories = new Set(oracle.phase_five.auth_state.profile_user_categories);
+  assert(userDelta.updated.every(({ after }) => profileCategories.has(after.category)),
+    "Phase 5 updated an auth user outside the six-profile identity set");
+
+  const sessionDelta = exactProjectionDelta(
+    initial.auth_sessions_projection,
+    final.auth_sessions_projection,
+    "Phase 5 auth session",
+  );
+  assert([...sessionDelta.added, ...sessionDelta.removed, ...sessionDelta.updated.map((row) => row.after)]
+    .every((row) => profileCategories.has(row.category)),
+  "Phase 5 changed a session outside the six-profile identity set");
+  const initialCounts = new Map(initial.session_counts_by_user.map((row) => [
+    row.user_identity_digest, row.count,
+  ]));
+  const finalCounts = new Map(final.session_counts_by_user.map((row) => [
+    row.user_identity_digest, row.count,
+  ]));
+  for (const identity of new Set([...initialCounts.keys(), ...finalCounts.keys()])) {
+    const added = sessionDelta.added.filter((row) => row.user_identity_digest === identity).length;
+    const removed = sessionDelta.removed.filter((row) => row.user_identity_digest === identity).length;
+    assert((finalCounts.get(identity) || 0) - (initialCounts.get(identity) || 0)
+      === added - removed,
+    "Phase 5 per-user session count delta disagreed with exact session identities");
+  }
+  const successfulSessionCreators = profiles.flatMap((profile) => profile.requests || []).filter(
+    (request) => request.statusCode < 400 && request.method === "POST" && new Set([
+      "/api/auth/login",
+      "/api/auth/invitations/accept",
+      "/api/auth/invitations/passkey/register/verify",
+      "/api/auth/passkeys/login/verify",
+    ]).has(request.path),
+  ).length;
+  assert(sessionDelta.added.length <= successfulSessionCreators,
+    "Phase 5 added more sessions than successful browser authentication requests");
+  return {
+    auth_session_added_identity_digests: sessionDelta.added.map((row) => row.identity_digest),
+    auth_session_removed_identity_digests: sessionDelta.removed.map((row) => row.identity_digest),
+    auth_session_updated_identity_digests: sessionDelta.updated.map((row) => row.after.identity_digest),
+    auth_sessions_exact: true,
+    auth_user_added_identity_digests: userDelta.added.map((row) => row.identity_digest),
+    auth_user_removed_identity_digests: userDelta.removed.map((row) => row.identity_digest),
+    auth_user_updated_identity_digests: userDelta.updated.map((row) => row.after.identity_digest),
+    auth_users_exact: true,
+    per_user_session_counts_exact: true,
+  };
+}
+
+function assertPhaseFiveDatabaseState(initial, final, fixture, profiles, oracle) {
   assert(initial && final, "Phase 5 semantic database boundary is missing");
   const invitee = fixture.phase_five.invitee_username;
   const viewerInvitee = fixture.phase_five.viewer_invitee_username;
@@ -898,12 +1101,12 @@ function assertPhaseFiveDatabaseState(initial, final, fixture, profiles) {
   "Phase 5 TOTP disable did not clear active and pending MFA state");
   assert(!final.passkeys.some((row) => row.username === fixture.roles.admin),
     "Phase 5 revoked administrator passkey still exists");
-  assert(final.challenge_summary.total_count === 16
-    && final.challenge_summary.used_count + final.challenge_summary.unused_count === 16
-    && final.challenge_summary.invalid_flow_count === 0
-    && final.challenge_summary.invalid_lifetime_count === 0
-    && final.challenge_summary.invalid_used_timestamp_count === 0,
-  "Phase 5 passkey challenge retention state is invalid");
+  assert(initial.passkeys.length === 0
+    && final.passkeys.length === 1
+    && final.passkeys[0].username === invitee,
+  "Phase 5 passwordless invitation passkey state is not exact");
+  const authEvidence = assertPhaseFiveExactAuthState(initial, final, profiles, oracle);
+  const challengeEvidence = assertPhaseFiveChallengeProjection(initial, final, profiles, oracle);
   assert(canonicalJson(final.runtime_flags) === canonicalJson({
     emergency_read_only: "0",
     emergency_read_only_expires_at_ms: "0",
@@ -920,10 +1123,13 @@ function assertPhaseFiveDatabaseState(initial, final, fixture, profiles) {
   assert(adminDesktop?.checks?.invalid_invitation_side_effects === 0,
     "Phase 5 invalid invitation attempts created side effects");
   return {
+    ...authEvidence,
+    ...challengeEvidence,
     invitation_acceptance_exact: true,
     incident_control_restored_exact: true,
     mfa_cleanup_exact: true,
     passkey_challenge_retention_exact: true,
+    passkey_added_count: final.passkeys.length - initial.passkeys.length,
     passkey_revocation_exact: true,
     settings_persistence_exact: true,
   };
@@ -938,35 +1144,112 @@ function normalizePhaseFiveMutationPath(pathname) {
     .replace(/^\/api\/gardens\/\d+\/members\/\d+$/, "/api/gardens/{garden_id}/members/{user_id}");
 }
 
-function assertPhaseFiveAuditEvents(beforeAudit, finalAudit, profiles) {
-  const beforeIds = new Set(beforeAudit.records.map((record) => record.id));
-  const events = finalAudit.records.filter((record) => !beforeIds.has(record.id));
-  const ownedPrefixes = [
-    "/api/auth/emergency-read-only",
-    "/api/auth/invitations/accept",
-    "/api/auth/me/settings",
-    "/api/auth/mfa/",
-    "/api/auth/passkeys",
-    "/api/auth/sessions",
-    "/api/auth/user-invitations",
-    "/api/auth/users/",
-  ];
-  const requests = profiles.flatMap((profile) => profile.requests.filter((request) => (
-    ["DELETE", "PATCH", "POST", "PUT"].includes(request.method)
-    && ownedPrefixes.some((prefix) => request.path.startsWith(prefix))
-    && request.statusCode < 400
-  )).map((request) => ({
-    ...request,
-    path: normalizePhaseFiveMutationPath(request.path),
-  })));
-  const eventRequestIds = new Set(events.map((event) => event.request_id).filter(Boolean));
-  for (const request of requests) {
-    assert(isSafeRequestId(request.requestId),
-      `Phase 5 mutation lacks a safe request ID: ${request.method} ${request.path}`);
-    assert(eventRequestIds.has(request.requestId),
-      `Phase 5 browser mutation lacks an audit event: ${request.method} ${request.path}`);
+function assertPhaseFiveAuditEvents(
+  beforeAudit,
+  finalAudit,
+  profiles,
+  oracle = phaseFiveOracle(),
+  fixture = null,
+) {
+  assert(Array.isArray(beforeAudit?.records) && Array.isArray(finalAudit?.records),
+    "Phase 5 audit boundary records are missing");
+  const beforeById = new Map(beforeAudit.records.map((record) => [record.id, record]));
+  const finalById = new Map(finalAudit.records.map((record) => [record.id, record]));
+  assert(beforeById.size === beforeAudit.records.length
+    && finalById.size === finalAudit.records.length,
+  "Phase 5 audit boundary contains duplicate event identities");
+  for (const [id, record] of beforeById) {
+    assert(finalById.has(id), `Phase 5 unexpectedly removed audit event ${id}`);
+    assert(canonicalJson(finalById.get(id)) === canonicalJson(record),
+      `Phase 5 unexpectedly changed audit event ${id}`);
   }
-  return { audit_mutations_bound_to_requests: true, audit_event_count: requests.length };
+  const events = finalAudit.records.filter((record) => !beforeById.has(record.id));
+  const scope = oracle.phase_five.audit_scope;
+  const inScope = (pathname) => scope.exact_paths.includes(pathname)
+    || scope.prefixes.some((prefix) => pathname.startsWith(prefix));
+  const normalize = (record) => ({
+    actor_auth_type: record.actor_auth_type,
+    actor_role: record.actor_role,
+    actor_username: record.actor_username,
+    garden_id: record.garden_id === null || record.garden_id === undefined
+      ? null : Number(record.garden_id),
+    method: record.method,
+    path: normalizePhaseFiveMutationPath(record.path),
+    request_id: record.request_id,
+    status_code: record.status_code,
+  });
+  const requests = profiles.flatMap((profile) => (profile.requests || []).flatMap((request) => {
+    const normalizedPath = normalizePhaseFiveMutationPath(request.path);
+    const isIncident = request.method === scope.incident.method
+      && normalizedPath === scope.incident.path
+      && request.statusCode === scope.incident.status_code;
+    if (!["DELETE", "PATCH", "POST", "PUT"].includes(request.method)
+      || (!isIncident && (!inScope(normalizedPath) || request.statusCode >= 400))) return [];
+    assert(isSafeRequestId(request.requestId),
+      `Phase 5 mutation lacks a safe request ID: ${request.method} ${normalizedPath}`);
+    const publicAuthRequest = new Set([
+      "/api/auth/invitations/accept",
+      "/api/auth/invitations/passkey/register/options",
+      "/api/auth/invitations/passkey/register/verify",
+      "/api/auth/login",
+      "/api/auth/passkeys/login/options",
+      "/api/auth/passkeys/login/verify",
+    ]).has(normalizedPath);
+    const invitationAcceptance = normalizedPath === "/api/auth/invitations/accept"
+      || normalizedPath === "/api/auth/invitations/passkey/register/verify";
+    const invitationGardenId = invitationAcceptance
+      && fixture
+      && request.actorUsername === fixture.phase_five.viewer_invitee_username
+      ? Number(fixture.gardens.alpha.id)
+      : null;
+    return [{
+      actor_auth_type: publicAuthRequest ? "none" : request.actorAuthType,
+      actor_role: publicAuthRequest ? "anonymous" : request.actorRole,
+      actor_username: publicAuthRequest ? "anonymous" : request.actorUsername,
+      garden_id: publicAuthRequest ? invitationGardenId : (
+        request.gardenId === null || request.gardenId === undefined
+          ? null : Number(request.gardenId)
+      ),
+      method: request.method,
+      path: normalizedPath,
+      request_id: request.requestId,
+      status_code: request.statusCode,
+    }];
+  }));
+  const expectedIncidentCount = requests.filter((request) => (
+    request.method === scope.incident.method
+    && request.path === scope.incident.path
+    && request.status_code === scope.incident.status_code
+  )).length;
+  assert(expectedIncidentCount === 1,
+    "Phase 5 incident control did not record exactly one expected 503 request");
+  const relevantEvents = events.map(normalize).filter((event) => (
+    (inScope(event.path) && event.status_code < 400)
+    || (event.method === scope.incident.method
+      && event.path === scope.incident.path
+      && event.status_code === scope.incident.status_code)
+  ));
+  const unmatched = [...requests];
+  for (const event of relevantEvents) {
+    assert(isSafeRequestId(event.request_id),
+      `Phase 5 audit event lacks a safe request ID: ${event.method} ${event.path}`);
+    const index = unmatched.findIndex((request) => auditRecordMatchesBrowserMutation(
+      event,
+      request,
+    ));
+    assert(index >= 0,
+      `Unexpected Phase 5 in-scope audit event: ${canonicalJson(event)}`);
+    unmatched.splice(index, 1);
+  }
+  assert(unmatched.length === 0,
+    `Phase 5 browser mutations lacked exact audit events: ${canonicalJson(unmatched)}`);
+  return {
+    audit_event_count: requests.length,
+    audit_incident_503_correlated: true,
+    audit_mutations_bound_to_requests: true,
+    audit_mutations_one_to_one: true,
+    audit_normalized_equality_exact: true,
+  };
 }
 
 function assertUniquePhaseThreeRows(rows, key, label) {
@@ -6608,11 +6891,14 @@ async function main() {
         finalDatabase.phase_five_state,
         fixture,
         phaseFiveProfiles,
+        phaseFiveOracleSpec,
       );
       phaseFiveAuditEvidence = assertPhaseFiveAuditEvents(
         phaseFiveAuditBaseline,
         finalDatabase.audit_state,
         phaseFiveProfiles,
+        phaseFiveOracleSpec,
+        fixture,
       );
     }
     const phaseOneSemanticDeltaTables = phaseOneRan ? new Set([
@@ -6844,7 +7130,9 @@ async function main() {
       },
     };
     const phaseFiveExpectedAdded = {
-      auth_passkey_challenges: 16,
+      auth_passkey_challenges:
+        phaseFiveDatabaseEvidence?.challenge_added_identity_digests?.length ?? 0,
+      auth_passkeys: phaseFiveDatabaseEvidence?.passkey_added_count ?? 0,
       auth_user_invitations: 1,
       auth_user_plot_assignment_meanings: 1,
       garden_invitations: 1,
@@ -7431,7 +7719,9 @@ module.exports = {
   assertPhaseFourFixtureOracleBinding,
   assertPhaseFourProfileEvidence,
   assertPhaseFiveAuditEvents,
+  assertPhaseFiveChallengeProjection,
   assertPhaseFiveDatabaseState,
+  assertPhaseFiveExactAuthState,
   assertPhaseFiveFixtureOracleBinding,
   assertPhaseFiveProfileEvidence,
   assertPhaseTwoAuditEvents,

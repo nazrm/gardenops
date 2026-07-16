@@ -268,7 +268,10 @@ run; failed runs preserve private logs and artifacts for diagnosis. Playwright
 first writes each trace to private staging because it can contain request and
 response payloads, page state, and identifiers. Run closure sanitizes and validates
 that staged trace, deletes the raw staging copy, and retains only the sanitized
-private archive. The public manifest is a sanitized projection; it binds the
+private archive. Sanitization is fail-closed: retained traces exclude DOM/page
+snapshots, screencast frames, response resources, and unknown archive members,
+and redact invitation, challenge, TOTP, recovery-code, credential, session, and
+CSRF fields from the remaining event metadata. The public manifest is a sanitized projection; it binds the
 fixture, runtime/browser, and lockfiles by hash and size and includes recomputable
 canonical projection digests. The
 runtime evidence hashes both the Chromium launcher and the resolved ELF browser
@@ -439,12 +442,15 @@ node --check scripts/check_complete_journeys_e2e.cjs
 ```
 
 Phase 5 verifies invitation acceptance, role boundaries, passkey enrollment,
-rename, passwordless login, and revocation, plus TOTP enrollment cancellation,
-confirmation, recovery-code regeneration, and disable. It also proves safe
-session inventory and revocation from a second browser context, personal
-settings persistence, and emergency read-only enable/block/disable behavior on
-desktop and Pixel 7 profiles. Invitation and authentication secrets are scrubbed
-before traces become retained evidence.
+rename, passwordless login, user-verification rejection, revoked-credential
+denial, passwordless backup enrollment, and final-factor lockout. It covers TOTP
+enrollment cancellation, confirmation, recovery-code regeneration, one-time use,
+reuse denial, fallback, and disable. It also proves safe session inventory,
+second-browser revocation, idle and absolute expiry, live role refresh, personal
+settings persistence, stale-CSRF and cross-garden denials, and emergency
+read-only enable/block/disable behavior across the six desktop/Pixel role
+profiles. Invitation and authentication secrets are removed before traces
+become retained evidence.
 
 Session deployments have two independent limits. `AUTH_SESSION_TTL_HOURS`
 defaults to a 12-hour idle timeout; `AUTH_SESSION_ABSOLUTE_TTL_HOURS` defaults to

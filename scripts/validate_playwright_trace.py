@@ -15,6 +15,8 @@ REDACTED = "[redacted]"
 SENSITIVE_KEYS = {
     "access_token",
     "authorization",
+    "challenge",
+    "challenge_token",
     "client_secret",
     "cookie",
     "cookies",
@@ -24,18 +26,31 @@ SENSITIVE_KEYS = {
     "csrf_token",
     "gardenops_csrf",
     "gardenops_session",
+    "invitation_token",
+    "invite_token",
+    "input_value",
+    "otpauth_uri",
+    "otpauth_url",
     "password",
+    "provisioning_uri",
     "proxy_authorization",
     "refresh_token",
+    "recovery_code",
+    "recovery_codes",
+    "qr_code",
     "secret",
     "set_cookie",
     "subscription_token",
     "token",
     "token_hash",
+    "totp_secret",
+    "totp_seed",
     "x_csrf_token",
     "x_xsrf_token",
     "xsrf_token",
 }
+TRACE_MEMBERS = {"trace.trace", "trace.network", "trace.stacks"}
+RISKY_TRACE_EVENT_TYPES = {"frame_snapshot", "screencast_frame"}
 SENSITIVE_HEADERS = {
     "authorization",
     "cookie",
@@ -59,7 +74,10 @@ SECRET_PATTERNS = (
     (
         "sensitive-field",
         re.compile(
-            r"[\"']?(?:password|csrf_token|access_token|refresh_token|client_secret|subscription_token)"
+            r"[\"']?(?:password|csrf[_-]?token|access[_-]?token|refresh[_-]?token|"
+            r"client[_-]?secret|subscription[_-]?token|invite(?:ation)?[_-]?token|"
+            r"challenge(?:[_-]?token)?|recovery[_-]?codes?|totp[_-]?(?:secret|seed)|"
+            r"otpauth[_-]?(?:uri|url)|provisioning[_-]?uri|qr[_-]?code)"
             r"[\"']?\s*[:=]\s*[\"'](?!\[redacted\])[^\"']+[\"']",
             re.IGNORECASE,
         ),
@@ -74,7 +92,9 @@ SECRET_PATTERNS = (
     (
         "sensitive-query",
         re.compile(
-            r"[?&](?:token|secret|password|csrf_token)=(?!\[redacted\])[^&#\s\"']+",
+            r"[?#&](?:token|secret|password|csrf[_-]?token|invite(?:ation)?(?:[_-]?token)?|"
+            r"challenge(?:[_-]?token)?|totp[_-]?(?:secret|seed))="
+            r"(?!\[redacted\])[^&#\s\"']+",
             re.IGNORECASE,
         ),
     ),
@@ -82,7 +102,8 @@ SECRET_PATTERNS = (
 
 
 def _normalized_key(value: object) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
+    camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(value).strip())
+    return re.sub(r"[^a-z0-9]+", "_", camel_split.lower()).strip("_")
 
 
 def _is_redacted(value: object) -> bool:
@@ -101,6 +122,14 @@ def _secret_category_for_name(value: object) -> str:
         return "csrf"
     if normalized == "subscription_token":
         return "subscription-token"
+    if normalized in {"invite_token", "invitation_token"}:
+        return "invitation-token"
+    if normalized.startswith("challenge"):
+        return "challenge"
+    if normalized.startswith("recovery_code"):
+        return "recovery-code"
+    if normalized.startswith("totp") or normalized.startswith("otpauth"):
+        return "totp"
     if normalized in {"credential", "credentials", "password"}:
         return "credential"
     if normalized in {"client_secret", "secret"}:
@@ -132,13 +161,17 @@ def _sanitize_string(value: str) -> str:
         flags=re.IGNORECASE,
     )
     sanitized = re.sub(
-        r"([?&](?:token|secret|password|csrf_token)=)[^&#\s\"']+",
+        r"([?#&](?:token|secret|password|csrf[_-]?token|invite(?:ation)?(?:[_-]?token)?|"
+        r"challenge(?:[_-]?token)?|totp[_-]?(?:secret|seed))=)[^&#\s\"']+",
         rf"\1{REDACTED}",
         sanitized,
         flags=re.IGNORECASE,
     )
     sanitized = re.sub(
-        r"([\"']?(?:password|csrf_token|access_token|refresh_token|client_secret|subscription_token)"
+        r"([\"']?(?:password|csrf[_-]?token|access[_-]?token|refresh[_-]?token|"
+        r"client[_-]?secret|subscription[_-]?token|invite(?:ation)?[_-]?token|"
+        r"challenge(?:[_-]?token)?|recovery[_-]?codes?|totp[_-]?(?:secret|seed)|"
+        r"otpauth[_-]?(?:uri|url)|provisioning[_-]?uri|qr[_-]?code)"
         r"[\"']?\s*[:=]\s*)[\"'][^\"']*[\"']",
         rf"\1\"{REDACTED}\"",
         sanitized,
@@ -151,7 +184,14 @@ def _sanitize_json(value: Any) -> Any:
     if isinstance(value, list):
         return [_sanitize_json(item) for item in value]
     if not isinstance(value, dict):
-        return _sanitize_string(value) if isinstance(value, str) else value
+        if not isinstance(value, str):
+            return value
+        if value.lstrip().startswith(("{", "[")):
+            try:
+                return json.dumps(_sanitize_json(json.loads(value)), separators=(",", ":"))
+            except json.JSONDecodeError:
+                pass
+        return _sanitize_string(value)
 
     header_name = str(value.get("name", "")).strip().lower()
     named_value = _normalized_key(header_name)
@@ -168,6 +208,15 @@ def _sanitize_json(value: Any) -> Any:
     return sanitized
 
 
+def _is_risky_trace_event(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    event_type = _normalized_key(value.get("type", ""))
+    return event_type in RISKY_TRACE_EVENT_TYPES or (
+        event_type == "snapshot" and "snapshot" in value
+    )
+
+
 def _json_secret_categories(value: Any) -> set[str]:
     if isinstance(value, list):
         categories: set[str] = set()
@@ -175,7 +224,15 @@ def _json_secret_categories(value: Any) -> set[str]:
             categories.update(_json_secret_categories(item))
         return categories
     if not isinstance(value, dict):
-        return _pattern_secret_categories(value) if isinstance(value, str) else set()
+        if not isinstance(value, str):
+            return set()
+        categories = _pattern_secret_categories(value)
+        if value.lstrip().startswith(("{", "[")):
+            try:
+                categories.update(_json_secret_categories(json.loads(value)))
+            except json.JSONDecodeError:
+                pass
+        return categories
 
     header_name = str(value.get("name", "")).strip().lower()
     named_value = _normalized_key(header_name)
@@ -228,13 +285,6 @@ def _sanitize_text(text: str) -> str:
     return _sanitize_string(text)
 
 
-def _sanitize_binary(data: bytes) -> bytes:
-    text = data.decode("latin-1")
-    for _category, pattern in SECRET_PATTERNS:
-        text = pattern.sub(lambda match: "#" * len(match.group(0)), text)
-    return text.encode("latin-1")
-
-
 def _secret_categories(data: bytes) -> set[str]:
     text = _decoded_text(data)
     if text is None:
@@ -271,6 +321,31 @@ def _safe_member_label(name: str) -> str:
     return "<other-member>"
 
 
+def _sanitize_trace_events(text: str) -> str:
+    retained: list[str] = []
+    for line in text.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            retained.append(_sanitize_string(line))
+            continue
+        if not _is_risky_trace_event(event):
+            retained.append(json.dumps(_sanitize_json(event), separators=(",", ":")))
+    if not any(line.strip() for line in retained):
+        raise ValueError("sanitized trace would contain no non-snapshot trace events")
+    return "\n".join(retained) + "\n"
+
+
+def _trace_has_risky_events(text: str) -> bool:
+    for line in text.splitlines():
+        try:
+            if _is_risky_trace_event(json.loads(line)):
+                return True
+        except json.JSONDecodeError:
+            continue
+    return False
+
+
 def sanitize_trace(source: Path, destination: Path) -> None:
     if not source.is_file() or source.is_symlink():
         raise ValueError("trace must be a regular file")
@@ -279,14 +354,20 @@ def sanitize_trace(source: Path, destination: Path) -> None:
     try:
         with zipfile.ZipFile(source) as archive, zipfile.ZipFile(destination, "x") as output:
             for info in archive.infolist():
+                if info.is_dir() or info.filename not in TRACE_MEMBERS:
+                    continue
                 data = archive.read(info)
                 text = _decoded_text(data)
-                sanitized = (
-                    _sanitize_text(text).encode("utf-8")
-                    if text is not None
-                    else _sanitize_binary(data)
+                if text is None:
+                    if info.filename in {"trace.trace", "trace.network"}:
+                        raise ValueError(f"{info.filename} is not UTF-8 text")
+                    continue
+                sanitized_text = (
+                    _sanitize_trace_events(text)
+                    if info.filename == "trace.trace"
+                    else _sanitize_text(text)
                 )
-                output.writestr(info, sanitized)
+                output.writestr(info.filename, sanitized_text.encode("utf-8"))
         os.chmod(destination, 0o600)
         validate_trace(destination)
     except BaseException:
@@ -299,17 +380,26 @@ def validate_trace(path: Path) -> None:
         raise ValueError("trace must be a regular file")
     with zipfile.ZipFile(path) as archive:
         names = set(archive.namelist())
+        if len(names) != len(archive.infolist()):
+            raise ValueError("trace archive contains duplicate member names")
+        unsafe_names = names - TRACE_MEMBERS
+        if unsafe_names:
+            raise ValueError("trace archive contains unsafe resource or unknown members")
         for required in ("trace.trace", "trace.network"):
             if required not in names:
                 raise ValueError(f"trace archive is missing {required}")
             info = archive.getinfo(required)
             if info.file_size <= 0:
                 raise ValueError(f"trace archive is missing non-empty {required}")
+            if _decoded_text(archive.read(info)) is None:
+                raise ValueError(f"{required} is not UTF-8 text")
         corrupt = archive.testzip()
         if corrupt is not None:
             raise ValueError(
                 "trace archive contains a corrupt member: " + _safe_member_label(corrupt)
             )
+        if _trace_has_risky_events(archive.read("trace.trace").decode("utf-8")):
+            raise ValueError("trace archive contains unsafe snapshot or screencast records")
         findings: dict[str, set[str]] = {}
         for info in archive.infolist():
             if info.is_dir():

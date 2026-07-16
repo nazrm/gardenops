@@ -498,9 +498,8 @@ function renderIncidentStatusCard(): string {
 function renderPasskeysCard(): string {
   const browserSupported = isPasskeySupported();
   const addDisabled = !state.passkeysEnabled || !browserSupported;
-  const unavailableText = !state.passkeysEnabled
-    ? t("admin.passkeys.unavailable")
-    : (!browserSupported ? t("admin.passkeys.browser_unsupported") : "");
+  const finalPasskeyRemovalBlocked = Boolean(state.me?.password_auth_disabled && state.passkeys.length === 1);
+  const unavailableText = !state.passkeysEnabled ? t("admin.passkeys.unavailable") : (!browserSupported ? t("admin.passkeys.browser_unsupported") : "");
   const rows = state.passkeys.map((passkey) => `
     <tr data-passkey-id="${passkey.id}">
       <td>${esc(passkeyDisplayName(passkey))}</td>
@@ -509,7 +508,7 @@ function renderPasskeysCard(): string {
       <td>${esc(renderPasskeyDevice(passkey))}</td>
       <td>
         <button type="button" class="adm-btn adm-btn--ghost adm-passkey-rename">${authT("identity.passkeys.rename")}</button>
-        <button type="button" class="adm-btn adm-btn--ghost adm-passkey-remove">${t("admin.passkeys.remove")}</button>
+        <button type="button" class="adm-btn adm-btn--ghost adm-passkey-remove"${finalPasskeyRemovalBlocked ? ` disabled title="${esc(authT("identity.passkeys.final_factor_required"))}"` : ""}>${t("admin.passkeys.remove")}</button>
       </td>
     </tr>
   `).join("");
@@ -518,6 +517,7 @@ function renderPasskeysCard(): string {
       <h3 class="adm-card-title">${t("admin.passkeys.title")}</h3>
       <p class="adm-section-desc">${t("admin.passkeys.desc")}</p>
       ${unavailableText ? `<p class="adm-section-desc">${unavailableText}</p>` : ""}
+      ${finalPasskeyRemovalBlocked ? `<p class="adm-section-desc">${esc(authT("identity.passkeys.final_factor_required"))}</p>` : ""}
       ${state.passkeys.length > 0 ? `
         <div class="adm-table-wrap">
           <table class="adm-table">
@@ -2784,9 +2784,20 @@ function wireSection(): void {
     );
     if (nicknameValue === null) return;
     const nickname = nicknameValue.trim();
-    const currentPassword = await promptPasswordDialog(t("auth.current_password"));
-    if (currentPassword === null || !currentPassword) return;
+    let currentPassword = "";
     try {
+      if (state.me?.password_auth_disabled) {
+        const reauthOptions = await beginPasskeyReauthenticationApi();
+        const reauthCredential = await getPasskey(reauthOptions.publicKey);
+        await finishPasskeyReauthenticationApi(
+          reauthOptions.challenge_token,
+          reauthCredential,
+        );
+        state.me = { ...state.me, mfa_authenticated: true };
+      } else {
+        currentPassword = await promptPasswordDialog(t("auth.current_password")) ?? ""; // push-sanitizer: allow SECRET_ASSIGNMENT - user-entered value is held only for this request
+        if (!currentPassword) return;
+      }
       const options = await beginPasskeyRegistrationApi(nickname, currentPassword);
       const credential = await createPasskey(options.publicKey);
       await finishPasskeyRegistrationApi(

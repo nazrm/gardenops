@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -123,14 +124,15 @@ function responseFor(page, method, pathname) {
 
 async function browserFetch(page, request) {
   return page.evaluate(async (input) => {
-    const csrf = document.cookie.split("; ")
+    const cookieCsrf = document.cookie.split("; ")
       .find((entry) => entry.startsWith("gardenops_csrf="))?.split("=").slice(1).join("=") || "";
+    const csrf = input.csrfToken === undefined ? decodeURIComponent(cookieCsrf) : input.csrfToken; // push-sanitizer: allow SECRET_ASSIGNMENT - disposable browser cookie or explicit denial canary
     const response = await fetch(input.path, {
       body: input.body === undefined ? undefined : JSON.stringify(input.body),
       credentials: "include",
       headers: {
         ...(input.body === undefined ? {} : { "content-type": "application/json" }),
-        "x-csrf-token": decodeURIComponent(csrf),
+        "x-csrf-token": csrf,
       },
       method: input.method || "GET",
     });
@@ -141,27 +143,51 @@ async function browserFetch(page, request) {
   }, request);
 }
 
+async function discardExpectedUiFailure(
+  page,
+  diagnostics,
+  marks,
+  method,
+  pathname,
+  expectedStatus,
+) {
+  await waitFor(() => diagnostics.httpErrors.length === marks.http + 1,
+    `HTTP diagnostic for ${pathname}`);
+  const httpAdded = diagnostics.httpErrors.splice(marks.http);
+  assert(httpAdded.length === 1 && httpAdded[0] === `${expectedStatus} ${pathname}`,
+    `Unexpected browser HTTP diagnostics for ${pathname}`);
+  await waitFor(() => diagnostics.consoleErrors.length === marks.console + 1,
+    `console diagnostic for ${pathname}`);
+  const consoleAdded = diagnostics.consoleErrors.splice(marks.console);
+  const classifiedAdded = diagnostics.classifiedConsoleDiagnostics.splice(marks.classified);
+  assert(consoleAdded.length === 1 && classifiedAdded.length === 1
+    && classifiedAdded[0].method === method
+    && classifiedAdded[0].path === pathname
+    && classifiedAdded[0].status === expectedStatus,
+  `Unexpected browser console diagnostics for ${pathname}`);
+}
+
+function diagnosticMarks(diagnostics) {
+  return {
+    classified: diagnostics.classifiedConsoleDiagnostics.length,
+    console: diagnostics.consoleErrors.length,
+    http: diagnostics.httpErrors.length,
+  };
+}
+
 async function expectedHttpFailure(page, diagnostics, request, expectedStatus) {
-  const httpMark = diagnostics.httpErrors.length;
-  const consoleMark = diagnostics.consoleErrors.length;
-  const classifiedMark = diagnostics.classifiedConsoleDiagnostics.length;
+  const marks = diagnosticMarks(diagnostics);
   const result = await browserFetch(page, request);
   assert(result.status === expectedStatus,
     `${request.method || "GET"} ${request.path} returned ${result.status}`);
-  await waitFor(() => diagnostics.httpErrors.length === httpMark + 1,
-    `HTTP diagnostic for ${request.path}`);
-  const httpAdded = diagnostics.httpErrors.splice(httpMark);
-  assert(httpAdded.length === 1 && httpAdded[0] === `${expectedStatus} ${request.path}`,
-    `Unexpected browser HTTP diagnostics for ${request.path}`);
-  await waitFor(() => diagnostics.consoleErrors.length === consoleMark + 1,
-    `console diagnostic for ${request.path}`);
-  const consoleAdded = diagnostics.consoleErrors.splice(consoleMark);
-  const classifiedAdded = diagnostics.classifiedConsoleDiagnostics.splice(classifiedMark);
-  assert(consoleAdded.length === 1 && classifiedAdded.length === 1
-    && classifiedAdded[0].method === (request.method || "GET")
-    && classifiedAdded[0].path === request.path
-    && classifiedAdded[0].status === expectedStatus,
-  `Unexpected browser console diagnostics for ${request.path}`);
+  await discardExpectedUiFailure(
+    page,
+    diagnostics,
+    marks,
+    request.method || "GET",
+    request.path,
+    expectedStatus,
+  );
   return result;
 }
 
@@ -187,7 +213,49 @@ async function enableVirtualAuthenticator(context, page) {
     authenticatorId: result.authenticatorId,
     isUserVerified: true,
   });
-  return { authenticatorId: result.authenticatorId, client };
+  return {
+    authenticatorId: result.authenticatorId,
+    client,
+    async setUserVerified(isUserVerified) {
+      await client.send("WebAuthn.setUserVerified", {
+        authenticatorId: result.authenticatorId,
+        isUserVerified,
+      });
+    },
+  };
+}
+
+async function signOut(page, label) {
+  const control = page.locator("#auth-btn:visible, #mobile-auth-btn:visible").first();
+  await visible(control, `${label} sign-out control`);
+  const pending = responseFor(page, "POST", "/api/auth/logout");
+  await control.click();
+  assert((await pending).ok(), `${label} logout failed`);
+  await visible(page.locator("#auth-gate-form"), `${label} sign-in gate`);
+}
+
+async function enterPasswordLoginStage(page, username, password) {
+  const form = page.locator("#auth-gate-form");
+  await visible(form, "password sign-in form");
+  const usernameInput = form.locator("input[name='username']");
+  if (await usernameInput.isVisible()) {
+    await usernameInput.fill(username);
+    await form.locator("button[type='submit']").click();
+  }
+  const passwordInput = form.locator("input[name='password']");
+  const passwordFallback = form.locator("#auth-gate-use-password");
+  await visible(
+    form.locator("input[name='password']:visible, #auth-gate-use-password:visible").first(),
+    "password fallback",
+  );
+  if (!(await passwordInput.isVisible())) await passwordFallback.click();
+  await visible(passwordInput, "password field");
+  await passwordInput.fill(password);
+  const pending = responseFor(page, "POST", "/api/auth/login");
+  await form.locator("button[type='submit']").click();
+  assert((await pending).ok(), "Password stage failed");
+  await visible(form.locator("input[name='mfa_code']"), "MFA sign-in stage");
+  return form;
 }
 
 function decodeBase32(value) {
@@ -216,6 +284,16 @@ function currentTotp(secret, nowMs = Date.now()) {
     | ((digest[offset + 2] & 0xff) << 8)
     | (digest[offset + 3] & 0xff);
   return String(binary % 1_000_000).padStart(6, "0");
+}
+
+async function freshTotpAfter(secret, previousCode) {
+  const deadline = Date.now() + 35_000;
+  while (Date.now() < deadline) {
+    const candidate = currentTotp(secret);
+    if (candidate !== previousCode) return candidate;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("Timed out waiting for a fresh TOTP code");
 }
 
 async function createUserInvitation(page, fixture) {
@@ -321,7 +399,7 @@ async function exerciseSettings(page, fixture) {
   await visible(persisted.first(), "persisted identity setting");
 }
 
-async function exercisePasskeys(page, fixture, adminPassword) {
+async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticator, diagnostics) {
   const proactivePrompt = await waitForProactivePasskeyPrompt(page);
   const registerPending = responseFor(page, "POST", "/api/auth/passkeys/register/verify");
   if (proactivePrompt) {
@@ -351,27 +429,50 @@ async function exercisePasskeys(page, fixture, adminPassword) {
   }).first();
   await visible(row, "renamed passkey");
 
-  const signOut = page.locator("#auth-btn:visible");
-  await visible(signOut, "desktop sign-out control");
-  const logoutPending = responseFor(page, "POST", "/api/auth/logout");
-  await signOut.click();
-  assert((await logoutPending).ok(), "Passkey test logout failed");
+  await signOut(page, "passkey test");
   const gate = page.locator("#auth-gate-form");
-  await visible(gate, "passwordless sign-in gate");
   await gate.locator("input[name='username']").fill(fixture.roles.admin);
+  await gate.locator("button[type='submit']").click();
+  const passkeyAction = gate.locator("button[type='submit']").filter({ hasText: "Use passkey" });
+  await visible(passkeyAction, "explicit passwordless passkey action");
+
+  await virtualAuthenticator.setUserVerified(false);
+  const rejectedMarks = diagnosticMarks(diagnostics);
+  let rejectedResponse = null;
+  const captureRejected = (response) => {
+    if (response.request().method() === "POST"
+      && new URL(response.url()).pathname === "/api/auth/passkeys/login/verify") {
+      rejectedResponse = response;
+    }
+  };
+  page.on("response", captureRejected);
+  await passkeyAction.click();
+  await waitFor(() => passkeyAction.isEnabled(), "rejected user-verification recovery");
+  await page.waitForTimeout(100);
+  page.off("response", captureRejected);
+  if (rejectedResponse) {
+    assert(rejectedResponse.status() === 400 || rejectedResponse.status() === 401,
+      `Rejected user verification returned ${rejectedResponse.status()}`);
+    await discardExpectedUiFailure(
+      page,
+      diagnostics,
+      rejectedMarks,
+      "POST",
+      "/api/auth/passkeys/login/verify",
+      rejectedResponse.status(),
+    );
+  }
+  assert(await gate.isVisible(), "Rejected user verification left the sign-in gate");
+
+  await virtualAuthenticator.setUserVerified(true);
   const loginPending = responseFor(page, "POST", "/api/auth/passkeys/login/verify");
-  await gate.locator("button[type='submit']").click();
-  await visible(
-    gate.locator("button[type='submit']").filter({ hasText: "Use passkey" }),
-    "explicit passwordless passkey action",
-  );
-  await gate.locator("button[type='submit']").click();
+  await passkeyAction.click();
   assert((await loginPending).ok(), "Passwordless passkey sign-in failed");
   await waitFor(() => page.locator(".auth-gate").count().then((count) => count === 0),
     "passwordless sign-in completion");
 }
 
-async function revokePasskey(page, fixture) {
+async function revokePasskey(page, fixture, diagnostics, adminPassword) {
   await openAdminSection(page, "desktop", "settings");
   const row = page.locator("[data-passkey-id]").filter({
     hasText: phaseFive(fixture).passkey_renamed_nickname,
@@ -387,9 +488,36 @@ async function revokePasskey(page, fixture) {
   assert((await pending).ok(), "Passkey revoke failed");
   await waitFor(() => page.locator("[data-passkey-id]").count().then((count) => count === 0),
     "revoked passkey removal");
+
+  await signOut(page, "revoked passkey");
+  const gate = page.locator("#auth-gate-form");
+  await gate.locator("input[name='username']").fill(fixture.roles.admin);
+  await gate.locator("button[type='submit']").click();
+  const passkeyAction = gate.locator("button[type='submit']").filter({ hasText: "Use passkey" });
+  await visible(passkeyAction, "revoked passkey sign-in action");
+  const marks = diagnosticMarks(diagnostics);
+  const deniedPending = responseFor(page, "POST", "/api/auth/passkeys/login/verify");
+  await passkeyAction.click();
+  const denied = await deniedPending;
+  assert(denied.status() === 401, `Revoked passkey authentication returned ${denied.status()}`);
+  await discardExpectedUiFailure(
+    page,
+    diagnostics,
+    marks,
+    "POST",
+    "/api/auth/passkeys/login/verify",
+    401,
+  );
+  assert(await gate.isVisible(), "Revoked passkey denial left the sign-in gate");
+  await gate.locator("#auth-gate-use-password").click();
+  await gate.locator("input[name='password']").fill(adminPassword);
+  const loginPending = responseFor(page, "POST", "/api/auth/login");
+  await gate.locator("button[type='submit']").click();
+  assert((await loginPending).ok(), "Password recovery after revoked passkey failed");
+  await gate.waitFor({ state: "detached", timeout: 15_000 });
 }
 
-async function exerciseTotp(page) {
+async function exerciseTotp(page, diagnostics, username, password) {
   await openAdminSection(page, "desktop", "settings");
   const firstStart = responseFor(page, "POST", "/api/auth/mfa/totp/start");
   await page.locator("#adm-mfa-start").click();
@@ -410,8 +538,9 @@ async function exerciseTotp(page) {
   assert((await secondStart).ok(), "Second TOTP enrollment start failed");
   await visible(page.locator("#adm-mfa-confirm"), "second TOTP enrollment confirmation");
   const secret = await page.locator("#adm-mfa-secret").inputValue();
+  const enrollmentCode = currentTotp(secret);
   const confirmPending = responseFor(page, "POST", "/api/auth/mfa/totp/confirm");
-  await page.locator("#adm-mfa-code").fill(currentTotp(secret));
+  await page.locator("#adm-mfa-code").fill(enrollmentCode);
   await page.locator("#adm-mfa-confirm").click();
   assert((await confirmPending).ok(), "TOTP enrollment confirmation failed");
   await visible(page.locator("#adm-mfa-recovery-output"), "TOTP recovery codes");
@@ -422,6 +551,43 @@ async function exerciseTotp(page) {
   await answerPrompt(page, "phase-five-recovery-regeneration");
   assert((await regeneratePending).ok(), "TOTP recovery regeneration failed");
   await visible(page.locator("#adm-mfa-recovery-output"), "regenerated TOTP recovery codes");
+  const recoveryCode = await page.locator("#adm-mfa-recovery-output").inputValue()
+    .then((value) => value.split(/\r?\n/).map((line) => line.trim()).find(Boolean));
+  assert(recoveryCode, "Regenerated recovery codes were empty");
+
+  await signOut(page, "recovery-code use");
+  let mfaForm = await enterPasswordLoginStage(page, username, password);
+  await mfaForm.locator("input[name='recovery_code']").fill(recoveryCode);
+  let loginPending = responseFor(page, "POST", "/api/auth/login");
+  await mfaForm.locator("button[type='submit']").click();
+  assert((await loginPending).ok(), "Recovery-code sign-in failed");
+  await mfaForm.waitFor({ state: "detached", timeout: 15_000 });
+
+  await signOut(page, "recovery-code reuse");
+  mfaForm = await enterPasswordLoginStage(page, username, password);
+  await mfaForm.locator("input[name='recovery_code']").fill(recoveryCode);
+  const reuseMarks = diagnosticMarks(diagnostics);
+  loginPending = responseFor(page, "POST", "/api/auth/login");
+  await mfaForm.locator("button[type='submit']").click();
+  const reused = await loginPending;
+  assert(reused.status() === 401, `Reused recovery code returned ${reused.status()}`);
+  await discardExpectedUiFailure(
+    page,
+    diagnostics,
+    reuseMarks,
+    "POST",
+    "/api/auth/login",
+    401,
+  );
+  await mfaForm.locator("input[name='recovery_code']").fill("");
+  await mfaForm.locator("input[name='mfa_code']").fill(
+    await freshTotpAfter(secret, enrollmentCode),
+  );
+  loginPending = responseFor(page, "POST", "/api/auth/login");
+  await mfaForm.locator("button[type='submit']").click();
+  assert((await loginPending).ok(), "TOTP fallback after recovery-code reuse failed");
+  await mfaForm.waitFor({ state: "detached", timeout: 15_000 });
+  await openAdminSection(page, "desktop", "settings");
 
   const disablePending = responseFor(page, "POST", "/api/auth/mfa/disable");
   await page.locator("#adm-mfa-disable").click();
@@ -471,6 +637,121 @@ async function exerciseSessionRevocation(options, page) {
   }
 }
 
+function ageDisposableSession(username, mode) {
+  assert(/^[a-z0-9_]{1,80}$/.test(username), "Session-expiry fixture username is invalid");
+  assert(["absolute", "idle"].includes(mode), "Session-expiry mode is invalid");
+  const assignment = mode === "idle"
+    ? "expires_at_ms = created_at_ms"
+    : "created_at_ms = 1, last_seen_at_ms = 1";
+  execFileSync("psql", [
+    process.env.GARDENOPS_DISPOSABLE_POSTGRES_URL,
+    "--no-psqlrc",
+    "--set=ON_ERROR_STOP=1",
+    "--quiet",
+    "--command",
+    `UPDATE auth_sessions SET ${assignment} WHERE user_id = (`
+      + `SELECT id FROM auth_users WHERE username = '${username}'`
+      + ");",
+  ], { stdio: "pipe" });
+}
+
+async function exerciseSessionExpiry(options) {
+  const cases = [
+    { mode: "idle", password: VIEWER_PASSWORD, username: options.fixture.roles.viewer }, // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+    { mode: "absolute", password: EDITOR_PASSWORD, username: options.fixture.roles.editor }, // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+  ];
+  for (const expiry of cases) {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), `gardenops-phase-five-${expiry.mode}-`));
+    const guarded = await createGuardedContext(
+      options.browser,
+      options.devices,
+      "desktop",
+      temporary,
+      `${expiry.mode}-session-expiry`,
+    );
+    const expiryPage = await guarded.context.newPage();
+    let closed = false;
+    try {
+      await expiryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
+      await authenticate(expiryPage, expiry.username, expiry.password);
+      guarded.markAuthenticated();
+      ageDisposableSession(expiry.username, expiry.mode);
+      await expectedHttpFailure(
+        expiryPage,
+        guarded.diagnostics,
+        { path: "/api/auth/me" },
+        401,
+      );
+      assert(await expiryPage.locator(".auth-gate").count() === 0,
+        `${expiry.mode} expiry unexpectedly changed UI before the next transition`);
+      await guarded.close("passed");
+      closed = true;
+    } finally {
+      if (!closed) await guarded.context.close().catch(() => undefined);
+      fs.rmSync(temporary, { force: true, recursive: true });
+    }
+  }
+}
+
+async function exerciseLiveRoleRefresh(options, page) {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "gardenops-phase-five-role-"));
+  const secondary = await createGuardedContext(
+    options.browser,
+    options.devices,
+    "desktop",
+    temporary,
+    "secondary-editor-role-refresh",
+  );
+  const secondaryPage = await secondary.context.newPage();
+  let closed = false;
+  try {
+    await secondaryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
+    const initial = await authenticate(secondaryPage, options.fixture.roles.editor, EDITOR_PASSWORD);
+    assert(initial.role === "editor", "Role-refresh fixture did not start as editor");
+    secondary.markAuthenticated();
+    const users = await browserFetch(page, { path: "/api/auth/users" });
+    const editor = users.body?.users?.find((user) => (
+      user.username === options.fixture.roles.editor
+    ));
+    assert(users.status === 200 && Number.isSafeInteger(editor?.id),
+      "Role-refresh editor account was not found");
+    const downgraded = await browserFetch(page, {
+      body: { action_reason: "phase-five-live-role-downgrade", role: "viewer" },
+      method: "PATCH",
+      path: `/api/auth/users/${editor.id}`,
+    });
+    assert(downgraded.status === 200 && downgraded.body.role === "viewer",
+      "Live editor downgrade failed");
+    await expectedHttpFailure(
+      secondaryPage,
+      secondary.diagnostics,
+      { path: "/api/auth/me" },
+      401,
+    );
+    await secondaryPage.reload({ waitUntil: "domcontentloaded" });
+    const viewer = await authenticate(secondaryPage, options.fixture.roles.editor, EDITOR_PASSWORD);
+    assert(viewer.role === "viewer", "Downgraded account did not refresh to viewer after sign-in");
+
+    const restored = await browserFetch(page, {
+      body: { action_reason: "phase-five-live-role-restore", role: "editor" },
+      method: "PATCH",
+      path: `/api/auth/users/${editor.id}`,
+    });
+    assert(restored.status === 200 && restored.body.role === "editor",
+      "Live editor role restoration failed");
+    await secondaryPage.reload({ waitUntil: "domcontentloaded" });
+    const refreshed = await browserFetch(secondaryPage, { path: "/api/auth/me" });
+    assert(refreshed.status === 200 && refreshed.body.role === "editor",
+      "Restored role remained stale in the secondary browser");
+    await signOut(secondaryPage, "role-refresh secondary session");
+    await secondary.close("passed");
+    closed = true;
+  } finally {
+    if (!closed) await secondary.context.close().catch(() => undefined);
+    fs.rmSync(temporary, { force: true, recursive: true });
+  }
+}
+
 async function exerciseIncidentControl(page, diagnostics, fixture) {
   await openAdminSection(page, "desktop", "system");
   const enablePending = responseFor(page, "PATCH", "/api/auth/emergency-read-only");
@@ -500,7 +781,15 @@ async function exerciseIncidentControl(page, diagnostics, fixture) {
     .then((value) => value === "false"), "emergency read-only disabled state");
 }
 
-async function acceptInvitation(page, guarded, inviteLink, password, expectedRole, expectedGardenId) {
+async function acceptInvitation(
+  page,
+  guarded,
+  inviteLink,
+  password,
+  expectedRole,
+  expectedGardenId,
+  virtualAuthenticator = null,
+) {
   assert(inviteLink, `Missing ${expectedRole} invitation link`);
   await page.goto(inviteLink, { waitUntil: "domcontentloaded" });
   await waitFor(() => page.evaluate(() => !location.hash.includes("invite=")),
@@ -508,10 +797,52 @@ async function acceptInvitation(page, guarded, inviteLink, password, expectedRol
   await guarded.startTracing();
   const form = page.locator("#auth-gate-invite-form");
   await visible(form, `${expectedRole} invitation form`);
-  await form.locator("input[name='password']").fill(password);
-  const acceptPending = responseFor(page, "POST", "/api/auth/invitations/accept");
-  await form.locator("button[type='submit']").click();
-  assert((await acceptPending).ok(), `${expectedRole} invitation acceptance failed`);
+  if (virtualAuthenticator) {
+    const passkeyButton = form.locator("button").filter({ hasText: "Use passkey" });
+    await visible(passkeyButton, `${expectedRole} passwordless invitation action`);
+    await virtualAuthenticator.setUserVerified(false);
+    const rejectedMarks = diagnosticMarks(guarded.diagnostics);
+    let rejectedResponse = null;
+    const captureRejected = (response) => {
+      if (response.request().method() === "POST"
+        && new URL(response.url()).pathname
+          === "/api/auth/invitations/passkey/register/verify") {
+        rejectedResponse = response;
+      }
+    };
+    page.on("response", captureRejected);
+    await passkeyButton.click();
+    await waitFor(() => passkeyButton.isEnabled(), `${expectedRole} rejected verification recovery`);
+    await page.waitForTimeout(100);
+    page.off("response", captureRejected);
+    if (rejectedResponse) {
+      assert(rejectedResponse.status() === 400,
+        `Rejected invitation user verification returned ${rejectedResponse.status()}`);
+      await discardExpectedUiFailure(
+        page,
+        guarded.diagnostics,
+        rejectedMarks,
+        "POST",
+        "/api/auth/invitations/passkey/register/verify",
+        400,
+      );
+    }
+    assert(await form.isVisible(), "Rejected invitation user verification left the auth gate");
+    await virtualAuthenticator.setUserVerified(true);
+    const acceptPending = responseFor(
+      page,
+      "POST",
+      "/api/auth/invitations/passkey/register/verify",
+    );
+    await passkeyButton.click();
+    assert((await acceptPending).status() === 201,
+      `${expectedRole} passwordless invitation acceptance failed`);
+  } else {
+    await form.locator("input[name='password']").fill(password);
+    const acceptPending = responseFor(page, "POST", "/api/auth/invitations/accept");
+    await form.locator("button[type='submit']").click();
+    assert((await acceptPending).ok(), `${expectedRole} invitation acceptance failed`);
+  }
   const continueButton = page.locator(".auth-gate button").filter({ hasText: /Continue/i });
   await visible(continueButton, `${expectedRole} invitation continuation`);
   await continueButton.click();
@@ -527,6 +858,72 @@ async function acceptInvitation(page, guarded, inviteLink, password, expectedRol
     assert(me.body.garden_id === expectedGardenId,
       `${expectedRole} invitation selected the wrong garden`);
   }
+}
+
+async function exerciseEditorAuthorizationDenials(page, diagnostics, fixture) {
+  await expectedHttpFailure(page, diagnostics, {
+    body: { address: "Phase 5 forbidden cross-garden mutation" },
+    method: "PATCH",
+    path: `/api/gardens/${fixture.gardens.alpha.id}/settings`,
+  }, 404);
+  await expectedHttpFailure(page, diagnostics, {
+    body: { address: "Phase 5 stale CSRF mutation" },
+    csrfToken: "phase-five-stale-csrf-token",
+    method: "PATCH",
+    path: `/api/gardens/${fixture.gardens.alpha.id}/settings`,
+  }, 403);
+}
+
+async function exercisePasswordlessPasskeyRedundancy(
+  page,
+  diagnostics,
+  virtualAuthenticator,
+) {
+  await openAdminSection(page, "desktop", "settings");
+  const initialRows = page.locator("[data-passkey-id]");
+  await waitFor(() => initialRows.count().then((count) => count === 1),
+    "passwordless primary passkey");
+
+  const reauthPending = responseFor(page, "POST", "/api/auth/reauthenticate/passkey/verify");
+  const registerPending = responseFor(page, "POST", "/api/auth/passkeys/register/verify");
+  await page.locator("#adm-passkey-add").click();
+  await answerPrompt(page, "Phase 5 backup garden key");
+  assert((await reauthPending).ok(), "Passwordless passkey step-up failed");
+  assert((await registerPending).status() === 201,
+    "Passwordless backup passkey registration failed");
+  await waitFor(() => page.locator("[data-passkey-id]").count().then((count) => count === 2),
+    "passwordless backup passkey registration");
+
+  const row = page.locator("[data-passkey-id]").first();
+  const deletePending = page.waitForResponse((response) => (
+    response.request().method() === "DELETE"
+    && /^\/api\/auth\/passkeys\/\d+$/.test(new URL(response.url()).pathname)
+  ));
+  const removalReauthPending = responseFor(
+    page,
+    "POST",
+    "/api/auth/reauthenticate/passkey/verify",
+  );
+  await row.locator(".adm-passkey-remove").click();
+  await confirmVisibleDialog(page);
+  await answerPrompt(page, "phase-five-passwordless-backup-revoke");
+  assert((await removalReauthPending).ok(), "Passwordless removal step-up failed");
+  assert((await deletePending).ok(), "Passwordless redundant passkey removal failed");
+  await waitFor(() => page.locator("[data-passkey-id]").count().then((count) => count === 1),
+    "passwordless redundant passkey removal");
+
+  const finalRow = page.locator("[data-passkey-id]").first();
+  const finalRemove = finalRow.locator(".adm-passkey-remove");
+  assert(await finalRemove.isDisabled(), "Passwordless final passkey removal remained enabled");
+  const finalPasskeyId = await finalRow.getAttribute("data-passkey-id");
+  assert(/^\d+$/.test(finalPasskeyId || ""), "Passwordless final passkey ID is invalid");
+  await expectedHttpFailure(page, diagnostics, {
+    body: { action_reason: "phase-five-final-factor-lockout" },
+    method: "DELETE",
+    path: `/api/auth/passkeys/${finalPasskeyId}`,
+  }, 409);
+  assert(await finalRemove.isDisabled(), "Final-factor denial changed the passkey controls");
+  await virtualAuthenticator.setUserVerified(true);
 }
 
 async function exerciseRoleSurface(page, profile, role) {
@@ -557,7 +954,7 @@ async function runProfile(options, shared) {
     ? options.username
     : role === "editor" && profile === "desktop"
       ? phaseFive(fixture).invitee_username
-      : role === "viewer" && profile === "desktop"
+      : role === "viewer" && profile === "mobile"
         ? phaseFive(fixture).viewer_invitee_username
         : role === "editor" ? fixture.roles.editor : fixture.roles.viewer;
   const recorder = createApiRecorder(page, { authType: "session", role, username });
@@ -580,7 +977,13 @@ async function runProfile(options, shared) {
       await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
       await authenticate(page, options.username, options.password);
       guarded.markAuthenticated();
-      await exercisePasskeys(page, fixture, options.password);
+      await exercisePasskeys(
+        page,
+        fixture,
+        options.password,
+        virtualAuthenticator,
+        guarded.diagnostics,
+      );
       result.checks.passkey_lifecycle = true;
       shared.editorInvite = await createUserInvitation(page, fixture);
       shared.viewerInvite = await createGardenInvitation(page, fixture);
@@ -593,12 +996,18 @@ async function runProfile(options, shared) {
       result.checks.settings_persistence = true;
       await exerciseSessionRevocation(options, page);
       result.checks.session_revocation = true;
-      await exerciseTotp(page);
+      await exerciseLiveRoleRefresh(options, page);
+      result.checks.live_role_refresh = true;
+      await exerciseSessionExpiry(options);
+      result.checks.idle_and_absolute_session_expiry = true;
+      await exerciseTotp(page, guarded.diagnostics, options.username, options.password);
       result.checks.totp_lifecycle = true;
       await exerciseIncidentControl(page, guarded.diagnostics, fixture);
       result.checks.incident_control = true;
-      await revokePasskey(page, fixture);
+      await revokePasskey(page, fixture, guarded.diagnostics, options.password);
+      result.checks.revoked_passkey_denial = true;
     } else if (role === "editor" && profile === "desktop") {
+      virtualAuthenticator = await enableVirtualAuthenticator(guarded.context, page);
       await acceptInvitation(
         page,
         guarded,
@@ -606,10 +1015,20 @@ async function runProfile(options, shared) {
         INVITEE_PASSWORD,
         "editor",
         null,
+        virtualAuthenticator,
       );
+      await exercisePasswordlessPasskeyRedundancy(
+        page,
+        guarded.diagnostics,
+        virtualAuthenticator,
+      );
+      await exerciseEditorAuthorizationDenials(page, guarded.diagnostics, fixture);
+      result.checks.passwordless_invitation = true;
+      result.checks.passwordless_passkey_redundancy = true;
+      result.checks.cross_garden_and_stale_csrf_denials = true;
       await exerciseRoleSurface(page, profile, role);
       result.checks.editor_identity_surface = true;
-    } else if (role === "viewer" && profile === "desktop") {
+    } else if (role === "viewer" && profile === "mobile") {
       await acceptInvitation(
         page,
         guarded,

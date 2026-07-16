@@ -643,6 +643,32 @@ def _authorize_passkey_registration(
     context: AuthContext,
     current_password: str,
 ) -> None:
+    if context.user_id is None:
+        raise HTTPException(status_code=400, detail="Session auth user is required")
+    password_state = db.execute(
+        """
+        SELECT password_hash, password_auth_disabled, is_active
+        FROM auth_users
+        WHERE id = %s
+        LIMIT 1
+        """,
+        (context.user_id,),
+    ).fetchone()
+    if not password_state or int(password_state["is_active"]) != 1:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    password_available = (
+        int(password_state["password_auth_disabled"]) != 1
+        and password_state["password_hash"] is not None
+    )
+    if not password_available:
+        if not _user_has_passkey(db, context.user_id):
+            raise HTTPException(status_code=403, detail="Passkey authentication is not available")
+        if int(context.mfa_authenticated_at_ms or 0) <= 0:
+            raise HTTPException(
+                status_code=403,
+                detail="Passkey reauthentication is required to add another passkey",
+            )
+        return
     _verify_current_password_for_context(
         db,
         context=context,
@@ -1720,6 +1746,39 @@ def auth_passkey_delete(
 ) -> dict[str, object]:
     context = _require_recent_session_context(request)
     action_reason = _normalize_action_reason(request, body_reason=body.action_reason)
+    user_row = db.execute(
+        """
+        SELECT password_hash, password_auth_disabled
+        FROM auth_users
+        WHERE id = %s
+        FOR UPDATE
+        """,
+        (context.user_id,),
+    ).fetchone()
+    if not user_row:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    passkey_row = db.execute(
+        "SELECT id FROM auth_passkeys WHERE id = %s AND user_id = %s",
+        (passkey_id, context.user_id),
+    ).fetchone()
+    if not passkey_row:
+        raise HTTPException(status_code=404, detail="Passkey not found")
+    passkey_count_row = db.execute(
+        "SELECT COUNT(*) AS count FROM auth_passkeys WHERE user_id = %s",
+        (context.user_id,),
+    ).fetchone()
+    passkey_count = int(passkey_count_row["count"] if passkey_count_row else 0)
+    password_available = (
+        int(user_row["password_auth_disabled"]) != 1 and user_row["password_hash"] is not None
+    )
+    if passkey_count <= 1 and not password_available:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot remove the final login factor. Add another passkey or enable password "
+                "authentication first."
+            ),
+        )
     row = db.execute(
         """
         DELETE FROM auth_passkeys

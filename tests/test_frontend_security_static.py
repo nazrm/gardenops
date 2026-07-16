@@ -51,6 +51,31 @@ class FrontendSecurityStaticTests(unittest.TestCase):
         self.assertIn('error.setAttribute("role", "alert")', gate)
         self.assertIn('error.setAttribute("aria-live", "assertive")', gate)
 
+    def test_passwordless_passkey_management_uses_step_up_and_blocks_final_factor_removal(
+        self,
+    ) -> None:
+        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("if (state.me?.password_auth_disabled)", panel)
+        self.assertIsNotNone(
+            re.search(
+                r"beginPasskeyReauthenticationApi\(\).*?finishPasskeyReauthenticationApi\("
+                r".*?beginPasskeyRegistrationApi\(nickname, currentPassword\)",
+                panel,
+                flags=re.DOTALL,
+            )
+        )
+        self.assertIn("state.me?.password_auth_disabled && state.passkeys.length === 1", panel)
+        self.assertIn('authT("identity.passkeys.final_factor_required")', panel)
+        self.assertIsNotNone(
+            re.search(
+                r"adm-passkey-remove.*?finalPasskeyRemovalBlocked.*?disabled",
+                panel,
+                flags=re.DOTALL,
+            )
+        )
+
     def test_plot_meaning_inputs_have_accessible_names(self) -> None:
         panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
             encoding="utf-8"

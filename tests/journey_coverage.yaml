@@ -15,13 +15,13 @@ journeys:
       evidence: []
       notes: {}
     desktop: proven
-    mobile: proven
+    mobile: required
     roles: proven
     offline: not_applicable
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: proven
+    accessibility: required
     performance: not_applicable
     evidence: &phase_five_evidence
       - scripts/check_complete_journeys_e2e.cjs
@@ -34,7 +34,9 @@ journeys:
       offline: Identity ceremonies require an online authentication boundary.
       provider: Identity journeys do not call an external provider.
       filesystem: Phase 5 identity actions have no supported file side effect.
-      performance: Phase 8 owns quantitative performance budgets.
+      mobile: Phase 8 owns identity variants that do not yet have direct responsive proof.
+      accessibility: Phase 8 owns keyboard, focus, semantic-tree, and screen-reader closure.
+      performance: Phase 9 owns quantitative performance budgets.
   - <<: *open_journey
     id: A1
     phase: 5
@@ -45,7 +47,7 @@ journeys:
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: proven
+    accessibility: required
     performance: not_applicable
     evidence: *phase_five_evidence
     notes: *phase_five_notes
@@ -79,7 +81,7 @@ journeys:
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: proven
+    accessibility: required
     performance: not_applicable
     evidence: *phase_five_evidence
     notes: *phase_five_notes
@@ -87,13 +89,13 @@ journeys:
     id: C1
     phase: 5
     desktop: proven
-    mobile: proven
+    mobile: required
     roles: proven
     offline: not_applicable
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: proven
+    accessibility: required
     performance: not_applicable
     evidence: *phase_five_evidence
     notes: *phase_five_notes
@@ -110,7 +112,7 @@ journeys:
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: proven
+    accessibility: required
     performance: not_applicable
     evidence: *phase_five_evidence
     notes: *phase_five_notes
@@ -121,13 +123,13 @@ journeys:
     id: C5
     phase: 5
     desktop: proven
-    mobile: proven
+    mobile: required
     roles: proven
     offline: not_applicable
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: proven
+    accessibility: required
     performance: not_applicable
     evidence: *phase_five_evidence
     notes: *phase_five_notes
@@ -153,13 +155,13 @@ journeys:
     id: CROSS-02
     phase: 5
     desktop: proven
-    mobile: proven
+    mobile: required
     roles: proven
     offline: not_applicable
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: proven
+    accessibility: required
     performance: not_applicable
     evidence: *phase_five_evidence
     notes: *phase_five_notes

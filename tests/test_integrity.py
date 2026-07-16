@@ -251,7 +251,7 @@ class MigrationGuardTests(unittest.TestCase):
         finally:
             db.return_db(conn)
 
-        self.assertEqual(versions, set(range(1, 28)))
+        self.assertEqual(versions, set(range(1, 29)))
         self.assertEqual(table["name"], "offline_create_operations")
         self.assertEqual(index["name"], "ux_weather_alerts_identity")
 
