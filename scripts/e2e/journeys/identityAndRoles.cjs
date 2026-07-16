@@ -65,6 +65,27 @@ async function confirmVisibleDialog(page) {
   await dialog.locator(".confirm-yes").click();
 }
 
+async function waitForProactivePasskeyPrompt(page, timeout = 2_000) {
+  const dialog = page.locator(".modal:visible").filter({
+    has: page.locator(".passkey-prompt-modal"),
+  }).last();
+  try {
+    await dialog.waitFor({ state: "visible", timeout });
+    return dialog;
+  } catch {
+    return null;
+  }
+}
+
+async function dismissProactivePasskeyPrompt(page) {
+  const dialog = await waitForProactivePasskeyPrompt(page);
+  if (!dialog) return;
+  const dismissed = responseFor(page, "POST", "/api/auth/passkeys/prompt/dismiss");
+  await dialog.locator(".confirm-no").click();
+  assert((await dismissed).ok(), "Passkey prompt dismissal failed");
+  await dialog.waitFor({ state: "detached" });
+}
+
 function responseFor(page, method, pathname) {
   return page.waitForResponse((response) => (
     response.request().method() === method
@@ -162,7 +183,7 @@ function currentTotp(secret, nowMs = Date.now()) {
   return String(binary % 1_000_000).padStart(6, "0");
 }
 
-async function createUserInvitation(page, fixture, adminPassword) {
+async function createUserInvitation(page, fixture) {
   await openAdminSection(page, "desktop", "users");
   await page.locator("#adm-user-inv-username").fill(phaseFive(fixture).invitee_username);
   await page.locator("#adm-user-inv-role").selectOption("editor");
@@ -170,7 +191,6 @@ async function createUserInvitation(page, fixture, adminPassword) {
   const pending = responseFor(page, "POST", "/api/auth/user-invitations");
   await page.locator("#adm-create-user-inv-form button[type='submit']").click();
   await answerPrompt(page, "phase-five-editor-invitation");
-  await answerPrompt(page, adminPassword);
   assert((await pending).status() === 201, "Editor invitation creation failed");
   await visible(page.locator("#adm-user-inv-link-input"), "editor invitation link");
   const link = await page.locator("#adm-user-inv-link-input").inputValue();
@@ -178,7 +198,7 @@ async function createUserInvitation(page, fixture, adminPassword) {
   return link;
 }
 
-async function createGardenInvitation(page, fixture, adminPassword) {
+async function createGardenInvitation(page, fixture) {
   await openAdminSection(page, "desktop", "invitations");
   await page.locator("#adm-inv-username").fill(phaseFive(fixture).viewer_invitee_username);
   await page.locator("#adm-inv-ttl").fill("60");
@@ -186,7 +206,6 @@ async function createGardenInvitation(page, fixture, adminPassword) {
   const pending = responseFor(page, "POST", pathName);
   await page.locator("#adm-create-inv-form button[type='submit']").click();
   await answerPrompt(page, "phase-five-viewer-invitation");
-  await answerPrompt(page, adminPassword);
   assert((await pending).status() === 201, "Viewer invitation creation failed");
   await visible(page.locator("#adm-inv-link-input"), "viewer invitation link");
   const link = await page.locator("#adm-inv-link-input").inputValue();
@@ -236,15 +255,20 @@ async function exerciseSettings(page, fixture) {
 }
 
 async function exercisePasskeys(page, fixture, adminPassword) {
-  await openAdminSection(page, "desktop", "settings");
+  const proactivePrompt = await waitForProactivePasskeyPrompt(page);
   const registerPending = responseFor(page, "POST", "/api/auth/passkeys/register/verify");
-  await page.locator("#adm-passkey-add").click();
-  await answerPrompt(page, phaseFive(fixture).passkey_nickname);
-  await answerPrompt(page, adminPassword);
+  if (proactivePrompt) {
+    await proactivePrompt.locator(".confirm-yes").click();
+    await answerPrompt(page, adminPassword);
+  } else {
+    await openAdminSection(page, "desktop", "settings");
+    await page.locator("#adm-passkey-add").click();
+    await answerPrompt(page, phaseFive(fixture).passkey_nickname);
+    await answerPrompt(page, adminPassword);
+  }
   assert((await registerPending).status() === 201, "Passkey registration failed");
-  let row = page.locator("[data-passkey-id]").filter({
-    hasText: phaseFive(fixture).passkey_nickname,
-  }).first();
+  await openAdminSection(page, "desktop", "settings");
+  let row = page.locator("[data-passkey-id]").first();
   await visible(row, "registered passkey");
 
   const renamePending = page.waitForResponse((response) => (
@@ -253,6 +277,7 @@ async function exercisePasskeys(page, fixture, adminPassword) {
   ));
   await row.locator(".adm-passkey-rename").click();
   await answerPrompt(page, phaseFive(fixture).passkey_renamed_nickname);
+  await answerPrompt(page, "phase-five-passkey-rename");
   assert((await renamePending).ok(), "Passkey rename failed");
   row = page.locator("[data-passkey-id]").filter({
     hasText: phaseFive(fixture).passkey_renamed_nickname,
@@ -284,6 +309,7 @@ async function revokePasskey(page, fixture) {
   ));
   await row.locator(".adm-passkey-remove").click();
   await confirmVisibleDialog(page);
+  await answerPrompt(page, "phase-five-passkey-revoke");
   assert((await pending).ok(), "Passkey revoke failed");
   await waitFor(() => page.locator("[data-passkey-id]").count().then((count) => count === 0),
     "revoked passkey removal");
@@ -352,6 +378,7 @@ async function exerciseSessionRevocation(options, page) {
     ));
     await row.locator(".adm-session-revoke-one").click();
     await confirmVisibleDialog(page);
+    await answerPrompt(page, "phase-five-session-revoke");
     assert((await revokePending).ok(), "Per-session revoke failed");
     const revokedStatus = await secondaryPage.evaluate(async () => (
       await fetch("/api/auth/me", { credentials: "include" })
@@ -412,6 +439,7 @@ async function acceptInvitation(page, guarded, inviteLink, password, expectedRol
   await waitFor(() => page.locator(".auth-gate").count().then((count) => count === 0),
     `${expectedRole} invitation sign-in`);
   guarded.markAuthenticated();
+  await dismissProactivePasskeyPrompt(page);
   const me = await browserFetch(page, { path: "/api/auth/me" });
   assert(me.status === 200 && me.body.role === expectedRole,
     `Invitation authenticated with role ${me.body?.role}`);
@@ -468,8 +496,10 @@ async function runProfile(options, shared) {
       await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
       await authenticate(page, options.username, options.password);
       guarded.markAuthenticated();
-      shared.editorInvite = await createUserInvitation(page, fixture, options.password);
-      shared.viewerInvite = await createGardenInvitation(page, fixture, options.password);
+      await exercisePasskeys(page, fixture, options.password);
+      result.checks.passkey_lifecycle = true;
+      shared.editorInvite = await createUserInvitation(page, fixture);
+      shared.viewerInvite = await createGardenInvitation(page, fixture);
       result.checks.invalid_invitation_side_effects = await exerciseInvalidInvitation(
         page,
         guarded.diagnostics,
@@ -477,8 +507,6 @@ async function runProfile(options, shared) {
       result.checks.invitation_lifecycle = true;
       await exerciseSettings(page, fixture);
       result.checks.settings_persistence = true;
-      await exercisePasskeys(page, fixture, options.password);
-      result.checks.passkey_lifecycle = true;
       await exerciseSessionRevocation(options, page);
       result.checks.session_revocation = true;
       await exerciseTotp(page);
@@ -516,6 +544,7 @@ async function runProfile(options, shared) {
       const auth = await authenticate(page, username, password);
       guarded.markAuthenticated();
       assert(auth.role === role, `Phase 5 ${role} fixture role drifted`);
+      await dismissProactivePasskeyPrompt(page);
       await exerciseRoleSurface(page, profile, role);
       if (role === "admin") {
         await visible(page.locator(".adm-identity-session-list"), "mobile identity sessions");

@@ -217,6 +217,17 @@ class TestPasskeyRegistration(PasskeyApiTest):
         self.assertEqual(dismissed.status_code, 200, dismissed.text)
         self.assertGreater(dismissed.json()["passkey_prompt_dismissed_until_ms"], 0)
 
+        conn = db.get_db()
+        try:
+            audit = conn.execute(
+                "SELECT detail FROM audit_events WHERE path = %s ORDER BY id DESC LIMIT 1",
+                ("/api/auth/passkeys/prompt/dismiss",),
+            ).fetchone()
+            self.assertIsNotNone(audit)
+            self.assertIn("auth.passkey.prompt-dismiss", str(audit["detail"]))
+        finally:
+            db.return_db(conn)
+
         muted = client.get("/api/auth/me", headers=headers)
         self.assertEqual(muted.status_code, 200, muted.text)
         self.assertFalse(muted.json()["passkey_prompt_eligible"])

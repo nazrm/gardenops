@@ -33,6 +33,8 @@ APP_ENV=production
 INTERNET_EXPOSED=true
 AUTH_REQUIRED=true
 AUTH_MODE=session
+AUTH_SESSION_TTL_HOURS=12
+AUTH_SESSION_ABSOLUTE_TTL_HOURS=168
 ALLOW_INSECURE_REMOTE=false
 CORS_ALLOW_ORIGINS=https://gardenops.example.com
 ALLOWED_HOSTS=gardenops.example.com
@@ -54,6 +56,9 @@ is rejected at startup. Session-auth deployments in either mode must set
 `AUTH_MFA_SECRET_KEY` to a generated secret with at least 32 characters. Generate
 one with `python -c "import secrets; print(secrets.token_urlsafe(32))"` and
 paste the output as the value.
+`AUTH_SESSION_TTL_HOURS` limits idle sessions, while
+`AUTH_SESSION_ABSOLUTE_TTL_HOURS` prevents activity from renewing a session
+beyond its absolute lifetime. Their defaults are 12 and 168 hours.
 Production, internet-exposed, and multi-instance deployments must use the Redis
 rate-limit backend; the in-memory backend is only for local development and
 tests.

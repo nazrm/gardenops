@@ -1690,7 +1690,17 @@ def auth_passkey_prompt_dismiss(
         """,
         (dismissed_until_ms, context.user_id),
     )
-    db.commit()
+    _commit_required_lifecycle_event(
+        request,
+        auth_context=context,
+        status_code=200,
+        detail=_lifecycle_detail(
+            "auth.passkey.prompt-dismiss",
+            user_id=context.user_id,
+            dismissed_until_ms=dismissed_until_ms,
+        ),
+        db=db,
+    )
     request.state.auth_context = replace(
         context,
         passkey_prompt_dismissed_until_ms=dismissed_until_ms,

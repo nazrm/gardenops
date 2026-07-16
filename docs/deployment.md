@@ -13,6 +13,8 @@ APP_ENV=production
 INTERNET_EXPOSED=true
 AUTH_REQUIRED=true
 AUTH_MODE=session
+AUTH_SESSION_TTL_HOURS=12
+AUTH_SESSION_ABSOLUTE_TTL_HOURS=168
 ALLOW_INSECURE_REMOTE=false
 CORS_ALLOW_ORIGINS=https://gardenops.example.com
 ALLOWED_HOSTS=gardenops.example.com
@@ -35,6 +37,9 @@ mode must also set `AUTH_MFA_SECRET_KEY` to a generated secret with at least 32
 characters. Generate one with
 `python -c "import secrets; print(secrets.token_urlsafe(32))"` and paste the
 output as the value.
+
+The session idle timeout defaults to 12 hours. The independent absolute timeout
+defaults to 168 hours and caps renewal even while the user remains active.
 
 If an older deployment copied the previous public placeholder value, rotate it
 while the service is private: start a maintenance instance with
