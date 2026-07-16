@@ -291,8 +291,10 @@ async function exercisePasskeys(page, fixture, adminPassword) {
   }).first();
   await visible(row, "renamed passkey");
 
+  const signOut = page.locator("#auth-btn:visible");
+  await visible(signOut, "desktop sign-out control");
   const logoutPending = responseFor(page, "POST", "/api/auth/logout");
-  await page.locator("#adm-sign-out").click();
+  await signOut.click();
   assert((await logoutPending).ok(), "Passkey test logout failed");
   const gate = page.locator("#auth-gate-form");
   await visible(gate, "passwordless sign-in gate");
