@@ -15,6 +15,7 @@
         "task_action",
         "media_upload"
       ],
+      "recovery_collapsed_by_default": true,
       "minimum_reconnect_count": 3,
       "terminal_statuses": [
         409,

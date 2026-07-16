@@ -313,6 +313,8 @@ function assertPhaseSixProfileEvidence(profiles, oracle = phaseSixOracle()) {
     "Phase 6 garden/account isolation evidence is incomplete");
   assert(checks.retry_as_new_identity_renewed === true,
     "Phase 6 terminal retry did not renew its operation identity");
+  assert(checks.failed_recovery_collapsed_by_default === true,
+    "Phase 6 failed-work recovery did not preserve access to the surrounding app");
   assert(/^[0-9a-f-]{36}$/.test(checks.operation_id || ""),
     "Phase 6 manifest operation ID is invalid");
   return {

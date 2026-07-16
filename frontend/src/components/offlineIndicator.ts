@@ -86,6 +86,8 @@ export function renderOfflineIndicator(
   state: OfflineIndicatorState,
   callbacks?: OfflineIndicatorCallbacks,
 ): void {
+  const failuresExpanded = container.querySelector(".offline-indicator-toggle")
+    ?.getAttribute("aria-expanded") === "true";
   container.replaceChildren();
   const {
     canDiscardDrafts = true,
@@ -102,11 +104,15 @@ export function renderOfflineIndicator(
   }
 
   container.hidden = false;
-  const badge = document.createElement("span");
+  const badge = document.createElement(failedDrafts.length > 0 ? "button" : "span");
   badge.className = "offline-indicator";
 
   if (failedDrafts.length > 0) {
     badge.classList.add("offline-indicator--failed");
+    badge.classList.add("offline-indicator-toggle");
+    (badge as HTMLButtonElement).type = "button";
+    badge.setAttribute("aria-controls", "offline-failures-panel");
+    badge.setAttribute("aria-expanded", String(failuresExpanded));
     const label = document.createElement("span");
     label.textContent = t("offline.indicator_failed");
     badge.appendChild(label);
@@ -140,7 +146,8 @@ export function renderOfflineIndicator(
     badge.appendChild(count);
   }
 
-  if (callbacks && canRetryDrafts && online && pendingCount > 0 && syncingCount === 0) {
+  if (callbacks && canRetryDrafts && failedDrafts.length === 0
+    && online && pendingCount > 0 && syncingCount === 0) {
     const btn = document.createElement("button");
     btn.className = "offline-sync-btn";
     btn.type = "button";
@@ -153,9 +160,16 @@ export function renderOfflineIndicator(
 
   if (failedDrafts.length === 0) return;
   const failures = document.createElement("section");
+  failures.id = "offline-failures-panel";
   failures.className = "offline-failures";
   failures.setAttribute("role", "alert");
   failures.setAttribute("aria-label", t("offline.failed_work"));
+  failures.hidden = !failuresExpanded;
+  badge.addEventListener("click", () => {
+    const expanded = badge.getAttribute("aria-expanded") === "true";
+    badge.setAttribute("aria-expanded", String(!expanded));
+    failures.hidden = expanded;
+  });
   const title = document.createElement("strong");
   title.textContent = t("offline.failed_work");
   failures.appendChild(title);

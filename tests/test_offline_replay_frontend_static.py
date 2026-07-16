@@ -214,6 +214,11 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn("onDiscardOfflineAction", task_cards)
         self.assertIn('role", offlineAction.status === "failed" ? "alert" : "status"', task_cards)
         self.assertIn('failures.setAttribute("role", "alert")', indicator)
+        self.assertIn('badge.setAttribute("aria-controls", "offline-failures-panel")', indicator)
+        self.assertIn('?.getAttribute("aria-expanded") === "true"', indicator)
+        self.assertIn('badge.setAttribute("aria-expanded", String(failuresExpanded))', indicator)
+        self.assertIn("failures.hidden = !failuresExpanded", indicator)
+        self.assertIn('badge.setAttribute("aria-expanded", String(!expanded))', indicator)
         self.assertIn("callbacks.onRetry(draft)", indicator)
         self.assertIn("callbacks.onDiscard(draft)", indicator)
         self.assertIn('t("offline.failed_task_action"', indicator)
@@ -226,6 +231,7 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
             "bottom: calc(78px + env(safe-area-inset-bottom, 0px) + var(--sp-2));",
             mobile_indicator,
         )
+        self.assertIn(".offline-failures[hidden]", styles)
 
     def test_conflict_and_gone_retry_explicitly_mint_new_operation_identities(self) -> None:
         queue = (ROOT / "frontend/src/services/offlineQueue.ts").read_text(encoding="utf-8")

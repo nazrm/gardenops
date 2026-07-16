@@ -232,6 +232,15 @@ async function runOfflineProfile(options) {
 
     const failedGarden = options.fixture.gardens.beta.id;
     await insertFailedDrafts(page, failedGarden);
+    const failureToggle = page.locator("#offline-indicator .offline-indicator-toggle");
+    await visible(failureToggle, "Phase 6 compact failed-work toggle");
+    assert(await failureToggle.getAttribute("aria-expanded") === "false",
+      "Phase 6 failed-work recovery was not collapsed by default");
+    assert(await page.locator("#offline-failures-panel").isHidden(),
+      "Phase 6 failed-work recovery panel covered the app by default");
+    await failureToggle.click();
+    await waitFor(async () => await failureToggle.getAttribute("aria-expanded") === "true",
+      "Phase 6 failed-work recovery expansion");
     const failures = page.locator("#offline-indicator .offline-failure-row");
     await waitFor(async () => await failures.count() === 5, "Phase 6 five-family failed state");
     assert(await failures.getByRole("button", { name: "Retry as new", exact: true }).count() === 3,
@@ -260,6 +269,15 @@ async function runOfflineProfile(options) {
       return recovered?.status === "pending"
         && recovered.operation_id !== conflictBefore.operation_id;
     }, "Phase 6 explicit retry-as-new identity renewal");
+    await waitFor(async () => await failures.count() === 4,
+      "Phase 6 recovered draft removal from failed work");
+    const rerenderedFailureToggle = page.locator("#offline-indicator .offline-indicator-toggle");
+    assert(await rerenderedFailureToggle.getAttribute("aria-expanded") === "true",
+      "Phase 6 failed-work recovery closed while the user was handling failures");
+    await rerenderedFailureToggle.click();
+    await waitFor(async () => (
+      await page.locator("#offline-indicator .offline-indicator-toggle").getAttribute("aria-expanded")
+    ) === "false", "Phase 6 failed-work recovery returns to compact state");
 
     const signOut = page.locator("#auth-btn:visible");
     guarded.markSignedOut();
@@ -291,6 +309,7 @@ async function runOfflineProfile(options) {
     result.checks = {
       account_queue_cleared_on_logout: true,
       failed_families_visible: ["journal", "issues", "harvest", "task_action", "media_upload"],
+      failed_recovery_collapsed_by_default: true,
       garden_isolation: true,
       independent_postcondition: true,
       lost_ack_route_fetch: true,

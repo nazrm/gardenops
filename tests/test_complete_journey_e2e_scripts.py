@@ -1112,6 +1112,7 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
         "task_action",
         "media_upload",
     ]
+    assert oracle["phase_six"]["browser_contract"]["recovery_collapsed_by_default"] is True
     for marker in (
         "route.fetch()",
         'route.abort("failed")',
@@ -1119,6 +1120,7 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
         "setOffline(false)",
         "independent postcondition",
         "Retry as new",
+        "failed-work recovery was not collapsed by default",
         "logout retained another account's drafts",
         "Garden A draft replayed into Garden B",
     ):

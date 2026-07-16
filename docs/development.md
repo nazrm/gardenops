@@ -477,7 +477,9 @@ real backend and then drop only its browser-facing response. The journey proves
 the retained operation ID, independent committed-state postcondition, repeated
 reconnect replay, garden isolation, logout queue clearing, and actionable
 conflict/gone recovery across journal, issue, harvest, task-action, and media
-draft labels. The complete payload/binary fingerprint, retention-expiry,
+draft labels. Failed details are collapsed behind a compact counted control by
+default so navigation and sign-out remain available. The complete
+payload/binary fingerprint, retention-expiry,
 side-effect-count, and media-asset matrices remain focused backend boundaries in
 `tests/test_offline_idempotency.py` and
 `tests/test_offline_idempotency_unit.py`, because their browser transport
