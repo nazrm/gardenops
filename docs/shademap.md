@@ -11,6 +11,10 @@ If no ShadeMap keys are configured, GardenOps still runs, but the ShadeMap panel
 cannot initialize. The backend returns `503` from `/api/shademap/config` until
 the required keys and tile-signing secret are present.
 
+The panel is also available only to GardenOps accounts entitled to the
+`shade_map` feature (Enthusiast tier or higher). Provider configuration does not
+override that account-level feature access.
+
 ## What GardenOps Provides
 
 GardenOps provides the application plumbing around ShadeMap:
