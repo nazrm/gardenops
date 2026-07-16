@@ -7105,9 +7105,81 @@ function refreshDataAfterAuthChange(): void {
 async function showAuthGateFromCurrentStatus(): Promise<void> {
   try {
     const status = await getAuthStatusApi();
+    releaseOfflineClearRecoveryGate();
     await showAuthGate(status.bootstrap_required, status.passkeys_enabled);
   } catch {
+    releaseOfflineClearRecoveryGate();
     await showAuthGate(false, false);
+  }
+}
+
+function releaseOfflineClearRecoveryGate(): void {
+  document.getElementById("offline-clear-recovery-gate")?.remove();
+  document.getElementById("app")?.removeAttribute("inert");
+}
+
+function waitForOfflineClearRetry(): Promise<void> {
+  return new Promise((resolve) => {
+    document.getElementById("offline-clear-recovery-gate")?.remove();
+    const gate = document.createElement("div");
+    gate.id = "offline-clear-recovery-gate";
+    gate.className = "offline-clear-recovery-gate";
+    gate.setAttribute("role", "alertdialog");
+    gate.setAttribute("aria-modal", "true");
+    gate.setAttribute("aria-labelledby", "offline-clear-recovery-title");
+    gate.setAttribute("aria-describedby", "offline-clear-recovery-message");
+
+    const panel = document.createElement("section");
+    panel.className = "offline-clear-recovery-panel";
+    const title = document.createElement("h1");
+    title.id = "offline-clear-recovery-title";
+    title.textContent = t("offline.clear_failed_title");
+    const message = document.createElement("p");
+    message.id = "offline-clear-recovery-message";
+    message.textContent = t("offline.clear_failed_message");
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = t("offline.clear_retry");
+    retry.addEventListener("click", () => {
+      retry.disabled = true;
+      retry.textContent = t("offline.clear_retrying");
+      resolve();
+    }, { once: true });
+    panel.append(title, message, retry);
+    gate.appendChild(panel);
+    document.getElementById("app")?.setAttribute("inert", "");
+    document.body.prepend(gate);
+    retry.focus();
+  });
+}
+
+async function requireOfflineQueueClear(
+  initialAttempt: Promise<void> | null = null,
+): Promise<void> {
+  document.getElementById("app")?.setAttribute("inert", "");
+  let attempt = initialAttempt;
+  while (true) {
+    try {
+      await (attempt ?? clearOfflineQueue());
+      return;
+    } catch {
+      attempt = null;
+      await waitForOfflineClearRetry();
+    }
+  }
+}
+
+async function completeSignedOutState(): Promise<void> {
+  adminPanelModule?.resetAdminPanelSensitiveState();
+  clearStoredAuthToken();
+  authProfile = null;
+  setActiveGardenContext(null);
+  await showAuthGateFromCurrentStatus();
+  await refreshGardenContext();
+  const needsOnboarding = await checkOnboardingNeeded();
+  if (!needsOnboarding) {
+    schedulePasskeyPrompt(authProfile);
+    refreshDataAfterAuthChange();
   }
 }
 
@@ -7119,18 +7191,11 @@ async function handleAuthButton(): Promise<void> {
     } catch {
       // clear local state even if backend token is already invalid
     }
-    await clearOfflineQueue().catch(() => undefined);
-    adminPanelModule?.resetAdminPanelSensitiveState();
     clearStoredAuthToken();
     authProfile = null;
     setActiveGardenContext(null);
-    await showAuthGateFromCurrentStatus();
-    await refreshGardenContext();
-    const needsOnboarding = await checkOnboardingNeeded();
-    if (!needsOnboarding) {
-      schedulePasskeyPrompt(authProfile);
-      refreshDataAfterAuthChange();
-    }
+    await requireOfflineQueueClear();
+    await completeSignedOutState();
   } else {
     // Not signed in — use the login gate
     await showAuthGateFromCurrentStatus();
@@ -7262,10 +7327,15 @@ function handleAuthExpired(): void {
   _authExpiredPending = true;
   adminPanelModule?.resetAdminPanelSensitiveState();
   clearStoredAuthToken();
-  void clearOfflineQueue().catch(() => undefined);
-  showAppStatus(t("status.session_expired"), t("status.sign_in"), () => {
-    _authExpiredPending = false;
-    void handleAuthButton();
+  authProfile = null;
+  setActiveGardenContext(null);
+  showAppStatus(t("status.session_expired"));
+  void requireOfflineQueueClear(clearOfflineQueue()).then(() => {
+    releaseOfflineClearRecoveryGate();
+    showAppStatus(t("status.session_expired"), t("status.sign_in"), () => {
+      _authExpiredPending = false;
+      void handleAuthButton();
+    });
   });
 }
 
@@ -7279,6 +7349,8 @@ async function bootstrapApp(): Promise<void> {
   let bootstrapRequired = false;
   let passkeysEnabled = false;
   let initialMe: AuthUserProfile | null = null;
+  let clearOfflineBeforeAuthGate = false;
+  let authGateRequired = false;
   try {
     initialMe = takePrimedAuthProfile();
     if (!initialMe) {
@@ -7295,6 +7367,8 @@ async function bootstrapApp(): Promise<void> {
       setFeatureGates(initialMe.subscription_tier ?? "home", initialMe.allowed_features ?? []);
     }
   } catch (err) {
+    authGateRequired = true;
+    clearOfflineBeforeAuthGate = isAuthApiError(err);
     if (err instanceof ApiError && err.status === 503) {
       showSecurityWarningBanner(err.message);
     }
@@ -7305,11 +7379,15 @@ async function bootstrapApp(): Promise<void> {
     } catch {
       // can't reach status either — gate will show the real error on submit
     }
-    await showAuthGate(bootstrapRequired, passkeysEnabled);
   }
 
   setupLayout();
   await initOfflineQueue();
+  if (authGateRequired) {
+    if (clearOfflineBeforeAuthGate) await requireOfflineQueueClear();
+    releaseOfflineClearRecoveryGate();
+    await showAuthGate(bootstrapRequired, passkeysEnabled);
+  }
   initOfflineFeature({
     extractPendingMediaFiles,
     withoutPendingMediaFiles,

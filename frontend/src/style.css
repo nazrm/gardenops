@@ -14637,6 +14637,56 @@ td.inventory-qty-zero {
   display: none;
 }
 
+.offline-failure-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.offline-clear-recovery-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-4);
+  background: var(--bg-1);
+}
+
+.offline-clear-recovery-panel {
+  width: min(30rem, 100%);
+  padding: var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--text-1);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.2);
+}
+
+.offline-clear-recovery-panel h1 {
+  margin: 0 0 var(--sp-2);
+  font-size: 1.25rem;
+}
+
+.offline-clear-recovery-panel p {
+  margin: 0 0 var(--sp-4);
+  line-height: 1.5;
+}
+
+.offline-clear-recovery-panel button {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
 .offline-failure-row {
   display: flex;
   justify-content: space-between;

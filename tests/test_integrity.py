@@ -327,6 +327,88 @@ class MigrationGuardTests(unittest.TestCase):
         finally:
             self._restore_migration_0028_and_history()
 
+    def test_corrupted_auth_session_contract_fails_closed_before_stamping(self) -> None:
+        cases = (
+            (
+                "column:auth_sessions.last_seen_at_ms",
+                "ALTER TABLE auth_sessions DROP COLUMN last_seen_at_ms",
+                """
+                ALTER TABLE auth_sessions
+                    ADD COLUMN last_seen_at_ms bigint NOT NULL DEFAULT 0;
+                ALTER TABLE auth_sessions
+                    ALTER COLUMN last_seen_at_ms DROP DEFAULT;
+                """,
+            ),
+            (
+                "constraint:auth_sessions_pkey",
+                "ALTER TABLE auth_sessions DROP CONSTRAINT auth_sessions_pkey",
+                """
+                ALTER TABLE auth_sessions
+                    ADD CONSTRAINT auth_sessions_pkey PRIMARY KEY (token_hash)
+                """,
+            ),
+            (
+                "constraint:fk_auth_sessions_user_id_auth_users",
+                """
+                ALTER TABLE auth_sessions
+                    DROP CONSTRAINT fk_auth_sessions_user_id_auth_users
+                """,
+                """
+                ALTER TABLE auth_sessions
+                    ADD CONSTRAINT fk_auth_sessions_user_id_auth_users
+                    FOREIGN KEY (user_id) REFERENCES auth_users(id)
+                    ON DELETE CASCADE DEFERRABLE
+                """,
+            ),
+            (
+                "index:idx_auth_sessions_expires",
+                "DROP INDEX idx_auth_sessions_expires",
+                """
+                CREATE INDEX idx_auth_sessions_expires
+                    ON auth_sessions USING btree (expires_at_ms)
+                """,
+            ),
+            (
+                "index:idx_auth_sessions_user",
+                "DROP INDEX idx_auth_sessions_user",
+                """
+                CREATE INDEX idx_auth_sessions_user
+                    ON auth_sessions USING btree (user_id)
+                """,
+            ),
+        )
+        for missing_part, corrupt_sql, restore_sql in cases:
+            with self.subTest(missing_part=missing_part):
+                conn = db.get_db()
+                try:
+                    self._assert_disposable_database(conn)
+                    conn.execute(corrupt_sql)
+                    conn.execute("DELETE FROM schema_migrations")
+                    conn.commit()
+                finally:
+                    db.return_db(conn)
+
+                try:
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        rf"refusing to stamp migrations.*{missing_part}",
+                    ):
+                        db.run_migrations()
+                    conn = db.get_db()
+                    try:
+                        versions = conn.execute("SELECT version FROM schema_migrations").fetchall()
+                    finally:
+                        db.return_db(conn)
+                    self.assertEqual(versions, [])
+                finally:
+                    conn = db.get_db()
+                    try:
+                        conn.execute(restore_sql)
+                        conn.commit()
+                    finally:
+                        db.return_db(conn)
+                    db.run_migrations()
+
     def test_0028_sql_rerun_is_idempotent(self) -> None:
         conn = db.get_db()
         try:
@@ -411,6 +493,77 @@ class MigrationGuardTests(unittest.TestCase):
         self.assertIn(
             {"kind": "column", "object": "auth_sessions.device_label"},
             column_diagnostics["missing"],
+        )
+
+    def test_auth_session_schema_signature_rejects_missing_core_contract(self) -> None:
+        cases = (
+            ("column", "auth_sessions.user_id", "user_id"),
+            ("constraint", "auth_sessions_pkey", "auth_sessions_pkey"),
+            (
+                "constraint",
+                "fk_auth_sessions_user_id_auth_users",
+                "fk_auth_sessions_user_id_auth_users",
+            ),
+            ("index", "idx_auth_sessions_expires", "idx_auth_sessions_expires"),
+            ("index", "idx_auth_sessions_user", "idx_auth_sessions_user"),
+        )
+        for kind, expected_object, removed_object in cases:
+            with self.subTest(kind=kind, object=expected_object):
+                snapshot = self._complete_schema_snapshot()
+                if kind == "column":
+                    snapshot.columns["auth_sessions"].remove(removed_object)
+                elif kind == "constraint":
+                    snapshot.constraints.remove(removed_object)
+                else:
+                    snapshot.indexes.remove(removed_object)
+
+                diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+                self.assertEqual(diagnostics["mode"], "incomplete-existing-schema")
+                self.assertFalse(diagnostics["can_stamp_migrations"])
+                self.assertIn(
+                    {"kind": kind, "object": expected_object},
+                    diagnostics["missing"],
+                )
+
+    def test_auth_session_schema_signature_rejects_wrong_core_definitions(self) -> None:
+        snapshot = self._complete_schema_snapshot()
+        snapshot.column_nullability["auth_sessions.user_id"] = True
+        snapshot.column_defaults["auth_sessions.token_hash"] = "''::text"
+        snapshot.constraint_definitions["auth_sessions_pkey"] = "PRIMARY KEY (user_id)"
+        snapshot.constraint_definitions["fk_auth_sessions_user_id_auth_users"] = (
+            "FOREIGN KEY (user_id) REFERENCES auth_users(id)"
+        )
+        snapshot.index_definitions["idx_auth_sessions_expires"] = (
+            "CREATE INDEX idx_auth_sessions_expires ON auth_sessions USING btree (user_id)"
+        )
+
+        diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+        self.assertEqual(diagnostics["mode"], "incomplete-existing-schema")
+        self.assertFalse(diagnostics["can_stamp_migrations"])
+        self.assertIn(
+            {"kind": "column-nullability", "object": "auth_sessions.user_id"},
+            diagnostics["missing"],
+        )
+        self.assertIn(
+            {"kind": "column-default", "object": "auth_sessions.token_hash"},
+            diagnostics["missing"],
+        )
+        self.assertIn(
+            {"kind": "constraint-definition", "object": "auth_sessions_pkey"},
+            diagnostics["missing"],
+        )
+        self.assertIn(
+            {
+                "kind": "constraint-definition",
+                "object": "fk_auth_sessions_user_id_auth_users",
+            },
+            diagnostics["missing"],
+        )
+        self.assertIn(
+            {"kind": "index-definition", "object": "idx_auth_sessions_expires"},
+            diagnostics["missing"],
         )
 
     def test_auth_session_schema_signature_rejects_wrong_definitions(self) -> None:

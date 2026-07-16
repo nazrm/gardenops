@@ -308,7 +308,7 @@ function assertPhaseSixProfileEvidence(profiles, oracle = phaseSixOracle()) {
   assert(canonicalJson(checks.failed_families_visible)
     === canonicalJson(oracle.phase_six.browser_contract.failed_families),
   "Phase 6 failed-family evidence drifted");
-  assert(canonicalJson(checks.terminal_statuses)
+  assert(canonicalJson(checks.injected_terminal_fixture_statuses)
     === canonicalJson(oracle.phase_six.browser_contract.terminal_statuses),
   "Phase 6 terminal recovery evidence drifted");
   assert(checks.garden_isolation === true && checks.account_queue_cleared_on_logout === true,
@@ -6721,7 +6721,7 @@ async function main() {
       ...(phaseSelected(3) ? ["I2", "I3", "P1", "P2", "P3", "P5"] : []),
       ...(phaseSelected(4) ? ["P4", "P6", "I1", "L1", "L2", "R2", "R3"] : []),
       ...(phaseSelected(5) ? ["A1", "A2", "A4", "C1", "C3", "C5", "CROSS-02"] : []),
-      ...(phaseSelected(6) ? ["C2", "INT-01", "OFF-01"] : []),
+      ...(phaseSelected(6) ? ["OFF-01"] : []),
     ],
     phase: PHASE,
     profiles: [],

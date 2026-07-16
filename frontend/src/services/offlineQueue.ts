@@ -120,6 +120,7 @@ export type ReplayErrorDisposition = "terminal" | "retryable";
 
 let db: IDBDatabase | null = null;
 let activeSync: Promise<SyncResult> | null = null;
+let activeClear: Promise<void> | null = null;
 
 function generateOperationId(): string {
   const cryptoApi = globalThis.crypto;
@@ -568,11 +569,36 @@ export async function retryDraft(id: number): Promise<boolean> {
   return true;
 }
 
-export async function clearOfflineQueue(): Promise<void> {
+async function runOfflineQueueClear(): Promise<void> {
   if (!db) await initOfflineQueue();
-  const store = getStore("readwrite");
-  await wrap(store.clear());
+  const syncToDrain = activeSync;
+  if (syncToDrain) await syncToDrain.catch(() => undefined);
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db!.transaction(STORE_NAME, "readwrite");
+    const request = transaction.objectStore(STORE_NAME).clear();
+    request.onerror = () => {
+      reject(new Error(`IDB request failed: ${request.error?.message}`));
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => {
+      reject(new Error(`IDB transaction failed: ${transaction.error?.message}`));
+    };
+    transaction.onabort = () => {
+      reject(new Error("IDB transaction was aborted"));
+    };
+  });
   emitQueueChanged();
+}
+
+export async function clearOfflineQueue(): Promise<void> {
+  if (activeClear) return activeClear;
+  const clear = runOfflineQueueClear();
+  activeClear = clear;
+  try {
+    await clear;
+  } finally {
+    if (activeClear === clear) activeClear = null;
+  }
 }
 
 export function classifyReplayError(error: unknown): ReplayErrorDisposition {
@@ -706,6 +732,9 @@ async function runSyncAllDrafts(
 export async function syncAllDrafts(
   callbacks: SyncCallbacks,
 ): Promise<SyncResult> {
+  if (activeClear) {
+    return { synced: 0, syncedTypes: [], failed: 0, remaining: 0 };
+  }
   if (activeSync) return activeSync;
   const sync = runSyncAllDrafts(callbacks);
   activeSync = sync;

@@ -213,7 +213,11 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn("onRetryOfflineAction", task_cards)
         self.assertIn("onDiscardOfflineAction", task_cards)
         self.assertIn('role", offlineAction.status === "failed" ? "alert" : "status"', task_cards)
-        self.assertIn('failures.setAttribute("role", "alert")', indicator)
+        self.assertIn('announcement.setAttribute("role", "alert")', indicator)
+        self.assertIn('failures.setAttribute("role", "region")', indicator)
+        self.assertIn("queueMicrotask", indicator)
+        self.assertIn("restoreRecoveryFocus(container, recoveryFocus)", indicator)
+        self.assertIn('row.dataset["draftId"] = String(draft.id)', indicator)
         self.assertIn('badge.setAttribute("aria-controls", "offline-failures-panel")', indicator)
         self.assertIn('?.getAttribute("aria-expanded") === "true"', indicator)
         self.assertIn('badge.setAttribute("aria-expanded", String(failuresExpanded))', indicator)
@@ -232,6 +236,26 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
             mobile_indicator,
         )
         self.assertIn(".offline-failures[hidden]", styles)
+
+    def test_account_transition_fails_closed_when_offline_clear_fails(self) -> None:
+        queue = (ROOT / "frontend/src/services/offlineQueue.ts").read_text(encoding="utf-8")
+        app = (ROOT / "frontend/src/app.ts").read_text(encoding="utf-8")
+
+        clear = queue.split("async function runOfflineQueueClear", 1)[1].split(
+            "export function classifyReplayError", 1
+        )[0]
+        self.assertIn('db!.transaction(STORE_NAME, "readwrite")', clear)
+        self.assertIn("transaction.oncomplete = () => resolve()", clear)
+        self.assertIn("transaction.onerror", clear)
+        self.assertIn("transaction.onabort", clear)
+        self.assertIn("const syncToDrain = activeSync", clear)
+        self.assertIn("async function requireOfflineQueueClear", app)
+        self.assertIn("await waitForOfflineClearRetry()", app)
+        self.assertIn('gate.setAttribute("role", "alertdialog")', app)
+        self.assertIn('document.getElementById("app")?.setAttribute("inert", "")', app)
+        self.assertIn("await requireOfflineQueueClear();\n    await completeSignedOutState();", app)
+        self.assertIn("clearOfflineBeforeAuthGate = isAuthApiError(err)", app)
+        self.assertIn("if (clearOfflineBeforeAuthGate) await requireOfflineQueueClear()", app)
 
     def test_conflict_and_gone_retry_explicitly_mint_new_operation_identities(self) -> None:
         queue = (ROOT / "frontend/src/services/offlineQueue.ts").read_text(encoding="utf-8")

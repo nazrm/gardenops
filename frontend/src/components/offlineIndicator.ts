@@ -81,14 +81,55 @@ function retryLabel(draft: OfflineDraft): string {
     : t("offline.retry");
 }
 
+interface RecoveryFocus {
+  action: "discard" | "retry" | null;
+  draftId: string;
+}
+
+function captureRecoveryFocus(container: HTMLElement): RecoveryFocus | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !container.contains(active)) return null;
+  const row = active.closest<HTMLElement>(".offline-failure-row");
+  return {
+    action: active.classList.contains("offline-retry-btn")
+      ? "retry"
+      : active.classList.contains("offline-discard-btn")
+        ? "discard"
+        : null,
+    draftId: row?.dataset["draftId"] ?? "",
+  };
+}
+
+function restoreRecoveryFocus(
+  container: HTMLElement,
+  focus: RecoveryFocus | null,
+): void {
+  if (!focus) return;
+  const sameDraft = focus.draftId
+    ? container.querySelector<HTMLElement>(
+      `.offline-failure-row[data-draft-id="${CSS.escape(focus.draftId)}"]`,
+    )
+    : null;
+  const sameAction = focus.action
+    ? sameDraft?.querySelector<HTMLElement>(`.offline-${focus.action}-btn`)
+    : null;
+  const target = sameAction
+    ?? container.querySelector<HTMLElement>(".offline-indicator-toggle")
+    ?? container.querySelector<HTMLElement>(".offline-sync-btn")
+    ?? document.querySelector<HTMLElement>(
+      '[aria-current="page"], .top-tab.active, .mobile-tabbar button.active, #auth-btn',
+    );
+  target?.focus();
+}
+
 export function renderOfflineIndicator(
   container: HTMLElement,
   state: OfflineIndicatorState,
   callbacks?: OfflineIndicatorCallbacks,
 ): void {
+  const recoveryFocus = captureRecoveryFocus(container);
   const failuresExpanded = container.querySelector(".offline-indicator-toggle")
     ?.getAttribute("aria-expanded") === "true";
-  container.replaceChildren();
   const {
     canDiscardDrafts = true,
     canRetryDrafts = true,
@@ -97,9 +138,17 @@ export function renderOfflineIndicator(
     pendingCount,
     syncingCount,
   } = state;
+  const previousFailedIds = new Set(
+    (container.dataset["failedDraftIds"] ?? "").split(",").filter(Boolean),
+  );
+  const failedIds = failedDrafts.map((draft) => String(draft.id));
+  const newlyFailedCount = failedIds.filter((id) => !previousFailedIds.has(id)).length;
+  container.dataset["failedDraftIds"] = failedIds.join(",");
+  container.replaceChildren();
 
   if (online && pendingCount === 0 && syncingCount === 0 && failedDrafts.length === 0) {
     container.hidden = true;
+    restoreRecoveryFocus(container, recoveryFocus);
     return;
   }
 
@@ -158,11 +207,29 @@ export function renderOfflineIndicator(
 
   container.appendChild(badge);
 
-  if (failedDrafts.length === 0) return;
+  const announcement = document.createElement("div");
+  announcement.className = "offline-failure-announcement";
+  announcement.setAttribute("role", "alert");
+  announcement.setAttribute("aria-atomic", "true");
+  container.appendChild(announcement);
+  if (newlyFailedCount > 0) {
+    queueMicrotask(() => {
+      if (announcement.isConnected) {
+        announcement.textContent = t("offline.failures_announced", {
+          count: newlyFailedCount,
+        });
+      }
+    });
+  }
+
+  if (failedDrafts.length === 0) {
+    restoreRecoveryFocus(container, recoveryFocus);
+    return;
+  }
   const failures = document.createElement("section");
   failures.id = "offline-failures-panel";
   failures.className = "offline-failures";
-  failures.setAttribute("role", "alert");
+  failures.setAttribute("role", "region");
   failures.setAttribute("aria-label", t("offline.failed_work"));
   failures.hidden = !failuresExpanded;
   badge.addEventListener("click", () => {
@@ -176,6 +243,7 @@ export function renderOfflineIndicator(
   for (const draft of failedDrafts) {
     const row = document.createElement("div");
     row.className = "offline-failure-row";
+    row.dataset["draftId"] = String(draft.id);
     const copy = document.createElement("div");
     const label = document.createElement("span");
     label.className = "offline-failure-label";
@@ -209,4 +277,5 @@ export function renderOfflineIndicator(
     failures.appendChild(row);
   }
   container.appendChild(failures);
+  restoreRecoveryFocus(container, recoveryFocus);
 }

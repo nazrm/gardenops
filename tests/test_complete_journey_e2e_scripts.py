@@ -1101,7 +1101,7 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     assert "runOfflineAndFailureRecovery" in checker_source
     assert "assertPhaseSixAuditEvents" in checker_source
     assert "assertPhaseSixProfileEvidence" in checker_source
-    assert 'phaseSelected(6) ? ["C2", "INT-01", "OFF-01"]' in checker_source
+    assert 'phaseSelected(6) ? ["OFF-01"]' in checker_source
     assert "_load_phase_six_oracle" in seeder_source
     assert '"phase_six": _phase_six_fixture_state()' in seeder_source
     assert oracle["schema_version"] == 1

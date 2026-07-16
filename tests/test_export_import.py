@@ -26,6 +26,52 @@ class TestExportImport(BaseApiTest):
             extra={"x-action-reason": action_reason},
         )
 
+    def _insert_snapshot(self, snapshot_id: str, *, garden_id: int, name: str) -> None:
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO layout_snapshots (public_id, name, data, garden_id)
+                VALUES (%s, %s, '{"plots":[]}', %s)
+                """,
+                (snapshot_id, name, garden_id),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+    def _snapshot_rows(self) -> list[tuple[str, int]]:
+        conn = db.get_db()
+        try:
+            rows = conn.execute(
+                """
+                SELECT public_id, garden_id
+                FROM layout_snapshots
+                ORDER BY public_id
+                """
+            ).fetchall()
+            return [(str(row["public_id"]), int(row["garden_id"])) for row in rows]
+        finally:
+            db.return_db(conn)
+
+    def _snapshot_delete_audits(self, snapshot_id: str) -> list[dict[str, object]]:
+        conn = db.get_db()
+        try:
+            return [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT status_code, detail
+                    FROM audit_events
+                    WHERE path = %s
+                    ORDER BY id
+                    """,
+                    (f"/api/snapshots/{snapshot_id}",),
+                ).fetchall()
+            ]
+        finally:
+            db.return_db(conn)
+
     def test_snapshot_lifecycle(self) -> None:
         """Save, list, restore, and delete a snapshot."""
         conn = db.get_db()
@@ -191,6 +237,135 @@ class TestExportImport(BaseApiTest):
                 headers=admin_headers,
             )
         self.assertEqual(del_res.status_code, 200)
+
+    def test_snapshot_delete_removes_only_target_and_writes_success_audit(self) -> None:
+        garden_id = self._get_default_garden_id()
+        target_id = "snap_delete_target"
+        retained_id = "snap_delete_retained"
+        self._insert_snapshot(target_id, garden_id=garden_id, name="Delete target")
+        self._insert_snapshot(retained_id, garden_id=garden_id, name="Retained snapshot")
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            response = self.client.delete(
+                f"/api/snapshots/{target_id}",
+                headers=self._destructive_admin_headers("delete-existing-snapshot"),
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"status": "ok"})
+        self.assertEqual(self._snapshot_rows(), [(retained_id, garden_id)])
+        audits = self._snapshot_delete_audits(target_id)
+        self.assertEqual(len(audits), 1)
+        self.assertEqual(int(audits[0]["status_code"]), 200)
+        detail = json.loads(str(audits[0]["detail"]))
+        self.assertEqual(detail["event"], "layout.snapshot.delete")
+        self.assertEqual(detail["snapshot_id"], target_id)
+        self.assertEqual(detail["garden_id"], garden_id)
+        self.assertEqual(detail["action_reason"], "delete-existing-snapshot")
+
+    def test_snapshot_delete_nonexistent_is_not_found_without_mutation_or_success_audit(
+        self,
+    ) -> None:
+        garden_id = self._get_default_garden_id()
+        retained_id = "snap_missing_retained"
+        missing_id = "snap_missing_target"
+        self._insert_snapshot(retained_id, garden_id=garden_id, name="Retained snapshot")
+        before = self._snapshot_rows()
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            response = self.client.delete(
+                f"/api/snapshots/{missing_id}",
+                headers=self._destructive_admin_headers("delete-missing-snapshot"),
+            )
+
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(response.json(), {"detail": "Snapshot not found"})
+        self.assertEqual(self._snapshot_rows(), before)
+        audits = self._snapshot_delete_audits(missing_id)
+        self.assertEqual(len(audits), 1)
+        self.assertEqual(int(audits[0]["status_code"]), 404)
+        self.assertNotIn("layout.snapshot.delete", str(audits[0]["detail"]))
+
+    def test_snapshot_delete_cross_garden_is_not_found_without_mutation_or_success_audit(
+        self,
+    ) -> None:
+        default_garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            foreign = conn.execute(
+                """
+                INSERT INTO gardens (slug, name, onboarding_complete)
+                VALUES ('snapshot-delete-foreign', 'Foreign snapshot garden', 1)
+                RETURNING id
+                """
+            ).fetchone()
+            assert foreign is not None
+            foreign_garden_id = int(foreign["id"])
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        local_id = "snap_cross_local"
+        foreign_id = "snap_cross_foreign"
+        self._insert_snapshot(local_id, garden_id=default_garden_id, name="Local snapshot")
+        self._insert_snapshot(foreign_id, garden_id=foreign_garden_id, name="Foreign snapshot")
+        before = self._snapshot_rows()
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            response = self.client.delete(
+                f"/api/snapshots/{foreign_id}",
+                headers=self._destructive_admin_headers("delete-cross-garden-snapshot"),
+            )
+
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(response.json(), {"detail": "Snapshot not found"})
+        self.assertEqual(self._snapshot_rows(), before)
+        audits = self._snapshot_delete_audits(foreign_id)
+        self.assertEqual(len(audits), 1)
+        self.assertEqual(int(audits[0]["status_code"]), 404)
+        self.assertNotIn("layout.snapshot.delete", str(audits[0]["detail"]))
+
+    def test_snapshot_delete_required_audit_failure_rolls_back(self) -> None:
+        garden_id = self._get_default_garden_id()
+        snapshot_id = "snap_delete_audit_rollback"
+        self._insert_snapshot(snapshot_id, garden_id=garden_id, name="Audit rollback")
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            headers = self._destructive_admin_headers("snapshot-delete-audit-failure")
+            with (
+                patch(
+                    "gardenops.main.write_required_audit_event",
+                    side_effect=RuntimeError("injected required audit failure"),
+                ),
+                self.assertRaisesRegex(RuntimeError, "injected required audit failure"),
+            ):
+                self.client.delete(
+                    f"/api/snapshots/{snapshot_id}",
+                    headers=headers,
+                )
+
+        self.assertEqual(self._snapshot_rows(), [(snapshot_id, garden_id)])
+        self.assertFalse(
+            any(
+                int(audit["status_code"]) == 200
+                for audit in self._snapshot_delete_audits(snapshot_id)
+            )
+        )
 
     def test_restore_nonexistent_snapshot(self) -> None:
         with patch.dict(

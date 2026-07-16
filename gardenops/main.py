@@ -2652,10 +2652,16 @@ def delete_snapshot(snapshot_id: str, db: DB, request: Request) -> dict:
     context, action_reason = enforce_destructive_admin_controls(request)
     garden_id = _active_garden_id(request)
     try:
-        db.execute(
-            "DELETE FROM layout_snapshots WHERE public_id = %s AND garden_id = %s",
+        deleted = db.execute(
+            """
+            DELETE FROM layout_snapshots
+            WHERE public_id = %s AND garden_id = %s
+            RETURNING public_id
+            """,
             (snapshot_id, garden_id),
-        )
+        ).fetchone()
+        if deleted is None:
+            raise HTTPException(status_code=404, detail="Snapshot not found")
         request.state.audited_by_handler = True
         audit_values = write_required_audit_event(
             method=request.method,

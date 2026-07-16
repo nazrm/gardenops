@@ -115,6 +115,14 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "purpose",
     ),
     "auth_sessions": (
+        "token_hash",
+        "user_id",
+        "expires_at_ms",
+        "created_at_ms",
+        "last_seen_at_ms",
+        "reauthenticated_at_ms",
+        "mfa_authenticated_at_ms",
+        "mfa_setup_required",
         "device_label",
         "location_hint",
     ),
@@ -296,6 +304,8 @@ REQUIRED_INDEXES = (
     "idx_auth_passkey_challenges_user",
     "idx_auth_passkey_challenges_invitation",
     "ux_auth_users_passkey_user_handle",
+    "idx_auth_sessions_expires",
+    "idx_auth_sessions_user",
 )
 
 REQUIRED_CONSTRAINTS = (
@@ -308,6 +318,8 @@ REQUIRED_CONSTRAINTS = (
     "auth_passkeys_user_id_fkey",
     "auth_passkey_challenges_pkey",
     "auth_passkey_challenges_user_id_fkey",
+    "auth_sessions_pkey",
+    "fk_auth_sessions_user_id_auth_users",
     "gardens_pkey",
     "plots_pkey",
     "garden_map_objects_pkey",
@@ -369,16 +381,40 @@ REQUIRED_COLUMN_NULLABILITY: dict[str, bool] = {
     "auth_password_reset_tokens.purpose": False,
     "auth_passkey_challenges.invitation_user_handle": True,
     "inventory_transactions.garden_id": False,
+    "auth_sessions.token_hash": False,
+    "auth_sessions.user_id": False,
+    "auth_sessions.expires_at_ms": False,
+    "auth_sessions.created_at_ms": False,
+    "auth_sessions.last_seen_at_ms": False,
+    "auth_sessions.reauthenticated_at_ms": False,
+    "auth_sessions.mfa_authenticated_at_ms": False,
+    "auth_sessions.mfa_setup_required": False,
     "auth_sessions.device_label": False,
     "auth_sessions.location_hint": False,
 }
 
 REQUIRED_COLUMN_TYPES: dict[str, str] = {
+    "auth_sessions.token_hash": "text",
+    "auth_sessions.user_id": "bigint",
+    "auth_sessions.expires_at_ms": "bigint",
+    "auth_sessions.created_at_ms": "bigint",
+    "auth_sessions.last_seen_at_ms": "bigint",
+    "auth_sessions.reauthenticated_at_ms": "bigint",
+    "auth_sessions.mfa_authenticated_at_ms": "bigint",
+    "auth_sessions.mfa_setup_required": "bigint",
     "auth_sessions.device_label": "text",
     "auth_sessions.location_hint": "text",
 }
 
-REQUIRED_COLUMN_DEFAULTS: dict[str, str] = {
+REQUIRED_COLUMN_DEFAULTS: dict[str, str | None] = {
+    "auth_sessions.token_hash": None,
+    "auth_sessions.user_id": None,
+    "auth_sessions.expires_at_ms": None,
+    "auth_sessions.created_at_ms": None,
+    "auth_sessions.last_seen_at_ms": None,
+    "auth_sessions.reauthenticated_at_ms": "1",
+    "auth_sessions.mfa_authenticated_at_ms": "0",
+    "auth_sessions.mfa_setup_required": "0",
     "auth_sessions.device_label": "''::text",
     "auth_sessions.location_hint": "''::text",
 }
@@ -410,6 +446,14 @@ REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
         "where",
         "passkey_user_handle is not null",
     ),
+    "idx_auth_sessions_expires": (
+        "auth_sessions",
+        "using btree (expires_at_ms)",
+    ),
+    "idx_auth_sessions_user": (
+        "auth_sessions",
+        "using btree (user_id)",
+    ),
 }
 
 REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
@@ -420,6 +464,13 @@ REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
         "length(password_hash) > 0",
         "password_auth_disabled = 1",
         "password_hash is null",
+    ),
+    "auth_sessions_pkey": ("primary key (token_hash)",),
+    "fk_auth_sessions_user_id_auth_users": (
+        "foreign key (user_id)",
+        "references auth_users(id)",
+        "on delete cascade",
+        "deferrable",
     ),
     "ck_procurement_receipt_provenance": (
         "status = 'received'",
@@ -527,7 +578,7 @@ def missing_schema_parts(
     required_constraints: tuple[str, ...] = REQUIRED_CONSTRAINTS,
     required_column_nullability: Mapping[str, bool] = REQUIRED_COLUMN_NULLABILITY,
     required_column_types: Mapping[str, str] = REQUIRED_COLUMN_TYPES,
-    required_column_defaults: Mapping[str, str] = REQUIRED_COLUMN_DEFAULTS,
+    required_column_defaults: Mapping[str, str | None] = REQUIRED_COLUMN_DEFAULTS,
     required_index_definition_fragments: Mapping[
         str,
         tuple[str, ...],
@@ -560,8 +611,14 @@ def missing_schema_parts(
         if actual != _normalize_definition(column_type):
             missing.append({"kind": "column-type", "object": column})
     for column, default in required_column_defaults.items():
-        actual = snapshot.column_defaults.get(column)
-        if actual is None or _normalize_definition(actual) != _normalize_definition(default):
+        if column not in snapshot.column_defaults:
+            missing.append({"kind": "column-default", "object": column})
+            continue
+        actual = snapshot.column_defaults[column]
+        if default is None:
+            if actual is not None:
+                missing.append({"kind": "column-default", "object": column})
+        elif actual is None or _normalize_definition(actual) != _normalize_definition(default):
             missing.append({"kind": "column-default", "object": column})
     for index, fragments in required_index_definition_fragments.items():
         actual = _normalize_definition(snapshot.index_definitions.get(index, ""))

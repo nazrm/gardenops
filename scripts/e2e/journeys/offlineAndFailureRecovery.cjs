@@ -404,7 +404,7 @@ async function runOfflineProfile(options) {
       replay_delivery_count: deliveryCount,
       retry_as_new_replacement_count: 1,
       retry_as_new_identity_renewed: true,
-      terminal_statuses: [409, 410],
+      injected_terminal_fixture_statuses: [409, 410],
     };
     result.assertions.passed.push("phase-six-offline-replay", "browser-diagnostics-clean");
     await recorder.settle();
