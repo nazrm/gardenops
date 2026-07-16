@@ -98,6 +98,15 @@ saved settings but intentionally does not claim to calculate shade. Relative
 module imports are not supported by this proxy path, so use a runtime with
 absolute dependencies or a single-file distribution.
 
+GardenOps keeps a private five-minute process-local copy of a validated runtime
+script. The authenticated proxy also has per-identity, per-user, per-garden,
+global, and concurrent-fetch controls. Tune these only when the runtime is
+actually in use: `SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT`,
+`SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_USER`,
+`SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_GARDEN`,
+`SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_GLOBAL`, and
+`SHADEMAP_RUNTIME_SCRIPT_CONCURRENCY_LIMIT`.
+
 ## How Requests Flow
 
 1. The browser opens the GardenOps ShadeMap panel.
@@ -256,7 +265,9 @@ GardenOps validates an upload before replacing the active terrain source, then
 commits the source change and cache invalidation together. A failed upload or
 database update leaves the previous active terrain usable. Removing uploaded
 terrain also clears its derived tile cache; do not rely on generated tiles as a
-separate durable terrain archive.
+separate durable terrain archive. Once the replacement is committed, deletion
+of the superseded file is best-effort: an upload can report pending file cleanup
+without rolling back the active terrain source.
 
 ## Rate Limits And Budgets
 

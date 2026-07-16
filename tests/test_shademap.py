@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -34,6 +35,11 @@ _LARGE_FEATURE_BOUNDS = {
     "west": -0.5,
     "zoom": 17,
 }
+_EXPECTED_HEAD = subprocess.check_output(
+    ["git", "rev-parse", "--verify", "HEAD"],
+    cwd=Path(__file__).resolve().parents[1],
+    text=True,
+).strip()
 
 
 def _complete_journey_fixture_env(artifact_dir: Path) -> dict[str, str]:
@@ -45,7 +51,7 @@ def _complete_journey_fixture_env(artifact_dir: Path) -> dict[str, str]:
         "GARDENOPS_COMPLETE_JOURNEYS_E2E_ALLOW_TRUNCATE": "1",
         "GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR": str(artifact_dir),
         "GARDENOPS_COMPLETE_JOURNEYS_E2E_CHILD": "1",
-        "GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD": "a" * 40,
+        "GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD": _EXPECTED_HEAD,
         "GARDENOPS_DISPOSABLE_POSTGRES_MARKER": "123.fixture",
         "GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER": "123",
         "GARDENOPS_DISPOSABLE_POSTGRES_URL": database_url,
@@ -642,9 +648,12 @@ class TestShademap(BaseApiTest):
                     return_value=(b"window.GardenOpsShadeMap = function () {};", "text/javascript"),
                 ) as fixture_request,
             ):
+                shademap_router._clear_runtime_script_cache()
                 response = self.client.get("/shademap/runtime.js")
+                cached_response = self.client.get("/shademap/runtime.js")
 
             self.assertEqual(response.status_code, 200)
+            self.assertEqual(cached_response.status_code, 200)
             self.assertEqual(response.headers["content-type"], "application/javascript")
             self.assertEqual(response.headers["x-content-type-options"], "nosniff")
             self.assertIn("GardenOpsShadeMap", response.text)
@@ -652,6 +661,7 @@ class TestShademap(BaseApiTest):
                 "http://127.0.0.1:19451/shademap/runtime.js",
                 timeout=20,
             )
+            shademap_router._clear_runtime_script_cache()
 
     def test_shademap_sdk_validation_ignores_loopback_override_in_production(self) -> None:
         with (

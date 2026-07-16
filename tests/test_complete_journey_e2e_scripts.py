@@ -1197,7 +1197,8 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
     for marker in (
         "data-phase-seven-simulator",
         "data-phase-seven-terrain",
-        "signed terrain tile",
+        "signed terrain tile rendering",
+        "data-phase-seven-terrain-size",
         "provider_fixture_redacted",
         "exerciseStaleWeather",
         "assertViewerShadeBoundary",
@@ -1216,6 +1217,9 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         '"partial"',
         '"/shademap/runtime.js"',
         '"/__fixture__/state"',
+        "createImageBitmap",
+        "terrainImage",
+        '"rendered"',
     ):
         assert marker in fixture_source
     for forbidden in ("route.fulfill(", "context.addCookies(", "page.setContent("):

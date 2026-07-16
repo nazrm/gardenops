@@ -1538,7 +1538,7 @@ async def upload_garden_lidar(
             db.rollback()
             prepared.rollback()
             raise
-        prepared.finalize()
+        cleanup_failed = bool(prepared.finalize())
     notify_garden_modified()
     _audit_membership_change(
         request,
@@ -1547,7 +1547,11 @@ async def upload_garden_lidar(
         garden_id=garden_id,
         db=db,
     )
-    return {"garden_id": garden_id, **status}
+    return {
+        "garden_id": garden_id,
+        **status,
+        "file_cleanup": "pending" if cleanup_failed else "complete",
+    }
 
 
 @router.delete("/gardens/{garden_id}/lidar")

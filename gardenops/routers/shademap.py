@@ -114,6 +114,7 @@ _ALLOWED_UPSTREAM_HOST_SUFFIXES: Final[tuple[str, ...]] = (
     "overpass.private.coffee",
 )
 SDK_CACHE_TTL_MS: Final[int] = 12 * 60 * 60 * 1000
+RUNTIME_SCRIPT_CACHE_TTL_MS: Final[int] = 5 * 60 * 1000
 FEATURE_CACHE_TTL_MS: Final[int] = 7 * 24 * 60 * 60 * 1000
 FEATURE_CACHE_MAX_ROWS: Final[int] = 4000
 TERRAIN_MAX_ZOOM: Final[int] = 15
@@ -128,6 +129,9 @@ SDK_CACHE_MAX_ROWS: Final[int] = 64
 DEFAULT_BUILDING_HEIGHT_METERS: Final[float] = 3.0
 DEFAULT_HOUSE_HEIGHT_METERS: Final[float] = 9.0
 DEFAULT_TREE_HEIGHT_METERS: Final[float] = 4.5
+
+_RUNTIME_SCRIPT_CACHE_LOCK = threading.Lock()
+_RUNTIME_SCRIPT_CACHE: dict[str, tuple[int, bytes, str]] = {}
 MIN_TREE_CANOPY_RADIUS_METERS: Final[float] = 1.2
 MAX_TREE_CANOPY_RADIUS_METERS: Final[float] = 3.5
 TREE_CANOPY_SIDES: Final[int] = 8
@@ -2308,13 +2312,54 @@ def get_shademap_runtime_script(request: FastAPIRequest, db: DB) -> Response:
     # Keep the upstream runtime behind the same garden-auth boundary as terrain
     # tiles. The browser needs no direct vendor URL or credential.
     _active_garden_id(request)
+    record_security_event("shademap_runtime_script_requests_total")
+    enforce_layered_rate_limit(
+        request,
+        bucket="shademap-runtime-script",
+        identity_limit=env_int("SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT", 20),
+        window_seconds=60,
+        user_limit=env_nonneg_int("SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_USER", 20),
+        garden_limit=env_nonneg_int("SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_GARDEN", 40),
+        global_limit=env_nonneg_int("SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_GLOBAL", 200),
+    )
     upstream_url = _runtime_script_upstream_url()
     if upstream_url is None:
         raise HTTPException(status_code=404, detail="ShadeMap runtime script is not configured")
-    if upstream_url.startswith("http://127.0.0.1:"):
-        payload, content_type = _request_validated_bytes(upstream_url, timeout=20)
-    else:
-        payload, content_type = _request_bytes(upstream_url, timeout=20)
+    cached = _runtime_script_cache_get(upstream_url)
+    if cached is None:
+        with acquire_concurrency_slot(
+            bucket="shademap-runtime-script",
+            limit=env_int("SHADEMAP_RUNTIME_SCRIPT_CONCURRENCY_LIMIT", 2),
+        ):
+            cached = _runtime_script_cache_get(upstream_url)
+            if cached is None:
+                if upstream_url.startswith("http://127.0.0.1:"):
+                    payload, content_type = _request_validated_bytes(upstream_url, timeout=20)
+                else:
+                    payload, content_type = _request_bytes(upstream_url, timeout=20)
+                cached = _runtime_script_cache_put(upstream_url, payload, content_type)
+    payload, content_type = cached
+    return Response(
+        content=payload,
+        media_type="application/javascript",
+        headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+def _runtime_script_cache_get(upstream_url: str) -> tuple[bytes, str] | None:
+    now_ms = int(time.time() * 1000)
+    with _RUNTIME_SCRIPT_CACHE_LOCK:
+        entry = _RUNTIME_SCRIPT_CACHE.get(upstream_url)
+        if entry is None or now_ms - entry[0] >= RUNTIME_SCRIPT_CACHE_TTL_MS:
+            return None
+        return entry[1], entry[2]
+
+
+def _runtime_script_cache_put(
+    upstream_url: str,
+    payload: bytes,
+    content_type: str,
+) -> tuple[bytes, str]:
     media_type = content_type.split(";", 1)[0].strip().lower()
     if media_type not in {
         "application/javascript",
@@ -2324,11 +2369,15 @@ def get_shademap_runtime_script(request: FastAPIRequest, db: DB) -> Response:
         raise HTTPException(
             status_code=502, detail="ShadeMap runtime returned a non-JavaScript response"
         )
-    return Response(
-        content=payload,
-        media_type="application/javascript",
-        headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
-    )
+    with _RUNTIME_SCRIPT_CACHE_LOCK:
+        _RUNTIME_SCRIPT_CACHE[upstream_url] = (int(time.time() * 1000), payload, content_type)
+    return payload, content_type
+
+
+def _clear_runtime_script_cache() -> None:
+    """Clear the process-local runtime cache for test isolation."""
+    with _RUNTIME_SCRIPT_CACHE_LOCK:
+        _RUNTIME_SCRIPT_CACHE.clear()
 
 
 @router.get("/shademap/monthly-estimated-sun")

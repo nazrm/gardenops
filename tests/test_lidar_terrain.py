@@ -258,3 +258,27 @@ class TestLidarTerrainValidation(unittest.TestCase):
         self.assertFalse(status["uploaded"])
         self.assertEqual(list(terrain_dir.glob("terrain.*")), [])
         self.assertEqual(lidar_terrain._DATASET_CACHE, {})
+
+    def test_finalize_keeps_a_committed_replacement_when_backup_cleanup_fails(self) -> None:
+        original = _terrain_bytes()
+        replacement = _terrain_bytes(compressed=True, z=np.array([50.0, 60.0, 70.0, 80.0]))
+        lidar_terrain.save_uploaded_terrain(602, original, "terrain.las")
+        prepared = lidar_terrain.prepare_uploaded_terrain(602, replacement, "replacement.laz")
+        prepared.activate()
+        backup = next(iter(prepared.backups.values()))
+        original_unlink = Path.unlink
+
+        def fail_only_backup(path: Path, *args, **kwargs):
+            if path == backup:
+                raise PermissionError("backup cleanup denied")
+            return original_unlink(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", fail_only_backup):
+            failed = prepared.finalize()
+
+        active = lidar_terrain._uploaded_terrain_path(602)
+        assert active is not None
+        self.assertEqual(active.suffix, ".laz")
+        self.assertEqual(active.read_bytes(), replacement)
+        self.assertEqual(failed, (backup,))
+        self.assertTrue(backup.exists())

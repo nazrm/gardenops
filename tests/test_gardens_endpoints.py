@@ -8,6 +8,7 @@ import numpy as np
 from pyproj import CRS
 
 import gardenops.db as db
+from gardenops.services import lidar_terrain
 from tests.base import BaseApiTest
 
 
@@ -208,6 +209,7 @@ class TestGardenSettings(BaseApiTest):
             self.assertTrue(upload_body["available"])
             self.assertTrue(upload_body["uploaded"])
             self.assertEqual(upload_body["filename"], "terrain.laz")
+            self.assertEqual(upload_body["file_cleanup"], "complete")
 
             stored = self.test_media_dir / "lidar" / f"garden-{garden_id}" / "terrain.laz"
             self.assertTrue(stored.exists())
@@ -280,6 +282,42 @@ class TestGardenSettings(BaseApiTest):
 
             self.assertEqual(stored.read_bytes(), original)
             self.assertEqual(list(stored.parent.glob(".terrain-*")), [])
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_garden_lidar_cleanup_failure_reports_pending_after_commit(self) -> None:
+        try:
+            client, headers, garden_id = self._create_garden_with_admin()
+            original = _valid_laz_bytes()
+            first = client.post(
+                f"/api/gardens/{garden_id}/lidar",
+                headers={**headers, "x-upload-filename": "terrain.laz"},
+                content=original,
+            )
+            self.assertEqual(first.status_code, 201, first.text)
+
+            original_finalize = lidar_terrain.PreparedTerrainUpload.finalize
+
+            def finalize_with_pending_cleanup(prepared):
+                original_finalize(prepared)
+                return (Path("backup-left-behind"),)
+
+            with patch.object(
+                lidar_terrain.PreparedTerrainUpload,
+                "finalize",
+                new=finalize_with_pending_cleanup,
+            ):
+                replacement = client.post(
+                    f"/api/gardens/{garden_id}/lidar",
+                    headers={**headers, "x-upload-filename": "replacement.laz"},
+                    content=_valid_laz_bytes(elevation_offset=100.0),
+                )
+
+            self.assertEqual(replacement.status_code, 201, replacement.text)
+            self.assertEqual(replacement.json()["file_cleanup"], "pending")
+            stored = self.test_media_dir / "lidar" / f"garden-{garden_id}" / "terrain.laz"
+            self.assertTrue(stored.exists())
+            self.assertNotEqual(stored.read_bytes(), original)
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 

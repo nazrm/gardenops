@@ -4,9 +4,30 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 _COMPLETE_JOURNEY_HEAD_RE = re.compile(r"[0-9a-f]{40}")
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
+@lru_cache(maxsize=1)
+def _repository_head() -> str:
+    """Resolve the checkout head once for the test-only fixture boundary."""
+    try:
+        return (
+            subprocess.check_output(
+                ["git", "rev-parse", "--verify", "HEAD"],
+                cwd=_REPOSITORY_ROOT,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            .strip()
+            .lower()
+        )
+    except OSError, subprocess.CalledProcessError:
+        return ""
 
 
 def complete_journey_loopback_fixture_enabled() -> bool:
@@ -31,6 +52,7 @@ def complete_journey_loopback_fixture_enabled() -> bool:
         or not system_identifier.isdecimal()
         or not marker.startswith(f"{system_identifier}.")
         or _COMPLETE_JOURNEY_HEAD_RE.fullmatch(expected_head) is None
+        or expected_head != _repository_head()
         or not artifact_raw
     ):
         return False

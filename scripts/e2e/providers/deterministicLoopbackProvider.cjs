@@ -38,6 +38,7 @@ const SHADEMAP_RUNTIME_SCRIPT = String.raw`(() => {
       this._canvas = null;
       this._canvasOverlay = null;
       this._gl = null;
+      this._terrainImage = null;
     }
     addTo(map) {
       const canvas = document.createElement("canvas");
@@ -70,10 +71,22 @@ const SHADEMAP_RUNTIME_SCRIPT = String.raw`(() => {
         const y = Math.floor((1 - Math.asinh(Math.tan(latitudeRadians)) / Math.PI) / 2 * scale);
         canvas.dataset.phaseSevenTerrain = "requested";
         fetch(terrainSource.getSourceUrl({ x, y, z: zoom }), { credentials: "same-origin" })
-          .then((response) => {
+          .then(async (response) => {
             const contentType = response.headers.get("content-type") || "";
-            canvas.dataset.phaseSevenTerrain = response.status === 200 && contentType.startsWith("image/png")
-              ? "available" : "unavailable";
+            if (response.status !== 200 || !contentType.startsWith("image/png")) {
+              canvas.dataset.phaseSevenTerrain = "unavailable";
+              return;
+            }
+            const terrainImage = await createImageBitmap(await response.blob());
+            if (terrainImage.width < 1 || terrainImage.height < 1) {
+              terrainImage.close();
+              canvas.dataset.phaseSevenTerrain = "unavailable";
+              return;
+            }
+            this._terrainImage?.close();
+            this._terrainImage = terrainImage;
+            canvas.dataset.phaseSevenTerrain = "rendered";
+            canvas.dataset.phaseSevenTerrainSize = terrainImage.width + "x" + terrainImage.height;
             this.flushSync();
             this.emitIdle();
           })
@@ -123,13 +136,18 @@ const SHADEMAP_RUNTIME_SCRIPT = String.raw`(() => {
       const minute = this.date.getHours() * 60 + this.date.getMinutes();
       const hue = (minute + this.date.getDate() * 19 + (this.sunExposure ? 137 : 0)) % 360;
       context.clearRect(0, 0, this._canvas.width, this._canvas.height);
-      context.fillStyle = "hsla(" + hue + ", 78%, 42%, 0.72)";
+      if (this._terrainImage) {
+        context.drawImage(this._terrainImage, 0, 0, this._canvas.width, this._canvas.height);
+      }
+      context.fillStyle = "hsla(" + hue + ", 78%, 42%, " + (this._terrainImage ? "0.46" : "0.72") + ")";
       context.fillRect(0, 0, this._canvas.width, this._canvas.height);
       context.fillStyle = this.sunExposure ? "rgba(255, 221, 84, 0.72)" : "rgba(24, 42, 78, 0.74)";
       const inset = Math.max(8, Math.round(Math.min(this._canvas.width, this._canvas.height) / 7));
       context.fillRect(inset, inset, this._canvas.width - inset * 2, this._canvas.height - inset * 2);
     }
     onRemove() {
+      this._terrainImage?.close();
+      this._terrainImage = null;
       this._canvasOverlay?.remove();
       this.removeAllListeners();
     }

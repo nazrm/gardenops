@@ -305,7 +305,9 @@ async function exerciseShade(page, label, {
   const { panel, canvas } = await waitForShadeReady(page, label);
   if (expectTerrain) {
     await waitFor(() => canvas.getAttribute("data-phase-seven-terrain")
-      .then((value) => value === "available"), `${label} signed terrain tile`);
+      .then((value) => value === "rendered"), `${label} signed terrain tile rendering`);
+    assert(await canvas.getAttribute("data-phase-seven-terrain-size") === "256x256",
+      `${label} decoded terrain tile dimensions were unexpected`);
   }
   const before = await shadePixels(page, canvas);
   const revision = Number(await panel.getAttribute("data-render-revision"));

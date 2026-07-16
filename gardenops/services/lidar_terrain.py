@@ -298,12 +298,26 @@ class PreparedTerrainUpload:
             self.rollback()
             raise
 
-    def finalize(self) -> None:
+    def finalize(self) -> tuple[Path, ...]:
+        """Best-effort cleanup after the replacement has become durable.
+
+        Activation and its database invalidation have already committed by the
+        time this runs. A cleanup failure must not turn that successful
+        replacement into a failed request.
+        """
+        failed: list[Path] = []
         try:
             for backup in self.backups.values():
-                backup.unlink(missing_ok=True)
+                try:
+                    backup.unlink(missing_ok=True)
+                except OSError:
+                    failed.append(backup)
             self.backups.clear()
-            self.pending.unlink(missing_ok=True)
+            try:
+                self.pending.unlink(missing_ok=True)
+            except OSError:
+                failed.append(self.pending)
+            return tuple(failed)
         finally:
             self._release_lock()
 

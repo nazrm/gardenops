@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 from gardenops.e2e_fixture import complete_journey_loopback_fixture_enabled
+
+EXPECTED_HEAD = subprocess.check_output(
+    ["git", "rev-parse", "--verify", "HEAD"],
+    cwd=Path(__file__).resolve().parents[1],
+    text=True,
+).strip()
 
 
 def _fixture_env(artifact_dir: Path) -> dict[str, str]:
@@ -18,7 +25,7 @@ def _fixture_env(artifact_dir: Path) -> dict[str, str]:
         "GARDENOPS_COMPLETE_JOURNEYS_E2E_ALLOW_TRUNCATE": "1",
         "GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR": str(artifact_dir),
         "GARDENOPS_COMPLETE_JOURNEYS_E2E_CHILD": "1",
-        "GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD": "a" * 40,
+        "GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD": EXPECTED_HEAD,
         "GARDENOPS_DISPOSABLE_POSTGRES_MARKER": "123.fixture",
         "GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER": "123",
         "GARDENOPS_DISPOSABLE_POSTGRES_URL": database_url,
@@ -34,6 +41,12 @@ def test_complete_journey_fixture_requires_all_runner_markers() -> None:
         with patch.dict(
             os.environ,
             {**env, "GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD": "not-a-commit"},
+            clear=True,
+        ):
+            assert complete_journey_loopback_fixture_enabled() is False
+        with patch.dict(
+            os.environ,
+            {**env, "GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD": "b" * 40},
             clear=True,
         ):
             assert complete_journey_loopback_fixture_enabled() is False

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +27,12 @@ from gardenops.services.ai_provider import (
     identify_plant_with_ai,
 )
 
+_EXPECTED_HEAD = subprocess.check_output(
+    ["git", "rev-parse", "--verify", "HEAD"],
+    cwd=Path(__file__).resolve().parents[1],
+    text=True,
+).strip()
+
 
 def _complete_journey_fixture_env(artifact_dir: Path) -> dict[str, str]:
     """Return the runner-issued contract required for local provider overrides."""
@@ -36,7 +43,7 @@ def _complete_journey_fixture_env(artifact_dir: Path) -> dict[str, str]:
         "GARDENOPS_COMPLETE_JOURNEYS_E2E_ALLOW_TRUNCATE": "1",
         "GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR": str(artifact_dir),
         "GARDENOPS_COMPLETE_JOURNEYS_E2E_CHILD": "1",
-        "GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD": "a" * 40,
+        "GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD": _EXPECTED_HEAD,
         "GARDENOPS_DISPOSABLE_POSTGRES_MARKER": "123.fixture",
         "GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER": "123",
         "GARDENOPS_DISPOSABLE_POSTGRES_URL": database_url,
