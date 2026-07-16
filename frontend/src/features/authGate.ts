@@ -816,9 +816,10 @@ function renderLoginFlow(
 
   passwordFallbackBtn.addEventListener("click", () => {
     passkeyAttempt += 1;
-    passkeyAbortController?.abort();
+    const abortController = passkeyAbortController;
     passkeyAbortController = null;
     revealPasswordLogin();
+    abortController?.abort();
   });
 
   const startPasskeyLogin = async (

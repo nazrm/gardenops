@@ -61,6 +61,22 @@ class FrontendSecurityStaticTests(unittest.TestCase):
                 panel,
             )
 
+    def test_password_fallback_reveals_before_aborting_passkey(self) -> None:
+        gate = (ROOT / "frontend" / "src" / "features" / "authGate.ts").read_text(
+            encoding="utf-8"
+        )
+        handler = re.search(
+            r'passwordFallbackBtn\.addEventListener\("click", \(\) => \{(?P<body>.*?)\n  \}\);',
+            gate,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(handler)
+        body = handler.group("body")
+        self.assertLess(
+            body.index("revealPasswordLogin();"),
+            body.index("abortController?.abort();"),
+        )
+
     def test_membership_mutations_refresh_capabilities(self) -> None:
         panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
             encoding="utf-8"
