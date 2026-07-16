@@ -535,6 +535,25 @@ async function authenticate(page, username, password) {
   return profile.body;
 }
 
+async function dismissProactivePasskeyPrompt(page, timeout = 5_000) {
+  const dialog = page.locator(".modal[data-passkey-prompt-ready='true']:visible").filter({
+    has: page.locator(".passkey-prompt-modal"),
+  }).last();
+  try {
+    await dialog.waitFor({ state: "visible", timeout });
+  } catch {
+    return false;
+  }
+  const dismissed = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/auth/passkeys/prompt/dismiss"
+  ));
+  await dialog.locator(".confirm-no").click();
+  assert((await dismissed).ok(), "Passkey prompt dismissal failed");
+  await dialog.waitFor({ state: "detached" });
+  return true;
+}
+
 function createApiRecorder(page, actor = {}) {
   const records = [];
   const recordsByRequest = new Map();
@@ -671,6 +690,7 @@ module.exports = {
   authenticate,
   createApiRecorder,
   createGuardedContext,
+  dismissProactivePasskeyPrompt,
   expectedHttpDiagnosticContext,
   isAllowedUrl,
   isExpectedSilentHttpContext,

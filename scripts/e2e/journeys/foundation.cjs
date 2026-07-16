@@ -5,6 +5,7 @@ const {
   authenticate,
   createApiRecorder,
   createGuardedContext,
+  dismissProactivePasskeyPrompt,
 } = require("../completeJourneyBrowser.cjs");
 const { assert, assertPageStructure, visible, waitFor } = require("../completeJourneyAssertions.cjs");
 
@@ -12,24 +13,6 @@ function fixtureGarden(fixture, key) {
   const garden = fixture.gardens?.[key];
   assert(garden && Number.isInteger(garden.id), `Missing ${key} fixture garden`);
   return garden;
-}
-
-async function dismissProactivePasskeyPrompt(page) {
-  const dialog = page.locator(".modal[data-passkey-prompt-ready='true']:visible").filter({
-    has: page.locator(".passkey-prompt-modal"),
-  }).last();
-  try {
-    await dialog.waitFor({ state: "visible", timeout: 5_000 });
-  } catch {
-    return;
-  }
-  const dismissed = page.waitForResponse((response) => (
-    response.request().method() === "POST"
-    && new URL(response.url()).pathname === "/api/auth/passkeys/prompt/dismiss"
-  ));
-  await dialog.locator(".confirm-no").click();
-  assert((await dismissed).ok(), "Foundation passkey prompt dismissal failed");
-  await dialog.waitFor({ state: "detached" });
 }
 
 async function assertActiveGardenHeading(page, profile, garden) {

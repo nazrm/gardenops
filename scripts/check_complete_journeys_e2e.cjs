@@ -452,7 +452,7 @@ function phaseOneAuditExpectedEvents(loginCount) {
     [1, "PATCH", "/api/plots/P1MOBILEPLOT", 200],
     [4, "PATCH", "/api/plots/COMPLETE-PHASE-ONE-INDOOR/plants/COMPLETE-PHASE-ONE-BASIL", 200],
     [loginCount, "POST", "/api/auth/login", 200],
-    [1, "POST", "/api/auth/passkeys/prompt/dismiss", 200],
+    [3, "POST", "/api/auth/passkeys/prompt/dismiss", 200],
     [9, "POST", "/api/auth/reauthenticate", 200],
     [2, "POST", "/api/gardens/{garden_id}/complete-onboarding", 200],
     [10, "POST", "/api/gardens/{garden_id}/map-objects", 201],
