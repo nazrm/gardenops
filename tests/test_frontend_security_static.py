@@ -76,6 +76,33 @@ class FrontendSecurityStaticTests(unittest.TestCase):
             )
         )
 
+    def test_first_admin_passkey_requires_bound_credential_step_up(self) -> None:
+        app = (ROOT / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")
+        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("reauthenticateAdminAfterPasskeyEnrollment", app)
+        self.assertIsNotNone(
+            re.search(
+                r"finishPasskeyRegistrationApi\(.*?"
+                r"reauthenticateAdminAfterPasskeyEnrollment\(\).*?"
+                r"refreshAuthProfileAfterPasskeyChange\(\)",
+                app,
+                flags=re.DOTALL,
+            )
+        )
+        self.assertIn("requiresAdminStepUp", panel)
+        self.assertIsNotNone(
+            re.search(
+                r"finishPasskeyRegistrationApi\(.*?requiresAdminStepUp.*?"
+                r"beginPasskeyReauthenticationApi\(\).*?"
+                r"finishPasskeyReauthenticationApi\(",
+                panel,
+                flags=re.DOTALL,
+            )
+        )
+
     def test_plot_meaning_inputs_have_accessible_names(self) -> None:
         panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
             encoding="utf-8"

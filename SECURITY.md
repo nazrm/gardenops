@@ -18,6 +18,9 @@ explicit `passwordless_recovery` reset token before password authentication can
 be restored. A passkey-only user may add a backup passkey after passkey-backed
 reauthentication, but cannot remove the final passkey until another passkey or
 password authentication is available.
+First passkey enrollment does not itself unlock protected administrator actions.
+The clients immediately authenticate with the newly bound passkey before
+resuming protected application reads.
 
 Sensitive session-auth actions treat failed password, TOTP, recovery-code, and
 passkey reauthentication as a rejected action and keep the operation available

@@ -6659,6 +6659,18 @@ async function refreshAuthProfileAfterPasskeyChange(): Promise<void> {
   }
 }
 
+async function reauthenticateAdminAfterPasskeyEnrollment(): Promise<void> {
+  if (authProfile?.role !== "admin" || authProfile.mfa_authenticated) return;
+  const options = await beginPasskeyReauthenticationApi();
+  const credential = await getPasskey(options.publicKey);
+  await finishPasskeyReauthenticationApi(options.challenge_token, credential);
+  authProfile = {
+    ...authProfile,
+    mfa_authenticated: true,
+    mfa_setup_required: false,
+  };
+}
+
 async function showPasskeyPrompt(): Promise<void> {
   if (
     !authProfile
@@ -6719,14 +6731,22 @@ async function showPasskeyPrompt(): Promise<void> {
     finish();
     const currentPassword = await promptPasswordDialog(t("auth.current_password"));
     if (!currentPassword) return;
+    let registrationCompleted = false;
     try {
       const nickname = t("auth.passkey_default_name");
       const options = await beginPasskeyRegistrationApi(nickname, currentPassword);
       const credential = await createPasskey(options.publicKey);
       await finishPasskeyRegistrationApi(options.challenge_token, nickname, credential);
+      registrationCompleted = true;
+      await reauthenticateAdminAfterPasskeyEnrollment();
       await refreshAuthProfileAfterPasskeyChange();
       showToast(t("auth.passkey_added"), "success");
     } catch (err) {
+      if (registrationCompleted && authProfile?.role === "admin") {
+        showToast(getApiErrorMessage(err), "error");
+        await handleAuthButton();
+        return;
+      }
       if (isPasskeyUserCancelled(err)) return;
       showToast(getApiErrorMessage(err), "error");
     }

@@ -451,6 +451,11 @@ async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticat
   await page.waitForLoadState("networkidle");
   const proactivePrompt = await waitForProactivePasskeyPrompt(page);
   const registerPending = responseFor(page, "POST", "/api/auth/passkeys/register/verify");
+  const enrollmentStepUpPending = responseFor(
+    page,
+    "POST",
+    "/api/auth/reauthenticate/passkey/verify",
+  );
   if (proactivePrompt) {
     await proactivePrompt.locator(".confirm-yes").click();
     await answerPrompt(page, adminPassword);
@@ -461,6 +466,7 @@ async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticat
     await answerPrompt(page, adminPassword);
   }
   assert((await registerPending).status() === 201, "Passkey registration failed");
+  assert((await enrollmentStepUpPending).ok(), "First passkey enrollment step-up failed");
   await openAdminSection(page, "desktop", "settings");
   let row = page.locator("[data-passkey-id]").first();
   await visible(row, "registered passkey");

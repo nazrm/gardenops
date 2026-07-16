@@ -2785,6 +2785,9 @@ function wireSection(): void {
     if (nicknameValue === null) return;
     const nickname = nicknameValue.trim();
     let currentPassword = "";
+    const requiresAdminStepUp = Boolean(
+      state.me?.role === "admin" && !state.me.mfa_authenticated,
+    );
     try {
       if (state.me?.password_auth_disabled) {
         const reauthOptions = await beginPasskeyReauthenticationApi();
@@ -2805,6 +2808,21 @@ function wireSection(): void {
         nickname,
         credential,
       );
+      if (requiresAdminStepUp) {
+        const reauthOptions = await beginPasskeyReauthenticationApi();
+        const reauthCredential = await getPasskey(reauthOptions.publicKey);
+        await finishPasskeyReauthenticationApi(
+          reauthOptions.challenge_token,
+          reauthCredential,
+        );
+        if (state.me) {
+          state.me = {
+            ...state.me,
+            mfa_authenticated: true,
+            mfa_setup_required: false,
+          };
+        }
+      }
       await loadSettings();
       onAuthStateChanged?.();
       setIdentityNotice(t("admin.passkeys.added"));
