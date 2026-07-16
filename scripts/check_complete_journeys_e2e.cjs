@@ -7241,6 +7241,8 @@ async function main() {
         expected_removed: 0,
       },
     };
+    // Cumulative onboarding already created the legacy default garden reused by the viewer invite.
+    const phaseFiveExpectedGardenAdditions = phaseOneRan ? 1 : 2;
     const phaseFiveExpectedAdded = {
       auth_passkey_challenges:
         phaseFiveDatabaseEvidence?.challenge_added_identity_digests?.length ?? 0,
@@ -7249,7 +7251,7 @@ async function main() {
       auth_user_plot_assignment_meanings: 1,
       garden_invitations: 1,
       garden_memberships: 4,
-      gardens: 2,
+      gardens: phaseFiveExpectedGardenAdditions,
       layout_state: 1,
       plot_ownership: 1,
       plots: 1,

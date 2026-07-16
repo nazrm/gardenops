@@ -1045,6 +1045,7 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
     }.issubset(oracle["phase_five"]["database_boundaries"]["owned_tables"])
     for marker in (
         "phaseFiveExpectedAdded",
+        "phaseFiveExpectedGardenAdditions",
         "passkey_challenge_retention_exact",
         "incident_control_restored_exact",
         "auth_users_exact",
