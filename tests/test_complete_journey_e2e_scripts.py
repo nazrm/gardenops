@@ -1099,6 +1099,7 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     assert 'require("./e2e/journeys/offlineAndFailureRecovery.cjs")' in checker_source
     assert "phaseSelected(6)" in checker_source
     assert "runOfflineAndFailureRecovery" in checker_source
+    assert "assertPhaseSixAuditEvents" in checker_source
     assert "assertPhaseSixProfileEvidence" in checker_source
     assert 'phaseSelected(6) ? ["C2", "INT-01", "OFF-01"]' in checker_source
     assert "_load_phase_six_oracle" in seeder_source
@@ -1114,6 +1115,10 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     ]
     assert oracle["phase_six"]["browser_contract"]["recovery_collapsed_by_default"] is True
     assert oracle["phase_six"]["browser_contract"]["retry_as_new_replacement_count"] == 1
+    assert oracle["phase_six"]["audit_contract"]["additional_login_count"] == 1
+    assert sum(
+        event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]
+    ) == 14
     for marker in (
         "route.fetch()",
         'route.abort("failed")',
@@ -1131,6 +1136,58 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
         assert marker in journey_source
     for forbidden in ("route.fulfill(", "page.setContent("):
         assert forbidden not in journey_source
+
+
+def test_phase_six_audit_contract_rejects_scope_tampering() -> None:
+    script = r"""
+const {
+  assertPhaseSixAuditEvents,
+  phaseSixOracle,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const oracle = phaseSixOracle();
+const fixture = {
+  gardens: { alpha: { id: 11 }, beta: { id: 22 } },
+  roles: { admin: 'phase-six-admin' },
+};
+const prior = { id: 900 };
+let id = 901;
+const records = oracle.phase_six.audit_contract.events.flatMap((event) => {
+  const actor = event.actor === 'admin' ? {
+    actor_auth_type: 'session', actor_role: 'admin', actor_username: fixture.roles.admin,
+  } : {
+    actor_auth_type: 'none', actor_role: 'anonymous', actor_username: 'anonymous',
+  };
+  const garden_id = event.garden === null ? null : fixture.gardens[event.garden].id;
+  return Array.from({ length: event.count }, () => ({
+    ...actor, garden_id, id: id++, method: event.method,
+    path: event.path, status_code: event.status_code,
+  }));
+});
+const evidence = assertPhaseSixAuditEvents(
+  { records: [prior] },
+  { records: [prior, ...records] },
+  fixture,
+  oracle,
+);
+if (!evidence.audit_events_exact || evidence.audit_event_count !== 14) process.exit(3);
+const tampered = structuredClone(records);
+tampered.at(-1).garden_id = 999;
+try {
+  assertPhaseSixAuditEvents(
+    { records: [prior] },
+    { records: [prior, ...tampered] },
+    fixture,
+    oracle,
+  );
+  process.exit(4);
+} catch (error) {
+  if (!String(error.message).includes('audit delta')) process.exit(5);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_phase_five_totp_generator_matches_rfc_vector() -> None:

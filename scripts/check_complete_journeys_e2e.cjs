@@ -243,6 +243,8 @@ function phaseSixOracle() {
     "Phase 6 oracle schema is unsupported");
   assert(oracle.phase_six && typeof oracle.phase_six === "object"
     && oracle.phase_six.fixture && typeof oracle.phase_six.fixture === "object"
+    && oracle.phase_six.audit_contract
+      && typeof oracle.phase_six.audit_contract === "object"
     && oracle.phase_six.browser_contract
       && typeof oracle.phase_six.browser_contract === "object"
     && oracle.phase_six.database_boundaries
@@ -328,6 +330,69 @@ function assertPhaseSixProfileEvidence(profiles, oracle = phaseSixOracle()) {
     reconnect_count: checks.reconnect_count,
     replay_delivery_count: checks.replay_delivery_count,
     terminal_recovery: true,
+  };
+}
+
+function assertPhaseSixAuditEvents(baseline, final, fixture, oracle = phaseSixOracle()) {
+  assert(Array.isArray(baseline?.records) && Array.isArray(final?.records),
+    "Phase 6 audit records are missing");
+  const baselineIds = new Set(baseline.records.map((record) => record.id));
+  const actual = final.records.filter((record) => !baselineIds.has(record.id)).map((record) => ({
+    actor_auth_type: record.actor_auth_type,
+    actor_role: record.actor_role,
+    actor_username: record.actor_username,
+    garden_id: record.garden_id,
+    method: record.method,
+    path: record.path,
+    status_code: record.status_code,
+  }));
+  const contract = oracle.phase_six.audit_contract;
+  assert(Number.isSafeInteger(contract.additional_login_count)
+    && contract.additional_login_count >= 0
+    && Array.isArray(contract.events),
+  "Phase 6 audit oracle is invalid");
+  const expected = contract.events.flatMap((event) => {
+    assert(Number.isSafeInteger(event.count) && event.count > 0,
+      "Phase 6 audit oracle count is invalid");
+    assert(["admin", "anonymous"].includes(event.actor),
+      "Phase 6 audit oracle actor is invalid");
+    assert(event.garden === null || ["alpha", "beta"].includes(event.garden),
+      "Phase 6 audit oracle garden is invalid");
+    const actor = event.actor === "admin" ? {
+      actor_auth_type: "session",
+      actor_role: "admin",
+      actor_username: fixture.roles.admin,
+    } : {
+      actor_auth_type: "none",
+      actor_role: "anonymous",
+      actor_username: "anonymous",
+    };
+    const gardenId = event.garden === null ? null : fixture.gardens[event.garden].id;
+    return Array.from({ length: event.count }, () => ({
+      ...actor,
+      garden_id: gardenId,
+      method: event.method,
+      path: event.path,
+      status_code: event.status_code,
+    }));
+  });
+  const sortProjection = (records) => records
+    .map((record) => canonicalJson(record))
+    .sort((left, right) => left.localeCompare(right));
+  assert(canonicalJson(sortProjection(actual)) === canonicalJson(sortProjection(expected)),
+    "Phase 6 audit delta diverged from its independent oracle");
+  const loginCount = contract.events.find((event) => (
+    event.method === "POST" && event.path === "/api/auth/login" && event.status_code === 200
+  ))?.count;
+  assert(loginCount === 1 + contract.additional_login_count,
+    "Phase 6 audit oracle login ceremony count is inconsistent");
+  return {
+    additional_login_count: contract.additional_login_count,
+    audit_event_count: actual.length,
+    audit_events_exact: true,
+    client_error_count: contract.events.find((event) => (
+      event.method === "POST" && event.path === "/api/client-errors"
+    ))?.count ?? 0,
   };
 }
 
@@ -6715,6 +6780,7 @@ async function main() {
   let phaseFiveProfileEvidence = null;
   let phaseFiveProfiles = [];
   let phaseSixDatabaseBaseline = null;
+  let phaseSixAuditEvidence = null;
   let phaseSixProfileSummary = null;
   let phaseSixProfiles = [];
   let thrownError = null;
@@ -7088,6 +7154,12 @@ async function main() {
       assert(phaseSixDatabaseBaseline, "Phase 6 database baseline snapshot is missing");
       phaseSixProfileSummary = assertPhaseSixProfileEvidence(
         phaseSixProfiles,
+        phaseSixOracleSpec,
+      );
+      phaseSixAuditEvidence = assertPhaseSixAuditEvents(
+        phaseSixDatabaseBaseline.audit_state,
+        finalDatabase.audit_state,
+        fixture,
         phaseSixOracleSpec,
       );
     }
@@ -7503,10 +7575,15 @@ async function main() {
       fixture.database_snapshot.audit_state.total_count === 0,
       "Foundation fixture unexpectedly started with audit events",
     );
+    const phaseSixAdditionalLoginCount = phaseSixRan
+      ? phaseSixOracleSpec.phase_six.audit_contract.additional_login_count
+      : 0;
     assert(
       phaseFiveRan
-        ? finalDatabase.audit_state.expected_login_count >= manifest.profiles.length
-        : finalDatabase.audit_state.expected_login_count === manifest.profiles.length,
+        ? finalDatabase.audit_state.expected_login_count
+          >= manifest.profiles.length + phaseSixAdditionalLoginCount
+        : finalDatabase.audit_state.expected_login_count
+          === manifest.profiles.length + phaseSixAdditionalLoginCount,
       `Browser journey login audit count was unexpected: ${JSON.stringify(finalDatabase.audit_state)}`,
     );
     if (phaseOneRan) {
@@ -7856,6 +7933,7 @@ async function main() {
         whole_table_mutation_accounting: wholeTableMutationAccounting,
       } : null,
       phase_six_enforcement: phaseSixRan ? {
+        ...phaseSixAuditEvidence,
         ...phaseSixProfileSummary,
         browser_profile_matrix: true,
         fixture_oracle_binding: phaseSixFixtureOracleEvidence,
@@ -8013,6 +8091,7 @@ module.exports = {
   assertPhaseFiveFixtureOracleBinding,
   assertPhaseFiveProfileEvidence,
   assertPhaseSixFixtureOracleBinding,
+  assertPhaseSixAuditEvents,
   assertPhaseSixProfileEvidence,
   assertPhaseTwoAuditEvents,
   assertPhaseTwoBrowserMutationMultiset,
