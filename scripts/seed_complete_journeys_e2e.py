@@ -4269,8 +4269,8 @@ def _auth_state(conn) -> dict[str, Any]:
     ).fetchone()
     digest = conn.execute(
         """
-        SELECT md5(COALESCE(
-            string_agg(
+        WITH normalized AS (
+            SELECT jsonb_set(
                 jsonb_set(
                     to_jsonb(user_value),
                     '{last_login_at}',
@@ -4278,19 +4278,20 @@ def _auth_state(conn) -> dict[str, Any]:
                         WHEN username IN (%s, %s, %s, %s, %s) THEN 'null'::jsonb
                         ELSE COALESCE(to_jsonb(last_login_at), 'null'::jsonb)
                     END
-                )::text,
-                E'\\n' ORDER BY jsonb_set(
-                    to_jsonb(user_value),
-                    '{last_login_at}',
-                    CASE
-                        WHEN username IN (%s, %s, %s, %s, %s) THEN 'null'::jsonb
-                        ELSE COALESCE(to_jsonb(last_login_at), 'null'::jsonb)
-                    END
-                )::text
-            ),
+                ),
+                '{passkey_prompt_dismissed_until_ms}',
+                CASE
+                    WHEN username IN (%s, %s, %s, %s, %s) THEN '0'::jsonb
+                    ELSE to_jsonb(passkey_prompt_dismissed_until_ms)
+                END
+            ) AS value
+            FROM auth_users AS user_value
+        )
+        SELECT md5(COALESCE(
+            string_agg(value::text, E'\\n' ORDER BY value::text),
             ''
         )) AS digest
-        FROM auth_users AS user_value
+        FROM normalized
         """,
         (
             ADMIN_USERNAME,
@@ -4305,6 +4306,22 @@ def _auth_state(conn) -> dict[str, Any]:
             MOBILE_ONBOARDING_LOGIN[0],
         ),
     ).fetchone()
+    dismissed_prompt_rows = conn.execute(
+        """
+        SELECT username
+        FROM auth_users
+        WHERE username = ANY(%s)
+          AND passkey_prompt_dismissed_until_ms > 0
+        ORDER BY username
+        """,
+        ([
+            ADMIN_USERNAME,
+            EDITOR_LOGIN[0],
+            VIEWER_LOGIN[0],
+            ONBOARDING_LOGIN[0],
+            MOBILE_ONBOARDING_LOGIN[0],
+        ],),
+    ).fetchall()
     session_rows = conn.execute(
         """
         SELECT users.username, COUNT(sessions.token_hash) AS count
@@ -4359,6 +4376,9 @@ def _auth_state(conn) -> dict[str, Any]:
                 "reauthenticated_before_created",
             )
         },
+        "passkey_prompt_dismissed_usernames": [
+            str(row["username"]) for row in dismissed_prompt_rows
+        ],
         "session_user_counts": {str(row["username"]): int(row["count"]) for row in session_rows},
         "users_expected_digest": str(digest["digest"] if digest else ""),
     }

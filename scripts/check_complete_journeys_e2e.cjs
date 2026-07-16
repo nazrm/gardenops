@@ -7250,7 +7250,21 @@ async function main() {
       assert(
         finalDatabase.auth_state.users_expected_digest
           === fixture.database_snapshot.auth_state.users_expected_digest,
-        "Browser login changed auth user state beyond last_login_at",
+        "Browser login changed auth user state beyond expected login and prompt fields",
+      );
+      assert(
+        canonicalJson(fixture.database_snapshot.auth_state.passkey_prompt_dismissed_usernames)
+          === canonicalJson([]),
+        "Complete journey fixture unexpectedly starts with dismissed passkey prompts",
+      );
+      const expectedPromptDismissals = [...new Set(manifest.profiles.flatMap((profile) => (
+        ["admin", "editor", "viewer"].includes(profile.role)
+          ? [fixture.roles[profile.role]] : []
+      )))].sort();
+      assert(
+        canonicalJson(finalDatabase.auth_state.passkey_prompt_dismissed_usernames)
+          === canonicalJson(expectedPromptDismissals),
+        "Browser journeys did not persist the exact expected passkey prompt dismissals",
       );
     }
     const expectedSessionCounts = expectedSessionUserCounts(
@@ -7504,6 +7518,8 @@ async function main() {
       auth_expected_writes: {
         admin_last_login_updated: true,
         auth_users_other_fields_unchanged: true,
+        passkey_prompt_dismissed_usernames:
+          finalDatabase.auth_state.passkey_prompt_dismissed_usernames,
         session_rows_valid: true,
         session_count_after: finalDatabase.auth_state.admin_session_count,
         session_count_before: fixture.database_snapshot.auth_state.admin_session_count,
