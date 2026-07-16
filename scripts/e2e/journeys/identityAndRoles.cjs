@@ -59,6 +59,7 @@ async function answerPrompt(page, value, beforeConfirm = null) {
   if (value !== undefined) await input.fill(value);
   const pending = beforeConfirm?.() ?? null;
   await dialog.locator(".confirm-yes").click();
+  await dialog.waitFor({ state: "detached" });
   return pending;
 }
 
@@ -1013,8 +1014,12 @@ async function exercisePasswordlessPasskeyRedundancy(
       }),
     );
     assert(removalPending, "Passwordless removal response capture was not armed");
-    assert((await removalPending.reauthentication).ok(), "Passwordless removal step-up failed");
-    assert((await removalPending.deletion).ok(), "Passwordless redundant passkey removal failed");
+    const [removalReauthentication, deletion] = await Promise.all([
+      removalPending.reauthentication,
+      removalPending.deletion,
+    ]);
+    assert(removalReauthentication.ok(), "Passwordless removal step-up failed");
+    assert(deletion.ok(), "Passwordless redundant passkey removal failed");
     await waitFor(() => page.locator("[data-passkey-id]").count().then((count) => count === 1),
       "passwordless redundant passkey removal");
 
