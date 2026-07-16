@@ -814,13 +814,16 @@ function renderLoginFlow(
     passwordInput.focus();
   };
 
-  passwordFallbackBtn.addEventListener("click", () => {
+  const revealPasswordFallback = (): void => {
+    if (loginStep !== "passkey") return;
     passkeyAttempt += 1;
     const abortController = passkeyAbortController;
     passkeyAbortController = null;
     revealPasswordLogin();
     abortController?.abort();
-  });
+  };
+  passwordFallbackBtn.addEventListener("pointerdown", revealPasswordFallback);
+  passwordFallbackBtn.addEventListener("click", revealPasswordFallback);
 
   const startPasskeyLogin = async (
     options: PasskeyOptionsResponse,

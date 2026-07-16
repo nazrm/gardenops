@@ -66,7 +66,7 @@ class FrontendSecurityStaticTests(unittest.TestCase):
             encoding="utf-8"
         )
         handler = re.search(
-            r'passwordFallbackBtn\.addEventListener\("click", \(\) => \{(?P<body>.*?)\n  \}\);',
+            r"const revealPasswordFallback = \(\): void => \{(?P<body>.*?)\n  \};",
             gate,
             flags=re.DOTALL,
         )
@@ -75,6 +75,14 @@ class FrontendSecurityStaticTests(unittest.TestCase):
         self.assertLess(
             body.index("revealPasswordLogin();"),
             body.index("abortController?.abort();"),
+        )
+        self.assertIn(
+            'passwordFallbackBtn.addEventListener("pointerdown", revealPasswordFallback)',
+            gate,
+        )
+        self.assertIn(
+            'passwordFallbackBtn.addEventListener("click", revealPasswordFallback)',
+            gate,
         )
 
     def test_membership_mutations_refresh_capabilities(self) -> None:
