@@ -378,7 +378,7 @@ async function exerciseSessionRevocation(options, page) {
     await openAdminSection(page, "desktop", "sessions");
     assert(!await page.locator("#admin-view").innerText().then((text) => text.includes("token_hash")),
       "Session UI exposed a token hash label");
-    const row = page.locator(`[data-session-id]:has-text("${options.username}")`)
+    const row = page.locator(`.adm-users-desktop [data-session-id]:has-text("${options.username}")`)
       .filter({ has: page.locator(".adm-session-revoke-one") }).first();
     await visible(row, "secondary administrator session");
     const revokePending = page.waitForResponse((response) => (
