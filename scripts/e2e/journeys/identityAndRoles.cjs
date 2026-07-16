@@ -252,13 +252,18 @@ async function exerciseSettings(page, fixture) {
   );
   const pendingRefreshRequests = new Set();
   let appRefreshStarted = false;
+  let lastRefreshActivityAt = Date.now();
   const captureRefreshRequest = (request) => {
     const pathname = new URL(request.url()).pathname;
     if (request.method() !== "GET" || !pathname.startsWith("/api/")) return;
     pendingRefreshRequests.add(request);
+    lastRefreshActivityAt = Date.now();
     if (pathname === "/api/gardens") appRefreshStarted = true;
   };
-  const settleRefreshRequest = (request) => pendingRefreshRequests.delete(request);
+  const settleRefreshRequest = (request) => {
+    if (!pendingRefreshRequests.delete(request)) return;
+    lastRefreshActivityAt = Date.now();
+  };
   page.on("request", captureRefreshRequest);
   page.on("requestfinished", settleRefreshRequest);
   page.on("requestfailed", settleRefreshRequest);
@@ -271,7 +276,10 @@ async function exerciseSettings(page, fixture) {
       "settled identity settings save",
     );
     await waitFor(() => appRefreshStarted, "post-save app refresh");
-    await waitFor(() => pendingRefreshRequests.size === 0, "settled post-save app refresh");
+    await waitFor(
+      () => pendingRefreshRequests.size === 0 && Date.now() - lastRefreshActivityAt >= 500,
+      "settled post-save app refresh",
+    );
   } finally {
     page.off("request", captureRefreshRequest);
     page.off("requestfinished", settleRefreshRequest);
