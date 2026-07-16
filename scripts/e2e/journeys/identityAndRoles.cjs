@@ -474,14 +474,30 @@ async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticat
   let row = page.locator("[data-passkey-id]").first();
   await visible(row, "registered passkey");
 
-  const renamePending = page.waitForResponse((response) => (
-    response.request().method() === "PATCH"
-    && /^\/api\/auth\/passkeys\/\d+$/.test(new URL(response.url()).pathname)
-  ));
   await row.locator(".adm-passkey-rename").click();
   await answerPrompt(page, phaseFive(fixture).passkey_renamed_nickname);
-  await answerPrompt(page, "phase-five-passkey-rename");
-  assert((await renamePending).ok(), "Passkey rename failed");
+  const renamePending = await answerPrompt(
+    page,
+    "phase-five-passkey-rename",
+    () => ({
+      mutation: page.waitForResponse((response) => (
+        response.request().method() === "PATCH"
+        && /^\/api\/auth\/passkeys\/\d+$/.test(new URL(response.url()).pathname)
+      )),
+      reauthentication: responseFor(
+        page,
+        "POST",
+        "/api/auth/reauthenticate/passkey/verify",
+      ),
+    }),
+  );
+  assert(renamePending, "Passkey rename response capture was not armed");
+  const [renameReauthentication, renameMutation] = await Promise.all([
+    renamePending.reauthentication,
+    renamePending.mutation,
+  ]);
+  assert(renameReauthentication.ok(), "Passkey rename step-up failed");
+  assert(renameMutation.ok(), "Passkey rename failed");
   row = page.locator("[data-passkey-id]").filter({
     hasText: phaseFive(fixture).passkey_renamed_nickname,
   }).first();
