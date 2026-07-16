@@ -720,6 +720,7 @@ async function exerciseLiveRoleRefresh(options, page) {
     ));
     assert(users.status === 200 && Number.isSafeInteger(editor?.id),
       "Role-refresh editor account was not found");
+    await secondaryPage.goto("about:blank");
     const downgraded = await browserFetch(page, {
       body: { action_reason: "phase-five-live-role-downgrade", role: "viewer" },
       method: "PATCH",
@@ -727,16 +728,16 @@ async function exerciseLiveRoleRefresh(options, page) {
     });
     assert(downgraded.status === 200 && downgraded.body.role === "viewer",
       "Live editor downgrade failed");
-    await expectedHttpFailure(
-      secondaryPage,
-      secondary.diagnostics,
-      { path: "/api/auth/me" },
-      401,
+    const downgradedSession = await secondary.context.request.get(
+      new URL("/api/auth/me", options.baseUrl).href,
     );
-    await secondaryPage.reload({ waitUntil: "domcontentloaded" });
+    assert(downgradedSession.status() === 401,
+      "Downgraded account retained its pre-change browser session");
+    await secondaryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
     const viewer = await authenticate(secondaryPage, options.fixture.roles.editor, EDITOR_PASSWORD);
     assert(viewer.role === "viewer", "Downgraded account did not refresh to viewer after sign-in");
 
+    await secondaryPage.goto("about:blank");
     const restored = await browserFetch(page, {
       body: { action_reason: "phase-five-live-role-restore", role: "editor" },
       method: "PATCH",
@@ -744,10 +745,18 @@ async function exerciseLiveRoleRefresh(options, page) {
     });
     assert(restored.status === 200 && restored.body.role === "editor",
       "Live editor role restoration failed");
-    await secondaryPage.reload({ waitUntil: "domcontentloaded" });
-    const refreshed = await browserFetch(secondaryPage, { path: "/api/auth/me" });
-    assert(refreshed.status === 200 && refreshed.body.role === "editor",
-      "Restored role remained stale in the secondary browser");
+    const restoredSession = await secondary.context.request.get(
+      new URL("/api/auth/me", options.baseUrl).href,
+    );
+    assert(restoredSession.status() === 401,
+      "Restored account retained its pre-change browser session");
+    await secondaryPage.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
+    const refreshed = await authenticate(
+      secondaryPage,
+      options.fixture.roles.editor,
+      EDITOR_PASSWORD,
+    );
+    assert(refreshed.role === "editor", "Restored role remained stale after sign-in");
     await signOut(secondaryPage, "role-refresh secondary session");
     await secondary.close("passed");
     closed = true;
