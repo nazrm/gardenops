@@ -503,12 +503,15 @@ async function acceptInvitation(page, guarded, inviteLink, password, expectedRol
 async function exerciseRoleSurface(page, profile, role) {
   await openAdminSection(page, profile, "settings");
   await visible(page.locator("#adm-main"), `${role} identity settings`);
-  assert(await page.locator(".adm-nav-btn[data-section='users']").count() === 0,
-    `${role} retained platform user controls`);
-  assert(await page.locator(".adm-nav-btn[data-section='sessions']").count() === 0,
-    `${role} retained platform session administration`);
-  assert(await page.locator(".adm-nav-btn[data-section='system']").count() === 0,
-    `${role} retained incident administration`);
+  const platformSections = ["users", "sessions", "system"];
+  for (const section of platformSections) {
+    const count = await page.locator(`.adm-nav-btn[data-section='${section}']`).count();
+    if (role === "admin") {
+      assert(count === 1, `admin is missing ${section} administration`);
+    } else {
+      assert(count === 0, `${role} retained ${section} administration`);
+    }
+  }
 }
 
 async function runProfile(options, shared) {
