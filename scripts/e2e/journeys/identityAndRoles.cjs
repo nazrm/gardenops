@@ -253,6 +253,10 @@ async function exerciseSettings(page, fixture) {
   const pending = responseFor(page, "PUT", "/api/auth/me/settings");
   await page.locator("#adm-plot-meaning-save").click();
   assert((await pending).ok(), "Identity settings save failed");
+  await visible(
+    page.locator(".toast-success").filter({ hasText: "Custom plot meanings saved" }).last(),
+    "settled identity settings save",
+  );
   await page.reload({ waitUntil: "domcontentloaded" });
   await openAdminSection(page, "desktop", "settings");
   const persisted = page.locator(".adm-plot-meaning-row").filter({
