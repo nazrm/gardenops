@@ -28,6 +28,10 @@ const EXPECTED_CONSOLE_DIAGNOSTIC_CONTEXTS = new Set([
   "viewer-task-write-denied",
   "viewer-weather-refresh-denied",
 ]);
+const EXPECTED_SILENT_HTTP_CONTEXTS = new Set([
+  "postauth-signout",
+  "preauth-session-probe",
+]);
 const EXPECTED_ABORTED_REQUEST_PATHS = new Set([
   "/api/calendar/export.ics",
   "/api/dashboard/badge-counts",
@@ -190,6 +194,10 @@ function expectedHttpDiagnosticContext({ authState, authenticated, method, path:
   return "unexpected-http-response";
 }
 
+function isExpectedSilentHttpContext(context) {
+  return EXPECTED_SILENT_HTTP_CONTEXTS.has(context);
+}
+
 function consoleStatus(text) {
   const match = /\b([1-5]\d{2})\s+\([^)]+\)/.exec(String(text || ""));
   return match ? Number(match[1]) : null;
@@ -350,8 +358,10 @@ async function createGuardedContext(
         status: pending?.status ?? status,
       };
       diagnostics.classifiedConsoleDiagnostics.push(event);
-      if (event.context === "preauth-session-probe") {
-        diagnostics.ignoredAuth401ConsoleErrors += 1;
+      if (isExpectedSilentHttpContext(event.context)) {
+        if (event.context === "preauth-session-probe") {
+          diagnostics.ignoredAuth401ConsoleErrors += 1;
+        }
         return;
       }
       diagnostics.consoleErrors.push(diagnosticLabel(event));
@@ -374,8 +384,8 @@ async function createGuardedContext(
         path: parsed.pathname,
         status: response.status(),
       });
-      if (context === "preauth-session-probe") {
-        diagnostics.expectedAuth401Responses += 1;
+      if (isExpectedSilentHttpContext(context)) {
+        if (context === "preauth-session-probe") diagnostics.expectedAuth401Responses += 1;
         return;
       }
       diagnostics.httpErrors.push(`${response.status()} ${parsed.pathname}`);
@@ -639,6 +649,7 @@ module.exports = {
   createGuardedContext,
   expectedHttpDiagnosticContext,
   isAllowedUrl,
+  isExpectedSilentHttpContext,
   redactTokenShapedSecrets,
   sanitizeDiagnostic,
 };

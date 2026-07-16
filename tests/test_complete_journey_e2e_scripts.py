@@ -1566,6 +1566,7 @@ def test_console_diagnostics_require_specific_request_status_and_context() -> No
 const {
   assertDiagnosticsClean,
   expectedHttpDiagnosticContext,
+  isExpectedSilentHttpContext,
 } = require('./scripts/e2e/completeJourneyBrowser.cjs');
 const classify = (authenticated, method, path, status) => expectedHttpDiagnosticContext({
   authenticated, method, path, status,
@@ -1580,6 +1581,8 @@ if (classifyState('signed-out', 'GET', '/api/auth/me', 401) !== 'postauth-signou
 }
 if (classifyState('signed-out', 'POST', '/api/tasks/task-1/action', 401)
     !== 'unexpected-http-response') process.exit(12);
+if (!isExpectedSilentHttpContext('postauth-signout')) process.exit(13);
+if (isExpectedSilentHttpContext('unexpected-http-response')) process.exit(14);
 if (classify(true, 'POST', '/api/tasks/task-1/action', 403) !== 'viewer-task-write-denied') {
   process.exit(5);
 }
