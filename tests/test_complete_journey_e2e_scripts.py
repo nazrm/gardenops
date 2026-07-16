@@ -2054,6 +2054,34 @@ try {
     assert result.returncode == 0, result.stderr
 
 
+def test_phase_two_read_only_probe_excludes_only_authentication_and_read_requests() -> None:
+    script = """
+const {
+  isPhaseTwoReadOnlyProbeMutation,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+for (const request of [
+  { method: 'GET', path: '/api/tasks' },
+  { method: 'POST', path: '/api/auth/login' },
+  { method: 'POST', path: '/api/auth/passkeys/login/options' },
+  { method: 'POST', path: '/api/media/summaries' },
+]) {
+  if (isPhaseTwoReadOnlyProbeMutation(request)) process.exit(3);
+}
+for (const request of [
+  { method: 'POST', path: '/api/tasks/batch-action' },
+  { method: 'PATCH', path: '/api/attention/preferences' },
+  { method: 'PUT', path: '/api/notifications/preferences' },
+  { method: 'DELETE', path: '/api/plants/plant-id' },
+]) {
+  if (!isPhaseTwoReadOnlyProbeMutation(request)) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_phase_one_snapshot_and_restore_import_graph_contracts_are_exact() -> None:
     script = """
 const {

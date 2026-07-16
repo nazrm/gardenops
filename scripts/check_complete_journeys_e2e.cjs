@@ -83,6 +83,15 @@ const PHASE_TWO_READ_ONLY_PERMUTATION_ORDER = [
   "admin:mobile",
   "editor:desktop",
 ];
+
+function isPhaseTwoReadOnlyProbeMutation(request) {
+  return ["DELETE", "PATCH", "POST", "PUT"].includes(request.method)
+    && ![
+      "/api/auth/login",
+      "/api/auth/passkeys/login/options",
+      "/api/media/summaries",
+    ].includes(request.path);
+}
 const PHASE_TWO_EDITOR_PASSWORD = "CompleteJourneysEditorE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 const PHASE_TWO_VIEWER_PASSWORD = "CompleteJourneysViewerE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 
@@ -3103,13 +3112,9 @@ async function runPhaseTwoReadOnlyPermutation({
       }, fixture.gardens.alpha.id);
       assert(canonicalJson(scopedReads) === canonicalJson([200, 200]),
         `Phase 2 read-only scoped probes failed: ${key}`);
-      const unexpectedMutationRequests = recorder.records.filter((request) => (
-        ["DELETE", "PATCH", "POST", "PUT"].includes(request.method)
-        && ![
-          "/api/auth/login",
-          "/api/media/summaries",
-        ].includes(request.path)
-      ));
+      const unexpectedMutationRequests = recorder.records.filter(
+        isPhaseTwoReadOnlyProbeMutation,
+      );
       assert(unexpectedMutationRequests.length === 0,
         `Phase 2 read-surface probe issued a domain mutation request: ${key}`);
       assertDiagnosticsClean(guarded.diagnostics, `${key} Phase 2 read-only permutation`);
@@ -7761,6 +7766,7 @@ module.exports = {
   isSafeManifestRequestPath,
   isSafeRequestId,
   isPhaseTwoAuditPath,
+  isPhaseTwoReadOnlyProbeMutation,
   phaseTwoBrowserMutationRecords,
   phaseTwoTaskNotificationClearReasons,
   phaseOneAuditExpectedEvents,
