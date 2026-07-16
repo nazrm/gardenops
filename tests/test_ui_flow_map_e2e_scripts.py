@@ -392,6 +392,9 @@ def test_disposable_runner_uses_a_non_secret_inherited_environment_allowlist(
     monkeypatch.setenv("LANG", "C.UTF-8")
 
     class FakeCluster:
+        system_identifier = DISPOSABLE_SYSTEM_IDENTIFIER
+        database_markers = {"gardenops_test": DISPOSABLE_MARKER}
+
         def url_for(self, name: str) -> str:
             return f"postgresql://local/{name}"
 
@@ -399,6 +402,8 @@ def test_disposable_runner_uses_a_non_secret_inherited_environment_allowlist(
 
     assert env["PATH"] == run_fast_postgres_tests.TEST_SUBPROCESS_PATH
     assert env["LANG"] == "C.UTF-8"
+    assert env["GARDENOPS_DISPOSABLE_POSTGRES_MARKER"] == DISPOSABLE_MARKER
+    assert env["GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER"] == DISPOSABLE_SYSTEM_IDENTIFIER
     for name in hostile_environment:
         assert name not in env
     assert set(run_fast_postgres_tests.INHERITED_ENV_ALLOWLIST) == {
@@ -406,6 +411,40 @@ def test_disposable_runner_uses_a_non_secret_inherited_environment_allowlist(
         "LC_ALL",
         "LC_CTYPE",
         "TZ",
+    }
+
+
+def test_disposable_runner_reuses_cluster_marker_for_shards(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cluster = run_fast_postgres_tests.Cluster(
+        work_dir=tmp_path / "work",
+        pgdata=tmp_path / "work" / "pgdata",
+        socket_dir=tmp_path / "work" / "socket",
+        log_dir=tmp_path / "logs",
+        port=55439,
+        postgres_os_user=None,
+        test_password="test-only",
+        system_identifier=DISPOSABLE_SYSTEM_IDENTIFIER,
+        database_markers={"gardenops_test": DISPOSABLE_MARKER},
+    )
+    monkeypatch.setattr(run_fast_postgres_tests, "_psql", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        run_fast_postgres_tests,
+        "_psql_scalar",
+        lambda *_args, **_kwargs: DISPOSABLE_MARKER,
+    )
+
+    marker = run_fast_postgres_tests._issue_disposable_marker(
+        cluster,
+        "gardenops_test_shard2",
+    )
+
+    assert marker == DISPOSABLE_MARKER
+    assert cluster.database_markers == {
+        "gardenops_test": DISPOSABLE_MARKER,
+        "gardenops_test_shard2": DISPOSABLE_MARKER,
     }
 
 

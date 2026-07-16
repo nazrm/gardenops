@@ -1268,8 +1268,12 @@ def delete_media_asset(asset_id: str, request: Request, db: DB) -> dict[str, obj
         (asset_id, garden_id),
     )
     db.commit()
-    drain_media_cleanup_jobs_best_effort(db, storage_pairs=storage_pairs)
-    return {"status": "ok", "asset_id": asset_id}
+    cleanup = drain_media_cleanup_jobs_best_effort(db, storage_pairs=storage_pairs)
+    return {
+        "status": "ok",
+        "asset_id": asset_id,
+        "file_cleanup": "pending" if cleanup.failed else "complete",
+    }
 
 
 @router.delete("/media/{asset_id}/links")
@@ -1326,14 +1330,18 @@ def remove_media_link(
             (asset_id, garden_id),
         )
     db.commit()
+    file_cleanup = "complete"
     if deleted_asset:
-        drain_media_cleanup_jobs_best_effort(db, storage_pairs=storage_pairs)
+        cleanup = drain_media_cleanup_jobs_best_effort(db, storage_pairs=storage_pairs)
+        if cleanup.failed:
+            file_cleanup = "pending"
     return {
         "status": "ok",
         "asset_id": asset_id,
         "target_type": target_type,
         "target_id": canonical_target_id,
         "deleted_asset": deleted_asset,
+        "file_cleanup": file_cleanup,
     }
 
 

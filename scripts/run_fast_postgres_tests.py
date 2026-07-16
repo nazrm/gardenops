@@ -66,6 +66,7 @@ class Cluster:
     postmaster_pid: int | None = None
     system_identifier: str | None = None
     preserve_logs: bool = False
+    database_markers: dict[str, str] | None = None
 
     @property
     def postgres_log(self) -> Path:
@@ -292,6 +293,7 @@ def _create_databases(cluster: Cluster, shards: int) -> None:
             admin=True,
             capture=True,
         )
+        _issue_disposable_marker(cluster, database)
 
 
 def _validate_url(cluster: Cluster, url: str, database: str) -> None:
@@ -340,6 +342,11 @@ def _test_env(cluster: Cluster, database: str) -> dict[str, str]:
     url = cluster.url_for(database)
     env["DATABASE_URL"] = url
     env["GARDENOPS_TEST_POSTGRES_URL"] = url
+    markers = getattr(cluster, "database_markers", None) or {}
+    marker = markers.get(database)
+    if marker and cluster.system_identifier:
+        env["GARDENOPS_DISPOSABLE_POSTGRES_MARKER"] = marker
+        env["GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER"] = cluster.system_identifier
     env["TAILLIGHT_URL"] = ""
     env["TAILLIGHT_API_KEY"] = ""
     return env
@@ -388,13 +395,21 @@ def _run_migrations(cluster: Cluster, database: str, *, print_failure: bool = Tr
 
 
 def _issue_disposable_marker(cluster: Cluster, database: str) -> str:
-    """Bind command-mode destructive work to this temporary cluster and database."""
-    if database not in COMMAND_DATABASES:
+    """Bind destructive test work to this temporary cluster and database."""
+    is_shard = (
+        database.startswith(f"{TEST_DB}_shard")
+        and database.removeprefix(f"{TEST_DB}_shard").isdigit()
+    )
+    if database not in COMMAND_DATABASES and not is_shard:
         raise RuntimeError(f"unsupported disposable command database: {database}")
     if not cluster.system_identifier:
         raise RuntimeError("disposable cluster system identifier is unavailable")
 
-    marker = f"{cluster.system_identifier}.{secrets.token_urlsafe(24)}"
+    existing_markers = cluster.database_markers or {}
+    marker = next(
+        iter(existing_markers.values()),
+        f"{cluster.system_identifier}.{secrets.token_urlsafe(24)}",
+    )
     _psql(
         cluster,
         "postgres",
@@ -409,6 +424,9 @@ def _issue_disposable_marker(cluster: Cluster, database: str) -> str:
     )
     if observed_marker != marker:
         raise RuntimeError("disposable database marker could not be verified")
+    if cluster.database_markers is None:
+        cluster.database_markers = {}
+    cluster.database_markers[database] = marker
     return marker
 
 

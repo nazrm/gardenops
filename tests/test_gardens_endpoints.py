@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import gardenops.db as db
@@ -209,9 +210,29 @@ class TestGardenSettings(BaseApiTest):
                 db.return_db(conn)
             self.assertIsNone(cached)
 
+            with patch.object(Path, "unlink", side_effect=PermissionError("storage read-only")):
+                pending = client.delete(f"/api/gardens/{garden_id}/lidar", headers=headers)
+            self.assertEqual(pending.status_code, 200, pending.text)
+            self.assertTrue(pending.json()["uploaded"])
+            self.assertEqual(pending.json()["file_cleanup"], "pending")
+            self.assertTrue(stored.exists())
+
+            conn = db.get_db()
+            try:
+                cleanup_row = conn.execute(
+                    "SELECT attempts, last_error FROM media_cleanup_jobs WHERE storage_key = %s",
+                    (f"lidar/garden-{garden_id}/terrain.laz",),
+                ).fetchone()
+                assert cleanup_row is not None
+                self.assertEqual(int(cleanup_row["attempts"]), 1)
+                self.assertIn("PermissionError", str(cleanup_row["last_error"]))
+            finally:
+                db.return_db(conn)
+
             deleted = client.delete(f"/api/gardens/{garden_id}/lidar", headers=headers)
             self.assertEqual(deleted.status_code, 200, deleted.text)
             self.assertFalse(deleted.json()["uploaded"])
+            self.assertEqual(deleted.json()["file_cleanup"], "complete")
             self.assertFalse(stored.exists())
         finally:
             os.environ["AUTH_REQUIRED"] = "false"

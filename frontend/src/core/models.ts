@@ -724,6 +724,7 @@ export interface OfflineDraft {
   status: "pending" | "syncing" | "failed";
   retry_count: number;
   last_error: string;
+  last_status?: number | null;
 }
 
 export type MapObjectType =

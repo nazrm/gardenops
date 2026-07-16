@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -9,7 +10,10 @@ from PIL import Image
 
 import gardenops.db as db
 from gardenops.routers.media import _enforce_media_quota
-from gardenops.services.media_store import PreparedMediaAsset
+from gardenops.services.media_store import (
+    PreparedMediaAsset,
+    drain_media_cleanup_jobs,
+)
 from tests.base import BaseApiTest, strong_password
 
 
@@ -65,6 +69,53 @@ class TestMedia(BaseApiTest):
         preview_image = Image.open(io.BytesIO(preview.content))
         self.assertLessEqual(preview_image.size[0], 160)
         self.assertLessEqual(preview_image.size[1], 120)
+
+    def test_media_upload_db_failure_removes_staged_files_and_rolls_back(self) -> None:
+        prepared_assets: list[PreparedMediaAsset] = []
+        from gardenops.routers import media as media_router
+
+        original_prepare = media_router.prepare_media_asset
+
+        def capture_prepared_asset(**kwargs: object) -> PreparedMediaAsset:
+            prepared = original_prepare(**kwargs)  # type: ignore[arg-type]
+            prepared_assets.append(prepared)
+            return prepared
+
+        payload = self._image_bytes(fmt="PNG", size=(40, 30))
+        with (
+            patch(
+                "gardenops.routers.media.prepare_media_asset",
+                side_effect=capture_prepared_asset,
+            ),
+            patch(
+                "gardenops.routers.media._insert_prepared_asset_link",
+                side_effect=RuntimeError("injected database failure"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "injected database failure"),
+        ):
+            self.client.post(
+                "/api/media/upload?target_type=plant&target_id=PLT-TEST",
+                content=payload,
+                headers={
+                    "content-type": "image/png",
+                    "x-upload-filename": "rollback.png",
+                },
+            )
+
+        self.assertEqual(len(prepared_assets), 1)
+        prepared = prepared_assets[0]
+        self.assertFalse((self.test_media_dir / prepared.storage_key).exists())
+        self.assertFalse((self.test_media_dir / prepared.preview_storage_key).exists())
+        conn = db.get_db()
+        try:
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM media_assets WHERE asset_id = %s",
+                    (prepared.asset_id,),
+                ).fetchone()
+            )
+        finally:
+            db.return_db(conn)
 
     def test_media_upload_rejects_unsupported_image_type(self) -> None:
         r = self.client.post(
@@ -862,6 +913,7 @@ class TestMedia(BaseApiTest):
 
         deleted = self.client.delete(f"/api/media/{asset_id}")
         self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json()["file_cleanup"], "complete")
 
         journal_list = self.client.get(f"/api/media?target_type=journal_entry&target_id={entry_id}")
         self.assertEqual(journal_list.status_code, 200, journal_list.text)
@@ -870,6 +922,66 @@ class TestMedia(BaseApiTest):
         plant_list = self.client.get("/api/media?target_type=plant&target_id=PLT-TEST")
         self.assertEqual(plant_list.status_code, 200, plant_list.text)
         self.assertEqual(plant_list.json()["total"], 0)
+
+    def test_media_delete_file_failure_is_visible_and_retryable(self) -> None:
+        uploaded = self.client.post(
+            "/api/media/upload?target_type=plant&target_id=PLT-TEST",
+            content=self._image_bytes(fmt="PNG"),
+            headers={
+                "content-type": "image/png",
+                "x-upload-filename": "cleanup-pending.png",
+            },
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        asset_id = uploaded.json()["asset_id"]
+
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                "SELECT storage_key, preview_storage_key FROM media_assets WHERE asset_id = %s",
+                (asset_id,),
+            ).fetchone()
+            assert row is not None
+            storage_pairs = [(str(row["storage_key"]), str(row["preview_storage_key"]))]
+        finally:
+            db.return_db(conn)
+        paths = [self.test_media_dir / key for key in storage_pairs[0]]
+        self.assertTrue(all(path.is_file() for path in paths))
+
+        with patch.object(Path, "unlink", side_effect=PermissionError("storage read-only")):
+            deleted = self.client.delete(f"/api/media/{asset_id}")
+
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json()["file_cleanup"], "pending")
+        self.assertTrue(all(path.is_file() for path in paths))
+
+        conn = db.get_db()
+        try:
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM media_assets WHERE asset_id = %s",
+                    (asset_id,),
+                ).fetchone()
+            )
+            cleanup_row = conn.execute(
+                "SELECT attempts, last_error FROM media_cleanup_jobs WHERE storage_key = %s",
+                (storage_pairs[0][0],),
+            ).fetchone()
+            assert cleanup_row is not None
+            self.assertEqual(int(cleanup_row["attempts"]), 1)
+            self.assertIn("PermissionError", str(cleanup_row["last_error"]))
+
+            retried = drain_media_cleanup_jobs(conn, storage_pairs=storage_pairs)
+            self.assertEqual((retried.succeeded, retried.failed), (1, 0))
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM media_cleanup_jobs WHERE storage_key = %s",
+                    (storage_pairs[0][0],),
+                ).fetchone()
+            )
+        finally:
+            db.return_db(conn)
+        self.assertTrue(all(not path.exists() for path in paths))
 
     def test_media_link_remove_unlinks_single_target_without_deleting_shared_asset(self) -> None:
         created = self.client.post(

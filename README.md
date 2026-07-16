@@ -116,7 +116,10 @@ control.
 - Offline journal, issue, and harvest creates, task actions, and queued media
   uploads retain their original garden and stable operation ID. Retries within
   30 days return the original result; if its target was deleted, replay returns
-  `410 Gone` instead of recreating data.
+  `410 Gone` instead of recreating data. Failed work remains in a compact
+  expandable recovery indicator so the rest of the app stays usable. Signing
+  out clears queued work before another account can sign in; if browser storage
+  cleanup fails, sign-in stays blocked behind a retryable cleanup prompt.
 - Issue tracking for pests, disease, damage, treatments, severity, causes,
   follow-up dates, resolution, and reopening, with linked history and one
   actionable follow-up per current issue state.

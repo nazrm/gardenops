@@ -32,7 +32,12 @@ from starlette.middleware.gzip import GZipMiddleware  # noqa: E402
 from starlette.middleware.trustedhost import TrustedHostMiddleware  # noqa: E402
 from starlette.responses import JSONResponse  # noqa: E402
 
-from gardenops.audit import reserve_mutation_audit_event, write_audit_event  # noqa: E402
+from gardenops.audit import (  # noqa: E402
+    enqueue_audit_event_telemetry,
+    reserve_mutation_audit_event,
+    write_audit_event,
+    write_required_audit_event,
+)
 from gardenops.branding import app_name, app_slug, app_user_agent  # noqa: E402
 from gardenops.constants import (  # noqa: E402
     GRID_COLS,
@@ -2596,37 +2601,48 @@ def restore_snapshot(
             context.subscription_tier,
             detail="ShadeMap snapshot restore fields require the shade_map feature",
         )
-    count = restore_snapshot_data(
-        db,
-        plots,
-        garden_id=garden_id,
-        owner_user_id=owner_user_id,
-        house=house,
-        shademap=shademap,
-        shademap_calibration=shademap_calibration,
-        shademap_obstacles=shademap_obstacles,
-        map_objects=map_objects,
-    )
-    request.state.audited_by_handler = True
-    write_audit_event(
-        method=request.method,
-        path=request.url.path,
-        status_code=200,
-        remote_host=request.client.host if request.client else "",
-        detail=json.dumps(
-            {
-                "event": "layout.snapshot.restore",
-                "snapshot_id": snapshot_id,
-                "garden_id": garden_id,
-                "action_reason": action_reason,
-                "plots": count,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        auth_context=context,
-        db=db,
-    )
+    media_storage_pairs: list[tuple[str, str]] = []
+    try:
+        count = restore_snapshot_data(
+            db,
+            plots,
+            garden_id=garden_id,
+            owner_user_id=owner_user_id,
+            house=house,
+            shademap=shademap,
+            shademap_calibration=shademap_calibration,
+            shademap_obstacles=shademap_obstacles,
+            map_objects=map_objects,
+            manage_transaction=False,
+            media_storage_pairs_out=media_storage_pairs,
+        )
+        request.state.audited_by_handler = True
+        audit_values = write_required_audit_event(
+            method=request.method,
+            path=request.url.path,
+            status_code=200,
+            remote_host=request.client.host if request.client else "",
+            detail=json.dumps(
+                {
+                    "event": "layout.snapshot.restore",
+                    "snapshot_id": snapshot_id,
+                    "garden_id": garden_id,
+                    "action_reason": action_reason,
+                    "plots": count,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            auth_context=context,
+            garden_id=garden_id,
+            db=db,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    enqueue_audit_event_telemetry(audit_values, db=db)
+    drain_media_cleanup_jobs_best_effort(db, storage_pairs=media_storage_pairs)
     notify_garden_modified()
     return {"status": "ok", "plots": count}
 
@@ -2635,30 +2651,42 @@ def restore_snapshot(
 def delete_snapshot(snapshot_id: str, db: DB, request: Request) -> dict:
     context, action_reason = enforce_destructive_admin_controls(request)
     garden_id = _active_garden_id(request)
-    db.execute(
-        "DELETE FROM layout_snapshots WHERE public_id = %s AND garden_id = %s",
-        (snapshot_id, garden_id),
-    )
-    db.commit()
-    request.state.audited_by_handler = True
-    write_audit_event(
-        method=request.method,
-        path=request.url.path,
-        status_code=200,
-        remote_host=request.client.host if request.client else "",
-        detail=json.dumps(
-            {
-                "event": "layout.snapshot.delete",
-                "snapshot_id": snapshot_id,
-                "garden_id": garden_id,
-                "action_reason": action_reason,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        auth_context=context,
-        db=db,
-    )
+    try:
+        deleted = db.execute(
+            """
+            DELETE FROM layout_snapshots
+            WHERE public_id = %s AND garden_id = %s
+            RETURNING public_id
+            """,
+            (snapshot_id, garden_id),
+        ).fetchone()
+        if deleted is None:
+            raise HTTPException(status_code=404, detail="Snapshot not found")
+        request.state.audited_by_handler = True
+        audit_values = write_required_audit_event(
+            method=request.method,
+            path=request.url.path,
+            status_code=200,
+            remote_host=request.client.host if request.client else "",
+            detail=json.dumps(
+                {
+                    "event": "layout.snapshot.delete",
+                    "snapshot_id": snapshot_id,
+                    "garden_id": garden_id,
+                    "action_reason": action_reason,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            auth_context=context,
+            garden_id=garden_id,
+            db=db,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    enqueue_audit_event_telemetry(audit_values, db=db)
     return {"status": "ok"}
 
 

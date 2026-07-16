@@ -8,6 +8,7 @@ const MAX_RETRIES = 5;
 const MAX_TRANSIENT_ATTEMPTS_PER_SYNC = 2;
 const TRANSIENT_RETRY_DELAY_MS = 300;
 const QUEUE_CHANGED_EVENT = "gardenops:offline-queue-changed";
+const TERMINAL_REPLAY_STATUSES = new Set([400, 403, 409, 410, 413, 422]);
 
 export const TASK_ACTION_DRAFT_TYPES = [
   "task_complete",
@@ -115,8 +116,11 @@ export interface OfflineQueueSnapshot {
   taskActions: Map<string, OfflineTaskActionState>;
 }
 
+export type ReplayErrorDisposition = "terminal" | "retryable";
+
 let db: IDBDatabase | null = null;
 let activeSync: Promise<SyncResult> | null = null;
+let activeClear: Promise<void> | null = null;
 
 function generateOperationId(): string {
   const cryptoApi = globalThis.crypto;
@@ -134,6 +138,30 @@ function generateOperationId(): string {
     /^(.{8})(.{4})(.{4})(.{4})(.{12})$/,
     "$1-$2-$3-$4-$5",
   );
+}
+
+function renewOperationIdentity(draft: OfflineDraft): OfflineDraft {
+  const serializedMedia = draft.payload["_serialized_media"];
+  return {
+    ...draft,
+    operation_id: generateOperationId(),
+    payload: Array.isArray(serializedMedia)
+      ? {
+        ...draft.payload,
+        _serialized_media: serializedMedia.map((item) => ({
+          ...(item as SerializedFile),
+          operation_id: generateOperationId(),
+        })),
+      }
+      : draft.payload,
+  };
+}
+
+export function canRetryFailedDraft(draft: OfflineDraft): boolean {
+  if (draft.last_status !== 409 && draft.last_status !== 410) return true;
+  if (["journal", "issue_create", "harvest_create"].includes(draft.type)) return true;
+  return draft.last_status === 409
+    && (draft.type === "plant_media_upload" || draft.type === "plot_media_upload");
 }
 
 function backfillDraftOperationIds(store: IDBObjectStore): void {
@@ -323,6 +351,7 @@ function createDraft(
     status: "pending",
     retry_count: 0,
     last_error: "",
+    last_status: null,
   };
 }
 
@@ -525,34 +554,89 @@ export async function retryDraft(id: number): Promise<boolean> {
   const store = getStore("readwrite");
   const existing = await wrap(store.get(id));
   if (!existing) return false;
-  const draft = existing as OfflineDraft;
+  let draft = existing as OfflineDraft;
   if (draft.status !== "failed") return false;
+  if (!canRetryFailedDraft(draft)) return false;
+  if (draft.last_status === 409 || draft.last_status === 410) {
+    draft = renewOperationIdentity(draft);
+  }
   draft.status = "pending";
   draft.retry_count = 0;
   draft.last_error = "";
+  draft.last_status = null;
   await wrap(store.put(draft));
   emitQueueChanged();
   return true;
 }
 
-export async function clearOfflineQueue(): Promise<void> {
+async function runOfflineQueueClear(): Promise<void> {
   if (!db) await initOfflineQueue();
-  const store = getStore("readwrite");
-  await wrap(store.clear());
+  const syncToDrain = activeSync;
+  if (syncToDrain) await syncToDrain.catch(() => undefined);
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db!.transaction(STORE_NAME, "readwrite");
+    const request = transaction.objectStore(STORE_NAME).clear();
+    request.onerror = () => {
+      reject(new Error(`IDB request failed: ${request.error?.message}`));
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => {
+      reject(new Error(`IDB transaction failed: ${transaction.error?.message}`));
+    };
+    transaction.onabort = () => {
+      reject(new Error("IDB transaction was aborted"));
+    };
+  });
   emitQueueChanged();
 }
 
-export async function markFailed(
+export async function clearOfflineQueue(): Promise<void> {
+  if (activeClear) return activeClear;
+  const clear = runOfflineQueueClear();
+  activeClear = clear;
+  try {
+    await clear;
+  } finally {
+    if (activeClear === clear) activeClear = null;
+  }
+}
+
+export function classifyReplayError(error: unknown): ReplayErrorDisposition {
+  if (typeof error !== "object" || error === null) return "retryable";
+  const status = (error as { status?: unknown }).status;
+  if (typeof status !== "number") return "retryable";
+  return TERMINAL_REPLAY_STATUSES.has(status) ? "terminal" : "retryable";
+}
+
+export function transitionDraftAfterReplayError(
+  draft: OfflineDraft,
+  error: unknown,
+): OfflineDraft {
+  const retryCount = draft.retry_count + 1;
+  const disposition = classifyReplayError(error);
+  const status = typeof error === "object" && error !== null
+    && typeof (error as { status?: unknown }).status === "number"
+    ? (error as { status: number }).status
+    : null;
+  return {
+    ...draft,
+    retry_count: retryCount,
+    last_error: error instanceof Error ? error.message : String(error),
+    last_status: status,
+    status: disposition === "terminal" || retryCount >= MAX_RETRIES
+      ? "failed"
+      : "pending",
+  };
+}
+
+async function recordReplayFailure(
   id: number,
-  error: string,
+  error: unknown,
 ): Promise<void> {
   const store = getStore("readwrite");
   const existing = await wrap(store.get(id));
   if (!existing) return;
-  const draft = existing as OfflineDraft;
-  draft.retry_count += 1;
-  draft.last_error = error;
-  draft.status = draft.retry_count >= MAX_RETRIES ? "failed" : "pending";
+  const draft = transitionDraftAfterReplayError(existing as OfflineDraft, error);
   await wrap(store.put(draft));
   emitQueueChanged();
 }
@@ -573,7 +657,11 @@ function isTransientSyncError(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
   const status = (error as { status?: unknown }).status;
   return typeof status === "number"
-    && (status === 0 || status === 408 || status === 425 || status === 429 || status >= 500);
+    && (status === 0
+      || status === 408
+      || status === 425
+      || status === 429
+      || (status >= 500 && status <= 599));
 }
 
 function waitForTransientRetry(attempt: number): Promise<void> {
@@ -585,7 +673,7 @@ function waitForTransientRetry(attempt: number): Promise<void> {
 async function syncDraft(
   draft: OfflineDraft,
   handler: (payload: Record<string, unknown>, draft: OfflineDraft) => Promise<void>,
-): Promise<{ synced: boolean; error?: string }> {
+): Promise<{ synced: boolean; error?: unknown }> {
   const syncingDraft = await markSyncing(draft.id);
   if (!syncingDraft) return { synced: false };
 
@@ -599,7 +687,7 @@ async function syncDraft(
       if (!transient || attempt === MAX_TRANSIENT_ATTEMPTS_PER_SYNC) {
         return {
           synced: false,
-          error: err instanceof Error ? err.message : String(err),
+          error: err,
         };
       }
       await waitForTransientRetry(attempt);
@@ -620,7 +708,10 @@ async function runSyncAllDrafts(
   for (const draft of drafts) {
     const handler = callbacks[draft.type as keyof SyncCallbacks];
     if (!handler) {
-      await markFailed(draft.id, `Unknown draft type: ${draft.type}`);
+      await recordReplayFailure(
+        draft.id,
+        Object.assign(new Error(`Unknown draft type: ${draft.type}`), { status: 400 }),
+      );
       failed += 1;
       continue;
     }
@@ -629,7 +720,7 @@ async function runSyncAllDrafts(
       synced += 1;
       syncedTypes.add(draft.type);
     } else if (outcome.error) {
-      await markFailed(draft.id, outcome.error);
+      await recordReplayFailure(draft.id, outcome.error);
       failed += 1;
     }
   }
@@ -641,6 +732,9 @@ async function runSyncAllDrafts(
 export async function syncAllDrafts(
   callbacks: SyncCallbacks,
 ): Promise<SyncResult> {
+  if (activeClear) {
+    return { synced: 0, syncedTypes: [], failed: 0, remaining: 0 };
+  }
   if (activeSync) return activeSync;
   const sync = runSyncAllDrafts(callbacks);
   activeSync = sync;

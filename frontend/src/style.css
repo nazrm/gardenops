@@ -14586,8 +14586,19 @@ td.inventory-qty-zero {
 }
 
 .offline-indicator--failed {
+  border: 0;
   background: var(--danger);
   color: #fff;
+}
+
+.offline-indicator-toggle {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.offline-indicator-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .offline-indicator-count {
@@ -14611,6 +14622,8 @@ td.inventory-qty-zero {
 
 .offline-failures {
   width: min(28rem, calc(100vw - 2 * var(--sp-2)));
+  max-height: min(70vh, 36rem);
+  overflow-y: auto;
   padding: var(--sp-3);
   border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--bg-3));
   border-radius: var(--r-sm);
@@ -14618,6 +14631,60 @@ td.inventory-qty-zero {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
   color: var(--text-1);
   font-size: 0.78rem;
+}
+
+.offline-failures[hidden] {
+  display: none;
+}
+
+.offline-failure-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.offline-clear-recovery-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-4);
+  background: var(--bg-1);
+}
+
+.offline-clear-recovery-panel {
+  width: min(30rem, 100%);
+  padding: var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--text-1);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.2);
+}
+
+.offline-clear-recovery-panel h1 {
+  margin: 0 0 var(--sp-2);
+  font-size: 1.25rem;
+}
+
+.offline-clear-recovery-panel p {
+  margin: 0 0 var(--sp-4);
+  line-height: 1.5;
+}
+
+.offline-clear-recovery-panel button {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
 }
 
 .offline-failure-row {

@@ -38,6 +38,9 @@ PHASE_FOUR_ORACLE_PATH = (
 PHASE_FIVE_ORACLE_PATH = (
     REPOSITORY_ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_five_oracle.json"
 )
+PHASE_SIX_ORACLE_PATH = (
+    REPOSITORY_ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_six_oracle.json"
+)
 
 
 def _load_phase_two_oracle() -> tuple[dict[str, Any], str]:
@@ -128,6 +131,29 @@ def _load_phase_five_oracle() -> tuple[dict[str, Any], str]:
 
 PHASE_FIVE_ORACLE, PHASE_FIVE_ORACLE_SHA256 = _load_phase_five_oracle()
 PHASE_FIVE_ORACLE_FIXTURE = PHASE_FIVE_ORACLE["phase_five"]["fixture"]
+
+
+def _load_phase_six_oracle() -> tuple[dict[str, Any], str]:
+    try:
+        raw = PHASE_SIX_ORACLE_PATH.read_bytes()
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Complete journey Phase 6 oracle is unavailable or invalid") from exc
+    phase_six = payload.get("phase_six") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 1
+        or not isinstance(phase_six, dict)
+        or not isinstance(phase_six.get("fixture"), dict)
+        or not isinstance(phase_six.get("browser_contract"), dict)
+        or not isinstance(phase_six.get("database_boundaries"), dict)
+        or not isinstance(phase_six.get("support"), dict)
+    ):
+        raise RuntimeError("Complete journey Phase 6 oracle contract is missing")
+    return payload, sha256(raw).hexdigest()
+
+
+PHASE_SIX_ORACLE, PHASE_SIX_ORACLE_SHA256 = _load_phase_six_oracle()
 
 ADMIN_USERNAME = os.environ.get(
     "GARDENOPS_COMPLETE_JOURNEYS_E2E_USERNAME", "complete_journeys_e2e_admin"
@@ -4109,6 +4135,18 @@ def _phase_five_fixture_state() -> dict[str, Any]:
     }
 
 
+def _phase_six_fixture_state() -> dict[str, Any]:
+    return {
+        "fixture": dict(PHASE_SIX_ORACLE["phase_six"]["fixture"]),
+        "oracle": {
+            "path": "scripts/e2e/fixtures/complete_journeys_phase_six_oracle.json",
+            "schema_version": PHASE_SIX_ORACLE["schema_version"],
+            "sha256": PHASE_SIX_ORACLE_SHA256,
+        },
+        "support": dict(PHASE_SIX_ORACLE["phase_six"]["support"]),
+    }
+
+
 def _count(conn, table: str) -> int:
     allowed = {
         "attention_outcomes",
@@ -4574,6 +4612,7 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
         "phase_three": _phase_three_fixture_state(conn, optimization_seed),
         "phase_four": _phase_four_fixture_state(),
         "phase_five": _phase_five_fixture_state(),
+        "phase_six": _phase_six_fixture_state(),
         "roles": {
             "admin": ADMIN_USERNAME,
             "editor": EDITOR_LOGIN[0],

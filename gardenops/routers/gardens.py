@@ -11,6 +11,7 @@ from urllib.request import urlopen
 
 import psycopg
 from fastapi import APIRouter, HTTPException, Query, Request
+from psycopg import sql
 from pydantic import Field
 
 from gardenops.audit import (
@@ -33,10 +34,11 @@ from gardenops.security import AuthContext, user_lifecycle_enabled
 from gardenops.security_metrics import record_security_event
 from gardenops.services.garden_layout_lock import lock_garden_layout
 from gardenops.services.lidar_terrain import (
-    clear_uploaded_terrain,
+    clear_local_terrain_cache,
     lidar_upload_max_bytes,
     local_terrain_storage_info,
     save_uploaded_terrain,
+    uploaded_terrain_storage_keys,
 )
 from gardenops.services.media_store import (
     drain_media_cleanup_jobs_best_effort,
@@ -537,6 +539,9 @@ def _delete_garden_related_state(
             (garden_id,),
         ).fetchall()
     }
+    media_storage_pairs.update(
+        (storage_key, "") for storage_key in uploaded_terrain_storage_keys(garden_id)
+    )
     plant_ids = [
         str(row["plt_id"])
         for row in db.execute(
@@ -584,6 +589,31 @@ def _delete_garden_related_state(
     ).fetchone()
     if deleted is None:
         raise HTTPException(status_code=404, detail="Garden not found")
+    remaining_scoped_rows: dict[str, int] = {}
+    garden_scoped_tables = db.execute(
+        """
+        SELECT table_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND column_name = 'garden_id'
+          AND table_name <> 'audit_events'
+        ORDER BY table_name
+        """
+    ).fetchall()
+    for row in garden_scoped_tables:
+        table_name = str(row["table_name"])
+        count_row = db.execute(
+            sql.SQL("SELECT COUNT(*) AS cnt FROM {} WHERE garden_id = %s").format(
+                sql.Identifier(table_name)
+            ),
+            (garden_id,),
+        ).fetchone()
+        count = int(count_row["cnt"]) if count_row else 0
+        if count:
+            remaining_scoped_rows[table_name] = count
+    if remaining_scoped_rows:
+        detail = ", ".join(f"{table}={count}" for table, count in remaining_scoped_rows.items())
+        raise RuntimeError(f"Garden deletion left scoped rows: {detail}")
     return (
         {
             "plots_deleted": int(plot_count_row["cnt"]) if plot_count_row else 0,
@@ -973,6 +1003,7 @@ def delete_garden(
         raise
     enqueue_audit_event_telemetry(audit_values, db=db)
     drain_media_cleanup_jobs_best_effort(db, storage_pairs=media_storage_pairs)
+    clear_local_terrain_cache()
     notify_garden_modified()
     record_security_event("destructive_admin_actions")
     record_security_event("destructive_admin_actions_delete_garden")
@@ -1518,9 +1549,13 @@ def delete_garden_lidar(
 ) -> dict[str, object]:
     context = _auth_context(request)
     _require_membership_editor(db, context=context, garden_id=garden_id)
-    status = clear_uploaded_terrain(garden_id)
+    storage_pairs = [(storage_key, "") for storage_key in uploaded_terrain_storage_keys(garden_id)]
+    enqueue_media_cleanup_jobs(db, storage_pairs)
     _invalidate_garden_terrain_state(db, garden_id)
     db.commit()
+    cleanup = drain_media_cleanup_jobs_best_effort(db, storage_pairs=storage_pairs)
+    clear_local_terrain_cache()
+    status = local_terrain_storage_info(garden_id)
     notify_garden_modified()
     _audit_membership_change(
         request,
@@ -1529,7 +1564,11 @@ def delete_garden_lidar(
         garden_id=garden_id,
         db=db,
     )
-    return {"garden_id": garden_id, **status}
+    return {
+        "garden_id": garden_id,
+        **status,
+        "file_cleanup": "pending" if cleanup.failed else "complete",
+    }
 
 
 @router.patch("/gardens/{garden_id}/settings")

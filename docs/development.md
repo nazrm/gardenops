@@ -254,6 +254,8 @@ scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --p
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 4
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 5
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 5
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 6
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 6
 ```
 
 The runner creates its own disposable PostgreSQL child through
@@ -467,6 +469,42 @@ coverage contracts:
 .venv/bin/pytest -q tests/test_complete_journey_e2e_scripts.py -k phase_five
 .venv/bin/python scripts/check_journey_coverage.py --allow-open
 node --check scripts/e2e/journeys/identityAndRoles.cjs
+node --check scripts/check_complete_journeys_e2e.cjs
+```
+
+Phase 6 uses Playwright routing to deliver an offline journal mutation to the
+real backend and then drop only its browser-facing response. The journey proves
+the retained operation ID, independent committed-state postcondition, repeated
+reconnect replay, garden isolation, logout queue clearing, and actionable
+conflict/gone recovery across journal, issue, harvest, task-action, and media
+draft labels. Failed details are collapsed behind a compact counted control by
+default so navigation and sign-out remain available, while newly terminal work
+is announced through a live region and recovery rerenders restore keyboard
+focus. Logout, session expiry, and confirmed signed-out startup fail closed when
+IndexedDB cleanup fails: the next sign-in remains unavailable until the user
+retries and completes local queue cleanup. The complete
+payload/binary fingerprint, retention-expiry,
+side-effect-count, and media-asset matrices remain focused backend boundaries in
+`tests/test_offline_idempotency.py` and
+`tests/test_offline_idempotency_unit.py`, because their browser transport
+mechanics are identical.
+
+The Phase 6 browser manifest names only `OFF-01`. Destructive atomicity (`C2`)
+and schema/bootstrap integrity (`INT-01`) are proven by their focused backend
+suites and recorded separately in the validation ledger; the browser profile
+owns the real lost-ack and recovery interaction. Its five-family terminal-state
+UI check uses deliberately inserted IndexedDB fixtures, while backend tests own
+the real response-classification and payload/binary fingerprint contracts.
+Direct mobile garden-delete wording and all accessibility closure remain Phase
+8 work.
+
+Before coordinating a real Phase 6 browser run, validate its static harness and
+frontend recovery contracts:
+
+```bash
+.venv/bin/pytest -q tests/test_complete_journey_e2e_scripts.py -k phase_six
+.venv/bin/python -m unittest tests.test_offline_replay_frontend_static
+node --check scripts/e2e/journeys/offlineAndFailureRecovery.cjs
 node --check scripts/check_complete_journeys_e2e.cjs
 ```
 

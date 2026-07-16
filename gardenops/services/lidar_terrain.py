@@ -235,6 +235,17 @@ def local_terrain_storage_info(garden_id: int) -> dict[str, object]:
     }
 
 
+def uploaded_terrain_storage_keys(garden_id: int) -> list[str]:
+    root = _media_storage_root().resolve()
+    target_dir = _uploaded_terrain_dir(garden_id)
+    keys: list[str] = []
+    for suffix in _ALLOWED_UPLOAD_SUFFIXES:
+        candidate = target_dir / f"terrain{suffix}"
+        if candidate.is_file():
+            keys.append(str(candidate.resolve().relative_to(root)))
+    return sorted(keys)
+
+
 def save_uploaded_terrain(
     garden_id: int, payload: bytes, original_filename: str
 ) -> dict[str, object]:

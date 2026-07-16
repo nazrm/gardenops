@@ -1,6 +1,7 @@
 """Tests for integrity layer: health endpoints, FK enforcement, consistency."""
 
 import json
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,7 +10,9 @@ import psycopg
 
 import gardenops.db as db
 from gardenops.schema_signature import (
+    REQUIRED_COLUMN_DEFAULTS,
     REQUIRED_COLUMN_NULLABILITY,
+    REQUIRED_COLUMN_TYPES,
     REQUIRED_COLUMNS,
     REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS,
     REQUIRED_CONSTRAINTS,
@@ -52,6 +55,8 @@ class MigrationGuardTests(unittest.TestCase):
             indexes=set(REQUIRED_INDEXES),
             constraints=set(REQUIRED_CONSTRAINTS),
             column_nullability=dict(REQUIRED_COLUMN_NULLABILITY),
+            column_types=dict(REQUIRED_COLUMN_TYPES),
+            column_defaults=dict(REQUIRED_COLUMN_DEFAULTS),
             index_definitions={
                 name: " ".join(fragments)
                 for name, fragments in REQUIRED_INDEX_DEFINITION_FRAGMENTS.items()
@@ -78,6 +83,64 @@ class MigrationGuardTests(unittest.TestCase):
         return (
             Path(__file__).parents[1] / "migrations/0027_inventory_procurement_integrity.sql"
         ).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _migration_0028_sql() -> str:
+        return (
+            Path(__file__).parents[1] / "migrations/0028_auth_session_device_metadata.sql"
+        ).read_text(encoding="utf-8")
+
+    def _assert_disposable_database(self, conn: db.DbConn) -> None:
+        expected_marker = os.environ.get("GARDENOPS_DISPOSABLE_POSTGRES_MARKER", "")
+        expected_system_identifier = os.environ.get(
+            "GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER", ""
+        )
+        identity = conn.execute(
+            """
+            SELECT current_database() AS database_name,
+                   current_user AS role_name,
+                   host(inet_server_addr()) AS server_address,
+                   inet_server_port() AS server_port,
+                   current_setting('gardenops.disposable_marker', true) AS marker,
+                   system_identifier::text AS system_identifier
+            FROM pg_control_system()
+            """
+        ).fetchone()
+        database_name = str(identity["database_name"])
+        self.assertTrue(
+            database_name == "gardenops_test"
+            or (
+                database_name.startswith("gardenops_test_shard")
+                and database_name.removeprefix("gardenops_test_shard").isdigit()
+            ),
+            f"unexpected disposable database name: {database_name}",
+        )
+        if not expected_marker and not expected_system_identifier:
+            self.assertEqual(database_name, "gardenops_test")
+            self.assertTrue(
+                os.environ.get("GARDENOPS_TEST_POSTGRES_URL", ""),
+                "dedicated test database URL is required",
+            )
+            return
+        self.assertTrue(expected_marker, "disposable database marker is required")
+        self.assertTrue(
+            expected_system_identifier,
+            "disposable cluster system identifier is required",
+        )
+        self.assertEqual(identity["role_name"], "gardenops_test_runner")
+        self.assertEqual(identity["server_address"], "127.0.0.1")
+        self.assertNotEqual(int(identity["server_port"]), 5432)
+        self.assertEqual(identity["marker"], expected_marker)
+        self.assertEqual(identity["system_identifier"], expected_system_identifier)
+
+    def _restore_migration_0028_and_history(self) -> None:
+        conn = db.get_db()
+        try:
+            conn.execute(self._migration_0028_sql())
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        db.run_migrations()
 
     @staticmethod
     def _remove_migration_0027_surface(conn: db.DbConn) -> None:
@@ -158,6 +221,205 @@ class MigrationGuardTests(unittest.TestCase):
         """Re-running run_migrations must not crash."""
         db.run_migrations()
         db.run_migrations()
+        conn = db.get_db()
+        try:
+            diagnostics = bootstrap_schema_diagnostics_from_snapshot(collect_schema_snapshot(conn))
+        finally:
+            db.return_db(conn)
+
+        self.assertEqual(diagnostics["mode"], "verified-baseline")
+        self.assertTrue(diagnostics["can_stamp_migrations"])
+        self.assertEqual(diagnostics["missing"], [])
+
+    def test_disposable_database_has_complete_zero_to_current_history(self) -> None:
+        conn = db.get_db()
+        try:
+            self._assert_disposable_database(conn)
+            versions = [
+                int(row["version"])
+                for row in conn.execute(
+                    "SELECT version FROM schema_migrations ORDER BY version"
+                ).fetchall()
+            ]
+            diagnostics = bootstrap_schema_diagnostics_from_snapshot(collect_schema_snapshot(conn))
+        finally:
+            db.return_db(conn)
+
+        self.assertEqual(versions, list(range(1, 29)))
+        self.assertEqual(diagnostics["mode"], "verified-baseline")
+        self.assertTrue(diagnostics["can_stamp_migrations"])
+        self.assertEqual(diagnostics["missing"], [])
+
+    def test_untracked_pre_0028_database_stamps_then_upgrades_to_current(self) -> None:
+        conn = db.get_db()
+        try:
+            self._assert_disposable_database(conn)
+            conn.execute("""
+                ALTER TABLE auth_sessions
+                    DROP COLUMN device_label,
+                    DROP COLUMN location_hint;
+                DELETE FROM schema_migrations;
+            """)
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        try:
+            db.run_migrations()
+            conn = db.get_db()
+            try:
+                versions = {
+                    int(row["version"])
+                    for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+                }
+                snapshot = collect_schema_snapshot(conn)
+            finally:
+                db.return_db(conn)
+
+            self.assertEqual(versions, set(range(1, 29)))
+            self.assertEqual(
+                snapshot.column_types["auth_sessions.device_label"],
+                "text",
+            )
+            self.assertEqual(
+                snapshot.column_defaults["auth_sessions.location_hint"],
+                "''::text",
+            )
+            self.assertFalse(snapshot.column_nullability["auth_sessions.device_label"])
+            self.assertEqual(missing_schema_parts(snapshot), [])
+        finally:
+            self._restore_migration_0028_and_history()
+
+    def test_partial_0028_database_fails_closed_before_stamping(self) -> None:
+        conn = db.get_db()
+        try:
+            self._assert_disposable_database(conn)
+            conn.execute("""
+                ALTER TABLE auth_sessions DROP COLUMN location_hint;
+                DELETE FROM schema_migrations;
+            """)
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        try:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "refusing to stamp migrations.*column:auth_sessions.location_hint",
+            ):
+                db.run_migrations()
+            conn = db.get_db()
+            try:
+                versions = conn.execute("SELECT version FROM schema_migrations").fetchall()
+                columns = {
+                    str(row["column_name"])
+                    for row in conn.execute(
+                        """
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = 'auth_sessions'
+                        """
+                    ).fetchall()
+                }
+            finally:
+                db.return_db(conn)
+            self.assertEqual(versions, [])
+            self.assertIn("device_label", columns)
+            self.assertNotIn("location_hint", columns)
+        finally:
+            self._restore_migration_0028_and_history()
+
+    def test_corrupted_auth_session_contract_fails_closed_before_stamping(self) -> None:
+        cases = (
+            (
+                "column:auth_sessions.last_seen_at_ms",
+                "ALTER TABLE auth_sessions DROP COLUMN last_seen_at_ms",
+                """
+                ALTER TABLE auth_sessions
+                    ADD COLUMN last_seen_at_ms bigint NOT NULL DEFAULT 0;
+                ALTER TABLE auth_sessions
+                    ALTER COLUMN last_seen_at_ms DROP DEFAULT;
+                """,
+            ),
+            (
+                "constraint:auth_sessions_pkey",
+                "ALTER TABLE auth_sessions DROP CONSTRAINT auth_sessions_pkey",
+                """
+                ALTER TABLE auth_sessions
+                    ADD CONSTRAINT auth_sessions_pkey PRIMARY KEY (token_hash)
+                """,
+            ),
+            (
+                "constraint:fk_auth_sessions_user_id_auth_users",
+                """
+                ALTER TABLE auth_sessions
+                    DROP CONSTRAINT fk_auth_sessions_user_id_auth_users
+                """,
+                """
+                ALTER TABLE auth_sessions
+                    ADD CONSTRAINT fk_auth_sessions_user_id_auth_users
+                    FOREIGN KEY (user_id) REFERENCES auth_users(id)
+                    ON DELETE CASCADE DEFERRABLE
+                """,
+            ),
+            (
+                "index:idx_auth_sessions_expires",
+                "DROP INDEX idx_auth_sessions_expires",
+                """
+                CREATE INDEX idx_auth_sessions_expires
+                    ON auth_sessions USING btree (expires_at_ms)
+                """,
+            ),
+            (
+                "index:idx_auth_sessions_user",
+                "DROP INDEX idx_auth_sessions_user",
+                """
+                CREATE INDEX idx_auth_sessions_user
+                    ON auth_sessions USING btree (user_id)
+                """,
+            ),
+        )
+        for missing_part, corrupt_sql, restore_sql in cases:
+            with self.subTest(missing_part=missing_part):
+                conn = db.get_db()
+                try:
+                    self._assert_disposable_database(conn)
+                    conn.execute(corrupt_sql)
+                    conn.execute("DELETE FROM schema_migrations")
+                    conn.commit()
+                finally:
+                    db.return_db(conn)
+
+                try:
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        rf"refusing to stamp migrations.*{missing_part}",
+                    ):
+                        db.run_migrations()
+                    conn = db.get_db()
+                    try:
+                        versions = conn.execute("SELECT version FROM schema_migrations").fetchall()
+                    finally:
+                        db.return_db(conn)
+                    self.assertEqual(versions, [])
+                finally:
+                    conn = db.get_db()
+                    try:
+                        conn.execute(restore_sql)
+                        conn.commit()
+                    finally:
+                        db.return_db(conn)
+                    db.run_migrations()
+
+    def test_0028_sql_rerun_is_idempotent(self) -> None:
+        conn = db.get_db()
+        try:
+            self._assert_disposable_database(conn)
+            conn.execute(self._migration_0028_sql())
+            conn.execute(self._migration_0028_sql())
+            self.assertEqual(missing_schema_parts(collect_schema_snapshot(conn)), [])
+        finally:
+            conn.rollback()
+            db.return_db(conn)
 
     def test_empty_bootstrap_signature_runs_migrations_normally(self) -> None:
         snapshot = SchemaSnapshot(
@@ -181,6 +443,150 @@ class MigrationGuardTests(unittest.TestCase):
         self.assertEqual(diagnostics["mode"], "verified-baseline")
         self.assertTrue(diagnostics["can_stamp_migrations"])
         self.assertEqual(diagnostics["missing"], [])
+
+    def test_pre_0028_bootstrap_signature_stamps_only_through_0027(self) -> None:
+        snapshot = self._complete_schema_snapshot()
+        snapshot.columns["auth_sessions"].difference_update({"device_label", "location_hint"})
+        for column in (
+            "auth_sessions.device_label",
+            "auth_sessions.location_hint",
+        ):
+            snapshot.column_nullability.pop(column)
+            snapshot.column_types.pop(column)
+            snapshot.column_defaults.pop(column)
+
+        diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+        self.assertEqual(diagnostics["mode"], "verified-upgrade-baseline")
+        self.assertTrue(diagnostics["can_stamp_migrations"])
+        self.assertEqual(diagnostics["stamp_through"], 27)
+
+    def test_auth_session_schema_signature_rejects_missing_table_or_column(self) -> None:
+        missing_table = self._complete_schema_snapshot()
+        missing_table.tables.remove("auth_sessions")
+        missing_table.columns.pop("auth_sessions")
+        for column in (
+            "auth_sessions.device_label",
+            "auth_sessions.location_hint",
+        ):
+            missing_table.column_nullability.pop(column)
+            missing_table.column_types.pop(column)
+            missing_table.column_defaults.pop(column)
+
+        table_diagnostics = bootstrap_schema_diagnostics_from_snapshot(missing_table)
+
+        self.assertEqual(table_diagnostics["mode"], "incomplete-existing-schema")
+        self.assertFalse(table_diagnostics["can_stamp_migrations"])
+        self.assertIn(
+            {"kind": "table", "object": "auth_sessions"},
+            table_diagnostics["missing"],
+        )
+
+        missing_column = self._complete_schema_snapshot()
+        missing_column.columns["auth_sessions"].remove("device_label")
+
+        column_diagnostics = bootstrap_schema_diagnostics_from_snapshot(missing_column)
+
+        self.assertEqual(column_diagnostics["mode"], "incomplete-existing-schema")
+        self.assertFalse(column_diagnostics["can_stamp_migrations"])
+        self.assertIn(
+            {"kind": "column", "object": "auth_sessions.device_label"},
+            column_diagnostics["missing"],
+        )
+
+    def test_auth_session_schema_signature_rejects_missing_core_contract(self) -> None:
+        cases = (
+            ("column", "auth_sessions.user_id", "user_id"),
+            ("constraint", "auth_sessions_pkey", "auth_sessions_pkey"),
+            (
+                "constraint",
+                "fk_auth_sessions_user_id_auth_users",
+                "fk_auth_sessions_user_id_auth_users",
+            ),
+            ("index", "idx_auth_sessions_expires", "idx_auth_sessions_expires"),
+            ("index", "idx_auth_sessions_user", "idx_auth_sessions_user"),
+        )
+        for kind, expected_object, removed_object in cases:
+            with self.subTest(kind=kind, object=expected_object):
+                snapshot = self._complete_schema_snapshot()
+                if kind == "column":
+                    snapshot.columns["auth_sessions"].remove(removed_object)
+                elif kind == "constraint":
+                    snapshot.constraints.remove(removed_object)
+                else:
+                    snapshot.indexes.remove(removed_object)
+
+                diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+                self.assertEqual(diagnostics["mode"], "incomplete-existing-schema")
+                self.assertFalse(diagnostics["can_stamp_migrations"])
+                self.assertIn(
+                    {"kind": kind, "object": expected_object},
+                    diagnostics["missing"],
+                )
+
+    def test_auth_session_schema_signature_rejects_wrong_core_definitions(self) -> None:
+        snapshot = self._complete_schema_snapshot()
+        snapshot.column_nullability["auth_sessions.user_id"] = True
+        snapshot.column_defaults["auth_sessions.token_hash"] = "''::text"
+        snapshot.constraint_definitions["auth_sessions_pkey"] = "PRIMARY KEY (user_id)"
+        snapshot.constraint_definitions["fk_auth_sessions_user_id_auth_users"] = (
+            "FOREIGN KEY (user_id) REFERENCES auth_users(id)"
+        )
+        snapshot.index_definitions["idx_auth_sessions_expires"] = (
+            "CREATE INDEX idx_auth_sessions_expires ON auth_sessions USING btree (user_id)"
+        )
+
+        diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+        self.assertEqual(diagnostics["mode"], "incomplete-existing-schema")
+        self.assertFalse(diagnostics["can_stamp_migrations"])
+        self.assertIn(
+            {"kind": "column-nullability", "object": "auth_sessions.user_id"},
+            diagnostics["missing"],
+        )
+        self.assertIn(
+            {"kind": "column-default", "object": "auth_sessions.token_hash"},
+            diagnostics["missing"],
+        )
+        self.assertIn(
+            {"kind": "constraint-definition", "object": "auth_sessions_pkey"},
+            diagnostics["missing"],
+        )
+        self.assertIn(
+            {
+                "kind": "constraint-definition",
+                "object": "fk_auth_sessions_user_id_auth_users",
+            },
+            diagnostics["missing"],
+        )
+        self.assertIn(
+            {"kind": "index-definition", "object": "idx_auth_sessions_expires"},
+            diagnostics["missing"],
+        )
+
+    def test_auth_session_schema_signature_rejects_wrong_definitions(self) -> None:
+        snapshot = self._complete_schema_snapshot()
+        snapshot.column_types["auth_sessions.device_label"] = "character varying"
+        snapshot.column_defaults["auth_sessions.location_hint"] = "'unknown'::text"
+        snapshot.column_nullability["auth_sessions.device_label"] = True
+
+        diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+        self.assertEqual(diagnostics["mode"], "incomplete-existing-schema")
+        self.assertFalse(diagnostics["can_stamp_migrations"])
+        self.assertIn(
+            {"kind": "column-type", "object": "auth_sessions.device_label"},
+            diagnostics["missing"],
+        )
+        self.assertIn(
+            {"kind": "column-default", "object": "auth_sessions.location_hint"},
+            diagnostics["missing"],
+        )
+        self.assertIn(
+            {"kind": "column-nullability", "object": "auth_sessions.device_label"},
+            diagnostics["missing"],
+        )
 
     def test_pre_0021_bootstrap_signature_stamps_only_through_0020(self) -> None:
         snapshot = self._complete_schema_snapshot()
@@ -227,6 +633,7 @@ class MigrationGuardTests(unittest.TestCase):
     def test_untracked_pre_0021_database_is_upgraded_to_current(self) -> None:
         conn = db.get_db()
         try:
+            self._assert_disposable_database(conn)
             conn.execute("DROP TABLE IF EXISTS offline_create_operations CASCADE")
             conn.execute("DROP INDEX IF EXISTS ux_weather_alerts_identity")
             conn.execute("DELETE FROM schema_migrations")
@@ -258,6 +665,7 @@ class MigrationGuardTests(unittest.TestCase):
     def test_0027_upgrades_resolvable_legacy_received_procurement(self) -> None:
         conn = db.get_db()
         try:
+            self._assert_disposable_database(conn)
             self._remove_migration_0027_surface(conn)
             receipt = self._insert_legacy_receipt(
                 conn,
@@ -321,6 +729,7 @@ class MigrationGuardTests(unittest.TestCase):
         migration_sql = self._migration_0027_sql()
         receipt: dict[str, int] | None = None
         try:
+            self._assert_disposable_database(conn)
             self._remove_migration_0027_surface(conn)
             receipt = self._insert_legacy_receipt(
                 conn,

@@ -32,6 +32,7 @@ PHASE_FOUR_ORACLE = (
 PHASE_FIVE_ORACLE = (
     ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_five_oracle.json"
 )
+PHASE_SIX_ORACLE = ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_six_oracle.json"
 EXPECTED_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
 ).stdout.strip()
@@ -199,7 +200,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
     subprocess.run(["git", "init", "--quiet"], cwd=checkout, check=True, timeout=20)
     runner = checkout / "scripts" / "run_complete_journeys_e2e.sh"
     result = subprocess.run(
-        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "6"],
+        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "7"],
         cwd=checkout,
         capture_output=True,
         check=False,
@@ -703,7 +704,7 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
     runner_source = RUNNER.read_text(encoding="utf-8")
 
-    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
     assert "runDailyAttentionWork" in journey_source
     assert 'require("./e2e/journeys/dailyAttentionWork.cjs")' in checker_source
     assert "phaseSelected(2)" in checker_source
@@ -721,7 +722,7 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_THREE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
     assert "GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER=1" in runner_source
     assert "runObservationToAction" in journey_source
     assert 'require("./e2e/journeys/observationToAction.cjs")' in checker_source
@@ -873,7 +874,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FOUR_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
     assert 'require("./e2e/journeys/planningAndReporting.cjs")' in checker_source
     assert "phaseSelected(4)" in checker_source
     assert "runPlanningAndReporting" in checker_source
@@ -1016,7 +1017,7 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FIVE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
     assert 'require("./e2e/journeys/identityAndRoles.cjs")' in checker_source
     assert "phaseSelected(5)" in checker_source
     assert "runIdentityAndRoles" in checker_source
@@ -1082,6 +1083,107 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
         assert marker in journey_source
     for forbidden in ("route.fulfill(", "context.addCookies(", "page.setContent("):
         assert forbidden not in journey_source
+
+
+def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
+    journey = ROOT / "scripts/e2e/journeys/offlineAndFailureRecovery.cjs"
+    journey_source = journey.read_text(encoding="utf-8")
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    seeder_source = SEEDER.read_text(encoding="utf-8")
+    runner_source = RUNNER.read_text(encoding="utf-8")
+    oracle = json.loads(PHASE_SIX_ORACLE.read_text(encoding="utf-8"))
+
+    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
+    assert 'require("./e2e/journeys/offlineAndFailureRecovery.cjs")' in checker_source
+    assert "phaseSelected(6)" in checker_source
+    assert "runOfflineAndFailureRecovery" in checker_source
+    assert "assertPhaseSixAuditEvents" in checker_source
+    assert "assertPhaseSixProfileEvidence" in checker_source
+    assert 'phaseSelected(6) ? ["OFF-01"]' in checker_source
+    assert "_load_phase_six_oracle" in seeder_source
+    assert '"phase_six": _phase_six_fixture_state()' in seeder_source
+    assert oracle["schema_version"] == 1
+    assert oracle["phase_six"]["profile_order"] == ["admin:desktop"]
+    assert oracle["phase_six"]["browser_contract"]["failed_families"] == [
+        "journal",
+        "issues",
+        "harvest",
+        "task_action",
+        "media_upload",
+    ]
+    assert oracle["phase_six"]["browser_contract"]["recovery_collapsed_by_default"] is True
+    assert oracle["phase_six"]["browser_contract"]["retry_as_new_replacement_count"] == 1
+    assert oracle["phase_six"]["audit_contract"]["additional_login_count"] == 1
+    assert sum(event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]) == 13
+    for marker in (
+        "route.fetch()",
+        'route.abort("failed")',
+        "captureNetworkFailures",
+        "consumeExpectedNetworkFailure",
+        "setOffline(true)",
+        "setOffline(false)",
+        "independent postcondition",
+        "Retry as new",
+        "failed-work recovery was not collapsed by default",
+        "retry-as-new did not create exactly one replacement",
+        "logout retained another account's drafts",
+        "Garden A draft replayed into Garden B",
+    ):
+        assert marker in journey_source
+    for forbidden in ("route.fulfill(", "page.setContent("):
+        assert forbidden not in journey_source
+
+
+def test_phase_six_audit_contract_rejects_scope_tampering() -> None:
+    script = r"""
+const {
+  assertPhaseSixAuditEvents,
+  phaseSixOracle,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const oracle = phaseSixOracle();
+const fixture = {
+  gardens: { alpha: { id: 11 }, beta: { id: 22 } },
+  roles: { admin: 'phase-six-admin' },
+};
+const prior = { id: 900 };
+let id = 901;
+const records = oracle.phase_six.audit_contract.events.flatMap((event) => {
+  const actor = event.actor === 'admin' ? {
+    actor_auth_type: 'session', actor_role: 'admin', actor_username: fixture.roles.admin,
+  } : {
+    actor_auth_type: 'none', actor_role: 'anonymous', actor_username: 'anonymous',
+  };
+  const garden_id = event.garden === null ? null : fixture.gardens[event.garden].id;
+  return Array.from({ length: event.count }, () => ({
+    ...actor, garden_id, id: id++, method: event.method,
+    path: event.path, status_code: event.status_code,
+  }));
+});
+const evidence = assertPhaseSixAuditEvents(
+  { records: [prior] },
+  { records: [prior, ...records] },
+  fixture,
+  oracle,
+);
+if (!evidence.audit_events_exact || evidence.audit_event_count !== 13) process.exit(3);
+const tampered = structuredClone(records);
+tampered.at(-1).garden_id = 999;
+try {
+  assertPhaseSixAuditEvents(
+    { records: [prior] },
+    { records: [prior, ...tampered] },
+    fixture,
+    oracle,
+  );
+  process.exit(4);
+} catch (error) {
+  if (!String(error.message).includes('audit delta')) process.exit(5);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_phase_five_totp_generator_matches_rfc_vector() -> None:
