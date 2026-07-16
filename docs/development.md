@@ -319,9 +319,11 @@ focused `--phase 2` run isolates the phase on a fresh fixture, while
 `--through-phase 2` proves the same choreography after Phases 0 and 1.
 
 The browser guard permits only the configured disposable frontend, backend, and
-optional provider origins on literal `127.0.0.1` ports; user mutations use
-visible controls, while the few page-origin fetches remain behind that same
-guard. Expected browser console diagnostics are admitted only after matching a
+optional provider origins. The frontend uses `localhost` so its WebAuthn RP ID
+is valid; backend and provider services remain on literal `127.0.0.1`. Every
+origin has a dynamic non-5432 port. User mutations use visible controls, while
+the few page-origin fetches remain behind that same guard. Expected browser
+console diagnostics are admitted only after matching a
 specific method, status, path, and probe context; a retained classification
 ledger prevents an unexpected diagnostic from being hidden by removing it from
 the working array. Pixel 7 evidence enforces its viewport, user-agent contract,

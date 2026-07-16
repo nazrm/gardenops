@@ -424,8 +424,8 @@ FRONTEND_PORT="${GARDENOPS_COMPLETE_JOURNEYS_E2E_FRONTEND_PORT:-$(pick_loopback_
 PROVIDER_PORT="${GARDENOPS_COMPLETE_JOURNEYS_E2E_PROVIDER_PORT:-$(pick_loopback_port)}"
 validate_distinct_ports "$BACKEND_PORT" "$FRONTEND_PORT" "$PROVIDER_PORT"
 export GARDENOPS_VITE_PROXY_TARGET="http://127.0.0.1:${BACKEND_PORT}"
-export AUTH_PASSKEY_RP_ID="127.0.0.1"
-export AUTH_PASSKEY_ORIGINS="http://127.0.0.1:${FRONTEND_PORT}"
+export AUTH_PASSKEY_RP_ID="localhost"
+export AUTH_PASSKEY_ORIGINS="http://localhost:${FRONTEND_PORT}"
 
 FIXTURE_PATH="$ARTIFACT_DIR/fixture.json"
 export GARDENOPS_COMPLETE_JOURNEYS_E2E_FIXTURE_PATH="$FIXTURE_PATH"
@@ -477,14 +477,14 @@ setsid env -i \
   GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
   GARDENOPS_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
   "$ROOT_DIR/frontend/node_modules/.bin/vite" preview \
-    --config "$VITE_CONFIG_PATH" --host 127.0.0.1 --port "$FRONTEND_PORT" --strictPort \
+    --config "$VITE_CONFIG_PATH" --host localhost --port "$FRONTEND_PORT" --strictPort \
     > "$LOG_DIR/frontend.log" 2>&1 &
 FRONTEND_PID=$!
 
 wait_for_url "http://127.0.0.1:${BACKEND_PORT}/api/health" "$BACKEND_PID" "FastAPI"
-wait_for_url "http://127.0.0.1:${FRONTEND_PORT}/" "$FRONTEND_PID" "production frontend preview"
+wait_for_url "http://localhost:${FRONTEND_PORT}/" "$FRONTEND_PID" "production frontend preview"
 
-BASE_URL="http://127.0.0.1:${FRONTEND_PORT}" \
+BASE_URL="http://localhost:${FRONTEND_PORT}" \
   node scripts/check_complete_journeys_e2e.cjs
 chmod 600 "$ARTIFACT_DIR/complete-journeys-manifest.json"
 find "$ARTIFACT_DIR" -maxdepth 1 -type f -name '*.zip' -exec chmod 600 {} +

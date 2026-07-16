@@ -2337,15 +2337,16 @@ const {
 } = require('./scripts/e2e/completeJourneyBrowser.cjs');
 const origins = allowedBrowserOrigins({
   backendUrl: 'http://127.0.0.1:43102',
-  baseUrl: 'http://127.0.0.1:43101',
+  baseUrl: 'http://localhost:43101',
   providerUrl: 'http://127.0.0.1:43103',
 });
-if (!isAllowedUrl('http://127.0.0.1:43101/api/tasks', origins)) process.exit(3);
-if (!isAllowedUrl('ws://127.0.0.1:43101/vite', origins)) process.exit(4);
+if (!isAllowedUrl('http://localhost:43101/api/tasks', origins)) process.exit(3);
+if (!isAllowedUrl('ws://localhost:43101/vite', origins)) process.exit(4);
 for (const url of [
   'http://127.0.0.1:43104/api/tasks',
   'http://127.0.0.2:43101/api/tasks',
-  'http://localhost:43101/api/tasks',
+  'http://127.0.0.1:43101/api/tasks',
+  'http://localhost:43102/api/tasks',
 ]) {
   if (isAllowedUrl(url, origins)) process.exit(5);
 }

@@ -62,8 +62,9 @@ function isLoopbackHostname(hostname) {
     && Number(octets[0]) === 127;
 }
 
-function isDisposableLoopbackHostname(hostname) {
-  return hostname.replace(/^\[|\]$/g, "").toLowerCase() === "127.0.0.1";
+function isDisposableLoopbackHostname(hostname, { allowLocalhost = false } = {}) {
+  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return normalized === "127.0.0.1" || (allowLocalhost && normalized === "localhost");
 }
 
 function normalizedNetworkOrigin(parsed) {
@@ -81,7 +82,10 @@ function disposableOrigin(rawUrl, label) {
     throw new Error(`${label} must be an absolute URL`);
   }
   assert(["http:", "https:"].includes(parsed.protocol), `${label} must use HTTP(S)`);
-  assert(isDisposableLoopbackHostname(parsed.hostname), `${label} must use 127.0.0.1`);
+  assert(
+    isDisposableLoopbackHostname(parsed.hostname, { allowLocalhost: label === "BASE_URL" }),
+    `${label} must use its dedicated loopback hostname`,
+  );
   assert(parsed.port && /^\d+$/.test(parsed.port), `${label} must include an explicit port`);
   assert(Number(parsed.port) !== 5432, `${label} must not use PostgreSQL port 5432`);
   assert(!parsed.username && !parsed.password, `${label} must not include credentials`);
@@ -188,7 +192,10 @@ function assertLoopbackBaseUrl(baseUrl) {
     throw new Error("Complete journey BASE_URL must be an absolute URL");
   }
   assert(["http:", "https:"].includes(parsed.protocol), "BASE_URL must use HTTP(S)");
-  assert(isDisposableLoopbackHostname(parsed.hostname), "BASE_URL must use literal 127.0.0.1");
+  assert(
+    isDisposableLoopbackHostname(parsed.hostname, { allowLocalhost: true }),
+    "BASE_URL must use localhost or literal 127.0.0.1",
+  );
   assert(parsed.port && /^\d+$/.test(parsed.port), "BASE_URL must include an explicit port");
   assert(Number(parsed.port) !== 5432, "BASE_URL must not use PostgreSQL port 5432");
   assert(!parsed.username && !parsed.password, "BASE_URL must not include credentials");
