@@ -134,16 +134,35 @@ function diagnosticMarks(diagnostics) {
   };
 }
 
-async function consumeExpectedNetworkFailure(diagnostics, marks, expected, label) {
+function captureNetworkFailures(page) {
+  const failures = [];
+  const listener = (request) => failures.push({
+    error: request.failure()?.errorText || "unknown failure",
+    method: request.method(),
+    path: new URL(request.url()).pathname,
+  });
+  page.on("requestfailed", listener);
+  return {
+    failures,
+    stop: () => page.off("requestfailed", listener),
+  };
+}
+
+async function consumeExpectedNetworkFailure(diagnostics, marks, capture, expected, label) {
   await waitFor(() => (
     diagnostics.requestFailures.length === marks.request + 1
       && diagnostics.consoleErrors.length === marks.console + 1
       && diagnostics.classifiedConsoleDiagnostics.length === marks.classified + 1
+      && capture.failures.length === 1
   ), `${label} diagnostic accounting`);
-  const requestFailure = diagnostics.requestFailures.splice(marks.request, 1)[0] || "";
+  diagnostics.requestFailures.splice(marks.request, 1);
   const consoleFailure = diagnostics.consoleErrors.splice(marks.console, 1)[0] || "";
   const classified = diagnostics.classifiedConsoleDiagnostics.splice(marks.classified, 1)[0];
-  assert(requestFailure.includes(expected.path) && requestFailure.includes(expected.error),
+  capture.stop();
+  const requestFailure = capture.failures[0];
+  assert(requestFailure.method === expected.method
+    && requestFailure.path === expected.path
+    && requestFailure.error.includes(expected.error),
     `${label} produced an unrelated request failure`);
   assert(consoleFailure.includes("unclassified-console-error"),
     `${label} did not produce the expected Chromium console failure`);
@@ -191,11 +210,13 @@ async function runOfflineProfile(options) {
 
     const title = options.oracle.phase_six.fixture.journal_title;
     const offlineQueueFailureMarks = diagnosticMarks(guarded.diagnostics);
+    const offlineQueueFailureCapture = captureNetworkFailures(page);
     const queued = await enqueueOfflineJournal(page, options.fixture, title);
     await consumeExpectedNetworkFailure(
       guarded.diagnostics,
       offlineQueueFailureMarks,
-      { error: "ERR_INTERNET_DISCONNECTED", path: "/api/media/summaries" },
+      offlineQueueFailureCapture,
+      { error: "ERR_INTERNET_DISCONNECTED", method: "POST", path: "/api/media/summaries" },
       "Phase 6 offline journal refresh",
     );
     assert(queued.garden_id === options.fixture.gardens.alpha.id,
@@ -235,6 +256,7 @@ async function runOfflineProfile(options) {
     };
     await page.route("**/api/journal", lostAckRoute);
     const lostAckFailureMarks = diagnosticMarks(guarded.diagnostics);
+    const lostAckFailureCapture = captureNetworkFailures(page);
     await page.context().setOffline(false);
     await firstSeen;
     await waitFor(async () => (await readDrafts(page))[0]?.status === "syncing",
@@ -259,7 +281,8 @@ async function runOfflineProfile(options) {
     await consumeExpectedNetworkFailure(
       guarded.diagnostics,
       lostAckFailureMarks,
-      { error: "ERR_FAILED", path: "/api/journal" },
+      lostAckFailureCapture,
+      { error: "ERR_FAILED", method: "POST", path: "/api/journal" },
       "Phase 6 lost acknowledgement",
     );
     await page.unroute("**/api/journal", lostAckRoute);

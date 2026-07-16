@@ -1117,6 +1117,7 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     for marker in (
         "route.fetch()",
         'route.abort("failed")',
+        "captureNetworkFailures",
         "consumeExpectedNetworkFailure",
         "setOffline(true)",
         "setOffline(false)",
