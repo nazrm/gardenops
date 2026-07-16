@@ -1435,6 +1435,8 @@ def test_phase_one_passkey_challenges_have_a_separate_exact_boundary() -> None:
     assert "cleaned_before_boundary_count" in checker_source
     assert "retained_rows_exact: true" in checker_source
     assert "passkey_challenge_projection: phaseOneChallengeEvidence" in checker_source
+    assert "phase_two_cumulative_browser_challenge_projection" in checker_source
+    assert "passkey_challenge_projection: phaseTwoChallengeEvidence" in checker_source
 
     script = r"""
 const { assertPhaseOneChallengeProjection } = require('./scripts/check_complete_journeys_e2e.cjs');
@@ -1456,6 +1458,16 @@ const profiles = [{ requests: [{
 const evidence = assertPhaseOneChallengeProjection(state([]), state([row('a', 200)]), profiles);
 if (evidence.retained_count !== 1 || evidence.cleaned_before_boundary_count !== 0) {
   process.exit(2);
+}
+const cumulativeEvidence = assertPhaseOneChallengeProjection(
+  state([]),
+  state([row('a', 200)]),
+  [...profiles, ...profiles],
+  'Phase 2 cumulative',
+);
+if (cumulativeEvidence.retained_count !== 1
+    || cumulativeEvidence.cleaned_before_boundary_count !== 1) {
+  process.exit(7);
 }
 try {
   assertPhaseOneChallengeProjection(

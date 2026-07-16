@@ -961,18 +961,18 @@ function phaseFiveChallengeStarts(profiles) {
   return starts;
 }
 
-function assertPhaseOneChallengeProjection(initialState, finalState, profiles) {
+function assertPhaseOneChallengeProjection(initialState, finalState, profiles, label = "Phase 1") {
   const challengeDelta = exactProjectionDelta(
     initialState?.challenge_projection,
     finalState?.challenge_projection,
-    "Phase 1 passkey challenge",
+    `${label} passkey challenge`,
   );
   const expectedChallengeStarts = phaseFiveChallengeStarts(profiles).login;
   assert(Number.isSafeInteger(finalState?.snapshot_at_ms) && finalState.snapshot_at_ms > 0,
-    "Phase 1 passkey challenge boundary lacks a snapshot timestamp");
+    `${label} passkey challenge boundary lacks a snapshot timestamp`);
   assert(challengeDelta.added.length <= expectedChallengeStarts
     && challengeDelta.removed.length === 0 && challengeDelta.updated.length === 0,
-  `Phase 1 passkey challenge rows diverged from browser challenge starts: ${canonicalJson({
+  `${label} passkey challenge rows diverged from browser challenge starts: ${canonicalJson({
     retained: challengeDelta.added.length,
     starts: expectedChallengeStarts,
     removed: challengeDelta.removed.length,
@@ -986,7 +986,7 @@ function assertPhaseOneChallengeProjection(initialState, finalState, profiles) {
     && row.consumed_state === "unused"
     && row.lifetime_valid === true
     && Number.isSafeInteger(row.expires_at_ms)
-  )), "Phase 1 retained an invalid, bound, or consumed passkey challenge");
+  )), `${label} retained an invalid, bound, or consumed passkey challenge`);
   return {
     browser_challenge_start_count: expectedChallengeStarts,
     cleaned_before_boundary_count: expectedChallengeStarts - challengeDelta.added.length,
@@ -6597,6 +6597,7 @@ async function main() {
   let phaseOneProfileEvidence = null;
   let phaseOneProfiles = [];
   let phaseTwoDatabaseEvidence = null;
+  let phaseTwoChallengeEvidence = null;
   let phaseTwoDatabase = null;
   let phaseTwoAuditEvidence = null;
   let phaseTwoAuditBaseline = null;
@@ -6887,6 +6888,17 @@ async function main() {
         [...phaseTwoReadOnlyProfiles, ...phaseTwoProfiles],
         fixture,
       );
+      phaseTwoChallengeEvidence = assertPhaseOneChallengeProjection(
+        fixture.database_snapshot.phase_five_state,
+        phaseTwoDatabase.phase_five_state,
+        [
+          ...phaseZeroProfiles,
+          ...phaseOneProfiles,
+          ...phaseTwoReadOnlyProfiles,
+          ...phaseTwoProfiles,
+        ],
+        "Phase 2 cumulative",
+      );
       if (phaseOneRan) {
         assert(phaseOneDatabase, "Phase 1 database boundary snapshot is missing before Phase 2");
         assertPhaseOneStatePreservedAfterPhaseTwo(
@@ -7062,9 +7074,9 @@ async function main() {
       );
     }
     const phaseTwoSemanticDeltaTables = phaseTwoRan ? new Set([
-      ...phaseOneSemanticDeltaTables,
+      ...phaseOneBoundaryDeltaTables,
       ...phaseTwoOracleTables,
-    ]) : phaseOneSemanticDeltaTables;
+    ]) : phaseOneBoundaryDeltaTables;
     if (phaseTwoRan) {
       assert(Object.keys(phaseTwoExactMutationCounts).every(
         (table) => phaseTwoSemanticDeltaTables.has(table),
@@ -7115,6 +7127,21 @@ async function main() {
     );
     const prePhaseThreeAccounting = Object.fromEntries(
       [...phaseTwoSemanticDeltaTables].map((table) => {
+        if (table === "auth_passkey_challenges") {
+          const evidence = phaseTwoRan ? phaseTwoChallengeEvidence : phaseOneChallengeEvidence;
+          assert(evidence, "Cumulative passkey challenge accounting evidence is missing");
+          return [table, {
+            allow_row_delta: true,
+            evidence: phaseTwoRan
+              ? "phase_two_cumulative_browser_challenge_projection"
+              : "phase_one_browser_challenge_projection",
+            expected_added: evidence.retained_count,
+            expected_identity_added: evidence.retained_count,
+            expected_identity_removed: 0,
+            expected_identity_updated: 0,
+            expected_removed: 0,
+          }];
+        }
         const exact = phaseTwoExactMutationCounts?.[table] || { added: 0, removed: 0 };
         const identity = phaseTwoExactIdentityCounts?.[table]
           || { added: 0, removed: 0, updated: 0 };
@@ -7633,6 +7660,7 @@ async function main() {
         ?? finalDatabase.phase_one_state.mobile_snapshot_count,
       phase_two_enforcement: phaseTwoRan ? {
         ...phaseTwoDatabaseEvidence,
+        passkey_challenge_projection: phaseTwoChallengeEvidence,
         ...phaseTwoAuditEvidence,
         browser_profile_matrix: phaseTwoProfileEvidence?.profile_matrix_enforced === true,
         fixture_oracle_binding: fixtureOracleEvidence,
