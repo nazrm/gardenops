@@ -5057,6 +5057,19 @@ const passkeyAudit = auditManifestProjection(auditState('/api/auth/passkeys/42')
 const sessionAudit = auditManifestProjection(
   auditState(`/api/auth/sessions/${opaqueRouteId}`),
 );
+const userInvitationAudit = auditManifestProjection(
+  auditState('/api/auth/user-invitations/42'),
+);
+const userAudit = auditManifestProjection(auditState('/api/auth/users/42'));
+const gardenMemberAudit = auditManifestProjection(
+  auditState('/api/gardens/7/members/42'),
+);
+const invitationPasskeyOptionsAudit = auditManifestProjection(
+  auditState('/api/auth/invitations/passkey/register/options'),
+);
+const invitationPasskeyVerifyAudit = auditManifestProjection(
+  auditState('/api/auth/invitations/passkey/register/verify'),
+);
 const taskPath = task.database.audit_projection.events[0].path;
 if (taskPath !== '/api/tasks/{task_id}/action') process.exit(3);
 if (attention.database.audit_projection.events[0].path
@@ -5068,12 +5081,23 @@ if (inventoryAudit.events[0].path !== '/api/inventory/{item_id}/transactions') p
 if (procurementAudit.events[0].path !== '/api/procurement/{item_id}/transition') process.exit(11);
 if (passkeyAudit.events[0].path !== '/api/auth/passkeys/{passkey_id}') process.exit(12);
 if (sessionAudit.events[0].path !== '/api/auth/sessions/{session_id}') process.exit(13);
+if (userInvitationAudit.events[0].path
+    !== '/api/auth/user-invitations/{invitation_id}') process.exit(14);
+if (userAudit.events[0].path !== '/api/auth/users/{user_id}') process.exit(15);
+if (gardenMemberAudit.events[0].path
+    !== '/api/gardens/{garden_id}/members/{user_id}') process.exit(16);
+if (invitationPasskeyOptionsAudit.events[0].path
+    !== '/api/auth/invitations/passkey/register/options') process.exit(17);
+if (invitationPasskeyVerifyAudit.events[0].path
+    !== '/api/auth/invitations/passkey/register/verify') process.exit(18);
 if (task.canonical_projection_digests.audit_snapshot
     === attention.canonical_projection_digests.audit_snapshot) process.exit(5);
 if (task.canonical_projection_digests.final_database
     === attention.canonical_projection_digests.final_database) process.exit(6);
 const serialized = JSON.stringify([
   task, attention, assignment, telemetry, passkeyAudit, sessionAudit,
+  userInvitationAudit, userAudit, gardenMemberAudit,
+  invitationPasskeyOptionsAudit, invitationPasskeyVerifyAudit,
 ]);
 if (serialized.includes(opaqueRouteId)) process.exit(7);
 """

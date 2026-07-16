@@ -1931,6 +1931,8 @@ function normalizeAuditProjectionPath(value) {
   if (new Set([
     "/api/auth/emergency-read-only",
     "/api/auth/invitations/accept",
+    "/api/auth/invitations/passkey/register/options",
+    "/api/auth/invitations/passkey/register/verify",
     "/api/auth/invitations/peek",
     "/api/auth/logout",
     "/api/auth/me/settings",
@@ -1949,6 +1951,9 @@ function normalizeAuditProjectionPath(value) {
     "/api/auth/reauthenticate/passkey/verify",
     "/api/auth/sessions/{session_id}",
     "/api/auth/user-invitations",
+    "/api/auth/user-invitations/{invitation_id}",
+    "/api/auth/users/{user_id}",
+    "/api/gardens/{garden_id}/members/{user_id}",
     "/api/gardens/{garden_id}/complete-onboarding",
     "/api/gardens/{garden_id}/invitations",
   ]).has(normalizedPhaseFivePath)) {
