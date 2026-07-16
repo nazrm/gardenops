@@ -2474,18 +2474,22 @@ def auth_mfa_disable(
         user_id=context.user_id,
         except_token_hash=context.session_token_hash,
     )
+    passkey_enrolled = passkeys.passkeys_configured() and _user_has_passkey(db, context.user_id)
+    setup_required = admin_mfa_required() and not passkey_enrolled
+    mfa_authenticated_at_ms = int(context.mfa_authenticated_at_ms or 0) if passkey_enrolled else 0
     if context.session_token_hash:
         db.execute(
             """
             UPDATE auth_sessions
             SET
-                mfa_authenticated_at_ms = 0,
+                mfa_authenticated_at_ms = %s,
                 mfa_setup_required = %s,
                 reauthenticated_at_ms = %s
             WHERE token_hash = %s
             """,
             (
-                1 if admin_mfa_required() else 0,
+                mfa_authenticated_at_ms,
+                1 if setup_required else 0,
                 current_timestamp_ms(),
                 context.session_token_hash,
             ),
@@ -2493,8 +2497,8 @@ def auth_mfa_disable(
     request.state.auth_context = replace(
         context,
         mfa_enabled=False,
-        mfa_authenticated_at_ms=0,
-        mfa_setup_required=admin_mfa_required(),
+        mfa_authenticated_at_ms=mfa_authenticated_at_ms,
+        mfa_setup_required=setup_required,
     )
     _record_destructive_admin_action("disable_mfa")
     _commit_required_lifecycle_event(
