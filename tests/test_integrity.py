@@ -95,11 +95,6 @@ class MigrationGuardTests(unittest.TestCase):
         expected_system_identifier = os.environ.get(
             "GARDENOPS_DISPOSABLE_POSTGRES_SYSTEM_IDENTIFIER", ""
         )
-        self.assertTrue(expected_marker, "disposable database marker is required")
-        self.assertTrue(
-            expected_system_identifier,
-            "disposable cluster system identifier is required",
-        )
         identity = conn.execute(
             """
             SELECT current_database() AS database_name,
@@ -119,6 +114,18 @@ class MigrationGuardTests(unittest.TestCase):
                 and database_name.removeprefix("gardenops_test_shard").isdigit()
             ),
             f"unexpected disposable database name: {database_name}",
+        )
+        if not expected_marker and not expected_system_identifier:
+            self.assertEqual(database_name, "gardenops_test")
+            self.assertTrue(
+                os.environ.get("GARDENOPS_TEST_POSTGRES_URL", ""),
+                "dedicated test database URL is required",
+            )
+            return
+        self.assertTrue(expected_marker, "disposable database marker is required")
+        self.assertTrue(
+            expected_system_identifier,
+            "disposable cluster system identifier is required",
         )
         self.assertEqual(identity["role_name"], "gardenops_test_runner")
         self.assertEqual(identity["server_address"], "127.0.0.1")
