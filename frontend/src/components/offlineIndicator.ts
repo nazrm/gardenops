@@ -1,5 +1,6 @@
 import { t } from "../core/i18n";
 import type { OfflineDraft } from "../core/models";
+import { canRetryFailedDraft } from "../services/offlineQueue";
 
 export interface OfflineIndicatorCallbacks {
   onDiscard: (draft: OfflineDraft) => void;
@@ -16,21 +17,68 @@ export interface OfflineIndicatorState {
   syncingCount: number;
 }
 
+function firstText(
+  payload: Record<string, unknown>,
+  keys: readonly string[],
+): string {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function serializedMediaName(payload: Record<string, unknown>): string {
+  const media = payload["_serialized_media"];
+  if (!Array.isArray(media)) return "";
+  const first = media[0];
+  if (!first || typeof first !== "object") return "";
+  const name = (first as { name?: unknown }).name;
+  return typeof name === "string" ? name.trim() : "";
+}
+
 function failedDraftLabel(draft: OfflineDraft): string {
   const taskId = String(draft.payload["task_id"] ?? "").trim();
-  if (!taskId) return t("offline.failed_draft", { type: draft.type });
-  const taskLabel = typeof draft.payload["task_label"] === "string"
-    && draft.payload["task_label"].trim()
-    ? draft.payload["task_label"].trim()
-    : t("offline.failed_task", { task: taskId });
-  const actionLabel = typeof draft.payload["action_label"] === "string"
-    && draft.payload["action_label"].trim()
-    ? draft.payload["action_label"].trim()
-    : t(`tasks.action_${draft.type.replace("task_", "")}`);
-  return t("offline.failed_task_action", {
-    action: actionLabel,
-    task: taskLabel,
-  });
+  if (taskId) {
+    const taskLabel = typeof draft.payload["task_label"] === "string"
+      && draft.payload["task_label"].trim()
+      ? draft.payload["task_label"].trim()
+      : t("offline.failed_task", { task: taskId });
+    const actionLabel = typeof draft.payload["action_label"] === "string"
+      && draft.payload["action_label"].trim()
+      ? draft.payload["action_label"].trim()
+      : t(`tasks.action_${draft.type.replace("task_", "")}`);
+    return t("offline.failed_task_action", {
+      action: actionLabel,
+      task: taskLabel,
+    });
+  }
+
+  const detailsByType: Record<string, { heading: string; keys: string[] }> = {
+    journal: { heading: t("journal.title"), keys: ["title", "notes"] },
+    issue_create: { heading: t("issues.title"), keys: ["title", "description"] },
+    harvest_create: { heading: t("harvest.title"), keys: ["notes", "occurred_on"] },
+  };
+  const details = detailsByType[draft.type];
+  if (details) {
+    const label = firstText(draft.payload, details.keys);
+    return label ? `${details.heading}: ${label}` : details.heading;
+  }
+
+  if (draft.type === "plant_media_upload" || draft.type === "plot_media_upload") {
+    const target = firstText(draft.payload, ["target_label", "target_id"]);
+    const file = serializedMediaName(draft.payload);
+    const subject = [target, file].filter(Boolean).join(": ");
+    return subject || t("media.untitled");
+  }
+
+  return t("offline.failed_draft", { type: draft.type });
+}
+
+function retryLabel(draft: OfflineDraft): string {
+  return draft.last_status === 409 || draft.last_status === 410
+    ? t("offline.retry_as_new")
+    : t("offline.retry");
 }
 
 export function renderOfflineIndicator(
@@ -126,11 +174,11 @@ export function renderOfflineIndicator(
     if (callbacks && (canRetryDrafts || canDiscardDrafts)) {
       const actions = document.createElement("div");
       actions.className = "offline-failure-actions";
-      if (canRetryDrafts) {
+      if (canRetryDrafts && canRetryFailedDraft(draft)) {
         const retry = document.createElement("button");
         retry.type = "button";
         retry.className = "offline-retry-btn";
-        retry.textContent = t("offline.retry");
+        retry.textContent = retryLabel(draft);
         retry.addEventListener("click", () => callbacks.onRetry(draft));
         actions.appendChild(retry);
       }

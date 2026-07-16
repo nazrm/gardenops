@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "phase_six": {
+    "profile_order": [
+      "admin:desktop"
+    ],
+    "fixture": {
+      "journal_title": "Phase 6 lost acknowledgement observation"
+    },
+    "browser_contract": {
+      "failed_families": [
+        "journal",
+        "issues",
+        "harvest",
+        "task_action",
+        "media_upload"
+      ],
+      "minimum_reconnect_count": 3,
+      "terminal_statuses": [
+        409,
+        410
+      ]
+    },
+    "database_boundaries": {
+      "owned_tables": [
+        "auth_passkey_challenges",
+        "auth_sessions",
+        "auth_users",
+        "garden_journal_entries",
+        "layout_state",
+        "offline_create_operations"
+      ]
+    },
+    "support": {
+      "account_isolation": "browser_logout_clear_proven",
+      "changed_payload_and_binary_conflict": "backend_proven_tests/test_offline_idempotency.py_and_unit.py",
+      "expired_retention_boundary": "backend_proven_tests/test_offline_idempotency.py",
+      "garden_and_endpoint_scope": "browser_and_backend_proven",
+      "lost_ack_and_repeated_reconnect": "browser_proven_route_fetch_then_abort",
+      "media_exact_asset_count": "backend_proven_tests/test_offline_idempotency.py",
+      "side_effect_and_operation_counts": "backend_proven_tests/test_offline_idempotency.py",
+      "target_gone_and_explicit_retry_as_new": "browser_and_backend_proven"
+    }
+  }
+}

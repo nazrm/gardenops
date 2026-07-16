@@ -32,6 +32,9 @@ PHASE_FOUR_ORACLE = (
 PHASE_FIVE_ORACLE = (
     ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_five_oracle.json"
 )
+PHASE_SIX_ORACLE = (
+    ROOT / "scripts" / "e2e" / "fixtures" / "complete_journeys_phase_six_oracle.json"
+)
 EXPECTED_HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
 ).stdout.strip()
@@ -199,7 +202,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
     subprocess.run(["git", "init", "--quiet"], cwd=checkout, check=True, timeout=20)
     runner = checkout / "scripts" / "run_complete_journeys_e2e.sh"
     result = subprocess.run(
-        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "6"],
+        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "7"],
         cwd=checkout,
         capture_output=True,
         check=False,
@@ -703,7 +706,7 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
     runner_source = RUNNER.read_text(encoding="utf-8")
 
-    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
     assert "runDailyAttentionWork" in journey_source
     assert 'require("./e2e/journeys/dailyAttentionWork.cjs")' in checker_source
     assert "phaseSelected(2)" in checker_source
@@ -721,7 +724,7 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_THREE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
     assert "GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER=1" in runner_source
     assert "runObservationToAction" in journey_source
     assert 'require("./e2e/journeys/observationToAction.cjs")' in checker_source
@@ -873,7 +876,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FOUR_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
     assert 'require("./e2e/journeys/planningAndReporting.cjs")' in checker_source
     assert "phaseSelected(4)" in checker_source
     assert "runPlanningAndReporting" in checker_source
@@ -1016,7 +1019,7 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FIVE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=5" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
     assert 'require("./e2e/journeys/identityAndRoles.cjs")' in checker_source
     assert "phaseSelected(5)" in checker_source
     assert "runIdentityAndRoles" in checker_source
@@ -1081,6 +1084,46 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
     ):
         assert marker in journey_source
     for forbidden in ("route.fulfill(", "context.addCookies(", "page.setContent("):
+        assert forbidden not in journey_source
+
+
+def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
+    journey = ROOT / "scripts/e2e/journeys/offlineAndFailureRecovery.cjs"
+    journey_source = journey.read_text(encoding="utf-8")
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    seeder_source = SEEDER.read_text(encoding="utf-8")
+    runner_source = RUNNER.read_text(encoding="utf-8")
+    oracle = json.loads(PHASE_SIX_ORACLE.read_text(encoding="utf-8"))
+
+    assert "MAX_IMPLEMENTED_PHASE=6" in runner_source
+    assert 'require("./e2e/journeys/offlineAndFailureRecovery.cjs")' in checker_source
+    assert "phaseSelected(6)" in checker_source
+    assert "runOfflineAndFailureRecovery" in checker_source
+    assert "assertPhaseSixProfileEvidence" in checker_source
+    assert 'phaseSelected(6) ? ["C2", "INT-01", "OFF-01"]' in checker_source
+    assert "_load_phase_six_oracle" in seeder_source
+    assert '"phase_six": _phase_six_fixture_state()' in seeder_source
+    assert oracle["schema_version"] == 1
+    assert oracle["phase_six"]["profile_order"] == ["admin:desktop"]
+    assert oracle["phase_six"]["browser_contract"]["failed_families"] == [
+        "journal",
+        "issues",
+        "harvest",
+        "task_action",
+        "media_upload",
+    ]
+    for marker in (
+        "route.fetch()",
+        'route.abort("failed")',
+        "setOffline(true)",
+        "setOffline(false)",
+        "independent postcondition",
+        "Retry as new",
+        "logout retained another account's drafts",
+        "Garden A draft replayed into Garden B",
+    ):
+        assert marker in journey_source
+    for forbidden in ("route.fulfill(", "page.setContent("):
         assert forbidden not in journey_source
 
 

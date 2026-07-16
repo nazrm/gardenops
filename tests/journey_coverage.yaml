@@ -102,6 +102,30 @@ journeys:
   - <<: *open_journey
     id: C2
     phase: 6
+    desktop: proven
+    mobile: required
+    roles: proven
+    offline: not_applicable
+    provider: not_applicable
+    database: proven
+    filesystem: proven
+    accessibility: required
+    performance: not_applicable
+    evidence:
+      - gardenops/routers/gardens.py
+      - gardenops/routers/media.py
+      - gardenops/services/lidar_terrain.py
+      - scripts/check_optimization_journeys_e2e.cjs
+      - tests/test_destructive_audit_atomicity.py
+      - tests/test_export_import.py
+      - tests/test_gardens_endpoints.py
+      - tests/test_media.py
+    notes:
+      mobile: Direct mobile garden-delete wording and layout proof remains Phase 8 work.
+      offline: Destructive administration requires an online current-assurance boundary and is not queued.
+      provider: Destructive garden, snapshot, media, and terrain operations do not call an external provider.
+      accessibility: Phase 8 owns keyboard, focus, semantic-tree, and screen-reader closure.
+      performance: Phase 9 owns quantitative destructive-operation budgets.
   - <<: *open_journey
     id: C3
     phase: 5
@@ -193,13 +217,13 @@ journeys:
     desktop: proven
     mobile: proven
     roles: proven
-    offline: required
+    offline: proven
     evidence: *phase_two_evidence
     provider: not_applicable
     filesystem: not_applicable
     notes:
       provider: Core task actions do not require an external provider.
-      offline: Offline task-action replay requires Phase 6 lost-ack and repeated reconnect evidence.
+      offline: The task-action browser replay plus Phase 6 lost-ack/reconnect controller and complete backend action matrix prove supported offline behavior.
       filesystem: Task actions and completion history do not use a supported file workflow.
       audit: Browser mutations, including the viewer's rejected direct write, are correlated one-to-one with audit rows by method, path, status, actor, auth type, and garden where present; audit timestamps remain product wall-clock evidence.
       database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
@@ -316,6 +340,28 @@ journeys:
   - <<: *open_journey
     id: INT-01
     phase: 6
+    desktop: not_applicable
+    mobile: not_applicable
+    roles: not_applicable
+    offline: not_applicable
+    provider: not_applicable
+    database: proven
+    filesystem: not_applicable
+    accessibility: not_applicable
+    performance: not_applicable
+    evidence:
+      - gardenops/schema_signature.py
+      - scripts/run_fast_postgres_tests.py
+      - tests/test_integrity.py
+    notes:
+      desktop: Schema bootstrap is an operator/database boundary with no desktop UI.
+      mobile: Schema bootstrap is an operator/database boundary with no mobile UI.
+      roles: Schema verification runs before application user roles are available.
+      offline: Schema verification is local database initialization, not a queued user operation.
+      provider: Schema verification does not call an external provider.
+      filesystem: Migration discovery reads packaged SQL but has no supported user file workflow.
+      accessibility: Schema verification has no user interface or assistive-technology surface.
+      performance: Phase 9 owns quantitative migration and startup budgets.
   - <<: *open_journey
     id: L1
     phase: 4
@@ -412,6 +458,30 @@ journeys:
   - <<: *open_journey
     id: OFF-01
     phase: 6
+    desktop: proven
+    mobile: required
+    roles: proven
+    offline: proven
+    provider: not_applicable
+    database: proven
+    filesystem: proven
+    accessibility: required
+    performance: not_applicable
+    evidence:
+      - scripts/check_complete_journeys_e2e.cjs
+      - scripts/e2e/fixtures/complete_journeys_phase_six_oracle.json
+      - scripts/e2e/journeys/offlineAndFailureRecovery.cjs
+      - scripts/run_complete_journeys_e2e.sh
+      - scripts/seed_complete_journeys_e2e.py
+      - tests/test_complete_journey_e2e_scripts.py
+      - tests/test_offline_idempotency.py
+      - tests/test_offline_idempotency_unit.py
+      - tests/test_offline_replay_frontend_static.py
+    notes:
+      mobile: Phase 8 owns direct responsive recovery proof; the shared queue mechanics are desktop-proven.
+      provider: Offline replay has no external provider boundary.
+      accessibility: Phase 8 owns keyboard, focus, semantic-tree, and screen-reader closure.
+      performance: Phase 9 owns quantitative replay and reconnect budgets.
   - <<: *open_journey
     id: P1
     phase: 3

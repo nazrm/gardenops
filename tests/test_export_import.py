@@ -204,6 +204,83 @@ class TestExportImport(BaseApiTest):
             )
         self.assertEqual(response.status_code, 404)
 
+    def test_snapshot_restore_partial_failure_rolls_back_all_changes(self) -> None:
+        saved = self.client.post("/api/snapshots", json={"name": "rollback-source"})
+        self.assertEqual(saved.status_code, 201, saved.text)
+        snapshot_id = self.client.get("/api/snapshots").json()[0]["id"]
+
+        conn = db.get_db()
+        try:
+            conn.execute("UPDATE plots SET notes = 'keep-current' WHERE plot_id = 'B1'")
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        updated = self.client.patch(
+            "/api/layout-state",
+            json={
+                "row": 7,
+                "col": 8,
+                "width": 6,
+                "height": 5,
+                "north_degrees": 222,
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        before = self.client.get("/api/plots/export").json()
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            headers = self._destructive_admin_headers("partial-snapshot-restore")
+            with (
+                patch(
+                    "gardenops.main.replace_map_objects",
+                    side_effect=RuntimeError("injected snapshot restore failure"),
+                ),
+                self.assertRaisesRegex(RuntimeError, "injected snapshot restore failure"),
+            ):
+                self.client.post(
+                    f"/api/snapshots/{snapshot_id}/restore",
+                    headers=headers,
+                )
+
+        self.assertEqual(self.client.get("/api/plots/export").json(), before)
+
+    def test_snapshot_restore_required_audit_failure_rolls_back(self) -> None:
+        saved = self.client.post("/api/snapshots", json={"name": "audit-rollback-source"})
+        self.assertEqual(saved.status_code, 201, saved.text)
+        snapshot_id = self.client.get("/api/snapshots").json()[0]["id"]
+
+        conn = db.get_db()
+        try:
+            conn.execute("UPDATE plots SET notes = 'retain-on-audit-failure' WHERE plot_id = 'B1'")
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        before = self.client.get("/api/plots/export").json()
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            headers = self._destructive_admin_headers("snapshot-audit-failure")
+            with (
+                patch(
+                    "gardenops.main.write_required_audit_event",
+                    side_effect=RuntimeError("injected required audit failure"),
+                ),
+                self.assertRaisesRegex(RuntimeError, "injected required audit failure"),
+            ):
+                self.client.post(
+                    f"/api/snapshots/{snapshot_id}/restore",
+                    headers=headers,
+                )
+
+        self.assertEqual(self.client.get("/api/plots/export").json(), before)
+
     def test_export_plots(self) -> None:
         self.client.patch(
             "/api/layout-state",

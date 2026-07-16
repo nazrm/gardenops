@@ -7,6 +7,58 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class OfflineReplayFrontendStaticTests(unittest.TestCase):
+    def test_replay_error_classifier_separates_terminal_and_retryable_statuses(self) -> None:
+        source = (ROOT / "frontend/src/services/offlineQueue.ts").read_text(encoding="utf-8")
+
+        classifier = source.split("export function classifyReplayError", 1)[1].split(
+            "export function transitionDraftAfterReplayError", 1
+        )[0]
+        self.assertIn("TERMINAL_REPLAY_STATUSES.has(status)", classifier)
+        self.assertIn("new Set([400, 403, 409, 410, 413, 422])", source)
+        self.assertIn("status === 408", source)
+        self.assertIn("status === 425", source)
+        self.assertIn("status === 429", source)
+        self.assertIn("status >= 500 && status <= 599", source)
+
+    def test_replay_transition_fails_terminal_errors_and_bounds_transient_retries(self) -> None:
+        source = (ROOT / "frontend/src/services/offlineQueue.ts").read_text(encoding="utf-8")
+
+        transition = source.split("export function transitionDraftAfterReplayError", 1)[1].split(
+            "async function recordReplayFailure", 1
+        )[0]
+        self.assertIn("const retryCount = draft.retry_count + 1", transition)
+        self.assertIn('disposition === "terminal" || retryCount >= MAX_RETRIES', transition)
+        self.assertIn('? "failed"', transition)
+        self.assertIn(': "pending"', transition)
+        self.assertIn("...draft", transition)
+        self.assertNotIn("operation_id:", transition)
+        self.assertNotIn("payload:", transition)
+        self.assertIn("recordReplayFailure(draft.id, outcome.error)", source)
+
+    def test_failed_replay_labels_cover_each_supported_draft_family(self) -> None:
+        indicator = (ROOT / "frontend/src/components/offlineIndicator.ts").read_text(
+            encoding="utf-8"
+        )
+
+        labels = indicator.split("function failedDraftLabel", 1)[1].split(
+            "export function renderOfflineIndicator", 1
+        )[0]
+        for draft_type in (
+            "journal",
+            "issue_create",
+            "harvest_create",
+            "plant_media_upload",
+            "plot_media_upload",
+        ):
+            self.assertIn(draft_type, labels)
+        self.assertIn('["title", "notes"]', labels)
+        self.assertIn('["title", "description"]', labels)
+        self.assertIn('["notes", "occurred_on"]', labels)
+        self.assertIn('["target_label", "target_id"]', labels)
+        self.assertIn("serializedMediaName(draft.payload)", labels)
+        self.assertIn('payload["task_label"]', indicator)
+        self.assertIn('payload["action_label"]', indicator)
+
     def test_queue_persists_a_distinct_attachment_operation_id(self) -> None:
         source = (ROOT / "frontend" / "src" / "services" / "offlineQueue.ts").read_text(
             encoding="utf-8"
@@ -175,6 +227,29 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
             mobile_indicator,
         )
 
+    def test_conflict_and_gone_retry_explicitly_mint_new_operation_identities(self) -> None:
+        queue = (ROOT / "frontend/src/services/offlineQueue.ts").read_text(encoding="utf-8")
+        indicator = (ROOT / "frontend/src/components/offlineIndicator.ts").read_text(
+            encoding="utf-8"
+        )
+
+        renewal = queue.split("function renewOperationIdentity", 1)[1].split(
+            "function backfillDraftOperationIds", 1
+        )[0]
+        retry = queue.split("export async function retryDraft", 1)[1].split(
+            "export async function clearOfflineQueue", 1
+        )[0]
+        self.assertIn("operation_id: generateOperationId()", renewal)
+        self.assertIn("_serialized_media: serializedMedia.map", renewal)
+        self.assertIn("operation_id: generateOperationId()", renewal)
+        self.assertIn("draft.last_status === 409 || draft.last_status === 410", retry)
+        self.assertIn("if (!canRetryFailedDraft(draft)) return false", retry)
+        self.assertIn("draft = renewOperationIdentity(draft)", retry)
+        self.assertIn("draft.last_status = null", retry)
+        self.assertIn('t("offline.retry_as_new")', indicator)
+        self.assertIn("draft.last_status === 409 || draft.last_status === 410", indicator)
+        self.assertIn("canRetryDrafts && canRetryFailedDraft(draft)", indicator)
+
     def test_downgraded_viewers_can_discard_failed_drafts_without_retrying_writes(self) -> None:
         feature = (ROOT / "frontend/src/features/offlineFeature.ts").read_text(encoding="utf-8")
         indicator = (ROOT / "frontend/src/components/offlineIndicator.ts").read_text(
@@ -190,7 +265,7 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn("if (!canRetryOfflineDrafts())", feature)
         self.assertIn("canDiscardDrafts?: boolean", indicator)
         self.assertIn("canRetryDrafts?: boolean", indicator)
-        self.assertIn("if (canRetryDrafts)", indicator)
+        self.assertIn("if (canRetryDrafts && canRetryFailedDraft(draft))", indicator)
         self.assertIn("if (canDiscardDrafts)", indicator)
         self.assertIn('offlineAction.status === "failed"', task_cards)
         self.assertIn("if (!ctx.ensureWriteAccess()) return;", tasks)

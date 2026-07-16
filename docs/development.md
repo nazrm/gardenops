@@ -254,6 +254,8 @@ scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --p
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 4
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 5
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 5
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 6
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 6
 ```
 
 The runner creates its own disposable PostgreSQL child through
@@ -467,6 +469,32 @@ coverage contracts:
 .venv/bin/pytest -q tests/test_complete_journey_e2e_scripts.py -k phase_five
 .venv/bin/python scripts/check_journey_coverage.py --allow-open
 node --check scripts/e2e/journeys/identityAndRoles.cjs
+node --check scripts/check_complete_journeys_e2e.cjs
+```
+
+Phase 6 uses Playwright routing to deliver an offline journal mutation to the
+real backend and then drop only its browser-facing response. The journey proves
+the retained operation ID, independent committed-state postcondition, repeated
+reconnect replay, garden isolation, logout queue clearing, and actionable
+conflict/gone recovery across journal, issue, harvest, task-action, and media
+draft labels. The complete payload/binary fingerprint, retention-expiry,
+side-effect-count, and media-asset matrices remain focused backend boundaries in
+`tests/test_offline_idempotency.py` and
+`tests/test_offline_idempotency_unit.py`, because their browser transport
+mechanics are identical.
+
+The Phase 6 manifest names `C2`, `INT-01`, and `OFF-01`. Destructive atomicity
+and schema/bootstrap integrity are proven at their backend boundaries; the
+browser profile owns the real lost-ack and recovery interaction. Direct mobile
+garden-delete wording and all accessibility closure remain Phase 8 work.
+
+Before coordinating a real Phase 6 browser run, validate its static harness and
+frontend recovery contracts:
+
+```bash
+.venv/bin/pytest -q tests/test_complete_journey_e2e_scripts.py -k phase_six
+.venv/bin/python -m unittest tests.test_offline_replay_frontend_static
+node --check scripts/e2e/journeys/offlineAndFailureRecovery.cjs
 node --check scripts/check_complete_journeys_e2e.cjs
 ```
 

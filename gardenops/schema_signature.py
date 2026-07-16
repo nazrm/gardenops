@@ -16,6 +16,7 @@ REQUIRED_TABLES = (
     "auth_passkeys",
     "auth_passkey_challenges",
     "auth_password_reset_tokens",
+    "auth_sessions",
     "audit_events",
     "gardens",
     "plots",
@@ -112,6 +113,10 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "used_by_user_id",
         "metadata",
         "purpose",
+    ),
+    "auth_sessions": (
+        "device_label",
+        "location_hint",
     ),
     "audit_events": (
         "id",
@@ -364,6 +369,18 @@ REQUIRED_COLUMN_NULLABILITY: dict[str, bool] = {
     "auth_password_reset_tokens.purpose": False,
     "auth_passkey_challenges.invitation_user_handle": True,
     "inventory_transactions.garden_id": False,
+    "auth_sessions.device_label": False,
+    "auth_sessions.location_hint": False,
+}
+
+REQUIRED_COLUMN_TYPES: dict[str, str] = {
+    "auth_sessions.device_label": "text",
+    "auth_sessions.location_hint": "text",
+}
+
+REQUIRED_COLUMN_DEFAULTS: dict[str, str] = {
+    "auth_sessions.device_label": "''::text",
+    "auth_sessions.location_hint": "''::text",
 }
 
 REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
@@ -427,6 +444,8 @@ class SchemaSnapshot:
     indexes: set[str]
     constraints: set[str]
     column_nullability: dict[str, bool] = field(default_factory=dict)
+    column_types: dict[str, str] = field(default_factory=dict)
+    column_defaults: dict[str, str | None] = field(default_factory=dict)
     index_definitions: dict[str, str] = field(default_factory=dict)
     constraint_definitions: dict[str, str] = field(default_factory=dict)
 
@@ -447,18 +466,24 @@ def collect_schema_snapshot(conn: psycopg.Connection[Any]) -> SchemaSnapshot:
 
     column_rows = conn.execute(
         """
-        SELECT table_name, column_name, is_nullable
+        SELECT table_name, column_name, data_type, column_default, is_nullable
         FROM information_schema.columns
         WHERE table_schema = 'public'
         """,
     ).fetchall()
     columns: dict[str, set[str]] = {}
     column_nullability: dict[str, bool] = {}
+    column_types: dict[str, str] = {}
+    column_defaults: dict[str, str | None] = {}
     for row in column_rows:
         table_name = str(row["table_name"])
         column_name = str(row["column_name"])
         columns.setdefault(table_name, set()).add(column_name)
-        column_nullability[f"{table_name}.{column_name}"] = str(row["is_nullable"]) == "YES"
+        qualified_name = f"{table_name}.{column_name}"
+        column_nullability[qualified_name] = str(row["is_nullable"]) == "YES"
+        column_types[qualified_name] = str(row["data_type"])
+        default = row["column_default"]
+        column_defaults[qualified_name] = None if default is None else str(default)
 
     index_rows = conn.execute(
         """
@@ -486,6 +511,8 @@ def collect_schema_snapshot(conn: psycopg.Connection[Any]) -> SchemaSnapshot:
         indexes=indexes,
         constraints=constraints,
         column_nullability=column_nullability,
+        column_types=column_types,
+        column_defaults=column_defaults,
         index_definitions=index_definitions,
         constraint_definitions=constraint_definitions,
     )
@@ -499,6 +526,8 @@ def missing_schema_parts(
     required_indexes: tuple[str, ...] = REQUIRED_INDEXES,
     required_constraints: tuple[str, ...] = REQUIRED_CONSTRAINTS,
     required_column_nullability: Mapping[str, bool] = REQUIRED_COLUMN_NULLABILITY,
+    required_column_types: Mapping[str, str] = REQUIRED_COLUMN_TYPES,
+    required_column_defaults: Mapping[str, str] = REQUIRED_COLUMN_DEFAULTS,
     required_index_definition_fragments: Mapping[
         str,
         tuple[str, ...],
@@ -526,6 +555,14 @@ def missing_schema_parts(
     for column, nullable in required_column_nullability.items():
         if snapshot.column_nullability.get(column) is not nullable:
             missing.append({"kind": "column-nullability", "object": column})
+    for column, column_type in required_column_types.items():
+        actual = _normalize_definition(snapshot.column_types.get(column, ""))
+        if actual != _normalize_definition(column_type):
+            missing.append({"kind": "column-type", "object": column})
+    for column, default in required_column_defaults.items():
+        actual = snapshot.column_defaults.get(column)
+        if actual is None or _normalize_definition(actual) != _normalize_definition(default):
+            missing.append({"kind": "column-default", "object": column})
     for index, fragments in required_index_definition_fragments.items():
         actual = _normalize_definition(snapshot.index_definitions.get(index, ""))
         if not actual or any(
@@ -580,6 +617,10 @@ _MIGRATION_0027_CONSTRAINTS = {
     "fk_procurement_received_by_user",
     "ck_procurement_receipt_provenance",
     "ck_procurement_quantity_positive",
+}
+_MIGRATION_0028_COLUMNS = {
+    "auth_sessions.device_label",
+    "auth_sessions.location_hint",
 }
 _MIGRATION_0022_CONSTRAINTS = {
     constraint
@@ -676,6 +717,17 @@ def _migration_0027_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
     )
 
 
+def _is_migration_0028_part(part: Mapping[str, object]) -> bool:
+    return str(part.get("object", "")) in _MIGRATION_0028_COLUMNS
+
+
+def _migration_0028_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
+    return not (
+        {"device_label", "location_hint"}
+        & snapshot.columns.get("auth_sessions", set())
+    )
+
+
 def bootstrap_schema_diagnostics_from_snapshot(
     snapshot: SchemaSnapshot,
 ) -> dict[str, object]:
@@ -695,20 +747,25 @@ def bootstrap_schema_diagnostics_from_snapshot(
         missing_audit_request_id = _migration_0023_schema_is_absent(snapshot)
         missing_media_cleanup = _migration_0026_schema_is_absent(snapshot)
         missing_inventory_integrity = _migration_0027_schema_is_absent(snapshot)
+        missing_auth_session_metadata = _migration_0028_schema_is_absent(snapshot)
         if (
             missing_offline_operations
             or missing_audit_request_id
             or missing_media_cleanup
             or missing_inventory_integrity
+            or missing_auth_session_metadata
         ) and all(
             (missing_offline_operations and _is_migration_0022_part(part))
             or (missing_audit_request_id and _is_migration_0023_part(part))
             or (missing_weather_identity and _is_migration_0021_part(part))
             or (missing_media_cleanup and _is_migration_0026_part(part))
             or (missing_inventory_integrity and _is_migration_0027_part(part))
+            or (missing_auth_session_metadata and _is_migration_0028_part(part))
             for part in missing
         ):
-            stamp_through = 26
+            stamp_through = 27
+            if missing_inventory_integrity:
+                stamp_through = 26
             if missing_media_cleanup:
                 stamp_through = 25
             if missing_audit_request_id:

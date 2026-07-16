@@ -10,6 +10,7 @@ import gardenops.db as db
 from gardenops import audit as audit_service
 from gardenops.main import app
 from gardenops.router_helpers import generate_public_id
+from gardenops.routers import gardens as gardens_router
 from gardenops.security import create_user
 from tests.base import BaseApiTest, strong_password
 
@@ -121,9 +122,19 @@ class TestGardenDeleteAuditAtomicity(BaseApiTest):
             conn.commit()
         finally:
             db.return_db(conn)
+        for storage_key in (
+            f"original/atomic/{suffix}.png",
+            f"preview/atomic/{suffix}.png",
+            f"lidar/garden-{garden_id}/terrain.laz",
+        ):
+            path = self.test_media_dir / storage_key
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"test")
         return {
             "admin_id": int(admin["id"]),
+            "asset_id": asset_id,
             "garden_id": garden_id,
+            "lidar_storage_key": f"lidar/garden-{garden_id}/terrain.laz",
             "password": password,
             "preview_storage_key": f"preview/atomic/{suffix}.png",
             "storage_key": f"original/atomic/{suffix}.png",
@@ -201,8 +212,17 @@ class TestGardenDeleteAuditAtomicity(BaseApiTest):
                     (garden_id,),
                 ).fetchone()
             )
+            self.assertIsNotNone(
+                conn.execute(
+                    "SELECT 1 FROM media_links WHERE asset_id = %s",
+                    (garden["asset_id"],),
+                ).fetchone()
+            )
         finally:
             db.return_db(conn)
+        self.assertTrue((self.test_media_dir / str(garden["storage_key"])).is_file())
+        self.assertTrue((self.test_media_dir / str(garden["preview_storage_key"])).is_file())
+        self.assertTrue((self.test_media_dir / str(garden["lidar_storage_key"])).is_file())
 
     def test_garden_delete_commits_required_audit_event_before_side_effects(self) -> None:
         garden = self._create_deletable_garden()
@@ -270,7 +290,10 @@ class TestGardenDeleteAuditAtomicity(BaseApiTest):
         drain_cleanup.assert_called_once()
         self.assertEqual(
             drain_cleanup.call_args.kwargs["storage_pairs"],
-            [(garden["storage_key"], garden["preview_storage_key"])],
+            [
+                (garden["lidar_storage_key"], ""),
+                (garden["storage_key"], garden["preview_storage_key"]),
+            ],
         )
         self.assertEqual(enqueue_telemetry.call_args.args[0], "audit_event")
         self.assertEqual(
@@ -465,3 +488,120 @@ class TestGardenDeleteAuditAtomicity(BaseApiTest):
             self.assertEqual(int(row["status_code"]), 102)
         finally:
             db.return_db(conn)
+
+    def test_garden_delete_child_failure_rolls_back_complete_graph_and_files(self) -> None:
+        garden = self._create_deletable_garden()
+        garden_id = int(garden["garden_id"])
+        original_delete_plots = gardens_router.delete_plots_for_replacement
+
+        def fail_after_child_deletes(
+            db_conn: db.DbConn,
+            *,
+            garden_id: int,
+            plot_ids: list[str],
+        ) -> object:
+            original_delete_plots(
+                db_conn,
+                garden_id=garden_id,
+                plot_ids=plot_ids,
+            )
+            raise RuntimeError("injected child delete failure")
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            client = TestClient(app, raise_server_exceptions=False)
+            self.addCleanup(client.close)
+            headers = self._destructive_headers(client, garden)
+            with (
+                patch(
+                    "gardenops.routers.gardens.delete_plots_for_replacement",
+                    side_effect=fail_after_child_deletes,
+                ),
+                patch("gardenops.routers.gardens.notify_garden_modified") as notify,
+                patch("gardenops.routers.gardens.record_security_event") as record_security,
+                patch(
+                    "gardenops.routers.gardens.drain_media_cleanup_jobs_best_effort"
+                ) as drain_cleanup,
+            ):
+                response = client.delete(
+                    f"/api/gardens/{garden_id}",
+                    headers={**headers, "x-action-reason": "child-delete-failure"},
+                )
+
+        self.assertEqual(response.status_code, 500)
+        notify.assert_not_called()
+        record_security.assert_not_called()
+        drain_cleanup.assert_not_called()
+        self._assert_related_state_exists(garden)
+
+        conn = db.get_db()
+        try:
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM media_cleanup_jobs WHERE storage_key = %s",
+                    (garden["storage_key"],),
+                ).fetchone()
+            )
+        finally:
+            db.return_db(conn)
+
+    def test_garden_delete_detects_future_uncascaded_garden_state(self) -> None:
+        garden = self._create_deletable_garden()
+        garden_id = int(garden["garden_id"])
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                CREATE TABLE phase_six_uncascaded_garden_state (
+                    id BIGSERIAL PRIMARY KEY,
+                    garden_id BIGINT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO phase_six_uncascaded_garden_state (garden_id) VALUES (%s)",
+                (garden_id,),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        try:
+            with patch.dict(
+                os.environ,
+                {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+                clear=False,
+            ):
+                client = TestClient(app, raise_server_exceptions=False)
+                self.addCleanup(client.close)
+                headers = self._destructive_headers(client, garden)
+                response = client.delete(
+                    f"/api/gardens/{garden_id}",
+                    headers={**headers, "x-action-reason": "future-table-guard"},
+                )
+
+            self.assertEqual(response.status_code, 500)
+            self._assert_related_state_exists(garden)
+            conn = db.get_db()
+            try:
+                retained = conn.execute(
+                    """
+                    SELECT COUNT(*) AS cnt
+                    FROM phase_six_uncascaded_garden_state
+                    WHERE garden_id = %s
+                    """,
+                    (garden_id,),
+                ).fetchone()
+                self.assertEqual(int(retained["cnt"]), 1)
+            finally:
+                db.return_db(conn)
+        finally:
+            conn = db.get_db()
+            try:
+                conn.execute("DROP TABLE IF EXISTS phase_six_uncascaded_garden_state")
+                conn.commit()
+            finally:
+                db.return_db(conn)
