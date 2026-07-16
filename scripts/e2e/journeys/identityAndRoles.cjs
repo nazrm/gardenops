@@ -335,10 +335,15 @@ async function exerciseTotp(page) {
   await confirmVisibleDialog(page);
   await answerPrompt(page, "phase-five-totp-enrollment-cancel");
   assert((await cancelPending).ok(), "TOTP enrollment cancel failed");
+  await waitFor(
+    () => page.locator("#adm-mfa-cancel").count().then((count) => count === 0),
+    "cancelled TOTP enrollment removal",
+  );
 
   const secondStart = responseFor(page, "POST", "/api/auth/mfa/totp/start");
   await page.locator("#adm-mfa-start").click();
   assert((await secondStart).ok(), "Second TOTP enrollment start failed");
+  await visible(page.locator("#adm-mfa-confirm"), "second TOTP enrollment confirmation");
   const secret = await page.locator("#adm-mfa-secret").inputValue();
   const confirmPending = responseFor(page, "POST", "/api/auth/mfa/totp/confirm");
   await page.locator("#adm-mfa-code").fill(currentTotp(secret));
