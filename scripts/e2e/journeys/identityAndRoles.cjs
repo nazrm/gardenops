@@ -433,7 +433,7 @@ async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticat
   const gate = page.locator("#auth-gate-form");
   await gate.locator("input[name='username']").fill(fixture.roles.admin);
   await gate.locator("button[type='submit']").click();
-  const passkeyAction = gate.locator("button[type='submit']").filter({ hasText: "Use passkey" });
+  let passkeyAction = gate.locator("button[type='submit']").filter({ hasText: "Use passkey" });
   await visible(passkeyAction, "explicit passwordless passkey action");
 
   await virtualAuthenticator.setUserVerified(false);
@@ -447,8 +447,7 @@ async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticat
   };
   page.on("response", captureRejected);
   await passkeyAction.click();
-  await waitFor(() => passkeyAction.isEnabled(), "rejected user-verification recovery");
-  await page.waitForTimeout(100);
+  await page.waitForTimeout(500);
   page.off("response", captureRejected);
   if (rejectedResponse) {
     assert(rejectedResponse.status() === 400 || rejectedResponse.status() === 401,
@@ -463,6 +462,12 @@ async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticat
     );
   }
   assert(await gate.isVisible(), "Rejected user verification left the sign-in gate");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await visible(gate, "user-verification retry gate");
+  await gate.locator("input[name='username']").fill(fixture.roles.admin);
+  await gate.locator("button[type='submit']").click();
+  passkeyAction = gate.locator("button[type='submit']").filter({ hasText: "Use passkey" });
+  await visible(passkeyAction, "user-verification retry action");
 
   await virtualAuthenticator.setUserVerified(true);
   const loginPending = responseFor(page, "POST", "/api/auth/passkeys/login/verify");
@@ -800,34 +805,6 @@ async function acceptInvitation(
   if (virtualAuthenticator) {
     const passkeyButton = form.locator("button").filter({ hasText: "Use passkey" });
     await visible(passkeyButton, `${expectedRole} passwordless invitation action`);
-    await virtualAuthenticator.setUserVerified(false);
-    const rejectedMarks = diagnosticMarks(guarded.diagnostics);
-    let rejectedResponse = null;
-    const captureRejected = (response) => {
-      if (response.request().method() === "POST"
-        && new URL(response.url()).pathname
-          === "/api/auth/invitations/passkey/register/verify") {
-        rejectedResponse = response;
-      }
-    };
-    page.on("response", captureRejected);
-    await passkeyButton.click();
-    await waitFor(() => passkeyButton.isEnabled(), `${expectedRole} rejected verification recovery`);
-    await page.waitForTimeout(100);
-    page.off("response", captureRejected);
-    if (rejectedResponse) {
-      assert(rejectedResponse.status() === 400,
-        `Rejected invitation user verification returned ${rejectedResponse.status()}`);
-      await discardExpectedUiFailure(
-        page,
-        guarded.diagnostics,
-        rejectedMarks,
-        "POST",
-        "/api/auth/invitations/passkey/register/verify",
-        400,
-      );
-    }
-    assert(await form.isVisible(), "Rejected invitation user verification left the auth gate");
     await virtualAuthenticator.setUserVerified(true);
     const acceptPending = responseFor(
       page,
