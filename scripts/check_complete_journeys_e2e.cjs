@@ -470,6 +470,8 @@ function assertPhaseEightDatabaseState(initial, final) {
 
 function assertPhaseSevenDatabaseState(initial, final, fixture) {
   assert(initial && final, "Phase 7 database state is missing");
+  assert(initial.alpha?.weather && final.alpha?.weather,
+    "Phase 7 stale-weather fixture was not prepared");
   assert(canonicalJson(initial.beta) === canonicalJson(final.beta),
     "Phase 7 changed the non-selected garden ShadeMap state");
   assert(final.alpha?.calibration?.enabled === true,

@@ -4231,17 +4231,22 @@ def _phase_seven_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         "SELECT fetched_at_ms, forecast_json FROM weather_cache WHERE garden_id = %s",
         (alpha_id,),
     ).fetchone()
-    if weather_row is None:
-        raise RuntimeError("Complete journey Phase 7 weather cache is missing")
+    weather = (
+        {
+            "fetched_at_ms": int(weather_row["fetched_at_ms"]),
+            "forecast_json": str(weather_row["forecast_json"]),
+        }
+        if weather_row is not None
+        else None
+    )
     return {
         "alpha": {
             "calibration": get_shademap_calibration(conn, garden_id=alpha_id),
             "obstacles": list_shademap_obstacles(conn, garden_id=alpha_id),
             "state": get_shademap_state(conn, garden_id=alpha_id),
-            "weather": {
-                "fetched_at_ms": int(weather_row["fetched_at_ms"]),
-                "forecast_json": str(weather_row["forecast_json"]),
-            },
+            # A location edit can legitimately invalidate this cache. Phase 7
+            # prepares it explicitly before its browser journey begins.
+            "weather": weather,
         },
         "beta": {
             "calibration": get_shademap_calibration(conn, garden_id=beta_id),

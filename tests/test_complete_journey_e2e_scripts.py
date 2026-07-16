@@ -1165,11 +1165,14 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
     assert "phaseSelected(7)" in checker_source
     assert "runProvidersAndTerrain" in checker_source
     assert "assertPhaseSevenDatabaseState" in checker_source
+    assert '"Phase 7 stale-weather fixture was not prepared"' in checker_source
     assert "assertPhaseSevenAuditEvents" in checker_source
     assert "assertPhaseSevenProfileEvidence" in checker_source
     assert "preparePhaseSevenFixtures" in checker_source
     assert "_load_phase_seven_oracle" in seeder_source
     assert "_prepare_phase_seven_weather" in seeder_source
+    assert '"weather": weather' in seeder_source
+    assert '"Complete journey Phase 7 weather cache is missing"' not in seeder_source
     assert '"phase_seven": _phase_seven_fixture_state()' in seeder_source
     assert "_write_phase_seven_terrain_fixture" in seeder_source
     assert "_write_phase_seven_estimated_sun_fixture" in seeder_source
