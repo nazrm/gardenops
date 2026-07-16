@@ -461,6 +461,7 @@ function phaseOneAuditExpectedEvents(loginCount) {
     [1, "PATCH", "/api/plots/P1MOBILEPLOT", 200],
     [4, "PATCH", "/api/plots/COMPLETE-PHASE-ONE-INDOOR/plants/COMPLETE-PHASE-ONE-BASIL", 200],
     [loginCount, "POST", "/api/auth/login", 200],
+    [loginCount, "POST", "/api/auth/passkeys/login/options", 200],
     [3, "POST", "/api/auth/passkeys/prompt/dismiss", 200],
     [9, "POST", "/api/auth/reauthenticate", 200],
     [2, "POST", "/api/gardens/{garden_id}/complete-onboarding", 200],
@@ -3442,6 +3443,7 @@ function assertPhaseTwoProfileEvidence(profiles, oracle = phaseTwoOracle()) {
 function isPhaseTwoAuditPath(pathname) {
   return [
     /^\/api\/auth\/login$/,
+    /^\/api\/auth\/passkeys\/login\/options$/,
     /^\/api\/attention\/(?:preferences|items\/[^/]+\/(?:read|dismiss|snooze|restore)|outcomes\/[^/]+\/restore)$/,
     /^\/api\/calendar\/(?:preferences|manual-events(?:\/[^/]+)?|subscriptions(?:\/[^/]+)?)$/,
     /^\/api\/media\/summaries$/,
@@ -3594,11 +3596,15 @@ function phaseTwoBrowserMutationRecords(profiles, fixture) {
       }
       assert(isPhaseTwoAuditPath(request.path),
         `Unknown Phase 2 browser mutation path: ${request.method} ${request.path}`);
-      const isLogin = request.path === "/api/auth/login";
-      const gardenId = isLogin ? null : (request.gardenId === null ? null : Number(request.gardenId));
+      const isPublicAuth = new Set([
+        "/api/auth/login",
+        "/api/auth/passkeys/login/options",
+      ]).has(request.path);
+      const gardenId = isPublicAuth
+        ? null : (request.gardenId === null ? null : Number(request.gardenId));
       assert(gardenId === null || (Number.isSafeInteger(gardenId) && gardenId > 0),
         `Phase 2 mutation garden ID is invalid: ${request.method} ${request.path}`);
-      const expectedActor = isLogin ? {
+      const expectedActor = isPublicAuth ? {
         authType: "none", role: "anonymous", username: "anonymous",
       } : {
         authType: "session", role: profile.role, username: fixture.roles[profile.role],
@@ -3699,6 +3705,7 @@ function isPhaseThreeAuditPath(pathname) {
     "/api/ai/diagnose-plant",
     "/api/ai/identify-plant",
     "/api/auth/login",
+    "/api/auth/passkeys/login/options",
     "/api/client-errors",
     "/api/harvest",
     "/api/harvest/{entry_id}",
@@ -3734,6 +3741,7 @@ function phaseThreeBrowserMutationRecords(profiles, fixture) {
         `Unknown Phase 3 browser mutation path: ${request.method} ${request.path}`);
       const isAnonymousAuditPath = new Set([
         "/api/auth/login",
+        "/api/auth/passkeys/login/options",
         "/api/client-errors",
       ]).has(request.path);
       const requestGardenId = request.gardenId === null ? null : Number(request.gardenId);

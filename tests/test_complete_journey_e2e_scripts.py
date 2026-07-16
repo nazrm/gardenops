@@ -4789,6 +4789,28 @@ try {
     assert result.returncode == 0, result.stderr
 
 
+def test_phase_two_correlates_passkey_options_as_public_authentication() -> None:
+    script = """
+const { phaseTwoBrowserMutationRecords } = require('./scripts/check_complete_journeys_e2e.cjs');
+const records = phaseTwoBrowserMutationRecords([{
+  profile: 'mobile', role: 'viewer', requests: [{
+    actorAuthType: 'none', actorRole: 'anonymous', actorUsername: 'anonymous', gardenId: null,
+    method: 'POST', path: '/api/auth/passkeys/login/options',
+    requestId: 'passkey-options-request-1', statusCode: 200,
+  }],
+}], { roles: { viewer: 'viewer' } });
+if (records.length !== 1) process.exit(3);
+if (records[0].actor_auth_type !== 'none') process.exit(4);
+if (records[0].actor_role !== 'anonymous') process.exit(5);
+if (records[0].actor_username !== 'anonymous') process.exit(6);
+if (records[0].garden_id !== null) process.exit(7);
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_phase_two_audit_correlation_rejects_request_id_tampering_from_peer_pages() -> None:
     script = """
 const { assertPhaseTwoAuditEvents } = require('./scripts/check_complete_journeys_e2e.cjs');

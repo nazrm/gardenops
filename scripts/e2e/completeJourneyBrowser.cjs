@@ -602,7 +602,13 @@ function createApiRecorder(page, actor = {}) {
       if (!parsed.pathname.startsWith("/api/")) return;
       const headers = request.headers();
       const isAnonymousAuditPath = new Set([
+        "/api/auth/invitations/accept",
+        "/api/auth/invitations/passkey/register/options",
+        "/api/auth/invitations/passkey/register/verify",
+        "/api/auth/invitations/peek",
         "/api/auth/login",
+        "/api/auth/passkeys/login/options",
+        "/api/auth/passkeys/login/verify",
         "/api/client-errors",
       ]).has(parsed.pathname);
       const record = {

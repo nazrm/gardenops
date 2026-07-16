@@ -8,6 +8,7 @@
         {"method":"PATCH","path":"/api/calendar/manual-events/{event_id}","status_code":200,"count":1},
         {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":5},
         {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/auth/passkeys/login/options","status_code":200,"count":2},
         {"method":"POST","path":"/api/calendar/manual-events","status_code":201,"count":1},
         {"method":"POST","path":"/api/calendar/subscriptions","status_code":201,"count":1},
         {"method":"POST","path":"/api/media/summaries","status_code":200,"count":2},
@@ -22,6 +23,7 @@
         {"method":"PATCH","path":"/api/calendar/manual-events/{event_id}","status_code":200,"count":1},
         {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":8},
         {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/auth/passkeys/login/options","status_code":200,"count":2},
         {"method":"POST","path":"/api/calendar/manual-events","status_code":201,"count":1},
         {"method":"POST","path":"/api/media/summaries","status_code":200,"count":2},
         {"method":"POST","path":"/api/tasks/tsk_complete_p2_bloom_mobile/action","status_code":200,"count":1},
@@ -35,12 +37,14 @@
       "editor:desktop": [
         {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":2},
         {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/auth/passkeys/login/options","status_code":200,"count":2},
         {"method":"POST","path":"/api/tasks/tsk_complete_p2_editor_prune/action","status_code":200,"count":1},
         {"method":"POST","path":"/api/weather/check","status_code":200,"count":1},
         {"method":"PUT","path":"/api/notifications/preferences","status_code":200,"count":1}
       ],
       "editor:mobile": [
         {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/auth/passkeys/login/options","status_code":200,"count":2},
         {"method":"POST","path":"/api/media/summaries","status_code":200,"count":1},
         {"method":"POST","path":"/api/tasks/tsk_complete_p2_editor_offline/action","status_code":200,"count":1},
         {"method":"POST","path":"/api/tasks/tsk_complete_p2_fertilize_grouped/action","status_code":200,"count":1},
@@ -51,6 +55,7 @@
       "viewer:desktop": [
         {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":2},
         {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/auth/passkeys/login/options","status_code":200,"count":2},
         {"method":"POST","path":"/api/calendar/manual-events","status_code":403,"count":1},
         {"method":"POST","path":"/api/calendar/subscriptions","status_code":403,"count":1},
         {"method":"POST","path":"/api/tasks/tsk_complete_p2_viewer_read_only/action","status_code":403,"count":1},
@@ -62,6 +67,7 @@
       "viewer:mobile": [
         {"method":"PATCH","path":"/api/calendar/preferences","status_code":200,"count":2},
         {"method":"POST","path":"/api/auth/login","status_code":200,"count":2},
+        {"method":"POST","path":"/api/auth/passkeys/login/options","status_code":200,"count":2},
         {"method":"POST","path":"/api/calendar/manual-events","status_code":403,"count":1},
         {"method":"POST","path":"/api/calendar/subscriptions","status_code":403,"count":1},
         {"method":"POST","path":"/api/tasks/tsk_complete_p2_viewer_read_only/action","status_code":403,"count":1},
