@@ -6,6 +6,7 @@ const {
   authenticate,
   createApiRecorder,
   createGuardedContext,
+  dismissProactivePasskeyPrompt,
 } = require("../completeJourneyBrowser.cjs");
 const {
   assert,
@@ -2367,6 +2368,7 @@ async function runProfile(options) {
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await authenticate(page, run.username, run.password);
     guarded.markAuthenticated();
+    await dismissProactivePasskeyPrompt(page);
     result.browser_profile.user_agent = await page.evaluate(() => navigator.userAgent);
     result.browser_profile.max_touch_points = await page.evaluate(() => navigator.maxTouchPoints);
     result.browser_profile.has_touch = result.browser_profile.max_touch_points > 0;
