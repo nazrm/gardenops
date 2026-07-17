@@ -1541,12 +1541,25 @@ async function exerciseToday(page, profile, fixture) {
 }
 
 async function runWeatherCheck(page) {
+  const checkButton = page.locator("#weather-dashboard .weather-check-btn:visible").first();
+  try {
+    await visible(checkButton, "weather check action");
+  } catch (error) {
+    const accessState = await page.evaluate(() => ({
+      activeGarden: document.querySelector<HTMLSelectElement>("#mobile-garden-select")?.value
+        ?? document.querySelector<HTMLSelectElement>("#garden-select")?.value
+        ?? null,
+      readOnly: document.body.classList.contains("garden-read-only"),
+      switchPending: document.body.classList.contains("garden-switch-pending"),
+    }));
+    throw new Error(`Weather check action was unavailable: ${JSON.stringify(accessState)}`, {
+      cause: error,
+    });
+  }
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
       && new URL(response.url()).pathname === "/api/weather/check"
   ));
-  const checkButton = page.locator("#weather-dashboard .weather-check-btn:visible").first();
-  await visible(checkButton, "weather check action");
   const [response] = await Promise.all([
     responsePromise,
     checkButton.click(),
