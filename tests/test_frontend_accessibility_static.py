@@ -115,6 +115,7 @@ def test_primary_navigation_uses_standard_navigation_semantics() -> None:
     layout = _read_frontend("components/layout.ts")
     tabs = _read_frontend("components/tabs.ts")
     app = _read_frontend("app.ts")
+    styles = _read_frontend("style.css")
 
     assert '<nav class="top-nav desktop-top-nav" aria-label="${t("nav.main_sections")}"' in layout
     assert 'role="tablist" aria-label="${t("nav.main_sections")}"' not in layout
@@ -124,6 +125,7 @@ def test_primary_navigation_uses_standard_navigation_semantics() -> None:
     assert 'btn.setAttribute("aria-current", "page")' in app
     assert 'btn.removeAttribute("aria-current")' in app
     assert 'addEventListener("keydown"' not in tabs
+    assert ".mobile-tab-btn:focus {\n  outline: 2px solid var(--focus-ring);" in styles
 
 
 def test_shell_has_one_desktop_heading_and_decorative_brand_images() -> None:
