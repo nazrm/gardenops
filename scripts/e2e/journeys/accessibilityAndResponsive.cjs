@@ -90,7 +90,7 @@ async function exerciseMapAndToday(page, options, result) {
   await assertFocusVisibleAndUnobscured(page, nextTab, `${label} Garden navigation control after keyboard traversal`);
   await nextTab.press("Enter");
   await visible(page.locator("#plants-view"), `${label} Garden tab panel`);
-  await focusByKeyboard(page, map, `${label} Map navigation return`);
+  await focusByKeyboard(page, map, `${label} Map navigation return`, { reverse: true });
   await map.press("Enter");
   await visible(page.locator("#map-grid"), `${label} map-first surface`);
   result.checks.map_populated = true;
