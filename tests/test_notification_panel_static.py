@@ -166,6 +166,8 @@ def test_viewers_keep_today_and_weather_navigation_without_write_affordances() -
     assert "canWrite: () => canWriteInGarden," in app
     assert "function canWriteWeather" in weather
     assert "canWriteWeather()" in weather
+    assert weather.count('addEventListener("click", callbacks.onCheckWeather)') == 2
+    assert "if (canWriteWeather()) callbacks.onCheckWeather();" not in weather
     assert 'document.body.classList.toggle("garden-read-only", !canWriteInGarden);' in app
 
 

@@ -119,9 +119,7 @@ export function renderWeatherDashboard(
         <div class="weather-no-data">${t("weather.no_forecast")}</div>
       </div>
     `);
-    container.querySelector(".weather-check-btn")?.addEventListener("click", () => {
-      if (canWriteWeather()) callbacks.onCheckWeather();
-    });
+    container.querySelector(".weather-check-btn")?.addEventListener("click", callbacks.onCheckWeather);
     return;
   }
 
@@ -201,9 +199,7 @@ export function renderWeatherDashboard(
   setReviewedDynamicHtml(container, sections.join(""));
 
   // Wire event handlers
-  container.querySelector(".weather-check-btn")?.addEventListener("click", () => {
-    if (canWriteWeather()) callbacks.onCheckWeather();
-  });
+  container.querySelector(".weather-check-btn")?.addEventListener("click", callbacks.onCheckWeather);
 
   container.querySelectorAll<HTMLButtonElement>(".weather-alert-dismiss").forEach((btn) => {
     btn.addEventListener("click", () => {
