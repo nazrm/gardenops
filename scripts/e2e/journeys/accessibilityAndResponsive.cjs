@@ -4,6 +4,7 @@ const {
   assertBrowserProfileContract,
   assertDiagnosticsClean,
   authenticate,
+  createApiRecorder,
   createGuardedContext,
   dismissProactivePasskeyPrompt,
 } = require("../completeJourneyBrowser.cjs");
@@ -51,10 +52,18 @@ function tabButton(page, tab) {
   return page.locator(`[data-tab='${tab}']:visible`).first();
 }
 
+async function focusByKeyboard(page, locator, label, { reverse = false } = {}) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    if (await locator.evaluate((element) => document.activeElement === element)) return;
+    await page.keyboard.press(reverse ? "Shift+Tab" : "Tab");
+  }
+  assert(false, `${label} was not reachable by ${reverse ? "Shift+Tab" : "Tab"}`);
+}
+
 async function activateTab(page, tab, label) {
   const button = tabButton(page, tab);
   await visible(button, `${label} ${tab} tab`);
-  await button.focus();
+  await focusByKeyboard(page, button, `${label} ${tab} tab`);
   await assertFocusVisibleAndUnobscured(page, button, `${label} ${tab} tab`);
   await button.press("Enter");
   return button;
@@ -64,7 +73,7 @@ async function openTasks(page, label) {
   await activateTab(page, "activity", label);
   const tasks = page.locator("#sub-mode-tasks:visible, [data-sub-mode='tasks']:visible").first();
   await visible(tasks, `${label} tasks sub-mode`);
-  await tasks.focus();
+  await focusByKeyboard(page, tasks, `${label} tasks sub-mode`);
   await assertFocusVisibleAndUnobscured(page, tasks, `${label} tasks sub-mode`);
   await tasks.press("Enter");
   await visible(page.locator("#tasks-tab-content"), `${label} tasks content`);
@@ -81,7 +90,7 @@ async function exerciseMapAndToday(page, options, result) {
   await assertFocusVisibleAndUnobscured(page, nextTab, `${label} Garden navigation control after keyboard traversal`);
   await nextTab.press("Enter");
   await visible(page.locator("#plants-view"), `${label} Garden tab panel`);
-  await map.focus();
+  await focusByKeyboard(page, map, `${label} Map navigation return`);
   await map.press("Enter");
   await visible(page.locator("#map-grid"), `${label} map-first surface`);
   result.checks.map_populated = true;
@@ -90,7 +99,7 @@ async function exerciseMapAndToday(page, options, result) {
   const mobileHandle = page.locator("#attention-today-mobile-handle:visible");
   let surface;
   if (await mobileHandle.count()) {
-    await mobileHandle.focus();
+    await focusByKeyboard(page, mobileHandle, `${label} Today handle`);
     await assertFocusVisibleAndUnobscured(page, mobileHandle, `${label} Today handle`);
     await mobileHandle.press("Enter");
     surface = page.locator("#attention-today-mobile-sheet");
@@ -104,7 +113,7 @@ async function exerciseMapAndToday(page, options, result) {
   const noAction = surface.locator('[data-testid="attention-today-section-no_action_needed"]');
   await visible(noAction.locator("summary"), `${label} no-action-needed disclosure`);
   const summary = noAction.locator("summary");
-  await summary.focus();
+  await focusByKeyboard(page, summary, `${label} no-action-needed disclosure`);
   await assertFocusVisibleAndUnobscured(page, summary, `${label} no-action-needed disclosure`);
   await summary.press("Space");
   await waitFor(async () => await noAction.evaluate((element) => element.hasAttribute("open")),
@@ -115,7 +124,7 @@ async function exerciseMapAndToday(page, options, result) {
   if (await mobileHandle.count()) {
     const close = surface.locator("[data-testid='attention-today-mobile-close']");
     await visible(close, `${label} Today close control`);
-    await close.focus();
+    await focusByKeyboard(page, close, `${label} Today close control`);
     await close.press("Enter");
     await surface.waitFor({ state: "hidden" });
     await waitFor(async () => await mobileHandle.evaluate((element) => document.activeElement === element),
@@ -137,15 +146,16 @@ async function exerciseTaskValidation(page, options, result) {
   await visible(card, `${label} grouped fertilize task`);
   const complete = card.getByRole("button", { name: /^Complete$/i });
   await visible(complete, `${label} grouped task Complete action`);
-  await complete.focus();
+  await focusByKeyboard(page, complete, `${label} grouped task Complete action`);
   await complete.press("Enter");
   const dialog = page.locator(".modal").filter({ has: page.locator(".task-completion-dialog") }).last();
   await visible(dialog, `${label} task completion dialog`);
   await assertFocusInside(dialog, `${label} task completion dialog`);
   const initialFocus = dialog.locator(".task-completion-list input[type='checkbox']").first();
   await assertFocusVisibleAndUnobscured(page, initialFocus, `${label} task completion initial plant selection focus`);
-  await dialog.locator(".task-completion-clear").focus();
-  await dialog.locator(".task-completion-clear").press("Enter");
+  const clear = dialog.locator(".task-completion-clear");
+  await focusByKeyboard(page, clear, `${label} task completion clear action`);
+  await clear.press("Enter");
   const feedback = dialog.locator(".task-completion-feedback");
   await visible(feedback, `${label} task completion validation feedback`);
   assert(await dialog.locator(".confirm-yes").isDisabled(),
@@ -157,9 +167,40 @@ async function exerciseTaskValidation(page, options, result) {
   assert(snapshot.includes("dialog"), `${label} task completion aria snapshot lost dialog semantics`);
   result.checks.task_completion_validation = true;
   result.axe.push(await assertAxeState(page, "task-completion-validation"));
-  await dialog.locator(".confirm-no").focus();
-  await dialog.locator(".confirm-no").press("Enter");
+  await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
+  await waitFor(async () => await complete.evaluate((element) => document.activeElement === element),
+    `${label} task completion Escape focus return`);
+  if (options.profile !== "desktop") return;
+
+  await complete.press("Enter");
+  const cancelledDialog = page.locator(".modal").filter({ has: page.locator(".task-completion-dialog") }).last();
+  await visible(cancelledDialog, `${label} task completion dialog for Cancel`);
+  const cancel = cancelledDialog.locator(".confirm-no");
+  await focusByKeyboard(page, cancel, `${label} task completion Cancel action`);
+  await cancel.press("Enter");
+  await cancelledDialog.waitFor({ state: "detached" });
+  await waitFor(async () => await complete.evaluate((element) => document.activeElement === element),
+    `${label} task completion Cancel focus return`);
+
+  await complete.press("Enter");
+  const confirmDialog = page.locator(".modal").filter({ has: page.locator(".task-completion-dialog") }).last();
+  await visible(confirmDialog, `${label} task completion dialog for confirmation`);
+  const selectAll = confirmDialog.locator(".task-completion-select-all");
+  await focusByKeyboard(page, selectAll, `${label} task completion select all action`);
+  await selectAll.press("Space");
+  const confirm = confirmDialog.locator(".confirm-yes");
+  assert(!await confirm.isDisabled(), `${label} task completion confirmation remained disabled`);
+  const completed = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+      && new URL(response.url()).pathname === `/api/tasks/${options.fixture.phase_two.task_ids.fertilize_grouped}/action`
+  ));
+  await focusByKeyboard(page, confirm, `${label} task completion confirmation action`);
+  await confirm.press("Enter");
+  assert((await completed).status() === 200, `${label} task completion did not succeed`);
+  await confirmDialog.waitFor({ state: "detached" });
+  await card.waitFor({ state: "hidden" });
+  result.checks.task_completion_confirmed = true;
 }
 
 async function exerciseNotifications(page, options, result) {
@@ -167,7 +208,7 @@ async function exerciseNotifications(page, options, result) {
   await activateTab(page, "map", label);
   const bell = page.locator("#notification-bell:visible");
   await visible(bell, `${label} notification bell`);
-  await bell.focus();
+  await focusByKeyboard(page, bell, `${label} notification bell`);
   await assertFocusVisibleAndUnobscured(page, bell, `${label} notification bell`);
   await bell.press("Enter");
   const panel = page.locator("#notification-panel");
@@ -175,7 +216,7 @@ async function exerciseNotifications(page, options, result) {
   await assertFocusInside(panel, `${label} notification panel`);
   const tabs = panel.locator("[role='tab']");
   await visible(tabs.first(), `${label} notification tabs`);
-  await tabs.first().focus();
+  await focusByKeyboard(page, tabs.first(), `${label} notification tabs`);
   await tabs.first().press("ArrowRight");
   await waitFor(async () => await panel.locator("[role='tab'][aria-selected='true']").count() === 1,
     `${label} notification tab state`);
@@ -191,6 +232,44 @@ async function exerciseNotifications(page, options, result) {
   result.checks.notifications_focus_return = true;
 }
 
+async function assertViewerTaskWriteDenied(page, diagnostics, fixture, label) {
+  const taskId = fixture.phase_two.task_ids.fertilize_mobile;
+  const before = {
+    console: diagnostics.consoleErrors.length,
+    http: diagnostics.httpErrors.length,
+  };
+  const response = await page.evaluate(async ({ gardenId, requestPath }) => {
+    const csrf = document.cookie
+      .split("; ")
+      .find((part) => part.startsWith("gardenops_csrf="))
+      ?.slice("gardenops_csrf=".length) || "";
+    const result = await fetch(requestPath, {
+      body: JSON.stringify({ action: "complete" }),
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        "x-csrf-token": decodeURIComponent(csrf),
+        "x-garden-id": String(gardenId),
+      },
+      method: "POST",
+    });
+    return { body: await result.json(), status: result.status };
+  }, {
+    gardenId: fixture.gardens.alpha.id,
+    requestPath: `/api/tasks/${encodeURIComponent(taskId)}/action`,
+  });
+  assert(response.status === 403 && response.body?.detail === "Forbidden: write access required",
+    `${label} viewer task mutation did not reach the authorization boundary`);
+  await waitFor(() => diagnostics.httpErrors.length === before.http + 1,
+    `${label} viewer task denial response`);
+  const httpErrors = diagnostics.httpErrors.splice(before.http);
+  assert(JSON.stringify(httpErrors) === JSON.stringify([`403 /api/tasks/${taskId}/action`]),
+    `${label} viewer task denial emitted unexpected HTTP diagnostics`);
+  await waitFor(() => diagnostics.consoleErrors.length === before.console + 1,
+    `${label} viewer task denial console diagnostic`);
+  diagnostics.consoleErrors.splice(before.console, 1);
+}
+
 async function exerciseViewerBoundary(page, options, result) {
   const label = profileLabel(options);
   await activateTab(page, "map", label);
@@ -200,7 +279,12 @@ async function exerciseViewerBoundary(page, options, result) {
   const add = page.locator("#tasks-add-btn");
   assert(await add.count() === 0 || await add.isDisabled(),
     `${label} viewer retained a task creation mutation`);
+  assert(await page.locator("#tasks-list .task-card").count() > 0,
+    `${label} viewer lost access to readable task information`);
+  await assertViewerTaskWriteDenied(page, result.diagnostics, options.fixture, label);
   result.checks.viewer_read_only = true;
+  result.checks.viewer_direct_task_write_denied = true;
+  result.checks.viewer_readable_tasks = true;
   result.axe.push(await assertAxeState(page, "read-only-map-and-tasks"));
 }
 
@@ -216,6 +300,11 @@ async function runProfile(options) {
     { baseUrl: options.baseUrl },
   );
   const page = await guarded.context.newPage();
+  const recorder = createApiRecorder(page, {
+    authType: "session",
+    role: options.role,
+    username,
+  });
   const result = {
     assertions: { failed: [], passed: [], skipped: [] },
     axe: [],
@@ -223,15 +312,18 @@ async function runProfile(options) {
     checks: {},
     failure: null,
     profile: options.profile,
+    requests: [],
     role: options.role,
     touch_targets: [],
     trace: null,
   };
+  result.diagnostics = guarded.diagnostics;
   let caughtError = null;
   let status = "failed";
   try {
     await page.goto(options.baseUrl, { waitUntil: "domcontentloaded" });
     const auth = await authenticate(page, username, password);
+    recorder.setGardenId(auth.garden_id);
     guarded.markAuthenticated();
     await dismissProactivePasskeyPrompt(page);
     result.browser_profile = { ...result.browser_profile, ...await browserRuntime(page) };
@@ -261,6 +353,8 @@ async function runProfile(options) {
     result.assertions.failed.push(result.failure);
   } finally {
     result.diagnostics = guarded.diagnostics;
+    await recorder.settle();
+    result.requests = recorder.records;
     try { result.trace = await guarded.close(status); } catch (error) { if (!caughtError) caughtError = error; }
   }
   return { error: caughtError, result };
@@ -275,6 +369,7 @@ async function runAccessibilityAndResponsive(options, profileRunner = runProfile
     ["admin", "mobile-reduced-motion"],
     ["admin", "desktop-reflow-200"],
     ["viewer", "desktop"],
+    ["viewer", "mobile"],
   ];
   const results = [];
   for (const [role, profile] of profiles) {

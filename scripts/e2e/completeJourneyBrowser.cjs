@@ -571,7 +571,7 @@ async function authenticate(page, username, password) {
   await visible(gate, "session sign-in gate");
   const form = gate.locator("#auth-gate-form");
   await form.locator("input[name='username']").fill(username);
-  await form.locator("button[type='submit']").click();
+  await form.locator("input[name='username']").press("Enter");
   const passwordInput = form.locator("input[name='password']");
   const passwordFallback = form.locator("#auth-gate-use-password");
   await visible(
@@ -580,11 +580,12 @@ async function authenticate(page, username, password) {
   );
   if (!(await passwordInput.isVisible())) {
     await visible(passwordFallback, "session sign-in password fallback");
-    await passwordFallback.click();
+    await passwordFallback.focus();
+    await passwordFallback.press("Enter");
   }
   await visible(passwordInput, "session sign-in password field");
   await passwordInput.fill(password);
-  await form.locator("button[type='submit']").click();
+  await passwordInput.press("Enter");
   await gate.waitFor({ state: "detached", timeout: 15000 });
   const profile = await page.evaluate(async () => {
     const response = await fetch("/api/auth/me", { credentials: "include" });

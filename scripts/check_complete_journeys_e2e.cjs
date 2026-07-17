@@ -414,6 +414,7 @@ function assertPhaseEightProfileEvidence(profiles) {
     "admin:mobile-reduced-motion",
     "admin:desktop-reflow-200",
     "viewer:desktop",
+    "viewer:mobile",
   ];
   const observed = profiles.map((profile) => `${profile.role}:${profile.profile}`);
   assert(canonicalJson(observed) === canonicalJson(expected),
@@ -425,7 +426,8 @@ function assertPhaseEightProfileEvidence(profiles) {
   const reducedDesktop = byProfile.get("admin:desktop-reduced-motion");
   const reducedMobile = byProfile.get("admin:mobile-reduced-motion");
   const reflow = byProfile.get("admin:desktop-reflow-200");
-  const viewer = byProfile.get("viewer:desktop");
+  const viewerDesktop = byProfile.get("viewer:desktop");
+  const viewerMobile = byProfile.get("viewer:mobile");
   assert(adminDesktop?.checks?.map_populated === true
     && adminDesktop?.checks?.today_disclosure === true
     && adminDesktop?.checks?.task_completion_validation === true
@@ -449,8 +451,11 @@ function assertPhaseEightProfileEvidence(profiles) {
   assert(reflow?.checks?.map_populated === true
     && reflow?.browser_profile?.user_agent_contract === "desktop-reflow-equivalent-200",
   "Phase 8 200% reflow-equivalent proof is incomplete");
-  assert(viewer?.checks?.viewer_read_only === true,
-    "Phase 8 viewer read-only proof is incomplete");
+  assert([viewerDesktop, viewerMobile].every((viewer) => (
+    viewer?.checks?.viewer_read_only === true
+    && viewer?.checks?.viewer_direct_task_write_denied === true
+    && viewer?.checks?.viewer_readable_tasks === true
+  )), "Phase 8 viewer read-only proof is incomplete");
   assert(profiles.every((profile) => (
     profile.checks?.browser_diagnostics === true
     && Array.isArray(profile.axe)
