@@ -5173,6 +5173,26 @@ if (records[0].garden_id !== null) process.exit(7);
     assert result.returncode == 0, result.stderr
 
 
+def test_phase_two_correlates_passkey_prompt_dismissal_as_a_session_mutation() -> None:
+    script = """
+const { phaseTwoBrowserMutationRecords } = require('./scripts/check_complete_journeys_e2e.cjs');
+const records = phaseTwoBrowserMutationRecords([{
+  profile: 'desktop', role: 'admin', requests: [{
+    actorAuthType: 'session', actorRole: 'admin', actorUsername: 'admin', gardenId: '7',
+    method: 'POST', path: '/api/auth/passkeys/prompt/dismiss',
+    requestId: 'passkey-prompt-dismiss-1', statusCode: 200,
+  }],
+}], { roles: { admin: 'admin' } });
+if (records.length !== 1) process.exit(3);
+if (records[0].actor_auth_type !== 'session') process.exit(4);
+if (records[0].garden_id !== 7) process.exit(5);
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_phase_two_audit_correlation_rejects_request_id_tampering_from_peer_pages() -> None:
     script = """
 const { assertPhaseTwoAuditEvents } = require('./scripts/check_complete_journeys_e2e.cjs');

@@ -3871,6 +3871,7 @@ function isPhaseTwoAuditPath(pathname) {
   return [
     /^\/api\/auth\/login$/,
     /^\/api\/auth\/passkeys\/login\/options$/,
+    /^\/api\/auth\/passkeys\/prompt\/dismiss$/,
     /^\/api\/attention\/(?:preferences|items\/[^/]+\/(?:read|dismiss|snooze|restore)|outcomes\/[^/]+\/restore)$/,
     /^\/api\/calendar\/(?:preferences|manual-events(?:\/[^/]+)?|subscriptions(?:\/[^/]+)?)$/,
     /^\/api\/media\/summaries$/,
