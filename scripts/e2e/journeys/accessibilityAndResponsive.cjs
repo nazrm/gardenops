@@ -141,10 +141,10 @@ async function exerciseMapAndToday(page, options, result) {
 async function exerciseTaskValidation(page, options, result) {
   const label = profileLabel(options);
   await openTasks(page, label);
-  const taskKey = options.profile === "desktop" ? "fertilize_grouped" : "fertilize_mobile";
+  const taskKey = options.profile === "desktop" ? "fertilize_grouped" : "bloom_mobile";
   const title = taskTitle(options.fixture, taskKey);
   const card = page.locator("#tasks-list .task-card").filter({ hasText: title }).first();
-  await visible(card, `${label} fertilize task`);
+  await visible(card, `${label} completion-capture task`);
   const complete = card.getByRole("button", { name: /^Complete$/i });
   await visible(complete, `${label} grouped task Complete action`);
   await focusByKeyboard(page, complete, `${label} grouped task Complete action`);
