@@ -462,10 +462,23 @@ function assertPhaseEightProfileEvidence(profiles) {
   return { profile_matrix_enforced: true, profile_order: observed };
 }
 
-function assertPhaseEightDatabaseState(initial, final) {
-  assert(canonicalJson(initial) === canonicalJson(final),
+function assertPhaseEightDatabaseState(initial, final, profiles) {
+  assert(initial && final, "Phase 8 database state is missing");
+  const initialDomainTables = { ...initial.domain_tables };
+  const finalDomainTables = { ...final.domain_tables };
+  delete initialDomainTables.auth_passkey_challenges;
+  delete finalDomainTables.auth_passkey_challenges;
+  assert(canonicalJson(initialDomainTables) === canonicalJson(finalDomainTables),
     "Phase 8 accessibility journey changed durable domain data");
-  return { domain_state_unchanged: true };
+  return {
+    domain_state_unchanged: true,
+    passkey_challenge_projection: assertPhaseOneChallengeProjection(
+      initial.phase_five_state,
+      final.phase_five_state,
+      profiles,
+      "Phase 8",
+    ),
+  };
 }
 
 function assertPhaseSevenDatabaseState(initial, final, fixture) {
@@ -7500,8 +7513,9 @@ async function main() {
       assert(phaseEightDatabaseBaseline, "Phase 8 database baseline snapshot is missing");
       phaseEightProfileEvidence = assertPhaseEightProfileEvidence(phaseEightProfiles);
       phaseEightDatabaseEvidence = assertPhaseEightDatabaseState(
-        phaseEightDatabaseBaseline.domain_tables,
-        finalDatabase.domain_tables,
+        phaseEightDatabaseBaseline,
+        finalDatabase,
+        phaseEightProfiles,
       );
     }
     const phaseOneSemanticDeltaTables = phaseOneRan ? new Set([
