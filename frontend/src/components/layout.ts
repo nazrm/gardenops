@@ -117,11 +117,11 @@ export function getAppShellMarkup(): string {
   return `
     <div class="app-shell">
       <header class="mobile-header">
-        <button class="mobile-header-logo-button" type="button" data-brand-home aria-label="${t("nav.map")}" title="${t("nav.map")}">
-          <img
-            class="mobile-header-logo"
-            src="${headerIconUrl}"
-            alt="${appTitle}"
+          <button class="mobile-header-logo-button" type="button" data-brand-home aria-label="${t("nav.map")}" title="${t("nav.map")}">
+            <img
+              class="mobile-header-logo"
+              src="${headerIconUrl}"
+              alt=""
             width="216"
             height="144"
             decoding="async"
@@ -151,7 +151,7 @@ export function getAppShellMarkup(): string {
             <img
               class="app-brand-logo"
               src="${headerIconUrl}"
-              alt="${appTitle}"
+              alt=""
               width="216"
               height="144"
               decoding="async"
@@ -200,6 +200,7 @@ export function getAppShellMarkup(): string {
       <div id="notification-panel" class="notification-panel" role="dialog" aria-label="${t("notifications.title")}" hidden></div>
 
       <main class="content-shell">
+        <h1 class="desktop-view-title" id="desktop-view-title">${t("nav.map")}</h1>
         <div id="app-status" class="app-status" hidden>
           <span id="app-status-text"></span>
           <div class="app-status-actions">

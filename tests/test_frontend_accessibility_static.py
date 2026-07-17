@@ -126,6 +126,33 @@ def test_primary_navigation_uses_standard_navigation_semantics() -> None:
     assert 'addEventListener("keydown"' not in tabs
 
 
+def test_shell_has_one_desktop_heading_and_decorative_brand_images() -> None:
+    layout = _read_frontend("components/layout.ts")
+    app = _read_frontend("app.ts")
+    styles = _read_frontend("style.css")
+
+    assert '<h1 class="desktop-view-title" id="desktop-view-title">${t("nav.map")}</h1>' in layout
+    assert layout.count('class="app-brand-logo"') == 1
+    assert layout.count('class="mobile-header-logo"') == 1
+    assert layout.count('alt=""') >= 2
+    assert '"#mobile-view-title, #desktop-view-title"' in app
+    assert ".desktop-view-title {" in styles
+    assert "@media (max-width: 960px) {\n  .desktop-view-title {\n    display: none;" in styles
+
+
+def test_phase_eight_controls_use_contrast_safe_foregrounds() -> None:
+    styles = _read_frontend("style.css")
+
+    top_meta = styles.split(".top-meta {", 1)[1].split("}", 1)[0]
+    active_map_object_toggle = styles.split(".map-object-toggle.active {", 1)[1].split("}", 1)[0]
+    primary_attention_action = styles.split(".attention-today-action--primary {", 1)[1].split("}", 1)[0]
+
+    assert "opacity" not in top_meta
+    assert "color: var(--text-1);" in active_map_object_toggle
+    assert "background: var(--brand);" in primary_attention_action
+    assert "color: var(--text-inv);" in primary_attention_action
+
+
 def test_static_filter_inputs_have_localized_accessible_names() -> None:
     layout = _read_frontend("components/layout.ts")
 

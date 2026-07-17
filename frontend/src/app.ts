@@ -1111,11 +1111,10 @@ function openMobileMapLayerSheet(sectionId: string): void {
 }
 
 function updateMobileHeader(): void {
-  const titleEl = document.getElementById("mobile-view-title");
   const gardenEl = document.getElementById("mobile-garden-name");
-  if (titleEl) {
+  document.querySelectorAll<HTMLElement>("#mobile-view-title, #desktop-view-title").forEach((titleEl) => {
     titleEl.textContent = tabTitle(activeTab);
-  }
+  });
   if (gardenEl) {
     const activeGardenId = getActiveGardenContext();
     const activeGarden = activeGardenId === null
