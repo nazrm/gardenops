@@ -1545,8 +1545,12 @@ async function runWeatherCheck(page) {
     response.request().method() === "POST"
       && new URL(response.url()).pathname === "/api/weather/check"
   ));
-  await page.locator("#weather-dashboard .weather-check-btn").click();
-  const response = await responsePromise;
+  const checkButton = page.locator("#weather-dashboard .weather-check-btn:visible").first();
+  await visible(checkButton, "weather check action");
+  const [response] = await Promise.all([
+    responsePromise,
+    checkButton.click(),
+  ]);
   assert(response.status() === 200, `Weather check returned ${response.status()}`);
   return response.json();
 }
@@ -1572,11 +1576,13 @@ async function runConcurrentWeatherChecks(page, profile, garden, recorder) {
     ));
     const currentResponse = waitForCheck(page);
     const peerResponse = waitForCheck(peer);
-    await Promise.all([
-      page.locator("#weather-dashboard .weather-check-btn").click(),
-      peer.locator("#weather-dashboard .weather-check-btn").click(),
+    const [responses] = await Promise.all([
+      Promise.all([currentResponse, peerResponse]),
+      Promise.all([
+        page.locator("#weather-dashboard .weather-check-btn:visible").first().click(),
+        peer.locator("#weather-dashboard .weather-check-btn:visible").first().click(),
+      ]),
     ]);
-    const responses = await Promise.all([currentResponse, peerResponse]);
     const results = await Promise.all(responses.map(async (response) => ({
       ...(await response.json()),
       status: response.status(),

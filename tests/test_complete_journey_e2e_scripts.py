@@ -3052,6 +3052,8 @@ def test_phase_two_journey_forbids_node_request_clients_and_unscoped_notificatio
     assert "page.context().request" not in source
     assert "dismissProactivePasskeyPrompt" in source
     assert "await dismissProactivePasskeyPrompt(page);" in source
+    assert '"#weather-dashboard .weather-check-btn:visible"' in source
+    assert "const [response] = await Promise.all([" in source
     assert 'const remaining = panel.locator(".notification-item").first()' not in source
     assert "Phase 2 explicit notification fixture" in source
     assert "page-origin feed fetch" in source
