@@ -463,7 +463,8 @@ async function installBrowserInteractionTiming(page, {
           && !mapView.hidden
           && !grid.querySelector(".map-grid-loading")
           && grid.querySelectorAll(".plot").length >= 600
-          && activeMapTab?.getAttribute("aria-selected") === "true"
+          && (activeMapTab?.getAttribute("aria-selected") === "true"
+            || activeMapTab?.getAttribute("aria-current") === "page")
         );
       }
       if (readinessConfig.name === "large-garden") {
@@ -489,7 +490,8 @@ async function installBrowserInteractionTiming(page, {
         return (
           plantsView instanceof HTMLElement
           && !plantsView.hidden
-          && gardenTab?.getAttribute("aria-selected") === "true"
+          && (gardenTab?.getAttribute("aria-selected") === "true"
+            || gardenTab?.getAttribute("aria-current") === "page")
           && (isMobile ? mobileReady : tableReady)
         );
       }
@@ -516,7 +518,8 @@ async function installBrowserInteractionTiming(page, {
         return (
           careView instanceof HTMLElement
           && !careView.hidden
-          && insightsTab?.getAttribute("aria-selected") === "true"
+          && (insightsTab?.getAttribute("aria-selected") === "true"
+            || insightsTab?.getAttribute("aria-current") === "page")
           && (isMobile ? mobileReady : tableReady)
         );
       }
@@ -1738,7 +1741,8 @@ async function runAppAuthScenario(page, options) {
         grid instanceof HTMLElement
         && !grid.querySelector(".map-grid-loading")
         && grid.querySelectorAll(".plot").length >= 3
-        && activeMapTab?.getAttribute("aria-selected") === "true"
+        && (activeMapTab?.getAttribute("aria-selected") === "true"
+          || activeMapTab?.getAttribute("aria-current") === "page")
       );
     },
     undefined,
@@ -1897,7 +1901,8 @@ async function runAppAuthLargeTabsScenario(page, options) {
       && !mapView.hidden
       && !grid.querySelector(".map-grid-loading")
       && grid.querySelectorAll(".plot").length >= 600
-      && activeMapTab?.getAttribute("aria-selected") === "true"
+      && (activeMapTab?.getAttribute("aria-selected") === "true"
+        || activeMapTab?.getAttribute("aria-current") === "page")
     );
   };
   await page.waitForFunction(mapReady, undefined, { timeout: timeoutMs });
@@ -1931,7 +1936,8 @@ async function runAppAuthLargeTabsScenario(page, options) {
     return (
       plantsView instanceof HTMLElement
       && !plantsView.hidden
-      && gardenTab?.getAttribute("aria-selected") === "true"
+      && (gardenTab?.getAttribute("aria-selected") === "true"
+        || gardenTab?.getAttribute("aria-current") === "page")
       && (isMobile ? mobileReady : tableReady)
     );
   };
@@ -1958,7 +1964,8 @@ async function runAppAuthLargeTabsScenario(page, options) {
     return (
       careView instanceof HTMLElement
       && !careView.hidden
-      && insightsTab?.getAttribute("aria-selected") === "true"
+      && (insightsTab?.getAttribute("aria-selected") === "true"
+        || insightsTab?.getAttribute("aria-current") === "page")
       && (isMobile ? mobileReady : tableReady)
     );
   };

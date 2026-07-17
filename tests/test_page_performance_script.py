@@ -408,6 +408,8 @@ console.log(JSON.stringify({
     assert "selectedTabSelector: gardenTabSelector" in app_auth
     assert "mobileLayoutBreakpointPx: MOBILE_LAYOUT_BREAKPOINT_PX" in app_auth
     assert 'gardenTab?.getAttribute("aria-current") === "page"' in script
+    assert 'activeMapTab?.getAttribute("aria-current") === "page"' in script
+    assert 'insightsTab?.getAttribute("aria-current") === "page"' in script
     assert 'mobileList?.querySelectorAll(".mobile-data-card").length === 1' in script
 
 
