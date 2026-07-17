@@ -7600,9 +7600,15 @@ async function main() {
         "Phase 2 expected task mutation identities do not match the independent count oracle",
       );
     }
+    const phaseTwoReadSideEffectTables = phaseTwoRan ? new Set([
+      // Passkey option starts are browser-visible authentication side effects,
+      // accounted for by the exact challenge projection below.
+      "auth_passkey_challenges",
+    ]) : new Set();
     const phaseTwoSemanticDeltaTables = phaseTwoRan ? new Set([
       ...phaseOneBoundaryDeltaTables,
       ...phaseTwoOracleTables,
+      ...phaseTwoReadSideEffectTables,
     ]) : phaseOneBoundaryDeltaTables;
     if (phaseTwoRan) {
       assert(Object.keys(phaseTwoExactMutationCounts).every(

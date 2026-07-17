@@ -1749,6 +1749,29 @@ try {
     assert result.returncode == 0, result.stderr
 
 
+def test_phase_two_accounts_for_deterministic_read_side_effects() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    oracle = json.loads(ORACLE.read_text(encoding="utf-8"))
+
+    assert "const phaseTwoReadSideEffectTables" in checker_source
+    assert '"auth_passkey_challenges"' in checker_source
+    accounting = oracle["phase_two"]["whole_table_mutation_accounting"]
+    assert {"provider_daily_usage", "shademap_cache"}.issubset(
+        accounting["phase_two_tables"]
+    )
+    for scope in ("phase_two_only", "cumulative_through_phase_two"):
+        for table, expected_added in (("provider_daily_usage", 4), ("shademap_cache", 3)):
+            assert accounting["exact_counts"][scope][table] == {
+                "added": expected_added,
+                "removed": 0,
+            }
+            assert accounting["exact_identity_counts"][scope][table] == {
+                "added": expected_added,
+                "removed": 0,
+                "updated": 0,
+            }
+
+
 def test_phase_two_subscription_probe_is_wired_to_classified_diagnostics() -> None:
     journey_path = ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs"
     journey_source = journey_path.read_text(encoding="utf-8")
