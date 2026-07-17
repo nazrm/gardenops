@@ -935,7 +935,7 @@ export class ShadePanelController {
     }
     this.syncTargetOptions();
     this.updateTargetMarker();
-    this.emitStateChange();
+    // Map focus updates the local analysis target, but is not a ShadeMap setting edit.
     void this.refreshStatus();
   }
 
