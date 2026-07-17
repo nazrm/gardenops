@@ -2087,8 +2087,17 @@ async function exerciseOfflineTask(page, fixture) {
       async () => await failedCompletionCard.getAttribute("data-offline-task-state") === "failed",
       "terminal offline task failure state",
     );
+    const failedRecoveryToggle = page.locator("#offline-indicator .offline-indicator-toggle");
+    await visible(failedRecoveryToggle, "global failed offline work recovery toggle");
+    assert(await failedRecoveryToggle.getAttribute("aria-expanded") === "false",
+      "failed offline work details were expanded by default");
+    await failedRecoveryToggle.click();
+    await waitFor(
+      async () => await failedRecoveryToggle.getAttribute("aria-expanded") === "true",
+      "global failed offline work recovery expansion",
+    );
     await visible(page.locator("#offline-indicator .offline-failures"),
-      "global failed offline work recovery");
+      "expanded failed offline work recovery");
     await visible(failedCompletionCard.locator(".task-offline-error").filter({
       hasText: "Deliberate journey sync failure",
     }), "per-task offline failure reason");

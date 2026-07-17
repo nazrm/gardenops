@@ -4242,6 +4242,18 @@ def test_phase_two_offline_calendar_is_loaded_before_connectivity_is_lost() -> N
     assert 'await openTasks(page, "mobile");' in offline[warmup:warm_disconnect]
 
 
+def test_phase_two_offline_failure_recovery_expands_the_compact_global_control() -> None:
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
+    offline = source.split("async function exerciseOfflineTask", 1)[1].split(
+        "async function exerciseViewer", 1
+    )[0]
+
+    assert "global failed offline work recovery toggle" in offline
+    assert 'getAttribute("aria-expanded") === "false"' in offline
+    assert "global failed offline work recovery expansion" in offline
+    assert "expanded failed offline work recovery" in offline
+
+
 def test_attention_preferences_strip_legacy_quiet_hours_before_save() -> None:
     source = (ROOT / "frontend/src/components/attentionTodayPanel.ts").read_text(encoding="utf-8")
     collector = source.split("function collectQuietHours", 1)[1].split(
