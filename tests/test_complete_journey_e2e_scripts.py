@@ -1263,6 +1263,7 @@ def test_phase_eight_accessibility_responsive_journey_and_harness_are_registered
         "assertAxeState",
         "chromiumAXTree",
         "assertFocusVisibleAndUnobscured",
+        "task-completion-list input[type='checkbox']",
         "assertTouchTargets",
         "desktop-reflow-200",
         "desktop-reduced-motion",

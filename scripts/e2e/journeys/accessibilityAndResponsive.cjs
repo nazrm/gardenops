@@ -141,8 +141,8 @@ async function exerciseTaskValidation(page, options, result) {
   const dialog = page.locator(".modal").filter({ has: page.locator(".task-completion-dialog") }).last();
   await visible(dialog, `${label} task completion dialog`);
   await assertFocusInside(dialog, `${label} task completion dialog`);
-  const initialFocus = dialog.locator(".task-completion-select-all");
-  await assertFocusVisibleAndUnobscured(page, initialFocus, `${label} task completion initial focus`);
+  const initialFocus = dialog.locator(".task-completion-list input[type='checkbox']").first();
+  await assertFocusVisibleAndUnobscured(page, initialFocus, `${label} task completion initial plant selection focus`);
   await dialog.locator(".task-completion-clear").focus();
   await dialog.locator(".task-completion-clear").press("Enter");
   const feedback = dialog.locator(".task-completion-feedback");
