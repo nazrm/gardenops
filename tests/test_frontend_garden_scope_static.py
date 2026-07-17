@@ -222,6 +222,24 @@ def test_weather_and_plot_alert_requests_cannot_apply_to_a_new_garden() -> None:
     assert "plotAlertsLoadPromise === loadPromise" in plot_alert_body
 
 
+def test_weather_write_controls_resync_after_garden_access_changes() -> None:
+    app = _read("frontend/src/app.ts")
+    weather = _read("frontend/src/features/weatherFeature.ts")
+    component = _read("frontend/src/components/weather.ts")
+    write_access_body = _function_body(
+        app,
+        "function applyWriteAccessUi",
+        "function ensureWriteAccess",
+    )
+
+    assert "export function syncWeatherWriteAccess" in weather
+    assert "if (!weatherFeatureInitialized) return;" in weather
+    assert "syncWeatherDashboardWriteAccess(container, ctx.canWrite());" in weather
+    assert "syncWeatherWriteAccess();" in write_access_body
+    assert "export function syncWeatherDashboardWriteAccess" in component
+    assert "button.hidden = !canWrite;" in component
+
+
 def test_admin_garden_settings_cannot_apply_an_old_garden_request() -> None:
     admin = _read("frontend/src/components/adminPanel.ts")
     body = _function_body(

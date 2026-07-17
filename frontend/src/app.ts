@@ -72,6 +72,7 @@ import {
   initWeatherFeature,
   loadWeather,
   resetWeatherForCurrentGarden,
+  syncWeatherWriteAccess,
 } from "./features/weatherFeature";
 import {
   initQuickActionsFeature,
@@ -6576,6 +6577,7 @@ function applyWriteAccessUi(): void {
   if (!canWriteInGarden) closeQuickActionSheet(false);
   renderMapObjectsPanelView();
   syncMobileCapabilities();
+  syncWeatherWriteAccess();
   if (canWriteInGarden) {
     void syncOfflineDraftsNow();
   } else {

@@ -57,10 +57,17 @@ def test_read_only_role_indicator_is_visible_in_desktop_and_mobile_shells() -> N
 
 def test_viewers_can_dismiss_personal_weather_attention_but_not_refresh_forecasts() -> None:
     weather = _read("frontend/src/components/weather.ts")
+    weather_feature = _read("frontend/src/features/weatherFeature.ts")
+    app = _read("frontend/src/app.ts")
     main = _read("gardenops/main.py")
 
     assert "createWeatherAlertCardMarkup(alert, true)" in weather
     assert weather.count('addEventListener("click", callbacks.onCheckWeather)') == 2
-    assert "if (canWriteWeather()) callbacks.onCheckWeather();" not in weather
+    assert "canWrite: boolean;" in weather
+    assert "syncWeatherDashboardWriteAccess" in weather
+    assert "canWriteWeather" not in weather
+    assert "{ canWrite: ctx.canWrite() }," in weather_feature
+    assert "export function syncWeatherWriteAccess" in weather_feature
+    assert "syncWeatherWriteAccess();" in app
     assert 'weather_alert_prefix = "/api/weather/alerts/"' in main
     assert "return alert_id.isdigit()" in main

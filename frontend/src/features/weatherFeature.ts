@@ -1,7 +1,10 @@
 import type { AppContext } from "../core/appContext";
 import type { WeatherSummary } from "../core/models";
 import { t } from "../core/i18n";
-import { renderWeatherDashboard } from "../components/weather";
+import {
+  renderWeatherDashboard,
+  syncWeatherDashboardWriteAccess,
+} from "../components/weather";
 import {
   fetchWeatherSummaryApi,
   checkWeatherApi,
@@ -16,6 +19,7 @@ let weatherGardenId: number | null = null;
 let weatherRequestVersion = 0;
 let weatherLoadVersion = 0;
 let onWeatherMutation: (() => Promise<void> | void) | null = null;
+let weatherFeatureInitialized = false;
 
 export interface WeatherFeatureOptions {
   onWeatherMutation?: () => Promise<void> | void;
@@ -57,10 +61,18 @@ export function initWeatherFeature(
 ): void {
   ctx = appCtx;
   onWeatherMutation = options.onWeatherMutation ?? null;
+  weatherFeatureInitialized = true;
 }
 
 export function getWeatherSummary(): WeatherSummary | null {
   return weatherSummary;
+}
+
+export function syncWeatherWriteAccess(): void {
+  if (!weatherFeatureInitialized) return;
+  const container = document.getElementById("weather-dashboard");
+  if (!container) return;
+  syncWeatherDashboardWriteAccess(container, ctx.canWrite());
 }
 
 export async function loadWeather(): Promise<void> {
@@ -126,6 +138,7 @@ export async function loadWeather(): Promise<void> {
             }
           },
         },
+        { canWrite: ctx.canWrite() },
       );
     }
   } catch {

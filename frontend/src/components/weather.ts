@@ -18,6 +18,10 @@ export interface WeatherCallbacks {
   onCheckWeather: () => void;
 }
 
+export interface WeatherRenderOptions {
+  canWrite: boolean;
+}
+
 const ALERT_ICONS: Record<string, string> = {
   frost_warning: "\u2744\ufe0f",
   heat_wave: "\ud83d\udd25",
@@ -99,6 +103,7 @@ export function renderWeatherDashboard(
   container: HTMLElement,
   summary: WeatherSummary | null,
   callbacks: WeatherCallbacks,
+  options: WeatherRenderOptions,
 ): void {
   if (!container) return;
 
@@ -113,7 +118,7 @@ export function renderWeatherDashboard(
         <div class="weather-section-title">
           ${t("weather.title")}
           <div class="weather-actions">
-            <button type="button" class="btn-secondary weather-check-btn"${canWriteWeather() ? "" : " hidden"}>${t("weather.check")}</button>
+            <button type="button" class="btn-secondary weather-check-btn"${options.canWrite ? "" : " hidden"}>${t("weather.check")}</button>
           </div>
         </div>
         <div class="weather-no-data">${t("weather.no_forecast")}</div>
@@ -150,7 +155,7 @@ export function renderWeatherDashboard(
           ${t("weather.forecast_title")}
           ${trustMarkup}
           <div class="weather-actions">
-            <button type="button" class="btn-secondary weather-check-btn"${canWriteWeather() ? "" : " hidden"}>${t("weather.refresh")}</button>
+            <button type="button" class="btn-secondary weather-check-btn"${options.canWrite ? "" : " hidden"}>${t("weather.refresh")}</button>
           </div>
         </div>
         <div class="forecast-strip">${days}</div>
@@ -217,8 +222,13 @@ export function renderWeatherDashboard(
   });
 }
 
-function canWriteWeather(): boolean {
-  return !document.body.classList.contains("garden-read-only");
+export function syncWeatherDashboardWriteAccess(
+  container: HTMLElement,
+  canWrite: boolean,
+): void {
+  container.querySelectorAll<HTMLButtonElement>(".weather-check-btn").forEach((button) => {
+    button.hidden = !canWrite;
+  });
 }
 
 function createWeatherAlertCardMarkup(
