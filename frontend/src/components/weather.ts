@@ -117,9 +117,7 @@ export function renderWeatherDashboard(
       <div class="weather-section">
         <div class="weather-section-title">
           ${t("weather.title")}
-          <div class="weather-actions">
-            <button type="button" class="btn-secondary weather-check-btn"${options.canWrite ? "" : " hidden"}>${t("weather.check")}</button>
-          </div>
+          ${weatherCheckActionMarkup(options, t("weather.check"))}
         </div>
         <div class="weather-no-data">${t("weather.no_forecast")}</div>
       </div>
@@ -154,11 +152,25 @@ export function renderWeatherDashboard(
         <div class="weather-section-title">
           ${t("weather.forecast_title")}
           ${trustMarkup}
-          <div class="weather-actions">
-            <button type="button" class="btn-secondary weather-check-btn"${options.canWrite ? "" : " hidden"}>${t("weather.refresh")}</button>
-          </div>
+          ${weatherCheckActionMarkup(options, t("weather.refresh"))}
         </div>
         <div class="forecast-strip">${days}</div>
+      </div>
+    `);
+  } else {
+    const title = summary.forecast_available
+      ? t("weather.forecast_title")
+      : t("weather.title");
+    const action = summary.forecast_available
+      ? t("weather.refresh")
+      : t("weather.check");
+    sections.push(`
+      <div class="weather-section">
+        <div class="weather-section-title">
+          ${title}
+          ${weatherCheckActionMarkup(options, action)}
+        </div>
+        <div class="weather-no-data">${t("weather.no_forecast")}</div>
       </div>
     `);
   }
@@ -229,6 +241,17 @@ export function syncWeatherDashboardWriteAccess(
   container.querySelectorAll<HTMLButtonElement>(".weather-check-btn").forEach((button) => {
     button.hidden = !canWrite;
   });
+}
+
+function weatherCheckActionMarkup(
+  options: WeatherRenderOptions,
+  label: string,
+): string {
+  return `
+    <div class="weather-actions">
+      <button type="button" class="btn-secondary weather-check-btn"${options.canWrite ? "" : " hidden"}>${label}</button>
+    </div>
+  `;
 }
 
 function createWeatherAlertCardMarkup(
