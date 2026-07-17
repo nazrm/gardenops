@@ -720,6 +720,19 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
         assert f'"{journey_id}"' in checker_source
 
 
+def test_phase_two_weather_fixture_uses_the_current_garden_locations() -> None:
+    source = SEEDER.read_text(encoding="utf-8")
+    weather_reset = source.split("def _reset_phase_two_weather_cache", 1)[1].split(
+        "def _prepare_phase_seven_weather", 1
+    )[0]
+
+    assert "SELECT id, latitude, longitude" in weather_reset
+    assert "FROM gardens" in weather_reset
+    assert "locations[garden_id]" in weather_reset
+    assert "weather gardens need configured locations" in weather_reset
+    assert "(beta_id, beta_forecast, 59.9239, 10.7622)" not in weather_reset
+
+
 def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
     journey_source = (ROOT / "scripts" / "e2e" / "journeys" / "observationToAction.cjs").read_text(
         encoding="utf-8"

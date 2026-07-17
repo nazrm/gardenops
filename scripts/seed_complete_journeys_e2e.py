@@ -900,10 +900,27 @@ def _reset_phase_two_weather_cache(
         }
     }
     garden_ids = sorted([alpha_id, beta_id])
-    for garden_id, forecast, latitude, longitude in (
-        (alpha_id, alpha_forecast, 59.9139, 10.7522),
-        (beta_id, beta_forecast, 59.9239, 10.7622),
+    location_rows = conn.execute(
+        """
+        SELECT id, latitude, longitude
+        FROM gardens
+        WHERE id = ANY(%s)
+        """,
+        (garden_ids,),
+    ).fetchall()
+    locations = {
+        int(row["id"]): (float(row["latitude"]), float(row["longitude"]))
+        for row in location_rows
+        if row["latitude"] is not None and row["longitude"] is not None
+    }
+    if set(locations) != set(garden_ids):
+        raise RuntimeError("Complete journey Phase 2 weather gardens need configured locations")
+
+    for garden_id, forecast in (
+        (alpha_id, alpha_forecast),
+        (beta_id, beta_forecast),
     ):
+        latitude, longitude = locations[garden_id]
         rows = conn.execute(
             "SELECT id FROM weather_cache WHERE garden_id = %s ORDER BY id",
             (garden_id,),
