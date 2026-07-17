@@ -285,7 +285,17 @@ async function exerciseViewerBoundary(page, options, result) {
   const label = profileLabel(options);
   await activateTab(page, "map", label);
   await visible(page.locator("#map-grid"), `${label} map-first surface`);
-  await visible(page.locator("#garden-role-chip"), `${label} role chip`);
+  if (options.profile === "mobile") {
+    const utility = page.locator("#mobile-utility-btn");
+    await utility.focus();
+    await utility.press("Enter");
+    await visible(page.locator("#mobile-garden-role-chip"), `${label} role chip`);
+    const close = page.locator("#mobile-utility-close-btn");
+    await close.focus();
+    await close.press("Enter");
+  } else {
+    await visible(page.locator("#garden-role-chip"), `${label} role chip`);
+  }
   await openTasks(page, label);
   const add = page.locator("#tasks-add-btn");
   assert(await add.count() === 0 || await add.isDisabled(),
