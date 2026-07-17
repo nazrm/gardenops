@@ -1771,6 +1771,60 @@ def test_phase_two_accounts_for_deterministic_read_side_effects() -> None:
                 "updated": 0,
             }
 
+    script = r"""
+const {
+  assertWholeTableMutationAccounting,
+  phaseTwoOracle,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const row = (prefix, count) => ({
+  count,
+  digest: prefix.repeat(32),
+  identity_columns: ['id'],
+  row_digests: Array.from(
+    { length: count }, (_, index) => String(index + 1).padStart(32, prefix),
+  ),
+  row_projections: Array.from({ length: count }, (_, index) => ({
+    identity_digest: String(index + 1).padStart(64, prefix),
+    row_digest: String(index + 1).padStart(64, prefix),
+  })),
+});
+const oracle = phaseTwoOracle().phase_two.whole_table_mutation_accounting;
+const tables = ['provider_daily_usage', 'shademap_cache'];
+const scope = oracle.exact_counts.phase_two_only;
+const identities = oracle.exact_identity_counts.phase_two_only;
+const accounting = Object.fromEntries(tables.map((table) => [table, {
+  allow_row_delta: true,
+  evidence: 'phase-two-read-side-effect-oracle',
+  expected_added: scope[table].added,
+  expected_removed: scope[table].removed,
+  expected_identity_added: identities[table].added,
+  expected_identity_removed: identities[table].removed,
+  expected_identity_updated: identities[table].updated,
+}]));
+const initial = {
+  provider_daily_usage: row('a', 0),
+  shademap_cache: row('b', 0),
+};
+const final = {
+  provider_daily_usage: row('a', 4),
+  shademap_cache: row('b', 3),
+};
+assertWholeTableMutationAccounting(initial, final, new Set(tables), accounting);
+try {
+  assertWholeTableMutationAccounting(initial, {
+    provider_daily_usage: row('a', 5),
+    shademap_cache: row('b', 3),
+  }, new Set(tables), accounting);
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('expected_added')) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
 
 def test_phase_two_subscription_probe_is_wired_to_classified_diagnostics() -> None:
     journey_path = ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs"
