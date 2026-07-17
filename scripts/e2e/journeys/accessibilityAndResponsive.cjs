@@ -141,8 +141,17 @@ async function exerciseMapAndToday(page, options, result) {
 async function exerciseTaskValidation(page, options, result) {
   const label = profileLabel(options);
   await openTasks(page, label);
-  const taskKey = options.profile === "desktop" ? "fertilize_grouped" : "bloom_mobile";
-  const title = taskTitle(options.fixture, taskKey);
+  const task = options.profile === "desktop"
+    ? {
+      id: options.fixture.phase_two.task_ids.fertilize_grouped,
+      title: taskTitle(options.fixture, "fertilize_grouped"),
+    }
+    : {
+      id: options.fixture.phase_eight?.completion_validation_task?.public_id,
+      title: options.fixture.phase_eight?.completion_validation_task?.title,
+    };
+  assert(task?.id && task?.title, `${label} completion-validation fixture is missing`);
+  const title = task.title;
   const card = page.locator("#tasks-list .task-card").filter({ hasText: title }).first();
   await visible(card, `${label} completion-capture task`);
   const complete = card.getByRole("button", { name: /^Complete$/i });

@@ -321,6 +321,8 @@ PHASE_TWO_TASKS = {
     "rain_indoor": "tsk_complete_p2_rain_indoor",
     "rain_unplaced": "tsk_complete_p2_rain_unplaced",
 }
+PHASE_EIGHT_COMPLETION_TASK_PUBLIC_ID = "tsk_complete_p8_completion_validation"
+PHASE_EIGHT_COMPLETION_TASK_TITLE = "Fertilize Phase 8 accessibility pair"
 PHASE_TWO_PLANTS = {
     "bloom_desktop": ("COMPLETE-P2-BLOOM-DESKTOP", "Phase 2 Desktop Astrantia", "H5"),
     "fertilize_a": ("COMPLETE-P2-FERT-A", "Phase 2 Fertilize A", "H5"),
@@ -1135,6 +1137,20 @@ def _seed_phase_two_fixtures(conn, optimization_seed: Any) -> None:
             window_start_on=PHASE_TWO_DATE if window_end else None,
             window_end_on=window_end,
         )
+
+    _seed_phase_two_task(
+        conn,
+        public_id=PHASE_EIGHT_COMPLETION_TASK_PUBLIC_ID,
+        garden_id=alpha_id,
+        actor_user_id=admin_id,
+        task_type="fertilize",
+        title=PHASE_EIGHT_COMPLETION_TASK_TITLE,
+        plant_ids=(
+            PHASE_TWO_PLANTS["fertilize_a"][0],
+            PHASE_TWO_PLANTS["fertilize_b"][0],
+        ),
+        plot_ids=(PHASE_TWO_ALPHA_PLOT_ID,),
+    )
 
     # This task is outside the maintenance upcoming window. It isolates the immediate
     # one-week snooze plus transient Change date correction path from later offline actions.
@@ -4295,6 +4311,15 @@ def _phase_seven_fixture_state() -> dict[str, Any]:
     }
 
 
+def _phase_eight_fixture_state() -> dict[str, Any]:
+    return {
+        "completion_validation_task": {
+            "public_id": PHASE_EIGHT_COMPLETION_TASK_PUBLIC_ID,
+            "title": PHASE_EIGHT_COMPLETION_TASK_TITLE,
+        },
+    }
+
+
 def _count(conn, table: str) -> int:
     allowed = {
         "attention_outcomes",
@@ -4763,6 +4788,7 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
         "phase_five": _phase_five_fixture_state(),
         "phase_six": _phase_six_fixture_state(),
         "phase_seven": _phase_seven_fixture_state(),
+        "phase_eight": _phase_eight_fixture_state(),
         "roles": {
             "admin": ADMIN_USERNAME,
             "editor": EDITOR_LOGIN[0],
