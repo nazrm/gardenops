@@ -260,6 +260,24 @@ def test_mobile_map_editor_opens_an_operable_layers_sheet() -> None:
     assert 'showToast(t("map.desktop_only")' not in app
 
 
+def test_shademap_context_reconciliation_does_not_persist_state() -> None:
+    shade_panel = _read("frontend/src/components/shadePanel.ts")
+    context_body = _function_body(
+        shade_panel,
+        "  setGardenContext(context: GardenContext): void",
+        "  setSelectedPlot(plotId: string | null): void",
+    )
+    selection_body = _function_body(
+        shade_panel,
+        "  setSelectedPlot(plotId: string | null): void",
+        "  showError(message: string): void",
+    )
+
+    assert "this.activeTargetId = HOUSE_TARGET_ID;" in context_body
+    assert "this.emitStateChange();" not in context_body
+    assert "this.emitStateChange();" in selection_body
+
+
 def test_north_direction_keeps_rendered_map_metadata_in_sync() -> None:
     app = _read("frontend/src/app.ts")
     body = _function_body(
