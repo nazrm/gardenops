@@ -1551,6 +1551,13 @@ async function runWeatherCheck(page) {
         ?? null,
       readOnly: document.body.classList.contains("garden-read-only"),
       switchPending: document.body.classList.contains("garden-switch-pending"),
+      weatherControls: Array.from(
+        document.querySelectorAll<HTMLButtonElement>("#weather-dashboard .weather-check-btn"),
+      ).map((button) => ({
+        hidden: button.hidden,
+        disabled: button.disabled,
+        text: button.textContent,
+      })),
     }));
     throw new Error(`Weather check action was unavailable: ${JSON.stringify(accessState)}`, {
       cause: error,
