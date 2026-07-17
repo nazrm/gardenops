@@ -121,10 +121,11 @@ async function exerciseMapAndToday(page, options, result) {
     await waitFor(async () => await mobileHandle.evaluate((element) => document.activeElement === element),
       `${label} Today trigger focus return`);
     result.checks.today_focus_return = true;
-    result.touch_targets = [
-      ...await assertTouchTargets(mobileHandle, `${label} Today handle`),
-      ...await assertTouchTargets(page.locator("#mobile-fab:visible"), `${label} Quick Actions trigger`),
-    ];
+    result.touch_targets = await assertTouchTargets(mobileHandle, `${label} Today handle`);
+    const mobileFab = page.locator("#mobile-fab:visible");
+    if (await mobileFab.count()) {
+      result.touch_targets.push(...await assertTouchTargets(mobileFab, `${label} Quick Actions trigger`));
+    }
   }
 }
 

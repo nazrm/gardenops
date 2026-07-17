@@ -1265,6 +1265,7 @@ def test_phase_eight_accessibility_responsive_journey_and_harness_are_registered
         "assertFocusVisibleAndUnobscured",
         "task-completion-list input[type='checkbox']",
         "assertTouchTargets",
+        "const mobileFab = page.locator(\"#mobile-fab:visible\")",
         "desktop-reflow-200",
         "desktop-reduced-motion",
         "mobile-reduced-motion",
