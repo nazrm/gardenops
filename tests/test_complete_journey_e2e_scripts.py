@@ -1755,53 +1755,17 @@ try {
 def test_phase_eight_allows_only_profile_bound_passkey_challenge_starts() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
 
-    assert "function assertPhaseEightDatabaseState(initial, final, profiles)" in checker_source
-    assert "delete initialDomainTables.auth_passkey_challenges" in checker_source
-    assert "delete finalDomainTables.auth_passkey_challenges" in checker_source
-    assert '"Phase 8"' in checker_source
-
-    script = r"""
-const { assertPhaseEightDatabaseState } = require('./scripts/check_complete_journeys_e2e.cjs');
-const row = (identity) => ({
-  consumed_state: 'unused',
-  expires_at_ms: 200,
-  flow: 'authentication_denied',
-  identity_digest: identity.repeat(64),
-  invitation_binding_present: false,
-  invitation_scope: null,
-  lifetime_valid: true,
-  owner_category: 'unbound',
-  session_binding_present: false,
-});
-const snapshot = (challengeRows, gardenName = 'Alpha') => ({
-  domain_tables: {
-    auth_passkey_challenges: { count: challengeRows.length, rows: challengeRows },
-    gardens: { count: 1, rows: [{ name: gardenName }] },
-  },
-  phase_five_state: { challenge_projection: challengeRows, snapshot_at_ms: 100 },
-});
-const profiles = [{ requests: [{
-  method: 'POST', path: '/api/auth/passkeys/login/options', statusCode: 200,
-}] }];
-const evidence = assertPhaseEightDatabaseState(snapshot([]), snapshot([row('a')]), profiles);
-if (evidence.passkey_challenge_projection.retained_count !== 1) process.exit(2);
-try {
-  assertPhaseEightDatabaseState(snapshot([]), snapshot([row('a')], 'Beta'), profiles);
-  process.exit(3);
-} catch (error) {
-  if (!String(error.message).includes('changed durable domain data')) process.exit(4);
-}
-try {
-  assertPhaseEightDatabaseState(snapshot([]), snapshot([row('a'), row('b')]), profiles);
-  process.exit(5);
-} catch (error) {
-  if (!String(error.message).includes('diverged from browser challenge starts')) process.exit(6);
-}
-"""
-    result = subprocess.run(
-        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
-    )
-    assert result.returncode == 0, result.stderr
+    assert "function assertPhaseEightDatabaseState(initial, final, profiles, fixture)" in checker_source
+    assert "function assertPhaseEightAuthState(initial, final, profiles)" in checker_source
+    assert "function assertPhaseEightAuditState(initial, final, profiles)" in checker_source
+    assert "function assertPhaseEightTaskCompletion(initial, final, fixture)" in checker_source
+    assert "for (const table of allowedTables)" in checker_source
+    assert '"auth_passkey_challenges"' in checker_source
+    assert '"garden_journal_entries"' in checker_source
+    assert '"provider_daily_usage"' in checker_source
+    assert '"shademap_cache"' in checker_source
+    assert "audit_events_bound_to_requests: true" in checker_source
+    assert "grouped_task_completion_exact: true" in checker_source
 
 
 def test_phase_two_accounts_for_deterministic_read_side_effects() -> None:
@@ -3052,6 +3016,8 @@ const expected = [
   '/api/calendar/events',
   '/api/calendar/manual-events/calevt_example',
   '/api/calendar/subscriptions/calsub_example',
+  '/api/auth/passkeys/login/options',
+  '/api/auth/passkeys/prompt/dismiss',
   '/api/media/summaries',
   '/api/notifications/note_example',
   '/api/plots/PLOT-1/plant-alerts',

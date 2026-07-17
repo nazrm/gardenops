@@ -467,22 +467,187 @@ function assertPhaseEightProfileEvidence(profiles) {
   return { profile_matrix_enforced: true, profile_order: observed };
 }
 
-function assertPhaseEightDatabaseState(initial, final, profiles) {
+function assertPhaseEightAuditState(initial, final, profiles) {
+  const initialRecords = initial?.audit_state?.records;
+  const finalRecords = final?.audit_state?.records;
+  assert(Array.isArray(initialRecords) && Array.isArray(finalRecords),
+    "Phase 8 audit state is missing");
+  assert(canonicalJson(finalRecords.slice(0, initialRecords.length)) === canonicalJson(initialRecords),
+    "Phase 8 changed an existing audit event");
+  const auditablePaths = new Set([
+    "/api/auth/login",
+    "/api/auth/passkeys/login/options",
+    "/api/auth/passkeys/prompt/dismiss",
+  ]);
+  const expected = profiles.flatMap((profile) => (profile.requests || []).filter((request) => (
+    request.method === "POST"
+    && (auditablePaths.has(request.path) || /^\/api\/tasks\/[^/]+\/action$/.test(request.path))
+  ))).map((request) => ({
+    method: request.method,
+    path: request.path,
+    request_id: request.requestId,
+    status_code: request.statusCode,
+  }));
+  const unmatched = [...expected];
+  for (const record of finalRecords.slice(initialRecords.length)) {
+    const index = unmatched.findIndex((request) => (
+      request.method === record.method
+      && request.path === record.path
+      && request.request_id === record.request_id
+      && request.status_code === record.status_code
+    ));
+    assert(index >= 0,
+      `Phase 8 audit event is not bound to a recorded browser request: ${canonicalJson(record)}`);
+    unmatched.splice(index, 1);
+  }
+  assert(unmatched.length === 0,
+    `Phase 8 recorded mutation lacks an audit event: ${canonicalJson(unmatched)}`);
+  return { audit_events_bound_to_requests: true, audit_event_count: expected.length };
+}
+
+function assertPhaseEightAuthState(initial, final, profiles) {
+  const before = initial?.phase_five_state;
+  const after = final?.phase_five_state;
+  assert(before && after, "Phase 8 auth state is missing");
+  const logins = profiles.flatMap((profile) => (profile.requests || []).filter((request) => (
+    request.method === "POST" && request.path === "/api/auth/login" && request.statusCode === 200
+  )));
+  const expectedCategories = logins.map((request) => {
+    const profile = profiles.find((candidate) => (candidate.requests || []).includes(request));
+    assert(profile && ["admin", "viewer"].includes(profile.role),
+      "Phase 8 login request has an unsupported role");
+    return `fixture_${profile.role}`;
+  }).sort();
+  const userDelta = exactProjectionDelta(
+    before.auth_users_projection,
+    after.auth_users_projection,
+    "Phase 8 auth user",
+  );
+  assert(userDelta.added.length === 0 && userDelta.removed.length === 0,
+    "Phase 8 added or removed an auth user");
+  const updatedCategories = userDelta.updated.map(({ after: row }) => row.category).sort();
+  assert(canonicalJson(updatedCategories) === canonicalJson([...new Set(expectedCategories)].sort()),
+    "Phase 8 changed an unexpected auth user");
+  for (const { before: previous, after: current } of userDelta.updated) {
+    const stablePrevious = { ...previous };
+    const stableCurrent = { ...current };
+    delete stablePrevious.last_login_at;
+    delete stablePrevious.passkey_prompt_dismissed_until_ms;
+    delete stableCurrent.last_login_at;
+    delete stableCurrent.passkey_prompt_dismissed_until_ms;
+    assert(canonicalJson(stablePrevious) === canonicalJson(stableCurrent)
+      && current.last_login_at !== null
+      && current.passkey_prompt_dismissed_until_ms > 0,
+    "Phase 8 changed auth user state beyond login and passkey prompt dismissal");
+  }
+  const sessionDelta = exactProjectionDelta(
+    before.auth_sessions_projection,
+    after.auth_sessions_projection,
+    "Phase 8 auth session",
+  );
+  assert(sessionDelta.removed.length === 0 && sessionDelta.updated.length === 0
+    && canonicalJson(sessionDelta.added.map((row) => row.category).sort())
+      === canonicalJson(expectedCategories),
+  "Phase 8 sessions diverged from successful browser logins");
+  const challenge = assertPhaseOneChallengeProjection(before, after, profiles, "Phase 8");
+  assert(challenge.retained_count === challenge.browser_challenge_start_count,
+    "Phase 8 passkey challenges were not retained exactly for browser starts");
+  return {
+    auth_sessions_exact: true,
+    auth_users_exact: true,
+    passkey_challenge_projection: challenge,
+  };
+}
+
+function assertPhaseEightTaskCompletion(initial, final, fixture) {
+  const taskId = fixture?.phase_two?.task_ids?.fertilize_grouped;
+  assert(typeof taskId === "string" && taskId, "Phase 8 grouped task fixture is missing");
+  const beforeTasks = new Map((initial?.phase_two_state?.tasks || []).map((task) => [task.public_id, task]));
+  const afterTasks = new Map((final?.phase_two_state?.tasks || []).map((task) => [task.public_id, task]));
+  assert(beforeTasks.size === afterTasks.size && beforeTasks.has(taskId) && afterTasks.has(taskId),
+    "Phase 8 task projection is missing the grouped fixture");
+  const changedTaskIds = [...afterTasks.keys()].filter((id) => (
+    canonicalJson(beforeTasks.get(id)) !== canonicalJson(afterTasks.get(id))
+  ));
+  assert(canonicalJson(changedTaskIds) === canonicalJson([taskId]),
+    "Phase 8 changed an unexpected task");
+  const beforeTask = beforeTasks.get(taskId);
+  const afterTask = afterTasks.get(taskId);
+  assert(afterTask.status === "completed"
+    && afterTask.completed_by_username === fixture.roles.admin
+    && Number.isSafeInteger(afterTask.completed_at_ms)
+    && afterTask.completed_at_ms > 0
+    && afterTask.updated_at_ms > beforeTask.updated_at_ms
+    && canonicalJson(afterTask.plant_ids) === canonicalJson(beforeTask.plant_ids)
+    && canonicalJson(afterTask.plot_ids) === canonicalJson(beforeTask.plot_ids),
+  "Phase 8 grouped completion did not persist the expected task state");
+  const beforeJournals = initial?.phase_two_state?.journal || [];
+  const afterJournals = final?.phase_two_state?.journal || [];
+  const beforeJournalIds = new Set(beforeJournals.map((entry) => entry.public_id));
+  const addedJournals = afterJournals.filter((entry) => !beforeJournalIds.has(entry.public_id));
+  assert(addedJournals.length === 1, "Phase 8 completion did not add exactly one journal entry");
+  const journal = addedJournals[0];
+  assert(journal.actor_username === fixture.roles.admin
+    && journal.event_type === "fertilized"
+    && journal.garden_id === fixture.gardens.alpha.id
+    && journal.occurred_on === fixture.clock.attention_date
+    && journal.metadata?.source === "task_completion"
+    && journal.metadata?.source_task_id === taskId
+    && journal.metadata?.source_task_type === "fertilize"
+    && canonicalJson(journal.plant_ids) === canonicalJson(beforeTask.plant_ids)
+    && canonicalJson(journal.plot_ids) === canonicalJson(beforeTask.plot_ids),
+  "Phase 8 completion journal did not match the selected task");
+  return { grouped_task_completion_exact: true, completion_journal_exact: true };
+}
+
+function assertPhaseEightDatabaseState(initial, final, profiles, fixture) {
   assert(initial && final, "Phase 8 database state is missing");
   const initialDomainTables = { ...initial.domain_tables };
   const finalDomainTables = { ...final.domain_tables };
-  delete initialDomainTables.auth_passkey_challenges;
-  delete finalDomainTables.auth_passkey_challenges;
+  const allowedTables = new Set([
+    "auth_passkey_challenges",
+    "garden_journal_entries",
+    "garden_journal_entry_plants",
+    "garden_journal_entry_plots",
+    "garden_tasks",
+    "provider_daily_usage",
+    "shademap_cache",
+  ]);
+  assertWholeTableProjectionCoverage(initialDomainTables, finalDomainTables, allowedTables);
+  for (const table of allowedTables) {
+    delete initialDomainTables[table];
+    delete finalDomainTables[table];
+  }
   assert(canonicalJson(initialDomainTables) === canonicalJson(finalDomainTables),
     "Phase 8 accessibility journey changed durable domain data");
+  const tableDelta = (table) => stableRowIdentityDelta(
+    initial.domain_tables[table].row_projections,
+    final.domain_tables[table].row_projections,
+  );
+  const taskDelta = tableDelta("garden_tasks");
+  const expectedTaskIdentity = sha256(canonicalJson({
+    public_id: fixture.phase_two.task_ids.fertilize_grouped,
+  }));
+  assert(taskDelta.added.length === 0 && taskDelta.removed.length === 0
+    && canonicalJson(taskDelta.updated.map((row) => row.identity_digest))
+      === canonicalJson([expectedTaskIdentity]),
+  "Phase 8 changed the wrong garden task row");
+  for (const [table, added] of [
+    ["garden_journal_entries", 1],
+    ["garden_journal_entry_plants", 2],
+    ["garden_journal_entry_plots", 1],
+    ["provider_daily_usage", 2],
+    ["shademap_cache", 2],
+  ]) {
+    const delta = tableDelta(table);
+    assert(delta.added.length === added && delta.removed.length === 0 && delta.updated.length === 0,
+      `Phase 8 ${table} read or completion delta was unexpected`);
+  }
   return {
     domain_state_unchanged: true,
-    passkey_challenge_projection: assertPhaseOneChallengeProjection(
-      initial.phase_five_state,
-      final.phase_five_state,
-      profiles,
-      "Phase 8",
-    ),
+    ...assertPhaseEightAuthState(initial, final, profiles),
+    ...assertPhaseEightAuditState(initial, final, profiles),
+    ...assertPhaseEightTaskCompletion(initial, final, fixture),
   };
 }
 
@@ -6605,7 +6770,7 @@ function assertFixtureAttentionClock(fixture) {
 function isSafeManifestRequestPath(value) {
   const requestPath = String(value || "");
   return [
-    /^\/api\/auth\/(?:login|me|status)$/,
+    /^\/api\/auth\/(?:login|me|status|passkeys\/(?:login\/options|prompt\/dismiss))$/,
     /^\/api\/attention\/(?:preferences|today)$/,
     /^\/api\/calendar\/(?:events|export\.ics|preferences|manual-events(?:\/[^/?]+)?|subscriptions(?:\/[^/?]+)?)$/,
     /^\/api\/dashboard\/badge-counts$/,
@@ -7522,6 +7687,7 @@ async function main() {
         phaseEightDatabaseBaseline,
         finalDatabase,
         phaseEightProfiles,
+        fixture,
       );
     }
     const phaseOneSemanticDeltaTables = phaseOneRan ? new Set([
