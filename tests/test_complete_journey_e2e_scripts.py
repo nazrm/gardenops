@@ -1260,6 +1260,10 @@ def test_phase_eight_accessibility_responsive_journey_and_harness_are_registered
     assert "assertPhaseEightDatabaseState" in checker_source
     assert "screen_reader_boundary" in checker_source
     assert "phaseEightDatabaseBaseline," in checker_source
+    assert "const PHASE_EIGHT_ALLOWED_TABLES" in checker_source
+    assert "const phaseEightAllowedTables = new Set(PHASE_EIGHT_ALLOWED_TABLES);" in checker_source
+    assert "function assertPhaseEightWholeTableMutationAccounting" in checker_source
+    assert "phase_eight_grouped_fertilize_completion" in checker_source
     for marker in (
         "assertAxeState",
         "chromiumAXTree",

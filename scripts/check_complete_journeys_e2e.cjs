@@ -111,6 +111,15 @@ function isPhaseTwoReadOnlyProbeMutation(request) {
 }
 const PHASE_TWO_EDITOR_PASSWORD = "CompleteJourneysEditorE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 const PHASE_TWO_VIEWER_PASSWORD = "CompleteJourneysViewerE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+const PHASE_EIGHT_ALLOWED_TABLES = [
+  "auth_passkey_challenges",
+  "garden_journal_entries",
+  "garden_journal_entry_plants",
+  "garden_journal_entry_plots",
+  "garden_tasks",
+  "provider_daily_usage",
+  "shademap_cache",
+];
 
 function phaseSelected(phase) {
   return phase >= PHASE && phase <= THROUGH_PHASE;
@@ -604,15 +613,7 @@ function assertPhaseEightDatabaseState(initial, final, profiles, fixture) {
   assert(initial && final, "Phase 8 database state is missing");
   const initialDomainTables = { ...initial.domain_tables };
   const finalDomainTables = { ...final.domain_tables };
-  const allowedTables = new Set([
-    "auth_passkey_challenges",
-    "garden_journal_entries",
-    "garden_journal_entry_plants",
-    "garden_journal_entry_plots",
-    "garden_tasks",
-    "provider_daily_usage",
-    "shademap_cache",
-  ]);
+  const allowedTables = new Set(PHASE_EIGHT_ALLOWED_TABLES);
   assertWholeTableProjectionCoverage(initialDomainTables, finalDomainTables, allowedTables);
   for (const table of allowedTables) {
     delete initialDomainTables[table];
@@ -649,6 +650,87 @@ function assertPhaseEightDatabaseState(initial, final, profiles, fixture) {
     ...assertPhaseEightAuditState(initial, final, profiles),
     ...assertPhaseEightTaskCompletion(initial, final, fixture),
   };
+}
+
+function assertPhaseEightWholeTableMutationAccounting(initial, final, fixture, evidence) {
+  const taskId = fixture?.phase_two?.task_ids?.fertilize_grouped;
+  assert(typeof taskId === "string" && taskId, "Phase 8 grouped task fixture is missing");
+  const passkeyStarts = evidence?.passkey_challenge_projection?.retained_count;
+  assert(Number.isSafeInteger(passkeyStarts) && passkeyStarts >= 0,
+    "Phase 8 passkey challenge accounting is missing");
+  const taskIdentity = sha256(canonicalJson({ public_id: taskId }));
+  const accounting = {
+    auth_passkey_challenges: {
+      allow_row_delta: true,
+      evidence: "phase_eight_browser_passkey_option_starts",
+      expected_added: passkeyStarts,
+      expected_identity_added: passkeyStarts,
+      expected_identity_removed: 0,
+      expected_identity_updated: 0,
+      expected_removed: 0,
+    },
+    garden_journal_entries: {
+      allow_row_delta: true,
+      evidence: "phase_eight_grouped_fertilize_completion",
+      expected_added: 1,
+      expected_identity_added: 1,
+      expected_identity_removed: 0,
+      expected_identity_updated: 0,
+      expected_removed: 0,
+    },
+    garden_journal_entry_plants: {
+      allow_row_delta: true,
+      evidence: "phase_eight_grouped_fertilize_completion",
+      expected_added: 2,
+      expected_identity_added: 2,
+      expected_identity_removed: 0,
+      expected_identity_updated: 0,
+      expected_removed: 0,
+    },
+    garden_journal_entry_plots: {
+      allow_row_delta: true,
+      evidence: "phase_eight_grouped_fertilize_completion",
+      expected_added: 1,
+      expected_identity_added: 1,
+      expected_identity_removed: 0,
+      expected_identity_updated: 0,
+      expected_removed: 0,
+    },
+    garden_tasks: {
+      allow_row_delta: true,
+      evidence: "phase_eight_grouped_fertilize_completion",
+      expected_added: 1,
+      expected_identity_added: 0,
+      expected_identity_removed: 0,
+      expected_identity_updated: 1,
+      expected_removed: 1,
+      expected_updated_identity_digests: [taskIdentity],
+    },
+    provider_daily_usage: {
+      allow_row_delta: true,
+      evidence: "phase_eight_weather_availability_reads",
+      expected_added: 2,
+      expected_identity_added: 2,
+      expected_identity_removed: 0,
+      expected_identity_updated: 0,
+      expected_removed: 0,
+    },
+    shademap_cache: {
+      allow_row_delta: true,
+      evidence: "phase_eight_shade_availability_reads",
+      expected_added: 2,
+      expected_identity_added: 2,
+      expected_identity_removed: 0,
+      expected_identity_updated: 0,
+      expected_removed: 0,
+    },
+  };
+  return assertWholeTableMutationAccounting(
+    initial.domain_tables,
+    final.domain_tables,
+    new Set(PHASE_EIGHT_ALLOWED_TABLES),
+    accounting,
+  );
 }
 
 function assertPhaseSevenDatabaseState(initial, final, fixture) {
@@ -7846,10 +7928,15 @@ async function main() {
         Object.hasOwn(finalDatabase.domain_tables, table)
       )),
     );
-    const cumulativeSemanticDeltaTables = phaseSevenRan ? new Set([
+    const throughPhaseSevenSemanticDeltaTables = phaseSevenRan ? new Set([
       ...throughPhaseSixSemanticDeltaTables,
       ...phaseSevenAllowedTables,
     ]) : throughPhaseSixSemanticDeltaTables;
+    const phaseEightAllowedTables = new Set(PHASE_EIGHT_ALLOWED_TABLES);
+    const cumulativeSemanticDeltaTables = phaseEightRan ? new Set([
+      ...throughPhaseSevenSemanticDeltaTables,
+      ...phaseEightAllowedTables,
+    ]) : throughPhaseSevenSemanticDeltaTables;
     const forbiddenDomainTables = changedDomainTables.filter(
       (table) => !cumulativeSemanticDeltaTables.has(table),
     );
@@ -8025,7 +8112,14 @@ async function main() {
         evidence: "phase_seven_browser_provider_shade_terrain_boundary",
       },
     ]));
-    const wholeTableMutationAccounting = phaseSevenRan
+    const wholeTableMutationAccounting = phaseEightRan
+      ? assertPhaseEightWholeTableMutationAccounting(
+        phaseEightDatabaseBaseline,
+        finalDatabase,
+        fixture,
+        phaseEightDatabaseEvidence,
+      )
+      : phaseSevenRan
       ? assertWholeTableMutationAccounting(
         phaseSevenDatabaseBaseline.domain_tables,
         finalDatabase.domain_tables,
@@ -8405,9 +8499,9 @@ async function main() {
         phase_eight_baseline: phaseEightDatabaseBaseline?.domain_tables ?? null,
       },
       domain_counts_unchanged: !phaseOneRan && !phaseTwoRan && !phaseThreeRan
-        && !phaseFourRan && !phaseFiveRan && !phaseSixRan && !phaseSevenRan,
+        && !phaseFourRan && !phaseFiveRan && !phaseSixRan && !phaseSevenRan && !phaseEightRan,
       domain_digests_unchanged: !phaseOneRan && !phaseTwoRan && !phaseThreeRan
-        && !phaseFourRan && !phaseFiveRan && !phaseSixRan && !phaseSevenRan,
+        && !phaseFourRan && !phaseFiveRan && !phaseSixRan && !phaseSevenRan && !phaseEightRan,
       phase_zero_enforcement: phaseZeroProfileEvidence ? {
         browser_profile_matrix: phaseZeroProfileEvidence.profile_matrix_enforced === true,
         cumulative_before_phase_one: true,
@@ -8742,6 +8836,7 @@ module.exports = {
   phaseSixOracle,
   phaseSevenOracle,
   assertPhaseEightDatabaseState,
+  assertPhaseEightWholeTableMutationAccounting,
   assertPhaseEightProfileEvidence,
   writeManifestAtomic,
   runPhaseTwoReadOnlyPermutation,
