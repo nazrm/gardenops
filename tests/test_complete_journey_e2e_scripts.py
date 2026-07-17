@@ -1259,6 +1259,7 @@ def test_phase_eight_accessibility_responsive_journey_and_harness_are_registered
     assert "assertPhaseEightProfileEvidence" in checker_source
     assert "assertPhaseEightDatabaseState" in checker_source
     assert "screen_reader_boundary" in checker_source
+    assert "phaseEightDatabaseBaseline," in checker_source
     for marker in (
         "assertAxeState",
         "chromiumAXTree",

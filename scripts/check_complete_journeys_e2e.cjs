@@ -7322,6 +7322,7 @@ async function main() {
       phaseFiveDatabaseBaseline,
       phaseSixDatabaseBaseline,
       phaseSevenDatabaseBaseline,
+      phaseEightDatabaseBaseline,
       phaseOneDatabase,
       phaseThreeDatabase,
       phaseThreeDatabaseBaseline,

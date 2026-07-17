@@ -156,7 +156,8 @@ async function exerciseTaskValidation(page, options, result) {
   await visible(card, `${label} completion-capture task`);
   const complete = card.getByRole("button", { name: /^Complete$/i });
   await visible(complete, `${label} grouped task Complete action`);
-  await focusByKeyboard(page, complete, `${label} grouped task Complete action`);
+  await complete.focus();
+  await assertFocusVisibleAndUnobscured(page, complete, `${label} grouped task Complete action`);
   await complete.press("Enter");
   const dialog = page.locator(".modal").filter({ has: page.locator(".task-completion-dialog") }).last();
   await visible(dialog, `${label} task completion dialog`);
