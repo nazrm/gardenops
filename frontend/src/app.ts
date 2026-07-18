@@ -274,7 +274,6 @@ let plotAlertsScheduleSeq = 0;
 let plotAlertsRequestVersion = 0;
 const PASSKEY_PROMPT_SESSION_KEY = "gardenops-passkey-prompt-shown";
 const WEATHER_SUMMARY_CACHE_MS = 60_000;
-const WEATHER_SUMMARY_IDLE_DELAY_MS = 250;
 let weatherLoadedAt = 0;
 let weatherLoadPromise: Promise<void> | null = null;
 let weatherScheduleSeq = 0;
@@ -2793,12 +2792,10 @@ function requestWeatherAfterPaint(): void {
   const seq = ++weatherScheduleSeq;
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
-      window.setTimeout(() => {
-        if (seq !== weatherScheduleSeq || activeTab !== "insights" || subMode !== "care") {
-          return;
-        }
-        void loadWeatherCached();
-      }, WEATHER_SUMMARY_IDLE_DELAY_MS);
+      if (seq !== weatherScheduleSeq || activeTab !== "insights" || subMode !== "care") {
+        return;
+      }
+      void loadWeatherCached();
     });
   });
 }

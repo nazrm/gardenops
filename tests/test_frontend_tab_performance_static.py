@@ -166,3 +166,8 @@ def test_weather_summary_is_deferred_off_insights_switch_path() -> None:
     assert "WEATHER_SUMMARY_CACHE_MS" in app
     assert "requestWeatherAfterPaint();" in refresh_body
     assert "await loadWeather()" not in refresh_body
+    weather_schedule = app.split("function requestWeatherAfterPaint", 1)[1].split(
+        "let navigationLoadSeq", 1
+    )[0]
+    assert weather_schedule.count("window.requestAnimationFrame") == 2
+    assert "window.setTimeout" not in weather_schedule
