@@ -1245,6 +1245,10 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         "provider_fixture_redacted",
         "exerciseStaleWeather",
         "assertViewerShadeBoundary",
+        "assertViewerTerrainBoundary",
+        "consumeExpectedViewerTerrainDiagnostics",
+        "#mobile-admin-btn:visible",
+        "viewer_write_denied",
         "consumeExpectedViewerShadeDiagnostics",
         '"/shademap/runtime.js"',
         'page.once("dialog"',
@@ -1790,19 +1794,18 @@ try {
     assert result.returncode == 0, result.stderr
 
 
-def test_phase_two_d4_provider_boundary_remains_required() -> None:
+def test_phase_two_d4_provider_boundary_is_proven_by_local_smtp() -> None:
     coverage = yaml.safe_load(
         (ROOT / "tests" / "journey_coverage.yaml").read_text(encoding="utf-8")
     )
     d4 = next(journey for journey in coverage["journeys"] if journey["id"] == "D4")
 
-    assert d4["provider"] == "required"
-    assert d4["provider"] != "proven"
+    assert d4["provider"] == "proven"
     assert (
-        "Production notification event handling through an exact local SMTP delivery"
+        "local loopback SMTP integration test verifies the production smtplib sender"
         in d4["notes"]["provider"]
     )
-    assert "does not claim that provider boundary" in d4["notes"]["provider"]
+    assert "tests/test_notifications.py" in d4["evidence"]["provider"]
 
 
 def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None:

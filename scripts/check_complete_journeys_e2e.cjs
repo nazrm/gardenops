@@ -406,16 +406,22 @@ function assertPhaseSevenProfileEvidence(profiles, oracle = phaseSevenOracle()) 
   "Phase 7 administrator desktop provider matrix is incomplete");
   assert(adminDesktop?.checks?.shade?.external_canvas === true
     && adminDesktop?.checks?.shade?.pixel_change === true
-    && adminDesktop?.checks?.terrain?.upload_and_cleanup === true,
+    && adminDesktop?.checks?.terrain?.upload_and_cleanup === true
+    && adminDesktop?.checks?.terrain?.cleanup_persisted === true,
   "Phase 7 administrator desktop ShadeMap or terrain proof is incomplete");
   assert(adminMobile?.checks?.chat_success?.success === true
-    && adminMobile?.checks?.shade?.external_canvas === true,
+    && adminMobile?.checks?.shade?.external_canvas === true
+    && adminMobile?.checks?.terrain?.upload_and_cleanup === true
+    && adminMobile?.checks?.terrain?.cleanup_persisted === true,
   "Phase 7 administrator mobile proof is incomplete");
-  assert(editor?.checks?.shade?.external_canvas === true,
-    "Phase 7 editor ShadeMap proof is incomplete");
+  assert(editor?.checks?.shade?.external_canvas === true
+    && editor?.checks?.terrain?.upload_and_cleanup === true
+    && editor?.checks?.terrain?.cleanup_persisted === true,
+  "Phase 7 editor ShadeMap proof is incomplete");
   assert(viewer?.checks?.shade?.viewer_read_only === true
-    && viewer?.checks?.shade?.viewer_controls_disabled === true,
-    "Phase 7 viewer ShadeMap boundary is incomplete");
+    && viewer?.checks?.shade?.viewer_controls_disabled === true
+    && viewer?.checks?.terrain?.viewer_write_denied === true,
+  "Phase 7 viewer ShadeMap boundary is incomplete");
   assert(profiles.every((profile) => profile.checks?.provider_fixture_redacted === true
     && profile.checks?.browser_diagnostics === true
     && profile.checks?.shademap_runtime_loaded === true),

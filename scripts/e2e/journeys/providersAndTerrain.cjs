@@ -15,14 +15,30 @@ const EDITOR_PASSWORD = "CompleteJourneysEditorE2E!Passphrase2026"; // push-sani
 const VIEWER_PASSWORD = "CompleteJourneysViewerE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 const EXPECTED_CHAT_REPLY = "Deterministic test reply: Check soil moisture before watering.";
 
-async function selectGarden(page, gardenId, label) {
-  const selector = page.locator("#garden-select:visible, #mobile-garden-select:visible").first();
+async function openMobileUtility(page, label) {
+  const utility = page.locator("#mobile-utility-sheet");
+  if (!await utility.evaluate((element) => element.classList.contains("mobile-utility-sheet--open"))) {
+    await page.locator("#mobile-utility-btn:visible").click();
+    await waitFor(() => utility.evaluate((element) => (
+      element.classList.contains("mobile-utility-sheet--open") && !element.hasAttribute("inert")
+    )), `${label} mobile utility open`);
+  }
+}
+
+async function selectGarden(page, gardenId, label, profile) {
+  if (profile === "mobile") await openMobileUtility(page, label);
+  const selector = page.locator(profile === "mobile" ? "#mobile-garden-select" : "#garden-select");
   await visible(selector, `${label} garden selector`);
   await selector.selectOption(String(gardenId));
   await waitFor(() => selector.inputValue().then((value) => value === String(gardenId)),
     `${label} garden switch`);
   await waitFor(() => page.locator("body.garden-switch-pending").count().then((count) => count === 0),
     `${label} garden switch settle`);
+  if (profile === "mobile") {
+    await page.locator("#mobile-utility-close-btn:visible").click();
+    await waitFor(() => page.locator("body.mobile-utility-open").count().then((count) => count === 0),
+      `${label} mobile utility close`);
+  }
 }
 
 async function openAnalysis(page, label) {
@@ -186,7 +202,9 @@ async function consumeExpectedViewerShadeDiagnostics(diagnostics, marks, label) 
   const classified = diagnostics.classifiedConsoleDiagnostics.splice(
     marks.classifiedConsoleDiagnostics,
     4,
-  ).sort((left, right) => left.path.localeCompare(right.path));
+  ).sort((left, right) => (
+    left.path.localeCompare(right.path) || left.method.localeCompare(right.method)
+  ));
   const expected = [
     ["DELETE", "/api/shademap/obstacles/999999"],
     ["PATCH", "/api/shademap/calibration"],
@@ -208,6 +226,44 @@ async function consumeExpectedViewerShadeDiagnostics(diagnostics, marks, label) 
   ].join(" ")).sort();
   assert(JSON.stringify(consoleErrors.sort()) === JSON.stringify(expectedConsoleErrors),
     `${label} viewer denial console messages drifted`);
+}
+
+async function consumeExpectedViewerTerrainDiagnostics(diagnostics, marks, label) {
+  await waitFor(() => diagnostics.httpErrors.length === marks.httpErrors + 2
+    && diagnostics.consoleErrors.length === marks.consoleErrors + 2
+    && diagnostics.classifiedConsoleDiagnostics.length === marks.classifiedConsoleDiagnostics + 2,
+  `${label} LiDAR read-only diagnostic accounting`);
+  const httpErrors = diagnostics.httpErrors.splice(marks.httpErrors, 2).sort();
+  const consoleErrors = diagnostics.consoleErrors.splice(marks.consoleErrors, 2);
+  const classified = diagnostics.classifiedConsoleDiagnostics.splice(
+    marks.classifiedConsoleDiagnostics,
+    2,
+  ).sort((left, right) => (
+    left.path.localeCompare(right.path) || left.method.localeCompare(right.method)
+  ));
+  const expected = [
+    ["DELETE", "/api/gardens/{garden_id}/lidar"],
+    ["POST", "/api/gardens/{garden_id}/lidar"],
+  ];
+  const actualPaths = classified.map((entry) => entry.path.replace(
+    /\/api\/gardens\/\d+\/lidar/,
+    "/api/gardens/{garden_id}/lidar",
+  ));
+  assert(JSON.stringify(httpErrors) === JSON.stringify([
+    "403 /api/gardens/{garden_id}/lidar",
+    "403 /api/gardens/{garden_id}/lidar",
+  ]), `${label} viewer LiDAR denial emitted unrelated HTTP diagnostics`);
+  assert(JSON.stringify(classified.map((entry, index) => [entry.method, actualPaths[index], entry.status]))
+    === JSON.stringify(expected), `${label} viewer LiDAR denial emitted unrelated console diagnostics`);
+  const expectedConsoleErrors = classified.map((entry) => [
+    entry.id,
+    entry.context,
+    entry.method,
+    entry.status,
+    entry.path,
+  ].join(" ")).sort();
+  assert(JSON.stringify(consoleErrors.sort()) === JSON.stringify(expectedConsoleErrors),
+    `${label} viewer LiDAR denial console messages drifted`);
 }
 
 async function assertViewerShadeBoundary(page, panel, label, diagnostics) {
@@ -389,8 +445,15 @@ async function exerciseShade(page, label, {
   };
 }
 
-async function openAdminGarden(page, label) {
-  await page.locator("#top-tab-admin:visible").click();
+async function openAdminGarden(page, profile, label) {
+  if (profile === "mobile") {
+    await openMobileUtility(page, label);
+    await page.locator("#mobile-admin-btn:visible").click();
+    await waitFor(() => page.locator("body.mobile-utility-open").count().then((count) => count === 0),
+      `${label} mobile utility close after settings navigation`);
+  } else {
+    await page.locator("#top-tab-admin:visible").click();
+  }
   const nav = page.locator(".adm-nav-btn[data-section='garden']:visible");
   await visible(nav, `${label} garden settings`);
   await nav.click();
@@ -399,23 +462,24 @@ async function openAdminGarden(page, label) {
 }
 
 async function exerciseTerrainUpload(page, options) {
-  await openAdminGarden(page, "Phase 7 terrain");
+  const label = `Phase 7 ${options.role}:${options.profile} terrain`;
+  await openAdminGarden(page, options.profile, label);
   const input = page.locator("#adm-garden-lidar-input");
-  await waitFor(() => input.count().then((count) => count === 1), "Phase 7 terrain file input");
+  await waitFor(() => input.count().then((count) => count === 1), `${label} file input`);
   const response = page.waitForResponse((candidate) => (
     candidate.request().method() === "POST"
       && /^\/api\/gardens\/\d+\/lidar$/.test(new URL(candidate.url()).pathname)
   ));
   await input.setInputFiles(options.terrainFile);
-  assert((await response).status() === 201, "Phase 7 terrain upload failed");
+  assert((await response).status() === 201, `${label} upload failed`);
   await waitFor(() => page.locator("#adm-garden-lidar-remove").isEnabled(),
-    "Phase 7 terrain upload state");
+    `${label} upload state`);
   const status = await page.evaluate(async (gardenId) => {
     const response = await fetch(`/api/gardens/${gardenId}/lidar`, { credentials: "include" });
     return { body: await response.json(), status: response.status };
   }, options.fixture.gardens.alpha.id);
   assert(status.status === 200 && status.body.uploaded === true,
-    "Phase 7 terrain upload did not persist the expected status");
+    `${label} upload did not persist the expected status`);
   return {
     remove: async () => {
       const remove = page.waitForResponse((candidate) => (
@@ -424,10 +488,58 @@ async function exerciseTerrainUpload(page, options) {
       ));
       page.once("dialog", (dialog) => dialog.accept());
       await page.locator("#adm-garden-lidar-remove").click();
-      assert((await remove).status() === 200, "Phase 7 terrain cleanup failed");
-      return { upload_and_cleanup: true };
+      assert((await remove).status() === 200, `${label} cleanup failed`);
+      const deletedStatus = await page.evaluate(async (gardenId) => {
+        const response = await fetch(`/api/gardens/${gardenId}/lidar`, { credentials: "include" });
+        return { body: await response.json(), status: response.status };
+      }, options.fixture.gardens.alpha.id);
+      assert(deletedStatus.status === 200 && deletedStatus.body.uploaded === false,
+        `${label} cleanup did not persist the expected status`);
+      return {
+        cleanup_persisted: true,
+        upload_and_cleanup: true,
+        upload_persisted: true,
+      };
     },
   };
+}
+
+async function assertViewerTerrainBoundary(page, gardenId, label, diagnostics) {
+  await page.locator("#top-tab-admin:visible").click();
+  await visible(page.locator("#admin-view"), `${label} settings surface`);
+  assert(await page.locator("#adm-garden-lidar-input").count() === 0,
+    `${label} viewer was offered a LiDAR upload control`);
+  const marks = {
+    classifiedConsoleDiagnostics: diagnostics.classifiedConsoleDiagnostics.length,
+    consoleErrors: diagnostics.consoleErrors.length,
+    httpErrors: diagnostics.httpErrors.length,
+  };
+  const direct = await page.evaluate(async (id) => {
+    const request = async (path, options = {}) => {
+      const response = await fetch(path, { credentials: "include", ...options });
+      return { body: await response.json(), status: response.status };
+    };
+    const before = await request(`/api/gardens/${id}/lidar`);
+    const denied = await Promise.all([
+      request(`/api/gardens/${id}/lidar`, {
+        body: new Uint8Array([0, 1, 2, 3]),
+        headers: {
+          "content-type": "application/octet-stream",
+          "x-upload-filename": "viewer-denied.las",
+        },
+        method: "POST",
+      }),
+      request(`/api/gardens/${id}/lidar`, { method: "DELETE" }),
+    ]);
+    const after = await request(`/api/gardens/${id}/lidar`);
+    return { after, before, denied };
+  }, gardenId);
+  assert(direct.denied.every((result) => result.status === 403),
+    `${label} viewer direct LiDAR mutation was not denied`);
+  assert(JSON.stringify(direct.before.body) === JSON.stringify(direct.after.body),
+    `${label} viewer direct LiDAR mutation changed persisted state`);
+  await consumeExpectedViewerTerrainDiagnostics(diagnostics, marks, label);
+  return true;
 }
 
 function credentials(options, role) {
@@ -466,7 +578,12 @@ async function runProfile(options) {
     recorder.setGardenId(auth.garden_id);
     guarded.markAuthenticated();
     await dismissProactivePasskeyPrompt(page);
-    await selectGarden(page, options.fixture.gardens.alpha.id, `Phase 7 ${options.role}:${options.profile}`);
+    await selectGarden(
+      page,
+      options.fixture.gardens.alpha.id,
+      `Phase 7 ${options.role}:${options.profile}`,
+      options.profile,
+    );
     if (options.role === "admin") {
       result.checks.chat_success = await exerciseChat(page, `Phase 7 ${options.profile}`);
       if (options.profile === "desktop") {
@@ -478,18 +595,35 @@ async function runProfile(options) {
         await fixtureControl(page, "success");
         const terrain = await exerciseTerrainUpload(page, options);
         result.checks.shade = await exerciseShade(page, "Phase 7 desktop", { expectTerrain: true });
-        await openAdminGarden(page, "Phase 7 terrain cleanup");
+        await openAdminGarden(page, options.profile, "Phase 7 desktop terrain cleanup");
         result.checks.terrain = await terrain.remove();
       } else {
-        result.checks.shade = await exerciseShade(page, "Phase 7 mobile", { mobile: true });
+        const terrain = await exerciseTerrainUpload(page, options);
+        result.checks.shade = await exerciseShade(page, "Phase 7 mobile", {
+          expectTerrain: true,
+          mobile: true,
+        });
+        await openAdminGarden(page, options.profile, "Phase 7 mobile terrain cleanup");
+        result.checks.terrain = await terrain.remove();
       }
     } else if (options.role === "viewer") {
       result.checks.shade = await exerciseShade(page, "Phase 7 viewer", {
         diagnostics: guarded.diagnostics,
         viewer: true,
       });
+      result.checks.terrain = {
+        viewer_write_denied: await assertViewerTerrainBoundary(
+          page,
+          options.fixture.gardens.alpha.id,
+          "Phase 7 viewer terrain",
+          guarded.diagnostics,
+        ),
+      };
     } else {
-      result.checks.shade = await exerciseShade(page, "Phase 7 editor");
+      const terrain = await exerciseTerrainUpload(page, options);
+      result.checks.shade = await exerciseShade(page, "Phase 7 editor", { expectTerrain: true });
+      await openAdminGarden(page, options.profile, "Phase 7 editor terrain cleanup");
+      result.checks.terrain = await terrain.remove();
     }
     const provider = await fixtureState(page);
     assert(provider.counts?.provider_requests > 0 || options.role === "viewer",

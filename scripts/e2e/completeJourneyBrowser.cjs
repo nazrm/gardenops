@@ -26,6 +26,7 @@ const EXPECTED_CONSOLE_DIAGNOSTIC_CONTEXTS = new Set([
   "viewer-harvest-write-denied",
   "viewer-issue-write-denied",
   "viewer-journal-write-denied",
+  "viewer-lidar-write-denied",
   "viewer-media-write-denied",
   "viewer-task-write-denied",
   "viewer-weather-refresh-denied",
@@ -189,6 +190,13 @@ function expectedHttpDiagnosticContext({ authState, authenticated, method, path:
   }
   if (method === "POST" && pathname === "/api/media/upload" && status === 403) {
     return "viewer-media-write-denied";
+  }
+  if (
+    ["DELETE", "POST"].includes(method)
+    && /^\/api\/gardens\/\d+\/lidar$/.test(pathname)
+    && status === 403
+  ) {
+    return "viewer-lidar-write-denied";
   }
   if (method === "POST" && pathname === "/api/weather/check" && status === 403) {
     return "viewer-weather-refresh-denied";

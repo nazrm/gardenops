@@ -196,15 +196,21 @@ journeys:
     id: C6
     phase: 7
     desktop: proven
+    mobile: proven
+    roles: proven
     offline: not_applicable
     provider: not_applicable
+    database: proven
     filesystem: proven
-    evidence: &phase_seven_filesystem_evidence
+    evidence: &phase_seven_terrain_workflow_evidence
       desktop: &phase_seven_browser
         - scripts/check_complete_journeys_e2e.cjs
         - scripts/e2e/journeys/providersAndTerrain.cjs
         - scripts/e2e/fixtures/complete_journeys_phase_seven_oracle.json
         - tests/test_complete_journey_e2e_scripts.py
+      mobile: *phase_seven_browser
+      roles: *phase_seven_browser
+      database: *phase_seven_browser
       filesystem: *phase_seven_browser
     notes:
       <<: *default_notes
