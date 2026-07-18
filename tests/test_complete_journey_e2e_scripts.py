@@ -837,6 +837,7 @@ def test_phase_three_lost_ack_and_reopen_are_real_user_flows() -> None:
 
     assert "window.__phaseThreeAckDropped = true" in journey_source
     assert "journal server commit before simulated acknowledgement loss" in journey_source
+    assert "journal replay response evidence before lost-ack reload" in journey_source
     assert "response_ack_loss_simulated: true" in journey_source
     generated_id_check = journey_source.index("assertGeneratedOfflineOperationIds(generatedQueued)")
     deterministic_rewrite = journey_source.index(

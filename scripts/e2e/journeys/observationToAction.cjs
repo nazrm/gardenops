@@ -1080,6 +1080,12 @@ async function exerciseOfflineCreates(page, context, diagnostics, profile, optio
     async () => await page.evaluate(() => window.__phaseThreeAckDropped === true),
     "journal server commit before simulated acknowledgement loss",
   );
+  await waitFor(
+    () => replayed.some((item) => (
+      item.operation_id === phaseThree.operation_slots.journal && item.body?.id
+    )),
+    "journal replay response evidence before lost-ack reload",
+  );
   assert((await readOfflineDrafts(page)).some((draft) => (
     draft.operation_id === phaseThree.operation_slots.journal && draft.status === "syncing"
   )), "Lost-ack journal draft was not retained as syncing before reload");
