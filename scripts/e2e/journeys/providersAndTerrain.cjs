@@ -241,13 +241,10 @@ async function consumeExpectedViewerTerrainDiagnostics(diagnostics, marks, label
   ).sort((left, right) => (
     left.path.localeCompare(right.path) || left.method.localeCompare(right.method)
   ));
-  const expected = [
-    ["DELETE", "/api/gardens/{garden_id}/lidar"],
-    ["POST", "/api/gardens/{garden_id}/lidar"],
-  ];
+  const expectedPath = "/api/gardens/{garden_id}/lidar";
   const actualPaths = classified.map((entry) => entry.path.replace(
     /\/api\/gardens\/\d+\/lidar/,
-    "/api/gardens/{garden_id}/lidar",
+    expectedPath,
   ));
   const normalizedHttpErrors = httpErrors.map((entry) => entry.replace(
     /\/api\/gardens\/\d+\/lidar/,
@@ -257,8 +254,11 @@ async function consumeExpectedViewerTerrainDiagnostics(diagnostics, marks, label
     "403 /api/gardens/{garden_id}/lidar",
     "403 /api/gardens/{garden_id}/lidar",
   ]), `${label} viewer LiDAR denial emitted unrelated HTTP diagnostics`);
-  assert(JSON.stringify(classified.map((entry, index) => [entry.method, actualPaths[index], entry.status]))
-    === JSON.stringify(expected), `${label} viewer LiDAR denial emitted unrelated console diagnostics`);
+  assert(classified.every((entry, index) => (
+    entry.context === "viewer-lidar-write-denied"
+      && actualPaths[index] === expectedPath
+      && entry.status === 403
+  )), `${label} viewer LiDAR denial emitted unrelated console diagnostics`);
   const expectedConsoleErrors = classified.map((entry) => [
     entry.id,
     entry.context,
