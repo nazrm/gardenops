@@ -932,7 +932,8 @@ class TestSecurity(BaseApiTest):
             conn = db.get_db()
             try:
                 conn.execute(
-                    "UPDATE auth_users SET subscription_tier = 'home' WHERE username = 'test_admin'",
+                    "UPDATE auth_users SET subscription_tier = 'home' "
+                    "WHERE username = 'test_admin'",
                 )
                 conn.commit()
             finally:
@@ -945,7 +946,8 @@ class TestSecurity(BaseApiTest):
             conn = db.get_db()
             try:
                 conn.execute(
-                    "UPDATE auth_users SET subscription_tier = 'enthusiast' WHERE username = 'test_admin'",
+                    "UPDATE auth_users SET subscription_tier = 'enthusiast' "
+                    "WHERE username = 'test_admin'",
                 )
                 conn.commit()
             finally:

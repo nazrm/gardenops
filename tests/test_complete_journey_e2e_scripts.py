@@ -1211,7 +1211,10 @@ def test_phase_five_mobile_profiles_own_mobile_identity_operations() -> None:
     session_revocation = source.split("async function exerciseSessionRevocation", 1)[1].split(
         "function ageDisposableSession", 1
     )[0]
-    assert 'await confirmVisibleDialog(page);\n    assert((await revokePending).ok()' in session_revocation
+    assert (
+        'await confirmVisibleDialog(page);\n    assert((await revokePending).ok()'
+        in session_revocation
+    )
     assert "acceptInvitation(" in editor_mobile
     assert "exercisePasswordlessPasskeyRedundancy(" in editor_mobile
     assert "exerciseEditorAuthorizationDenials(" in editor_mobile
