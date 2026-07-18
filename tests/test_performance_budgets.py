@@ -93,16 +93,24 @@ def _write_measurements(path: Path, measurements: list[dict[str, object]]) -> No
 def test_tracked_budgets_are_established_and_require_measurements() -> None:
     budgets = load_budgets(DEFAULT_BUDGETS)
 
-    assert [budget["baseline"]["status"] for budget in budgets] == [
-        "established",
-        "established",
-    ]
+    expected_names = {
+        "M1-large-desktop-app-ready",
+        "M1-large-pixel-app-ready",
+        "D1-large-desktop-tab-switch",
+        "D1-large-pixel-tab-switch",
+        *{
+            f"{journey}-large-{profile}-focus"
+            for journey in ("M3", "D1", "D2", "D4", "D5", "P1", "P2", "P4", "R2", "CROSS-01")
+            for profile in ("desktop", "pixel")
+        },
+    }
+    assert {budget["name"] for budget in budgets} == expected_names
+    assert all(budget["baseline"]["status"] == "established" for budget in budgets)
     results = evaluate(budgets, [])
 
-    assert [(result.status, result.name) for result in results] == [
-        ("INCONCLUSIVE", "M1-large-desktop-app-ready"),
-        ("INCONCLUSIVE", "M1-large-pixel-app-ready"),
-    ]
+    assert {(result.status, result.name) for result in results} == {
+        ("INCONCLUSIVE", name) for name in expected_names
+    }
     assert all(result.detail == "measurement is missing" for result in results)
 
 

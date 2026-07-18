@@ -579,7 +579,10 @@ research and validate it without rewriting tracked baselines:
 
 ```bash
 .venv/bin/python scripts/capture_page_performance_measurements.py \
-  path/to/phase-nine-large-desktop.json path/to/phase-nine-large-pixel-7.json \
+  path/to/phase-nine-large-desktop.json \
+  path/to/phase-nine-large-pixel-7.json \
+  path/to/phase-nine-focus-matrix-desktop.json \
+  path/to/phase-nine-focus-matrix-pixel-7.json \
   --output research/optimization-map/performance_measurements.json
 .venv/bin/python scripts/check_performance_budgets.py
 ```
