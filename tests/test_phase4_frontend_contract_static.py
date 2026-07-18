@@ -70,6 +70,17 @@ def test_phase4_mutations_are_garden_scoped_and_pending_locked() -> None:
     assert 'card.setAttribute("aria-busy", "true")' in planner
 
 
+def test_inventory_only_builds_the_active_responsive_surface() -> None:
+    inventory = _read("frontend/src/tabs/inventoryTab.ts")
+
+    assert 'window.matchMedia("(min-width: 961px)")' in inventory
+    assert 'inventoryDesktopLayoutQuery.addEventListener("change"' in inventory
+    assert "if (inventoryViewLoaded) renderInventoryView();" in inventory
+    assert "const isDesktop = inventoryDesktopLayoutQuery.matches;" in inventory
+    assert "if (isDesktop) {\n    mobileList?.replaceChildren();" in inventory
+    assert "} else if (mobileList) {\n    thead?.replaceChildren();" in inventory
+
+
 def test_phase4_fractional_inventory_and_accessible_procurement_forms() -> None:
     inventory_component = _read("frontend/src/components/inventory.ts")
     procurement_component = _read("frontend/src/components/procurement.ts")
