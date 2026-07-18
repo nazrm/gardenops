@@ -51,7 +51,7 @@
         "journals": 0,
         "media": 0,
         "offline_operations": 0,
-        "provider_counts": { "diagnose": 1, "identify": 1 }
+        "provider_counts": { "users": { "admin": { "diagnose": 1, "identify": 1 } } }
       },
       "editor:desktop": {
         "cleanup_jobs": 0,
@@ -65,7 +65,12 @@
         "journals": 0,
         "media": 0,
         "offline_operations": 0,
-        "provider_counts": { "diagnose": 1, "identify": 1 }
+        "provider_counts": {
+          "users": {
+            "admin": { "diagnose": 1, "identify": 1 },
+            "editor": { "diagnose": 1, "identify": 1 }
+          }
+        }
       },
       "admin:mobile": {
         "cleanup_jobs": 0,
@@ -79,7 +84,12 @@
         "journals": 0,
         "media": 0,
         "offline_operations": 0,
-        "provider_counts": { "diagnose": 2, "identify": 1 }
+        "provider_counts": {
+          "users": {
+            "admin": { "diagnose": 2, "identify": 2 },
+            "editor": { "diagnose": 1, "identify": 1 }
+          }
+        }
       },
       "editor:mobile": {
         "cleanup_jobs": 0,
@@ -93,7 +103,12 @@
         "journals": 1,
         "media": 2,
         "offline_operations": 6,
-        "provider_counts": { "diagnose": 2, "identify": 1 }
+        "provider_counts": {
+          "users": {
+            "admin": { "diagnose": 2, "identify": 2 },
+            "editor": { "diagnose": 1, "identify": 1 }
+          }
+        }
       },
       "viewer:desktop": {
         "cleanup_jobs": 0,
@@ -107,7 +122,12 @@
         "journals": 1,
         "media": 2,
         "offline_operations": 6,
-        "provider_counts": { "diagnose": 2, "identify": 1 }
+        "provider_counts": {
+          "users": {
+            "admin": { "diagnose": 2, "identify": 2 },
+            "editor": { "diagnose": 1, "identify": 1 }
+          }
+        }
       },
       "viewer:mobile": {
         "cleanup_jobs": 0,
@@ -121,7 +141,12 @@
         "journals": 1,
         "media": 2,
         "offline_operations": 6,
-        "provider_counts": { "diagnose": 2, "identify": 1 }
+        "provider_counts": {
+          "users": {
+            "admin": { "diagnose": 2, "identify": 2 },
+            "editor": { "diagnose": 1, "identify": 1 }
+          }
+        }
       }
     },
     "whole_table_mutation_accounting": {
@@ -162,7 +187,7 @@
         "plant_media_covers": { "added": 0, "identity_added": 0, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
         "plants": { "added": 0, "identity_added": 0, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
         "plot_plants": { "added": 0, "identity_added": 0, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
-        "provider_daily_usage": { "added": 4, "identity_added": 4, "identity_removed": 0, "identity_updated": 0, "removed": 0 }
+        "provider_daily_usage": { "added": 6, "identity_added": 6, "identity_removed": 0, "identity_updated": 0, "removed": 0 }
       }
     }
   }

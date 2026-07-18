@@ -1835,8 +1835,34 @@ function assertPhaseThreeProfileEvidence(profiles) {
       `Phase 3 profile has skipped assertions: ${profile.role}:${profile.profile}`);
     assert(typeof profile?.checks?.last_completed_step === "string"
       && profile.checks.last_completed_step,
-    `Phase 3 last-completed-step evidence is missing: ${profile.role}:${profile.profile}`);
+      `Phase 3 last-completed-step evidence is missing: ${profile.role}:${profile.profile}`);
   }
+  const adminDesktop = profiles.find((profile) => (
+    profile.role === "admin" && profile.profile === "desktop"
+  ));
+  const editorDesktop = profiles.find((profile) => (
+    profile.role === "editor" && profile.profile === "desktop"
+  ));
+  const adminMobile = profiles.find((profile) => (
+    profile.role === "admin" && profile.profile === "mobile"
+  ));
+  const viewers = profiles.filter((profile) => profile.role === "viewer");
+  assert(adminDesktop?.checks?.identify_plant?.create_from_prefill === true
+    && adminDesktop?.checks?.issue_lifecycle?.advisory_non_mutating_before_track === true,
+  "Phase 3 administrator desktop photo-to-action proof is incomplete");
+  assert(editorDesktop?.checks?.identify_advisory?.advisory_non_mutating === true
+    && editorDesktop?.checks?.diagnosis_advisory?.advisory_non_mutating === true
+    && editorDesktop?.checks?.diagnosis_advisory?.explicit_track_action_available === true,
+  "Phase 3 editor photo advisory proof is incomplete");
+  assert(adminMobile?.checks?.identify_advisory?.advisory_non_mutating === true
+    && adminMobile?.checks?.issue_lifecycle?.advisory_non_mutating_before_track === true,
+  "Phase 3 mobile photo-to-action proof is incomplete");
+  assert(viewers.length === 2 && viewers.every((profile) => (
+    profile.checks.viewer_read_only?.identification_write_entry_disabled === true
+      && profile.checks.viewer_read_only?.diagnosis_write_entry_hidden === true
+      && canonicalJson(profile.checks.viewer_read_only.direct_write_statuses)
+        === canonicalJson([403, 403, 403, 403])
+  )), "Phase 3 viewer photo-to-action denial proof is incomplete");
   return { profile_matrix_enforced: true, profile_order: observed };
 }
 
@@ -2574,37 +2600,41 @@ function assertUniquePhaseThreeRows(rows, key, label) {
 
 function assertPhaseThreeProviderUsage(rows, fixture, expectedCounts) {
   assert(Array.isArray(rows), "Phase 3 provider budget usage is missing");
-  const identify = expectedCounts?.identify;
-  const diagnose = expectedCounts?.diagnose;
-  assert(Number.isSafeInteger(identify) && identify >= 0
-    && Number.isSafeInteger(diagnose) && diagnose >= 0,
-  "Phase 3 provider budget expectation is invalid");
+  const users = expectedCounts?.users || { admin: expectedCounts };
+  assert(users && typeof users === "object" && !Array.isArray(users),
+    "Phase 3 provider budget user expectation is invalid");
   const usageDays = new Set(rows.map((row) => row.usage_day));
   assert((rows.length === 0 && usageDays.size === 0) || (usageDays.size === 1
     && [...usageDays].every((day) => /^\d{4}-\d{2}-\d{2}$/.test(day))),
   "Phase 3 provider budget usage day was invalid");
   const expected = [];
-  for (const [feature, requestCount] of [
-    ["ai-diagnose", diagnose],
-    ["ai-identify", identify],
-  ]) {
-    if (requestCount === 0) continue;
-    expected.push(
-      {
+  for (const [feature, field] of [["ai-diagnose", "diagnose"], ["ai-identify", "identify"]]) {
+    let gardenCount = 0;
+    for (const [role, counts] of Object.entries(users)) {
+      const requestCount = counts?.[field];
+      assert(typeof fixture.roles?.[role] === "string"
+        && Number.isSafeInteger(requestCount) && requestCount >= 0,
+      "Phase 3 provider budget expectation is invalid");
+      gardenCount += requestCount;
+      if (requestCount > 0) {
+        expected.push({
+          feature,
+          request_count: requestCount,
+          scope_id: null,
+          scope_type: "user",
+          scope_username: fixture.roles[role],
+        });
+      }
+    }
+    if (gardenCount > 0) {
+      expected.push({
         feature,
-        request_count: requestCount,
+        request_count: gardenCount,
         scope_id: fixture.gardens.alpha.id,
         scope_type: "garden",
         scope_username: "",
-      },
-      {
-        feature,
-        request_count: requestCount,
-        scope_id: null,
-        scope_type: "user",
-        scope_username: fixture.roles.admin,
-      },
-    );
+      });
+    }
   }
   const observed = rows.map((row) => ({
     feature: row.feature,
@@ -2613,7 +2643,10 @@ function assertPhaseThreeProviderUsage(rows, fixture, expectedCounts) {
     scope_type: row.scope_type,
     scope_username: row.scope_type === "user" ? row.scope_username : "",
   }));
-  assert(canonicalJson(observed) === canonicalJson(expected),
+  const sorted = (entries) => entries.sort((left, right) => (
+    canonicalJson(left).localeCompare(canonicalJson(right))
+  ));
+  assert(canonicalJson(sorted(observed)) === canonicalJson(sorted(expected)),
     "Phase 3 provider budget usage did not match the AI user journeys");
   return true;
 }
@@ -2718,7 +2751,12 @@ function assertPhaseThreeDatabaseState(initial, final, fixture) {
   assert(canonicalJson(final.seen_state) === canonicalJson(initial.seen_state),
     "Phase 3 changed seeded plant observation state");
 
-  assertPhaseThreeProviderUsage(final.provider_usage, fixture, { diagnose: 2, identify: 1 });
+  assertPhaseThreeProviderUsage(final.provider_usage, fixture, {
+    users: {
+      admin: { diagnose: 2, identify: 2 },
+      editor: { diagnose: 1, identify: 1 },
+    },
+  });
 
   const phaseThree = fixture.phase_three;
   assert(final.harvests.length === 1, `Phase 3 retained ${final.harvests.length} harvests`);
@@ -5019,6 +5057,7 @@ function isPhaseThreeAuditPath(pathname) {
     "/api/ai/identify-plant",
     "/api/auth/login",
     "/api/auth/passkeys/login/options",
+    "/api/auth/passkeys/prompt/dismiss",
     "/api/client-errors",
     "/api/harvest",
     "/api/harvest/{entry_id}",

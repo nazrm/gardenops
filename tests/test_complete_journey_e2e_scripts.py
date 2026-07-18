@@ -855,6 +855,40 @@ def test_phase_three_lost_ack_and_reopen_are_real_user_flows() -> None:
     assert 'updateIssueApi(issue.id, { status: "open" })' in issue_tab
 
 
+def test_phase_three_photo_advisories_cover_mobile_and_role_boundaries() -> None:
+    journey_source = (ROOT / "scripts" / "e2e" / "journeys" / "observationToAction.cjs").read_text(
+        encoding="utf-8"
+    )
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    oracle = json.loads(PHASE_THREE_ORACLE.read_text(encoding="utf-8"))
+
+    assert "exerciseIdentifyAdvisory" in journey_source
+    assert "exerciseDiagnosisAdvisory" in journey_source
+    assert "dismissProactivePasskeyPrompt" in journey_source
+    assert 'result.checks.last_completed_step = "mobile-identify-advisory"' in journey_source
+    assert "identification_write_entry_disabled" in journey_source
+    assert "diagnosis_write_entry_hidden" in journey_source
+    assert "Phase 3 editor photo advisory proof is incomplete" in checker_source
+    assert "Phase 3 viewer photo-to-action denial proof is incomplete" in checker_source
+    assert '"/api/auth/passkeys/prompt/dismiss"' in checker_source
+    diagnosis_lifecycle = _javascript_function_containing(
+        journey_source, 'const title = phaseThree.labels.issue_online;'
+    )
+    assert 'issueDialog.waitFor({ state: "detached" })' not in diagnosis_lifecycle
+    assert oracle["phase_three"]["profile_boundaries"]["editor:desktop"]["provider_counts"] == {
+        "users": {
+            "admin": {"diagnose": 1, "identify": 1},
+            "editor": {"diagnose": 1, "identify": 1},
+        },
+    }
+    assert oracle["phase_three"]["profile_boundaries"]["admin:mobile"]["provider_counts"] == {
+        "users": {
+            "admin": {"diagnose": 2, "identify": 2},
+            "editor": {"diagnose": 1, "identify": 1},
+        },
+    }
+
+
 def test_phase_three_exact_mutation_contract_selects_rollup_baseline_variant() -> None:
     script = """
 const fs = require('node:fs');
