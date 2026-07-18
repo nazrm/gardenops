@@ -56,12 +56,12 @@ def test_phase_one_manifest_only_marks_enforced_dimensions_proven() -> None:
     payload = validate_manifest(DEFAULT_MANIFEST, repo_root=ROOT)
     journeys = {journey["id"]: journey for journey in payload["journeys"]}
     expected_proven_dimensions = {
-        "A3": {"desktop", "mobile", "roles", "database"},
+        "A3": {"desktop", "mobile", "roles", "database", "performance"},
         "CROSS-01": {"desktop", "mobile", "roles", "database", "performance"},
         "M1": {"desktop", "mobile", "roles", "database", "performance"},
-        "M2": {"desktop", "mobile", "roles", "database"},
+        "M2": {"desktop", "mobile", "roles", "database", "performance"},
         "M3": {"desktop", "mobile", "roles", "database", "performance"},
-        "M4": {"desktop", "mobile", "roles", "database", "filesystem"},
+        "M4": {"desktop", "mobile", "roles", "database", "filesystem", "performance"},
     }
     for journey_id, expected in expected_proven_dimensions.items():
         journey = journeys[journey_id]
@@ -75,9 +75,7 @@ def test_phase_one_manifest_only_marks_enforced_dimensions_proven() -> None:
         assert "scripts/e2e/journeys/foundation.cjs" in evidence_paths
         assert "tests/test_complete_journey_e2e_scripts.py" in evidence_paths
         assert journey["accessibility"] == "required"
-        assert journey["performance"] == (
-            "proven" if journey_id in {"CROSS-01", "M1", "M3"} else "required"
-        )
+        assert journey["performance"] == "proven"
 
 
 def test_phase_two_manifest_only_marks_enforced_dimensions_proven() -> None:
@@ -111,11 +109,14 @@ def test_phase_two_manifest_only_marks_enforced_dimensions_proven() -> None:
     assert "tests/test_notifications.py" in journeys["D4"]["evidence"]["provider"]
 
 
-def test_phase_nine_manifest_maps_only_measured_focuses_to_performance_proof() -> None:
+def test_phase_nine_manifest_maps_measured_and_shared_scale_surfaces_to_performance_proof() -> None:
     payload = validate_manifest(DEFAULT_MANIFEST, repo_root=ROOT)
     journeys = {journey["id"]: journey for journey in payload["journeys"]}
-    measured = {"CROSS-01", "D1", "D2", "D4", "D5", "M1", "M3", "P1", "P2", "P4", "R2"}
-    for journey_id in measured:
+    performance_proven = {
+        "A3", "CROSS-01", "D1", "D2", "D4", "D5", "L1", "L2", "M1", "M2", "M3", "M4",
+        "M5", "P1", "P2", "P4", "P6", "R2", "R3",
+    }
+    for journey_id in performance_proven:
         journey = journeys[journey_id]
         assert journey["performance"] == "proven"
         evidence_paths = journey["evidence"]["performance"]

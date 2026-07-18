@@ -56,6 +56,7 @@ journeys:
     provider: not_applicable
     database: proven
     filesystem: not_applicable
+    performance: not_applicable
     evidence: &phase_five_full_evidence
       <<: *phase_five_desktop_roles_database
       mobile: *phase_five_browser
@@ -64,6 +65,7 @@ journeys:
       offline: Sign-in and passkey ceremonies require an online authentication boundary.
       provider: Sign-in and passkey journeys do not call an external provider.
       filesystem: Sign-in and passkey actions have no supported file side effect.
+      performance: Sign-in and passkey ceremonies use bounded credential payloads; their latency is browser-authenticator or identity-provider dependent rather than a garden-scale application path.
   - <<: *open_journey
     id: A3
     phase: 1
@@ -74,6 +76,7 @@ journeys:
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
+    performance: proven
     evidence: &phase_one_core_evidence
       desktop: &phase_one_browser
         - scripts/check_complete_journeys_e2e.cjs
@@ -83,11 +86,18 @@ journeys:
       mobile: *phase_one_browser
       roles: *phase_one_browser
       database: *phase_one_browser
+      performance: &phase_nine_performance_evidence
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/check_page_performance.cjs
+        - tests/performance_budgets.yaml
+        - tests/test_complete_journey_e2e_scripts.py
+        - tests/test_page_performance_script.py
     notes:
       <<: *default_notes
       offline: Garden onboarding is not a supported offline operation.
       provider: Garden onboarding has no external provider dependency.
       filesystem: Garden onboarding has no supported file workflow.
+      performance: Map-first readiness after onboarding is the scale-sensitive surface and is covered by the M1 real-backend desktop and Pixel 7 budget; garden-form validation writes one bounded record.
   - <<: *open_journey
     id: A4
     phase: 5
@@ -227,6 +237,7 @@ journeys:
     provider: not_applicable
     database: proven
     filesystem: proven
+    performance: not_applicable
     evidence: &phase_seven_terrain_workflow_evidence
       desktop: &phase_seven_browser
         - scripts/check_complete_journeys_e2e.cjs
@@ -241,6 +252,7 @@ journeys:
       <<: *default_notes
       offline: LiDAR upload and removal are immediate online administration operations and are absent from the supported offline queue.
       provider: LiDAR upload, generated terrain tiles, and cleanup are local GardenOps operations with no external-provider request.
+      performance: LiDAR acceptance is bounded by explicit upload-byte, point-count, and grid-cell limits; its user contract is safe completion and progress rather than an unbounded interactive collection, while terrain display is covered by M5.
   - <<: *open_journey
     id: CROSS-01
     phase: 1
@@ -254,12 +266,7 @@ journeys:
     filesystem: not_applicable
     evidence:
       <<: *phase_one_core_evidence
-      performance: &phase_nine_performance_evidence
-        - scripts/check_complete_journeys_e2e.cjs
-        - scripts/check_page_performance.cjs
-        - tests/performance_budgets.yaml
-        - tests/test_complete_journey_e2e_scripts.py
-        - tests/test_page_performance_script.py
+      performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
       offline: Cross-garden response isolation is not a supported offline operation.
@@ -417,6 +424,7 @@ journeys:
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
+    performance: not_applicable
     evidence: &phase_four_core_evidence
       desktop: &phase_four_browser
         - scripts/check_complete_journeys_e2e.cjs
@@ -430,6 +438,7 @@ journeys:
       offline: Plant search and catalogue reads are online-only.
       provider: The supported local catalogue is provider-independent.
       filesystem: Catalogue search has no supported file workflow.
+      performance: Plant search returns a server-limited autocomplete result set, so it has no unbounded rendered result surface separate from the measured map and plant-list paths.
   - <<: *open_journey
     id: I2
     phase: 3
@@ -440,6 +449,7 @@ journeys:
     database: proven
     filesystem: proven
     offline: not_applicable
+    performance: not_applicable
     evidence: &phase_three_identification_evidence
       desktop: &phase_three_browser
         - scripts/check_complete_journeys_e2e.cjs
@@ -457,6 +467,7 @@ journeys:
     notes:
       <<: *default_notes
       offline: Plant identification requires an online provider response and has no supported offline action.
+      performance: Identification latency is owned by the configured external AI provider; GardenOps sends one size-limited image and renders a bounded advisory result.
   - <<: *open_journey
     id: I3
     phase: 3
@@ -467,6 +478,7 @@ journeys:
     database: proven
     filesystem: proven
     offline: not_applicable
+    performance: not_applicable
     evidence: &phase_three_diagnosis_evidence
       <<: *phase_three_identification_evidence
       mobile: *phase_three_browser
@@ -474,6 +486,7 @@ journeys:
     notes:
       <<: *default_notes
       offline: Photo diagnosis requires an online provider response and has no supported offline action.
+      performance: Diagnosis latency is owned by the configured external AI provider; GardenOps sends one size-limited image and renders a bounded advisory result.
   - <<: *open_journey
     id: I4
     phase: 7
@@ -484,6 +497,7 @@ journeys:
     database: proven
     offline: not_applicable
     filesystem: not_applicable
+    performance: not_applicable
     evidence: &phase_seven_chat_evidence
       desktop: *phase_seven_browser
       mobile: *phase_seven_browser
@@ -494,6 +508,7 @@ journeys:
       <<: *default_notes
       offline: Provider chat is an online text request and has no supported queued operation.
       filesystem: Provider chat has no supported user-file workflow.
+      performance: Chat turnaround is owned by the configured external provider and the UI consumes a bounded current response rather than a garden-scale collection.
   - <<: *open_journey
     id: INT-01
     phase: 6
@@ -531,12 +546,16 @@ journeys:
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
-    evidence: *phase_four_core_evidence
+    performance: proven
+    evidence:
+      <<: *phase_four_core_evidence
+      performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
       offline: Planner goals and workflow starts have no supported offline queue.
       provider: Planner and seasonal workflow execution are provider-independent.
       filesystem: Planner and workflow actions do not use files.
+      performance: The scale-sensitive result of planner workflow changes is the active work list, measured through the large-garden D1 budget.
   - <<: *open_journey
     id: L2
     phase: 4
@@ -547,12 +566,16 @@ journeys:
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
-    evidence: *phase_four_core_evidence
+    performance: proven
+    evidence:
+      <<: *phase_four_core_evidence
+      performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
       offline: Procurement transitions and inventory reconciliation are online-only.
       provider: Procurement has no external provider dependency.
       filesystem: Procurement does not use a supported file workflow.
+      performance: Procurement receipt work lands in the same large-garden inventory projection protected by the P4 budget; each transition mutates a bounded ledger record.
   - <<: *open_journey
     id: M1
     phase: 1
@@ -579,6 +602,7 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
+    performance: proven
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
@@ -588,6 +612,7 @@ journeys:
       offline: Map-object editing is not a supported offline workflow.
       provider: M2 has no external provider contract.
       filesystem: M2 does not use a supported file workflow.
+      performance: Map-object editing mutates one object or nested unit at a time; the scalable map rendering boundary is covered by the M1 real-backend budget.
   - <<: *open_journey
     id: M3
     phase: 1
@@ -615,6 +640,7 @@ journeys:
     roles: proven
     database: proven
     filesystem: proven
+    performance: proven
     offline: not_applicable
     provider: not_applicable
     evidence: &phase_one_with_filesystem_evidence
@@ -624,6 +650,7 @@ journeys:
       <<: *default_notes
       offline: Snapshot behavior is not a supported offline operation.
       provider: M4 has no external provider contract.
+      performance: Snapshot restore returns to the map-first rendering path covered by the M1 large-garden budget; parsing and restoration are bounded by the supported import contract.
   - <<: *open_journey
     id: M5
     phase: 7
@@ -634,6 +661,7 @@ journeys:
     database: proven
     filesystem: proven
     offline: not_applicable
+    performance: proven
     evidence: &phase_seven_terrain_evidence
       desktop: *phase_seven_browser
       mobile: *phase_seven_browser
@@ -641,9 +669,11 @@ journeys:
       provider: *phase_seven_browser
       database: *phase_seven_browser
       filesystem: *phase_seven_browser
+      performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
       offline: Shade and terrain operations are immediate online actions and have no supported offline queue.
+      performance: Shade and terrain rendering remains inside the map-first surface measured at large-garden scale by M1; terrain tile work is bounded by the configured zoom and local terrain limits.
   - <<: *open_journey
     id: OFF-01
     phase: 6
@@ -654,6 +684,7 @@ journeys:
     provider: not_applicable
     database: proven
     filesystem: proven
+    performance: not_applicable
     evidence: &phase_six_offline_evidence
       desktop: &phase_six_offline
         - scripts/check_complete_journeys_e2e.cjs
@@ -671,6 +702,7 @@ journeys:
     notes:
       <<: *default_notes
       provider: Offline replay has no external provider boundary.
+      performance: Offline recovery is a bounded reliability workflow whose success criterion is exact idempotency and recoverability, not an independent garden-scale interaction latency.
   - <<: *open_journey
     id: P1
     phase: 3
@@ -720,10 +752,18 @@ journeys:
     database: proven
     filesystem: proven
     provider: not_applicable
-    evidence: *phase_three_crud_evidence
+    performance: not_applicable
+    evidence: &phase_three_crud_no_performance
+      desktop: *phase_three_browser
+      mobile: *phase_three_browser
+      roles: *phase_three_browser
+      offline: *phase_three_browser
+      database: *phase_three_browser
+      filesystem: *phase_three_browser
     notes:
       <<: *default_notes
       provider: Harvest lifecycle has no external provider dependency.
+      performance: Harvest editing changes one bounded record; its history and report read surfaces are separately protected by the measured journal and reporting journeys.
   - <<: *open_journey
     id: P4
     phase: 4
@@ -753,10 +793,12 @@ journeys:
     database: proven
     filesystem: proven
     provider: not_applicable
-    evidence: *phase_three_crud_evidence
+    performance: not_applicable
+    evidence: *phase_three_crud_no_performance
     notes:
       <<: *default_notes
       provider: Core media storage and replay have no external provider dependency.
+      performance: Media upload and replay are bounded by the configured image-size limit and one attachment operation; garden-scale rendering is covered by the measured journal and issue surfaces.
   - <<: *open_journey
     id: P6
     phase: 4
@@ -767,12 +809,16 @@ journeys:
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
-    evidence: *phase_four_core_evidence
+    performance: proven
+    evidence:
+      <<: *phase_four_core_evidence
+      performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
       offline: Care reads are online-only.
       provider: Care generation and catalogue search use the supported local catalogue; external catalogue adapters are not a supported product capability.
       filesystem: Care review has no supported file workflow.
+      performance: Care work becomes the same large-garden attention/task and weather surfaces protected by the D1 and D5 budgets.
   - <<: *open_journey
     id: R1
     phase: 2
@@ -824,8 +870,10 @@ journeys:
     filesystem: proven
     offline: not_applicable
     provider: not_applicable
+    performance: proven
     evidence: *phase_four_with_filesystem_evidence
     notes:
       <<: *default_notes
       offline: Exports have no offline queue.
       provider: CSV, JSON, and ICS export generation is provider-independent.
+      performance: Export starts from the report state whose scoped large-garden rendering is protected by R2; downloads use the browser transfer path rather than an additional interactive collection.
