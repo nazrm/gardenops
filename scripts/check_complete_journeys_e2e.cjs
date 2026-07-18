@@ -269,6 +269,7 @@ function phaseSixOracle() {
   assert(oracle && typeof oracle === "object" && oracle.schema_version === 1,
     "Phase 6 oracle schema is unsupported");
   assert(oracle.phase_six && typeof oracle.phase_six === "object"
+    && Array.isArray(oracle.phase_six.profile_order) && oracle.phase_six.profile_order.length > 0
     && oracle.phase_six.fixture && typeof oracle.phase_six.fixture === "object"
     && oracle.phase_six.audit_contract
       && typeof oracle.phase_six.audit_contract === "object"
@@ -352,40 +353,46 @@ function assertPhaseSevenFixtureOracleBinding(fixture, oracle) {
 }
 
 function assertPhaseSixProfileEvidence(profiles, oracle = phaseSixOracle()) {
-  assert(Array.isArray(profiles) && profiles.length === 1,
-    "Phase 6 must execute exactly one browser profile");
-  const profile = profiles[0];
-  assert(`${profile.role}:${profile.profile}` === oracle.phase_six.profile_order[0],
+  const expectedProfiles = oracle.phase_six.profile_order;
+  assert(Array.isArray(profiles) && profiles.length === expectedProfiles.length,
+    "Phase 6 browser profile count drifted");
+  assert(Array.isArray(expectedProfiles) && expectedProfiles.length > 0,
+    "Phase 6 browser profile order is missing");
+  assert(canonicalJson(profiles.map((profile) => `${profile.role}:${profile.profile}`))
+    === canonicalJson(expectedProfiles),
     "Phase 6 browser profile order drifted");
-  const checks = profile.checks || {};
-  assert(checks.lost_ack_route_fetch === true && checks.independent_postcondition === true,
-    "Phase 6 lost-ack evidence is incomplete");
-  assert(checks.reconnect_count >= oracle.phase_six.browser_contract.minimum_reconnect_count,
-    "Phase 6 repeated reconnect evidence is incomplete");
-  assert(canonicalJson(checks.failed_families_visible)
-    === canonicalJson(oracle.phase_six.browser_contract.failed_families),
-  "Phase 6 failed-family evidence drifted");
-  assert(canonicalJson(checks.injected_terminal_fixture_statuses)
-    === canonicalJson(oracle.phase_six.browser_contract.terminal_statuses),
-  "Phase 6 terminal recovery evidence drifted");
-  assert(checks.garden_isolation === true && checks.account_queue_cleared_on_logout === true,
-    "Phase 6 garden/account isolation evidence is incomplete");
-  assert(checks.retry_as_new_identity_renewed === true,
-    "Phase 6 terminal retry did not renew its operation identity");
-  assert(checks.retry_as_new_replacement_count
-    === oracle.phase_six.browser_contract.retry_as_new_replacement_count,
-    "Phase 6 explicit retry-as-new replacement count drifted");
-  assert(checks.failed_recovery_collapsed_by_default === true,
-    "Phase 6 failed-work recovery did not preserve access to the surrounding app");
-  assert(/^[0-9a-f-]{36}$/.test(checks.operation_id || ""),
-    "Phase 6 manifest operation ID is invalid");
+  for (const profile of profiles) {
+    const checks = profile.checks || {};
+    assert(checks.lost_ack_route_fetch === true && checks.independent_postcondition === true,
+      "Phase 6 lost-ack evidence is incomplete");
+    assert(checks.reconnect_count >= oracle.phase_six.browser_contract.minimum_reconnect_count,
+      "Phase 6 repeated reconnect evidence is incomplete");
+    assert(canonicalJson(checks.failed_families_visible)
+      === canonicalJson(oracle.phase_six.browser_contract.failed_families),
+    "Phase 6 failed-family evidence drifted");
+    assert(canonicalJson(checks.injected_terminal_fixture_statuses)
+      === canonicalJson(oracle.phase_six.browser_contract.terminal_statuses),
+    "Phase 6 terminal recovery evidence drifted");
+    assert(checks.garden_isolation === true && checks.account_queue_cleared_on_logout === true,
+      "Phase 6 garden/account isolation evidence is incomplete");
+    assert(checks.retry_as_new_identity_renewed === true,
+      "Phase 6 terminal retry did not renew its operation identity");
+    assert(checks.retry_as_new_replacement_count
+      === oracle.phase_six.browser_contract.retry_as_new_replacement_count,
+      "Phase 6 explicit retry-as-new replacement count drifted");
+    assert(checks.failed_recovery_collapsed_by_default === true,
+      "Phase 6 failed-work recovery did not preserve access to the surrounding app");
+    assert(/^[0-9a-f-]{36}$/.test(checks.operation_id || ""),
+      "Phase 6 manifest operation ID is invalid");
+  }
   return {
     account_isolation: true,
-    failed_family_count: checks.failed_families_visible.length,
+    profile_count: profiles.length,
+    failed_family_count: oracle.phase_six.browser_contract.failed_families.length,
     garden_isolation: true,
     lost_ack_real_backend_delivery: true,
-    reconnect_count: checks.reconnect_count,
-    replay_delivery_count: checks.replay_delivery_count,
+    reconnect_count: Math.min(...profiles.map((profile) => profile.checks.reconnect_count)),
+    replay_delivery_count: Math.min(...profiles.map((profile) => profile.checks.replay_delivery_count)),
     terminal_recovery: true,
   };
 }

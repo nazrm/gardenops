@@ -2,22 +2,32 @@
   "schema_version": 1,
   "phase_six": {
     "profile_order": [
-      "admin:desktop"
+      "admin:desktop",
+      "admin:mobile"
     ],
     "fixture": {
-      "journal_title": "Phase 6 lost acknowledgement observation"
+      "profiles": {
+        "desktop": {
+          "journal_title": "Phase 6 lost acknowledgement observation desktop",
+          "retry_as_new_title": "Conflicting journal observation desktop"
+        },
+        "mobile": {
+          "journal_title": "Phase 6 lost acknowledgement observation mobile",
+          "retry_as_new_title": "Conflicting journal observation mobile"
+        }
+      }
     },
     "audit_contract": {
-      "additional_login_count": 1,
+      "additional_login_count": 3,
       "events": [
-        { "actor": "anonymous", "count": 2, "garden": null, "method": "POST", "path": "/api/auth/passkeys/login/options", "status_code": 200 },
-        { "actor": "anonymous", "count": 2, "garden": null, "method": "POST", "path": "/api/auth/login", "status_code": 200 },
+        { "actor": "anonymous", "count": 4, "garden": null, "method": "POST", "path": "/api/auth/passkeys/login/options", "status_code": 200 },
+        { "actor": "anonymous", "count": 4, "garden": null, "method": "POST", "path": "/api/auth/login", "status_code": 200 },
         { "actor": "admin", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/auth/passkeys/prompt/dismiss", "status_code": 200 },
-        { "actor": "admin", "count": 2, "garden": "alpha", "method": "POST", "path": "/api/media/summaries", "status_code": 200 },
-        { "actor": "admin", "count": 2, "garden": "beta", "method": "POST", "path": "/api/media/summaries", "status_code": 200 },
-        { "actor": "admin", "count": 2, "garden": "alpha", "method": "POST", "path": "/api/journal", "status_code": 201 },
-        { "actor": "admin", "count": 1, "garden": "beta", "method": "POST", "path": "/api/journal", "status_code": 201 },
-        { "actor": "admin", "count": 1, "garden": "beta", "method": "POST", "path": "/api/auth/logout", "status_code": 200 }
+        { "actor": "admin", "count": 4, "garden": "alpha", "method": "POST", "path": "/api/media/summaries", "status_code": 200 },
+        { "actor": "admin", "count": 4, "garden": "beta", "method": "POST", "path": "/api/media/summaries", "status_code": 200 },
+        { "actor": "admin", "count": 4, "garden": "alpha", "method": "POST", "path": "/api/journal", "status_code": 201 },
+        { "actor": "admin", "count": 2, "garden": "beta", "method": "POST", "path": "/api/journal", "status_code": 201 },
+        { "actor": "admin", "count": 2, "garden": "beta", "method": "POST", "path": "/api/auth/logout", "status_code": 200 }
       ]
     },
     "browser_contract": {

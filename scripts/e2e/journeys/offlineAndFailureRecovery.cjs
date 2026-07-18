@@ -9,20 +9,35 @@ const {
 } = require("../completeJourneyBrowser.cjs");
 const { assert, assertPageStructure, visible, waitFor } = require("../completeJourneyAssertions.cjs");
 
-async function openJournal(page) {
-  await page.locator("#top-tab-activity:visible").click();
+async function openJournal(page, profile) {
+  const tab = profile === "mobile" ? "#mobile-tab-activity" : "#top-tab-activity";
+  await page.locator(`${tab}:visible`).click();
   await page.locator("#sub-mode-journal:visible, [data-sub-mode='journal']:visible").first().click();
-  await visible(page.locator("#journal-tab-content"), "Phase 6 journal surface");
+  await visible(page.locator("#journal-tab-content"), `Phase 6 ${profile} journal surface`);
 }
 
-async function selectGarden(page, gardenId) {
-  const select = page.locator("#garden-select:visible");
-  await visible(select, "Phase 6 garden selector");
+async function selectGarden(page, profile, gardenId) {
+  if (profile === "mobile" && !await page.locator("body.mobile-utility-open").count()) {
+    await page.locator("#mobile-utility-btn:visible").click();
+    await waitFor(
+      async () => await page.locator("body.mobile-utility-open").count() === 1,
+      "Phase 6 mobile utility for garden selection",
+    );
+  }
+  const select = page.locator(profile === "mobile" ? "#mobile-garden-select" : "#garden-select");
+  await visible(select, `Phase 6 ${profile} garden selector`);
   await select.selectOption(String(gardenId));
   await waitFor(async () => await select.inputValue() === String(gardenId),
-    `Phase 6 active garden ${gardenId}`);
+    `Phase 6 ${profile} active garden ${gardenId}`);
   await waitFor(async () => !await page.locator("body.garden-switch-pending").count(),
-    `Phase 6 garden ${gardenId} switch`);
+    `Phase 6 ${profile} garden ${gardenId} switch`);
+  if (profile === "mobile" && await page.locator("body.mobile-utility-open").count()) {
+    await page.locator("#mobile-utility-close-btn:visible").click();
+    await waitFor(
+      async () => !await page.locator("body.mobile-utility-open").count(),
+      "Phase 6 mobile utility close after garden selection",
+    );
+  }
 }
 
 async function readDrafts(page) {
@@ -45,7 +60,7 @@ async function readDrafts(page) {
   });
 }
 
-async function insertFailedDrafts(page, gardenId, journalPayload) {
+async function insertFailedDrafts(page, gardenId, journalPayload, retryAsNewTitle) {
   await page.evaluate(async ({ activeGardenId, rows }) => {
     const database = await new Promise((resolve, reject) => {
       const request = indexedDB.open("gardenops-offline");
@@ -86,7 +101,7 @@ async function insertFailedDrafts(page, gardenId, journalPayload) {
         payload: {
           ...journalPayload,
           notes: "Phase 6 explicit retry-as-new observation.",
-          title: "Conflicting journal observation",
+          title: retryAsNewTitle,
         },
       },
       { type: "issue_create", last_status: 410, payload: { title: "Removed issue target" } },
@@ -119,7 +134,7 @@ async function browserJson(page, path, gardenId) {
   }, { activeGardenId: gardenId, requestPath: path });
 }
 
-async function enqueueOfflineJournal(page, fixture, title) {
+async function enqueueOfflineJournal(page, fixture, profile, title) {
   const journalLoaded = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return response.request().method() === "GET"
@@ -132,7 +147,7 @@ async function enqueueOfflineJournal(page, fixture, title) {
       && url.pathname === "/api/media/summaries"
       && response.status() === 200;
   });
-  await openJournal(page);
+  await openJournal(page, profile);
   await Promise.all([journalLoaded, mediaPreviewsLoaded]);
   await page.context().setOffline(true);
   await page.locator("#journal-add-btn").click();
@@ -145,6 +160,32 @@ async function enqueueOfflineJournal(page, fixture, title) {
   await visible(page.locator("#offline-indicator .offline-indicator--offline"),
     "Phase 6 offline queued state");
   return (await readDrafts(page))[0];
+}
+
+function profileFixture(oracle, profile) {
+  const value = oracle?.phase_six?.fixture?.profiles?.[profile];
+  assert(value && typeof value === "object", `Phase 6 ${profile} fixture is missing`);
+  assert(typeof value.journal_title === "string" && value.journal_title,
+    `Phase 6 ${profile} journal fixture is missing`);
+  assert(typeof value.retry_as_new_title === "string" && value.retry_as_new_title,
+    `Phase 6 ${profile} retry-as-new fixture is missing`);
+  return value;
+}
+
+async function signOut(page, profile, guarded) {
+  if (profile === "mobile" && !await page.locator("body.mobile-utility-open").count()) {
+    await page.locator("#mobile-utility-btn:visible").click();
+    await waitFor(
+      async () => await page.locator("body.mobile-utility-open").count() === 1,
+      "Phase 6 mobile utility for sign-out",
+    );
+  }
+  const selector = profile === "mobile" ? "#mobile-auth-btn" : "#auth-btn";
+  const control = page.locator(`${selector}:visible`);
+  await visible(control, `Phase 6 ${profile} sign-out control`);
+  guarded.markSignedOut();
+  await control.click();
+  await visible(page.locator("#auth-gate-form"), `Phase 6 ${profile} sign-in after queue clear`);
 }
 
 function diagnosticMarks(diagnostics) {
@@ -194,13 +235,13 @@ async function consumeExpectedNetworkFailure(diagnostics, marks, capture, expect
   `${label} console failure was unexpectedly classified as an HTTP response`);
 }
 
-async function runOfflineProfile(options) {
+async function runOfflineProfile(options, profile) {
   const guarded = await createGuardedContext(
     options.browser,
     options.devices,
-    "desktop",
+    profile,
     options.artifactDir,
-    "phase-six-admin-desktop",
+    `phase-six-admin-${profile}`,
     { baseUrl: options.baseUrl },
   );
   const page = await guarded.context.newPage();
@@ -214,7 +255,7 @@ async function runOfflineProfile(options) {
     browser_profile: guarded.profile,
     checks: {},
     failure: null,
-    profile: "desktop",
+    profile,
     requests: [],
     role: "admin",
     trace: null,
@@ -227,12 +268,14 @@ async function runOfflineProfile(options) {
     recorder.setGardenId(auth.garden_id);
     guarded.markAuthenticated();
     await dismissProactivePasskeyPrompt(page);
-    await selectGarden(page, options.fixture.gardens.alpha.id);
+    await selectGarden(page, profile, options.fixture.gardens.alpha.id);
 
-    const title = options.oracle.phase_six.fixture.journal_title;
+    const profileData = profileFixture(options.oracle, profile);
+    const title = profileData.journal_title;
+    const retryAsNewTitle = profileData.retry_as_new_title;
     const offlineQueueFailureMarks = diagnosticMarks(guarded.diagnostics);
     const offlineQueueFailureCapture = captureNetworkFailures(page);
-    const queued = await enqueueOfflineJournal(page, options.fixture, title);
+    const queued = await enqueueOfflineJournal(page, options.fixture, profile, title);
     await page.waitForTimeout(200);
     offlineQueueFailureCapture.stop();
     assert(guarded.diagnostics.requestFailures.length === offlineQueueFailureMarks.request
@@ -284,7 +327,7 @@ async function runOfflineProfile(options) {
       "Phase 6 retrying queue state");
     await visible(page.locator("#offline-indicator .offline-indicator--syncing"),
       "Phase 6 visible retrying state");
-    await selectGarden(page, options.fixture.gardens.beta.id);
+    await selectGarden(page, profile, options.fixture.gardens.beta.id);
     releaseFirst();
     await replaySeen;
     assert(firstResponse?.status === 201 && firstResponse.body?.id,
@@ -317,7 +360,7 @@ async function runOfflineProfile(options) {
     assert(deliveryCount === 2, "Phase 6 repeated reconnect duplicated the journal mutation");
 
     const failedGarden = options.fixture.gardens.beta.id;
-    await insertFailedDrafts(page, failedGarden, queued.payload);
+    await insertFailedDrafts(page, failedGarden, queued.payload, retryAsNewTitle);
     const failureToggle = page.locator("#offline-indicator .offline-indicator-toggle");
     await visible(failureToggle, "Phase 6 compact failed-work toggle");
     assert(await failureToggle.getAttribute("aria-expanded") === "false",
@@ -334,7 +377,7 @@ async function runOfflineProfile(options) {
     assert(await failures.getByRole("button", { name: "Discard", exact: true }).count() === 5,
       "Phase 6 terminal failures were not discardable");
     for (const label of [
-      "Conflicting journal observation",
+      retryAsNewTitle,
       "Removed issue target",
       "Conflicting harvest record",
       "Removed care task",
@@ -344,11 +387,11 @@ async function runOfflineProfile(options) {
     }
 
     const conflictBefore = (await readDrafts(page)).find((draft) => (
-      draft.payload?.title === "Conflicting journal observation"
+      draft.payload?.title === retryAsNewTitle
     ));
     assert(conflictBefore, "Phase 6 conflict draft is missing before recovery");
     await page.context().setOffline(true);
-    await failures.filter({ hasText: "Conflicting journal observation" })
+    await failures.filter({ hasText: retryAsNewTitle })
       .getByRole("button", { name: "Retry as new", exact: true }).click();
     await waitFor(async () => {
       const recovered = (await readDrafts(page)).find((draft) => draft.id === conflictBefore.id);
@@ -369,7 +412,7 @@ async function runOfflineProfile(options) {
       || [];
     assert(betaReplacement.status === 200
       && betaReplacementEntries.filter((entry) => (
-        entry.title === "Conflicting journal observation"
+        entry.title === retryAsNewTitle
       )).length === 1,
     "Phase 6 retry-as-new did not create exactly one replacement in its source garden");
     await waitFor(async () => await failures.count() === 4,
@@ -382,16 +425,13 @@ async function runOfflineProfile(options) {
       await page.locator("#offline-indicator .offline-indicator-toggle").getAttribute("aria-expanded")
     ) === "false", "Phase 6 failed-work recovery returns to compact state");
 
-    const signOut = page.locator("#auth-btn:visible");
-    guarded.markSignedOut();
-    await signOut.click();
-    await visible(page.locator("#auth-gate-form"), "Phase 6 sign-in after queue clear");
+    await signOut(page, profile, guarded);
     assert((await readDrafts(page)).length === 0, "Phase 6 logout retained another account's drafts");
     await authenticate(page, options.username, options.password);
     guarded.markAuthenticated();
 
-    result.structure = await assertPageStructure(page, "Phase 6 admin:desktop");
-    assertDiagnosticsClean(guarded.diagnostics, "Phase 6 admin:desktop");
+    result.structure = await assertPageStructure(page, `Phase 6 admin:${profile}`);
+    assertDiagnosticsClean(guarded.diagnostics, `Phase 6 admin:${profile}`);
     result.checks = {
       account_queue_cleared_on_logout: true,
       failed_families_visible: ["journal", "issues", "harvest", "task_action", "media_upload"],
@@ -422,10 +462,19 @@ async function runOfflineProfile(options) {
 }
 
 async function runOfflineAndFailureRecovery(options, profileRunner = runOfflineProfile) {
-  const outcome = await profileRunner(options);
-  if (options.onProfile) options.onProfile(outcome.result);
-  if (outcome.error) throw outcome.error;
-  return [outcome.result];
+  const profiles = options.oracle?.phase_six?.profile_order;
+  assert(Array.isArray(profiles) && profiles.length > 0, "Phase 6 profile order is missing");
+  const results = [];
+  for (const expectedProfile of profiles) {
+    const [role, profile] = String(expectedProfile).split(":");
+    assert(role === "admin" && ["desktop", "mobile"].includes(profile),
+      "Phase 6 profile order is invalid");
+    const outcome = await profileRunner(options, profile);
+    if (options.onProfile) options.onProfile(outcome.result);
+    if (outcome.error) throw outcome.error;
+    results.push(outcome.result);
+  }
+  return results;
 }
 
 module.exports = { runOfflineAndFailureRecovery };

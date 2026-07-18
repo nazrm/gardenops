@@ -1219,7 +1219,17 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     assert "_load_phase_six_oracle" in seeder_source
     assert '"phase_six": _phase_six_fixture_state()' in seeder_source
     assert oracle["schema_version"] == 1
-    assert oracle["phase_six"]["profile_order"] == ["admin:desktop"]
+    assert oracle["phase_six"]["profile_order"] == ["admin:desktop", "admin:mobile"]
+    assert oracle["phase_six"]["fixture"]["profiles"] == {
+        "desktop": {
+            "journal_title": "Phase 6 lost acknowledgement observation desktop",
+            "retry_as_new_title": "Conflicting journal observation desktop",
+        },
+        "mobile": {
+            "journal_title": "Phase 6 lost acknowledgement observation mobile",
+            "retry_as_new_title": "Conflicting journal observation mobile",
+        },
+    }
     assert oracle["phase_six"]["browser_contract"]["failed_families"] == [
         "journal",
         "issues",
@@ -1229,8 +1239,8 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     ]
     assert oracle["phase_six"]["browser_contract"]["recovery_collapsed_by_default"] is True
     assert oracle["phase_six"]["browser_contract"]["retry_as_new_replacement_count"] == 1
-    assert oracle["phase_six"]["audit_contract"]["additional_login_count"] == 1
-    assert sum(event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]) == 13
+    assert oracle["phase_six"]["audit_contract"]["additional_login_count"] == 3
+    assert sum(event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]) == 25
     for marker in (
         "route.fetch()",
         'route.abort("failed")',
@@ -1244,6 +1254,10 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
         "retry-as-new did not create exactly one replacement",
         "logout retained another account's drafts",
         "Garden A draft replayed into Garden B",
+        "#mobile-tab-activity",
+        "#mobile-garden-select",
+        "#mobile-auth-btn",
+        "profileFixture",
     ):
         assert marker in journey_source
     for forbidden in ("route.fulfill(", "page.setContent("):
@@ -1643,7 +1657,7 @@ const evidence = assertPhaseSixAuditEvents(
   fixture,
   oracle,
 );
-if (!evidence.audit_events_exact || evidence.audit_event_count !== 13) process.exit(3);
+if (!evidence.audit_events_exact || evidence.audit_event_count !== 25) process.exit(3);
 const tampered = structuredClone(records);
 tampered.at(-1).garden_id = 999;
 try {
