@@ -1002,11 +1002,13 @@ function createBrowserContextOptions(options) {
 }
 
 function buildViewportProfile(options) {
-  const contextOptions = createBrowserContextOptions(options);
   const deviceProfile = options.deviceProfile ?? "desktop";
-  const mobileDeviceEmulation = contextOptions.isMobile === true;
+  const mobileDeviceEmulation = deviceProfile === "pixel-7";
+  const viewport = mobileDeviceEmulation
+    ? { height: 915, width: 412 }
+    : { height: options.viewportHeight, width: options.viewportWidth };
   const responsiveMobileBreakpoint = mobileDeviceEmulation
-    || contextOptions.viewport.width <= MOBILE_LAYOUT_BREAKPOINT_PX;
+    || viewport.width <= MOBILE_LAYOUT_BREAKPOINT_PX;
   return {
     deviceProfile,
     label: mobileDeviceEmulation
@@ -1019,7 +1021,7 @@ function buildViewportProfile(options) {
       ? "mobile-breakpoint"
       : "desktop-breakpoint",
     strategy: mobileDeviceEmulation ? "playwright-device-descriptor" : "viewport-only",
-    viewport: { ...contextOptions.viewport },
+    viewport,
   };
 }
 
