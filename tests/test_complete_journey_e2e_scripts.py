@@ -1134,11 +1134,24 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
         "layout_state",
         "plots",
         "plot_ownership",
+        "provider_daily_usage",
         "security_runtime_flags",
+        "shademap_cache",
     }.issubset(oracle["phase_five"]["database_boundaries"]["owned_tables"])
+    assert oracle["phase_five"]["read_side_effects"] == {
+        "exact_counts": {
+            "provider_daily_usage": {"added": 2, "removed": 0},
+            "shademap_cache": {"added": 2, "removed": 0},
+        },
+        "exact_identity_counts": {
+            "provider_daily_usage": {"added": 2, "removed": 0, "updated": 0},
+            "shademap_cache": {"added": 2, "removed": 0, "updated": 0},
+        },
+    }
     for marker in (
         "phaseFiveExpectedAdded",
         "phaseFiveExpectedGardenAdditions",
+        "phaseFiveReadSideEffects",
         "passkey_challenge_retention_exact",
         "incident_control_restored_exact",
         "auth_users_exact",

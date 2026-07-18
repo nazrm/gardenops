@@ -8937,6 +8937,26 @@ async function main() {
     };
     // Cumulative onboarding already created the legacy default garden reused by the viewer invite.
     const phaseFiveExpectedGardenAdditions = phaseOneRan ? 1 : 2;
+    const phaseFiveReadSideEffects = phaseFiveOracleSpec.phase_five.read_side_effects;
+    assert(phaseFiveReadSideEffects
+      && typeof phaseFiveReadSideEffects === "object"
+      && phaseFiveReadSideEffects.exact_counts
+      && typeof phaseFiveReadSideEffects.exact_counts === "object"
+      && phaseFiveReadSideEffects.exact_identity_counts
+      && typeof phaseFiveReadSideEffects.exact_identity_counts === "object",
+    "Phase 5 read-side-effect oracle is invalid");
+    for (const table of ["provider_daily_usage", "shademap_cache"]) {
+      const counts = phaseFiveReadSideEffects.exact_counts[table];
+      const identities = phaseFiveReadSideEffects.exact_identity_counts[table];
+      assert(Number.isSafeInteger(counts?.added) && counts.added >= 0
+        && Number.isSafeInteger(counts?.removed) && counts.removed >= 0
+        && Number.isSafeInteger(identities?.added) && identities.added >= 0
+        && Number.isSafeInteger(identities?.removed) && identities.removed >= 0
+        && Number.isSafeInteger(identities?.updated) && identities.updated >= 0
+        && identities.added + identities.updated === counts.added
+        && identities.removed + identities.updated === counts.removed,
+      `Phase 5 ${table} read-side-effect oracle is invalid`);
+    }
     const phaseFiveExpectedAdded = {
       auth_passkey_challenges:
         phaseFiveDatabaseEvidence?.challenge_added_identity_digests?.length ?? 0,
@@ -8949,7 +8969,9 @@ async function main() {
       layout_state: 1,
       plot_ownership: 1,
       plots: 1,
+      provider_daily_usage: phaseFiveReadSideEffects.exact_counts.provider_daily_usage.added,
       security_runtime_flags: 2,
+      shademap_cache: phaseFiveReadSideEffects.exact_counts.shademap_cache.added,
     };
     const phaseFiveExpectedRemoved = {
       auth_passkey_challenges:
