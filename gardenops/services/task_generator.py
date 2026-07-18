@@ -18,6 +18,7 @@ from gardenops.services.ai_provider import (
     generate_task_descriptions_with_ai,
     is_ai_provider_configured,
 )
+from gardenops.services.plant_traits import harvest_offset_months
 from gardenops.services.task_windows import (
     derive_recommended_window_strings,
     weekly_watering_recurrence_deadline,
@@ -109,13 +110,6 @@ def _bloom_season_closed_plants(
         (garden_id, target_year),
     ).fetchall()
     return {str(row["plt_id"]) for row in rows}
-
-
-_HARVEST_OFFSETS: dict[str, int] = {
-    "baerbusker": 2,  # berry bushes: ~2 months after bloom
-    "frø": 3,  # planted from seed: ~3 months after sow
-    "trær": 3,  # fruit trees: ~3 months after bloom
-}
 
 
 _EN_MONTHS: dict[int, str] = {
@@ -1924,7 +1918,7 @@ def generate_tasks(
                 created += 1
 
         # Rule 6: Harvest window check
-        offset = _HARVEST_OFFSETS.get(category)
+        offset = harvest_offset_months(plant_ctx)
         if offset:
             for bm in _bloom_months(bloom_raw):
                 harvest_month = bm + offset
@@ -2281,7 +2275,7 @@ def _infer_harvest(
     month: int,
 ) -> tuple[str, str]:
     name = plant["name"]
-    offset = _HARVEST_OFFSETS.get(plant.get("category", ""), 0)
+    offset = harvest_offset_months(plant) or 0
     mo_en = _EN_MONTHS.get(month, "")
     mo_no = _NO_MONTHS.get(month, "")
     if offset:

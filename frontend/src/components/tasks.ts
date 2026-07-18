@@ -2,7 +2,10 @@ import type { GardenTask, TaskType } from "../core/models";
 import { getLocale, t } from "../core/i18n";
 import { renderEmptyState } from "./emptyState";
 import { taskSnoozePolicy } from "../features/taskSnoozePolicy";
-import { canQueueCompletionOffline } from "../features/taskCompletionFlow";
+import {
+  canQueueCompletionOffline,
+  taskCompletionActionLabel,
+} from "../features/taskCompletionFlow";
 import type { OfflineTaskActionState } from "../services/offlineQueue";
 
 export type TaskListDataState = "live" | "cached" | "unavailable";
@@ -297,7 +300,7 @@ function createTaskCard(
     const completeBtn = document.createElement("button");
     completeBtn.type = "button";
     completeBtn.className = "task-action-btn task-action-complete";
-    completeBtn.textContent = t("tasks.action_complete");
+    completeBtn.textContent = taskCompletionActionLabel(task);
     completeBtn.disabled = offlineUnsupportedCompletion;
     if (offlineUnsupportedCompletion) {
       completeBtn.title = t("offline.indicator_offline");

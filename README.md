@@ -96,6 +96,9 @@ control.
 - Task planning with generated work items, seasonal task windows, manual tasks,
   task-specific snooze defaults, journal-backed completion history, grouped
   plant completion, current-placement history, and overdue/follow-up views.
+  Bloom observations record either a dated flowering observation or an explicit
+  not-seen-this-season outcome, while generated harvest checks require evidence
+  that a plant is actually harvestable.
 - Map Today attention panel that keeps the map first while summarizing current
   tasks, issue follow-ups, weather risks, status notices, and rain-covered
   watering outcomes that need no action.

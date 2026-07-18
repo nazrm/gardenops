@@ -61,6 +61,7 @@ import {
   needsCompletionDialog,
   offlineTaskActionLabels,
   openTaskCompletionDialog,
+  taskCompletionActionLabel,
 } from "../features/taskCompletionFlow";
 import {
   getTaskActionStates,
@@ -1481,7 +1482,7 @@ function renderDetail(event?: CalendarEvent): void {
     const taskForCompletion = calendarTaskForCompletion(event);
     actions.appendChild(
       actionButton(
-        t("tasks.action_complete"),
+        taskCompletionActionLabel(taskForCompletion),
         () => {
           completeCalendarTask(event);
         },

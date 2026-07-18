@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from gardenops.db import DbConn, current_timestamp_ms
+from gardenops.services.plant_traits import harvest_offset_months
 
 GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS = ("water:%",)
 GENERATED_WATERING_RULE_SOURCE_PATTERNS = (
@@ -150,6 +151,40 @@ def _terminal_metadata(
     return json.dumps(metadata, sort_keys=True, separators=(",", ":"))
 
 
+def _invalid_generated_harvest_rows(db: DbConn, garden_id: int) -> list[dict[str, Any]]:
+    rows = db.execute(
+        """
+        SELECT t.id, t.task_type, t.rule_source, t.metadata_json,
+               COALESCE(t.snoozed_until, t.due_on) AS action_on,
+               p.plt_id, p.name, p.category,
+               p.care_watering, p.care_soil, p.care_planting,
+               p.care_maintenance, p.care_notes
+        FROM garden_tasks t
+        LEFT JOIN garden_task_plants gtp ON gtp.task_id = t.id
+        LEFT JOIN plants p ON p.plt_id = gtp.plt_id
+        WHERE t.garden_id = %s
+          AND t.task_type = 'harvest'
+          AND t.status IN ('pending', 'snoozed')
+          AND t.rule_source LIKE 'harvest_check:%%'
+        ORDER BY t.id ASC, p.plt_id ASC
+        FOR UPDATE OF t SKIP LOCKED
+        """,
+        (garden_id,),
+    ).fetchall()
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(int(row["id"]), []).append(dict(row))
+
+    invalid: list[dict[str, Any]] = []
+    for task_rows in grouped.values():
+        eligible = any(
+            row.get("plt_id") and harvest_offset_months(row) is not None for row in task_rows
+        )
+        if not eligible:
+            invalid.append(task_rows[0])
+    return invalid
+
+
 def expire_stale_generated_tasks(
     db: DbConn,
     *,
@@ -165,8 +200,10 @@ def expire_stale_generated_tasks(
         today_sql="%s",
     )
     stale_generated_non_watering = stale_generated_non_watering_weather_sql(today_sql="%s")
-    rows = db.execute(
-        f"""
+    rows = [
+        dict(row)
+        for row in db.execute(
+            f"""
         SELECT t.id, t.task_type, t.rule_source, t.metadata_json,
                COALESCE(t.snoozed_until, t.due_on) AS action_on,
                weather_alert.id AS weather_alert_id,
@@ -184,20 +221,24 @@ def expire_stale_generated_tasks(
         ORDER BY t.id ASC
         FOR UPDATE OF t SKIP LOCKED
         """,  # noqa: S608
-        [
-            garden_id,
-            GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS[0],
-            today,
-            "auto:dry_water:%",
-            today,
-            *GENERATED_NON_WATERING_WEATHER_RULE_SOURCE_PATTERNS,
-            today,
-        ],
-    ).fetchall()
+            [
+                garden_id,
+                GENERATED_WEEKLY_WATERING_RULE_SOURCE_PATTERNS[0],
+                today,
+                "auto:dry_water:%",
+                today,
+                *GENERATED_NON_WATERING_WEATHER_RULE_SOURCE_PATTERNS,
+                today,
+            ],
+        ).fetchall()
+    ]
+    rows.extend(_invalid_generated_harvest_rows(db, garden_id))
     for row in rows:
         terminal_status = "expired"
         terminal_reason = "stale_generated_watering"
-        if is_generated_non_watering_weather_rule_source(str(row["rule_source"] or "")):
+        if str(row["task_type"] or "") == "harvest":
+            terminal_reason = "harvest_not_applicable"
+        elif is_generated_non_watering_weather_rule_source(str(row["rule_source"] or "")):
             if row["weather_alert_id"] is None or bool(row["weather_alert_dismissed"]):
                 terminal_status = "skipped"
                 terminal_reason = "weather_alert_resolved"

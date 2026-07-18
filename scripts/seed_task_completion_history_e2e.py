@@ -22,11 +22,13 @@ E2E_USERNAME = "task_history_e2e_admin"
 E2E_PLOT_ID = "A1"
 E2E_TASK_IDS = (
     "tsk_e2e_bloom",
+    "tsk_e2e_bloom_not_seen",
     "tsk_e2e_fertilize",
     "tsk_e2e_prune",
 )
 PLANTS = (
     ("BLOOM-E2E", "Bloom E2E", "flowers"),
+    ("BLOOM-NOT-SEEN-E2E", "Bloom not seen E2E", "flowers"),
     ("FERT-A-E2E", "Fert A E2E", "perennial"),
     ("FERT-B-E2E", "Fert B E2E", "perennial"),
     ("PRUNE-A-E2E", "Prune A E2E", "shrub"),
@@ -324,6 +326,18 @@ def seed_tasks(conn, garden_id: int, owner_user_id: int) -> None:
     )
     upsert_task(
         conn,
+        public_id="tsk_e2e_bloom_not_seen",
+        garden_id=garden_id,
+        owner_user_id=owner_user_id,
+        task_type="observe_bloom",
+        title="Observe bloom: Bloom not seen E2E",
+        description="Record whether Bloom not seen E2E flowered this season.",
+        due_on="2026-07-05",
+        plant_ids=["BLOOM-NOT-SEEN-E2E"],
+        plot_ids=[E2E_PLOT_ID],
+    )
+    upsert_task(
+        conn,
         public_id="tsk_e2e_fertilize",
         garden_id=garden_id,
         owner_user_id=owner_user_id,
@@ -394,10 +408,10 @@ def print_snapshot(conn) -> None:
         """
         SELECT id, public_id, status, title, snoozed_until
         FROM garden_tasks
-        WHERE public_id IN (%s, %s, %s)
+        WHERE public_id = ANY(%s)
         ORDER BY public_id
         """,
-        E2E_TASK_IDS,
+        (list(E2E_TASK_IDS),),
     ).fetchall()
     task_ids = [int(row["id"]) for row in task_rows]
     task_plant_map = _task_plant_map(conn, task_ids)
