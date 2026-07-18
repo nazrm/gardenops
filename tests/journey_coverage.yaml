@@ -423,6 +423,8 @@ journeys:
     id: I2
     phase: 3
     desktop: proven
+    mobile: proven
+    roles: proven
     provider: proven
     database: proven
     filesystem: proven
@@ -436,6 +438,8 @@ journeys:
         - tests/test_issues.py
         - tests/test_journal.py
         - tests/test_media.py
+      mobile: *phase_three_browser
+      roles: *phase_three_browser
       provider: *phase_three_browser
       database: *phase_three_browser
       filesystem: *phase_three_browser
@@ -447,6 +451,7 @@ journeys:
     phase: 3
     desktop: proven
     mobile: proven
+    roles: proven
     provider: proven
     database: proven
     filesystem: proven
@@ -454,6 +459,7 @@ journeys:
     evidence: &phase_three_diagnosis_evidence
       <<: *phase_three_identification_evidence
       mobile: *phase_three_browser
+      roles: *phase_three_browser
     notes:
       <<: *default_notes
       offline: Photo diagnosis requires an online provider response and has no supported offline action.
