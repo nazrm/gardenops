@@ -249,7 +249,11 @@ async function consumeExpectedViewerTerrainDiagnostics(diagnostics, marks, label
     /\/api\/gardens\/\d+\/lidar/,
     "/api/gardens/{garden_id}/lidar",
   ));
-  assert(JSON.stringify(httpErrors) === JSON.stringify([
+  const normalizedHttpErrors = httpErrors.map((entry) => entry.replace(
+    /\/api\/gardens\/\d+\/lidar/,
+    "/api/gardens/{garden_id}/lidar",
+  ));
+  assert(JSON.stringify(normalizedHttpErrors) === JSON.stringify([
     "403 /api/gardens/{garden_id}/lidar",
     "403 /api/gardens/{garden_id}/lidar",
   ]), `${label} viewer LiDAR denial emitted unrelated HTTP diagnostics`);
