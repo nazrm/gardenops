@@ -214,11 +214,24 @@ def test_page_performance_focus_matrix_static_proof_contract() -> None:
 def test_mobile_focus_garden_switch_waits_for_automatic_utility_closure() -> None:
     script = (ROOT / "scripts" / "check_page_performance.cjs").read_text()
     start = script.index("const selectGardenByPrefix")
-    end = script.index("const browserErrorsSince", start)
+    end = script.index("const closeMobileUtility", start)
     helper = script[start:end]
 
     assert "mobile-utility-open" in helper
     assert "mobile-utility-close-btn" not in helper
+
+
+def test_mobile_focus_dismisses_restored_notification_utility_before_navigation() -> None:
+    script = (ROOT / "scripts" / "check_page_performance.cjs").read_text()
+    helper_start = script.index("const closeMobileUtility")
+    helper_end = script.index("const browserErrorsSince", helper_start)
+    helper = script[helper_start:helper_end]
+    notification_close = script.index("#notification-panel .notification-panel-close")
+    next_navigation = script.index('await openPrimary("insights")', notification_close)
+
+    assert "#mobile-utility-close-btn" in helper
+    assert "mobile-utility-open" in helper
+    assert script.index("await closeMobileUtility()", notification_close) < next_navigation
 
 
 def test_page_performance_readiness_rejects_4xx() -> None:

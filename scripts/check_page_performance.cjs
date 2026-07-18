@@ -2289,6 +2289,15 @@ async function runAppAuthFocusMatrixScenario(page, options, browserDiagnostics) 
     }
     return targetGardenId;
   };
+  const closeMobileUtility = async () => {
+    if (profile !== "mobile" || !await page.locator("body.mobile-utility-open").count()) return;
+    await page.locator("#mobile-utility-close-btn").click({ timeout: timeoutMs });
+    await page.waitForFunction(
+      () => !document.body.classList.contains("mobile-utility-open"),
+      undefined,
+      { timeout: timeoutMs },
+    );
+  };
   const browserErrorsSince = (mark) => ({
     console: browserDiagnostics.consoleMessages.slice(mark.console),
     page: browserDiagnostics.pageErrors.slice(mark.page),
@@ -2470,6 +2479,7 @@ async function runAppAuthFocusMatrixScenario(page, options, browserDiagnostics) 
       "Scale History Heavy G01 inbox proof",
     ));
   await page.locator("#notification-panel .notification-panel-close").click({ timeout: timeoutMs });
+  await closeMobileUtility();
 
   await openPrimary("insights");
   await measureFocus(FOCUS_MATRIX_CONTRACT[4],
