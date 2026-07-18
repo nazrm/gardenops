@@ -57,10 +57,10 @@ def test_phase_one_manifest_only_marks_enforced_dimensions_proven() -> None:
     journeys = {journey["id"]: journey for journey in payload["journeys"]}
     expected_proven_dimensions = {
         "A3": {"desktop", "mobile", "roles", "database"},
-        "CROSS-01": {"desktop", "mobile", "roles", "database"},
-        "M1": {"desktop", "mobile", "roles", "database"},
+        "CROSS-01": {"desktop", "mobile", "roles", "database", "performance"},
+        "M1": {"desktop", "mobile", "roles", "database", "performance"},
         "M2": {"desktop", "mobile", "roles", "database"},
-        "M3": {"desktop", "mobile", "roles", "database"},
+        "M3": {"desktop", "mobile", "roles", "database", "performance"},
         "M4": {"desktop", "mobile", "roles", "database", "filesystem"},
     }
     for journey_id, expected in expected_proven_dimensions.items():
@@ -75,19 +75,21 @@ def test_phase_one_manifest_only_marks_enforced_dimensions_proven() -> None:
         assert "scripts/e2e/journeys/foundation.cjs" in evidence_paths
         assert "tests/test_complete_journey_e2e_scripts.py" in evidence_paths
         assert journey["accessibility"] == "required"
-        assert journey["performance"] == "required"
+        assert journey["performance"] == (
+            "proven" if journey_id in {"CROSS-01", "M1", "M3"} else "required"
+        )
 
 
 def test_phase_two_manifest_only_marks_enforced_dimensions_proven() -> None:
     payload = validate_manifest(DEFAULT_MANIFEST, repo_root=ROOT)
     journeys = {journey["id"]: journey for journey in payload["journeys"]}
     expected_proven_dimensions = {
-        "D1": {"desktop", "mobile", "provider"},
-        "D2": {"desktop", "mobile", "roles", "offline"},
-        "D3": {"desktop", "mobile", "roles", "filesystem"},
-        "D4": {"desktop", "mobile", "roles"},
-        "D5": {"desktop", "mobile", "roles"},
-        "R1": {"desktop", "mobile"},
+        "D1": {"desktop", "mobile", "provider", "database", "performance"},
+        "D2": {"desktop", "mobile", "roles", "offline", "database", "performance"},
+        "D3": {"desktop", "mobile", "roles", "filesystem", "database"},
+        "D4": {"desktop", "mobile", "roles", "provider", "database", "performance"},
+        "D5": {"desktop", "mobile", "roles", "provider", "database", "performance"},
+        "R1": {"desktop", "mobile", "database"},
     }
     for journey_id, expected in expected_proven_dimensions.items():
         journey = journeys[journey_id]
@@ -101,9 +103,30 @@ def test_phase_two_manifest_only_marks_enforced_dimensions_proven() -> None:
         assert "scripts/e2e/journeys/dailyAttentionWork.cjs" in evidence_paths
         assert "tests/test_complete_journey_e2e_scripts.py" in evidence_paths
         assert journey["accessibility"] == "required"
-        assert journey["performance"] == "required"
+        assert journey["performance"] == (
+            "proven" if journey_id in {"D1", "D2", "D4", "D5"} else "not_applicable"
+        )
     assert journeys["D2"]["offline"] == "proven"
-    assert journeys["D4"]["provider"] == "required"
+    assert journeys["D4"]["provider"] == "proven"
+    assert "tests/test_notifications.py" in journeys["D4"]["evidence"]["provider"]
+
+
+def test_phase_nine_manifest_maps_only_measured_focuses_to_performance_proof() -> None:
+    payload = validate_manifest(DEFAULT_MANIFEST, repo_root=ROOT)
+    journeys = {journey["id"]: journey for journey in payload["journeys"]}
+    measured = {"CROSS-01", "D1", "D2", "D4", "D5", "M1", "M3", "P1", "P2", "P4", "R2"}
+    for journey_id in measured:
+        journey = journeys[journey_id]
+        assert journey["performance"] == "proven"
+        evidence_paths = journey["evidence"]["performance"]
+        assert "scripts/check_complete_journeys_e2e.cjs" in evidence_paths
+        assert "scripts/check_page_performance.cjs" in evidence_paths
+        assert "tests/test_complete_journey_e2e_scripts.py" in evidence_paths
+        assert "tests/test_page_performance_script.py" in evidence_paths
+    for journey_id in {"D3", "R1"}:
+        assert journeys[journey_id]["performance"] == "not_applicable"
+    assert journeys["C6"]["desktop"] == "proven"
+    assert journeys["C6"]["provider"] == "not_applicable"
 
 
 def test_duplicate_journey_id_is_rejected(tmp_path: Path) -> None:

@@ -1,8 +1,10 @@
 import json
 import os
+import socketserver
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
+from email import message_from_bytes
 from typing import Any
 from unittest.mock import patch
 
@@ -115,6 +117,59 @@ class _DigestDeliveryPauseBeforeLockConnection:
 
     def commit(self) -> None:
         self._connection.commit()
+
+
+class _LoopbackSmtpHandler(socketserver.StreamRequestHandler):
+    """Minimal SMTP receiver for exercising the production smtplib boundary."""
+
+    def handle(self) -> None:
+        self.wfile.write(b"220 GardenOps loopback SMTP\r\n")
+        self.wfile.flush()
+        mail_from = ""
+        recipients: list[str] = []
+        while line := self.rfile.readline():
+            command = line.decode("utf-8", errors="replace").rstrip("\r\n")
+            upper = command.upper()
+            if upper.startswith(("EHLO ", "HELO ")):
+                self.wfile.write(b"250-localhost\r\n250 SIZE 1048576\r\n")
+            elif upper.startswith("MAIL FROM:"):
+                mail_from = command[10:]
+                self.wfile.write(b"250 sender accepted\r\n")
+            elif upper.startswith("RCPT TO:"):
+                recipients.append(command[8:])
+                self.wfile.write(b"250 recipient accepted\r\n")
+            elif upper == "DATA":
+                self.wfile.write(b"354 end with <CR><LF>.<CR><LF>\r\n")
+                self.wfile.flush()
+                payload = bytearray()
+                while message_line := self.rfile.readline():
+                    if message_line == b".\r\n":
+                        break
+                    payload.extend(message_line)
+                self.server.messages.append(  # type: ignore[attr-defined]
+                    {
+                        "mail_from": mail_from,
+                        "recipients": recipients,
+                        "payload": bytes(payload),
+                    }
+                )
+                self.wfile.write(b"250 message accepted\r\n")
+            elif upper == "QUIT":
+                self.wfile.write(b"221 closing connection\r\n")
+                self.wfile.flush()
+                return
+            else:
+                self.wfile.write(b"250 accepted\r\n")
+            self.wfile.flush()
+
+
+class _LoopbackSmtpServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self) -> None:
+        super().__init__(("127.0.0.1", 0), _LoopbackSmtpHandler)
+        self.messages: list[dict[str, Any]] = []
 
 
 class TestTaskNotificationConcurrency(DbTestBase):
@@ -278,6 +333,107 @@ class TestTaskNotificationConcurrency(DbTestBase):
 
 
 class TestPendingEmailDigestConcurrency(DbTestBase):
+    def test_default_sender_delivers_digest_to_loopback_smtp_and_marks_event_after_acceptance(
+        self,
+    ) -> None:
+        """Exercise persisted digest eligibility through the real SMTP client boundary."""
+        from gardenops.services.notification_service import deliver_pending_email_digests
+
+        user = create_user(
+            self.conn,
+            username="digest_loopback_smtp",
+            password=strong_password("digest-loopback-smtp"),
+            role="editor",
+        )
+        user_id = int(user["id"])
+        now = 1_900_000_000_000
+        self.conn.execute(
+            "UPDATE auth_users SET subscription_tier = 'pro' WHERE id = %s",
+            (user_id,),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO garden_memberships (garden_id, user_id, role)
+            VALUES (%s, %s, 'editor')
+            ON CONFLICT DO NOTHING
+            """,
+            (self.garden_id, user_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO user_notification_preferences
+                (user_id, in_app_enabled, email_enabled, email_address,
+                 digest_frequency, quiet_hours_json, task_due_enabled,
+                 task_overdue_enabled, created_at_ms, updated_at_ms)
+            VALUES (%s, 1, 1, 'loopback-recipient@example.test', 'daily', '{}', 1, 1, %s, %s)
+            """,
+            (user_id, now, now),
+        )
+        event = self.conn.execute(
+            """
+            INSERT INTO notification_events
+                (public_id, garden_id, user_id, notification_type, title, body,
+                 target_type, target_id, read_at_ms, emailed_at_ms, metadata_json,
+                 dismissed, created_at_ms, notification_subtype, severity, expires_at_ms,
+                 cleared_at_ms, clear_reason, superseded_by_id)
+            VALUES ('note_digest_loopback_smtp', %s, %s, 'task_due',
+                    'Water loopback basil', 'Water loopback basil today', 'task',
+                    'task_digest_loopback_smtp', NULL, NULL, '{}', 0, %s, NULL,
+                    'normal', NULL, NULL, NULL, NULL)
+            RETURNING id
+            """,
+            (self.garden_id, user_id, now),
+        ).fetchone()
+        assert event is not None
+        self.conn.commit()
+
+        server = _LoopbackSmtpServer()
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        host, port = server.server_address
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "GARDENOPS_SMTP_HOST": str(host),
+                    "GARDENOPS_SMTP_PORT": str(port),
+                    "GARDENOPS_SMTP_FROM": "digest-sender@example.test",
+                    "GARDENOPS_SMTP_TLS": "false",
+                    "GARDENOPS_SMTP_USERNAME": "",
+                    "GARDENOPS_SMTP_PASSWORD": "",
+                },
+                clear=False,
+            ):
+                result = deliver_pending_email_digests(
+                    self.conn,
+                    self.garden_id,
+                    now_ms=now + 1,
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=5)
+
+        self.assertEqual(int(result["emailed_users"]), 1)
+        self.assertEqual(int(result["notifications_marked"]), 1)
+        self.assertEqual(len(server.messages), 1)
+        delivery = server.messages[0]
+        self.assertEqual(
+            str(delivery["mail_from"]).split(" ", maxsplit=1)[0],
+            "<digest-sender@example.test>",
+        )
+        self.assertEqual(delivery["recipients"], ["<loopback-recipient@example.test>"])
+        message = message_from_bytes(delivery["payload"])
+        self.assertEqual(message["From"], "digest-sender@example.test")
+        self.assertEqual(message["To"], "loopback-recipient@example.test")
+        self.assertIn("Water loopback basil", message.get_payload())
+        row = self.conn.execute(
+            "SELECT emailed_at_ms FROM notification_events WHERE id = %s",
+            (int(event["id"]),),
+        ).fetchone()
+        assert row is not None
+        self.assertEqual(int(row["emailed_at_ms"]), now + 1)
+
     def test_concurrent_deliveries_claim_a_recipient_once(self) -> None:
         from gardenops.services.notification_service import deliver_pending_email_digests
 

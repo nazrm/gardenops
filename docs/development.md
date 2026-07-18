@@ -359,8 +359,13 @@ allowed domain table, so scoped assertions do not silently omit unrelated extra
 rows. Summary counts, observed-row lengths, and frozen timestamps are not
 accepted as independent expectations.
 
-Phase 2 database coverage remains required in `tests/journey_coverage.yaml`:
-the harness correlates every `POST`, `PUT`, `PATCH`, and `DELETE` browser
+The default SMTP sender also has a separate disposable integration test using a
+loopback SMTP receiver. It drives the production `smtplib` path from persisted
+eligible preferences and verifies that the matching notification row is marked
+delivered only after the receiver accepts the message; it never contacts a public
+mail service.
+
+Phase 2 database evidence correlates every `POST`, `PUT`, `PATCH`, and `DELETE` browser
 mutation one-to-one with method, path, response status, actor, authentication
 type, garden scope, and the response `X-Request-ID` persisted as correlation on
 the audit row. The database-generated audit row ID, not client-supplied
@@ -368,9 +373,9 @@ the audit row. The database-generated audit row ID, not client-supplied
 successful mutation paths fail the evidence check. The audit writer
 records wall-clock timestamps, so those timestamps remain an explicit
 nondeterministic field and are not used as ordering proof. The same manifest keeps unsupported
-editor/viewer role dimensions required. Phase 8 accessibility and Phase 9
-performance remain explicitly open; the current structural and focus assertions
-are not a substitute for those phase audits.
+editor/viewer role dimensions required. Phase 8 accessibility remains open until the
+operator-assisted screen-reader smoke is complete; unexercised mobile and role paths
+remain required rather than being inferred from another surface.
 
 When Phase 2 follows Phase 1 in a cumulative run, Phase 1's intentional garden
 address update invalidates cached forecasts. The guarded Phase 2 preparation
@@ -581,7 +586,12 @@ research and validate it without rewriting tracked baselines:
 
 Do not use a developer-machine result from a dirty worktree as budget evidence,
 and do not weaken a budget to accept a regression. Query plan inspection is
-read-only and restricted to the disposable runner database.
+read-only and restricted to the disposable runner database. The Phase 9 focus
+matrix measures real visible work for cross-garden switching, indoor/map state,
+Today and task actions, notifications, weather, journal, issues, inventory, and
+reports. The map-first readiness budget is tracked separately for desktop and
+Pixel 7. Other paths remain `required` until they have their own scale-sensitive
+measurement or a technically valid non-applicability rationale.
 
 The tracked coverage contract is `tests/journey_coverage.yaml` version 2. Each
 journey records a state for every coverage dimension. A `proven` dimension must

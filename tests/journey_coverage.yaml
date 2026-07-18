@@ -195,17 +195,21 @@ journeys:
   - <<: *open_journey
     id: C6
     phase: 7
+    desktop: proven
     offline: not_applicable
+    provider: not_applicable
     filesystem: proven
     evidence: &phase_seven_filesystem_evidence
-      filesystem: &phase_seven_browser
+      desktop: &phase_seven_browser
         - scripts/check_complete_journeys_e2e.cjs
         - scripts/e2e/journeys/providersAndTerrain.cjs
         - scripts/e2e/fixtures/complete_journeys_phase_seven_oracle.json
         - tests/test_complete_journey_e2e_scripts.py
+      filesystem: *phase_seven_browser
     notes:
       <<: *default_notes
       offline: LiDAR upload and removal are immediate online administration operations and are absent from the supported offline queue.
+      provider: LiDAR upload, generated terrain tiles, and cleanup are local GardenOps operations with no external-provider request.
   - <<: *open_journey
     id: CROSS-01
     phase: 1
@@ -213,10 +217,18 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
+    performance: proven
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
-    evidence: *phase_one_core_evidence
+    evidence:
+      <<: *phase_one_core_evidence
+      performance: &phase_nine_performance_evidence
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/check_page_performance.cjs
+        - tests/performance_budgets.yaml
+        - tests/test_complete_journey_e2e_scripts.py
+        - tests/test_page_performance_script.py
     notes:
       <<: *default_notes
       offline: Cross-garden response isolation is not a supported offline operation.
@@ -245,6 +257,8 @@ journeys:
     desktop: proven
     mobile: proven
     provider: proven
+    database: proven
+    performance: proven
     offline: not_applicable
     filesystem: not_applicable
     evidence: &phase_two_today_evidence
@@ -256,6 +270,8 @@ journeys:
         - tests/test_task_action_parity_frontend_static.py
       mobile: *phase_two_browser
       provider: *phase_two_browser
+      database: *phase_two_browser
+      performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
       offline: Attention actions are online-only and have no supported offline queue.
@@ -266,6 +282,8 @@ journeys:
     desktop: proven
     mobile: proven
     roles: proven
+    database: proven
+    performance: proven
     offline: proven
     provider: not_applicable
     filesystem: not_applicable
@@ -273,6 +291,8 @@ journeys:
       desktop: *phase_two_browser
       mobile: *phase_two_browser
       roles: *phase_two_browser
+      database: *phase_two_browser
+      performance: *phase_nine_performance_evidence
       offline:
         - scripts/e2e/journeys/dailyAttentionWork.cjs
         - scripts/e2e/journeys/offlineAndFailureRecovery.cjs
@@ -288,6 +308,8 @@ journeys:
     mobile: proven
     roles: proven
     filesystem: proven
+    database: proven
+    performance: not_applicable
     offline: not_applicable
     provider: not_applicable
     evidence: &phase_two_calendar_evidence
@@ -295,39 +317,59 @@ journeys:
       mobile: *phase_two_browser
       roles: *phase_two_browser
       filesystem: *phase_two_browser
+      database: *phase_two_browser
     notes:
       <<: *default_notes
       offline: Calendar reads and manual-event mutations are online-only.
       provider: Calendar events, subscriptions, and ICS exports have no external provider dependency.
+      performance: Calendar event and subscription work has no large-garden list or aggregation boundary beyond the independently measured activity surfaces.
   - <<: *open_journey
     id: D4
     phase: 2
     desktop: proven
     mobile: proven
     roles: proven
+    database: proven
+    provider: proven
+    performance: proven
     offline: not_applicable
     filesystem: not_applicable
     evidence: &phase_two_core_evidence
       desktop: *phase_two_browser
       mobile: *phase_two_browser
       roles: *phase_two_browser
+      database: *phase_two_browser
+      performance: *phase_nine_performance_evidence
+      provider:
+        - gardenops/services/notification_service.py
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/e2e/journeys/dailyAttentionWork.cjs
+        - tests/test_complete_journey_e2e_scripts.py
+        - tests/test_notifications.py
     notes:
       <<: *default_notes
       offline: Notification inbox and preference mutations are online-only.
       filesystem: Notification preference and delivery workflows do not use a supported file workflow.
-      provider: Production notification event handling through an exact local SMTP delivery remains required; Phase 2 does not claim that provider boundary.
+      provider: Phase 2 saves the digest preference through the UI; the local loopback SMTP integration test verifies the production smtplib sender accepts the digest before its notification row is marked delivered.
   - <<: *open_journey
     id: D5
     phase: 2
     desktop: proven
     mobile: proven
     roles: proven
+    provider: proven
+    database: proven
+    performance: proven
     offline: not_applicable
     filesystem: not_applicable
-    evidence: *phase_two_core_evidence
+    evidence:
+      <<: *phase_two_core_evidence
+      provider: *phase_seven_browser
+      performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
       offline: Weather checks and alert actions are online-only.
+      provider: Phase 7 drives the stale forecast through the loopback provider and proves the visible non-authoritative refresh path.
       filesystem: Weather checks, tasks, alerts, and outcomes do not use a supported file workflow.
   - <<: *open_journey
     id: I1
@@ -474,10 +516,13 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
+    performance: proven
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
-    evidence: *phase_one_core_evidence
+    evidence:
+      <<: *phase_one_core_evidence
+      performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
       offline: Map-first and plant interaction are not a supported offline workflow.
@@ -506,10 +551,13 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
+    performance: proven
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
-    evidence: *phase_one_core_evidence
+    evidence:
+      <<: *phase_one_core_evidence
+      performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
       offline: Indoor switching and saved views are not a supported offline workflow.
@@ -587,6 +635,7 @@ journeys:
     database: proven
     filesystem: proven
     provider: not_applicable
+    performance: proven
     evidence: &phase_three_crud_evidence
       desktop: *phase_three_browser
       mobile: *phase_three_browser
@@ -594,6 +643,7 @@ journeys:
       offline: *phase_three_browser
       database: *phase_three_browser
       filesystem: *phase_three_browser
+      performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
       provider: Journal lifecycle has no external provider dependency.
@@ -607,7 +657,10 @@ journeys:
     database: proven
     filesystem: proven
     provider: not_applicable
-    evidence: *phase_three_crud_evidence
+    performance: proven
+    evidence:
+      <<: *phase_three_crud_evidence
+      performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
       provider: Issue lifecycle is provider-independent; photo diagnosis is tracked separately as I3.
@@ -635,9 +688,11 @@ journeys:
     filesystem: proven
     offline: not_applicable
     provider: not_applicable
+    performance: proven
     evidence: &phase_four_with_filesystem_evidence
       <<: *phase_four_core_evidence
       filesystem: *phase_four_browser
+      performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
       offline: Inventory mutations have no supported offline queue.
@@ -675,17 +730,21 @@ journeys:
     phase: 2
     desktop: proven
     mobile: proven
+    database: proven
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
+    performance: not_applicable
     evidence: &phase_two_history_evidence
       desktop: *phase_two_browser
       mobile: *phase_two_browser
+      database: *phase_two_browser
     notes:
       <<: *default_notes
       offline: Historical record review has no supported offline read workflow.
       provider: Durable garden history review has no external provider dependency.
       filesystem: History review does not use a supported file workflow.
+      performance: History review is a bounded detail/readback flow; large history aggregation is protected by the independently measured journal and reporting paths.
   - <<: *open_journey
     id: R2
     phase: 4
@@ -696,7 +755,10 @@ journeys:
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
-    evidence: *phase_four_core_evidence
+    performance: proven
+    evidence:
+      <<: *phase_four_core_evidence
+      performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
       offline: Reports and corrective navigation require online data.
