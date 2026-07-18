@@ -24,6 +24,7 @@ journeys:
         accessibility: Automated accessibility proof passed; the remaining closure condition is the operator-assisted screen-reader smoke.
         performance: A representative real-backend scale measurement still needs to establish this user-visible path.
     desktop: proven
+    mobile: proven
     roles: proven
     offline: not_applicable
     provider: not_applicable
@@ -36,6 +37,7 @@ journeys:
         - scripts/e2e/journeys/identityAndRoles.cjs
         - scripts/e2e/fixtures/complete_journeys_phase_five_oracle.json
         - tests/test_complete_journey_e2e_scripts.py
+      mobile: *phase_five_browser
       roles: *phase_five_browser
       database: *phase_five_browser
     notes:
@@ -108,13 +110,16 @@ journeys:
     id: C1
     phase: 5
     desktop: proven
+    mobile: proven
     roles: proven
     offline: not_applicable
     provider: not_applicable
     database: proven
     filesystem: not_applicable
     performance: not_applicable
-    evidence: *phase_five_desktop_roles_database
+    evidence:
+      <<: *phase_five_desktop_roles_database
+      mobile: *phase_five_browser
     notes:
       <<: *default_notes
       offline: Account membership administration requires an online authentication boundary.
@@ -196,13 +201,16 @@ journeys:
     id: C5
     phase: 5
     desktop: proven
+    mobile: proven
     roles: proven
     offline: not_applicable
     provider: not_applicable
     database: proven
     filesystem: not_applicable
     performance: not_applicable
-    evidence: *phase_five_desktop_roles_database
+    evidence:
+      <<: *phase_five_desktop_roles_database
+      mobile: *phase_five_browser
     notes:
       <<: *default_notes
       offline: Session revocation requires an online authentication boundary.
@@ -261,13 +269,16 @@ journeys:
     id: CROSS-02
     phase: 5
     desktop: proven
+    mobile: proven
     roles: proven
     offline: not_applicable
     provider: not_applicable
     database: proven
     filesystem: not_applicable
     performance: not_applicable
-    evidence: *phase_five_desktop_roles_database
+    evidence:
+      <<: *phase_five_desktop_roles_database
+      mobile: *phase_five_browser
     notes:
       <<: *default_notes
       offline: Cross-user authorization isolation requires an online authentication boundary.
