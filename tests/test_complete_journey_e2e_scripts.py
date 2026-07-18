@@ -1154,10 +1154,11 @@ def test_phase_five_mobile_profiles_own_mobile_identity_operations() -> None:
         'role === "viewer" && profile === "mobile"', 1
     )[0]
 
-    assert "createGardenInvitation(page, fixture, profile)" in admin_mobile
+    assert "createGardenInvitation(page, fixture, profile, options.password)" in admin_mobile
     assert "exerciseSessionRevocation(options, page, profile)" in admin_mobile
     assert "mobile_membership_invitation" in admin_mobile
     assert "mobile_session_revocation" in admin_mobile
+    assert "phase-five-mobile-session-revoke" in source
     assert "acceptInvitation(" in editor_mobile
     assert "exercisePasswordlessPasskeyRedundancy(" in editor_mobile
     assert "exerciseEditorAuthorizationDenials(" in editor_mobile

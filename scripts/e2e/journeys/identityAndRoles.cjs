@@ -367,7 +367,7 @@ async function createUserInvitation(page, fixture, profile) {
   return link;
 }
 
-async function createGardenInvitation(page, fixture, profile) {
+async function createGardenInvitation(page, fixture, profile, adminPassword = null) {
   await openAdminSection(page, profile, "invitations");
   await page.locator("#adm-inv-username").fill(phaseFive(fixture).viewer_invitee_username);
   await page.locator("#adm-inv-ttl").fill("60");
@@ -375,6 +375,7 @@ async function createGardenInvitation(page, fixture, profile) {
   const pending = responseFor(page, "POST", pathName);
   await page.locator("#adm-create-inv-form button[type='submit']").click();
   await answerPrompt(page, "phase-five-viewer-invitation");
+  if (adminPassword !== null) await answerPrompt(page, adminPassword);
   assert((await pending).status() === 201, "Viewer invitation creation failed");
   await visible(page.locator("#adm-inv-link-input"), "viewer invitation link");
   const link = await page.locator("#adm-inv-link-input").inputValue();
@@ -747,6 +748,8 @@ async function exerciseSessionRevocation(options, page, profile) {
     ));
     await row.locator(".adm-session-revoke-one").click();
     await confirmVisibleDialog(page);
+    await answerPrompt(page, "phase-five-mobile-session-revoke");
+    await answerPrompt(page, options.password);
     assert((await revokePending).ok(), "Per-session revoke failed");
     const revokedStatus = await secondaryPage.evaluate(async () => (
       await fetch("/api/auth/me", { credentials: "include" })
@@ -1183,7 +1186,7 @@ async function runProfile(options, shared) {
       guarded.markAuthenticated();
       assert(auth.role === role, "Phase 5 mobile administrator role drifted");
       await dismissProactivePasskeyPrompt(page);
-      shared.viewerInvite = await createGardenInvitation(page, fixture, profile);
+      shared.viewerInvite = await createGardenInvitation(page, fixture, profile, options.password);
       result.checks.mobile_membership_invitation = true;
       supplementalRequests.push(...await exerciseSessionRevocation(options, page, profile));
       result.checks.mobile_session_revocation = true;
