@@ -27,6 +27,8 @@
       "events": [
         { "actor": "admin", "count": 2, "garden": "alpha", "method": "POST", "path": "/api/ai/garden-chat", "status_code": 200 },
         { "actor": "admin", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/ai/garden-chat", "status_code": 429 },
+        { "actor": "editor", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/ai/garden-chat", "status_code": 200 },
+        { "actor": "viewer", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/ai/garden-chat", "status_code": 200 },
         { "actor": "anonymous", "count": 4, "garden": null, "method": "POST", "path": "/api/auth/login", "status_code": 200 },
         { "actor": "anonymous", "count": 4, "garden": null, "method": "POST", "path": "/api/auth/passkeys/login/options", "status_code": 200 },
         { "actor": "admin", "count": 2, "garden": "alpha", "method": "POST", "path": "/api/auth/reauthenticate", "status_code": 200 },

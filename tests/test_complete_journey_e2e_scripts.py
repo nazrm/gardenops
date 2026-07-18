@@ -1208,6 +1208,7 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
     assert '"Phase 7 stale-weather fixture was not prepared"' in checker_source
     assert "assertPhaseSevenAuditEvents" in checker_source
     assert "assertPhaseSevenProfileEvidence" in checker_source
+    assert "provider_budgets_exact" in checker_source
     assert "preparePhaseSevenFixtures" in checker_source
     assert "_load_phase_seven_oracle" in seeder_source
     assert "_prepare_phase_seven_weather" in seeder_source
@@ -1234,6 +1235,17 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         event["path"] == "/api/ai/garden-chat" and event["status_code"] == 429
         for event in oracle["phase_seven"]["audit_contract"]["events"]
     )
+    chat_writes = {
+        (event["actor"], event["status_code"]): event["count"]
+        for event in oracle["phase_seven"]["audit_contract"]["events"]
+        if event["method"] == "POST" and event["path"] == "/api/ai/garden-chat"
+    }
+    assert chat_writes == {
+        ("admin", 200): 2,
+        ("admin", 429): 1,
+        ("editor", 200): 1,
+        ("viewer", 200): 1,
+    }
     assert any(
         event["path"] == "/api/weather/check" and event["status_code"] == 200
         for event in oracle["phase_seven"]["audit_contract"]["events"]
@@ -1271,6 +1283,8 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         "provider_settings",
         '"/api/admin/provider-settings"',
         "reauthentication_enforced",
+        "Phase 7 editor",
+        "Phase 7 viewer",
         "exerciseStaleWeather",
         "assertViewerShadeBoundary",
         "assertViewerTerrainBoundary",

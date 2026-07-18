@@ -820,6 +820,7 @@ async function runProfile(options) {
         );
       }
     } else if (options.role === "viewer") {
+      result.checks.chat_success = await exerciseChat(page, "Phase 7 viewer");
       result.checks.shade = await exerciseShade(page, "Phase 7 viewer", {
         diagnostics: guarded.diagnostics,
         viewer: true,
@@ -839,6 +840,7 @@ async function runProfile(options) {
         "Phase 7 viewer provider settings",
       );
     } else {
+      result.checks.chat_success = await exerciseChat(page, "Phase 7 editor");
       const terrain = await exerciseTerrainUpload(page, options);
       result.checks.shade = await exerciseShade(page, "Phase 7 editor", { expectTerrain: true });
       await openAdminGarden(page, options.profile, "Phase 7 editor terrain cleanup");

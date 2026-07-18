@@ -460,6 +460,7 @@ journeys:
     phase: 7
     desktop: proven
     mobile: proven
+    roles: proven
     provider: proven
     database: proven
     offline: not_applicable
@@ -467,6 +468,7 @@ journeys:
     evidence: &phase_seven_chat_evidence
       desktop: *phase_seven_browser
       mobile: *phase_seven_browser
+      roles: *phase_seven_browser
       provider: *phase_seven_browser
       database: *phase_seven_browser
     notes:

@@ -422,17 +422,19 @@ function assertPhaseSevenProfileEvidence(profiles, oracle = phaseSevenOracle()) 
   assert(editor?.checks?.shade?.external_canvas === true
     && editor?.checks?.terrain?.upload_and_cleanup === true
     && editor?.checks?.terrain?.cleanup_persisted === true
+    && editor?.checks?.chat_success?.success === true
     && editor?.checks?.provider_settings?.ui_hidden === true
     && editor?.checks?.provider_settings?.api_read_denied === true
     && editor?.checks?.provider_settings?.api_write_denied === true,
-  "Phase 7 editor ShadeMap or provider-settings boundary is incomplete");
+  "Phase 7 editor chat, ShadeMap, or provider-settings boundary is incomplete");
   assert(viewer?.checks?.shade?.viewer_read_only === true
     && viewer?.checks?.shade?.viewer_controls_disabled === true
     && viewer?.checks?.terrain?.viewer_write_denied === true
+    && viewer?.checks?.chat_success?.success === true
     && viewer?.checks?.provider_settings?.ui_hidden === true
     && viewer?.checks?.provider_settings?.api_read_denied === true
     && viewer?.checks?.provider_settings?.api_write_denied === true,
-  "Phase 7 viewer ShadeMap or provider-settings boundary is incomplete");
+  "Phase 7 viewer chat, ShadeMap, or provider-settings boundary is incomplete");
   assert(profiles.every((profile) => profile.checks?.provider_fixture_redacted === true
     && profile.checks?.browser_diagnostics === true
     && profile.checks?.shademap_runtime_loaded === true),
@@ -809,11 +811,23 @@ function assertPhaseSevenDatabaseState(initial, final, fixture) {
   assert(canonicalJson(initial.alpha?.weather) === canonicalJson(final.alpha?.weather),
     "Phase 7 stale weather refresh changed the degraded forecast cache");
   const usage = final.provider_usage || [];
-  assert(usage.length === 2 && usage.every((row) => (
-    row.feature === "ai-garden-chat" && row.request_count >= 1
-      && ((row.scope_type === "garden" && row.scope_id === fixture.gardens.alpha.id)
-        || (row.scope_type === "user" && row.scope_username === fixture.roles.admin))
-  )), "Phase 7 provider budget usage was not scoped to the selected admin and garden");
+  assert(Array.isArray(initial.provider_usage) && initial.provider_usage.length === 0,
+    "Phase 7 provider budget fixture did not start empty");
+  const usageByScope = new Map(usage.map((row) => [
+    `${row.scope_type}:${row.scope_type === "garden" ? row.scope_id : row.scope_username}`,
+    row,
+  ]));
+  const expectedUsage = new Map([
+    [`garden:${fixture.gardens.alpha.id}`, 5],
+    [`user:${fixture.roles.admin}`, 3],
+    [`user:${fixture.roles.editor}`, 1],
+    [`user:${fixture.roles.viewer}`, 1],
+  ]);
+  assert(usageByScope.size === expectedUsage.size
+    && [...expectedUsage].every(([scope, requestCount]) => {
+      const row = usageByScope.get(scope);
+      return row?.feature === "ai-garden-chat" && row.request_count === requestCount;
+    }), "Phase 7 provider budget usage did not match the authenticated role journeys");
   const providerSettings = final.provider_settings;
   const expectedProviderSettings = phaseSevenOracle().phase_seven.database_boundaries.provider_settings;
   assert(providerSettings && expectedProviderSettings,
@@ -828,6 +842,7 @@ function assertPhaseSevenDatabaseState(initial, final, fixture) {
     calibration_persisted: true,
     provider_settings_secret_cleanup: true,
     provider_budget_scoped: true,
+    provider_budgets_exact: true,
     stale_weather_preserved: true,
     temporary_obstacle_removed: true,
   };
