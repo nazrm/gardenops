@@ -790,6 +790,7 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
         "viewer:mobile",
     ]
     assert set(oracle["phase_three"]["whole_table_mutation_accounting"]["table_counts"]) == {
+        "auth_passkey_challenges",
         "garden_issue_plants",
         "garden_issue_plots",
         "garden_issues",
@@ -811,6 +812,7 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
         "plants",
         "plot_plants",
         "provider_daily_usage",
+        "shademap_cache",
     }
     assert oracle["phase_three"]["fixture"]["media"]["oriented_jpeg"] == {
         "filename": "oriented-2x4.jpg",
@@ -910,7 +912,7 @@ if (present.rollupVariant !== 'rollup_present') process.exit(4);
 if (present.accounting.app_settings.expected_added !== 1
   || present.accounting.app_settings.expected_removed !== 1
   || present.accounting.app_settings.expected_identity_updated !== 1) process.exit(5);
-if (present.allowedTables.size !== 22) process.exit(6);
+if (present.allowedTables.size !== 24) process.exit(6);
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

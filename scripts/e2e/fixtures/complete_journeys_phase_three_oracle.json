@@ -167,6 +167,7 @@
         }
       },
       "table_counts": {
+        "auth_passkey_challenges": { "added": 6, "identity_added": 6, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
         "garden_issue_plants": { "added": 1, "identity_added": 1, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
         "garden_issue_plots": { "added": 1, "identity_added": 1, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
         "garden_issues": { "added": 1, "identity_added": 1, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
@@ -187,7 +188,8 @@
         "plant_media_covers": { "added": 0, "identity_added": 0, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
         "plants": { "added": 0, "identity_added": 0, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
         "plot_plants": { "added": 0, "identity_added": 0, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
-        "provider_daily_usage": { "added": 6, "identity_added": 6, "identity_removed": 0, "identity_updated": 0, "removed": 0 }
+        "provider_daily_usage": { "added": 8, "identity_added": 8, "identity_removed": 0, "identity_updated": 0, "removed": 0 },
+        "shademap_cache": { "added": 2, "identity_added": 2, "identity_removed": 0, "identity_updated": 0, "removed": 0 }
       }
     }
   }

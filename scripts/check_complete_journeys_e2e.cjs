@@ -3696,6 +3696,7 @@ function phaseThreeExactMutationContract(initialState, fixture, oracle) {
   "Phase 3 whole-table mutation oracle is missing");
   const expectedTables = [
     "app_settings",
+    "auth_passkey_challenges",
     "garden_issue_plants",
     "garden_issue_plots",
     "garden_issues",
@@ -3717,6 +3718,7 @@ function phaseThreeExactMutationContract(initialState, fixture, oracle) {
     "plants",
     "plot_plants",
     "provider_daily_usage",
+    "shademap_cache",
   ];
   assert(canonicalJson(["app_settings", ...Object.keys(tableCounts)].sort())
     === canonicalJson([...expectedTables].sort()),
