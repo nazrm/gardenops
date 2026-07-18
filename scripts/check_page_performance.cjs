@@ -2169,7 +2169,7 @@ const FOCUS_MATRIX_CONTRACT = [
   },
   { id: "D1", surface: "map/today", expected: "History Heavy G01 queued work", requests: ["/api/attention/today"] },
   { id: "D2", surface: "activity/tasks", expected: "History Heavy G01 queued work", requests: ["/api/tasks"] },
-  { id: "D4", surface: "notifications/inbox", expected: "History Heavy G01 notification", requests: ["/api/notifications"] },
+  { id: "D4", surface: "notifications/inbox", expected: "Scale History Heavy G01 inbox proof", requests: ["/api/notifications"] },
   { id: "D5", surface: "insights/care", expected: "Weather", requests: ["/api/weather"] },
   { id: "P1", surface: "activity/journal", expected: "History Heavy G01 journal", requests: ["/api/journal"] },
   { id: "P2", surface: "activity/issues", expected: "History Heavy G01 issue", requests: ["/api/issues"] },
@@ -2436,7 +2436,10 @@ async function runAppAuthFocusMatrixScenario(page, options, browserDiagnostics) 
   await measureFocus(FOCUS_MATRIX_CONTRACT[3],
     () => page.locator(profile === "mobile" ? "#mobile-notification-btn" : "#notification-bell")
       .click({ timeout: timeoutMs }),
-    () => visibleSeed("#notification-panel .notification-item", "History Heavy G01 notification"));
+    () => visibleSeed(
+      "#notification-panel .notification-item",
+      "Scale History Heavy G01 inbox proof",
+    ));
   await page.locator("#notification-panel .notification-panel-close").click({ timeout: timeoutMs });
 
   await openPrimary("insights");

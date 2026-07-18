@@ -374,6 +374,35 @@ def test_history_heavy_profile_spans_multiple_seasons_for_live_lists(
     assert all(int(row[column]) > one_year_ms for column in row.keys())
 
 
+def test_history_heavy_profile_has_a_current_visible_inbox_notification(
+    scale_profiles: tuple[Any, dict[str, Any]],
+) -> None:
+    conn, projection = scale_profiles
+    fixture = projection["profiles"]["history-heavy"]["fixtures"][0]
+
+    row = conn.execute(
+        """
+        SELECT event.dismissed, event.notification_type, event.title, event.created_at_ms,
+               auth_user.username
+        FROM notification_events AS event
+        JOIN gardens AS garden ON garden.id = event.garden_id
+        JOIN auth_users AS auth_user ON auth_user.id = event.user_id
+        WHERE garden.slug = %s AND event.public_id = %s
+        """,
+        (
+            fixture["slug"],
+            "note_scale_history_heavy_g01_00000",
+        ),
+    ).fetchone()
+
+    assert row is not None
+    assert str(row["username"]) == seed.ADMIN_USERNAME
+    assert str(row["notification_type"]) == "system"
+    assert str(row["title"]) == "Scale History Heavy G01 inbox proof"
+    assert int(row["dismissed"]) == 0
+    assert int(row["created_at_ms"]) == seed.SCALE_PROFILE_NOW_MS
+
+
 def test_multi_garden_profile_keeps_overlapping_names_but_distinct_content(
     scale_profiles: tuple[Any, dict[str, Any]],
 ) -> None:

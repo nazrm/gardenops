@@ -4915,11 +4915,15 @@ def _seed_scale_profile_garden(
                 f"note_scale_{profile.replace('-', '_')}_g{garden_number:02d}_{index:05d}",
                 garden_id,
                 (users[ADMIN_USERNAME], users[EDITOR_LOGIN[0]], users[VIEWER_LOGIN[0]])[index % 3],
-                "task_due" if index % 2 else "task_overdue",
-                f"Scale {content_marker} notification {(index % 90) + 1:02d}",
+                "system"
+                if profile == "history-heavy" and index == 0
+                else ("task_due" if index % 2 else "task_overdue"),
+                f"Scale {content_marker} inbox proof"
+                if profile == "history-heavy" and index == 0
+                else (f"Scale {content_marker} notification {(index % 90) + 1:02d}"),
                 task_public_ids[index % len(task_public_ids)],
                 json.dumps({"profile": profile, "sequence": index}, sort_keys=True),
-                1 if index % 5 == 0 else 0,
+                0 if profile == "history-heavy" and index == 0 else (1 if index % 5 == 0 else 0),
                 _scale_profile_timestamp(
                     profile, index, default_step_ms=360_000, history_step_days=7
                 ),
