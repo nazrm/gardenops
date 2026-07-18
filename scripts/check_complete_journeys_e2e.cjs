@@ -1175,6 +1175,11 @@ function normalizedPhaseNineQueryPath(value) {
   return value;
 }
 
+function isPhaseNineReadOnlyQueryRequest(method, pathValue) {
+  return method === "GET"
+    || (method === "POST" && pathValue === "/api/media/summaries");
+}
+
 function assertPhaseNineQueryEvidence(evidencePath) {
   assert(fs.existsSync(evidencePath), "Phase 9 query evidence is missing");
   const contents = fs.readFileSync(evidencePath, "utf8").trim();
@@ -1187,7 +1192,8 @@ function assertPhaseNineQueryEvidence(evidencePath) {
   for (const line of contents.split(/\r?\n/)) {
     const record = JSON.parse(line);
     assert(record && typeof record === "object"
-      && record.method === "GET" && typeof record.path === "string"
+      && typeof record.path === "string"
+      && isPhaseNineReadOnlyQueryRequest(record.method, record.path)
       && Number.isInteger(record.status) && record.status >= 200 && record.status < 300
       && Number.isInteger(record.query_count) && record.query_count >= 0
       && Number.isInteger(record.batch_rows) && record.batch_rows >= 0
@@ -9583,6 +9589,7 @@ module.exports = {
   isSafeRequestId,
   isPhaseTwoAuditPath,
   isPhaseTwoReadOnlyProbeMutation,
+  isPhaseNineReadOnlyQueryRequest,
   phaseTwoBrowserMutationRecords,
   phaseTwoTaskNotificationClearReasons,
   phaseOneAuditExpectedEvents,

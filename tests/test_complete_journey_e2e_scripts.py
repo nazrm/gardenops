@@ -1461,11 +1461,38 @@ def test_phase_nine_query_evidence_is_private_and_manifested_only_as_safe_aggreg
     assert "path.dirname(target) === path.resolve(ARTIFACT_DIR)" in path_helper
     assert "statement_fingerprints" in validator
     assert "probe_label" in validator
+    assert "isPhaseNineReadOnlyQueryRequest" in validator
     assert "phase-nine-small-desktop" in validator
     assert "query count changed between equivalent" in validator
     assert "statement_fingerprints" not in sanitizer
     assert "scale_comparison" in sanitizer
     assert "total_query_count" in sanitizer
+
+
+def test_phase_nine_query_evidence_allows_only_registered_read_requests() -> None:
+    script = r"""
+const {
+  isPhaseNineReadOnlyQueryRequest,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+for (const [method, path] of [
+  ['GET', '/api/tasks'],
+  ['POST', '/api/media/summaries'],
+]) {
+  if (!isPhaseNineReadOnlyQueryRequest(method, path)) process.exit(3);
+}
+for (const [method, path] of [
+  ['POST', '/api/media/upload'],
+  ['POST', '/api/tasks/batch-action'],
+  ['PATCH', '/api/attention/preferences'],
+]) {
+  if (isPhaseNineReadOnlyQueryRequest(method, path)) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_phase_nine_database_snapshot_buffer_supports_scale_profile_projections() -> None:
