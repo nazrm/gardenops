@@ -100,7 +100,9 @@ class _QueryCountingConnection:
 
 
 def _raw_connection(conn: DbConn | _QueryCountingConnection) -> DbConn:
-    return getattr(conn, "_gardenops_raw_connection", conn)
+    if isinstance(conn, _QueryCountingConnection):
+        return conn._gardenops_raw_connection
+    return conn
 
 
 def _database_url() -> str:
