@@ -2108,7 +2108,6 @@ function assertPhaseFiveProfileEvidence(profiles, oracle) {
     "passkey_lifecycle",
     "revoked_passkey_denial",
     "totp_lifecycle",
-    "session_revocation",
     "settings_persistence",
     "incident_control",
   ]) {
@@ -2117,16 +2116,23 @@ function assertPhaseFiveProfileEvidence(profiles, oracle) {
   }
   assert(adminMobile?.checks?.mobile_identity_settings === true,
     "Phase 5 administrator mobile identity settings proof is incomplete");
+  for (const check of ["mobile_membership_invitation", "mobile_session_revocation"]) {
+    assert(adminMobile?.checks?.[check] === true,
+      `Phase 5 administrator mobile ${check} proof is incomplete`);
+  }
   const editorDesktop = profiles.find((profile) => (
     profile.role === "editor" && profile.profile === "desktop"
+  ));
+  const editorMobile = profiles.find((profile) => (
+    profile.role === "editor" && profile.profile === "mobile"
   ));
   for (const check of [
     "cross_garden_and_stale_csrf_denials",
     "passwordless_invitation",
     "passwordless_passkey_redundancy",
   ]) {
-    assert(editorDesktop?.checks?.[check] === true,
-      `Phase 5 editor desktop ${check} proof is incomplete`);
+    assert(editorMobile?.checks?.[check] === true,
+      `Phase 5 editor mobile ${check} proof is incomplete`);
   }
   assert(editors.length === 2 && editors.every((profile) => (
     profile.checks.editor_identity_surface === true

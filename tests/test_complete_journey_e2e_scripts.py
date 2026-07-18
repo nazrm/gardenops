@@ -1113,6 +1113,8 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
         "passwordless_invitation",
         "passwordless_passkey_redundancy",
         "cross_garden_and_stale_csrf_denials",
+        "mobile_membership_invitation",
+        "mobile_session_revocation",
     ):
         assert marker in checker_source
     for journey_id in ("A1", "A2", "A4", "C1", "C3", "C5", "CROSS-02"):
@@ -1138,6 +1140,27 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
         assert marker in journey_source
     for forbidden in ("route.fulfill(", "context.addCookies(", "page.setContent("):
         assert forbidden not in journey_source
+
+
+def test_phase_five_mobile_profiles_own_mobile_identity_operations() -> None:
+    source = (ROOT / "scripts" / "e2e" / "journeys" / "identityAndRoles.cjs").read_text(
+        encoding="utf-8"
+    )
+    run_profile = source.split("async function runProfile(options, shared)", 1)[1]
+    admin_mobile = run_profile.split('role === "admin" && profile === "mobile"', 1)[1].split(
+        'role === "editor" && profile === "mobile"', 1
+    )[0]
+    editor_mobile = run_profile.rsplit('role === "editor" && profile === "mobile"', 1)[1].split(
+        'role === "viewer" && profile === "mobile"', 1
+    )[0]
+
+    assert "createGardenInvitation(page, fixture, profile)" in admin_mobile
+    assert "exerciseSessionRevocation(options, page, profile)" in admin_mobile
+    assert "mobile_membership_invitation" in admin_mobile
+    assert "mobile_session_revocation" in admin_mobile
+    assert "acceptInvitation(" in editor_mobile
+    assert "exercisePasswordlessPasskeyRedundancy(" in editor_mobile
+    assert "exerciseEditorAuthorizationDenials(" in editor_mobile
 
 
 def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
