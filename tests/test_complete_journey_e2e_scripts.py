@@ -1241,6 +1241,19 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     assert oracle["phase_six"]["browser_contract"]["retry_as_new_replacement_count"] == 1
     assert oracle["phase_six"]["audit_contract"]["additional_login_count"] == 3
     assert sum(event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]) == 25
+    assert oracle["phase_six"]["read_side_effects"] == {
+        "exact_counts": {
+            "provider_daily_usage": {"added": 2, "removed": 0},
+            "shademap_cache": {"added": 2, "removed": 0},
+        },
+        "exact_identity_counts": {
+            "provider_daily_usage": {"added": 2, "removed": 0, "updated": 0},
+            "shademap_cache": {"added": 2, "removed": 0, "updated": 0},
+        },
+    }
+    assert {"provider_daily_usage", "shademap_cache"}.issubset(
+        oracle["phase_six"]["database_boundaries"]["owned_tables"]
+    )
     for marker in (
         "route.fetch()",
         'route.abort("failed")',
@@ -1260,6 +1273,7 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
         "profileFixture",
     ):
         assert marker in journey_source
+    assert "phase_six_map_bootstrap_read_side_effect_oracle" in checker_source
     for forbidden in ("route.fulfill(", "page.setContent("):
         assert forbidden not in journey_source
 
@@ -1670,6 +1684,73 @@ try {
   process.exit(4);
 } catch (error) {
   if (!String(error.message).includes('audit delta')) process.exit(5);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_six_accounts_for_deterministic_map_bootstrap_side_effects() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    oracle = json.loads(PHASE_SIX_ORACLE.read_text(encoding="utf-8"))
+
+    assert "phase_six_map_bootstrap_read_side_effect_oracle" in checker_source
+    contract = oracle["phase_six"]["read_side_effects"]
+    for table in ("provider_daily_usage", "shademap_cache"):
+        assert contract["exact_counts"][table] == {"added": 2, "removed": 0}
+        assert contract["exact_identity_counts"][table] == {
+            "added": 2,
+            "removed": 0,
+            "updated": 0,
+        }
+
+    script = r"""
+const {
+  assertWholeTableMutationAccounting,
+  phaseSixOracle,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const row = (prefix, count) => ({
+  count,
+  digest: prefix.repeat(32),
+  identity_columns: ['id'],
+  row_digests: Array.from(
+    { length: count }, (_, index) => String(index + 1).padStart(32, prefix),
+  ),
+  row_projections: Array.from({ length: count }, (_, index) => ({
+    identity_digest: String(index + 1).padStart(64, prefix),
+    row_digest: String(index + 1).padStart(64, prefix),
+  })),
+});
+const contract = phaseSixOracle().phase_six.read_side_effects;
+const tables = ['provider_daily_usage', 'shademap_cache'];
+const accounting = Object.fromEntries(tables.map((table) => [table, {
+  allow_row_delta: true,
+  evidence: 'phase_six_map_bootstrap_read_side_effect_oracle',
+  expected_added: contract.exact_counts[table].added,
+  expected_removed: contract.exact_counts[table].removed,
+  expected_identity_added: contract.exact_identity_counts[table].added,
+  expected_identity_removed: contract.exact_identity_counts[table].removed,
+  expected_identity_updated: contract.exact_identity_counts[table].updated,
+}]));
+const initial = {
+  provider_daily_usage: row('a', 0),
+  shademap_cache: row('b', 0),
+};
+const final = {
+  provider_daily_usage: row('a', 2),
+  shademap_cache: row('b', 2),
+};
+assertWholeTableMutationAccounting(initial, final, new Set(tables), accounting);
+try {
+  assertWholeTableMutationAccounting(initial, {
+    provider_daily_usage: row('a', 3),
+    shademap_cache: row('b', 2),
+  }, new Set(tables), accounting);
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('expected_added')) process.exit(4);
 }
 """
     result = subprocess.run(

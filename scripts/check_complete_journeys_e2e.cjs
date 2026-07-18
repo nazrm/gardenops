@@ -275,6 +275,8 @@ function phaseSixOracle() {
       && typeof oracle.phase_six.audit_contract === "object"
     && oracle.phase_six.browser_contract
       && typeof oracle.phase_six.browser_contract === "object"
+    && oracle.phase_six.read_side_effects
+      && typeof oracle.phase_six.read_side_effects === "object"
     && oracle.phase_six.database_boundaries
       && typeof oracle.phase_six.database_boundaries === "object"
     && oracle.phase_six.support && typeof oracle.phase_six.support === "object",
@@ -8964,13 +8966,31 @@ async function main() {
         expected_removed: expectedRemoved,
       }];
     }));
-    const phaseSixAccounting = Object.fromEntries([...phaseSixAllowedTables].map((table) => [
-      table,
-      {
+    const phaseSixReadSideEffects = phaseSixOracleSpec.phase_six.read_side_effects;
+    assert(phaseSixReadSideEffects
+      && typeof phaseSixReadSideEffects === "object"
+      && phaseSixReadSideEffects.exact_counts
+      && typeof phaseSixReadSideEffects.exact_counts === "object"
+      && phaseSixReadSideEffects.exact_identity_counts
+      && typeof phaseSixReadSideEffects.exact_identity_counts === "object",
+    "Phase 6 read-side-effect oracle is invalid");
+    const phaseSixAccounting = Object.fromEntries([...phaseSixAllowedTables].map((table) => {
+      const exact = phaseSixReadSideEffects.exact_counts[table];
+      const identities = phaseSixReadSideEffects.exact_identity_counts[table];
+      return [table, {
         allow_row_delta: true,
-        evidence: "phase_six_browser_and_backend_boundary",
-      },
-    ]));
+        evidence: exact && identities
+          ? "phase_six_map_bootstrap_read_side_effect_oracle"
+          : "phase_six_browser_and_backend_boundary",
+        ...(exact && identities ? {
+          expected_added: exact.added,
+          expected_identity_added: identities.added,
+          expected_identity_removed: identities.removed,
+          expected_identity_updated: identities.updated,
+          expected_removed: exact.removed,
+        } : {}),
+      }];
+    }));
     const phaseSevenAccounting = Object.fromEntries([...phaseSevenAllowedTables].map((table) => [
       table,
       {

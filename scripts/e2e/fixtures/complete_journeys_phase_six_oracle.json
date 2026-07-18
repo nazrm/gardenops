@@ -46,6 +46,16 @@
         410
       ]
     },
+    "read_side_effects": {
+      "exact_counts": {
+        "provider_daily_usage": { "added": 2, "removed": 0 },
+        "shademap_cache": { "added": 2, "removed": 0 }
+      },
+      "exact_identity_counts": {
+        "provider_daily_usage": { "added": 2, "removed": 0, "updated": 0 },
+        "shademap_cache": { "added": 2, "removed": 0, "updated": 0 }
+      }
+    },
     "database_boundaries": {
       "owned_tables": [
         "auth_passkey_challenges",
@@ -53,7 +63,9 @@
         "auth_users",
         "garden_journal_entries",
         "layout_state",
-        "offline_create_operations"
+        "offline_create_operations",
+        "provider_daily_usage",
+        "shademap_cache"
       ]
     },
     "support": {
