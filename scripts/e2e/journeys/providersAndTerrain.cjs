@@ -524,8 +524,8 @@ async function assertViewerTerrainBoundary(page, gardenId, label, diagnostics) {
       return { body: await response.json(), status: response.status };
     };
     const before = await request(`/api/gardens/${id}/lidar`);
-    const denied = await Promise.all([
-      request(`/api/gardens/${id}/lidar`, {
+    const denied = [
+      await request(`/api/gardens/${id}/lidar`, {
         body: new Uint8Array([0, 1, 2, 3]),
         headers: {
           "content-type": "application/octet-stream",
@@ -533,8 +533,8 @@ async function assertViewerTerrainBoundary(page, gardenId, label, diagnostics) {
         },
         method: "POST",
       }),
-      request(`/api/gardens/${id}/lidar`, { method: "DELETE" }),
-    ]);
+      await request(`/api/gardens/${id}/lidar`, { method: "DELETE" }),
+    ];
     const after = await request(`/api/gardens/${id}/lidar`);
     return { after, before, denied };
   }, gardenId);

@@ -1255,6 +1255,8 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         "inset overlay is mode-dependent",
     ):
         assert marker in journey_source
+    assert "const denied = [\n      await request(`/api/gardens/${id}/lidar`" in journey_source
+    assert "Promise.all([\n      request(`/api/gardens/${id}/lidar`" not in journey_source
     for marker in (
         '"127.0.0.1"',
         '"timeout"',
