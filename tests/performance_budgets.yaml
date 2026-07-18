@@ -1,0 +1,94 @@
+version: 1
+budgets:
+  - name: M1-large-desktop-app-ready
+    journey: M1
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: appReadyMs
+      unit: ms
+    baseline:
+      status: pending
+      median: null
+      p75: null
+    limit:
+      type: regression_percent
+      max_percent: 15
+    sampling:
+      minimum_samples: 7
+      max_coefficient_of_variation: 0.15
+    source: &large_desktop_source
+      artifact: page-performance-v6
+      api_mode: live
+      device_profile: desktop
+      scenario: app-auth-large-tabs
+    rationale: Protect map-first application readiness on a realistic large garden without claiming an unreviewed baseline.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: D1-large-desktop-tab-switch
+    journey: D1
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: maxTabSwitchBrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: pending
+      median: null
+      p75: null
+    limit:
+      type: regression_percent
+      max_percent: 15
+    sampling:
+      minimum_samples: 7
+      max_coefficient_of_variation: 0.15
+    source: *large_desktop_source
+    rationale: Protect visible care-list transitions under realistic task volume without claiming an unreviewed baseline.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: M1-large-pixel-app-ready
+    journey: M1
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: appReadyMs
+      unit: ms
+    baseline:
+      status: pending
+      median: null
+      p75: null
+    limit:
+      type: regression_percent
+      max_percent: 15
+    sampling:
+      minimum_samples: 7
+      max_coefficient_of_variation: 0.15
+    source: &large_pixel_source
+      artifact: page-performance-v6
+      api_mode: live
+      device_profile: pixel-7
+      scenario: app-auth-large-tabs
+    rationale: Protect map-first application readiness on the true mobile browser profile without claiming an unreviewed baseline.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: D1-large-pixel-tab-switch
+    journey: D1
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: maxTabSwitchBrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: pending
+      median: null
+      p75: null
+    limit:
+      type: regression_percent
+      max_percent: 15
+    sampling:
+      minimum_samples: 7
+      max_coefficient_of_variation: 0.15
+    source: *large_pixel_source
+    rationale: Protect visible care-list transitions on the true mobile browser profile without claiming an unreviewed baseline.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9

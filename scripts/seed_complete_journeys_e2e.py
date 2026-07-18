@@ -10,7 +10,7 @@ import re
 import stat
 import subprocess
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -20,7 +20,7 @@ import numpy as np
 from psycopg import sql
 from pyproj import CRS, Transformer
 
-from gardenops.db import close_pool, current_timestamp_ms, get_db, return_db
+from gardenops.db import close_pool, current_timestamp_ms, executemany, get_db, return_db
 from gardenops.routers.map_objects import snapshot_map_objects
 from gardenops.routers.shademap import (
     get_shademap_calibration,
@@ -216,6 +216,93 @@ PHASE_FIVE_VIEWER_INVITEE_LOGIN = (
 
 PHASE_ONE_LARGE_GARDEN_SLUG = "complete-journeys-phase-one-large"
 PHASE_ONE_LARGE_GARDEN_NAME = "Complete Journeys Large Garden"
+SCALE_PROFILE_NOW_MS = 1_783_857_600_000
+SCALE_PROFILE_PREFIX = "complete-journeys-scale-"
+SCALE_PROFILE_TABLES = (
+    "gardens",
+    "garden_memberships",
+    "plots",
+    "plot_ownership",
+    "plants",
+    "plant_ownership",
+    "plot_plants",
+    "garden_tasks",
+    "garden_task_plants",
+    "garden_task_plots",
+    "garden_journal_entries",
+    "garden_journal_entry_plants",
+    "garden_issues",
+    "garden_issue_plants",
+    "media_assets",
+    "media_links",
+    "notification_events",
+    "harvest_entries",
+    "harvest_entry_plants",
+    "weather_cache",
+)
+SCALE_PROFILE_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
+    "small": (
+        {
+            "slug": f"{SCALE_PROFILE_PREFIX}small",
+            "name": "Complete Journeys Scale Small",
+            "plants": 24,
+            "plots": 12,
+            "tasks": 18,
+            "journal": 12,
+            "issues": 4,
+            "media": 6,
+            "notifications": 12,
+            "harvest": 4,
+            "weather": 4,
+        },
+    ),
+    "large": (
+        {
+            "slug": f"{SCALE_PROFILE_PREFIX}large",
+            "name": "Complete Journeys Scale Large",
+            "plants": 900,
+            "plots": 600,
+            "tasks": 900,
+            "journal": 300,
+            "issues": 150,
+            "media": 450,
+            "notifications": 900,
+            "harvest": 300,
+            "weather": 30,
+        },
+    ),
+    "history-heavy": (
+        {
+            "slug": f"{SCALE_PROFILE_PREFIX}history-heavy",
+            "name": "Complete Journeys Scale History Heavy",
+            "plants": 120,
+            "plots": 60,
+            "tasks": 2000,
+            "journal": 1000,
+            "issues": 300,
+            "media": 120,
+            "notifications": 240,
+            "harvest": 600,
+            "weather": 300,
+        },
+    ),
+    "multi-garden": tuple(
+        {
+            "slug": f"{SCALE_PROFILE_PREFIX}multi-{index:02d}",
+            "name": "Complete Journeys Shared Garden",
+            "plants": 60,
+            "plots": 40,
+            "tasks": 120,
+            "journal": 24,
+            "issues": 8,
+            "media": 12,
+            "notifications": 36,
+            "harvest": 12,
+            "weather": 12,
+        }
+        for index in range(1, 5)
+    ),
+}
 PHASE_ONE_INDOOR_PLOT_ID = "COMPLETE-PHASE-ONE-INDOOR"
 PHASE_ONE_INDOOR_PLANT_ID = "COMPLETE-PHASE-ONE-BASIL"
 PHASE_ONE_INDOOR_PLANT_NAME = "Complete Phase One Indoor Basil"
@@ -4320,6 +4407,581 @@ def _phase_eight_fixture_state() -> dict[str, Any]:
     }
 
 
+def _scale_profile_users(conn) -> dict[str, int]:
+    expected_roles = {
+        ADMIN_USERNAME: "admin",
+        EDITOR_LOGIN[0]: "editor",
+        VIEWER_LOGIN[0]: "viewer",
+    }
+    rows = conn.execute(
+        "SELECT id, username, role FROM auth_users WHERE username = ANY(%s)",
+        (list(expected_roles),),
+    ).fetchall()
+    observed = {str(row["username"]): row for row in rows}
+    if set(observed) != set(expected_roles):
+        raise RuntimeError(
+            "Complete journey scale profiles require existing admin/editor/viewer users"
+        )
+    for username, role in expected_roles.items():
+        if str(observed[username]["role"]) != role:
+            raise RuntimeError(f"Complete journey scale profile role mismatch for {username}")
+    return {username: int(observed[username]["id"]) for username in expected_roles}
+
+
+def _remove_scale_profiles(conn) -> None:
+    slugs = [spec["slug"] for gardens in SCALE_PROFILE_SPECS.values() for spec in gardens]
+    garden_rows = conn.execute(
+        "SELECT id FROM gardens WHERE slug = ANY(%s)",
+        (slugs,),
+    ).fetchall()
+    garden_ids = [int(row["id"]) for row in garden_rows]
+    if not garden_ids:
+        return
+    plant_rows = conn.execute(
+        "SELECT plt_id FROM plant_ownership WHERE garden_id = ANY(%s)",
+        (garden_ids,),
+    ).fetchall()
+    plant_ids = [str(row["plt_id"]) for row in plant_rows]
+    if plant_ids:
+        conn.execute("DELETE FROM plot_plants WHERE plt_id = ANY(%s)", (plant_ids,))
+    conn.execute("DELETE FROM gardens WHERE id = ANY(%s)", (garden_ids,))
+    if plant_ids:
+        conn.execute("DELETE FROM plants WHERE plt_id = ANY(%s)", (plant_ids,))
+
+
+def _scale_profile_date(profile: str, index: int) -> str:
+    anchor = date(2022, 1, 1) if profile == "history-heavy" else date(2026, 1, 1)
+    span = 1_460 if profile == "history-heavy" else 365
+    return (anchor + timedelta(days=index % span)).isoformat()
+
+
+def _scale_task_due_date(profile: str, index: int) -> str:
+    """Keep the smallest profile on the same actionable Tasks path as large."""
+    if profile == "small":
+        return "2026-07-12"
+    return _scale_profile_date(profile, index)
+
+
+def _seed_scale_profile_garden(
+    conn,
+    *,
+    profile: str,
+    garden_number: int,
+    spec: dict[str, Any],
+    users: dict[str, int],
+) -> None:
+    admin_id = users[ADMIN_USERNAME]
+    garden = conn.execute(
+        """
+        INSERT INTO gardens (
+            slug, name, grid_rows, grid_cols, latitude, longitude, address,
+            onboarding_complete, owner_user_id
+        )
+        VALUES (%s, %s, 64, 64, 59.9139, 10.7522,
+                'Disposable scale profile fixture', 1, %s)
+        RETURNING id
+        """,
+        (spec["slug"], spec["name"], admin_id),
+    ).fetchone()
+    if not garden:
+        raise RuntimeError(f"Failed to create scale profile garden {spec['slug']}")
+    garden_id = int(garden["id"])
+    executemany(
+        conn,
+        "INSERT INTO garden_memberships (garden_id, user_id, role) VALUES (%s, %s, %s)",
+        (
+            (garden_id, users[ADMIN_USERNAME], "admin"),
+            (garden_id, users[EDITOR_LOGIN[0]], "editor"),
+            (garden_id, users[VIEWER_LOGIN[0]], "viewer"),
+        ),
+    )
+
+    scale_prefix = f"{profile.replace('-', '_').upper()}-G{garden_number:02d}"
+    plant_ids = [
+        f"SCALE-{scale_prefix}-PLANT-{index:04d}" for index in range(1, spec["plants"] + 1)
+    ]
+    plot_ids = [f"SCALE-{scale_prefix}-PLOT-{index:04d}" for index in range(1, spec["plots"] + 1)]
+    executemany(
+        conn,
+        """
+        INSERT INTO plants (
+            plt_id, name, latin, category, bloom_month, color, hardiness,
+            height_cm, light, link, year_planted, seen_growing, care_watering,
+            care_soil, care_planting, care_maintenance, care_notes, seen_growing_date
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, 'H5', %s, %s, '', %s, 1,
+                'Water when the top soil is dry', 'Well-drained loam',
+                'Plant at deterministic spacing', 'Inspect weekly',
+                'Disposable scale profile fixture', %s)
+        """,
+        (
+            (
+                plant_id,
+                f"Scale Plant {(index % 75) + 1:02d}",
+                f"Deterministica species {(index % 40) + 1}",
+                ("vegetable", "herb", "flower", "fruit")[index % 4],
+                ("May", "June", "July", "August")[index % 4],
+                ("#5f8c74", "#ba6658", "#d6a84b", "#6c7fb0")[index % 4],
+                30 + index % 170,
+                ("full sun", "part sun", "shade")[index % 3],
+                str(2022 + index % 4),
+                _scale_profile_date(profile, index),
+            )
+            for index, plant_id in enumerate(plant_ids)
+        ),
+    )
+    executemany(
+        conn,
+        """
+        INSERT INTO plots (
+            plot_id, garden_id, zone_code, zone_name, plot_number,
+            grid_row, grid_col, sub_zone, notes, color
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                'Disposable scale profile fixture', %s)
+        """,
+        (
+            (
+                plot_id,
+                garden_id,
+                chr(ord("A") + index % 6),
+                f"Shared Zone {(index % 8) + 1}",
+                index + 1,
+                index // 30 + 1,
+                index % 30 + 1,
+                f"Bed {(index % 24) + 1}",
+                ("#5f8c74", "#ba6658", "#d6a84b")[index % 3],
+            )
+            for index, plot_id in enumerate(plot_ids)
+        ),
+    )
+    executemany(
+        conn,
+        "INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
+        ((plant_id, admin_id, garden_id) for plant_id in plant_ids),
+    )
+    executemany(
+        conn,
+        "INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
+        ((plot_id, admin_id, garden_id) for plot_id in plot_ids),
+    )
+    executemany(
+        conn,
+        """
+        INSERT INTO plot_plants
+            (plot_id, plt_id, quantity, seen_growing, seen_growing_date, room_label)
+        VALUES (%s, %s, %s, 1, %s, '')
+        """,
+        (
+            (
+                plot_ids[index % len(plot_ids)],
+                plant_id,
+                1 + index % 4,
+                _scale_profile_date(profile, index),
+            )
+            for index, plant_id in enumerate(plant_ids)
+        ),
+    )
+
+    task_public_ids = [
+        f"tsk_scale_{profile.replace('-', '_')}_g{garden_number:02d}_{index:05d}"
+        for index in range(1, spec["tasks"] + 1)
+    ]
+    executemany(
+        conn,
+        """
+        INSERT INTO garden_tasks (
+            public_id, garden_id, task_type, title, description, status, severity,
+            due_on, rule_source, metadata_json, created_by_user_id,
+            completed_by_user_id, completed_at_ms, created_at_ms, updated_at_ms
+        )
+        VALUES (%s, %s, %s, %s, 'Deterministic scale task', %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            (
+                public_id,
+                garden_id,
+                ("water", "prune", "fertilize", "harvest")[index % 4],
+                f"Scale queued work {(index % 120) + 1:03d}",
+                "completed"
+                if (
+                    (profile == "history-heavy" and index % 3)
+                    or (profile in {"large", "multi-garden"} and index % 4 == 0)
+                )
+                else "pending",
+                "high" if index % 11 == 0 else "normal",
+                _scale_task_due_date(profile, index),
+                f"scale-profile:{profile}",
+                json.dumps({"profile": profile, "sequence": index}, sort_keys=True),
+                admin_id,
+                admin_id
+                if (
+                    (profile == "history-heavy" and index % 3)
+                    or (profile in {"large", "multi-garden"} and index % 4 == 0)
+                )
+                else None,
+                SCALE_PROFILE_NOW_MS - index * 86_400_000
+                if (
+                    (profile == "history-heavy" and index % 3)
+                    or (profile in {"large", "multi-garden"} and index % 4 == 0)
+                )
+                else None,
+                SCALE_PROFILE_NOW_MS - index * 60_000,
+                SCALE_PROFILE_NOW_MS - index * 60_000,
+            )
+            for index, public_id in enumerate(task_public_ids)
+        ),
+    )
+    task_rows = conn.execute(
+        "SELECT id, public_id FROM garden_tasks WHERE garden_id = %s ORDER BY public_id",
+        (garden_id,),
+    ).fetchall()
+    executemany(
+        conn,
+        "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
+        (
+            (int(row["id"]), plant_ids[index % len(plant_ids)])
+            for index, row in enumerate(task_rows)
+        ),
+    )
+    executemany(
+        conn,
+        "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, %s)",
+        ((int(row["id"]), plot_ids[index % len(plot_ids)]) for index, row in enumerate(task_rows)),
+    )
+
+    journal_public_ids = [
+        f"jrn_scale_{profile.replace('-', '_')}_g{garden_number:02d}_{index:05d}"
+        for index in range(1, spec["journal"] + 1)
+    ]
+    executemany(
+        conn,
+        """
+        INSERT INTO garden_journal_entries (
+            public_id, garden_id, event_type, occurred_on, title, notes,
+            metadata_json, actor_user_id, created_at_ms, updated_at_ms
+        )
+        VALUES (%s, %s, %s, %s, %s, 'Deterministic multi-season observation',
+                %s, %s, %s, %s)
+        """,
+        (
+            (
+                public_id,
+                garden_id,
+                ("observation", "care", "weather", "harvest")[index % 4],
+                _scale_profile_date(profile, index * 2),
+                f"Scale journal {(index % 180) + 1:03d}",
+                json.dumps({"profile": profile, "season": index % 4}, sort_keys=True),
+                admin_id,
+                SCALE_PROFILE_NOW_MS - index * 120_000,
+                SCALE_PROFILE_NOW_MS - index * 120_000,
+            )
+            for index, public_id in enumerate(journal_public_ids)
+        ),
+    )
+    journal_rows = conn.execute(
+        "SELECT id FROM garden_journal_entries WHERE garden_id = %s ORDER BY public_id",
+        (garden_id,),
+    ).fetchall()
+    executemany(
+        conn,
+        "INSERT INTO garden_journal_entry_plants (entry_id, plt_id) VALUES (%s, %s)",
+        (
+            (int(row["id"]), plant_ids[index % len(plant_ids)])
+            for index, row in enumerate(journal_rows)
+        ),
+    )
+
+    issue_public_ids = [
+        f"iss_scale_{profile.replace('-', '_')}_g{garden_number:02d}_{index:05d}"
+        for index in range(1, spec["issues"] + 1)
+    ]
+    executemany(
+        conn,
+        """
+        INSERT INTO garden_issues (
+            public_id, garden_id, issue_type, title, description, severity, status,
+            suspected_cause, treatment_plan, metadata_json, created_by_user_id,
+            created_at_ms, updated_at_ms
+        )
+        VALUES (%s, %s, %s, %s, 'Deterministic scale issue', %s, %s,
+                'Scale fixture cause', 'Scale fixture treatment', %s, %s, %s, %s)
+        """,
+        (
+            (
+                public_id,
+                garden_id,
+                ("pest", "disease", "damage")[index % 3],
+                f"Scale issue {(index % 60) + 1:02d}",
+                "urgent" if index % 7 == 0 else "normal",
+                "resolved" if profile == "history-heavy" and index % 2 else "open",
+                json.dumps({"profile": profile, "sequence": index}, sort_keys=True),
+                admin_id,
+                SCALE_PROFILE_NOW_MS - index * 180_000,
+                SCALE_PROFILE_NOW_MS - index * 180_000,
+            )
+            for index, public_id in enumerate(issue_public_ids)
+        ),
+    )
+    issue_rows = conn.execute(
+        "SELECT id FROM garden_issues WHERE garden_id = %s ORDER BY public_id",
+        (garden_id,),
+    ).fetchall()
+    executemany(
+        conn,
+        "INSERT INTO garden_issue_plants (issue_id, plt_id) VALUES (%s, %s)",
+        (
+            (int(row["id"]), plant_ids[index % len(plant_ids)])
+            for index, row in enumerate(issue_rows)
+        ),
+    )
+
+    harvest_public_ids = [
+        f"hrv_scale_{profile.replace('-', '_')}_g{garden_number:02d}_{index:05d}"
+        for index in range(1, spec["harvest"] + 1)
+    ]
+    executemany(
+        conn,
+        """
+        INSERT INTO harvest_entries (
+            public_id, garden_id, occurred_on, quantity, unit, quality, notes,
+            metadata_json, actor_user_id, created_at_ms, updated_at_ms
+        )
+        VALUES (%s, %s, %s, %s, 'kg', %s, 'Deterministic scale harvest',
+                %s, %s, %s, %s)
+        """,
+        (
+            (
+                public_id,
+                garden_id,
+                _scale_profile_date(profile, index * 3),
+                round(0.25 + (index % 20) * 0.1, 2),
+                ("good", "excellent", "processing")[index % 3],
+                json.dumps({"profile": profile, "season": index % 4}, sort_keys=True),
+                admin_id,
+                SCALE_PROFILE_NOW_MS - index * 240_000,
+                SCALE_PROFILE_NOW_MS - index * 240_000,
+            )
+            for index, public_id in enumerate(harvest_public_ids)
+        ),
+    )
+    harvest_rows = conn.execute(
+        "SELECT id FROM harvest_entries WHERE garden_id = %s ORDER BY public_id",
+        (garden_id,),
+    ).fetchall()
+    executemany(
+        conn,
+        "INSERT INTO harvest_entry_plants (entry_id, plt_id) VALUES (%s, %s)",
+        (
+            (int(row["id"]), plant_ids[index % len(plant_ids)])
+            for index, row in enumerate(harvest_rows)
+        ),
+    )
+
+    asset_ids = [
+        f"media_scale_{profile.replace('-', '_')}_g{garden_number:02d}_{index:05d}"
+        for index in range(1, spec["media"] + 1)
+    ]
+    executemany(
+        conn,
+        """
+        INSERT INTO media_assets (
+            asset_id, garden_id, storage_key, preview_storage_key, original_filename,
+            mime_type, bytes, width, height, created_at_ms, actor_user_id
+        )
+        VALUES (%s, %s, %s, %s, %s, 'image/png', %s, %s, %s, %s, %s)
+        """,
+        (
+            (
+                asset_id,
+                garden_id,
+                f"original/scale/{profile}/g{garden_number:02d}/{index:05d}.png",
+                f"preview/scale/{profile}/g{garden_number:02d}/{index:05d}.png",
+                f"scale-{index:05d}.png",
+                128 + index % 64,
+                64 + index % 16,
+                64 + index % 16,
+                SCALE_PROFILE_NOW_MS - index * 300_000,
+                admin_id,
+            )
+            for index, asset_id in enumerate(asset_ids)
+        ),
+    )
+    executemany(
+        conn,
+        """
+        INSERT INTO media_links (asset_id, target_type, target_id, sort_order)
+        VALUES (%s, 'plant', %s, 0)
+        """,
+        ((asset_id, plant_ids[index % len(plant_ids)]) for index, asset_id in enumerate(asset_ids)),
+    )
+
+    executemany(
+        conn,
+        """
+        INSERT INTO notification_events (
+            public_id, garden_id, user_id, notification_type, title, body,
+            target_type, target_id, metadata_json, dismissed, created_at_ms
+        )
+        VALUES (%s, %s, %s, %s, %s, 'Deterministic queued work notification',
+                'task', %s, %s, %s, %s)
+        """,
+        (
+            (
+                f"note_scale_{profile.replace('-', '_')}_g{garden_number:02d}_{index:05d}",
+                garden_id,
+                (users[ADMIN_USERNAME], users[EDITOR_LOGIN[0]], users[VIEWER_LOGIN[0]])[index % 3],
+                "task_due" if index % 2 else "task_overdue",
+                f"Scale notification {(index % 90) + 1:02d}",
+                task_public_ids[index % len(task_public_ids)],
+                json.dumps({"profile": profile, "sequence": index}, sort_keys=True),
+                1 if index % 5 == 0 else 0,
+                SCALE_PROFILE_NOW_MS - index * 360_000,
+            )
+            for index in range(spec["notifications"])
+        ),
+    )
+    executemany(
+        conn,
+        """
+        INSERT INTO weather_cache (
+            garden_id, fetched_at_ms, forecast_json, latitude, longitude
+        )
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (
+            (
+                garden_id,
+                SCALE_PROFILE_NOW_MS - index * 86_400_000,
+                json.dumps(
+                    {
+                        "profile": profile,
+                        "season": index % 4,
+                        "temperature_c": -5 + index % 31,
+                    },
+                    sort_keys=True,
+                ),
+                59.9139,
+                10.7522,
+            )
+            for index in range(spec["weather"])
+        ),
+    )
+
+
+def _scale_profile_projection(conn) -> dict[str, Any]:
+    count_queries = {
+        "gardens": "SELECT COUNT(*) AS count FROM gardens WHERE id = ANY(%s)",
+        "garden_memberships": (
+            "SELECT COUNT(*) AS count FROM garden_memberships WHERE garden_id = ANY(%s)"
+        ),
+        "plots": "SELECT COUNT(*) AS count FROM plots WHERE garden_id = ANY(%s)",
+        "plot_ownership": "SELECT COUNT(*) AS count FROM plot_ownership WHERE garden_id = ANY(%s)",
+        "plants": (
+            "SELECT COUNT(DISTINCT plt_id) AS count FROM plant_ownership WHERE garden_id = ANY(%s)"
+        ),
+        "plant_ownership": (
+            "SELECT COUNT(*) AS count FROM plant_ownership WHERE garden_id = ANY(%s)"
+        ),
+        "plot_plants": (
+            "SELECT COUNT(*) AS count FROM plot_plants WHERE plot_id IN "
+            "(SELECT plot_id FROM plots WHERE garden_id = ANY(%s))"
+        ),
+        "garden_tasks": "SELECT COUNT(*) AS count FROM garden_tasks WHERE garden_id = ANY(%s)",
+        "garden_task_plants": (
+            "SELECT COUNT(*) AS count FROM garden_task_plants WHERE task_id IN "
+            "(SELECT id FROM garden_tasks WHERE garden_id = ANY(%s))"
+        ),
+        "garden_task_plots": (
+            "SELECT COUNT(*) AS count FROM garden_task_plots WHERE task_id IN "
+            "(SELECT id FROM garden_tasks WHERE garden_id = ANY(%s))"
+        ),
+        "garden_journal_entries": (
+            "SELECT COUNT(*) AS count FROM garden_journal_entries WHERE garden_id = ANY(%s)"
+        ),
+        "garden_journal_entry_plants": (
+            "SELECT COUNT(*) AS count FROM garden_journal_entry_plants WHERE entry_id IN "
+            "(SELECT id FROM garden_journal_entries WHERE garden_id = ANY(%s))"
+        ),
+        "garden_issues": "SELECT COUNT(*) AS count FROM garden_issues WHERE garden_id = ANY(%s)",
+        "garden_issue_plants": (
+            "SELECT COUNT(*) AS count FROM garden_issue_plants WHERE issue_id IN "
+            "(SELECT id FROM garden_issues WHERE garden_id = ANY(%s))"
+        ),
+        "media_assets": "SELECT COUNT(*) AS count FROM media_assets WHERE garden_id = ANY(%s)",
+        "media_links": (
+            "SELECT COUNT(*) AS count FROM media_links WHERE asset_id IN "
+            "(SELECT asset_id FROM media_assets WHERE garden_id = ANY(%s))"
+        ),
+        "notification_events": (
+            "SELECT COUNT(*) AS count FROM notification_events WHERE garden_id = ANY(%s)"
+        ),
+        "harvest_entries": (
+            "SELECT COUNT(*) AS count FROM harvest_entries WHERE garden_id = ANY(%s)"
+        ),
+        "harvest_entry_plants": (
+            "SELECT COUNT(*) AS count FROM harvest_entry_plants WHERE entry_id IN "
+            "(SELECT id FROM harvest_entries WHERE garden_id = ANY(%s))"
+        ),
+        "weather_cache": "SELECT COUNT(*) AS count FROM weather_cache WHERE garden_id = ANY(%s)",
+    }
+    profiles: dict[str, Any] = {}
+    for profile, specs in SCALE_PROFILE_SPECS.items():
+        slugs = sorted(str(spec["slug"]) for spec in specs)
+        garden_rows = conn.execute(
+            "SELECT id FROM gardens WHERE slug = ANY(%s) ORDER BY slug",
+            (slugs,),
+        ).fetchall()
+        garden_ids = [int(row["id"]) for row in garden_rows]
+        if len(garden_ids) != len(slugs):
+            raise RuntimeError(f"Complete journey scale profile is incomplete: {profile}")
+        counts: dict[str, int] = {}
+        for table in SCALE_PROFILE_TABLES:
+            row = conn.execute(count_queries[table], (garden_ids,)).fetchone()
+            counts[table] = int(row["count"] if row else 0)
+        identifiers = conn.execute(
+            """
+            SELECT
+                (SELECT MIN(public_id) FROM garden_tasks WHERE garden_id = ANY(%s))
+                    AS first_task,
+                (SELECT MAX(public_id) FROM garden_tasks WHERE garden_id = ANY(%s))
+                    AS last_task,
+                (SELECT MIN(plt_id) FROM plant_ownership WHERE garden_id = ANY(%s))
+                    AS first_plant,
+                (SELECT MAX(plt_id) FROM plant_ownership WHERE garden_id = ANY(%s))
+                    AS last_plant
+            """,
+            (garden_ids, garden_ids, garden_ids, garden_ids),
+        ).fetchone()
+        profiles[profile] = {
+            "counts": counts,
+            "identifiers": {
+                "first_plant": str(identifiers["first_plant"]),
+                "first_task": str(identifiers["first_task"]),
+                "last_plant": str(identifiers["last_plant"]),
+                "last_task": str(identifiers["last_task"]),
+            },
+            "slugs": slugs,
+        }
+    return {"profiles": profiles, "schema_version": 1}
+
+
+def _apply_scale_profiles(conn) -> dict[str, Any]:
+    users = _scale_profile_users(conn)
+    _remove_scale_profiles(conn)
+    for profile, specs in SCALE_PROFILE_SPECS.items():
+        for garden_number, spec in enumerate(specs, start=1):
+            _seed_scale_profile_garden(
+                conn,
+                profile=profile,
+                garden_number=garden_number,
+                spec=spec,
+                users=users,
+            )
+    return _scale_profile_projection(conn)
+
+
 def _count(conn, table: str) -> int:
     allowed = {
         "attention_outcomes",
@@ -5404,6 +6066,7 @@ def main() -> None:
     database_url = os.environ.get("DATABASE_URL", "")
     optimization_seed.require_optimization_journeys_e2e_database(database_url)
     snapshot_only = sys.argv[1:] == ["--snapshot"]
+    apply_scale_profiles = sys.argv[1:] == ["--apply-scale-profiles"]
     prepare_phase_two = sys.argv[1:] == ["--prepare-phase-two"]
     prepare_phase_seven = sys.argv[1:] == ["--prepare-phase-seven"]
     phase_two_maintenance = sys.argv[1:] == ["--phase-two-maintenance"]
@@ -5412,6 +6075,7 @@ def main() -> None:
     if (
         sys.argv[1:]
         and not snapshot_only
+        and not apply_scale_profiles
         and not prepare_phase_two
         and not prepare_phase_seven
         and not phase_two_maintenance
@@ -5420,8 +6084,8 @@ def main() -> None:
     ):
         raise SystemExit(
             "Usage: seed_complete_journeys_e2e.py "
-            "[--snapshot | --prepare-phase-two | --prepare-phase-seven | --phase-two-maintenance "
-            "| --phase-two-preference-delivery | --output PATH]"
+            "[--snapshot | --apply-scale-profiles | --prepare-phase-two | --prepare-phase-seven "
+            "| --phase-two-maintenance | --phase-two-preference-delivery | --output PATH]"
         )
 
     conn = None
@@ -5429,6 +6093,11 @@ def main() -> None:
         conn = get_db()
         try:
             optimization_seed.verify_optimization_journeys_e2e_database_marker(conn)
+            if apply_scale_profiles:
+                result = _apply_scale_profiles(conn)
+                conn.commit()
+                print(json.dumps(result, separators=(",", ":"), sort_keys=True))
+                return
             if prepare_phase_two:
                 print(
                     json.dumps(

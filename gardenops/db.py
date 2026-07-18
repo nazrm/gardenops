@@ -14,6 +14,7 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool as _PgConnectionPool
 
+from gardenops.performance_queries import active_query_execution_collector
 from gardenops.schema_signature import (
     bootstrap_schema_diagnostics_from_snapshot,
     collect_schema_snapshot,
@@ -53,6 +54,55 @@ _REQUEST_DB_CONN_STATE = "_db_conn"
 _STATE_MISSING = object()
 
 
+class _QueryCountingCursor:
+    """Proxy a psycopg cursor when a request-local performance probe is active."""
+
+    def __init__(self, cursor: Any, collector: Any) -> None:
+        self._cursor = cursor
+        self._collector = collector
+
+    def execute(self, query: Query, params: Params | None = None, **kwargs: Any) -> Any:
+        self._collector.record(query)
+        return self._cursor.execute(query, params, **kwargs)
+
+    def executemany(self, query: Query, params_seq: Iterable[Any], **kwargs: Any) -> Any:
+        self._collector.record(query)
+        return self._cursor.executemany(query, params_seq, **kwargs)
+
+    def __enter__(self) -> _QueryCountingCursor:
+        self._cursor.__enter__()
+        return self
+
+    def __exit__(self, *args: Any) -> Any:
+        return self._cursor.__exit__(*args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
+class _QueryCountingConnection:
+    """Proxy connection entry points so direct and cursor executions are counted once."""
+
+    def __init__(self, connection: DbConn, collector: Any) -> None:
+        self._gardenops_raw_connection = connection
+        self._collector = collector
+
+    def execute(self, query: Query, params: Params | None = None, **kwargs: Any) -> Any:
+        self._collector.record(query)
+        return self._gardenops_raw_connection.execute(query, params, **kwargs)
+
+    def cursor(self, *args: Any, **kwargs: Any) -> _QueryCountingCursor:
+        cursor = self._gardenops_raw_connection.cursor(*args, **kwargs)
+        return _QueryCountingCursor(cursor, self._collector)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._gardenops_raw_connection, name)
+
+
+def _raw_connection(conn: DbConn | _QueryCountingConnection) -> DbConn:
+    return getattr(conn, "_gardenops_raw_connection", conn)
+
+
 def _database_url() -> str:
     url = os.environ.get("DATABASE_URL", "").strip()
     if not url:
@@ -74,7 +124,11 @@ def _get_pool() -> _PgConnectionPool[DbConn]:
 
 
 def get_db() -> DbConn:
-    return _get_pool().getconn()
+    connection = _get_pool().getconn()
+    collector = active_query_execution_collector()
+    if collector is None:
+        return connection
+    return cast(DbConn, _QueryCountingConnection(connection, collector))
 
 
 def request_scoped_db_conn(
@@ -84,6 +138,7 @@ def request_scoped_db_conn(
 
 
 def return_db(conn: DbConn) -> None:
+    conn = _raw_connection(conn)
     if conn.info.transaction_status != TransactionStatus.IDLE:
         conn.rollback()
     _get_pool().putconn(conn)

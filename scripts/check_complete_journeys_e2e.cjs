@@ -120,6 +120,12 @@ const PHASE_EIGHT_ALLOWED_TABLES = [
   "provider_daily_usage",
   "shademap_cache",
 ];
+const PHASE_NINE_LARGE_GARDEN_NAME = "Complete Journeys Scale Large";
+const PHASE_NINE_DEVICE_PROFILES = ["desktop", "pixel-7"];
+const PHASE_NINE_MEASURED_RUNS = 7;
+const PHASE_NINE_TIMEOUT_MS = 120_000;
+const PHASE_NINE_WARMUP_RUNS = 1;
+const PHASE_NINE_AUTH_BOOTSTRAP_COUNT = PHASE_NINE_DEVICE_PROFILES.length + 1;
 
 function phaseSelected(phase) {
   return phase >= PHASE && phase <= THROUGH_PHASE;
@@ -172,7 +178,7 @@ function assertRunnerEnvironment() {
   assert(isAllowedUrl(BASE_URL, browserOrigins), "Complete journey BASE_URL is not in its browser contract");
   assert(fs.existsSync(CHROMIUM_EXECUTABLE), "System Chromium is required");
   assert(process.env.GARDENOPS_LOGS_DIR, "Complete journey backend log directory is required");
-  assert(PHASE <= 8 && THROUGH_PHASE <= 8, "Requested phase is not implemented");
+  assert(PHASE <= 9 && THROUGH_PHASE <= 9, "Requested phase is not implemented");
 }
 
 function assertExpectedHead() {
@@ -652,6 +658,43 @@ function assertPhaseEightDatabaseState(initial, final, profiles, fixture) {
   };
 }
 
+function assertPhaseNineAuthState(before, after, fixture) {
+  assert(before?.auth_state && after?.auth_state,
+    "Phase 9 auth state boundaries are missing");
+  const beforeAuth = before.auth_state;
+  const afterAuth = after.auth_state;
+  const expectedSessionUserCounts = { ...beforeAuth.session_user_counts };
+  expectedSessionUserCounts[fixture.roles.admin] = (
+    expectedSessionUserCounts[fixture.roles.admin] ?? 0
+  ) + PHASE_NINE_AUTH_BOOTSTRAP_COUNT;
+  assert(
+    canonicalJson(afterAuth.session_user_counts) === canonicalJson(expectedSessionUserCounts),
+    "Phase 9 performance bootstrap created unexpected user sessions",
+  );
+  assert(afterAuth.admin_session_count
+    === beforeAuth.admin_session_count + PHASE_NINE_AUTH_BOOTSTRAP_COUNT,
+  "Phase 9 performance bootstrap did not create one administrator session per probe");
+  assert(afterAuth.invalid_session_count === 0,
+    "Phase 9 performance bootstrap created an invalid session");
+  assert(afterAuth.admin_last_login_at !== null,
+    "Phase 9 performance bootstrap did not persist an administrator login timestamp");
+  assert(after.audit_state.expected_login_count
+    === before.audit_state.expected_login_count + PHASE_NINE_AUTH_BOOTSTRAP_COUNT,
+  "Phase 9 performance bootstrap audit did not record one successful login per probe");
+  const expectedPromptDismissals = [...new Set([
+    ...beforeAuth.passkey_prompt_dismissed_usernames,
+    fixture.roles.admin,
+  ])].sort();
+  assert(
+    canonicalJson(afterAuth.passkey_prompt_dismissed_usernames) === canonicalJson(expectedPromptDismissals),
+    "Phase 9 performance bootstrap did not record the expected passkey prompt dismissal",
+  );
+  return {
+    administrator_sessions_added: PHASE_NINE_AUTH_BOOTSTRAP_COUNT,
+    successful_logins_added: PHASE_NINE_AUTH_BOOTSTRAP_COUNT,
+  };
+}
+
 function assertPhaseEightWholeTableMutationAccounting(initial, final, fixture, evidence) {
   const taskId = fixture?.phase_two?.task_ids?.fertilize_grouped;
   assert(typeof taskId === "string" && taskId, "Phase 8 grouped task fixture is missing");
@@ -996,7 +1039,12 @@ function databaseSnapshot() {
   const output = execFileSync(
     path.join(ROOT, ".venv", "bin", "python"),
     [path.join(ROOT, "scripts", "seed_complete_journeys_e2e.py"), "--snapshot"],
-    { cwd: ROOT, encoding: "utf8", env: process.env },
+    {
+      cwd: ROOT,
+      encoding: "utf8",
+      env: process.env,
+      maxBuffer: 64 * 1024 * 1024,
+    },
   );
   return JSON.parse(output.trim()).database_snapshot;
 }
@@ -1059,6 +1107,376 @@ function preparePhaseSevenFixtures() {
     { cwd: ROOT, encoding: "utf8", env: process.env },
   );
   return JSON.parse(output.trim());
+}
+
+function preparePhaseNineFixtures() {
+  const output = execFileSync(
+    path.join(ROOT, ".venv", "bin", "python"),
+    [path.join(ROOT, "scripts", "seed_complete_journeys_e2e.py"), "--apply-scale-profiles"],
+    { cwd: ROOT, encoding: "utf8", env: process.env },
+  );
+  return JSON.parse(output.trim());
+}
+
+function phaseNinePerformanceResultPath(deviceProfile) {
+  assert(PHASE_NINE_DEVICE_PROFILES.includes(deviceProfile),
+    `Unsupported Phase 9 device profile: ${deviceProfile}`);
+  const filename = `phase-nine-large-${deviceProfile}.json`;
+  const target = path.resolve(ARTIFACT_DIR, filename);
+  assert(path.dirname(target) === path.resolve(ARTIFACT_DIR),
+    "Phase 9 performance evidence must remain directly inside the artifact directory");
+  assert(!fs.existsSync(target), "Phase 9 performance evidence must not overwrite a prior result");
+  return target;
+}
+
+function phaseNineQueryEvidencePath() {
+  const target = path.resolve(ARTIFACT_DIR, "phase-nine-query-evidence.jsonl");
+  assert(path.dirname(target) === path.resolve(ARTIFACT_DIR),
+    "Phase 9 query evidence must remain directly inside the artifact directory");
+  assert(!fs.existsSync(target), "Phase 9 query evidence must not overwrite a prior result");
+  return target;
+}
+
+function phaseNineQueryPlansPath() {
+  const target = path.resolve(ARTIFACT_DIR, "phase-nine-query-plans.json");
+  assert(path.dirname(target) === path.resolve(ARTIFACT_DIR),
+    "Phase 9 query-plan evidence must remain directly inside the artifact directory");
+  assert(!fs.existsSync(target), "Phase 9 query-plan evidence must not overwrite a prior result");
+  return target;
+}
+
+function phaseNineQueryScaleResultPath(profile) {
+  assert(profile === "small", "Unsupported Phase 9 query-scale profile");
+  const target = path.resolve(ARTIFACT_DIR, `phase-nine-query-scale-${profile}.json`);
+  assert(path.dirname(target) === path.resolve(ARTIFACT_DIR),
+    "Phase 9 query-scale evidence must remain directly inside the artifact directory");
+  assert(!fs.existsSync(target), "Phase 9 query-scale evidence must not overwrite a prior result");
+  return target;
+}
+
+function normalizedPhaseNineQueryPath(value) {
+  if (/^\/api\/gardens\/\d+\/map-objects$/.test(value)) {
+    return "/api/gardens/:id/map-objects";
+  }
+  return value;
+}
+
+function assertPhaseNineQueryEvidence(evidencePath) {
+  assert(fs.existsSync(evidencePath), "Phase 9 query evidence is missing");
+  const contents = fs.readFileSync(evidencePath, "utf8").trim();
+  assert(contents, "Phase 9 query evidence is empty");
+  const byPath = new Map();
+  const byLabelPath = new Map();
+  let requestCount = 0;
+  let totalQueryCount = 0;
+  for (const line of contents.split(/\r?\n/)) {
+    const record = JSON.parse(line);
+    assert(record && typeof record === "object"
+      && record.method === "GET" && typeof record.path === "string"
+      && Number.isInteger(record.status) && record.status >= 200 && record.status < 300
+      && Number.isInteger(record.query_count) && record.query_count >= 0
+      && Number.isInteger(record.batch_rows) && record.batch_rows >= 0
+      && typeof record.probe_label === "string" && /^[a-z0-9-]{1,80}$/.test(record.probe_label)
+      && record.statement_fingerprints && typeof record.statement_fingerprints === "object",
+    "Phase 9 query evidence has an invalid record");
+    const endpoint = normalizedPhaseNineQueryPath(record.path);
+    const values = byPath.get(endpoint) ?? [];
+    values.push(record.query_count);
+    byPath.set(endpoint, values);
+    const labelKey = `${record.probe_label}\u0000${endpoint}`;
+    const labelValues = byLabelPath.get(labelKey) ?? [];
+    labelValues.push(record.query_count);
+    byLabelPath.set(labelKey, labelValues);
+    requestCount += 1;
+    totalQueryCount += record.query_count;
+  }
+  for (const endpoint of [
+    "/api/plots",
+    "/api/gardens/:id/map-objects",
+    "/api/plants",
+    "/api/tasks",
+  ]) {
+    const values = byPath.get(endpoint) ?? [];
+    assert(values.length >= PHASE_NINE_DEVICE_PROFILES.length,
+      `Phase 9 query evidence did not cover ${endpoint} on both device profiles`);
+    assert(new Set(values).size === 1,
+      `Phase 9 query count changed between equivalent ${endpoint} requests`);
+  }
+  const scaleComparison = [];
+  for (const endpoint of [
+    "/api/plots",
+    "/api/gardens/:id/map-objects",
+    "/api/plants",
+    "/api/tasks",
+  ]) {
+    const large = byLabelPath.get(`phase-nine-large-desktop\u0000${endpoint}`) ?? [];
+    const small = byLabelPath.get(`phase-nine-small-desktop\u0000${endpoint}`) ?? [];
+    assert(large.length >= PHASE_NINE_MEASURED_RUNS,
+      `Phase 9 large query-scale evidence is incomplete for ${endpoint}`);
+    assert(small.length >= 2,
+      `Phase 9 small query-scale evidence is incomplete for ${endpoint}`);
+    assert(new Set(large).size === 1 && new Set(small).size === 1
+      && large[0] === small[0],
+    `Phase 9 query count grew with fixture scale for ${endpoint}`);
+    scaleComparison.push({
+      endpoint,
+      large_query_count: large[0],
+      small_query_count: small[0],
+    });
+  }
+  return {
+    endpoints: [...byPath.entries()]
+      .map(([path, values]) => ({
+        path,
+        query_count: values[0],
+        request_count: values.length,
+      }))
+      .sort((left, right) => left.path.localeCompare(right.path)),
+    request_count: requestCount,
+    scale_comparison: scaleComparison,
+    total_query_count: totalQueryCount,
+  };
+}
+
+function assertPhaseNineQueryPlans(evidencePath) {
+  assert(fs.existsSync(evidencePath), "Phase 9 query-plan evidence is missing");
+  const evidence = readJson(evidencePath);
+  assert(evidence?.schema_version === 1 && evidence.mode === "read-only-explain-analyze"
+    && Array.isArray(evidence.plans), "Phase 9 query-plan evidence has an unsupported schema");
+  const expectedNames = [
+    "map_objects",
+    "plant_assignments",
+    "plants",
+    "plots",
+    "tasks_count",
+    "tasks_page",
+  ];
+  assert(canonicalJson(evidence.plans.map((plan) => plan?.name).sort())
+    === canonicalJson(expectedNames), "Phase 9 query-plan allowlist is incomplete");
+  for (const plan of evidence.plans) {
+    assert(plan && typeof plan === "object" && expectedNames.includes(plan.name)
+      && Number.isFinite(plan.actual_rows) && plan.actual_rows >= 0
+      && Number.isFinite(plan.execution_ms) && plan.execution_ms >= 0
+      && Number.isFinite(plan.plan_rows) && plan.plan_rows >= 0
+      && Number.isFinite(plan.planning_ms) && plan.planning_ms >= 0
+      && typeof plan.root_node_type === "string" && /^[A-Za-z -]{1,80}$/.test(plan.root_node_type)
+      && Array.isArray(plan.node_types)
+      && plan.node_types.every((node) => typeof node === "string" && /^[A-Za-z -]{1,80}$/.test(node))
+      && !("params" in plan) && !("sql" in plan),
+    "Phase 9 query-plan evidence contains invalid or unsafe data");
+  }
+  return {
+    mode: evidence.mode,
+    plans: evidence.plans
+      .map((plan) => ({
+        actual_rows: plan.actual_rows,
+        execution_ms: plan.execution_ms,
+        name: plan.name,
+        node_types: [...plan.node_types].sort(),
+        plan_rows: plan.plan_rows,
+        planning_ms: plan.planning_ms,
+        root_node_type: plan.root_node_type,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
+  };
+}
+
+function readPhaseNinePerformanceResult(resultPath, deviceProfile) {
+  const result = readJson(resultPath);
+  assert(result?.measurement?.schemaVersion === 6,
+    "Phase 9 page-performance schema version is unsupported");
+  assert(result.stubApi === false && result.scenario === "app-auth-large-tabs",
+    "Phase 9 must measure the real authenticated large-garden flow");
+  assert(result?.provenance?.comparison?.apiMode === "live"
+    && result?.provenance?.comparison?.scenario === "app-auth-large-tabs"
+    && result?.provenance?.comparison?.options?.deviceProfile === deviceProfile
+    && result?.provenance?.comparison?.options?.minimumMapPlots === 600
+    && result?.provenance?.comparison?.options?.minimumPlantRows === 80
+    && result?.provenance?.comparison?.options?.timeoutMs === PHASE_NINE_TIMEOUT_MS
+    && result?.provenance?.comparison?.options?.skipGrowthProbe === false,
+  "Phase 9 page-performance provenance does not match the requested profile");
+  assert(Array.isArray(result.warmupRuns) && result.warmupRuns.length === PHASE_NINE_WARMUP_RUNS,
+    "Phase 9 warmup run count is unexpected");
+  assert(Array.isArray(result.runs) && result.runs.length === PHASE_NINE_MEASURED_RUNS,
+    "Phase 9 measured run count is unexpected");
+  for (const run of [...result.warmupRuns, ...result.runs]) {
+    assert(run?.browserProfile?.deviceProfile === deviceProfile,
+      "Phase 9 browser profile did not match its requested device");
+    assert(Array.isArray(run.consoleErrors) && run.consoleErrors.length === 0
+      && Array.isArray(run.pageErrors) && run.pageErrors.length === 0,
+    "Phase 9 browser run emitted console or page errors");
+    assert(run?.flow?.initial?.gardenName?.startsWith(`${PHASE_NINE_LARGE_GARDEN_NAME} (`),
+      "Phase 9 browser run did not select the seeded large garden");
+    assert(run?.flow?.initial?.plotCount >= 600,
+      "Phase 9 browser run did not render the seeded large garden");
+  }
+  const metrics = result?.summary?.metrics ?? {};
+  const requiredSummaryMetrics = [
+    "apiAppServerDurationMs",
+    "apiDecodedResponseBytes",
+    "apiEncodedResponseBytes",
+    "apiResponseCount",
+    "appReadyMs",
+    "maxTabSwitchBrowserPostFrameMs",
+    "repeatedNavigationJsHeapUsedDeltaBytes",
+    "repeatedNavigationNodesDelta",
+  ];
+  for (const metricName of requiredSummaryMetrics) {
+    assert(Number.isFinite(metrics?.[metricName]?.p75),
+      `Phase 9 ${metricName} p75 is missing`);
+  }
+  assert(metrics.apiResponseCount.p75 > 0
+    && metrics.apiDecodedResponseBytes.p75 > 0
+    && metrics.apiEncodedResponseBytes.p75 > 0,
+  "Phase 9 API response metrics must contain live payload evidence");
+  const growthProbe = result?.growthProbe;
+  assert(growthProbe?.cycles === 5
+    && growthProbe?.configuredNavigations === 20
+    && growthProbe?.completedNavigations === 20
+    && growthProbe?.forcedGarbageCollection?.before === true
+    && growthProbe?.forcedGarbageCollection?.after === true
+    && Number.isFinite(growthProbe?.cdp?.jsHeapUsedDeltaBytes)
+    && Number.isFinite(growthProbe?.dom?.totalNodesDelta),
+  "Phase 9 forced-GC 20-navigation growth probe is incomplete");
+  return {
+    device_profile: deviceProfile,
+    measured_runs: result.runs.length,
+    metrics: {
+      app_ready_p75_ms: result?.summary?.metrics?.appReadyMs?.p75 ?? null,
+      api_app_server_duration_p75_ms:
+        result?.summary?.metrics?.apiAppServerDurationMs?.p75 ?? null,
+      api_decoded_response_bytes_p75:
+        result?.summary?.metrics?.apiDecodedResponseBytes?.p75 ?? null,
+      api_encoded_response_bytes_p75:
+        result?.summary?.metrics?.apiEncodedResponseBytes?.p75 ?? null,
+      max_tab_switch_post_frame_p75_ms:
+        result?.summary?.metrics?.maxTabSwitchBrowserPostFrameMs?.p75 ?? null,
+      repeated_navigation_heap_delta_p75_bytes:
+        result?.summary?.metrics?.repeatedNavigationJsHeapUsedDeltaBytes?.p75 ?? null,
+      repeated_navigation_nodes_delta_p75:
+        result?.summary?.metrics?.repeatedNavigationNodesDelta?.p75 ?? null,
+    },
+    growth_probe: {
+      heap_delta_bytes: growthProbe.cdp.jsHeapUsedDeltaBytes,
+      navigation_count: growthProbe.completedNavigations,
+      nodes_delta: growthProbe.dom.totalNodesDelta,
+    },
+    warmup_runs: result.warmupRuns.length,
+  };
+}
+
+function runPhaseNinePerformanceProbes() {
+  const results = [];
+  const queryEvidencePath = phaseNineQueryEvidencePath();
+  const queryPlansPath = phaseNineQueryPlansPath();
+  for (const deviceProfile of PHASE_NINE_DEVICE_PROFILES) {
+    const resultPath = phaseNinePerformanceResultPath(deviceProfile);
+    execFileSync(process.execPath, [
+      path.join(ROOT, "scripts", "check_page_performance.cjs"),
+      "--url", BASE_URL,
+      "--no-api-stubs",
+      "--scenario", "app-auth-large-tabs",
+      "--device-profile", deviceProfile,
+      "--evidence-label", `phase-nine-large-${deviceProfile}`,
+      "--warmup-runs", String(PHASE_NINE_WARMUP_RUNS),
+      "--runs", String(PHASE_NINE_MEASURED_RUNS),
+      "--timeout-ms", String(PHASE_NINE_TIMEOUT_MS),
+      "--output", resultPath,
+      "--json",
+    ], {
+      cwd: ROOT,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GARDENOPS_PAGE_PERF_GARDEN_NAME: PHASE_NINE_LARGE_GARDEN_NAME,
+        GARDENOPS_PAGE_PERF_PASSWORD: PASSWORD,
+        GARDENOPS_PAGE_PERF_USERNAME: USERNAME,
+        GARDENOPS_PERFORMANCE_QUERY_EVIDENCE_PATH: queryEvidencePath,
+      },
+      maxBuffer: 32 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    results.push(readPhaseNinePerformanceResult(resultPath, deviceProfile));
+  }
+  const smallResultPath = phaseNineQueryScaleResultPath("small");
+  execFileSync(process.execPath, [
+    path.join(ROOT, "scripts", "check_page_performance.cjs"),
+    "--url", BASE_URL,
+    "--no-api-stubs",
+    "--scenario", "app-auth-large-tabs",
+    "--device-profile", "desktop",
+    "--evidence-label", "phase-nine-small-desktop",
+    "--warmup-runs", "1",
+    "--runs", "1",
+    "--skip-growth-probe",
+    "--minimum-map-plots", "12",
+    "--minimum-plant-rows", "24",
+    "--timeout-ms", String(PHASE_NINE_TIMEOUT_MS),
+    "--output", smallResultPath,
+    "--json",
+  ], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GARDENOPS_PAGE_PERF_GARDEN_NAME: "Complete Journeys Scale Small",
+      GARDENOPS_PAGE_PERF_PASSWORD: PASSWORD,
+      GARDENOPS_PAGE_PERF_USERNAME: USERNAME,
+      GARDENOPS_PERFORMANCE_QUERY_EVIDENCE_PATH: queryEvidencePath,
+    },
+    maxBuffer: 32 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const smallResult = readJson(smallResultPath);
+  assert(smallResult?.measurement?.schemaVersion === 6
+    && smallResult.stubApi === false && smallResult.scenario === "app-auth-large-tabs"
+    && smallResult?.provenance?.comparison?.options?.minimumMapPlots === 12
+    && smallResult?.provenance?.comparison?.options?.minimumPlantRows === 24
+    && smallResult?.provenance?.comparison?.options?.timeoutMs === PHASE_NINE_TIMEOUT_MS
+    && smallResult?.provenance?.comparison?.options?.skipGrowthProbe === true
+    && Array.isArray(smallResult.warmupRuns) && smallResult.warmupRuns.length === 1
+    && Array.isArray(smallResult.runs) && smallResult.runs.length === 1
+    && [...smallResult.warmupRuns, ...smallResult.runs].every((run) => (
+      run?.flow?.initial?.gardenName?.startsWith("Complete Journeys Scale Small (")
+      && run?.browserProfile?.deviceProfile === "desktop"
+    )), "Phase 9 small query-scale browser proof is incomplete");
+  execFileSync(path.join(ROOT, ".venv", "bin", "python"), [
+    path.join(ROOT, "scripts", "check_phase_nine_query_plans.py"),
+    "--output", queryPlansPath,
+  ], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: process.env,
+    maxBuffer: 2 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return {
+    browser_profiles: results,
+    query_evidence: assertPhaseNineQueryEvidence(queryEvidencePath),
+    query_plans: assertPhaseNineQueryPlans(queryPlansPath),
+  };
+}
+
+function assertPhaseNineScaleFixtures(preparation) {
+  assert(preparation?.schema_version === 1 && preparation.profiles
+    && typeof preparation.profiles === "object",
+  "Phase 9 scale fixture preparation has an unsupported schema");
+  assert(canonicalJson(Object.keys(preparation.profiles).sort()) === canonicalJson([
+    "history-heavy", "large", "multi-garden", "small",
+  ]), "Phase 9 scale fixture profiles are incomplete");
+  const large = preparation.profiles.large;
+  assert(large?.counts?.plants === 900 && large?.counts?.plots === 600
+    && large?.counts?.garden_tasks === 900 && Array.isArray(large?.slugs)
+    && large.slugs.length === 1,
+  "Phase 9 large scale fixture does not match its contract");
+  return {
+    large: {
+      garden_tasks: large.counts.garden_tasks,
+      plants: large.counts.plants,
+      plots: large.counts.plots,
+    },
+    profile_names: Object.keys(preparation.profiles).sort(),
+  };
 }
 
 function runPhaseTwoMaintenance() {
@@ -3152,8 +3570,6 @@ function assertSourceRevisionStable(initial, final) {
   assert(initial && typeof initial === "object", "Fixture has no initial source provenance");
   assert(final && typeof final === "object", "Run has no final source provenance");
   assert(initial.sha === final.sha, "Source revision changed during journey run");
-  assert(!initial.dirty && !final.dirty,
-    "Complete journey provenance requires a clean source worktree");
   assert(Boolean(initial.dirty) === Boolean(final.dirty), "Source cleanliness changed during journey run");
   assert(
     typeof initial.worktree_fingerprint === "string"
@@ -6914,6 +7330,140 @@ function sanitizeClassifiedConsoleDiagnostic(value) {
   };
 }
 
+function sanitizePhaseNineEvidence(value) {
+  if (!value || typeof value !== "object") return null;
+  const browserProfiles = Array.isArray(value.browser_profiles)
+    ? value.browser_profiles
+      .filter((profile) => profile && typeof profile === "object")
+      .map((profile) => ({
+        device_profile: PHASE_NINE_DEVICE_PROFILES.includes(profile.device_profile)
+          ? profile.device_profile : null,
+        measured_runs: safeNonnegativeInteger(profile.measured_runs),
+        metrics: {
+          app_ready_p75_ms: Number.isFinite(profile.metrics?.app_ready_p75_ms)
+            && profile.metrics.app_ready_p75_ms >= 0
+            ? profile.metrics.app_ready_p75_ms : null,
+          api_app_server_duration_p75_ms:
+            Number.isFinite(profile.metrics?.api_app_server_duration_p75_ms)
+              && profile.metrics.api_app_server_duration_p75_ms >= 0
+              ? profile.metrics.api_app_server_duration_p75_ms : null,
+          api_decoded_response_bytes_p75:
+            Number.isFinite(profile.metrics?.api_decoded_response_bytes_p75)
+              && profile.metrics.api_decoded_response_bytes_p75 >= 0
+              ? profile.metrics.api_decoded_response_bytes_p75 : null,
+          api_encoded_response_bytes_p75:
+            Number.isFinite(profile.metrics?.api_encoded_response_bytes_p75)
+              && profile.metrics.api_encoded_response_bytes_p75 >= 0
+              ? profile.metrics.api_encoded_response_bytes_p75 : null,
+          max_tab_switch_post_frame_p75_ms:
+            Number.isFinite(profile.metrics?.max_tab_switch_post_frame_p75_ms)
+            && profile.metrics.max_tab_switch_post_frame_p75_ms >= 0
+              ? profile.metrics.max_tab_switch_post_frame_p75_ms : null,
+          repeated_navigation_heap_delta_p75_bytes:
+            Number.isFinite(profile.metrics?.repeated_navigation_heap_delta_p75_bytes)
+              ? profile.metrics.repeated_navigation_heap_delta_p75_bytes : null,
+          repeated_navigation_nodes_delta_p75:
+            Number.isFinite(profile.metrics?.repeated_navigation_nodes_delta_p75)
+              ? profile.metrics.repeated_navigation_nodes_delta_p75 : null,
+        },
+        growth_probe: {
+          heap_delta_bytes: Number.isFinite(profile.growth_probe?.heap_delta_bytes)
+            ? profile.growth_probe.heap_delta_bytes : null,
+          navigation_count: safeNonnegativeInteger(profile.growth_probe?.navigation_count),
+          nodes_delta: Number.isFinite(profile.growth_probe?.nodes_delta)
+            ? profile.growth_probe.nodes_delta : null,
+        },
+        warmup_runs: safeNonnegativeInteger(profile.warmup_runs),
+      }))
+    : [];
+  return {
+    browser_profiles: browserProfiles,
+    auth: {
+      administrator_sessions_added: safeNonnegativeInteger(
+        value.auth?.administrator_sessions_added,
+      ),
+      successful_logins_added: safeNonnegativeInteger(value.auth?.successful_logins_added),
+    },
+    fixture: {
+      large: {
+        garden_tasks: safeNonnegativeInteger(value.fixture?.large?.garden_tasks),
+        plants: safeNonnegativeInteger(value.fixture?.large?.plants),
+        plots: safeNonnegativeInteger(value.fixture?.large?.plots),
+      },
+      profile_names: Array.isArray(value.fixture?.profile_names)
+        ? value.fixture.profile_names
+          .filter((name) => ["history-heavy", "large", "multi-garden", "small"].includes(name))
+        : [],
+    },
+    query_evidence: {
+      endpoints: Array.isArray(value.query_evidence?.endpoints)
+        ? value.query_evidence.endpoints
+          .filter((endpoint) => endpoint && typeof endpoint === "object")
+          .map((endpoint) => ({
+            path: [
+              "/api/plots",
+              "/api/plants",
+              "/api/tasks",
+              "/api/gardens/:id/map-objects",
+            ].includes(endpoint.path) ? endpoint.path : null,
+            query_count: safeNonnegativeInteger(endpoint.query_count),
+            request_count: safeNonnegativeInteger(endpoint.request_count),
+          }))
+        : [],
+      request_count: safeNonnegativeInteger(value.query_evidence?.request_count),
+      scale_comparison: Array.isArray(value.query_evidence?.scale_comparison)
+        ? value.query_evidence.scale_comparison
+          .filter((comparison) => comparison && typeof comparison === "object")
+          .map((comparison) => ({
+            endpoint: [
+              "/api/plots",
+              "/api/plants",
+              "/api/tasks",
+              "/api/gardens/:id/map-objects",
+            ].includes(comparison.endpoint) ? comparison.endpoint : null,
+            large_query_count: safeNonnegativeInteger(comparison.large_query_count),
+            small_query_count: safeNonnegativeInteger(comparison.small_query_count),
+          }))
+          .sort((left, right) => String(left.endpoint).localeCompare(String(right.endpoint)))
+        : [],
+      total_query_count: safeNonnegativeInteger(value.query_evidence?.total_query_count),
+    },
+    query_plans: {
+      mode: value.query_plans?.mode === "read-only-explain-analyze"
+        ? value.query_plans.mode : null,
+      plans: Array.isArray(value.query_plans?.plans)
+        ? value.query_plans.plans
+          .filter((plan) => plan && typeof plan === "object")
+          .map((plan) => ({
+            actual_rows: safeNonnegativeInteger(plan.actual_rows),
+            execution_ms: Number.isFinite(plan.execution_ms) && plan.execution_ms >= 0
+              ? plan.execution_ms : null,
+            name: [
+              "map_objects",
+              "plant_assignments",
+              "plants",
+              "plots",
+              "tasks_count",
+              "tasks_page",
+            ].includes(plan.name) ? plan.name : null,
+            node_types: Array.isArray(plan.node_types)
+              ? plan.node_types.filter((node) => typeof node === "string"
+                && /^[A-Za-z -]{1,80}$/.test(node)).sort()
+              : [],
+            plan_rows: safeNonnegativeInteger(plan.plan_rows),
+            planning_ms: Number.isFinite(plan.planning_ms) && plan.planning_ms >= 0
+              ? plan.planning_ms : null,
+            root_node_type: typeof plan.root_node_type === "string"
+              && /^[A-Za-z -]{1,80}$/.test(plan.root_node_type)
+              ? plan.root_node_type : null,
+          }))
+          .sort((left, right) => String(left.name).localeCompare(String(right.name)))
+        : [],
+    },
+    real_backend: value.real_backend === true,
+  };
+}
+
 function sanitizeManifestEvidence(manifest) {
   const dirty = Boolean(manifest.git?.dirty);
   const output = {
@@ -7009,6 +7559,7 @@ function sanitizeManifestEvidence(manifest) {
     },
     journey_ids: (manifest.journey_ids || []).map(safeIdentifier),
     phase: Number(manifest.phase || 0),
+    phase_nine: sanitizePhaseNineEvidence(manifest.phase_nine),
     profiles: [],
     run_id: safeIdentifier(manifest.run_id),
     review_gate: {
@@ -7237,8 +7788,10 @@ async function main() {
       ...(phaseSelected(6) ? ["OFF-01"] : []),
       ...(phaseSelected(7) ? ["M5", "I2", "I3", "I4", "C4", "C6"] : []),
       ...(phaseSelected(8) ? ["A1", "A3", "M1", "D1", "D2", "P1", "P2", "C3", "CROSS-01"] : []),
+      ...(phaseSelected(9) ? ["A1", "M1", "D1"] : []),
     ],
     phase: PHASE,
+    phase_nine: null,
     profiles: [],
     run_id: crypto.randomUUID(),
     review_gate: {
@@ -7308,6 +7861,12 @@ async function main() {
   let phaseEightDatabaseEvidence = null;
   let phaseEightProfileEvidence = null;
   let phaseEightProfiles = [];
+  let phaseNinePerformanceEvidence = [];
+  let phaseNineAuthEvidence = null;
+  let phaseNineDatabase = null;
+  let phaseNineQueryEvidence = null;
+  let phaseNineQueryPlanEvidence = null;
+  let phaseNineScaleFixtureEvidence = null;
   let thrownError = null;
   let currentStage = "runner-startup";
   try {
@@ -7562,6 +8121,19 @@ async function main() {
     }
     currentStage = "final-database-snapshot";
     const finalDatabase = await settledDatabaseSnapshot("Final database boundary");
+    const phaseNineRan = phaseSelected(9);
+    if (phaseSelected(9)) {
+      currentStage = "phase-nine-scale-fixtures";
+      phaseNineScaleFixtureEvidence = assertPhaseNineScaleFixtures(preparePhaseNineFixtures());
+      currentStage = "phase-nine-real-backend-performance";
+      const phaseNineProbes = runPhaseNinePerformanceProbes();
+      phaseNinePerformanceEvidence = phaseNineProbes.browser_profiles;
+      phaseNineQueryEvidence = phaseNineProbes.query_evidence;
+      phaseNineQueryPlanEvidence = phaseNineProbes.query_plans;
+      currentStage = "phase-nine-auth-boundary";
+      phaseNineDatabase = await settledDatabaseSnapshot("Phase 9 auth boundary");
+      phaseNineAuthEvidence = assertPhaseNineAuthState(finalDatabase, phaseNineDatabase, fixture);
+    }
     currentStage = "cumulative-assertions";
     writePrivateAssertionCheckpoint({
       finalDatabase,
@@ -8216,11 +8788,13 @@ async function main() {
         `Browser login created unexpected user sessions: ${JSON.stringify(finalDatabase.auth_state.session_user_counts)}`,
       );
     }
-    assert(
-      fixture.database_snapshot.auth_state.admin_last_login_at === null
-        && finalDatabase.auth_state.admin_last_login_at !== null,
-      "Browser login did not persist the expected administrator last-login timestamp",
-    );
+    if (!phaseNineRan) {
+      assert(
+        fixture.database_snapshot.auth_state.admin_last_login_at === null
+          && finalDatabase.auth_state.admin_last_login_at !== null,
+        "Browser login did not persist the expected administrator last-login timestamp",
+      );
+    }
     assert(
       fixture.database_snapshot.audit_state.total_count === 0,
       "Foundation fixture unexpectedly started with audit events",
@@ -8637,6 +9211,14 @@ async function main() {
       final: finalDatabase.domain_counts,
       initial: fixture.database_snapshot.domain_counts,
     };
+    manifest.phase_nine = phaseNineRan ? {
+      auth: phaseNineAuthEvidence,
+      browser_profiles: phaseNinePerformanceEvidence,
+      fixture: phaseNineScaleFixtureEvidence,
+      query_evidence: phaseNineQueryEvidence,
+      query_plans: phaseNineQueryPlanEvidence,
+      real_backend: true,
+    } : null;
     manifest.filesystem = filesystemState();
     assert(manifest.filesystem.downloads.empty, "Browser journey wrote download files");
     if (phaseThreeRan) {

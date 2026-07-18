@@ -556,6 +556,33 @@ node --check scripts/e2e/journeys/accessibilityAndResponsive.cjs
 node --check scripts/check_complete_journeys_e2e.cjs
 ```
 
+Phase 9 measures the map-first application at realistic scale before enforcing
+performance budgets. It uses a disposable PostgreSQL fixture with large,
+history-heavy, and multi-garden profiles; real local FastAPI responses; desktop
+and Pixel 7 browser contexts; a smaller comparison fixture for query scaling;
+and read-only query-plan evidence. Run the phase through the complete-journey
+runner only:
+
+```bash
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+```
+
+The retained page-performance results, query fingerprints, and query-plan
+reports are private ignored evidence. Establish a budget only from results
+captured on a clean revision, then keep the capture document under ignored
+research and validate it without rewriting tracked baselines:
+
+```bash
+.venv/bin/python scripts/capture_page_performance_measurements.py \
+  path/to/phase-nine-large-desktop.json path/to/phase-nine-large-pixel-7.json \
+  --output research/optimization-map/performance_measurements.json
+.venv/bin/python scripts/check_performance_budgets.py
+```
+
+Do not use a developer-machine result from a dirty worktree as budget evidence,
+and do not weaken a budget to accept a regression. Query plan inspection is
+read-only and restricted to the disposable runner database.
+
 The tracked coverage contract is `tests/journey_coverage.yaml`. Validate open
 phases during implementation and require complete closure only in the final
 phase:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -57,6 +58,29 @@ def _run_runner(*args: str, env: dict[str, str] | None = None) -> subprocess.Com
     )
 
 
+def _javascript_function_containing(source: str, marker: str) -> str:
+    marker_index = source.index(marker)
+    starts = list(
+        re.finditer(
+            r"\bfunction\s+[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{",
+            source[:marker_index],
+        )
+    )
+    assert starts, f"No JavaScript function contains {marker!r}"
+    start = starts[-1].start()
+    brace_start = source.index("{", starts[-1].start())
+    depth = 0
+    for index in range(brace_start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                assert index >= marker_index
+                return source[start : index + 1]
+    raise AssertionError(f"Unterminated JavaScript function containing {marker!r}")
+
+
 def test_phase_zero_complete_journey_files_exist() -> None:
     expected = (
         RUNNER,
@@ -65,6 +89,7 @@ def test_phase_zero_complete_journey_files_exist() -> None:
         ROOT / "scripts" / "e2e" / "completeJourneyBrowser.cjs",
         ROOT / "scripts" / "e2e" / "completeJourneyAssertions.cjs",
         ROOT / "scripts" / "e2e" / "completeJourneyApi.cjs",
+        ROOT / "scripts" / "e2e" / "performanceFastapiApp.py",
         ROOT / "scripts" / "e2e" / "journeys" / "foundation.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "gardenMapPlants.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs",
@@ -214,7 +239,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
         timeout=20,
     )
     assert result.returncode == 2
-    assert "not implemented" in result.stderr.lower()
+    assert "review-gated" in result.stderr.lower()
     assert (checkout / "research").is_dir()
 
 
@@ -710,7 +735,7 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
     runner_source = RUNNER.read_text(encoding="utf-8")
 
-    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert "runDailyAttentionWork" in journey_source
     assert 'require("./e2e/journeys/dailyAttentionWork.cjs")' in checker_source
     assert "phaseSelected(2)" in checker_source
@@ -741,7 +766,7 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_THREE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert "GARDENOPS_E2E_LOOPBACK_PROVIDER=1" in runner_source
     assert "GARDENOPS_E2E_SHADEMAP_ESTIMATE_CSV" in runner_source
     assert "'/shademap': proxyTarget" in runner_source
@@ -897,7 +922,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FOUR_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert 'require("./e2e/journeys/planningAndReporting.cjs")' in checker_source
     assert "phaseSelected(4)" in checker_source
     assert "runPlanningAndReporting" in checker_source
@@ -1045,7 +1070,7 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FIVE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert 'require("./e2e/journeys/identityAndRoles.cjs")' in checker_source
     assert "phaseSelected(5)" in checker_source
     assert "runIdentityAndRoles" in checker_source
@@ -1121,7 +1146,7 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_SIX_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert 'require("./e2e/journeys/offlineAndFailureRecovery.cjs")' in checker_source
     assert "phaseSelected(6)" in checker_source
     assert "runOfflineAndFailureRecovery" in checker_source
@@ -1172,7 +1197,7 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_SEVEN_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert "GARDENOPS_E2E_LOOPBACK_PROVIDER=1" in runner_source
     assert 'require("./e2e/journeys/providersAndTerrain.cjs")' in checker_source
     assert "phaseSelected(7)" in checker_source
@@ -1252,7 +1277,7 @@ def test_phase_eight_accessibility_responsive_journey_and_harness_are_registered
     checker_source = CHECKER.read_text(encoding="utf-8")
     runner_source = RUNNER.read_text(encoding="utf-8")
 
-    assert "MAX_IMPLEMENTED_PHASE=8" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert 'require("./e2e/journeys/accessibilityAndResponsive.cjs")' in checker_source
     assert "phaseSelected(8)" in checker_source
     assert "runAccessibilityAndResponsive" in checker_source
@@ -1270,7 +1295,7 @@ def test_phase_eight_accessibility_responsive_journey_and_harness_are_registered
         "assertFocusVisibleAndUnobscured",
         "task-completion-list input[type='checkbox']",
         "assertTouchTargets",
-        "const mobileFab = page.locator(\"#mobile-fab:visible\")",
+        'const mobileFab = page.locator("#mobile-fab:visible")',
         "desktop-reflow-200",
         "desktop-reduced-motion",
         "mobile-reduced-motion",
@@ -1293,6 +1318,126 @@ def test_phase_eight_accessibility_responsive_journey_and_harness_are_registered
         assert f"id: {state_id}" in inventory_source
     for forbidden in ("route.fulfill(", "context.addCookies(", "page.setContent("):
         assert forbidden not in journey_source
+
+
+def test_phase_nine_runner_selects_the_test_performance_app_only_through_phase_nine() -> None:
+    runner_source = RUNNER.read_text(encoding="utf-8")
+    phase_app = "scripts.e2e.performanceFastapiApp:app"
+    default_match = re.search(
+        r"(?m)^(?P<variable>[A-Z][A-Z0-9_]*)=(?:\"|')?gardenops\.main:app(?:\"|')?\s*$",
+        runner_source,
+    )
+
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
+    assert default_match, "The runner must default to the production ASGI app"
+    selection = re.search(
+        r"if\s+\(\(\s*THROUGH_PHASE\s*(?:==|>=)\s*9\s*\)\)\s*;?\s*then"
+        r"(?P<body>.*?)\n\s*fi\b",
+        runner_source,
+        re.DOTALL,
+    )
+    assert selection, "Phase 9 backend selection must be based on THROUGH_PHASE"
+    variable = default_match.group("variable")
+    assert re.search(
+        rf"(?m)^\s*{re.escape(variable)}=(?:\"|')?{re.escape(phase_app)}(?:\"|')?\s*$",
+        selection.group("body"),
+    )
+    assert (
+        "export GARDENOPS_PERFORMANCE_QUERY_EVIDENCE_PATH="
+        '"$ARTIFACT_DIR/phase-nine-query-evidence.jsonl"'
+    ) in selection.group("body")
+    assert runner_source.count(phase_app) == 1
+    uvicorn_command = runner_source[runner_source.index('bin/uvicorn"') :]
+    assert re.search(rf"\$\{{?{re.escape(variable)}\}}?", uvicorn_command)
+
+
+def test_phase_nine_checker_prepares_scale_profiles_with_the_complete_journey_seeder() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    helper = _javascript_function_containing(checker_source, '"--apply-scale-profiles"')
+    phase_nine_runner = _javascript_function_containing(
+        checker_source,
+        "assertPhaseNineScaleFixtures(preparePhaseNineFixtures())",
+    )
+
+    assert re.search(r"function\s+preparePhaseNineFixtures\s*\(", helper)
+    assert "seed_complete_journeys_e2e.py" in helper
+    assert "execFileSync" in helper
+    assert "phaseSelected(9)" in phase_nine_runner
+    assert "preparePhaseNineFixtures(" in phase_nine_runner
+
+
+def test_phase_nine_checker_runs_authenticated_dual_device_real_backend_probes() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    probe = _javascript_function_containing(checker_source, "check_page_performance.cjs")
+    auth_boundary = _javascript_function_containing(
+        checker_source,
+        "Phase 9 performance bootstrap created unexpected user sessions",
+    )
+    result_path = _javascript_function_containing(
+        checker_source,
+        "Phase 9 performance evidence must remain directly inside the artifact directory",
+    )
+
+    assert '"--scenario"' in probe
+    assert '"app-auth-large-tabs"' in probe
+    assert '"--no-api-stubs"' in probe
+    assert re.search(
+        r"PHASE_NINE_DEVICE_PROFILES\s*=\s*\[\s*[\"']desktop[\"']\s*,"
+        r"\s*[\"']pixel-7[\"']\s*\]",
+        checker_source,
+    )
+    assert '"--device-profile"' in probe
+    assert '"--output"' in probe
+    assert "path.resolve(ARTIFACT_DIR" in result_path
+    assert "path.dirname(target) === path.resolve(ARTIFACT_DIR)" in result_path
+
+    for name in (
+        "GARDENOPS_PAGE_PERF_USERNAME",
+        "GARDENOPS_PAGE_PERF_PASSWORD",
+        "GARDENOPS_PAGE_PERF_GARDEN_NAME",
+    ):
+        assert name in probe
+        assert f"process.env.{name}" not in checker_source
+    assert re.search(r"\benv\s*:\s*\{", probe)
+    assert re.search(
+        r"GARDENOPS_PAGE_PERF_GARDEN_NAME\s*:\s*[^,\n]*(?:large|scale)[^,\n]*name",
+        probe,
+        re.IGNORECASE,
+    )
+    assert "PHASE_NINE_AUTH_BOOTSTRAP_COUNT = PHASE_NINE_DEVICE_PROFILES.length + 1" in (
+        checker_source
+    )
+    assert "PHASE_NINE_AUTH_BOOTSTRAP_COUNT" in auth_boundary
+    for forbidden in ("/tmp", "os.tmpdir", "mkdtemp", '"--serve"'):
+        assert forbidden not in probe
+
+
+def test_phase_nine_query_evidence_is_private_and_manifested_only_as_safe_aggregates() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    path_helper = _javascript_function_containing(checker_source, "phase-nine-query-evidence.jsonl")
+    probe = _javascript_function_containing(
+        checker_source, "GARDENOPS_PERFORMANCE_QUERY_EVIDENCE_PATH"
+    )
+    validator = _javascript_function_containing(checker_source, "Phase 9 query evidence is missing")
+    sanitizer = _javascript_function_containing(checker_source, "query_evidence: {")
+
+    assert "GARDENOPS_PERFORMANCE_QUERY_EVIDENCE_PATH" in probe
+    assert "path.dirname(target) === path.resolve(ARTIFACT_DIR)" in path_helper
+    assert "statement_fingerprints" in validator
+    assert "probe_label" in validator
+    assert "phase-nine-small-desktop" in validator
+    assert "query count changed between equivalent" in validator
+    assert "statement_fingerprints" not in sanitizer
+    assert "scale_comparison" in sanitizer
+    assert "total_query_count" in sanitizer
+
+
+def test_phase_nine_database_snapshot_buffer_supports_scale_profile_projections() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    snapshot = _javascript_function_containing(checker_source, '"--snapshot"')
+
+    assert "function databaseSnapshot" in snapshot
+    assert "maxBuffer: 64 * 1024 * 1024" in snapshot
 
 
 def test_phase_six_audit_contract_rejects_scope_tampering() -> None:
@@ -1759,7 +1904,10 @@ try {
 def test_phase_eight_allows_only_profile_bound_passkey_challenge_starts() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
 
-    assert "function assertPhaseEightDatabaseState(initial, final, profiles, fixture)" in checker_source
+    assert (
+        "function assertPhaseEightDatabaseState(initial, final, profiles, fixture)"
+        in checker_source
+    )
     assert "function assertPhaseEightAuthState(initial, final, profiles)" in checker_source
     assert "function assertPhaseEightAuditState(initial, final, profiles)" in checker_source
     assert "function assertPhaseEightTaskCompletion(initial, final, fixture)" in checker_source
@@ -1779,9 +1927,7 @@ def test_phase_two_accounts_for_deterministic_read_side_effects() -> None:
     assert "const phaseTwoReadSideEffectTables" in checker_source
     assert '"auth_passkey_challenges"' in checker_source
     accounting = oracle["phase_two"]["whole_table_mutation_accounting"]
-    assert {"provider_daily_usage", "shademap_cache"}.issubset(
-        accounting["phase_two_tables"]
-    )
+    assert {"provider_daily_usage", "shademap_cache"}.issubset(accounting["phase_two_tables"])
     for scope in ("phase_two_only", "cumulative_through_phase_two"):
         for table, expected_added in (("provider_daily_usage", 4), ("shademap_cache", 3)):
             assert accounting["exact_counts"][scope][table] == {
@@ -2186,7 +2332,7 @@ if (safeUtcTimestamp('2026-02-30T09:08:07Z') !== (
     assert result.returncode == 0, result.stderr
 
 
-def test_checker_requires_clean_and_stable_source_provenance() -> None:
+def test_checker_requires_stable_source_provenance() -> None:
     script = """
 const { assertSourceRevisionStable } = require('./scripts/check_complete_journeys_e2e.cjs');
 const initial = { sha: 'abc123', dirty: false, worktree_fingerprint: 'a'.repeat(64) };
@@ -2197,11 +2343,12 @@ try {
 } catch (error) {
   if (!String(error.message).includes('worktree changed')) process.exit(4);
 }
+assertSourceRevisionStable({ ...initial, dirty: true }, { ...initial, dirty: true });
 try {
-  assertSourceRevisionStable({ ...initial, dirty: true }, { ...initial, dirty: true });
+  assertSourceRevisionStable({ ...initial, dirty: true }, { ...initial, dirty: false });
   process.exit(5);
 } catch (error) {
-  if (!String(error.message).includes('clean source worktree')) process.exit(6);
+  if (!String(error.message).includes('Source cleanliness changed')) process.exit(6);
 }
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)

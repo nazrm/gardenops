@@ -9,7 +9,7 @@ fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT_DIR"
-MAX_IMPLEMENTED_PHASE=8
+MAX_IMPLEMENTED_PHASE=9
 
 die() {
   printf 'Complete journey E2E: %s\n' "$1" >&2
@@ -497,7 +497,12 @@ setsid node "$ROOT_DIR/scripts/e2e/providers/deterministicLoopbackProvider.cjs" 
   > "$LOG_DIR/provider-fixture.log" 2>&1 &
 PROVIDER_PID=$!
 
-setsid "$ROOT_DIR/.venv/bin/uvicorn" gardenops.main:app \
+BACKEND_APPLICATION="gardenops.main:app"
+if ((THROUGH_PHASE >= 9)); then
+  BACKEND_APPLICATION="scripts.e2e.performanceFastapiApp:app"
+  export GARDENOPS_PERFORMANCE_QUERY_EVIDENCE_PATH="$ARTIFACT_DIR/phase-nine-query-evidence.jsonl"
+fi
+setsid "$ROOT_DIR/.venv/bin/uvicorn" "$BACKEND_APPLICATION" \
   --host 127.0.0.1 --port "$BACKEND_PORT" > "$LOG_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
 vite_environment "$ROOT_DIR/frontend/node_modules/.bin/vite" build \

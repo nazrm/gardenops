@@ -565,7 +565,7 @@ function assertDiagnosticsClean(diagnostics, label) {
   );
 }
 
-async function authenticate(page, username, password) {
+async function signInThroughSessionForm(page, username, password) {
   assert(username && password, "Complete journey credentials are required");
   const gate = page.locator(".auth-gate");
   await visible(gate, "session sign-in gate");
@@ -594,10 +594,15 @@ async function authenticate(page, username, password) {
   assert(profile.status === 200, "Session profile endpoint did not return 200");
   assert(profile.body.username === username, "Session profile does not match fixture user");
   assert(profile.body.auth_type === "session", "Fixture user is not session-authenticated");
+  return profile.body;
+}
+
+async function authenticate(page, username, password) {
+  const profile = await signInThroughSessionForm(page, username, password);
   const traceControl = TRACE_CONTROLS.get(page.context());
   assert(traceControl, "Authenticated browser context has no guarded trace control");
   await traceControl.startTracing();
-  return profile.body;
+  return profile;
 }
 
 async function dismissProactivePasskeyPrompt(page, timeout = 5_000) {
@@ -767,4 +772,5 @@ module.exports = {
   isExpectedSilentHttpContext,
   redactTokenShapedSecrets,
   sanitizeDiagnostic,
+  signInThroughSessionForm,
 };

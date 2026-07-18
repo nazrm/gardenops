@@ -7,6 +7,12 @@ const path = require("node:path");
 const { createHash } = require("node:crypto");
 const { execFileSync, spawn } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
+const {
+  allowedBrowserOrigins,
+  dismissProactivePasskeyPrompt,
+  isAllowedUrl,
+  signInThroughSessionForm,
+} = require("./e2e/completeJourneyBrowser.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const FRONTEND_DIR = path.join(ROOT, "frontend");
@@ -21,12 +27,15 @@ const DEFAULT_PORT = 5177;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MOBILE_LAYOUT_BREAKPOINT_PX = 960;
 const MANAGED_CHILD_STOP_TIMEOUT_MS = 1_500;
+const DEVICE_PROFILES = new Set(["desktop", "pixel-7"]);
 const SCENARIOS = new Set(["app-unauth", "app-auth", "app-auth-large-tabs"]);
 const LARGE_TAB_TRANSITIONS = [
-  { name: "mapToGarden", tab: "garden", readiness: "large-garden" },
+  { name: "mapToActivityTasks", tab: "activity", readiness: "large-tasks" },
+  { name: "activityTasksToGarden", tab: "garden", readiness: "large-garden" },
   { name: "gardenToInsights", tab: "insights", readiness: "large-care" },
   { name: "insightsToMap", tab: "map", readiness: "large-map" },
-  { name: "warmMapToGarden", tab: "garden", readiness: "large-garden" },
+  { name: "warmMapToActivityTasks", tab: "activity", readiness: "large-tasks" },
+  { name: "warmActivityTasksToGarden", tab: "garden", readiness: "large-garden" },
   { name: "warmGardenToInsights", tab: "insights", readiness: "large-care" },
   { name: "warmInsightsToMap", tab: "map", readiness: "large-map" },
 ];
@@ -41,6 +50,13 @@ const LARGE_TAB_LEGACY_NODE_TIMING_METRICS = LARGE_TAB_TRANSITIONS.flatMap(({ na
 const LARGE_TAB_PLAYWRIGHT_TIMING_METRICS = LARGE_TAB_TRANSITIONS.map(
   ({ name }) => `${name}PlaywrightActionMs`,
 );
+const GROWTH_PROBE_CYCLES = 5;
+const GROWTH_PROBE_NAVIGATIONS = [
+  { tab: "activity", readiness: "large-tasks" },
+  { tab: "garden", readiness: "large-garden" },
+  { tab: "insights", readiness: "large-care" },
+  { tab: "map", readiness: "large-map" },
+];
 const SCENARIO_METRICS = {
   "app-auth": [
     "appShellReadyMs",
@@ -53,6 +69,10 @@ const SCENARIO_METRICS = {
     "domContentLoadedMs",
     "loadEventMs",
     "firstContentfulPaintMs",
+    "apiAppServerDurationMs",
+    "apiDecodedResponseBytes",
+    "apiEncodedResponseBytes",
+    "apiResponseCount",
     "resourceEncodedBytes",
   ],
   "app-auth-large-tabs": [
@@ -75,6 +95,12 @@ const SCENARIO_METRICS = {
     "domContentLoadedMs",
     "loadEventMs",
     "firstContentfulPaintMs",
+    "apiAppServerDurationMs",
+    "apiDecodedResponseBytes",
+    "apiEncodedResponseBytes",
+    "apiResponseCount",
+    "repeatedNavigationJsHeapUsedDeltaBytes",
+    "repeatedNavigationNodesDelta",
     "resourceEncodedBytes",
   ],
   "app-unauth": [
@@ -87,6 +113,10 @@ const SCENARIO_METRICS = {
     "domContentLoadedMs",
     "loadEventMs",
     "firstContentfulPaintMs",
+    "apiAppServerDurationMs",
+    "apiDecodedResponseBytes",
+    "apiEncodedResponseBytes",
+    "apiResponseCount",
     "resourceEncodedBytes",
   ],
 };
@@ -103,9 +133,15 @@ Options:
   --host <host>                   Managed server host. Default: ${DEFAULT_HOST}.
   --port <port>                   Managed server port. Default: ${DEFAULT_PORT}.
   --scenario <name>               Scenario to run: app-unauth, app-auth, or app-auth-large-tabs. Default: app-unauth.
-  --no-api-stubs                  Let auth API calls hit the target server.
+  --no-api-stubs                  Measure a real loopback backend session; credentials come from GARDENOPS_PAGE_PERF_USERNAME and GARDENOPS_PAGE_PERF_PASSWORD.
   --skip-interaction              Measure load only; useful when live passkeys intercept Enter.
-  --runs <count>                  Measured runs. Default: 3.
+  --device-profile <name>         Browser context: desktop or pixel-7. Default: desktop.
+  --evidence-label <label>        Safe label for live query evidence correlation.
+  --minimum-map-plots <count>     Minimum rendered map plots for the large-tab flow. Default: 600.
+  --minimum-plant-rows <count>    Minimum non-virtualized plant/care rows. Default: 80.
+  --warmup-runs <count>           Discarded warmup runs before measurement. Default: 1.
+  --runs <count>                  Measured runs after warmup. Default: 7.
+  --skip-growth-probe             Omit the large-tab warmup growth probe for a scale-count-only run.
   --output <path>                 Write JSON results.
   --compare <path>                Compare against a previous JSON result.
   --max-regression-pct <number>   Fail compare mode when a core metric regresses. Default: 5.
@@ -150,27 +186,33 @@ function parseArgs(argv) {
   const options = {
     browserPath: process.env.PERF_CHROMIUM || "",
     comparePath: "",
+    deviceProfile: "desktop",
+    evidenceLabel: "",
     headful: false,
     host: DEFAULT_HOST,
     interactionBudgetMs: null,
     json: false,
     maxRegressionMs: 15,
     maxRegressionPct: 5,
+    minimumMapPlots: 600,
+    minimumPlantRows: 80,
     navigationBudgetMs: null,
     outputPath: "",
     port: DEFAULT_PORT,
     renderedRowBudget: null,
-    runs: 3,
+    runs: 7,
     scenario: "app-unauth",
     serve: false,
     serveMode: "dev",
     skipInteraction: false,
+    skipGrowthProbe: false,
     stubApi: true,
     tabSwitchBudgetMs: null,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     url: "",
     viewportHeight: 900,
     viewportWidth: 1440,
+    warmupRuns: 1,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -199,8 +241,20 @@ function parseArgs(argv) {
       options.stubApi = false;
     } else if (arg === "--skip-interaction") {
       options.skipInteraction = true;
+    } else if (arg === "--device-profile") {
+      options.deviceProfile = next();
+    } else if (arg === "--evidence-label") {
+      options.evidenceLabel = next();
+    } else if (arg === "--minimum-map-plots") {
+      options.minimumMapPlots = parsePositiveInt(next(), "--minimum-map-plots");
+    } else if (arg === "--minimum-plant-rows") {
+      options.minimumPlantRows = parsePositiveInt(next(), "--minimum-plant-rows");
+    } else if (arg === "--warmup-runs") {
+      options.warmupRuns = parsePositiveInt(next(), "--warmup-runs");
     } else if (arg === "--runs") {
       options.runs = parsePositiveInt(next(), "--runs");
+    } else if (arg === "--skip-growth-probe") {
+      options.skipGrowthProbe = true;
     } else if (arg === "--output") {
       options.outputPath = next();
     } else if (arg === "--compare") {
@@ -255,6 +309,9 @@ function parseArgs(argv) {
   if (!SCENARIOS.has(options.scenario)) {
     throw new Error(`Unknown scenario: ${options.scenario}`);
   }
+  if (!DEVICE_PROFILES.has(options.deviceProfile)) {
+    throw new Error(`Unknown device profile: ${options.deviceProfile}`);
+  }
   if (!["dev", "preview"].includes(options.serveMode)) {
     throw new Error(`Unknown serve mode: ${options.serveMode}`);
   }
@@ -269,6 +326,39 @@ function parseArgs(argv) {
 }
 
 function validateOptionCompatibility(options) {
+  if (!options.stubApi) {
+    let target;
+    try {
+      target = new URL(options.url);
+    } catch {
+      throw new Error("--no-api-stubs requires an absolute loopback target URL");
+    }
+    if (
+      !["127.0.0.1", "localhost"].includes(target.hostname)
+      || target.protocol !== "http:"
+      || !target.port
+      || Number(target.port) === 5432
+    ) {
+      throw new Error("--no-api-stubs requires an HTTP loopback target on a non-5432 port");
+    }
+  }
+  if (options.evidenceLabel && !/^[a-z0-9-]{1,80}$/.test(options.evidenceLabel)) {
+    throw new Error("--evidence-label must use lowercase letters, digits, and hyphens only");
+  }
+  if (options.evidenceLabel && options.stubApi) {
+    throw new Error("--evidence-label requires --no-api-stubs");
+  }
+  if (options.skipGrowthProbe && options.scenario !== "app-auth-large-tabs") {
+    throw new Error("--skip-growth-probe requires --scenario app-auth-large-tabs");
+  }
+  if (
+    (options.minimumMapPlots !== 600 || options.minimumPlantRows !== 80)
+    && options.scenario !== "app-auth-large-tabs"
+  ) {
+    throw new Error(
+      "--minimum-map-plots and --minimum-plant-rows require --scenario app-auth-large-tabs",
+    );
+  }
   if (options.tabSwitchBudgetMs !== null) {
     if (!new Set(["app-auth", "app-auth-large-tabs"]).has(options.scenario)) {
       throw new Error(
@@ -286,6 +376,45 @@ function validateOptionCompatibility(options) {
       "--interaction-budget-ms requires a measured interaction; remove --skip-interaction",
     );
   }
+}
+
+function liveCredentialsFor(options) {
+  if (options.stubApi || options.scenario === "app-unauth") return null;
+  const credentials = Object.fromEntries([
+    ["password", process.env.GARDENOPS_PAGE_PERF_PASSWORD || ""],
+    ["username", process.env.GARDENOPS_PAGE_PERF_USERNAME || ""],
+  ]);
+  if (!credentials.username || !credentials.password) {
+    throw new Error(
+      "--no-api-stubs authenticated scenarios require GARDENOPS_PAGE_PERF_USERNAME and GARDENOPS_PAGE_PERF_PASSWORD",
+    );
+  }
+  return credentials;
+}
+
+function liveGardenNameFor(options) {
+  if (options.stubApi || options.scenario === "app-unauth") return "";
+  return process.env.GARDENOPS_PAGE_PERF_GARDEN_NAME || "";
+}
+
+async function installLiveNetworkGuard(context, options) {
+  const allowedOrigins = allowedBrowserOrigins({ baseUrl: options.url });
+  const blockedRequests = [];
+  await context.route("**/*", async (route) => {
+    if (isAllowedUrl(route.request().url(), allowedOrigins)) {
+      await route.continue();
+      return;
+    }
+    blockedRequests.push(route.request().url());
+    await route.abort();
+  });
+  return {
+    assertNoBlockedRequests() {
+      if (blockedRequests.length > 0) {
+        throw new Error(`Live performance run attempted ${blockedRequests.length} non-loopback request(s)`);
+      }
+    },
+  };
 }
 
 function roundMs(value) {
@@ -339,6 +468,24 @@ async function collectCdpMetrics(session) {
   } catch {
     return null;
   }
+}
+
+async function collectGarbage(session) {
+  if (!session) return false;
+  try {
+    await session.send("HeapProfiler.collectGarbage");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForAnimationFrames(page, count = 2) {
+  await page.evaluate(async (frameCount) => {
+    for (let frame = 0; frame < frameCount; frame += 1) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+  }, count);
 }
 
 function metricDeltaMs(before, after, name) {
@@ -457,12 +604,13 @@ async function installBrowserInteractionTiming(page, {
         const grid = document.querySelector("#map-grid");
         const activeMapTab = document.querySelector("#top-tab-map");
         const mapView = document.querySelector("#map-view");
+        const minimumMapPlots = Number(args.minimumMapPlots ?? 600);
         return (
           grid instanceof HTMLElement
           && mapView instanceof HTMLElement
           && !mapView.hidden
           && !grid.querySelector(".map-grid-loading")
-          && grid.querySelectorAll(".plot").length >= 600
+          && grid.querySelectorAll(".plot").length >= minimumMapPlots
           && (activeMapTab?.getAttribute("aria-selected") === "true"
             || activeMapTab?.getAttribute("aria-current") === "page")
         );
@@ -472,20 +620,21 @@ async function installBrowserInteractionTiming(page, {
         const gardenTab = document.querySelector("#top-tab-garden");
         const tableBody = document.querySelector("#plants-table-body");
         const mobileList = document.querySelector("#plants-mobile-list");
+        const minimumPlantRows = Number(args.minimumPlantRows ?? 80);
         const isMobile = window.innerWidth <= args.mobileLayoutBreakpointPx;
         const tableReady = tableBody instanceof HTMLElement
           && tableBody.dataset.renderReady === "true"
           && (
             tableBody.dataset.renderMode === "virtual"
               ? tableBody.querySelectorAll("tr[data-virtual-row]").length > 0
-              : tableBody.querySelectorAll("tr").length >= 80
+              : tableBody.querySelectorAll("tr").length >= minimumPlantRows
           );
         const mobileReady = mobileList instanceof HTMLElement
           && mobileList.dataset.renderReady === "true"
           && (
             mobileList.dataset.renderMode === "virtual"
               ? mobileList.querySelectorAll("[data-virtual-item]").length > 0
-              : mobileList.querySelectorAll(".mobile-data-card").length >= 80
+              : mobileList.querySelectorAll(".mobile-data-card").length >= minimumPlantRows
           );
         return (
           plantsView instanceof HTMLElement
@@ -500,20 +649,21 @@ async function installBrowserInteractionTiming(page, {
         const insightsTab = document.querySelector("#top-tab-insights");
         const tableBody = document.querySelector("#care-table-body");
         const mobileList = document.querySelector("#care-mobile-list");
+        const minimumPlantRows = Number(args.minimumPlantRows ?? 80);
         const isMobile = window.innerWidth <= args.mobileLayoutBreakpointPx;
         const tableReady = tableBody instanceof HTMLElement
           && tableBody.dataset.renderReady === "true"
           && (
             tableBody.dataset.renderMode === "virtual"
               ? tableBody.querySelectorAll("tr[data-virtual-row]").length > 0
-              : tableBody.querySelectorAll("tr").length >= 80
+              : tableBody.querySelectorAll("tr").length >= minimumPlantRows
           );
         const mobileReady = mobileList instanceof HTMLElement
           && mobileList.dataset.renderReady === "true"
           && (
             mobileList.dataset.renderMode === "virtual"
               ? mobileList.querySelectorAll("[data-virtual-item]").length > 0
-              : mobileList.querySelectorAll(".care-mobile-card").length >= 80
+              : mobileList.querySelectorAll(".care-mobile-card").length >= minimumPlantRows
           );
         return (
           careView instanceof HTMLElement
@@ -521,6 +671,19 @@ async function installBrowserInteractionTiming(page, {
           && (insightsTab?.getAttribute("aria-selected") === "true"
             || insightsTab?.getAttribute("aria-current") === "page")
           && (isMobile ? mobileReady : tableReady)
+        );
+      }
+      if (readinessConfig.name === "large-tasks") {
+        const activityTab = document.querySelector("#top-tab-activity");
+        const taskContent = document.querySelector("#tasks-tab-content");
+        const taskList = document.querySelector("#tasks-list");
+        return (
+          taskContent instanceof HTMLElement
+          && !taskContent.hidden
+          && taskList instanceof HTMLElement
+          && taskList.querySelector("[data-task-id]") !== null
+          && (activityTab?.getAttribute("aria-selected") === "true"
+            || activityTab?.getAttribute("aria-current") === "page")
         );
       }
       throw new Error(`Unknown browser readiness predicate ${readinessConfig.name}`);
@@ -725,6 +888,43 @@ async function collectDomSnapshot(page) {
   });
 }
 
+async function waitForScenarioReadiness(page, predicate, {
+  label,
+  timeoutMs,
+}) {
+  try {
+    await page.waitForFunction(predicate, undefined, { timeout: timeoutMs });
+  } catch (error) {
+    let state = null;
+    try {
+      state = await page.evaluate(() => ({
+        activeTab: document.querySelector("[role='tab'][aria-selected='true']")?.id ?? "",
+        activeGardenId: sessionStorage.getItem("gardenops-active-garden-id") ?? "",
+        appStatus: document.querySelector("#app-status-text")?.textContent?.trim() ?? "",
+        careRows: document.querySelector("#care-table-body")?.querySelectorAll("tr").length ?? 0,
+        careViewHidden: document.querySelector("#care-view")?.hidden ?? null,
+        mapAriaCurrent: document.querySelector("#top-tab-map")?.getAttribute("aria-current") ?? "",
+        mapLoading: Boolean(document.querySelector("#map-grid .map-grid-loading")),
+        mapPlots: document.querySelector("#map-grid")?.querySelectorAll(".plot").length ?? 0,
+        mapViewHidden: document.querySelector("#map-view")?.hidden ?? null,
+        plotResources: performance.getEntriesByType("resource")
+          .filter((entry) => entry.name.includes("/api/plots"))
+          .map((entry) => entry.name.replace(/^https?:\/\/[^/]+/, "")),
+        plantRows: document.querySelector("#plants-table-body")?.querySelectorAll("tr").length ?? 0,
+        plantsViewHidden: document.querySelector("#plants-view")?.hidden ?? null,
+      }));
+    } catch {
+      // Preserve the original timeout if the page has already closed.
+    }
+    throw new Error(
+      `${label} readiness did not settle (${errorMessage(error)}): ${JSON.stringify(state)}`,
+      {
+      cause: error,
+      },
+    );
+  }
+}
+
 function summarizeRuns(runs, scenario) {
   const metricNames = new Set(SCENARIO_METRICS[scenario] ?? []);
   for (const run of runs) {
@@ -745,6 +945,15 @@ function summarizeRuns(runs, scenario) {
 }
 
 function createBrowserContextOptions(options) {
+  if (options.deviceProfile === "pixel-7") {
+    const { devices } = require(PLAYWRIGHT_PATH);
+    const pixel7 = devices["Pixel 7"];
+    if (!pixel7) {
+      throw new Error("Playwright Pixel 7 device profile is unavailable");
+    }
+    const { defaultBrowserType: _defaultBrowserType, ...contextOptions } = pixel7;
+    return contextOptions;
+  }
   return {
     deviceScaleFactor: 1,
     hasTouch: false,
@@ -757,41 +966,48 @@ function createBrowserContextOptions(options) {
 }
 
 function buildViewportProfile(options) {
-  const responsiveMobileBreakpoint = options.viewportWidth <= MOBILE_LAYOUT_BREAKPOINT_PX;
+  const contextOptions = createBrowserContextOptions(options);
+  const deviceProfile = options.deviceProfile ?? "desktop";
+  const mobileDeviceEmulation = contextOptions.isMobile === true;
+  const responsiveMobileBreakpoint = mobileDeviceEmulation
+    || contextOptions.viewport.width <= MOBILE_LAYOUT_BREAKPOINT_PX;
   return {
-    label: responsiveMobileBreakpoint
-      ? "responsive mobile-breakpoint desktop Chromium"
-      : "desktop-breakpoint desktop Chromium",
-    mobileDeviceEmulation: false,
+    deviceProfile,
+    label: mobileDeviceEmulation
+      ? "Playwright Pixel 7 mobile emulation"
+      : responsiveMobileBreakpoint
+        ? "responsive mobile-breakpoint desktop Chromium"
+        : "desktop-breakpoint desktop Chromium",
+    mobileDeviceEmulation,
     responsiveLayout: responsiveMobileBreakpoint
       ? "mobile-breakpoint"
       : "desktop-breakpoint",
-    strategy: "viewport-only",
-    viewport: {
-      height: options.viewportHeight,
-      width: options.viewportWidth,
-    },
+    strategy: mobileDeviceEmulation ? "playwright-device-descriptor" : "viewport-only",
+    viewport: { ...contextOptions.viewport },
   };
 }
 
 function tabSelectorForViewport(options, tab) {
-  return options.viewportWidth <= MOBILE_LAYOUT_BREAKPOINT_PX
+  const viewportProfile = buildViewportProfile(options);
+  return viewportProfile.responsiveLayout === "mobile-breakpoint"
     ? `#mobile-tab-${tab}`
     : `#top-tab-${tab}`;
 }
 
 function buildMeasurementMetadata(options) {
   const viewportProfile = buildViewportProfile(options);
+  const contextOptions = createBrowserContextOptions(options);
   return {
     browserContext: {
-      ...createBrowserContextOptions(options),
+      ...contextOptions,
       mobileEmulation: {
-        enabled: false,
+        deviceProfile: viewportProfile.deviceProfile,
+        enabled: viewportProfile.mobileDeviceEmulation,
         responsiveBreakpointPx: MOBILE_LAYOUT_BREAKPOINT_PX,
         responsiveLayout: viewportProfile.responsiveLayout,
-        strategy: "viewport-only",
+        strategy: viewportProfile.strategy,
       },
-      userAgentOverride: null,
+      userAgentOverride: contextOptions.userAgent ?? null,
       viewportProfile,
     },
     interactionTiming: {
@@ -808,7 +1024,7 @@ function buildMeasurementMetadata(options) {
         description: "*PlaywrightActionMs is the Playwright click call duration, including locator/actionability overhead. It is diagnostic-only and not browser render time.",
       },
     },
-    schemaVersion: 3,
+    schemaVersion: 6,
   };
 }
 
@@ -873,10 +1089,15 @@ function buildComparisonProvenance({ browserPath, browserVersion, options }) {
       version: browserVersion,
     },
     options: {
+      deviceProfile: options.deviceProfile,
       headful: options.headful,
       interactionMode: options.skipInteraction ? "load-only" : "measured",
+      minimumMapPlots: options.minimumMapPlots,
+      minimumPlantRows: options.minimumPlantRows,
       serveMode: options.serve ? options.serveMode : "external",
+      skipGrowthProbe: options.skipGrowthProbe,
       targetUrl: options.url,
+      timeoutMs: options.timeoutMs,
     },
     scenario: options.scenario,
     viewportProfile: buildViewportProfile(options),
@@ -909,6 +1130,7 @@ function buildReproducibilityProvenance({
       effectiveOptions: { ...options },
     },
     runCount: options.runs,
+    warmupRunCount: options.warmupRuns,
     viewportProfile: buildViewportProfile(options),
   };
 }
@@ -1432,9 +1654,9 @@ async function installScenarioRoutes(context, scenario) {
   });
 }
 
-function apiResponseErrorDetails(response) {
+function apiResponseDetails(response) {
   const status = response.status();
-  if (!Number.isFinite(status) || status < 400) return null;
+  if (!Number.isFinite(status)) return null;
   let url;
   try {
     url = new URL(response.url());
@@ -1456,6 +1678,11 @@ function apiResponseErrorDetails(response) {
   };
 }
 
+function apiResponseErrorDetails(response) {
+  const details = apiResponseDetails(response);
+  return details?.status >= 400 ? details : null;
+}
+
 function isExpectedApiErrorResponse(scenario, details) {
   return scenario === "app-unauth"
     && details.method === "GET"
@@ -1465,11 +1692,36 @@ function isExpectedApiErrorResponse(scenario, details) {
 
 function createApiResponseTracker(page, scenario) {
   const unexpectedResponses = [];
+  const pendingCaptures = [];
+  const timings = [];
+  const parseAppDuration = (header) => {
+    if (typeof header !== "string") return null;
+    const match = header.match(/(?:^|,)\s*app\s*(?:;[^,]*)?;\s*dur\s*=\s*([0-9]+(?:\.[0-9]+)?)/i);
+    if (!match) return null;
+    const duration = Number(match[1]);
+    return Number.isFinite(duration) && duration >= 0 ? duration : null;
+  };
   const onResponse = (response) => {
-    const details = apiResponseErrorDetails(response);
-    if (details && !isExpectedApiErrorResponse(scenario, details)) {
-      unexpectedResponses.push(details);
+    const details = apiResponseDetails(response);
+    const errorDetails = details?.status >= 400 ? details : null;
+    if (errorDetails && !isExpectedApiErrorResponse(scenario, errorDetails)) {
+      unexpectedResponses.push(errorDetails);
     }
+    if (!details) return;
+    const headers = typeof response.allHeaders === "function"
+      ? response.allHeaders()
+      : Promise.resolve({});
+    const capture = headers.then((responseHeaders) => {
+      const appDurationMs = parseAppDuration(responseHeaders["server-timing"]);
+      timings.push({
+        appDurationMs,
+        path: details.pathname,
+        status: details.status,
+      });
+    }).catch(() => {
+      // Browser failures are collected separately; missing optional timing never hides them.
+    });
+    pendingCaptures.push(capture);
   };
   page.on("response", onResponse);
   return {
@@ -1480,6 +1732,21 @@ function createApiResponseTracker(page, scenario) {
           .map((details) => `${details.method} ${details.path} -> ${details.status}`)
           .join(", ")}`,
       );
+    },
+    async flush() {
+      await Promise.all(pendingCaptures);
+    },
+    summary() {
+      const measured = timings
+        .map((entry) => entry.appDurationMs)
+        .filter((duration) => Number.isFinite(duration));
+      return {
+        appServerDurationMs: measured.length > 0
+          ? roundMs(measured.reduce((total, duration) => total + duration, 0))
+          : null,
+        appServerTimedResponseCount: measured.length,
+        responseCount: timings.length,
+      };
     },
     detach() {
       page.off?.("response", onResponse);
@@ -1507,7 +1774,7 @@ async function collectBrowserMetrics(page) {
       encodedBodySize: entry.encodedBodySize || 0,
       decodedBodySize: entry.decodedBodySize || 0,
     }));
-    const totals = resourceRows.reduce(
+    const resourceTotals = (entries) => entries.reduce(
       (acc, entry) => {
         acc.transferSize += entry.transferSize;
         acc.encodedBodySize += entry.encodedBodySize;
@@ -1517,6 +1784,14 @@ async function collectBrowserMetrics(page) {
       },
       { count: 0, decodedBodySize: 0, encodedBodySize: 0, transferSize: 0 },
     );
+    const apiResources = resourceRows.filter((entry) => {
+      try {
+        return new URL(entry.name).pathname.startsWith("/api/");
+      } catch {
+        return false;
+      }
+    });
+    const totals = resourceTotals(resourceRows);
     return {
       navigation: nav
         ? {
@@ -1532,6 +1807,9 @@ async function collectBrowserMetrics(page) {
         firstContentfulPaintMs: fcp?.startTime ?? null,
       },
       resources: {
+        api: {
+          totals: resourceTotals(apiResources),
+        },
         totals,
         byType: resourceRows.reduce((acc, entry) => {
           const key = entry.initiatorType || "other";
@@ -1860,6 +2138,12 @@ async function runAppAuthLargeTabsScenario(page, options) {
     }
   };
   page.on("request", onInitialRequest);
+  await page.addInitScript((thresholds) => {
+    window.__gardenopsPerfLargeTabThresholds = thresholds;
+  }, {
+    minimumMapPlots: options.minimumMapPlots,
+    minimumPlantRows: options.minimumPlantRows,
+  });
   await page.addInitScript(() => {
     window.__gardenopsPerfLongTasks = [];
     try {
@@ -1895,17 +2179,30 @@ async function runAppAuthLargeTabsScenario(page, options) {
     const grid = document.querySelector("#map-grid");
     const activeMapTab = document.querySelector("#top-tab-map");
     const mapView = document.querySelector("#map-view");
+    const minimumMapPlots = Number(
+      window.__gardenopsPerfLargeTabThresholds?.minimumMapPlots ?? 600,
+    );
     return (
       grid instanceof HTMLElement
       && mapView instanceof HTMLElement
       && !mapView.hidden
       && !grid.querySelector(".map-grid-loading")
-      && grid.querySelectorAll(".plot").length >= 600
+      && grid.querySelectorAll(".plot").length >= minimumMapPlots
       && (activeMapTab?.getAttribute("aria-selected") === "true"
         || activeMapTab?.getAttribute("aria-current") === "page")
     );
   };
-  await page.waitForFunction(mapReady, undefined, { timeout: timeoutMs });
+  try {
+    await waitForScenarioReadiness(page, mapReady, {
+      label: "large map",
+      timeoutMs,
+    });
+  } catch (error) {
+    throw new Error(
+      `${errorMessage(error)}; requested readiness timeout: ${timeoutMs}ms; `
+      + `observed initial API requests: ${initialApiRequests.join(", ")}`,
+    );
+  }
   const appReadyMs = performance.now() - startedAt;
   await page.waitForTimeout(50);
   page.off?.("request", onInitialRequest);
@@ -1918,20 +2215,23 @@ async function runAppAuthLargeTabsScenario(page, options) {
     const gardenTab = document.querySelector("#top-tab-garden");
     const tableBody = document.querySelector("#plants-table-body");
     const mobileList = document.querySelector("#plants-mobile-list");
+    const minimumPlantRows = Number(
+      window.__gardenopsPerfLargeTabThresholds?.minimumPlantRows ?? 80,
+    );
     const isMobile = window.innerWidth <= 960;
     const tableReady = tableBody instanceof HTMLElement
       && tableBody.dataset.renderReady === "true"
       && (
         tableBody.dataset.renderMode === "virtual"
           ? tableBody.querySelectorAll("tr[data-virtual-row]").length > 0
-          : tableBody.querySelectorAll("tr").length >= 80
+          : tableBody.querySelectorAll("tr").length >= minimumPlantRows
       );
     const mobileReady = mobileList instanceof HTMLElement
       && mobileList.dataset.renderReady === "true"
       && (
         mobileList.dataset.renderMode === "virtual"
           ? mobileList.querySelectorAll("[data-virtual-item]").length > 0
-          : mobileList.querySelectorAll(".mobile-data-card").length >= 80
+          : mobileList.querySelectorAll(".mobile-data-card").length >= minimumPlantRows
       );
     return (
       plantsView instanceof HTMLElement
@@ -1946,20 +2246,23 @@ async function runAppAuthLargeTabsScenario(page, options) {
     const insightsTab = document.querySelector("#top-tab-insights");
     const tableBody = document.querySelector("#care-table-body");
     const mobileList = document.querySelector("#care-mobile-list");
+    const minimumPlantRows = Number(
+      window.__gardenopsPerfLargeTabThresholds?.minimumPlantRows ?? 80,
+    );
     const isMobile = window.innerWidth <= 960;
     const tableReady = tableBody instanceof HTMLElement
       && tableBody.dataset.renderReady === "true"
       && (
         tableBody.dataset.renderMode === "virtual"
           ? tableBody.querySelectorAll("tr[data-virtual-row]").length > 0
-          : tableBody.querySelectorAll("tr").length >= 80
+          : tableBody.querySelectorAll("tr").length >= minimumPlantRows
       );
     const mobileReady = mobileList instanceof HTMLElement
       && mobileList.dataset.renderReady === "true"
       && (
         mobileList.dataset.renderMode === "virtual"
           ? mobileList.querySelectorAll("[data-virtual-item]").length > 0
-          : mobileList.querySelectorAll(".care-mobile-card").length >= 80
+          : mobileList.querySelectorAll(".care-mobile-card").length >= minimumPlantRows
       );
     return (
       careView instanceof HTMLElement
@@ -1969,8 +2272,29 @@ async function runAppAuthLargeTabsScenario(page, options) {
       && (isMobile ? mobileReady : tableReady)
     );
   };
+  const tasksReady = () => {
+    const activityTab = document.querySelector("#top-tab-activity");
+    const taskContent = document.querySelector("#tasks-tab-content");
+    const taskList = document.querySelector("#tasks-list");
+    return (
+      taskContent instanceof HTMLElement
+      && !taskContent.hidden
+      && taskList instanceof HTMLElement
+      && taskList.querySelector("[data-task-id]") !== null
+      && (activityTab?.getAttribute("aria-selected") === "true"
+        || activityTab?.getAttribute("aria-current") === "page")
+    );
+  };
   const tabSelector = (tab) => tabSelectorForViewport(options, tab);
+  const readinessPredicates = {
+    "large-care": careReady,
+    "large-garden": gardenReady,
+    "large-map": mapReady,
+    "large-tasks": tasksReady,
+  };
   const cdpSession = await createCdpMetricsSession(page);
+  const repeatedNavigationCdpBefore = await collectCdpMetrics(cdpSession);
+  const repeatedNavigationDomBefore = await collectDomSnapshot(page);
   const measureSwitch = async (name, tab, readiness) => {
     const beforeCdp = await collectCdpMetrics(cdpSession);
     const domBefore = await collectDomSnapshot(page);
@@ -1979,7 +2303,11 @@ async function runAppAuthLargeTabsScenario(page, options) {
       page,
       target,
       {
-        args: { mobileLayoutBreakpointPx: MOBILE_LAYOUT_BREAKPOINT_PX },
+        args: {
+          minimumMapPlots: options.minimumMapPlots,
+          minimumPlantRows: options.minimumPlantRows,
+          mobileLayoutBreakpointPx: MOBILE_LAYOUT_BREAKPOINT_PX,
+        },
         name: readiness,
       },
       timeoutMs,
@@ -2145,13 +2473,19 @@ async function runAppAuthLargeTabsScenario(page, options) {
     { listSelector, tableBodySelector },
   );
   await page.click(tabSelector("garden"));
-  await page.waitForFunction(gardenReady, undefined, { timeout: timeoutMs });
+  await waitForScenarioReadiness(page, gardenReady, {
+    label: "large garden",
+    timeoutMs,
+  });
   const plantVirtualScroll = await scrollVirtualSurfaceToEnd(
     "#plants-table-body",
     "#plants-mobile-list",
   );
   await page.click(tabSelector("insights"));
-  await page.waitForFunction(careReady, undefined, { timeout: timeoutMs });
+  await waitForScenarioReadiness(page, careReady, {
+    label: "large care",
+    timeoutMs,
+  });
   const careVirtualScroll = await scrollVirtualSurfaceToEnd(
     "#care-table-body",
     "#care-mobile-list",
@@ -2176,6 +2510,20 @@ async function runAppAuthLargeTabsScenario(page, options) {
   }));
   finalFlow.plantVirtualScroll = plantVirtualScroll;
   finalFlow.careVirtualScroll = careVirtualScroll;
+  const repeatedNavigationCdpAfter = await collectCdpMetrics(cdpSession);
+  const repeatedNavigationDomAfter = await collectDomSnapshot(page);
+  const repeatedNavigationCdpDelta = summarizeCdpDelta(
+    repeatedNavigationCdpBefore,
+    repeatedNavigationCdpAfter,
+  );
+  finalFlow.repeatedNavigation = {
+    cdp: repeatedNavigationCdpDelta,
+    dom: {
+      after: repeatedNavigationDomAfter,
+      before: repeatedNavigationDomBefore,
+      totalNodesDelta: repeatedNavigationDomAfter.totalNodes - repeatedNavigationDomBefore.totalNodes,
+    },
+  };
 
   const maxPhaseValue = (readValue) => {
     const values = tabSwitchDetails
@@ -2190,11 +2538,53 @@ async function runAppAuthLargeTabsScenario(page, options) {
     ]),
   );
   const browserMetrics = await collectBrowserMetrics(page);
+  let growthProbe = null;
+  if (options.growthProbe) {
+    const garbageCollectionBefore = await collectGarbage(cdpSession);
+    await waitForAnimationFrames(page);
+    const cdpBefore = await collectCdpMetrics(cdpSession);
+    const domBefore = await collectDomSnapshot(page);
+    let completedNavigations = 0;
+    for (let cycle = 0; cycle < GROWTH_PROBE_CYCLES; cycle += 1) {
+      for (const transition of GROWTH_PROBE_NAVIGATIONS) {
+        const predicate = readinessPredicates[transition.readiness];
+        if (!predicate) {
+          throw new Error(`Missing growth-probe readiness predicate: ${transition.readiness}`);
+        }
+        await page.click(tabSelector(transition.tab), { timeout: timeoutMs });
+        await waitForScenarioReadiness(page, predicate, {
+          label: `growth probe ${cycle + 1} ${transition.tab}`,
+          timeoutMs,
+        });
+        completedNavigations += 1;
+      }
+    }
+    const garbageCollectionAfter = await collectGarbage(cdpSession);
+    await waitForAnimationFrames(page);
+    const cdpAfter = await collectCdpMetrics(cdpSession);
+    const domAfter = await collectDomSnapshot(page);
+    growthProbe = {
+      completedNavigations,
+      configuredNavigations: GROWTH_PROBE_CYCLES * GROWTH_PROBE_NAVIGATIONS.length,
+      cycles: GROWTH_PROBE_CYCLES,
+      cdp: summarizeCdpDelta(cdpBefore, cdpAfter),
+      dom: {
+        after: domAfter,
+        before: domBefore,
+        totalNodesDelta: domAfter.totalNodes - domBefore.totalNodes,
+      },
+      forcedGarbageCollection: {
+        after: garbageCollectionAfter,
+        before: garbageCollectionBefore,
+      },
+    };
+  }
   return {
     flow: {
       initial: initialFlow,
       final: finalFlow,
     },
+    growthProbe,
     resources: normalizeResources(browserMetrics.resources),
     tabSwitchDetails,
     timings: {
@@ -2235,6 +2625,10 @@ async function runAppAuthLargeTabsScenario(page, options) {
       mountedPlantRows: finalFlow.plantRows,
       resourceEncodedBytes: browserMetrics.resources.totals.encodedBodySize,
       resourceTransferBytes: browserMetrics.resources.totals.transferSize,
+      apiDecodedResponseBytes: browserMetrics.resources.api.totals.decodedBodySize,
+      apiEncodedResponseBytes: browserMetrics.resources.api.totals.encodedBodySize,
+      repeatedNavigationJsHeapUsedDeltaBytes: repeatedNavigationCdpDelta.jsHeapUsedDeltaBytes,
+      repeatedNavigationNodesDelta: finalFlow.repeatedNavigation.dom.totalNodesDelta,
       responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
       warmInsightsToMapScriptDurationMs: switchByName.warmInsightsToMap.cdpDelta.scriptDurationMs,
       warmInsightsToMapStyleLayoutDurationMs: switchByName.warmInsightsToMap.cdpDelta.styleLayoutDurationMs,
@@ -2242,13 +2636,147 @@ async function runAppAuthLargeTabsScenario(page, options) {
   };
 }
 
-async function runMeasuredScenario(browser, options, runIndex) {
+async function assertBrowserDeviceProfile(page, options) {
+  const deviceProfile = options.deviceProfile ?? "desktop";
+  const contextOptions = createBrowserContextOptions(options);
+  const runtime = await page.evaluate(() => ({
+    coarsePointer: window.matchMedia("(pointer: coarse)").matches,
+    innerHeight: window.innerHeight,
+    innerWidth: window.innerWidth,
+    maxTouchPoints: navigator.maxTouchPoints,
+    userAgent: navigator.userAgent,
+  }));
+  const expectedViewport = contextOptions.viewport;
+  if (
+    runtime.innerWidth !== expectedViewport.width
+    || runtime.innerHeight !== expectedViewport.height
+  ) {
+    throw new Error(
+      `Browser profile ${deviceProfile} viewport mismatch: expected ${expectedViewport.width}x${expectedViewport.height}, got ${runtime.innerWidth}x${runtime.innerHeight}`,
+    );
+  }
+  if (deviceProfile === "pixel-7") {
+    if (runtime.maxTouchPoints <= 0) {
+      throw new Error("Browser profile pixel-7 did not expose touch input");
+    }
+    if (!runtime.userAgent.includes("Pixel 7")) {
+      throw new Error("Browser profile pixel-7 did not expose the Pixel 7 user agent");
+    }
+  } else if (runtime.maxTouchPoints !== 0) {
+    throw new Error("Browser profile desktop unexpectedly exposed touch input");
+  }
+  return {
+    ...runtime,
+    deviceProfile,
+  };
+}
+
+function assertValidBrowserSample({ consoleMessages, pageErrors, runIndex }) {
+  if (consoleMessages.length === 0 && pageErrors.length === 0) return;
+  const messages = [
+    ...consoleMessages.map((message) => `console error: ${message}`),
+    ...pageErrors.map((message) => `page error: ${message}`),
+  ];
+  throw new Error(`Performance run ${runIndex} recorded browser errors: ${messages.join(" | ")}`);
+}
+
+async function selectLivePerformanceGarden(page, gardenName, timeoutMs) {
+  if (!gardenName) return null;
+  const gardenSelector = page.locator("[data-garden-select]:visible").first();
+  await gardenSelector.waitFor({ state: "visible", timeout: timeoutMs });
+  const gardenId = await gardenSelector.evaluate((select, expectedName) => {
+    if (!(select instanceof HTMLSelectElement)) return "";
+    const option = [...select.options].find((candidate) => (
+      candidate.textContent?.trim().startsWith(`${expectedName} (`)
+    ));
+    return option?.value ?? "";
+  }, gardenName);
+  if (!gardenId) {
+    throw new Error(`Live performance garden was not available: ${gardenName}`);
+  }
+  const gardenRefresh = page.waitForResponse((response) => {
+    try {
+      const request = response.request();
+      const url = new URL(response.url());
+      return request.method() === "GET"
+        && url.pathname === `/api/gardens/${gardenId}/map-objects`
+        && response.ok();
+    } catch {
+      return false;
+    }
+  }, { timeout: timeoutMs });
+  await gardenSelector.selectOption(gardenId);
+  await gardenRefresh;
+  return Number(gardenId);
+}
+
+async function createLiveSessionStorageState(browser, options, credentials, gardenName = "") {
+  if (!credentials) return null;
   const context = await browser.newContext(createBrowserContextOptions(options));
+  const networkGuard = await installLiveNetworkGuard(context, options);
+  try {
+    const page = await context.newPage();
+    const response = await page.goto(options.url, {
+      waitUntil: "domcontentloaded",
+      timeout: options.timeoutMs,
+    });
+    if (!response || !response.ok()) {
+      throw new Error(`Live session bootstrap failed with status ${response?.status() ?? "unknown"}`);
+    }
+    await signInThroughSessionForm(page, credentials.username, credentials.password);
+    await dismissProactivePasskeyPrompt(page);
+    const gardenId = await selectLivePerformanceGarden(page, gardenName, options.timeoutMs);
+    if (gardenId !== null) {
+      const mapTab = page.locator(tabSelectorForViewport(options, "map"));
+      await mapTab.click({ timeout: options.timeoutMs });
+      await page.waitForFunction(() => {
+        const grid = document.querySelector("#map-grid");
+        const mapView = document.querySelector("#map-view");
+        const activeMapTab = document.querySelector("#top-tab-map");
+        return (
+          grid instanceof HTMLElement
+          && mapView instanceof HTMLElement
+          && !mapView.hidden
+          && !grid.querySelector(".map-grid-loading")
+          && grid.querySelector(".plot") !== null
+          && activeMapTab?.getAttribute("aria-current") === "page"
+        );
+      }, undefined, { timeout: options.timeoutMs });
+    }
+    networkGuard.assertNoBlockedRequests();
+    return {
+      gardenId,
+      storageState: await context.storageState(),
+    };
+  } finally {
+    await context.close();
+  }
+}
+
+async function runMeasuredScenario(browser, options, runIndex, liveSession = null) {
+  const context = await browser.newContext({
+    ...createBrowserContextOptions(options),
+    ...(!options.stubApi ? {
+      extraHTTPHeaders: {
+        "X-GardenOps-Performance-Probe": "1",
+        ...(options.evidenceLabel
+          ? { "X-GardenOps-Performance-Probe-Label": options.evidenceLabel }
+          : {}),
+      },
+    } : {}),
+    ...(liveSession ? { storageState: liveSession.storageState } : {}),
+  });
+  const networkGuard = options.stubApi ? null : await installLiveNetworkGuard(context, options);
   try {
     if (options.stubApi) {
       await installScenarioRoutes(context, options.scenario);
     }
     const page = await context.newPage();
+    if (liveSession?.gardenId) {
+      await page.addInitScript((gardenId) => {
+        sessionStorage.setItem("gardenops-active-garden-id", String(gardenId));
+      }, liveSession.gardenId);
+    }
     const apiResponseTracker = createApiResponseTracker(page, options.scenario);
     const consoleMessages = [];
     const pageErrors = [];
@@ -2264,9 +2792,18 @@ async function runMeasuredScenario(browser, options, runIndex) {
         : options.scenario === "app-auth"
           ? await runAppAuthScenario(page, options)
           : await runAppUnauthScenario(page, options);
+      await apiResponseTracker.flush();
       apiResponseTracker.assertNoUnexpectedResponses();
+      networkGuard?.assertNoBlockedRequests();
+      const browserProfile = await assertBrowserDeviceProfile(page, options);
+      assertValidBrowserSample({ consoleMessages, pageErrors, runIndex });
+      const apiResponseSummary = apiResponseTracker.summary();
+      result.timings.apiAppServerDurationMs = apiResponseSummary.appServerDurationMs;
+      result.timings.apiResponseCount = apiResponseSummary.responseCount;
+      result.timings.apiAppServerTimedResponseCount = apiResponseSummary.appServerTimedResponseCount;
       return {
         ...result,
+        browserProfile,
         consoleErrors: consoleMessages,
         pageErrors,
         run: runIndex,
@@ -2537,10 +3074,7 @@ function printHuman(result, outputPath) {
       `App ready: ${metricSummary("appReadyMs")}`,
     );
     console.log(
-      `Browser post-frame proxy (budgeted; not guaranteed first presentation): ${transitionSummary("mapToGarden")}; ${transitionSummary("gardenToInsights")}; ${transitionSummary("insightsToMap")}`,
-    );
-    console.log(
-      `Warm browser post-frame proxy (budgeted): ${transitionSummary("warmMapToGarden")}; ${transitionSummary("warmGardenToInsights")}; ${transitionSummary("warmInsightsToMap")}`,
+      `Browser post-frame proxy (budgeted; not guaranteed first presentation): ${LARGE_TAB_TRANSITIONS.map(({ name }) => transitionSummary(name)).join("; ")}`,
     );
     console.log(
       `Browser post-frame aggregate max: ${metricSummary("maxTabSwitchBrowserPostFrameMs")}; browser readiness aggregate max: ${metricSummary("maxTabSwitchBrowserReadyMs")}`,
@@ -2665,9 +3199,25 @@ async function main() {
       headless: !options.headful,
     });
     const browserVersion = browser.version();
+    const liveSession = await createLiveSessionStorageState(
+      browser,
+      options,
+      liveCredentialsFor(options),
+      liveGardenNameFor(options),
+    );
+    const warmupRuns = [];
+    for (let i = 1; i <= options.warmupRuns; i += 1) {
+      warmupRuns.push(
+        await runMeasuredScenario(browser, {
+          ...options,
+          growthProbe: options.scenario === "app-auth-large-tabs"
+            && !options.skipGrowthProbe && i === 1,
+        }, `warmup-${i}`, liveSession),
+      );
+    }
     const runs = [];
     for (let i = 1; i <= options.runs; i += 1) {
-      runs.push(await runMeasuredScenario(browser, options, i));
+      runs.push(await runMeasuredScenario(browser, options, i, liveSession));
     }
     result = {
       browserPath,
@@ -2686,6 +3236,8 @@ async function main() {
       stubApi: options.stubApi,
       summary: summarizeRuns(runs, options.scenario),
       url: options.url,
+      warmupRuns,
+      growthProbe: warmupRuns.find((run) => run.growthProbe)?.growthProbe ?? null,
       runs,
     };
 
@@ -2743,12 +3295,16 @@ module.exports = {
   buildMeasurementMetadata,
   cleanupManagedResources,
   compareSummaries,
+  createLiveSessionStorageState,
   createApiResponseTracker,
   emitSuccessAfterCleanup,
   enforceBudgets,
   installScenarioRoutes,
+  installLiveNetworkGuard,
   isReadyStatus,
   metricStats,
+  liveCredentialsFor,
+  liveGardenNameFor,
   parseArgs,
   persistAndValidateResult,
   request,
