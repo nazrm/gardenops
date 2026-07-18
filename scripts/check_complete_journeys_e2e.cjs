@@ -122,10 +122,13 @@ const PHASE_EIGHT_ALLOWED_TABLES = [
 ];
 const PHASE_NINE_LARGE_GARDEN_NAME = "Complete Journeys Scale Large";
 const PHASE_NINE_DEVICE_PROFILES = ["desktop", "pixel-7"];
+const PHASE_NINE_FOCUS_MATRIX_IDS = [
+  "M3", "D1", "D2", "D4", "D5", "P1", "P2", "P4", "R2", "CROSS-01",
+];
 const PHASE_NINE_MEASURED_RUNS = 7;
 const PHASE_NINE_TIMEOUT_MS = 120_000;
 const PHASE_NINE_WARMUP_RUNS = 1;
-const PHASE_NINE_AUTH_BOOTSTRAP_COUNT = PHASE_NINE_DEVICE_PROFILES.length + 1;
+const PHASE_NINE_AUTH_BOOTSTRAP_COUNT = PHASE_NINE_DEVICE_PROFILES.length * 2 + 1;
 
 function phaseSelected(phase) {
   return phase >= PHASE && phase <= THROUGH_PHASE;
@@ -1129,6 +1132,17 @@ function phaseNinePerformanceResultPath(deviceProfile) {
   return target;
 }
 
+function phaseNineFocusMatrixResultPath(deviceProfile) {
+  assert(PHASE_NINE_DEVICE_PROFILES.includes(deviceProfile),
+    `Unsupported Phase 9 focus-matrix device profile: ${deviceProfile}`);
+  const target = path.resolve(ARTIFACT_DIR, `phase-nine-focus-matrix-${deviceProfile}.json`);
+  assert(path.dirname(target) === path.resolve(ARTIFACT_DIR),
+    "Phase 9 focus-matrix evidence must remain directly inside the artifact directory");
+  assert(!fs.existsSync(target),
+    "Phase 9 focus-matrix evidence must not overwrite a prior result");
+  return target;
+}
+
 function phaseNineQueryEvidencePath() {
   const target = path.resolve(ARTIFACT_DIR, "phase-nine-query-evidence.jsonl");
   assert(path.dirname(target) === path.resolve(ARTIFACT_DIR),
@@ -1166,6 +1180,7 @@ function assertPhaseNineQueryEvidence(evidencePath) {
   const contents = fs.readFileSync(evidencePath, "utf8").trim();
   assert(contents, "Phase 9 query evidence is empty");
   const byPath = new Map();
+  const baselineByPath = new Map();
   const byLabelPath = new Map();
   let requestCount = 0;
   let totalQueryCount = 0;
@@ -1183,6 +1198,11 @@ function assertPhaseNineQueryEvidence(evidencePath) {
     const values = byPath.get(endpoint) ?? [];
     values.push(record.query_count);
     byPath.set(endpoint, values);
+    if (/^phase-nine-large-(?:desktop|pixel-7)$/.test(record.probe_label)) {
+      const baselineValues = baselineByPath.get(endpoint) ?? [];
+      baselineValues.push(record.query_count);
+      baselineByPath.set(endpoint, baselineValues);
+    }
     const labelKey = `${record.probe_label}\u0000${endpoint}`;
     const labelValues = byLabelPath.get(labelKey) ?? [];
     labelValues.push(record.query_count);
@@ -1196,7 +1216,7 @@ function assertPhaseNineQueryEvidence(evidencePath) {
     "/api/plants",
     "/api/tasks",
   ]) {
-    const values = byPath.get(endpoint) ?? [];
+    const values = baselineByPath.get(endpoint) ?? [];
     assert(values.length >= PHASE_NINE_DEVICE_PROFILES.length,
       `Phase 9 query evidence did not cover ${endpoint} on both device profiles`);
     assert(new Set(values).size === 1,
@@ -1365,8 +1385,73 @@ function readPhaseNinePerformanceResult(resultPath, deviceProfile) {
   };
 }
 
+function phaseNineFocusMetricName(focusId) {
+  return `focus${focusId.replace(/[^A-Z0-9]/g, "")}BrowserPostFrameMs`;
+}
+
+function readPhaseNineFocusMatrixResult(resultPath, deviceProfile) {
+  const result = readJson(resultPath);
+  assert(result?.measurement?.schemaVersion === 6,
+    "Phase 9 focus-matrix schema version is unsupported");
+  assert(result.stubApi === false && result.scenario === "app-auth-focus-matrix",
+    "Phase 9 focus-matrix must measure the real authenticated flow");
+  assert(result?.provenance?.comparison?.apiMode === "live"
+    && result?.provenance?.comparison?.scenario === "app-auth-focus-matrix"
+    && result?.provenance?.comparison?.options?.deviceProfile === deviceProfile
+    && result?.provenance?.comparison?.options?.timeoutMs === PHASE_NINE_TIMEOUT_MS,
+  "Phase 9 focus-matrix provenance does not match the requested profile");
+  assert(Array.isArray(result.warmupRuns) && result.warmupRuns.length === PHASE_NINE_WARMUP_RUNS,
+    "Phase 9 focus-matrix warmup run count is unexpected");
+  assert(Array.isArray(result.runs) && result.runs.length === PHASE_NINE_MEASURED_RUNS,
+    "Phase 9 focus-matrix measured run count is unexpected");
+  for (const run of [...result.warmupRuns, ...result.runs]) {
+    assert(run?.browserProfile?.deviceProfile === deviceProfile,
+      "Phase 9 focus-matrix browser profile did not match its requested device");
+    assert(Array.isArray(run.consoleErrors) && run.consoleErrors.length === 0
+      && Array.isArray(run.pageErrors) && run.pageErrors.length === 0,
+    "Phase 9 focus-matrix browser run emitted console or page errors");
+    assert(run?.flow?.initialGarden?.name?.startsWith(`${PHASE_NINE_LARGE_GARDEN_NAME} (`),
+      "Phase 9 focus-matrix run did not begin in the seeded large garden");
+    assert(Array.isArray(run.focusMatrix)
+      && canonicalJson(run.focusMatrix.map((proof) => proof?.focusId))
+        === canonicalJson(PHASE_NINE_FOCUS_MATRIX_IDS),
+    "Phase 9 focus-matrix run did not prove every planned focus in order");
+    for (const proof of run.focusMatrix) {
+      assert(proof && typeof proof === "object"
+        && PHASE_NINE_FOCUS_MATRIX_IDS.includes(proof.focusId)
+        && Number.isSafeInteger(proof.activeGarden?.id) && proof.activeGarden.id > 0
+        && typeof proof.activeGarden?.name === "string" && proof.activeGarden.name.length > 0
+        && typeof proof.surface === "string" && proof.surface.length > 0
+        && typeof proof.expectedVisibleSeededContent?.text === "string"
+        && proof.expectedVisibleSeededContent.text.length > 0
+        && Array.isArray(proof.scopedRequests?.expectedPaths)
+        && Array.isArray(proof.scopedRequests?.observed)
+        && proof.browserErrors?.console?.length === 0 && proof.browserErrors?.page?.length === 0
+        && Number.isFinite(proof.timing?.browserReadyMs) && proof.timing.browserReadyMs >= 0
+        && Number.isFinite(proof.timing?.browserPostFrameMs)
+        && proof.timing.browserPostFrameMs >= proof.timing.browserReadyMs,
+      "Phase 9 focus-matrix proof has an invalid user-facing interaction boundary");
+    }
+  }
+  const metrics = result?.summary?.metrics ?? {};
+  const focus_metrics_p75_ms = Object.fromEntries(PHASE_NINE_FOCUS_MATRIX_IDS.map((focusId) => {
+    const p75 = metrics?.[phaseNineFocusMetricName(focusId)]?.p75;
+    assert(Number.isFinite(p75) && p75 >= 0,
+      `Phase 9 focus-matrix ${focusId} browser post-frame p75 is missing`);
+    return [focusId, p75];
+  }));
+  return {
+    device_profile: deviceProfile,
+    focus_ids: PHASE_NINE_FOCUS_MATRIX_IDS,
+    focus_metrics_p75_ms,
+    measured_runs: result.runs.length,
+    warmup_runs: result.warmupRuns.length,
+  };
+}
+
 function runPhaseNinePerformanceProbes() {
   const results = [];
+  const focusMatrixResults = [];
   const queryEvidencePath = phaseNineQueryEvidencePath();
   const queryPlansPath = phaseNineQueryPlansPath();
   for (const deviceProfile of PHASE_NINE_DEVICE_PROFILES) {
@@ -1397,6 +1482,33 @@ function runPhaseNinePerformanceProbes() {
       stdio: ["ignore", "pipe", "pipe"],
     });
     results.push(readPhaseNinePerformanceResult(resultPath, deviceProfile));
+    const focusMatrixResultPath = phaseNineFocusMatrixResultPath(deviceProfile);
+    execFileSync(process.execPath, [
+      path.join(ROOT, "scripts", "check_page_performance.cjs"),
+      "--url", BASE_URL,
+      "--no-api-stubs",
+      "--scenario", "app-auth-focus-matrix",
+      "--device-profile", deviceProfile,
+      "--evidence-label", `phase-nine-focus-${deviceProfile}`,
+      "--warmup-runs", String(PHASE_NINE_WARMUP_RUNS),
+      "--runs", String(PHASE_NINE_MEASURED_RUNS),
+      "--timeout-ms", String(PHASE_NINE_TIMEOUT_MS),
+      "--output", focusMatrixResultPath,
+      "--json",
+    ], {
+      cwd: ROOT,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GARDENOPS_PAGE_PERF_GARDEN_NAME: PHASE_NINE_LARGE_GARDEN_NAME,
+        GARDENOPS_PAGE_PERF_PASSWORD: PASSWORD,
+        GARDENOPS_PAGE_PERF_USERNAME: USERNAME,
+        GARDENOPS_PERFORMANCE_QUERY_EVIDENCE_PATH: queryEvidencePath,
+      },
+      maxBuffer: 32 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    focusMatrixResults.push(readPhaseNineFocusMatrixResult(focusMatrixResultPath, deviceProfile));
   }
   const smallResultPath = phaseNineQueryScaleResultPath("small");
   execFileSync(process.execPath, [
@@ -1452,6 +1564,7 @@ function runPhaseNinePerformanceProbes() {
   });
   return {
     browser_profiles: results,
+    focus_matrix_profiles: focusMatrixResults,
     query_evidence: assertPhaseNineQueryEvidence(queryEvidencePath),
     query_plans: assertPhaseNineQueryPlans(queryPlansPath),
   };
@@ -1466,14 +1579,49 @@ function assertPhaseNineScaleFixtures(preparation) {
   ]), "Phase 9 scale fixture profiles are incomplete");
   const large = preparation.profiles.large;
   assert(large?.counts?.plants === 900 && large?.counts?.plots === 600
-    && large?.counts?.garden_tasks === 900 && Array.isArray(large?.slugs)
+    && large?.counts?.garden_tasks === 900 && large?.counts?.indoor_assignments === 1
+    && large?.counts?.inventory_items === 300
+    && large?.counts?.inventory_transactions === 1800
+    && large?.counts?.user_saved_views === 1 && Array.isArray(large?.slugs)
     && large.slugs.length === 1,
   "Phase 9 large scale fixture does not match its contract");
+  const historyHeavy = preparation.profiles["history-heavy"];
+  assert(historyHeavy?.counts?.garden_tasks === 2000
+    && historyHeavy?.counts?.garden_journal_entries === 1000
+    && historyHeavy?.counts?.garden_issues === 300
+    && historyHeavy?.counts?.notification_events === 240
+    && historyHeavy?.counts?.weather_cache === 300
+    && historyHeavy?.counts?.inventory_items === 240
+    && historyHeavy?.counts?.inventory_transactions === 2400
+    && Array.isArray(historyHeavy?.slugs) && historyHeavy.slugs.length === 1,
+  "Phase 9 history-heavy fixture does not match its contract");
+  const multiGarden = preparation.profiles["multi-garden"];
+  assert(multiGarden?.counts?.gardens === 4 && multiGarden?.counts?.plots === 160
+    && multiGarden?.counts?.plants === 240 && multiGarden?.counts?.indoor_assignments === 4
+    && multiGarden?.counts?.inventory_items === 120
+    && multiGarden?.counts?.inventory_transactions === 480
+    && Array.isArray(multiGarden?.slugs) && multiGarden.slugs.length === 4,
+  "Phase 9 multi-garden fixture does not match its contract");
   return {
     large: {
       garden_tasks: large.counts.garden_tasks,
+      indoor_assignments: large.counts.indoor_assignments,
+      inventory_items: large.counts.inventory_items,
+      inventory_transactions: large.counts.inventory_transactions,
       plants: large.counts.plants,
       plots: large.counts.plots,
+    },
+    history_heavy: {
+      garden_journal_entries: historyHeavy.counts.garden_journal_entries,
+      garden_issues: historyHeavy.counts.garden_issues,
+      garden_tasks: historyHeavy.counts.garden_tasks,
+      notification_events: historyHeavy.counts.notification_events,
+      weather_cache: historyHeavy.counts.weather_cache,
+    },
+    multi_garden: {
+      gardens: multiGarden.counts.gardens,
+      plants: multiGarden.counts.plants,
+      plots: multiGarden.counts.plots,
     },
     profile_names: Object.keys(preparation.profiles).sort(),
   };
@@ -7376,8 +7524,27 @@ function sanitizePhaseNineEvidence(value) {
         warmup_runs: safeNonnegativeInteger(profile.warmup_runs),
       }))
     : [];
+  const focusMatrixProfiles = Array.isArray(value.focus_matrix_profiles)
+    ? value.focus_matrix_profiles
+      .filter((profile) => profile && typeof profile === "object")
+      .map((profile) => ({
+        device_profile: PHASE_NINE_DEVICE_PROFILES.includes(profile.device_profile)
+          ? profile.device_profile : null,
+        focus_ids: Array.isArray(profile.focus_ids)
+          ? profile.focus_ids.filter((focusId) => PHASE_NINE_FOCUS_MATRIX_IDS.includes(focusId))
+          : [],
+        focus_metrics_p75_ms: Object.fromEntries(PHASE_NINE_FOCUS_MATRIX_IDS.map((focusId) => {
+          const valueForFocus = profile.focus_metrics_p75_ms?.[focusId];
+          return [focusId, Number.isFinite(valueForFocus) && valueForFocus >= 0
+            ? valueForFocus : null];
+        })),
+        measured_runs: safeNonnegativeInteger(profile.measured_runs),
+        warmup_runs: safeNonnegativeInteger(profile.warmup_runs),
+      }))
+    : [];
   return {
     browser_profiles: browserProfiles,
+    focus_matrix_profiles: focusMatrixProfiles,
     auth: {
       administrator_sessions_added: safeNonnegativeInteger(
         value.auth?.administrator_sessions_added,
@@ -7387,8 +7554,29 @@ function sanitizePhaseNineEvidence(value) {
     fixture: {
       large: {
         garden_tasks: safeNonnegativeInteger(value.fixture?.large?.garden_tasks),
+        indoor_assignments: safeNonnegativeInteger(value.fixture?.large?.indoor_assignments),
+        inventory_items: safeNonnegativeInteger(value.fixture?.large?.inventory_items),
+        inventory_transactions: safeNonnegativeInteger(
+          value.fixture?.large?.inventory_transactions,
+        ),
         plants: safeNonnegativeInteger(value.fixture?.large?.plants),
         plots: safeNonnegativeInteger(value.fixture?.large?.plots),
+      },
+      history_heavy: {
+        garden_journal_entries: safeNonnegativeInteger(
+          value.fixture?.history_heavy?.garden_journal_entries,
+        ),
+        garden_issues: safeNonnegativeInteger(value.fixture?.history_heavy?.garden_issues),
+        garden_tasks: safeNonnegativeInteger(value.fixture?.history_heavy?.garden_tasks),
+        notification_events: safeNonnegativeInteger(
+          value.fixture?.history_heavy?.notification_events,
+        ),
+        weather_cache: safeNonnegativeInteger(value.fixture?.history_heavy?.weather_cache),
+      },
+      multi_garden: {
+        gardens: safeNonnegativeInteger(value.fixture?.multi_garden?.gardens),
+        plants: safeNonnegativeInteger(value.fixture?.multi_garden?.plants),
+        plots: safeNonnegativeInteger(value.fixture?.multi_garden?.plots),
       },
       profile_names: Array.isArray(value.fixture?.profile_names)
         ? value.fixture.profile_names
@@ -7788,7 +7976,9 @@ async function main() {
       ...(phaseSelected(6) ? ["OFF-01"] : []),
       ...(phaseSelected(7) ? ["M5", "I2", "I3", "I4", "C4", "C6"] : []),
       ...(phaseSelected(8) ? ["A1", "A3", "M1", "D1", "D2", "P1", "P2", "C3", "CROSS-01"] : []),
-      ...(phaseSelected(9) ? ["A1", "M1", "D1"] : []),
+      ...(phaseSelected(9) ? [
+        "M1", "M3", "D1", "D2", "D4", "D5", "P1", "P2", "P4", "R2", "CROSS-01",
+      ] : []),
     ],
     phase: PHASE,
     phase_nine: null,
@@ -7862,6 +8052,7 @@ async function main() {
   let phaseEightProfileEvidence = null;
   let phaseEightProfiles = [];
   let phaseNinePerformanceEvidence = [];
+  let phaseNineFocusMatrixEvidence = [];
   let phaseNineAuthEvidence = null;
   let phaseNineDatabase = null;
   let phaseNineQueryEvidence = null;
@@ -8128,6 +8319,7 @@ async function main() {
       currentStage = "phase-nine-real-backend-performance";
       const phaseNineProbes = runPhaseNinePerformanceProbes();
       phaseNinePerformanceEvidence = phaseNineProbes.browser_profiles;
+      phaseNineFocusMatrixEvidence = phaseNineProbes.focus_matrix_profiles;
       phaseNineQueryEvidence = phaseNineProbes.query_evidence;
       phaseNineQueryPlanEvidence = phaseNineProbes.query_plans;
       currentStage = "phase-nine-auth-boundary";
@@ -9214,6 +9406,7 @@ async function main() {
     manifest.phase_nine = phaseNineRan ? {
       auth: phaseNineAuthEvidence,
       browser_profiles: phaseNinePerformanceEvidence,
+      focus_matrix_profiles: phaseNineFocusMatrixEvidence,
       fixture: phaseNineScaleFixtureEvidence,
       query_evidence: phaseNineQueryEvidence,
       query_plans: phaseNineQueryPlanEvidence,

@@ -583,9 +583,13 @@ Do not use a developer-machine result from a dirty worktree as budget evidence,
 and do not weaken a budget to accept a regression. Query plan inspection is
 read-only and restricted to the disposable runner database.
 
-The tracked coverage contract is `tests/journey_coverage.yaml`. Validate open
-phases during implementation and require complete closure only in the final
-phase:
+The tracked coverage contract is `tests/journey_coverage.yaml` version 2. Each
+journey records a state for every coverage dimension. A `proven` dimension must
+name its own tracked evidence paths, while a `required` dimension must name the
+specific remaining blocker in that dimension's note. Use `not_applicable` only
+when the dimension does not apply to the journey, with a concrete rationale; it
+cannot defer applicable work to a later phase. Validate open dimensions during
+implementation and require complete closure only in the final phase:
 
 ```bash
 .venv/bin/python scripts/check_journey_coverage.py --allow-open

@@ -85,7 +85,85 @@ def test_page_performance_script_documents_authenticated_app_scenario() -> None:
     result = _run_page_perf("--help")
 
     assert result.returncode == 0
-    assert "app-unauth, app-auth, or app-auth-large-tabs" in result.stdout
+    assert "app-unauth, app-auth, app-auth-large-tabs, or app-auth-focus-matrix" in result.stdout
+
+
+def test_page_performance_focus_matrix_parser_requires_real_measured_backend() -> None:
+    result = _run_harness_probe(
+        """
+const { parseArgs } = require(process.env.PERF_SCRIPT);
+const parseError = (args) => {
+  try { parseArgs(args); return ""; } catch (error) { return error.message; }
+};
+const base = [
+  "--scenario", "app-auth-focus-matrix",
+  "--url", "http://127.0.0.1:8123/",
+];
+console.log(JSON.stringify({
+  stub: parseError(base),
+  skipped: parseError([...base, "--no-api-stubs", "--skip-interaction"]),
+  valid: parseArgs([...base, "--no-api-stubs"]).scenario,
+}));
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "stub": "--scenario app-auth-focus-matrix requires --no-api-stubs",
+        "skipped": "--scenario app-auth-focus-matrix requires measured interactions",
+        "valid": "app-auth-focus-matrix",
+    }
+
+
+def test_page_performance_focus_matrix_contract_is_complete_and_ordered() -> None:
+    result = _run_harness_probe(
+        """
+const { FOCUS_MATRIX_CONTRACT, FOCUS_MATRIX_IDS } = require(process.env.PERF_SCRIPT);
+console.log(JSON.stringify({ contract: FOCUS_MATRIX_CONTRACT, ids: FOCUS_MATRIX_IDS }));
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    expected_ids = ["M3", "D1", "D2", "D4", "D5", "P1", "P2", "P4", "R2", "CROSS-01"]
+    assert payload["ids"] == expected_ids
+    assert [entry["id"] for entry in payload["contract"]] == expected_ids
+    assert all(entry["surface"] for entry in payload["contract"])
+    assert all(entry["expected"] for entry in payload["contract"])
+    assert all(entry["requests"] for entry in payload["contract"])
+
+
+def test_page_performance_focus_matrix_static_proof_contract() -> None:
+    script = (ROOT / "scripts" / "check_page_performance.cjs").read_text()
+
+    for selector in (
+        "#mobile-tab-${tab}",
+        "#top-tab-${tab}",
+        "#attention-today-mobile-handle",
+        "#mobile-notification-btn",
+        "#notification-bell",
+        "#sub-mode-journal:visible",
+        "#sub-mode-issues:visible",
+        "#sub-mode-inventory:visible",
+        "#stats-mode-reports:visible",
+        "#mobile-garden-select",
+        "#garden-select",
+    ):
+        assert selector in script
+    for field in (
+        "focusId",
+        "activeGarden",
+        "surface",
+        "expectedVisibleSeededContent",
+        "scopedRequests",
+        "browserErrors",
+        "browserPostFrameMs",
+        "browserReadyMs",
+    ):
+        assert field in script
+    assert "installScenarioRoutes(context, options.scenario)" in script
+    assert 'options.scenario === "app-auth-focus-matrix" && options.stubApi' in script
 
 
 def test_page_performance_readiness_rejects_4xx() -> None:

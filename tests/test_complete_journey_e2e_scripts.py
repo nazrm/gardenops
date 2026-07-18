@@ -11,6 +11,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.seed_complete_journeys_e2e import (
     _frozen_attention_clock,
@@ -1369,6 +1370,11 @@ def test_phase_nine_checker_prepares_scale_profiles_with_the_complete_journey_se
 def test_phase_nine_checker_runs_authenticated_dual_device_real_backend_probes() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
     probe = _javascript_function_containing(checker_source, "check_page_performance.cjs")
+    focus_probe_start = checker_source.index("function runPhaseNinePerformanceProbes()")
+    focus_probe_end = checker_source.index(
+        "\nfunction assertPhaseNineScaleFixtures", focus_probe_start
+    )
+    focus_probe = checker_source[focus_probe_start:focus_probe_end]
     auth_boundary = _javascript_function_containing(
         checker_source,
         "Phase 9 performance bootstrap created unexpected user sessions",
@@ -1380,6 +1386,7 @@ def test_phase_nine_checker_runs_authenticated_dual_device_real_backend_probes()
 
     assert '"--scenario"' in probe
     assert '"app-auth-large-tabs"' in probe
+    assert '"app-auth-focus-matrix"' in focus_probe
     assert '"--no-api-stubs"' in probe
     assert re.search(
         r"PHASE_NINE_DEVICE_PROFILES\s*=\s*\[\s*[\"']desktop[\"']\s*,"
@@ -1388,6 +1395,8 @@ def test_phase_nine_checker_runs_authenticated_dual_device_real_backend_probes()
     )
     assert '"--device-profile"' in probe
     assert '"--output"' in probe
+    assert "phaseNineFocusMatrixResultPath" in focus_probe
+    assert "readPhaseNineFocusMatrixResult" in focus_probe
     assert "path.resolve(ARTIFACT_DIR" in result_path
     assert "path.dirname(target) === path.resolve(ARTIFACT_DIR)" in result_path
 
@@ -1404,12 +1413,39 @@ def test_phase_nine_checker_runs_authenticated_dual_device_real_backend_probes()
         probe,
         re.IGNORECASE,
     )
-    assert "PHASE_NINE_AUTH_BOOTSTRAP_COUNT = PHASE_NINE_DEVICE_PROFILES.length + 1" in (
+    assert "PHASE_NINE_AUTH_BOOTSTRAP_COUNT = PHASE_NINE_DEVICE_PROFILES.length * 2 + 1" in (
         checker_source
     )
     assert "PHASE_NINE_AUTH_BOOTSTRAP_COUNT" in auth_boundary
     for forbidden in ("/tmp", "os.tmpdir", "mkdtemp", '"--serve"'):
         assert forbidden not in probe
+
+
+def test_phase_nine_focus_matrix_proof_is_private_and_manifested_as_metrics_only() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    validator = _javascript_function_containing(
+        checker_source, "Phase 9 focus-matrix proof has an invalid user-facing interaction boundary"
+    )
+    sanitizer = _javascript_function_containing(checker_source, "const focusMatrixProfiles")
+
+    for focus_id in ("M3", "D1", "D2", "D4", "D5", "P1", "P2", "P4", "R2", "CROSS-01"):
+        assert f'"{focus_id}"' in checker_source
+    for field in (
+        "activeGarden",
+        "expectedVisibleSeededContent",
+        "scopedRequests",
+        "browserPostFrameMs",
+        "browserReadyMs",
+    ):
+        assert field in validator
+    assert "focus_metrics_p75_ms" in sanitizer
+    for unsafe_field in (
+        "activeGarden",
+        "expectedVisibleSeededContent",
+        "scopedRequests",
+        "observed",
+    ):
+        assert unsafe_field not in sanitizer
 
 
 def test_phase_nine_query_evidence_is_private_and_manifested_only_as_safe_aggregates() -> None:
@@ -1728,13 +1764,18 @@ try {
 
 
 def test_phase_two_d4_provider_boundary_remains_required() -> None:
-    coverage = (ROOT / "tests" / "journey_coverage.yaml").read_text(encoding="utf-8")
-    d4 = coverage.split("    id: D4\n", 1)[1].split("    id: D5\n", 1)[0]
+    coverage = yaml.safe_load(
+        (ROOT / "tests" / "journey_coverage.yaml").read_text(encoding="utf-8")
+    )
+    d4 = next(journey for journey in coverage["journeys"] if journey["id"] == "D4")
 
-    assert "    provider: required\n" in d4
-    assert "    provider: proven\n" not in d4
-    assert "Production notification event handling through an exact local SMTP delivery" in d4
-    assert "does not claim that provider boundary" in d4
+    assert d4["provider"] == "required"
+    assert d4["provider"] != "proven"
+    assert (
+        "Production notification event handling through an exact local SMTP delivery"
+        in d4["notes"]["provider"]
+    )
+    assert "does not claim that provider boundary" in d4["notes"]["provider"]
 
 
 def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None:

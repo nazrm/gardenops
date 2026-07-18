@@ -239,6 +239,10 @@ SCALE_PROFILE_TABLES = (
     "harvest_entries",
     "harvest_entry_plants",
     "weather_cache",
+    "indoor_assignments",
+    "inventory_items",
+    "inventory_transactions",
+    "user_saved_views",
 )
 SCALE_PROFILE_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
     "small": (
@@ -254,6 +258,8 @@ SCALE_PROFILE_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
             "notifications": 12,
             "harvest": 4,
             "weather": 4,
+            "inventory": 12,
+            "ledger_per_item": 3,
         },
     ),
     "large": (
@@ -269,6 +275,8 @@ SCALE_PROFILE_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
             "notifications": 900,
             "harvest": 300,
             "weather": 30,
+            "inventory": 300,
+            "ledger_per_item": 6,
         },
     ),
     "history-heavy": (
@@ -284,6 +292,8 @@ SCALE_PROFILE_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
             "notifications": 240,
             "harvest": 600,
             "weather": 300,
+            "inventory": 240,
+            "ledger_per_item": 10,
         },
     ),
     "multi-garden": tuple(
@@ -299,6 +309,8 @@ SCALE_PROFILE_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
             "notifications": 36,
             "harvest": 12,
             "weather": 12,
+            "inventory": 30,
+            "ledger_per_item": 4,
         }
         for index in range(1, 5)
     ),
@@ -4462,6 +4474,17 @@ def _scale_task_due_date(profile: str, index: int) -> str:
     return _scale_profile_date(profile, index)
 
 
+def _scale_profile_timestamp(
+    profile: str,
+    index: int,
+    *,
+    default_step_ms: int,
+    history_step_days: int = 1,
+) -> int:
+    step_ms = history_step_days * 86_400_000 if profile == "history-heavy" else default_step_ms
+    return SCALE_PROFILE_NOW_MS - index * step_ms
+
+
 def _seed_scale_profile_garden(
     conn,
     *,
@@ -4497,6 +4520,7 @@ def _seed_scale_profile_garden(
     )
 
     scale_prefix = f"{profile.replace('-', '_').upper()}-G{garden_number:02d}"
+    content_marker = f"{profile.replace('-', ' ').title()} G{garden_number:02d}"
     plant_ids = [
         f"SCALE-{scale_prefix}-PLANT-{index:04d}" for index in range(1, spec["plants"] + 1)
     ]
@@ -4517,7 +4541,7 @@ def _seed_scale_profile_garden(
         (
             (
                 plant_id,
-                f"Scale Plant {(index % 75) + 1:02d}",
+                f"Scale {content_marker} Plant {(index % 75) + 1:02d}",
                 f"Deterministica species {(index % 40) + 1}",
                 ("vegetable", "herb", "flower", "fruit")[index % 4],
                 ("May", "June", "July", "August")[index % 4],
@@ -4565,6 +4589,23 @@ def _seed_scale_profile_garden(
         "INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
         ((plot_id, admin_id, garden_id) for plot_id in plot_ids),
     )
+    indoor_plot_id = f"SCALE-{scale_prefix}-INDOOR"
+    indoor_room_label = f"Scale {content_marker} Propagation Shelf"
+    conn.execute(
+        """
+        INSERT INTO plots (
+            plot_id, garden_id, zone_code, zone_name, plot_number,
+            grid_row, grid_col, sub_zone, notes, color
+        )
+        VALUES (%s, %s, 'I', 'Indoor', 0, NULL, NULL, '',
+                'Disposable scale profile indoor fixture', '#6f91a6')
+        """,
+        (indoor_plot_id, garden_id),
+    )
+    conn.execute(
+        "INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
+        (indoor_plot_id, admin_id, garden_id),
+    )
     executemany(
         conn,
         """
@@ -4580,6 +4621,40 @@ def _seed_scale_profile_garden(
                 _scale_profile_date(profile, index),
             )
             for index, plant_id in enumerate(plant_ids)
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO plot_plants
+            (plot_id, plt_id, quantity, seen_growing, seen_growing_date, room_label)
+        VALUES (%s, %s, 3, 1, %s, %s)
+        """,
+        (
+            indoor_plot_id,
+            plant_ids[0],
+            _scale_profile_date(profile, garden_number),
+            indoor_room_label,
+        ),
+    )
+    saved_view_label = f"Scale {content_marker} Indoor View"
+    conn.execute(
+        """
+        INSERT INTO user_saved_views (
+            user_id, garden_id, view_type, label, filter_json, is_preset,
+            sort_order, created_at_ms, updated_at_ms
+        )
+        VALUES (%s, %s, 'plants', %s, %s, 0, 1, %s, %s)
+        """,
+        (
+            admin_id,
+            garden_id,
+            saved_view_label,
+            json.dumps(
+                {"plot_id": indoor_plot_id, "q": f"Scale {content_marker}"},
+                sort_keys=True,
+            ),
+            SCALE_PROFILE_NOW_MS,
+            SCALE_PROFILE_NOW_MS,
         ),
     )
 
@@ -4603,7 +4678,7 @@ def _seed_scale_profile_garden(
                 public_id,
                 garden_id,
                 ("water", "prune", "fertilize", "harvest")[index % 4],
-                f"Scale queued work {(index % 120) + 1:03d}",
+                f"Scale {content_marker} queued work {(index % 120) + 1:03d}",
                 "completed"
                 if (
                     (profile == "history-heavy" and index % 3)
@@ -4627,8 +4702,8 @@ def _seed_scale_profile_garden(
                     or (profile in {"large", "multi-garden"} and index % 4 == 0)
                 )
                 else None,
-                SCALE_PROFILE_NOW_MS - index * 60_000,
-                SCALE_PROFILE_NOW_MS - index * 60_000,
+                _scale_profile_timestamp(profile, index, default_step_ms=60_000),
+                _scale_profile_timestamp(profile, index, default_step_ms=60_000),
             )
             for index, public_id in enumerate(task_public_ids)
         ),
@@ -4671,11 +4746,15 @@ def _seed_scale_profile_garden(
                 garden_id,
                 ("observation", "care", "weather", "harvest")[index % 4],
                 _scale_profile_date(profile, index * 2),
-                f"Scale journal {(index % 180) + 1:03d}",
+                f"Scale {content_marker} journal {(index % 180) + 1:03d}",
                 json.dumps({"profile": profile, "season": index % 4}, sort_keys=True),
                 admin_id,
-                SCALE_PROFILE_NOW_MS - index * 120_000,
-                SCALE_PROFILE_NOW_MS - index * 120_000,
+                _scale_profile_timestamp(
+                    profile, index, default_step_ms=120_000, history_step_days=2
+                ),
+                _scale_profile_timestamp(
+                    profile, index, default_step_ms=120_000, history_step_days=2
+                ),
             )
             for index, public_id in enumerate(journal_public_ids)
         ),
@@ -4713,13 +4792,17 @@ def _seed_scale_profile_garden(
                 public_id,
                 garden_id,
                 ("pest", "disease", "damage")[index % 3],
-                f"Scale issue {(index % 60) + 1:02d}",
+                f"Scale {content_marker} issue {(index % 60) + 1:02d}",
                 "urgent" if index % 7 == 0 else "normal",
                 "resolved" if profile == "history-heavy" and index % 2 else "open",
                 json.dumps({"profile": profile, "sequence": index}, sort_keys=True),
                 admin_id,
-                SCALE_PROFILE_NOW_MS - index * 180_000,
-                SCALE_PROFILE_NOW_MS - index * 180_000,
+                _scale_profile_timestamp(
+                    profile, index, default_step_ms=180_000, history_step_days=7
+                ),
+                _scale_profile_timestamp(
+                    profile, index, default_step_ms=180_000, history_step_days=7
+                ),
             )
             for index, public_id in enumerate(issue_public_ids)
         ),
@@ -4833,11 +4916,13 @@ def _seed_scale_profile_garden(
                 garden_id,
                 (users[ADMIN_USERNAME], users[EDITOR_LOGIN[0]], users[VIEWER_LOGIN[0]])[index % 3],
                 "task_due" if index % 2 else "task_overdue",
-                f"Scale notification {(index % 90) + 1:02d}",
+                f"Scale {content_marker} notification {(index % 90) + 1:02d}",
                 task_public_ids[index % len(task_public_ids)],
                 json.dumps({"profile": profile, "sequence": index}, sort_keys=True),
                 1 if index % 5 == 0 else 0,
-                SCALE_PROFILE_NOW_MS - index * 360_000,
+                _scale_profile_timestamp(
+                    profile, index, default_step_ms=360_000, history_step_days=7
+                ),
             )
             for index in range(spec["notifications"])
         ),
@@ -4853,7 +4938,9 @@ def _seed_scale_profile_garden(
         (
             (
                 garden_id,
-                SCALE_PROFILE_NOW_MS - index * 86_400_000,
+                _scale_profile_timestamp(
+                    profile, index, default_step_ms=86_400_000, history_step_days=7
+                ),
                 json.dumps(
                     {
                         "profile": profile,
@@ -4869,6 +4956,74 @@ def _seed_scale_profile_garden(
         ),
     )
 
+    inventory_public_ids = [
+        f"inv_scale_{profile.replace('-', '_')}_g{garden_number:02d}_{index:05d}"
+        for index in range(1, spec["inventory"] + 1)
+    ]
+    executemany(
+        conn,
+        """
+        INSERT INTO inventory_items (
+            public_id, garden_id, plt_id, label, inventory_type, unit, created_at_ms
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            (
+                public_id,
+                garden_id,
+                plant_ids[index % len(plant_ids)] if index % 3 == 0 else None,
+                f"Scale {content_marker} Inventory {(index % 90) + 1:02d}",
+                ("seed", "bulb", "tuber", "division", "other")[index % 5],
+                ("packets", "pcs", "kg")[index % 3],
+                _scale_profile_timestamp(
+                    profile, index, default_step_ms=420_000, history_step_days=5
+                ),
+            )
+            for index, public_id in enumerate(inventory_public_ids)
+        ),
+    )
+    inventory_rows = conn.execute(
+        "SELECT id, public_id FROM inventory_items WHERE garden_id = %s ORDER BY public_id",
+        (garden_id,),
+    ).fetchall()
+    executemany(
+        conn,
+        """
+        INSERT INTO inventory_transactions (
+            item_id, garden_id, delta, reason, source_name, cost_minor,
+            occurred_on, storage_location, notes, actor_user_id,
+            journal_entry_id, created_at_ms
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                'Disposable deterministic scale ledger', %s, NULL, %s)
+        """,
+        (
+            (
+                int(row["id"]),
+                garden_id,
+                10 + ledger_index if ledger_index % 3 == 0 else -1,
+                ("purchased", "sowed", "adjusted")[ledger_index % 3],
+                f"Scale supplier {(item_index % 12) + 1:02d}",
+                500 + item_index * 10 if ledger_index % 3 == 0 else None,
+                _scale_profile_date(
+                    profile,
+                    item_index * spec["ledger_per_item"] + ledger_index,
+                ),
+                f"Shelf {(item_index % 16) + 1:02d}",
+                admin_id,
+                _scale_profile_timestamp(
+                    profile,
+                    item_index * spec["ledger_per_item"] + ledger_index,
+                    default_step_ms=480_000,
+                    history_step_days=2,
+                ),
+            )
+            for item_index, row in enumerate(inventory_rows)
+            for ledger_index in range(spec["ledger_per_item"])
+        ),
+    )
+
 
 def _scale_profile_projection(conn) -> dict[str, Any]:
     count_queries = {
@@ -4876,8 +5031,13 @@ def _scale_profile_projection(conn) -> dict[str, Any]:
         "garden_memberships": (
             "SELECT COUNT(*) AS count FROM garden_memberships WHERE garden_id = ANY(%s)"
         ),
-        "plots": "SELECT COUNT(*) AS count FROM plots WHERE garden_id = ANY(%s)",
-        "plot_ownership": "SELECT COUNT(*) AS count FROM plot_ownership WHERE garden_id = ANY(%s)",
+        "plots": (
+            "SELECT COUNT(*) AS count FROM plots WHERE garden_id = ANY(%s) AND zone_code <> 'I'"
+        ),
+        "plot_ownership": (
+            "SELECT COUNT(*) AS count FROM plot_ownership WHERE garden_id = ANY(%s) "
+            "AND plot_id IN (SELECT plot_id FROM plots WHERE zone_code <> 'I')"
+        ),
         "plants": (
             "SELECT COUNT(DISTINCT plt_id) AS count FROM plant_ownership WHERE garden_id = ANY(%s)"
         ),
@@ -4886,7 +5046,7 @@ def _scale_profile_projection(conn) -> dict[str, Any]:
         ),
         "plot_plants": (
             "SELECT COUNT(*) AS count FROM plot_plants WHERE plot_id IN "
-            "(SELECT plot_id FROM plots WHERE garden_id = ANY(%s))"
+            "(SELECT plot_id FROM plots WHERE garden_id = ANY(%s) AND zone_code <> 'I')"
         ),
         "garden_tasks": "SELECT COUNT(*) AS count FROM garden_tasks WHERE garden_id = ANY(%s)",
         "garden_task_plants": (
@@ -4925,6 +5085,19 @@ def _scale_profile_projection(conn) -> dict[str, Any]:
             "(SELECT id FROM harvest_entries WHERE garden_id = ANY(%s))"
         ),
         "weather_cache": "SELECT COUNT(*) AS count FROM weather_cache WHERE garden_id = ANY(%s)",
+        "indoor_assignments": (
+            "SELECT COUNT(*) AS count FROM plot_plants WHERE plot_id IN "
+            "(SELECT plot_id FROM plots WHERE garden_id = ANY(%s) AND zone_code = 'I')"
+        ),
+        "inventory_items": (
+            "SELECT COUNT(*) AS count FROM inventory_items WHERE garden_id = ANY(%s)"
+        ),
+        "inventory_transactions": (
+            "SELECT COUNT(*) AS count FROM inventory_transactions WHERE garden_id = ANY(%s)"
+        ),
+        "user_saved_views": (
+            "SELECT COUNT(*) AS count FROM user_saved_views WHERE garden_id = ANY(%s)"
+        ),
     }
     profiles: dict[str, Any] = {}
     for profile, specs in SCALE_PROFILE_SPECS.items():
@@ -4962,6 +5135,25 @@ def _scale_profile_projection(conn) -> dict[str, Any]:
                 "last_plant": str(identifiers["last_plant"]),
                 "last_task": str(identifiers["last_task"]),
             },
+            "fixtures": [
+                {
+                    "content_marker": f"{profile.replace('-', ' ').title()} G{index:02d}",
+                    "indoor_plot_id": (
+                        f"SCALE-{profile.replace('-', '_').upper()}-G{index:02d}-INDOOR"
+                    ),
+                    "indoor_plant_id": (
+                        f"SCALE-{profile.replace('-', '_').upper()}-G{index:02d}-PLANT-0001"
+                    ),
+                    "inventory_item_id": (
+                        f"inv_scale_{profile.replace('-', '_')}_g{index:02d}_00001"
+                    ),
+                    "saved_view_label": (
+                        f"Scale {profile.replace('-', ' ').title()} G{index:02d} Indoor View"
+                    ),
+                    "slug": slugs[index - 1],
+                }
+                for index, garden_id in enumerate(garden_ids, start=1)
+            ],
             "slugs": slugs,
         }
     return {"profiles": profiles, "schema_version": 1}

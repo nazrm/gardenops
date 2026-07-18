@@ -90,18 +90,20 @@ def _write_measurements(path: Path, measurements: list[dict[str, object]]) -> No
     )
 
 
-def test_tracked_pending_baseline_is_valid_and_inconclusive() -> None:
+def test_tracked_budgets_are_established_and_require_measurements() -> None:
     budgets = load_budgets(DEFAULT_BUDGETS)
 
+    assert [budget["baseline"]["status"] for budget in budgets] == [
+        "established",
+        "established",
+    ]
     results = evaluate(budgets, [])
 
     assert [(result.status, result.name) for result in results] == [
         ("INCONCLUSIVE", "M1-large-desktop-app-ready"),
-        ("INCONCLUSIVE", "D1-large-desktop-tab-switch"),
         ("INCONCLUSIVE", "M1-large-pixel-app-ready"),
-        ("INCONCLUSIVE", "D1-large-pixel-tab-switch"),
     ]
-    assert "pending" in results[0].detail
+    assert all(result.detail == "measurement is missing" for result in results)
 
 
 def test_measurement_passes_both_regression_thresholds() -> None:

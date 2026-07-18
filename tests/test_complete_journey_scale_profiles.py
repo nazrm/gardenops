@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -37,6 +38,10 @@ EXPECTED_COUNTS = {
         "harvest_entries": 4,
         "harvest_entry_plants": 4,
         "weather_cache": 4,
+        "indoor_assignments": 1,
+        "inventory_items": 12,
+        "inventory_transactions": 36,
+        "user_saved_views": 1,
     },
     "large": {
         "gardens": 1,
@@ -59,6 +64,10 @@ EXPECTED_COUNTS = {
         "harvest_entries": 300,
         "harvest_entry_plants": 300,
         "weather_cache": 30,
+        "indoor_assignments": 1,
+        "inventory_items": 300,
+        "inventory_transactions": 1800,
+        "user_saved_views": 1,
     },
     "history-heavy": {
         "gardens": 1,
@@ -81,6 +90,10 @@ EXPECTED_COUNTS = {
         "harvest_entries": 600,
         "harvest_entry_plants": 600,
         "weather_cache": 300,
+        "indoor_assignments": 1,
+        "inventory_items": 240,
+        "inventory_transactions": 2400,
+        "user_saved_views": 1,
     },
     "multi-garden": {
         "gardens": 4,
@@ -103,6 +116,10 @@ EXPECTED_COUNTS = {
         "harvest_entries": 48,
         "harvest_entry_plants": 48,
         "weather_cache": 48,
+        "indoor_assignments": 4,
+        "inventory_items": 120,
+        "inventory_transactions": 480,
+        "user_saved_views": 4,
     },
 }
 
@@ -258,6 +275,126 @@ def test_small_scale_profile_exercises_the_actionable_tasks_path(
     ).fetchall()
 
     assert [str(row["due_on"]) for row in rows] == ["2026-07-12"]
+
+
+def test_scale_profiles_include_explicit_indoor_assignment_and_saved_view(
+    scale_profiles: tuple[Any, dict[str, Any]],
+) -> None:
+    conn, projection = scale_profiles
+
+    for profile in projection["profiles"].values():
+        for fixture in profile["fixtures"]:
+            row = conn.execute(
+                """
+                SELECT plot.zone_code, assignment.plt_id, assignment.quantity,
+                       assignment.room_label, saved.view_type, saved.label,
+                       saved.filter_json
+                FROM plots AS plot
+                JOIN plot_plants AS assignment ON assignment.plot_id = plot.plot_id
+                JOIN gardens AS garden ON garden.id = plot.garden_id
+                JOIN user_saved_views AS saved ON saved.garden_id = garden.id
+                WHERE garden.slug = %s AND plot.plot_id = %s
+                """,
+                (fixture["slug"], fixture["indoor_plot_id"]),
+            ).fetchone()
+
+            assert row is not None
+            assert str(row["zone_code"]) == "I"
+            assert str(row["plt_id"]) == fixture["indoor_plant_id"]
+            assert int(row["quantity"]) == 3
+            assert str(row["room_label"]) == f"Scale {fixture['content_marker']} Propagation Shelf"
+            assert str(row["view_type"]) == "plants"
+            assert str(row["label"]) == fixture["saved_view_label"]
+            assert json.loads(str(row["filter_json"])) == {
+                "plot_id": fixture["indoor_plot_id"],
+                "q": f"Scale {fixture['content_marker']}",
+            }
+
+
+def test_scale_profiles_include_deterministic_inventory_ledger_volume(
+    scale_profiles: tuple[Any, dict[str, Any]],
+) -> None:
+    conn, projection = scale_profiles
+
+    for profile_name, profile in projection["profiles"].items():
+        expected_depth = seed.SCALE_PROFILE_SPECS[profile_name][0]["ledger_per_item"]
+        for fixture in profile["fixtures"]:
+            row = conn.execute(
+                """
+                SELECT item.public_id, COUNT(tx.id) AS transaction_count,
+                       COALESCE(SUM(tx.delta), 0) AS quantity
+                FROM inventory_items AS item
+                JOIN gardens AS garden ON garden.id = item.garden_id
+                LEFT JOIN inventory_transactions AS tx
+                  ON tx.item_id = item.id AND tx.garden_id = item.garden_id
+                WHERE garden.slug = %s AND item.public_id = %s
+                GROUP BY item.public_id
+                """,
+                (fixture["slug"], fixture["inventory_item_id"]),
+            ).fetchone()
+
+            assert row is not None
+            assert str(row["public_id"]) == fixture["inventory_item_id"]
+            assert int(row["transaction_count"]) == expected_depth
+            assert float(row["quantity"]) > 0
+
+
+def test_history_heavy_profile_spans_multiple_seasons_for_live_lists(
+    scale_profiles: tuple[Any, dict[str, Any]],
+) -> None:
+    conn, projection = scale_profiles
+    slug = projection["profiles"]["history-heavy"]["slugs"][0]
+
+    row = conn.execute(
+        """
+        SELECT
+            MAX(task.created_at_ms) - MIN(task.created_at_ms) AS task_span_ms,
+            (SELECT MAX(entry.created_at_ms) - MIN(entry.created_at_ms)
+             FROM garden_journal_entries AS entry WHERE entry.garden_id = garden.id)
+                AS journal_span_ms,
+            (SELECT MAX(issue.created_at_ms) - MIN(issue.created_at_ms)
+             FROM garden_issues AS issue WHERE issue.garden_id = garden.id)
+                AS issue_span_ms,
+            (SELECT MAX(note.created_at_ms) - MIN(note.created_at_ms)
+             FROM notification_events AS note WHERE note.garden_id = garden.id)
+                AS notification_span_ms,
+            (SELECT MAX(weather.fetched_at_ms) - MIN(weather.fetched_at_ms)
+             FROM weather_cache AS weather WHERE weather.garden_id = garden.id)
+                AS weather_span_ms
+        FROM gardens AS garden
+        JOIN garden_tasks AS task ON task.garden_id = garden.id
+        WHERE garden.slug = %s
+        GROUP BY garden.id
+        """,
+        (slug,),
+    ).fetchone()
+
+    assert row is not None
+    one_year_ms = 365 * 86_400_000
+    assert all(int(row[column]) > one_year_ms for column in row.keys())
+
+
+def test_multi_garden_profile_keeps_overlapping_names_but_distinct_content(
+    scale_profiles: tuple[Any, dict[str, Any]],
+) -> None:
+    conn, projection = scale_profiles
+    fixtures = projection["profiles"]["multi-garden"]["fixtures"]
+    rows = conn.execute(
+        """
+        SELECT garden.name, garden.slug, MIN(plant.name) AS first_plant_name
+        FROM gardens AS garden
+        JOIN plant_ownership AS ownership ON ownership.garden_id = garden.id
+        JOIN plants AS plant ON plant.plt_id = ownership.plt_id
+        WHERE garden.slug = ANY(%s)
+        GROUP BY garden.id, garden.name, garden.slug
+        ORDER BY garden.slug
+        """,
+        ([fixture["slug"] for fixture in fixtures],),
+    ).fetchall()
+
+    assert {str(row["name"]) for row in rows} == {"Complete Journeys Shared Garden"}
+    assert len({str(row["first_plant_name"]) for row in rows}) == 4
+    assert [str(row["slug"]) for row in rows] == [fixture["slug"] for fixture in fixtures]
 
 
 def test_apply_scale_profiles_cli_refuses_without_runner_child_guard() -> None:

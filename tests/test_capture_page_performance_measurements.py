@@ -139,7 +139,7 @@ def test_capture_combines_matching_desktop_and_pixel_results() -> None:
             (desktop, json.dumps(desktop).encode("utf-8")),
             (pixel, json.dumps(pixel).encode("utf-8")),
         ],
-        [budgets[0], budgets[2]],
+        [budgets[0], budgets[1]],
     )
 
     assert [measurement["budget"] for measurement in document["measurements"]] == [
@@ -155,5 +155,5 @@ def test_capture_rejects_a_selected_budget_without_matching_result() -> None:
     with pytest.raises(CaptureError, match="no matching page-performance result"):
         build_document(
             [(desktop, json.dumps(desktop).encode("utf-8"))],
-            [budgets[0], budgets[2]],
+            [budgets[0], budgets[1]],
         )

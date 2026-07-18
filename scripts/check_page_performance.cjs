@@ -28,7 +28,15 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const MOBILE_LAYOUT_BREAKPOINT_PX = 960;
 const MANAGED_CHILD_STOP_TIMEOUT_MS = 1_500;
 const DEVICE_PROFILES = new Set(["desktop", "pixel-7"]);
-const SCENARIOS = new Set(["app-unauth", "app-auth", "app-auth-large-tabs"]);
+const FOCUS_MATRIX_IDS = [
+  "M3", "D1", "D2", "D4", "D5", "P1", "P2", "P4", "R2", "CROSS-01",
+];
+const SCENARIOS = new Set([
+  "app-unauth",
+  "app-auth",
+  "app-auth-large-tabs",
+  "app-auth-focus-matrix",
+]);
 const LARGE_TAB_TRANSITIONS = [
   { name: "mapToActivityTasks", tab: "activity", readiness: "large-tasks" },
   { name: "activityTasksToGarden", tab: "garden", readiness: "large-garden" },
@@ -58,6 +66,28 @@ const GROWTH_PROBE_NAVIGATIONS = [
   { tab: "map", readiness: "large-map" },
 ];
 const SCENARIO_METRICS = {
+  "app-auth-focus-matrix": [
+    "appShellReadyMs",
+    "appReadyMs",
+    ...FOCUS_MATRIX_IDS.flatMap((focusId) => {
+      const metricId = focusId.replace(/[^A-Z0-9]/g, "");
+      return [
+        `focus${metricId}BrowserReadyMs`,
+        `focus${metricId}BrowserPostFrameMs`,
+        `focus${metricId}PlaywrightActionMs`,
+      ];
+    }),
+    "maxFocusBrowserReadyMs",
+    "maxFocusBrowserPostFrameMs",
+    "domContentLoadedMs",
+    "loadEventMs",
+    "firstContentfulPaintMs",
+    "apiAppServerDurationMs",
+    "apiDecodedResponseBytes",
+    "apiEncodedResponseBytes",
+    "apiResponseCount",
+    "resourceEncodedBytes",
+  ],
   "app-auth": [
     "appShellReadyMs",
     "appReadyMs",
@@ -132,7 +162,7 @@ Options:
   --url <url>                     Target URL. Defaults to http://127.0.0.1:5177/ with --serve.
   --host <host>                   Managed server host. Default: ${DEFAULT_HOST}.
   --port <port>                   Managed server port. Default: ${DEFAULT_PORT}.
-  --scenario <name>               Scenario to run: app-unauth, app-auth, or app-auth-large-tabs. Default: app-unauth.
+  --scenario <name>               Scenario to run: app-unauth, app-auth, app-auth-large-tabs, or app-auth-focus-matrix. Default: app-unauth.
   --no-api-stubs                  Measure a real loopback backend session; credentials come from GARDENOPS_PAGE_PERF_USERNAME and GARDENOPS_PAGE_PERF_PASSWORD.
   --skip-interaction              Measure load only; useful when live passkeys intercept Enter.
   --device-profile <name>         Browser context: desktop or pixel-7. Default: desktop.
@@ -326,6 +356,12 @@ function parseArgs(argv) {
 }
 
 function validateOptionCompatibility(options) {
+  if (options.scenario === "app-auth-focus-matrix" && options.stubApi) {
+    throw new Error("--scenario app-auth-focus-matrix requires --no-api-stubs");
+  }
+  if (options.scenario === "app-auth-focus-matrix" && options.skipInteraction) {
+    throw new Error("--scenario app-auth-focus-matrix requires measured interactions");
+  }
   if (!options.stubApi) {
     let target;
     try {
@@ -2124,6 +2160,355 @@ async function runAppAuthScenario(page, options) {
   };
 }
 
+const FOCUS_MATRIX_CONTRACT = [
+  {
+    id: "M3",
+    surface: "garden/indoor",
+    expected: "Propagation Shelf",
+    requests: ["/api/plots/:id/plants"],
+  },
+  { id: "D1", surface: "map/today", expected: "History Heavy G01 queued work", requests: ["/api/attention/today"] },
+  { id: "D2", surface: "activity/tasks", expected: "History Heavy G01 queued work", requests: ["/api/tasks"] },
+  { id: "D4", surface: "notifications/inbox", expected: "History Heavy G01 notification", requests: ["/api/notifications"] },
+  { id: "D5", surface: "insights/care", expected: "Weather", requests: ["/api/weather"] },
+  { id: "P1", surface: "activity/journal", expected: "History Heavy G01 journal", requests: ["/api/journal"] },
+  { id: "P2", surface: "activity/issues", expected: "History Heavy G01 issue", requests: ["/api/issues"] },
+  {
+    id: "P4",
+    surface: "garden/inventory",
+    expected: "Scale Large G01 Inventory",
+    requests: ["/api/inventory"],
+  },
+  { id: "R2", surface: "insights/statistics/reports", expected: "Overdue tasks", requests: ["/api/statistics/reports"] },
+  {
+    id: "CROSS-01",
+    surface: "map/cross-garden",
+    expected: "SCALE-MULTI-G02-PLOT-0001",
+    requests: ["/api/plots", "/api/gardens/:id/map-objects"],
+  },
+];
+
+function focusMetricId(focusId) {
+  return focusId.replace(/[^A-Z0-9]/g, "");
+}
+
+async function activeGardenProof(page, profile) {
+  return page.evaluate((selector) => {
+    const select = document.querySelector(selector);
+    if (!(select instanceof HTMLSelectElement)) {
+      throw new Error("Active garden selector is unavailable");
+    }
+    return {
+      id: Number(select.value),
+      name: select.selectedOptions[0]?.textContent?.trim() ?? "",
+    };
+  }, profile === "mobile" ? "#mobile-garden-select" : "#garden-select");
+}
+
+async function runAppAuthFocusMatrixScenario(page, options, browserDiagnostics) {
+  const { timeoutMs, url } = options;
+  const startedAt = performance.now();
+  const response = await page.goto(url, {
+    waitUntil: "domcontentloaded",
+    timeout: timeoutMs,
+  });
+  if (!response || !response.ok()) {
+    throw new Error(`Navigation failed with status ${response?.status() ?? "unknown"}`);
+  }
+  const gotoMs = performance.now() - startedAt;
+  await page.waitForSelector(".app-shell", { state: "visible", timeout: timeoutMs });
+  const appShellReadyMs = performance.now() - startedAt;
+  await page.waitForFunction(() => {
+    const grid = document.querySelector("#map-grid");
+    return grid instanceof HTMLElement
+      && !grid.querySelector(".map-grid-loading")
+      && grid.querySelector(".plot") !== null;
+  }, undefined, { timeout: timeoutMs });
+  const appReadyMs = performance.now() - startedAt;
+
+  const profile = buildViewportProfile(options).responsiveLayout === "mobile-breakpoint"
+    ? "mobile"
+    : "desktop";
+  const primarySelector = (tab) => tabSelectorForViewport(options, tab);
+  const visibleSeed = async (selector, text) => {
+    const match = page.locator(selector).filter({ hasText: text }).first();
+    await match.waitFor({ state: "visible", timeout: timeoutMs });
+    return selector;
+  };
+  const openPrimary = async (tab) => {
+    const selector = primarySelector(tab);
+    await page.locator(selector).click({ timeout: timeoutMs });
+    await page.waitForFunction((selectorToCheck) => {
+      const tabElement = document.querySelector(selectorToCheck);
+      return tabElement?.getAttribute("aria-selected") === "true"
+        || tabElement?.getAttribute("aria-current") === "page";
+    }, selector, { timeout: timeoutMs });
+  };
+  const openSubMode = async (parent, mode) => {
+    await openPrimary(parent);
+    const selector = `#sub-mode-${mode}:visible, [data-sub-mode='${mode}']:visible`;
+    await page.locator(selector).first().click({ timeout: timeoutMs });
+  };
+  const gardenSelector = profile === "mobile" ? "#mobile-garden-select" : "#garden-select";
+  const selectGardenByPrefix = async (prefix, optionIndex = 0) => {
+    if (profile === "mobile" && !await page.locator("body.mobile-utility-open").count()) {
+      await page.locator("#mobile-utility-btn").click({ timeout: timeoutMs });
+    }
+    const targetGardenId = await page.locator(gardenSelector).evaluate((select, selection) => {
+      if (!(select instanceof HTMLSelectElement)) return "";
+      return [...select.options]
+        .filter((option) => option.textContent?.trim().startsWith(`${selection.prefix} (`))
+        .at(selection.optionIndex)?.value ?? "";
+    }, { optionIndex, prefix });
+    if (!targetGardenId) throw new Error(`Seeded garden is unavailable: ${prefix}`);
+    await page.locator(gardenSelector).selectOption(targetGardenId, { timeout: timeoutMs });
+    await page.waitForFunction((gardenId) => (
+      sessionStorage.getItem("gardenops-active-garden-id") === gardenId
+      && !document.body.classList.contains("garden-switch-pending")
+    ), targetGardenId, { timeout: timeoutMs });
+    if (profile === "mobile") {
+      await page.locator("#mobile-utility-close-btn").click({ timeout: timeoutMs });
+    }
+    return targetGardenId;
+  };
+  const browserErrorsSince = (mark) => ({
+    console: browserDiagnostics.consoleMessages.slice(mark.console),
+    page: browserDiagnostics.pageErrors.slice(mark.page),
+  });
+
+  const focusMatrix = [];
+  const timings = {};
+  const measureFocus = async (contract, action, readiness) => {
+    const responses = [];
+    const pending = [];
+    const errorsMark = {
+      console: browserDiagnostics.consoleMessages.length,
+      page: browserDiagnostics.pageErrors.length,
+    };
+    const onResponse = (apiResponse) => {
+      let requestUrl;
+      try {
+        requestUrl = new URL(apiResponse.url());
+      } catch {
+        return;
+      }
+      if (!requestUrl.pathname.startsWith("/api/")) return;
+      const request = apiResponse.request();
+      pending.push(Promise.resolve(request.allHeaders?.() ?? request.headers()).then((headers) => {
+        responses.push({
+          gardenId: headers["x-garden-id"] ? Number(headers["x-garden-id"]) : null,
+          method: request.method(),
+          path: `${requestUrl.pathname}${requestUrl.search}`,
+          status: apiResponse.status(),
+        });
+      }));
+    };
+    page.on("response", onResponse);
+    const timingId = await page.evaluate(() => {
+      const state = window.__gardenopsFocusTiming ??= { entries: {}, nextId: 0 };
+      const id = String(++state.nextId);
+      const entry = { intentAtMs: null, listener: null };
+      const recordIntent = () => {
+        if (!Number.isFinite(entry.intentAtMs)) entry.intentAtMs = performance.now();
+      };
+      entry.listener = recordIntent;
+      for (const eventName of ["pointerdown", "click", "change", "input"]) {
+        document.addEventListener(eventName, recordIntent, true);
+      }
+      state.entries[id] = entry;
+      return id;
+    });
+    const nodeStartedAt = performance.now();
+    let playwrightActionMs;
+    let browserIntentAt;
+    let browserReadyAt;
+    let browserPostFrameAt;
+    try {
+      const actionStartedAt = performance.now();
+      await action();
+      playwrightActionMs = performance.now() - actionStartedAt;
+      await readiness();
+      ({ browserIntentAt, browserPostFrameAt, browserReadyAt } = await page.evaluate(async (id) => {
+        const entry = window.__gardenopsFocusTiming?.entries?.[id];
+        if (!entry) throw new Error("Missing focus interaction timing");
+        const readyAtMs = performance.now();
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const postFrameAtMs = performance.now();
+        for (const eventName of ["pointerdown", "click", "change", "input"]) {
+          document.removeEventListener(eventName, entry.listener, true);
+        }
+        delete window.__gardenopsFocusTiming.entries[id];
+        return {
+          browserPostFrameAt: postFrameAtMs,
+          browserReadyAt: readyAtMs,
+          browserIntentAt: Number.isFinite(entry.intentAtMs) ? entry.intentAtMs : null,
+        };
+      }, timingId));
+      if (!Number.isFinite(browserIntentAt)) {
+        throw new Error(`Focus ${contract.id} did not record a browser interaction intent`);
+      }
+      await Promise.all(pending);
+    } finally {
+      page.off?.("response", onResponse);
+      await page.evaluate((id) => {
+        const entry = window.__gardenopsFocusTiming?.entries?.[id];
+        if (!entry) return;
+        for (const eventName of ["pointerdown", "click", "change", "input"]) {
+          document.removeEventListener(eventName, entry.listener, true);
+        }
+        delete window.__gardenopsFocusTiming.entries[id];
+      }, timingId).catch(() => {});
+    }
+    const browserErrors = browserErrorsSince(errorsMark);
+    if (browserErrors.console.length || browserErrors.page.length) {
+      throw new Error(`Focus ${contract.id} recorded browser errors`);
+    }
+    const activeGarden = await activeGardenProof(page, profile);
+    const wrongGardenRequest = responses.find((entry) => (
+      entry.gardenId !== null && entry.gardenId !== activeGarden.id
+    ));
+    if (wrongGardenRequest) {
+      throw new Error(
+        `Focus ${contract.id} observed cross-garden request ${wrongGardenRequest.path}`,
+      );
+    }
+    const failedRequest = responses.find((entry) => entry.status >= 400);
+    if (failedRequest) {
+      throw new Error(
+        `Focus ${contract.id} observed ${failedRequest.method} ${failedRequest.path} -> ${failedRequest.status}`,
+      );
+    }
+    const timing = {
+      browserPostFrameMs: roundMs(browserPostFrameAt - browserIntentAt),
+      browserReadyMs: roundMs(browserReadyAt - browserIntentAt),
+      nodeReadyObservedMs: roundMs(performance.now() - nodeStartedAt),
+      playwrightActionMs: roundMs(playwrightActionMs),
+    };
+    const metricId = focusMetricId(contract.id);
+    timings[`focus${metricId}BrowserReadyMs`] = timing.browserReadyMs;
+    timings[`focus${metricId}BrowserPostFrameMs`] = timing.browserPostFrameMs;
+    timings[`focus${metricId}PlaywrightActionMs`] = timing.playwrightActionMs;
+    focusMatrix.push({
+      activeGarden,
+      browserErrors,
+      expectedVisibleSeededContent: {
+        text: contract.expected,
+      },
+      focusId: contract.id,
+      scopedRequests: {
+        expectedPaths: contract.requests,
+        observed: responses,
+      },
+      surface: contract.surface,
+      timing,
+    });
+  };
+
+  await openPrimary("garden");
+  await measureFocus(FOCUS_MATRIX_CONTRACT[0],
+    () => page.locator("#sub-mode-indoor:visible, [data-sub-mode='indoor']:visible").first()
+      .click({ timeout: timeoutMs }),
+    () => visibleSeed("#indoor-tab-content .indoor-card-wrapper", "Propagation Shelf"));
+  await measureFocus(FOCUS_MATRIX_CONTRACT[1],
+    async () => {
+      await selectGardenByPrefix("Complete Journeys Scale History Heavy");
+      await openPrimary("map");
+      if (profile === "mobile") {
+        await page.locator("#attention-today-mobile-handle").click({ timeout: timeoutMs });
+      }
+    },
+    () => visibleSeed(profile === "mobile"
+      ? "#attention-today-mobile-sheet"
+      : "#attention-today-panel", "History Heavy G01 queued work"));
+  if (profile === "mobile") {
+    await page.locator("[data-testid='attention-today-mobile-close']")
+      .click({ timeout: timeoutMs });
+  }
+  await measureFocus(FOCUS_MATRIX_CONTRACT[2],
+    () => openPrimary("activity"),
+    () => visibleSeed("#tasks-list [data-task-id]", "History Heavy G01 queued work"));
+
+  if (profile === "mobile") {
+    await page.locator("#mobile-utility-btn").click({ timeout: timeoutMs });
+    await page.locator("#mobile-utility-sheet").waitFor({ state: "visible", timeout: timeoutMs });
+  }
+  await measureFocus(FOCUS_MATRIX_CONTRACT[3],
+    () => page.locator(profile === "mobile" ? "#mobile-notification-btn" : "#notification-bell")
+      .click({ timeout: timeoutMs }),
+    () => visibleSeed("#notification-panel .notification-item", "History Heavy G01 notification"));
+  await page.locator("#notification-panel .notification-panel-close").click({ timeout: timeoutMs });
+
+  await openPrimary("insights");
+  await measureFocus(FOCUS_MATRIX_CONTRACT[4],
+    () => page.locator("#sub-mode-care:visible, [data-sub-mode='care']:visible").first()
+      .click({ timeout: timeoutMs }),
+    () => visibleSeed("#weather-dashboard", "Weather"));
+  await openPrimary("activity");
+  await measureFocus(FOCUS_MATRIX_CONTRACT[5],
+    () => page.locator("#sub-mode-journal:visible, [data-sub-mode='journal']:visible").first()
+      .click({ timeout: timeoutMs }),
+    () => visibleSeed("#journal-list .journal-card", "History Heavy G01 journal"));
+  await measureFocus(FOCUS_MATRIX_CONTRACT[6],
+    () => page.locator("#sub-mode-issues:visible, [data-sub-mode='issues']:visible").first()
+      .click({ timeout: timeoutMs }),
+    () => visibleSeed("#issues-list .issue-card, #issues-tab-content .issue-card", "History Heavy G01 issue"));
+  await selectGardenByPrefix("Complete Journeys Scale Large");
+  await openPrimary("garden");
+  await measureFocus(FOCUS_MATRIX_CONTRACT[7],
+    () => page.locator("#sub-mode-inventory:visible, [data-sub-mode='inventory']:visible").first()
+      .click({ timeout: timeoutMs }),
+    () => visibleSeed(
+      "#inventory-table-body tr, #inventory-mobile-list .inventory-card",
+      "Scale Large G01 Inventory",
+    ));
+  await selectGardenByPrefix("Complete Journeys Scale History Heavy");
+  await openSubMode("insights", "statistics");
+  await measureFocus(FOCUS_MATRIX_CONTRACT[8],
+    () => page.locator("#stats-mode-reports:visible").click({ timeout: timeoutMs }),
+    () => visibleSeed("#reports-dashboard .report-action-card", "Overdue tasks"));
+
+  await openPrimary("map");
+  await selectGardenByPrefix("Complete Journeys Shared Garden", 0);
+  await measureFocus(FOCUS_MATRIX_CONTRACT[9],
+    () => selectGardenByPrefix("Complete Journeys Shared Garden", 1),
+    async () => {
+      await page.waitForFunction(() => (
+        document.querySelector(".plot[data-plot-id='SCALE-MULTI-G02-PLOT-0001']") !== null
+        && document.querySelector(".plot[data-plot-id='SCALE-LARGE-G01-PLOT-0001']") === null
+      ), undefined, { timeout: timeoutMs });
+    });
+
+  const browserMetrics = await collectBrowserMetrics(page);
+  const focusReadyValues = focusMatrix.map((proof) => proof.timing.browserReadyMs);
+  const focusPostFrameValues = focusMatrix.map((proof) => proof.timing.browserPostFrameMs);
+  return {
+    flow: {
+      focusMatrix,
+      initialGarden: focusMatrix[0].activeGarden,
+    },
+    focusMatrix,
+    resources: normalizeResources(browserMetrics.resources),
+    timings: {
+      ...timings,
+      appReadyMs: roundMs(appReadyMs),
+      appShellReadyMs: roundMs(appShellReadyMs),
+      domContentLoadedMs: roundMs(browserMetrics.navigation?.domContentLoadedMs ?? NaN),
+      firstContentfulPaintMs: roundMs(browserMetrics.paints.firstContentfulPaintMs ?? NaN),
+      firstPaintMs: roundMs(browserMetrics.paints.firstPaintMs ?? NaN),
+      gotoMs: roundMs(gotoMs),
+      loadEventMs: roundMs(browserMetrics.navigation?.loadEventMs ?? NaN),
+      maxFocusBrowserPostFrameMs: roundMs(Math.max(...focusPostFrameValues)),
+      maxFocusBrowserReadyMs: roundMs(Math.max(...focusReadyValues)),
+      resourceEncodedBytes: browserMetrics.resources.totals.encodedBodySize,
+      resourceTransferBytes: browserMetrics.resources.totals.transferSize,
+      apiDecodedResponseBytes: browserMetrics.resources.api.totals.decodedBodySize,
+      apiEncodedResponseBytes: browserMetrics.resources.api.totals.encodedBodySize,
+      responseEndMs: roundMs(browserMetrics.navigation?.responseEndMs ?? NaN),
+    },
+  };
+}
+
 async function runAppAuthLargeTabsScenario(page, options) {
   const { timeoutMs, url } = options;
   const initialApiRequests = [];
@@ -2789,6 +3174,11 @@ async function runMeasuredScenario(browser, options, runIndex, liveSession = nul
     try {
       const result = options.scenario === "app-auth-large-tabs"
         ? await runAppAuthLargeTabsScenario(page, options)
+        : options.scenario === "app-auth-focus-matrix"
+          ? await runAppAuthFocusMatrixScenario(page, options, {
+            consoleMessages,
+            pageErrors,
+          })
         : options.scenario === "app-auth"
           ? await runAppAuthScenario(page, options)
           : await runAppUnauthScenario(page, options);
@@ -3094,6 +3484,13 @@ function printHuman(result, outputPath) {
     console.log(
       `Mounted cards: plants median ${metrics.mountedPlantCards?.median ?? "n/a"}, care median ${metrics.mountedCareCards?.median ?? "n/a"}`,
     );
+  } else if (result.scenario === "app-auth-focus-matrix") {
+    console.log(
+      `Focus matrix browser post-frame proxy: ${metricSummary("maxFocusBrowserPostFrameMs")}`,
+    );
+    console.log(
+      `Focus matrix browser readiness: ${metricSummary("maxFocusBrowserReadyMs")}`,
+    );
   } else if (result.scenario === "app-auth") {
     console.log(
       `App shell ready: ${metricSummary("appShellReadyMs")}`,
@@ -3288,6 +3685,8 @@ function errorMessage(err) {
 }
 
 module.exports = {
+  FOCUS_MATRIX_CONTRACT,
+  FOCUS_MATRIX_IDS,
   assertComparableProvenance,
   buildAuthPerformanceData,
   buildComparisonProvenance,
@@ -3308,6 +3707,7 @@ module.exports = {
   parseArgs,
   persistAndValidateResult,
   request,
+  runAppAuthFocusMatrixScenario,
   startServer,
   tabSelectorForViewport,
   waitForServer,
