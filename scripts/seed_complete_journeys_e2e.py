@@ -4371,6 +4371,38 @@ def _phase_seven_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         if weather_row is not None
         else None
     )
+    provider_setting_rows = conn.execute(
+        """
+        SELECT key, value
+        FROM app_settings
+        WHERE key = ANY(%s)
+        ORDER BY key
+        """,
+        (
+            [
+                "ai_provider",
+                "anthropic_model",
+                "openai_fast_model",
+                "openai_model",
+            ],
+        ),
+    ).fetchall()
+    provider_secret_rows = conn.execute(
+        """
+        SELECT key
+        FROM app_secrets
+        WHERE key = ANY(%s)
+        ORDER BY key
+        """,
+        (
+            [
+                "anthropic_api_key",
+                "openai_api_key",
+                "plantnet_api_key",
+                "shademap_api_key",
+            ],
+        ),
+    ).fetchall()
     return {
         "alpha": {
             "calibration": get_shademap_calibration(conn, garden_id=alpha_id),
@@ -4395,6 +4427,13 @@ def _phase_seven_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             }
             for row in usage_rows
         ],
+        "provider_settings": {
+            "database_secrets": [str(row["key"]) for row in provider_secret_rows],
+            "database_settings": [
+                {"key": str(row["key"]), "value": str(row["value"])}
+                for row in provider_setting_rows
+            ],
+        },
     }
 
 

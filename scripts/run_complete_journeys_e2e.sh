@@ -380,6 +380,7 @@ export AUTH_LOGIN_ADMIN_USERNAME_RATE_LIMIT=100
 export AUTH_LOGIN_ADMIN_HOST_RATE_LIMIT=200
 export AI_PROVIDER=openai
 export OPENAI_API_KEY="complete-journeys-loopback-provider-key" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+export APP_SECRETS_ENCRYPTION_KEY="LeDkAJuMJr5CskNSuLibpaED5CkKdS9SsMI7Okh8piI=" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 export GARDENOPS_E2E_LOOPBACK_PROVIDER=1
 unset GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER
 export GARDENOPS_NOTIFICATION_SCHEDULER_ENABLED=false

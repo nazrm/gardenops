@@ -769,6 +769,7 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
 
     assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert "GARDENOPS_E2E_LOOPBACK_PROVIDER=1" in runner_source
+    assert "APP_SECRETS_ENCRYPTION_KEY" in runner_source
     assert "GARDENOPS_E2E_SHADEMAP_ESTIMATE_CSV" in runner_source
     assert "'/shademap': proxyTarget" in runner_source
     assert "VITE_SHADEMAP_BASEMAP_URL" in runner_source
@@ -1243,12 +1244,33 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         if event["method"] == "PATCH" and event["path"] == "/api/shademap/state"
     }
     assert state_writes == {("admin", 200): 4, ("editor", 200): 2, ("viewer", 403): 1}
+    provider_writes = {
+        (event["actor"], event["status_code"]): event["count"]
+        for event in oracle["phase_seven"]["audit_contract"]["events"]
+        if event["method"] == "PUT" and event["path"] == "/api/admin/provider-settings"
+    }
+    assert provider_writes == {("admin", 200): 2, ("editor", 403): 1, ("viewer", 403): 1}
+    assert oracle["phase_seven"]["database_boundaries"]["provider_settings"] == {
+        "database_secrets": [],
+        "database_settings": [
+            {"key": "ai_provider", "value": "openai"},
+            {"key": "anthropic_model", "value": "claude-sonnet-4-6"},
+            {"key": "openai_fast_model", "value": "gpt-5.4-mini"},
+            {"key": "openai_model", "value": "gpt-5.5"},
+        ],
+    }
     for marker in (
         "data-phase-seven-simulator",
         "data-phase-seven-terrain",
         "signed terrain tile rendering",
         "data-phase-seven-terrain-size",
         "provider_fixture_redacted",
+        "exerciseProviderSettingsAdmin",
+        "assertProviderSettingsRoleBoundary",
+        "MANAGED_PROVIDER_SECRET",
+        "provider_settings",
+        '"/api/admin/provider-settings"',
+        "reauthentication_enforced",
         "exerciseStaleWeather",
         "assertViewerShadeBoundary",
         "assertViewerTerrainBoundary",

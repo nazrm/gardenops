@@ -169,11 +169,28 @@ journeys:
   - <<: *open_journey
     id: C4
     phase: 7
+    desktop: proven
+    mobile: proven
+    roles: proven
     offline: not_applicable
+    provider: proven
+    database: proven
     filesystem: not_applicable
+    performance: not_applicable
+    evidence: &phase_seven_provider_settings_evidence
+      desktop: &phase_seven_provider_settings_browser
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/e2e/journeys/providersAndTerrain.cjs
+        - scripts/e2e/fixtures/complete_journeys_phase_seven_oracle.json
+        - tests/test_complete_journey_e2e_scripts.py
+      mobile: *phase_seven_provider_settings_browser
+      roles: *phase_seven_provider_settings_browser
+      provider: *phase_seven_provider_settings_browser
+      database: *phase_seven_provider_settings_browser
     notes:
       <<: *default_notes
       offline: Provider configuration is submitted immediately and is absent from the supported offline queue.
+      performance: Provider configuration is a rare platform-admin action with no user-facing scale-sensitive path.
       filesystem: Provider settings manipulate scalar configuration fields and have no supported user-file workflow.
   - <<: *open_journey
     id: C5

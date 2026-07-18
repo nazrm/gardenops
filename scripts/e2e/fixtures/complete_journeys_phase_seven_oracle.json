@@ -29,6 +29,7 @@
         { "actor": "admin", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/ai/garden-chat", "status_code": 429 },
         { "actor": "anonymous", "count": 4, "garden": null, "method": "POST", "path": "/api/auth/login", "status_code": 200 },
         { "actor": "anonymous", "count": 4, "garden": null, "method": "POST", "path": "/api/auth/passkeys/login/options", "status_code": 200 },
+        { "actor": "admin", "count": 2, "garden": "alpha", "method": "POST", "path": "/api/auth/reauthenticate", "status_code": 200 },
         { "actor": "admin", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/auth/passkeys/prompt/dismiss", "status_code": 200 },
         { "actor": "editor", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/auth/passkeys/prompt/dismiss", "status_code": 200 },
         { "actor": "viewer", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/auth/passkeys/prompt/dismiss", "status_code": 200 },
@@ -50,6 +51,9 @@
         { "actor": "viewer", "count": 1, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/state", "status_code": 403 },
         { "actor": "admin", "count": 4, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/state", "status_code": 200 },
         { "actor": "editor", "count": 2, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/state", "status_code": 200 },
+        { "actor": "admin", "count": 2, "garden": "alpha", "method": "PUT", "path": "/api/admin/provider-settings", "status_code": 200 },
+        { "actor": "editor", "count": 1, "garden": "alpha", "method": "PUT", "path": "/api/admin/provider-settings", "status_code": 403 },
+        { "actor": "viewer", "count": 1, "garden": "alpha", "method": "PUT", "path": "/api/admin/provider-settings", "status_code": 403 },
         { "actor": "admin", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/weather/check", "status_code": 200 }
       ]
     },
@@ -63,6 +67,8 @@
     },
     "database_boundaries": {
       "owned_tables": [
+        "app_secrets",
+        "app_settings",
         "auth_passkey_challenges",
         "lidar_grid_cache",
         "provider_daily_usage",
@@ -71,11 +77,21 @@
         "shademap_obstacles",
         "shademap_state",
         "weather_cache"
-      ]
+      ],
+      "provider_settings": {
+        "database_secrets": [],
+        "database_settings": [
+          { "key": "ai_provider", "value": "openai" },
+          { "key": "anthropic_model", "value": "claude-sonnet-4-6" },
+          { "key": "openai_fast_model", "value": "gpt-5.4-mini" },
+          { "key": "openai_model", "value": "gpt-5.5" }
+        ]
+      }
     },
     "support": {
       "ai_chat_success_and_quota": "browser_and_loopback_provider_proven",
       "provider_fixture_redaction": "browser_fixture_state_proven",
+      "provider_settings": "browser-managed-secret-lifecycle-and-role-boundary-proven",
       "shade_external_runtime": "browser_canvas_and_pixel_proven",
       "signed_local_terrain_tile": "browser_real_upload_and_tile_proven",
       "stale_weather_refresh": "browser_stale_marker_and_non_authoritative_refresh_proven",

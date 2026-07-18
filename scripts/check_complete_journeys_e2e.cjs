@@ -407,21 +407,32 @@ function assertPhaseSevenProfileEvidence(profiles, oracle = phaseSevenOracle()) 
   assert(adminDesktop?.checks?.shade?.external_canvas === true
     && adminDesktop?.checks?.shade?.pixel_change === true
     && adminDesktop?.checks?.terrain?.upload_and_cleanup === true
-    && adminDesktop?.checks?.terrain?.cleanup_persisted === true,
-  "Phase 7 administrator desktop ShadeMap or terrain proof is incomplete");
+    && adminDesktop?.checks?.terrain?.cleanup_persisted === true
+    && adminDesktop?.checks?.provider_settings?.managed_secret_metadata_redacted === true
+    && adminDesktop?.checks?.provider_settings?.reauthentication_enforced === true
+    && adminDesktop?.checks?.provider_settings?.cleanup_persisted === true,
+  "Phase 7 administrator desktop ShadeMap, terrain, or provider-settings proof is incomplete");
   assert(adminMobile?.checks?.chat_success?.success === true
     && adminMobile?.checks?.shade?.external_canvas === true
     && adminMobile?.checks?.terrain?.upload_and_cleanup === true
-    && adminMobile?.checks?.terrain?.cleanup_persisted === true,
+    && adminMobile?.checks?.terrain?.cleanup_persisted === true
+    && adminMobile?.checks?.provider_settings?.mobile_surface_reachable === true
+    && adminMobile?.checks?.provider_settings?.refresh_preserved_redacted_summary === true,
   "Phase 7 administrator mobile proof is incomplete");
   assert(editor?.checks?.shade?.external_canvas === true
     && editor?.checks?.terrain?.upload_and_cleanup === true
-    && editor?.checks?.terrain?.cleanup_persisted === true,
-  "Phase 7 editor ShadeMap proof is incomplete");
+    && editor?.checks?.terrain?.cleanup_persisted === true
+    && editor?.checks?.provider_settings?.ui_hidden === true
+    && editor?.checks?.provider_settings?.api_read_denied === true
+    && editor?.checks?.provider_settings?.api_write_denied === true,
+  "Phase 7 editor ShadeMap or provider-settings boundary is incomplete");
   assert(viewer?.checks?.shade?.viewer_read_only === true
     && viewer?.checks?.shade?.viewer_controls_disabled === true
-    && viewer?.checks?.terrain?.viewer_write_denied === true,
-  "Phase 7 viewer ShadeMap boundary is incomplete");
+    && viewer?.checks?.terrain?.viewer_write_denied === true
+    && viewer?.checks?.provider_settings?.ui_hidden === true
+    && viewer?.checks?.provider_settings?.api_read_denied === true
+    && viewer?.checks?.provider_settings?.api_write_denied === true,
+  "Phase 7 viewer ShadeMap or provider-settings boundary is incomplete");
   assert(profiles.every((profile) => profile.checks?.provider_fixture_redacted === true
     && profile.checks?.browser_diagnostics === true
     && profile.checks?.shademap_runtime_loaded === true),
@@ -803,8 +814,19 @@ function assertPhaseSevenDatabaseState(initial, final, fixture) {
       && ((row.scope_type === "garden" && row.scope_id === fixture.gardens.alpha.id)
         || (row.scope_type === "user" && row.scope_username === fixture.roles.admin))
   )), "Phase 7 provider budget usage was not scoped to the selected admin and garden");
+  const providerSettings = final.provider_settings;
+  const expectedProviderSettings = phaseSevenOracle().phase_seven.database_boundaries.provider_settings;
+  assert(providerSettings && expectedProviderSettings,
+    "Phase 7 provider settings database boundary is missing");
+  assert(canonicalJson(initial.provider_settings) === canonicalJson({
+    database_secrets: [],
+    database_settings: [],
+  }), "Phase 7 provider settings baseline was not empty");
+  assert(canonicalJson(providerSettings) === canonicalJson(expectedProviderSettings),
+    "Phase 7 provider settings final database state drifted");
   return {
     calibration_persisted: true,
+    provider_settings_secret_cleanup: true,
     provider_budget_scoped: true,
     stale_weather_preserved: true,
     temporary_obstacle_removed: true,
@@ -3199,6 +3221,7 @@ function normalizeAuditProjectionPath(value) {
   const pathname = String(value || "");
   const normalizedPhaseFivePath = normalizePhaseFiveMutationPath(pathname);
   if (new Set([
+    "/api/admin/provider-settings",
     "/api/auth/emergency-read-only",
     "/api/auth/invitations/accept",
     "/api/auth/invitations/passkey/register/options",

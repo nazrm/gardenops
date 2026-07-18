@@ -131,6 +131,12 @@ def test_phase_nine_manifest_maps_only_measured_focuses_to_performance_proof() -
     assert journeys["C6"]["database"] == "proven"
     assert journeys["C6"]["provider"] == "not_applicable"
     assert "scripts/e2e/journeys/providersAndTerrain.cjs" in journeys["C6"]["evidence"]["mobile"]
+    c4 = journeys["C4"]
+    assert {dimension for dimension in DIMENSIONS if c4[dimension] == "proven"} == {
+        "desktop", "mobile", "roles", "provider", "database",
+    }
+    assert c4["performance"] == "not_applicable"
+    assert "scripts/e2e/journeys/providersAndTerrain.cjs" in c4["evidence"]["roles"]
 
 
 def test_duplicate_journey_id_is_rejected(tmp_path: Path) -> None:

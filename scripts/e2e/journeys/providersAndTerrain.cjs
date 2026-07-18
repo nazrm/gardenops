@@ -14,6 +14,8 @@ const { assert, assertPageStructure, visible, waitFor } = require("../completeJo
 const EDITOR_PASSWORD = "CompleteJourneysEditorE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 const VIEWER_PASSWORD = "CompleteJourneysViewerE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 const EXPECTED_CHAT_REPLY = "Deterministic test reply: Check soil moisture before watering.";
+const MANAGED_PROVIDER_SECRET = "phase-seven-managed-provider-fixture-4242"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+const PROVIDER_SETTINGS_PATH = "/api/admin/provider-settings";
 
 async function openMobileUtility(page, label) {
   const utility = page.locator("#mobile-utility-sheet");
@@ -465,6 +467,201 @@ async function openAdminGarden(page, profile, label) {
     `${label} garden settings load`);
 }
 
+async function openAdminSettings(page, profile, label) {
+  if (profile === "mobile") {
+    await openMobileUtility(page, label);
+    await page.locator("#mobile-admin-btn:visible").click();
+    await waitFor(() => page.locator("body.mobile-utility-open").count().then((count) => count === 0),
+      `${label} mobile utility close after settings navigation`);
+  } else {
+    await page.locator("#top-tab-admin:visible").click();
+  }
+  const settings = page.locator(".adm-nav-btn[data-section='settings']:visible");
+  await visible(settings, `${label} settings navigation`);
+  await settings.click();
+  await waitFor(() => page.locator("#admin-view").getAttribute("aria-busy")
+    .then((value) => value !== "true"), `${label} settings load`);
+}
+
+function responseFor(page, method, pathname) {
+  return page.waitForResponse((response) => (
+    response.request().method() === method
+      && new URL(response.url()).pathname === pathname
+  ));
+}
+
+async function answerPrompt(page, value, label) {
+  const dialog = page.locator(".modal:visible").last();
+  await visible(dialog, `${label} prompt`);
+  const dialogHandle = await dialog.elementHandle();
+  assert(dialogHandle, `${label} prompt element was unavailable`);
+  const input = dialog.locator(".prompt-dialog-input");
+  await visible(input, `${label} prompt input`);
+  await input.fill(value);
+  try {
+    await dialog.locator(".confirm-yes").click();
+    await page.waitForFunction((element) => !element.isConnected, dialogHandle);
+  } finally {
+    await dialogHandle.dispose();
+  }
+}
+
+async function browserJsonRequest(page, request) {
+  return page.evaluate(async (input) => {
+    const cookieCsrf = document.cookie.split("; ")
+      .find((entry) => entry.startsWith("gardenops_csrf="))?.split("=").slice(1).join("=") || "";
+    const response = await fetch(input.path, {
+      body: input.body === undefined ? undefined : JSON.stringify(input.body),
+      credentials: "include",
+      headers: {
+        ...(input.body === undefined ? {} : { "content-type": "application/json" }),
+        "x-csrf-token": decodeURIComponent(cookieCsrf),
+      },
+      method: input.method,
+    });
+    const text = await response.text();
+    let body = text;
+    try { body = text ? JSON.parse(text) : null; } catch { /* text response */ }
+    return { body, status: response.status };
+  }, request);
+}
+
+function diagnosticMarks(diagnostics) {
+  return {
+    classified: diagnostics.classifiedConsoleDiagnostics.length,
+    console: diagnostics.consoleErrors.length,
+    http: diagnostics.httpErrors.length,
+  };
+}
+
+async function expectProviderSettingsForbidden(page, diagnostics, request, label) {
+  const marks = diagnosticMarks(diagnostics);
+  const result = await browserJsonRequest(page, request);
+  assert(result.status === 403, `${label} ${request.method} provider settings was not denied`);
+  assert(!JSON.stringify(result.body).includes(MANAGED_PROVIDER_SECRET),
+    `${label} provider settings denial exposed a managed secret`);
+  await waitFor(() => diagnostics.httpErrors.length === marks.http + 1
+    && diagnostics.consoleErrors.length === marks.console + 1
+    && diagnostics.classifiedConsoleDiagnostics.length === marks.classified + 1,
+  `${label} provider settings denial diagnostics`);
+  const httpError = diagnostics.httpErrors.splice(marks.http, 1)[0];
+  const consoleError = diagnostics.consoleErrors.splice(marks.console, 1)[0];
+  const classified = diagnostics.classifiedConsoleDiagnostics.splice(marks.classified, 1)[0];
+  assert(httpError === `403 ${PROVIDER_SETTINGS_PATH}`,
+    `${label} provider settings denial emitted an unrelated HTTP error`);
+  assert(classified?.method === request.method
+    && classified.path === PROVIDER_SETTINGS_PATH
+    && classified.status === 403,
+  `${label} provider settings denial emitted an unrelated console diagnostic`);
+  assert(consoleError === [classified.id, classified.context, classified.method,
+    classified.status, classified.path].join(" "),
+  `${label} provider settings denial console accounting drifted`);
+  return true;
+}
+
+async function saveProviderSettings(page, password, label, reason) {
+  const reauthentication = responseFor(page, "POST", "/api/auth/reauthenticate");
+  const update = responseFor(page, "PUT", PROVIDER_SETTINGS_PATH);
+  await page.locator("#adm-provider-save:visible").click();
+  await answerPrompt(page, reason, `${label} action reason`);
+  await answerPrompt(page, password, `${label} password confirmation`);
+  assert((await reauthentication).ok(), `${label} provider settings reauthentication failed`);
+  const response = await update;
+  assert(response.status() === 200, `${label} provider settings update failed`);
+  return response.json();
+}
+
+function providerSecretStatus(summary, label) {
+  const status = summary?.secrets?.openai_api_key;
+  assert(status && typeof status === "object", `${label} OpenAI secret metadata is missing`);
+  return status;
+}
+
+async function exerciseProviderSettingsAdmin(page, profile, password, label) {
+  await openAdminSettings(page, profile, label);
+  const secretInput = page.locator("#adm-provider-secret-openai_api_key:visible");
+  await visible(secretInput, `${label} provider secret input`);
+  assert(await secretInput.isEnabled(), `${label} provider secret input is disabled`);
+  if (profile === "mobile") {
+    const refresh = responseFor(page, "GET", PROVIDER_SETTINGS_PATH);
+    await page.locator("#adm-provider-refresh:visible").click();
+    assert((await refresh).ok(), `${label} provider settings refresh failed`);
+    const current = await browserJsonRequest(page, { method: "GET", path: PROVIDER_SETTINGS_PATH });
+    assert(current.status === 200, `${label} provider settings state was unavailable`);
+    const status = providerSecretStatus(current.body, label);
+    assert(status.source === "env" && status.configured === true,
+      `${label} provider settings did not retain the environment fallback after cleanup`);
+    return { mobile_surface_reachable: true, refresh_preserved_redacted_summary: true };
+  }
+
+  const baseline = await browserJsonRequest(page, { method: "GET", path: PROVIDER_SETTINGS_PATH });
+  assert(baseline.status === 200, `${label} provider settings baseline was unavailable`);
+  assert(!JSON.stringify(baseline.body).includes(MANAGED_PROVIDER_SECRET),
+    `${label} provider settings baseline exposed a managed secret`);
+  await secretInput.fill(MANAGED_PROVIDER_SECRET);
+  const saved = await saveProviderSettings(
+    page,
+    password,
+    label,
+    "phase-seven-provider-secret-set",
+  );
+  const managed = providerSecretStatus(saved, label);
+  assert(managed.configured === true && managed.source === "db" && managed.last4 === "4242",
+    `${label} provider settings did not return redacted managed-secret metadata`);
+  assert(!JSON.stringify(saved).includes(MANAGED_PROVIDER_SECRET),
+    `${label} provider settings response exposed the managed secret`);
+  await waitFor(() => page.locator("#adm-provider-secret-openai_api_key:visible").inputValue()
+    .then((value) => value === ""), `${label} provider secret input clear after save`);
+
+  const persisted = await browserJsonRequest(page, { method: "GET", path: PROVIDER_SETTINGS_PATH });
+  assert(persisted.status === 200 && providerSecretStatus(persisted.body, label).source === "db",
+    `${label} provider settings did not persist managed-secret metadata`);
+  assert(!JSON.stringify(persisted.body).includes(MANAGED_PROVIDER_SECRET),
+    `${label} persisted provider settings exposed the managed secret`);
+
+  const clear = page.locator("#adm-provider-clear-openai_api_key:visible");
+  assert(await clear.isEnabled(), `${label} provider secret clear control is disabled`);
+  await clear.check();
+  const cleared = await saveProviderSettings(
+    page,
+    password,
+    label,
+    "phase-seven-provider-secret-clear",
+  );
+  const fallback = providerSecretStatus(cleared, label);
+  assert(fallback.configured === true && fallback.source === "env",
+    `${label} provider secret clear did not restore the environment fallback`);
+  assert(!JSON.stringify(cleared).includes(MANAGED_PROVIDER_SECRET),
+    `${label} cleared provider settings response exposed the managed secret`);
+
+  const finalState = await browserJsonRequest(page, { method: "GET", path: PROVIDER_SETTINGS_PATH });
+  assert(finalState.status === 200 && providerSecretStatus(finalState.body, label).source === "env",
+    `${label} provider secret cleanup did not persist`);
+  assert(!JSON.stringify(finalState.body).includes(MANAGED_PROVIDER_SECRET),
+    `${label} provider secret cleanup exposed the managed secret`);
+  return {
+    cleanup_persisted: true,
+    managed_secret_metadata_redacted: true,
+    reauthentication_enforced: true,
+  };
+}
+
+async function assertProviderSettingsRoleBoundary(page, diagnostics, profile, label) {
+  await openAdminSettings(page, profile, label);
+  assert(await page.locator("#adm-provider-save").count() === 0,
+    `${label} displayed provider settings controls to a non-admin`);
+  const readDenied = await expectProviderSettingsForbidden(page, diagnostics, {
+    method: "GET",
+    path: PROVIDER_SETTINGS_PATH,
+  }, label);
+  const writeDenied = await expectProviderSettingsForbidden(page, diagnostics, {
+    body: { action_reason: "phase-seven-provider-settings-denied", ai_provider: "disabled" },
+    method: "PUT",
+    path: PROVIDER_SETTINGS_PATH,
+  }, label);
+  return { api_read_denied: readDenied, api_write_denied: writeDenied, ui_hidden: true };
+}
+
 async function exerciseTerrainUpload(page, options) {
   const label = `Phase 7 ${options.role}:${options.profile} terrain`;
   await openAdminGarden(page, options.profile, label);
@@ -601,6 +798,12 @@ async function runProfile(options) {
         result.checks.shade = await exerciseShade(page, "Phase 7 desktop", { expectTerrain: true });
         await openAdminGarden(page, options.profile, "Phase 7 desktop terrain cleanup");
         result.checks.terrain = await terrain.remove();
+        result.checks.provider_settings = await exerciseProviderSettingsAdmin(
+          page,
+          options.profile,
+          password,
+          "Phase 7 desktop provider settings",
+        );
       } else {
         const terrain = await exerciseTerrainUpload(page, options);
         result.checks.shade = await exerciseShade(page, "Phase 7 mobile", {
@@ -609,6 +812,12 @@ async function runProfile(options) {
         });
         await openAdminGarden(page, options.profile, "Phase 7 mobile terrain cleanup");
         result.checks.terrain = await terrain.remove();
+        result.checks.provider_settings = await exerciseProviderSettingsAdmin(
+          page,
+          options.profile,
+          password,
+          "Phase 7 mobile provider settings",
+        );
       }
     } else if (options.role === "viewer") {
       result.checks.shade = await exerciseShade(page, "Phase 7 viewer", {
@@ -623,11 +832,23 @@ async function runProfile(options) {
           guarded.diagnostics,
         ),
       };
+      result.checks.provider_settings = await assertProviderSettingsRoleBoundary(
+        page,
+        guarded.diagnostics,
+        options.profile,
+        "Phase 7 viewer provider settings",
+      );
     } else {
       const terrain = await exerciseTerrainUpload(page, options);
       result.checks.shade = await exerciseShade(page, "Phase 7 editor", { expectTerrain: true });
       await openAdminGarden(page, options.profile, "Phase 7 editor terrain cleanup");
       result.checks.terrain = await terrain.remove();
+      result.checks.provider_settings = await assertProviderSettingsRoleBoundary(
+        page,
+        guarded.diagnostics,
+        options.profile,
+        "Phase 7 editor provider settings",
+      );
     }
     const provider = await fixtureState(page);
     assert(provider.counts?.provider_requests > 0 || options.role === "viewer",
