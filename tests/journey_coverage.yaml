@@ -631,6 +631,7 @@ journeys:
     id: OFF-01
     phase: 6
     desktop: proven
+    mobile: proven
     roles: proven
     offline: proven
     provider: not_applicable
@@ -645,6 +646,7 @@ journeys:
         - tests/test_offline_idempotency.py
         - tests/test_offline_idempotency_unit.py
         - tests/test_offline_replay_frontend_static.py
+      mobile: *phase_six_offline
       roles: *phase_six_offline
       offline: *phase_six_offline
       database: *phase_six_offline

@@ -27,7 +27,8 @@
         { "actor": "admin", "count": 4, "garden": "beta", "method": "POST", "path": "/api/media/summaries", "status_code": 200 },
         { "actor": "admin", "count": 4, "garden": "alpha", "method": "POST", "path": "/api/journal", "status_code": 201 },
         { "actor": "admin", "count": 2, "garden": "beta", "method": "POST", "path": "/api/journal", "status_code": 201 },
-        { "actor": "admin", "count": 2, "garden": "beta", "method": "POST", "path": "/api/auth/logout", "status_code": 200 }
+        { "actor": "admin", "count": 2, "garden": "beta", "method": "POST", "path": "/api/auth/logout", "status_code": 200 },
+        { "actor": "anonymous", "count": 1, "garden": null, "method": "POST", "path": "/api/client-errors", "status_code": 204 }
       ]
     },
     "browser_contract": {
@@ -73,6 +74,7 @@
       "changed_payload_and_binary_conflict": "backend_proven_tests/test_offline_idempotency.py_and_unit.py",
       "expired_retention_boundary": "backend_proven_tests/test_offline_idempotency.py",
       "garden_and_endpoint_scope": "browser_and_backend_proven",
+      "lost_ack_handled_error_telemetry": "browser_proven_after_deliberate_response_abort",
       "lost_ack_and_repeated_reconnect": "browser_proven_route_fetch_then_abort",
       "media_exact_asset_count": "backend_proven_tests/test_offline_idempotency.py",
       "side_effect_and_operation_counts": "backend_proven_tests/test_offline_idempotency.py",

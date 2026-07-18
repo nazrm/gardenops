@@ -235,6 +235,17 @@ async function consumeExpectedNetworkFailure(diagnostics, marks, capture, expect
   `${label} console failure was unexpectedly classified as an HTTP response`);
 }
 
+async function waitForLostAckTelemetry(recorder, profile) {
+  await waitFor(async () => {
+    await recorder.settle();
+    return recorder.records.filter((record) => (
+      record.method === "POST"
+        && record.path === "/api/client-errors"
+        && record.statusCode === 204
+    )).length === 1;
+  }, `Phase 6 ${profile} lost-ack handled-error telemetry`);
+}
+
 async function runOfflineProfile(options, profile) {
   const guarded = await createGuardedContext(
     options.browser,
@@ -349,6 +360,7 @@ async function runOfflineProfile(options, profile) {
       { error: "ERR_FAILED", method: "POST", path: "/api/journal" },
       "Phase 6 lost acknowledgement",
     );
+    if (profile === "desktop") await waitForLostAckTelemetry(recorder, profile);
     await page.unroute("**/api/journal", lostAckRoute);
 
     for (let reconnect = 0; reconnect < 2; reconnect += 1) {

@@ -1240,7 +1240,18 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     assert oracle["phase_six"]["browser_contract"]["recovery_collapsed_by_default"] is True
     assert oracle["phase_six"]["browser_contract"]["retry_as_new_replacement_count"] == 1
     assert oracle["phase_six"]["audit_contract"]["additional_login_count"] == 3
-    assert sum(event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]) == 25
+    assert sum(event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]) == 26
+    assert any(
+        event == {
+            "actor": "anonymous",
+            "count": 1,
+            "garden": None,
+            "method": "POST",
+            "path": "/api/client-errors",
+            "status_code": 204,
+        }
+        for event in oracle["phase_six"]["audit_contract"]["events"]
+    )
     assert oracle["phase_six"]["read_side_effects"] == {
         "exact_counts": {
             "provider_daily_usage": {"added": 2, "removed": 0},
@@ -1271,6 +1282,7 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
         "#mobile-garden-select",
         "#mobile-auth-btn",
         "profileFixture",
+        "waitForLostAckTelemetry",
     ):
         assert marker in journey_source
     assert "phase_six_map_bootstrap_read_side_effect_oracle" in checker_source
@@ -1671,7 +1683,7 @@ const evidence = assertPhaseSixAuditEvents(
   fixture,
   oracle,
 );
-if (!evidence.audit_events_exact || evidence.audit_event_count !== 25) process.exit(3);
+if (!evidence.audit_events_exact || evidence.audit_event_count !== 26) process.exit(3);
 const tampered = structuredClone(records);
 tampered.at(-1).garden_id = 999;
 try {
