@@ -1034,7 +1034,15 @@ function tabSelectorForViewport(options, tab) {
 
 function buildMeasurementMetadata(options) {
   const viewportProfile = buildViewportProfile(options);
-  const contextOptions = createBrowserContextOptions(options);
+  const contextOptions = options.deviceProfile === "pixel-7"
+    ? {
+      deviceScaleFactor: 2.625,
+      hasTouch: true,
+      isMobile: true,
+      userAgent: "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36",
+      viewport: { height: 915, width: 412 },
+    }
+    : createBrowserContextOptions(options);
   return {
     browserContext: {
       ...contextOptions,
