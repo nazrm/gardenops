@@ -113,8 +113,25 @@ def test_phase_nine_manifest_maps_measured_and_shared_scale_surfaces_to_performa
     payload = validate_manifest(DEFAULT_MANIFEST, repo_root=ROOT)
     journeys = {journey["id"]: journey for journey in payload["journeys"]}
     performance_proven = {
-        "A3", "CROSS-01", "D1", "D2", "D4", "D5", "L1", "L2", "M1", "M2", "M3", "M4",
-        "M5", "P1", "P2", "P4", "P6", "R2", "R3",
+        "A3",
+        "CROSS-01",
+        "D1",
+        "D2",
+        "D4",
+        "D5",
+        "L1",
+        "L2",
+        "M1",
+        "M2",
+        "M3",
+        "M4",
+        "M5",
+        "P1",
+        "P2",
+        "P4",
+        "P6",
+        "R2",
+        "R3",
     }
     for journey_id in performance_proven:
         journey = journeys[journey_id]
@@ -134,7 +151,11 @@ def test_phase_nine_manifest_maps_measured_and_shared_scale_surfaces_to_performa
     assert "scripts/e2e/journeys/providersAndTerrain.cjs" in journeys["C6"]["evidence"]["mobile"]
     c4 = journeys["C4"]
     assert {dimension for dimension in DIMENSIONS if c4[dimension] == "proven"} == {
-        "desktop", "mobile", "roles", "provider", "database",
+        "desktop",
+        "mobile",
+        "roles",
+        "provider",
+        "database",
     }
     assert c4["performance"] == "not_applicable"
     assert "scripts/e2e/journeys/providersAndTerrain.cjs" in c4["evidence"]["roles"]

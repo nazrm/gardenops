@@ -875,7 +875,7 @@ def test_phase_three_photo_advisories_cover_mobile_and_role_boundaries() -> None
     assert "Phase 3 viewer photo-to-action denial proof is incomplete" in checker_source
     assert '"/api/auth/passkeys/prompt/dismiss"' in checker_source
     diagnosis_lifecycle = _javascript_function_containing(
-        journey_source, 'const title = phaseThree.labels.issue_online;'
+        journey_source, "const title = phaseThree.labels.issue_online;"
     )
     assert 'issueDialog.waitFor({ state: "detached" })' not in diagnosis_lifecycle
     assert oracle["phase_three"]["profile_boundaries"]["editor:desktop"]["provider_counts"] == {
@@ -1212,7 +1212,7 @@ def test_phase_five_mobile_profiles_own_mobile_identity_operations() -> None:
         "function ageDisposableSession", 1
     )[0]
     assert (
-        'await confirmVisibleDialog(page);\n    assert((await revokePending).ok()'
+        "await confirmVisibleDialog(page);\n    assert((await revokePending).ok()"
         in session_revocation
     )
     assert "acceptInvitation(" in editor_mobile
@@ -1261,7 +1261,8 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     assert oracle["phase_six"]["audit_contract"]["additional_login_count"] == 3
     assert sum(event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]) == 26
     assert any(
-        event == {
+        event
+        == {
             "actor": "anonymous",
             "count": 1,
             "garden": None,
@@ -4549,9 +4550,7 @@ try {
     assert "unexpectedMutationRequests.length === 0" in checker_source
 
 
-def test_phase_two_profile_contract_requires_role_actions_and_mobile_lifecycle_checks() -> (
-    None
-):
+def test_phase_two_profile_contract_requires_role_actions_and_mobile_lifecycle_checks() -> None:
     source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
     journey_source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
         encoding="utf-8"

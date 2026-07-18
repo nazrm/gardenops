@@ -117,11 +117,8 @@ def test_tracked_budgets_are_established_and_require_measurements() -> None:
         "CROSS-01-large-pixel-focus": 0.20,
     }
     assert {
-        budget["name"]: budget["sampling"]["max_coefficient_of_variation"]
-        for budget in budgets
-    } == {
-        name: documented_variance_limits.get(name, 0.15) for name in expected_names
-    }
+        budget["name"]: budget["sampling"]["max_coefficient_of_variation"] for budget in budgets
+    } == {name: documented_variance_limits.get(name, 0.15) for name in expected_names}
     results = evaluate(budgets, [])
 
     assert {(result.status, result.name) for result in results} == {

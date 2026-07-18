@@ -147,9 +147,9 @@ def test_phase_eight_controls_use_contrast_safe_foregrounds() -> None:
 
     top_meta = styles.split(".top-meta {", 1)[1].split("}", 1)[0]
     active_map_object_toggle = styles.split(".map-object-toggle.active {", 1)[1].split("}", 1)[0]
-    primary_attention_action = (
-        styles.split(".attention-today-action--primary {", 1)[1].split("}", 1)[0]
-    )
+    primary_attention_action = styles.split(".attention-today-action--primary {", 1)[1].split(
+        "}", 1
+    )[0]
 
     assert "opacity" not in top_meta
     assert "color: var(--text-1);" in active_map_object_toggle

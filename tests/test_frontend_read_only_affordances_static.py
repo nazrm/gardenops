@@ -78,6 +78,6 @@ def test_weather_dashboard_keeps_a_refresh_action_when_forecast_days_are_empty()
 
     assert "if (summary.forecast_days.length > 0)" in weather
     assert "const action = summary.forecast_available" in weather
-    assert 'weatherCheckActionMarkup(options, action)' in weather
+    assert "weatherCheckActionMarkup(options, action)" in weather
     assert 'weatherCheckActionMarkup(options, t("weather.refresh"))' in weather
     assert 'weatherCheckActionMarkup(options, t("weather.check"))' in weather

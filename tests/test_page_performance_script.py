@@ -150,8 +150,7 @@ console.log(JSON.stringify({
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {
         "desktop": (
-            "#inventory-table-body tr:visible, "
-            "#inventory-mobile-list .inventory-card:visible"
+            "#inventory-table-body tr:visible, #inventory-mobile-list .inventory-card:visible"
         ),
         "single": "#notification-panel .notification-item:visible",
     }
