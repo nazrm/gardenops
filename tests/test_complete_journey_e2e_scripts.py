@@ -1158,7 +1158,10 @@ def test_phase_five_mobile_profiles_own_mobile_identity_operations() -> None:
     assert "exerciseSessionRevocation(options, page, profile)" in admin_mobile
     assert "mobile_membership_invitation" in admin_mobile
     assert "mobile_session_revocation" in admin_mobile
-    assert "phase-five-mobile-session-revoke" in source
+    session_revocation = source.split("async function exerciseSessionRevocation", 1)[1].split(
+        "function ageDisposableSession", 1
+    )[0]
+    assert 'await confirmVisibleDialog(page);\n    assert((await revokePending).ok()' in session_revocation
     assert "acceptInvitation(" in editor_mobile
     assert "exercisePasswordlessPasskeyRedundancy(" in editor_mobile
     assert "exerciseEditorAuthorizationDenials(" in editor_mobile

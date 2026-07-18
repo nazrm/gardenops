@@ -748,8 +748,6 @@ async function exerciseSessionRevocation(options, page, profile) {
     ));
     await row.locator(".adm-session-revoke-one").click();
     await confirmVisibleDialog(page);
-    await answerPrompt(page, "phase-five-mobile-session-revoke");
-    await answerPrompt(page, options.password);
     assert((await revokePending).ok(), "Per-session revoke failed");
     const revokedStatus = await secondaryPage.evaluate(async () => (
       await fetch("/api/auth/me", { credentials: "include" })
