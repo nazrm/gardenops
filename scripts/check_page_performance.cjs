@@ -2281,7 +2281,11 @@ async function runAppAuthFocusMatrixScenario(page, options, browserDiagnostics) 
       && !document.body.classList.contains("garden-switch-pending")
     ), targetGardenId, { timeout: timeoutMs });
     if (profile === "mobile") {
-      await page.locator("#mobile-utility-close-btn").click({ timeout: timeoutMs });
+      await page.waitForFunction(
+        () => !document.body.classList.contains("mobile-utility-open"),
+        undefined,
+        { timeout: timeoutMs },
+      );
     }
     return targetGardenId;
   };

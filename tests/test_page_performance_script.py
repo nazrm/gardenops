@@ -211,6 +211,16 @@ def test_page_performance_focus_matrix_static_proof_contract() -> None:
     assert 'options.scenario === "app-auth-focus-matrix" && options.stubApi' in script
 
 
+def test_mobile_focus_garden_switch_waits_for_automatic_utility_closure() -> None:
+    script = (ROOT / "scripts" / "check_page_performance.cjs").read_text()
+    start = script.index("const selectGardenByPrefix")
+    end = script.index("const browserErrorsSince", start)
+    helper = script[start:end]
+
+    assert "mobile-utility-open" in helper
+    assert "mobile-utility-close-btn" not in helper
+
+
 def test_page_performance_readiness_rejects_4xx() -> None:
     server, url = _serve_status(404)
     try:
