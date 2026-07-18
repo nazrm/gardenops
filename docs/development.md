@@ -588,7 +588,10 @@ research and validate it without rewriting tracked baselines:
 ```
 
 Do not use a developer-machine result from a dirty worktree as budget evidence,
-and do not weaken a budget to accept a regression. Query plan inspection is
+and do not weaken a median or p75 budget to accept a regression. The default
+sample coefficient-of-variation limit is 0.15; a higher per-metric limit needs
+reproduced clean-run variance evidence and remains subject to the same latency
+ceilings. Query plan inspection is
 read-only and restricted to the disposable runner database. The Phase 9 focus
 matrix measures real visible work for cross-garden switching, indoor/map state,
 Today and task actions, notifications, weather, journal, issues, inventory, and

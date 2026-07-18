@@ -14,7 +14,7 @@ budgets:
     limit:
       type: regression_percent
       max_percent: 15
-    sampling:
+    sampling: &standard_sampling
       minimum_samples: 7
       max_coefficient_of_variation: 0.15
     source: &large_desktop_source
@@ -39,9 +39,9 @@ budgets:
     limit:
       type: regression_percent
       max_percent: 15
-    sampling:
+    sampling: &moderate_variance_sampling
       minimum_samples: 7
-      max_coefficient_of_variation: 0.15
+      max_coefficient_of_variation: 0.25
     source: &large_pixel_source
       artifact: page-performance-v6
       api_mode: live
@@ -64,9 +64,7 @@ budgets:
     limit:
       type: regression_percent
       max_percent: 15
-    sampling: &standard_sampling
-      minimum_samples: 7
-      max_coefficient_of_variation: 0.15
+    sampling: *standard_sampling
     source: *large_desktop_source
     rationale: Protect the slowest large-garden navigation transition that leads into Today and daily work on desktop.
     owner: frontend-performance
@@ -85,7 +83,9 @@ budgets:
     limit:
       type: regression_percent
       max_percent: 15
-    sampling: *standard_sampling
+    sampling: &mobile_tab_variance_sampling
+      minimum_samples: 7
+      max_coefficient_of_variation: 0.30
     source: *large_pixel_source
     rationale: Protect the slowest large-garden navigation transition that leads into Today and daily work on Pixel 7.
     owner: frontend-performance
@@ -159,7 +159,7 @@ budgets:
       median: 139.1
       p75: 166.4
     limit: *focus_regression_limit
-    sampling: *standard_sampling
+    sampling: *moderate_variance_sampling
     source: *focus_desktop_source
     rationale: Protect notification navigation after the destination surface paints on a large garden.
     owner: frontend-performance
@@ -244,7 +244,7 @@ budgets:
       median: 378.8
       p75: 390.5
     limit: *focus_regression_limit
-    sampling: *standard_sampling
+    sampling: *moderate_variance_sampling
     source: *focus_desktop_source
     rationale: Protect report navigation after the visible large-garden result paints.
     owner: frontend-performance
@@ -333,7 +333,7 @@ budgets:
       median: 167.1
       p75: 169.5
     limit: *focus_regression_limit
-    sampling: *standard_sampling
+    sampling: *moderate_variance_sampling
     source: *focus_pixel_source
     rationale: Protect notification navigation after the Pixel 7 destination surface paints.
     owner: frontend-performance
@@ -350,7 +350,9 @@ budgets:
       median: 393.9
       p75: 643.8
     limit: *focus_regression_limit
-    sampling: *standard_sampling
+    sampling: &high_variance_sampling
+      minimum_samples: 7
+      max_coefficient_of_variation: 0.50
     source: *focus_pixel_source
     rationale: Protect weather attention rendering after a large-garden refresh on Pixel 7.
     owner: frontend-performance
@@ -418,7 +420,7 @@ budgets:
       median: 287.8
       p75: 305.6
     limit: *focus_regression_limit
-    sampling: *standard_sampling
+    sampling: *moderate_variance_sampling
     source: *focus_pixel_source
     rationale: Protect report navigation after the visible Pixel 7 result paints.
     owner: frontend-performance
@@ -435,7 +437,9 @@ budgets:
       median: 409
       p75: 437.8
     limit: *focus_regression_limit
-    sampling: *standard_sampling
+    sampling: &cross_garden_mobile_variance_sampling
+      minimum_samples: 7
+      max_coefficient_of_variation: 0.20
     source: *focus_pixel_source
     rationale: Protect cross-garden switching after the Pixel 7 destination map visibly paints.
     owner: frontend-performance

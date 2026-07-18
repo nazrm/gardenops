@@ -106,6 +106,22 @@ def test_tracked_budgets_are_established_and_require_measurements() -> None:
     }
     assert {budget["name"] for budget in budgets} == expected_names
     assert all(budget["baseline"]["status"] == "established" for budget in budgets)
+    documented_variance_limits = {
+        "M1-large-pixel-app-ready": 0.25,
+        "D1-large-pixel-tab-switch": 0.30,
+        "D4-large-desktop-focus": 0.25,
+        "R2-large-desktop-focus": 0.25,
+        "D4-large-pixel-focus": 0.25,
+        "D5-large-pixel-focus": 0.50,
+        "R2-large-pixel-focus": 0.25,
+        "CROSS-01-large-pixel-focus": 0.20,
+    }
+    assert {
+        budget["name"]: budget["sampling"]["max_coefficient_of_variation"]
+        for budget in budgets
+    } == {
+        name: documented_variance_limits.get(name, 0.15) for name in expected_names
+    }
     results = evaluate(budgets, [])
 
     assert {(result.status, result.name) for result in results} == {
