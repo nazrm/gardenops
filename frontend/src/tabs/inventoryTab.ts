@@ -5,6 +5,7 @@ import type {
 } from "../services/api";
 import { t } from "../core/i18n";
 import {
+  clearInventoryList,
   renderInventoryList,
   renderInventoryTable,
   renderTransactionHistory,
@@ -66,7 +67,8 @@ export function resetInventoryForGardenSwitch(): void {
   inventoryViewLoaded = false;
   inventoryPendingActions.clear();
   document.getElementById("inventory-summary")?.replaceChildren();
-  document.getElementById("inventory-mobile-list")?.replaceChildren();
+  const mobileList = document.getElementById("inventory-mobile-list");
+  if (mobileList) clearInventoryList(mobileList);
   document.getElementById("inventory-table-body")?.replaceChildren();
   document.getElementById("inventory-pagination")?.replaceChildren();
   const typeFilter = querySelect("inventory-type-filter");
@@ -175,7 +177,7 @@ function renderInventoryView(): void {
   );
 
   if (isDesktop) {
-    mobileList?.replaceChildren();
+    if (mobileList) clearInventoryList(mobileList);
     if (thead && tbody) {
       renderInventoryTable(
         thead,
