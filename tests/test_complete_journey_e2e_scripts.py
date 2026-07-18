@@ -4362,7 +4362,7 @@ try {
     assert "unexpectedMutationRequests.length === 0" in checker_source
 
 
-def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_weather_checks() -> (
+def test_phase_two_profile_contract_requires_role_actions_and_mobile_lifecycle_checks() -> (
     None
 ):
     source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
@@ -4375,6 +4375,8 @@ def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_w
         "mobile_calendar_lifecycle",
         "mobile_notification_preference_mutation",
         "mobile_history_reload",
+        "editor_calendar_action_and_weather_scope",
+        "viewer_direct_forbidden_task_write",
         "viewer_today_weather_affordances",
         "tasks_calendar_subscriptions_aba_race",
         "stale_dom_assertions",

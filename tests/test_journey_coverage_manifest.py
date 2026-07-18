@@ -84,7 +84,7 @@ def test_phase_two_manifest_only_marks_enforced_dimensions_proven() -> None:
     payload = validate_manifest(DEFAULT_MANIFEST, repo_root=ROOT)
     journeys = {journey["id"]: journey for journey in payload["journeys"]}
     expected_proven_dimensions = {
-        "D1": {"desktop", "mobile", "provider", "database", "performance"},
+        "D1": {"desktop", "mobile", "roles", "provider", "database", "performance"},
         "D2": {"desktop", "mobile", "roles", "offline", "database", "performance"},
         "D3": {"desktop", "mobile", "roles", "filesystem", "database"},
         "D4": {"desktop", "mobile", "roles", "provider", "database", "performance"},

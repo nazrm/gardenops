@@ -279,6 +279,7 @@ journeys:
     phase: 2
     desktop: proven
     mobile: proven
+    roles: proven
     provider: proven
     database: proven
     performance: proven
@@ -292,6 +293,7 @@ journeys:
         - tests/test_complete_journey_e2e_scripts.py
         - tests/test_task_action_parity_frontend_static.py
       mobile: *phase_two_browser
+      roles: *phase_two_browser
       provider: *phase_two_browser
       database: *phase_two_browser
       performance: *phase_nine_performance_evidence
