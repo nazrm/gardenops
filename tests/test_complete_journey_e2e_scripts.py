@@ -1237,6 +1237,12 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         event["path"] == "/api/weather/check" and event["status_code"] == 200
         for event in oracle["phase_seven"]["audit_contract"]["events"]
     )
+    state_writes = {
+        (event["actor"], event["status_code"]): event["count"]
+        for event in oracle["phase_seven"]["audit_contract"]["events"]
+        if event["method"] == "PATCH" and event["path"] == "/api/shademap/state"
+    }
+    assert state_writes == {("admin", 200): 4, ("editor", 200): 2, ("viewer", 403): 1}
     for marker in (
         "data-phase-seven-simulator",
         "data-phase-seven-terrain",

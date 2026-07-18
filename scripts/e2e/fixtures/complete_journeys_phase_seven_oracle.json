@@ -48,8 +48,8 @@
         { "actor": "viewer", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/shademap/obstacles", "status_code": 403 },
         { "actor": "viewer", "count": 1, "garden": "alpha", "method": "DELETE", "path": "/api/shademap/obstacles/{obstacle_id}", "status_code": 403 },
         { "actor": "viewer", "count": 1, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/state", "status_code": 403 },
-        { "actor": "admin", "count": 6, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/state", "status_code": 200 },
-        { "actor": "editor", "count": 3, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/state", "status_code": 200 },
+        { "actor": "admin", "count": 4, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/state", "status_code": 200 },
+        { "actor": "editor", "count": 2, "garden": "alpha", "method": "PATCH", "path": "/api/shademap/state", "status_code": 200 },
         { "actor": "admin", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/weather/check", "status_code": 200 }
       ]
     },
