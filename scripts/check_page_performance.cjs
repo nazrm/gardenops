@@ -2192,6 +2192,10 @@ function focusMetricId(focusId) {
   return focusId.replace(/[^A-Z0-9]/g, "");
 }
 
+function selectorWithVisibleMatches(selector) {
+  return selector.split(",").map((part) => `${part.trim()}:visible`).join(", ");
+}
+
 async function activeGardenProof(page, profile) {
   return page.evaluate((selector) => {
     const select = document.querySelector(selector);
@@ -2231,7 +2235,9 @@ async function runAppAuthFocusMatrixScenario(page, options, browserDiagnostics) 
     : "desktop";
   const primarySelector = (tab) => tabSelectorForViewport(options, tab);
   const visibleSeed = async (selector, text) => {
-    const match = page.locator(selector).filter({ hasText: text }).first();
+    const match = page.locator(selectorWithVisibleMatches(selector))
+      .filter({ hasText: text })
+      .first();
     await match.waitFor({ state: "visible", timeout: timeoutMs });
     return selector;
   };
@@ -3711,6 +3717,7 @@ module.exports = {
   persistAndValidateResult,
   request,
   runAppAuthFocusMatrixScenario,
+  selectorWithVisibleMatches,
   startServer,
   tabSelectorForViewport,
   waitForServer,

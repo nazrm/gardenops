@@ -134,6 +134,29 @@ console.log(JSON.stringify({ contract: FOCUS_MATRIX_CONTRACT, ids: FOCUS_MATRIX_
     assert all(entry["requests"] for entry in payload["contract"])
 
 
+def test_page_performance_focus_matrix_uses_visible_seeded_content_only() -> None:
+    result = _run_harness_probe(
+        """
+const { selectorWithVisibleMatches } = require(process.env.PERF_SCRIPT);
+const inventorySelector = "#inventory-table-body tr, "
+  + "#inventory-mobile-list .inventory-card";
+console.log(JSON.stringify({
+  desktop: selectorWithVisibleMatches(inventorySelector),
+  single: selectorWithVisibleMatches("#notification-panel .notification-item"),
+}));
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "desktop": (
+            "#inventory-table-body tr:visible, "
+            "#inventory-mobile-list .inventory-card:visible"
+        ),
+        "single": "#notification-panel .notification-item:visible",
+    }
+
+
 def test_page_performance_focus_matrix_static_proof_contract() -> None:
     script = (ROOT / "scripts" / "check_page_performance.cjs").read_text()
 
