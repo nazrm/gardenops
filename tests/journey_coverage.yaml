@@ -761,6 +761,7 @@ journeys:
     phase: 2
     desktop: proven
     mobile: proven
+    roles: proven
     database: proven
     offline: not_applicable
     provider: not_applicable
@@ -769,6 +770,7 @@ journeys:
     evidence: &phase_two_history_evidence
       desktop: *phase_two_browser
       mobile: *phase_two_browser
+      roles: *phase_two_browser
       database: *phase_two_browser
     notes:
       <<: *default_notes

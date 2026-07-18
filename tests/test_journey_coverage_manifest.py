@@ -89,7 +89,7 @@ def test_phase_two_manifest_only_marks_enforced_dimensions_proven() -> None:
         "D3": {"desktop", "mobile", "roles", "filesystem", "database"},
         "D4": {"desktop", "mobile", "roles", "provider", "database", "performance"},
         "D5": {"desktop", "mobile", "roles", "provider", "database", "performance"},
-        "R1": {"desktop", "mobile", "database"},
+        "R1": {"desktop", "mobile", "roles", "database"},
     }
     for journey_id, expected in expected_proven_dimensions.items():
         journey = journeys[journey_id]
