@@ -139,6 +139,8 @@ def test_phase_nine_manifest_maps_only_measured_focuses_to_performance_proof() -
     assert "scripts/e2e/journeys/providersAndTerrain.cjs" in c4["evidence"]["roles"]
     assert journeys["I4"]["roles"] == "proven"
     assert "scripts/e2e/journeys/providersAndTerrain.cjs" in journeys["I4"]["evidence"]["roles"]
+    assert journeys["P6"]["provider"] == "not_applicable"
+    assert "external catalogue adapters" in journeys["P6"]["notes"]["provider"]
 
 
 def test_duplicate_journey_id_is_rejected(tmp_path: Path) -> None:

@@ -744,11 +744,13 @@ journeys:
     roles: proven
     database: proven
     offline: not_applicable
+    provider: not_applicable
     filesystem: not_applicable
     evidence: *phase_four_core_evidence
     notes:
       <<: *default_notes
       offline: Care reads are online-only.
+      provider: Care generation and catalogue search use the supported local catalogue; external catalogue adapters are not a supported product capability.
       filesystem: Care review has no supported file workflow.
   - <<: *open_journey
     id: R1
