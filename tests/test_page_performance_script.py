@@ -157,6 +157,28 @@ console.log(JSON.stringify({
     }
 
 
+def test_page_performance_focus_matrix_matches_target_garden_request_templates() -> None:
+    result = _run_harness_probe(
+        """
+const { requestPathMatchesTemplate } = require(process.env.PERF_SCRIPT);
+const mapObjects = "/api/gardens/42/map-objects";
+const mapObjectTemplate = "/api/gardens/:id/map-objects";
+console.log(JSON.stringify({
+  mapObjects: requestPathMatchesTemplate(mapObjects, mapObjectTemplate),
+  plots: requestPathMatchesTemplate("/api/plots?include=all", "/api/plots"),
+  wrongGarden: requestPathMatchesTemplate("/api/gardens/42/plots", mapObjectTemplate),
+}));
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "mapObjects": True,
+        "plots": True,
+        "wrongGarden": False,
+    }
+
+
 def test_page_performance_focus_matrix_static_proof_contract() -> None:
     script = (ROOT / "scripts" / "check_page_performance.cjs").read_text()
 

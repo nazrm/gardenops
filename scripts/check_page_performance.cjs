@@ -2196,6 +2196,14 @@ function selectorWithVisibleMatches(selector) {
   return selector.split(",").map((part) => `${part.trim()}:visible`).join(", ");
 }
 
+function requestPathMatchesTemplate(actualPath, expectedPath) {
+  const actualParts = actualPath.split("?", 1)[0].split("/").filter(Boolean);
+  const expectedParts = expectedPath.split("/").filter(Boolean);
+  return actualParts.length === expectedParts.length && expectedParts.every((part, index) => (
+    part.startsWith(":") || actualParts[index] === part
+  ));
+}
+
 async function activeGardenProof(page, profile) {
   return page.evaluate((selector) => {
     const select = document.querySelector(selector);
@@ -2374,7 +2382,18 @@ async function runAppAuthFocusMatrixScenario(page, options, browserDiagnostics) 
     const wrongGardenRequest = responses.find((entry) => (
       entry.gardenId !== null && entry.gardenId !== activeGarden.id
     ));
-    if (wrongGardenRequest) {
+    const activeGardenRequests = responses.filter((entry) => entry.gardenId === activeGarden.id);
+    const missingCrossGardenRequests = contract.id === "CROSS-01"
+      ? contract.requests.filter((expectedPath) => !activeGardenRequests.some((entry) => (
+        requestPathMatchesTemplate(entry.path, expectedPath)
+      )))
+      : [];
+    if (missingCrossGardenRequests.length > 0) {
+      throw new Error(
+        `Focus ${contract.id} did not request ${missingCrossGardenRequests.join(", ")} for the target garden`,
+      );
+    }
+    if (contract.id !== "CROSS-01" && wrongGardenRequest) {
       throw new Error(
         `Focus ${contract.id} observed cross-garden request ${wrongGardenRequest.path}`,
       );
@@ -3717,6 +3736,7 @@ module.exports = {
   persistAndValidateResult,
   request,
   runAppAuthFocusMatrixScenario,
+  requestPathMatchesTemplate,
   selectorWithVisibleMatches,
   startServer,
   tabSelectorForViewport,
