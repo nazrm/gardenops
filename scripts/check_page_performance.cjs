@@ -2183,7 +2183,7 @@ const FOCUS_MATRIX_CONTRACT = [
   {
     id: "CROSS-01",
     surface: "map/cross-garden",
-    expected: "SCALE-MULTI-G02-PLOT-0001",
+    expected: "SCALE-MULTI_GARDEN-G02-PLOT-0001",
     requests: ["/api/plots", "/api/gardens/:id/map-objects"],
   },
 ];
@@ -2483,7 +2483,7 @@ async function runAppAuthFocusMatrixScenario(page, options, browserDiagnostics) 
     () => selectGardenByPrefix("Complete Journeys Shared Garden", 1),
     async () => {
       await page.waitForFunction(() => (
-        document.querySelector(".plot[data-plot-id='SCALE-MULTI-G02-PLOT-0001']") !== null
+        document.querySelector(".plot[data-plot-id='SCALE-MULTI_GARDEN-G02-PLOT-0001']") !== null
         && document.querySelector(".plot[data-plot-id='SCALE-LARGE-G01-PLOT-0001']") === null
       ), undefined, { timeout: timeoutMs });
     });

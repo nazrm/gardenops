@@ -410,10 +410,12 @@ def test_multi_garden_profile_keeps_overlapping_names_but_distinct_content(
     fixtures = projection["profiles"]["multi-garden"]["fixtures"]
     rows = conn.execute(
         """
-        SELECT garden.name, garden.slug, MIN(plant.name) AS first_plant_name
+        SELECT garden.name, garden.slug, MIN(plant.name) AS first_plant_name,
+               MIN(plot.plot_id) AS first_plot_id
         FROM gardens AS garden
         JOIN plant_ownership AS ownership ON ownership.garden_id = garden.id
         JOIN plants AS plant ON plant.plt_id = ownership.plt_id
+        JOIN plots AS plot ON plot.garden_id = garden.id AND plot.zone_code <> 'I'
         WHERE garden.slug = ANY(%s)
         GROUP BY garden.id, garden.name, garden.slug
         ORDER BY garden.slug
@@ -424,6 +426,12 @@ def test_multi_garden_profile_keeps_overlapping_names_but_distinct_content(
     assert {str(row["name"]) for row in rows} == {"Complete Journeys Shared Garden"}
     assert len({str(row["first_plant_name"]) for row in rows}) == 4
     assert [str(row["slug"]) for row in rows] == [fixture["slug"] for fixture in fixtures]
+    assert [str(row["first_plot_id"]) for row in rows] == [
+        "SCALE-MULTI_GARDEN-G01-PLOT-0001",
+        "SCALE-MULTI_GARDEN-G02-PLOT-0001",
+        "SCALE-MULTI_GARDEN-G03-PLOT-0001",
+        "SCALE-MULTI_GARDEN-G04-PLOT-0001",
+    ]
 
 
 def test_apply_scale_profiles_cli_refuses_without_runner_child_guard() -> None:
