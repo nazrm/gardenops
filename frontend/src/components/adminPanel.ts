@@ -3452,5 +3452,5 @@ export function refreshAdminPanelLocalization(): void {
 }
 
 export function getAdminViewMarkup(): string {
-  return `<section id="admin-view" class="view adm-view" role="tabpanel" aria-labelledby="top-tab-admin" hidden></section>`;
+  return `<section id="admin-view" class="view adm-view" aria-labelledby="top-tab-admin" hidden></section>`;
 }

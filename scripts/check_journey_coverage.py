@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -111,6 +112,10 @@ DIMENSIONS = (
 )
 ALLOWED_STATES = frozenset({"required", "proven", "not_applicable"})
 REQUIRED_FIELDS = frozenset({"id", "phase", *DIMENSIONS, "evidence", "notes"})
+DEFERRED_NOT_APPLICABLE_REASON = re.compile(
+    r"\b(?:phase\s+\d+|not\s+yet|remains?\s+open|pending|deferred|future\s+work)\b",
+    re.IGNORECASE,
+)
 
 
 class CoverageManifestError(ValueError):
@@ -185,8 +190,8 @@ def validate_manifest(
         raise CoverageManifestError(
             f"manifest has unknown root fields: {', '.join(sorted(unknown_root_fields))}"
         )
-    if payload.get("version") != 1:
-        raise CoverageManifestError("manifest version must be 1")
+    if payload.get("version") != 2:
+        raise CoverageManifestError("manifest version must be 2")
     journeys = payload.get("journeys")
     if not isinstance(journeys, list):
         raise CoverageManifestError("manifest journeys must be a list")
@@ -231,7 +236,31 @@ def validate_manifest(
         ):
             raise CoverageManifestError(f"{journey_id}: notes must be a string-to-string mapping")
 
-        has_proven_dimension = False
+        evidence = journey["evidence"]
+        if not isinstance(evidence, dict):
+            raise CoverageManifestError(f"{journey_id}: evidence must be a dimension mapping")
+        unknown_evidence_dimensions = set(evidence) - set(DIMENSIONS)
+        if unknown_evidence_dimensions:
+            raise CoverageManifestError(
+                f"{journey_id}: evidence has unknown dimensions: "
+                f"{', '.join(sorted(unknown_evidence_dimensions))}"
+            )
+        for dimension, paths in evidence.items():
+            if (
+                not isinstance(paths, list)
+                or not paths
+                or not all(isinstance(item, str) and item.strip() for item in paths)
+            ):
+                raise CoverageManifestError(
+                    f"{journey_id}: evidence.{dimension} must be a non-empty list of paths"
+                )
+            if len(paths) != len(set(paths)):
+                raise CoverageManifestError(
+                    f"{journey_id}: evidence.{dimension} contains duplicate paths"
+                )
+            for evidence_path in paths:
+                _validate_evidence_path(evidence_path, repo_root=repo_root, journey_id=journey_id)
+
         for dimension in DIMENSIONS:
             state = journey[dimension]
             if state not in ALLOWED_STATES:
@@ -240,24 +269,29 @@ def validate_manifest(
                 )
             if state == "required":
                 open_dimensions.append(f"{journey_id}.{dimension}")
+                if dimension not in notes:
+                    raise CoverageManifestError(
+                        f"{journey_id}: {dimension}=required requires notes.{dimension} "
+                        "describing the remaining closure condition"
+                    )
             elif state == "proven":
-                has_proven_dimension = True
-            elif dimension not in notes:
-                raise CoverageManifestError(
-                    f"{journey_id}: {dimension}=not_applicable requires notes.{dimension}"
-                )
-
-        evidence = journey["evidence"]
-        if not isinstance(evidence, list) or not all(
-            isinstance(item, str) and item.strip() for item in evidence
-        ):
-            raise CoverageManifestError(f"{journey_id}: evidence must be a list of paths")
-        if has_proven_dimension and not evidence:
-            raise CoverageManifestError(
-                f"{journey_id}: proven dimensions require durable evidence paths"
-            )
-        for evidence_path in evidence:
-            _validate_evidence_path(evidence_path, repo_root=repo_root, journey_id=journey_id)
+                if dimension not in evidence:
+                    raise CoverageManifestError(
+                        f"{journey_id}: {dimension}=proven requires evidence.{dimension}"
+                    )
+            else:
+                if dimension not in notes:
+                    raise CoverageManifestError(
+                        f"{journey_id}: {dimension}=not_applicable requires notes.{dimension}"
+                    )
+                if dimension in evidence:
+                    raise CoverageManifestError(
+                        f"{journey_id}: {dimension}=not_applicable cannot have evidence.{dimension}"
+                    )
+                if DEFERRED_NOT_APPLICABLE_REASON.search(notes[dimension]):
+                    raise CoverageManifestError(
+                        f"{journey_id}: {dimension}=not_applicable reason cannot defer closure"
+                    )
 
     missing_ids = EXPECTED_JOURNEY_IDS - seen_ids
     unknown_ids = seen_ids - EXPECTED_JOURNEY_IDS

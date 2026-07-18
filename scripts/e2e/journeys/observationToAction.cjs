@@ -7,6 +7,7 @@ const {
   authenticate,
   createApiRecorder,
   createGuardedContext,
+  dismissProactivePasskeyPrompt,
 } = require("../completeJourneyBrowser.cjs");
 const { assert, assertPageStructure, visible, waitFor } = require("../completeJourneyAssertions.cjs");
 
@@ -223,6 +224,14 @@ async function exerciseViewer(page, diagnostics, profile, fixture) {
       `${profile} viewer received ${mode} mutation controls`);
   }
 
+  await openPlants(page, profile);
+  const addPlant = page.locator("#add-plant-btn:visible");
+  await visible(addPlant, `${profile} viewer plants surface`);
+  assert(await addPlant.isDisabled(),
+    `${profile} viewer received a usable plant creation entry point`);
+  assert(await page.locator("#identify-from-photo-btn:visible").count() === 0,
+    `${profile} viewer received an identification mutation entry point`);
+
   await openActivityMode(page, profile, "issues", "#issues-tab-content");
   const readableIssue = page.locator(".issue-card").first();
   await visible(readableIssue, `${profile} viewer issue summary`);
@@ -256,7 +265,9 @@ async function exerciseViewer(page, diagnostics, profile, fixture) {
   });
   return {
     direct_write_statuses: [403, 403, 403, 403],
+    identification_write_entry_disabled: true,
     issue_details_readable: true,
+    diagnosis_write_entry_hidden: true,
     readable_surfaces: 3,
   };
 }
@@ -490,6 +501,41 @@ async function exerciseIdentifyPlant(page, profile, options) {
   };
 }
 
+async function exerciseIdentifyAdvisory(page, profile, options) {
+  await openPlants(page, profile);
+  await page.locator("#add-plant-btn").click();
+  await visible(page.locator("#plant-search-create-btn"), "plant create-new action");
+  await page.locator("#plant-search-create-btn").click();
+  await visible(page.locator("#create-plant-form"), "plant create form before photo identification");
+  const identifyFromPhoto = page.locator("#identify-from-photo-btn:visible");
+  await visible(identifyFromPhoto, "identify-from-photo action");
+  await identifyFromPhoto.click();
+
+  const identify = page.getByRole("dialog", { name: /identify plant/i });
+  await visible(identify, "identify plant dialog");
+  await identify.locator("input[type='file']").setInputFiles(mediaInput(options));
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+      && new URL(response.url()).pathname === "/api/ai/identify-plant"
+  ));
+  await identify.getByRole("button", { name: "Identify", exact: true }).click();
+  const response = await responsePromise;
+  assert(response.status() === 200, `Plant identification returned ${response.status()}`);
+  const candidate = identify.locator(".candidate-card").filter({ hasText: "Test rose" }).first();
+  await visible(candidate, "deterministic plant identification candidate");
+  await visible(candidate.getByText("Rosa canina", { exact: true }), "identified Latin name");
+  await visible(candidate.getByRole("button", { name: /add to garden/i }),
+    "identification requires an explicit add action");
+  await identify.getByRole("button", { name: "Close", exact: true }).click();
+  await identify.waitFor({ state: "detached" });
+  return {
+    advisory_non_mutating: true,
+    candidate_latin: "Rosa canina",
+    candidate_name: "Test rose",
+    explicit_add_action_available: true,
+  };
+}
+
 async function deleteIdentifiedPlant(page, profile, identified) {
   await openPlants(page, profile);
   const row = plantRecord(page, profile, identified.plant_name);
@@ -625,6 +671,48 @@ async function exerciseDiagnosisAndIssue(page, profile, options) {
     create_edit_follow_up_history_resolve_delete: true,
     repeated_resolve_status: repeatedResolve.status,
     reopen_ui_available: true,
+  };
+}
+
+async function exerciseDiagnosisAdvisory(page, profile, options) {
+  const initialIssuesResponse = page.waitForResponse((response) => (
+    response.request().method() === "GET"
+      && new URL(response.url()).pathname === "/api/issues"
+  ));
+  await openActivityMode(page, profile, "issues", "#issues-tab-content");
+  const initialIssues = await initialIssuesResponse;
+  assert(initialIssues.status() === 200, "Initial issue list load failed");
+  const initialIssuePayload = await initialIssues.json();
+  await waitFor(
+    async () => await page.locator(".issue-card").count() === initialIssuePayload.issues.length,
+    "initial issue list rendering",
+  );
+  const beforeCount = initialIssuePayload.issues.length;
+  await page.locator("#issues-add-btn").click();
+  const issueDialog = page.getByRole("dialog").last();
+  await visible(issueDialog, "new issue dialog");
+  const diagnoseButton = issueDialog.getByRole("button", { name: "What's wrong?" });
+  await visible(diagnoseButton, "diagnosis advisory entry point");
+  await diagnoseButton.click();
+  const diagnosis = page.getByRole("dialog", { name: "What's wrong?" });
+  await visible(diagnosis, "diagnosis advisory dialog");
+  await diagnosis.locator("input[type='file']").setInputFiles(mediaInput(options, "diagnosis"));
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+      && new URL(response.url()).pathname === "/api/ai/diagnose-plant"
+  ));
+  await diagnosis.getByRole("button", { name: "Diagnose", exact: true }).click();
+  assert((await responsePromise).status() === 200, "Photo diagnosis returned a non-success response");
+  await visible(diagnosis.locator(".diagnosis-disclaimer"), "diagnosis advisory disclaimer");
+  await visible(diagnosis.getByRole("button", { name: /track this issue/i }).first(),
+    "diagnosis explicit track-this-issue action");
+  assert(await page.locator(".issue-card").count() === beforeCount,
+    "Diagnosis advisory mutated issue state before explicit tracking");
+  await diagnosis.getByRole("button", { name: "Close", exact: true }).click();
+  await diagnosis.waitFor({ state: "detached" });
+  return {
+    advisory_non_mutating: true,
+    explicit_track_action_available: true,
   };
 }
 
@@ -992,6 +1080,12 @@ async function exerciseOfflineCreates(page, context, diagnostics, profile, optio
     async () => await page.evaluate(() => window.__phaseThreeAckDropped === true),
     "journal server commit before simulated acknowledgement loss",
   );
+  await waitFor(
+    () => replayed.some((item) => (
+      item.operation_id === phaseThree.operation_slots.journal && item.body?.id
+    )),
+    "journal replay response evidence before lost-ack reload",
+  );
   assert((await readOfflineDrafts(page)).some((draft) => (
     draft.operation_id === phaseThree.operation_slots.journal && draft.status === "syncing"
   )), "Lost-ack journal draft was not retained as syncing before reload");
@@ -1116,6 +1210,7 @@ async function runProfile(options) {
     const authenticated = await authenticate(page, run.username, run.password);
     guarded.markAuthenticated();
     assert(authenticated.role === run.role, `Expected ${run.role}, authenticated as ${authenticated.role}`);
+    await dismissProactivePasskeyPrompt(page);
     result.browser_profile.user_agent = await page.evaluate(() => navigator.userAgent);
     result.browser_profile.max_touch_points = await page.evaluate(() => navigator.maxTouchPoints);
     result.browser_profile.has_touch = result.browser_profile.max_touch_points > 0;
@@ -1146,6 +1241,10 @@ async function runProfile(options) {
       result.checks.harvest_lifecycle = await exerciseHarvest(page, run.profile, run);
       result.checks.last_completed_step = "harvest-lifecycle";
     } else if (run.role === "editor" && run.profile === "desktop") {
+      result.checks.identify_advisory = await exerciseIdentifyAdvisory(page, run.profile, run);
+      result.checks.last_completed_step = "editor-identify-advisory";
+      result.checks.diagnosis_advisory = await exerciseDiagnosisAdvisory(page, run.profile, run);
+      result.checks.last_completed_step = "editor-diagnosis-advisory";
       result.checks.journal_media = await exerciseJournalAndMedia(page, run.profile, run);
       result.checks.last_completed_step = "editor-journal-media";
       result.checks.harvest_lifecycle = await exerciseHarvest(page, run.profile, run);
@@ -1155,6 +1254,8 @@ async function runProfile(options) {
       result.checks.last_completed_step = "mobile-decimal-unit-harvest";
       result.checks.issue_lifecycle = await exerciseDiagnosisAndIssue(page, run.profile, run);
       result.checks.last_completed_step = "mobile-issue-lifecycle";
+      result.checks.identify_advisory = await exerciseIdentifyAdvisory(page, run.profile, run);
+      result.checks.last_completed_step = "mobile-identify-advisory";
     } else {
       result.checks.offline_replay = await exerciseOfflineCreates(
         page, guarded.context, guarded.diagnostics, run.profile, run,

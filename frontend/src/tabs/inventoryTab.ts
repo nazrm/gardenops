@@ -5,6 +5,7 @@ import type {
 } from "../services/api";
 import { t } from "../core/i18n";
 import {
+  clearInventoryList,
   renderInventoryList,
   renderInventoryTable,
   renderTransactionHistory,
@@ -35,6 +36,8 @@ let inventoryOffset = 0;
 let inventoryRequestGeneration = 0;
 const inventoryPendingActions = new Set<string>();
 const INVENTORY_PAGE_SIZE = 50;
+const inventoryDesktopLayoutQuery = window.matchMedia("(min-width: 961px)");
+let inventoryViewLoaded = false;
 
 interface InventoryRequestContext {
   gardenId: number;
@@ -61,9 +64,11 @@ export function resetInventoryForGardenSwitch(): void {
   inventoryItems = [];
   inventoryTotal = 0;
   inventoryOffset = 0;
+  inventoryViewLoaded = false;
   inventoryPendingActions.clear();
   document.getElementById("inventory-summary")?.replaceChildren();
-  document.getElementById("inventory-mobile-list")?.replaceChildren();
+  const mobileList = document.getElementById("inventory-mobile-list");
+  if (mobileList) clearInventoryList(mobileList);
   document.getElementById("inventory-table-body")?.replaceChildren();
   document.getElementById("inventory-pagination")?.replaceChildren();
   const typeFilter = querySelect("inventory-type-filter");
@@ -102,6 +107,9 @@ export function initInventoryTab(
       inventoryOffset = 0;
       void loadInventoryItems();
     });
+  inventoryDesktopLayoutQuery.addEventListener("change", () => {
+    if (inventoryViewLoaded) renderInventoryView();
+  });
 }
 
 export async function loadInventoryItems(): Promise<void> {
@@ -134,6 +142,7 @@ export async function loadInventoryItems(): Promise<void> {
     }
     inventoryItems = result.items;
     inventoryTotal = result.total;
+    inventoryViewLoaded = true;
     renderInventoryView();
   } catch (err) {
     if (!isCurrentInventoryRequest(request)) return;
@@ -155,32 +164,37 @@ function renderInventoryView(): void {
   }
 
   const plantNames = buildPlantNameMap(ctx.getPlants());
+  const isDesktop = inventoryDesktopLayoutQuery.matches;
 
   const mobileList = document.getElementById(
     "inventory-mobile-list",
   );
-  if (mobileList) {
-    renderInventoryList(
-      mobileList,
-      inventoryItems,
-      {
-        ...inventoryCallbacks,
-        canWrite: ctx.canWrite(),
-      },
-      plantNames,
-    );
-  }
-
   const thead = document.getElementById(
     "inventory-table-head",
   );
   const tbody = document.getElementById(
     "inventory-table-body",
   );
-  if (thead && tbody) {
-    renderInventoryTable(
-      thead,
-      tbody,
+
+  if (isDesktop) {
+    if (mobileList) clearInventoryList(mobileList);
+    if (thead && tbody) {
+      renderInventoryTable(
+        thead,
+        tbody,
+        inventoryItems,
+        {
+          ...inventoryCallbacks,
+          canWrite: ctx.canWrite(),
+        },
+        plantNames,
+      );
+    }
+  } else if (mobileList) {
+    thead?.replaceChildren();
+    tbody?.replaceChildren();
+    renderInventoryList(
+      mobileList,
       inventoryItems,
       {
         ...inventoryCallbacks,

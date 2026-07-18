@@ -294,7 +294,12 @@ function renderInviteFlow(
   );
   const loadingDiv = document.createElement("div");
   loadingDiv.className = "auth-gate-loading";
+  loadingDiv.setAttribute("role", "status");
+  loadingDiv.setAttribute("aria-live", "polite");
+  loadingDiv.setAttribute("aria-busy", "true");
+  loadingDiv.setAttribute("aria-label", t("auth.invite_loading"));
   const spinner = document.createElement("div");
+  spinner.setAttribute("aria-hidden", "true");
   spinner.className = "auth-gate-spinner";
   loadingDiv.appendChild(spinner);
   loadingCard.appendChild(loadingDiv);

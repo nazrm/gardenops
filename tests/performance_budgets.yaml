@@ -1,0 +1,446 @@
+version: 1
+budgets:
+  - name: M1-large-desktop-app-ready
+    journey: M1
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: appReadyMs
+      unit: ms
+    baseline:
+      status: established
+      median: 1485.9
+      p75: 1540.1
+    limit:
+      type: regression_percent
+      max_percent: 15
+    sampling: &standard_sampling
+      minimum_samples: 7
+      max_coefficient_of_variation: 0.15
+    source: &large_desktop_source
+      artifact: page-performance-v6
+      api_mode: live
+      device_profile: desktop
+      scenario: app-auth-large-tabs
+    rationale: Protect map-first application readiness on a realistic large garden from the reviewed clean-revision baseline.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: M1-large-pixel-app-ready
+    journey: M1
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: appReadyMs
+      unit: ms
+    baseline:
+      status: established
+      median: 1453.1
+      p75: 1473.25
+    limit:
+      type: regression_percent
+      max_percent: 15
+    sampling: &moderate_variance_sampling
+      minimum_samples: 7
+      max_coefficient_of_variation: 0.25
+    source: &large_pixel_source
+      artifact: page-performance-v6
+      api_mode: live
+      device_profile: pixel-7
+      scenario: app-auth-large-tabs
+    rationale: Protect map-first application readiness on the true mobile browser profile from the reviewed clean-revision baseline.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: D1-large-desktop-tab-switch
+    journey: D1
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: maxTabSwitchBrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 586.7
+      p75: 592.1
+    limit:
+      type: regression_percent
+      max_percent: 15
+    sampling: *standard_sampling
+    source: *large_desktop_source
+    rationale: Protect the slowest large-garden navigation transition that leads into Today and daily work on desktop.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: D1-large-pixel-tab-switch
+    journey: D1
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: maxTabSwitchBrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 440.1
+      p75: 457.9
+    limit:
+      type: regression_percent
+      max_percent: 15
+    sampling: &mobile_tab_variance_sampling
+      minimum_samples: 7
+      max_coefficient_of_variation: 0.30
+    source: *large_pixel_source
+    rationale: Protect the slowest large-garden navigation transition that leads into Today and daily work on Pixel 7.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: M3-large-desktop-focus
+    journey: M3
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: focusM3BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 182.7
+      p75: 195.3
+    limit: &focus_regression_limit
+      type: regression_percent
+      max_percent: 15
+    sampling: *standard_sampling
+    source: &focus_desktop_source
+      artifact: page-performance-v6
+      api_mode: live
+      device_profile: desktop
+      scenario: app-auth-focus-matrix
+    rationale: Protect large-garden indoor and saved-view navigation after the browser paints the visible result.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: D1-large-desktop-focus
+    journey: D1
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: focusD1BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 774.7
+      p75: 821.3
+    limit: *focus_regression_limit
+    sampling: *standard_sampling
+    source: *focus_desktop_source
+    rationale: Protect Today attention rendering and its visible task context on a large garden.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: D2-large-desktop-focus
+    journey: D2
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: focusD2BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 313.6
+      p75: 328.4
+    limit: *focus_regression_limit
+    sampling: *standard_sampling
+    source: *focus_desktop_source
+    rationale: Protect visible task work and calendar routing on a large garden.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: D4-large-desktop-focus
+    journey: D4
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: focusD4BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 139.1
+      p75: 166.4
+    limit: *focus_regression_limit
+    sampling: *moderate_variance_sampling
+    source: *focus_desktop_source
+    rationale: Protect notification navigation after the destination surface paints on a large garden.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: D5-large-desktop-focus
+    journey: D5
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: focusD5BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 394.9
+      p75: 660.1
+    limit: *focus_regression_limit
+    sampling: *standard_sampling
+    source: *focus_desktop_source
+    rationale: Protect weather attention rendering after a large-garden refresh.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: P1-large-desktop-focus
+    journey: P1
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: focusP1BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 280
+      p75: 286.7
+    limit: *focus_regression_limit
+    sampling: *standard_sampling
+    source: *focus_desktop_source
+    rationale: Protect journal history navigation after the visible large-garden result paints.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: P2-large-desktop-focus
+    journey: P2
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: focusP2BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 237.3
+      p75: 254.9
+    limit: *focus_regression_limit
+    sampling: *standard_sampling
+    source: *focus_desktop_source
+    rationale: Protect issue work navigation after the visible large-garden result paints.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: P4-large-desktop-focus
+    journey: P4
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: focusP4BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 402.6
+      p75: 417.2
+    limit: *focus_regression_limit
+    sampling: *standard_sampling
+    source: *focus_desktop_source
+    rationale: Protect inventory work navigation after the visible large-garden result paints.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: R2-large-desktop-focus
+    journey: R2
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: focusR2BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 378.8
+      p75: 390.5
+    limit: *focus_regression_limit
+    sampling: *moderate_variance_sampling
+    source: *focus_desktop_source
+    rationale: Protect report navigation after the visible large-garden result paints.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: CROSS-01-large-desktop-focus
+    journey: CROSS-01
+    fixture: complete-journeys-scale-large-v1
+    profile: desktop-1440x900
+    metric:
+      name: focusCROSS01BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 459.7
+      p75: 500.3
+    limit: *focus_regression_limit
+    sampling: *standard_sampling
+    source: *focus_desktop_source
+    rationale: Protect cross-garden switching after the destination map visibly paints.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: M3-large-pixel-focus
+    journey: M3
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: focusM3BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 221.6
+      p75: 243
+    limit: *focus_regression_limit
+    sampling: *standard_sampling
+    source: &focus_pixel_source
+      artifact: page-performance-v6
+      api_mode: live
+      device_profile: pixel-7
+      scenario: app-auth-focus-matrix
+    rationale: Protect large-garden indoor and saved-view navigation after the Pixel 7 browser paints the visible result.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: D1-large-pixel-focus
+    journey: D1
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: focusD1BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 783
+      p75: 813.4
+    limit: *focus_regression_limit
+    sampling: *standard_sampling
+    source: *focus_pixel_source
+    rationale: Protect Today attention rendering and its visible task context on Pixel 7.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: D2-large-pixel-focus
+    journey: D2
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: focusD2BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 319.7
+      p75: 334.6
+    limit: *focus_regression_limit
+    sampling: *standard_sampling
+    source: *focus_pixel_source
+    rationale: Protect visible task work and calendar routing on Pixel 7.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: D4-large-pixel-focus
+    journey: D4
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: focusD4BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 167.1
+      p75: 169.5
+    limit: *focus_regression_limit
+    sampling: *moderate_variance_sampling
+    source: *focus_pixel_source
+    rationale: Protect notification navigation after the Pixel 7 destination surface paints.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: D5-large-pixel-focus
+    journey: D5
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: focusD5BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 393.9
+      p75: 643.8
+    limit: *focus_regression_limit
+    sampling: &high_variance_sampling
+      minimum_samples: 7
+      max_coefficient_of_variation: 0.50
+    source: *focus_pixel_source
+    rationale: Protect weather attention rendering after a large-garden refresh on Pixel 7.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: P1-large-pixel-focus
+    journey: P1
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: focusP1BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 260.7
+      p75: 271.5
+    limit: *focus_regression_limit
+    sampling: *standard_sampling
+    source: *focus_pixel_source
+    rationale: Protect journal history navigation after the visible Pixel 7 result paints.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: P2-large-pixel-focus
+    journey: P2
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: focusP2BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 242.1
+      p75: 256.3
+    limit: *focus_regression_limit
+    sampling: *standard_sampling
+    source: *focus_pixel_source
+    rationale: Protect issue work navigation after the visible Pixel 7 result paints.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: P4-large-pixel-focus
+    journey: P4
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: focusP4BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 240.5
+      p75: 253.8
+    limit: *focus_regression_limit
+    sampling: *standard_sampling
+    source: *focus_pixel_source
+    rationale: Protect inventory work navigation after the visible Pixel 7 result paints.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: R2-large-pixel-focus
+    journey: R2
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: focusR2BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 287.8
+      p75: 305.6
+    limit: *focus_regression_limit
+    sampling: *moderate_variance_sampling
+    source: *focus_pixel_source
+    rationale: Protect report navigation after the visible Pixel 7 result paints.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+  - name: CROSS-01-large-pixel-focus
+    journey: CROSS-01
+    fixture: complete-journeys-scale-large-v1
+    profile: pixel-7
+    metric:
+      name: focusCROSS01BrowserPostFrameMs
+      unit: ms
+    baseline:
+      status: established
+      median: 409
+      p75: 437.8
+    limit: *focus_regression_limit
+    sampling: &cross_garden_mobile_variance_sampling
+      minimum_samples: 7
+      max_coefficient_of_variation: 0.20
+    source: *focus_pixel_source
+    rationale: Protect cross-garden switching after the Pixel 7 destination map visibly paints.
+    owner: frontend-performance
+    command: scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9

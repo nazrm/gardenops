@@ -21,7 +21,7 @@ from gardenops.audit import (
     write_required_audit_event,
 )
 from gardenops.db import DB, DbConn, current_timestamp_ms, executemany
-from gardenops.feature_gates import TIER_ORDER, features_for_tier
+from gardenops.feature_gates import TIER_ORDER, feature_allowed, features_for_tier
 from gardenops.incident_controls import (
     get_emergency_read_only_status,
     list_active_sessions,
@@ -2181,7 +2181,7 @@ def auth_me(request: Request, response: Response, db: DB) -> dict[str, object]:
         server_shademap_key = get_shademap_api_key(db) or ""
     except ConfigurationError:
         server_shademap_key = ""
-    shademap_available = bool(
+    shademap_available = feature_allowed(context.subscription_tier, "shade_map") and bool(
         server_shademap_key
         or os.environ.get("SHADEMAP_PUBLIC_API_KEY", "").strip()
         or os.environ.get("SHADEMAP_PUBLIC_KEY", "").strip()

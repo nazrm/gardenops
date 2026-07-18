@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -10,6 +11,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.seed_complete_journeys_e2e import (
     _frozen_attention_clock,
@@ -57,6 +59,29 @@ def _run_runner(*args: str, env: dict[str, str] | None = None) -> subprocess.Com
     )
 
 
+def _javascript_function_containing(source: str, marker: str) -> str:
+    marker_index = source.index(marker)
+    starts = list(
+        re.finditer(
+            r"\bfunction\s+[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{",
+            source[:marker_index],
+        )
+    )
+    assert starts, f"No JavaScript function contains {marker!r}"
+    start = starts[-1].start()
+    brace_start = source.index("{", starts[-1].start())
+    depth = 0
+    for index in range(brace_start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                assert index >= marker_index
+                return source[start : index + 1]
+    raise AssertionError(f"Unterminated JavaScript function containing {marker!r}")
+
+
 def test_phase_zero_complete_journey_files_exist() -> None:
     expected = (
         RUNNER,
@@ -65,11 +90,13 @@ def test_phase_zero_complete_journey_files_exist() -> None:
         ROOT / "scripts" / "e2e" / "completeJourneyBrowser.cjs",
         ROOT / "scripts" / "e2e" / "completeJourneyAssertions.cjs",
         ROOT / "scripts" / "e2e" / "completeJourneyApi.cjs",
+        ROOT / "scripts" / "e2e" / "performanceFastapiApp.py",
         ROOT / "scripts" / "e2e" / "journeys" / "foundation.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "gardenMapPlants.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "observationToAction.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "providersAndTerrain.cjs",
+        ROOT / "scripts" / "e2e" / "journeys" / "accessibilityAndResponsive.cjs",
         ORACLE,
         PHASE_THREE_ORACLE,
         PHASE_SEVEN_ORACLE,
@@ -205,7 +232,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
     subprocess.run(["git", "init", "--quiet"], cwd=checkout, check=True, timeout=20)
     runner = checkout / "scripts" / "run_complete_journeys_e2e.sh"
     result = subprocess.run(
-        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "8"],
+        ["bash", str(runner), "--expected-head", "0" * 40, "--phase", "9"],
         cwd=checkout,
         capture_output=True,
         check=False,
@@ -213,7 +240,7 @@ def test_runner_creates_missing_ignored_research_root_in_fresh_checkout(tmp_path
         timeout=20,
     )
     assert result.returncode == 2
-    assert "not implemented" in result.stderr.lower()
+    assert "review-gated" in result.stderr.lower()
     assert (checkout / "research").is_dir()
 
 
@@ -709,7 +736,7 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
     checker_source = CHECKER.read_text(encoding="utf-8")
     runner_source = RUNNER.read_text(encoding="utf-8")
 
-    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert "runDailyAttentionWork" in journey_source
     assert 'require("./e2e/journeys/dailyAttentionWork.cjs")' in checker_source
     assert "phaseSelected(2)" in checker_source
@@ -717,6 +744,19 @@ def test_phase_two_fixture_and_journey_wiring_are_declared() -> None:
     assert '"--prepare-phase-two"' in checker_source
     for journey_id in ("D1", "D2", "D3", "D4", "D5", "R1"):
         assert f'"{journey_id}"' in checker_source
+
+
+def test_phase_two_weather_fixture_uses_the_current_garden_locations() -> None:
+    source = SEEDER.read_text(encoding="utf-8")
+    weather_reset = source.split("def _reset_phase_two_weather_cache", 1)[1].split(
+        "def _prepare_phase_seven_weather", 1
+    )[0]
+
+    assert "SELECT id, latitude, longitude" in weather_reset
+    assert "FROM gardens" in weather_reset
+    assert "locations[garden_id]" in weather_reset
+    assert "weather gardens need configured locations" in weather_reset
+    assert "(beta_id, beta_forecast, 59.9239, 10.7622)" not in weather_reset
 
 
 def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
@@ -727,8 +767,9 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_THREE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert "GARDENOPS_E2E_LOOPBACK_PROVIDER=1" in runner_source
+    assert "APP_SECRETS_ENCRYPTION_KEY" in runner_source
     assert "GARDENOPS_E2E_SHADEMAP_ESTIMATE_CSV" in runner_source
     assert "'/shademap': proxyTarget" in runner_source
     assert "VITE_SHADEMAP_BASEMAP_URL" in runner_source
@@ -749,6 +790,7 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
         "viewer:mobile",
     ]
     assert set(oracle["phase_three"]["whole_table_mutation_accounting"]["table_counts"]) == {
+        "auth_passkey_challenges",
         "garden_issue_plants",
         "garden_issue_plots",
         "garden_issues",
@@ -770,6 +812,7 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
         "plants",
         "plot_plants",
         "provider_daily_usage",
+        "shademap_cache",
     }
     assert oracle["phase_three"]["fixture"]["media"]["oriented_jpeg"] == {
         "filename": "oriented-2x4.jpg",
@@ -794,6 +837,7 @@ def test_phase_three_lost_ack_and_reopen_are_real_user_flows() -> None:
 
     assert "window.__phaseThreeAckDropped = true" in journey_source
     assert "journal server commit before simulated acknowledgement loss" in journey_source
+    assert "journal replay response evidence before lost-ack reload" in journey_source
     assert "response_ack_loss_simulated: true" in journey_source
     generated_id_check = journey_source.index("assertGeneratedOfflineOperationIds(generatedQueued)")
     deterministic_rewrite = journey_source.index(
@@ -812,6 +856,40 @@ def test_phase_three_lost_ack_and_reopen_are_real_user_flows() -> None:
     assert "onReopen" in issue_component
     assert "handleReopenIssue" in issue_tab
     assert 'updateIssueApi(issue.id, { status: "open" })' in issue_tab
+
+
+def test_phase_three_photo_advisories_cover_mobile_and_role_boundaries() -> None:
+    journey_source = (ROOT / "scripts" / "e2e" / "journeys" / "observationToAction.cjs").read_text(
+        encoding="utf-8"
+    )
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    oracle = json.loads(PHASE_THREE_ORACLE.read_text(encoding="utf-8"))
+
+    assert "exerciseIdentifyAdvisory" in journey_source
+    assert "exerciseDiagnosisAdvisory" in journey_source
+    assert "dismissProactivePasskeyPrompt" in journey_source
+    assert 'result.checks.last_completed_step = "mobile-identify-advisory"' in journey_source
+    assert "identification_write_entry_disabled" in journey_source
+    assert "diagnosis_write_entry_hidden" in journey_source
+    assert "Phase 3 editor photo advisory proof is incomplete" in checker_source
+    assert "Phase 3 viewer photo-to-action denial proof is incomplete" in checker_source
+    assert '"/api/auth/passkeys/prompt/dismiss"' in checker_source
+    diagnosis_lifecycle = _javascript_function_containing(
+        journey_source, "const title = phaseThree.labels.issue_online;"
+    )
+    assert 'issueDialog.waitFor({ state: "detached" })' not in diagnosis_lifecycle
+    assert oracle["phase_three"]["profile_boundaries"]["editor:desktop"]["provider_counts"] == {
+        "users": {
+            "admin": {"diagnose": 1, "identify": 1},
+            "editor": {"diagnose": 1, "identify": 1},
+        },
+    }
+    assert oracle["phase_three"]["profile_boundaries"]["admin:mobile"]["provider_counts"] == {
+        "users": {
+            "admin": {"diagnose": 2, "identify": 2},
+            "editor": {"diagnose": 1, "identify": 1},
+        },
+    }
 
 
 def test_phase_three_exact_mutation_contract_selects_rollup_baseline_variant() -> None:
@@ -835,7 +913,7 @@ if (present.rollupVariant !== 'rollup_present') process.exit(4);
 if (present.accounting.app_settings.expected_added !== 1
   || present.accounting.app_settings.expected_removed !== 1
   || present.accounting.app_settings.expected_identity_updated !== 1) process.exit(5);
-if (present.allowedTables.size !== 22) process.exit(6);
+if (present.allowedTables.size !== 24) process.exit(6);
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -883,7 +961,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FOUR_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert 'require("./e2e/journeys/planningAndReporting.cjs")' in checker_source
     assert "phaseSelected(4)" in checker_source
     assert "runPlanningAndReporting" in checker_source
@@ -1031,7 +1109,7 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_FIVE_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert 'require("./e2e/journeys/identityAndRoles.cjs")' in checker_source
     assert "phaseSelected(5)" in checker_source
     assert "runIdentityAndRoles" in checker_source
@@ -1056,11 +1134,24 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
         "layout_state",
         "plots",
         "plot_ownership",
+        "provider_daily_usage",
         "security_runtime_flags",
+        "shademap_cache",
     }.issubset(oracle["phase_five"]["database_boundaries"]["owned_tables"])
+    assert oracle["phase_five"]["read_side_effects"] == {
+        "exact_counts": {
+            "provider_daily_usage": {"added": 2, "removed": 0},
+            "shademap_cache": {"added": 2, "removed": 0},
+        },
+        "exact_identity_counts": {
+            "provider_daily_usage": {"added": 2, "removed": 0, "updated": 0},
+            "shademap_cache": {"added": 2, "removed": 0, "updated": 0},
+        },
+    }
     for marker in (
         "phaseFiveExpectedAdded",
         "phaseFiveExpectedGardenAdditions",
+        "phaseFiveReadSideEffects",
         "passkey_challenge_retention_exact",
         "incident_control_restored_exact",
         "auth_users_exact",
@@ -1072,6 +1163,8 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
         "passwordless_invitation",
         "passwordless_passkey_redundancy",
         "cross_garden_and_stale_csrf_denials",
+        "mobile_membership_invitation",
+        "mobile_session_revocation",
     ):
         assert marker in checker_source
     for journey_id in ("A1", "A2", "A4", "C1", "C3", "C5", "CROSS-02"):
@@ -1099,6 +1192,34 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
         assert forbidden not in journey_source
 
 
+def test_phase_five_mobile_profiles_own_mobile_identity_operations() -> None:
+    source = (ROOT / "scripts" / "e2e" / "journeys" / "identityAndRoles.cjs").read_text(
+        encoding="utf-8"
+    )
+    run_profile = source.split("async function runProfile(options, shared)", 1)[1]
+    admin_mobile = run_profile.split('role === "admin" && profile === "mobile"', 1)[1].split(
+        'role === "editor" && profile === "mobile"', 1
+    )[0]
+    editor_mobile = run_profile.rsplit('role === "editor" && profile === "mobile"', 1)[1].split(
+        'role === "viewer" && profile === "mobile"', 1
+    )[0]
+
+    assert "createGardenInvitation(page, fixture, profile, options.password)" in admin_mobile
+    assert "exerciseSessionRevocation(options, page, profile)" in admin_mobile
+    assert "mobile_membership_invitation" in admin_mobile
+    assert "mobile_session_revocation" in admin_mobile
+    session_revocation = source.split("async function exerciseSessionRevocation", 1)[1].split(
+        "function ageDisposableSession", 1
+    )[0]
+    assert (
+        "await confirmVisibleDialog(page);\n    assert((await revokePending).ok()"
+        in session_revocation
+    )
+    assert "acceptInvitation(" in editor_mobile
+    assert "exercisePasswordlessPasskeyRedundancy(" in editor_mobile
+    assert "exerciseEditorAuthorizationDenials(" in editor_mobile
+
+
 def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     journey = ROOT / "scripts/e2e/journeys/offlineAndFailureRecovery.cjs"
     journey_source = journey.read_text(encoding="utf-8")
@@ -1107,7 +1228,7 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_SIX_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert 'require("./e2e/journeys/offlineAndFailureRecovery.cjs")' in checker_source
     assert "phaseSelected(6)" in checker_source
     assert "runOfflineAndFailureRecovery" in checker_source
@@ -1117,7 +1238,17 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     assert "_load_phase_six_oracle" in seeder_source
     assert '"phase_six": _phase_six_fixture_state()' in seeder_source
     assert oracle["schema_version"] == 1
-    assert oracle["phase_six"]["profile_order"] == ["admin:desktop"]
+    assert oracle["phase_six"]["profile_order"] == ["admin:desktop", "admin:mobile"]
+    assert oracle["phase_six"]["fixture"]["profiles"] == {
+        "desktop": {
+            "journal_title": "Phase 6 lost acknowledgement observation desktop",
+            "retry_as_new_title": "Conflicting journal observation desktop",
+        },
+        "mobile": {
+            "journal_title": "Phase 6 lost acknowledgement observation mobile",
+            "retry_as_new_title": "Conflicting journal observation mobile",
+        },
+    }
     assert oracle["phase_six"]["browser_contract"]["failed_families"] == [
         "journal",
         "issues",
@@ -1127,8 +1258,33 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     ]
     assert oracle["phase_six"]["browser_contract"]["recovery_collapsed_by_default"] is True
     assert oracle["phase_six"]["browser_contract"]["retry_as_new_replacement_count"] == 1
-    assert oracle["phase_six"]["audit_contract"]["additional_login_count"] == 1
-    assert sum(event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]) == 13
+    assert oracle["phase_six"]["audit_contract"]["additional_login_count"] == 3
+    assert sum(event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]) == 26
+    assert any(
+        event
+        == {
+            "actor": "anonymous",
+            "count": 1,
+            "garden": None,
+            "method": "POST",
+            "path": "/api/client-errors",
+            "status_code": 204,
+        }
+        for event in oracle["phase_six"]["audit_contract"]["events"]
+    )
+    assert oracle["phase_six"]["read_side_effects"] == {
+        "exact_counts": {
+            "provider_daily_usage": {"added": 2, "removed": 0},
+            "shademap_cache": {"added": 2, "removed": 0},
+        },
+        "exact_identity_counts": {
+            "provider_daily_usage": {"added": 2, "removed": 0, "updated": 0},
+            "shademap_cache": {"added": 2, "removed": 0, "updated": 0},
+        },
+    }
+    assert {"provider_daily_usage", "shademap_cache"}.issubset(
+        oracle["phase_six"]["database_boundaries"]["owned_tables"]
+    )
     for marker in (
         "route.fetch()",
         'route.abort("failed")',
@@ -1142,8 +1298,14 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
         "retry-as-new did not create exactly one replacement",
         "logout retained another account's drafts",
         "Garden A draft replayed into Garden B",
+        "#mobile-tab-activity",
+        "#mobile-garden-select",
+        "#mobile-auth-btn",
+        "profileFixture",
+        "waitForLostAckTelemetry",
     ):
         assert marker in journey_source
+    assert "phase_six_map_bootstrap_read_side_effect_oracle" in checker_source
     for forbidden in ("route.fulfill(", "page.setContent("):
         assert forbidden not in journey_source
 
@@ -1158,17 +1320,21 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
     runner_source = RUNNER.read_text(encoding="utf-8")
     oracle = json.loads(PHASE_SEVEN_ORACLE.read_text(encoding="utf-8"))
 
-    assert "MAX_IMPLEMENTED_PHASE=7" in runner_source
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert "GARDENOPS_E2E_LOOPBACK_PROVIDER=1" in runner_source
     assert 'require("./e2e/journeys/providersAndTerrain.cjs")' in checker_source
     assert "phaseSelected(7)" in checker_source
     assert "runProvidersAndTerrain" in checker_source
     assert "assertPhaseSevenDatabaseState" in checker_source
+    assert '"Phase 7 stale-weather fixture was not prepared"' in checker_source
     assert "assertPhaseSevenAuditEvents" in checker_source
     assert "assertPhaseSevenProfileEvidence" in checker_source
+    assert "provider_budgets_exact" in checker_source
     assert "preparePhaseSevenFixtures" in checker_source
     assert "_load_phase_seven_oracle" in seeder_source
     assert "_prepare_phase_seven_weather" in seeder_source
+    assert '"weather": weather' in seeder_source
+    assert '"Complete journey Phase 7 weather cache is missing"' not in seeder_source
     assert '"phase_seven": _phase_seven_fixture_state()' in seeder_source
     assert "_write_phase_seven_terrain_fixture" in seeder_source
     assert "_write_phase_seven_estimated_sun_fixture" in seeder_source
@@ -1190,24 +1356,70 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         event["path"] == "/api/ai/garden-chat" and event["status_code"] == 429
         for event in oracle["phase_seven"]["audit_contract"]["events"]
     )
+    chat_writes = {
+        (event["actor"], event["status_code"]): event["count"]
+        for event in oracle["phase_seven"]["audit_contract"]["events"]
+        if event["method"] == "POST" and event["path"] == "/api/ai/garden-chat"
+    }
+    assert chat_writes == {
+        ("admin", 200): 2,
+        ("admin", 429): 1,
+        ("editor", 200): 1,
+        ("viewer", 200): 1,
+    }
     assert any(
         event["path"] == "/api/weather/check" and event["status_code"] == 200
         for event in oracle["phase_seven"]["audit_contract"]["events"]
     )
+    state_writes = {
+        (event["actor"], event["status_code"]): event["count"]
+        for event in oracle["phase_seven"]["audit_contract"]["events"]
+        if event["method"] == "PATCH" and event["path"] == "/api/shademap/state"
+    }
+    assert state_writes == {("admin", 200): 4, ("editor", 200): 2, ("viewer", 403): 1}
+    provider_writes = {
+        (event["actor"], event["status_code"]): event["count"]
+        for event in oracle["phase_seven"]["audit_contract"]["events"]
+        if event["method"] == "PUT" and event["path"] == "/api/admin/provider-settings"
+    }
+    assert provider_writes == {("admin", 200): 2, ("editor", 403): 1, ("viewer", 403): 1}
+    assert oracle["phase_seven"]["database_boundaries"]["provider_settings"] == {
+        "database_secrets": [],
+        "database_settings": [
+            {"key": "ai_provider", "value": "openai"},
+            {"key": "anthropic_model", "value": "claude-sonnet-4-6"},
+            {"key": "openai_fast_model", "value": "gpt-5.4-mini"},
+            {"key": "openai_model", "value": "gpt-5.5"},
+        ],
+    }
     for marker in (
         "data-phase-seven-simulator",
         "data-phase-seven-terrain",
         "signed terrain tile rendering",
         "data-phase-seven-terrain-size",
         "provider_fixture_redacted",
+        "exerciseProviderSettingsAdmin",
+        "assertProviderSettingsRoleBoundary",
+        "MANAGED_PROVIDER_SECRET",
+        "provider_settings",
+        '"/api/admin/provider-settings"',
+        "reauthentication_enforced",
+        "Phase 7 editor",
+        "Phase 7 viewer",
         "exerciseStaleWeather",
         "assertViewerShadeBoundary",
+        "assertViewerTerrainBoundary",
+        "consumeExpectedViewerTerrainDiagnostics",
+        "#mobile-admin-btn:visible",
+        "viewer_write_denied",
         "consumeExpectedViewerShadeDiagnostics",
         '"/shademap/runtime.js"',
         'page.once("dialog"',
         "inset overlay is mode-dependent",
     ):
         assert marker in journey_source
+    assert "const denied = [\n      await request(`/api/gardens/${id}/lidar`" in journey_source
+    assert "Promise.all([\n      request(`/api/gardens/${id}/lidar`" not in journey_source
     for marker in (
         '"127.0.0.1"',
         '"timeout"',
@@ -1225,6 +1437,239 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
     for forbidden in ("route.fulfill(", "context.addCookies(", "page.setContent("):
         assert forbidden not in journey_source
     assert "addInitScript(" not in journey_source
+
+
+def test_phase_eight_accessibility_responsive_journey_and_harness_are_registered() -> None:
+    journey = ROOT / "scripts" / "e2e" / "journeys" / "accessibilityAndResponsive.cjs"
+    inventory = ROOT / "tests" / "accessibility_expectations.yaml"
+    journey_source = journey.read_text(encoding="utf-8")
+    inventory_source = inventory.read_text(encoding="utf-8")
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    runner_source = RUNNER.read_text(encoding="utf-8")
+
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
+    assert 'require("./e2e/journeys/accessibilityAndResponsive.cjs")' in checker_source
+    assert "phaseSelected(8)" in checker_source
+    assert "runAccessibilityAndResponsive" in checker_source
+    assert "assertPhaseEightProfileEvidence" in checker_source
+    assert "assertPhaseEightDatabaseState" in checker_source
+    assert "screen_reader_boundary" in checker_source
+    assert "phaseEightDatabaseBaseline," in checker_source
+    assert "const PHASE_EIGHT_ALLOWED_TABLES" in checker_source
+    assert "const phaseEightAllowedTables = new Set(PHASE_EIGHT_ALLOWED_TABLES);" in checker_source
+    assert "function assertPhaseEightWholeTableMutationAccounting" in checker_source
+    assert "phase_eight_grouped_fertilize_completion" in checker_source
+    for marker in (
+        "assertAxeState",
+        "chromiumAXTree",
+        "assertFocusVisibleAndUnobscured",
+        "task-completion-list input[type='checkbox']",
+        "assertTouchTargets",
+        'const mobileFab = page.locator("#mobile-fab:visible")',
+        "desktop-reflow-200",
+        "desktop-reduced-motion",
+        "mobile-reduced-motion",
+        "task-completion-validation",
+        "notification-panel",
+        "read-only-map-and-tasks",
+    ):
+        assert marker in journey_source
+    for state_id in (
+        "authenticated-map",
+        "today-attention",
+        "task-completion-validation",
+        "notification-panel",
+        "read-only-map-and-tasks",
+        "invitation-loading-and-retry",
+        "journal-and-issue-composers",
+        "offline-terminal-recovery",
+        "provider-chat-recovery",
+    ):
+        assert f"id: {state_id}" in inventory_source
+    for forbidden in ("route.fulfill(", "context.addCookies(", "page.setContent("):
+        assert forbidden not in journey_source
+
+
+def test_phase_nine_runner_selects_the_test_performance_app_only_through_phase_nine() -> None:
+    runner_source = RUNNER.read_text(encoding="utf-8")
+    phase_app = "scripts.e2e.performanceFastapiApp:app"
+    default_match = re.search(
+        r"(?m)^(?P<variable>[A-Z][A-Z0-9_]*)=(?:\"|')?gardenops\.main:app(?:\"|')?\s*$",
+        runner_source,
+    )
+
+    assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
+    assert default_match, "The runner must default to the production ASGI app"
+    selection = re.search(
+        r"if\s+\(\(\s*THROUGH_PHASE\s*(?:==|>=)\s*9\s*\)\)\s*;?\s*then"
+        r"(?P<body>.*?)\n\s*fi\b",
+        runner_source,
+        re.DOTALL,
+    )
+    assert selection, "Phase 9 backend selection must be based on THROUGH_PHASE"
+    variable = default_match.group("variable")
+    assert re.search(
+        rf"(?m)^\s*{re.escape(variable)}=(?:\"|')?{re.escape(phase_app)}(?:\"|')?\s*$",
+        selection.group("body"),
+    )
+    assert (
+        "export GARDENOPS_PERFORMANCE_QUERY_EVIDENCE_PATH="
+        '"$ARTIFACT_DIR/phase-nine-query-evidence.jsonl"'
+    ) in selection.group("body")
+    assert runner_source.count(phase_app) == 1
+    uvicorn_command = runner_source[runner_source.index('bin/uvicorn"') :]
+    assert re.search(rf"\$\{{?{re.escape(variable)}\}}?", uvicorn_command)
+
+
+def test_phase_nine_checker_prepares_scale_profiles_with_the_complete_journey_seeder() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    helper = _javascript_function_containing(checker_source, '"--apply-scale-profiles"')
+    phase_nine_runner = _javascript_function_containing(
+        checker_source,
+        "assertPhaseNineScaleFixtures(preparePhaseNineFixtures())",
+    )
+
+    assert re.search(r"function\s+preparePhaseNineFixtures\s*\(", helper)
+    assert "seed_complete_journeys_e2e.py" in helper
+    assert "execFileSync" in helper
+    assert "phaseSelected(9)" in phase_nine_runner
+    assert "preparePhaseNineFixtures(" in phase_nine_runner
+
+
+def test_phase_nine_checker_runs_authenticated_dual_device_real_backend_probes() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    probe = _javascript_function_containing(checker_source, "check_page_performance.cjs")
+    focus_probe_start = checker_source.index("function runPhaseNinePerformanceProbes()")
+    focus_probe_end = checker_source.index(
+        "\nfunction assertPhaseNineScaleFixtures", focus_probe_start
+    )
+    focus_probe = checker_source[focus_probe_start:focus_probe_end]
+    auth_boundary = _javascript_function_containing(
+        checker_source,
+        "Phase 9 performance bootstrap created unexpected user sessions",
+    )
+    result_path = _javascript_function_containing(
+        checker_source,
+        "Phase 9 performance evidence must remain directly inside the artifact directory",
+    )
+
+    assert '"--scenario"' in probe
+    assert '"app-auth-large-tabs"' in probe
+    assert '"app-auth-focus-matrix"' in focus_probe
+    assert '"--no-api-stubs"' in probe
+    assert re.search(
+        r"PHASE_NINE_DEVICE_PROFILES\s*=\s*\[\s*[\"']desktop[\"']\s*,"
+        r"\s*[\"']pixel-7[\"']\s*\]",
+        checker_source,
+    )
+    assert '"--device-profile"' in probe
+    assert '"--output"' in probe
+    assert "phaseNineFocusMatrixResultPath" in focus_probe
+    assert "readPhaseNineFocusMatrixResult" in focus_probe
+    assert "path.resolve(ARTIFACT_DIR" in result_path
+    assert "path.dirname(target) === path.resolve(ARTIFACT_DIR)" in result_path
+
+    for name in (
+        "GARDENOPS_PAGE_PERF_USERNAME",
+        "GARDENOPS_PAGE_PERF_PASSWORD",
+        "GARDENOPS_PAGE_PERF_GARDEN_NAME",
+    ):
+        assert name in probe
+        assert f"process.env.{name}" not in checker_source
+    assert re.search(r"\benv\s*:\s*\{", probe)
+    assert re.search(
+        r"GARDENOPS_PAGE_PERF_GARDEN_NAME\s*:\s*[^,\n]*(?:large|scale)[^,\n]*name",
+        probe,
+        re.IGNORECASE,
+    )
+    assert "PHASE_NINE_AUTH_BOOTSTRAP_COUNT = PHASE_NINE_DEVICE_PROFILES.length * 2 + 1" in (
+        checker_source
+    )
+    assert "PHASE_NINE_AUTH_BOOTSTRAP_COUNT" in auth_boundary
+    for forbidden in ("/tmp", "os.tmpdir", "mkdtemp", '"--serve"'):
+        assert forbidden not in probe
+
+
+def test_phase_nine_focus_matrix_proof_is_private_and_manifested_as_metrics_only() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    validator = _javascript_function_containing(
+        checker_source, "Phase 9 focus-matrix proof has an invalid user-facing interaction boundary"
+    )
+    sanitizer = _javascript_function_containing(checker_source, "const focusMatrixProfiles")
+
+    for focus_id in ("M3", "D1", "D2", "D4", "D5", "P1", "P2", "P4", "R2", "CROSS-01"):
+        assert f'"{focus_id}"' in checker_source
+    for field in (
+        "activeGarden",
+        "expectedVisibleSeededContent",
+        "scopedRequests",
+        "browserPostFrameMs",
+        "browserReadyMs",
+    ):
+        assert field in validator
+    assert "focus_metrics_p75_ms" in sanitizer
+    for unsafe_field in (
+        "activeGarden",
+        "expectedVisibleSeededContent",
+        "scopedRequests",
+        "observed",
+    ):
+        assert unsafe_field not in sanitizer
+
+
+def test_phase_nine_query_evidence_is_private_and_manifested_only_as_safe_aggregates() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    path_helper = _javascript_function_containing(checker_source, "phase-nine-query-evidence.jsonl")
+    probe = _javascript_function_containing(
+        checker_source, "GARDENOPS_PERFORMANCE_QUERY_EVIDENCE_PATH"
+    )
+    validator = _javascript_function_containing(checker_source, "Phase 9 query evidence is missing")
+    sanitizer = _javascript_function_containing(checker_source, "query_evidence: {")
+
+    assert "GARDENOPS_PERFORMANCE_QUERY_EVIDENCE_PATH" in probe
+    assert "path.dirname(target) === path.resolve(ARTIFACT_DIR)" in path_helper
+    assert "statement_fingerprints" in validator
+    assert "probe_label" in validator
+    assert "isPhaseNineReadOnlyQueryRequest" in validator
+    assert "phase-nine-small-desktop" in validator
+    assert "query count changed between equivalent" in validator
+    assert "statement_fingerprints" not in sanitizer
+    assert "scale_comparison" in sanitizer
+    assert "total_query_count" in sanitizer
+
+
+def test_phase_nine_query_evidence_allows_only_registered_read_requests() -> None:
+    script = r"""
+const {
+  isPhaseNineReadOnlyQueryRequest,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+for (const [method, path] of [
+  ['GET', '/api/tasks'],
+  ['POST', '/api/media/summaries'],
+]) {
+  if (!isPhaseNineReadOnlyQueryRequest(method, path)) process.exit(3);
+}
+for (const [method, path] of [
+  ['POST', '/api/media/upload'],
+  ['POST', '/api/tasks/batch-action'],
+  ['PATCH', '/api/attention/preferences'],
+]) {
+  if (isPhaseNineReadOnlyQueryRequest(method, path)) process.exit(4);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_nine_database_snapshot_buffer_supports_scale_profile_projections() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    snapshot = _javascript_function_containing(checker_source, '"--snapshot"')
+
+    assert "function databaseSnapshot" in snapshot
+    assert "maxBuffer: 64 * 1024 * 1024" in snapshot
 
 
 def test_phase_six_audit_contract_rejects_scope_tampering() -> None:
@@ -1258,7 +1703,7 @@ const evidence = assertPhaseSixAuditEvents(
   fixture,
   oracle,
 );
-if (!evidence.audit_events_exact || evidence.audit_event_count !== 13) process.exit(3);
+if (!evidence.audit_events_exact || evidence.audit_event_count !== 26) process.exit(3);
 const tampered = structuredClone(records);
 tampered.at(-1).garden_id = 999;
 try {
@@ -1271,6 +1716,73 @@ try {
   process.exit(4);
 } catch (error) {
   if (!String(error.message).includes('audit delta')) process.exit(5);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_six_accounts_for_deterministic_map_bootstrap_side_effects() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    oracle = json.loads(PHASE_SIX_ORACLE.read_text(encoding="utf-8"))
+
+    assert "phase_six_map_bootstrap_read_side_effect_oracle" in checker_source
+    contract = oracle["phase_six"]["read_side_effects"]
+    for table in ("provider_daily_usage", "shademap_cache"):
+        assert contract["exact_counts"][table] == {"added": 2, "removed": 0}
+        assert contract["exact_identity_counts"][table] == {
+            "added": 2,
+            "removed": 0,
+            "updated": 0,
+        }
+
+    script = r"""
+const {
+  assertWholeTableMutationAccounting,
+  phaseSixOracle,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const row = (prefix, count) => ({
+  count,
+  digest: prefix.repeat(32),
+  identity_columns: ['id'],
+  row_digests: Array.from(
+    { length: count }, (_, index) => String(index + 1).padStart(32, prefix),
+  ),
+  row_projections: Array.from({ length: count }, (_, index) => ({
+    identity_digest: String(index + 1).padStart(64, prefix),
+    row_digest: String(index + 1).padStart(64, prefix),
+  })),
+});
+const contract = phaseSixOracle().phase_six.read_side_effects;
+const tables = ['provider_daily_usage', 'shademap_cache'];
+const accounting = Object.fromEntries(tables.map((table) => [table, {
+  allow_row_delta: true,
+  evidence: 'phase_six_map_bootstrap_read_side_effect_oracle',
+  expected_added: contract.exact_counts[table].added,
+  expected_removed: contract.exact_counts[table].removed,
+  expected_identity_added: contract.exact_identity_counts[table].added,
+  expected_identity_removed: contract.exact_identity_counts[table].removed,
+  expected_identity_updated: contract.exact_identity_counts[table].updated,
+}]));
+const initial = {
+  provider_daily_usage: row('a', 0),
+  shademap_cache: row('b', 0),
+};
+const final = {
+  provider_daily_usage: row('a', 2),
+  shademap_cache: row('b', 2),
+};
+assertWholeTableMutationAccounting(initial, final, new Set(tables), accounting);
+try {
+  assertWholeTableMutationAccounting(initial, {
+    provider_daily_usage: row('a', 3),
+    shademap_cache: row('b', 2),
+  }, new Set(tables), accounting);
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('expected_added')) process.exit(4);
 }
 """
     result = subprocess.run(
@@ -1514,14 +2026,18 @@ try {
     assert result.returncode == 0, result.stderr
 
 
-def test_phase_two_d4_provider_boundary_remains_required() -> None:
-    coverage = (ROOT / "tests" / "journey_coverage.yaml").read_text(encoding="utf-8")
-    d4 = coverage.split("    id: D4\n", 1)[1].split("    id: D5\n", 1)[0]
+def test_phase_two_d4_provider_boundary_is_proven_by_local_smtp() -> None:
+    coverage = yaml.safe_load(
+        (ROOT / "tests" / "journey_coverage.yaml").read_text(encoding="utf-8")
+    )
+    d4 = next(journey for journey in coverage["journeys"] if journey["id"] == "D4")
 
-    assert "    provider: required\n" in d4
-    assert "    provider: proven\n" not in d4
-    assert "Production notification event handling through an exact local SMTP delivery" in d4
-    assert "does not claim that provider boundary" in d4
+    assert d4["provider"] == "proven"
+    assert (
+        "local loopback SMTP integration test verifies the production smtplib sender"
+        in d4["notes"]["provider"]
+    )
+    assert "tests/test_notifications.py" in d4["evidence"]["provider"]
 
 
 def test_phase_two_adversarial_attention_evidence_contract_is_declared() -> None:
@@ -1680,6 +2196,100 @@ try {
   process.exit(5);
 } catch (error) {
   if (!String(error.message).includes('retained an invalid')) process.exit(6);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_eight_allows_only_profile_bound_passkey_challenge_starts() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+
+    assert (
+        "function assertPhaseEightDatabaseState(initial, final, profiles, fixture)"
+        in checker_source
+    )
+    assert "function assertPhaseEightAuthState(initial, final, profiles)" in checker_source
+    assert "function assertPhaseEightAuditState(initial, final, profiles)" in checker_source
+    assert "function assertPhaseEightTaskCompletion(initial, final, fixture)" in checker_source
+    assert "for (const table of allowedTables)" in checker_source
+    assert '"auth_passkey_challenges"' in checker_source
+    assert '"garden_journal_entries"' in checker_source
+    assert '"provider_daily_usage"' in checker_source
+    assert '"shademap_cache"' in checker_source
+    assert "audit_events_bound_to_requests: true" in checker_source
+    assert "grouped_task_completion_exact: true" in checker_source
+
+
+def test_phase_two_accounts_for_deterministic_read_side_effects() -> None:
+    checker_source = CHECKER.read_text(encoding="utf-8")
+    oracle = json.loads(ORACLE.read_text(encoding="utf-8"))
+
+    assert "const phaseTwoReadSideEffectTables" in checker_source
+    assert '"auth_passkey_challenges"' in checker_source
+    accounting = oracle["phase_two"]["whole_table_mutation_accounting"]
+    assert {"provider_daily_usage", "shademap_cache"}.issubset(accounting["phase_two_tables"])
+    for scope in ("phase_two_only", "cumulative_through_phase_two"):
+        for table, expected_added in (("provider_daily_usage", 4), ("shademap_cache", 3)):
+            assert accounting["exact_counts"][scope][table] == {
+                "added": expected_added,
+                "removed": 0,
+            }
+            assert accounting["exact_identity_counts"][scope][table] == {
+                "added": expected_added,
+                "removed": 0,
+                "updated": 0,
+            }
+
+    script = r"""
+const {
+  assertWholeTableMutationAccounting,
+  phaseTwoOracle,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const row = (prefix, count) => ({
+  count,
+  digest: prefix.repeat(32),
+  identity_columns: ['id'],
+  row_digests: Array.from(
+    { length: count }, (_, index) => String(index + 1).padStart(32, prefix),
+  ),
+  row_projections: Array.from({ length: count }, (_, index) => ({
+    identity_digest: String(index + 1).padStart(64, prefix),
+    row_digest: String(index + 1).padStart(64, prefix),
+  })),
+});
+const oracle = phaseTwoOracle().phase_two.whole_table_mutation_accounting;
+const tables = ['provider_daily_usage', 'shademap_cache'];
+const scope = oracle.exact_counts.phase_two_only;
+const identities = oracle.exact_identity_counts.phase_two_only;
+const accounting = Object.fromEntries(tables.map((table) => [table, {
+  allow_row_delta: true,
+  evidence: 'phase-two-read-side-effect-oracle',
+  expected_added: scope[table].added,
+  expected_removed: scope[table].removed,
+  expected_identity_added: identities[table].added,
+  expected_identity_removed: identities[table].removed,
+  expected_identity_updated: identities[table].updated,
+}]));
+const initial = {
+  provider_daily_usage: row('a', 0),
+  shademap_cache: row('b', 0),
+};
+const final = {
+  provider_daily_usage: row('a', 4),
+  shademap_cache: row('b', 3),
+};
+assertWholeTableMutationAccounting(initial, final, new Set(tables), accounting);
+try {
+  assertWholeTableMutationAccounting(initial, {
+    provider_daily_usage: row('a', 5),
+    shademap_cache: row('b', 3),
+  }, new Set(tables), accounting);
+  process.exit(3);
+} catch (error) {
+  if (!String(error.message).includes('expected_added')) process.exit(4);
 }
 """
     result = subprocess.run(
@@ -2025,7 +2635,7 @@ if (safeUtcTimestamp('2026-02-30T09:08:07Z') !== (
     assert result.returncode == 0, result.stderr
 
 
-def test_checker_requires_clean_and_stable_source_provenance() -> None:
+def test_checker_requires_stable_source_provenance() -> None:
     script = """
 const { assertSourceRevisionStable } = require('./scripts/check_complete_journeys_e2e.cjs');
 const initial = { sha: 'abc123', dirty: false, worktree_fingerprint: 'a'.repeat(64) };
@@ -2036,11 +2646,12 @@ try {
 } catch (error) {
   if (!String(error.message).includes('worktree changed')) process.exit(4);
 }
+assertSourceRevisionStable({ ...initial, dirty: true }, { ...initial, dirty: true });
 try {
-  assertSourceRevisionStable({ ...initial, dirty: true }, { ...initial, dirty: true });
+  assertSourceRevisionStable({ ...initial, dirty: true }, { ...initial, dirty: false });
   process.exit(5);
 } catch (error) {
-  if (!String(error.message).includes('clean source worktree')) process.exit(6);
+  if (!String(error.message).includes('Source cleanliness changed')) process.exit(6);
 }
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
@@ -2859,6 +3470,8 @@ const expected = [
   '/api/calendar/events',
   '/api/calendar/manual-events/calevt_example',
   '/api/calendar/subscriptions/calsub_example',
+  '/api/auth/passkeys/login/options',
+  '/api/auth/passkeys/prompt/dismiss',
   '/api/media/summaries',
   '/api/notifications/note_example',
   '/api/plots/PLOT-1/plant-alerts',
@@ -3002,6 +3615,10 @@ def test_phase_two_journey_forbids_node_request_clients_and_unscoped_notificatio
     assert "context().request" not in source
     assert ".context().request" not in source
     assert "page.context().request" not in source
+    assert "dismissProactivePasskeyPrompt" in source
+    assert "await dismissProactivePasskeyPrompt(page);" in source
+    assert '"#weather-dashboard .weather-check-btn:visible"' in source
+    assert "const [response] = await Promise.all([" in source
     assert 'const remaining = panel.locator(".notification-item").first()' not in source
     assert "Phase 2 explicit notification fixture" in source
     assert "page-origin feed fetch" in source
@@ -3933,9 +4550,7 @@ try {
     assert "unexpectedMutationRequests.length === 0" in checker_source
 
 
-def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_weather_checks() -> (
-    None
-):
+def test_phase_two_profile_contract_requires_role_actions_and_mobile_lifecycle_checks() -> None:
     source = (ROOT / "scripts/check_complete_journeys_e2e.cjs").read_text(encoding="utf-8")
     journey_source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(
         encoding="utf-8"
@@ -3946,6 +4561,8 @@ def test_phase_two_profile_contract_requires_mobile_lifecycle_and_viewer_today_w
         "mobile_calendar_lifecycle",
         "mobile_notification_preference_mutation",
         "mobile_history_reload",
+        "editor_calendar_action_and_weather_scope",
+        "viewer_direct_forbidden_task_write",
         "viewer_today_weather_affordances",
         "tasks_calendar_subscriptions_aba_race",
         "stale_dom_assertions",
@@ -4175,6 +4792,18 @@ def test_phase_two_offline_calendar_is_loaded_before_connectivity_is_lost() -> N
         in offline[cold_disconnect:warmup]
     )
     assert 'await openTasks(page, "mobile");' in offline[warmup:warm_disconnect]
+
+
+def test_phase_two_offline_failure_recovery_expands_the_compact_global_control() -> None:
+    source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
+    offline = source.split("async function exerciseOfflineTask", 1)[1].split(
+        "async function exerciseViewer", 1
+    )[0]
+
+    assert "global failed offline work recovery toggle" in offline
+    assert 'getAttribute("aria-expanded") === "false"' in offline
+    assert "global failed offline work recovery expansion" in offline
+    assert "expanded failed offline work recovery" in offline
 
 
 def test_attention_preferences_strip_legacy_quiet_hours_before_save() -> None:
@@ -5089,6 +5718,26 @@ if (records[0].actor_auth_type !== 'none') process.exit(4);
 if (records[0].actor_role !== 'anonymous') process.exit(5);
 if (records[0].actor_username !== 'anonymous') process.exit(6);
 if (records[0].garden_id !== null) process.exit(7);
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_two_correlates_passkey_prompt_dismissal_as_a_session_mutation() -> None:
+    script = """
+const { phaseTwoBrowserMutationRecords } = require('./scripts/check_complete_journeys_e2e.cjs');
+const records = phaseTwoBrowserMutationRecords([{
+  profile: 'desktop', role: 'admin', requests: [{
+    actorAuthType: 'session', actorRole: 'admin', actorUsername: 'admin', gardenId: '7',
+    method: 'POST', path: '/api/auth/passkeys/prompt/dismiss',
+    requestId: 'passkey-prompt-dismiss-1', statusCode: 200,
+  }],
+}], { roles: { admin: 'admin' } });
+if (records.length !== 1) process.exit(3);
+if (records[0].actor_auth_type !== 'session') process.exit(4);
+if (records[0].garden_id !== 7) process.exit(5);
 """
     result = subprocess.run(
         ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True

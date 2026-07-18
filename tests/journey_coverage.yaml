@@ -1,4 +1,4 @@
-version: 1
+version: 2
 journeys:
   - id: A2
     phase: 5
@@ -12,31 +12,40 @@ journeys:
       filesystem: required
       accessibility: required
       performance: required
-      evidence: []
-      notes: {}
+      evidence: {}
+      notes: &default_notes
+        desktop: A direct desktop real-backend journey is still required for this dimension.
+        mobile: A direct Pixel 7 real-backend journey is still required for this dimension.
+        roles: A separately authenticated editor/viewer authorization journey is still required for this dimension.
+        offline: A supported offline/reconnect journey is still required for this dimension.
+        provider: The supported external-provider boundary still needs deterministic proof.
+        database: The final PostgreSQL state still needs an exact postcondition assertion.
+        filesystem: The supported file lifecycle still needs a filesystem postcondition assertion.
+        accessibility: Automated accessibility proof passed; the remaining closure condition is the operator-assisted screen-reader smoke.
+        performance: A representative real-backend scale measurement still needs to establish this user-visible path.
     desktop: proven
-    mobile: required
+    mobile: proven
     roles: proven
     offline: not_applicable
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: required
     performance: not_applicable
-    evidence: &phase_five_evidence
-      - scripts/check_complete_journeys_e2e.cjs
-      - scripts/e2e/fixtures/complete_journeys_phase_five_oracle.json
-      - scripts/e2e/journeys/identityAndRoles.cjs
-      - scripts/run_complete_journeys_e2e.sh
-      - scripts/seed_complete_journeys_e2e.py
-      - tests/test_complete_journey_e2e_scripts.py
-    notes: &phase_five_notes
+    evidence: &phase_five_desktop_roles_database
+      desktop: &phase_five_browser
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/e2e/journeys/identityAndRoles.cjs
+        - scripts/e2e/fixtures/complete_journeys_phase_five_oracle.json
+        - tests/test_complete_journey_e2e_scripts.py
+      mobile: *phase_five_browser
+      roles: *phase_five_browser
+      database: *phase_five_browser
+    notes:
+      <<: *default_notes
       offline: Identity ceremonies require an online authentication boundary.
       provider: Identity journeys do not call an external provider.
-      filesystem: Phase 5 identity actions have no supported file side effect.
-      mobile: Phase 8 owns identity variants that do not yet have direct responsive proof.
-      accessibility: Phase 8 owns keyboard, focus, semantic-tree, and screen-reader closure.
-      performance: Phase 9 owns quantitative performance budgets.
+      filesystem: Identity actions have no supported file side effect.
+      performance: This low-volume account recovery flow has no independent scale-sensitive performance boundary.
   - <<: *open_journey
     id: A1
     phase: 5
@@ -47,10 +56,16 @@ journeys:
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: required
     performance: not_applicable
-    evidence: *phase_five_evidence
-    notes: *phase_five_notes
+    evidence: &phase_five_full_evidence
+      <<: *phase_five_desktop_roles_database
+      mobile: *phase_five_browser
+    notes:
+      <<: *default_notes
+      offline: Sign-in and passkey ceremonies require an online authentication boundary.
+      provider: Sign-in and passkey journeys do not call an external provider.
+      filesystem: Sign-in and passkey actions have no supported file side effect.
+      performance: Sign-in and passkey ceremonies use bounded credential payloads; their latency is browser-authenticator or identity-provider dependent rather than a garden-scale application path.
   - <<: *open_journey
     id: A3
     phase: 1
@@ -58,19 +73,31 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
-    evidence: &phase_one_evidence
-      - scripts/check_complete_journeys_e2e.cjs
-      - scripts/e2e/journeys/foundation.cjs
-      - scripts/e2e/journeys/gardenMapPlants.cjs
-      - scripts/seed_complete_journeys_e2e.py
-      - tests/test_complete_journey_e2e_scripts.py
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
+    performance: proven
+    evidence: &phase_one_core_evidence
+      desktop: &phase_one_browser
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/e2e/journeys/gardenMapPlants.cjs
+        - scripts/e2e/journeys/foundation.cjs
+        - tests/test_complete_journey_e2e_scripts.py
+      mobile: *phase_one_browser
+      roles: *phase_one_browser
+      database: *phase_one_browser
+      performance: &phase_nine_performance_evidence
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/check_page_performance.cjs
+        - tests/performance_budgets.yaml
+        - tests/test_complete_journey_e2e_scripts.py
+        - tests/test_page_performance_script.py
     notes:
-      offline: Phase 1 does not exercise offline operations.
-      provider: Phase 1 uses no external provider contract.
-      filesystem: No supported A3 file workflow is exercised.
+      <<: *default_notes
+      offline: Garden onboarding is not a supported offline operation.
+      provider: Garden onboarding has no external provider dependency.
+      filesystem: Garden onboarding has no supported file workflow.
+      performance: Map-first readiness after onboarding is the scale-sensitive surface and is covered by the M1 real-backend desktop and Pixel 7 budget; garden-form validation writes one bounded record.
   - <<: *open_journey
     id: A4
     phase: 5
@@ -81,51 +108,61 @@ journeys:
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: required
     performance: not_applicable
-    evidence: *phase_five_evidence
-    notes: *phase_five_notes
+    evidence: *phase_five_full_evidence
+    notes:
+      <<: *default_notes
+      offline: Account settings mutations require an online authentication boundary.
+      provider: Account settings journeys do not call an external provider.
+      filesystem: Account settings actions have no supported file side effect.
+      performance: This low-volume account settings flow has no independent scale-sensitive performance boundary.
   - <<: *open_journey
     id: C1
     phase: 5
     desktop: proven
-    mobile: required
+    mobile: proven
     roles: proven
     offline: not_applicable
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: required
     performance: not_applicable
-    evidence: *phase_five_evidence
-    notes: *phase_five_notes
+    evidence:
+      <<: *phase_five_desktop_roles_database
+      mobile: *phase_five_browser
+    notes:
+      <<: *default_notes
+      offline: Account membership administration requires an online authentication boundary.
+      provider: Account membership administration does not call an external provider.
+      filesystem: Account membership administration has no supported file side effect.
+      performance: This low-volume membership flow has no independent scale-sensitive performance boundary.
   - <<: *open_journey
     id: C2
     phase: 6
     desktop: proven
-    mobile: required
     roles: proven
     offline: not_applicable
     provider: not_applicable
     database: proven
     filesystem: proven
-    accessibility: required
     performance: not_applicable
-    evidence:
-      - gardenops/routers/gardens.py
-      - gardenops/routers/media.py
-      - gardenops/services/lidar_terrain.py
-      - scripts/check_optimization_journeys_e2e.cjs
-      - tests/test_destructive_audit_atomicity.py
-      - tests/test_export_import.py
-      - tests/test_gardens_endpoints.py
-      - tests/test_media.py
+    evidence: &phase_six_destructive_evidence
+      desktop: &phase_six_destructive
+        - scripts/check_optimization_journeys_e2e.cjs
+        - gardenops/routers/gardens.py
+        - gardenops/routers/media.py
+        - tests/test_destructive_audit_atomicity.py
+        - tests/test_export_import.py
+        - tests/test_gardens_endpoints.py
+        - tests/test_media.py
+      roles: *phase_six_destructive
+      database: *phase_six_destructive
+      filesystem: *phase_six_destructive
     notes:
-      mobile: Direct mobile garden-delete wording and layout proof remains Phase 8 work.
+      <<: *default_notes
       offline: Destructive administration requires an online current-assurance boundary and is not queued.
       provider: Destructive garden, snapshot, media, and terrain operations do not call an external provider.
-      accessibility: Phase 8 owns keyboard, focus, semantic-tree, and screen-reader closure.
-      performance: Phase 9 owns quantitative destructive-operation budgets.
+      performance: This infrequent destructive operation has no independent scale-sensitive performance boundary.
   - <<: *open_journey
     id: C3
     phase: 5
@@ -136,30 +173,86 @@ journeys:
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: required
     performance: not_applicable
-    evidence: *phase_five_evidence
-    notes: *phase_five_notes
+    evidence: *phase_five_full_evidence
+    notes:
+      <<: *default_notes
+      offline: MFA enrollment and recovery require an online authentication boundary.
+      provider: MFA journeys do not call an external provider.
+      filesystem: MFA actions have no supported file side effect.
+      performance: This low-volume MFA flow has no independent scale-sensitive performance boundary.
   - <<: *open_journey
     id: C4
     phase: 7
+    desktop: proven
+    mobile: proven
+    roles: proven
+    offline: not_applicable
+    provider: proven
+    database: proven
+    filesystem: not_applicable
+    performance: not_applicable
+    evidence: &phase_seven_provider_settings_evidence
+      desktop: &phase_seven_provider_settings_browser
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/e2e/journeys/providersAndTerrain.cjs
+        - scripts/e2e/fixtures/complete_journeys_phase_seven_oracle.json
+        - tests/test_complete_journey_e2e_scripts.py
+      mobile: *phase_seven_provider_settings_browser
+      roles: *phase_seven_provider_settings_browser
+      provider: *phase_seven_provider_settings_browser
+      database: *phase_seven_provider_settings_browser
+    notes:
+      <<: *default_notes
+      offline: Provider configuration is submitted immediately and is absent from the supported offline queue.
+      performance: Provider configuration is a rare platform-admin action with no user-facing scale-sensitive path.
+      filesystem: Provider settings manipulate scalar configuration fields and have no supported user-file workflow.
   - <<: *open_journey
     id: C5
     phase: 5
     desktop: proven
-    mobile: required
+    mobile: proven
     roles: proven
     offline: not_applicable
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: required
     performance: not_applicable
-    evidence: *phase_five_evidence
-    notes: *phase_five_notes
+    evidence:
+      <<: *phase_five_desktop_roles_database
+      mobile: *phase_five_browser
+    notes:
+      <<: *default_notes
+      offline: Session revocation requires an online authentication boundary.
+      provider: Session revocation does not call an external provider.
+      filesystem: Session revocation has no supported file side effect.
+      performance: This low-volume session operation has no independent scale-sensitive performance boundary.
   - <<: *open_journey
     id: C6
     phase: 7
+    desktop: proven
+    mobile: proven
+    roles: proven
+    offline: not_applicable
+    provider: not_applicable
+    database: proven
+    filesystem: proven
+    performance: not_applicable
+    evidence: &phase_seven_terrain_workflow_evidence
+      desktop: &phase_seven_browser
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/e2e/journeys/providersAndTerrain.cjs
+        - scripts/e2e/fixtures/complete_journeys_phase_seven_oracle.json
+        - tests/test_complete_journey_e2e_scripts.py
+      mobile: *phase_seven_browser
+      roles: *phase_seven_browser
+      database: *phase_seven_browser
+      filesystem: *phase_seven_browser
+    notes:
+      <<: *default_notes
+      offline: LiDAR upload and removal are immediate online administration operations and are absent from the supported offline queue.
+      provider: LiDAR upload, generated terrain tiles, and cleanup are local GardenOps operations with no external-provider request.
+      performance: LiDAR acceptance is bounded by explicit upload-byte, point-count, and grid-cell limits; its user contract is safe completion and progress rather than an unbounded interactive collection, while terrain display is covered by M5.
   - <<: *open_journey
     id: CROSS-01
     phase: 1
@@ -167,66 +260,90 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
-    evidence: *phase_one_evidence
+    performance: proven
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
+    evidence:
+      <<: *phase_one_core_evidence
+      performance: *phase_nine_performance_evidence
     notes:
-      offline: Cross-garden response isolation is online-only.
+      <<: *default_notes
+      offline: Cross-garden response isolation is not a supported offline operation.
       provider: Cross-garden response isolation has no provider dependency.
       filesystem: Cross-garden response isolation has no file operation.
   - <<: *open_journey
     id: CROSS-02
     phase: 5
     desktop: proven
-    mobile: required
+    mobile: proven
     roles: proven
     offline: not_applicable
     provider: not_applicable
     database: proven
     filesystem: not_applicable
-    accessibility: required
     performance: not_applicable
-    evidence: *phase_five_evidence
-    notes: *phase_five_notes
+    evidence:
+      <<: *phase_five_desktop_roles_database
+      mobile: *phase_five_browser
+    notes:
+      <<: *default_notes
+      offline: Cross-user authorization isolation requires an online authentication boundary.
+      provider: Cross-user authorization isolation does not call an external provider.
+      filesystem: Cross-user authorization isolation has no supported file side effect.
+      performance: This authorization boundary has no independent scale-sensitive performance path.
   - <<: *open_journey
     id: D1
     phase: 2
     desktop: proven
     mobile: proven
+    roles: proven
     provider: proven
-    evidence: &phase_two_evidence
-      - scripts/check_complete_journeys_e2e.cjs
-      - scripts/e2e/journeys/dailyAttentionWork.cjs
-      - scripts/e2e/fixtures/complete_journeys_phase_two_oracle.json
-      - scripts/run_complete_journeys_e2e.sh
-      - scripts/seed_complete_journeys_e2e.py
-      - tests/test_complete_journey_e2e_scripts.py
-      - tests/test_task_action_parity_frontend_static.py
+    database: proven
+    performance: proven
     offline: not_applicable
     filesystem: not_applicable
+    evidence: &phase_two_today_evidence
+      desktop: &phase_two_browser
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/e2e/journeys/dailyAttentionWork.cjs
+        - scripts/e2e/fixtures/complete_journeys_phase_two_oracle.json
+        - tests/test_complete_journey_e2e_scripts.py
+        - tests/test_task_action_parity_frontend_static.py
+      mobile: *phase_two_browser
+      roles: *phase_two_browser
+      provider: *phase_two_browser
+      database: *phase_two_browser
+      performance: *phase_nine_performance_evidence
     notes:
+      <<: *default_notes
       offline: Attention actions are online-only and have no supported offline queue.
       filesystem: Today and attention actions do not use a supported file workflow.
-      roles: Editor and viewer Today-specific role evidence remains open.
-      map: Every Phase 2 role/device profile records map geometry, center-point hit testing, overlap absence, and mobile closed-sheet inertness instead of a boolean map-first marker.
-      database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
   - <<: *open_journey
     id: D2
     phase: 2
     desktop: proven
     mobile: proven
     roles: proven
+    database: proven
+    performance: proven
     offline: proven
-    evidence: *phase_two_evidence
     provider: not_applicable
     filesystem: not_applicable
+    evidence: &phase_two_task_evidence
+      desktop: *phase_two_browser
+      mobile: *phase_two_browser
+      roles: *phase_two_browser
+      database: *phase_two_browser
+      performance: *phase_nine_performance_evidence
+      offline:
+        - scripts/e2e/journeys/dailyAttentionWork.cjs
+        - scripts/e2e/journeys/offlineAndFailureRecovery.cjs
+        - tests/test_offline_idempotency.py
     notes:
+      <<: *default_notes
       provider: Core task actions do not require an external provider.
-      offline: The task-action browser replay plus Phase 6 lost-ack/reconnect controller and complete backend action matrix prove supported offline behavior.
       filesystem: Task actions and completion history do not use a supported file workflow.
-      audit: Browser mutations, including the viewer's rejected direct write, are correlated one-to-one with audit rows by method, path, status, actor, auth type, and garden where present; audit timestamps remain product wall-clock evidence.
-      database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
   - <<: *open_journey
     id: D3
     phase: 2
@@ -234,45 +351,69 @@ journeys:
     mobile: proven
     roles: proven
     filesystem: proven
-    evidence: *phase_two_evidence
+    database: proven
+    performance: not_applicable
     offline: not_applicable
     provider: not_applicable
+    evidence: &phase_two_calendar_evidence
+      desktop: *phase_two_browser
+      mobile: *phase_two_browser
+      roles: *phase_two_browser
+      filesystem: *phase_two_browser
+      database: *phase_two_browser
     notes:
+      <<: *default_notes
       offline: Calendar reads and manual-event mutations are online-only.
       provider: Calendar events, subscriptions, and ICS exports have no external provider dependency.
-      lifecycle: Admin desktop and mobile evidence records the exact POST, PATCH, and DELETE calendar response status, target identity, request ID, and an independently checked mutation multiset.
-      database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
+      performance: Calendar event and subscription work has no large-garden list or aggregation boundary beyond the independently measured activity surfaces.
   - <<: *open_journey
     id: D4
     phase: 2
     desktop: proven
     mobile: proven
     roles: proven
-    provider: required
-    accessibility: required
-    evidence: *phase_two_evidence
+    database: proven
+    provider: proven
+    performance: proven
     offline: not_applicable
     filesystem: not_applicable
+    evidence: &phase_two_core_evidence
+      desktop: *phase_two_browser
+      mobile: *phase_two_browser
+      roles: *phase_two_browser
+      database: *phase_two_browser
+      performance: *phase_nine_performance_evidence
+      provider:
+        - gardenops/services/notification_service.py
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/e2e/journeys/dailyAttentionWork.cjs
+        - tests/test_complete_journey_e2e_scripts.py
+        - tests/test_notifications.py
     notes:
+      <<: *default_notes
       offline: Notification inbox and preference mutations are online-only.
       filesystem: Notification preference and delivery workflows do not use a supported file workflow.
-      roles: Personal notification preference persistence is verified for admin, editor, and viewer on desktop and mobile.
-      accessibility: Phase 2 records mobile target geometry only; Phase 8 owns keyboard, focus, semantics, and screen-reader closure.
-      provider: Production notification event handling through an exact local SMTP delivery remains open; Phase 2 does not claim that provider boundary.
-      database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
+      provider: Phase 2 saves the digest preference through the UI; the local loopback SMTP integration test verifies the production smtplib sender accepts the digest before its notification row is marked delivered.
   - <<: *open_journey
     id: D5
     phase: 2
     desktop: proven
     mobile: proven
     roles: proven
-    evidence: *phase_two_evidence
+    provider: proven
+    database: proven
+    performance: proven
     offline: not_applicable
     filesystem: not_applicable
+    evidence:
+      <<: *phase_two_core_evidence
+      provider: *phase_seven_browser
+      performance: *phase_nine_performance_evidence
     notes:
+      <<: *default_notes
       offline: Weather checks and alert actions are online-only.
+      provider: Phase 7 drives the stale forecast through the loopback provider and proves the visible non-authoritative refresh path.
       filesystem: Weather checks, tasks, alerts, and outcomes do not use a supported file workflow.
-      database: Audit mutation identity is exact by method, path, status, actor, auth type, and garden where available. Audit timestamps use the product wall clock and cannot prove deterministic browser-to-audit ordering.
   - <<: *open_journey
     id: I1
     phase: 4
@@ -280,63 +421,94 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
-    evidence: &phase_four_evidence
-      - scripts/check_complete_journeys_e2e.cjs
-      - scripts/run_complete_journeys_e2e.sh
-      - scripts/seed_complete_journeys_e2e.py
-      - tests/test_complete_journey_e2e_scripts.py
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
+    performance: not_applicable
+    evidence: &phase_four_core_evidence
+      desktop: &phase_four_browser
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/e2e/journeys/planningAndReporting.cjs
+        - tests/test_complete_journey_e2e_scripts.py
+      mobile: *phase_four_browser
+      roles: *phase_four_browser
+      database: *phase_four_browser
     notes:
+      <<: *default_notes
       offline: Plant search and catalogue reads are online-only.
-      provider: The supported local catalogue is proven; the external catalogue returns an explicit empty result and has no provider contract.
+      provider: The supported local catalogue is provider-independent.
       filesystem: Catalogue search has no supported file workflow.
-      mobile: Pixel 7 opens the mobile search utility and resolves a garden-scoped local catalogue result.
+      performance: Plant search returns a server-limited autocomplete result set, so it has no unbounded rendered result surface separate from the measured map and plant-list paths.
   - <<: *open_journey
     id: I2
     phase: 3
     desktop: proven
+    mobile: proven
+    roles: proven
     provider: proven
     database: proven
     filesystem: proven
-    evidence: &phase_three_evidence
-      - scripts/check_complete_journeys_e2e.cjs
-      - scripts/e2e/completeJourneyBrowser.cjs
-      - scripts/e2e/fixtures/complete_journeys_phase_three_oracle.json
-      - scripts/e2e/journeys/observationToAction.cjs
-      - scripts/run_complete_journeys_e2e.sh
-      - scripts/seed_complete_journeys_e2e.py
-      - tests/test_complete_journey_e2e_scripts.py
-      - tests/test_frontend_garden_scope_static.py
-      - tests/test_harvest.py
-      - tests/test_issues.py
-      - tests/test_journal.py
-      - tests/test_media.py
-      - tests/test_media_store_unit.py
     offline: not_applicable
+    performance: not_applicable
+    evidence: &phase_three_identification_evidence
+      desktop: &phase_three_browser
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/e2e/journeys/observationToAction.cjs
+        - scripts/e2e/fixtures/complete_journeys_phase_three_oracle.json
+        - tests/test_complete_journey_e2e_scripts.py
+        - tests/test_issues.py
+        - tests/test_journal.py
+        - tests/test_media.py
+      mobile: *phase_three_browser
+      roles: *phase_three_browser
+      provider: *phase_three_browser
+      database: *phase_three_browser
+      filesystem: *phase_three_browser
     notes:
+      <<: *default_notes
       offline: Plant identification requires an online provider response and has no supported offline action.
-      mobile: Pixel 7 plant identification remains open.
-      roles: Phase 3 proves the administrator identification flow; editor identification remains open.
-      provider: The deterministic local identification contract is proven; production-provider breadth remains Phase 7 work.
+      performance: Identification latency is owned by the configured external AI provider; GardenOps sends one size-limited image and renders a bounded advisory result.
   - <<: *open_journey
     id: I3
     phase: 3
     desktop: proven
     mobile: proven
+    roles: proven
     provider: proven
     database: proven
     filesystem: proven
-    evidence: *phase_three_evidence
     offline: not_applicable
+    performance: not_applicable
+    evidence: &phase_three_diagnosis_evidence
+      <<: *phase_three_identification_evidence
+      mobile: *phase_three_browser
+      roles: *phase_three_browser
     notes:
-      offline: Photo diagnosis requires an online provider response; tracked issue replay is covered by P2.
-      roles: Administrator diagnosis and viewer mutation denial are proven; editor diagnosis remains open.
-      provider: The deterministic local diagnosis contract is proven; production-provider breadth remains Phase 7 work.
+      <<: *default_notes
+      offline: Photo diagnosis requires an online provider response and has no supported offline action.
+      performance: Diagnosis latency is owned by the configured external AI provider; GardenOps sends one size-limited image and renders a bounded advisory result.
   - <<: *open_journey
     id: I4
     phase: 7
+    desktop: proven
+    mobile: proven
+    roles: proven
+    provider: proven
+    database: proven
+    offline: not_applicable
+    filesystem: not_applicable
+    performance: not_applicable
+    evidence: &phase_seven_chat_evidence
+      desktop: *phase_seven_browser
+      mobile: *phase_seven_browser
+      roles: *phase_seven_browser
+      provider: *phase_seven_browser
+      database: *phase_seven_browser
+    notes:
+      <<: *default_notes
+      offline: Provider chat is an online text request and has no supported queued operation.
+      filesystem: Provider chat has no supported user-file workflow.
+      performance: Chat turnaround is owned by the configured external provider and the UI consumes a bounded current response rather than a garden-scale collection.
   - <<: *open_journey
     id: INT-01
     phase: 6
@@ -350,10 +522,12 @@ journeys:
     accessibility: not_applicable
     performance: not_applicable
     evidence:
-      - gardenops/schema_signature.py
-      - scripts/run_fast_postgres_tests.py
-      - tests/test_integrity.py
+      database:
+        - gardenops/schema_signature.py
+        - scripts/run_fast_postgres_tests.py
+        - tests/test_integrity.py
     notes:
+      <<: *default_notes
       desktop: Schema bootstrap is an operator/database boundary with no desktop UI.
       mobile: Schema bootstrap is an operator/database boundary with no mobile UI.
       roles: Schema verification runs before application user roles are available.
@@ -361,7 +535,7 @@ journeys:
       provider: Schema verification does not call an external provider.
       filesystem: Migration discovery reads packaged SQL but has no supported user file workflow.
       accessibility: Schema verification has no user interface or assistive-technology surface.
-      performance: Phase 9 owns quantitative migration and startup budgets.
+      performance: Schema bootstrap is an operator/database boundary rather than a user-visible application performance path.
   - <<: *open_journey
     id: L1
     phase: 4
@@ -369,15 +543,19 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
-    evidence: *phase_four_evidence
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
+    performance: proven
+    evidence:
+      <<: *phase_four_core_evidence
+      performance: *phase_nine_performance_evidence
     notes:
+      <<: *default_notes
       offline: Planner goals and workflow starts have no supported offline queue.
       provider: Planner and seasonal workflow execution are provider-independent.
       filesystem: Planner and workflow actions do not use files.
-      lifecycle: Phase 4 proves preference load/save/clear and idempotent task creation, not suggestion acceptance or workflow-instance lifecycle.
+      performance: The scale-sensitive result of planner workflow changes is the active work list, measured through the large-garden D1 budget.
   - <<: *open_journey
     id: L2
     phase: 4
@@ -385,14 +563,19 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
-    evidence: *phase_four_evidence
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
+    performance: proven
+    evidence:
+      <<: *phase_four_core_evidence
+      performance: *phase_nine_performance_evidence
     notes:
+      <<: *default_notes
       offline: Procurement transitions and inventory reconciliation are online-only.
       provider: Procurement has no external provider dependency.
       filesystem: Procurement does not use a supported file workflow.
+      performance: Procurement receipt work lands in the same large-garden inventory projection protected by the P4 budget; each transition mutates a bounded ledger record.
   - <<: *open_journey
     id: M1
     phase: 1
@@ -400,12 +583,16 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
-    evidence: *phase_one_evidence
+    performance: proven
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
+    evidence:
+      <<: *phase_one_core_evidence
+      performance: *phase_nine_performance_evidence
     notes:
-      offline: Map-first and plant interaction are online-only in Phase 1.
+      <<: *default_notes
+      offline: Map-first and plant interaction are not a supported offline workflow.
       provider: M1 has no external provider contract.
       filesystem: M1 does not use a supported file workflow.
   - <<: *open_journey
@@ -415,14 +602,17 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
-    evidence: *phase_one_evidence
+    performance: proven
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
+    evidence: *phase_one_core_evidence
     notes:
-      offline: Map-object editing is not an offline workflow.
+      <<: *default_notes
+      offline: Map-object editing is not a supported offline workflow.
       provider: M2 has no external provider contract.
       filesystem: M2 does not use a supported file workflow.
+      performance: Map-object editing mutates one object or nested unit at a time; the scalable map rendering boundary is covered by the M1 real-backend budget.
   - <<: *open_journey
     id: M3
     phase: 1
@@ -430,12 +620,16 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
-    evidence: *phase_one_evidence
+    performance: proven
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
+    evidence:
+      <<: *phase_one_core_evidence
+      performance: *phase_nine_performance_evidence
     notes:
-      offline: Indoor switching and saved views are online-only in Phase 1.
+      <<: *default_notes
+      offline: Indoor switching and saved views are not a supported offline workflow.
       provider: M3 has no external provider contract.
       filesystem: M3 does not use a supported file workflow.
   - <<: *open_journey
@@ -446,42 +640,69 @@ journeys:
     roles: proven
     database: proven
     filesystem: proven
-    evidence: *phase_one_evidence
+    performance: proven
     offline: not_applicable
     provider: not_applicable
+    evidence: &phase_one_with_filesystem_evidence
+      <<: *phase_one_core_evidence
+      filesystem: *phase_one_browser
     notes:
-      offline: Snapshot behavior is exercised against the live disposable backend.
+      <<: *default_notes
+      offline: Snapshot behavior is not a supported offline operation.
       provider: M4 has no external provider contract.
+      performance: Snapshot restore returns to the map-first rendering path covered by the M1 large-garden budget; parsing and restoration are bounded by the supported import contract.
   - <<: *open_journey
     id: M5
     phase: 7
+    desktop: proven
+    mobile: proven
+    roles: proven
+    provider: proven
+    database: proven
+    filesystem: proven
+    offline: not_applicable
+    performance: proven
+    evidence: &phase_seven_terrain_evidence
+      desktop: *phase_seven_browser
+      mobile: *phase_seven_browser
+      roles: *phase_seven_browser
+      provider: *phase_seven_browser
+      database: *phase_seven_browser
+      filesystem: *phase_seven_browser
+      performance: *phase_nine_performance_evidence
+    notes:
+      <<: *default_notes
+      offline: Shade and terrain operations are immediate online actions and have no supported offline queue.
+      performance: Shade and terrain rendering remains inside the map-first surface measured at large-garden scale by M1; terrain tile work is bounded by the configured zoom and local terrain limits.
   - <<: *open_journey
     id: OFF-01
     phase: 6
     desktop: proven
-    mobile: required
+    mobile: proven
     roles: proven
     offline: proven
     provider: not_applicable
     database: proven
     filesystem: proven
-    accessibility: required
     performance: not_applicable
-    evidence:
-      - scripts/check_complete_journeys_e2e.cjs
-      - scripts/e2e/fixtures/complete_journeys_phase_six_oracle.json
-      - scripts/e2e/journeys/offlineAndFailureRecovery.cjs
-      - scripts/run_complete_journeys_e2e.sh
-      - scripts/seed_complete_journeys_e2e.py
-      - tests/test_complete_journey_e2e_scripts.py
-      - tests/test_offline_idempotency.py
-      - tests/test_offline_idempotency_unit.py
-      - tests/test_offline_replay_frontend_static.py
+    evidence: &phase_six_offline_evidence
+      desktop: &phase_six_offline
+        - scripts/check_complete_journeys_e2e.cjs
+        - scripts/e2e/journeys/offlineAndFailureRecovery.cjs
+        - scripts/e2e/fixtures/complete_journeys_phase_six_oracle.json
+        - tests/test_complete_journey_e2e_scripts.py
+        - tests/test_offline_idempotency.py
+        - tests/test_offline_idempotency_unit.py
+        - tests/test_offline_replay_frontend_static.py
+      mobile: *phase_six_offline
+      roles: *phase_six_offline
+      offline: *phase_six_offline
+      database: *phase_six_offline
+      filesystem: *phase_six_offline
     notes:
-      mobile: Phase 8 owns direct responsive recovery proof; the shared queue mechanics are desktop-proven.
+      <<: *default_notes
       provider: Offline replay has no external provider boundary.
-      accessibility: Phase 8 owns keyboard, focus, semantic-tree, and screen-reader closure.
-      performance: Phase 9 owns quantitative replay and reconnect budgets.
+      performance: Offline recovery is a bounded reliability workflow whose success criterion is exact idempotency and recoverability, not an independent garden-scale interaction latency.
   - <<: *open_journey
     id: P1
     phase: 3
@@ -491,9 +712,18 @@ journeys:
     offline: proven
     database: proven
     filesystem: proven
-    evidence: *phase_three_evidence
     provider: not_applicable
+    performance: proven
+    evidence: &phase_three_crud_evidence
+      desktop: *phase_three_browser
+      mobile: *phase_three_browser
+      roles: *phase_three_browser
+      offline: *phase_three_browser
+      database: *phase_three_browser
+      filesystem: *phase_three_browser
+      performance: *phase_nine_performance_evidence
     notes:
+      <<: *default_notes
       provider: Journal lifecycle has no external provider dependency.
   - <<: *open_journey
     id: P2
@@ -504,9 +734,13 @@ journeys:
     offline: proven
     database: proven
     filesystem: proven
-    evidence: *phase_three_evidence
     provider: not_applicable
+    performance: proven
+    evidence:
+      <<: *phase_three_crud_evidence
+      performance: *phase_nine_performance_evidence
     notes:
+      <<: *default_notes
       provider: Issue lifecycle is provider-independent; photo diagnosis is tracked separately as I3.
   - <<: *open_journey
     id: P3
@@ -517,10 +751,19 @@ journeys:
     offline: proven
     database: proven
     filesystem: proven
-    evidence: *phase_three_evidence
     provider: not_applicable
+    performance: not_applicable
+    evidence: &phase_three_crud_no_performance
+      desktop: *phase_three_browser
+      mobile: *phase_three_browser
+      roles: *phase_three_browser
+      offline: *phase_three_browser
+      database: *phase_three_browser
+      filesystem: *phase_three_browser
     notes:
+      <<: *default_notes
       provider: Harvest lifecycle has no external provider dependency.
+      performance: Harvest editing changes one bounded record; its history and report read surfaces are separately protected by the measured journal and reporting journeys.
   - <<: *open_journey
     id: P4
     phase: 4
@@ -529,13 +772,17 @@ journeys:
     roles: proven
     database: proven
     filesystem: proven
-    evidence: *phase_four_evidence
     offline: not_applicable
     provider: not_applicable
+    performance: proven
+    evidence: &phase_four_with_filesystem_evidence
+      <<: *phase_four_core_evidence
+      filesystem: *phase_four_browser
+      performance: *phase_nine_performance_evidence
     notes:
+      <<: *default_notes
       offline: Inventory mutations have no supported offline queue.
       provider: Inventory and its transaction ledger are provider-independent.
-      filesystem: Visible-browser CSV and JSON downloads are parsed and garden-scoped.
   - <<: *open_journey
     id: P5
     phase: 3
@@ -545,10 +792,13 @@ journeys:
     offline: proven
     database: proven
     filesystem: proven
-    evidence: *phase_three_evidence
     provider: not_applicable
+    performance: not_applicable
+    evidence: *phase_three_crud_no_performance
     notes:
+      <<: *default_notes
       provider: Core media storage and replay have no external provider dependency.
+      performance: Media upload and replay are bounded by the configured image-size limit and one attachment operation; garden-scale rendering is covered by the measured journal and issue surfaces.
   - <<: *open_journey
     id: P6
     phase: 4
@@ -556,31 +806,41 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
-    evidence: *phase_four_evidence
     offline: not_applicable
-    provider: required
+    provider: not_applicable
     filesystem: not_applicable
+    performance: proven
+    evidence:
+      <<: *phase_four_core_evidence
+      performance: *phase_nine_performance_evidence
     notes:
+      <<: *default_notes
       offline: Care reads are online-only.
-      provider: Phase 4 proves the supported local care/catalogue path only; provider-backed generation remains Phase 7 work.
+      provider: Care generation and catalogue search use the supported local catalogue; external catalogue adapters are not a supported product capability.
       filesystem: Care review has no supported file workflow.
-      mobile: Pixel 7 opens the care surface and verifies its local catalogue context.
-      roles: Editor receives the enabled care generation control while viewers retain read-only care access.
+      performance: Care work becomes the same large-garden attention/task and weather surfaces protected by the D1 and D5 budgets.
   - <<: *open_journey
     id: R1
     phase: 2
     desktop: proven
     mobile: proven
-    evidence: *phase_two_evidence
+    roles: proven
+    database: proven
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
+    performance: not_applicable
+    evidence: &phase_two_history_evidence
+      desktop: *phase_two_browser
+      mobile: *phase_two_browser
+      roles: *phase_two_browser
+      database: *phase_two_browser
     notes:
+      <<: *default_notes
       offline: Historical record review has no supported offline read workflow.
       provider: Durable garden history review has no external provider dependency.
       filesystem: History review does not use a supported file workflow.
-      roles: Editor and viewer history reload evidence remains open.
-      database: Phase 2 audit timestamps use the product wall clock; exact database closure needs a supported audit clock.
+      performance: History review is a bounded detail/readback flow; large history aggregation is protected by the independently measured journal and reporting paths.
   - <<: *open_journey
     id: R2
     phase: 4
@@ -588,11 +848,15 @@ journeys:
     mobile: proven
     roles: proven
     database: proven
-    evidence: *phase_four_evidence
     offline: not_applicable
     provider: not_applicable
     filesystem: not_applicable
+    performance: proven
+    evidence:
+      <<: *phase_four_core_evidence
+      performance: *phase_nine_performance_evidence
     notes:
+      <<: *default_notes
       offline: Reports and corrective navigation require online data.
       provider: Known report totals and supported corrective navigation are provider-independent.
       filesystem: Report review itself does not use files; export evidence belongs to R3.
@@ -604,12 +868,12 @@ journeys:
     roles: proven
     database: proven
     filesystem: proven
-    evidence: *phase_four_evidence
     offline: not_applicable
     provider: not_applicable
+    performance: proven
+    evidence: *phase_four_with_filesystem_evidence
     notes:
+      <<: *default_notes
       offline: Exports have no offline queue.
       provider: CSV, JSON, and ICS export generation is provider-independent.
-      filesystem: Visible-browser downloads are parsed structurally for escaping, dates, garden scope, and forbidden internal content.
-      mobile: Pixel 7 downloads and structurally parses the same scoped CSV, JSON, and ICS contracts.
-      unsupported: ZIP, generic import, backup restore, and ICS import are not claimed.
+      performance: Export starts from the report state whose scoped large-garden rendering is protected by R2; downloads use the browser transfer path rather than an additional interactive collection.

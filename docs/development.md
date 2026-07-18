@@ -258,6 +258,8 @@ scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --p
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 6
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 7
 scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 7
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 8
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --through-phase 8
 ```
 
 The runner creates its own disposable PostgreSQL child through
@@ -357,8 +359,13 @@ allowed domain table, so scoped assertions do not silently omit unrelated extra
 rows. Summary counts, observed-row lengths, and frozen timestamps are not
 accepted as independent expectations.
 
-Phase 2 database coverage remains required in `tests/journey_coverage.yaml`:
-the harness correlates every `POST`, `PUT`, `PATCH`, and `DELETE` browser
+The default SMTP sender also has a separate disposable integration test using a
+loopback SMTP receiver. It drives the production `smtplib` path from persisted
+eligible preferences and verifies that the matching notification row is marked
+delivered only after the receiver accepts the message; it never contacts a public
+mail service.
+
+Phase 2 database evidence correlates every `POST`, `PUT`, `PATCH`, and `DELETE` browser
 mutation one-to-one with method, path, response status, actor, authentication
 type, garden scope, and the response `X-Request-ID` persisted as correlation on
 the audit row. The database-generated audit row ID, not client-supplied
@@ -366,9 +373,9 @@ the audit row. The database-generated audit row ID, not client-supplied
 successful mutation paths fail the evidence check. The audit writer
 records wall-clock timestamps, so those timestamps remain an explicit
 nondeterministic field and are not used as ordering proof. The same manifest keeps unsupported
-editor/viewer role dimensions required. Phase 8 accessibility and Phase 9
-performance remain explicitly open; the current structural and focus assertions
-are not a substitute for those phase audits.
+editor/viewer role dimensions required. Phase 8 accessibility remains open until the
+operator-assisted screen-reader smoke is complete; unexercised mobile and role paths
+remain required rather than being inferred from another surface.
 
 When Phase 2 follows Phase 1 in a cumulative run, Phase 1's intentional garden
 address update invalidates cached forecasts. The guarded Phase 2 preparation
@@ -536,9 +543,69 @@ node --check scripts/e2e/journeys/providersAndTerrain.cjs
 node --check scripts/check_complete_journeys_e2e.cjs
 ```
 
-The tracked coverage contract is `tests/journey_coverage.yaml`. Validate open
-phases during implementation and require complete closure only in the final
-phase:
+Phase 8 adds the tracked accessibility-state inventory, pinned `axe-core` scans
+for serious and critical violations, Chromium accessibility-tree assertions,
+keyboard/focus checks, Pixel 7 and tablet layouts, reduced-motion rendering,
+and a 200% reflow-equivalent viewport. It preserves the existing map-first
+interaction and uses the same disposable backend, loopback network guard, and
+private trace lifecycle as every complete journey. Automated checks are not a
+screen-reader audit: record the separate operator-assisted smoke before marking
+the phase closed.
+
+Before coordinating a real Phase 8 browser run, validate its static and
+browser-harness contracts:
+
+```bash
+.venv/bin/pytest -q tests/test_frontend_accessibility_static.py tests/test_complete_journey_e2e_scripts.py -k phase_eight
+node --check scripts/e2e/journeys/accessibilityAndResponsive.cjs
+node --check scripts/check_complete_journeys_e2e.cjs
+```
+
+Phase 9 measures the map-first application at realistic scale before enforcing
+performance budgets. It uses a disposable PostgreSQL fixture with large,
+history-heavy, and multi-garden profiles; real local FastAPI responses; desktop
+and Pixel 7 browser contexts; a smaller comparison fixture for query scaling;
+and read-only query-plan evidence. Run the phase through the complete-journey
+runner only:
+
+```bash
+scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 9
+```
+
+The retained page-performance results, query fingerprints, and query-plan
+reports are private ignored evidence. Establish a budget only from results
+captured on a clean revision, then keep the capture document under ignored
+research and validate it without rewriting tracked baselines:
+
+```bash
+.venv/bin/python scripts/capture_page_performance_measurements.py \
+  path/to/phase-nine-large-desktop.json \
+  path/to/phase-nine-large-pixel-7.json \
+  path/to/phase-nine-focus-matrix-desktop.json \
+  path/to/phase-nine-focus-matrix-pixel-7.json \
+  --output research/optimization-map/performance_measurements.json
+.venv/bin/python scripts/check_performance_budgets.py
+```
+
+Do not use a developer-machine result from a dirty worktree as budget evidence,
+and do not weaken a median or p75 budget to accept a regression. The default
+sample coefficient-of-variation limit is 0.15; a higher per-metric limit needs
+reproduced clean-run variance evidence and remains subject to the same latency
+ceilings. Query plan inspection is
+read-only and restricted to the disposable runner database. The Phase 9 focus
+matrix measures real visible work for cross-garden switching, indoor/map state,
+Today and task actions, notifications, weather, journal, issues, inventory, and
+reports. The map-first readiness budget is tracked separately for desktop and
+Pixel 7. Other paths remain `required` until they have their own scale-sensitive
+measurement or a technically valid non-applicability rationale.
+
+The tracked coverage contract is `tests/journey_coverage.yaml` version 2. Each
+journey records a state for every coverage dimension. A `proven` dimension must
+name its own tracked evidence paths, while a `required` dimension must name the
+specific remaining blocker in that dimension's note. Use `not_applicable` only
+when the dimension does not apply to the journey, with a concrete rationale; it
+cannot defer applicable work to a later phase. Validate open dimensions during
+implementation and require complete closure only in the final phase:
 
 ```bash
 .venv/bin/python scripts/check_journey_coverage.py --allow-open

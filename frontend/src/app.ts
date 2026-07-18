@@ -72,6 +72,7 @@ import {
   initWeatherFeature,
   loadWeather,
   resetWeatherForCurrentGarden,
+  syncWeatherWriteAccess,
 } from "./features/weatherFeature";
 import {
   initQuickActionsFeature,
@@ -273,7 +274,6 @@ let plotAlertsScheduleSeq = 0;
 let plotAlertsRequestVersion = 0;
 const PASSKEY_PROMPT_SESSION_KEY = "gardenops-passkey-prompt-shown";
 const WEATHER_SUMMARY_CACHE_MS = 60_000;
-const WEATHER_SUMMARY_IDLE_DELAY_MS = 250;
 let weatherLoadedAt = 0;
 let weatherLoadPromise: Promise<void> | null = null;
 let weatherScheduleSeq = 0;
@@ -1110,11 +1110,10 @@ function openMobileMapLayerSheet(sectionId: string): void {
 }
 
 function updateMobileHeader(): void {
-  const titleEl = document.getElementById("mobile-view-title");
   const gardenEl = document.getElementById("mobile-garden-name");
-  if (titleEl) {
+  document.querySelectorAll<HTMLElement>("#mobile-view-title, #desktop-view-title").forEach((titleEl) => {
     titleEl.textContent = tabTitle(activeTab);
-  }
+  });
   if (gardenEl) {
     const activeGardenId = getActiveGardenContext();
     const activeGarden = activeGardenId === null
@@ -2793,12 +2792,10 @@ function requestWeatherAfterPaint(): void {
   const seq = ++weatherScheduleSeq;
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
-      window.setTimeout(() => {
-        if (seq !== weatherScheduleSeq || activeTab !== "insights" || subMode !== "care") {
-          return;
-        }
-        void loadWeatherCached();
-      }, WEATHER_SUMMARY_IDLE_DELAY_MS);
+      if (seq !== weatherScheduleSeq || activeTab !== "insights" || subMode !== "care") {
+        return;
+      }
+      void loadWeatherCached();
     });
   });
 }
@@ -2882,8 +2879,11 @@ function applyNavigationState(opts: { triggerLoads?: boolean } = {}): void {
   document.querySelectorAll<HTMLButtonElement>(".top-tab").forEach((btn) => {
     const isActive = btn.dataset["tab"] === activeTab;
     btn.classList.toggle("active", isActive);
-    btn.setAttribute("aria-selected", isActive ? "true" : "false");
-    btn.tabIndex = isActive ? 0 : -1;
+    if (isActive) {
+      btn.setAttribute("aria-current", "page");
+    } else {
+      btn.removeAttribute("aria-current");
+    }
   });
   document.querySelectorAll<HTMLButtonElement>(".mobile-tab-btn").forEach((btn) => {
     const isActive = btn.dataset["tab"] === activeTab;
@@ -6573,6 +6573,7 @@ function applyWriteAccessUi(): void {
   if (!canWriteInGarden) closeQuickActionSheet(false);
   renderMapObjectsPanelView();
   syncMobileCapabilities();
+  syncWeatherWriteAccess();
   if (canWriteInGarden) {
     void syncOfflineDraftsNow();
   } else {

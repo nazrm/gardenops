@@ -6,6 +6,7 @@ const {
   authenticate,
   createApiRecorder,
   createGuardedContext,
+  dismissProactivePasskeyPrompt,
 } = require("../completeJourneyBrowser.cjs");
 const {
   assert,
@@ -1540,12 +1541,36 @@ async function exerciseToday(page, profile, fixture) {
 }
 
 async function runWeatherCheck(page) {
+  const checkButton = page.locator("#weather-dashboard .weather-check-btn:visible").first();
+  try {
+    await visible(checkButton, "weather check action");
+  } catch (error) {
+    const accessState = await page.evaluate(() => ({
+      activeGarden: document.querySelector<HTMLSelectElement>("#mobile-garden-select")?.value
+        ?? document.querySelector<HTMLSelectElement>("#garden-select")?.value
+        ?? null,
+      readOnly: document.body.classList.contains("garden-read-only"),
+      switchPending: document.body.classList.contains("garden-switch-pending"),
+      weatherControls: Array.from(
+        document.querySelectorAll<HTMLButtonElement>("#weather-dashboard .weather-check-btn"),
+      ).map((button) => ({
+        hidden: button.hidden,
+        disabled: button.disabled,
+        text: button.textContent,
+      })),
+    }));
+    throw new Error(`Weather check action was unavailable: ${JSON.stringify(accessState)}`, {
+      cause: error,
+    });
+  }
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
       && new URL(response.url()).pathname === "/api/weather/check"
   ));
-  await page.locator("#weather-dashboard .weather-check-btn").click();
-  const response = await responsePromise;
+  const [response] = await Promise.all([
+    responsePromise,
+    checkButton.click(),
+  ]);
   assert(response.status() === 200, `Weather check returned ${response.status()}`);
   return response.json();
 }
@@ -1571,11 +1596,13 @@ async function runConcurrentWeatherChecks(page, profile, garden, recorder) {
     ));
     const currentResponse = waitForCheck(page);
     const peerResponse = waitForCheck(peer);
-    await Promise.all([
-      page.locator("#weather-dashboard .weather-check-btn").click(),
-      peer.locator("#weather-dashboard .weather-check-btn").click(),
+    const [responses] = await Promise.all([
+      Promise.all([currentResponse, peerResponse]),
+      Promise.all([
+        page.locator("#weather-dashboard .weather-check-btn:visible").first().click(),
+        peer.locator("#weather-dashboard .weather-check-btn:visible").first().click(),
+      ]),
     ]);
-    const responses = await Promise.all([currentResponse, peerResponse]);
     const results = await Promise.all(responses.map(async (response) => ({
       ...(await response.json()),
       status: response.status(),
@@ -2060,8 +2087,17 @@ async function exerciseOfflineTask(page, fixture) {
       async () => await failedCompletionCard.getAttribute("data-offline-task-state") === "failed",
       "terminal offline task failure state",
     );
+    const failedRecoveryToggle = page.locator("#offline-indicator .offline-indicator-toggle");
+    await visible(failedRecoveryToggle, "global failed offline work recovery toggle");
+    assert(await failedRecoveryToggle.getAttribute("aria-expanded") === "false",
+      "failed offline work details were expanded by default");
+    await failedRecoveryToggle.click();
+    await waitFor(
+      async () => await failedRecoveryToggle.getAttribute("aria-expanded") === "true",
+      "global failed offline work recovery expansion",
+    );
     await visible(page.locator("#offline-indicator .offline-failures"),
-      "global failed offline work recovery");
+      "expanded failed offline work recovery");
     await visible(failedCompletionCard.locator(".task-offline-error").filter({
       hasText: "Deliberate journey sync failure",
     }), "per-task offline failure reason");
@@ -2367,6 +2403,7 @@ async function runProfile(options) {
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await authenticate(page, run.username, run.password);
     guarded.markAuthenticated();
+    await dismissProactivePasskeyPrompt(page);
     result.browser_profile.user_agent = await page.evaluate(() => navigator.userAgent);
     result.browser_profile.max_touch_points = await page.evaluate(() => navigator.maxTouchPoints);
     result.browser_profile.has_touch = result.browser_profile.max_touch_points > 0;

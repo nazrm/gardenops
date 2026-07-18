@@ -917,6 +917,46 @@ class TestSecurity(BaseApiTest):
             self.assertEqual(me.json()["username"], "test_admin")
             self.assertEqual(me.json()["auth_type"], "session")
 
+    def test_auth_me_shademap_availability_requires_feature_entitlement(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+                "SHADEMAP_PUBLIC_API_KEY": "test-public-key",
+            },
+            clear=False,
+        ):
+            _, csrf = self._login_session("test_admin", strong_password("testadminpass"))
+            conn = db.get_db()
+            try:
+                conn.execute(
+                    "UPDATE auth_users SET subscription_tier = 'home' "
+                    "WHERE username = 'test_admin'",
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            home = self.client.get("/api/auth/me", headers=self._session_headers(csrf))
+            self.assertEqual(home.status_code, 200)
+            self.assertFalse(home.json()["shademap_available"])
+
+            conn = db.get_db()
+            try:
+                conn.execute(
+                    "UPDATE auth_users SET subscription_tier = 'enthusiast' "
+                    "WHERE username = 'test_admin'",
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            entitled = self.client.get("/api/auth/me", headers=self._session_headers(csrf))
+            self.assertEqual(entitled.status_code, 200)
+            self.assertTrue(entitled.json()["shademap_available"])
+
     def test_cookie_session_mutation_requires_valid_csrf_token(self) -> None:
         with patch.dict(
             os.environ,

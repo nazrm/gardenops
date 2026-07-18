@@ -916,8 +916,8 @@ export class ShadePanelController {
     if (context.selectedPlotId) {
       this.activeTargetId = plotTargetId(context.selectedPlotId);
     } else if (!this.findTargetById(this.activeTargetId)) {
+      // Context reconciliation is not a user edit, so it must not write state.
       this.activeTargetId = HOUSE_TARGET_ID;
-      this.emitStateChange();
     }
     this.syncTargetOptions();
     this.renderCalibrationEditor();
@@ -935,7 +935,7 @@ export class ShadePanelController {
     }
     this.syncTargetOptions();
     this.updateTargetMarker();
-    this.emitStateChange();
+    // Map focus updates the local analysis target, but is not a ShadeMap setting edit.
     void this.refreshStatus();
   }
 

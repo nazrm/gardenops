@@ -85,7 +85,152 @@ def test_page_performance_script_documents_authenticated_app_scenario() -> None:
     result = _run_page_perf("--help")
 
     assert result.returncode == 0
-    assert "app-unauth, app-auth, or app-auth-large-tabs" in result.stdout
+    assert "app-unauth, app-auth, app-auth-large-tabs, or app-auth-focus-matrix" in result.stdout
+
+
+def test_page_performance_focus_matrix_parser_requires_real_measured_backend() -> None:
+    result = _run_harness_probe(
+        """
+const { parseArgs } = require(process.env.PERF_SCRIPT);
+const parseError = (args) => {
+  try { parseArgs(args); return ""; } catch (error) { return error.message; }
+};
+const base = [
+  "--scenario", "app-auth-focus-matrix",
+  "--url", "http://127.0.0.1:8123/",
+];
+console.log(JSON.stringify({
+  stub: parseError(base),
+  skipped: parseError([...base, "--no-api-stubs", "--skip-interaction"]),
+  valid: parseArgs([...base, "--no-api-stubs"]).scenario,
+}));
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "stub": "--scenario app-auth-focus-matrix requires --no-api-stubs",
+        "skipped": "--scenario app-auth-focus-matrix requires measured interactions",
+        "valid": "app-auth-focus-matrix",
+    }
+
+
+def test_page_performance_focus_matrix_contract_is_complete_and_ordered() -> None:
+    result = _run_harness_probe(
+        """
+const { FOCUS_MATRIX_CONTRACT, FOCUS_MATRIX_IDS } = require(process.env.PERF_SCRIPT);
+console.log(JSON.stringify({ contract: FOCUS_MATRIX_CONTRACT, ids: FOCUS_MATRIX_IDS }));
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    expected_ids = ["M3", "D1", "D2", "D4", "D5", "P1", "P2", "P4", "R2", "CROSS-01"]
+    assert payload["ids"] == expected_ids
+    assert [entry["id"] for entry in payload["contract"]] == expected_ids
+    assert all(entry["surface"] for entry in payload["contract"])
+    assert all(entry["expected"] for entry in payload["contract"])
+    assert all(entry["requests"] for entry in payload["contract"])
+
+
+def test_page_performance_focus_matrix_uses_visible_seeded_content_only() -> None:
+    result = _run_harness_probe(
+        """
+const { selectorWithVisibleMatches } = require(process.env.PERF_SCRIPT);
+const inventorySelector = "#inventory-table-body tr, "
+  + "#inventory-mobile-list .inventory-card";
+console.log(JSON.stringify({
+  desktop: selectorWithVisibleMatches(inventorySelector),
+  single: selectorWithVisibleMatches("#notification-panel .notification-item"),
+}));
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "desktop": (
+            "#inventory-table-body tr:visible, #inventory-mobile-list .inventory-card:visible"
+        ),
+        "single": "#notification-panel .notification-item:visible",
+    }
+
+
+def test_page_performance_focus_matrix_matches_target_garden_request_templates() -> None:
+    result = _run_harness_probe(
+        """
+const { requestPathMatchesTemplate } = require(process.env.PERF_SCRIPT);
+const mapObjects = "/api/gardens/42/map-objects";
+const mapObjectTemplate = "/api/gardens/:id/map-objects";
+console.log(JSON.stringify({
+  mapObjects: requestPathMatchesTemplate(mapObjects, mapObjectTemplate),
+  plots: requestPathMatchesTemplate("/api/plots?include=all", "/api/plots"),
+  wrongGarden: requestPathMatchesTemplate("/api/gardens/42/plots", mapObjectTemplate),
+}));
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "mapObjects": True,
+        "plots": True,
+        "wrongGarden": False,
+    }
+
+
+def test_page_performance_focus_matrix_static_proof_contract() -> None:
+    script = (ROOT / "scripts" / "check_page_performance.cjs").read_text()
+
+    for selector in (
+        "#mobile-tab-${tab}",
+        "#top-tab-${tab}",
+        "#attention-today-mobile-handle",
+        "#mobile-notification-btn",
+        "#notification-bell",
+        "#sub-mode-journal:visible",
+        "#sub-mode-issues:visible",
+        "#sub-mode-inventory:visible",
+        "#stats-mode-reports:visible",
+        "#mobile-garden-select",
+        "#garden-select",
+    ):
+        assert selector in script
+    for field in (
+        "focusId",
+        "activeGarden",
+        "surface",
+        "expectedVisibleSeededContent",
+        "scopedRequests",
+        "browserErrors",
+        "browserPostFrameMs",
+        "browserReadyMs",
+    ):
+        assert field in script
+    assert "installScenarioRoutes(context, options.scenario)" in script
+    assert 'options.scenario === "app-auth-focus-matrix" && options.stubApi' in script
+
+
+def test_mobile_focus_garden_switch_waits_for_automatic_utility_closure() -> None:
+    script = (ROOT / "scripts" / "check_page_performance.cjs").read_text()
+    start = script.index("const selectGardenByPrefix")
+    end = script.index("const closeMobileUtility", start)
+    helper = script[start:end]
+
+    assert "mobile-utility-open" in helper
+    assert "mobile-utility-close-btn" not in helper
+
+
+def test_mobile_focus_dismisses_restored_notification_utility_before_navigation() -> None:
+    script = (ROOT / "scripts" / "check_page_performance.cjs").read_text()
+    helper_start = script.index("const closeMobileUtility")
+    helper_end = script.index("const browserErrorsSince", helper_start)
+    helper = script[helper_start:helper_end]
+    notification_close = script.index("#notification-panel .notification-panel-close")
+    next_navigation = script.index('await openPrimary("insights")', notification_close)
+
+    assert "#mobile-utility-close-btn" in helper
+    assert "mobile-utility-open" in helper
+    assert script.index("await closeMobileUtility()", notification_close) < next_navigation
 
 
 def test_page_performance_readiness_rejects_4xx() -> None:
@@ -176,6 +321,7 @@ const {
 const options = {
   browserPath: "",
   comparePath: "",
+  deviceProfile: "desktop",
   headful: false,
   host: "127.0.0.1",
   interactionBudgetMs: null,
@@ -197,6 +343,7 @@ const options = {
   url: "http://127.0.0.1:5177/",
   viewportHeight: 844,
   viewportWidth: 390,
+  warmupRuns: 1,
 };
 console.log(JSON.stringify({
   metadata: buildMeasurementMetadata(options),
@@ -214,17 +361,19 @@ console.log(JSON.stringify({
     payload = json.loads(result.stdout)
     metadata = payload["metadata"]
     provenance = payload["provenance"]
-    assert metadata["schemaVersion"] == 3
+    assert metadata["schemaVersion"] == 6
     assert metadata["browserContext"]["viewport"] == {"height": 844, "width": 390}
     assert metadata["browserContext"]["isMobile"] is False
     assert metadata["browserContext"]["hasTouch"] is False
     assert metadata["browserContext"]["mobileEmulation"] == {
+        "deviceProfile": "desktop",
         "enabled": False,
         "responsiveBreakpointPx": 960,
         "responsiveLayout": "mobile-breakpoint",
         "strategy": "viewport-only",
     }
     assert metadata["browserContext"]["viewportProfile"] == {
+        "deviceProfile": "desktop",
         "label": "responsive mobile-breakpoint desktop Chromium",
         "mobileDeviceEmulation": False,
         "responsiveLayout": "mobile-breakpoint",
@@ -260,10 +409,12 @@ console.log(JSON.stringify({
             "version": "123.0.0.0",
         },
         "options": {
+            "deviceProfile": "desktop",
             "headful": False,
             "interactionMode": "measured",
             "serveMode": "external",
             "targetUrl": "http://127.0.0.1:5177/",
+            "timeoutMs": 15000,
         },
         "scenario": "app-unauth",
         "viewportProfile": metadata["browserContext"]["viewportProfile"],
@@ -272,6 +423,7 @@ console.log(JSON.stringify({
     assert provenance["invocation"]["effectiveOptions"] == {
         "browserPath": "",
         "comparePath": "",
+        "deviceProfile": "desktop",
         "headful": False,
         "host": "127.0.0.1",
         "interactionBudgetMs": None,
@@ -293,8 +445,10 @@ console.log(JSON.stringify({
         "url": "http://127.0.0.1:5177/",
         "viewportHeight": 844,
         "viewportWidth": 390,
+        "warmupRuns": 1,
     }
     assert provenance["runCount"] == 2
+    assert provenance["warmupRunCount"] == 1
     assert provenance["viewportProfile"]["label"] == (
         "responsive mobile-breakpoint desktop Chromium"
     )
@@ -310,6 +464,15 @@ console.log(JSON.stringify({
     assert "tabSwitchPlaywrightActionMs" in script
     assert "initialApiRequests" in script
     assert "Map-first startup fetched the full /api/plants catalogue" in script
+    assert 'const mapTab = page.locator(tabSelectorForViewport(options, "map"))' in script
+    assert "await mapTab.click({ timeout: options.timeoutMs });" in script
+    assert "window.__gardenopsPerfLargeTabThresholds = thresholds" in script
+    assert "window.__gardenopsPerfLargeTabThresholds?.minimumMapPlots" in script
+    assert "window.__gardenopsPerfLargeTabThresholds?.minimumPlantRows" in script
+    assert "const minimumMapPlots = Number(args.minimumMapPlots ?? 600);" in script
+    assert "const minimumPlantRows = Number(args.minimumPlantRows ?? 80);" in script
+    assert "minimumMapPlots: options.minimumMapPlots" in script
+    assert "minimumPlantRows: options.minimumPlantRows" in script
     assert "requestAnimationFrame(() => {\n        requestAnimationFrame" in script
 
 
@@ -384,6 +547,67 @@ const response = (status, url, method = "GET") => ({
     assert "GET /api/gardens/1/map-objects -> 404" in payload["unexpectedError"]
 
 
+def test_page_performance_tracks_server_timing_without_changing_api_error_contract() -> None:
+    result = _run_harness_probe(
+        """
+const { createApiResponseTracker } = require(process.env.PERF_SCRIPT);
+let listener = null;
+const page = {
+  off: () => {},
+  on: (event, handler) => { if (event === "response") listener = handler; },
+};
+const response = (path, serverTiming) => ({
+  allHeaders: async () => ({ "server-timing": serverTiming }),
+  request: () => ({ method: () => "GET" }),
+  status: () => 200,
+  url: () => `http://perf.test${path}`,
+});
+(async () => {
+  const tracker = createApiResponseTracker(page, "app-auth-large-tabs");
+  listener(response("/api/plots", "db;dur=2.5, app;dur=7.25"));
+  listener(response("/api/gardens/1/map-objects", "app;desc=route;dur=1.5"));
+  listener(response("/assets/app.js", "app;dur=999"));
+  await tracker.flush();
+  tracker.assertNoUnexpectedResponses();
+  console.log(JSON.stringify(tracker.summary()));
+})().catch((error) => {
+  console.error(error.stack);
+  process.exitCode = 1;
+});
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "appServerDurationMs": 8.8,
+        "appServerTimedResponseCount": 2,
+        "responseCount": 2,
+    }
+
+
+def test_page_performance_records_api_payload_navigation_and_growth_metrics() -> None:
+    script = (ROOT / "scripts" / "check_page_performance.cjs").read_text(encoding="utf-8")
+
+    for metric in (
+        "apiAppServerDurationMs",
+        "apiDecodedResponseBytes",
+        "apiEncodedResponseBytes",
+        "apiResponseCount",
+        "repeatedNavigationJsHeapUsedDeltaBytes",
+        "repeatedNavigationNodesDelta",
+    ):
+        assert metric in script
+    assert 'new URL(entry.name).pathname.startsWith("/api/")' in script
+    assert "repeatedNavigationCdpBefore" in script
+    assert "repeatedNavigationCdpAfter" in script
+    assert "apiResponseTracker.flush()" in script
+    assert "GROWTH_PROBE_CYCLES = 5" in script
+    assert "GROWTH_PROBE_NAVIGATIONS" in script
+    assert "HeapProfiler.collectGarbage" in script
+    assert "completedNavigations" in script
+    assert "growthProbe: warmupRuns.find" in script
+
+
 def test_page_performance_app_auth_selects_responsive_tab_target() -> None:
     result = _run_harness_probe(
         """
@@ -391,6 +615,11 @@ const { tabSelectorForViewport } = require(process.env.PERF_SCRIPT);
 console.log(JSON.stringify({
   desktop: tabSelectorForViewport({ viewportWidth: 1440 }, "garden"),
   mobile: tabSelectorForViewport({ viewportWidth: 390 }, "garden"),
+  pixel7: tabSelectorForViewport({
+    deviceProfile: "pixel-7",
+    viewportWidth: 1440,
+    viewportHeight: 900,
+  }, "garden"),
 }));
 """,
     )
@@ -399,16 +628,147 @@ console.log(JSON.stringify({
     assert json.loads(result.stdout) == {
         "desktop": "#top-tab-garden",
         "mobile": "#mobile-tab-garden",
+        "pixel7": "#mobile-tab-garden",
     }
     script = (ROOT / "scripts" / "check_page_performance.cjs").read_text()
     app_auth = script.split("async function runAppAuthScenario", 1)[1].split(
         "async function runAppAuthLargeTabsScenario", 1
     )[0]
     assert 'tabSelectorForViewport(options, "garden")' in app_auth
+    session_bootstrap = script.split("async function createLiveSessionStorageState", 1)[1].split(
+        "async function runMeasuredScenario", 1
+    )[0]
+    assert 'tabSelectorForViewport(options, "map")' in session_bootstrap
     assert "selectedTabSelector: gardenTabSelector" in app_auth
     assert "mobileLayoutBreakpointPx: MOBILE_LAYOUT_BREAKPOINT_PX" in app_auth
     assert 'gardenTab?.getAttribute("aria-current") === "page"' in script
+    assert 'activeMapTab?.getAttribute("aria-current") === "page"' in script
+    assert 'insightsTab?.getAttribute("aria-current") === "page"' in script
     assert 'mobileList?.querySelectorAll(".mobile-data-card").length === 1' in script
+    assert "assertValidBrowserSample" in script
+
+
+def test_page_performance_uses_a_real_pixel_7_device_profile() -> None:
+    result = _run_harness_probe(
+        """
+const {
+  buildComparisonProvenance,
+  buildMeasurementMetadata,
+  parseArgs,
+} = require(process.env.PERF_SCRIPT);
+const parseError = (argv) => {
+  try {
+    parseArgs(argv);
+    return "";
+  } catch (caught) {
+    return caught.message;
+  }
+};
+const options = parseArgs([
+  "--device-profile", "pixel-7",
+  "--warmup-runs", "2",
+  "--runs", "7",
+]);
+const scaleOptions = parseArgs([
+  "--no-api-stubs",
+  "--url", "http://127.0.0.1:5177/",
+  "--scenario", "app-auth-large-tabs",
+  "--evidence-label", "phase-nine-small-desktop",
+  "--skip-growth-probe",
+  "--minimum-map-plots", "12",
+  "--minimum-plant-rows", "24",
+]);
+console.log(JSON.stringify({
+  defaults: parseArgs([]),
+  invalidEvidenceLabel: parseError(["--evidence-label", "Phase-Nine"]),
+  invalidMinimumScenario: parseError(["--minimum-map-plots", "12"]),
+  invalidProfile: parseError(["--device-profile", "tablet"]),
+  metadata: buildMeasurementMetadata(options),
+  comparison: buildComparisonProvenance({
+    browserPath: "/usr/bin/chromium",
+    browserVersion: "123",
+    options,
+  }),
+  options,
+  scaleOptions,
+}));
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["defaults"]["deviceProfile"] == "desktop"
+    assert payload["defaults"]["runs"] == 7
+    assert payload["defaults"]["warmupRuns"] == 1
+    assert "lowercase letters" in payload["invalidEvidenceLabel"]
+    assert "require --scenario app-auth-large-tabs" in payload["invalidMinimumScenario"]
+    assert "Unknown device profile: tablet" in payload["invalidProfile"]
+    assert payload["options"]["deviceProfile"] == "pixel-7"
+    assert payload["options"]["runs"] == 7
+    assert payload["options"]["warmupRuns"] == 2
+    assert payload["scaleOptions"]["evidenceLabel"] == "phase-nine-small-desktop"
+    assert payload["scaleOptions"]["skipGrowthProbe"] is True
+    assert payload["scaleOptions"]["minimumMapPlots"] == 12
+    assert payload["scaleOptions"]["minimumPlantRows"] == 24
+    assert payload["comparison"]["options"]["skipGrowthProbe"] is False
+    assert payload["comparison"]["options"]["minimumMapPlots"] == 600
+    assert payload["comparison"]["options"]["minimumPlantRows"] == 80
+    browser_context = payload["metadata"]["browserContext"]
+    assert browser_context["isMobile"] is True
+    assert browser_context["hasTouch"] is True
+    assert "Pixel 7" in browser_context["userAgentOverride"]
+    assert browser_context["mobileEmulation"] == {
+        "deviceProfile": "pixel-7",
+        "enabled": True,
+        "responsiveBreakpointPx": 960,
+        "responsiveLayout": "mobile-breakpoint",
+        "strategy": "playwright-device-descriptor",
+    }
+    assert browser_context["viewportProfile"]["label"] == ("Playwright Pixel 7 mobile emulation")
+    assert browser_context["viewportProfile"]["strategy"] == ("playwright-device-descriptor")
+
+
+def test_page_performance_live_mode_requires_loopback_and_environment_credentials() -> None:
+    result = _run_harness_probe(
+        """
+const { liveCredentialsFor, parseArgs } = require(process.env.PERF_SCRIPT);
+const errorFor = (fn) => {
+  try {
+    fn();
+    return "";
+  } catch (caught) {
+    return caught.message;
+  }
+};
+const local = parseArgs([
+  "--no-api-stubs",
+  "--scenario", "app-auth",
+  "--url", "http://localhost:5177/",
+]);
+console.log(JSON.stringify({
+  credentials: errorFor(() => liveCredentialsFor(local)),
+  remote: errorFor(() => parseArgs([
+    "--no-api-stubs",
+    "--url", "https://example.com/",
+  ])),
+}));
+""",
+        env={
+            "GARDENOPS_PAGE_PERF_PASSWORD": "",
+            "GARDENOPS_PAGE_PERF_USERNAME": "",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert "GARDENOPS_PAGE_PERF_USERNAME" in payload["credentials"]
+    assert "HTTP loopback target" in payload["remote"]
+    script = (ROOT / "scripts" / "check_page_performance.cjs").read_text()
+    assert "signInThroughSessionForm" in script
+    assert "storageState: liveSession.storageState" in script
+    assert "GARDENOPS_PAGE_PERF_GARDEN_NAME" in script
+    assert "gardenops-active-garden-id" in script
+    assert "non-loopback request" in script
 
 
 def test_page_performance_metric_stats_reports_sample_count() -> None:
@@ -456,10 +816,12 @@ const run = (scenario, metrics, options) => {
 const p75 = (value, n = 3) => ({ n, p75: value });
 const largeMetrics = {
   appReadyMs: p75(10),
-  mapToGardenBrowserPostFrameMs: p75(20),
+  mapToActivityTasksBrowserPostFrameMs: p75(20),
+  activityTasksToGardenBrowserPostFrameMs: p75(20),
   gardenToInsightsBrowserPostFrameMs: p75(20),
   insightsToMapBrowserPostFrameMs: p75(20),
-  warmMapToGardenBrowserPostFrameMs: p75(20),
+  warmMapToActivityTasksBrowserPostFrameMs: p75(20),
+  warmActivityTasksToGardenBrowserPostFrameMs: p75(20),
   warmGardenToInsightsBrowserPostFrameMs: p75(20),
   warmInsightsToMapBrowserPostFrameMs: p75(20),
   maxTabSwitchLegacyNodePostFrameObservedMs: p75(999),

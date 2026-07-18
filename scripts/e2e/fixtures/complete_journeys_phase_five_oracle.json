@@ -32,8 +32,10 @@
         "garden_invitations",
         "auth_user_plot_assignment_meanings",
         "layout_state",
+        "provider_daily_usage",
         "plots",
         "plot_ownership",
+        "shademap_cache",
         "security_runtime_flags"
       ],
       "forbidden_manifest_fields": [
@@ -44,6 +46,16 @@
         "password_hash",
         "token_hash"
       ]
+    },
+    "read_side_effects": {
+      "exact_counts": {
+        "provider_daily_usage": { "added": 2, "removed": 0 },
+        "shademap_cache": { "added": 2, "removed": 0 }
+      },
+      "exact_identity_counts": {
+        "provider_daily_usage": { "added": 2, "removed": 0, "updated": 0 },
+        "shademap_cache": { "added": 2, "removed": 0, "updated": 0 }
+      }
     },
     "auth_state": {
       "expected_added_user_categories": [

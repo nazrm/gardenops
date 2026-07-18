@@ -222,6 +222,24 @@ def test_weather_and_plot_alert_requests_cannot_apply_to_a_new_garden() -> None:
     assert "plotAlertsLoadPromise === loadPromise" in plot_alert_body
 
 
+def test_weather_write_controls_resync_after_garden_access_changes() -> None:
+    app = _read("frontend/src/app.ts")
+    weather = _read("frontend/src/features/weatherFeature.ts")
+    component = _read("frontend/src/components/weather.ts")
+    write_access_body = _function_body(
+        app,
+        "function applyWriteAccessUi",
+        "function ensureWriteAccess",
+    )
+
+    assert "export function syncWeatherWriteAccess" in weather
+    assert "if (!weatherFeatureInitialized) return;" in weather
+    assert "syncWeatherDashboardWriteAccess(container, ctx.canWrite());" in weather
+    assert "syncWeatherWriteAccess();" in write_access_body
+    assert "export function syncWeatherDashboardWriteAccess" in component
+    assert "button.hidden = !canWrite;" in component
+
+
 def test_admin_garden_settings_cannot_apply_an_old_garden_request() -> None:
     admin = _read("frontend/src/components/adminPanel.ts")
     body = _function_body(
@@ -258,6 +276,25 @@ def test_mobile_map_editor_opens_an_operable_layers_sheet() -> None:
     assert "editorAvailable: true" in app
     assert 'setMobileMapSheetOpen("map-layers-panel")' in app
     assert 'showToast(t("map.desktop_only")' not in app
+
+
+def test_shademap_context_and_map_focus_do_not_persist_state() -> None:
+    shade_panel = _read("frontend/src/components/shadePanel.ts")
+    context_body = _function_body(
+        shade_panel,
+        "  setGardenContext(context: GardenContext): void",
+        "  setSelectedPlot(plotId: string | null): void",
+    )
+    selection_body = _function_body(
+        shade_panel,
+        "  setSelectedPlot(plotId: string | null): void",
+        "  showError(message: string): void",
+    )
+
+    assert "this.activeTargetId = HOUSE_TARGET_ID;" in context_body
+    assert "this.emitStateChange();" not in context_body
+    assert "this.activeTargetId = plotTargetId(plotId);" in selection_body
+    assert "this.emitStateChange();" not in selection_body
 
 
 def test_north_direction_keeps_rendered_map_metadata_in_sync() -> None:

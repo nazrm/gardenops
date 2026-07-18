@@ -1,7 +1,10 @@
 import re
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
+ACCESSIBILITY_INVENTORY = ROOT / "tests" / "accessibility_expectations.yaml"
 
 LAYOUT_INPUT_KEYS = {
     "plants-search": "plants.search_placeholder",
@@ -67,6 +70,91 @@ def test_all_reported_accessibility_name_defects_are_covered() -> None:
         + len(PROVIDER_SECRET_KEYS) * 2
         + len(CALENDAR_FILTER_INPUTS)
     ) == 29
+
+
+def test_phase_eight_state_inventory_is_complete_and_machine_readable() -> None:
+    payload = yaml.safe_load(ACCESSIBILITY_INVENTORY.read_text(encoding="utf-8"))
+    assert payload["version"] == 1
+    states = payload["states"]
+    assert isinstance(states, list) and len(states) >= 9
+    required_variants = {
+        "populated",
+        "empty",
+        "validation-error",
+        "busy",
+        "recoverable-error",
+        "dialog",
+        "read-only",
+        "mobile",
+    }
+    observed_variants = {variant for state in states for variant in state["variants"]}
+    assert required_variants <= observed_variants
+    for state in states:
+        assert state["id"]
+        assert state["surfaces"]
+        assert state["route"]
+        assert state["focus"]
+        assert isinstance(state["automated_scan"], bool)
+
+
+def test_invitation_loading_and_chat_failures_expose_live_semantics() -> None:
+    auth_gate = _read_frontend("features/authGate.ts")
+    analysis = _read_frontend("tabs/analysisTab.ts")
+
+    assert 'loadingDiv.setAttribute("role", "status")' in auth_gate
+    assert 'loadingDiv.setAttribute("aria-live", "polite")' in auth_gate
+    assert 'loadingDiv.setAttribute("aria-busy", "true")' in auth_gate
+    assert 'spinner.setAttribute("aria-hidden", "true")' in auth_gate
+    assert 'loading.setAttribute("role", "status")' in analysis
+    assert 'loading.setAttribute("aria-live", "polite")' in analysis
+    assert 'errBubble.setAttribute("role", "alert")' in analysis
+    assert 'errBubble.setAttribute("aria-live", "assertive")' in analysis
+
+
+def test_primary_navigation_uses_standard_navigation_semantics() -> None:
+    layout = _read_frontend("components/layout.ts")
+    tabs = _read_frontend("components/tabs.ts")
+    app = _read_frontend("app.ts")
+    styles = _read_frontend("style.css")
+
+    assert '<nav class="top-nav desktop-top-nav" aria-label="${t("nav.main_sections")}"' in layout
+    assert 'role="tablist" aria-label="${t("nav.main_sections")}"' not in layout
+    assert 'id="top-tab-map" class="top-tab active" data-tab="map" aria-current="page"' in layout
+    assert 'id="top-tab-garden" class="top-tab" data-tab="garden" data-i18n="nav.garden"' in layout
+    assert 'role="tabpanel" aria-labelledby="top-tab-map"' not in layout
+    assert 'btn.setAttribute("aria-current", "page")' in app
+    assert 'btn.removeAttribute("aria-current")' in app
+    assert 'addEventListener("keydown"' not in tabs
+    assert ".mobile-tab-btn:focus {\n  outline: 2px solid var(--focus-ring);" in styles
+
+
+def test_shell_has_one_desktop_heading_and_decorative_brand_images() -> None:
+    layout = _read_frontend("components/layout.ts")
+    app = _read_frontend("app.ts")
+    styles = _read_frontend("style.css")
+
+    assert '<h1 class="desktop-view-title" id="desktop-view-title">${t("nav.map")}</h1>' in layout
+    assert layout.count('class="app-brand-logo"') == 1
+    assert layout.count('class="mobile-header-logo"') == 1
+    assert layout.count('alt=""') >= 2
+    assert '"#mobile-view-title, #desktop-view-title"' in app
+    assert ".desktop-view-title {" in styles
+    assert "@media (max-width: 960px) {\n  .desktop-view-title {\n    display: none;" in styles
+
+
+def test_phase_eight_controls_use_contrast_safe_foregrounds() -> None:
+    styles = _read_frontend("style.css")
+
+    top_meta = styles.split(".top-meta {", 1)[1].split("}", 1)[0]
+    active_map_object_toggle = styles.split(".map-object-toggle.active {", 1)[1].split("}", 1)[0]
+    primary_attention_action = styles.split(".attention-today-action--primary {", 1)[1].split(
+        "}", 1
+    )[0]
+
+    assert "opacity" not in top_meta
+    assert "color: var(--text-1);" in active_map_object_toggle
+    assert "background: var(--brand);" in primary_attention_action
+    assert "color: var(--text-inv);" in primary_attention_action
 
 
 def test_static_filter_inputs_have_localized_accessible_names() -> None:

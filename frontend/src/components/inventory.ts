@@ -13,6 +13,7 @@ import {
 } from "../services/api";
 import { getLocaleTag, t } from "../core/i18n";
 import { renderEmptyState } from "./emptyState";
+import { clearVirtualList, renderVirtualList } from "./virtualList";
 
 // ── Labels ────────────────────────────────────────────────
 
@@ -92,18 +93,25 @@ export function renderInventoryList(
   cbs: InventoryListCallbacks,
   plantNames?: Map<string, string>,
 ): void {
-  container.replaceChildren();
-  if (items.length === 0) {
+  const renderEmpty = (): void => {
     renderEmptyState(container, {
       icon: "\uD83D\uDCE6",
       headline: t("inventory.empty"),
       hint: t("inventory.empty_hint"),
     });
-    return;
-  }
-  for (const item of items) {
-    container.appendChild(createInventoryCard(item, cbs, plantNames));
-  }
+  };
+  renderVirtualList({
+    container,
+    items,
+    estimateItemHeight: 190,
+    overscan: 4,
+    createItem: (item) => createInventoryCard(item, cbs, plantNames),
+    renderEmpty,
+  });
+}
+
+export function clearInventoryList(container: HTMLElement): void {
+  clearVirtualList(container);
 }
 
 function createInventoryCard(

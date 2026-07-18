@@ -9,7 +9,7 @@ fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT_DIR"
-MAX_IMPLEMENTED_PHASE=7
+MAX_IMPLEMENTED_PHASE=9
 
 die() {
   printf 'Complete journey E2E: %s\n' "$1" >&2
@@ -380,6 +380,7 @@ export AUTH_LOGIN_ADMIN_USERNAME_RATE_LIMIT=100
 export AUTH_LOGIN_ADMIN_HOST_RATE_LIMIT=200
 export AI_PROVIDER=openai
 export OPENAI_API_KEY="complete-journeys-loopback-provider-key" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+export APP_SECRETS_ENCRYPTION_KEY="LeDkAJuMJr5CskNSuLibpaED5CkKdS9SsMI7Okh8piI=" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 export GARDENOPS_E2E_LOOPBACK_PROVIDER=1
 unset GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER
 export GARDENOPS_NOTIFICATION_SCHEDULER_ENABLED=false
@@ -497,7 +498,12 @@ setsid node "$ROOT_DIR/scripts/e2e/providers/deterministicLoopbackProvider.cjs" 
   > "$LOG_DIR/provider-fixture.log" 2>&1 &
 PROVIDER_PID=$!
 
-setsid "$ROOT_DIR/.venv/bin/uvicorn" gardenops.main:app \
+BACKEND_APPLICATION="gardenops.main:app"
+if ((THROUGH_PHASE >= 9)); then
+  BACKEND_APPLICATION="scripts.e2e.performanceFastapiApp:app"
+  export GARDENOPS_PERFORMANCE_QUERY_EVIDENCE_PATH="$ARTIFACT_DIR/phase-nine-query-evidence.jsonl"
+fi
+setsid "$ROOT_DIR/.venv/bin/uvicorn" "$BACKEND_APPLICATION" \
   --host 127.0.0.1 --port "$BACKEND_PORT" > "$LOG_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
 vite_environment "$ROOT_DIR/frontend/node_modules/.bin/vite" build \

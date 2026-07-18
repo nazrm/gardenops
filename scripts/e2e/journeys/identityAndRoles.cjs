@@ -352,8 +352,8 @@ async function freshTotpAfter(secret, previousCode) {
   throw new Error("Timed out waiting for a fresh TOTP code");
 }
 
-async function createUserInvitation(page, fixture) {
-  await openAdminSection(page, "desktop", "users");
+async function createUserInvitation(page, fixture, profile) {
+  await openAdminSection(page, profile, "users");
   await page.locator("#adm-user-inv-username").fill(phaseFive(fixture).invitee_username);
   await page.locator("#adm-user-inv-role").selectOption("editor");
   await page.locator("#adm-user-inv-ttl").fill("60");
@@ -367,14 +367,15 @@ async function createUserInvitation(page, fixture) {
   return link;
 }
 
-async function createGardenInvitation(page, fixture) {
-  await openAdminSection(page, "desktop", "invitations");
+async function createGardenInvitation(page, fixture, profile, adminPassword = null) {
+  await openAdminSection(page, profile, "invitations");
   await page.locator("#adm-inv-username").fill(phaseFive(fixture).viewer_invitee_username);
   await page.locator("#adm-inv-ttl").fill("60");
   const pathName = `/api/gardens/${fixture.gardens.alpha.id}/invitations`;
   const pending = responseFor(page, "POST", pathName);
   await page.locator("#adm-create-inv-form button[type='submit']").click();
   await answerPrompt(page, "phase-five-viewer-invitation");
+  if (adminPassword !== null) await answerPrompt(page, adminPassword);
   assert((await pending).status() === 201, "Viewer invitation creation failed");
   await visible(page.locator("#adm-inv-link-input"), "viewer invitation link");
   const link = await page.locator("#adm-inv-link-input").inputValue();
@@ -403,8 +404,8 @@ async function exerciseInvalidInvitation(page, diagnostics) {
   return 0;
 }
 
-async function exerciseSettings(page, fixture) {
-  await openAdminSection(page, "desktop", "settings");
+async function exerciseSettings(page, fixture, profile) {
+  await openAdminSection(page, profile, "settings");
   await page.locator("#adm-plot-meaning-add").click();
   const row = page.locator(".adm-plot-meaning-row").last();
   await row.locator(".adm-plot-meaning-pattern").fill(phaseFive(fixture).settings_pattern);
@@ -714,7 +715,7 @@ async function exerciseTotp(page, username, password, guarded) {
   await waitFor(() => page.locator("#adm-mfa-disable").isDisabled(), "disabled TOTP controls");
 }
 
-async function exerciseSessionRevocation(options, page) {
+async function exerciseSessionRevocation(options, page, profile) {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "gardenops-phase-five-session-"));
   const secondary = await createGuardedContext(
     options.browser,
@@ -735,10 +736,10 @@ async function exerciseSessionRevocation(options, page) {
     const auth = await authenticate(secondaryPage, options.username, options.password);
     recorder.setGardenId(auth.garden_id);
     secondary.markAuthenticated();
-    await openAdminSection(page, "desktop", "sessions");
+    await openAdminSection(page, profile, "sessions");
     assert(!await page.locator("#admin-view").innerText().then((text) => text.includes("token_hash")),
       "Session UI exposed a token hash label");
-    const row = page.locator(`.adm-users-desktop [data-session-id]:has-text("${options.username}")`)
+    const row = page.locator(`[data-session-id]:has-text("${options.username}")`)
       .filter({ has: page.locator(".adm-session-revoke-one") }).first();
     await visible(row, "secondary administrator session");
     const revokePending = page.waitForResponse((response) => (
@@ -1011,8 +1012,9 @@ async function exercisePasswordlessPasskeyRedundancy(
   page,
   diagnostics,
   virtualAuthenticator,
+  profile,
 ) {
-  await openAdminSection(page, "desktop", "settings");
+  await openAdminSection(page, profile, "settings");
   const initialRows = page.locator("[data-passkey-id]");
   await waitFor(() => initialRows.count().then((count) => count === 1),
     "passwordless primary passkey");
@@ -1122,7 +1124,7 @@ async function runProfile(options, shared) {
   const page = await guarded.context.newPage();
   const username = role === "admin"
     ? options.username
-    : role === "editor" && profile === "desktop"
+    : role === "editor" && profile === "mobile"
       ? phaseFive(fixture).invitee_username
       : role === "viewer" && profile === "mobile"
         ? phaseFive(fixture).viewer_invitee_username
@@ -1157,17 +1159,14 @@ async function runProfile(options, shared) {
         guarded,
       );
       result.checks.passkey_lifecycle = true;
-      shared.editorInvite = await createUserInvitation(page, fixture);
-      shared.viewerInvite = await createGardenInvitation(page, fixture);
+      shared.editorInvite = await createUserInvitation(page, fixture, profile);
       result.checks.invalid_invitation_side_effects = await exerciseInvalidInvitation(
         page,
         guarded.diagnostics,
       );
       result.checks.invitation_lifecycle = true;
-      await exerciseSettings(page, fixture);
+      await exerciseSettings(page, fixture, profile);
       result.checks.settings_persistence = true;
-      supplementalRequests.push(...await exerciseSessionRevocation(options, page));
-      result.checks.session_revocation = true;
       supplementalRequests.push(...await exerciseLiveRoleRefresh(options, page));
       result.checks.live_role_refresh = true;
       supplementalRequests.push(...await exerciseSessionExpiry(options));
@@ -1178,7 +1177,20 @@ async function runProfile(options, shared) {
       result.checks.incident_control = true;
       await revokePasskey(page, fixture, guarded, options.password);
       result.checks.revoked_passkey_denial = true;
-    } else if (role === "editor" && profile === "desktop") {
+    } else if (role === "admin" && profile === "mobile") {
+      await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+      const auth = await authenticate(page, options.username, options.password);
+      recorder.setGardenId(auth.garden_id);
+      guarded.markAuthenticated();
+      assert(auth.role === role, "Phase 5 mobile administrator role drifted");
+      await dismissProactivePasskeyPrompt(page);
+      shared.viewerInvite = await createGardenInvitation(page, fixture, profile, options.password);
+      result.checks.mobile_membership_invitation = true;
+      supplementalRequests.push(...await exerciseSessionRevocation(options, page, profile));
+      result.checks.mobile_session_revocation = true;
+      await exerciseRoleSurface(page, profile, role);
+      result.checks.mobile_identity_settings = true;
+    } else if (role === "editor" && profile === "mobile") {
       virtualAuthenticator = await enableVirtualAuthenticator(guarded.context, page);
       await acceptInvitation(
         page,
@@ -1194,6 +1206,7 @@ async function runProfile(options, shared) {
         page,
         guarded.diagnostics,
         virtualAuthenticator,
+        profile,
       );
       await exerciseEditorAuthorizationDenials(page, guarded.diagnostics, fixture);
       result.checks.passwordless_invitation = true;
@@ -1225,10 +1238,7 @@ async function runProfile(options, shared) {
       assert(auth.role === role, `Phase 5 ${role} fixture role drifted`);
       await dismissProactivePasskeyPrompt(page);
       await exerciseRoleSurface(page, profile, role);
-      if (role === "admin") {
-        await visible(page.locator(".adm-identity-session-list"), "mobile identity sessions");
-        result.checks.mobile_identity_settings = true;
-      } else if (role === "editor") {
+      if (role === "editor") {
         result.checks.editor_identity_surface = true;
       } else {
         result.checks.viewer_identity_surface = true;

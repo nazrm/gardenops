@@ -18,6 +18,10 @@ export interface WeatherCallbacks {
   onCheckWeather: () => void;
 }
 
+export interface WeatherRenderOptions {
+  canWrite: boolean;
+}
+
 const ALERT_ICONS: Record<string, string> = {
   frost_warning: "\u2744\ufe0f",
   heat_wave: "\ud83d\udd25",
@@ -99,6 +103,7 @@ export function renderWeatherDashboard(
   container: HTMLElement,
   summary: WeatherSummary | null,
   callbacks: WeatherCallbacks,
+  options: WeatherRenderOptions,
 ): void {
   if (!container) return;
 
@@ -112,16 +117,12 @@ export function renderWeatherDashboard(
       <div class="weather-section">
         <div class="weather-section-title">
           ${t("weather.title")}
-          <div class="weather-actions">
-            <button type="button" class="btn-secondary weather-check-btn"${canWriteWeather() ? "" : " hidden"}>${t("weather.check")}</button>
-          </div>
+          ${weatherCheckActionMarkup(options, t("weather.check"))}
         </div>
         <div class="weather-no-data">${t("weather.no_forecast")}</div>
       </div>
     `);
-    container.querySelector(".weather-check-btn")?.addEventListener("click", () => {
-      if (canWriteWeather()) callbacks.onCheckWeather();
-    });
+    container.querySelector(".weather-check-btn")?.addEventListener("click", callbacks.onCheckWeather);
     return;
   }
 
@@ -151,11 +152,25 @@ export function renderWeatherDashboard(
         <div class="weather-section-title">
           ${t("weather.forecast_title")}
           ${trustMarkup}
-          <div class="weather-actions">
-            <button type="button" class="btn-secondary weather-check-btn"${canWriteWeather() ? "" : " hidden"}>${t("weather.refresh")}</button>
-          </div>
+          ${weatherCheckActionMarkup(options, t("weather.refresh"))}
         </div>
         <div class="forecast-strip">${days}</div>
+      </div>
+    `);
+  } else {
+    const title = summary.forecast_available
+      ? t("weather.forecast_title")
+      : t("weather.title");
+    const action = summary.forecast_available
+      ? t("weather.refresh")
+      : t("weather.check");
+    sections.push(`
+      <div class="weather-section">
+        <div class="weather-section-title">
+          ${title}
+          ${weatherCheckActionMarkup(options, action)}
+        </div>
+        <div class="weather-no-data">${t("weather.no_forecast")}</div>
       </div>
     `);
   }
@@ -201,9 +216,7 @@ export function renderWeatherDashboard(
   setReviewedDynamicHtml(container, sections.join(""));
 
   // Wire event handlers
-  container.querySelector(".weather-check-btn")?.addEventListener("click", () => {
-    if (canWriteWeather()) callbacks.onCheckWeather();
-  });
+  container.querySelector(".weather-check-btn")?.addEventListener("click", callbacks.onCheckWeather);
 
   container.querySelectorAll<HTMLButtonElement>(".weather-alert-dismiss").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -221,8 +234,24 @@ export function renderWeatherDashboard(
   });
 }
 
-function canWriteWeather(): boolean {
-  return !document.body.classList.contains("garden-read-only");
+export function syncWeatherDashboardWriteAccess(
+  container: HTMLElement,
+  canWrite: boolean,
+): void {
+  container.querySelectorAll<HTMLButtonElement>(".weather-check-btn").forEach((button) => {
+    button.hidden = !canWrite;
+  });
+}
+
+function weatherCheckActionMarkup(
+  options: WeatherRenderOptions,
+  label: string,
+): string {
+  return `
+    <div class="weather-actions">
+      <button type="button" class="btn-secondary weather-check-btn"${options.canWrite ? "" : " hidden"}>${label}</button>
+    </div>
+  `;
 }
 
 function createWeatherAlertCardMarkup(
