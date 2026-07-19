@@ -734,6 +734,41 @@ class TestInferTaskDescription(DbTestBase):
         assert str(task["window_start_on"]) == "2026-07-11"
         assert str(task["window_end_on"]) == "2026-07-22"
 
+    def test_generic_tree_does_not_create_harvest_task(self) -> None:
+        self._insert_plant(
+            "HA-TREE",
+            "Japanese maple",
+            category="trær",
+            bloom_month="mai",
+            care_maintenance="Prune damaged branches in winter.",
+            care_notes="Provide nutrients while establishing.",
+        )
+
+        generate_tasks(self.conn, self.garden_id, 8, 2026, self._owner_id)
+
+        task = self.conn.execute(
+            "SELECT id FROM garden_tasks WHERE garden_id = %s AND task_type = 'harvest'",
+            (self.garden_id,),
+        ).fetchone()
+        assert task is None
+
+    def test_fruit_tree_with_harvest_evidence_creates_harvest_task(self) -> None:
+        self._insert_plant(
+            "HA-APPLE",
+            "Apple tree",
+            category="trær",
+            bloom_month="mai",
+            care_notes="Harvest fruit when fully coloured.",
+        )
+
+        generate_tasks(self.conn, self.garden_id, 8, 2026, self._owner_id)
+
+        task = self.conn.execute(
+            "SELECT id FROM garden_tasks WHERE garden_id = %s AND task_type = 'harvest'",
+            (self.garden_id,),
+        ).fetchone()
+        assert task is not None
+
     def test_auto_dry_water(self) -> None:
         self._insert_plant(
             "DW1",

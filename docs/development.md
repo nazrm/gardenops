@@ -653,7 +653,9 @@ GARDENOPS_TASK_HISTORY_E2E_TEST_URL="postgresql://localhost/gardenops_task_histo
 
 This runner uses a disposable local database only, truncates it after a
 task-history-specific safety guard passes, and exercises real API routes
-through FastAPI and Vite.
+through FastAPI and Vite. The journey covers bloom outcome discovery and a
+not-seen-this-season journal record, one-week bloom snoozing, partial grouped
+fertilizing, and keyboard-accessible grouped pruning selection.
 If local TCP PostgreSQL authentication rejects the `localhost` URL, use the
 local socket path and run database commands as the `postgres` user instead.
 Override the E2E ports when the defaults are already occupied:

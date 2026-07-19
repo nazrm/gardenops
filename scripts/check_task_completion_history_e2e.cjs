@@ -199,9 +199,9 @@ function taskCard(page, title) {
   return page.locator("#tasks-list .task-card").filter({ hasText: title }).first();
 }
 
-async function openCompletionDialogFromCard(page, card) {
-  const button = card.getByRole("button", { name: /^Complete$/i });
-  await waitVisible(button, "task complete button");
+async function openCompletionDialogFromCard(page, card, actionName = /^Complete$/i) {
+  const button = card.getByRole("button", { name: actionName });
+  await waitVisible(button, "task completion action");
   await button.focus();
   await button.press("Enter");
   const dialog = page.locator(".task-completion-dialog").last();
@@ -223,11 +223,30 @@ async function main() {
     await openTasksView(page);
 
     const bloomCard = taskCard(page, "Observe bloom: Bloom E2E");
+    const bloomNotSeenCard = taskCard(page, "Observe bloom: Bloom not seen E2E");
     const fertilizeCard = taskCard(page, "Fertilize 2 plants");
     const pruneCard = taskCard(page, "Prune 2 plants");
     await waitVisible(bloomCard, "bloom task card");
+    await waitVisible(bloomNotSeenCard, "bloom not-seen task card");
     await waitVisible(fertilizeCard, "fertilize task card");
     await waitVisible(pruneCard, "prune task card");
+
+    const bloomOutcomeDialog = await openCompletionDialogFromCard(
+      page,
+      bloomNotSeenCard,
+      /^Record outcome$/i,
+    );
+    await waitVisible(
+      bloomOutcomeDialog.getByRole("button", { name: /^Seen blooming$/i }),
+      "positive bloom outcome",
+    );
+    const notSeenButton = bloomOutcomeDialog.getByRole("button", {
+      name: /^Not seen this season$/i,
+    });
+    await waitVisible(notSeenButton, "negative bloom outcome");
+    await notSeenButton.click();
+    await waitHidden(bloomOutcomeDialog, "bloom outcome dialog after submit");
+    await waitHidden(bloomNotSeenCard, "completed bloom not-seen task card");
 
     await bloomCard.getByRole("button", { name: /Check again in 1 week/i }).click();
     const changeDateAction = page.locator("#toast-container .toast-action").filter({
@@ -276,16 +295,22 @@ async function main() {
     const snapshot = dataSnapshot();
     const tasksById = Object.fromEntries(snapshot.tasks.map((task) => [task.public_id, task]));
     const bloomTask = tasksById["tsk_e2e_bloom"];
+    const bloomNotSeenTask = tasksById["tsk_e2e_bloom_not_seen"];
     const fertilizeTask = tasksById["tsk_e2e_fertilize"];
     const pruneTask = tasksById["tsk_e2e_prune"];
 
     assert(bloomTask, "Snapshot missing bloom task");
+    assert(bloomNotSeenTask, "Snapshot missing bloom not-seen task");
     assert(fertilizeTask, "Snapshot missing fertilize task");
     assert(pruneTask, "Snapshot missing prune task");
     assert(bloomTask.status === "snoozed", `Expected bloom task snoozed, got ${bloomTask.status}`);
     assert(
       bloomTask.snoozed_until === EXPECTED_SNOOZE_DATE,
       `Expected bloom snoozed_until ${EXPECTED_SNOOZE_DATE}, got ${bloomTask.snoozed_until}`,
+    );
+    assert(
+      bloomNotSeenTask.status === "completed",
+      `Expected bloom not-seen task completed, got ${bloomNotSeenTask.status}`,
     );
     assert(fertilizeTask.status === "pending", `Expected fertilize task pending, got ${fertilizeTask.status}`);
     assertDeepEqual(
@@ -299,6 +324,26 @@ async function main() {
     );
 
     const fertilizedEntries = snapshot.journal.filter((entry) => entry.event_type === "fertilized");
+    const bloomNotSeenEntries = snapshot.journal.filter(
+      (entry) => entry.metadata?.source_task_id === "tsk_e2e_bloom_not_seen",
+    );
+    assert(
+      bloomNotSeenEntries.length === 1,
+      `Expected one not-seen bloom journal entry, got ${bloomNotSeenEntries.length}`,
+    );
+    assert(
+      bloomNotSeenEntries[0].event_type === "observed",
+      `Expected not-seen bloom event type observed, got ${bloomNotSeenEntries[0].event_type}`,
+    );
+    assert(
+      bloomNotSeenEntries[0].metadata?.outcome === "not_seen_blooming_this_season",
+      `Expected explicit not-seen bloom outcome, got ${JSON.stringify(bloomNotSeenEntries[0].metadata)}`,
+    );
+    assertDeepEqual(
+      bloomNotSeenEntries[0].plant_ids,
+      ["BLOOM-NOT-SEEN-E2E"],
+      "Not-seen bloom journal entry should reference the observed plant",
+    );
     assert(fertilizedEntries.length === 1, `Expected one fertilized journal entry, got ${fertilizedEntries.length}`);
     assertDeepEqual(
       fertilizedEntries[0].plant_ids,

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -z "${GARDENOPS_TASK_HISTORY_E2E_TEST_URL:-}" ]]; then
+GARDENOPS_TASK_HISTORY_E2E_TEST_URL="${GARDENOPS_TASK_HISTORY_E2E_TEST_URL:-${DATABASE_URL:-}}"
+if [[ -z "$GARDENOPS_TASK_HISTORY_E2E_TEST_URL" ]]; then
   echo "GARDENOPS_TASK_HISTORY_E2E_TEST_URL is required" >&2
   exit 2
 fi

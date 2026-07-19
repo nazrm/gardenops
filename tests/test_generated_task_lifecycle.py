@@ -8,6 +8,49 @@ from tests.base import DbTestBase
 
 
 class TestGeneratedTaskLifecycle(DbTestBase):
+    def test_non_edible_tree_harvest_advice_expires(self) -> None:
+        self._insert_plant(
+            "TREE-NO-HARVEST",
+            "Japanese maple",
+            category="trær",
+            care_maintenance="Remove damaged branches in winter.",
+        )
+        task = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (garden_id, public_id, task_type, title, description, status,
+                 severity, due_on, rule_source, metadata_json,
+                 created_by_user_id, created_at_ms, updated_at_ms)
+            VALUES (%s, 'tsk_invalid_tree_harvest', 'harvest', 'Harvest check', '',
+                    'pending', 'low', '2026-08-15',
+                    'harvest_check:TREE-NO-HARVEST:2026-08-15', '{}', %s, 1, 1)
+            RETURNING id
+            """,
+            (self.garden_id, self._owner_id),
+        ).fetchone()
+        assert task is not None
+        self.conn.execute(
+            "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, %s)",
+            (int(task["id"]), "TREE-NO-HARVEST"),
+        )
+
+        expired = expire_stale_generated_tasks(
+            self.conn,
+            garden_id=self.garden_id,
+            today_iso="2026-07-18",
+            now_ms=1_784_332_800_000,
+        )
+
+        row = self.conn.execute(
+            "SELECT status, metadata_json FROM garden_tasks WHERE id = %s",
+            (int(task["id"]),),
+        ).fetchone()
+        assert expired == 1
+        assert row is not None
+        assert str(row["status"]) == "expired"
+        lifecycle = json.loads(str(row["metadata_json"]))["lifecycle"]
+        assert lifecycle["reason"] == "harvest_not_applicable"
+
     def test_dry_spell_watering_stays_active_until_alert_validity_ends(self) -> None:
         alert = self.conn.execute(
             """

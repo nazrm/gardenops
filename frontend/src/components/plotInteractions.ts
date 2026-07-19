@@ -78,6 +78,7 @@ import {
   needsCompletionDialog,
   offlineTaskActionLabels,
   openTaskCompletionDialog,
+  taskCompletionActionLabel,
 } from "../features/taskCompletionFlow";
 
 export interface PlotCallbacks {
@@ -500,7 +501,7 @@ function renderTaskCard(
       appendTaskCardAction(
         actions,
         "action-complete",
-        t("tasks.action_complete") as string,
+        taskCompletionActionLabel(task),
         "\u2713",
         callbacks.onComplete,
       );

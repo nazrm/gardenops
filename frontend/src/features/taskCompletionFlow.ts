@@ -32,6 +32,14 @@ export function canQueueCompletionOffline(task: CompletionTask): boolean {
   return canQueueDefaultCompletionOffline(task) || task.task_type === "observe_bloom";
 }
 
+export function taskCompletionActionLabel(task: CompletionTask): string {
+  return String(t(
+    task.task_type === "observe_bloom"
+      ? "tasks.action_record_outcome"
+      : "tasks.action_complete",
+  ));
+}
+
 export function offlineTaskActionLabels(
   task: TaskActionLabelTask,
   action: TaskActionRequest["action"],
