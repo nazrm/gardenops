@@ -25,6 +25,9 @@ updates:
       semver-major-days: 30
       semver-minor-days: 7
       semver-patch-days: 7
+      exclude:
+        - "anthropic"
+        - "openai"
 
   - package-ecosystem: "npm"
     directory: "/frontend"

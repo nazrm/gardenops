@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COOLDOWN_DAYS = 7
 SECURITY_BYPASS_PATH = ROOT / ".gardenops" / "security-release-bypass.json"
 TRUSTED_PYTHON_BYPASS_SOURCE = "pip-audit base/head diff"
+RELEASE_AGE_EXEMPT_PACKAGES = {"anthropic", "openai"}
 
 # These packages were already locked inside the cooldown window when the
 # dependency policy was introduced. The dates are the point where the locked
@@ -147,6 +148,10 @@ def main() -> None:
 
         newest_upload = max(upload_times)
         if newest_upload <= cutoff:
+            continue
+
+        if name in RELEASE_AGE_EXEMPT_PACKAGES:
+            allowed.append(f"{key} approved AI SDK exemption")
             continue
 
         exception_until = TEMPORARY_EXCEPTIONS.get(key)

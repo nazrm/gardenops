@@ -15,6 +15,11 @@ fixes should move through a separate emergency path.
   creation time, merge time, or lockfile edit time.
 - The rule applies to direct dependencies, transitive additions, and GitHub
   Action updates.
+- The direct Python SDK packages `anthropic` and `openai` are exempt from the
+  release-age wait so GardenOps can track provider API changes promptly. This
+  exact-name exception does not apply to their transitive dependencies or
+  similarly named packages, and it does not bypass lock consistency, source and
+  integrity validation, vulnerability audits, tests, or review.
 - Dependabot enforces the routine cooldown window for pip, npm, and GitHub
   Actions updates.
 - GitHub Actions must be pinned to immutable commit SHAs. Keep a version comment
