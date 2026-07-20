@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -217,6 +218,54 @@ def test_python_release_age_rejects_unrelated_security_bypass(tmp_path, monkeypa
     error_output = capsys.readouterr().err
     assert "fresh-package==2.0.0" in error_output
     assert "7-day cooldown window" in error_output
+
+
+@pytest.mark.parametrize("package_name", ["anthropic", "openai"])
+def test_python_release_age_allows_approved_ai_sdk_exemptions(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    package_name,
+):
+    module = load_python_release_age_module()
+    write_uv_lock(tmp_path, package_name=package_name)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(module, "SECURITY_BYPASS_PATH", tmp_path / "missing-bypass.json")
+    monkeypatch.delenv("GARDENOPS_SECURITY_RELEASE_BYPASS", raising=False)
+
+    module.main()
+
+    output = capsys.readouterr().out
+    assert f"{package_name}==2.0.0 approved AI SDK exemption" in output
+    assert "Python locked packages satisfy the release-age policy." in output
+
+
+def test_python_release_age_does_not_exempt_similarly_named_packages(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    module = load_python_release_age_module()
+    write_uv_lock(tmp_path, package_name="openai-agents")
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(module, "SECURITY_BYPASS_PATH", tmp_path / "missing-bypass.json")
+    monkeypatch.delenv("GARDENOPS_SECURITY_RELEASE_BYPASS", raising=False)
+
+    with pytest.raises(SystemExit):
+        module.main()
+
+    error_output = capsys.readouterr().err
+    assert "openai-agents==2.0.0" in error_output
+    assert "7-day cooldown window" in error_output
+
+
+def test_dependabot_cooldown_exempts_only_approved_ai_sdks():
+    config = yaml.safe_load((ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
+    pip_config = next(
+        update for update in config["updates"] if update["package-ecosystem"] == "pip"
+    )
+
+    assert pip_config["cooldown"]["exclude"] == ["anthropic", "openai"]
 
 
 def test_python_release_age_rejects_forged_bypass_without_trusted_source(
