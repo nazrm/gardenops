@@ -55,10 +55,67 @@ Add provider keys only for integrations you intend to enable.
 The `deploy/` directory contains example files:
 
 - `gardenops.service.example`
+- `gardenops-atomic-release.conf.example`
+- `gardenops-atomic-deploy`
+- `gardenops-release-preflight`
 - `nginx.production.example.conf`
 
 Review and adapt them for your host paths, service user, Python environment,
 TLS termination, proxy topology, upload size, log retention, and backup policy.
+
+## Atomic Releases
+
+Production deployments should build an immutable release before changing the
+running service. The supplied deployment wrapper keeps the Git checkout as a
+control repository, builds commit-addressed releases under
+`/srv/gardenops/releases/`, and switches `/srv/gardenops/current` only after the
+new release passes its service-user preflight.
+
+Install the host-owned scripts and systemd drop-in:
+
+```bash
+sudo install -o root -g root -m 0755 deploy/gardenops-atomic-deploy \
+  /usr/local/sbin/gardenops-atomic-deploy
+sudo install -o root -g root -m 0755 deploy/gardenops-release-preflight \
+  /usr/local/sbin/gardenops-release-preflight
+sudo install -d -o root -g root -m 0755 \
+  /etc/systemd/system/gardenops.service.d
+sudo install -o root -g root -m 0644 \
+  deploy/gardenops-atomic-release.conf.example \
+  /etc/systemd/system/gardenops.service.d/atomic-release.conf
+sudo systemctl daemon-reload
+```
+
+Prepare the exact commit from `origin/main` while the current service remains
+online, then activate that prepared commit:
+
+```bash
+git fetch origin main
+COMMIT=$(git rev-parse origin/main)
+sudo /usr/local/sbin/gardenops-atomic-deploy prepare "$COMMIT"
+sudo /usr/local/sbin/gardenops-atomic-deploy activate "$COMMIT"
+```
+
+`prepare` checks out tracked files from the commit, installs locked production
+Python dependencies, performs a clean locked frontend install and build, and
+normalizes the release to `root:gardenops` with group-readable files. It uses
+`umask 0027` independently of the interactive shell. The preflight runs as the
+`gardenops` service account and verifies source, migrations, the frontend entry
+point and referenced assets, and application importability.
+
+`activate` reruns preflight, applies migrations, runs the read-only backend
+integrity audit, atomically updates the `current` symlink, restarts the service,
+and waits for local health. The prior release is recorded as
+`/srv/gardenops/previous`. Rollback is allowed only when the current and prior
+migration trees are identical:
+
+```bash
+sudo /usr/local/sbin/gardenops-atomic-deploy rollback
+```
+
+This restriction is deliberate: changing application code back does not undo a
+database migration. A schema-changing rollback requires an operator-reviewed
+database recovery plan and a tested backup.
 
 ## First Admin User
 
@@ -82,7 +139,8 @@ deployment or after pulling changes:
 set -a
 . /etc/gardenops.env
 set +a
-/opt/gardenops/.venv/bin/python -c "import gardenops.db as db; db.run_migrations()"
+/srv/gardenops/current/.venv/bin/python -c \
+  "import gardenops.db as db; db.run_migrations()"
 ```
 
 Test restores before relying on backups. Keep database dumps, media uploads,
