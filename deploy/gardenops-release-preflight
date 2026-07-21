@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+release=${1:-}
+if [[ -z "$release" || ! -d "$release" ]]; then
+    echo "usage: gardenops-release-preflight RELEASE_DIR" >&2
+    exit 2
+fi
+
+required=(
+    "$release/gardenops"
+    "$release/migrations"
+    "$release/frontend/dist"
+    "$release/frontend/dist/index.html"
+    "$release/.venv/bin/python"
+)
+for path in "${required[@]}"; do
+    if [[ ! -r "$path" ]]; then
+        echo "release preflight: unreadable required path: $path" >&2
+        exit 1
+    fi
+done
+if [[ ! -x "$release/.venv/bin/python" ]]; then
+    echo "release preflight: Python is not executable: $release/.venv/bin/python" >&2
+    exit 1
+fi
+
+unreadable=$(
+    find "$release/gardenops" "$release/migrations" "$release/frontend/dist" \
+        \( -type d ! -executable -o -type f ! -readable \) -print -quit
+)
+if [[ -n "$unreadable" ]]; then
+    echo "release preflight: service user cannot access: $unreadable" >&2
+    exit 1
+fi
+
+RELEASE_DIR="$release" "$release/.venv/bin/python" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+
+release = Path(os.environ["RELEASE_DIR"])
+dist = release / "frontend" / "dist"
+index = (dist / "index.html").read_text(encoding="utf-8")
+references = set(re.findall(r'''(?:src|href)=["']([^"']+)["']''', index))
+for reference in references:
+    if reference.startswith(("http://", "https://", "data:", "#")):
+        continue
+    asset = dist / reference.lstrip("/")
+    if not asset.is_file():
+        raise SystemExit(f"release preflight: index references missing asset: {reference}")
+    with asset.open("rb") as handle:
+        handle.read(1)
+PY
+
+(
+    cd "$release"
+    PYTHONDONTWRITEBYTECODE=1 "$release/.venv/bin/python" -c \
+        "from gardenops.main import app; assert app is not None"
+)
+
+echo "release preflight: OK ($release)"

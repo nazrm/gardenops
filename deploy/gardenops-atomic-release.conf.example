@@ -1,0 +1,5 @@
+[Service]
+WorkingDirectory=/srv/gardenops/current
+ExecStart=
+ExecStartPre=/usr/local/sbin/gardenops-release-preflight /srv/gardenops/current
+ExecStart=/srv/gardenops/current/.venv/bin/python -m uvicorn gardenops.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers

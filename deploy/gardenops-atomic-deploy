@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONTROL_REPO=${GARDENOPS_CONTROL_REPO:-/opt/gardenops}
+RELEASE_ROOT=${GARDENOPS_RELEASE_ROOT:-/srv/gardenops}
+RELEASES_DIR="$RELEASE_ROOT/releases"
+CURRENT_LINK="$RELEASE_ROOT/current"
+PREVIOUS_LINK="$RELEASE_ROOT/previous"
+ENV_FILE=${GARDENOPS_ENV_FILE:-/etc/gardenops.env}
+SERVICE=${GARDENOPS_SERVICE:-gardenops.service}
+SERVICE_USER=${GARDENOPS_SERVICE_USER:-gardenops}
+SERVICE_GROUP=${GARDENOPS_SERVICE_GROUP:-gardenops}
+BUILD_USER=${GARDENOPS_BUILD_USER:-ole}
+PERSISTENT_ROOT=${GARDENOPS_PERSISTENT_ROOT:-/opt/gardenops}
+PREFLIGHT=${GARDENOPS_PREFLIGHT:-/usr/local/sbin/gardenops-release-preflight}
+LOCK_FILE=${GARDENOPS_DEPLOY_LOCK:-/run/lock/gardenops-deploy.lock}
+UV=${GARDENOPS_UV:-/usr/local/bin/uv}
+NPM=${GARDENOPS_NPM:-/usr/local/bin/npm}
+
+usage() {
+    cat <<'EOF'
+usage: gardenops-atomic-deploy COMMAND [REVISION]
+
+Commands:
+  prepare [REVISION]   Build and validate an immutable release (default: origin/main)
+  activate REVISION    Migrate, validate, and switch to a prepared release
+  deploy [REVISION]    Prepare and activate a release (default: origin/main)
+  rollback             Switch to the previous release when migrations are identical
+EOF
+}
+
+die() {
+    echo "gardenops deploy: $*" >&2
+    exit 1
+}
+
+require_root() {
+    [[ $(id -u) -eq 0 ]] || die "must run as root"
+}
+
+resolve_revision() {
+    git -C "$CONTROL_REPO" rev-parse --verify "${1:-origin/main}^{commit}"
+}
+
+release_for_revision() {
+    local revision=$1
+    local sha
+    sha=$(resolve_revision "$revision")
+    printf '%s/%s\n' "$RELEASES_DIR" "$sha"
+}
+
+as_build_user() {
+    /usr/sbin/runuser -u "$BUILD_USER" -- "$@"
+}
+
+with_release_env() {
+    local release=$1
+    shift
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+    /usr/sbin/runuser -u "$SERVICE_USER" --preserve-environment -- \
+        env HOME="/var/lib/$SERVICE_USER" PYTHONDONTWRITEBYTECODE=1 "$@"
+}
+
+preflight_release() {
+    local release=$1
+    with_release_env "$release" "$PREFLIGHT" "$release"
+}
+
+migration_digest() {
+    local release=$1
+    (
+        cd "$release"
+        find migrations -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            | sha256sum \
+            | awk '{print $1}'
+    )
+}
+
+atomic_link() {
+    local target=$1
+    local link=$2
+    local temporary="$link.new.$$"
+    ln -s "$target" "$temporary"
+    mv -Tf "$temporary" "$link"
+}
+
+prepare_release() {
+    local revision=${1:-origin/main}
+    local sha release build_dir
+    sha=$(resolve_revision "$revision")
+    release="$RELEASES_DIR/$sha"
+    if [[ -f "$release/RELEASE_READY" ]]; then
+        preflight_release "$release"
+        echo "$release"
+        return
+    fi
+
+    build_dir="$release"
+    install -d -o root -g "$SERVICE_GROUP" -m 0755 "$RELEASE_ROOT" "$RELEASES_DIR"
+    rm -rf -- "$build_dir"
+    install -d -o "$BUILD_USER" -g "$SERVICE_GROUP" -m 0750 "$build_dir"
+    trap "rm -rf -- '$build_dir'" EXIT
+
+    git -C "$CONTROL_REPO" archive "$sha" | tar -x -C "$build_dir"
+    chown -R "$BUILD_USER:$SERVICE_GROUP" "$build_dir"
+    as_build_user bash -c \
+        'set -euo pipefail; umask 0027; cd "$1"; UV_CACHE_DIR=/tmp/gardenops-uv-cache "$2" sync --locked --no-dev' \
+        bash "$build_dir" "$UV"
+    as_build_user bash -c \
+        'set -euo pipefail; umask 0027; cd "$1/frontend"; "$2" ci; "$2" run build' \
+        bash "$build_dir" "$NPM"
+    rm -rf -- "$build_dir/frontend/node_modules"
+
+    ln -s "$PERSISTENT_ROOT/logs" "$build_dir/logs"
+    ln -s "$PERSISTENT_ROOT/media_uploads" "$build_dir/media_uploads"
+    printf '%s\n' "$sha" > "$build_dir/RELEASE_COMMIT"
+    chown -R "root:$SERVICE_GROUP" "$build_dir"
+    chmod -R u=rwX,g=rX,o= "$build_dir"
+
+    preflight_release "$release"
+    install -o root -g "$SERVICE_GROUP" -m 0640 /dev/null "$build_dir/RELEASE_READY"
+    trap - EXIT
+    echo "$release"
+}
+
+wait_for_health() {
+    local attempts=${GARDENOPS_HEALTH_ATTEMPTS:-30}
+    local delay=${GARDENOPS_HEALTH_DELAY:-1}
+    local health_host=${GARDENOPS_HEALTH_HOST:-${ALLOWED_HOSTS%%,*}}
+    local i
+    health_host=${health_host//[[:space:]]/}
+    [[ -n "$health_host" ]] || die "health check needs GARDENOPS_HEALTH_HOST or ALLOWED_HOSTS"
+    for ((i = 1; i <= attempts; i++)); do
+        if curl --fail --silent --show-error --max-time 3 \
+            -H "Host: $health_host" \
+            -H "X-Real-IP: 127.0.0.1" \
+            -H "X-Forwarded-For: 127.0.0.1" \
+            -H "X-Forwarded-Proto: https" \
+            -H "X-Forwarded-Host: $health_host" \
+            -H "X-Forwarded-Port: 443" \
+            http://127.0.0.1:8000/api/health >/dev/null; then
+            return 0
+        fi
+        sleep "$delay"
+    done
+    return 1
+}
+
+activate_release() {
+    local revision=$1
+    local release old_target
+    release=$(release_for_revision "$revision")
+    [[ -d "$release" ]] || die "release is not prepared: $release"
+    preflight_release "$release"
+
+    with_release_env "$release" "$release/.venv/bin/python" -c \
+        "import gardenops.db as db; db.run_migrations()"
+    with_release_env "$release" "$release/.venv/bin/python" \
+        "$release/scripts/check_backend_integrity.py" --allow-production
+
+    old_target=""
+    if [[ -L "$CURRENT_LINK" ]]; then
+        old_target=$(readlink -f "$CURRENT_LINK")
+        atomic_link "$old_target" "$PREVIOUS_LINK"
+    fi
+    atomic_link "$release" "$CURRENT_LINK"
+    if systemctl restart "$SERVICE" && wait_for_health; then
+        echo "gardenops deploy: active release $release"
+        return
+    fi
+
+    if [[ -n "$old_target" && -d "$old_target" ]] \
+        && [[ $(migration_digest "$release") == $(migration_digest "$old_target") ]]; then
+        echo "gardenops deploy: activation failed; restoring $old_target" >&2
+        atomic_link "$old_target" "$CURRENT_LINK"
+        systemctl restart "$SERVICE"
+        wait_for_health || die "activation and automatic rollback both failed"
+    fi
+    die "activation failed; automatic rollback was unavailable or unsafe"
+}
+
+rollback_release() {
+    [[ -L "$CURRENT_LINK" ]] || die "current release link does not exist"
+    [[ -L "$PREVIOUS_LINK" ]] || die "previous release link does not exist"
+    local current previous
+    current=$(readlink -f "$CURRENT_LINK")
+    previous=$(readlink -f "$PREVIOUS_LINK")
+    [[ -d "$previous" ]] || die "previous release is missing: $previous"
+    [[ $(migration_digest "$current") == $(migration_digest "$previous") ]] \
+        || die "rollback refused because migration contents differ"
+    preflight_release "$previous"
+    atomic_link "$previous" "$CURRENT_LINK"
+    atomic_link "$current" "$PREVIOUS_LINK"
+    systemctl restart "$SERVICE"
+    wait_for_health || die "rollback health check failed"
+    echo "gardenops deploy: rolled back to $previous"
+}
+
+main() {
+    require_root
+    [[ -r "$ENV_FILE" ]] || die "environment file is unreadable: $ENV_FILE"
+    [[ -d "$(dirname "$LOCK_FILE")" ]] || die "lock directory does not exist"
+    exec 9>"$LOCK_FILE"
+    chmod 0600 "$LOCK_FILE"
+    flock -n 9 || die "another deployment is running"
+
+    local command=${1:-}
+    case "$command" in
+        prepare)
+            prepare_release "${2:-origin/main}"
+            ;;
+        activate)
+            [[ $# -eq 2 ]] || die "activate requires a revision"
+            activate_release "$2"
+            ;;
+        deploy)
+            local revision=${2:-origin/main}
+            prepare_release "$revision" >/dev/null
+            activate_release "$revision"
+            ;;
+        rollback)
+            [[ $# -eq 1 ]] || die "rollback takes no revision"
+            rollback_release
+            ;;
+        *)
+            usage >&2
+            exit 2
+            ;;
+    esac
+}
+
+main "$@"
