@@ -66,8 +66,8 @@ def test_atomic_deploy_has_required_safety_gates() -> None:
     assert 'install -d -o root -g "$SERVICE_GROUP" -m 0750 "$(dirname "$LOCK_FILE")"' not in script
     assert "umask 0027" in script
     assert 'm 0755 "$RELEASE_ROOT" "$RELEASES_DIR"' in script
-    assert "preflight_release \"$release\"" in script
-    assert "check_backend_integrity.py\" --allow-production" in script
-    assert 'X-Forwarded-Host: $health_host' in script
+    assert 'preflight_release "$release"' in script
+    assert 'check_backend_integrity.py" --allow-production' in script
+    assert "X-Forwarded-Host: $health_host" in script
     assert "rollback refused because migration contents differ" in script
     assert "mv -Tf" in script
