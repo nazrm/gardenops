@@ -32,7 +32,7 @@ test = [
     "pytest-xdist>=3.8.0",
 ]
 lint = [
-    "ruff>=0.15.14",
+    "ruff>=0.15.22",
     "ty>=0.0.51,<0.0.52",
 ]
 audit = [
