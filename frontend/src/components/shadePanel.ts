@@ -245,7 +245,7 @@ function trustedShadeMapRuntimeScriptUrl(runtimeScriptUrl: string): string {
   }).trustedTypes;
   if (!trustedTypes) return runtimeScriptUrl;
   if (!shadeMapRuntimeTrustedTypesPolicy) {
-    shadeMapRuntimeTrustedTypesPolicy = trustedTypes.createPolicy("gardenops-html", {
+    shadeMapRuntimeTrustedTypesPolicy = trustedTypes.createPolicy("gardenops-shademap-script", {
       createScriptURL: (url: string) => {
         if (url !== "/shademap/runtime.js") {
           throw new TypeError("ShadeMap runtime URL is not a GardenOps asset path");
