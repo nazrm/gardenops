@@ -103,6 +103,12 @@ normalizes the release to `root:gardenops` with group-readable files. It uses
 `gardenops` service account and verifies source, migrations, the frontend entry
 point and referenced assets, and application importability.
 
+The deployment lock defaults to `/run/gardenops/deploy.lock`; the wrapper
+creates its parent as a root-owned, non-writable runtime directory. If
+`GARDENOPS_DEPLOY_LOCK` overrides this location, its parent directory must
+already be root-owned and not group- or world-writable. Symbolic-link lock
+paths are rejected.
+
 `activate` reruns preflight, applies migrations, runs the read-only backend
 integrity audit, atomically updates the `current` symlink, restarts the service,
 and waits for local health. The prior release is recorded as
