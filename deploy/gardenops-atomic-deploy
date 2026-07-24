@@ -13,7 +13,8 @@ SERVICE_GROUP=${GARDENOPS_SERVICE_GROUP:-gardenops}
 BUILD_USER=${GARDENOPS_BUILD_USER:-ole}
 PERSISTENT_ROOT=${GARDENOPS_PERSISTENT_ROOT:-/opt/gardenops}
 PREFLIGHT=${GARDENOPS_PREFLIGHT:-/usr/local/sbin/gardenops-release-preflight}
-LOCK_FILE=${GARDENOPS_DEPLOY_LOCK:-/run/lock/gardenops-deploy.lock}
+DEFAULT_LOCK_DIR=/run/gardenops
+LOCK_FILE=${GARDENOPS_DEPLOY_LOCK:-$DEFAULT_LOCK_DIR/deploy.lock}
 UV=${GARDENOPS_UV:-/usr/local/bin/uv}
 NPM=${GARDENOPS_NPM:-/usr/local/bin/npm}
 
@@ -36,6 +37,33 @@ die() {
 
 require_root() {
     [[ $(id -u) -eq 0 ]] || die "must run as root"
+}
+
+open_deploy_lock() {
+    local lock_dir lock_dir_mode lock_dir_owner lock_fd_target
+    lock_dir=$(dirname -- "$LOCK_FILE")
+
+    if [[ "$LOCK_FILE" == "$DEFAULT_LOCK_DIR/deploy.lock" ]]; then
+        install -d -o root -g root -m 0750 "$DEFAULT_LOCK_DIR"
+    fi
+    [[ -d "$lock_dir" ]] || die "lock directory does not exist: $lock_dir"
+    lock_dir_owner=$(stat -Lc '%u' -- "$lock_dir")
+    lock_dir_mode=$(stat -Lc '%a' -- "$lock_dir")
+    [[ "$lock_dir_owner" == 0 && $((8#$lock_dir_mode & 8#022)) -eq 0 ]] \
+        || die "lock directory must be root-owned and not group- or world-writable: $lock_dir"
+    [[ ! -e "$LOCK_FILE" || -f "$LOCK_FILE" ]] \
+        || die "lock path is not a regular file: $LOCK_FILE"
+    [[ ! -L "$LOCK_FILE" ]] || die "lock path must not be a symbolic link: $LOCK_FILE"
+
+    # Append mode avoids truncating an existing file. The protected directory makes
+    # the path stable while it is opened; verify the descriptor before using it.
+    exec 9>>"$LOCK_FILE"
+    lock_fd_target="/proc/$$/fd/9"
+    [[ -f "$lock_fd_target" ]] || die "lock descriptor is not a regular file"
+    [[ $(stat -Lc '%d:%i' -- "$LOCK_FILE") == $(stat -Lc '%d:%i' -- "$lock_fd_target") ]] \
+        || die "lock path changed while it was opened"
+    chmod 0600 "$lock_fd_target"
+    flock -n 9 || die "another deployment is running"
 }
 
 resolve_revision() {
@@ -204,10 +232,7 @@ rollback_release() {
 main() {
     require_root
     [[ -r "$ENV_FILE" ]] || die "environment file is unreadable: $ENV_FILE"
-    [[ -d "$(dirname "$LOCK_FILE")" ]] || die "lock directory does not exist"
-    exec 9>"$LOCK_FILE"
-    chmod 0600 "$LOCK_FILE"
-    flock -n 9 || die "another deployment is running"
+    open_deploy_lock
 
     local command=${1:-}
     case "$command" in

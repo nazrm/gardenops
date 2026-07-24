@@ -63,7 +63,12 @@ def test_atomic_deploy_has_required_safety_gates() -> None:
     script = DEPLOY.read_text(encoding="utf-8")
 
     assert "flock -n" in script
-    assert 'install -d -o root -g "$SERVICE_GROUP" -m 0750 "$(dirname "$LOCK_FILE")"' not in script
+    assert "LOCK_FILE=${GARDENOPS_DEPLOY_LOCK:-$DEFAULT_LOCK_DIR/deploy.lock}" in script
+    assert 'install -d -o root -g root -m 0750 "$DEFAULT_LOCK_DIR"' in script
+    assert 'exec 9>>"$LOCK_FILE"' in script
+    assert 'exec 9>"$LOCK_FILE"' not in script
+    assert "lock path must not be a symbolic link" in script
+    assert "lock directory must be root-owned and not group- or world-writable" in script
     assert "umask 0027" in script
     assert 'm 0755 "$RELEASE_ROOT" "$RELEASES_DIR"' in script
     assert 'preflight_release "$release"' in script
