@@ -2025,7 +2025,7 @@ class TestShademap(BaseApiTest):
         self.assertIn("runtime_script_url", source)
         self.assertIn('"/shademap/runtime.js"', source)
         self.assertIn("trustedShadeMapRuntimeScriptUrl", source)
-        self.assertIn('createPolicy("gardenops-html"', source)
+        self.assertIn('createPolicy("gardenops-shademap-script"', source)
 
     def test_shade_token_retry_and_mobile_sheet_recovery_contracts(self) -> None:
         root = Path(__file__).parents[1]
