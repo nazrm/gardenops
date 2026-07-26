@@ -2841,7 +2841,7 @@ class TestPlots(BaseApiTest):
         policy = response.headers["content-security-policy-report-only"]
         self.assertIn("report-uri", policy)
         self.assertIn("require-trusted-types-for 'script'", policy)
-        self.assertIn("trusted-types gardenops-html default", policy)
+        self.assertIn("trusted-types gardenops-html gardenops-shademap-script default", policy)
 
     def test_csp_report_endpoint_is_public_and_accepts_json(self) -> None:
         with patch.dict(

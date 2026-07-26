@@ -1203,7 +1203,7 @@ def _csp_policy() -> str:
         "default-src 'self'",
         "script-src 'self'",
         "require-trusted-types-for 'script'",
-        "trusted-types gardenops-html default",
+        "trusted-types gardenops-html gardenops-shademap-script default",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         "img-src 'self' data: blob: https://*.amazonaws.com https://*.shademap.app",
         f"connect-src {' '.join(connect_src)}",
