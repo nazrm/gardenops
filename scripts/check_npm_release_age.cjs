@@ -5,37 +5,14 @@ const https = require("node:https");
 const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "..");
-const COOLDOWN_DAYS = 7;
+const ROUTINE_COOLDOWN_DAYS = 3;
+const MAJOR_OR_NEW_DIRECT_COOLDOWN_DAYS = 14;
 const REGISTRY_URL = "https://registry.npmjs.org";
+const TRUSTED_NPM_BYPASS_SOURCE = "npm audit base/head diff";
+const configuredSecurityBypassPath = process.env.GARDENOPS_SECURITY_RELEASE_BYPASS || "";
 const SECURITY_BYPASS_PATH =
-  process.env.GARDENOPS_SECURITY_RELEASE_BYPASS ||
+  configuredSecurityBypassPath ||
   path.join(ROOT, ".gardenops", "security-release-bypass.json");
-
-// These packages were already locked inside the cooldown window when the
-// dependency policy was introduced. The dates are the point where the locked
-// version has aged out of the cooldown window; remove entries after they expire.
-const TEMPORARY_EXCEPTIONS = {
-  "@oxc-project/types@0.130.0": "2026-05-25T15:05:37.000Z",
-  "@rolldown/binding-android-arm64@1.0.1": "2026-05-27T12:44:25.000Z",
-  "@rolldown/binding-darwin-arm64@1.0.1": "2026-05-27T12:44:00.000Z",
-  "@rolldown/binding-darwin-x64@1.0.1": "2026-05-27T12:43:16.000Z",
-  "@rolldown/binding-freebsd-x64@1.0.1": "2026-05-27T12:43:41.000Z",
-  "@rolldown/binding-linux-arm-gnueabihf@1.0.1": "2026-05-27T12:43:47.000Z",
-  "@rolldown/binding-linux-arm64-gnu@1.0.1": "2026-05-27T12:43:53.000Z",
-  "@rolldown/binding-linux-arm64-musl@1.0.1": "2026-05-27T12:44:07.000Z",
-  "@rolldown/binding-linux-ppc64-gnu@1.0.1": "2026-05-27T12:44:43.000Z",
-  "@rolldown/binding-linux-s390x-gnu@1.0.1": "2026-05-27T12:44:37.000Z",
-  "@rolldown/binding-linux-x64-gnu@1.0.1": "2026-05-27T12:43:29.000Z",
-  "@rolldown/binding-linux-x64-musl@1.0.1": "2026-05-27T12:43:35.000Z",
-  "@rolldown/binding-openharmony-arm64@1.0.1": "2026-05-27T12:44:13.000Z",
-  "@rolldown/binding-wasm32-wasi@1.0.1": "2026-05-27T12:44:30.000Z",
-  "@rolldown/binding-win32-arm64-msvc@1.0.1": "2026-05-27T12:44:19.000Z",
-  "@rolldown/binding-win32-x64-msvc@1.0.1": "2026-05-27T12:43:22.000Z",
-  "@rolldown/pluginutils@1.0.1": "2026-05-27T03:52:30.000Z",
-  "playwright-core@1.60.0": "2026-05-25T19:09:41.000Z",
-  "rolldown@1.0.1": "2026-05-27T12:44:47.000Z",
-  "vite@8.0.13": "2026-05-28T11:11:55.000Z",
-};
 
 function packageNameFromLockPath(packagePath) {
   const parts = packagePath.split("/");
@@ -57,6 +34,17 @@ function packageKey(name, version) {
 }
 
 function loadSecurityReleaseBypasses() {
+  if (
+    configuredSecurityBypassPath &&
+    !["1", "true", "yes", "on"].includes(
+      (process.env.GARDENOPS_ALLOW_SECURITY_RELEASE_BYPASS_OVERRIDE || "").toLowerCase(),
+    )
+  ) {
+    throw new Error(
+      "external bypass file overrides require " +
+        "GARDENOPS_ALLOW_SECURITY_RELEASE_BYPASS_OVERRIDE=true",
+    );
+  }
   if (!fs.existsSync(SECURITY_BYPASS_PATH)) {
     return new Map();
   }
@@ -68,6 +56,9 @@ function loadSecurityReleaseBypasses() {
     throw new Error(`${SECURITY_BYPASS_PATH} is not valid JSON: ${error.message}`);
   }
 
+  if (data.schema !== 1) {
+    throw new Error(`${SECURITY_BYPASS_PATH} field 'schema' must be 1`);
+  }
   const entries = data.npm === undefined ? [] : data.npm;
   if (!Array.isArray(entries)) {
     throw new Error(`${SECURITY_BYPASS_PATH} field 'npm' must be a list`);
@@ -83,6 +74,7 @@ function loadSecurityReleaseBypasses() {
     const fromVersion = entry.from;
     const toVersion = entry.to;
     const advisories = entry.advisories_fixed;
+    const source = entry.source;
     if (typeof packageName !== "string" || packageName.length === 0) {
       throw new Error(`${SECURITY_BYPASS_PATH} npm[${index}].package must be a non-empty string`);
     }
@@ -94,6 +86,12 @@ function loadSecurityReleaseBypasses() {
     }
     if (fromVersion === toVersion) {
       throw new Error(`${SECURITY_BYPASS_PATH} npm[${index}] must change versions`);
+    }
+    if (source !== TRUSTED_NPM_BYPASS_SOURCE) {
+      throw new Error(
+        `${SECURITY_BYPASS_PATH} npm[${index}].source must be ` +
+          `'${TRUSTED_NPM_BYPASS_SOURCE}'`,
+      );
     }
     if (
       !Array.isArray(advisories) ||
@@ -164,8 +162,8 @@ async function mapWithConcurrency(items, concurrency, worker) {
   return results;
 }
 
-function collectLockedPackages() {
-  const lockPath = path.join(ROOT, "frontend", "package-lock.json");
+function collectLockedPackages(root = ROOT) {
+  const lockPath = path.join(root, "frontend", "package-lock.json");
   const lockData = JSON.parse(fs.readFileSync(lockPath, "utf8"));
 
   if (![2, 3].includes(lockData.lockfileVersion)) {
@@ -206,6 +204,74 @@ function collectLockedPackages() {
   );
 }
 
+function directDependencyNames(root) {
+  const packageData = JSON.parse(
+    fs.readFileSync(path.join(root, "frontend", "package.json"), "utf8"),
+  );
+  return new Set([
+    ...Object.keys(packageData.dependencies || {}),
+    ...Object.keys(packageData.devDependencies || {}),
+    ...Object.keys(packageData.optionalDependencies || {}),
+    ...Object.keys(packageData.peerDependencies || {}),
+  ]);
+}
+
+function packageVersions(packages) {
+  const versions = new Map();
+  for (const { name, version } of packages) {
+    if (!versions.has(name)) {
+      versions.set(name, new Set());
+    }
+    versions.get(name).add(version);
+  }
+  return versions;
+}
+
+function versionMajor(version) {
+  const match = /^(\d+)/.exec(version);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function cooldownFor({ name, version }, baseVersions, baseDirect, headDirect) {
+  if (headDirect.has(name) && !baseDirect.has(name)) {
+    return { days: MAJOR_OR_NEW_DIRECT_COOLDOWN_DAYS, tier: "new direct dependency" };
+  }
+  if (headDirect.has(name)) {
+    const headMajor = versionMajor(version);
+    const priorMajors = new Set(
+      Array.from(baseVersions.get(name) || [], (item) => versionMajor(item)),
+    );
+    if (headMajor !== null && priorMajors.size > 0 && !priorMajors.has(headMajor)) {
+      return { days: MAJOR_OR_NEW_DIRECT_COOLDOWN_DAYS, tier: "major direct update" };
+    }
+  }
+  return { days: ROUTINE_COOLDOWN_DAYS, tier: "routine update" };
+}
+
+function selectPackagesToCheck(headPackages, basePackages, baseDirect, headDirect) {
+  const baseKeys = new Set(basePackages.map(({ name, version }) => packageKey(name, version)));
+  const newlyDirect = new Set(Array.from(headDirect).filter((name) => !baseDirect.has(name)));
+  return headPackages.filter(
+    ({ name, version }) => !baseKeys.has(packageKey(name, version)) || newlyDirect.has(name),
+  );
+}
+
+function parseArgs(argv) {
+  const args = { baseRoot: null, headRoot: ROOT };
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === "--base-root") {
+      args.baseRoot = path.resolve(argv[index + 1]);
+      index += 1;
+    } else if (argv[index] === "--head-root") {
+      args.headRoot = path.resolve(argv[index + 1]);
+      index += 1;
+    } else {
+      throw new Error(`unknown argument: ${argv[index]}`);
+    }
+  }
+  return args;
+}
+
 async function lookupPublishTime({ name, version }) {
   const metadataUrl = `${REGISTRY_URL}/${encodeURIComponent(name)}`;
   const metadata = await fetchJson(metadataUrl);
@@ -217,11 +283,18 @@ async function lookupPublishTime({ name, version }) {
 }
 
 async function main() {
+  const { baseRoot, headRoot } = parseArgs(process.argv.slice(2));
   const now = new Date();
-  const cutoff = new Date(now.getTime() - COOLDOWN_DAYS * 24 * 60 * 60 * 1000);
-  const lockedPackages = collectLockedPackages();
-  const publishTimes = await mapWithConcurrency(lockedPackages, 8, lookupPublishTime);
+  const headPackages = collectLockedPackages(headRoot);
+  const basePackages = baseRoot ? collectLockedPackages(baseRoot) : [];
+  const baseDirect = baseRoot ? directDependencyNames(baseRoot) : new Set();
+  const headDirect = directDependencyNames(headRoot);
+  const packagesToCheck = baseRoot
+    ? selectPackagesToCheck(headPackages, basePackages, baseDirect, headDirect)
+    : headPackages;
   const securityBypasses = loadSecurityReleaseBypasses();
+  const publishTimes = await mapWithConcurrency(packagesToCheck, 8, lookupPublishTime);
+  const baseVersions = packageVersions(basePackages);
   const errors = [];
   const allowed = [];
 
@@ -232,26 +305,26 @@ async function main() {
       continue;
     }
 
-    if (publishedAt <= cutoff) {
-      continue;
-    }
-
-    const exceptionUntilValue = TEMPORARY_EXCEPTIONS[key];
-    const exceptionUntil = exceptionUntilValue ? new Date(exceptionUntilValue) : null;
-    if (exceptionUntil && now < exceptionUntil) {
-      allowed.push(`${key} until ${exceptionUntil.toISOString()}`);
-      continue;
-    }
-
     const bypassAdvisories = securityBypasses.get(key);
     if (bypassAdvisories) {
       allowed.push(`${key} fixing ${bypassAdvisories.join(", ")}`);
       continue;
     }
 
+    const { days, tier } = cooldownFor(
+      { name, version },
+      baseVersions,
+      baseDirect,
+      headDirect,
+    );
+    const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    if (publishedAt <= cutoff) {
+      continue;
+    }
+
     errors.push(
-      `${key} was published at ${publishedAt.toISOString()} inside the ${COOLDOWN_DAYS}-day ` +
-        "cooldown window",
+      `${key} was published at ${publishedAt.toISOString()} inside the ${days}-day ` +
+        `cooldown window (${tier})`,
     );
   }
 
@@ -271,7 +344,15 @@ async function main() {
   console.log("npm locked packages satisfy the release-age policy.");
 }
 
-main().catch((error) => {
-  console.error(`npm release-age check: ${error.message}`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(`npm release-age check: ${error.message}`);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  cooldownFor,
+  loadSecurityReleaseBypasses,
+  selectPackagesToCheck,
+};

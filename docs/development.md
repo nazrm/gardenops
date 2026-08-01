@@ -684,6 +684,9 @@ seeding does not dominate runtime.
 
 - Keep changes scoped.
 - Include tests for behavior changes.
+- Require the always-present `Dependency Policy`, `Backend`, and `Frontend`
+  checks. Backend and Frontend wait for the policy gate before installing the
+  pull request dependency graph.
 - Update public docs when behavior, setup, environment variables, or deployment
   expectations change.
 - Do not commit `.env`, database dumps, media uploads, local terrain files, or
@@ -692,3 +695,5 @@ seeding does not dominate runtime.
 For a repeatable local review process, including worktree checkout, agent-assisted
 review prompts, Dependabot handling, and merge gates, see
 [pr-review-runbook.md](pr-review-runbook.md).
+The release-age tiers, advisory-delta behavior, and verified security bypass are
+defined in [dependency-security-policy.md](dependency-security-policy.md).

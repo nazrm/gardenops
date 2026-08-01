@@ -4,12 +4,6 @@ on:
   schedule:
     - cron: "40 6 * * 1"
   workflow_dispatch:
-  pull_request:
-    paths:
-      - pyproject.toml
-      - uv.lock
-      - frontend/package.json
-      - frontend/package-lock.json
 
 permissions:
   contents: read
@@ -20,8 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version-file: .python-version
@@ -29,51 +21,9 @@ jobs:
         with:
           enable-cache: true
       - run: uv lock --check
-      - name: Prepare trusted Python dependency policy checkout
-        if: github.event_name == 'pull_request'
-        run: |
-          set -euo pipefail
-          rm -rf /tmp/gardenops-policy-python /tmp/gardenops-pr-dependency-data
-          mkdir -p /tmp/gardenops-pr-dependency-data/frontend
-          cp pyproject.toml uv.lock /tmp/gardenops-pr-dependency-data/
-          cp frontend/package.json frontend/package-lock.json /tmp/gardenops-pr-dependency-data/frontend/
-          git fetch origin "${{ github.base_ref }}" --depth=1
-          git worktree prune
-          git worktree add --detach /tmp/gardenops-policy-python "origin/${{ github.base_ref }}"
       - run: python scripts/check_dependency_sources.py
-        if: github.event_name != 'pull_request'
-      - run: python scripts/check_dependency_sources.py --root /tmp/gardenops-pr-dependency-data
-        if: github.event_name == 'pull_request'
-        working-directory: /tmp/gardenops-policy-python
-      - name: Generate trusted Python security-release bypass evidence
-        if: github.event_name == 'pull_request'
-        working-directory: /tmp/gardenops-policy-python
-        run: |
-          set -euo pipefail
-          if python scripts/generate_security_release_bypass.py --help | grep -q -- "--head-root"; then
-            uv run --frozen --group audit python scripts/generate_security_release_bypass.py --ecosystem python --base-ref "origin/${{ github.base_ref }}" --head-root /tmp/gardenops-pr-dependency-data
-          else
-            uv run --frozen --group audit python scripts/generate_security_release_bypass.py --ecosystem python --base-ref "origin/${{ github.base_ref }}"
-          fi
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: github.event_name == 'pull_request'
-        with:
-          name: dependency-audit-security-release-bypass-python
-          path: /tmp/gardenops-policy-python/.gardenops/security-release-bypass.json
-          if-no-files-found: ignore
-      - run: python scripts/check_python_release_age.py
-        if: github.event_name != 'pull_request'
-      - name: Copy PR dependency data into trusted Python policy checkout
-        if: github.event_name == 'pull_request'
-        run: |
-          set -euo pipefail
-          cp /tmp/gardenops-pr-dependency-data/pyproject.toml /tmp/gardenops-pr-dependency-data/uv.lock /tmp/gardenops-policy-python/
-          cp /tmp/gardenops-pr-dependency-data/frontend/package.json /tmp/gardenops-pr-dependency-data/frontend/package-lock.json /tmp/gardenops-policy-python/frontend/
-      - run: python scripts/check_python_release_age.py
-        if: github.event_name == 'pull_request'
-        working-directory: /tmp/gardenops-policy-python
-      - run: uv sync --frozen --all-groups
-      - run: uv pip freeze | grep -v '^-e ' > /tmp/gardenops-backend-requirements.txt
+      - run: uv sync --frozen --all-groups --no-install-project
+      - run: uv export --frozen --all-groups --no-emit-project --format requirements.txt --output-file /tmp/gardenops-backend-requirements.txt --quiet
       - run: uv run --frozen --group audit pip-audit --strict -r /tmp/gardenops-backend-requirements.txt
       - run: uv export --frozen --format cyclonedx1.5 --all-groups --output-file gardenops-python.cdx.json --quiet
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -90,56 +40,12 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        if: github.event_name == 'pull_request'
-        with:
-          python-version-file: .python-version
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
         with:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
-      - name: Prepare trusted npm dependency policy checkout
-        if: github.event_name == 'pull_request'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          rm -rf /tmp/gardenops-policy-npm /tmp/gardenops-pr-npm-data
-          mkdir -p /tmp/gardenops-pr-npm-data/frontend
-          cp frontend/package.json frontend/package-lock.json /tmp/gardenops-pr-npm-data/frontend/
-          git fetch origin "${{ github.base_ref }}" --depth=1
-          git worktree prune
-          git worktree add --detach /tmp/gardenops-policy-npm "origin/${{ github.base_ref }}"
-      - name: Generate trusted npm security-release bypass evidence
-        if: github.event_name == 'pull_request'
-        working-directory: /tmp/gardenops-policy-npm
-        run: |
-          set -euo pipefail
-          if python scripts/generate_security_release_bypass.py --help | grep -q -- "--head-root"; then
-            python scripts/generate_security_release_bypass.py --ecosystem npm --base-ref "origin/${{ github.base_ref }}" --head-root /tmp/gardenops-pr-npm-data
-          else
-            python scripts/generate_security_release_bypass.py --ecosystem npm --base-ref "origin/${{ github.base_ref }}"
-          fi
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: github.event_name == 'pull_request'
-        with:
-          name: dependency-audit-security-release-bypass-npm
-          path: /tmp/gardenops-policy-npm/.gardenops/security-release-bypass.json
-          if-no-files-found: ignore
-      - run: node ../scripts/check_npm_release_age.cjs
-        if: github.event_name != 'pull_request'
-      - name: Copy PR npm dependency data into trusted policy checkout
-        if: github.event_name == 'pull_request'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          cp /tmp/gardenops-pr-npm-data/frontend/package.json /tmp/gardenops-pr-npm-data/frontend/package-lock.json /tmp/gardenops-policy-npm/frontend/
-      - run: node scripts/check_npm_release_age.cjs
-        if: github.event_name == 'pull_request'
-        working-directory: /tmp/gardenops-policy-npm
+      - run: npm ci --ignore-scripts
       - run: npm audit --audit-level=high
       - run: npm audit signatures
       - run: npm sbom --package-lock-only --sbom-format cyclonedx --sbom-type application > gardenops-frontend.cdx.json

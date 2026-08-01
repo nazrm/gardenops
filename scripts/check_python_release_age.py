@@ -1,9 +1,11 @@
-"""Reject Python lockfile packages that are newer than the cooldown window."""
+"""Reject changed Python packages that are newer than their cooldown tier."""
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import re
 import sys
 import tomllib
 from datetime import UTC, datetime, timedelta
@@ -11,25 +13,13 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-COOLDOWN_DAYS = 7
-SECURITY_BYPASS_PATH = ROOT / ".gardenops" / "security-release-bypass.json"
+ROUTINE_COOLDOWN_DAYS = 3
+MAJOR_OR_NEW_DIRECT_COOLDOWN_DAYS = 14
+AI_SDK_COOLDOWN_DAYS = 1
 TRUSTED_PYTHON_BYPASS_SOURCE = "pip-audit base/head diff"
-RELEASE_AGE_EXEMPT_PACKAGES = {"anthropic", "openai"}
-
-# These packages were already locked inside the cooldown window when the
-# dependency policy was introduced. The dates are the point where the locked
-# artifact has aged out of the cooldown window; remove entries after they expire.
-# Security fixes may also use this narrow path when the PR documents the bypass.
-TEMPORARY_EXCEPTIONS = {
-    "anthropic==0.102.0": datetime(2026, 5, 27, 18, 12, 44, tzinfo=UTC),
-    "idna==3.15": datetime(2026, 5, 26, 22, 45, 58, tzinfo=UTC),
-    "msgpack==1.2.1": datetime(2026, 6, 25, 16, 13, 53, tzinfo=UTC),
-    "openai==2.37.0": datetime(2026, 5, 29, 22, 30, 36, tzinfo=UTC),
-    "pip==26.1.2": datetime(2026, 6, 14, 17, 33, 59, tzinfo=UTC),
-    "starlette==1.0.1": datetime(2026, 6, 4, 21, 58, 59, tzinfo=UTC),
-    "starlette==1.3.1": datetime(2026, 6, 19, 9, 23, 12, tzinfo=UTC),
-    "uvicorn==0.47.0": datetime(2026, 5, 28, 18, 16, 55, tzinfo=UTC),
-}
+REDUCED_COOLDOWN_PACKAGES = {"anthropic", "openai"}
+REQUIREMENT_NAME_RE = re.compile(r"^\s*([A-Za-z0-9_.-]+)")
+VERSION_MAJOR_RE = re.compile(r"^(\d+)")
 
 
 class SecurityBypassError(ValueError):
@@ -60,9 +50,13 @@ def _normalize_python_name(name: str) -> str:
     return name.replace("_", "-").lower()
 
 
-def _load_security_release_bypasses() -> dict[str, list[str]]:
+def _load_security_release_bypasses(root: Path = ROOT) -> dict[str, list[str]]:
     configured_path = os.environ.get("GARDENOPS_SECURITY_RELEASE_BYPASS", "").strip()
-    path = Path(configured_path) if configured_path else SECURITY_BYPASS_PATH
+    path = (
+        Path(configured_path)
+        if configured_path
+        else root / ".gardenops/security-release-bypass.json"
+    )
     if configured_path:
         allow_override = os.environ.get(
             "GARDENOPS_ALLOW_SECURITY_RELEASE_BYPASS_OVERRIDE", ""
@@ -123,40 +117,104 @@ def _load_security_release_bypasses() -> dict[str, list[str]]:
     return bypasses
 
 
-def main() -> None:
-    lock_data = tomllib.loads((ROOT / "uv.lock").read_text())
-    cutoff = datetime.now(UTC) - timedelta(days=COOLDOWN_DAYS)
+def _lock_packages(root: Path) -> dict[str, dict[str, Any]]:
+    lock_data = tomllib.loads((root / "uv.lock").read_text())
+    packages: dict[str, dict[str, Any]] = {}
+    for package_info in lock_data.get("package", []):
+        name = _normalize_python_name(str(package_info.get("name", "<unknown>")))
+        version = str(package_info.get("version", "<unknown>"))
+        if name != "gardenops":
+            packages[f"{name}=={version}"] = package_info
+    return packages
+
+
+def _direct_dependency_names(root: Path) -> set[str]:
+    data = tomllib.loads((root / "pyproject.toml").read_text())
+    project = data.get("project", {})
+    requirements: list[object] = list(project.get("dependencies", []))
+    for group in project.get("optional-dependencies", {}).values():
+        if isinstance(group, list):
+            requirements.extend(group)
+    for group in data.get("dependency-groups", {}).values():
+        if isinstance(group, list):
+            requirements.extend(group)
+
+    names: set[str] = set()
+    for requirement in requirements:
+        if not isinstance(requirement, str):
+            continue
+        match = REQUIREMENT_NAME_RE.match(requirement)
+        if match:
+            names.add(_normalize_python_name(match.group(1)))
+    return names
+
+
+def _version_major(version: str) -> int | None:
+    match = VERSION_MAJOR_RE.match(version)
+    return int(match.group(1)) if match else None
+
+
+def _package_versions(packages: dict[str, dict[str, Any]]) -> dict[str, set[str]]:
+    versions: dict[str, set[str]] = {}
+    for key in packages:
+        name, version = key.rsplit("==", 1)
+        versions.setdefault(name, set()).add(version)
+    return versions
+
+
+def _cooldown_days(
+    name: str,
+    version: str,
+    *,
+    base_versions: dict[str, set[str]],
+    base_direct: set[str],
+    head_direct: set[str],
+) -> tuple[int, str]:
+    if name in REDUCED_COOLDOWN_PACKAGES and name in head_direct:
+        return AI_SDK_COOLDOWN_DAYS, "AI SDK"
+    if name in head_direct and name not in base_direct:
+        return MAJOR_OR_NEW_DIRECT_COOLDOWN_DAYS, "new direct dependency"
+    if name in head_direct:
+        head_major = _version_major(version)
+        prior_majors = {_version_major(item) for item in base_versions.get(name, set())}
+        if head_major is not None and prior_majors and head_major not in prior_majors:
+            return MAJOR_OR_NEW_DIRECT_COOLDOWN_DAYS, "major direct update"
+    return ROUTINE_COOLDOWN_DAYS, "routine update"
+
+
+def main(*, base_root: Path | None = None, head_root: Path | None = None) -> None:
+    head_root = head_root or ROOT
+    head_packages = _lock_packages(head_root)
+    base_packages = _lock_packages(base_root) if base_root else {}
+    base_direct = _direct_dependency_names(base_root) if base_root else set()
+    head_direct = _direct_dependency_names(head_root)
+    newly_direct = head_direct - base_direct
+    packages_to_check = (
+        {
+            key: value
+            for key, value in head_packages.items()
+            if key not in base_packages or key.rsplit("==", 1)[0] in newly_direct
+        }
+        if base_root
+        else head_packages
+    )
+    base_versions = _package_versions(base_packages)
+    now = datetime.now(UTC)
     errors: list[str] = []
     allowed: list[str] = []
     try:
-        security_bypasses = _load_security_release_bypasses()
+        security_bypasses = _load_security_release_bypasses(ROOT)
     except SecurityBypassError as error:
         print(f"python release-age check: {error}", file=sys.stderr)
         raise SystemExit(1) from error
 
-    for package_info in lock_data.get("package", []):
+    for key, package_info in packages_to_check.items():
         name = _normalize_python_name(str(package_info.get("name", "<unknown>")))
         version = str(package_info.get("version", "<unknown>"))
-        key = f"{name}=={version}"
-        if name == "gardenops":
-            continue
 
         upload_times = _candidate_upload_times(package_info)
         if not upload_times:
             errors.append(f"{key} has no artifact upload-time metadata in uv.lock")
-            continue
-
-        newest_upload = max(upload_times)
-        if newest_upload <= cutoff:
-            continue
-
-        if name in RELEASE_AGE_EXEMPT_PACKAGES:
-            allowed.append(f"{key} approved AI SDK exemption")
-            continue
-
-        exception_until = TEMPORARY_EXCEPTIONS.get(key)
-        if exception_until and datetime.now(UTC) < exception_until:
-            allowed.append(f"{key} until {exception_until.isoformat()}")
             continue
 
         bypass_advisories = security_bypasses.get(key)
@@ -164,9 +222,20 @@ def main() -> None:
             allowed.append(f"{key} fixing {', '.join(bypass_advisories)}")
             continue
 
+        cooldown_days, tier = _cooldown_days(
+            name,
+            version,
+            base_versions=base_versions,
+            base_direct=base_direct,
+            head_direct=head_direct,
+        )
+        newest_upload = max(upload_times)
+        if newest_upload <= now - timedelta(days=cooldown_days):
+            continue
+
         errors.append(
             f"{key} newest artifact {newest_upload.isoformat()} is inside the "
-            f"{COOLDOWN_DAYS}-day cooldown window"
+            f"{cooldown_days}-day cooldown window ({tier})"
         )
 
     if errors:
@@ -181,5 +250,13 @@ def main() -> None:
     print("Python locked packages satisfy the release-age policy.")
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base-root", type=Path)
+    parser.add_argument("--head-root", type=Path, default=ROOT)
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    main(base_root=args.base_root, head_root=args.head_root)
