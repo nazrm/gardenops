@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -96,7 +97,7 @@ def test_npm_release_age_rejects_external_bypass_without_opt_in(tmp_path):
 
     result = subprocess.run(
         ["node", "-e", f"require({json.dumps(str(script))}).loadSecurityReleaseBypasses()"],
-        env={"GARDENOPS_SECURITY_RELEASE_BYPASS": str(evidence)},
+        env={**os.environ, "GARDENOPS_SECURITY_RELEASE_BYPASS": str(evidence)},
         check=False,
         capture_output=True,
         text=True,
@@ -126,6 +127,7 @@ def test_npm_release_age_rejects_bypass_without_trusted_source(tmp_path):
     )
     script = ROOT / "scripts" / "check_npm_release_age.cjs"
     env = {
+        **os.environ,
         "GARDENOPS_SECURITY_RELEASE_BYPASS": str(evidence),
         "GARDENOPS_ALLOW_SECURITY_RELEASE_BYPASS_OVERRIDE": "true",
     }
