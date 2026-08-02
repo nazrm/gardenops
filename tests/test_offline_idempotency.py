@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, timedelta
 from threading import Barrier
 from unittest.mock import patch
 
@@ -320,6 +320,9 @@ class TestOfflineCreateIdempotency(BaseApiTest):
 
     def test_task_actions_replay_once_and_reject_changed_payloads(self) -> None:
         completed_task_id = ""
+        today = date.today()
+        snooze_until = (today + timedelta(days=7)).isoformat()
+        reschedule_to = (today + timedelta(days=14)).isoformat()
         actions = [
             ("complete", {"action": "complete", "notes": "Finished task"}, "completed"),
             ("skip", {"action": "skip", "notes": "Skip task"}, "skipped"),
@@ -327,7 +330,7 @@ class TestOfflineCreateIdempotency(BaseApiTest):
                 "snooze",
                 {
                     "action": "snooze",
-                    "snooze_until": "2026-08-01",
+                    "snooze_until": snooze_until,
                     "notes": "Snooze task",
                 },
                 "snoozed",
@@ -336,7 +339,7 @@ class TestOfflineCreateIdempotency(BaseApiTest):
                 "reschedule",
                 {
                     "action": "reschedule",
-                    "reschedule_to": "2026-08-15",
+                    "reschedule_to": reschedule_to,
                     "notes": "Reschedule task",
                 },
                 "pending",
@@ -379,9 +382,9 @@ class TestOfflineCreateIdempotency(BaseApiTest):
             action_notes = task_body["metadata"].get("action_notes", [])
             self.assertEqual(len(action_notes), 1)
             if action == "snooze":
-                self.assertEqual(task_body["snoozed_until"], "2026-08-01")
+                self.assertEqual(task_body["snoozed_until"], snooze_until)
             if action == "reschedule":
-                self.assertEqual(task_body["due_on"], "2026-08-15")
+                self.assertEqual(task_body["due_on"], reschedule_to)
             if action == "complete":
                 completed_task_id = task_id
 

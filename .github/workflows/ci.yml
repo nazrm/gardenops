@@ -72,6 +72,13 @@ jobs:
           python scripts/check_dependency_sources.py
           uv lock --check
           npm ci --dry-run --ignore-scripts --prefix frontend
+      - name: Validate Python lock consistency
+        if: github.event_name == 'pull_request' && steps.changes.outputs.python == 'true'
+        working-directory: /tmp/gardenops-pr-data
+        run: uv lock --check
+      - name: Validate npm lock consistency
+        if: github.event_name == 'pull_request' && steps.changes.outputs.npm == 'true'
+        run: npm ci --dry-run --ignore-scripts --prefix /tmp/gardenops-pr-data/frontend
       - name: Install trusted Python audit tooling
         if: github.event_name == 'pull_request' && steps.changes.outputs.python == 'true'
         working-directory: /tmp/gardenops-policy
