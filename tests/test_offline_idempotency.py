@@ -320,8 +320,9 @@ class TestOfflineCreateIdempotency(BaseApiTest):
 
     def test_task_actions_replay_once_and_reject_changed_payloads(self) -> None:
         completed_task_id = ""
-        snooze_until = (date.today() + timedelta(days=7)).isoformat()
-        reschedule_to = (date.today() + timedelta(days=14)).isoformat()
+        today = date.today()
+        snooze_until = (today + timedelta(days=7)).isoformat()
+        reschedule_to = (today + timedelta(days=14)).isoformat()
         actions = [
             ("complete", {"action": "complete", "notes": "Finished task"}, "completed"),
             ("skip", {"action": "skip", "notes": "Skip task"}, "skipped"),
