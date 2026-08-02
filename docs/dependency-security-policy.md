@@ -34,11 +34,12 @@ The gate runs before Backend and Frontend jobs and performs these checks without
 installing packages from the pull request:
 
 1. Validate Python and npm lock sources, hashes, and integrity metadata.
-2. Require every GitHub Action to use an approved identity pinned to a full
+2. Confirm changed manifests are consistent with their committed lockfiles.
+3. Require every GitHub Action to use an approved identity pinned to a full
    40-character commit SHA.
-3. Apply the seven-day age check to Action refs added by the pull request.
-4. Compare base and head vulnerability results.
-5. Apply the appropriate release-age tier only to changed locked versions.
+4. Apply the seven-day age check to Action refs added by the pull request.
+5. Compare base and head vulnerability results.
+6. Apply the appropriate release-age tier only to changed locked versions.
 
 Policy scripts execute from a detached base-branch checkout. PR manifests,
 lockfiles, and workflow files are copied into that checkout as untrusted data.
