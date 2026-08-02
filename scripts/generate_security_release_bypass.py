@@ -188,6 +188,26 @@ def build_python_bypasses(
     ], warnings
 
 
+def build_python_introduced_advisories(
+    base_audit: dict[str, Any], head_audit: dict[str, Any]
+) -> list[dict[str, str]]:
+    base_dependencies = _python_dependencies(base_audit)
+    head_dependencies = _python_dependencies(head_audit)
+    introduced: list[dict[str, str]] = []
+
+    for name, head_info in sorted(head_dependencies.items()):
+        base_advisories = base_dependencies.get(name, {}).get("advisories", set())
+        for advisory in sorted(head_info["advisories"] - base_advisories):
+            introduced.append(
+                {
+                    "package": name,
+                    "version": head_info["version"],
+                    "advisory": advisory,
+                }
+            )
+    return introduced
+
+
 def _package_name_from_lock_path(package_path: str) -> str | None:
     parts = package_path.split("/")
     try:
@@ -293,6 +313,59 @@ def _npm_audit_findings(
     return findings
 
 
+def _npm_advisory_severities(audit_data: dict[str, Any]) -> dict[tuple[str, str], str]:
+    severities: dict[tuple[str, str], str] = {}
+    vulnerabilities = audit_data.get("vulnerabilities", {})
+    if not isinstance(vulnerabilities, dict):
+        return severities
+
+    rank = {"unknown": 0, "low": 1, "moderate": 2, "high": 3, "critical": 4}
+    for key, vulnerability in vulnerabilities.items():
+        if not isinstance(key, str) or not isinstance(vulnerability, dict):
+            continue
+        name = vulnerability.get("name")
+        package_name = name if isinstance(name, str) else key
+        fallback = vulnerability.get("severity", "unknown")
+        fallback_severity = fallback if isinstance(fallback, str) else "unknown"
+        for via in vulnerability.get("via", []):
+            advisory = _advisory_id_from_npm_via(via)
+            if not advisory:
+                continue
+            via_severity = via.get("severity") if isinstance(via, dict) else None
+            severity = via_severity if isinstance(via_severity, str) else fallback_severity
+            severity = severity.lower()
+            current = severities.get((package_name, advisory), "unknown")
+            if rank.get(severity, 0) > rank.get(current, 0):
+                severities[(package_name, advisory)] = severity
+    return severities
+
+
+def build_npm_introduced_advisories(
+    base_audit: dict[str, Any],
+    head_audit: dict[str, Any],
+) -> list[dict[str, str]]:
+    base_severities = _npm_advisory_severities(base_audit)
+    head_severities = _npm_advisory_severities(head_audit)
+    rank = {"unknown": 0, "low": 1, "moderate": 2, "high": 3, "critical": 4}
+    introduced: list[dict[str, str]] = []
+
+    for (package, advisory), severity in sorted(head_severities.items()):
+        base_severity = base_severities.get((package, advisory), "unknown")
+        if rank.get(severity, 0) < rank["high"]:
+            continue
+        if rank.get(severity, 0) <= rank.get(base_severity, 0):
+            continue
+        introduced.append(
+            {
+                "package": package,
+                "advisory": advisory,
+                "severity": severity,
+                "change": "introduced" if base_severity == "unknown" else "worsened",
+            }
+        )
+    return introduced
+
+
 def _run_npm_audit(project_dir: Path) -> dict[str, Any]:
     result = _run(
         ["npm", "audit", "--package-lock-only", "--json"],
@@ -354,7 +427,7 @@ def build_npm_bypasses(
 
 def generate_python_bypasses(
     base_ref: str, temp_dir: Path, cache_dir: Path, head_root: Path = ROOT
-) -> tuple[list[dict[str, Any]], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str], list[dict[str, str]]]:
     base_dir = temp_dir / "base-python"
     _materialize_base(base_ref, ["pyproject.toml", "uv.lock"], base_dir)
 
@@ -365,12 +438,13 @@ def generate_python_bypasses(
 
     base_audit = _run_pip_audit(base_requirements, cache_dir)
     head_audit = _run_pip_audit(head_requirements, cache_dir)
-    return build_python_bypasses(base_audit, head_audit)
+    entries, warnings = build_python_bypasses(base_audit, head_audit)
+    return entries, warnings, build_python_introduced_advisories(base_audit, head_audit)
 
 
 def generate_npm_bypasses(
     base_ref: str, temp_dir: Path, head_root: Path = ROOT
-) -> tuple[list[dict[str, Any]], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str], list[dict[str, str]]]:
     base_dir = temp_dir / "base-npm"
     _materialize_base(base_ref, ["frontend/package.json", "frontend/package-lock.json"], base_dir)
 
@@ -380,7 +454,8 @@ def generate_npm_bypasses(
     head_lock = _load_package_lock(head_frontend)
     base_audit = _run_npm_audit(base_frontend)
     head_audit = _run_npm_audit(head_frontend)
-    return build_npm_bypasses(base_audit, head_audit, base_lock, head_lock)
+    entries, warnings = build_npm_bypasses(base_audit, head_audit, base_lock, head_lock)
+    return entries, warnings, build_npm_introduced_advisories(base_audit, head_audit)
 
 
 def parse_args() -> argparse.Namespace:
@@ -419,18 +494,22 @@ def main() -> None:
     warnings: list[str] = []
     python_entries: list[dict[str, Any]] = []
     npm_entries: list[dict[str, Any]] = []
+    python_introduced: list[dict[str, str]] = []
+    npm_introduced: list[dict[str, str]] = []
 
     with tempfile.TemporaryDirectory(prefix="gardenops-security-bypass-") as temp_path:
         temp_dir = Path(temp_path)
         head_root = args.head_root.resolve()
         if args.ecosystem in {"all", "python"}:
-            python_entries, python_warnings = generate_python_bypasses(
+            python_entries, python_warnings, python_introduced = generate_python_bypasses(
                 args.base_ref, temp_dir, args.pip_audit_cache_dir, head_root
             )
             warnings.extend(python_warnings)
 
         if args.ecosystem in {"all", "npm"}:
-            npm_entries, npm_warnings = generate_npm_bypasses(args.base_ref, temp_dir, head_root)
+            npm_entries, npm_warnings, npm_introduced = generate_npm_bypasses(
+                args.base_ref, temp_dir, head_root
+            )
             warnings.extend(npm_warnings)
 
     evidence = {
@@ -439,6 +518,10 @@ def main() -> None:
         "base_ref": args.base_ref,
         "python": python_entries,
         "npm": npm_entries,
+        "introduced": {
+            "python": python_introduced,
+            "npm": npm_introduced,
+        },
         "warnings": warnings,
     }
     args.output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -456,6 +539,18 @@ def main() -> None:
         print("Warnings:")
         for warning in warnings:
             print(f"- {warning}")
+
+    introduced = [
+        *(f"python {item['package']} {item['advisory']}" for item in python_introduced),
+        *(
+            f"npm {item['package']} {item['advisory']} ({item['severity']}, {item['change']})"
+            for item in npm_introduced
+        ),
+    ]
+    if introduced:
+        for item in introduced:
+            print(f"dependency advisory delta: {item}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -162,7 +162,6 @@ uv sync --frozen --group test --group lint
 uv run ruff check gardenops tests
 uv run ruff format --check gardenops tests
 uv run python scripts/check_env_docs.py
-python scripts/check_github_action_pins.py
 uv run python -c "import gardenops.db as db; db.run_migrations()"
 uv run python scripts/check_backend_integrity.py --format text
 uv run python -m pytest tests/ -q --tb=short
@@ -172,7 +171,7 @@ The GitHub CI frontend job maps to these local checks:
 
 ```bash
 cd frontend
-npm ci
+npm ci --ignore-scripts
 python ../scripts/check_innerhtml_sinks.py --root src --allowlist security/innerhtml_allowlist.txt
 npm run build
 cd ..
@@ -182,14 +181,22 @@ node scripts/check_no_sourcemaps.cjs frontend/dist
 For dependency PRs, also run the relevant audit locally when feasible:
 
 ```bash
-uv pip freeze | grep -v '^-e ' > /tmp/gardenops-backend-requirements.txt
-python -m pip install --upgrade "pip-audit==2.9.0"
-pip-audit --strict -r /tmp/gardenops-backend-requirements.txt
+uv export --frozen --all-groups --no-emit-project --format requirements.txt \
+  --output-file /tmp/gardenops-backend-requirements.txt --quiet
+uv run --frozen --group audit pip-audit --strict \
+  -r /tmp/gardenops-backend-requirements.txt
 
 cd frontend
-npm audit --audit-level=high
+npm audit --package-lock-only --audit-level=high
 cd ..
 ```
+
+The required `Dependency Policy` check compares the PR with its base branch,
+applies release age only to changed versions, and fails newly introduced
+advisories rather than unrelated baseline findings. See
+[dependency-security-policy.md](dependency-security-policy.md) for the exact
+tiers and security-remediation evidence rules. The scheduled full dependency
+audit is monitoring and is not a duplicate PR merge gate.
 
 Targeted validation is acceptable for low-risk PRs, but the final merge decision
 must say which full checks were skipped and why.
@@ -324,8 +331,11 @@ Handle common failures this way:
 - Backend tests: reproduce locally with the same test command before patching.
 - Frontend build: run `npm run build` in `frontend/`, then inspect TypeScript
   and security-check output.
-- Dependency audit: identify whether the PR itself introduced the advisory or
-  whether a separate dependency PR should merge first.
+- Dependency Policy: inspect the base/head evidence artifact and determine
+  whether the PR introduced or worsened the advisory, violated a release-age
+  tier, or changed an unapproved Action identity.
+- Scheduled dependency audit: fix the baseline advisory in a focused dependency
+  PR; do not make unrelated PRs absorb the baseline failure.
 - Workflow failures: inspect workflow diff as high risk before accepting any
   change that increases permissions or runs PR-controlled code with secrets.
 
@@ -354,7 +364,7 @@ For non-deploy PRs, do not touch the live service checkout.
 Do not merge until all are true:
 
 - The PR is mergeable and not a draft.
-- GitHub CI and dependency audits are green.
+- `Dependency Policy`, `Backend`, and `Frontend` are green.
 - Local validation passed or every skipped check is explicitly justified.
 - The diff contains no secrets, dumps, logs, media uploads, runtime output, or
   accidental generated files.

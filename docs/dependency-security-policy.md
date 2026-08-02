@@ -1,136 +1,114 @@
 # Dependency Security Policy
 
 GardenOps treats Python packages, npm packages, GitHub Actions, and audit tools
-as supply-chain dependencies. Routine dependency updates should wait until new
-versions have had time to be observed by the ecosystem, while known security
-fixes should move through a separate emergency path.
+as supply-chain dependencies. Pull requests have one mandatory `Dependency
+Policy` check. Backend and frontend CI wait for that check before installing the
+pull request's dependency graph.
 
-## Cooling-Off Rule
+## Release-Age Tiers
 
-- Routine dependency updates must wait at least 7 days after the package
-  artifact was published before they are accepted.
-- Major-version updates should wait at least 30 days unless they are part of an
-  approved security remediation.
-- Release age is measured from package artifact publish time, not from PR
-  creation time, merge time, or lockfile edit time.
-- The rule applies to direct dependencies, transitive additions, and GitHub
-  Action updates.
-- The direct Python SDK packages `anthropic` and `openai` are exempt from the
-  release-age wait so GardenOps can track provider API changes promptly. This
-  exact-name exception does not apply to their transitive dependencies or
-  similarly named packages, and it does not bypass lock consistency, source and
-  integrity validation, vulnerability audits, tests, or review.
-- Dependabot enforces the routine cooldown window for pip, npm, and GitHub
-  Actions updates.
-- GitHub Actions must be pinned to immutable commit SHAs. Keep a version comment
-  on each pinned action so the intended upstream ref is reviewable.
-- CI enforces pinned action refs with `scripts/check_github_action_pins.py`.
-  `uses:` entries must use a full 40-character commit SHA. Local repository
-  actions are not allowed in PR-triggered workflows unless this policy is
-  deliberately revised with a narrow allowlist.
+Release age is evaluated only for package versions or Action refs added by the
+pull request. Existing locked versions are not re-gated on every change.
 
-## Emergency Security Updates
+| Change | Minimum age |
+| --- | ---: |
+| `anthropic` or `openai` direct Python SDK update | 1 day |
+| Routine patch, minor, or transitive package update | 3 days |
+| GitHub Action commit | 7 days |
+| New direct dependency | 14 days |
+| Direct dependency major update | 14 days |
 
-Security updates may bypass the routine cooldown when a known advisory affects
-the locked dependency graph.
-The bypass must come from generated base/head audit evidence, not from PR title,
-labels, bot identity, or reviewer assertion alone.
+Age is measured from the package artifact publish time or Action commit time,
+not PR creation or lockfile edit time. The AI SDK tier applies only to the exact
+direct package names; their transitive dependencies and similarly named
+packages use the normal tiers.
 
-Before merging a cooldown bypass:
+Dependabot mirrors these windows where its configuration supports them. The AI
+SDKs are excluded from Dependabot's global pip cooldown so Dependabot can open
+the PR promptly; the `Dependency Policy` check still enforces their one-day
+minimum.
 
-1. Confirm the advisory applies to the locked package version.
-2. Prefer a resolver-compatible direct dependency update over a manual
-   transitive override.
-3. Run the relevant dependency audit after the update.
-4. Run focused tests for the affected surface, plus broader CI when practical.
-5. Review release notes, changelog, and maintainer/source identity for the new
-   version.
-6. Document the bypass reason in the PR description.
+## Pull Request Gate
 
-If the only available fix requires an unusual transitive override, document why
-the direct dependency cannot be updated first and add focused regression tests
-for the affected behavior.
+The gate runs before Backend and Frontend jobs and performs these checks without
+installing packages from the pull request:
 
-## Manifest And Lockfile Policy
+1. Validate Python and npm lock sources, hashes, and integrity metadata.
+2. Require every GitHub Action to use an approved identity pinned to a full
+   40-character commit SHA.
+3. Apply the seven-day age check to Action refs added by the pull request.
+4. Compare base and head vulnerability results.
+5. Apply the appropriate release-age tier only to changed locked versions.
 
-- `pyproject.toml` and `frontend/package.json` declare direct dependencies.
-- `uv.lock` and `frontend/package-lock.json` are the authoritative resolved
-  dependency graphs for installation and review.
-- Development, CI, deployment, and agent workflows must install from lockfiles:
-  `uv sync --frozen` for Python and `npm ci` for frontend dependencies.
-- Audit tools are dependencies too. They must be declared in project manifests
-  and installed from lockfiles rather than installed ad hoc in CI.
-- Routine Python lock refreshes are checked against package upload timestamps in
-  `uv.lock`. Routine npm lock refreshes query npm registry publish timestamps.
-  Newly published packages need a documented temporary exception until their
-  normal cooldown window has passed.
-- PRs that refresh lockfiles without the cooldown guard or without explaining a
-  security bypass should be rejected even if audits are green.
-- Lockfile changes must be reviewed as code because they can add new transitive
-  packages, sources, native extensions, or install scripts.
+Policy scripts execute from a detached base-branch checkout. PR manifests,
+lockfiles, and workflow files are copied into that checkout as untrusted data.
+Do not run a policy helper from the PR branch or install the PR dependency graph
+inside the policy job.
 
-## New Dependency Intake Checklist
+Approved Action identities are intentionally narrow and maintained in
+`scripts/check_github_action_pins.py`. Adding an Action requires reviewing its
+publisher, purpose, permissions, and pinned commit before adding its identity to
+the allowlist.
+
+## Advisory Delta
+
+The PR gate compares base and head audits instead of failing on vulnerabilities
+that already exist on the base branch:
+
+- Python fails when the head graph introduces a new advisory.
+- npm fails when the head graph introduces a high or critical advisory, or an
+  existing advisory worsens to high or critical.
+- Existing unchanged findings remain visible to the scheduled full audit but do
+  not block unrelated dependency PRs.
+
+The weekly `Dependency Audits` workflow scans the complete current graph, checks
+npm registry signatures, and publishes Python and frontend CycloneDX SBOMs. It
+is monitoring for baseline risk, not a duplicate pull-request release gate.
+
+## Verified Security Remediation
+
+A package update may bypass its release-age window only when generated base/head
+audit evidence proves that the exact version change removes an advisory from
+the locked graph. PR titles, labels, bot identity, and reviewer assertions are
+not bypass evidence.
+
+Generated evidence must name the package, exact old and new versions, fixed
+advisories, and trusted source (`pip-audit base/head diff` or `npm audit
+base/head diff`). The normal lock, source, Action, test, and build checks still
+apply.
+
+Before merging a security remediation:
+
+1. Confirm the advisory applies to the locked version.
+2. Prefer a resolver-compatible dependency update over a manual transitive
+   override.
+3. Review release notes and maintainer/source identity.
+4. Run the relevant focused tests and the complete required CI.
+5. Record the advisory and evidence in the PR description.
+
+## Dependency Intake
 
 Every new direct dependency should answer:
 
-- What job does this package do, and why is a smaller/local implementation not
-  appropriate?
-- Who publishes and maintains it?
-- Is the license acceptable?
-- Does it introduce native code, install scripts, postinstall downloads, or
-  network behavior?
-- How many transitive dependencies does it add?
-- Does it run in production, build/test/lint tooling, or CI only?
-- Does it have recent suspicious ownership, release, or package-name changes?
-- Are there known advisories, deprecated packages, or abandoned maintainers?
-- Can the data flow through the dependency include secrets, private media,
-  garden location data, or user-controlled content?
+- What job does it do, and why is a local or existing implementation unsuitable?
+- Who publishes and maintains it, and is its license acceptable?
+- Does it add native code, lifecycle scripts, downloads, or network behavior?
+- How large is its transitive graph and where does it execute?
+- Does it process secrets, private media, location data, or user content?
+- Are there advisories, ownership changes, deprecations, or abandonment signals?
 
-## Review And Ownership
+`pyproject.toml` and `frontend/package.json` declare direct dependencies.
+`uv.lock` and `frontend/package-lock.json` are the authoritative installation
+graphs. CI and deployment install with frozen/clean lockfile semantics. Audit
+tools must also be declared and locked rather than installed ad hoc.
 
-Dependency manifests, lockfiles, Dependabot config, GitHub Actions workflows,
-and this policy require owner review through `CODEOWNERS`.
+## Ownership And Recovery
 
-The dependency review workflow must fail PRs that introduce high or critical
-known vulnerabilities in runtime or development dependency scopes.
+Dependency manifests, lockfiles, Dependabot configuration, workflow files,
+policy scripts, and this document require owner review through `CODEOWNERS`.
+The protected `main` branch requires `Dependency Policy`, `Backend`, and
+`Frontend` status checks.
 
-CI must also reject lockfiles that resolve packages from unexpected registries,
-direct URLs, git sources, local paths, or registry packages without integrity
-metadata. Python and npm lockfiles must also reject packages whose uploaded
-artifacts or package versions are inside the 7-day cooldown window unless a
-temporary exception or generated security-bypass evidence is present in the
-release-age check.
-
-For pull requests, dependency policy scripts must execute from a trusted
-base-ref checkout. The PR's manifest and lockfile changes are copied into that
-checkout as data before source, integrity, and release-age checks run. Do not
-replace this with a helper script from the PR branch.
-
-When a PR changes the dependency policy scripts themselves, CI may be running
-against a base branch that does not yet support the newest script flags. In
-that bootstrap case, the workflow must fall back to trusted base-branch tooling
-without external bypass evidence rather than running PR-controlled audit code.
-The action-pin checker follows the same trust boundary: if the base checkout
-lacks that script, CI must fail closed instead of copying or running a checker
-from the PR branch.
-
-Generated release-age bypass evidence must include trusted audit source
-metadata, including `source: pip-audit base/head diff` for Python entries.
-Package/version-only bypass JSON is not sufficient evidence.
-
-The scheduled dependency audit should publish CycloneDX SBOM artifacts for the
-Python and frontend dependency graphs. The frontend audit must also run npm
-registry signature and attestation verification.
-
-## Rollback And Exceptions
-
-If a dependency update passes audit but breaks the app or introduces suspicious
-behavior:
-
-1. Revert the dependency PR or lockfile change.
-2. Re-run the relevant audit to confirm the revert state.
-3. If the revert reintroduces a known advisory, document the accepted risk and
-   mitigation while a safer fix is prepared.
-
-Policy exceptions belong in the PR description and should include the affected
-package, version, reason for bypass, validation performed, and follow-up owner.
+If an accepted update breaks the app or becomes suspicious, revert it and rerun
+the relevant audit. If the revert restores a known advisory, record the accepted
+risk and mitigation while preparing a safer fix.
