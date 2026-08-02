@@ -28,13 +28,13 @@
     "preview": "vite preview"
   },
   "devDependencies": {
-    "@emnapi/core": "^1.11.1",
-    "@emnapi/runtime": "^1.11.1",
+    "@emnapi/core": "^1.11.3",
+    "@emnapi/runtime": "^1.11.3",
     "@types/leaflet": "^1.9.21",
     "axe-core": "4.12.1",
-    "playwright-core": "1.61.0",
+    "playwright-core": "1.62.0",
     "typescript": "6.0.3",
-    "vite": "^8.0.16"
+    "vite": "^8.1.5"
   },
   "dependencies": {
     "@fullcalendar/core": "^6.1.21",
