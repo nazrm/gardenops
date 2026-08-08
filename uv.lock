@@ -425,7 +425,7 @@ requires-dist = [
     { name = "laspy", extras = ["lazrs"], specifier = ">=2.7.0" },
     { name = "numpy", specifier = ">=2.4.2" },
     { name = "openai", specifier = ">=2.44.0" },
-    { name = "pillow", specifier = ">=12.2.0" },
+    { name = "pillow", specifier = ">=12.3.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
     { name = "psycopg-pool", specifier = ">=3.3.1" },
     { name = "pyproj", specifier = ">=3.7.2" },
