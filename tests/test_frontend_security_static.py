@@ -113,25 +113,19 @@ class FrontendSecurityStaticTests(unittest.TestCase):
                 panel,
             )
 
-    def test_password_fallback_reveals_before_aborting_passkey(self) -> None:
+    def test_passkey_first_login_starts_ceremony_and_falls_back_to_password(self) -> None:
         gate = (ROOT / "frontend" / "src" / "features" / "authGate.ts").read_text(encoding="utf-8")
-        handler = re.search(
-            r"const revealPasswordFallback = \(\): void => \{(?P<body>.*?)\n  \};",
-            gate,
-            flags=re.DOTALL,
-        )
-        self.assertIsNotNone(handler)
-        body = handler.group("body")
-        self.assertLess(
-            body.index("revealPasswordLogin();"),
-            body.index("abortController?.abort();"),
-        )
-        self.assertIn('setLoginStep("passkey-ready")', gate)
-        self.assertIn('step === "passkey-ready"', gate)
+        self.assertNotIn("passwordFallbackBtn", gate)
+        self.assertNotIn("auth-gate-use-password", gate)
+        self.assertNotIn('passkey-ready', gate)
         self.assertIn(
-            'passwordFallbackBtn.addEventListener("click", revealPasswordFallback)',
+            'const options = await beginPasskeyLoginApi(username)',
             gate,
         )
+        self.assertIn('if (!options.passkey_available)', gate)
+        self.assertIn('await startPasskeyLogin(options, username)', gate)
+        self.assertIn('showPasskeyError(err, false)', gate)
+        self.assertIn('passkeyAbortController?.abort()', gate)
 
     def test_personal_settings_navigation_is_not_subscription_gated(self) -> None:
         app = (ROOT / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")

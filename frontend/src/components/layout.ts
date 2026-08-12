@@ -635,7 +635,7 @@ export function getAppShellMarkup(): string {
                 <option value="gone" data-i18n="plants.presence_filter_gone">${t("plants.presence_filter_gone")}</option>
                 <option value="unobserved" data-i18n="plants.presence_filter_unobserved">${t("plants.presence_filter_unobserved")}</option>
               </select>
-              <div class="mobile-sort-controls">
+              <div class="plant-sort-controls">
                 <select id="plants-sort-field" aria-label="${t("plants.sort_by")}" data-i18n-aria-label="plants.sort_by">
                   <option value="name" data-i18n="plants.sort_name">${t("plants.sort_name")}</option>
                   <option value="latin" data-i18n="plants.sort_latin">${t("plants.sort_latin")}</option>
@@ -645,6 +645,7 @@ export function getAppShellMarkup(): string {
                   <option value="light" data-i18n="plants.sort_light">${t("plants.sort_light")}</option>
                   <option value="plot_ids" data-i18n="plants.sort_plots">${t("plants.sort_plots")}</option>
                   <option value="year_planted" data-i18n="plants.sort_year">${t("plants.sort_year")}</option>
+                  <option value="added_at_ms" data-i18n="plants.sort_added">${t("plants.sort_added")}</option>
                 </select>
                 <button id="plants-sort-dir" class="sort-dir-btn" type="button" aria-label="${t("plants.sort_toggle_current", { direction: "asc" })}">${t("common.asc")}</button>
               </div>

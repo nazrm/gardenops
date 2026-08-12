@@ -4786,6 +4786,10 @@ body.moving-house .house-placeholder {
   box-shadow: none;
 }
 
+.auth-gate-identity-field input:focus-visible {
+  outline: none;
+}
+
 .auth-gate-card button[type="submit"] {
   margin-top: var(--sp-2);
   padding: 10px;
@@ -5280,7 +5284,8 @@ body.moving-house .house-placeholder {
   box-shadow: 0 0 0 3px var(--brand-muted);
 }
 
-.mobile-sort-controls {
+.mobile-sort-controls,
+.plant-sort-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--sp-2);
@@ -6864,6 +6869,7 @@ th.sort-desc::after {
 
   .filter-row {
     flex-direction: row;
+    flex-wrap: wrap;
   }
 
   .filter-row input {

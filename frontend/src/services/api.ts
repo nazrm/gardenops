@@ -1050,6 +1050,7 @@ export interface PasskeySummary {
 
 export interface PasskeyOptionsResponse {
   challenge_token: string;
+  passkey_available?: boolean;
   publicKey: unknown;
 }
 
