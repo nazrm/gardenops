@@ -117,15 +117,15 @@ class FrontendSecurityStaticTests(unittest.TestCase):
         gate = (ROOT / "frontend" / "src" / "features" / "authGate.ts").read_text(encoding="utf-8")
         self.assertNotIn("passwordFallbackBtn", gate)
         self.assertNotIn("auth-gate-use-password", gate)
-        self.assertNotIn('passkey-ready', gate)
+        self.assertNotIn("passkey-ready", gate)
         self.assertIn(
-            'const options = await beginPasskeyLoginApi(username)',
+            "const options = await beginPasskeyLoginApi(username)",
             gate,
         )
-        self.assertIn('if (!options.passkey_available)', gate)
-        self.assertIn('await startPasskeyLogin(options, username)', gate)
-        self.assertIn('showPasskeyError(err, false)', gate)
-        self.assertIn('passkeyAbortController?.abort()', gate)
+        self.assertIn("if (!options.passkey_available)", gate)
+        self.assertIn("await startPasskeyLogin(options, username)", gate)
+        self.assertIn("showPasskeyError(err, false)", gate)
+        self.assertIn("passkeyAbortController?.abort()", gate)
 
     def test_personal_settings_navigation_is_not_subscription_gated(self) -> None:
         app = (ROOT / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")

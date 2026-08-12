@@ -419,9 +419,7 @@ REQUIRED_COLUMN_DEFAULTS: dict[str, str | None] = {
     "auth_sessions.mfa_setup_required": "0",
     "auth_sessions.device_label": "''::text",
     "auth_sessions.location_hint": "''::text",
-    "plant_ownership.created_at_ms": (
-        "((EXTRACT(epoch FROM now()) * (1000)::numeric))::bigint"
-    ),
+    "plant_ownership.created_at_ms": ("((EXTRACT(epoch FROM now()) * (1000)::numeric))::bigint"),
 }
 
 REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
