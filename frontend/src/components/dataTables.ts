@@ -324,7 +324,7 @@ function cellClass(key: string): string {
 export type SortField =
   | "name" | "latin" | "bloom_month" | "color"
   | "hardiness" | "height_cm" | "light" | "year_planted"
-  | "deer_resistant" | "plot_ids";
+  | "deer_resistant" | "plot_ids" | "added_at_ms";
 
 export type SortDir = "asc" | "desc";
 
@@ -347,7 +347,7 @@ export function sortPlants(
       if (delta !== 0) return delta;
       return a.name.localeCompare(b.name);
     }
-    if (field === "height_cm") {
+    if (field === "height_cm" || field === "added_at_ms") {
       const va = a[field] ?? 0;
       const vb = b[field] ?? 0;
       const delta = (va - vb) * mul;

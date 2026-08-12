@@ -1920,7 +1920,11 @@ def auth_passkey_login_options(
         include_allow_credentials=False,
     )
     db.commit()
-    return {"challenge_token": challenge.token, "publicKey": public_key}
+    return {
+        "challenge_token": challenge.token,
+        "passkey_available": user_id is not None,
+        "publicKey": public_key,
+    }
 
 
 @router.post("/auth/passkeys/login/verify")

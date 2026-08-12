@@ -709,20 +709,13 @@ function renderLoginFlow(
   submitBtn.textContent = bootstrapRequired
     ? t("auth.create_account")
     : t("auth.sign_in_action");
-  const passwordFallbackBtn = document.createElement("button");
-  passwordFallbackBtn.type = "button";
-  passwordFallbackBtn.id = "auth-gate-use-password";
-  passwordFallbackBtn.className = "auth-gate-secondary-action";
-  passwordFallbackBtn.textContent = t("auth.use_password_instead");
-  passwordFallbackBtn.hidden = true;
 
   const passkeyAvailable = !bootstrapRequired && passkeysEnabled && isPasskeySupported();
-  type LoginStep = "username" | "passkey-ready" | "passkey" | "password";
+  type LoginStep = "username" | "passkey" | "password";
   let loginStep: LoginStep = bootstrapRequired ? "password" : "username";
   let passkeyAttempt = 0;
   let passkeyAbortController: AbortController | null = null;
-  let pendingPasskeyOptions: PasskeyOptionsResponse | null = null;
-  let pendingPasskeyUsername = "";
+  let usernameResolutionInFlight = false;
 
   // Load policy and init checklist if bootstrap
   if (bootstrapRequired) {
@@ -753,7 +746,6 @@ function renderLoginFlow(
     checklistContainer,
     mfaWrap,
     submitBtn,
-    passwordFallbackBtn,
   );
 
   const setLoginStep = (step: LoginStep): void => {
@@ -767,18 +759,11 @@ function renderLoginFlow(
 
     passwordLabel.hidden = true;
     passwordInput.required = false;
-    passwordFallbackBtn.hidden = step !== "passkey-ready";
 
     if (step === "username") {
       passwordInput.value = "";
       submitBtn.disabled = false;
       submitBtn.textContent = t("auth.enter_action");
-      return;
-    }
-
-    if (step === "passkey-ready") {
-      submitBtn.disabled = false;
-      submitBtn.textContent = t("auth.use_passkey");
       return;
     }
 
@@ -827,17 +812,12 @@ function renderLoginFlow(
     passwordInput.focus();
   };
 
-  const revealPasswordFallback = (): void => {
-    if (loginStep !== "passkey-ready") return;
+  const cancelPasskeyAttempt = (): void => {
     passkeyAttempt += 1;
     const abortController = passkeyAbortController;
     passkeyAbortController = null;
-    pendingPasskeyOptions = null;
-    pendingPasskeyUsername = "";
-    revealPasswordLogin();
     abortController?.abort();
   };
-  passwordFallbackBtn.addEventListener("click", revealPasswordFallback);
 
   const startPasskeyLogin = async (
     options: PasskeyOptionsResponse,
@@ -855,10 +835,12 @@ function renderLoginFlow(
         revealPasswordLogin();
         return;
       }
-      await finishPasskeySignIn(options.challenge_token, credential);
+      await finishPasskeySignIn(options.challenge_token, credential, attempt);
     } catch (err) {
       if (attempt !== passkeyAttempt || loginStep !== "passkey") return;
-      showPasskeyError(err, true);
+      // A missing credential and a dismissed browser prompt both use
+      // NotAllowedError. Keep the fallback quiet so it feels like one flow.
+      showPasskeyError(err, false);
       revealPasswordLogin();
     } finally {
       if (passkeyAbortController === abortController) passkeyAbortController = null;
@@ -866,21 +848,28 @@ function renderLoginFlow(
   };
 
   const resolveUsernameLoginStep = async (username: string): Promise<void> => {
+    const attempt = ++passkeyAttempt;
+    usernameResolutionInFlight = true;
     submitBtn.disabled = true;
     submitBtn.textContent = t("auth.signing_in");
     removeAuthGateError();
 
     try {
       if (passkeyAvailable) {
-        pendingPasskeyOptions = await beginPasskeyLoginApi(username);
-        pendingPasskeyUsername = username;
-        setLoginStep("passkey-ready");
+        const options = await beginPasskeyLoginApi(username);
+        if (attempt !== passkeyAttempt || usernameInput.value.trim() !== username) return;
+        if (!options.passkey_available) {
+          revealPasswordLogin();
+          return;
+        }
+        await startPasskeyLogin(options, username);
         return;
       }
       revealPasswordLogin();
     } catch {
       revealPasswordLogin();
     } finally {
+      usernameResolutionInFlight = false;
       if (gate.isConnected) {
         submitBtn.disabled = false;
       }
@@ -890,11 +879,13 @@ function renderLoginFlow(
   const finishPasskeySignIn = async (
     challengeToken: string,
     credential: unknown,
+    attempt: number,
   ): Promise<void> => {
     const result = await finishPasskeyLoginApi(
       challengeToken,
       credential,
     );
+    if (attempt !== passkeyAttempt || loginStep !== "passkey") return;
     if (
       result.status === "password_change_required"
       || result.user.must_change_password
@@ -919,18 +910,6 @@ function renderLoginFlow(
     }
     if (!bootstrapRequired && loginStep === "username") {
       await resolveUsernameLoginStep(username);
-      return;
-    }
-    if (!bootstrapRequired && loginStep === "passkey-ready") {
-      const options = pendingPasskeyOptions;
-      const passkeyUsername = pendingPasskeyUsername;
-      pendingPasskeyOptions = null;
-      pendingPasskeyUsername = "";
-      if (!options || !passkeyUsername) {
-        revealPasswordLogin();
-        return;
-      }
-      await startPasskeyLogin(options, passkeyUsername);
       return;
     }
     if (!bootstrapRequired && loginStep === "passkey") {
@@ -999,10 +978,14 @@ function renderLoginFlow(
   });
 
   usernameInput.addEventListener("input", () => {
-    if (bootstrapRequired || awaitingMfa || loginStep === "username") {
+    if (bootstrapRequired || awaitingMfa) {
       return;
     }
     removeAuthGateError();
+    if (usernameResolutionInFlight || loginStep === "passkey") {
+      cancelPasskeyAttempt();
+      usernameResolutionInFlight = false;
+    }
     setLoginStep("username");
   });
 }
