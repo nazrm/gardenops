@@ -420,11 +420,8 @@ PLANT_LOOKUP_SYSTEM_PROMPT = (
     "'orkidéer' for orchids, 'prydgress' for ornamental grasses. "
     "For hardiness use RHS ratings (H1-H7). "
     "For light use Norwegian: 'sol', 'halvskygge', 'skygge', or combinations. "
-    "For link: provide a URL to a well-known reference page. "
-    "Prefer rhs.org.uk/plants/ for the latin name, or en.wikipedia.org/wiki/. "
-    "ONLY provide a URL you are confident is real and correct. "
-    "If unsure, return an empty string for link. "
-    "NEVER fabricate or guess URLs. "
+    "For link: always return an empty string; GardenOps resolves reference links "
+    "independently after the botanical identity is returned. "
     "If you cannot identify the plant, still call the tool with your best guess "
     "and set the name to what the user asked for."
 )
