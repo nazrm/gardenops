@@ -140,6 +140,7 @@ balance becomes a problem.
 - AI chat client contract regressions
 - map-object editor contract regressions
 - Attention Today panel contract regressions
+- iOS Home Screen metadata, manifest, and icon regressions
 - TypeScript errors
 - production bundling errors
 - sourcemap leakage, including inline `sourceMappingURL` references
