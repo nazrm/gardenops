@@ -427,6 +427,7 @@ retention, backups, restore drills, and provider keys before installing them.
 | `gardenops/` | FastAPI application, routers, services, security, and database access |
 | `frontend/src/` | TypeScript browser app |
 | `migrations/` | PostgreSQL schema migrations |
+| `scripts/repair_rhs_plant_links.py` | Dry-run-first exact RHS reference audit and repair |
 | `tests/` | Backend, integration, and public-runtime tests |
 | `scripts/` | Repository checks and operational helpers |
 | `deploy/` | Example systemd and nginx deployment files |
