@@ -267,6 +267,10 @@ body.auth-gate-active {
   outline-offset: 2px;
 }
 
+.auth-gate-identity-field input:focus-visible {
+  outline: none;
+}
+
 .adm-identity-status {
   min-height: 20px;
   margin: 0 0 12px;

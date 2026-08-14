@@ -521,6 +521,25 @@ async function exercisePlantAndSavedView(
   const plantId = await row.getAttribute("data-plt-id");
   assert(plantId, "Created plant row has no plant ID");
 
+  const sortField = page.locator("#plants-sort-field");
+  const sortDirection = page.locator("#plants-sort-dir");
+  const originalSortField = await sortField.inputValue();
+  const records = page.locator(profile === "mobile"
+    ? "#plants-mobile-list article[data-plt-id]"
+    : "#plants-table-body tr[data-plt-id]");
+  await sortField.selectOption("added_at_ms");
+  let directionChanged = false;
+  if (await records.first().getAttribute("data-plt-id") !== plantId) {
+    await sortDirection.click();
+    directionChanged = true;
+  }
+  await waitFor(
+    async () => await records.first().getAttribute("data-plt-id") === plantId,
+    `${profile} newest plant date-added sort`,
+  );
+  await sortField.selectOption(originalSortField);
+  if (directionChanged) await sortDirection.click();
+
   await row.locator("[data-edit-plt]").click();
   dialog = page.locator("#edit-plant-form");
   await visible(dialog, "edit plant form");

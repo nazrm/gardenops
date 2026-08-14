@@ -34,6 +34,7 @@ export interface Plant {
   care_planting: string;
   care_maintenance: string;
   care_notes: string;
+  added_at_ms: number;
   quantity?: number;
   plot_ids?: string[];
   missing_plot_ids?: string[];
