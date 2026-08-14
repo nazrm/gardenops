@@ -47,6 +47,10 @@ from gardenops.services.ai_provider import (
     lookup_plant_with_ai,
     require_ai_provider_configured,
 )
+from gardenops.services.rhs_plant_resolver import (
+    normalize_botanical_name,
+    resolve_rhs_reference,
+)
 
 router = APIRouter()
 
@@ -137,18 +141,13 @@ def _normalize_hostname(hostname: str | None) -> str:
 
 
 def _page_mentions_plant(body: str, path: str, latin: str) -> bool:
-    """Check if page body or URL path references the plant's latin name."""
-    latin_lower = latin.lower()
-    genus = latin_lower.split()[0] if " " in latin_lower else ""
-    body_lower = body.lower()
-    path_lower = path.lower().replace("-", " ")
-
-    if latin_lower in body_lower or latin_lower in path_lower:
-        return True
-    # Genus-only fallback (handles taxonomic reclassifications)
-    if genus and (genus in body_lower or genus in path_lower):
-        return True
-    return False
+    """Check for the complete normalized botanical name, never a genus fallback."""
+    latin_key = normalize_botanical_name(latin)
+    if not latin_key:
+        return False
+    body_key = normalize_botanical_name(body)
+    path_key = normalize_botanical_name(urllib.parse.unquote(path).replace("-", " "))
+    return latin_key in body_key or latin_key in path_key
 
 
 def _validate_plant_link(link: str, latin: str = "") -> str:
@@ -364,10 +363,17 @@ def ai_plant_lookup(body: LookupRequest, request: Request, db: DB) -> dict:
         record_security_event("ai_provider_failures_plant_lookup")
         raise HTTPException(502, "AI provider request failed") from exc
 
-    link = str(data.get("link", ""))
-    if link:
-        latin = str(data.get("latin", ""))
-        data["link"] = _validate_plant_link(link, latin=latin)
+    resolution = resolve_rhs_reference(
+        latin=str(data.get("latin", "")),
+        common_name=str(data.get("name", "")),
+    )
+    data["link"] = resolution.canonical_url if resolution.verified else ""
+    if not resolution.verified:
+        _log.info(
+            "RHS plant link not resolved for AI lookup: status=%s reason=%s",
+            resolution.status,
+            resolution.reason,
+        )
     return data
 
 

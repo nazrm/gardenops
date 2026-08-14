@@ -581,16 +581,6 @@ async function signInThroughSessionForm(page, username, password) {
   await form.locator("input[name='username']").fill(username);
   await form.locator("input[name='username']").press("Enter");
   const passwordInput = form.locator("input[name='password']");
-  const passwordFallback = form.locator("#auth-gate-use-password");
-  await visible(
-    form.locator("input[name='password']:visible, #auth-gate-use-password:visible").first(),
-    "session sign-in recovery control",
-  );
-  if (!(await passwordInput.isVisible())) {
-    await visible(passwordFallback, "session sign-in password fallback");
-    await passwordFallback.focus();
-    await passwordFallback.press("Enter");
-  }
   await visible(passwordInput, "session sign-in password field");
   await passwordInput.fill(password);
   await passwordInput.press("Enter");

@@ -90,6 +90,18 @@ class MigrationGuardTests(unittest.TestCase):
             Path(__file__).parents[1] / "migrations/0028_auth_session_device_metadata.sql"
         ).read_text(encoding="utf-8")
 
+    @staticmethod
+    def _migration_0029_sql() -> str:
+        return (
+            Path(__file__).parents[1] / "migrations/0029_plant_ownership_created_at.sql"
+        ).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _migration_0030_sql() -> str:
+        return (
+            Path(__file__).parents[1] / "migrations/0030_plant_external_references.sql"
+        ).read_text(encoding="utf-8")
+
     def _assert_disposable_database(self, conn: db.DbConn) -> None:
         expected_marker = os.environ.get("GARDENOPS_DISPOSABLE_POSTGRES_MARKER", "")
         expected_system_identifier = os.environ.get(
@@ -245,7 +257,7 @@ class MigrationGuardTests(unittest.TestCase):
         finally:
             db.return_db(conn)
 
-        self.assertEqual(versions, list(range(1, 29)))
+        self.assertEqual(versions, list(range(1, 31)))
         self.assertEqual(diagnostics["mode"], "verified-baseline")
         self.assertTrue(diagnostics["can_stamp_migrations"])
         self.assertEqual(diagnostics["missing"], [])
@@ -276,7 +288,7 @@ class MigrationGuardTests(unittest.TestCase):
             finally:
                 db.return_db(conn)
 
-            self.assertEqual(versions, set(range(1, 29)))
+            self.assertEqual(versions, set(range(1, 31)))
             self.assertEqual(
                 snapshot.column_types["auth_sessions.device_label"],
                 "text",
@@ -421,6 +433,32 @@ class MigrationGuardTests(unittest.TestCase):
             conn.rollback()
             db.return_db(conn)
 
+    def test_0029_sql_rerun_is_idempotent(self) -> None:
+        conn = db.get_db()
+        try:
+            self._assert_disposable_database(conn)
+            conn.execute(self._migration_0029_sql())
+            conn.execute(self._migration_0029_sql())
+            snapshot = collect_schema_snapshot(conn)
+            self.assertEqual(missing_schema_parts(snapshot), [])
+            self.assertFalse(snapshot.column_nullability["plant_ownership.created_at_ms"])
+            self.assertEqual(snapshot.column_types["plant_ownership.created_at_ms"], "bigint")
+            self.assertIsNotNone(snapshot.column_defaults["plant_ownership.created_at_ms"])
+        finally:
+            conn.rollback()
+            db.return_db(conn)
+
+    def test_0030_sql_rerun_is_idempotent(self) -> None:
+        conn = db.get_db()
+        try:
+            self._assert_disposable_database(conn)
+            conn.execute(self._migration_0030_sql())
+            conn.execute(self._migration_0030_sql())
+            self.assertEqual(missing_schema_parts(collect_schema_snapshot(conn)), [])
+        finally:
+            conn.rollback()
+            db.return_db(conn)
+
     def test_empty_bootstrap_signature_runs_migrations_normally(self) -> None:
         snapshot = SchemaSnapshot(
             tables={"schema_migrations"},
@@ -460,6 +498,40 @@ class MigrationGuardTests(unittest.TestCase):
         self.assertEqual(diagnostics["mode"], "verified-upgrade-baseline")
         self.assertTrue(diagnostics["can_stamp_migrations"])
         self.assertEqual(diagnostics["stamp_through"], 27)
+
+    def test_pre_0029_bootstrap_signature_stamps_only_through_0028(self) -> None:
+        snapshot = self._complete_schema_snapshot()
+        snapshot.columns["plant_ownership"].remove("created_at_ms")
+        snapshot.column_nullability.pop("plant_ownership.created_at_ms")
+        snapshot.column_types.pop("plant_ownership.created_at_ms")
+        snapshot.column_defaults.pop("plant_ownership.created_at_ms")
+
+        diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+        self.assertEqual(diagnostics["mode"], "verified-upgrade-baseline")
+        self.assertTrue(diagnostics["can_stamp_migrations"])
+        self.assertEqual(diagnostics["stamp_through"], 28)
+
+    def test_pre_0030_bootstrap_signature_stamps_only_through_0029(self) -> None:
+        snapshot = self._complete_schema_snapshot()
+        snapshot.tables.remove("plant_external_references")
+        snapshot.columns.pop("plant_external_references")
+        snapshot.indexes.remove("idx_plant_external_references_status")
+        snapshot.constraints.difference_update(
+            {
+                "plant_external_references_pkey",
+                "fk_plant_external_references_plant",
+                "ck_plant_external_references_source",
+                "ck_plant_external_references_match_type",
+                "ck_plant_external_references_status",
+            }
+        )
+
+        diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+        self.assertEqual(diagnostics["mode"], "verified-upgrade-baseline")
+        self.assertTrue(diagnostics["can_stamp_migrations"])
+        self.assertEqual(diagnostics["stamp_through"], 29)
 
     def test_auth_session_schema_signature_rejects_missing_table_or_column(self) -> None:
         missing_table = self._complete_schema_snapshot()
@@ -658,7 +730,7 @@ class MigrationGuardTests(unittest.TestCase):
         finally:
             db.return_db(conn)
 
-        self.assertEqual(versions, set(range(1, 29)))
+        self.assertEqual(versions, set(range(1, 31)))
         self.assertEqual(table["name"], "offline_create_operations")
         self.assertEqual(index["name"], "ux_weather_alerts_identity")
 
