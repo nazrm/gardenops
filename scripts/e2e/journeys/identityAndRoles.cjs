@@ -299,12 +299,6 @@ async function enterPasswordLoginStage(page, username, password) {
     await form.locator("button[type='submit']").click();
   }
   const passwordInput = form.locator("input[name='password']");
-  const passwordFallback = form.locator("#auth-gate-use-password");
-  await visible(
-    form.locator("input[name='password']:visible, #auth-gate-use-password:visible").first(),
-    "password fallback",
-  );
-  if (!(await passwordInput.isVisible())) await passwordFallback.click();
   await visible(passwordInput, "password field");
   await passwordInput.fill(password);
   const pending = responseFor(page, "POST", "/api/auth/login");
@@ -513,36 +507,23 @@ async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticat
   await signOut(page, "passkey test", guarded);
   const gate = page.locator("#auth-gate-form");
   await gate.locator("input[name='username']").fill(fixture.roles.admin);
-  await gate.locator("button[type='submit']").click();
-  let passkeyAction = gate.locator("button[type='submit']").filter({ hasText: "Use passkey" });
-  await visible(passkeyAction, "explicit passwordless passkey action");
-
   await virtualAuthenticator.setUserVerified(false);
   const rejectedMarks = diagnosticMarks(diagnostics);
-  let rejectedResponse = null;
-  const captureRejected = (response) => {
-    if (response.request().method() === "POST"
-      && new URL(response.url()).pathname === "/api/auth/passkeys/login/verify") {
-      rejectedResponse = response;
-    }
-  };
-  page.on("response", captureRejected);
-  await passkeyAction.click();
-  await page.waitForTimeout(500);
-  page.off("response", captureRejected);
-  if (rejectedResponse) {
-    assert(rejectedResponse.status() === 400 || rejectedResponse.status() === 401,
-      `Rejected user verification returned ${rejectedResponse.status()}`);
-    await discardExpectedUiFailure(
-      page,
-      diagnostics,
-      rejectedMarks,
-      "POST",
-      "/api/auth/passkeys/login/verify",
-      rejectedResponse.status(),
-    );
-  }
+  const rejectedPending = responseFor(page, "POST", "/api/auth/passkeys/login/verify");
+  await gate.locator("button[type='submit']").click();
+  const rejectedResponse = await rejectedPending;
+  assert(rejectedResponse.status() === 400 || rejectedResponse.status() === 401,
+    `Rejected user verification returned ${rejectedResponse.status()}`);
+  await discardExpectedUiFailure(
+    page,
+    diagnostics,
+    rejectedMarks,
+    "POST",
+    "/api/auth/passkeys/login/verify",
+    rejectedResponse.status(),
+  );
   assert(await gate.isVisible(), "Rejected user verification left the sign-in gate");
+  await visible(gate.locator("input[name='password']"), "password fallback after rejected passkey");
   const retryMarks = diagnosticMarks(diagnostics);
   await page.reload({ waitUntil: "domcontentloaded" });
   await visible(gate, "user-verification retry gate");
@@ -555,13 +536,9 @@ async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticat
     401,
   );
   await gate.locator("input[name='username']").fill(fixture.roles.admin);
-  await gate.locator("button[type='submit']").click();
-  passkeyAction = gate.locator("button[type='submit']").filter({ hasText: "Use passkey" });
-  await visible(passkeyAction, "user-verification retry action");
-
   await virtualAuthenticator.setUserVerified(true);
   const loginPending = responseFor(page, "POST", "/api/auth/passkeys/login/verify");
-  await passkeyAction.click();
+  await gate.locator("button[type='submit']").click();
   assert((await loginPending).ok(), "Passwordless passkey sign-in failed");
   await waitFor(() => page.locator(".auth-gate").count().then((count) => count === 0),
     "passwordless sign-in completion");
@@ -589,29 +566,11 @@ async function revokePasskey(page, fixture, guarded, adminPassword) {
   await signOut(page, "revoked passkey", guarded);
   const gate = page.locator("#auth-gate-form");
   await gate.locator("input[name='username']").fill(fixture.roles.admin);
+  const optionsPending = responseFor(page, "POST", "/api/auth/passkeys/login/options");
   await gate.locator("button[type='submit']").click();
-  const passkeyAction = gate.locator("button[type='submit']").filter({ hasText: "Use passkey" });
-  await visible(passkeyAction, "revoked passkey sign-in action");
-  const marks = diagnosticMarks(diagnostics);
-  const deniedPending = responseFor(page, "POST", "/api/auth/passkeys/login/verify");
-  await passkeyAction.click();
-  const denied = await deniedPending;
-  assert(denied.status() === 401, `Revoked passkey authentication returned ${denied.status()}`);
-  await discardExpectedUiFailure(
-    page,
-    diagnostics,
-    marks,
-    "POST",
-    "/api/auth/passkeys/login/verify",
-    401,
-  );
+  assert((await optionsPending).ok(), "Revoked passkey options request failed");
   assert(await gate.isVisible(), "Revoked passkey denial left the sign-in gate");
   const passwordInput = gate.locator("input[name='password']");
-  await visible(
-    gate.locator("input[name='password']:visible, #auth-gate-use-password:visible").first(),
-    "revoked passkey password fallback",
-  );
-  if (!(await passwordInput.isVisible())) await gate.locator("#auth-gate-use-password").click();
   await visible(passwordInput, "revoked passkey password field");
   await passwordInput.fill(adminPassword);
   const loginPending = responseFor(page, "POST", "/api/auth/login");

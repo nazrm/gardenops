@@ -476,7 +476,12 @@ def _fetch_plant_rows(
     plt_ids: list[str] | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    sql = "SELECT p.* FROM plants p LEFT JOIN plant_ownership po ON po.plt_id = p.plt_id WHERE 1=1"
+    sql = (
+        "SELECT p.*, po.created_at_ms AS added_at_ms "
+        "FROM plants p "
+        "LEFT JOIN plant_ownership po ON po.plt_id = p.plt_id "
+        "WHERE 1=1"
+    )
     params: list[object] = []
     scope_sql, scope_params = _plant_scope_sql(context)
     sql += scope_sql
@@ -554,6 +559,7 @@ def _serialize_plant_rows(
     result = []
     for r in rows:
         d = dict(r)
+        d["added_at_ms"] = int(d["added_at_ms"]) if d.get("added_at_ms") is not None else 0
         plant_seen_growing = None if d.get("seen_growing") is None else bool(d["seen_growing"])
         plant_seen_growing_date = (
             str(d["seen_growing_date"]) if d.get("seen_growing_date") else None

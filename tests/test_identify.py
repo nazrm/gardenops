@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 from PIL import Image
 
 from gardenops.rate_limit import acquire_concurrency_slot
+from gardenops.services.rhs_plant_resolver import RhsResolution
 from tests.base import BaseApiTest
 
 
@@ -704,6 +705,53 @@ class TestDiagnosePlant(BaseApiTest):
                 headers={"Content-Type": "image/jpeg"},
             )
         self.assertEqual(resp.status_code, 422)
+
+
+class TestPlantLookupReferenceResolution(BaseApiTest):
+    @patch("gardenops.routers.ai.resolve_rhs_reference")
+    @patch("gardenops.routers.ai.lookup_plant_with_ai")
+    def test_lookup_uses_verified_rhs_link_instead_of_model_link(
+        self,
+        mock_lookup: MagicMock,
+        mock_resolve: MagicMock,
+    ) -> None:
+        mock_lookup.return_value = {
+            "name": "Asiatisk lilje",
+            "latin": "Lilium 'Blacklist'",
+            "category": "lok",
+            "bloom_month": "juli",
+            "color": "rod",
+            "hardiness": "H6",
+            "height_cm": 90,
+            "light": "sol",
+            "link": "https://www.rhs.org.uk/plants/lilium",
+        }
+        mock_resolve.return_value = RhsResolution(
+            status="verified",
+            match_type="exact",
+            reason="unique_exact_botanical_match",
+            query="Lilium 'Blacklist'",
+            candidate_count=1,
+            external_id="506653",
+            canonical_url=("https://www.rhs.org.uk/plants/506653/lilium-blacklist-iab/details"),
+            matched_botanical_name="Lilium 'Blacklist' (Ia/b)",
+        )
+
+        with patch.dict(os.environ, _DIAGNOSE_ENV):
+            response = self.client.post(
+                "/api/ai/plant-lookup",
+                json={"query": "Lilium Blacklist"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["link"],
+            "https://www.rhs.org.uk/plants/506653/lilium-blacklist-iab/details",
+        )
+        mock_resolve.assert_called_once_with(
+            latin="Lilium 'Blacklist'",
+            common_name="Asiatisk lilje",
+        )
 
 
 class TestLLMProviderDisabled(BaseApiTest):

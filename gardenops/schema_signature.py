@@ -25,6 +25,7 @@ REQUIRED_TABLES = (
     "plot_ownership",
     "plants",
     "plant_ownership",
+    "plant_external_references",
     "garden_tasks",
     "garden_task_plots",
     "garden_issues",
@@ -167,7 +168,21 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     ),
     "plot_ownership": ("plot_id", "owner_user_id", "garden_id"),
     "plants": ("plt_id", "name", "category"),
-    "plant_ownership": ("plt_id", "owner_user_id", "garden_id"),
+    "plant_ownership": ("plt_id", "owner_user_id", "garden_id", "created_at_ms"),
+    "plant_external_references": (
+        "plt_id",
+        "source",
+        "external_id",
+        "external_entity_id",
+        "canonical_url",
+        "matched_botanical_name",
+        "matched_common_name",
+        "match_type",
+        "verification_status",
+        "verification_reason",
+        "metadata_json",
+        "verified_at_ms",
+    ),
     "garden_tasks": ("id", "garden_id", "created_by_user_id", "completed_by_user_id"),
     "garden_task_plots": ("task_id", "plot_id"),
     "garden_issues": ("id", "garden_id", "created_by_user_id", "resolved_by_user_id"),
@@ -283,6 +298,7 @@ REQUIRED_INDEXES = (
     "idx_garden_map_object_units_garden",
     "idx_plot_ownership_garden",
     "idx_plant_ownership_garden",
+    "idx_plant_external_references_status",
     "idx_gipl_plot",
     "idx_gtpl_plot",
     "idx_gjepl_plot",
@@ -334,6 +350,11 @@ REQUIRED_CONSTRAINTS = (
     "fk_garden_map_object_units_object_garden",
     "plants_pkey",
     "plant_ownership_pkey",
+    "plant_external_references_pkey",
+    "fk_plant_external_references_plant",
+    "ck_plant_external_references_source",
+    "ck_plant_external_references_match_type",
+    "ck_plant_external_references_status",
     "ux_inventory_items_id_garden",
     "ux_inventory_tx_id_item_garden",
     "fk_inventory_tx_garden",
@@ -391,6 +412,7 @@ REQUIRED_COLUMN_NULLABILITY: dict[str, bool] = {
     "auth_sessions.mfa_setup_required": False,
     "auth_sessions.device_label": False,
     "auth_sessions.location_hint": False,
+    "plant_ownership.created_at_ms": False,
 }
 
 REQUIRED_COLUMN_TYPES: dict[str, str] = {
@@ -404,6 +426,7 @@ REQUIRED_COLUMN_TYPES: dict[str, str] = {
     "auth_sessions.mfa_setup_required": "bigint",
     "auth_sessions.device_label": "text",
     "auth_sessions.location_hint": "text",
+    "plant_ownership.created_at_ms": "bigint",
 }
 
 REQUIRED_COLUMN_DEFAULTS: dict[str, str | None] = {
@@ -417,6 +440,7 @@ REQUIRED_COLUMN_DEFAULTS: dict[str, str | None] = {
     "auth_sessions.mfa_setup_required": "0",
     "auth_sessions.device_label": "''::text",
     "auth_sessions.location_hint": "''::text",
+    "plant_ownership.created_at_ms": ("((EXTRACT(epoch FROM now()) * (1000)::numeric))::bigint"),
 }
 
 REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
@@ -679,6 +703,16 @@ _MIGRATION_0028_COLUMNS = {
     "auth_sessions.device_label",
     "auth_sessions.location_hint",
 }
+_MIGRATION_0029_COLUMN = "plant_ownership.created_at_ms"
+_MIGRATION_0030_TABLE = "plant_external_references"
+_MIGRATION_0030_INDEXES = {"idx_plant_external_references_status"}
+_MIGRATION_0030_CONSTRAINTS = {
+    "plant_external_references_pkey",
+    "fk_plant_external_references_plant",
+    "ck_plant_external_references_source",
+    "ck_plant_external_references_match_type",
+    "ck_plant_external_references_status",
+}
 _MIGRATION_0022_CONSTRAINTS = {
     constraint
     for constraint in REQUIRED_CONSTRAINTS
@@ -782,6 +816,37 @@ def _migration_0028_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
     return not ({"device_label", "location_hint"} & snapshot.columns.get("auth_sessions", set()))
 
 
+def _is_migration_0029_part(part: Mapping[str, object]) -> bool:
+    return str(part.get("object", "")) == _MIGRATION_0029_COLUMN
+
+
+def _migration_0029_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
+    return "created_at_ms" not in snapshot.columns.get("plant_ownership", set())
+
+
+def _is_migration_0030_part(part: Mapping[str, object]) -> bool:
+    kind = str(part.get("kind", ""))
+    obj = str(part.get("object", ""))
+    if kind == "table":
+        return obj == _MIGRATION_0030_TABLE
+    if kind == "column":
+        return obj.startswith(f"{_MIGRATION_0030_TABLE}.")
+    if kind == "index":
+        return obj in _MIGRATION_0030_INDEXES
+    if kind == "constraint":
+        return obj in _MIGRATION_0030_CONSTRAINTS
+    return False
+
+
+def _migration_0030_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
+    return (
+        _MIGRATION_0030_TABLE not in snapshot.tables
+        and _MIGRATION_0030_TABLE not in snapshot.columns
+        and not (_MIGRATION_0030_INDEXES & snapshot.indexes)
+        and not (_MIGRATION_0030_CONSTRAINTS & snapshot.constraints)
+    )
+
+
 def bootstrap_schema_diagnostics_from_snapshot(
     snapshot: SchemaSnapshot,
 ) -> dict[str, object]:
@@ -802,12 +867,16 @@ def bootstrap_schema_diagnostics_from_snapshot(
         missing_media_cleanup = _migration_0026_schema_is_absent(snapshot)
         missing_inventory_integrity = _migration_0027_schema_is_absent(snapshot)
         missing_auth_session_metadata = _migration_0028_schema_is_absent(snapshot)
+        missing_plant_ownership_created_at = _migration_0029_schema_is_absent(snapshot)
+        missing_plant_external_references = _migration_0030_schema_is_absent(snapshot)
         if (
             missing_offline_operations
             or missing_audit_request_id
             or missing_media_cleanup
             or missing_inventory_integrity
             or missing_auth_session_metadata
+            or missing_plant_ownership_created_at
+            or missing_plant_external_references
         ) and all(
             (missing_offline_operations and _is_migration_0022_part(part))
             or (missing_audit_request_id and _is_migration_0023_part(part))
@@ -815,9 +884,17 @@ def bootstrap_schema_diagnostics_from_snapshot(
             or (missing_media_cleanup and _is_migration_0026_part(part))
             or (missing_inventory_integrity and _is_migration_0027_part(part))
             or (missing_auth_session_metadata and _is_migration_0028_part(part))
+            or (missing_plant_ownership_created_at and _is_migration_0029_part(part))
+            or (missing_plant_external_references and _is_migration_0030_part(part))
             for part in missing
         ):
-            stamp_through = 27
+            stamp_through = 29
+            if missing_plant_external_references:
+                stamp_through = 29
+            if missing_plant_ownership_created_at:
+                stamp_through = 28
+            if missing_auth_session_metadata:
+                stamp_through = 27
             if missing_inventory_integrity:
                 stamp_through = 26
             if missing_media_cleanup:

@@ -1364,9 +1364,10 @@ class TestPasskeyLogin(PasskeyApiTest):
         )
 
         self.assertEqual(options.status_code, 200, options.text)
+        self.assertTrue(options.json()["passkey_available"])
         self.assertFalse(options.json()["publicKey"].get("allowCredentials"))
 
-    def test_login_options_do_not_reveal_missing_passkey_users(self) -> None:
+    def test_login_options_use_same_fallback_for_non_passkey_candidates(self) -> None:
         self._create_test_user("password_only_passkey_login_user", "password-only", "editor")
         self._create_test_user("inactive_passkey_login_user", "inactive-pass", "editor")
         conn = db.get_db()
@@ -1393,6 +1394,7 @@ class TestPasskeyLogin(PasskeyApiTest):
                 self.assertEqual(options.status_code, 200, options.text)
                 body = options.json()
                 self.assertTrue(body.get("challenge_token"))
+                self.assertFalse(body["passkey_available"])
                 self.assertIn("publicKey", body)
                 self.assertFalse(body["publicKey"].get("allowCredentials"))
 
