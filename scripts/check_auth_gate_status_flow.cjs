@@ -289,27 +289,32 @@ function main() {
   if (authGateText.includes("allowCredentials?.length")) {
     fail("auth gate must not branch on public allowCredentials because that leaks passkey enrollment");
   }
-  if (!authGateText.includes("passwordFallbackBtn.hidden = step !== \"passkey-ready\"")) {
-    fail("passkey-first login must expose password fallback before the blocking browser ceremony");
+  if (authGateText.includes("passwordFallbackBtn") || authGateText.includes("auth-gate-use-password")) {
+    fail("passkey-first login must not render a separate passkey/password choice row");
+  }
+  if (authGateText.includes("passkey-ready")) {
+    fail("passkey-first login must start the browser ceremony instead of stopping at a ready step");
   }
   if (!authGateText.includes("passkeyAttempt += 1") || !authGateText.includes("attempt !== passkeyAttempt")) {
-    fail("password fallback must invalidate any pending passkey ceremony result");
+    fail("editing the username must invalidate any pending passkey ceremony result");
   }
   if (!authGateText.includes("passkeyAbortController?.abort()") || !authGateText.includes("abortController.signal")) {
-    fail("password fallback must abort the pending passkey ceremony");
+    fail("editing the username must abort the pending passkey ceremony");
   }
   if (!authGateText.includes("auth.login_action")) {
-    fail("password fallback after username resolution must expose a Login action");
+    fail("password fallback after passkey resolution must expose a Login action");
   }
-  if (!authGateText.includes("submitBtn.textContent = t(\"auth.use_passkey\")")) {
-    fail("passkey-first login must expose an explicit passkey action after username resolution");
+  if (!authGateText.includes("if (!options.passkey_available)")) {
+    fail("password-only usernames must reveal the password field without starting WebAuthn");
+  }
+  if (!authGateText.includes("showPasskeyError(err, false)")) {
+    fail("missing passkey errors must reveal password without showing a cancellation error");
   }
   if (
-    !authGateText.includes("pendingPasskeyOptions = await beginPasskeyLoginApi(username)")
-    || !authGateText.includes("setLoginStep(\"passkey-ready\")")
-    || !authGateText.includes("await startPasskeyLogin(options, passkeyUsername)")
+    !authGateText.includes("const options = await beginPasskeyLoginApi(username)")
+    || !authGateText.includes("await startPasskeyLogin(options, username)")
   ) {
-    fail("username-resolved passkey options must wait for the explicit passkey action");
+    fail("username submission must resolve the login method and start enrolled passkeys immediately");
   }
   if (!authGateText.includes("auth-gate-identity-label auth-gate-username-label")) {
     fail("username-first login must render the username control as an identity row");
@@ -328,6 +333,9 @@ function main() {
   }
   if (!styleText.includes(".auth-gate-identity-field:focus-within")) {
     fail("username-first login identity row must expose an obvious focus state");
+  }
+  if (!authStyleText.includes(".auth-gate-identity-field input:focus-visible")) {
+    fail("username-first login input must not add a second focus outline inside the identity row");
   }
   if (styleText.includes(".auth-gate-identity-field input:placeholder-shown")) {
     fail("username-first login placeholder must stay left-aligned");

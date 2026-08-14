@@ -5258,6 +5258,26 @@ class TestSecurity(BaseApiTest):
 
         self.assertEqual(validated, "https://rhs.org.uk/plants/123/rosa-canina/details")
 
+    def test_ai_plant_link_rejects_genus_only_page_for_cultivar(self) -> None:
+        html = b"<html><body><h1>Lilium</h1></body></html>"
+
+        class _StaticOpener:
+            def open(self, request, timeout=0):  # type: ignore[no-untyped-def]
+                return self_response
+
+        self_response = self._DummyResponse(body=html)
+
+        with patch(
+            "gardenops.routers.ai.urllib.request.build_opener",
+            return_value=_StaticOpener(),
+        ):
+            validated = _validate_plant_link(
+                "https://rhs.org.uk/plants/lilium",
+                latin="Lilium 'Blacklist'",
+            )
+
+        self.assertEqual(validated, "")
+
     def test_journal_viewer_cannot_write(self) -> None:
         """Viewer users cannot create, update, or delete journal entries."""
         os.environ["AUTH_REQUIRED"] = "true"

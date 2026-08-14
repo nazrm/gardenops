@@ -45,6 +45,35 @@ class TestPlants(BaseApiTest):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()["plt_id"], "PLT-TEST")
 
+    def test_list_plants_exposes_garden_date_added(self) -> None:
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                UPDATE plant_ownership
+                SET created_at_ms = %s
+                WHERE plt_id = %s AND garden_id = %s
+                """,
+                (1_700_000_000_123, "PLT-TEST", garden_id),
+            )
+            conn.execute(
+                """
+                UPDATE plant_ownership
+                SET created_at_ms = %s
+                WHERE plt_id = %s AND garden_id = %s
+                """,
+                (1_800_000_000_456, "PLT-002", garden_id),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        plants = {plant["plt_id"]: plant for plant in self.client.get("/api/plants").json()}
+
+        self.assertEqual(plants["PLT-TEST"]["added_at_ms"], 1_700_000_000_123)
+        self.assertEqual(plants["PLT-002"]["added_at_ms"], 1_800_000_000_456)
+
     def test_update_plant(self) -> None:
         response = self.client.patch(
             "/api/plants/PLT-TEST",
