@@ -478,6 +478,7 @@ async function assertGlobalSearch(page, profile, alpha) {
 }
 
 async function openPlants(page, profile = "desktop") {
+  if (usesMobileLayout(profile)) await closeMobileSurfaces(page);
   await page.locator(usesMobileLayout(profile) ? "#mobile-tab-garden" : "#top-tab-garden").click();
   await page.locator("#sub-mode-plants").click();
   await visible(page.locator("#plants-search"), "plants search");
