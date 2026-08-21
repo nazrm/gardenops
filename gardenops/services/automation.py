@@ -313,7 +313,8 @@ _OUTDOOR_HARDINESS_SQL = """
           JOIN plots outdoor_plot ON outdoor_plot.plot_id = pp.plot_id
           WHERE pp.plt_id = p.plt_id
             AND outdoor_plot.garden_id = po.garden_id
-            AND outdoor_plot.grid_row IS NOT NULL
+            AND outdoor_plot.archived_at_ms IS NULL
+            AND outdoor_plot.environment = 'outdoor'
       )
 """
 
@@ -329,7 +330,8 @@ _OUTDOOR_CARE_WATERING_SQL = """
           JOIN plots outdoor_plot ON outdoor_plot.plot_id = pp.plot_id
           WHERE pp.plt_id = p.plt_id
             AND outdoor_plot.garden_id = po.garden_id
-            AND outdoor_plot.grid_row IS NOT NULL
+            AND outdoor_plot.archived_at_ms IS NULL
+            AND outdoor_plot.environment = 'outdoor'
       )
 """
 
@@ -456,7 +458,8 @@ def _create_weather_tasks(
             FROM plot_plants pp
             JOIN plots p ON p.plot_id = pp.plot_id
             WHERE p.garden_id = %s
-              AND p.grid_row IS NOT NULL
+              AND p.archived_at_ms IS NULL
+              AND p.environment = 'outdoor'
               AND pp.plt_id = ANY(%s)
             ORDER BY pp.plt_id, pp.plot_id
             """,
@@ -839,7 +842,8 @@ def _reschedule_watering_during_rain(
               WHERE gtp.task_id = garden_tasks.id
                 AND gtp.plt_id = split_part(garden_tasks.rule_source, ':', 2)
                 AND p.garden_id = %s
-                AND p.grid_row IS NOT NULL
+                AND p.archived_at_ms IS NULL
+                AND p.environment = 'outdoor'
           )
           AND NOT EXISTS (
               SELECT 1
@@ -849,7 +853,8 @@ def _reschedule_watering_during_rain(
               WHERE gtp.task_id = garden_tasks.id
                 AND gtp.plt_id = split_part(garden_tasks.rule_source, ':', 2)
                 AND p.garden_id = %s
-                AND p.grid_row IS NULL
+                AND p.archived_at_ms IS NULL
+                AND p.environment = 'indoor'
           )
         FOR UPDATE SKIP LOCKED
         """,

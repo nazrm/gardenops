@@ -276,7 +276,8 @@ class TaskAttentionProvider:
             JOIN plots p ON p.plot_id = pp.plot_id
             WHERE gtp.task_id IN ({placeholders})
               AND p.garden_id = %s
-              AND p.grid_row IS NOT NULL
+              AND p.archived_at_ms IS NULL
+              AND p.environment = 'outdoor'
             """,
             [*task_ids, garden_id],
         ).fetchall()
