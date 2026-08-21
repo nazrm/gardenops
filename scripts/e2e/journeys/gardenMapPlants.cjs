@@ -638,12 +638,32 @@ async function exercisePlantAndSavedView(
     dialog = page.locator("#edit-plant-form");
     await visible(dialog, "plant form for canonical container proof");
     await dialog.locator(`.plot-chip[data-plot='${assignmentPlotId}'] .chip-remove`).click();
+    const finalUnlinkPath = `/api/plots/${assignmentPlotId}/plants/${plantId}`;
+    const finalUnlinkFailureMark = diagnostics.requestFailures.length;
+    const finalUnlinkAborts = [];
+    const finalUnlinkFailureListener = (request) => {
+      const failure = request.failure()?.errorText || "";
+      if (
+        request.method() === "DELETE"
+        && new URL(request.url()).pathname === finalUnlinkPath
+        && failure.includes("ERR_ABORTED")
+      ) finalUnlinkAborts.push(finalUnlinkPath);
+    };
+    page.on("requestfailed", finalUnlinkFailureListener);
     const finalUnlinkResponsePromise = page.waitForResponse((response) => (
       response.request().method() === "DELETE"
-      && new URL(response.url()).pathname === `/api/plots/${assignmentPlotId}/plants/${plantId}`
+      && new URL(response.url()).pathname === finalUnlinkPath
     ));
     await dialog.locator("button[type='submit']").click();
     assert((await finalUnlinkResponsePromise).status() === 204, "Canonical proof plant was not left unassigned");
+    await page.waitForTimeout(100);
+    page.off("requestfailed", finalUnlinkFailureListener);
+    const finalUnlinkFailuresAdded = diagnostics.requestFailures.length - finalUnlinkFailureMark;
+    assert(
+      finalUnlinkFailuresAdded === finalUnlinkAborts.length,
+      "Canonical proof unlink produced an unrelated request failure",
+    );
+    diagnostics.requestFailures.splice(finalUnlinkFailureMark, finalUnlinkFailuresAdded);
     await visible(plantRecord(page, profile, renamed), "unassigned plant for canonical proof");
     return {
       plantName: renamed,
@@ -839,7 +859,7 @@ async function movePlantFromLocation(
   await waitFor(async () => await picker.count() === 0, "Move location picker close");
 }
 
-async function unassignPlantFromLocation(page, profile, plant, plotId) {
+async function unassignPlantFromLocation(page, diagnostics, profile, plant, plotId) {
   await openPlants(page, profile);
   await page.locator("#plants-search").fill(plant.name);
   const row = plantRecord(page, profile, plant.name);
@@ -848,12 +868,32 @@ async function unassignPlantFromLocation(page, profile, plant, plotId) {
   const dialog = page.locator("#edit-plant-form");
   await visible(dialog, "plant edit form for unassign");
   await dialog.locator(`.plot-chip[data-plot='${plotId}'] .chip-remove`).click();
+  const unassignPath = `/api/plots/${plotId}/plants/${plant.id}`;
+  const failureMark = diagnostics.requestFailures.length;
+  const expectedAborts = [];
+  const failureListener = (request) => {
+    const failure = request.failure()?.errorText || "";
+    if (
+      request.method() === "DELETE"
+      && new URL(request.url()).pathname === unassignPath
+      && failure.includes("ERR_ABORTED")
+    ) expectedAborts.push(unassignPath);
+  };
+  page.on("requestfailed", failureListener);
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === "DELETE"
-    && new URL(response.url()).pathname === `/api/plots/${plotId}/plants/${plant.id}`
+    && new URL(response.url()).pathname === unassignPath
   ));
   await dialog.locator("button[type='submit']").click();
   assert((await responsePromise).status() === 204, "Plant unassign returned an unexpected status");
+  await page.waitForTimeout(100);
+  page.off("requestfailed", failureListener);
+  const failuresAdded = diagnostics.requestFailures.length - failureMark;
+  assert(
+    failuresAdded === expectedAborts.length,
+    "Canonical container unassign produced an unrelated request failure",
+  );
+  diagnostics.requestFailures.splice(failureMark, failuresAdded);
   await visible(plantRecord(page, profile, plant.name), `unassigned ${plant.name}`);
 }
 
@@ -938,7 +978,7 @@ async function exerciseCanonicalContainerDesktop(page, diagnostics, fixture, alp
     2,
     { expectMerge: true },
   );
-  await unassignPlantFromLocation(page, "desktop", plant, container.id);
+  await unassignPlantFromLocation(page, diagnostics, "desktop", plant, container.id);
   await openMap(page, "desktop");
   await enableMapEditor(page);
   await archiveCanonicalContainer(page, alpha, container);
