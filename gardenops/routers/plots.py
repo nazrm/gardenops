@@ -1300,7 +1300,6 @@ def bulk_update_seen_growing(body: BulkSeenGrowingBody, db: DB, request: Request
 
     validated_plots: set[str] = set()
     for update in body.updates:
-        _require_plant_access(db, update.plt_id, context)
         if update.plot_id not in validated_plots:
             _require_plot_access(db, update.plot_id, context)
             validated_plots.add(update.plot_id)
