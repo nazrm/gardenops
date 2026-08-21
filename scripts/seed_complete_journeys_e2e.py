@@ -783,10 +783,10 @@ def _seed_phase_one_fixtures(conn, optimization_seed: Any) -> None:
         """
         INSERT INTO plots (
             plot_id, garden_id, zone_code, zone_name, plot_number,
-            grid_row, grid_col, sub_zone, notes, color
+            grid_row, grid_col, sub_zone, notes, color, plot_kind, environment
         )
         VALUES (%s, %s, 'I', 'Indoor growing', 1, NULL, NULL, 'Greenhouse shelf',
-                'Disposable Phase 1 indoor fixture', '#6f91a6')
+                'Disposable Phase 1 indoor fixture', '#6f91a6', 'indoor', 'indoor')
         """,
         (PHASE_ONE_INDOOR_PLOT_ID, alpha_id),
     )
@@ -798,10 +798,10 @@ def _seed_phase_one_fixtures(conn, optimization_seed: Any) -> None:
         """
         INSERT INTO plots (
             plot_id, garden_id, zone_code, zone_name, plot_number,
-            grid_row, grid_col, sub_zone, notes, color
+            grid_row, grid_col, sub_zone, notes, color, plot_kind, environment
         )
         VALUES (%s, %s, 'I', 'Indoor growing', 1, NULL, NULL, %s,
-                'Disposable Phase 1 Beta indoor fixture', '#8796ad')
+                'Disposable Phase 1 Beta indoor fixture', '#8796ad', 'indoor', 'indoor')
         """,
         (PHASE_ONE_BETA_INDOOR_PLOT_ID, beta_id, PHASE_ONE_BETA_INDOOR_ROOM_LABEL),
     )
@@ -4634,10 +4634,10 @@ def _seed_scale_profile_garden(
         """
         INSERT INTO plots (
             plot_id, garden_id, zone_code, zone_name, plot_number,
-            grid_row, grid_col, sub_zone, notes, color
+            grid_row, grid_col, sub_zone, notes, color, plot_kind, environment
         )
         VALUES (%s, %s, 'I', 'Indoor', 0, NULL, NULL, '',
-                'Disposable scale profile indoor fixture', '#6f91a6')
+                'Disposable scale profile indoor fixture', '#6f91a6', 'indoor', 'indoor')
         """,
         (indoor_plot_id, garden_id),
     )

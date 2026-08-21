@@ -95,6 +95,8 @@ class TestEnsureIndoorPlot(BaseApiTest):
             self.assertEqual(row["zone_name"], "Innendors")
             self.assertIsNone(row["grid_row"])
             self.assertIsNone(row["grid_col"])
+            self.assertEqual(row["plot_kind"], "indoor")
+            self.assertEqual(row["environment"], "indoor")
         finally:
             db.return_db(conn)
 
