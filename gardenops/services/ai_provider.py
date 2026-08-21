@@ -367,8 +367,8 @@ PLANT_LOOKUP_TOOL_SCHEMA = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "name": {"type": "string"},
-            "latin": {"type": "string"},
+            "name": {"type": "string", "maxLength": 200},
+            "latin": {"type": "string", "maxLength": 200},
             "category": {
                 "type": "string",
                 "enum": [
