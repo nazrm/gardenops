@@ -530,6 +530,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     for marker in (
         "PHASE_ONE_INDOOR_PLOT_ID",
         "PHASE_ONE_INDOOR_PLANT_ID",
+        "PHASE_ONE_CANONICAL_CONTAINER_ID",
         "PHASE_ONE_BETA_INDOOR_PLOT_ID",
         "PHASE_ONE_BETA_INDOOR_ROOM_LABEL",
         "PHASE_ONE_VIEWER_GARDENS",
@@ -677,6 +678,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     ):
         assert marker in desktop_admin_branch
     assert "runGardenMapPlants" in checker_source
+    assert '"schema_version": 2' in seeder_source
     assert "fitPersistedHouseSizeToGrid" in app_source
     assert "state.houseSize = fitPersistedHouseSizeToGrid(house);" in app_source
     assert "phaseSelected(1)" in checker_source
@@ -2241,7 +2243,7 @@ def test_phase_two_accounts_for_deterministic_read_side_effects() -> None:
     oracle = json.loads(ORACLE.read_text(encoding="utf-8"))
 
     assert "const phaseTwoReadSideEffectTables" in checker_source
-    assert checker_source.count("assertPhaseOneRuntimeReadSideEffects(") == 2
+    assert checker_source.count("assertPhaseOneExactSideEffects(") == 2
     assert '"auth_passkey_challenges"' in checker_source
     accounting = oracle["phase_two"]["whole_table_mutation_accounting"]
     assert {"provider_daily_usage", "shademap_cache"}.issubset(accounting["phase_two_tables"])
@@ -2256,10 +2258,16 @@ def test_phase_two_accounts_for_deterministic_read_side_effects() -> None:
                 "removed": 0,
                 "updated": 0,
             }
+    assert accounting["exact_counts"]["cumulative_through_phase_two"][
+        "garden_map_object_units"
+    ] == {"added": 0, "removed": 1}
+    assert accounting["exact_identity_counts"]["cumulative_through_phase_two"][
+        "garden_map_object_units"
+    ] == {"added": 0, "removed": 1, "updated": 0}
 
     script = r"""
 const {
-  assertPhaseOneRuntimeReadSideEffects,
+  assertPhaseOneExactSideEffects,
   assertWholeTableMutationAccounting,
   phaseTwoOracle,
 } = require('./scripts/check_complete_journeys_e2e.cjs');
@@ -2298,11 +2306,14 @@ const final = {
   shademap_cache: row('b', 3),
 };
 assertWholeTableMutationAccounting(initial, final, new Set(tables), accounting);
-assertPhaseOneRuntimeReadSideEffects(initial, final, fullOracle);
+const phaseOneInitial = { ...initial, garden_map_object_units: row('c', 1) };
+const phaseOneFinal = { ...final, garden_map_object_units: row('c', 0) };
+assertPhaseOneExactSideEffects(phaseOneInitial, phaseOneFinal, fullOracle);
 try {
-  assertPhaseOneRuntimeReadSideEffects(initial, {
+  assertPhaseOneExactSideEffects(phaseOneInitial, {
     provider_daily_usage: row('a', 5),
     shademap_cache: row('b', 3),
+    garden_map_object_units: row('c', 0),
   }, fullOracle);
   process.exit(3);
 } catch (error) {
@@ -3046,14 +3057,57 @@ const graphs = {
     map_objects: [], plants: [], plots: [],
   },
 };
-assertExactPhaseOneRestoreImportGraphs(graphs, structuredClone(graphs));
+const canonicalFixture = {
+  phase_one: {
+    canonical_container: {
+      garden_id: 1,
+      owner_username: 'admin',
+      plot_id: 'CONT-SEEDED',
+    },
+    map_unit: { public_id: 'mapunit_alpha' },
+  },
+};
+graphs.alpha.plots.push({
+  garden_id: 1,
+  owner_username: 'admin',
+  plot_id: 'CONT-SEEDED',
+  plot_kind: 'container',
+});
+const finalGraphs = structuredClone(graphs);
+finalGraphs.alpha.map_objects[0].units = [];
+for (const [index, [display_name, container_type]] of [
+  ['Phase 1 Blue Planter', 'planter'],
+  ['Phase 1 Keyboard Pot', 'pot'],
+  ['Phase 1 Mobile Pot', 'pot'],
+].entries()) {
+  finalGraphs.alpha.plots.push({
+    archived_at_ms: 1,
+    container_type,
+    display_name,
+    environment: 'outdoor',
+    garden_id: 1,
+    owner_username: 'admin',
+    parent_object_public_id: null,
+    plot_id: `containe_${String(index + 1).repeat(20)}`,
+    plot_kind: 'container',
+  });
+}
+assertExactPhaseOneRestoreImportGraphs(graphs, finalGraphs, canonicalFixture);
 try {
-  const changed = structuredClone(graphs);
+  const changed = structuredClone(finalGraphs);
   changed.alpha.assignments[0].quantity = 2;
-  assertExactPhaseOneRestoreImportGraphs(graphs, changed);
+  assertExactPhaseOneRestoreImportGraphs(graphs, changed, canonicalFixture);
   process.exit(3);
 } catch (error) {
   if (!String(error.message).includes('assignment graph')) process.exit(4);
+}
+try {
+  const changed = structuredClone(finalGraphs);
+  changed.alpha.plots = changed.alpha.plots.filter((plot) => plot.plot_id !== 'CONT-SEEDED');
+  assertExactPhaseOneRestoreImportGraphs(graphs, changed, canonicalFixture);
+  process.exit(7);
+} catch (error) {
+  if (!String(error.message).includes('assignment graph')) process.exit(8);
 }
 try {
   const changedSnapshot = structuredClone(snapshot);

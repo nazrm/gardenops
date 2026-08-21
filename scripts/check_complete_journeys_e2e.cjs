@@ -111,7 +111,8 @@ function isPhaseTwoReadOnlyProbeMutation(request) {
 }
 const PHASE_TWO_EDITOR_PASSWORD = "CompleteJourneysEditorE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 const PHASE_TWO_VIEWER_PASSWORD = "CompleteJourneysViewerE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
-const PHASE_ONE_RUNTIME_READ_SIDE_EFFECT_TABLES = [
+const PHASE_ONE_EXACT_SIDE_EFFECT_TABLES = [
+  "garden_map_object_units",
   "provider_daily_usage",
   "shademap_cache",
 ];
@@ -3707,18 +3708,20 @@ function assertWholeTableMutationAccounting(initial, final, allowedTables, accou
   };
 }
 
-function assertPhaseOneRuntimeReadSideEffects(initial, final, oracle) {
+function assertPhaseOneExactSideEffects(initial, final, oracle) {
   const spec = oracle?.phase_two?.whole_table_mutation_accounting;
   const counts = spec?.exact_counts?.cumulative_through_phase_two;
   const identities = spec?.exact_identity_counts?.cumulative_through_phase_two;
-  assert(counts && identities, "Phase 1 runtime read-side-effect oracle is missing");
-  const tables = new Set(PHASE_ONE_RUNTIME_READ_SIDE_EFFECT_TABLES);
+  assert(counts && identities, "Phase 1 exact side-effect oracle is missing");
+  const tables = new Set(PHASE_ONE_EXACT_SIDE_EFFECT_TABLES);
   const projection = (domainTables) => Object.fromEntries(
     [...tables].map((table) => [table, domainTables[table]]),
   );
   const accounting = Object.fromEntries([...tables].map((table) => [table, {
     allow_row_delta: true,
-    evidence: "phase_one_map_profile_runtime_reads_existing_oracle",
+    evidence: table === "garden_map_object_units"
+      ? "phase_one_snapshot_restore_retires_legacy_unit"
+      : "phase_one_map_profile_runtime_reads_existing_oracle",
     expected_added: counts[table].added,
     expected_identity_added: identities[table].added,
     expected_identity_removed: identities[table].removed,
@@ -7225,11 +7228,11 @@ function assertExactPhaseOneMobileSnapshot(snapshots, expected) {
   );
   assert(
     canonicalJson(payload) === canonicalJson(expected.payload),
-    "Mobile snapshot payload did not match the final Alpha snapshot projection",
+    "Mobile snapshot payload did not match the Alpha projection at its save boundary",
   );
 }
 
-function assertExactPhaseOneRestoreImportGraphs(initialGraphs, finalGraphs) {
+function assertExactPhaseOneRestoreImportGraphs(initialGraphs, finalGraphs, fixture) {
   const expectedGardens = ["alpha", "beta"];
   assert(initialGraphs && typeof initialGraphs === "object", "Fixture restore/import graph is missing");
   assert(finalGraphs && typeof finalGraphs === "object", "Final restore/import graph is missing");
@@ -7241,9 +7244,56 @@ function assertExactPhaseOneRestoreImportGraphs(initialGraphs, finalGraphs) {
     canonicalJson(Object.keys(finalGraphs).sort()) === canonicalJson(expectedGardens),
     "Final restore/import graph has unexpected gardens",
   );
+  const legacyUnitId = fixture?.phase_one?.map_unit?.public_id;
+  const seededContainerId = fixture?.phase_one?.canonical_container?.plot_id;
+  assert(typeof legacyUnitId === "string" && legacyUnitId, "Legacy unit fixture ID is missing");
+  assert(typeof seededContainerId === "string" && seededContainerId,
+    "Canonical container fixture ID is missing");
+  const expectedInitial = structuredClone(initialGraphs);
+  const expectedFinal = structuredClone(finalGraphs);
+  let retiredLegacyUnits = 0;
+  for (const object of expectedInitial.alpha.map_objects) {
+    object.units = object.units.filter((unit) => {
+      if (unit.public_id !== legacyUnitId) return true;
+      retiredLegacyUnits += 1;
+      return false;
+    });
+  }
+  assert(retiredLegacyUnits === 1, "Fixture did not contain exactly one retired legacy map unit");
+  const expectedHistory = new Map([
+    ["Phase 1 Blue Planter", "planter"],
+    ["Phase 1 Keyboard Pot", "pot"],
+    ["Phase 1 Mobile Pot", "pot"],
+  ]);
+  const retainedHistory = expectedFinal.alpha.plots.filter((plot) => (
+    plot.plot_kind === "container" && plot.plot_id !== seededContainerId
+  ));
+  assert(retainedHistory.length === expectedHistory.size,
+    "Phase 1 did not retain exactly the expected canonical container history");
+  const historyIds = new Set();
+  const historyNames = new Set();
+  for (const plot of retainedHistory) {
+    assert(expectedHistory.get(plot.display_name) === plot.container_type
+      && /^containe_[a-f0-9]{20}$/.test(plot.plot_id)
+      && Number.isSafeInteger(plot.archived_at_ms) && plot.archived_at_ms > 0
+      && plot.environment === "outdoor"
+      && plot.garden_id === fixture.phase_one.canonical_container.garden_id
+      && plot.owner_username === fixture.phase_one.canonical_container.owner_username
+      && plot.parent_object_public_id === null,
+    `Phase 1 retained invalid canonical container history: ${plot.display_name}`);
+    historyIds.add(plot.plot_id);
+    historyNames.add(plot.display_name);
+  }
+  assert(historyIds.size === expectedHistory.size,
+    "Phase 1 canonical container history IDs were not unique");
+  assert(historyNames.size === expectedHistory.size,
+    "Phase 1 canonical container history names were not unique");
+  assert(!expectedFinal.alpha.assignments.some((assignment) => historyIds.has(assignment.plot_id)),
+    "Archived canonical container history retained a plant assignment");
+  expectedFinal.alpha.plots = expectedFinal.alpha.plots.filter((plot) => !historyIds.has(plot.plot_id));
   for (const garden of expectedGardens) {
     assert(
-      canonicalJson(finalGraphs[garden]) === canonicalJson(initialGraphs[garden]),
+      canonicalJson(expectedFinal[garden]) === canonicalJson(expectedInitial[garden]),
       `Restore/import changed the final ${garden} plot, layout, map-object, or assignment graph`,
     );
   }
@@ -8715,11 +8765,11 @@ async function main() {
     ]) : new Set();
     const phaseOneBoundaryDeltaTables = phaseOneRan ? new Set([
       ...phaseOneSemanticDeltaTables,
-      ...PHASE_ONE_RUNTIME_READ_SIDE_EFFECT_TABLES,
+      ...PHASE_ONE_EXACT_SIDE_EFFECT_TABLES,
       "auth_passkey_challenges",
     ]) : phaseOneSemanticDeltaTables;
     if (phaseOneRan) {
-      assertPhaseOneRuntimeReadSideEffects(
+      assertPhaseOneExactSideEffects(
         fixture.database_snapshot.domain_tables,
         phaseOneDatabase.domain_tables,
         oracle,
@@ -9219,7 +9269,7 @@ async function main() {
         garden_journal_entries: 1,
         garden_journal_entry_plants: 1,
         garden_journal_entry_plots: 1,
-        garden_map_object_units: 0,
+        garden_map_object_units: -1,
         garden_map_objects: 0,
         garden_memberships: 4,
         gardens: 3,
@@ -9247,13 +9297,26 @@ async function main() {
         JSON.stringify(finalPhaseOne.alpha_map_object) === JSON.stringify(initialPhaseOne.alpha_map_object),
         "Alpha map object geometry/style was not restored",
       );
-      assert(
-        JSON.stringify(finalPhaseOne.alpha_map_unit) === JSON.stringify(initialPhaseOne.alpha_map_unit),
-        "Alpha nested map unit changed",
-      );
+      assert(initialPhaseOne.alpha_map_unit?.public_id === fixture.phase_one.map_unit.public_id
+        && finalPhaseOne.alpha_map_unit === null,
+        "Snapshot/import did not retire exactly the historical Alpha map unit");
+      assert(initialPhaseOne.alpha_map_unit_count === 1 && finalPhaseOne.alpha_map_unit_count === 0,
+        "Snapshot/import legacy map-unit count was unexpected");
+      const expectedCanonicalContainer = fixture.phase_one.canonical_container;
+      for (const [boundary, graph] of [
+        ["fixture", initialPhaseOne.restore_import_graphs],
+        ["final", finalPhaseOne.restore_import_graphs],
+      ]) {
+        const container = graph.alpha.plots.find(
+          (plot) => plot.plot_id === expectedCanonicalContainer.plot_id,
+        );
+        assert(canonicalJson(container) === canonicalJson(expectedCanonicalContainer),
+          `Phase 1 ${boundary} canonical container projection was not preserved`);
+      }
       assertExactPhaseOneRestoreImportGraphs(
         initialPhaseOne.restore_import_graphs,
         finalPhaseOne.restore_import_graphs,
+        fixture,
       );
       assert(finalPhaseOne.indoor_room_label === initialPhaseOne.indoor_room_label, "Indoor room was not restored");
       const expectedIndoorAssignment = {
@@ -9305,11 +9368,18 @@ async function main() {
         "Mobile snapshot was not persisted",
       );
       assert(initialPhaseOne.mobile_snapshots.length === 0, "Fixture unexpectedly has a mobile snapshot");
+      const expectedMobileSnapshotPayload = structuredClone(finalPhaseOne.alpha_snapshot_payload);
+      const finalMobileContainerCount = expectedMobileSnapshotPayload.plots.length;
+      expectedMobileSnapshotPayload.plots = expectedMobileSnapshotPayload.plots.filter(
+        (plot) => plot.display_name !== "Phase 1 Mobile Pot",
+      );
+      assert(expectedMobileSnapshotPayload.plots.length === finalMobileContainerCount - 1,
+        "Final Alpha projection did not contain exactly one post-snapshot mobile container");
       assertExactPhaseOneMobileSnapshot(finalPhaseOne.mobile_snapshots, {
         garden_id: fixture.phase_one.mobile_snapshot.garden_id,
         garden_owner_username: fixture.phase_one.mobile_snapshot.owner_username,
         name: fixture.phase_one.mobile_snapshot.name,
-        payload: finalPhaseOne.alpha_snapshot_payload,
+        payload: expectedMobileSnapshotPayload,
       });
       assert(
         canonicalJson(initialPhaseOne.quick_action_records) === canonicalJson({
@@ -9318,10 +9388,6 @@ async function main() {
         "Fixture unexpectedly has retained quick-action records",
       );
       assertExactPhaseOneQuickActionRecords(finalPhaseOne.quick_action_records, fixture);
-      assert(
-        finalPhaseOne.alpha_map_unit_count === initialPhaseOne.alpha_map_unit_count,
-        "Canonical browser mutations changed retained legacy map-unit rows",
-      );
       const expectedLifecycleAudit = {
         assignment_create_count: 6,
         assignment_delete_count: 3,
@@ -9734,7 +9800,7 @@ module.exports = {
   assertPhaseOneAuditContract,
   assertPhaseOneChallengeProjection,
   assertPhaseOneProfileEvidence,
-  assertPhaseOneRuntimeReadSideEffects,
+  assertPhaseOneExactSideEffects,
   assertPhaseThreeBoundaryEvidence,
   assertPhaseThreeProviderUsage,
   assertPhaseFourAuditEvents,
