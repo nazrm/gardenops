@@ -2656,6 +2656,7 @@ async function runProfile({
     assert(profileData.role === role, `Fixture role mismatch: expected ${role}`);
     await dismissProactivePasskeyPrompt(page);
     result.browser_profile.user_agent = await page.evaluate(() => navigator.userAgent);
+    result.browser_profile.device_pixel_ratio = await page.evaluate(() => window.devicePixelRatio);
     result.browser_profile.max_touch_points = await page.evaluate(() => navigator.maxTouchPoints);
     result.browser_profile.has_touch = result.browser_profile.max_touch_points > 0;
     result.browser_profile.viewport = page.viewportSize();
