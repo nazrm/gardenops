@@ -493,6 +493,24 @@ async function addPlotAssignment(dialog, plotId) {
   await visible(dialog.locator(`.plot-chip[data-plot='${plotId}']`), `plot assignment ${plotId}`);
 }
 
+async function createUnassignedPlant(page, profile, name) {
+  await openPlants(page, profile);
+  await page.locator("#add-plant-btn").click();
+  await visible(page.locator("#plant-search-create-btn"), "plant search create-new action");
+  await page.locator("#plant-search-create-btn").click();
+  const dialog = page.locator("#create-plant-form");
+  await visible(dialog, "create unassigned plant form");
+  await dialog.locator("input[name='name']").fill(name);
+  await dialog.locator("select[name='category']").selectOption("urter");
+  await dialog.locator("button[type='submit']").click();
+  await page.locator("#plants-search").fill(name);
+  const row = plantRecord(page, profile, name);
+  await visible(row, `created unassigned plant ${name}`);
+  const id = await row.getAttribute("data-plt-id");
+  assert(id, "Created unassigned plant has no plant ID");
+  return { id, name };
+}
+
 async function exercisePlantAndSavedView(
   page,
   diagnostics,
@@ -1160,7 +1178,7 @@ async function exerciseCanonicalContainerMobile(page, diagnostics, fixture, alph
   diagnostics.canonical_mobile_viewport = page.viewportSize();
 }
 
-async function exerciseCanonicalContainerKeyboard(page, diagnostics, fixture, alpha, plantName) {
+async function exerciseCanonicalContainerKeyboard(page, diagnostics, alpha) {
   assert(
     JSON.stringify(page.viewportSize()) === JSON.stringify({ width: 720, height: 450 }),
     "Canonical keyboard proof did not use the 200% reflow viewport",
@@ -1168,8 +1186,11 @@ async function exerciseCanonicalContainerKeyboard(page, diagnostics, fixture, al
   await openMap(page, "desktop-reflow-200");
   await enableMapEditor(page, "desktop-reflow-200");
   const container = await createCanonicalContainer(page, alpha, "Phase 1 Keyboard Pot", { type: "pot" });
-  const plant = { name: plantName };
-  await openPlants(page, "desktop-reflow-200");
+  const plant = await createUnassignedPlant(
+    page,
+    "desktop-reflow-200",
+    "Phase 1 Browser Mint Keyboard Reflow",
+  );
   await page.locator("#plants-search").fill(plant.name);
   const row = plantRecord(page, "desktop-reflow-200", plant.name);
   const place = row.locator(".plant-place-btn");
@@ -1196,7 +1217,7 @@ async function exerciseCanonicalContainerKeyboard(page, diagnostics, fixture, al
   await confirm.focus();
   const placeResponsePromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
-    && new URL(response.url()).pathname.startsWith(`/api/plots/${container.id}/plants/`)
+    && new URL(response.url()).pathname === `/api/plots/${container.id}/plants/${plant.id}`
   ));
   await confirm.press("Enter");
   assert((await placeResponsePromise).ok(), "Keyboard Place request failed");
@@ -2679,9 +2700,7 @@ async function runProfile({
       await exerciseCanonicalContainerKeyboard(
         page,
         guarded.diagnostics,
-        fixture,
         alpha,
-        "Phase 1 Browser Mint admin desktop Edited",
       );
       result.checks.canonical_container_keyboard_reflow = true;
       result.assertions.passed.push("canonical-container-keyboard-reflow");
