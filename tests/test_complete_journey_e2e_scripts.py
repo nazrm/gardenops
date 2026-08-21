@@ -679,6 +679,17 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         assert marker in desktop_admin_branch
     assert "runGardenMapPlants" in checker_source
     assert '"schema_version": 2' in seeder_source
+    lifecycle_contract = checker_source.split("const expectedLifecycleAudit = {", 1)[1].split(
+        "};", 1
+    )[0]
+    for expected in (
+        "assignment_create_count: 6",
+        "assignment_delete_count: 4",
+        "plant_create_count: 3",
+        "plant_delete_count: 3",
+        "plant_update_count: 6",
+    ):
+        assert expected in lifecycle_contract
     assert "fitPersistedHouseSizeToGrid" in app_source
     assert "state.houseSize = fitPersistedHouseSizeToGrid(house);" in app_source
     assert "phaseSelected(1)" in checker_source

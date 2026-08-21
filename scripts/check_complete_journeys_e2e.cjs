@@ -9390,15 +9390,15 @@ async function main() {
       assertExactPhaseOneQuickActionRecords(finalPhaseOne.quick_action_records, fixture);
       const expectedLifecycleAudit = {
         assignment_create_count: 6,
-        assignment_delete_count: 3,
+        assignment_delete_count: 4,
         ...Object.fromEntries(
           Object.keys(finalPhaseOne.lifecycle_audit)
             .filter((key) => key.startsWith("nested_unit_"))
             .map((key) => [key, 0]),
         ),
-        plant_create_count: 2,
-        plant_delete_count: 2,
-        plant_update_count: 5,
+        plant_create_count: 3,
+        plant_delete_count: 3,
+        plant_update_count: 6,
         saved_view_create_count: 2,
         saved_view_delete_count: 2,
       };
