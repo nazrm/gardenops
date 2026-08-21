@@ -2768,6 +2768,7 @@ async function runProfile({
           page, guarded.diagnostics, alpha, profile, "mobile admin",
         );
         result.checks.garden_settings_reload_persistence = true;
+        await openMap(page, profile);
         await saveMobileSnapshot(page, fixture);
         await exerciseMobileMapImport(page, guarded.diagnostics, password);
         await submitMobileQuickAction(page, fixture, alpha);
