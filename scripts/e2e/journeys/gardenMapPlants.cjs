@@ -36,8 +36,12 @@ function viewerFixtureGarden(fixture, key, garden) {
   return { ...garden, ...viewer };
 }
 
+function usesMobileLayout(profile) {
+  return profile === "mobile" || profile === "desktop-reflow-200";
+}
+
 function plantRecord(page, profile, name) {
-  const selector = profile === "mobile"
+  const selector = usesMobileLayout(profile)
     ? "#plants-mobile-list article[data-plt-id]"
     : "#plants-table-body tr[data-plt-id]";
   return page.locator(selector).filter({ hasText: name });
@@ -250,7 +254,7 @@ async function assertMobileFocusReturn(page) {
 
 async function openMap(page, profile) {
   await closeMobileSurfaces(page);
-  const tab = page.locator(profile === "mobile" ? "#mobile-tab-map" : "#top-tab-map");
+  const tab = page.locator(usesMobileLayout(profile) ? "#mobile-tab-map" : "#top-tab-map");
   await visible(tab, `${profile} Map tab`);
   await tab.click();
   await visible(page.locator("#map-grid"), `${profile} Map grid after navigation`);
@@ -474,7 +478,7 @@ async function assertGlobalSearch(page, profile, alpha) {
 }
 
 async function openPlants(page, profile = "desktop") {
-  await page.locator(profile === "mobile" ? "#mobile-tab-garden" : "#top-tab-garden").click();
+  await page.locator(usesMobileLayout(profile) ? "#mobile-tab-garden" : "#top-tab-garden").click();
   await page.locator("#sub-mode-plants").click();
   await visible(page.locator("#plants-search"), "plants search");
 }
@@ -706,7 +710,7 @@ async function mutateIndoorPlant(
 
 async function enableMapEditor(page, profile = "desktop") {
   const edit = page.locator("#edit-mode-btn");
-  if (profile === "mobile") {
+  if (usesMobileLayout(profile)) {
     const layers = page.locator("#map-layers-panel.mobile-map-sheet--open");
     if (!await layers.count()) await page.locator("#mobile-map-layers-btn").click();
     await visible(layers, "mobile map layers");
