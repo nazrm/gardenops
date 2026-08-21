@@ -2,13 +2,34 @@
 
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 
 import gardenops.db as db
 from tests.base import BaseApiTest
 
 
 class TestContainerPlotMoves(BaseApiTest):
+    def _insert_plant(self, plt_id: str, name: str) -> None:
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO plants (plt_id, name, category) VALUES (%s, %s, 'busker')",
+                (plt_id, name),
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES (%s, %s, %s)
+                """,
+                (plt_id, self._owner_id, garden_id),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
     def _insert_container(
         self,
         plot_id: str,
@@ -127,6 +148,11 @@ class TestContainerPlotMoves(BaseApiTest):
         self.assertEqual(b2["seen_growing_date"], "2025")
         self.assertIsNone(b2["room_label"])
 
+    @patch.dict(
+        os.environ,
+        {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+        clear=False,
+    )
     def test_shared_container_is_readable_but_viewer_cannot_assign(self) -> None:
         editor = self._create_test_user("container_editor", "container-editor-pass", role="editor")
         viewer = self._create_test_user("container_viewer", "container-viewer-pass", role="viewer")
@@ -144,13 +170,6 @@ class TestContainerPlotMoves(BaseApiTest):
             conn.execute(
                 "UPDATE plant_ownership SET owner_user_id = %s WHERE plt_id = 'VIEWER-PLANT'",
                 (viewer["id"],),
-            )
-            conn.execute(
-                """
-                INSERT INTO garden_memberships (garden_id, user_id, role)
-                VALUES (%s, %s, 'editor'), (%s, %s, 'viewer')
-                """,
-                (garden_id, editor["id"], garden_id, viewer["id"]),
             )
             conn.commit()
         finally:
@@ -185,7 +204,7 @@ class TestContainerPlotMoves(BaseApiTest):
             headers=viewer_headers,
             json={"quantity": 1},
         )
-        self.assertEqual(denied.status_code, 404, denied.text)
+        self.assertEqual(denied.status_code, 403, denied.text)
 
     def test_archived_containers_are_hidden_and_cannot_receive_assignments(self) -> None:
         self._insert_container("ACTIVE-C")
