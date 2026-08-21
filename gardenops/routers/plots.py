@@ -696,7 +696,8 @@ def list_plot_plants(plot_id: str, db: DB, request: Request) -> list[dict]:
         params = [plot_id, garden_id, context.user_id]
     rows = db.execute(
         f"""
-        SELECT pl.*, pp.quantity, pp.room_label
+        SELECT pl.*, pp.quantity, pp.room_label,
+               pp.seen_growing, pp.seen_growing_date
         FROM plants pl
         LEFT JOIN plant_ownership pown ON pown.plt_id = pl.plt_id
         JOIN plot_plants pp ON pp.plt_id = pl.plt_id
