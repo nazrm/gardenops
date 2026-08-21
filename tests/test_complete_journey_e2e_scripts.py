@@ -6111,6 +6111,12 @@ const containerCollectionAudit = auditManifestProjection(
 const containerItemAudit = auditManifestProjection(
   auditState(`/api/gardens/7/containers/${opaqueRouteId}`),
 );
+const placeholderContainerCollectionAudit = auditManifestProjection(
+  auditState('/api/gardens/{garden_id}/containers'),
+);
+const placeholderContainerItemAudit = auditManifestProjection(
+  auditState(`/api/gardens/{garden_id}/containers/${opaqueRouteId}`),
+);
 const invitationPasskeyOptionsAudit = auditManifestProjection(
   auditState('/api/auth/invitations/passkey/register/options'),
 );
@@ -6137,6 +6143,10 @@ if (containerCollectionAudit.events[0].path
     !== '/api/gardens/{garden_id}/containers') process.exit(19);
 if (containerItemAudit.events[0].path
     !== '/api/gardens/{garden_id}/containers/{plot_id}') process.exit(20);
+if (placeholderContainerCollectionAudit.events[0].path
+    !== '/api/gardens/{garden_id}/containers') process.exit(23);
+if (placeholderContainerItemAudit.events[0].path
+    !== '/api/gardens/{garden_id}/containers/{plot_id}') process.exit(24);
 if (invitationPasskeyOptionsAudit.events[0].path
     !== '/api/auth/invitations/passkey/register/options') process.exit(17);
 if (invitationPasskeyVerifyAudit.events[0].path
@@ -6149,12 +6159,14 @@ const serialized = JSON.stringify([
   task, attention, assignment, telemetry, passkeyAudit, sessionAudit,
   userInvitationAudit, userAudit, gardenMemberAudit,
   containerCollectionAudit, containerItemAudit,
+  placeholderContainerCollectionAudit, placeholderContainerItemAudit,
   invitationPasskeyOptionsAudit, invitationPasskeyVerifyAudit,
 ]);
 if (serialized.includes(opaqueRouteId)) process.exit(7);
 for (const path of [
   '/api/gardens/not-a-number/containers',
   `/api/gardens/7/containers/${opaqueRouteId}/extra`,
+  `/api/gardens/{garden_id}/containers/${opaqueRouteId}/extra`,
 ]) {
   try {
     auditManifestProjection(auditState(path));

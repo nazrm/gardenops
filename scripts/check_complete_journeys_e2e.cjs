@@ -3363,11 +3363,11 @@ function normalizeAuditProjectionPath(value) {
   }
   const parameterizedRoutes = [
     [
-      /^\/api\/gardens\/\d+\/containers$/,
+      /^\/api\/gardens\/(?:\d+|\{garden_id\})\/containers$/,
       () => "/api/gardens/{garden_id}/containers",
     ],
     [
-      /^\/api\/gardens\/\d+\/containers\/[^/?#]+$/,
+      /^\/api\/gardens\/(?:\d+|\{garden_id\})\/containers\/[^/?#]+$/,
       () => "/api/gardens/{garden_id}/containers/{plot_id}",
     ],
     [
