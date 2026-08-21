@@ -135,7 +135,20 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "garden_id",
     ),
     "gardens": ("id", "slug", "name", "owner_user_id"),
-    "plots": ("plot_id", "garden_id", "zone_code", "zone_name", "grid_row", "grid_col"),
+    "plots": (
+        "plot_id",
+        "garden_id",
+        "zone_code",
+        "zone_name",
+        "grid_row",
+        "grid_col",
+        "plot_kind",
+        "display_name",
+        "container_type",
+        "parent_map_object_id",
+        "environment",
+        "archived_at_ms",
+    ),
     "garden_map_objects": (
         "id",
         "public_id",
@@ -292,6 +305,7 @@ REQUIRED_INDEXES = (
     "idx_offline_create_operations_expiry",
     "ux_plots_garden_grid_cell",
     "idx_plots_garden",
+    "idx_plots_active_containers",
     "idx_garden_map_objects_garden",
     "ux_garden_map_objects_id_garden",
     "idx_garden_map_object_units_object",
@@ -345,6 +359,10 @@ REQUIRED_CONSTRAINTS = (
     "garden_map_object_units_public_id_key",
     "plot_ownership_pkey",
     "fk_plots_garden_id_gardens",
+    "ck_plots_plot_kind",
+    "ck_plots_environment",
+    "ck_plots_container_subtype",
+    "fk_plots_parent_map_object_garden",
     "fk_garden_map_objects_garden_id_gardens",
     "fk_garden_map_object_units_garden_id_gardens",
     "fk_garden_map_object_units_object_garden",
@@ -413,6 +431,12 @@ REQUIRED_COLUMN_NULLABILITY: dict[str, bool] = {
     "auth_sessions.device_label": False,
     "auth_sessions.location_hint": False,
     "plant_ownership.created_at_ms": False,
+    "plots.plot_kind": False,
+    "plots.display_name": True,
+    "plots.container_type": True,
+    "plots.parent_map_object_id": True,
+    "plots.environment": False,
+    "plots.archived_at_ms": True,
 }
 
 REQUIRED_COLUMN_TYPES: dict[str, str] = {
@@ -427,6 +451,12 @@ REQUIRED_COLUMN_TYPES: dict[str, str] = {
     "auth_sessions.device_label": "text",
     "auth_sessions.location_hint": "text",
     "plant_ownership.created_at_ms": "bigint",
+    "plots.plot_kind": "text",
+    "plots.display_name": "text",
+    "plots.container_type": "text",
+    "plots.parent_map_object_id": "bigint",
+    "plots.environment": "text",
+    "plots.archived_at_ms": "bigint",
 }
 
 REQUIRED_COLUMN_DEFAULTS: dict[str, str | None] = {
@@ -441,6 +471,12 @@ REQUIRED_COLUMN_DEFAULTS: dict[str, str | None] = {
     "auth_sessions.device_label": "''::text",
     "auth_sessions.location_hint": "''::text",
     "plant_ownership.created_at_ms": ("((EXTRACT(epoch FROM now()) * (1000)::numeric))::bigint"),
+    "plots.plot_kind": "'ground'::text",
+    "plots.display_name": None,
+    "plots.container_type": None,
+    "plots.parent_map_object_id": None,
+    "plots.environment": "'outdoor'::text",
+    "plots.archived_at_ms": None,
 }
 
 REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
@@ -478,6 +514,13 @@ REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
         "auth_sessions",
         "using btree (user_id)",
     ),
+    "idx_plots_active_containers": (
+        "plots",
+        "using btree (garden_id, parent_map_object_id, plot_id)",
+        "where",
+        "plot_kind = 'container'",
+        "archived_at_ms is null",
+    ),
 }
 
 REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
@@ -506,6 +549,35 @@ REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
         "received_by_user_id is null",
         "received_at_ms is not null",
         "received_at_ms is null",
+    ),
+    "ck_plots_plot_kind": (
+        "check",
+        "plot_kind",
+        "ground",
+        "indoor",
+        "container",
+    ),
+    "ck_plots_environment": (
+        "check",
+        "environment",
+        "outdoor",
+        "covered",
+        "indoor",
+    ),
+    "ck_plots_container_subtype": (
+        "check",
+        "plot_kind",
+        "container_type",
+        "grid_row",
+        "grid_col",
+        "display_name",
+        "parent_map_object_id",
+    ),
+    "fk_plots_parent_map_object_garden": (
+        "foreign key (parent_map_object_id, garden_id)",
+        "references garden_map_objects(id, garden_id)",
+        "on delete set null",
+        "deferrable",
     ),
 }
 
@@ -713,6 +785,21 @@ _MIGRATION_0030_CONSTRAINTS = {
     "ck_plant_external_references_match_type",
     "ck_plant_external_references_status",
 }
+_MIGRATION_0031_COLUMNS = {
+    "plots.plot_kind",
+    "plots.display_name",
+    "plots.container_type",
+    "plots.parent_map_object_id",
+    "plots.environment",
+    "plots.archived_at_ms",
+}
+_MIGRATION_0031_INDEXES = {"idx_plots_active_containers"}
+_MIGRATION_0031_CONSTRAINTS = {
+    "ck_plots_plot_kind",
+    "ck_plots_environment",
+    "ck_plots_container_subtype",
+    "fk_plots_parent_map_object_garden",
+}
 _MIGRATION_0022_CONSTRAINTS = {
     constraint
     for constraint in REQUIRED_CONSTRAINTS
@@ -847,6 +934,29 @@ def _migration_0030_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
     )
 
 
+def _is_migration_0031_part(part: Mapping[str, object]) -> bool:
+    obj = str(part.get("object", ""))
+    kind = str(part.get("kind", ""))
+    if obj in _MIGRATION_0031_COLUMNS:
+        return True
+    if kind == "index":
+        return obj in _MIGRATION_0031_INDEXES
+    if kind == "constraint":
+        return obj in _MIGRATION_0031_CONSTRAINTS
+    return False
+
+
+def _migration_0031_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
+    return (
+        not (
+            _MIGRATION_0031_COLUMNS
+            & {f"plots.{column}" for column in snapshot.columns.get("plots", set())}
+        )
+        and not (_MIGRATION_0031_INDEXES & snapshot.indexes)
+        and not (_MIGRATION_0031_CONSTRAINTS & snapshot.constraints)
+    )
+
+
 def bootstrap_schema_diagnostics_from_snapshot(
     snapshot: SchemaSnapshot,
 ) -> dict[str, object]:
@@ -869,6 +979,7 @@ def bootstrap_schema_diagnostics_from_snapshot(
         missing_auth_session_metadata = _migration_0028_schema_is_absent(snapshot)
         missing_plant_ownership_created_at = _migration_0029_schema_is_absent(snapshot)
         missing_plant_external_references = _migration_0030_schema_is_absent(snapshot)
+        missing_canonical_container_plots = _migration_0031_schema_is_absent(snapshot)
         if (
             missing_offline_operations
             or missing_audit_request_id
@@ -877,6 +988,7 @@ def bootstrap_schema_diagnostics_from_snapshot(
             or missing_auth_session_metadata
             or missing_plant_ownership_created_at
             or missing_plant_external_references
+            or missing_canonical_container_plots
         ) and all(
             (missing_offline_operations and _is_migration_0022_part(part))
             or (missing_audit_request_id and _is_migration_0023_part(part))
@@ -886,9 +998,12 @@ def bootstrap_schema_diagnostics_from_snapshot(
             or (missing_auth_session_metadata and _is_migration_0028_part(part))
             or (missing_plant_ownership_created_at and _is_migration_0029_part(part))
             or (missing_plant_external_references and _is_migration_0030_part(part))
+            or (missing_canonical_container_plots and _is_migration_0031_part(part))
             for part in missing
         ):
             stamp_through = 29
+            if missing_canonical_container_plots:
+                stamp_through = 30
             if missing_plant_external_references:
                 stamp_through = 29
             if missing_plant_ownership_created_at:
