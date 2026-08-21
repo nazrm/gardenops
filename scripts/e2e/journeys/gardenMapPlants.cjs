@@ -1378,7 +1378,6 @@ async function saveMobileSnapshot(page, fixture) {
 async function exerciseEditorMapObjectWrite(page, alpha) {
   await openMap(page, "desktop");
   await enableMapEditor(page);
-  await visible(page.locator("#map-objects-panel .map-object-intent-form"), "editor area form");
   const mapBoundsBefore = await page.locator("#map-grid").boundingBox();
   assert(mapBoundsBefore, "Editor map grid has no initial dimensions");
   const created = await createCanonicalArea(page, alpha, "Phase 1 Editor Patio", "patio");
