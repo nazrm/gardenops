@@ -501,9 +501,25 @@ class TestExportImport(BaseApiTest):
         self.assertEqual(response.status_code, 200)
         data = json.loads(response.content)
         self.assertIsInstance(data, dict)
-        self.assertEqual(data["schema_version"], 1)
+        self.assertEqual(data["schema_version"], 2)
         self.assertIsInstance(data["plots"], list)
         self.assertGreater(len(data["plots"]), 0)
+        for plot in data["plots"]:
+            self.assertTrue(
+                {
+                    "plot_kind",
+                    "display_name",
+                    "container_type",
+                    "parent_object_public_id",
+                    "environment",
+                    "archived_at_ms",
+                }.issubset(plot)
+            )
+        ground_plot = next(plot for plot in data["plots"] if plot["plot_id"] == "B1")
+        self.assertEqual(ground_plot["plot_kind"], "ground")
+        self.assertIsNone(ground_plot["display_name"])
+        self.assertIsNone(ground_plot["container_type"])
+        self.assertIsNone(ground_plot["parent_object_public_id"])
         self.assertEqual(
             data["house"],
             {
@@ -540,7 +556,7 @@ class TestExportImport(BaseApiTest):
                 "/api/plots/import",
                 headers=self._destructive_admin_headers("unsupported-layout-version"),
                 json={
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "plots": [
                         {
                             "plot_id": "VERSION-PROBE",
@@ -742,30 +758,63 @@ class TestExportImport(BaseApiTest):
         self.assertEqual(patio.status_code, 201, patio.text)
         patio_id = patio.json()["public_id"]
         pot = self.client.post(
-            f"/api/gardens/{garden_id}/map-objects/{patio_id}/units",
+            f"/api/gardens/{garden_id}/containers",
             json={
-                "unit_type": "pot",
                 "name": "Rosemary pot",
-                "shape_type": "ellipse",
-                "geometry": {"x": 2, "y": 2, "width": 2, "height": 2},
-                "style": {"color": "#c58f5c"},
-                "sort_order": 1,
+                "container_type": "pot",
+                "parent_object_public_id": patio_id,
+                "environment": "covered",
             },
         )
         self.assertEqual(pot.status_code, 201, pot.text)
+        container_id = pot.json()["plot_id"]
 
         export_res = self.client.get("/api/plots/export")
         self.assertEqual(export_res.status_code, 200, export_res.text)
         exported = json.loads(export_res.content)
+        self.assertEqual(exported["schema_version"], 2)
         self.assertEqual(len(exported["map_objects"]), 1)
         self.assertEqual(exported["map_objects"][0]["public_id"], patio_id)
-        self.assertEqual(exported["map_objects"][0]["units"][0]["name"], "Rosemary pot")
+        self.assertNotIn("units", exported["map_objects"][0])
+        self.assertNotIn("containers", exported["map_objects"][0])
+        exported_container = next(
+            plot for plot in exported["plots"] if plot["plot_id"] == container_id
+        )
+        self.assertEqual(
+            {
+                field: exported_container[field]
+                for field in (
+                    "plot_id",
+                    "plot_kind",
+                    "display_name",
+                    "container_type",
+                    "parent_object_public_id",
+                    "environment",
+                    "archived_at_ms",
+                )
+            },
+            {
+                "plot_id": container_id,
+                "plot_kind": "container",
+                "display_name": "Rosemary pot",
+                "container_type": "pot",
+                "parent_object_public_id": patio_id,
+                "environment": "covered",
+                "archived_at_ms": None,
+            },
+        )
 
         delete_res = self.client.delete(f"/api/gardens/{garden_id}/map-objects/{patio_id}")
         self.assertEqual(delete_res.status_code, 200, delete_res.text)
+        self.assertEqual(delete_res.json()["unparented_containers"], 1)
         empty_res = self.client.get(f"/api/gardens/{garden_id}/map-objects")
         self.assertEqual(empty_res.status_code, 200, empty_res.text)
         self.assertEqual(empty_res.json()["objects"], [])
+        detached_res = self.client.get(
+            f"/api/gardens/{garden_id}/containers/{container_id}"
+        )
+        self.assertEqual(detached_res.status_code, 200, detached_res.text)
+        self.assertIsNone(detached_res.json()["parent_object_public_id"])
 
         with patch.dict(
             os.environ,
@@ -782,7 +831,6 @@ class TestExportImport(BaseApiTest):
         self.assertEqual(restored_res.status_code, 200, restored_res.text)
         restored = restored_res.json()["objects"]
         exported_object = exported["map_objects"][0]
-        exported_unit = exported_object["units"][0]
         self.assertEqual(len(restored), 1)
         restored_object = restored[0]
         for field in (
@@ -798,19 +846,18 @@ class TestExportImport(BaseApiTest):
         ):
             with self.subTest(field=field):
                 self.assertEqual(restored_object[field], exported_object[field])
-        self.assertEqual(len(restored_object["units"]), 1)
-        restored_unit = restored_object["units"][0]
+        self.assertEqual(len(restored_object["containers"]), 1)
+        restored_container = restored_object["containers"][0]
         for field in (
-            "public_id",
-            "unit_type",
-            "name",
-            "shape_type",
-            "geometry",
-            "style",
-            "sort_order",
+            "plot_id",
+            "display_name",
+            "container_type",
+            "parent_object_public_id",
+            "environment",
+            "archived_at_ms",
         ):
-            with self.subTest(field=f"unit.{field}"):
-                self.assertEqual(restored_unit[field], exported_unit[field])
+            with self.subTest(field=f"container.{field}"):
+                self.assertEqual(restored_container[field], exported_container[field])
 
     def test_export_plants_csv(self) -> None:
         response = self.client.get("/api/plants/export-csv")
