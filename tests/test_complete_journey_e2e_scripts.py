@@ -650,6 +650,11 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     assert journey_source.count("page.evaluate(async") == 0
     assert "const unitUpdate = await issueBrowserRequest" not in journey_source
     assert "route.fulfill" not in journey_source
+    mobile_canonical = journey_source.split("async function exerciseCanonicalContainerMobile", 1)[1]
+    mobile_canonical = mobile_canonical.split("async function exerciseCanonicalContainerKeyboard", 1)[0]
+    assert 'await openIndoor(page, "mobile")' in mobile_canonical
+    assert "fixture.phase_one.indoor.room_label" in mobile_canonical
+    assert "restored indoor room after canonical mobile move" in mobile_canonical
     delay_start = journey_source.index("async function delayGardenSwitchResponses")
     delay_end = journey_source.index("async function assertGlobalSearch", delay_start)
     delay_source = journey_source[delay_start:delay_end]
@@ -2236,6 +2241,7 @@ def test_phase_two_accounts_for_deterministic_read_side_effects() -> None:
     oracle = json.loads(ORACLE.read_text(encoding="utf-8"))
 
     assert "const phaseTwoReadSideEffectTables" in checker_source
+    assert checker_source.count("assertPhaseOneRuntimeReadSideEffects(") == 2
     assert '"auth_passkey_challenges"' in checker_source
     accounting = oracle["phase_two"]["whole_table_mutation_accounting"]
     assert {"provider_daily_usage", "shademap_cache"}.issubset(accounting["phase_two_tables"])
@@ -2253,6 +2259,7 @@ def test_phase_two_accounts_for_deterministic_read_side_effects() -> None:
 
     script = r"""
 const {
+  assertPhaseOneRuntimeReadSideEffects,
   assertWholeTableMutationAccounting,
   phaseTwoOracle,
 } = require('./scripts/check_complete_journeys_e2e.cjs');
@@ -2268,7 +2275,8 @@ const row = (prefix, count) => ({
     row_digest: String(index + 1).padStart(64, prefix),
   })),
 });
-const oracle = phaseTwoOracle().phase_two.whole_table_mutation_accounting;
+const fullOracle = phaseTwoOracle();
+const oracle = fullOracle.phase_two.whole_table_mutation_accounting;
 const tables = ['provider_daily_usage', 'shademap_cache'];
 const scope = oracle.exact_counts.phase_two_only;
 const identities = oracle.exact_identity_counts.phase_two_only;
@@ -2290,11 +2298,12 @@ const final = {
   shademap_cache: row('b', 3),
 };
 assertWholeTableMutationAccounting(initial, final, new Set(tables), accounting);
+assertPhaseOneRuntimeReadSideEffects(initial, final, fullOracle);
 try {
-  assertWholeTableMutationAccounting(initial, {
+  assertPhaseOneRuntimeReadSideEffects(initial, {
     provider_daily_usage: row('a', 5),
     shademap_cache: row('b', 3),
-  }, new Set(tables), accounting);
+  }, fullOracle);
   process.exit(3);
 } catch (error) {
   if (!String(error.message).includes('expected_added')) process.exit(4);

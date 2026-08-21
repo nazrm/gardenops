@@ -1172,6 +1172,17 @@ async function exerciseCanonicalContainerMobile(page, diagnostics, fixture, alph
     { id: sourcePlotId, name: "Indoor growing" },
     fixture.phase_one.indoor.quantity,
   );
+  await openIndoor(page, "mobile");
+  const indoorCard = page.locator("#indoor-tab-content .indoor-card-wrapper")
+    .filter({ hasText: fixturePlant.name });
+  await visible(indoorCard, "indoor plant after canonical mobile move");
+  await indoorCard.locator(".indoor-room-row button").click();
+  await indoorCard.locator(".indoor-room-input").fill(fixture.phase_one.indoor.room_label);
+  await indoorCard.locator(".indoor-room-edit .btn-primary").click();
+  await visible(
+    indoorCard.getByText(fixture.phase_one.indoor.room_label, { exact: false }),
+    "restored indoor room after canonical mobile move",
+  );
   await openMap(page, "mobile");
   await enableMapEditor(page, "mobile");
   await archiveCanonicalContainer(page, alpha, container);

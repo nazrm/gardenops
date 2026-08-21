@@ -111,6 +111,10 @@ function isPhaseTwoReadOnlyProbeMutation(request) {
 }
 const PHASE_TWO_EDITOR_PASSWORD = "CompleteJourneysEditorE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 const PHASE_TWO_VIEWER_PASSWORD = "CompleteJourneysViewerE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+const PHASE_ONE_RUNTIME_READ_SIDE_EFFECT_TABLES = [
+  "provider_daily_usage",
+  "shademap_cache",
+];
 const PHASE_EIGHT_ALLOWED_TABLES = [
   "auth_passkey_challenges",
   "garden_journal_entries",
@@ -3701,6 +3705,32 @@ function assertWholeTableMutationAccounting(initial, final, allowedTables, accou
     changed_tables: changedTables,
     independent_accounting_enforced: true,
   };
+}
+
+function assertPhaseOneRuntimeReadSideEffects(initial, final, oracle) {
+  const spec = oracle?.phase_two?.whole_table_mutation_accounting;
+  const counts = spec?.exact_counts?.cumulative_through_phase_two;
+  const identities = spec?.exact_identity_counts?.cumulative_through_phase_two;
+  assert(counts && identities, "Phase 1 runtime read-side-effect oracle is missing");
+  const tables = new Set(PHASE_ONE_RUNTIME_READ_SIDE_EFFECT_TABLES);
+  const projection = (domainTables) => Object.fromEntries(
+    [...tables].map((table) => [table, domainTables[table]]),
+  );
+  const accounting = Object.fromEntries([...tables].map((table) => [table, {
+    allow_row_delta: true,
+    evidence: "phase_one_map_profile_runtime_reads_existing_oracle",
+    expected_added: counts[table].added,
+    expected_identity_added: identities[table].added,
+    expected_identity_removed: identities[table].removed,
+    expected_identity_updated: identities[table].updated,
+    expected_removed: counts[table].removed,
+  }]));
+  return assertWholeTableMutationAccounting(
+    projection(initial),
+    projection(final),
+    tables,
+    accounting,
+  );
 }
 
 function phaseThreeExactMutationContract(initialState, fixture, oracle) {
@@ -8685,8 +8715,16 @@ async function main() {
     ]) : new Set();
     const phaseOneBoundaryDeltaTables = phaseOneRan ? new Set([
       ...phaseOneSemanticDeltaTables,
+      ...PHASE_ONE_RUNTIME_READ_SIDE_EFFECT_TABLES,
       "auth_passkey_challenges",
     ]) : phaseOneSemanticDeltaTables;
+    if (phaseOneRan) {
+      assertPhaseOneRuntimeReadSideEffects(
+        fixture.database_snapshot.domain_tables,
+        phaseOneDatabase.domain_tables,
+        oracle,
+      );
+    }
     const phaseOneChangedDomainTables = phaseOneRan ? [...new Set([
       ...Object.keys(fixture.database_snapshot.domain_tables),
       ...Object.keys(phaseOneDatabase?.domain_tables || {}),
@@ -9696,6 +9734,7 @@ module.exports = {
   assertPhaseOneAuditContract,
   assertPhaseOneChallengeProjection,
   assertPhaseOneProfileEvidence,
+  assertPhaseOneRuntimeReadSideEffects,
   assertPhaseThreeBoundaryEvidence,
   assertPhaseThreeProviderUsage,
   assertPhaseFourAuditEvents,
