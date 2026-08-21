@@ -18,6 +18,7 @@ const DEFAULT_AREA_COLOR = "#8f9f7d";
 interface RenderMapObjectsPanelParams {
   container: HTMLElement | null;
   objects: MapObject[];
+  containers: ContainerSummary[];
   plots: Plot[];
   selectedObjectId: string | null;
   showObjects: boolean;
@@ -153,16 +154,20 @@ function plotContainerSummary(plot: Plot): ContainerSummary {
 
 function allContainers(params: RenderMapObjectsPanelParams): ContainerSummary[] {
   const byId = new Map<string, ContainerSummary>();
+  for (const plot of params.plots) {
+    if (plot.plot_kind !== "container" || plot.archived_at_ms != null) continue;
+    const container = plotContainerSummary(plot);
+    byId.set(container.plot_id, container);
+  }
   for (const object of params.objects) {
     for (const container of object.containers ?? []) {
       if (container.archived_at_ms == null) byId.set(container.plot_id, container);
+      else byId.delete(container.plot_id);
     }
   }
-  for (const plot of params.plots) {
-    if (plot.plot_kind !== "container" || plot.archived_at_ms != null) continue;
-    const summary = plotContainerSummary(plot);
-    const existing = byId.get(summary.plot_id);
-    byId.set(summary.plot_id, existing ? { ...summary, ...existing } : summary);
+  for (const container of params.containers) {
+    if (container.archived_at_ms == null) byId.set(container.plot_id, container);
+    else byId.delete(container.plot_id);
   }
   return [...byId.values()].sort((a, b) =>
     a.display_name.localeCompare(b.display_name, undefined, { sensitivity: "base" }));

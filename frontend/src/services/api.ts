@@ -26,6 +26,7 @@ import type {
   JournalListResponse,
   MapObject,
   MapObjectInput,
+  MapObjectsResponse,
   MapObjectUnit,
   MapObjectUnitInput,
   NotificationListResponse,
@@ -1980,11 +1981,10 @@ export async function updateLayoutStateApi(
   return apiPatch<HouseLayoutState>("/api/layout-state", house);
 }
 
-export async function listMapObjectsApi(gardenId: number): Promise<MapObject[]> {
-  const body = await apiGet<{ objects: MapObject[] }>(
+export async function listMapObjectsApi(gardenId: number): Promise<MapObjectsResponse> {
+  return apiGet<MapObjectsResponse>(
     `/api/gardens/${gardenId}/map-objects`,
   );
-  return body.objects;
 }
 
 export async function createMapObjectApi(

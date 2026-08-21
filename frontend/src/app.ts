@@ -255,6 +255,7 @@ import {
 const state: AppState = {
   plots: [],
   mapObjects: [],
+  mapObjectContainers: [],
   selectedMapObjectId: null,
   showMapObjects: true,
   plantsCache: [],
@@ -3387,6 +3388,7 @@ function renderMapObjectsPanelView(): void {
   renderMapObjectsPanel({
     container: document.getElementById("map-objects-panel"),
     objects: state.mapObjects,
+    containers: state.mapObjectContainers,
     plots: state.plots,
     selectedObjectId: state.selectedMapObjectId,
     showObjects: state.showMapObjects,
@@ -3428,14 +3430,16 @@ async function fetchMapObjects(options: MapFetchOptions = {}): Promise<void> {
   const requestVersion = options.requestVersion ?? ++mapRefreshVersion;
   if (requestGardenId === null) {
     state.mapObjects = [];
+    state.mapObjectContainers = [];
     state.selectedMapObjectId = null;
     if (options.render !== false) renderPlots();
     return;
   }
   try {
-    const objects = await listMapObjectsApi(requestGardenId);
+    const { objects, containers } = await listMapObjectsApi(requestGardenId);
     if (!isCurrentMapRequest(requestGardenId, requestVersion)) return;
     state.mapObjects = objects;
+    state.mapObjectContainers = containers;
     if (
       state.selectedMapObjectId
       && !objects.some((object) => object.public_id === state.selectedMapObjectId)
@@ -7096,6 +7100,7 @@ function clearGardenScopedStateForSwitch(): void {
   resetMapLayoutForGardenSwitch();
   state.plots = [];
   state.mapObjects = [];
+  state.mapObjectContainers = [];
   state.selectedMapObjectId = null;
   state.selectedPlotId = null;
   state.selectedPlotIds.clear();

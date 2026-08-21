@@ -29,6 +29,7 @@ const layoutSource = readSource("frontend/src/components/layout.ts");
 
 assertIncludes(apiSource, "export async function updateMapObjectApi", "missing update API");
 assertIncludes(apiSource, "apiPatch<MapObject>", "update API must use PATCH");
+assertIncludes(apiSource, "Promise<MapObjectsResponse>", "map object API must retain canonical containers");
 assertIncludes(panelSource, "onCreateArea", "missing area creation callback");
 assertIncludes(panelSource, "onCreateContainer", "missing container creation callback");
 assertIncludes(panelSource, "onUpdateObject", "missing object update callback");
@@ -36,6 +37,7 @@ assertIncludes(panelSource, "map-object-intent-form", "missing progressive creat
 assertIncludes(panelSource, "map-object-disclosure", "missing progressive disclosure controls");
 assertIncludes(panelSource, "container_type: typeSelect.value as ContainerType", "container type is not submitted");
 assertIncludes(panelSource, "map-object-geometry-form", "missing geometry editor form");
+assertIncludes(panelSource, "for (const container of params.containers)", "panel must use canonical containers");
 assertExcludes(panelSource, "buildUnitGrid", "unit mini-grid must not be part of the normal UI");
 assertExcludes(panelSource, "map-object-unit-grid", "unit mini-grid must not be part of the normal UI");
 assertIncludes(mapViewSource, "onMapObjectGeometryChange", "missing map geometry callback");
@@ -51,6 +53,7 @@ assertExcludes(mapViewSource, "+W", "old text resize controls must be removed");
 assertExcludes(mapViewSource, "-W", "old text resize controls must be removed");
 assertIncludes(appSource, "updateMapObjectApi", "app must call update API");
 assertIncludes(appSource, "createContainerApi", "app must call canonical container API");
+assertIncludes(appSource, "state.mapObjectContainers = containers", "app must retain canonical containers");
 assertIncludes(appSource, "openPlantLocationPicker", "missing plant location picker flow");
 assertIncludes(appSource, "plantLocationDestinations", "missing grouped location destinations");
 assertIncludes(appSource, "updateMapObjectGeometry", "missing map geometry update flow");

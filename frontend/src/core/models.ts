@@ -818,6 +818,11 @@ export interface MapObject {
   containers: ContainerSummary[];
 }
 
+export interface MapObjectsResponse {
+  objects: MapObject[];
+  containers: ContainerSummary[];
+}
+
 export interface MapObjectInput {
   object_type: MapObjectType;
   name: string;
@@ -846,6 +851,7 @@ export type AppTab = "map" | "garden" | "activity" | "insights" | "admin";
 export interface AppState {
   plots: Plot[];
   mapObjects: MapObject[];
+  mapObjectContainers: ContainerSummary[];
   selectedMapObjectId: string | null;
   showMapObjects: boolean;
   plantsCache: Plant[];
