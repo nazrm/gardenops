@@ -15,9 +15,6 @@ const ONBOARDING_PASSWORD = "CompleteJourneysOnboardingE2E!Passphrase2026"; // p
 const MOBILE_ONBOARDING_PASSWORD = "CompleteJourneysMobileOnboardingE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 const EDITOR_PASSWORD = "CompleteJourneysEditorE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 const VIEWER_PASSWORD = "CompleteJourneysViewerE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
-const MAP_OBJECT_TYPES = [
-  "patio", "terrace", "greenhouse", "shed", "pond", "path", "bed", "other",
-];
 const ROUTE_GUARD_PROBE_URL = "http://192.0.2.1/api/complete-journey-route-guard";
 
 function fixtureGarden(fixture, key) {
@@ -498,7 +495,7 @@ async function exercisePlantAndSavedView(
   alpha,
   profile = "desktop",
   lifecycleLabel = profile,
-  { assignmentPlotId = alpha.plot_id } = {},
+  { assignmentPlotId = alpha.plot_id, leaveUnassigned = false } = {},
 ) {
   const suffix = lifecycleLabel.replace(/[^a-z0-9]+/gi, " ").trim();
   const plantName = `Phase 1 Browser Mint ${suffix}`;
@@ -636,6 +633,24 @@ async function exercisePlantAndSavedView(
   await search.fill(renamed);
   const deleteRow = plantRecord(page, profile, renamed);
   await visible(deleteRow, "edited plant ready for deletion");
+  if (leaveUnassigned) {
+    await deleteRow.locator("[data-edit-plt]").click();
+    dialog = page.locator("#edit-plant-form");
+    await visible(dialog, "plant form for canonical container proof");
+    await dialog.locator(`.plot-chip[data-plot='${assignmentPlotId}'] .chip-remove`).click();
+    const finalUnlinkResponsePromise = page.waitForResponse((response) => (
+      response.request().method() === "DELETE"
+      && new URL(response.url()).pathname === `/api/plots/${assignmentPlotId}/plants/${plantId}`
+    ));
+    await dialog.locator("button[type='submit']").click();
+    assert((await finalUnlinkResponsePromise).status() === 204, "Canonical proof plant was not left unassigned");
+    await visible(plantRecord(page, profile, renamed), "unassigned plant for canonical proof");
+    return {
+      plantName: renamed,
+      savedViewName,
+      unassignedPlant: { id: plantId, name: renamed },
+    };
+  }
   await deleteRow.locator("[data-edit-plt]").click();
   await page.locator("#delete-edit-plant").click();
   await acceptConfirm(page);
@@ -686,18 +701,244 @@ async function enableMapEditor(page, profile = "desktop") {
   }
 }
 
-async function createMapObject(page, type, index) {
-  const form = page.locator("#map-objects-panel .map-object-custom-form");
-  const name = `Phase 1 ${type} ${index}`;
-  const fields = form.locator(".map-object-identity-grid");
-  await fields.locator("input[type='text']").fill(name);
-  await fields.locator(".map-object-type-select").selectOption(type);
-  await fields.locator("select").nth(1).selectOption(index % 2 ? "ellipse" : "rectangle");
-  if (index === 0) await form.locator("input[type='checkbox']").check();
+async function createCanonicalArea(page, alpha, name, type = "patio") {
+  const panel = page.locator("#map-objects-panel");
+  const addArea = panel.locator("details").first();
+  await addArea.locator("summary").click();
+  const form = addArea.locator("form.map-object-intent-form");
+  await visible(form, "canonical area form");
+  await form.locator("select").selectOption(type);
+  await form.locator("input[type='text']").fill(name);
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === `/api/gardens/${alpha.id}/map-objects`
+  ));
   await form.locator("button[type='submit']").click();
-  const row = page.locator("#map-objects-panel .map-object-row").filter({ hasText: name });
-  await visible(row, `created ${type} map object`);
-  return { name, row };
+  const response = await responsePromise;
+  assert(response.status() === 201, `Canonical area create returned ${response.status()}`);
+  const created = await response.json();
+  assert(created && typeof created.public_id === "string", "Canonical area has no public ID");
+  const row = panel.locator(".map-object-row").filter({ hasText: name });
+  await visible(row, `created canonical ${type} area`);
+  await waitFor(
+    async () => await page.locator(`.map-object-label[data-object-id='${created.public_id}']`).count() > 0,
+    `canonical ${type} area on map`,
+  );
+  return { id: created.public_id, name, row };
+}
+
+async function createCanonicalContainer(page, alpha, name, {
+  parentObjectId = null,
+  type = "pot",
+} = {}) {
+  const scope = parentObjectId
+    ? page.locator("#map-objects-panel .map-object-detail .map-object-action-row")
+    : page.locator("#map-objects-panel .map-object-standalone");
+  const details = scope.locator("details").first();
+  await details.locator("summary").click();
+  const form = details.locator("form.map-object-intent-form");
+  await visible(form, "canonical container form");
+  await form.locator("select").selectOption(type);
+  await form.locator("input[type='text']").fill(name);
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === `/api/gardens/${alpha.id}/containers`
+  ));
+  await form.locator("button[type='submit']").click();
+  const response = await responsePromise;
+  assert(response.status() === 201, `Canonical container create returned ${response.status()}`);
+  const created = await response.json();
+  assert(created && typeof created.plot_id === "string", "Canonical container has no plot ID");
+  const row = page.locator(".map-container-row").filter({ hasText: name });
+  await visible(row, `created canonical ${type}`);
+  return { id: created.plot_id, name, row };
+}
+
+async function archiveCanonicalContainer(page, alpha, container) {
+  const row = page.locator(".map-container-row").filter({ hasText: container.name });
+  await visible(row, `container ${container.name} before archive`);
+  const archive = row.locator(".map-object-icon-btn");
+  await visible(archive, `archive control for ${container.name}`);
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === "DELETE"
+    && new URL(response.url()).pathname === `/api/gardens/${alpha.id}/containers/${container.id}`
+  ));
+  await archive.click();
+  await acceptConfirm(page);
+  const response = await responsePromise;
+  assert(response.ok(), `Canonical container archive returned ${response.status()}`);
+  await waitFor(async () => await row.count() === 0, `archive ${container.name}`);
+}
+
+async function selectLocationPickerDestination(page, name) {
+  const option = page.locator(".plant-location-picker-option").filter({ hasText: name }).first();
+  await visible(option, `location destination ${name}`);
+  await option.click();
+  return option;
+}
+
+async function placePlantIntoContainer(page, profile, plant, container, expectedStatus = 201) {
+  await openPlants(page, profile);
+  await page.locator("#plants-search").fill(plant.name);
+  const row = plantRecord(page, profile, plant.name);
+  await visible(row, `unassigned plant ${plant.name}`);
+  const place = row.locator(".plant-place-btn");
+  await visible(place, `Place action for ${plant.name}`);
+  await place.click();
+  const picker = page.locator(".plant-location-picker");
+  await visible(picker, "Place location picker");
+  await selectLocationPickerDestination(page, container.name);
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === `/api/plots/${container.id}/plants/${plant.id}`
+  ));
+  await picker.locator(".confirm-yes").click();
+  const response = await responsePromise;
+  assert(response.status() === expectedStatus, `Place plant returned ${response.status()}`);
+  await waitFor(async () => await picker.count() === 0, "Place location picker close");
+}
+
+async function movePlantFromLocation(
+  page,
+  profile,
+  plant,
+  sourcePlotId,
+  destination,
+  quantity,
+  { expectMerge = false } = {},
+) {
+  await openPlants(page, profile);
+  await page.locator("#plants-search").fill(plant.name);
+  const row = plantRecord(page, profile, plant.name);
+  await visible(row, `plant ${plant.name} for move`);
+  const source = row.locator(`[data-goto-plot='${sourcePlotId}']`);
+  await visible(source, `source location ${sourcePlotId} for ${plant.name}`);
+  const move = source.locator("xpath=..").locator(".plot-link-action");
+  await visible(move, `Move action from ${sourcePlotId}`);
+  await move.click();
+  const picker = page.locator(".plant-location-picker");
+  await visible(picker, "Move location picker");
+  await selectLocationPickerDestination(page, destination.name);
+  const quantityInput = picker.locator(".plant-location-picker-quantity");
+  if (await quantityInput.count()) await quantityInput.fill(String(quantity));
+  if (expectMerge) {
+    await visible(picker.locator(".plant-location-picker-merge"), "Move merge announcement");
+    assert(
+      /total will be/i.test(await picker.locator(".plant-location-picker-merge").textContent()),
+      "Move merge announcement did not disclose the resulting quantity",
+    );
+  }
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname
+      === `/api/plots/${sourcePlotId}/plants/${plant.id}/move/${destination.id}`
+  ));
+  await picker.locator(".confirm-yes").click();
+  const response = await responsePromise;
+  assert(response.ok(), `Move plant returned ${response.status()}`);
+  await waitFor(async () => await picker.count() === 0, "Move location picker close");
+}
+
+async function unassignPlantFromLocation(page, profile, plant, plotId) {
+  await openPlants(page, profile);
+  await page.locator("#plants-search").fill(plant.name);
+  const row = plantRecord(page, profile, plant.name);
+  await visible(row, `plant ${plant.name} before unassign`);
+  await row.locator("[data-edit-plt]").click();
+  const dialog = page.locator("#edit-plant-form");
+  await visible(dialog, "plant edit form for unassign");
+  await dialog.locator(`.plot-chip[data-plot='${plotId}'] .chip-remove`).click();
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === "DELETE"
+    && new URL(response.url()).pathname === `/api/plots/${plotId}/plants/${plant.id}`
+  ));
+  await dialog.locator("button[type='submit']").click();
+  assert((await responsePromise).status() === 204, "Plant unassign returned an unexpected status");
+  await visible(plantRecord(page, profile, plant.name), `unassigned ${plant.name}`);
+}
+
+async function deletePlantByName(page, profile, plantName) {
+  await openPlants(page, profile);
+  await page.locator("#plants-search").fill(plantName);
+  const row = plantRecord(page, profile, plantName);
+  await visible(row, `temporary plant ${plantName} before deletion`);
+  await row.locator("[data-edit-plt]").click();
+  await page.locator("#delete-edit-plant").click();
+  await acceptConfirm(page);
+  await waitFor(async () => await row.count() === 0, `temporary plant ${plantName} deletion`);
+}
+
+async function exerciseCanonicalContainerDesktop(page, diagnostics, fixture, alpha, plant) {
+  await openMap(page, "desktop");
+  await enableMapEditor(page);
+  const area = await createCanonicalArea(page, alpha, "Phase 1 Basil Terrace", "terrace");
+  const areaDetail = page.locator("#map-objects-panel .map-object-detail");
+  if (!await areaDetail.isVisible()) await area.row.locator(".map-object-row-main").click();
+  await visible(areaDetail, "canonical area detail");
+  const container = await createCanonicalContainer(
+    page,
+    alpha,
+    "Phase 1 Blue Planter",
+    { parentObjectId: area.id, type: "planter" },
+  );
+
+  await placePlantIntoContainer(page, "desktop", plant, container);
+  const fixturePlant = {
+    id: fixture.phase_one.indoor.plant_id,
+    name: fixture.phase_one.indoor.plant_name,
+  };
+  const sourcePlotId = fixture.phase_one.indoor.plot_id;
+  await movePlantFromLocation(page, "desktop", fixturePlant, sourcePlotId, container, 1);
+  await movePlantFromLocation(
+    page,
+    "desktop",
+    fixturePlant,
+    sourcePlotId,
+    container,
+    1,
+    { expectMerge: true },
+  );
+
+  await openMap(page, "desktop");
+  await enableMapEditor(page);
+  const areaRow = page.locator("#map-objects-panel .map-object-row").filter({ hasText: area.name });
+  const containerRow = page.locator(".map-container-row").filter({ hasText: container.name });
+  await visible(areaRow, "canonical area after plant moves");
+  await visible(containerRow, "canonical container after plant moves");
+  await waitFor(
+    async () => /1 container.*2 plants/i.test(await areaRow.locator(".map-object-row-meta").textContent()),
+    "area display name and plant count",
+  );
+  await waitFor(
+    async () => /2 plants/i.test(await containerRow.locator(".map-object-row-meta").textContent()),
+    "container display name and plant count",
+  );
+
+  await reloadAndAccountForAborts(page, diagnostics);
+  await openMap(page, "desktop");
+  await enableMapEditor(page);
+  await visible(page.getByText(area.name, { exact: true }), "area display name after reload");
+  await visible(page.getByText(container.name, { exact: true }), "container display name after reload");
+  await openPlants(page, "desktop");
+  await page.locator("#plants-search").fill(plant.name);
+  const placedRow = plantRecord(page, "desktop", plant.name);
+  await visible(placedRow.locator(".plot-link").filter({ hasText: container.name }), "placed plant location after reload");
+
+  await movePlantFromLocation(
+    page,
+    "desktop",
+    fixturePlant,
+    container.id,
+    { id: sourcePlotId, name: "Indoor growing" },
+    2,
+    { expectMerge: true },
+  );
+  await unassignPlantFromLocation(page, "desktop", plant, container.id);
+  await openMap(page, "desktop");
+  await enableMapEditor(page);
+  await archiveCanonicalContainer(page, alpha, container);
+  const areaAfterArchive = page.locator("#map-objects-panel .map-object-row").filter({ hasText: area.name });
+  await deleteMapObjectRow(page, areaAfterArchive, area.name);
 }
 
 async function deleteMapObjectRow(page, row, name) {
@@ -826,226 +1067,128 @@ async function exerciseDiscoverableMobilePlotEdit(page, diagnostics) {
   await deleteMobilePlotThroughBottomSheet(page, diagnostics, renamedPlotId);
 }
 
-async function moveMapObjectWithTouch(page, surface, objectId, alpha) {
-  const grid = page.locator("#map-grid");
-  const [gridBox, surfaceBox, gridDimensions] = await Promise.all([
-    grid.boundingBox(),
-    surface.boundingBox(),
-    grid.evaluate((element) => ({
-      cols: Number(getComputedStyle(element).getPropertyValue("--grid-cols")),
-      rows: Number(getComputedStyle(element).getPropertyValue("--grid-rows")),
-    })),
-  ]);
-  assert(gridBox && surfaceBox, "Touch manipulation needs visible map geometry");
-  assert(gridDimensions.cols > 0 && gridDimensions.rows > 0, "Touch manipulation has invalid map dimensions");
-  const startX = surfaceBox.x + surfaceBox.width / 2;
-  const startY = surfaceBox.y + surfaceBox.height / 2;
-  const cellWidth = gridBox.width / gridDimensions.cols;
-  const endX = Math.min(gridBox.x + gridBox.width - 2, startX + cellWidth);
-  const positionedLabel = page.locator(`.map-object-label[data-object-id='${objectId}']`);
-  const styleBeforeTouchMove = await positionedLabel.getAttribute("style");
-  const hitTest = await surface.evaluate((element, { x, y }) => {
-    const hit = document.elementFromPoint(x, y);
-    return hit !== null && (hit === element || element.contains(hit));
-  }, { x: startX, y: startY });
-  assert(hitTest, "Touch manipulation start point does not hit the map-object surface");
-  const geometryPath = `/api/gardens/${alpha.id}/map-objects/${objectId}`;
-  const responsePromise = page.waitForResponse((response) => (
-    response.request().method() === "PATCH"
-    && new URL(response.url()).pathname === geometryPath
-  ));
-  const protocol = await page.context().newCDPSession(page);
-  const touchPoint = (x, y) => ({
-    force: 1,
-    id: 41,
-    radiusX: 1,
-    radiusY: 1,
-    x,
-    y,
-  });
-  try {
-    await protocol.send("Input.dispatchTouchEvent", {
-      touchPoints: [touchPoint(startX, startY)],
-      type: "touchStart",
-    });
-    await protocol.send("Input.dispatchTouchEvent", {
-      touchPoints: [touchPoint(endX, startY)],
-      type: "touchMove",
-    });
-    await protocol.send("Input.dispatchTouchEvent", {
-      touchPoints: [],
-      type: "touchEnd",
-    });
-  } finally {
-    await protocol.detach().catch(() => {});
-  }
-  assert((await responsePromise).ok(), "Touch map object move PATCH failed");
-  await waitFor(
-    async () => await positionedLabel.getAttribute("style") !== styleBeforeTouchMove,
-    "touch map object move render",
+async function exerciseCanonicalContainerMobile(page, diagnostics, fixture, alpha) {
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert(
+    JSON.stringify(page.viewportSize()) === JSON.stringify({ width: 390, height: 844 }),
+    "Canonical mobile proof did not use the required 390x844 viewport",
   );
+  await openMap(page, "mobile");
+  await enableMapEditor(page, "mobile");
+  const container = await createCanonicalContainer(
+    page,
+    alpha,
+    "Phase 1 Mobile Pot",
+    { type: "pot" },
+  );
+  const fixturePlant = {
+    id: fixture.phase_one.indoor.plant_id,
+    name: fixture.phase_one.indoor.plant_name,
+  };
+  const sourcePlotId = fixture.phase_one.indoor.plot_id;
+  await movePlantFromLocation(
+    page,
+    "mobile",
+    fixturePlant,
+    sourcePlotId,
+    container,
+    fixture.phase_one.indoor.quantity,
+  );
+  await movePlantFromLocation(
+    page,
+    "mobile",
+    fixturePlant,
+    container.id,
+    { id: sourcePlotId, name: "Indoor growing" },
+    fixture.phase_one.indoor.quantity,
+  );
+  await openMap(page, "mobile");
+  await enableMapEditor(page, "mobile");
+  await archiveCanonicalContainer(page, alpha, container);
+  diagnostics.canonical_mobile_viewport = page.viewportSize();
 }
 
-async function exerciseMapObjectEditor(page, diagnostics, alpha, { profile = "desktop", useTouch = false } = {}) {
-  await enableMapEditor(page, profile);
-  await visible(page.locator("#map-objects-panel .map-object-custom-form"), "map object category editor");
-  const mapBoundsBefore = await page.locator("#map-grid").boundingBox();
-  assert(mapBoundsBefore, "Map grid has no initial dimensions");
-  const created = [];
-  const objectTypes = profile === "mobile" ? ["patio"] : MAP_OBJECT_TYPES;
-  for (const [index, type] of objectTypes.entries()) {
-    created.push(await createMapObject(page, type, index));
-  }
-
-  const primary = created[0];
-  const primaryId = await primary.row.getAttribute("data-object-id");
-  assert(primaryId, "Created primary map object has no public ID");
-  const detail = page.locator("#map-objects-panel .map-object-detail").filter({ hasText: primary.name });
-  if (!await detail.isVisible()) await primary.row.locator(".map-object-row-main").click();
-  await visible(detail, "primary map object details");
-  const positionInputs = detail.locator(".map-object-position-grid input");
-  await positionInputs.nth(0).fill("2");
-  await positionInputs.nth(1).fill("2");
-  await positionInputs.nth(2).fill("3");
-  await positionInputs.nth(3).fill("2");
-  const geometryPath = `/api/gardens/${alpha.id}/map-objects/${primaryId}`;
-  const waitForGeometryPatch = () => page.waitForResponse((response) => (
-    response.request().method() === "PATCH"
-    && new URL(response.url()).pathname === geometryPath
+async function exerciseCanonicalContainerKeyboard(page, diagnostics, fixture, alpha, plantName) {
+  assert(
+    JSON.stringify(page.viewportSize()) === JSON.stringify({ width: 720, height: 450 }),
+    "Canonical keyboard proof did not use the 200% reflow viewport",
+  );
+  await openMap(page, "desktop-reflow-200");
+  await enableMapEditor(page, "desktop-reflow-200");
+  const container = await createCanonicalContainer(page, alpha, "Phase 1 Keyboard Pot", { type: "pot" });
+  const plant = { name: plantName };
+  await openPlants(page, "desktop-reflow-200");
+  await page.locator("#plants-search").fill(plant.name);
+  const row = plantRecord(page, "desktop-reflow-200", plant.name);
+  const place = row.locator(".plant-place-btn");
+  await visible(place, "keyboard Place action");
+  await place.focus();
+  await place.press("Enter");
+  const picker = page.locator(".plant-location-picker");
+  await visible(picker, "keyboard Place picker");
+  const live = picker.locator(".plant-location-picker-status");
+  assert(await live.getAttribute("aria-live") === "polite", "Place picker has no polite live region");
+  const search = picker.locator(".plant-location-picker-search");
+  await search.fill(container.name);
+  const option = picker.locator(".plant-location-picker-option").filter({ hasText: container.name }).first();
+  await visible(option, "keyboard Place destination");
+  await option.focus();
+  await option.press("Enter");
+  const confirm = picker.locator(".confirm-yes");
+  await confirm.focus();
+  const placeResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname.startsWith(`/api/plots/${container.id}/plants/`)
   ));
-  let geometryResponsePromise = waitForGeometryPatch();
-  await detail.locator(".map-object-geometry-form button[type='submit']").click();
-  assert((await geometryResponsePromise).ok(), "Map object geometry form PATCH failed");
-  const surface = page.locator(`.map-object-interaction-surface[data-object-id='${primaryId}']`);
-  await visible(surface, "direct manipulation surface");
-  await surface.focus();
-  const positionedPrimaryLabel = page.locator(`.map-object-label[data-object-id='${primaryId}']`);
-  const styleBeforeKeyboardMove = await positionedPrimaryLabel.getAttribute("style");
-  geometryResponsePromise = waitForGeometryPatch();
-  await surface.press("ArrowRight");
-  assert((await geometryResponsePromise).ok(), "Map object keyboard move PATCH failed");
+  await confirm.press("Enter");
+  assert((await placeResponsePromise).ok(), "Keyboard Place request failed");
+  await waitFor(async () => await picker.count() === 0, "keyboard Place picker close");
   await waitFor(
-    async () => await positionedPrimaryLabel.getAttribute("style") !== styleBeforeKeyboardMove,
-    "map object keyboard move render",
+    async () => await page.locator("#toast-container .toast").filter({ hasText: /location updated/i }).count() > 0,
+    "Place live success announcement",
   );
-  await surface.focus();
-  geometryResponsePromise = waitForGeometryPatch();
-  await surface.press("Shift+ArrowDown");
-  assert((await geometryResponsePromise).ok(), "Map object keyboard resize PATCH failed");
-  if (useTouch) {
-    await closeMobileSurfaces(page);
-    await visible(surface, "mobile touch manipulation surface");
-    await moveMapObjectWithTouch(page, surface, primaryId, alpha);
-    await page.locator("#mobile-map-layers-btn").click();
-    await visible(page.locator("#map-layers-panel"), "mobile map layers after touch manipulation");
-  }
+  await waitFor(async () => await place.evaluate((element) => document.activeElement === element), "Place focus restoration");
 
-  if (!await detail.isVisible()) {
-    await page.locator("#map-objects-panel .map-object-row").filter({ hasText: primary.name })
-      .locator(".map-object-row-main").click();
-  }
-  await visible(detail, "primary map object details");
-  const unitCreatePath = `/api/gardens/${alpha.id}/map-objects/${primaryId}/units`;
-  const unitCreateResponsePromise = page.waitForResponse((response) => (
+  await openPlants(page, "desktop-reflow-200");
+  await page.locator("#plants-search").fill(plant.name);
+  const movedRow = plantRecord(page, "desktop-reflow-200", plant.name);
+  const move = movedRow.locator(".plot-link-action").first();
+  await visible(move, "keyboard Move action");
+  await move.focus();
+  await move.press("Enter");
+  await visible(picker, "keyboard Move picker");
+  assert(
+    await picker.locator(".plant-location-picker-status").getAttribute("aria-live") === "polite",
+    "Move picker has no polite live region",
+  );
+  const destination = picker.locator(".plant-location-picker-option")
+    .filter({ hasText: "Indoor growing" }).first();
+  await visible(destination, "keyboard Move destination");
+  await destination.focus();
+  await destination.press("Enter");
+  const moveConfirm = picker.locator(".confirm-yes");
+  await moveConfirm.focus();
+  const moveResponsePromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
-    && new URL(response.url()).pathname === unitCreatePath
+    && new URL(response.url()).pathname.includes("/move/")
   ));
-  await detail.locator(".map-object-create-row button").first().click();
-  const unitCreateResponse = await unitCreateResponsePromise;
-  assert(unitCreateResponse.status() === 201, "Nested map unit create failed");
-  const createdUnit = await unitCreateResponse.json();
-  assert(createdUnit && typeof createdUnit.public_id === "string", "Created nested map unit has no public ID");
-  const renamedUnit = `Phase 1 ${profile} nested unit edited`;
-  const unitUpdatePath = `${unitCreatePath}/${createdUnit.public_id}`;
-  const unitTile = detail.locator(".map-object-unit").filter({ hasText: createdUnit.name }).first();
-  await visible(unitTile, "created nested map unit tile");
-  await unitTile.click();
-  const unitForm = detail.locator(".map-object-unit-form");
-  await visible(unitForm, "nested map unit editor");
-  const unitIdentity = unitForm.locator(".map-object-identity-grid");
-  await unitIdentity.locator("input[type='text']").fill(renamedUnit);
-  await unitIdentity.locator("select").nth(0).selectOption("shelf");
-  await unitIdentity.locator("select").nth(1).selectOption("ellipse");
-  await unitIdentity.locator("input[type='color']").fill("#4c7e99");
-  const unitPosition = unitForm.locator(".map-object-position-grid input");
-  await unitPosition.nth(0).fill("2");
-  await unitPosition.nth(1).fill("2");
-  await unitPosition.nth(2).fill("1");
-  await unitPosition.nth(3).fill("1");
-  const unitUpdateResponsePromise = page.waitForResponse((response) => (
-    response.request().method() === "PATCH"
-    && new URL(response.url()).pathname === unitUpdatePath
-  ));
-  await unitForm.locator("button[type='submit']").click();
-  assert((await unitUpdateResponsePromise).ok(), "Nested map unit editor PATCH failed");
-  await visible(
-    detail.locator(".map-object-unit").filter({ hasText: renamedUnit }),
-    "nested unit editor update",
+  await moveConfirm.press("Enter");
+  assert((await moveResponsePromise).ok(), "Keyboard Move request failed");
+  await waitFor(async () => await picker.count() === 0, "keyboard Move picker close");
+  await waitFor(
+    async () => await page.locator("#toast-container .toast").filter({ hasText: /location updated/i }).count() > 0,
+    "Move live success announcement",
   );
-  const mapBoundsAfterMutation = await page.locator("#map-grid").boundingBox();
-  assert(mapBoundsAfterMutation, "Map grid has no dimensions after object mutations");
-  assert(
-    Math.abs(mapBoundsAfterMutation.width - mapBoundsBefore.width) <= 1
-      && Math.abs(mapBoundsAfterMutation.height - mapBoundsBefore.height) <= 1,
-    "Map dimensions shifted during map-object labels or selection",
+  await waitFor(
+    async () => await move.evaluate((element) => document.activeElement === element),
+    "Move focus restoration",
   );
 
-  await reloadAndAccountForAborts(page, diagnostics);
-  await enableMapEditor(page, profile);
-  await visible(page.locator("#map-objects-panel .map-object-custom-form"), "map object editor after reload");
-  await visible(page.getByText(primary.name, { exact: true }), "map object geometry after reload");
-  const reloadedPrimary = page.locator("#map-objects-panel .map-object-row").filter({ hasText: primary.name });
-  await reloadedPrimary.locator(".map-object-row-main").click();
-  const reloadedDetail = page.locator("#map-objects-panel .map-object-detail");
-  const reloadedUnit = reloadedDetail.locator(".map-object-unit").filter({ hasText: renamedUnit });
-  await visible(reloadedUnit, "nested unit edit after reload");
-  await reloadedUnit.click();
-  const reloadedUnitForm = reloadedDetail.locator(".map-object-unit-form");
-  await visible(reloadedUnitForm, "reloaded nested unit editor for direct delete");
-  const directUnitDeleteResponsePromise = page.waitForResponse((response) => (
-    response.request().method() === "DELETE"
-    && new URL(response.url()).pathname === unitUpdatePath
-  ));
-  await reloadedUnitForm.locator(".map-object-create-row button").filter({ hasText: "Delete" }).click();
-  await acceptConfirm(page);
-  assert((await directUnitDeleteResponsePromise).ok(), "Direct nested unit delete failed");
-  await waitFor(async () => await reloadedUnit.count() === 0, "direct nested unit removal");
-
-  const cascadeUnitCreateResponsePromise = page.waitForResponse((response) => (
-    response.request().method() === "POST"
-    && new URL(response.url()).pathname === unitCreatePath
-  ));
-  await reloadedDetail.locator(".map-object-create-row button").first().click();
-  const cascadeUnitCreateResponse = await cascadeUnitCreateResponsePromise;
-  assert(cascadeUnitCreateResponse.status() === 201, "Cascade nested unit create failed");
-  const cascadeUnit = await cascadeUnitCreateResponse.json();
-  await visible(
-    reloadedDetail.locator(".map-object-unit").filter({ hasText: cascadeUnit.name }),
-    "nested unit retained for parent cascade",
-  );
-  const parentDeletePath = `/api/gardens/${alpha.id}/map-objects/${primaryId}`;
-  const parentDeleteResponsePromise = page.waitForResponse((response) => (
-    response.request().method() === "DELETE"
-    && new URL(response.url()).pathname === parentDeletePath
-  ));
-  await deleteMapObjectRow(page, reloadedPrimary, primary.name);
-  const parentDeleteResponse = await parentDeleteResponsePromise;
-  assert(parentDeleteResponse.ok(), "Map object parent delete failed");
-  assert(
-    (await parentDeleteResponse.json()).deleted_units === 1,
-    "Map object parent delete did not report the nested-unit cascade",
-  );
-  await reloadAndAccountForAborts(page, diagnostics);
-  assert(
-    await page.locator(`.map-object-label[data-object-id='${primaryId}']`).count() === 0,
-    "Map object delete did not cascade its nested unit from the reloaded map",
-  );
-  await enableMapEditor(page, profile);
-  for (const item of created.slice(1)) {
-    const row = page.locator("#map-objects-panel .map-object-row").filter({ hasText: item.name });
-    await deleteMapObjectRow(page, row, item.name);
-  }
-  await waitFor(async () => await page.getByText(primary.name, { exact: true }).count() === 0, "map object UI cascade");
+  await openMap(page, "desktop-reflow-200");
+  await enableMapEditor(page, "desktop-reflow-200");
+  await archiveCanonicalContainer(page, alpha, container);
+  await deletePlantByName(page, "desktop-reflow-200", plant.name);
+  diagnostics.canonical_keyboard_reflow = true;
 }
 
 async function updateGardenSettings(
@@ -1147,40 +1290,19 @@ async function saveMobileSnapshot(page, fixture) {
   await closeMobileSurfaces(page);
 }
 
-async function exerciseEditorMapObjectWrite(page) {
+async function exerciseEditorMapObjectWrite(page, alpha) {
   await openMap(page, "desktop");
   await enableMapEditor(page);
-  await visible(page.locator("#map-objects-panel .map-object-custom-form"), "editor map object editor");
+  await visible(page.locator("#map-objects-panel .map-object-intent-form"), "editor area form");
   const mapBoundsBefore = await page.locator("#map-grid").boundingBox();
   assert(mapBoundsBefore, "Editor map grid has no initial dimensions");
-  const created = await createMapObject(page, "patio", 9);
+  const created = await createCanonicalArea(page, alpha, "Phase 1 Editor Patio", "patio");
   await deleteMapObjectRow(page, created.row, created.name);
   const mapBoundsAfter = await page.locator("#map-grid").boundingBox();
   assert(mapBoundsAfter, "Editor map grid has no dimensions after object mutation");
   assert(
     mapBoundsAfter.width === mapBoundsBefore.width && mapBoundsAfter.height === mapBoundsBefore.height,
     "Editor map dimensions shifted during map-object mutation",
-  );
-}
-
-async function exerciseMobileMapObject(page, alpha) {
-  await openMap(page, "mobile");
-  await enableMapEditor(page);
-  await visible(page.locator("#map-objects-panel .map-object-custom-form"), "mobile map object editor");
-  const mapBoundsBefore = await page.locator("#map-grid").boundingBox();
-  assert(mapBoundsBefore, "Mobile map grid has no initial dimensions");
-  const created = await createMapObject(page, "terrace", 10);
-  const objectId = await created.row.getAttribute("data-object-id");
-  assert(objectId, "Mobile map object has no public ID");
-  const surface = page.locator(`.map-object-interaction-surface[data-object-id='${objectId}']`);
-  await visible(surface, "mobile direct manipulation surface");
-  await moveMapObjectWithTouch(page, surface, objectId, alpha);
-  await deleteMapObjectRow(page, created.row, created.name);
-  const mapBoundsAfter = await page.locator("#map-grid").boundingBox();
-  assert(mapBoundsAfter, "Mobile map grid has no dimensions after object mutation");
-  assert(
-    mapBoundsAfter.width === mapBoundsBefore.width && mapBoundsAfter.height === mapBoundsBefore.height,
-    "Mobile map dimensions shifted during map-object touch mutation",
   );
 }
 
@@ -1718,27 +1840,18 @@ async function assertViewerDenied(page, alpha, profile) {
     .filter({ hasText: alpha.object_label });
   await visible(mapObjectRow, "viewer map-object inspection row");
   await mapObjectRow.locator(".map-object-row-main").click();
-  const unitTile = page.locator("#map-objects-panel .map-object-unit").first();
-  await visible(unitTile, "viewer nested-unit inspection tile");
-  assert(!await unitTile.isDisabled(), "Viewer nested-unit inspection tile is disabled");
-  await unitTile.click();
-  const unitForm = page.locator("#map-objects-panel .map-object-unit-form");
-  await visible(unitForm, "viewer nested-unit inspection form");
-  const unitControls = unitForm.locator("input, select, button");
-  assert(await unitControls.count() > 0, "Viewer nested-unit inspection form has no controls");
-  for (let index = 0; index < await unitControls.count(); index += 1) {
-    assert(await unitControls.nth(index).isDisabled(), "Viewer nested-unit inspection mutation control is enabled");
-  }
   const writeControls = page.locator(
-    "#map-objects-panel .map-object-create-row button, "
-    + "#map-objects-panel .map-object-submit-btn, "
+    "#map-objects-panel .map-object-intent-form input, "
+    + "#map-objects-panel .map-object-intent-form select, "
+    + "#map-objects-panel .map-object-intent-form button, "
     + "#map-objects-panel .map-object-icon-btn, "
     + "#map-objects-panel .map-object-geometry-form input, "
-    + "#map-objects-panel .map-object-geometry-form select",
+    + "#map-objects-panel .map-object-geometry-form select, "
+    + "#map-objects-panel .map-object-geometry-form button",
   );
   const count = await writeControls.count();
   for (let index = 0; index < count; index += 1) {
-    assert(await writeControls.nth(index).isDisabled(), "Viewer map-object write control is enabled");
+    assert(await writeControls.nth(index).isDisabled(), "Viewer area/container write control is enabled");
   }
   assert(
     await page.locator(".map-object-interaction-surface").count() === 0,
@@ -2444,7 +2557,18 @@ async function runOnboardingProfile(options, { password, profile, username }) {
   return { error: caughtError, result };
 }
 
-async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, password, profile, role, username }) {
+async function runProfile({
+  artifactDir,
+  baseUrl,
+  browser,
+  devices,
+  fixture,
+  password,
+  profile,
+  role,
+  username,
+  canonicalOnly = false,
+}) {
   const alpha = fixtureGarden(fixture, "alpha");
   const beta = fixtureGarden(fixture, "beta");
   const roleAlpha = role === "viewer" ? viewerFixtureGarden(fixture, "alpha", alpha) : alpha;
@@ -2487,7 +2611,18 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
     assert(!recorder.records.some((request) => request.method === "GET" && request.path === "/api/plants"), `${profile} map-first startup fetched /api/plants`);
     result.checks.map_first_without_plants = true;
 
-    if (role === "viewer") {
+    if (canonicalOnly) {
+      assert(role === "admin", "Canonical keyboard proof must use the admin fixture");
+      await exerciseCanonicalContainerKeyboard(
+        page,
+        guarded.diagnostics,
+        fixture,
+        alpha,
+        "Phase 1 Browser Mint admin desktop Edited",
+      );
+      result.checks.canonical_container_keyboard_reflow = true;
+      result.assertions.passed.push("canonical-container-keyboard-reflow");
+    } else if (role === "viewer") {
       await assertViewerDenied(page, roleAlpha, profile);
       result.checks.viewer_role_affordances_and_denials = true;
       result.checks.viewer_m1_m3_read_only_behavior = true;
@@ -2510,26 +2645,32 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
             page, guarded.diagnostics, alpha, profile,
           );
           result.checks.editor_settings_layout_reload_persistence = true;
-          await exerciseEditorMapObjectWrite(page);
+          await exerciseEditorMapObjectWrite(page, alpha);
           result.checks.editor_m1_m3_supported_writes = true;
           result.checks.editor_a3_settings_and_m4_layout_write = true;
         }
         result.checks.editor_profile_write_affordances_and_admin_denial = true;
         result.assertions.passed.push("A3-M1-M2-M3-M4-editor-profile-real-write-and-admin-denial");
       } else if (profile === "desktop") {
-        await exercisePlantAndSavedView(
+        const canonicalPlant = await exercisePlantAndSavedView(
           page, guarded.diagnostics, fixture, alpha, profile, "admin desktop",
+          { leaveUnassigned: true },
         );
         result.checks.saved_view_delete_confirmation = true;
         await mutateIndoorPlant(page, guarded.diagnostics, fixture, profile, "admin desktop");
         result.checks.indoor_reload_persistence = true;
-        await openMap(page, profile);
-        await exerciseMapObjectEditor(page, guarded.diagnostics, alpha, { profile });
-        await openMap(page, profile);
         const mapStateTransitions = await exerciseSnapshotsAndImport(
           page, guarded.diagnostics, password, alpha, beta,
         );
         result.checks.import_rejection_render_churn = mapStateTransitions;
+        await exerciseCanonicalContainerDesktop(
+          page,
+          guarded.diagnostics,
+          fixture,
+          alpha,
+          canonicalPlant.unassignedPlant,
+        );
+        result.checks.canonical_container_desktop = true;
         result.checks.desktop_admin_mutation_workflows = true;
         result.assertions.passed.push("M1-M2-M3-M4-desktop-admin-real-ui-mutations");
       } else {
@@ -2545,20 +2686,17 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
           page, guarded.diagnostics, alpha, profile, "mobile admin",
         );
         result.checks.garden_settings_reload_persistence = true;
-        await openMap(page, profile);
-        await exerciseMapObjectEditor(page, guarded.diagnostics, alpha, {
-          profile,
-          useTouch: true,
-        });
         await saveMobileSnapshot(page, fixture);
         await exerciseMobileMapImport(page, guarded.diagnostics, password);
         await submitMobileQuickAction(page, fixture, alpha);
+        await exerciseCanonicalContainerMobile(page, guarded.diagnostics, fixture, alpha);
+        result.checks.canonical_container_mobile = true;
         result.checks.mobile_supported_writes_and_focus_return = true;
         result.assertions.passed.push("M1-M2-M3-M4-mobile-real-ui-writes-and-focus-return");
       }
       if (role === "editor") result.assertions.passed.push("map-first");
     }
-    if (["admin", "editor", "viewer"].includes(role)) {
+    if (!canonicalOnly && ["admin", "editor", "viewer"].includes(role)) {
       const isAdmin = role === "admin";
       const delayedGardenRace = await exerciseDelayedGardenSwitch(
         page,
@@ -2612,6 +2750,13 @@ async function runProfile({ artifactDir, baseUrl, browser, devices, fixture, pas
 async function runGardenMapPlants(options, profileRunner = runProfile) {
   const runs = [
     { profile: "desktop", role: "admin", username: options.username, password: options.password },
+    {
+      canonicalOnly: true,
+      profile: "desktop-reflow-200",
+      role: "admin",
+      username: options.username,
+      password: options.password,
+    },
     { profile: "mobile", role: "admin", username: options.username, password: options.password },
     { profile: "desktop", role: "editor", username: options.fixture.roles.editor, password: EDITOR_PASSWORD },
     { profile: "mobile", role: "editor", username: options.fixture.roles.editor, password: EDITOR_PASSWORD },

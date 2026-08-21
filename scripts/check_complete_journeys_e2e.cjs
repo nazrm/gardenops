@@ -1705,20 +1705,19 @@ function runPhaseTwoPreferenceDelivery() {
 
 function phaseOneAuditExpectedEvents(loginCount) {
   return [
-    [10, "DELETE", "/api/gardens/{garden_id}/map-objects/{public_id}", 200],
-    [2, "DELETE", "/api/gardens/{garden_id}/map-objects/{public_id}/units/{public_id}", 200],
+    [2, "DELETE", "/api/gardens/{garden_id}/map-objects/{public_id}", 200],
+    [3, "DELETE", "/api/gardens/{garden_id}/containers/{plot_id}", 200],
     [3, "DELETE", "/api/plants/{created_plant_id}", 200],
-    [2, "DELETE", "/api/plots/OPT-JOURNEY-A-PLOT/plants/{created_plant_id}", 204],
+    [3, "DELETE", "/api/plots/OPT-JOURNEY-A-PLOT/plants/{created_plant_id}", 204],
     [1, "DELETE", "/api/plots/P1EDITORASSIGN/plants/{created_plant_id}", 204],
+    [1, "DELETE", "/api/plots/{plot_id}/plants/{created_plant_id}", 204],
     [1, "DELETE", "/api/plots/P1MOBILEPLOTEDITED", 204],
     [3, "DELETE", "/api/saved-views/{saved_view_id}", 200],
     [1, "DELETE", "/api/snapshots/{public_id}", 200],
-    [7, "PATCH", "/api/gardens/{garden_id}/map-objects/{public_id}", 200],
     [1, "PATCH", "/api/gardens/{garden_id}/map-objects/obj_optimization_journeys_a", 200],
-    [2, "PATCH", "/api/gardens/{garden_id}/map-objects/{public_id}/units/{public_id}", 200],
     [4, "PATCH", "/api/gardens/{garden_id}/settings", 200],
     [6, "PATCH", "/api/layout-state", 200],
-    [6, "PATCH", "/api/plants/{created_plant_id}", 200],
+    [7, "PATCH", "/api/plants/{created_plant_id}", 200],
     [1, "PATCH", "/api/plots/P1MOBILEPLOT", 200],
     [4, "PATCH", "/api/plots/COMPLETE-PHASE-ONE-INDOOR/plants/COMPLETE-PHASE-ONE-BASIL", 200],
     [loginCount, "POST", "/api/auth/login", 200],
@@ -1726,14 +1725,16 @@ function phaseOneAuditExpectedEvents(loginCount) {
     [3, "POST", "/api/auth/passkeys/prompt/dismiss", 200],
     [9, "POST", "/api/auth/reauthenticate", 200],
     [2, "POST", "/api/gardens/{garden_id}/complete-onboarding", 200],
-    [10, "POST", "/api/gardens/{garden_id}/map-objects", 201],
-    [4, "POST", "/api/gardens/{garden_id}/map-objects/{public_id}/units", 201],
+    [2, "POST", "/api/gardens/{garden_id}/map-objects", 201],
+    [3, "POST", "/api/gardens/{garden_id}/containers", 201],
     [2, "POST", "/api/gardens", 201],
     [1, "POST", "/api/harvest", 201],
     [3, "POST", "/api/plants", 201],
     [1, "POST", "/api/plots", 201],
+    [2, "POST", "/api/plots/{plot_id}/plants/{created_plant_id}", 201],
     [4, "POST", "/api/plots/OPT-JOURNEY-A-PLOT/plants/{created_plant_id}", 201],
     [2, "POST", "/api/plots/P1EDITORASSIGN/plants/{created_plant_id}", 201],
+    [6, "POST", "/api/plots/{from_plot_id}/plants/{created_plant_id}/move/{to_plot_id}", 200],
     [2, "POST", "/api/plots/import", 200],
     [1, "POST", "/api/plots/import", 409],
     [3, "POST", "/api/plots/import", 422],
@@ -1756,7 +1757,10 @@ function assertPhaseOneAuditContract(auditState, loginCount) {
   ]);
   const observedByKey = new Map();
   for (const event of auditState.events) {
-    const key = auditEventKey(event);
+    const key = auditEventKey({
+      ...event,
+      path: normalizeAuditProjectionPath(event.path) || event.path,
+    });
     assert(!observedByKey.has(key), `Phase 1 audit event was duplicated: ${key}`);
     assert(Number.isSafeInteger(event.count) && event.count > 0, `Invalid Phase 1 audit count: ${key}`);
     assert(
@@ -3359,6 +3363,10 @@ function normalizeAuditProjectionPath(value) {
   }
   const parameterizedRoutes = [
     [
+      /^\/api\/plots\/[^/?#]+\/plants\/[^/?#]+\/move\/[^/?#]+$/,
+      () => "/api/plots/{from_plot_id}/plants/{created_plant_id}/move/{to_plot_id}",
+    ],
+    [
       /^\/api\/attention\/items\/[^/?#]+\/(read|dismiss|snooze|restore)$/,
       (match) => `/api/attention/items/{item_id}/${match[1]}`,
     ],
@@ -4153,15 +4161,22 @@ function assertPhaseOneProfileEvidence(profiles) {
       role: "admin",
       checks: [
         "desktop_admin_mutation_workflows",
+        "canonical_container_desktop",
         "indoor_reload_persistence",
         "saved_view_delete_confirmation",
         "role_cross_garden_response_isolation",
       ],
     },
     {
+      profile: "desktop-reflow-200",
+      role: "admin",
+      checks: ["canonical_container_keyboard_reflow"],
+    },
+    {
       profile: "mobile",
       role: "admin",
       checks: [
+        "canonical_container_mobile",
         "garden_settings_reload_persistence",
         "indoor_reload_persistence",
         "mobile_supported_writes_and_focus_return",
@@ -7526,7 +7541,7 @@ function isSafeManifestRequestPath(value) {
     /^\/api\/attention\/(?:preferences|today)$/,
     /^\/api\/calendar\/(?:events|export\.ics|preferences|manual-events(?:\/[^/?]+)?|subscriptions(?:\/[^/?]+)?)$/,
     /^\/api\/dashboard\/badge-counts$/,
-    /^\/api\/gardens(?:\/\d+\/map-objects(?:\/[^/?]+(?:\/units(?:\/[^/?]+)?)?)?)?$/,
+    /^\/api\/gardens(?:\/\d+\/(?:map-objects(?:\/[^/?]+)?|containers(?:\/[^/?]+)?))?$/,
     /^\/api\/journal(?:\/[^/?]+)?$/,
     /^\/api\/inventory(?:\/[^/?]+(?:\/transactions)?)?$/,
     /^\/api\/layout-state$/,
@@ -7534,7 +7549,7 @@ function isSafeManifestRequestPath(value) {
     /^\/api\/notifications(?:\/(?:generate|preferences|read-all|[^/?]+(?:\/(?:dismiss|read))?))?$/,
     /^\/api\/plants(?:\/[^/?]+)?$/,
     /^\/api\/planner\/(?:goal|garden-profile|suggestions)$/,
-    /^\/api\/plots(?:\/(?:alerts|elevations|[^/?]+(?:\/(?:plant-alerts|plants|tasks))?))?$/,
+    /^\/api\/plots(?:\/(?:alerts|elevations|[^/?]+(?:\/(?:plant-alerts|plants(?:\/[^/?]+(?:\/move\/[^/?]+)?)?|tasks))?))?$/,
     /^\/api\/security\/csp-report$/,
     /^\/api\/statistics\/reports$/,
     /^\/api\/external-plants$/,
@@ -9167,8 +9182,8 @@ async function main() {
         harvest_entry_plots: 1,
         layout_snapshots: 1,
         layout_state: 2,
-        plot_ownership: 2,
-        plots: 2,
+        plot_ownership: 5,
+        plots: 5,
       };
       for (const [table, delta] of Object.entries(expectedCountDeltas)) {
         assert(
@@ -9258,29 +9273,26 @@ async function main() {
       );
       assertExactPhaseOneQuickActionRecords(finalPhaseOne.quick_action_records, fixture);
       assert(
-        initialPhaseOne.alpha_map_unit_count >= 1
-          && finalPhaseOne.alpha_map_unit_count === initialPhaseOne.alpha_map_unit_count,
-        "Parent map-object deletion did not cascade its nested unit",
+        finalPhaseOne.alpha_map_unit_count === initialPhaseOne.alpha_map_unit_count,
+        "Canonical browser mutations changed retained legacy map-unit rows",
       );
       const expectedLifecycleAudit = {
-        assignment_create_count: 4,
-        assignment_delete_count: 2,
-        nested_unit_create_count: 4,
-        nested_unit_direct_delete_count: 2,
-        nested_unit_update_count: 2,
+        assignment_create_count: 6,
+        assignment_delete_count: 3,
+        ...Object.fromEntries(
+          Object.keys(finalPhaseOne.lifecycle_audit)
+            .filter((key) => key.startsWith("nested_unit_"))
+            .map((key) => [key, 0]),
+        ),
         plant_create_count: 2,
         plant_delete_count: 2,
-        plant_update_count: 4,
+        plant_update_count: 5,
         saved_view_create_count: 2,
         saved_view_delete_count: 2,
       };
       assert(
         JSON.stringify(finalPhaseOne.lifecycle_audit) === JSON.stringify(expectedLifecycleAudit),
-        `Phase 1 plant, saved-view, or nested-unit lifecycle was unexpected: ${JSON.stringify(finalPhaseOne.lifecycle_audit)}`,
-      );
-      assert(
-        finalPhaseOne.lifecycle_audit.nested_unit_direct_delete_count === 2,
-        "Nested unit direct deletion was not exercised once per administrator device",
+        `Phase 1 plant, saved-view, or canonical-container lifecycle was unexpected: ${JSON.stringify(finalPhaseOne.lifecycle_audit)}`,
       );
       const onboardingGardens = finalPhaseOne.onboarding_gardens.filter(
         (garden) => [
@@ -9424,7 +9436,7 @@ async function main() {
         passkey_challenge_projection: phaseOneChallengeEvidence,
         cross_garden_links_absent: true,
         mobile_snapshot_garden_owned: true,
-        nested_unit_parent_cascade: true,
+        canonical_container_browser_proof: true,
         onboarding_default_context_exact: true,
         onboarding_generated_plot_ownership_and_layout_graph: true,
         onboarding_grid_location_and_ownership: true,

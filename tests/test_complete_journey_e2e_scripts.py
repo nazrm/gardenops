@@ -533,7 +533,6 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "PHASE_ONE_BETA_INDOOR_PLOT_ID",
         "PHASE_ONE_BETA_INDOOR_ROOM_LABEL",
         "PHASE_ONE_VIEWER_GARDENS",
-        "PHASE_ONE_MAP_UNIT_ID",
         "PHASE_ONE_SAVED_VIEW_LABEL",
         "PHASE_ONE_MOBILE_SNAPSHOT_NAME",
         "PHASE_ONE_BROWSER_PLANT_ID",
@@ -566,9 +565,14 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "mutateIndoorPlant",
         "exerciseDiscoverableMobilePlotEdit",
         "createMobileEditorPlot",
-        "exerciseMapObjectEditor",
+        "exerciseCanonicalContainerDesktop",
+        "exerciseCanonicalContainerMobile",
+        "exerciseCanonicalContainerKeyboard",
+        "createCanonicalArea",
+        "createCanonicalContainer",
+        "placePlantIntoContainer",
+        "movePlantFromLocation",
         "exerciseEditorMapObjectWrite",
-        "exerciseMobileMapObject",
         "exerciseSnapshotsAndImport",
         "exerciseMobileMapImport",
         "submitMobileQuickAction",
@@ -606,12 +610,15 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         ".indoor-room-input",
         ".drawer-edit-plot-btn",
         "#edit-plot-form",
-        ".map-object-type-select",
+        ".map-object-intent-form",
+        ".map-container-row",
+        ".plant-location-picker",
+        ".plant-location-picker-option",
+        ".plant-location-picker-status",
+        "canonical_container_desktop",
+        "canonical_container_mobile",
+        "canonical_container_keyboard_reflow",
         ".map-object-interaction-surface",
-        ".map-object-unit",
-        ".map-object-unit-form",
-        "deleted_units === 1",
-        "Input.dispatchTouchEvent",
         "has no non-interactive browser hit-test point",
         ".snapshot-restore",
         "#import-map-input",
@@ -690,8 +697,9 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "assertSourceRevisionStable",
         "safeUtcTimestamp",
         "sourceProvenance",
-        "nested_unit_direct_delete_count",
-        "nested_unit_update_count",
+        "canonical_container_desktop",
+        "canonical_container_mobile",
+        "canonical_container_keyboard_reflow",
         "saved_view_delete_confirmation",
         "indoor_reload_persistence",
         "garden_settings_reload_persistence",
@@ -2783,6 +2791,7 @@ const profiles = [
   profile('onboarding', 'desktop', { onboarding_validation_recovery_complete: true }),
   profile('onboarding', 'mobile', { onboarding_validation_recovery_complete: true }),
   profile('admin', 'desktop', {
+    canonical_container_desktop: true,
     desktop_admin_mutation_workflows: true,
     indoor_reload_persistence: true,
     import_rejection_render_churn: {
@@ -2815,7 +2824,12 @@ const profiles = [
     role_cross_garden_response_isolation: true,
     saved_view_delete_confirmation: true,
   }),
+  profile('admin', 'desktop-reflow-200', {
+    canonical_container_keyboard_reflow: true,
+    map_first_without_plants: true,
+  }),
   profile('admin', 'mobile', {
+    canonical_container_mobile: true,
     delayed_surfaces: delayedMobile,
     garden_settings_reload_persistence: true,
     indoor_reload_persistence: true,
@@ -2877,7 +2891,7 @@ try {
   if (!String(error.message).includes('assignments_with_cross_garden_ownership')) process.exit(3);
 }
 const audit = { events: [
-  ...phaseOneAuditExpectedEvents(8),
+  ...phaseOneAuditExpectedEvents(9),
   { count: 4, method: 'POST', path: '/api/media/summaries', status_code: 200 },
 ] };
 const prohibitedDirectViewerDenials = [
@@ -2887,17 +2901,17 @@ const prohibitedDirectViewerDenials = [
   ['POST', '/api/plots/import', 403],
 ];
 for (const [method, path, statusCode] of prohibitedDirectViewerDenials) {
-  if (phaseOneAuditExpectedEvents(8).some((event) => (
+  if (phaseOneAuditExpectedEvents(9).some((event) => (
     event.count === 1
       && event.method === method
       && event.path === path
       && event.status_code === statusCode
   ))) process.exit(15);
 }
-const evidence = assertPhaseOneAuditContract(audit, 8);
+const evidence = assertPhaseOneAuditContract(audit, 9);
 if (evidence.unexpected_count !== 0 || evidence.flexible_read_event_types !== 1) process.exit(4);
 const incomplete = structuredClone(profiles);
-incomplete[3].checks.mobile_supported_writes_and_focus_return = false;
+incomplete[4].checks.mobile_supported_writes_and_focus_return = false;
 try {
   assertPhaseOneProfileEvidence(incomplete);
   process.exit(5);
@@ -2905,7 +2919,7 @@ try {
   if (!String(error.message).includes('browser check is missing')) process.exit(6);
 }
 const incompleteRoleIsolation = structuredClone(profiles);
-incompleteRoleIsolation[4].checks.role_cross_garden_response_isolation = false;
+incompleteRoleIsolation[5].checks.role_cross_garden_response_isolation = false;
 try {
   assertPhaseOneProfileEvidence(incompleteRoleIsolation);
   process.exit(9);
@@ -2940,7 +2954,7 @@ try {
 }
 audit.events.push({ count: 1, method: 'POST', path: '/api/unexpected', status_code: 200 });
 try {
-  assertPhaseOneAuditContract(audit, 8);
+  assertPhaseOneAuditContract(audit, 9);
   process.exit(17);
 } catch (error) {
   if (!String(error.message).includes('Unexpected Phase 1 audit event')) process.exit(18);
