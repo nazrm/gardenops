@@ -1175,6 +1175,8 @@ async function exerciseCanonicalContainerMobile(page, diagnostics, fixture, alph
   await openMap(page, "mobile");
   await enableMapEditor(page, "mobile");
   await archiveCanonicalContainer(page, alpha, container);
+  await openPlants(page, "mobile");
+  await page.locator("#plants-search").fill("");
   diagnostics.canonical_mobile_viewport = page.viewportSize();
 }
 
