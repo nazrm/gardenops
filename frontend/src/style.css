@@ -1499,12 +1499,13 @@ textarea {
 }
 
 .map-objects-panel {
+  display: grid;
   gap: var(--sp-3);
 }
 
 .map-object-toggle {
   min-width: 56px;
-  min-height: 28px;
+  min-height: 44px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   background: var(--bg-2);
@@ -1528,13 +1529,15 @@ textarea {
 
 .map-object-create-stack,
 .map-object-custom-form,
-.map-object-geometry-form {
+.map-object-geometry-form,
+.map-object-intent-form {
   display: grid;
   gap: var(--sp-2);
 }
 
 .map-object-custom-form,
-.map-object-geometry-form {
+.map-object-geometry-form,
+.map-object-intent-form {
   padding: var(--sp-2);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
@@ -1550,6 +1553,35 @@ textarea {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--sp-2);
+}
+
+.map-object-disclosure {
+  min-width: 0;
+}
+
+.map-object-disclosure > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.map-object-disclosure[open] > summary {
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  border-color: var(--accent);
+}
+
+.map-object-intent-form {
+  padding: var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-top: 0;
+  border-radius: 0 0 var(--r-sm) var(--r-sm);
+  background: var(--bg-1);
 }
 
 .map-object-identity-grid .map-object-field:first-child {
@@ -1585,7 +1617,7 @@ textarea {
 .map-object-field select {
   width: 100%;
   min-width: 0;
-  min-height: 30px;
+  min-height: 44px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   background: var(--bg-2);
@@ -1600,7 +1632,7 @@ textarea {
 }
 
 .map-object-submit-btn {
-  min-height: 32px;
+  min-height: 44px;
 }
 
 .map-object-list {
@@ -1624,7 +1656,7 @@ textarea {
   display: grid;
   gap: 2px;
   min-width: 0;
-  min-height: 42px;
+  min-height: 44px;
   padding: 8px 10px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
@@ -1652,8 +1684,8 @@ textarea {
 }
 
 .map-object-icon-btn {
-  width: 32px;
-  min-height: 42px;
+  width: 44px;
+  min-height: 44px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   background: var(--bg-2);
@@ -1669,6 +1701,55 @@ textarea {
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   background: var(--bg-1);
+}
+
+.map-object-action-row {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.map-object-subheading {
+  margin: var(--sp-2) 0 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.map-container-list {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.map-container-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--sp-2);
+  align-items: start;
+}
+
+.map-container-row-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.map-container-row .map-object-disclosure > summary {
+  min-width: 44px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.map-container-row .map-object-disclosure[open] {
+  grid-column: 1 / -1;
 }
 
 .map-object-detail-heading {
@@ -3783,6 +3864,37 @@ textarea {
     0 0 0 2px var(--accent-muted);
 }
 
+.map-container-marker {
+  position: absolute;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 6px;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bg-1) 88%, transparent);
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+
+.map-container-marker:hover,
+.map-container-marker:focus-visible {
+  background: var(--accent-muted);
+}
+
+.map-container-marker:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .map-object-label {
   position: relative;
   align-self: center;
@@ -4539,6 +4651,24 @@ body.moving-house .house-placeholder {
   letter-spacing: 0.02em;
 }
 
+.plant-move-btn {
+  min-height: 44px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.plant-move-btn:hover,
+.plant-move-btn:focus-visible {
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+
 .remove-btn {
   width: 22px;
   height: 22px;
@@ -5060,6 +5190,117 @@ body.moving-house .house-placeholder {
 .passkey-prompt-modal h3 {
   margin-bottom: var(--sp-3);
   font-size: 20px;
+}
+
+.plant-location-picker {
+  width: min(520px, calc(100vw - 24px));
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.plant-location-picker h3,
+.plant-location-picker p {
+  margin: 0;
+}
+
+.plant-location-picker-plant {
+  color: var(--text-1);
+  font-weight: 700;
+}
+
+.plant-location-picker-source,
+.plant-location-picker-status,
+.plant-location-picker-merge {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.plant-location-picker-merge {
+  min-height: 1.25em;
+  color: var(--accent);
+}
+
+.plant-location-picker-search,
+.plant-location-picker-quantity {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font: inherit;
+}
+
+.plant-location-picker-search:focus,
+.plant-location-picker-quantity:focus {
+  border-color: var(--brand);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--brand-muted);
+}
+
+.plant-location-picker-list {
+  display: grid;
+  gap: var(--sp-3);
+  max-height: min(42vh, 360px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.plant-location-picker-group {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.plant-location-picker-group h4 {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.plant-location-picker-option {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+}
+
+.plant-location-picker-option:hover,
+.plant-location-picker-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+}
+
+.plant-location-picker-option:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.plant-location-picker-quantity-field {
+  display: grid;
+  gap: var(--sp-1);
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.plant-location-picker-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2);
+}
+
+.plant-location-picker-actions button {
+  min-height: 44px;
 }
 
 .modal-help-text {
@@ -5703,8 +5944,20 @@ th.sort-desc::after {
 }
 
 .plot-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 6px;
   font-size: 12px;
-  padding: 0;
+}
+
+.plot-link-action,
+.plant-place-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 6px;
+  font-size: 12px;
 }
 
 .plot-link-note {

@@ -20,6 +20,8 @@ export function renderPlantCard(
     mediaPreview?: MediaAsset | null | undefined;
     alertTypes?: PlantAlertType[] | undefined;
     onCreateCalendarEvent?: ((plant: Plant) => void) | undefined;
+    onMove?: ((plant: Plant, sourcePlotId: string) => void) | undefined;
+    plotLabel?: string | undefined;
     canWrite?: boolean | undefined;
   } = {},
 ): HTMLElement {
@@ -59,6 +61,21 @@ export function renderPlantCard(
     actions.appendChild(editButton);
   }
 
+  if (options.canWrite !== false && options.onMove) {
+    const moveButton = document.createElement("button");
+    moveButton.className = "plant-move-btn";
+    moveButton.dataset["move"] = plant.plt_id;
+    moveButton.setAttribute(
+      "aria-label",
+      t("map.move_plant_aria", { name: plant.name }),
+    );
+    moveButton.title = t("map.move_plant");
+    moveButton.type = "button";
+    moveButton.textContent = t("map.move_short");
+    moveButton.addEventListener("click", () => options.onMove?.(plant, plotId));
+    actions.appendChild(moveButton);
+  }
+
   if (options.canWrite !== false && options.onCreateCalendarEvent) {
     const calendarButton = document.createElement("button");
     calendarButton.className = "plant-calendar-btn";
@@ -77,7 +94,10 @@ export function renderPlantCard(
     const removeButton = document.createElement("button");
     removeButton.className = "remove-btn";
     removeButton.dataset["remove"] = plant.plt_id;
-    removeButton.setAttribute("aria-label", t("plants.card_remove_aria", { name: plant.name, plot: plotId }));
+    removeButton.setAttribute("aria-label", t("plants.card_remove_aria", {
+      name: plant.name,
+      plot: options.plotLabel ?? plotId,
+    }));
     removeButton.type = "button";
     removeButton.textContent = "\u00d7";
     actions.appendChild(removeButton);

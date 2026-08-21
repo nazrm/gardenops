@@ -1,78 +1,75 @@
 import type {
+  ContainerPatch,
+  ContainerSummary,
+  ContainerType,
   MapObject,
   MapObjectGeometry,
   MapObjectInput,
-  MapObjectInternalLayout,
   MapObjectShape,
   MapObjectType,
-  MapObjectUnit,
-  MapObjectUnitInput,
-  MapObjectUnitType,
+  Plot,
 } from "../core/models";
 import { t } from "../core/i18n";
 
-const DEFAULT_CUSTOM_COLOR = "#8f9f7d";
-let selectedNestedUnit: { objectPublicId: string; unitPublicId: string } | null = null;
-
-export interface MapObjectCustomDraft {
-  object_type: MapObjectType;
-  name: string;
-  shape_type: MapObjectShape;
-  style: { color: string };
-  has_internal_layout: boolean;
-  internal_layout: MapObjectInternalLayout | null;
-}
+const AREA_TYPES = ["patio", "terrace", "greenhouse", "balcony", "other"] as const;
+const CONTAINER_TYPES = ["pot", "planter", "raised_bed", "other"] as const;
+const DEFAULT_AREA_COLOR = "#8f9f7d";
 
 interface RenderMapObjectsPanelParams {
   container: HTMLElement | null;
   objects: MapObject[];
+  plots: Plot[];
   selectedObjectId: string | null;
   showObjects: boolean;
   canWrite: boolean;
   selectedPlotCount: number;
   onToggleObjects: (show: boolean) => void;
-  onCreateObject: (type: MapObjectType) => void;
-  onCreateCustomObject: (draft: MapObjectCustomDraft) => void;
-  onUpdateObject: (publicId: string, patch: Partial<MapObjectInput>) => void;
+  onCreateArea: (type: MapObjectType, name: string) => void;
+  onCreateContainer: (input: {
+    name: string;
+    container_type: ContainerType;
+    parent_object_public_id?: string | null;
+  }) => void;
+  onUpdateContainer: (plotId: string, patch: ContainerPatch) => void;
   onSelectObject: (publicId: string | null) => void;
+  onUpdateObject: (publicId: string, patch: Partial<MapObjectInput>) => void;
   onDeleteObject: (publicId: string) => void;
-  onAddUnit: (objectPublicId: string, type: MapObjectUnitType) => void;
-  onUpdateUnit?: (
-    objectPublicId: string,
-    unitPublicId: string,
-    patch: Partial<MapObjectUnitInput>,
-  ) => void;
-  onDeleteUnit: (objectPublicId: string, unitPublicId: string) => void;
+  onDeleteContainer: (plotId: string) => void;
+  onOpenContainer: (plotId: string, trigger: HTMLElement) => void;
 }
 
-function objectTypeLabel(type: MapObjectType): string {
+function areaTypeLabel(type: MapObjectType): string {
   switch (type) {
     case "patio": return t("map.object_patio");
     case "terrace": return t("map.object_terrace");
     case "greenhouse": return t("map.object_greenhouse");
-    case "shed": return t("map.object_shed");
-    case "pond": return t("map.object_pond");
-    case "path": return t("map.object_path");
-    case "bed": return t("map.object_bed");
+    case "balcony": return t("map.object_balcony");
     default: return t("map.object_other");
   }
 }
 
-function shapeTypeLabel(type: MapObjectShape): string {
-  return type === "ellipse" ? t("map.object_ellipse") : t("map.object_rectangle");
-}
-
-function unitTypeLabel(type: MapObjectUnitType): string {
+function containerTypeLabel(type: ContainerType): string {
   switch (type) {
-    case "pot": return t("map.unit_pot");
-    case "planter": return t("map.unit_planter");
-    case "raised_bed": return t("map.unit_raised_bed");
-    case "shelf": return t("map.unit_shelf");
-    default: return t("map.unit_other");
+    case "pot": return t("map.container_pot");
+    case "planter": return t("map.container_planter");
+    case "raised_bed": return t("map.container_raised_bed");
+    default: return t("map.container_other");
   }
 }
 
-function makeButton(className: string, label: string, title = label): HTMLButtonElement {
+function environmentLabel(environment: ContainerSummary["environment"]): string {
+  switch (environment) {
+    case "covered": return t("map.environment_covered");
+    case "indoor": return t("map.environment_indoor");
+    default: return t("map.environment_outdoor");
+  }
+}
+
+function makeButton(
+  className: string,
+  label: string,
+  title = label,
+): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.className = className;
@@ -81,25 +78,48 @@ function makeButton(className: string, label: string, title = label): HTMLButton
   return button;
 }
 
-function makeField(label: string, control: HTMLElement): HTMLLabelElement {
-  const field = document.createElement("label");
-  field.className = "map-object-field";
-  const text = document.createElement("span");
-  text.textContent = label;
-  field.append(text, control);
-  return field;
-}
-
-function makeTextInput(value: string, disabled: boolean): HTMLInputElement {
+function makeTextInput(
+  value: string,
+  placeholder: string,
+  disabled: boolean,
+): HTMLInputElement {
   const input = document.createElement("input");
   input.type = "text";
   input.value = value;
+  input.placeholder = placeholder;
   input.maxLength = 120;
   input.disabled = disabled;
   return input;
 }
 
-function makeNumberInput(value: number, min: number, max: number, disabled: boolean): HTMLInputElement {
+function makeSelect<T extends string>(
+  value: T,
+  values: readonly T[],
+  labelFor: (value: T) => string,
+  disabled: boolean,
+): HTMLSelectElement {
+  const select = document.createElement("select");
+  select.disabled = disabled;
+  for (const optionValue of values) {
+    const option = document.createElement("option");
+    option.value = optionValue;
+    option.textContent = labelFor(optionValue);
+    select.appendChild(option);
+  }
+  select.value = value;
+  return select;
+}
+
+function makeField(label: string, control: HTMLElement): HTMLLabelElement {
+  const field = document.createElement("label");
+  field.className = "map-object-field";
+  const labelText = document.createElement("span");
+  labelText.textContent = label;
+  field.append(labelText, control);
+  return field;
+}
+
+function makeNumberInput(value: number, min: number, max: number): HTMLInputElement {
   const input = document.createElement("input");
   input.type = "number";
   input.value = String(value);
@@ -107,354 +127,289 @@ function makeNumberInput(value: number, min: number, max: number, disabled: bool
   input.max = String(max);
   input.step = "1";
   input.inputMode = "numeric";
-  input.disabled = disabled;
   return input;
 }
 
-function makeColorInput(value: string, disabled: boolean): HTMLInputElement {
-  const input = document.createElement("input");
-  input.type = "color";
-  input.value = /^#[0-9a-f]{6}$/i.test(value) ? value : DEFAULT_CUSTOM_COLOR;
-  input.disabled = disabled;
-  return input;
+function positiveInteger(value: string, fallback: number): number {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? Math.max(1, parsed) : fallback;
 }
 
-function makeShapeSelect(value: MapObjectShape, disabled: boolean): HTMLSelectElement {
-  const select = document.createElement("select");
-  select.disabled = disabled;
-  for (const shape of ["rectangle", "ellipse"] as const) {
-    const option = document.createElement("option");
-    option.value = shape;
-    option.textContent = shapeTypeLabel(shape);
-    select.appendChild(option);
-  }
-  select.value = value;
-  return select;
+function shapeLabel(shape: MapObjectShape): string {
+  return shape === "ellipse" ? t("map.object_ellipse") : t("map.object_rectangle");
 }
 
-function makeObjectTypeSelect(value: MapObjectType, disabled: boolean): HTMLSelectElement {
-  const select = document.createElement("select");
-  select.disabled = disabled;
-  select.className = "map-object-type-select";
-  for (const type of [
-    "patio", "terrace", "greenhouse", "shed", "pond", "path", "bed", "other",
-  ] as const) {
-    const option = document.createElement("option");
-    option.value = type;
-    option.textContent = objectTypeLabel(type);
-    select.appendChild(option);
-  }
-  select.value = value;
-  return select;
-}
-
-function makeUnitTypeSelect(value: MapObjectUnitType, disabled: boolean): HTMLSelectElement {
-  const select = document.createElement("select");
-  select.disabled = disabled;
-  for (const type of ["pot", "planter", "raised_bed", "shelf", "other"] as const) {
-    const option = document.createElement("option");
-    option.value = type;
-    option.textContent = unitTypeLabel(type);
-    select.appendChild(option);
-  }
-  select.value = value;
-  return select;
-}
-
-function positiveIntegerValue(input: HTMLInputElement, fallback: number): number {
-  const value = Number.parseInt(input.value, 10);
-  if (!Number.isFinite(value)) return fallback;
-  return Math.max(1, value);
-}
-
-function shapeValue(select: HTMLSelectElement): MapObjectShape {
-  return select.value === "ellipse" ? "ellipse" : "rectangle";
-}
-
-function clampUnitGeometry(
-  geometry: MapObjectGeometry,
-  layout: MapObjectInternalLayout,
-): MapObjectGeometry {
-  const width = Math.min(Math.max(1, geometry.width), layout.cols);
-  const height = Math.min(Math.max(1, geometry.height), layout.rows);
+function plotContainerSummary(plot: Plot): ContainerSummary {
   return {
-    width,
-    height,
-    x: Math.min(Math.max(1, geometry.x), layout.cols - width + 1),
-    y: Math.min(Math.max(1, geometry.y), layout.rows - height + 1),
+    plot_id: plot.plot_id,
+    display_name: plot.display_name?.trim() || t("map.unnamed_container"),
+    container_type: plot.container_type ?? "other",
+    environment: plot.environment ?? "outdoor",
+    plant_count: plot.plant_count ?? 0,
+    parent_map_object_public_id: plot.parent_map_object_public_id ?? null,
+    ...(plot.archived_at_ms != null ? { archived_at_ms: plot.archived_at_ms } : {}),
   };
 }
 
-function selectedUnitForObject(object: MapObject): MapObjectUnit | null {
-  if (selectedNestedUnit?.objectPublicId !== object.public_id) return null;
-  const unit = object.units.find((item) => item.public_id === selectedNestedUnit?.unitPublicId);
-  if (!unit) selectedNestedUnit = null;
-  return unit ?? null;
+function allContainers(params: RenderMapObjectsPanelParams): ContainerSummary[] {
+  const byId = new Map<string, ContainerSummary>();
+  for (const object of params.objects) {
+    for (const container of object.containers ?? []) {
+      if (container.archived_at_ms == null) byId.set(container.plot_id, container);
+    }
+  }
+  for (const plot of params.plots) {
+    if (plot.plot_kind !== "container" || plot.archived_at_ms != null) continue;
+    const summary = plotContainerSummary(plot);
+    const existing = byId.get(summary.plot_id);
+    byId.set(summary.plot_id, existing ? { ...summary, ...existing } : summary);
+  }
+  return [...byId.values()].sort((a, b) =>
+    a.display_name.localeCompare(b.display_name, undefined, { sensitivity: "base" }));
 }
 
-function selectNestedUnit(
-  objectPublicId: string,
-  unitPublicId: string,
-  params: RenderMapObjectsPanelParams,
-): void {
-  const alreadySelected = selectedNestedUnit?.objectPublicId === objectPublicId
-    && selectedNestedUnit.unitPublicId === unitPublicId;
-  selectedNestedUnit = alreadySelected ? null : { objectPublicId, unitPublicId };
-  renderMapObjectsPanel(params);
+function areaObjectType(type: MapObjectType): MapObjectType {
+  return AREA_TYPES.includes(type as (typeof AREA_TYPES)[number]) ? type : "other";
 }
 
-function buildCreateRow(params: RenderMapObjectsPanelParams): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "map-object-create-row";
-
-  const patio = makeButton(
-    "cat-filter-btn",
-    `+ ${t("map.object_patio")}`,
-    params.selectedPlotCount > 0
-      ? t("map.object_create_from_selection")
-      : t("map.object_create_default"),
-  );
-  patio.disabled = !params.canWrite;
-  patio.id = "map-object-create-patio-btn";
-  patio.addEventListener("click", () => params.onCreateObject("patio"));
-
-  const terrace = makeButton("cat-filter-btn", `+ ${t("map.object_terrace")}`);
-  terrace.disabled = !params.canWrite;
-  terrace.id = "map-object-create-terrace-btn";
-  terrace.addEventListener("click", () => params.onCreateObject("terrace"));
-
-  row.append(patio, terrace);
-  return row;
+function areaDisplayName(object: MapObject): string {
+  return object.name?.trim() || areaTypeLabel(areaObjectType(object.object_type));
 }
 
-function buildCustomObjectForm(params: RenderMapObjectsPanelParams): HTMLFormElement {
+function buildAreaCreateForm(params: RenderMapObjectsPanelParams): HTMLElement {
+  const details = document.createElement("details");
+  details.className = "map-object-disclosure";
+
+  const summary = document.createElement("summary");
+  summary.className = "map-object-add-summary";
+  summary.textContent = `+ ${t("map.area_add")}`;
+  details.appendChild(summary);
+
   const form = document.createElement("form");
-  form.className = "map-object-custom-form";
-
-  const title = document.createElement("strong");
-  title.className = "map-object-form-title";
-  title.textContent = t("map.object_custom");
-
+  form.className = "map-object-intent-form";
+  const typeSelect = makeSelect("patio", AREA_TYPES, areaTypeLabel, !params.canWrite);
+  const nameInput = makeTextInput("", t("map.area_name_placeholder"), !params.canWrite);
   const fields = document.createElement("div");
-  fields.className = "map-object-form-grid map-object-identity-grid";
-
-  const nameInput = makeTextInput(t("map.object_custom"), !params.canWrite);
-  const typeSelect = makeObjectTypeSelect("other", !params.canWrite);
-  const shapeSelect = makeShapeSelect("rectangle", !params.canWrite);
-  const colorInput = makeColorInput(DEFAULT_CUSTOM_COLOR, !params.canWrite);
-  const layoutToggle = document.createElement("input");
-  layoutToggle.type = "checkbox";
-  layoutToggle.disabled = !params.canWrite;
-
-  const layoutLabel = document.createElement("label");
-  layoutLabel.className = "map-object-checkbox-field";
-  const layoutText = document.createElement("span");
-  layoutText.textContent = t("map.object_layout");
-  layoutLabel.append(layoutToggle, layoutText);
-
+  fields.className = "map-object-form-grid";
   fields.append(
-    makeField(t("map.object_name"), nameInput),
-    makeField(t("map.object_type"), typeSelect),
-    makeField(t("map.object_shape"), shapeSelect),
-    makeField(t("map.object_color"), colorInput),
-    layoutLabel,
+    makeField(t("map.area_type"), typeSelect),
+    makeField(t("map.area_name"), nameInput),
   );
-
-  const layoutFields = document.createElement("div");
-  layoutFields.className = "map-object-form-grid map-object-layout-grid";
-  const layoutRows = makeNumberInput(6, 1, 100, !params.canWrite);
-  const layoutCols = makeNumberInput(8, 1, 100, !params.canWrite);
-  layoutFields.hidden = true;
-  layoutFields.append(
-    makeField(t("map.object_layout_rows"), layoutRows),
-    makeField(t("map.object_layout_cols"), layoutCols),
-  );
-
-  layoutToggle.addEventListener("change", () => {
-    layoutFields.hidden = !layoutToggle.checked;
-  });
-
-  const submit = makeButton("cat-filter-btn map-object-submit-btn", `+ ${t("map.object_create_custom")}`);
+  const submit = makeButton("cat-filter-btn map-object-submit-btn", t("map.area_create"));
   submit.type = "submit";
   submit.disabled = !params.canWrite;
-
+  form.append(fields, submit);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!params.canWrite) return;
-    const name = nameInput.value.trim() || t("map.object_custom");
-    params.onCreateCustomObject({
-      object_type: typeSelect.value as MapObjectType,
-      name,
-      shape_type: shapeValue(shapeSelect),
-      style: { color: colorInput.value },
-      has_internal_layout: layoutToggle.checked,
-      internal_layout: layoutToggle.checked
-        ? {
-            rows: positiveIntegerValue(layoutRows, 6),
-            cols: positiveIntegerValue(layoutCols, 8),
-          }
-        : null,
-    });
+    params.onCreateArea(
+      typeSelect.value as MapObjectType,
+      nameInput.value.trim() || areaTypeLabel(typeSelect.value as MapObjectType),
+    );
+    details.open = false;
+    summary.focus();
   });
-
-  form.append(title, fields, layoutFields, submit);
-  return form;
+  details.appendChild(form);
+  return details;
 }
 
-function buildCreateArea(params: RenderMapObjectsPanelParams): HTMLElement {
-  const area = document.createElement("div");
-  area.className = "map-object-create-stack";
-  area.append(buildCreateRow(params), buildCustomObjectForm(params));
-  return area;
+function buildContainerCreateForm(
+  params: RenderMapObjectsPanelParams,
+  parentObjectPublicId: string | null,
+  existing?: ContainerSummary,
+): HTMLElement {
+  const details = document.createElement("details");
+  details.className = "map-object-disclosure";
+  const summary = document.createElement("summary");
+  summary.className = "map-object-add-summary";
+  summary.textContent = existing
+    ? t("map.container_edit")
+    : parentObjectPublicId
+      ? `+ ${t("map.container_add")}`
+      : `+ ${t("map.container_add_standalone")}`;
+  details.appendChild(summary);
+
+  const form = document.createElement("form");
+  form.className = "map-object-intent-form";
+  const typeSelect = makeSelect(
+    existing?.container_type ?? "pot",
+    CONTAINER_TYPES,
+    containerTypeLabel,
+    !params.canWrite,
+  );
+  const nameInput = makeTextInput(
+    existing?.display_name ?? "",
+    t("map.container_name_placeholder"),
+    !params.canWrite,
+  );
+  const fields = document.createElement("div");
+  fields.className = "map-object-form-grid";
+  fields.append(
+    makeField(t("map.container_type"), typeSelect),
+    makeField(t("map.container_name"), nameInput),
+  );
+  const submit = makeButton(
+    "cat-filter-btn map-object-submit-btn",
+    existing ? t("map.container_save") : t("map.container_create"),
+  );
+  submit.type = "submit";
+  submit.disabled = !params.canWrite || (existing?.can_edit === false);
+  form.append(fields, submit);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!params.canWrite) return;
+    const name = nameInput.value.trim();
+    if (!name) {
+      nameInput.focus();
+      return;
+    }
+    if (existing) {
+      params.onUpdateContainer(existing.plot_id, {
+        name,
+        container_type: typeSelect.value as ContainerType,
+      });
+    } else {
+      params.onCreateContainer({
+        name,
+        container_type: typeSelect.value as ContainerType,
+        parent_object_public_id: parentObjectPublicId,
+      });
+    }
+    details.open = false;
+    summary.focus();
+  });
+  details.appendChild(form);
+  return details;
 }
 
-function buildObjectList(params: RenderMapObjectsPanelParams): HTMLElement {
+function buildAreaList(params: RenderMapObjectsPanelParams): HTMLElement {
   const list = document.createElement("div");
   list.className = "map-object-list";
-
   if (params.objects.length === 0) {
     const empty = document.createElement("p");
     empty.className = "map-object-empty";
-    empty.textContent = t("map.object_empty");
+    empty.textContent = t("map.area_empty");
     list.appendChild(empty);
     return list;
   }
 
-  params.objects.forEach((object) => {
+  const containers = allContainers(params);
+  for (const object of params.objects) {
+    const objectName = areaDisplayName(object);
     const row = document.createElement("div");
     row.className = "map-object-row";
     row.dataset["objectId"] = object.public_id;
-
-    const select = makeButton("map-object-row-main", object.name);
+    const select = makeButton("map-object-row-main", objectName);
     select.classList.toggle("active", object.public_id === params.selectedObjectId);
+    select.setAttribute("aria-pressed", String(object.public_id === params.selectedObjectId));
     select.addEventListener("click", () => {
       params.onSelectObject(
         object.public_id === params.selectedObjectId ? null : object.public_id,
       );
     });
-
     const meta = document.createElement("span");
     meta.className = "map-object-row-meta";
-    meta.textContent = `${objectTypeLabel(object.object_type)} · ${object.geometry.width}×${object.geometry.height}`;
+    meta.textContent = t("map.area_summary", {
+      type: areaTypeLabel(areaObjectType(object.object_type)),
+      containers: object.container_count ?? containers.filter(
+        (container) => container.parent_map_object_public_id === object.public_id,
+      ).length,
+      plants: object.plant_count ?? 0,
+    });
     select.appendChild(meta);
-
-    const del = makeButton("map-object-icon-btn", "×", t("common.delete"));
-    del.disabled = !params.canWrite;
-    del.addEventListener("click", () => params.onDeleteObject(object.public_id));
-
-    row.append(select, del);
+    row.appendChild(select);
+    if (params.canWrite) {
+      const del = makeButton("map-object-icon-btn", "×", t("common.delete"));
+      del.setAttribute("aria-label", `${t("common.delete")} ${objectName}`);
+      del.addEventListener("click", () => params.onDeleteObject(object.public_id));
+      row.appendChild(del);
+    }
     list.appendChild(row);
-  });
-
+  }
   return list;
 }
 
-function buildUnitGrid(
-  object: MapObject,
-  selectedUnitId: string | null,
+function buildContainerRow(
+  container: ContainerSummary,
   params: RenderMapObjectsPanelParams,
 ): HTMLElement {
-  const grid = document.createElement("div");
-  grid.className = "map-object-unit-grid";
-  grid.style.setProperty("--unit-rows", String(object.internal_layout.rows));
-  grid.style.setProperty("--unit-cols", String(object.internal_layout.cols));
+  const row = document.createElement("div");
+  row.className = "map-container-row";
+  const open = makeButton("map-container-row-main", container.display_name);
+  open.dataset["containerPlotId"] = container.plot_id;
+  open.setAttribute("aria-label", `${container.display_name}, ${containerTypeLabel(container.container_type)}`);
+  open.addEventListener("click", () => params.onOpenContainer(container.plot_id, open));
+  const meta = document.createElement("span");
+  meta.className = "map-object-row-meta";
+  meta.textContent = `${containerTypeLabel(container.container_type)} · ${t("map.plant_count", { count: container.plant_count })}`;
+  if (container.environment !== "outdoor") {
+    meta.textContent += ` · ${environmentLabel(container.environment)}`;
+  }
+  open.appendChild(meta);
+  row.appendChild(open);
 
-  object.units.forEach((unit) => {
-    const cell = document.createElement("button");
-    cell.type = "button";
-    cell.className = `map-object-unit map-object-unit--${unit.shape_type}`;
-    cell.style.gridRow = `${unit.geometry.y} / ${unit.geometry.y + unit.geometry.height}`;
-    cell.style.gridColumn = `${unit.geometry.x} / ${unit.geometry.x + unit.geometry.width}`;
-    cell.style.setProperty("--map-object-unit-color", unit.style.color);
-    cell.textContent = unit.name;
-    cell.title = `${unit.name} · ${unitTypeLabel(unit.unit_type)}`;
-    cell.setAttribute("aria-label", `${unit.name} · ${unitTypeLabel(unit.unit_type)}`);
-    cell.setAttribute("aria-pressed", String(unit.public_id === selectedUnitId));
-    cell.classList.toggle("active", unit.public_id === selectedUnitId);
-    cell.addEventListener("click", () => {
-      selectNestedUnit(object.public_id, unit.public_id, params);
-    });
-    grid.appendChild(cell);
-  });
-
-  return grid;
+  if (params.canWrite && container.can_edit !== false) {
+    row.appendChild(buildContainerCreateForm(params, container.parent_map_object_public_id ?? null, container));
+  }
+  if (params.canWrite && container.can_archive === true) {
+    const archive = makeButton("map-object-icon-btn", "×", t("map.container_archive"));
+    archive.setAttribute("aria-label", `${t("map.container_archive")} ${container.display_name}`);
+    archive.addEventListener("click", () => params.onDeleteContainer(container.plot_id));
+    row.appendChild(archive);
+  }
+  return row;
 }
 
-function buildUnitEditor(
-  object: MapObject,
-  unit: MapObjectUnit,
+function buildSelectedArea(
   params: RenderMapObjectsPanelParams,
-): HTMLFormElement {
-  const form = document.createElement("form");
-  form.className = "map-object-geometry-form map-object-unit-form";
-
-  const onUpdateUnit = params.onUpdateUnit;
-  const canEditUnit = params.canWrite && onUpdateUnit !== undefined;
-  const nameInput = makeTextInput(unit.name, !canEditUnit);
-  const typeSelect = makeUnitTypeSelect(unit.unit_type, !canEditUnit);
-  const shapeSelect = makeShapeSelect(unit.shape_type, !canEditUnit);
-  const colorInput = makeColorInput(unit.style.color, !canEditUnit);
-  const rowInput = makeNumberInput(unit.geometry.y, 1, object.internal_layout.rows, !canEditUnit);
-  const colInput = makeNumberInput(unit.geometry.x, 1, object.internal_layout.cols, !canEditUnit);
-  const widthInput = makeNumberInput(unit.geometry.width, 1, object.internal_layout.cols, !canEditUnit);
-  const heightInput = makeNumberInput(unit.geometry.height, 1, object.internal_layout.rows, !canEditUnit);
-
-  const title = document.createElement("strong");
-  title.className = "map-object-form-title";
-  title.textContent = unit.name;
-
-  const identity = document.createElement("div");
-  identity.className = "map-object-form-grid map-object-identity-grid";
-  identity.append(
-    makeField(t("map.object_name"), nameInput),
-    makeField(t("map.object_type"), typeSelect),
-    makeField(t("map.object_shape"), shapeSelect),
-    makeField(t("map.object_color"), colorInput),
-  );
-
-  const geometry = document.createElement("div");
-  geometry.className = "map-object-form-grid map-object-position-grid";
-  geometry.append(
-    makeField(t("map.object_row"), rowInput),
-    makeField(t("map.object_col"), colInput),
-    makeField(t("map.object_width"), widthInput),
-    makeField(t("map.object_height"), heightInput),
-  );
+  containers: ContainerSummary[],
+): HTMLElement | null {
+  const selected = params.objects.find((object) => object.public_id === params.selectedObjectId);
+  if (!selected) return null;
+  const panel = document.createElement("section");
+  panel.className = "map-object-detail";
+  const heading = document.createElement("div");
+  heading.className = "map-object-detail-heading";
+  const name = document.createElement("strong");
+  name.textContent = areaDisplayName(selected);
+  const status = document.createElement("span");
+  status.textContent = t("map.area_selected", {
+    type: areaTypeLabel(areaObjectType(selected.object_type)),
+  });
+  heading.append(name, status);
 
   const actions = document.createElement("div");
-  actions.className = "map-object-create-row";
-  const save = makeButton("cat-filter-btn map-object-submit-btn", t("map.object_save"));
-  save.type = "submit";
-  save.disabled = !canEditUnit;
-  const deleteUnit = makeButton("cat-filter-btn", t("common.delete"));
-  deleteUnit.disabled = !params.canWrite;
-  deleteUnit.setAttribute("aria-label", `${t("common.delete")} ${unit.name}`);
-  deleteUnit.title = `${t("common.delete")} ${unit.name}`;
-  deleteUnit.addEventListener("click", () => {
-    params.onDeleteUnit(object.public_id, unit.public_id);
-  });
-  actions.append(save, deleteUnit);
+  actions.className = "map-object-action-row";
+  actions.appendChild(buildContainerCreateForm(params, selected.public_id));
+  panel.append(heading, actions);
 
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    if (!canEditUnit || !onUpdateUnit) return;
-    const nextGeometry = clampUnitGeometry({
-      x: positiveIntegerValue(colInput, unit.geometry.x),
-      y: positiveIntegerValue(rowInput, unit.geometry.y),
-      width: positiveIntegerValue(widthInput, unit.geometry.width),
-      height: positiveIntegerValue(heightInput, unit.geometry.height),
-    }, object.internal_layout);
-    onUpdateUnit(object.public_id, unit.public_id, {
-      unit_type: typeSelect.value as MapObjectUnitType,
-      name: nameInput.value.trim() || unit.name,
-      shape_type: shapeValue(shapeSelect),
-      geometry: nextGeometry,
-      style: { color: colorInput.value },
-    });
-  });
+  const childContainers = containers.filter(
+    (container) => container.parent_map_object_public_id === selected.public_id,
+  );
+  const containerHeading = document.createElement("h4");
+  containerHeading.className = "map-object-subheading";
+  containerHeading.textContent = t("map.containers_here");
+  panel.appendChild(containerHeading);
+  const list = document.createElement("div");
+  list.className = "map-container-list";
+  if (childContainers.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "map-object-empty";
+    empty.textContent = t("map.containers_empty");
+    list.appendChild(empty);
+  } else {
+    childContainers.forEach((container) => list.appendChild(buildContainerRow(container, params)));
+  }
+  panel.appendChild(list);
 
-  form.append(title, identity, geometry, actions);
-  return form;
+  const layout = document.createElement("details");
+  layout.className = "map-object-disclosure map-object-layout-disclosure";
+  const layoutSummary = document.createElement("summary");
+  layoutSummary.className = "map-object-add-summary";
+  layoutSummary.textContent = t("map.edit_layout");
+  layout.append(layoutSummary, buildGeometryForm(selected, params));
+  panel.appendChild(layout);
+  return panel;
 }
 
 function buildGeometryForm(
@@ -463,155 +418,99 @@ function buildGeometryForm(
 ): HTMLFormElement {
   const form = document.createElement("form");
   form.className = "map-object-geometry-form";
-
-  const nameInput = makeTextInput(object.name, !params.canWrite);
-  const shapeSelect = makeShapeSelect(object.shape_type, !params.canWrite);
-  const colorInput = makeColorInput(object.style.color, !params.canWrite);
-  const rowInput = makeNumberInput(object.geometry.y, 1, 100, !params.canWrite);
-  const colInput = makeNumberInput(object.geometry.x, 1, 100, !params.canWrite);
-  const widthInput = makeNumberInput(object.geometry.width, 1, 100, !params.canWrite);
-  const heightInput = makeNumberInput(object.geometry.height, 1, 100, !params.canWrite);
-  const layoutToggle = document.createElement("input");
-  layoutToggle.type = "checkbox";
-  layoutToggle.checked = object.has_internal_layout;
-  layoutToggle.disabled = !params.canWrite || (object.has_internal_layout && object.units.length > 0);
-
+  const nameInput = makeTextInput(areaDisplayName(object), "", !params.canWrite);
+  const shapeSelect = makeSelect(object.shape_type, ["rectangle", "ellipse"] as const, shapeLabel, !params.canWrite);
+  const colorInput = document.createElement("input");
+  colorInput.type = "color";
+  colorInput.value = /^#[0-9a-f]{6}$/i.test(object.style.color) ? object.style.color : DEFAULT_AREA_COLOR;
+  colorInput.disabled = !params.canWrite;
   const identity = document.createElement("div");
   identity.className = "map-object-form-grid map-object-identity-grid";
   identity.append(
-    makeField(t("map.object_name"), nameInput),
+    makeField(t("map.area_name"), nameInput),
     makeField(t("map.object_shape"), shapeSelect),
     makeField(t("map.object_color"), colorInput),
   );
-
   const geometry = document.createElement("div");
   geometry.className = "map-object-form-grid map-object-position-grid";
+  const rowInput = makeNumberInput(object.geometry.y, 1, 100);
+  const colInput = makeNumberInput(object.geometry.x, 1, 100);
+  const widthInput = makeNumberInput(object.geometry.width, 1, 100);
+  const heightInput = makeNumberInput(object.geometry.height, 1, 100);
+  [rowInput, colInput, widthInput, heightInput].forEach((input) => {
+    input.disabled = !params.canWrite;
+  });
   geometry.append(
     makeField(t("map.object_row"), rowInput),
     makeField(t("map.object_col"), colInput),
     makeField(t("map.object_width"), widthInput),
     makeField(t("map.object_height"), heightInput),
   );
-
-  const layoutLabel = document.createElement("label");
-  layoutLabel.className = "map-object-checkbox-field";
-  const layoutText = document.createElement("span");
-  layoutText.textContent = t("map.object_layout");
-  layoutLabel.append(layoutToggle, layoutText);
-
-  const layoutFields = document.createElement("div");
-  layoutFields.className = "map-object-form-grid map-object-layout-grid";
-  const rowsInput = makeNumberInput(object.internal_layout.rows, 1, 100, !params.canWrite);
-  const colsInput = makeNumberInput(object.internal_layout.cols, 1, 100, !params.canWrite);
-  layoutFields.hidden = !layoutToggle.checked;
-  layoutFields.append(
-    makeField(t("map.object_layout_rows"), rowsInput),
-    makeField(t("map.object_layout_cols"), colsInput),
-  );
-
-  layoutToggle.addEventListener("change", () => {
-    layoutFields.hidden = !layoutToggle.checked;
-  });
-
-  const submit = makeButton("cat-filter-btn map-object-submit-btn", t("map.object_save"));
-  submit.type = "submit";
-  submit.disabled = !params.canWrite;
-
+  const save = makeButton("cat-filter-btn map-object-submit-btn", t("map.object_save"));
+  save.type = "submit";
+  save.disabled = !params.canWrite;
+  form.append(identity, geometry, save);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!params.canWrite) return;
-    const nextGeometry: MapObjectGeometry = {
-      x: positiveIntegerValue(colInput, object.geometry.x),
-      y: positiveIntegerValue(rowInput, object.geometry.y),
-      width: positiveIntegerValue(widthInput, object.geometry.width),
-      height: positiveIntegerValue(heightInput, object.geometry.height),
+    const geometryValue: MapObjectGeometry = {
+      x: positiveInteger(colInput.value, object.geometry.x),
+      y: positiveInteger(rowInput.value, object.geometry.y),
+      width: positiveInteger(widthInput.value, object.geometry.width),
+      height: positiveInteger(heightInput.value, object.geometry.height),
     };
-    const patch: Partial<MapObjectInput> = {
-      name: nameInput.value.trim() || object.name,
-      shape_type: shapeValue(shapeSelect),
-      geometry: nextGeometry,
+    params.onUpdateObject(object.public_id, {
+      name: nameInput.value.trim() || areaDisplayName(object),
+      shape_type: shapeSelect.value as MapObjectShape,
+      geometry: geometryValue,
       style: { color: colorInput.value },
-      has_internal_layout: layoutToggle.checked,
-    };
-    if (layoutToggle.checked) {
-      patch.internal_layout = {
-        rows: positiveIntegerValue(rowsInput, object.internal_layout.rows),
-        cols: positiveIntegerValue(colsInput, object.internal_layout.cols),
-      };
-    }
-    params.onUpdateObject(object.public_id, patch);
+    });
   });
-
-  form.append(identity, geometry, layoutLabel, layoutFields, submit);
   return form;
 }
 
-function buildSelectedObject(params: RenderMapObjectsPanelParams): HTMLElement | null {
-  const selected = params.objects.find((object) => object.public_id === params.selectedObjectId);
-  if (!selected) return null;
-
-  const panel = document.createElement("div");
-  panel.className = "map-object-detail";
-
-  const heading = document.createElement("div");
-  heading.className = "map-object-detail-heading";
-  const name = document.createElement("strong");
-  name.textContent = selected.name;
-  const status = document.createElement("span");
-  status.textContent = selected.has_internal_layout
-    ? t("map.object_layout_only")
-    : t("map.object_layout_disabled");
-  heading.append(name, status);
-
-  panel.append(heading, buildGeometryForm(selected, params));
-
-  if (!selected.has_internal_layout) {
-    const empty = document.createElement("p");
-    empty.className = "map-object-layout-empty";
-    empty.textContent = t("map.object_layout_disabled");
-    panel.appendChild(empty);
-    return panel;
-  }
-
-  const actions = document.createElement("div");
-  actions.className = "map-object-create-row";
-  const pot = makeButton("cat-filter-btn", `+ ${t("map.unit_pot")}`);
-  pot.disabled = !params.canWrite;
-  pot.addEventListener("click", () => params.onAddUnit(selected.public_id, "pot"));
-  const planter = makeButton("cat-filter-btn", `+ ${t("map.unit_planter")}`);
-  planter.disabled = !params.canWrite;
-  planter.addEventListener("click", () => params.onAddUnit(selected.public_id, "planter"));
-  actions.append(pot, planter);
-
-  const selectedUnit = selectedUnitForObject(selected);
-  panel.append(actions, buildUnitGrid(selected, selectedUnit?.public_id ?? null, params));
-  if (selectedUnit) {
-    panel.appendChild(buildUnitEditor(selected, selectedUnit, params));
-  }
-  return panel;
-}
-
 export function renderMapObjectsPanel(params: RenderMapObjectsPanelParams): void {
-  const { container } = params;
-  if (!container) return;
-
+  if (!params.container) return;
+  const containers = allContainers(params);
   const header = document.createElement("div");
   header.className = "map-layer-section-header";
   const title = document.createElement("h3");
-  title.textContent = t("map.objects");
+  title.textContent = t("map.areas_containers");
   const toggle = makeButton(
     "map-object-toggle",
     params.showObjects ? t("map.object_hide") : t("map.object_show"),
   );
   toggle.classList.toggle("active", params.showObjects);
+  toggle.setAttribute("aria-pressed", String(params.showObjects));
   toggle.addEventListener("click", () => params.onToggleObjects(!params.showObjects));
   header.append(title, toggle);
 
-  const selectedPanel = buildSelectedObject(params);
-  container.replaceChildren(
+  const standalone = containers.filter((container) => !container.parent_map_object_public_id);
+  const standaloneSection = document.createElement("section");
+  standaloneSection.className = "map-object-standalone";
+  const standaloneHeading = document.createElement("h4");
+  standaloneHeading.className = "map-object-subheading";
+  standaloneHeading.textContent = t("map.standalone_containers");
+  standaloneSection.append(standaloneHeading, buildContainerCreateForm(params, null));
+  const standaloneList = document.createElement("div");
+  standaloneList.className = "map-container-list";
+  if (standalone.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "map-object-empty";
+    empty.textContent = t("map.standalone_empty");
+    standaloneList.appendChild(empty);
+  } else {
+    standalone.forEach((container) => standaloneList.appendChild(buildContainerRow(container, params)));
+  }
+  standaloneSection.appendChild(standaloneList);
+
+  params.container.replaceChildren(
     header,
-    buildCreateArea(params),
-    buildObjectList(params),
-    ...(selectedPanel ? [selectedPanel] : []),
+    buildAreaCreateForm(params),
+    buildAreaList(params),
+    standaloneSection,
+    ...(params.selectedObjectId ? [buildSelectedArea(params, containers)].filter(
+      (item): item is HTMLElement => item !== null,
+    ) : []),
   );
 }

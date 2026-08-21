@@ -11,6 +11,9 @@ import type {
   CalendarPreferencesResponse,
   CalendarSubscription,
   CompanionCheck,
+  ContainerInput,
+  ContainerPatch,
+  ContainerSummary,
   GardenIssue,
   GardenTask,
   GardenProfile,
@@ -2006,6 +2009,33 @@ export async function deleteMapObjectApi(
   await apiDelete<unknown>(`/api/gardens/${gardenId}/map-objects/${publicId}`);
 }
 
+export async function createContainerApi(
+  gardenId: number,
+  input: ContainerInput,
+): Promise<ContainerSummary> {
+  return apiPost<ContainerSummary>(`/api/gardens/${gardenId}/containers`, input);
+}
+
+export async function updateContainerApi(
+  gardenId: number,
+  plotId: string,
+  patch: ContainerPatch,
+): Promise<ContainerSummary> {
+  return apiPatch<ContainerSummary>(
+    `/api/gardens/${gardenId}/containers/${encodeApiPathSegment(plotId)}`,
+    patch,
+  );
+}
+
+export async function deleteContainerApi(
+  gardenId: number,
+  plotId: string,
+): Promise<void> {
+  await apiDelete<unknown>(
+    `/api/gardens/${gardenId}/containers/${encodeApiPathSegment(plotId)}`,
+  );
+}
+
 export async function createMapObjectUnitApi(
   gardenId: number,
   objectPublicId: string,
@@ -2185,12 +2215,13 @@ export async function movePlantBetweenPlotsApi(
   fromPlotId: string,
   toPlotId: string,
   pltId: string,
+  quantity?: number,
 ): Promise<void> {
   await apiPost<unknown>(
     `/api/plots/${encodeApiPathSegment(fromPlotId)}/plants/${encodeApiPathSegment(
       pltId,
     )}/move/${encodeApiPathSegment(toPlotId)}`,
-    {},
+    quantity === undefined ? {} : { quantity },
   );
 }
 

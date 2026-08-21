@@ -12,7 +12,17 @@ export interface Plot {
   has_tree: boolean;
   has_bush: boolean;
   categories: string[];
+  plot_kind?: PlotKind;
+  display_name?: string | null;
+  container_type?: ContainerType | null;
+  parent_map_object_public_id?: string | null;
+  environment?: ContainerEnvironment;
+  archived_at_ms?: number | null;
 }
+
+export type PlotKind = "ground" | "indoor" | "container";
+export type ContainerType = "pot" | "planter" | "raised_bed" | "other";
+export type ContainerEnvironment = "outdoor" | "covered" | "indoor";
 
 export type PlantPresenceStatus = "present" | "mixed" | "gone";
 
@@ -732,6 +742,7 @@ export type MapObjectType =
   | "patio"
   | "terrace"
   | "greenhouse"
+  | "balcony"
   | "shed"
   | "pond"
   | "path"
@@ -739,7 +750,6 @@ export type MapObjectType =
   | "other";
 
 export type MapObjectShape = "rectangle" | "ellipse";
-export type MapObjectUnitType = "pot" | "planter" | "raised_bed" | "shelf" | "other";
 
 export interface MapObjectGeometry {
   x: number;
@@ -757,6 +767,9 @@ export interface MapObjectInternalLayout {
   cols: number;
 }
 
+/** Legacy snapshot/import shape. New runtime UI uses ContainerSummary. */
+export type MapObjectUnitType = "pot" | "planter" | "raised_bed" | "shelf" | "other";
+
 export interface MapObjectUnit {
   public_id: string;
   unit_type: MapObjectUnitType;
@@ -769,6 +782,27 @@ export interface MapObjectUnit {
   updated_at_ms?: number;
 }
 
+export interface MapObjectUnitInput {
+  unit_type: MapObjectUnitType;
+  name: string;
+  shape_type: MapObjectShape;
+  geometry: MapObjectGeometry;
+  style?: MapObjectStyle;
+  sort_order?: number;
+}
+
+export interface ContainerSummary {
+  plot_id: string;
+  display_name: string;
+  container_type: ContainerType;
+  environment: ContainerEnvironment;
+  plant_count: number;
+  parent_map_object_public_id?: string | null;
+  can_edit?: boolean;
+  can_archive?: boolean;
+  archived_at_ms?: number | null;
+}
+
 export interface MapObject {
   public_id: string;
   object_type: MapObjectType;
@@ -777,11 +811,11 @@ export interface MapObject {
   geometry: MapObjectGeometry;
   style: MapObjectStyle;
   z_index: number;
-  has_internal_layout: boolean;
-  internal_layout: MapObjectInternalLayout;
   created_at_ms?: number;
   updated_at_ms?: number;
-  units: MapObjectUnit[];
+  container_count: number;
+  plant_count: number;
+  containers: ContainerSummary[];
 }
 
 export interface MapObjectInput {
@@ -791,17 +825,20 @@ export interface MapObjectInput {
   geometry: MapObjectGeometry;
   style?: MapObjectStyle;
   z_index?: number;
-  has_internal_layout?: boolean;
-  internal_layout?: MapObjectInternalLayout | null;
 }
 
-export interface MapObjectUnitInput {
-  unit_type: MapObjectUnitType;
+export interface ContainerInput {
   name: string;
-  shape_type: MapObjectShape;
-  geometry: MapObjectGeometry;
-  style?: MapObjectStyle;
-  sort_order?: number;
+  container_type: ContainerType;
+  parent_object_public_id?: string | null;
+  environment?: ContainerEnvironment;
+}
+
+export interface ContainerPatch {
+  name?: string;
+  container_type?: ContainerType;
+  parent_object_public_id?: string | null;
+  environment?: ContainerEnvironment;
 }
 
 export type AppTab = "map" | "garden" | "activity" | "insights" | "admin";

@@ -16,6 +16,7 @@ const SNAP_HEIGHTS: Record<SnapState, string> = {
 
 export interface BottomSheetParams {
   plotId: string;
+  plotLabel?: string;
   plants: Plant[];
   mediaPreviewByPlantId?: Map<string, MediaAsset | null>;
   plantAlertsByPlantId?: Map<string, PlantAlertType[]>;
@@ -24,6 +25,7 @@ export interface BottomSheetParams {
   onSearch: (event: Event) => void;
   onRemove: (pltId: string) => void;
   onEdit: (plant: Plant) => void;
+  onMove?: ((plant: Plant, sourcePlotId: string) => void) | undefined;
   onEditPlot?: (() => void) | undefined;
   onDeletePlot?: (() => void) | undefined;
   onCreatePlant?: ((plotId: string) => void) | undefined;
@@ -35,6 +37,7 @@ export interface BottomSheetParams {
 type BottomSheetPlantSectionParams = Pick<
   BottomSheetParams,
   | "plotId"
+  | "plotLabel"
   | "plants"
   | "mediaPreviewByPlantId"
   | "plantAlertsByPlantId"
@@ -42,6 +45,7 @@ type BottomSheetPlantSectionParams = Pick<
   | "onClose"
   | "onRemove"
   | "onEdit"
+  | "onMove"
   | "onCreateCalendarEvent"
 >;
 
@@ -89,6 +93,8 @@ function buildBottomSheetPlantsSection(
             params.mediaPreviewByPlantId?.get(plant.plt_id) ?? null,
           alertTypes: params.plantAlertsByPlantId?.get(plant.plt_id),
           canWrite: params.canWrite,
+          ...(params.plotLabel ? { plotLabel: params.plotLabel } : {}),
+          ...(params.onMove ? { onMove: params.onMove } : {}),
           onCreateCalendarEvent: params.onCreateCalendarEvent
             ? (selectedPlant) =>
                 params.onCreateCalendarEvent?.({
@@ -177,7 +183,7 @@ export function showBottomSheet(params: BottomSheetParams): void {
 
   const title = document.createElement("h2");
   title.id = "plot-bottom-sheet-title";
-  title.textContent = plotId;
+  title.textContent = params.plotLabel ?? plotId;
 
   const closeBtn = document.createElement("button");
   closeBtn.className = "close-btn";
@@ -276,6 +282,7 @@ export function showBottomSheet(params: BottomSheetParams): void {
 
   const plantsSection = buildBottomSheetPlantsSection({
     plotId,
+    ...(params.plotLabel ? { plotLabel: params.plotLabel } : {}),
     plants,
     ...(mediaPreviewByPlantId
       ? { mediaPreviewByPlantId }
@@ -289,6 +296,7 @@ export function showBottomSheet(params: BottomSheetParams): void {
     onClose,
     onRemove,
     onEdit,
+    ...(params.onMove ? { onMove: params.onMove } : {}),
     ...(params.onCreateCalendarEvent
       ? { onCreateCalendarEvent: params.onCreateCalendarEvent }
       : {}),

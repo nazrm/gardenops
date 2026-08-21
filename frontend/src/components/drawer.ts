@@ -7,6 +7,7 @@ import { trapFocus } from "./dialogCore";
 
 export interface DrawerParams {
   plotId: string;
+  plotLabel?: string;
   plants: Plant[];
   mediaPreviewByPlantId?: Map<string, MediaAsset | null>;
   plantAlertsByPlantId?: Map<string, PlantAlertType[]>;
@@ -15,6 +16,7 @@ export interface DrawerParams {
   onSearch: (event: Event) => void;
   onRemove: (pltId: string) => void;
   onEdit: (plant: Plant) => void;
+  onMove?: ((plant: Plant, sourcePlotId: string) => void) | undefined;
   onDeletePlot?: (() => void) | undefined;
   onCreatePlant?: ((plotId: string) => void) | undefined;
   onCreateCalendarEvent?:
@@ -25,6 +27,7 @@ export interface DrawerParams {
 type DrawerPlantSectionParams = Pick<
   DrawerParams,
   | "plotId"
+  | "plotLabel"
   | "plants"
   | "mediaPreviewByPlantId"
   | "plantAlertsByPlantId"
@@ -32,6 +35,7 @@ type DrawerPlantSectionParams = Pick<
   | "onClose"
   | "onRemove"
   | "onEdit"
+  | "onMove"
   | "onCreateCalendarEvent"
 >;
 
@@ -122,6 +126,8 @@ function buildDrawerPlantsSection(
             params.mediaPreviewByPlantId?.get(plant.plt_id) ?? null,
           alertTypes: params.plantAlertsByPlantId?.get(plant.plt_id),
           canWrite: params.canWrite,
+          ...(params.plotLabel ? { plotLabel: params.plotLabel } : {}),
+          ...(params.onMove ? { onMove: params.onMove } : {}),
           onCreateCalendarEvent: params.onCreateCalendarEvent
             ? (selectedPlant) =>
                 params.onCreateCalendarEvent?.({
@@ -161,6 +167,7 @@ function buildDrawerPlantsSection(
       if (plant) params.onEdit(plant);
     });
   });
+
   plantsSection.querySelectorAll<HTMLButtonElement>(
     "button[data-calendar-create-plant]",
   ).forEach((btn) => {
@@ -203,7 +210,7 @@ export function showDrawer(params: DrawerParams): void {
 
   const title = document.createElement("h2");
   title.id = "plot-drawer-title";
-  title.textContent = plotId;
+  title.textContent = params.plotLabel ?? plotId;
 
   const closeBtn = document.createElement("button");
   closeBtn.className = "close-btn";
@@ -278,6 +285,7 @@ export function showDrawer(params: DrawerParams): void {
 
   const plantsSection = buildDrawerPlantsSection({
     plotId,
+    ...(params.plotLabel ? { plotLabel: params.plotLabel } : {}),
     plants,
     ...(mediaPreviewByPlantId
       ? { mediaPreviewByPlantId }
@@ -291,6 +299,7 @@ export function showDrawer(params: DrawerParams): void {
     onClose,
     onRemove,
     onEdit,
+    ...(params.onMove ? { onMove: params.onMove } : {}),
     ...(params.onCreateCalendarEvent
       ? { onCreateCalendarEvent: params.onCreateCalendarEvent }
       : {}),

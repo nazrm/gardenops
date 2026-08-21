@@ -88,6 +88,8 @@ export interface PlotCallbacks {
   canWrite: () => boolean;
   deletePlot: (plotId: string) => Promise<void>;
   onEditPlant: (plant: Plant) => void;
+  onMovePlant?: ((plant: Plant, sourcePlotId: string) => void) | undefined;
+  getPlotLabel?: ((plotId: string) => string) | undefined;
   onEditPlot: (plotId: string) => void;
   onPlantAssignmentsChanged: (pltIds?: string[]) => Promise<void> | void;
   onPlotFocusChanged: (plotId: string | null) => void;
@@ -256,9 +258,11 @@ function getPanelCallbacks(
   cbs: PlotCallbacks,
 ): {
   canWrite: boolean;
+  plotLabel?: string;
   onClose: () => void;
   onRemove: (pltId: string) => void;
   onEdit: (plant: Plant) => void;
+  onMove?: ((plant: Plant, sourcePlotId: string) => void) | undefined;
   onCreateCalendarEvent?: (
     prefill: { plant_ids?: string[]; plot_ids?: string[] },
   ) => void;
@@ -266,10 +270,12 @@ function getPanelCallbacks(
   const canWrite = cbs.canWrite();
   return {
     canWrite,
+    ...(cbs.getPlotLabel ? { plotLabel: cbs.getPlotLabel(plotId) } : {}),
     onClose: () => closePanel(state, cbs),
     onRemove: (pltId) =>
       void removePlant(state, plotId, pltId, cbs),
     onEdit: (plant) => cbs.onEditPlant(plant),
+    ...(canWrite && cbs.onMovePlant ? { onMove: cbs.onMovePlant } : {}),
     ...(canWrite && cbs.onCreateCalendarEvent
       ? { onCreateCalendarEvent: cbs.onCreateCalendarEvent }
       : {}),
