@@ -918,7 +918,12 @@ async function exerciseCanonicalContainerDesktop(page, diagnostics, fixture, alp
   await openMap(page, "desktop");
   await enableMapEditor(page);
   await visible(page.getByText(area.name, { exact: true }), "area display name after reload");
-  await visible(page.getByText(container.name, { exact: true }), "container display name after reload");
+  const reloadedAreaRow = page.locator(`#map-objects-panel .map-object-row[data-object-id='${area.id}']`);
+  await reloadedAreaRow.locator(".map-object-row-main").click();
+  await visible(
+    page.locator(".map-container-row").filter({ hasText: container.name }),
+    "container display name after reload",
+  );
   await openPlants(page, "desktop");
   await page.locator("#plants-search").fill(plant.name);
   const placedRow = plantRecord(page, "desktop", plant.name);
