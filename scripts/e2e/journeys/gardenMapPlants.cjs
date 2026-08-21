@@ -944,6 +944,8 @@ async function exerciseCanonicalContainerDesktop(page, diagnostics, fixture, alp
   await archiveCanonicalContainer(page, alpha, container);
   const areaAfterArchive = page.locator("#map-objects-panel .map-object-row").filter({ hasText: area.name });
   await deleteMapObjectRow(page, areaAfterArchive, area.name);
+  await deletePlantByName(page, "desktop", plant.name);
+  await page.locator("#plants-search").fill("");
 }
 
 async function deleteMapObjectRow(page, row, name) {
