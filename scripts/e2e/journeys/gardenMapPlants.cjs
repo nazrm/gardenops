@@ -1128,6 +1128,12 @@ async function exerciseCanonicalContainerKeyboard(page, diagnostics, fixture, al
   await visible(picker, "keyboard Place picker");
   const live = picker.locator(".plant-location-picker-status");
   assert(await live.getAttribute("aria-live") === "polite", "Place picker has no polite live region");
+  await page.keyboard.press("Escape");
+  await waitFor(async () => await picker.count() === 0, "keyboard Place picker cancel");
+  await waitFor(async () => await place.evaluate((element) => document.activeElement === element), "Place focus restoration");
+
+  await place.press("Enter");
+  await visible(picker, "keyboard Place picker after focus restoration");
   const search = picker.locator(".plant-location-picker-search");
   await search.fill(container.name);
   const option = picker.locator(".plant-location-picker-option").filter({ hasText: container.name }).first();
@@ -1147,7 +1153,6 @@ async function exerciseCanonicalContainerKeyboard(page, diagnostics, fixture, al
     async () => await page.locator("#toast-container .toast").filter({ hasText: /location updated/i }).count() > 0,
     "Place live success announcement",
   );
-  await waitFor(async () => await place.evaluate((element) => document.activeElement === element), "Place focus restoration");
 
   await openPlants(page, "desktop-reflow-200");
   await page.locator("#plants-search").fill(plant.name);
@@ -1161,6 +1166,15 @@ async function exerciseCanonicalContainerKeyboard(page, diagnostics, fixture, al
     await picker.locator(".plant-location-picker-status").getAttribute("aria-live") === "polite",
     "Move picker has no polite live region",
   );
+  await page.keyboard.press("Escape");
+  await waitFor(async () => await picker.count() === 0, "keyboard Move picker cancel");
+  await waitFor(
+    async () => await move.evaluate((element) => document.activeElement === element),
+    "Move focus restoration",
+  );
+
+  await move.press("Enter");
+  await visible(picker, "keyboard Move picker after focus restoration");
   const destination = picker.locator(".plant-location-picker-option")
     .filter({ hasText: "Indoor growing" }).first();
   await visible(destination, "keyboard Move destination");
@@ -1178,10 +1192,6 @@ async function exerciseCanonicalContainerKeyboard(page, diagnostics, fixture, al
   await waitFor(
     async () => await page.locator("#toast-container .toast").filter({ hasText: /location updated/i }).count() > 0,
     "Move live success announcement",
-  );
-  await waitFor(
-    async () => await move.evaluate((element) => document.activeElement === element),
-    "Move focus restoration",
   );
 
   await openMap(page, "desktop-reflow-200");
