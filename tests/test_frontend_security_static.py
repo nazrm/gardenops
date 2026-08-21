@@ -122,7 +122,7 @@ class FrontendSecurityStaticTests(unittest.TestCase):
             "const options = await beginPasskeyLoginApi(username)",
             gate,
         )
-        self.assertIn("if (!options.passkey_available)", gate)
+        self.assertNotIn("passkey_available", gate)
         self.assertIn("await startPasskeyLogin(options, username)", gate)
         self.assertIn("showPasskeyError(err, false)", gate)
         self.assertIn("passkeyAbortController?.abort()", gate)

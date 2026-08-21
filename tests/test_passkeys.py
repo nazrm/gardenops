@@ -1354,7 +1354,7 @@ class TestPasskeyLogin(PasskeyApiTest):
                 self.assertEqual(response.status_code, 400)
                 self.assertEqual(response.json()["detail"], "Username is required")
 
-    def test_login_options_do_not_reveal_username_scoped_credentials(self) -> None:
+    def test_login_options_do_not_reveal_passkey_enrollment(self) -> None:
         client, _headers, _passkey_id = self._register_passkey()
         client.post("/api/auth/logout")
 
@@ -1364,7 +1364,7 @@ class TestPasskeyLogin(PasskeyApiTest):
         )
 
         self.assertEqual(options.status_code, 200, options.text)
-        self.assertTrue(options.json()["passkey_available"])
+        self.assertNotIn("passkey_available", options.json())
         self.assertFalse(options.json()["publicKey"].get("allowCredentials"))
 
     def test_login_options_use_same_fallback_for_non_passkey_candidates(self) -> None:
@@ -1394,7 +1394,7 @@ class TestPasskeyLogin(PasskeyApiTest):
                 self.assertEqual(options.status_code, 200, options.text)
                 body = options.json()
                 self.assertTrue(body.get("challenge_token"))
-                self.assertFalse(body["passkey_available"])
+                self.assertNotIn("passkey_available", body)
                 self.assertIn("publicKey", body)
                 self.assertFalse(body["publicKey"].get("allowCredentials"))
 

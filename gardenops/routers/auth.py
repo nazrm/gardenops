@@ -1922,7 +1922,6 @@ def auth_passkey_login_options(
     db.commit()
     return {
         "challenge_token": challenge.token,
-        "passkey_available": user_id is not None,
         "publicKey": public_key,
     }
 

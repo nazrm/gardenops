@@ -304,8 +304,8 @@ function main() {
   if (!authGateText.includes("auth.login_action")) {
     fail("password fallback after passkey resolution must expose a Login action");
   }
-  if (!authGateText.includes("if (!options.passkey_available)")) {
-    fail("password-only usernames must reveal the password field without starting WebAuthn");
+  if (authGateText.includes("passkey_available")) {
+    fail("the public login flow must not branch on passkey enrollment");
   }
   if (!authGateText.includes("showPasskeyError(err, false)")) {
     fail("missing passkey errors must reveal password without showing a cancellation error");
