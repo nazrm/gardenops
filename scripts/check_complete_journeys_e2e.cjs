@@ -3363,6 +3363,14 @@ function normalizeAuditProjectionPath(value) {
   }
   const parameterizedRoutes = [
     [
+      /^\/api\/gardens\/\d+\/containers$/,
+      () => "/api/gardens/{garden_id}/containers",
+    ],
+    [
+      /^\/api\/gardens\/\d+\/containers\/[^/?#]+$/,
+      () => "/api/gardens/{garden_id}/containers/{plot_id}",
+    ],
+    [
       /^\/api\/plots\/[^/?#]+\/plants\/[^/?#]+\/move\/[^/?#]+$/,
       () => "/api/plots/{from_plot_id}/plants/{created_plant_id}/move/{to_plot_id}",
     ],

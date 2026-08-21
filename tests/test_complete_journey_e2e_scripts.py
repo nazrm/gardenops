@@ -6105,6 +6105,12 @@ const userAudit = auditManifestProjection(auditState('/api/auth/users/42'));
 const gardenMemberAudit = auditManifestProjection(
   auditState('/api/gardens/7/members/42'),
 );
+const containerCollectionAudit = auditManifestProjection(
+  auditState('/api/gardens/7/containers'),
+);
+const containerItemAudit = auditManifestProjection(
+  auditState(`/api/gardens/7/containers/${opaqueRouteId}`),
+);
 const invitationPasskeyOptionsAudit = auditManifestProjection(
   auditState('/api/auth/invitations/passkey/register/options'),
 );
@@ -6127,6 +6133,10 @@ if (userInvitationAudit.events[0].path
 if (userAudit.events[0].path !== '/api/auth/users/{user_id}') process.exit(15);
 if (gardenMemberAudit.events[0].path
     !== '/api/gardens/{garden_id}/members/{user_id}') process.exit(16);
+if (containerCollectionAudit.events[0].path
+    !== '/api/gardens/{garden_id}/containers') process.exit(19);
+if (containerItemAudit.events[0].path
+    !== '/api/gardens/{garden_id}/containers/{plot_id}') process.exit(20);
 if (invitationPasskeyOptionsAudit.events[0].path
     !== '/api/auth/invitations/passkey/register/options') process.exit(17);
 if (invitationPasskeyVerifyAudit.events[0].path
@@ -6138,9 +6148,21 @@ if (task.canonical_projection_digests.final_database
 const serialized = JSON.stringify([
   task, attention, assignment, telemetry, passkeyAudit, sessionAudit,
   userInvitationAudit, userAudit, gardenMemberAudit,
+  containerCollectionAudit, containerItemAudit,
   invitationPasskeyOptionsAudit, invitationPasskeyVerifyAudit,
 ]);
 if (serialized.includes(opaqueRouteId)) process.exit(7);
+for (const path of [
+  '/api/gardens/not-a-number/containers',
+  `/api/gardens/7/containers/${opaqueRouteId}/extra`,
+]) {
+  try {
+    auditManifestProjection(auditState(path));
+    process.exit(21);
+  } catch (error) {
+    if (!String(error.message).includes('event path is invalid')) process.exit(22);
+  }
+}
 """
     result = subprocess.run(
         ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
