@@ -2529,7 +2529,7 @@ def restore_snapshot_data(
                 " (plot_id,garden_id,zone_code,zone_name,plot_number,"
                 "grid_row,grid_col,sub_zone,notes,color,plot_kind,display_name,"
                 "container_type,parent_map_object_id,environment,archived_at_ms)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
                 " ON CONFLICT (plot_id) DO UPDATE SET"
                 " garden_id=EXCLUDED.garden_id,"
                 " zone_code=EXCLUDED.zone_code,"

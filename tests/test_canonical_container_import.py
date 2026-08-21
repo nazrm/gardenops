@@ -47,7 +47,8 @@ class TestCanonicalContainerImport(BaseApiTest):
                 )
                 VALUES (%s, %s, 'patio', 'North patio', 'rectangle',
                         '{\"x\":1,\"y\":1,\"width\":4,\"height\":3}',
-                        '{\"color\":\"#7d9f7a\"}', 0, 0, '{}',
+                        '{\"color\":\"#7d9f7a\"}', 0, 0,
+                        '{\"rows\":6,\"cols\":8}',
                         %s, %s, %s)
                 RETURNING id
                 """,
@@ -85,6 +86,20 @@ class TestCanonicalContainerImport(BaseApiTest):
         )
         conn = db.get_db()
         try:
+            conn.execute(
+                """
+                INSERT INTO plants (plt_id, name, latin, category)
+                VALUES (%s, %s, '', 'busker')
+                """,
+                ("PLT-EXPORT", "Export fixture plant"),
+            )
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES (%s, %s, %s)
+                """,
+                ("PLT-EXPORT", self._owner_id, self._get_default_garden_id()),
+            )
             conn.execute(
                 "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES (%s, %s, 3)",
                 ("EXPORT-CONT", "PLT-EXPORT"),
