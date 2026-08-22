@@ -116,6 +116,35 @@ const PHASE_ONE_EXACT_SIDE_EFFECT_TABLES = [
   "provider_daily_usage",
   "shademap_cache",
 ];
+const PHASE_ONE_EXACT_SIDE_EFFECT_ACCOUNTING = {
+  garden_map_object_units: {
+    allow_row_delta: true,
+    evidence: "phase_one_snapshot_restore_retires_legacy_unit",
+    expected_added: 0,
+    expected_identity_added: 0,
+    expected_identity_removed: 1,
+    expected_identity_updated: 0,
+    expected_removed: 1,
+  },
+  provider_daily_usage: {
+    allow_row_delta: true,
+    evidence: "phase_one_map_profiles_terrain_provider_misses",
+    expected_added: 5,
+    expected_identity_added: 5,
+    expected_identity_removed: 0,
+    expected_identity_updated: 0,
+    expected_removed: 0,
+  },
+  shademap_cache: {
+    allow_row_delta: true,
+    evidence: "phase_one_map_profiles_terrain_cache_misses",
+    expected_added: 3,
+    expected_identity_added: 3,
+    expected_identity_removed: 0,
+    expected_identity_updated: 0,
+    expected_removed: 0,
+  },
+};
 const PHASE_EIGHT_ALLOWED_TABLES = [
   "auth_passkey_challenges",
   "garden_journal_entries",
@@ -3708,31 +3737,16 @@ function assertWholeTableMutationAccounting(initial, final, allowedTables, accou
   };
 }
 
-function assertPhaseOneExactSideEffects(initial, final, oracle) {
-  const spec = oracle?.phase_two?.whole_table_mutation_accounting;
-  const counts = spec?.exact_counts?.cumulative_through_phase_two;
-  const identities = spec?.exact_identity_counts?.cumulative_through_phase_two;
-  assert(counts && identities, "Phase 1 exact side-effect oracle is missing");
+function assertPhaseOneExactSideEffects(initial, final) {
   const tables = new Set(PHASE_ONE_EXACT_SIDE_EFFECT_TABLES);
   const projection = (domainTables) => Object.fromEntries(
     [...tables].map((table) => [table, domainTables[table]]),
   );
-  const accounting = Object.fromEntries([...tables].map((table) => [table, {
-    allow_row_delta: true,
-    evidence: table === "garden_map_object_units"
-      ? "phase_one_snapshot_restore_retires_legacy_unit"
-      : "phase_one_map_profile_runtime_reads_existing_oracle",
-    expected_added: counts[table].added,
-    expected_identity_added: identities[table].added,
-    expected_identity_removed: identities[table].removed,
-    expected_identity_updated: identities[table].updated,
-    expected_removed: counts[table].removed,
-  }]));
   return assertWholeTableMutationAccounting(
     projection(initial),
     projection(final),
     tables,
-    accounting,
+    PHASE_ONE_EXACT_SIDE_EFFECT_ACCOUNTING,
   );
 }
 
@@ -8772,7 +8786,6 @@ async function main() {
       assertPhaseOneExactSideEffects(
         fixture.database_snapshot.domain_tables,
         phaseOneDatabase.domain_tables,
-        oracle,
       );
     }
     const phaseOneChangedDomainTables = phaseOneRan ? [...new Set([

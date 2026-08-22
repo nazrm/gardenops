@@ -2318,14 +2318,18 @@ const final = {
 };
 assertWholeTableMutationAccounting(initial, final, new Set(tables), accounting);
 const phaseOneInitial = { ...initial, garden_map_object_units: row('c', 1) };
-const phaseOneFinal = { ...final, garden_map_object_units: row('c', 0) };
-assertPhaseOneExactSideEffects(phaseOneInitial, phaseOneFinal, fullOracle);
+const phaseOneFinal = {
+  provider_daily_usage: row('a', 5),
+  shademap_cache: row('b', 3),
+  garden_map_object_units: row('c', 0),
+};
+assertPhaseOneExactSideEffects(phaseOneInitial, phaseOneFinal);
 try {
   assertPhaseOneExactSideEffects(phaseOneInitial, {
-    provider_daily_usage: row('a', 5),
+    provider_daily_usage: row('a', 6),
     shademap_cache: row('b', 3),
     garden_map_object_units: row('c', 0),
-  }, fullOracle);
+  });
   process.exit(3);
 } catch (error) {
   if (!String(error.message).includes('expected_added')) process.exit(4);
