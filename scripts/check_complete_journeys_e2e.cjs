@@ -1782,17 +1782,24 @@ function assertPhaseOneAuditContract(auditState, loginCount) {
   ]);
   const observedByKey = new Map();
   for (const event of auditState.events) {
+    assert(Number.isSafeInteger(event?.count) && event.count > 0,
+      "Invalid Phase 1 audit count");
+    assert(["DELETE", "GET", "HEAD", "PATCH", "POST", "PUT"].includes(event?.method),
+      "Invalid Phase 1 audit method");
+    assert(Number.isSafeInteger(event?.status_code)
+      && event.status_code >= 100 && event.status_code <= 599,
+    "Invalid Phase 1 audit status");
+    const normalizedPath = normalizeAuditProjectionPath(event?.path);
+    assert(normalizedPath !== null, "Invalid Phase 1 audit path");
     const key = auditEventKey({
       ...event,
-      path: normalizeAuditProjectionPath(event.path) || event.path,
+      path: normalizedPath,
     });
-    assert(!observedByKey.has(key), `Phase 1 audit event was duplicated: ${key}`);
-    assert(Number.isSafeInteger(event.count) && event.count > 0, `Invalid Phase 1 audit count: ${key}`);
     assert(
       expectedByKey.has(key) || flexibleReadEventKeys.has(key),
       `Unexpected Phase 1 audit event: ${key}`,
     );
-    observedByKey.set(key, event.count);
+    observedByKey.set(key, (observedByKey.get(key) || 0) + event.count);
   }
   for (const [key, expectedCount] of expectedByKey) {
     assert(

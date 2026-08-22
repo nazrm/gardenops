@@ -3004,8 +3004,21 @@ try {
 } catch (error) {
   if (!String(error.message).includes('assignments_with_cross_garden_ownership')) process.exit(3);
 }
+const expectedAudit = phaseOneAuditExpectedEvents(9);
+const containerDelete = expectedAudit.find((event) => (
+  event.method === 'DELETE'
+    && event.path === '/api/gardens/{garden_id}/containers/{plot_id}'
+    && event.status_code === 200
+));
+if (containerDelete?.count !== 3) process.exit(19);
 const audit = { events: [
-  ...phaseOneAuditExpectedEvents(9),
+  ...expectedAudit.filter((event) => event !== containerDelete),
+  ...['containe_first', 'containe_second', 'containe_third'].map((plotId) => ({
+    count: 1,
+    method: 'DELETE',
+    path: `/api/gardens/1/containers/${plotId}`,
+    status_code: 200,
+  })),
   { count: 4, method: 'POST', path: '/api/media/summaries', status_code: 200 },
 ] };
 const prohibitedDirectViewerDenials = [
@@ -3024,6 +3037,20 @@ for (const [method, path, statusCode] of prohibitedDirectViewerDenials) {
 }
 const evidence = assertPhaseOneAuditContract(audit, 9);
 if (evidence.unexpected_count !== 0 || evidence.flexible_read_event_types !== 1) process.exit(4);
+try {
+  assertPhaseOneAuditContract({ events: [
+    ...audit.events,
+    {
+      count: 1,
+      method: 'DELETE',
+      path: '/api/gardens/1/containers/containe_fourth',
+      status_code: 200,
+    },
+  ] }, 9);
+  process.exit(20);
+} catch (error) {
+  if (!String(error.message).includes('count was unexpected')) process.exit(21);
+}
 const incomplete = structuredClone(profiles);
 incomplete[4].checks.mobile_supported_writes_and_focus_return = false;
 try {
@@ -3066,7 +3093,7 @@ try {
 } catch (error) {
   if (!/delayed A\\/B\\/A/i.test(String(error.message))) process.exit(16);
 }
-audit.events.push({ count: 1, method: 'POST', path: '/api/unexpected', status_code: 200 });
+audit.events.push({ count: 1, method: 'POST', path: '/api/issues', status_code: 200 });
 try {
   assertPhaseOneAuditContract(audit, 9);
   process.exit(17);
