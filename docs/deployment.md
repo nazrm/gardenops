@@ -124,10 +124,10 @@ This restriction is deliberate: changing application code back does not undo a
 database migration. A schema-changing rollback requires an operator-reviewed
 database recovery plan and a tested backup.
 
-If migration or pre-activation validation fails, the wrapper restores the
-previously active service while the `current` symlink is still unchanged. Once
-the new symlink is installed, the existing activation failure and
-migration-digest rollback rules take over.
+If preflight or migration fails, the wrapper restores the previously active
+service while the `current` symlink is still unchanged. Once migrations
+succeed, a later integrity failure leaves the service stopped; activation
+failures continue through the existing migration-digest rollback rules.
 
 ## First Admin User
 

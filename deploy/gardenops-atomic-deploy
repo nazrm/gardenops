@@ -204,6 +204,7 @@ activate_release() {
 
     with_release_env "$release" "$release/.venv/bin/python" -c \
         "import gardenops.db as db; db.run_migrations()"
+    restore_service_on_failure=0
     with_release_env "$release" "$release/.venv/bin/python" \
         "$release/scripts/check_backend_integrity.py" --allow-production
 
@@ -213,7 +214,6 @@ activate_release() {
         atomic_link "$old_target" "$PREVIOUS_LINK"
     fi
     atomic_link "$release" "$CURRENT_LINK"
-    restore_service_on_failure=0
     trap - EXIT
     if systemctl restart "$SERVICE" && wait_for_health; then
         echo "gardenops deploy: active release $release"
