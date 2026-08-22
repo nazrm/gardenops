@@ -4414,9 +4414,6 @@ function renderPlantsTable(): void {
       void selectPlot(state, plotId, plotCbs);
     },
     onEdit: (plant: Plant) => openEditPlantDialog(plant),
-    onMove: (plant: Plant, sourcePlotId: string) => {
-      void openPlantMovePicker(plant, sourcePlotId).catch(showFetchError);
-    },
     onPlace: (plant: Plant) => openPlantPlacePicker(plant),
     onToggleSelect: (pltId: string) => togglePlantSelection(pltId),
     selectedIds: selectedPlantIds,
@@ -6438,6 +6435,9 @@ function openEditPlantDialog(plant: Plant): void {
       if (allWarnings.length > 0) {
         showAppStatus(allWarnings.join(" | "));
       }
+    },
+    onMove: (sourcePlotId) => {
+      void openPlantMovePicker(plant, sourcePlotId).catch(showFetchError);
     },
     onAiUpdate: (q) => aiPlantLookup(q),
     onObservationChanged: async (pltId) => {

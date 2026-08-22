@@ -863,6 +863,25 @@ async function placePlantIntoContainer(
   await waitFor(async () => await picker.count() === 0, "Place location picker close");
 }
 
+async function plantMoveControlFromEdit(page, profile, plant, sourcePlotId) {
+  await openPlants(page, profile);
+  await page.locator("#plants-search").fill(plant.name);
+  const row = plantRecord(page, profile, plant.name);
+  await visible(row, `plant ${plant.name} for move`);
+  assert(
+    await row.locator(".plot-link-action").count() === 0,
+    "Plant list exposed inline Move controls",
+  );
+  await row.locator("[data-edit-plt]").click();
+  const dialog = page.locator("#edit-plant-form");
+  await visible(dialog, `plant edit form for ${plant.name}`);
+  const move = dialog.locator(
+    `.plot-chip[data-plot='${sourcePlotId}'] .plot-chip-move`,
+  );
+  await visible(move, `Move location action from ${sourcePlotId}`);
+  return { dialog, move };
+}
+
 async function movePlantFromLocation(
   page,
   profile,
@@ -872,14 +891,12 @@ async function movePlantFromLocation(
   quantity,
   { expectMerge = false } = {},
 ) {
-  await openPlants(page, profile);
-  await page.locator("#plants-search").fill(plant.name);
-  const row = plantRecord(page, profile, plant.name);
-  await visible(row, `plant ${plant.name} for move`);
-  const source = row.locator(`[data-goto-plot='${sourcePlotId}']`);
-  await visible(source, `source location ${sourcePlotId} for ${plant.name}`);
-  const move = source.locator("xpath=..").locator(".plot-link-action");
-  await visible(move, `Move action from ${sourcePlotId}`);
+  const { dialog, move } = await plantMoveControlFromEdit(
+    page,
+    profile,
+    plant,
+    sourcePlotId,
+  );
   await move.click();
   const picker = page.locator(".plant-location-picker");
   await visible(picker, "Move location picker");
@@ -902,6 +919,7 @@ async function movePlantFromLocation(
   const response = await responsePromise;
   assert(response.ok(), `Move plant returned ${response.status()}`);
   await waitFor(async () => await picker.count() === 0, "Move location picker close");
+  await dialog.locator("#cancel-edit-plant").click();
 }
 
 async function unassignPlantFromLocation(page, diagnostics, profile, plant, plotId) {
@@ -1269,10 +1287,12 @@ async function exerciseCanonicalContainerKeyboard(page, diagnostics, alpha) {
     "Place live success announcement",
   );
 
-  await openPlants(page, "desktop-reflow-200");
-  await page.locator("#plants-search").fill(plant.name);
-  const movedRow = plantRecord(page, "desktop-reflow-200", plant.name);
-  const move = movedRow.locator(".plot-link-action").first();
+  const { dialog: moveDialog, move } = await plantMoveControlFromEdit(
+    page,
+    "desktop-reflow-200",
+    plant,
+    container.id,
+  );
   await visible(move, "keyboard Move action");
   await move.focus();
   await move.press("Enter");
@@ -1316,6 +1336,7 @@ async function exerciseCanonicalContainerKeyboard(page, diagnostics, alpha) {
     async () => await page.locator("#toast-container .toast").filter({ hasText: /location updated/i }).count() > 0,
     "Move live success announcement",
   );
+  await moveDialog.locator("#cancel-edit-plant").click();
 
   await openMap(page, "desktop-reflow-200");
   await enableMapEditor(page, "desktop-reflow-200");

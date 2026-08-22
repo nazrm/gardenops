@@ -146,7 +146,6 @@ export function filterPlants(
 interface PlantsTableCallbacks {
   canWrite: boolean;
   onOpenPlot: (plotId: string) => void;
-  onMove?: (plant: Plant, sourcePlotId: string) => void;
   onPlace?: (plant: Plant) => void;
   onEdit: (plant: Plant) => void;
   knownPlotIds: Set<string>;
@@ -156,6 +155,8 @@ interface PlantsTableCallbacks {
   onToggleSelect?: (pltId: string) => void;
   selectedIds?: Set<string>;
 }
+
+const MAX_VISIBLE_PLANT_LOCATIONS = 2;
 
 function createMobileFact(label: string, value: string): HTMLElement | null {
   if (!value) return null;
@@ -181,7 +182,6 @@ function appendPlotLinks(
   knownPlotIds: Set<string>,
   plotAssignmentMeanings: PlotAssignmentMeaning[],
   plotLabels?: ReadonlyMap<string, string>,
-  onMove?: (plant: Plant, sourcePlotId: string) => void,
   onPlace?: (plant: Plant) => void,
 ): void {
   container.replaceChildren();
@@ -208,8 +208,15 @@ function appendPlotLinks(
   const missingIds = new Set(
     (plant.missing_plot_ids ?? []).filter((plotId) => !knownPlotIds.has(plotId)),
   );
-  ids.forEach((id, index) => {
-    if (index > 0) container.append(document.createTextNode(" "));
+  const visibleIds = ids.slice(0, MAX_VISIBLE_PLANT_LOCATIONS);
+  const hiddenIds = ids.slice(MAX_VISIBLE_PLANT_LOCATIONS);
+  visibleIds.forEach((id, index) => {
+    if (index > 0) {
+      const separator = document.createElement("span");
+      separator.className = "plot-link-separator";
+      separator.textContent = ", ";
+      container.appendChild(separator);
+    }
     const meaning = resolvePlotAssignmentMeaning(id, plotAssignmentMeanings);
     const meaningText = formatPlotAssignmentMeaning(meaning);
     if (missingIds.has(id)) {
@@ -222,12 +229,6 @@ function appendPlotLinks(
         : t("plants.missing_plot");
       missingId.textContent = id;
       missing.appendChild(missingId);
-      if (meaningText) {
-        const note = document.createElement("span");
-        note.className = "plot-link-note";
-        note.textContent = meaningText;
-        missing.appendChild(note);
-      }
       container.appendChild(missing);
       return;
     }
@@ -241,23 +242,24 @@ function appendPlotLinks(
     if (meaningText) button.title = meaningText;
     button.addEventListener("click", () => onOpenPlot(id));
     token.appendChild(button);
-    if (onMove && canAssign) {
-      const moveButton = document.createElement("button");
-      moveButton.type = "button";
-      moveButton.className = "text-link plot-link-action";
-      moveButton.textContent = t("map.move_short");
-      moveButton.setAttribute(
-        "aria-label",
-        t("map.move_plant_from_aria", {
-          name: plant.name,
-          plot: plotLabels?.get(id) ?? id,
-        }),
-      );
-      moveButton.addEventListener("click", () => onMove(plant, id));
-      token.append(" ", moveButton);
-    }
     container.appendChild(token);
   });
+
+  if (hiddenIds.length > 0) {
+    const separator = document.createElement("span");
+    separator.className = "plot-link-separator";
+    separator.textContent = ", ";
+    const hiddenLabels = hiddenIds.map((id) => plotLabels?.get(id) ?? id);
+    const more = document.createElement("span");
+    more.className = "plot-link-overflow";
+    more.textContent = `+${hiddenIds.length}`;
+    more.title = hiddenLabels.join(", ");
+    more.setAttribute("aria-label", t("plants.more_locations", {
+      count: hiddenIds.length,
+      names: hiddenLabels.join(", "),
+    }));
+    container.append(separator, more);
+  }
 }
 
 const CATEGORY_EMOJI: Record<string, string> = {
@@ -277,7 +279,6 @@ function appendCellContent(
   knownPlotIds: Set<string>,
   plotAssignmentMeanings: PlotAssignmentMeaning[],
   plotLabels?: ReadonlyMap<string, string>,
-  onMove?: (plant: Plant, sourcePlotId: string) => void,
   onPlace?: (plant: Plant) => void,
   mediaPreviewByPlantId?: ReadonlyMap<string, MediaAsset | null>,
 ): void {
@@ -321,7 +322,6 @@ function appendCellContent(
         knownPlotIds,
         plotAssignmentMeanings,
         plotLabels,
-        canWrite ? onMove : undefined,
         canWrite ? onPlace : undefined,
       );
       return;
@@ -516,7 +516,7 @@ export function renderPlantsTableBody(
   callbacks: PlantsTableCallbacks,
 ): void {
   const {
-    canWrite, onOpenPlot, onMove, onPlace, onEdit, knownPlotIds, plotLabels,
+    canWrite, onOpenPlot, onPlace, onEdit, knownPlotIds, plotLabels,
     plotAssignmentMeanings, mediaPreviewByPlantId,
     onToggleSelect, selectedIds,
   } = callbacks;
@@ -572,7 +572,6 @@ export function renderPlantsTableBody(
         knownPlotIds,
         plotAssignmentMeanings,
         plotLabels,
-        canWrite ? onMove : undefined,
         canWrite ? onPlace : undefined,
         mediaPreviewByPlantId,
       );
@@ -618,7 +617,7 @@ export function renderPlantsMobileCards(
   callbacks: PlantsTableCallbacks,
 ): void {
   const {
-    canWrite, onOpenPlot, onMove, onPlace, onEdit, knownPlotIds, plotLabels,
+    canWrite, onOpenPlot, onPlace, onEdit, knownPlotIds, plotLabels,
     plotAssignmentMeanings, mediaPreviewByPlantId,
     onToggleSelect, selectedIds,
   } = callbacks;
@@ -751,7 +750,6 @@ export function renderPlantsMobileCards(
       knownPlotIds,
       plotAssignmentMeanings,
       plotLabels,
-      canWrite ? onMove : undefined,
       canWrite ? onPlace : undefined,
     );
     plotRow.append(plotLabel, plotLinks);

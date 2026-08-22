@@ -203,6 +203,8 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
     "plants.field_height": "Height",
     "plants.field_year": "Year",
     "plants.field_plots": "Plots",
+    "plants.more_locations": ({ count, names }) =>
+      `${count} more location${Number(count) === 1 ? "" : "s"}: ${names}`,
     "plants.field_height_value": ({ count }) => `${count} cm`,
     "plants.missing_plot": "This plot ID does not exist in the current map",
     "plants.column_name": "Name",
@@ -2630,6 +2632,9 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
     "plants.field_height": "Høyde",
     "plants.field_year": "År",
     "plants.field_plots": "Felt",
+    "plants.more_locations": ({ count, names }) => Number(count) === 1
+      ? `1 plassering til: ${names}`
+      : `${count} flere plasseringer: ${names}`,
     "plants.field_height_value": ({ count }) => `${count} cm`,
     "plants.missing_plot": "Dette felt-ID-et finnes ikke i gjeldende kart",
     "plants.column_name": "Navn",
