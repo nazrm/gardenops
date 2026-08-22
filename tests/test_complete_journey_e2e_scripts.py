@@ -661,7 +661,9 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     assert "const unitUpdate = await issueBrowserRequest" not in journey_source
     assert "route.fulfill" not in journey_source
     mobile_canonical = journey_source.split("async function exerciseCanonicalContainerMobile", 1)[1]
-    mobile_canonical = mobile_canonical.split("async function exerciseCanonicalContainerKeyboard", 1)[0]
+    mobile_canonical = mobile_canonical.split(
+        "async function exerciseCanonicalContainerKeyboard", 1
+    )[0]
     assert 'await openIndoor(page, "mobile")' in mobile_canonical
     assert "fixture.phase_one.indoor.room_label" in mobile_canonical
     assert "restored indoor room after canonical mobile move" in mobile_canonical
@@ -2378,7 +2380,11 @@ for (const rows of [sameDay, oneSplit, bothSplit]) {
   );
 }
 for (const [rows, message] of [
-  [[...sameDay.slice(0, 1), usage('2026-08-21', 'user', 5, 'viewer', 2), ...sameDay.slice(2)], 'scope'],
+  [[
+    ...sameDay.slice(0, 1),
+    usage('2026-08-21', 'user', 5, 'viewer', 2),
+    ...sameDay.slice(2),
+  ], 'scope'],
   [[{ ...sameDay[0], feature: 'ai-identify' }, ...sameDay.slice(1)], 'feature'],
   [[...sameDay, usage('2026-08-21', 'garden', 2, '', 1)], 'duplicate'],
   [oneSplit.map((row) => ({
