@@ -1,6 +1,7 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from unittest.mock import patch
 from uuid import uuid4
 
 import gardenops.db as db
@@ -538,6 +539,53 @@ class TestPlantFromStock(BaseApiTest):
             self.assertIsNone(assignment)
         finally:
             db.return_db(conn)
+
+    def test_peer_cannot_plant_stock_linked_to_another_member_plant(self) -> None:
+        item_id = self._seed_linked_stock()
+        owner = self._create_test_user("inventory_plant_owner", "inventoryownerpass")
+        self._create_test_user("inventory_plant_peer", "inventorypeerpass")
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                UPDATE plant_ownership
+                SET owner_user_id = %s
+                WHERE plt_id = 'PLT-TEST' AND garden_id = %s
+                """,
+                (int(owner["id"]), garden_id),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            peer_client, peer_headers = self._authenticated_client(
+                "inventory_plant_peer",
+                "inventorypeerpass",
+                garden_id=garden_id,
+            )
+            denied = peer_client.post(
+                f"/api/inventory/{item_id}/plant",
+                headers={**peer_headers, "X-Offline-Operation-Id": str(uuid4())},
+                json=self._plant_body(),
+            )
+
+        self.assertEqual(denied.status_code, 404, denied.text)
+        self.assertEqual(self.client.get(f"/api/inventory/{item_id}").json()["quantity"], "1")
+        self.assertEqual(self.client.get("/api/journal?event_type=planted").json()["total"], 0)
+        conn = db.get_db()
+        try:
+            assignment = conn.execute(
+                "SELECT 1 FROM plot_plants WHERE plot_id = 'B1' AND plt_id = 'PLT-TEST'",
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertIsNone(assignment)
 
     def test_concurrent_commands_cannot_overdraw_stock(self) -> None:
         item_id = self._seed_linked_stock("1")

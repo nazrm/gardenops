@@ -31,6 +31,9 @@ from gardenops.router_helpers import (
     is_local_admin_fallback as _is_local_admin_fallback,
 )
 from gardenops.router_helpers import (
+    is_owner_or_admin as _is_owner_or_admin,
+)
+from gardenops.router_helpers import (
     parse_metadata as _parse_metadata,
 )
 from gardenops.router_helpers import (
@@ -115,16 +118,19 @@ def _validate_linked_plant(
             "SELECT 1 FROM plants WHERE plt_id = %s",
             (normalized,),
         ).fetchone()
+        if not row:
+            raise HTTPException(404, f"Plant {normalized} not found in active garden")
+        return normalized
     else:
         row = db.execute(
             """
-            SELECT 1
+            SELECT owner_user_id
             FROM plant_ownership
             WHERE garden_id = %s AND plt_id = %s
             """,
             (_active_garden_id(context), normalized),
         ).fetchone()
-    if not row:
+    if not row or not _is_owner_or_admin(context, row["owner_user_id"]):
         raise HTTPException(404, f"Plant {normalized} not found in active garden")
     return normalized
 
