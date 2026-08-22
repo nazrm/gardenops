@@ -1154,7 +1154,9 @@ function plantLocationDestinations(
   sourcePlotId?: string,
 ): PlantLocationDestination[] {
   const assigned = new Set(plant.plot_ids ?? []);
-  const activePlots = state.plots.filter((plot) => plot.archived_at_ms == null);
+  const activePlots = state.plots.filter(
+    (plot) => plot.archived_at_ms == null && plot.can_assign,
+  );
   const destinations: PlantLocationDestination[] = [];
   const addDestination = (
     plot: Plot,
@@ -1223,7 +1225,7 @@ async function openPlantMovePicker(
   plant: Plant,
   sourcePlotId: string,
 ): Promise<void> {
-  if (!ensureWriteAccess()) return;
+  if (!plant.can_assign || !ensureWriteAccess()) return;
   const sourcePlants = await getPlotPlants(sourcePlotId);
   const sourcePlant = sourcePlants.find((candidate) => candidate.plt_id === plant.plt_id);
   const sourceQuantity = Math.max(1, sourcePlant?.quantity ?? plant.quantity ?? 1);
@@ -1231,12 +1233,14 @@ async function openPlantMovePicker(
   const sourceLabel = sourcePlot
     ? plotDisplayLabel(sourcePlot)
     : t("map.unnamed_location");
+  const destinations = plantLocationDestinations(plant, sourcePlotId);
+  if (destinations.length === 0) return;
   openPlantLocationPicker({
     mode: "move",
     plant,
     sourceLabel,
     sourceQuantity,
-    destinations: plantLocationDestinations(plant, sourcePlotId),
+    destinations,
     getDestinationQuantity: async (plotId) => {
       const plants = await getPlotPlants(plotId);
       return plants.find((candidate) => candidate.plt_id === plant.plt_id)?.quantity ?? null;
@@ -1261,11 +1265,13 @@ async function openPlantMovePicker(
 }
 
 function openPlantPlacePicker(plant: Plant): void {
-  if (!ensureWriteAccess()) return;
+  if (!plant.can_assign || !ensureWriteAccess()) return;
+  const destinations = plantLocationDestinations(plant);
+  if (destinations.length === 0) return;
   openPlantLocationPicker({
     mode: "place",
     plant,
-    destinations: plantLocationDestinations(plant),
+    destinations,
     onConfirm: async (destination, quantity) => {
       await addPlantToPlotApi(destination.plot_id, plant.plt_id, quantity);
       await refreshPlantLocationState(plant.plt_id, [destination.plot_id]);

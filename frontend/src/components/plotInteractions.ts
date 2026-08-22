@@ -166,6 +166,7 @@ function historicalContainerPlot(container: ContainerSummary): Plot {
     notes: "",
     color: null,
     plant_count: container.plant_count,
+    can_assign: false,
     has_tree: false,
     has_bush: false,
     categories: [],

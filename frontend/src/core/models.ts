@@ -9,6 +9,7 @@ export interface Plot {
   notes: string;
   color: string | null;
   plant_count: number;
+  can_assign: boolean;
   has_tree: boolean;
   has_bush: boolean;
   categories: string[];
@@ -45,6 +46,7 @@ export interface Plant {
   care_maintenance: string;
   care_notes: string;
   added_at_ms: number;
+  can_assign: boolean;
   quantity?: number;
   plot_ids?: string[];
   missing_plot_ids?: string[];

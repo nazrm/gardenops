@@ -27,7 +27,7 @@ export function renderPlantCard(
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "plant-card";
-  card.draggable = options.canWrite !== false;
+  card.draggable = options.canWrite !== false && plant.can_assign;
   card.dataset["pltId"] = plant.plt_id;
   card.dataset["fromPlot"] = plotId;
 
@@ -61,7 +61,7 @@ export function renderPlantCard(
     actions.appendChild(editButton);
   }
 
-  if (options.canWrite !== false && options.onMove) {
+  if (options.canWrite !== false && plant.can_assign && options.onMove) {
     const moveButton = document.createElement("button");
     moveButton.className = "plant-move-btn";
     moveButton.dataset["move"] = plant.plt_id;

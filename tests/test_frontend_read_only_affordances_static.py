@@ -16,6 +16,21 @@ def test_plants_table_omits_row_write_controls_when_read_only() -> None:
     assert "const totalCols = columns.length + (canWrite ? 1 : 0)" in source
 
 
+def test_assignment_controls_use_plant_and_plot_capabilities() -> None:
+    data_tables = _read("frontend/src/components/dataTables.ts")
+    plant_card = _read("frontend/src/components/plantCard.ts")
+    app = _read("frontend/src/app.ts")
+
+    assert "const canAssign = plant.can_assign;" in data_tables
+    assert "if (onPlace && canAssign)" in data_tables
+    assert "if (onMove && canAssign)" in data_tables
+    assert "card.draggable = options.canWrite !== false && plant.can_assign;" in plant_card
+    assert "options.canWrite !== false && plant.can_assign && options.onMove" in plant_card
+    assert "(plot) => plot.archived_at_ms == null && plot.can_assign" in app
+    assert app.count("if (!plant.can_assign || !ensureWriteAccess()) return;") == 2
+    assert app.count("if (destinations.length === 0) return;") == 2
+
+
 def test_app_passes_active_garden_write_access_and_clears_stale_selection() -> None:
     source = _read("frontend/src/app.ts")
 

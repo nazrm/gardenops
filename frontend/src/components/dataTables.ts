@@ -185,9 +185,10 @@ function appendPlotLinks(
   onPlace?: (plant: Plant) => void,
 ): void {
   container.replaceChildren();
+  const canAssign = plant.can_assign;
   const ids = plant.plot_ids;
   if (!ids || ids.length === 0) {
-    if (onPlace) {
+    if (onPlace && canAssign) {
       const placeButton = document.createElement("button");
       placeButton.type = "button";
       placeButton.className = "text-link plant-place-btn";
@@ -240,7 +241,7 @@ function appendPlotLinks(
     if (meaningText) button.title = meaningText;
     button.addEventListener("click", () => onOpenPlot(id));
     token.appendChild(button);
-    if (onMove) {
+    if (onMove && canAssign) {
       const moveButton = document.createElement("button");
       moveButton.type = "button";
       moveButton.className = "text-link plot-link-action";
