@@ -1398,6 +1398,15 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
     "map.container_archived": "Container archived",
     "map.containers_here": "Containers here",
     "map.containers_empty": "No containers in this area yet",
+    "map.plots_move_here": ({ count }) => count === 1
+      ? "Move selected plot here"
+      : `Move ${count} selected plots here`,
+    "map.plots_move_here_empty": "Move selected plots here",
+    "map.plots_move_select_first": "Select one or more map plots first",
+    "map.plots_move_confirm": "Move here",
+    "map.plots_moved": ({ count, area }) => count === 1
+      ? `Plot moved to ${area}`
+      : `${count} plots moved to ${area}`,
     "map.standalone_containers": "Standalone containers",
     "map.standalone_empty": "No standalone containers yet",
     "map.plant_count": ({ count }) => `${count} plant${Number(count) === 1 ? "" : "s"}`,
@@ -3830,6 +3839,15 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
     "map.container_archived": "Beholder arkivert",
     "map.containers_here": "Beholdere her",
     "map.containers_empty": "Ingen beholdere i dette området ennå",
+    "map.plots_move_here": ({ count }) => count === 1
+      ? "Flytt valgt felt hit"
+      : `Flytt ${count} valgte felt hit`,
+    "map.plots_move_here_empty": "Flytt valgte felt hit",
+    "map.plots_move_select_first": "Velg ett eller flere felt på kartet først",
+    "map.plots_move_confirm": "Flytt hit",
+    "map.plots_moved": ({ count, area }) => count === 1
+      ? `Felt flyttet til ${area}`
+      : `${count} felt flyttet til ${area}`,
     "map.standalone_containers": "Frittstående beholdere",
     "map.standalone_empty": "Ingen frittstående beholdere ennå",
     "map.plant_count": ({ count }) => `${count} plante${Number(count) === 1 ? "" : "r"}`,

@@ -423,8 +423,14 @@ function renderMapObjects(
         marker.style.left = `${8 + ((index % columns) * 84) / columns}%`;
         marker.style.top = `${8 + (Math.floor(index / columns) * 84) / markerRows}%`;
         marker.style.setProperty("--container-columns", String(columns));
-        marker.textContent = String(container.plant_count);
-        marker.title = container.display_name;
+        const markerName = document.createElement("span");
+        markerName.className = "map-container-marker-name";
+        markerName.textContent = container.display_name;
+        const markerCount = document.createElement("span");
+        markerCount.className = "map-container-marker-count";
+        markerCount.textContent = t("map.plant_count", { count: container.plant_count });
+        marker.append(markerName, markerCount);
+        marker.title = `${container.display_name}, ${markerCount.textContent}`;
         marker.setAttribute(
           "aria-label",
           `${container.display_name}, ${t("map.plant_count", { count: container.plant_count })}`,

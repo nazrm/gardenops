@@ -1576,12 +1576,26 @@ textarea {
   border-color: var(--accent);
 }
 
+.map-object-disclosure > summary[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .map-object-intent-form {
   padding: var(--sp-2);
   border: 1px solid var(--border-subtle);
   border-top: 0;
   border-radius: 0 0 var(--r-sm) var(--r-sm);
   background: var(--bg-1);
+}
+
+.map-object-selection-preview {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
 }
 
 .map-object-identity-grid .map-object-field:first-child {
@@ -3904,19 +3918,40 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-direction: column;
   min-width: 44px;
   min-height: 44px;
-  padding: 6px;
+  max-width: 88px;
+  padding: 5px 7px;
   transform: translate(-50%, -50%);
   pointer-events: auto;
   border: 2px solid var(--accent);
-  border-radius: 50%;
+  border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--bg-1) 88%, transparent);
   color: var(--text-1);
   font-size: 12px;
   font-weight: 800;
   cursor: pointer;
   box-shadow: var(--shadow-sm);
+}
+
+.map-container-marker-name,
+.map-container-marker-count {
+  display: block;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-container-marker-name {
+  font-size: 11px;
+}
+
+.map-container-marker-count {
+  color: var(--text-3);
+  font-size: 9px;
+  font-weight: 700;
 }
 
 .map-container-marker:hover,

@@ -104,7 +104,7 @@ interface RenderMapObjectsPanelParams {
   selectedObjectId: string | null;
   showObjects: boolean;
   canWrite: boolean;
-  selectedPlotCount: number;
+  selectedPlotIds: readonly string[];
   onToggleObjects: (show: boolean) => void;
   onCreateArea: (type: MapObjectType, name: string) => Promise<boolean>;
   onCreateContainer: (input: {
@@ -113,6 +113,11 @@ interface RenderMapObjectsPanelParams {
     parent_object_public_id?: string | null;
   }) => void;
   onUpdateContainer: (plotId: string, patch: ContainerPatch) => void;
+  onMovePlotsToArea: (
+    publicId: string,
+    plotIds: string[],
+    containerType: ContainerType,
+  ) => void;
   onSelectObject: (publicId: string | null) => void;
   onUpdateObject: (publicId: string, patch: Partial<MapObjectInput>) => void;
   onDeleteObject: (publicId: string) => void;
@@ -471,7 +476,10 @@ function buildSelectedArea(
 
   const actions = document.createElement("div");
   actions.className = "map-object-action-row";
-  actions.appendChild(buildContainerCreateForm(params, selected.public_id));
+  actions.append(
+    buildMoveSelectedPlotsForm(params, selected),
+    buildContainerCreateForm(params, selected.public_id),
+  );
   panel.append(heading, actions);
 
   const childContainers = containers.filter(
@@ -501,6 +509,67 @@ function buildSelectedArea(
   layout.append(layoutSummary, buildGeometryForm(selected, params));
   panel.appendChild(layout);
   return panel;
+}
+
+function buildMoveSelectedPlotsForm(
+  params: RenderMapObjectsPanelParams,
+  object: MapObject,
+): HTMLElement {
+  const selectedIds = new Set(params.selectedPlotIds);
+  const selectedPlots = params.plots.filter((plot) => (
+    selectedIds.has(plot.plot_id)
+    && plot.plot_kind !== "container"
+    && plot.archived_at_ms == null
+    && plot.grid_row != null
+    && plot.grid_col != null
+  ));
+  const details = document.createElement("details");
+  details.className = "map-object-disclosure map-object-move-disclosure";
+  const summary = document.createElement("summary");
+  summary.className = "map-object-add-summary";
+  summary.textContent = selectedPlots.length > 0
+    ? t("map.plots_move_here", { count: selectedPlots.length })
+    : t("map.plots_move_here_empty");
+  if (selectedPlots.length === 0 || !params.canWrite) {
+    summary.setAttribute("aria-disabled", "true");
+    summary.title = t("map.plots_move_select_first");
+    summary.addEventListener("click", (event) => event.preventDefault());
+  }
+  details.appendChild(summary);
+
+  const form = document.createElement("form");
+  form.className = "map-object-intent-form map-object-move-form";
+  const typeSelect = makeSelect(
+    "planter" as ContainerType,
+    CONTAINER_TYPES,
+    containerTypeLabel,
+    !params.canWrite,
+  );
+  const selected = document.createElement("p");
+  selected.className = "map-object-selection-preview";
+  selected.textContent = selectedPlots.map((plot) => plot.plot_id).join(", ");
+  const submit = makeButton(
+    "cat-filter-btn map-object-submit-btn",
+    t("map.plots_move_confirm"),
+  );
+  submit.type = "submit";
+  submit.disabled = selectedPlots.length === 0 || !params.canWrite;
+  form.append(
+    makeField(t("map.container_type"), typeSelect),
+    selected,
+    submit,
+  );
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!params.canWrite || selectedPlots.length === 0) return;
+    params.onMovePlotsToArea(
+      object.public_id,
+      selectedPlots.map((plot) => plot.plot_id),
+      typeSelect.value as ContainerType,
+    );
+  });
+  details.appendChild(form);
+  return details;
 }
 
 function buildGeometryForm(
