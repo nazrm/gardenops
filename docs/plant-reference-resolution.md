@@ -17,6 +17,8 @@ then the RHS resolver independently searches using the complete botanical name.
 - A synonym is accepted only when the RHS result explicitly identifies its
   accepted parent plant.
 - Ambiguous, unaccepted, missing, or malformed results do not produce a link.
+- Resolver input is limited to three botanical variants of at most 200
+  characters, bounding the number and size of searches generated from AI data.
 - RHS request failures do not clear or replace stored links.
 
 Verified and unresolved checks are recorded in `plant_external_references` with
