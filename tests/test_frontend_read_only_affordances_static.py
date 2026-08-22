@@ -26,7 +26,8 @@ def test_assignment_controls_use_plant_and_plot_capabilities() -> None:
 
     assert "const canAssign = plant.can_assign;" in data_tables
     assert "if (onPlace && canAssign)" in data_tables
-    assert "if (onMove && canAssign)" in data_tables
+    assert 'className = "plot-link-action"' not in data_tables
+    assert 'moveBtn.className = "plot-chip-move";' in _read("frontend/src/components/overlays.ts")
     assert "options.canWrite !== false" in plant_card
     assert "options.canAssign !== false" in plant_card
     assert "plant.can_assign" in plant_card

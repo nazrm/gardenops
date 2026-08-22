@@ -15,7 +15,7 @@ export interface EditCallbacks {
   restoreMapObjectGeometry: (
     publicId: string,
     geometry: NonNullable<MoveAction["mapObject"]>["geometry"],
-  ) => Promise<void>;
+  ) => Promise<boolean>;
 }
 
 export function toggleEditMode(
@@ -286,8 +286,20 @@ export async function undo(
   state: AppState,
   cbs: EditCallbacks,
 ): Promise<void> {
-  const action = state.undoStack.pop();
+  const action = state.undoStack[state.undoStack.length - 1];
   if (!action) return;
+
+  if (action.mapObject && action.house === undefined && action.plots.length === 0) {
+    const restored = await cbs.restoreMapObjectGeometry(
+      action.mapObject.public_id,
+      action.mapObject.geometry,
+    );
+    if (restored) state.undoStack.pop();
+    updateUndoButton(state);
+    return;
+  }
+
+  state.undoStack.pop();
 
   if (action.house) {
     state.housePosition = {

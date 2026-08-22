@@ -48,7 +48,7 @@ class TestMapObjects(BaseApiTest):
             "object_type": "patio",
             "name": "Kitchen patio",
             "shape_type": "rectangle",
-            "geometry": {"x": 1, "y": 1, "width": 4, "height": 3},
+            "geometry": {"x": 18, "y": 1, "width": 4, "height": 3},
             "style": {"color": "#7d9f7a"},
             "z_index": 2,
             "has_internal_layout": True,
@@ -107,6 +107,41 @@ class TestMapObjects(BaseApiTest):
         finally:
             db.return_db(conn)
 
+    @staticmethod
+    def _seed_map_object(
+        garden_id: int,
+        *,
+        public_id: str,
+        name: str,
+        geometry: dict[str, int],
+    ) -> None:
+        conn = db.get_db()
+        now_ms = db.current_timestamp_ms()
+        try:
+            conn.execute(
+                """
+                INSERT INTO garden_map_objects (
+                    public_id, garden_id, object_type, name, shape_type,
+                    geometry_json, style_json, z_index, has_internal_layout,
+                    internal_layout_json, created_at_ms, updated_at_ms
+                )
+                VALUES (%s, %s, 'patio', %s, 'rectangle', %s, %s, 0, 0, %s, %s, %s)
+                """,
+                (
+                    public_id,
+                    garden_id,
+                    name,
+                    json.dumps(geometry, separators=(",", ":")),
+                    json.dumps({"color": "#7d9f7a"}),
+                    json.dumps({"rows": 6, "cols": 8}),
+                    now_ms,
+                    now_ms,
+                ),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
     def _import_layout(self, payload: dict[str, object], reason: str = "map-object-import"):
         with patch.dict(
             os.environ,
@@ -131,7 +166,7 @@ class TestMapObjects(BaseApiTest):
         patio = created.json()
         self.assertEqual(patio["object_type"], "patio")
         self.assertEqual(patio["name"], "Kitchen patio")
-        self.assertEqual(patio["geometry"], {"x": 1, "y": 1, "width": 4, "height": 3})
+        self.assertEqual(patio["geometry"], {"x": 18, "y": 1, "width": 4, "height": 3})
         self.assertEqual(patio["style"], {"color": "#7d9f7a"})
         self.assertEqual(patio["internal_layout"], {"rows": 6, "cols": 8})
         self.assertEqual(patio["container_count"], 0)
@@ -319,6 +354,134 @@ class TestMapObjects(BaseApiTest):
         self.assertEqual(created.status_code, 400, created.text)
         self.assertIn("does not fit", created.json()["detail"])
 
+    def test_rejects_plot_house_and_area_overlaps(self) -> None:
+        garden_id = self._default_garden()
+
+        plot_overlap = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects",
+            json={
+                **self._patio_payload(),
+                "geometry": {"x": 1, "y": 1, "width": 1, "height": 1},
+            },
+        )
+        self.assertEqual(plot_overlap.status_code, 409, plot_overlap.text)
+        self.assertIn("plot B1", plot_overlap.json()["detail"])
+
+        house_overlap = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects",
+            json={
+                **self._patio_payload(),
+                "geometry": {"x": 6, "y": 9, "width": 1, "height": 1},
+            },
+        )
+        self.assertEqual(house_overlap.status_code, 409, house_overlap.text)
+        self.assertIn("house", house_overlap.json()["detail"])
+
+        first = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects",
+            json=self._patio_payload(),
+        )
+        self.assertEqual(first.status_code, 201, first.text)
+        area_overlap = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects",
+            json={
+                **self._patio_payload(),
+                "name": "Overlapping area",
+                "geometry": {"x": 18, "y": 1, "width": 1, "height": 1},
+            },
+        )
+        self.assertEqual(area_overlap.status_code, 409, area_overlap.text)
+        self.assertIn("area Kitchen patio", area_overlap.json()["detail"])
+
+    def test_edge_adjacency_and_container_plot_do_not_block(self) -> None:
+        garden_id = self._default_garden()
+        first = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects",
+            json=self._patio_payload(),
+        )
+        self.assertEqual(first.status_code, 201, first.text)
+        container = self.client.post(
+            f"/api/gardens/{garden_id}/containers",
+            json=self._container_payload(first.json()["public_id"]),
+        )
+        self.assertEqual(container.status_code, 201, container.text)
+
+        adjacent = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects",
+            json={
+                **self._patio_payload(),
+                "name": "Edge area",
+                "geometry": {"x": 22, "y": 1, "width": 1, "height": 1},
+            },
+        )
+        self.assertEqual(adjacent.status_code, 201, adjacent.text)
+
+        container_clear = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects",
+            json={
+                **self._patio_payload(),
+                "name": "Container-clear area",
+                "geometry": {"x": 3, "y": 1, "width": 1, "height": 1},
+            },
+        )
+        self.assertEqual(container_clear.status_code, 201, container_clear.text)
+
+    def test_legacy_overlap_allows_metadata_and_same_geometry_but_rejects_changed_geometry(
+        self,
+    ) -> None:
+        garden_id = self._default_garden()
+        self._seed_map_object(
+            garden_id,
+            public_id="legacy-area-a",
+            name="Legacy area A",
+            geometry={"x": 18, "y": 1, "width": 4, "height": 3},
+        )
+        self._seed_map_object(
+            garden_id,
+            public_id="legacy-area-b",
+            name="Legacy area B",
+            geometry={"x": 20, "y": 2, "width": 2, "height": 2},
+        )
+
+        metadata = self.client.patch(
+            f"/api/gardens/{garden_id}/map-objects/legacy-area-a",
+            json={"name": "Renamed legacy area"},
+        )
+        self.assertEqual(metadata.status_code, 200, metadata.text)
+
+        same_geometry = self.client.patch(
+            f"/api/gardens/{garden_id}/map-objects/legacy-area-a",
+            json={"geometry": {"height": 3, "width": 4, "y": 1, "x": 18}},
+        )
+        self.assertEqual(same_geometry.status_code, 200, same_geometry.text)
+
+        changed_geometry = self.client.patch(
+            f"/api/gardens/{garden_id}/map-objects/legacy-area-a",
+            json={
+                "geometry": {"x": 19, "y": 1, "width": 4, "height": 3},
+            },
+        )
+        self.assertEqual(changed_geometry.status_code, 409, changed_geometry.text)
+        self.assertIn("area Legacy area B", changed_geometry.json()["detail"])
+
+    def test_layout_state_rejects_house_overlap_with_area(self) -> None:
+        garden_id = self._default_garden()
+        area = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects",
+            json=self._patio_payload(),
+        )
+        self.assertEqual(area.status_code, 201, area.text)
+
+        current = self.client.get("/api/layout-state")
+        self.assertEqual(current.status_code, 200, current.text)
+        body = current.json()
+        body.update({"row": 1, "col": 18, "width": 1, "height": 1})
+
+        updated = self.client.patch("/api/layout-state", json=body)
+
+        self.assertEqual(updated.status_code, 409, updated.text)
+        self.assertIn("area Kitchen patio", updated.json()["detail"])
+
     def test_patch_area_preserves_fields_and_containers_ignore_internal_layout(self) -> None:
         garden_id = self._default_garden()
         patio = self.client.post(
@@ -340,7 +503,7 @@ class TestMapObjects(BaseApiTest):
         )
         self.assertEqual(renamed.status_code, 200, renamed.text)
         self.assertEqual(renamed.json()["name"], "Dining patio")
-        self.assertEqual(renamed.json()["geometry"], {"x": 1, "y": 1, "width": 4, "height": 3})
+        self.assertEqual(renamed.json()["geometry"], {"x": 18, "y": 1, "width": 4, "height": 3})
 
         unchanged = self.client.patch(
             f"/api/gardens/{garden_id}/map-objects/{patio_id}",

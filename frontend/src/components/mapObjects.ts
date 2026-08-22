@@ -15,6 +15,87 @@ const AREA_TYPES = ["patio", "terrace", "greenhouse", "balcony", "other"] as con
 const CONTAINER_TYPES = ["pot", "planter", "raised_bed", "other"] as const;
 const DEFAULT_AREA_COLOR = "#8f9f7d";
 
+export interface MapObjectGeometryConflicts {
+  outOfBounds: boolean;
+  plotIds: string[];
+  objectIds: string[];
+  house: boolean;
+}
+
+export interface MapObjectGeometryConflictContext {
+  gridRows: number;
+  gridCols: number;
+  plots: readonly Plot[];
+  objects: readonly MapObject[];
+  housePosition: { row: number; col: number };
+  houseSize: { width: number; height: number };
+  ignoreObjectId?: string | null;
+}
+
+/** Map occupancy uses half-open rectangles so adjacent cells remain valid. */
+export function getMapObjectGeometryConflicts(
+  geometry: MapObjectGeometry,
+  context: MapObjectGeometryConflictContext,
+): MapObjectGeometryConflicts {
+  const overlaps = (
+    left: MapObjectGeometry,
+    right: MapObjectGeometry,
+  ): boolean => (
+    left.x < right.x + right.width
+    && right.x < left.x + left.width
+    && left.y < right.y + right.height
+    && right.y < left.y + left.height
+  );
+
+  const outOfBounds = (
+    geometry.x < 1
+    || geometry.y < 1
+    || geometry.x + geometry.width > context.gridCols + 1
+    || geometry.y + geometry.height > context.gridRows + 1
+  );
+  const plotIds: string[] = [];
+  for (const plot of context.plots) {
+    if (
+      plot.archived_at_ms != null
+      || plot.plot_kind === "container"
+      || plot.container_type != null
+      || plot.grid_row == null
+      || plot.grid_col == null
+    ) {
+      continue;
+    }
+    if (
+      overlaps(geometry, {
+        x: plot.grid_col,
+        y: plot.grid_row,
+        width: 1,
+        height: 1,
+      })
+    ) {
+      plotIds.push(plot.plot_id);
+    }
+  }
+
+  const objectIds: string[] = [];
+  for (const object of context.objects) {
+    if (
+      object.public_id !== context.ignoreObjectId
+      && overlaps(geometry, object.geometry)
+    ) {
+      objectIds.push(object.public_id);
+    }
+  }
+
+  const house = overlaps(geometry, {
+    x: context.housePosition.col,
+    y: context.housePosition.row,
+    width: context.houseSize.width,
+    height: context.houseSize.height,
+  });
+
+  return { outOfBounds, plotIds, objectIds, house };
+}
+
 interface RenderMapObjectsPanelParams {
   container: HTMLElement | null;
   objects: MapObject[];
@@ -25,7 +106,7 @@ interface RenderMapObjectsPanelParams {
   canWrite: boolean;
   selectedPlotCount: number;
   onToggleObjects: (show: boolean) => void;
-  onCreateArea: (type: MapObjectType, name: string) => void;
+  onCreateArea: (type: MapObjectType, name: string) => Promise<boolean>;
   onCreateContainer: (input: {
     name: string;
     container_type: ContainerType;
@@ -207,12 +288,17 @@ function buildAreaCreateForm(params: RenderMapObjectsPanelParams): HTMLElement {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!params.canWrite) return;
-    params.onCreateArea(
+    void params.onCreateArea(
       typeSelect.value as MapObjectType,
       nameInput.value.trim() || areaTypeLabel(typeSelect.value as MapObjectType),
-    );
-    details.open = false;
-    summary.focus();
+    ).then((created) => {
+      if (!created) {
+        details.open = true;
+        return;
+      }
+      details.open = false;
+      summary.focus();
+    });
   });
   details.appendChild(form);
   return details;

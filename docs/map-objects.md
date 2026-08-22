@@ -29,8 +29,10 @@ fields once.
 ## User Workflow
 
 1. Open the map's **Areas & containers** panel and choose **Add area**.
-2. Choose the area type, give it a name, and place it on the map. Geometry and
-   appearance remain under **Edit layout** when needed.
+2. Choose the area type, give it a name, and place it on the map. GardenOps
+   chooses the first available 4 × 3 space, then tries one 2 × 2 space;
+   occupied plots, areas, and the house are left available for their existing
+   use. Geometry and appearance remain under **Edit layout** when needed.
 3. Select an area and choose **Add container**, or use **Add standalone
    container** for a pot that is not in an area.
 4. Choose Pot, Planter, Raised bed, or Other and give it a name. GardenOps
@@ -42,8 +44,9 @@ fields once.
    of a quantity and explains a destination merge before confirmation.
 
 Place and Move work with buttons, touch, and keyboard. Dragging a plant is not
-required. Successful changes refresh the source, destination, plant details,
-and map counts and are announced to assistive technology.
+required. Area moves and resizes preview their dimensions and reject occupied
+cells before saving. Successful changes refresh the source, destination, plant
+details, and map counts and are announced to assistive technology.
 
 ## Permissions And Lifecycle
 

@@ -38,7 +38,10 @@ import {
   type MapObjectManipulationMode,
   type MapObjectResizeHandle,
 } from "./components/mapView";
-import { renderMapObjectsPanel } from "./components/mapObjects";
+import {
+  getMapObjectGeometryConflicts,
+  renderMapObjectsPanel,
+} from "./components/mapObjects";
 import {
   openPlantLocationPicker,
   type PlantLocationDestination,
@@ -506,6 +509,14 @@ const mapInteraction = {
   showElevation: false,
   elevationCache: null as PlotElevations | null,
 };
+
+interface MapObjectGeometryRequestState {
+  committedGeometry: MapObject["geometry"];
+  pending: number;
+  tail: Promise<void>;
+}
+
+const mapObjectGeometryRequests = new Map<string, MapObjectGeometryRequestState>();
 let elevationCacheGardenId: number | null = null;
 function loadSort(): { field: SortField; dir: SortDir } {
   return loadFromStorage(
@@ -3331,35 +3342,6 @@ function mapObjectColor(type: MapObjectType): string {
   return "#8f9f7d";
 }
 
-function selectedPlotBounds(): { x: number; y: number; width: number; height: number } {
-  const selected = state.plots.filter(
-    (plot) =>
-      state.selectedPlotIds.has(plot.plot_id)
-      && plot.grid_row !== null
-      && plot.grid_col !== null,
-  );
-  if (selected.length === 0) {
-    return {
-      x: 1,
-      y: 1,
-      width: Math.min(4, state.gridCols),
-      height: Math.min(3, state.gridRows),
-    };
-  }
-  const rows = selected.map((plot) => plot.grid_row ?? 1);
-  const cols = selected.map((plot) => plot.grid_col ?? 1);
-  const minRow = Math.min(...rows);
-  const maxRow = Math.max(...rows);
-  const minCol = Math.min(...cols);
-  const maxCol = Math.max(...cols);
-  return {
-    x: minCol,
-    y: minRow,
-    width: maxCol - minCol + 1,
-    height: maxRow - minRow + 1,
-  };
-}
-
 function positiveIntegerOrFallback(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.max(1, Math.trunc(value));
@@ -3395,6 +3377,53 @@ function normalizeMapObjectPatch(patch: Partial<MapObjectInput>): Partial<MapObj
   return normalized;
 }
 
+function mapObjectGeometryConflicts(
+  geometry: MapObject["geometry"],
+  ignoreObjectId: string | null = null,
+) {
+  return getMapObjectGeometryConflicts(geometry, {
+    gridRows: state.gridRows,
+    gridCols: state.gridCols,
+    plots: state.plots,
+    objects: state.mapObjects,
+    housePosition: state.housePosition,
+    houseSize: state.houseSize,
+    ignoreObjectId,
+  });
+}
+
+function mapObjectGeometryIsBlocked(conflicts: ReturnType<typeof mapObjectGeometryConflicts>): boolean {
+  return (
+    conflicts.outOfBounds
+    || conflicts.house
+    || conflicts.plotIds.length > 0
+    || conflicts.objectIds.length > 0
+  );
+}
+
+function showMapObjectGeometryConflict(): void {
+  showToast(t("map.object_geometry_conflict"), "error");
+}
+
+function firstMapObjectPlacement(): MapObject["geometry"] | null {
+  const sizes = [
+    { width: 4, height: 3 },
+    { width: 2, height: 2 },
+  ];
+  for (const size of sizes) {
+    if (size.width > state.gridCols || size.height > state.gridRows) continue;
+    for (let y = 1; y <= state.gridRows - size.height + 1; y += 1) {
+      for (let x = 1; x <= state.gridCols - size.width + 1; x += 1) {
+        const geometry = { ...size, x, y };
+        if (!mapObjectGeometryIsBlocked(mapObjectGeometryConflicts(geometry))) {
+          return geometry;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function renderMapObjectsPanelView(): void {
   renderMapObjectsPanel({
     container: document.getElementById("map-objects-panel"),
@@ -3409,9 +3438,7 @@ function renderMapObjectsPanelView(): void {
       state.showMapObjects = show;
       renderPlots();
     },
-    onCreateArea: (type, name) => {
-      void createMapObjectFromSelection(type, name);
-    },
+    onCreateArea: (type, name) => createMapObjectFromSelection(type, name),
     onCreateContainer: (input) => {
       void createContainer(input);
     },
@@ -3490,27 +3517,34 @@ async function refreshMapState(options: MapRefreshOptions = {}): Promise<void> {
   });
 }
 
-async function createMapObjectFromSelection(type: MapObjectType, name: string): Promise<void> {
-  if (!ensureWriteAccess()) return;
+async function createMapObjectFromSelection(type: MapObjectType, name: string): Promise<boolean> {
+  if (!ensureWriteAccess()) return false;
   const gardenId = getActiveGardenContext();
   if (gardenId === null) {
     showToast(t("error.missing_garden"), "error");
-    return;
+    return false;
+  }
+  const geometry = firstMapObjectPlacement();
+  if (!geometry) {
+    showToast(t("map.object_no_space"), "error");
+    return false;
   }
   try {
     const object = await createMapObjectApi(gardenId, {
       object_type: type,
       name: name || mapObjectTypeName(type),
       shape_type: "rectangle",
-      geometry: selectedPlotBounds(),
+      geometry,
       style: { color: mapObjectColor(type) },
       z_index: 5,
     });
     state.selectedMapObjectId = object.public_id;
     await fetchMapObjects();
     showToast(t("map.object_created"), "success");
+    return true;
   } catch (err) {
     showFetchError(err);
+    return false;
   }
 }
 
@@ -3562,23 +3596,152 @@ async function updateMapObject(
   publicId: string,
   patch: Partial<MapObjectInput>,
   options: { showSuccessToast?: boolean } = {},
-): Promise<void> {
-  if (!ensureWriteAccess()) return;
+): Promise<boolean> {
+  if (!ensureWriteAccess()) return false;
   const gardenId = getActiveGardenContext();
   if (gardenId === null) {
     showToast(t("error.missing_garden"), "error");
-    return;
+    return false;
+  }
+  const normalizedPatch = normalizeMapObjectPatch(patch);
+  if (normalizedPatch.geometry) {
+    const localObject = state.mapObjects.find((item) => item.public_id === publicId);
+    const geometryChanged = !localObject
+      || !sameMapObjectGeometry(localObject.geometry, normalizedPatch.geometry);
+    if (geometryChanged) {
+      const conflicts = mapObjectGeometryConflicts(normalizedPatch.geometry, publicId);
+      if (mapObjectGeometryIsBlocked(conflicts)) {
+        clearMapObjectConflictState();
+        showMapObjectGeometryConflict();
+        return false;
+      }
+    }
+    const previousGeometry = localObject ? { ...localObject.geometry } : null;
+    return queueMapObjectGeometryPatch(
+      gardenId,
+      publicId,
+      normalizedPatch,
+      {
+        previousGeometry,
+        recordUndo: previousGeometry !== null && geometryChanged,
+        optimisticGeometry: false,
+        showSuccessToast: options.showSuccessToast !== false,
+      },
+    );
   }
   try {
-    const object = await updateMapObjectApi(gardenId, publicId, normalizeMapObjectPatch(patch));
+    const object = await updateMapObjectApi(gardenId, publicId, normalizedPatch);
     state.selectedMapObjectId = object.public_id;
     await fetchMapObjects();
     if (options.showSuccessToast !== false) {
       showToast(t("map.object_updated"), "success");
     }
+    return true;
   } catch (err) {
+    clearMapObjectConflictState();
     showFetchError(err);
+    return false;
   }
+}
+
+// Serialize absolute geometry PATCHes so late keyboard responses cannot regress newer input.
+function queueMapObjectGeometryPatch(
+  gardenId: number,
+  publicId: string,
+  patch: Partial<MapObjectInput>,
+  options: {
+    previousGeometry: MapObject["geometry"] | null;
+    recordUndo: boolean;
+    optimisticGeometry: boolean;
+    showSuccessToast: boolean;
+    refocusSurface?: boolean;
+  },
+): Promise<boolean> {
+  const targetGeometry = patch.geometry ? { ...patch.geometry } : null;
+  const localObject = state.mapObjects.find((item) => item.public_id === publicId);
+  const initialGeometry = options.previousGeometry
+    ?? localObject?.geometry
+    ?? targetGeometry;
+  if (!initialGeometry) return Promise.resolve(false);
+
+  let persistence = mapObjectGeometryRequests.get(publicId);
+  if (!persistence) {
+    persistence = {
+      committedGeometry: { ...initialGeometry },
+      pending: 0,
+      tail: Promise.resolve(),
+    };
+    mapObjectGeometryRequests.set(publicId, persistence);
+  }
+  persistence.pending += 1;
+
+  if (
+    targetGeometry
+    && options.optimisticGeometry
+    && localObject
+    && !sameMapObjectGeometry(localObject.geometry, targetGeometry)
+  ) {
+    localObject.geometry = targetGeometry;
+    renderPlots();
+    if (options.refocusSurface) {
+      requestAnimationFrame(() => {
+        const surface = Array.from(
+          document.querySelectorAll<HTMLElement>(".map-object-interaction-surface[data-object-id]"),
+        ).find((item) => item.dataset["objectId"] === publicId);
+        surface?.focus({ preventScroll: true });
+      });
+    }
+  }
+
+  const run = persistence.tail.then(async (): Promise<boolean> => {
+    if (
+      mapObjectGeometryRequests.get(publicId) !== persistence
+    ) {
+      return false;
+    }
+    try {
+      const saved = await updateMapObjectApi(gardenId, publicId, patch);
+      if (mapObjectGeometryRequests.get(publicId) !== persistence) return false;
+      state.selectedMapObjectId = saved.public_id;
+      if (targetGeometry) {
+        persistence.committedGeometry = { ...targetGeometry };
+        if (
+          options.recordUndo
+          && options.previousGeometry
+          && !sameMapObjectGeometry(options.previousGeometry, targetGeometry)
+        ) {
+          pushMapObjectGeometryUndo(publicId, options.previousGeometry);
+        }
+      }
+      persistence.pending -= 1;
+      if (persistence.pending === 0) {
+        mapObjectGeometryRequests.delete(publicId);
+        await fetchMapObjects();
+      }
+      if (options.showSuccessToast) {
+        showToast(t("map.object_updated"), "success");
+      }
+      return true;
+    } catch (err) {
+      if (
+        mapObjectGeometryRequests.get(publicId) === persistence
+      ) {
+        persistence.pending = 0;
+        mapObjectGeometryRequests.delete(publicId);
+        const currentObject = state.mapObjects.find((item) => item.public_id === publicId);
+        if (currentObject && targetGeometry) {
+          currentObject.geometry = { ...persistence.committedGeometry };
+          renderPlots();
+        }
+        clearMapObjectConflictState();
+        showFetchError(err);
+        await fetchMapObjects();
+      }
+      return false;
+    }
+  });
+  persistence.tail = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 function updateMapObjectGeometry(
@@ -3592,30 +3755,27 @@ function updateMapObjectGeometry(
   } = {},
 ): void {
   const nextGeometry = clampMapObjectGeometry(geometry);
-  if (sameMapObjectGeometry(object.geometry, nextGeometry)) return;
-  if (options.recordUndo) {
-    pushMapObjectGeometryUndo(
-      object.public_id,
-      options.previousGeometry ?? object.geometry,
-    );
+  const conflicts = mapObjectGeometryConflicts(nextGeometry, object.public_id);
+  if (mapObjectGeometryIsBlocked(conflicts)) {
+    clearMapObjectConflictState();
+    showMapObjectGeometryConflict();
+    return;
   }
-  const localObject = state.mapObjects.find((item) => item.public_id === object.public_id);
-  if (localObject) {
-    localObject.geometry = nextGeometry;
-    renderPlots();
-    if (options.refocusSurface) {
-      requestAnimationFrame(() => {
-        const surface = Array.from(
-          document.querySelectorAll<HTMLElement>(".map-object-interaction-surface[data-object-id]"),
-        ).find((item) => item.dataset["objectId"] === object.public_id);
-        surface?.focus({ preventScroll: true });
-      });
-    }
-  }
-  void updateMapObject(
+  const previousGeometry = options.previousGeometry ?? object.geometry;
+  if (sameMapObjectGeometry(previousGeometry, nextGeometry)) return;
+  const gardenId = getActiveGardenContext();
+  if (!ensureWriteAccess() || gardenId === null) return;
+  void queueMapObjectGeometryPatch(
+    gardenId,
     object.public_id,
     { geometry: nextGeometry },
-    { showSuccessToast: options.showSuccessToast ?? false },
+    {
+      previousGeometry: { ...previousGeometry },
+      recordUndo: options.recordUndo === true,
+      optimisticGeometry: true,
+      showSuccessToast: options.showSuccessToast ?? false,
+      ...(options.refocusSurface ? { refocusSurface: true } : {}),
+    },
   );
 }
 
@@ -3651,11 +3811,36 @@ function pushMapObjectGeometryUndo(
 async function restoreMapObjectGeometry(
   publicId: string,
   geometry: MapObject["geometry"],
-): Promise<void> {
-  await updateMapObject(
+): Promise<boolean> {
+  if (!ensureWriteAccess()) return false;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) {
+    showToast(t("error.missing_garden"), "error");
+    return false;
+  }
+  const normalizedGeometry = clampMapObjectGeometry(geometry);
+  const conflicts = mapObjectGeometryConflicts(normalizedGeometry, publicId);
+  if (mapObjectGeometryIsBlocked(conflicts)) {
+    clearMapObjectConflictState();
+    showMapObjectGeometryConflict();
+    return false;
+  }
+  const localObject = state.mapObjects.find((item) => item.public_id === publicId);
+  if (!localObject) {
+    showMapObjectGeometryConflict();
+    return false;
+  }
+  if (sameMapObjectGeometry(localObject.geometry, normalizedGeometry)) return true;
+  return queueMapObjectGeometryPatch(
+    gardenId,
     publicId,
-    { geometry },
-    { showSuccessToast: false },
+    { geometry: normalizedGeometry },
+    {
+      previousGeometry: { ...localObject.geometry },
+      recordUndo: false,
+      optimisticGeometry: false,
+      showSuccessToast: false,
+    },
   );
 }
 
@@ -4229,9 +4414,6 @@ function renderPlantsTable(): void {
       void selectPlot(state, plotId, plotCbs);
     },
     onEdit: (plant: Plant) => openEditPlantDialog(plant),
-    onMove: (plant: Plant, sourcePlotId: string) => {
-      void openPlantMovePicker(plant, sourcePlotId).catch(showFetchError);
-    },
     onPlace: (plant: Plant) => openPlantPlacePicker(plant),
     onToggleSelect: (pltId: string) => togglePlantSelection(pltId),
     selectedIds: selectedPlantIds,
@@ -5145,22 +5327,22 @@ function clearDropGhosts(): void {
 function isHousePositionValid(topRow: number, topCol: number): boolean {
   const w = state.houseSize.width;
   const h = state.houseSize.height;
-  if (topRow < 1 || topCol < 1 || topRow + h - 1 > state.gridRows || topCol + w - 1 > state.gridCols) {
-    return false;
-  }
-  for (const plot of state.plots) {
-    if (
-      plot.grid_row != null &&
-      plot.grid_col != null &&
-      plot.grid_row >= topRow &&
-      plot.grid_row < topRow + h &&
-      plot.grid_col >= topCol &&
-      plot.grid_col < topCol + w
-    ) {
-      return false;
-    }
-  }
-  return true;
+  const conflicts = getMapObjectGeometryConflicts(
+    { x: topCol, y: topRow, width: w, height: h },
+    {
+      gridRows: state.gridRows,
+      gridCols: state.gridCols,
+      plots: state.plots,
+      objects: state.mapObjects,
+      housePosition: state.housePosition,
+      houseSize: state.houseSize,
+    },
+  );
+  return (
+    !conflicts.outOfBounds
+    && conflicts.plotIds.length === 0
+    && conflicts.objectIds.length === 0
+  );
 }
 
 function showDropGhosts(targetRow: number, targetCol: number): void {
@@ -5363,6 +5545,8 @@ function renderPlots(): void {
   const grid = document.getElementById("map-grid");
   if (!grid) return;
 
+  clearMapObjectConflictState();
+
   const elevRange = mapInteraction.elevationCache?.min_m != null && mapInteraction.elevationCache?.max_m != null
     ? { min: mapInteraction.elevationCache.min_m, max: mapInteraction.elevationCache.max_m }
     : null;
@@ -5548,6 +5732,37 @@ function gridLineForMapObjectGeometry(geometry: MapObject["geometry"]): {
   };
 }
 
+function clearMapObjectConflictState(): void {
+  const grid = document.getElementById("map-grid");
+  if (!grid) return;
+  grid.querySelectorAll<HTMLElement>(".map-object-conflict").forEach((element) => {
+    element.classList.remove("map-object-conflict");
+  });
+  grid.querySelectorAll<HTMLElement>(".map-object-preview").forEach((preview) => {
+    preview.classList.remove("map-object-preview--valid", "map-object-preview--invalid");
+  });
+}
+
+function applyMapObjectConflictState(
+  conflicts: ReturnType<typeof mapObjectGeometryConflicts>,
+): void {
+  const grid = document.getElementById("map-grid");
+  if (!grid) return;
+  const plotIds = new Set(conflicts.plotIds);
+  const objectIds = new Set(conflicts.objectIds);
+  grid.querySelectorAll<HTMLElement>(".plot[data-plot-id]").forEach((plot) => {
+    plot.classList.toggle("map-object-conflict", plotIds.has(plot.dataset["plotId"] ?? ""));
+  });
+  grid.querySelectorAll<HTMLElement>(".map-object-overlay[data-object-id]").forEach((overlay) => {
+    overlay.classList.toggle(
+      "map-object-conflict",
+      objectIds.has(overlay.dataset["objectId"] ?? ""),
+    );
+  });
+  const house = document.getElementById("house");
+  house?.classList.toggle("map-object-conflict", conflicts.house);
+}
+
 function updateMapObjectPreview(
   objectId: string,
   geometry: MapObject["geometry"],
@@ -5555,6 +5770,7 @@ function updateMapObjectPreview(
 ): void {
   const grid = document.getElementById("map-grid");
   if (!grid) return;
+  clearMapObjectConflictState();
   const controls = Array.from(
     grid.querySelectorAll<HTMLElement>(".map-object-direct-controls[data-object-id]"),
   ).find((item) => item.dataset["objectId"] === objectId);
@@ -5563,7 +5779,31 @@ function updateMapObjectPreview(
   controls.style.gridRow = lines.row;
   controls.style.gridColumn = lines.column;
   const preview = controls.querySelector<HTMLElement>(".map-object-preview");
-  if (preview) preview.hidden = !visible;
+  if (!preview) return;
+  const dimensions = preview.querySelector<HTMLElement>(".map-object-preview-dimensions");
+  if (!visible) {
+    preview.hidden = true;
+    if (dimensions) dimensions.textContent = "";
+    return;
+  }
+  const object = state.mapObjects.find((item) => item.public_id === objectId);
+  if (!object) {
+    preview.hidden = true;
+    if (dimensions) dimensions.textContent = "";
+    return;
+  }
+  const conflicts = mapObjectGeometryConflicts(geometry, objectId);
+  const blocked = mapObjectGeometryIsBlocked(conflicts);
+  preview.hidden = false;
+  preview.classList.toggle("map-object-preview--valid", !blocked);
+  preview.classList.toggle("map-object-preview--invalid", blocked);
+  if (dimensions) {
+    dimensions.textContent = t("map.object_dimensions", {
+      width: geometry.width,
+      height: geometry.height,
+    });
+  }
+  applyMapObjectConflictState(conflicts);
 }
 
 function resizeMapObjectGeometry(
@@ -5878,12 +6118,22 @@ function onHouseResizeMove(event: MouseEvent): void {
   if (!house) return;
   house.style.gridRow = `${state.housePosition.row} / ${state.housePosition.row + state.houseSize.height}`;
   house.style.gridColumn = `${state.housePosition.col} / ${state.housePosition.col + state.houseSize.width}`;
+  house.classList.toggle(
+    "house--invalid",
+    !isHousePositionValid(state.housePosition.row, state.housePosition.col),
+  );
 }
 
 function stopHouseResize(): void {
   if (!mapInteraction.houseResizeSession) return;
   const start = mapInteraction.houseResizeSession.startHouse;
-  if (
+  const house = document.getElementById("house");
+  if (house?.classList.contains("house--invalid")) {
+    state.houseSize = { width: start.width, height: start.height };
+    house.classList.remove("house--invalid");
+    renderPlots();
+    showToast(t("map.house_overlap_error"), "error");
+  } else if (
     start.width !== state.houseSize.width ||
     start.height !== state.houseSize.height
   ) {
@@ -6185,6 +6435,9 @@ function openEditPlantDialog(plant: Plant): void {
       if (allWarnings.length > 0) {
         showAppStatus(allWarnings.join(" | "));
       }
+    },
+    onMove: (sourcePlotId) => {
+      void openPlantMovePicker(plant, sourcePlotId).catch(showFetchError);
     },
     onAiUpdate: (q) => aiPlantLookup(q),
     onObservationChanged: async (pltId) => {

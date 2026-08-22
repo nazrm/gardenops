@@ -10,12 +10,16 @@ from tests.base import BaseApiTest
 
 class TestCanonicalContainers(BaseApiTest):
     @staticmethod
-    def _area_payload(name: str = "North patio") -> dict[str, object]:
+    def _area_payload(
+        name: str = "North patio",
+        *,
+        y: int = 1,
+    ) -> dict[str, object]:
         return {
             "object_type": "patio",
             "name": name,
             "shape_type": "rectangle",
-            "geometry": {"x": 1, "y": 1, "width": 4, "height": 3},
+            "geometry": {"x": 18, "y": y, "width": 4, "height": 3},
             "has_internal_layout": False,
         }
 
@@ -124,7 +128,7 @@ class TestCanonicalContainers(BaseApiTest):
         first_area = self._create_area(garden_id)
         second_response = self.client.post(
             f"/api/gardens/{garden_id}/map-objects",
-            json=self._area_payload("South patio"),
+            json=self._area_payload("South patio", y=5),
         )
         self.assertEqual(second_response.status_code, 201, second_response.text)
         second_area = second_response.json()

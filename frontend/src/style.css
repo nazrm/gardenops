@@ -3864,6 +3864,40 @@ textarea {
     0 0 0 2px var(--accent-muted);
 }
 
+.map-object-overlay.map-object-conflict {
+  border-color: var(--danger) !important;
+  background:
+    repeating-linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--danger) 30%, transparent),
+      color-mix(in srgb, var(--danger) 30%, transparent) 6px,
+      color-mix(in srgb, var(--danger) 12%, transparent) 6px,
+      color-mix(in srgb, var(--danger) 12%, transparent) 12px
+    ) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
+.plot.map-object-conflict {
+  box-shadow:
+    inset 0 0 0 3px var(--danger),
+    0 0 0 1px color-mix(in srgb, var(--danger) 70%, transparent);
+  filter: saturate(0.75) brightness(1.04);
+  z-index: 4;
+}
+
+.house-placeholder.map-object-conflict {
+  border-color: var(--danger) !important;
+  background-image:
+    repeating-linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--danger) 22%, transparent),
+      color-mix(in srgb, var(--danger) 22%, transparent) 6px,
+      transparent 6px,
+      transparent 12px
+    ) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 60%, transparent);
+}
+
 .map-container-marker {
   position: absolute;
   z-index: 3;
@@ -3934,19 +3968,48 @@ textarea {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  border: 2px dashed var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--accent);
   border-radius: var(--r-sm);
-  background:
-    repeating-linear-gradient(
-      45deg,
-      color-mix(in srgb, var(--map-object-color, #8f9f7d) 28%, transparent),
-      color-mix(in srgb, var(--map-object-color, #8f9f7d) 28%, transparent) 6px,
-      color-mix(in srgb, var(--map-object-color, #8f9f7d) 14%, transparent) 6px,
-      color-mix(in srgb, var(--map-object-color, #8f9f7d) 14%, transparent) 12px
-    );
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   box-shadow: 0 0 0 2px var(--accent-muted);
   opacity: 0.78;
   z-index: 1;
+}
+
+.map-object-preview--valid {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.map-object-preview--invalid {
+  border-color: var(--danger);
+  background:
+    repeating-linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--danger) 30%, transparent),
+      color-mix(in srgb, var(--danger) 30%, transparent) 6px,
+      color-mix(in srgb, var(--danger) 10%, transparent) 6px,
+      color-mix(in srgb, var(--danger) 10%, transparent) 12px
+    );
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
+.map-object-preview-dimensions {
+  display: block;
+  max-width: calc(100% - 8px);
+  overflow: hidden;
+  padding: 3px 5px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--bg-1) 82%, transparent);
+  color: var(--text-1);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .map-object-preview--ellipse {
@@ -5722,11 +5785,24 @@ body.moving-house .house-placeholder {
 }
 
 .mobile-data-plot-links .plot-link {
+  display: inline-flex;
+  align-items: center;
   min-height: 44px;
   padding: 0 10px;
   border-radius: 999px;
   background: var(--bg-1);
   border: 1px solid var(--border-subtle);
+}
+
+.mobile-data-plot-links .plot-link-separator {
+  display: none;
+}
+
+.mobile-data-plot-links .plot-link-overflow,
+.mobile-data-plot-links .plant-place-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
 }
 
 .care-mobile-card {
@@ -5927,43 +6003,43 @@ th.sort-desc::after {
   text-decoration: underline;
 }
 
-.plot-links-cell {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px 6px;
+.data-table td.plot-links-cell {
+  width: 180px;
+  max-width: 220px;
   overflow: hidden;
-  white-space: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plot-link-token {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  display: inline;
   max-width: 100%;
 }
 
 .plot-link {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0 6px;
+  display: inline;
+  min-height: 0;
+  padding: 0;
   font-size: 12px;
+  line-height: 1.4;
 }
 
-.plot-link-action,
 .plant-place-btn {
   display: inline-flex;
   align-items: center;
-  min-height: 44px;
-  padding: 0 6px;
+  min-height: 32px;
+  padding: 0;
   font-size: 12px;
 }
 
-.plot-link-note {
+.plot-link-separator,
+.plot-link-overflow {
   color: var(--text-3);
-  font-size: 10px;
-  line-height: 1.2;
+  font-size: 12px;
+}
+
+.plot-link-overflow {
+  font-weight: 700;
 }
 
 .plot-link--missing {
@@ -6258,6 +6334,23 @@ th.sort-desc::after {
 
 .chip-remove:hover {
   color: var(--danger);
+}
+
+.plot-chip-move {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--brand-text);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.plot-chip-move:hover,
+.plot-chip-move:focus-visible {
+  color: var(--text-1);
 }
 
 .plot-assign-empty {
@@ -8007,6 +8100,48 @@ th.sort-desc::after {
 /* iOS auto-zoom prevention for touch devices at any viewport (tablets included) */
 @media (pointer: coarse) {
   input, textarea, select { font-size: 16px !important; }
+
+  .map-object-resize-handle[data-handle="n"],
+  .map-object-resize-handle[data-handle="e"],
+  .map-object-resize-handle[data-handle="s"],
+  .map-object-resize-handle[data-handle="w"] {
+    display: none;
+  }
+
+  .map-object-resize-handle {
+    width: 56px;
+    height: 56px;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .map-object-resize-handle::before {
+    inset: 20px;
+    border: 2px solid var(--accent);
+    border-radius: 50%;
+    background: var(--bg-1);
+  }
+
+  .map-object-resize-handle[data-handle="nw"] {
+    top: -28px;
+    left: -28px;
+  }
+
+  .map-object-resize-handle[data-handle="ne"] {
+    top: -28px;
+    right: -28px;
+  }
+
+  .map-object-resize-handle[data-handle="se"] {
+    right: -28px;
+    bottom: -28px;
+  }
+
+  .map-object-resize-handle[data-handle="sw"] {
+    bottom: -28px;
+    left: -28px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

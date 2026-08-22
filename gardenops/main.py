@@ -2148,6 +2148,47 @@ def _ensure_garden_map_objects_fit_grid(
             )
 
 
+def _ensure_garden_house_clear_of_map_objects(
+    db: DbConn,
+    *,
+    garden_id: int,
+    house_row: int,
+    house_col: int,
+    house_width: int,
+    house_height: int,
+) -> None:
+    house_right = house_col + house_width
+    house_bottom = house_row + house_height
+    rows = db.execute(
+        """
+        SELECT name, geometry_json
+        FROM garden_map_objects
+        WHERE garden_id = %s
+        ORDER BY z_index DESC, id DESC
+        """,
+        (garden_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            geometry = json.loads(str(row["geometry_json"] or "{}"))
+            object_left = _coerce_required_int(geometry["x"])
+            object_top = _coerce_required_int(geometry["y"])
+            object_right = object_left + _coerce_required_int(geometry["width"])
+            object_bottom = object_top + _coerce_required_int(geometry["height"])
+        except KeyError, TypeError, ValueError, json.JSONDecodeError:
+            continue
+        if (
+            house_col < object_right
+            and object_left < house_right
+            and house_row < object_bottom
+            and object_top < house_bottom
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"House overlaps area {row['name']}",
+            )
+
+
 def set_layout_state(
     db: DbConn,
     house: Mapping[str, object],
@@ -2781,6 +2822,7 @@ def get_layout_state_api(db: DB, request: Request) -> dict[str, int]:
 @app.patch("/api/layout-state")
 def update_layout_state(body: LayoutStateBody, db: DB, request: Request) -> dict[str, int]:
     garden_id = _active_garden_id(request)
+    lock_garden_layout(db, garden_id)
     _ensure_garden_plots_fit_grid(
         db,
         garden_id=garden_id,
@@ -2792,6 +2834,14 @@ def update_layout_state(body: LayoutStateBody, db: DB, request: Request) -> dict
         garden_id=garden_id,
         grid_rows=body.grid_rows,
         grid_cols=body.grid_cols,
+    )
+    _ensure_garden_house_clear_of_map_objects(
+        db,
+        garden_id=garden_id,
+        house_row=body.row,
+        house_col=body.col,
+        house_width=body.width,
+        house_height=body.height,
     )
     updated = set_layout_state(db, body.model_dump(), garden_id=garden_id)
     db.execute(

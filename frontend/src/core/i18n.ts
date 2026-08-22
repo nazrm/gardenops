@@ -203,6 +203,8 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
     "plants.field_height": "Height",
     "plants.field_year": "Year",
     "plants.field_plots": "Plots",
+    "plants.more_locations": ({ count, names }) =>
+      `${count} more location${Number(count) === 1 ? "" : "s"}: ${names}`,
     "plants.field_height_value": ({ count }) => `${count} cm`,
     "plants.missing_plot": "This plot ID does not exist in the current map",
     "plants.column_name": "Name",
@@ -1310,6 +1312,9 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
     "map.object_updated": "Object updated",
     "map.object_deleted": "Object deleted",
     "map.object_delete_confirm": "Delete object?",
+    "map.object_no_space": "No suitable space is available.",
+    "map.object_geometry_conflict": "That area overlaps an existing map item.",
+    "map.object_dimensions": ({ width, height }) => `${width}m × ${height}m`,
     "map.object_no_unit_space": "No free space",
     "map.object_custom": "Custom",
     "map.object_create_custom": "Create",
@@ -2627,6 +2632,9 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
     "plants.field_height": "Høyde",
     "plants.field_year": "År",
     "plants.field_plots": "Felt",
+    "plants.more_locations": ({ count, names }) => Number(count) === 1
+      ? `1 plassering til: ${names}`
+      : `${count} flere plasseringer: ${names}`,
     "plants.field_height_value": ({ count }) => `${count} cm`,
     "plants.missing_plot": "Dette felt-ID-et finnes ikke i gjeldende kart",
     "plants.column_name": "Navn",
@@ -3736,6 +3744,9 @@ const translations: Record<Locale, Record<string, TranslationEntry>> = {
     "map.object_updated": "Objekt oppdatert",
     "map.object_deleted": "Objekt slettet",
     "map.object_delete_confirm": "Slette objekt?",
+    "map.object_no_space": "Det finnes ikke egnet plass.",
+    "map.object_geometry_conflict": "Området overlapper et eksisterende kartelement.",
+    "map.object_dimensions": ({ width, height }) => `${width}m × ${height}m`,
     "map.object_no_unit_space": "Ingen ledig plass",
     "map.object_custom": "Egendefinert",
     "map.object_create_custom": "Opprett",
