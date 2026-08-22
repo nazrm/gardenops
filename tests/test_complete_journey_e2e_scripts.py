@@ -601,6 +601,14 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "role_delayed_surfaces",
     ):
         assert marker in journey_source
+    quick_action = _javascript_function_containing(
+        journey_source,
+        "quick action harvest form",
+    )
+    assert "input[name='plot_ids']" not in quick_action
+    assert 'plotPicker.locator(".chip-input__field").fill(alpha.plot_id)' in quick_action
+    assert 'plotPicker.locator(".chip-input__option")' in quick_action
+    assert 'plotPicker.locator(".chip-input__chip")' in quick_action
     assert "waitFor(() => page.locator" not in journey_source
     for substantive_marker in (
         "#onb-garden-name",

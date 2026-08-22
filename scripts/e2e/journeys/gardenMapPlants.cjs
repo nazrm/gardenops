@@ -1450,7 +1450,20 @@ async function submitMobileQuickAction(page, fixture, alpha) {
   await form.locator("input[name='quantity']").fill("1");
   await form.locator("textarea[name='notes']").fill("Phase 1 mobile quick action");
   await form.locator("input[name='plant_ids']").fill(fixture.phase_one.indoor.plant_id);
-  await form.locator("input[name='plot_ids']").fill(alpha.plot_id);
+  const plotPicker = form.locator(".chip-input");
+  assert(await plotPicker.count() === 1, "Quick action harvest form has an unexpected plot picker count");
+  await plotPicker.locator(".chip-input__field").fill(alpha.plot_id);
+  const plotChoices = plotPicker.locator(".chip-input__option");
+  await waitFor(async () => await plotChoices.count() === 1, "quick action harvest plot choice");
+  const plotChoice = plotChoices.first();
+  await visible(plotChoice, "quick action harvest plot choice");
+  const plotLabel = (await plotChoice.textContent() || "").trim();
+  assert(plotLabel, "Quick action harvest plot choice has no human-readable label");
+  await plotChoice.click();
+  await visible(
+    plotPicker.locator(".chip-input__chip").filter({ hasText: plotLabel }),
+    "selected quick action harvest plot",
+  );
   await form.locator("button[type='submit']").click();
   await waitFor(async () => await page.locator(".modal-form").count() === 0, "mobile quick action submission");
 }
