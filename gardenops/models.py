@@ -97,20 +97,70 @@ class PlotImportItem(StrictBaseModel):
     sub_zone: str | None = Field(default="", max_length=120)
     notes: str | None = Field(default="", max_length=4000)
     color: str | None = None
+    plot_kind: Literal["ground", "indoor", "container"] = "ground"
+    display_name: str | None = Field(default=None, max_length=120)
+    container_type: Literal["pot", "planter", "raised_bed", "other"] | None = None
+    parent_object_public_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    environment: Literal["outdoor", "covered", "indoor"] = "outdoor"
+    archived_at_ms: int | None = Field(default=None, ge=0)
 
     @field_validator("plot_id")
     @classmethod
     def validate_plot_id(cls, value: str) -> str:
         return normalize_public_id(value, field_name="plot_id")
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_indoor_zone(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        if str(value.get("zone_code") or "").strip().upper() != "I":
+            return value
+        if "plot_kind" in value:
+            return value
+        normalized = dict(value)
+        normalized.update(
+            plot_kind="indoor",
+            environment="indoor",
+            grid_row=None,
+            grid_col=None,
+        )
+        return normalized
+
     @model_validator(mode="after")
     def validate_grid_position(self) -> PlotImportItem:
         if (self.grid_row is None) != (self.grid_col is None):
             raise ValueError("grid_row and grid_col must both be set or both be null")
+        if self.plot_kind == "container":
+            if self.grid_row is not None or self.grid_col is not None:
+                raise ValueError("Container plots cannot have grid coordinates")
+            if not self.display_name or not self.display_name.strip():
+                raise ValueError("Container plots require a display_name")
+            if self.container_type is None:
+                raise ValueError("Container plots require a container_type")
+        elif self.container_type is not None or self.parent_object_public_id is not None:
+            raise ValueError("Only container plots may have container fields")
+        elif self.archived_at_ms is not None:
+            raise ValueError("Only container plots may be archived")
         return self
 
 
-MapObjectType = Literal["patio", "terrace", "greenhouse", "shed", "pond", "path", "bed", "other"]
+MapObjectType = Literal[
+    "patio",
+    "terrace",
+    "greenhouse",
+    "balcony",
+    "shed",
+    "pond",
+    "path",
+    "bed",
+    "other",
+]
 MapObjectShape = Literal["rectangle", "ellipse"]
 MapObjectUnitType = Literal["pot", "planter", "raised_bed", "shelf", "other"]
 
@@ -175,6 +225,7 @@ class MapObjectImportItem(StrictBaseModel):
 
 
 class LayoutExportBody(StrictBaseModel):
+    schema_version: Literal[1, 2] = 1
     plots: list[PlotImportItem] = Field(min_length=1, max_length=1000)
     house: ImportedLayoutStateBody | None = None
     shademap: ShadeMapStateBody | None = None
@@ -187,7 +238,7 @@ class LayoutExportBody(StrictBaseModel):
 
 
 class ImportBody(StrictBaseModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     plots: list[PlotImportItem] = Field(min_length=1, max_length=1000)
     house: ImportedLayoutStateBody | None = None
     shademap: ShadeMapStateBody | None = None

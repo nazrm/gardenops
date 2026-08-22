@@ -20,12 +20,18 @@ export function renderPlantCard(
     mediaPreview?: MediaAsset | null | undefined;
     alertTypes?: PlantAlertType[] | undefined;
     onCreateCalendarEvent?: ((plant: Plant) => void) | undefined;
+    onMove?: ((plant: Plant, sourcePlotId: string) => void) | undefined;
+    plotLabel?: string | undefined;
     canWrite?: boolean | undefined;
+    canAssign?: boolean | undefined;
   } = {},
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "plant-card";
-  card.draggable = options.canWrite !== false;
+  card.draggable =
+    options.canWrite !== false
+    && options.canAssign !== false
+    && plant.can_assign;
   card.dataset["pltId"] = plant.plt_id;
   card.dataset["fromPlot"] = plotId;
 
@@ -59,6 +65,26 @@ export function renderPlantCard(
     actions.appendChild(editButton);
   }
 
+  if (
+    options.canWrite !== false
+    && options.canAssign !== false
+    && plant.can_assign
+    && options.onMove
+  ) {
+    const moveButton = document.createElement("button");
+    moveButton.className = "plant-move-btn";
+    moveButton.dataset["move"] = plant.plt_id;
+    moveButton.setAttribute(
+      "aria-label",
+      t("map.move_plant_aria", { name: plant.name }),
+    );
+    moveButton.title = t("map.move_plant");
+    moveButton.type = "button";
+    moveButton.textContent = t("map.move_short");
+    moveButton.addEventListener("click", () => options.onMove?.(plant, plotId));
+    actions.appendChild(moveButton);
+  }
+
   if (options.canWrite !== false && options.onCreateCalendarEvent) {
     const calendarButton = document.createElement("button");
     calendarButton.className = "plant-calendar-btn";
@@ -73,11 +99,18 @@ export function renderPlantCard(
     actions.appendChild(calendarButton);
   }
 
-  if (options.canWrite !== false) {
+  if (
+    options.canWrite !== false
+    && options.canAssign !== false
+    && plant.can_assign
+  ) {
     const removeButton = document.createElement("button");
     removeButton.className = "remove-btn";
     removeButton.dataset["remove"] = plant.plt_id;
-    removeButton.setAttribute("aria-label", t("plants.card_remove_aria", { name: plant.name, plot: plotId }));
+    removeButton.setAttribute("aria-label", t("plants.card_remove_aria", {
+      name: plant.name,
+      plot: options.plotLabel ?? plotId,
+    }));
     removeButton.type = "button";
     removeButton.textContent = "\u00d7";
     actions.appendChild(removeButton);

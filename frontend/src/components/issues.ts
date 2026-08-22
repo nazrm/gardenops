@@ -1,4 +1,5 @@
-import type { GardenIssue } from "../core/models";
+import type { GardenIssue, LinkedPlot, Plot } from "../core/models";
+import { formatPlotLabel } from "../core/models";
 import { t } from "../core/i18n";
 import { createFieldGroup as _createFieldGroup, createParagraph } from "../core/dom";
 import { renderPendingMediaPickerLazy } from "./mediaGalleryLoader";
@@ -14,6 +15,12 @@ const ISSUE_TYPE_ICONS: Record<string, string> = {
   damage: "\uD83D\uDC94",
   other: "\u2753",
 };
+
+type PlotChoice = Pick<Plot, "plot_id" | "zone_name" | "display_name">;
+
+function plotChoiceLabel(plot: PlotChoice): string {
+  return formatPlotLabel(plot.plot_id, plot.zone_name, null, plot.display_name);
+}
 
 export interface IssueListCallbacks {
   onEdit: (issue: GardenIssue) => void;
@@ -193,14 +200,23 @@ function createIssueCard(
       });
       tags.appendChild(tag);
     }
-    for (const plotId of issue.plot_ids) {
+    const plotList: LinkedPlot[] = issue.plots ?? issue.plot_ids.map((plotId) => ({
+      plot_id: plotId,
+      zone_name: "",
+    }));
+    for (const plot of plotList) {
       const tag = document.createElement("button");
       tag.type = "button";
       tag.className = "journal-tag journal-tag-plot";
-      tag.textContent = plotId;
+      tag.textContent = formatPlotLabel(
+        plot.plot_id,
+        plot.zone_name,
+        null,
+        plot.display_name,
+      );
       tag.addEventListener("click", (e) => {
         e.stopPropagation();
-        cbs.onPlotClick(plotId);
+        cbs.onPlotClick(plot.plot_id);
       });
       tags.appendChild(tag);
     }
@@ -263,7 +279,7 @@ export function createIssueForm(options: {
   issue?: GardenIssue | undefined;
   readOnly?: boolean | undefined;
   availablePlants?: Array<{ plt_id: string; name: string }>;
-  availablePlots?: string[];
+  availablePlots?: PlotChoice[];
   onSave: (data: Record<string, unknown>) => Promise<void>;
   onCancel: () => void;
   onDiagnoseFromPhoto?: () => void;
@@ -388,12 +404,29 @@ export function createIssueForm(options: {
   form.appendChild(plantChipInput.container);
 
   // Plot IDs (chip input)
+  const plotChoicesById = new Map<string, PlotChoice>();
+  for (const plot of availablePlots ?? []) {
+    plotChoicesById.set(plot.plot_id, plot);
+  }
+  for (const plot of issue?.plots ?? []) {
+    plotChoicesById.set(plot.plot_id, plot);
+  }
+  for (const plotId of issue?.plot_ids ?? []) {
+    if (!plotChoicesById.has(plotId)) {
+      plotChoicesById.set(plotId, { plot_id: plotId, zone_name: "" });
+    }
+  }
+  const plotChoices = [...plotChoicesById.values()].sort((left, right) =>
+    plotChoiceLabel(left).localeCompare(plotChoiceLabel(right), undefined, { sensitivity: "base" }),
+  );
   const plotChipInput = createChipInput({
     label: t("issues.form_plot_ids"),
     placeholder: t("issues.form_plot_ids_placeholder"),
-    items: (availablePlots ?? []).map((id) => ({ id })),
-    getKey: (p) => p.id,
-    getLabel: (p) => p.id,
+    items: plotChoices,
+    getKey: (plot) => plot.plot_id,
+    getLabel: (plot) => plotChoiceLabel(plot),
+    getSearchText: (plot) =>
+      `${plot.plot_id} ${plotChoiceLabel(plot)}`.toLowerCase(),
     selected: issue?.plot_ids ?? [],
   });
   form.appendChild(plotChipInput.container);

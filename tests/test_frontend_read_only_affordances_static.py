@@ -16,6 +16,43 @@ def test_plants_table_omits_row_write_controls_when_read_only() -> None:
     assert "const totalCols = columns.length + (canWrite ? 1 : 0)" in source
 
 
+def test_assignment_controls_use_plant_and_plot_capabilities() -> None:
+    data_tables = _read("frontend/src/components/dataTables.ts")
+    plant_card = _read("frontend/src/components/plantCard.ts")
+    drawer = _read("frontend/src/components/drawer.ts")
+    bottom_sheet = _read("frontend/src/components/bottomSheet.ts")
+    interactions = _read("frontend/src/components/plotInteractions.ts")
+    app = _read("frontend/src/app.ts")
+
+    assert "const canAssign = plant.can_assign;" in data_tables
+    assert "if (onPlace && canAssign)" in data_tables
+    assert "if (onMove && canAssign)" in data_tables
+    assert "options.canWrite !== false" in plant_card
+    assert "options.canAssign !== false" in plant_card
+    assert "plant.can_assign" in plant_card
+    assert "canAssign?: boolean;" in drawer
+    assert "canAssign?: boolean;" in bottom_sheet
+    assert drawer.count("canAssign: params.canAssign") == 2
+    assert bottom_sheet.count("canAssign: params.canAssign") == 2
+    assert "params.canAssign !== false" in drawer
+    assert "params.canAssign !== false" in bottom_sheet
+    assert "const canAssign =" in interactions
+    assert (
+        "state.plots.find((plot) => plot.plot_id === plotId)?.can_assign === true" in interactions
+    )
+    assert "const assignablePlants = plants.filter" in interactions
+    assert "can_assign?: boolean" in interactions
+    assert "if (!plot?.can_assign || plantCanAssign === false)" in interactions
+    assert "if (!plot?.can_assign || !plant?.can_assign)" in interactions
+    assert "if (!sourcePlot?.can_assign || !destinationPlot?.can_assign)" in app
+    assert "(plot) => plot.archived_at_ms == null && plot.can_assign" in app
+    assert (
+        "if (!plant.can_assign || !sourcePlot?.can_assign || !ensureWriteAccess()) return;" in app
+    )
+    assert "if (!plant.can_assign || !ensureWriteAccess()) return;" in app
+    assert app.count("if (destinations.length === 0) return;") == 2
+
+
 def test_app_passes_active_garden_write_access_and_clears_stale_selection() -> None:
     source = _read("frontend/src/app.ts")
 

@@ -146,8 +146,11 @@ export function filterPlants(
 interface PlantsTableCallbacks {
   canWrite: boolean;
   onOpenPlot: (plotId: string) => void;
+  onMove?: (plant: Plant, sourcePlotId: string) => void;
+  onPlace?: (plant: Plant) => void;
   onEdit: (plant: Plant) => void;
   knownPlotIds: Set<string>;
+  plotLabels?: ReadonlyMap<string, string>;
   plotAssignmentMeanings: PlotAssignmentMeaning[];
   mediaPreviewByPlantId?: ReadonlyMap<string, MediaAsset | null>;
   onToggleSelect?: (pltId: string) => void;
@@ -177,14 +180,28 @@ function appendPlotLinks(
   onOpenPlot: (plotId: string) => void,
   knownPlotIds: Set<string>,
   plotAssignmentMeanings: PlotAssignmentMeaning[],
+  plotLabels?: ReadonlyMap<string, string>,
+  onMove?: (plant: Plant, sourcePlotId: string) => void,
+  onPlace?: (plant: Plant) => void,
 ): void {
   container.replaceChildren();
+  const canAssign = plant.can_assign;
   const ids = plant.plot_ids;
   if (!ids || ids.length === 0) {
-    const empty = document.createElement("span");
-    empty.className = "text-muted";
-    empty.textContent = "\u2014";
-    container.appendChild(empty);
+    if (onPlace && canAssign) {
+      const placeButton = document.createElement("button");
+      placeButton.type = "button";
+      placeButton.className = "text-link plant-place-btn";
+      placeButton.textContent = t("map.place_plant");
+      placeButton.setAttribute("aria-label", t("map.place_plant_aria", { name: plant.name }));
+      placeButton.addEventListener("click", () => onPlace(plant));
+      container.appendChild(placeButton);
+    } else {
+      const empty = document.createElement("span");
+      empty.className = "text-muted";
+      empty.textContent = "\u2014";
+      container.appendChild(empty);
+    }
     return;
   }
 
@@ -220,10 +237,25 @@ function appendPlotLinks(
     button.className = "text-link plot-link";
     button.dataset["gotoPlot"] = id;
     button.type = "button";
-    button.textContent = id;
+    button.textContent = plotLabels?.get(id) ?? id;
     if (meaningText) button.title = meaningText;
     button.addEventListener("click", () => onOpenPlot(id));
     token.appendChild(button);
+    if (onMove && canAssign) {
+      const moveButton = document.createElement("button");
+      moveButton.type = "button";
+      moveButton.className = "text-link plot-link-action";
+      moveButton.textContent = t("map.move_short");
+      moveButton.setAttribute(
+        "aria-label",
+        t("map.move_plant_from_aria", {
+          name: plant.name,
+          plot: plotLabels?.get(id) ?? id,
+        }),
+      );
+      moveButton.addEventListener("click", () => onMove(plant, id));
+      token.append(" ", moveButton);
+    }
     container.appendChild(token);
   });
 }
@@ -240,9 +272,13 @@ function appendCellContent(
   cell: HTMLElement,
   plant: Plant,
   key: string,
+  canWrite: boolean,
   onOpenPlot: (plotId: string) => void,
   knownPlotIds: Set<string>,
   plotAssignmentMeanings: PlotAssignmentMeaning[],
+  plotLabels?: ReadonlyMap<string, string>,
+  onMove?: (plant: Plant, sourcePlotId: string) => void,
+  onPlace?: (plant: Plant) => void,
   mediaPreviewByPlantId?: ReadonlyMap<string, MediaAsset | null>,
 ): void {
   switch (key) {
@@ -278,7 +314,16 @@ function appendCellContent(
       return;
     }
     case "plot_ids":
-      appendPlotLinks(cell, plant, onOpenPlot, knownPlotIds, plotAssignmentMeanings);
+      appendPlotLinks(
+        cell,
+        plant,
+        onOpenPlot,
+        knownPlotIds,
+        plotAssignmentMeanings,
+        plotLabels,
+        canWrite ? onMove : undefined,
+        canWrite ? onPlace : undefined,
+      );
       return;
     case "link": {
       const safeLink = sanitizeUrl(plant.link ?? "");
@@ -471,7 +516,8 @@ export function renderPlantsTableBody(
   callbacks: PlantsTableCallbacks,
 ): void {
   const {
-    canWrite, onOpenPlot, onEdit, knownPlotIds, plotAssignmentMeanings, mediaPreviewByPlantId,
+    canWrite, onOpenPlot, onMove, onPlace, onEdit, knownPlotIds, plotLabels,
+    plotAssignmentMeanings, mediaPreviewByPlantId,
     onToggleSelect, selectedIds,
   } = callbacks;
   const totalCols = columns.length + (canWrite ? 1 : 0) + (canWrite && onToggleSelect ? 1 : 0);
@@ -521,9 +567,13 @@ export function renderPlantsTableBody(
         cell,
         plant,
         col.key,
+        canWrite,
         onOpenPlot,
         knownPlotIds,
         plotAssignmentMeanings,
+        plotLabels,
+        canWrite ? onMove : undefined,
+        canWrite ? onPlace : undefined,
         mediaPreviewByPlantId,
       );
       row.appendChild(cell);
@@ -568,7 +618,8 @@ export function renderPlantsMobileCards(
   callbacks: PlantsTableCallbacks,
 ): void {
   const {
-    canWrite, onOpenPlot, onEdit, knownPlotIds, plotAssignmentMeanings, mediaPreviewByPlantId,
+    canWrite, onOpenPlot, onMove, onPlace, onEdit, knownPlotIds, plotLabels,
+    plotAssignmentMeanings, mediaPreviewByPlantId,
     onToggleSelect, selectedIds,
   } = callbacks;
 
@@ -693,7 +744,16 @@ export function renderPlantsMobileCards(
     plotLabel.textContent = t("plants.field_plots");
     const plotLinks = document.createElement("div");
     plotLinks.className = "mobile-data-plot-links";
-    appendPlotLinks(plotLinks, plant, onOpenPlot, knownPlotIds, plotAssignmentMeanings);
+    appendPlotLinks(
+      plotLinks,
+      plant,
+      onOpenPlot,
+      knownPlotIds,
+      plotAssignmentMeanings,
+      plotLabels,
+      canWrite ? onMove : undefined,
+      canWrite ? onPlace : undefined,
+    );
     plotRow.append(plotLabel, plotLinks);
 
     article.append(header, chipRow, factGrid, plotRow);

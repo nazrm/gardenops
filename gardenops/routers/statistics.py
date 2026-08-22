@@ -111,6 +111,7 @@ def get_statistics_actions(db: DB, request: Request) -> dict:
         FROM plots pl
         JOIN plot_ownership pwo ON pwo.plot_id = pl.plot_id
         WHERE pwo.garden_id = %s
+          AND pl.plot_kind <> 'container'
           AND NOT EXISTS (
               SELECT 1
               FROM plot_plants pp

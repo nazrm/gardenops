@@ -1,7 +1,9 @@
 import type {
   AppState,
+  ContainerSummary,
   GardenTask,
   Plant,
+  Plot,
   TaskListResponse,
 } from "../core/models";
 import { t } from "../core/i18n";
@@ -10,6 +12,7 @@ import {
   deleteMediaAssetApi,
   fetchJournalEntriesApi,
   fetchTasksApi,
+  getContainerApi,
   getActiveGardenContext,
   getApiErrorMessage,
   getPlotPlantAlerts,
@@ -88,6 +91,8 @@ export interface PlotCallbacks {
   canWrite: () => boolean;
   deletePlot: (plotId: string) => Promise<void>;
   onEditPlant: (plant: Plant) => void;
+  onMovePlant?: ((plant: Plant, sourcePlotId: string) => void) | undefined;
+  getPlotLabel?: ((plotId: string) => string) | undefined;
   onEditPlot: (plotId: string) => void;
   onPlantAssignmentsChanged: (pltIds?: string[]) => Promise<void> | void;
   onPlotFocusChanged: (plotId: string | null) => void;
@@ -147,6 +152,48 @@ function sortPlantsForPlotPanel(plants: Plant[]): Plant[] {
       a.category.localeCompare(b.category) ||
       a.name.localeCompare(b.name),
   );
+}
+
+function historicalContainerPlot(container: ContainerSummary): Plot {
+  return {
+    plot_id: container.plot_id,
+    zone_code: "C",
+    zone_name: "Containers",
+    plot_number: 0,
+    grid_row: null,
+    grid_col: null,
+    sub_zone: "",
+    notes: "",
+    color: null,
+    plant_count: container.plant_count,
+    can_assign: false,
+    has_tree: false,
+    has_bush: false,
+    categories: [],
+    plot_kind: "container",
+    display_name: container.display_name,
+    container_type: container.container_type,
+    environment: container.environment,
+    archived_at_ms: container.archived_at_ms ?? null,
+  };
+}
+
+async function resolvePlotForSelection(
+  state: AppState,
+  plotId: string,
+): Promise<{ plot: Plot; historical: boolean } | null> {
+  const activePlot = state.plots.find((candidate) => candidate.plot_id === plotId);
+  if (activePlot) return { plot: activePlot, historical: false };
+
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return null;
+  try {
+    const container = await getContainerApi(gardenId, plotId);
+    if (container.archived_at_ms == null) return null;
+    return { plot: historicalContainerPlot(container), historical: true };
+  } catch {
+    return null;
+  }
 }
 
 function createEmptyMediaPreviewMap(
@@ -254,22 +301,39 @@ function getPanelCallbacks(
   state: AppState,
   plotId: string,
   cbs: PlotCallbacks,
+  options: { plotLabel?: string; readOnly?: boolean; plants?: Plant[] } = {},
 ): {
   canWrite: boolean;
+  canAssign: boolean;
+  plotLabel?: string;
   onClose: () => void;
   onRemove: (pltId: string) => void;
   onEdit: (plant: Plant) => void;
+  onMove?: ((plant: Plant, sourcePlotId: string) => void) | undefined;
   onCreateCalendarEvent?: (
     prefill: { plant_ids?: string[]; plot_ids?: string[] },
   ) => void;
 } {
-  const canWrite = cbs.canWrite();
+  const canWrite = options.readOnly !== true && cbs.canWrite();
+  const canAssign =
+    options.readOnly !== true
+    && state.plots.find((plot) => plot.plot_id === plotId)?.can_assign === true;
+  const plotLabel = options.plotLabel ?? cbs.getPlotLabel?.(plotId);
   return {
     canWrite,
+    canAssign,
+    ...(plotLabel ? { plotLabel } : {}),
     onClose: () => closePanel(state, cbs),
-    onRemove: (pltId) =>
-      void removePlant(state, plotId, pltId, cbs),
+    onRemove: (pltId) => {
+      const plant = options.plants?.find((candidate) => candidate.plt_id === pltId);
+      if (!canAssign || !plant?.can_assign) {
+        showToast(t("error.forbidden"), "error");
+        return;
+      }
+      void removePlant(state, plotId, pltId, cbs, plant);
+    },
     onEdit: (plant) => cbs.onEditPlant(plant),
+    ...(canWrite && canAssign && cbs.onMovePlant ? { onMove: cbs.onMovePlant } : {}),
     ...(canWrite && cbs.onCreateCalendarEvent
       ? { onCreateCalendarEvent: cbs.onCreateCalendarEvent }
       : {}),
@@ -1164,10 +1228,11 @@ async function hydrateActivePlotPanel(
   plants: Plant[],
   cbs: PlotCallbacks,
   seq: number,
+  options: { plotLabel?: string; readOnly?: boolean } = {},
 ): Promise<void> {
   const supplemental = await getPlotSupplementalData(plotId, plants);
   if (seq !== plotSelectionSeq || state.selectedPlotId !== plotId) return;
-  const callbacks = getPanelCallbacks(state, plotId, cbs);
+  const callbacks = getPanelCallbacks(state, plotId, cbs, { ...options, plants });
   updateDrawerPlantsSection({
     plotId,
     plants,
@@ -1193,7 +1258,7 @@ async function refreshSelectedPlotPlants(
   const seq = ++plotSelectionSeq;
   const plants = await getPlotPlantsCached(plotId);
   if (seq !== plotSelectionSeq || state.selectedPlotId !== plotId) return;
-  const callbacks = getPanelCallbacks(state, plotId, cbs);
+  const callbacks = getPanelCallbacks(state, plotId, cbs, { plants });
   updateDrawerPlantsSection({
     plotId,
     plants,
@@ -1230,18 +1295,25 @@ export async function selectPlot(
     );
   });
 
+  const resolved = await resolvePlotForSelection(state, plotId);
+  if (!resolved) return;
+  const { plot, historical } = resolved;
   state.selectedPlotId = plotId;
   cbs.onPlotFocusChanged(plotId);
   const seq = ++plotSelectionSeq;
-  const plot = state.plots.find((p) => p.plot_id === plotId);
-  if (!plot) return;
+  const panelOptions = historical
+    ? { readOnly: true, plotLabel: plot.display_name?.trim() || plot.plot_id }
+    : {};
 
   const topPlants = await getPlotPlantsCached(plotId);
   if (seq !== plotSelectionSeq || state.selectedPlotId !== plotId) return;
 
   if (cbs.isMobile()) {
     const supplemental = getCachedPlotSupplementalData(plotId);
-    const panelCallbacks = getPanelCallbacks(state, plotId, cbs);
+    const panelCallbacks = getPanelCallbacks(state, plotId, cbs, {
+      ...panelOptions,
+      plants: topPlants,
+    });
     showBottomSheet({
       plotId,
       plants: topPlants,
@@ -1253,27 +1325,42 @@ export async function selectPlot(
         : {}),
       onSearch: (e) => void handlePlantSearch(state, e, cbs),
       ...panelCallbacks,
-      ...(cbs.canWrite()
+      ...(panelCallbacks.canWrite
         ? {
             onEditPlot: () => cbs.onEditPlot(plotId),
             onDeletePlot: () => void cbs.deletePlot(plotId),
           }
         : {}),
-      ...(cbs.canWrite() && cbs.onCreatePlant
+      ...(panelCallbacks.canWrite && cbs.onCreatePlant
         ? { onCreatePlant: cbs.onCreatePlant }
         : {}),
     });
-    activatePlotTasksPanel(state, plotId, cbs);
-    void hydrateActivePlotPanel(state, plotId, topPlants, cbs, seq);
-    void loadPlotTasksPreview(state, plotId, cbs);
+    if (!historical) activatePlotTasksPanel(state, plotId, cbs);
+    void hydrateActivePlotPanel(state, plotId, topPlants, cbs, seq, panelOptions);
+    if (!historical) void loadPlotTasksPreview(state, plotId, cbs);
     void loadPlotJournalPreview(plotId, cbs);
-    void loadPlotMediaPreview(plotId, cbs);
+    if (!historical) void loadPlotMediaPreview(plotId, cbs);
     return;
   }
 
   const anchor =
     anchorEl ??
     document.querySelector(`[data-plot-id="${plotId}"]`);
+  if (!anchor && historical) {
+    const panelCallbacks = getPanelCallbacks(state, plotId, cbs, {
+      ...panelOptions,
+      plants: topPlants,
+    });
+    showDrawer({
+      plotId,
+      plants: topPlants,
+      onSearch: (e) => void handlePlantSearch(state, e, cbs),
+      ...panelCallbacks,
+    });
+    void hydrateActivePlotPanel(state, plotId, topPlants, cbs, seq, panelOptions);
+    void loadPlotJournalPreview(plotId, cbs);
+    return;
+  }
   if (!anchor) return;
 
   const anchorRect = anchor.getBoundingClientRect();
@@ -1315,7 +1402,7 @@ export async function openDrawerForPlot(
   const plants = await getPlotPlantsCached(plotId);
   if (seq !== plotSelectionSeq || state.selectedPlotId !== plotId) return;
   const supplemental = getCachedPlotSupplementalData(plotId);
-  const panelCallbacks = getPanelCallbacks(state, plotId, cbs);
+  const panelCallbacks = getPanelCallbacks(state, plotId, cbs, { plants });
 
   showDrawer({
     plotId,
@@ -1352,7 +1439,10 @@ export async function handlePlantSearch(
   const resultsDiv =
     getDrawerSearchResults() ?? getSheetSearchResults();
   if (!resultsDiv) return;
-  if (!cbs.canWrite()) {
+  const selectedPlot = state.selectedPlotId
+    ? state.plots.find((plot) => plot.plot_id === state.selectedPlotId)
+    : null;
+  if (!cbs.canWrite() || !selectedPlot?.can_assign) {
     cancelPendingPlantSearch();
     resultsDiv.replaceChildren();
     return;
@@ -1372,9 +1462,21 @@ export async function handlePlantSearch(
     void (async () => {
       const plants = await searchPlantsApi(query, { limit: 10 });
       if (seq !== plantSearchSeq || input.value.trim() !== query) return;
-      renderSearchResults(resultsDiv, plants, (pltId) => {
+      const assignablePlants = plants.filter(
+        (plant) => (plant as { can_assign?: boolean }).can_assign !== false,
+      );
+      renderSearchResults(resultsDiv, assignablePlants, (pltId) => {
         if (!state.selectedPlotId) return;
-        void addPlantToPlot(state, state.selectedPlotId, pltId, cbs);
+        const searchedPlant = assignablePlants.find((plant) => plant.plt_id === pltId);
+        const plantCanAssign =
+          (searchedPlant as { can_assign?: boolean } | undefined)?.can_assign;
+        void addPlantToPlot(
+          state,
+          state.selectedPlotId,
+          pltId,
+          cbs,
+          plantCanAssign,
+        );
       });
     })();
   }, PLANT_SEARCH_DEBOUNCE_MS);
@@ -1385,9 +1487,15 @@ export async function addPlantToPlot(
   plotId: string,
   pltId: string,
   cbs: PlotCallbacks,
+  plantCanAssign?: boolean,
 ): Promise<void> {
+  const plot = state.plots.find((candidate) => candidate.plot_id === plotId);
   if (!cbs.canWrite()) {
     showToast(t("error.write_access"), "error");
+    return;
+  }
+  if (!plot?.can_assign || plantCanAssign === false) {
+    showToast(t("error.forbidden"), "error");
     return;
   }
   try {
@@ -1429,9 +1537,15 @@ export async function removePlant(
   plotId: string,
   pltId: string,
   cbs: PlotCallbacks,
+  plant?: Plant,
 ): Promise<void> {
+  const plot = state.plots.find((candidate) => candidate.plot_id === plotId);
   if (!cbs.canWrite()) {
     showToast(t("error.write_access"), "error");
+    return;
+  }
+  if (!plot?.can_assign || !plant?.can_assign) {
+    showToast(t("error.forbidden"), "error");
     return;
   }
   if (!(await confirmDialog(t("plots.confirm_remove_plant"), t("common.remove")))) return;
