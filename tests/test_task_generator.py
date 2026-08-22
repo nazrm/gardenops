@@ -517,8 +517,8 @@ class TestInferTaskDescription(DbTestBase):
             """
             INSERT INTO plots
                 (plot_id, garden_id, zone_code, zone_name, plot_number,
-                 grid_row, grid_col, sub_zone, notes)
-            VALUES ('RW-IN', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+                 grid_row, grid_col, sub_zone, notes, environment)
+            VALUES ('RW-IN', %s, 'I', 'Indoor', 1, NULL, NULL, '', '', 'indoor')
             """,
             (self.garden_id,),
         )
@@ -582,10 +582,10 @@ class TestInferTaskDescription(DbTestBase):
             """
             INSERT INTO plots
                 (plot_id, garden_id, zone_code, zone_name, plot_number,
-                 grid_row, grid_col, sub_zone, notes)
+                 grid_row, grid_col, sub_zone, notes, environment)
             VALUES
-                ('RMIX-OUT', %s, 'R', 'Outdoor', 1, 1, 1, '', ''),
-                ('RMIX-IN', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+                ('RMIX-OUT', %s, 'R', 'Outdoor', 1, 1, 1, '', '', 'outdoor'),
+                ('RMIX-IN', %s, 'I', 'Indoor', 1, NULL, NULL, '', '', 'indoor')
             """,
             (self.garden_id, self.garden_id),
         )

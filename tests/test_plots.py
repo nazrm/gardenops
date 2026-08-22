@@ -209,6 +209,10 @@ class TestPlots(BaseApiTest):
         data = response.json()
         self.assertTrue(any(p["plot_id"] == "B1" for p in data))
 
+    def test_list_plots_exposes_assignment_capability(self) -> None:
+        plots = {plot["plot_id"]: plot for plot in self.client.get("/api/plots").json()}
+        self.assertTrue(plots["B1"]["can_assign"])
+
     def test_concurrent_read_requests_do_not_error(self) -> None:
         paths = [
             "/api/plots",

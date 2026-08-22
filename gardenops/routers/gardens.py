@@ -496,6 +496,11 @@ def _normalized_zone_identity(zone_code: str, zone_name: str) -> tuple[str, str]
     normalized_name = zone_name.strip()
     if not normalized_code or not normalized_name:
         raise HTTPException(status_code=400, detail="Zone code and name are required")
+    if normalized_code.upper() == "I":
+        raise HTTPException(
+            status_code=400,
+            detail="Zone code 'I' is reserved for indoor plants",
+        )
     return normalized_code, normalized_name
 
 

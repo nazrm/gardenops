@@ -1,4 +1,4 @@
-import type { MapObject, Plot } from "../core/models";
+import type { ContainerSummary, MapObject, Plot } from "../core/models";
 import { t } from "../core/i18n";
 
 const ZOOM_MIN = 1.0;
@@ -15,6 +15,7 @@ const gestureBindings = new WeakMap<HTMLElement, {
 }>();
 const gridDelegationState = new WeakMap<HTMLElement, {
   byCell: Map<string, Plot>;
+  byContainer: Map<string, ContainerSummary>;
   callbacks: GridCallbacks;
 }>();
 
@@ -236,6 +237,7 @@ interface RenderMapParams {
   showMapObjects?: boolean;
   selectedMapObjectId?: string | null;
   onMapObjectClick: ((object: MapObject) => void) | undefined;
+  onMapContainerClick?: ((container: ContainerSummary, trigger: HTMLElement) => void) | undefined;
   onMapObjectGeometryChange?: (object: MapObject, geometry: MapObject["geometry"]) => void;
   onMapObjectManipulationStart?: (
     object: MapObject,
@@ -294,8 +296,24 @@ export function renderMapGrid(params: RenderMapParams): void {
     byCell.set(`${p.grid_row},${p.grid_col}`, p);
   }
   const byMapObject = new Map<string, MapObject>();
+  const byContainer = new Map<string, ContainerSummary>();
   for (const object of params.mapObjects ?? []) {
     byMapObject.set(object.public_id, object);
+    for (const container of object.containers ?? []) {
+      byContainer.set(container.plot_id, container);
+    }
+  }
+  for (const plot of plots) {
+    if (plot.plot_kind !== "container" || plot.archived_at_ms != null) continue;
+    if (byContainer.has(plot.plot_id)) continue;
+    byContainer.set(plot.plot_id, {
+      plot_id: plot.plot_id,
+      display_name: plot.display_name?.trim() || t("map.unnamed_container"),
+      container_type: plot.container_type ?? "other",
+      environment: plot.environment ?? "outdoor",
+      plant_count: plot.plant_count ?? 0,
+      parent_map_object_public_id: plot.parent_map_object_public_id ?? null,
+    });
   }
 
   const fragment = document.createDocumentFragment();
@@ -334,7 +352,9 @@ export function renderMapGrid(params: RenderMapParams): void {
     onPlotDragEnd, onDragOverCell, onDropToCell, onExtendPlot,
     onEmptyCellClick,
     byMapObject,
+    byContainer,
     onMapObjectClick: params.onMapObjectClick,
+    onMapContainerClick: params.onMapContainerClick,
   });
 
   renderHouse(
@@ -351,6 +371,7 @@ export function renderMapGrid(params: RenderMapParams): void {
     params.onMapObjectGeometryChange,
     params.onMapObjectManipulationStart,
     params.onMapObjectKeyEdit,
+    params.onMapContainerClick,
   );
 
   ensureZoomControls(grid);
@@ -370,6 +391,7 @@ function renderMapObjects(
     event: PointerEvent,
   ) => void,
   onMapObjectKeyEdit?: (object: MapObject, event: KeyboardEvent) => void,
+  onMapContainerClick?: ((container: ContainerSummary, trigger: HTMLElement) => void) | undefined,
 ): void {
   if (!showObjects || objects.length === 0) return;
 
@@ -385,6 +407,31 @@ function renderMapObjects(
     overlay.style.setProperty("--map-object-color", object.style.color);
     overlay.style.zIndex = String(6 + object.z_index);
     overlay.classList.toggle("active", object.public_id === selectedMapObjectId);
+    const containers = (object.containers ?? []).filter(
+      (container) => container.archived_at_ms == null,
+    );
+    if (object.public_id === selectedMapObjectId && containers.length > 0) {
+      const count = containers.length;
+      const columns = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(count))));
+      const markerRows = Math.ceil(count / columns);
+      containers.forEach((container, index) => {
+        const marker = document.createElement("button");
+        marker.type = "button";
+        marker.className = "map-container-marker";
+        marker.dataset["containerPlotId"] = container.plot_id;
+        marker.dataset["objectId"] = object.public_id;
+        marker.style.left = `${8 + ((index % columns) * 84) / columns}%`;
+        marker.style.top = `${8 + (Math.floor(index / columns) * 84) / markerRows}%`;
+        marker.style.setProperty("--container-columns", String(columns));
+        marker.textContent = String(container.plant_count);
+        marker.title = container.display_name;
+        marker.setAttribute(
+          "aria-label",
+          `${container.display_name}, ${t("map.plant_count", { count: container.plant_count })}`,
+        );
+        overlay.appendChild(marker);
+      });
+    }
     grid.appendChild(overlay);
 
     const label = document.createElement("button");
@@ -651,7 +698,9 @@ interface GridCallbacks {
   onExtendPlot: (plot: Plot) => void;
   onEmptyCellClick: (row: number, col: number) => void;
   byMapObject: Map<string, MapObject>;
+  byContainer: Map<string, ContainerSummary>;
   onMapObjectClick: ((object: MapObject) => void) | undefined;
+  onMapContainerClick?: ((container: ContainerSummary, trigger: HTMLElement) => void) | undefined;
 }
 
 function wireGridDelegation(
@@ -662,12 +711,14 @@ function wireGridDelegation(
   const existing = gridDelegationState.get(grid);
   if (existing) {
     existing.byCell = byCell;
+    existing.byContainer = cbs.byContainer;
     existing.callbacks = cbs;
     return;
   }
 
   const state = {
     byCell,
+    byContainer: cbs.byContainer,
     callbacks: cbs,
   };
   gridDelegationState.set(grid, state);
@@ -691,6 +742,17 @@ function wireGridDelegation(
       if (object) state.callbacks.onMapObjectClick?.(object);
       return;
     }
+    const containerMarker = (e.target as HTMLElement).closest<HTMLButtonElement>(".map-container-marker");
+    const containerId = containerMarker?.dataset["containerPlotId"];
+    if (containerId) {
+      const container = state.callbacks.byContainer.get(containerId);
+      if (container) {
+        e.preventDefault();
+        e.stopPropagation();
+        state.callbacks.onMapContainerClick?.(container, containerMarker);
+      }
+      return;
+    }
     const extBtn = (e.target as HTMLElement).closest<HTMLElement>(".plot-extend-btn");
     if (extBtn) {
       e.stopPropagation();
@@ -711,6 +773,17 @@ function wireGridDelegation(
 
   grid.addEventListener("keydown", (e) => {
     if (e.key !== "Enter" && e.key !== " ") return;
+    const containerMarker = (e.target as HTMLElement).closest<HTMLButtonElement>(".map-container-marker");
+    const containerId = containerMarker?.dataset["containerPlotId"];
+    if (containerId) {
+      const container = state.callbacks.byContainer.get(containerId);
+      if (container) {
+        e.preventDefault();
+        e.stopPropagation();
+        state.callbacks.onMapContainerClick?.(container, containerMarker);
+      }
+      return;
+    }
     const plot = plotAt(e.target);
     if (!plot) return;
     e.preventDefault();

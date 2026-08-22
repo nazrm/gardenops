@@ -35,6 +35,7 @@ from gardenops.router_helpers import (
     validate_date as _validate_date,
 )
 from gardenops.routers.media import collect_media_cleanup_for_target
+from gardenops.routers.plots import _lock_assignment_target_rows
 from gardenops.security import (
     AuthContext,
     has_write_access,
@@ -298,6 +299,12 @@ def _is_owner_or_admin(context: AuthContext, owner_user_id: int | None) -> bool:
     return is_owner_or_admin(context, owner_user_id)
 
 
+def _can_assign_plant(context: AuthContext, owner_user_id: int | None) -> bool:
+    if _is_local_admin_fallback(context):
+        return True
+    return _is_owner_or_admin(context, owner_user_id)
+
+
 def _require_plant_access(
     db: DbConn,
     plt_id: str,
@@ -477,7 +484,8 @@ def _fetch_plant_rows(
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     sql = (
-        "SELECT p.*, po.created_at_ms AS added_at_ms "
+        "SELECT p.*, po.created_at_ms AS added_at_ms, "
+        "po.owner_user_id AS _assignment_owner_user_id "
         "FROM plants p "
         "LEFT JOIN plant_ownership po ON po.plt_id = p.plt_id "
         "WHERE 1=1"
@@ -517,7 +525,8 @@ def _fetch_plant_search_rows(
 ) -> list[dict[str, Any]]:
     sql = (
         "SELECT p.plt_id, p.name, COALESCE(p.latin, '') AS latin, "
-        "COALESCE(p.category, '') AS category "
+        "COALESCE(p.category, '') AS category, "
+        "po.owner_user_id AS _assignment_owner_user_id "
         "FROM plants p "
         "LEFT JOIN plant_ownership po ON po.plt_id = p.plt_id "
         "WHERE 1=1"
@@ -541,6 +550,7 @@ def _serialize_plant_rows(
     *,
     rows: list[dict[str, Any]],
     garden_id: int,
+    context: AuthContext,
 ) -> list[dict[str, Any]]:
     if not rows:
         return []
@@ -559,6 +569,8 @@ def _serialize_plant_rows(
     result = []
     for r in rows:
         d = dict(r)
+        assignment_owner_user_id = d.pop("_assignment_owner_user_id", None)
+        d["can_assign"] = _can_assign_plant(context, assignment_owner_user_id)
         d["added_at_ms"] = int(d["added_at_ms"]) if d.get("added_at_ms") is not None else 0
         plant_seen_growing = None if d.get("seen_growing") is None else bool(d["seen_growing"])
         plant_seen_growing_date = (
@@ -649,6 +661,7 @@ def _serialize_plant_search_rows(
     rows: list[dict[str, Any]],
     garden_id: int,
     include_assignments: bool,
+    context: AuthContext,
 ) -> list[dict[str, Any]]:
     if not rows:
         return []
@@ -668,6 +681,10 @@ def _serialize_plant_search_rows(
             "name": str(row["name"] or ""),
             "latin": str(row["latin"] or ""),
             "category": str(row["category"] or ""),
+            "can_assign": _can_assign_plant(
+                context,
+                row.get("_assignment_owner_user_id"),
+            ),
         }
         if include_assignments:
             plant_assignments = assignment_rows.get(plt_id, [])
@@ -745,7 +762,7 @@ def list_plants(
         q=q,
         category=category,
     )
-    return _serialize_plant_rows(db, rows=rows, garden_id=garden_id)
+    return _serialize_plant_rows(db, rows=rows, garden_id=garden_id, context=context)
 
 
 @router.get("/plants/search")
@@ -770,6 +787,7 @@ def search_plants(
         rows=rows,
         garden_id=garden_id,
         include_assignments=include_assignments,
+        context=context,
     )
 
 
@@ -787,7 +805,7 @@ def get_plant_details(plt_id: str, db: DB, request: Request) -> dict[str, Any]:
     )
     if not rows:
         raise HTTPException(status_code=404, detail=f"Plant {plt_id} not found")
-    return _serialize_plant_rows(db, rows=rows, garden_id=garden_id)[0]
+    return _serialize_plant_rows(db, rows=rows, garden_id=garden_id, context=context)[0]
 
 
 def _resolve_plant_owner_id(
@@ -990,7 +1008,7 @@ def import_plants_csv(body: ImportPlantsCsvBody, db: DB, request: Request) -> di
             updated += 1 if exists else 0
             row_count += 1
         if has_assignments_column and imported_assignments:
-            _reject_foreign_plot_targets(
+            _lock_assignment_target_rows(
                 db,
                 [
                     str(assignment["plot_id"])
@@ -998,6 +1016,7 @@ def import_plants_csv(body: ImportPlantsCsvBody, db: DB, request: Request) -> di
                     for assignment in assignments
                 ],
                 context,
+                allow_missing_custom=True,
             )
             db.execute("SET CONSTRAINTS ALL DEFERRED")
             for plt_id, assignments in imported_assignments.items():
@@ -1334,59 +1353,7 @@ def _validate_batch_plot_targets(
     normalized = _normalize_batch_plot_ids(plot_ids)
     if not normalized:
         return []
-    garden_id = _active_garden_id(context)
-    placeholders = ",".join(["%s"] * len(normalized))
-    rows = db.execute(
-        f"""
-        SELECT p.plot_id, po.garden_id
-        FROM plots p
-        LEFT JOIN plot_ownership po ON po.plot_id = p.plot_id
-        WHERE p.plot_id IN ({placeholders})
-        """,
-        normalized,
-    ).fetchall()
-    rows_by_plot = {str(row["plot_id"]): row for row in rows}
-    missing_or_foreign = [
-        plot_id
-        for plot_id in normalized
-        if plot_id not in rows_by_plot
-        or rows_by_plot[plot_id]["garden_id"] is None
-        or int(rows_by_plot[plot_id]["garden_id"]) != garden_id
-    ]
-    if missing_or_foreign:
-        raise HTTPException(
-            404,
-            f"Plots not found in active garden: {', '.join(missing_or_foreign[:5])}",
-        )
-    return normalized
-
-
-def _reject_foreign_plot_targets(
-    db: DbConn,
-    plot_ids: list[str],
-    context: AuthContext,
-) -> list[str]:
-    normalized = _normalize_batch_plot_ids(plot_ids)
-    if not normalized:
-        return []
-    garden_id = _active_garden_id(context)
-    placeholders = ",".join(["%s"] * len(normalized))
-    rows = db.execute(
-        f"""
-        SELECT plot_id, garden_id
-        FROM plot_ownership
-        WHERE plot_id IN ({placeholders})
-          AND garden_id IS NOT NULL
-          AND garden_id != %s
-        """,
-        [*normalized, garden_id],
-    ).fetchall()
-    foreign = [str(row["plot_id"]) for row in rows]
-    if foreign:
-        raise HTTPException(
-            404,
-            f"Plots not found in active garden: {', '.join(foreign[:5])}",
-        )
+    _lock_assignment_target_rows(db, normalized, context)
     return normalized
 
 

@@ -109,9 +109,10 @@ creates its parent as a root-owned, non-writable runtime directory. If
 already be root-owned and not group- or world-writable. Symbolic-link lock
 paths are rejected.
 
-`activate` reruns preflight, applies migrations, runs the read-only backend
-integrity audit, atomically updates the `current` symlink, restarts the service,
-and waits for local health. The prior release is recorded as
+`activate` reruns preflight, briefly stops the current service to close the old
+writer window, applies migrations, runs the read-only backend integrity audit,
+atomically updates the `current` symlink, restarts the service, and waits for
+local health. The prior release is recorded as
 `/srv/gardenops/previous`. Rollback is allowed only when the current and prior
 migration trees are identical:
 
@@ -122,6 +123,11 @@ sudo /usr/local/sbin/gardenops-atomic-deploy rollback
 This restriction is deliberate: changing application code back does not undo a
 database migration. A schema-changing rollback requires an operator-reviewed
 database recovery plan and a tested backup.
+
+If preflight or migration fails, the wrapper restores the previously active
+service while the `current` symlink is still unchanged. Once migrations
+succeed, a later integrity failure leaves the service stopped; activation
+failures continue through the existing migration-digest rollback rules.
 
 ## First Admin User
 

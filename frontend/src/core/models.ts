@@ -9,10 +9,21 @@ export interface Plot {
   notes: string;
   color: string | null;
   plant_count: number;
+  can_assign: boolean;
   has_tree: boolean;
   has_bush: boolean;
   categories: string[];
+  plot_kind?: PlotKind;
+  display_name?: string | null;
+  container_type?: ContainerType | null;
+  parent_map_object_public_id?: string | null;
+  environment?: ContainerEnvironment;
+  archived_at_ms?: number | null;
 }
+
+export type PlotKind = "ground" | "indoor" | "container";
+export type ContainerType = "pot" | "planter" | "raised_bed" | "other";
+export type ContainerEnvironment = "outdoor" | "covered" | "indoor";
 
 export type PlantPresenceStatus = "present" | "mixed" | "gone";
 
@@ -35,6 +46,7 @@ export interface Plant {
   care_maintenance: string;
   care_notes: string;
   added_at_ms: number;
+  can_assign: boolean;
   quantity?: number;
   plot_ids?: string[];
   missing_plot_ids?: string[];
@@ -55,12 +67,23 @@ export interface IndoorPlant extends Plant {
   quantity: number;
 }
 
+export interface LinkedPlot {
+  plot_id: string;
+  zone_name: string;
+  display_name?: string | null;
+  plot_kind?: PlotKind | null;
+  archived_at_ms?: number | null;
+}
+
 /** Format a plot label for display. Indoor plots show zone_name + room. */
 export function formatPlotLabel(
   plot_id: string,
   zone_name: string,
   roomLabel?: string | null,
+  displayName?: string | null,
 ): string {
+  const explicitName = displayName?.trim();
+  if (explicitName) return explicitName;
   if (plot_id.startsWith("INDOOR-")) {
     return roomLabel ? `${zone_name} \u2014 ${roomLabel}` : zone_name;
   }
@@ -105,7 +128,7 @@ export interface JournalEntry {
   updated_at_ms: number;
   plant_ids: string[];
   plot_ids: string[];
-  plots?: Array<{ plot_id: string; zone_name: string }>;
+  plots?: LinkedPlot[];
 }
 
 export interface JournalListResponse {
@@ -435,6 +458,7 @@ export interface CalendarEvent {
   target_id: string;
   plant_ids: string[];
   plot_ids: string[];
+  plots?: LinkedPlot[];
   due_on?: string;
   snoozed_until?: string | null;
   updated_at_ms: number;
@@ -533,6 +557,7 @@ export interface GardenIssue {
   updated_at_ms: number;
   plant_ids: string[];
   plot_ids: string[];
+  plots?: LinkedPlot[];
 }
 
 export interface IssueListResponse {
@@ -581,7 +606,7 @@ export interface HarvestEntry {
   updated_at_ms: number;
   plant_ids: string[];
   plot_ids: string[];
-  plots?: Array<{ plot_id: string; zone_name: string }>;
+  plots?: LinkedPlot[];
 }
 
 export interface HarvestListResponse {
@@ -732,6 +757,7 @@ export type MapObjectType =
   | "patio"
   | "terrace"
   | "greenhouse"
+  | "balcony"
   | "shed"
   | "pond"
   | "path"
@@ -739,7 +765,6 @@ export type MapObjectType =
   | "other";
 
 export type MapObjectShape = "rectangle" | "ellipse";
-export type MapObjectUnitType = "pot" | "planter" | "raised_bed" | "shelf" | "other";
 
 export interface MapObjectGeometry {
   x: number;
@@ -757,6 +782,9 @@ export interface MapObjectInternalLayout {
   cols: number;
 }
 
+/** Legacy snapshot/import shape. New runtime UI uses ContainerSummary. */
+export type MapObjectUnitType = "pot" | "planter" | "raised_bed" | "shelf" | "other";
+
 export interface MapObjectUnit {
   public_id: string;
   unit_type: MapObjectUnitType;
@@ -769,32 +797,6 @@ export interface MapObjectUnit {
   updated_at_ms?: number;
 }
 
-export interface MapObject {
-  public_id: string;
-  object_type: MapObjectType;
-  name: string;
-  shape_type: MapObjectShape;
-  geometry: MapObjectGeometry;
-  style: MapObjectStyle;
-  z_index: number;
-  has_internal_layout: boolean;
-  internal_layout: MapObjectInternalLayout;
-  created_at_ms?: number;
-  updated_at_ms?: number;
-  units: MapObjectUnit[];
-}
-
-export interface MapObjectInput {
-  object_type: MapObjectType;
-  name: string;
-  shape_type: MapObjectShape;
-  geometry: MapObjectGeometry;
-  style?: MapObjectStyle;
-  z_index?: number;
-  has_internal_layout?: boolean;
-  internal_layout?: MapObjectInternalLayout | null;
-}
-
 export interface MapObjectUnitInput {
   unit_type: MapObjectUnitType;
   name: string;
@@ -804,11 +806,67 @@ export interface MapObjectUnitInput {
   sort_order?: number;
 }
 
+export interface ContainerSummary {
+  plot_id: string;
+  display_name: string;
+  container_type: ContainerType;
+  environment: ContainerEnvironment;
+  plant_count: number;
+  parent_map_object_public_id?: string | null;
+  can_edit?: boolean;
+  can_archive?: boolean;
+  archived_at_ms?: number | null;
+}
+
+export interface MapObject {
+  public_id: string;
+  object_type: MapObjectType;
+  name: string;
+  shape_type: MapObjectShape;
+  geometry: MapObjectGeometry;
+  style: MapObjectStyle;
+  z_index: number;
+  created_at_ms?: number;
+  updated_at_ms?: number;
+  container_count: number;
+  plant_count: number;
+  containers: ContainerSummary[];
+}
+
+export interface MapObjectsResponse {
+  objects: MapObject[];
+  containers: ContainerSummary[];
+}
+
+export interface MapObjectInput {
+  object_type: MapObjectType;
+  name: string;
+  shape_type: MapObjectShape;
+  geometry: MapObjectGeometry;
+  style?: MapObjectStyle;
+  z_index?: number;
+}
+
+export interface ContainerInput {
+  name: string;
+  container_type: ContainerType;
+  parent_object_public_id?: string | null;
+  environment?: ContainerEnvironment;
+}
+
+export interface ContainerPatch {
+  name?: string;
+  container_type?: ContainerType;
+  parent_object_public_id?: string | null;
+  environment?: ContainerEnvironment;
+}
+
 export type AppTab = "map" | "garden" | "activity" | "insights" | "admin";
 
 export interface AppState {
   plots: Plot[];
   mapObjects: MapObject[];
+  mapObjectContainers: ContainerSummary[];
   selectedMapObjectId: string | null;
   showMapObjects: boolean;
   plantsCache: Plant[];

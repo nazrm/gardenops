@@ -11,6 +11,9 @@ import type {
   CalendarPreferencesResponse,
   CalendarSubscription,
   CompanionCheck,
+  ContainerInput,
+  ContainerPatch,
+  ContainerSummary,
   GardenIssue,
   GardenTask,
   GardenProfile,
@@ -23,6 +26,7 @@ import type {
   JournalListResponse,
   MapObject,
   MapObjectInput,
+  MapObjectsResponse,
   MapObjectUnit,
   MapObjectUnitInput,
   NotificationListResponse,
@@ -1750,6 +1754,16 @@ export async function getPlots(): Promise<Plot[]> {
   return apiGet<Plot[]>("/api/plots");
 }
 
+export async function getContainerApi(
+  gardenId: number,
+  plotId: string,
+): Promise<ContainerSummary> {
+  return apiGet<ContainerSummary>(
+    `/api/gardens/${gardenId}/containers/${encodeApiPathSegment(plotId)}`,
+    { gardenId },
+  );
+}
+
 export interface HouseLayoutState {
   row: number;
   col: number;
@@ -1977,11 +1991,10 @@ export async function updateLayoutStateApi(
   return apiPatch<HouseLayoutState>("/api/layout-state", house);
 }
 
-export async function listMapObjectsApi(gardenId: number): Promise<MapObject[]> {
-  const body = await apiGet<{ objects: MapObject[] }>(
+export async function listMapObjectsApi(gardenId: number): Promise<MapObjectsResponse> {
+  return apiGet<MapObjectsResponse>(
     `/api/gardens/${gardenId}/map-objects`,
   );
-  return body.objects;
 }
 
 export async function createMapObjectApi(
@@ -2004,6 +2017,33 @@ export async function deleteMapObjectApi(
   publicId: string,
 ): Promise<void> {
   await apiDelete<unknown>(`/api/gardens/${gardenId}/map-objects/${publicId}`);
+}
+
+export async function createContainerApi(
+  gardenId: number,
+  input: ContainerInput,
+): Promise<ContainerSummary> {
+  return apiPost<ContainerSummary>(`/api/gardens/${gardenId}/containers`, input);
+}
+
+export async function updateContainerApi(
+  gardenId: number,
+  plotId: string,
+  patch: ContainerPatch,
+): Promise<ContainerSummary> {
+  return apiPatch<ContainerSummary>(
+    `/api/gardens/${gardenId}/containers/${encodeApiPathSegment(plotId)}`,
+    patch,
+  );
+}
+
+export async function deleteContainerApi(
+  gardenId: number,
+  plotId: string,
+): Promise<void> {
+  await apiDelete<unknown>(
+    `/api/gardens/${gardenId}/containers/${encodeApiPathSegment(plotId)}`,
+  );
 }
 
 export async function createMapObjectUnitApi(
@@ -2185,12 +2225,13 @@ export async function movePlantBetweenPlotsApi(
   fromPlotId: string,
   toPlotId: string,
   pltId: string,
+  quantity?: number,
 ): Promise<void> {
   await apiPost<unknown>(
     `/api/plots/${encodeApiPathSegment(fromPlotId)}/plants/${encodeApiPathSegment(
       pltId,
     )}/move/${encodeApiPathSegment(toPlotId)}`,
-    {},
+    quantity === undefined ? {} : { quantity },
   );
 }
 

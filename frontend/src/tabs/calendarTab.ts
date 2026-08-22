@@ -25,9 +25,11 @@ import type {
   CalendarSubscription,
   CalendarViewMode,
   GardenTask,
+  LinkedPlot,
   Plant,
   Plot,
 } from "../core/models";
+import { formatPlotLabel } from "../core/models";
 import {
   buildCalendarExportUrl,
   createCalendarSubscriptionApi,
@@ -815,8 +817,14 @@ function renderPlotFilter(): void {
     placeholder: t("calendar.plot_filter_placeholder"),
     items: availableCalendarPlots(),
     getKey: (plot) => plot.plot_id,
-    getLabel: (plot) => `${plot.plot_id} (${plot.zone_name})`,
-    getSearchText: (plot) => `${plot.plot_id} ${plot.zone_name} ${plot.zone_code}`.toLowerCase(),
+    getLabel: (plot) => formatPlotLabel(plot.plot_id, plot.zone_name, null, plot.display_name),
+    getSearchText: (plot) =>
+      `${plot.plot_id} ${plot.zone_name} ${plot.zone_code} ${formatPlotLabel(
+        plot.plot_id,
+        plot.zone_name,
+        null,
+        plot.display_name,
+      )}`.toLowerCase(),
     selected: selectedPlotIdList(),
   });
   chipInput.container.classList.add("calendar-plot-filter-input");
@@ -1073,9 +1081,14 @@ function canMutateCalendarTaskTarget(target: CalendarTaskActionTarget): boolean 
   return target.gardenId === getActiveGardenContext() && ctx.canWrite();
 }
 
-function plotLabel(plotId: string): string {
+function plotLabel(plotId: string, linkedPlot?: LinkedPlot): string {
   const plot = ctx.getPlots().find((candidate) => candidate.plot_id === plotId);
-  return plot ? `${plot.plot_id} · ${plot.zone_name}` : plotId;
+  return formatPlotLabel(
+    plotId,
+    linkedPlot?.zone_name ?? plot?.zone_name ?? "",
+    null,
+    linkedPlot?.display_name ?? plot?.display_name,
+  );
 }
 
 function detailRow(label: string, value: string): HTMLElement {
@@ -1213,8 +1226,14 @@ async function openManualEventDialog(
     placeholder: t("calendar.manual_plot_placeholder"),
     items: availableCalendarPlots(),
     getKey: (plot) => plot.plot_id,
-    getLabel: (plot) => `${plot.plot_id} (${plot.zone_name})`,
-    getSearchText: (plot) => `${plot.plot_id} ${plot.zone_name} ${plot.zone_code}`.toLowerCase(),
+    getLabel: (plot) => formatPlotLabel(plot.plot_id, plot.zone_name, null, plot.display_name),
+    getSearchText: (plot) =>
+      `${plot.plot_id} ${plot.zone_name} ${plot.zone_code} ${formatPlotLabel(
+        plot.plot_id,
+        plot.zone_name,
+        null,
+        plot.display_name,
+      )}`.toLowerCase(),
     selected: resolveDraftPlotIds(existing, draft),
   });
   plotInput.container.classList.add("calendar-manual-event-plot-input");
@@ -1432,10 +1451,11 @@ function renderDetail(event?: CalendarEvent): void {
     const list = document.createElement("div");
     list.className = "calendar-detail-tags";
     for (const plotId of event.plot_ids) {
+      const linkedPlot = event.plots?.find((plot) => plot.plot_id === plotId);
       const button = document.createElement("button");
       button.type = "button";
       button.className = "calendar-link-chip";
-      button.textContent = plotLabel(plotId);
+      button.textContent = plotLabel(plotId, linkedPlot);
       button.addEventListener("click", () => {
         ctx.setActiveTab("map");
         void ctx.selectPlot(plotId);

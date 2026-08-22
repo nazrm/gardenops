@@ -252,7 +252,12 @@ def _build_garden_profile(
     """Analyze the existing garden to build a profile."""
     # Count plots
     total_plots_row = db.execute(
-        "SELECT COUNT(*) AS cnt FROM plot_ownership WHERE garden_id = %s",
+        """
+        SELECT COUNT(*) AS cnt
+        FROM plots pl
+        JOIN plot_ownership po ON po.plot_id = pl.plot_id
+        WHERE po.garden_id = %s AND pl.plot_kind <> 'container'
+        """,
         (garden_id,),
     ).fetchone()
     assert total_plots_row is not None
@@ -262,8 +267,9 @@ def _build_garden_profile(
         """
         SELECT COUNT(DISTINCT pp.plot_id) AS cnt
         FROM plot_plants pp
+        JOIN plots pl ON pl.plot_id = pp.plot_id
         JOIN plot_ownership pwo ON pwo.plot_id = pp.plot_id
-        WHERE pwo.garden_id = %s
+        WHERE pwo.garden_id = %s AND pl.plot_kind <> 'container'
         """,
         (garden_id,),
     ).fetchone()
@@ -404,6 +410,7 @@ def get_planting_suggestions(
             FROM plots pl
             JOIN plot_ownership pwo ON pwo.plot_id = pl.plot_id
             WHERE pwo.garden_id = %s AND pl.plot_id = %s
+              AND pl.plot_kind <> 'container'
             """,
             (garden_id, target_plot_id),
         ).fetchall()
@@ -414,7 +421,7 @@ def get_planting_suggestions(
             FROM plots pl
             JOIN plot_ownership pwo ON pwo.plot_id = pl.plot_id
             LEFT JOIN plot_plants pp ON pp.plot_id = pl.plot_id
-            WHERE pwo.garden_id = %s
+            WHERE pwo.garden_id = %s AND pl.plot_kind <> 'container'
             GROUP BY pl.plot_id, pl.zone_code, pl.zone_name
             HAVING COUNT(pp.plt_id) <= 1
             ORDER BY COUNT(pp.plt_id), pl.zone_code, pl.plot_id
@@ -474,6 +481,7 @@ def get_planting_suggestions(
             JOIN plots pl ON pl.plot_id = pp.plot_id
             JOIN plot_ownership pwo ON pwo.plot_id = pl.plot_id
             WHERE pwo.garden_id = %s AND pl.zone_code = %s
+              AND pl.plot_kind <> 'container'
             GROUP BY p.category
             ORDER BY cnt DESC
             """,
