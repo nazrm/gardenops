@@ -3249,9 +3249,11 @@ const graph = (name, slug, owner, id) => ({
   map_objects: [],
   plants: [],
   plots: [{
-    color: '', garden_id: id, grid_col: null, grid_row: null, notes: '',
-    owner_username: owner, plot_id: `INDOOR-${id}`, plot_number: 0, sub_zone: '',
-    zone_code: 'I', zone_name: 'Innendors',
+    archived_at_ms: null, color: null, container_type: null, display_name: null,
+    environment: 'indoor', garden_id: id, grid_col: null, grid_row: null, notes: '',
+    owner_username: owner, parent_object_public_id: null, plot_id: `INDOOR-${id}`,
+    plot_kind: 'indoor', plot_number: 0, sub_zone: '', zone_code: 'I',
+    zone_name: 'Innendors',
   }],
 });
 const expectedGraphs = {
