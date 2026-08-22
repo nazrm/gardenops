@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
+from fastapi import HTTPException
+
 import gardenops.db as db
+import gardenops.main as garden_main
 from tests.base import BaseApiTest
 
 
@@ -158,7 +163,75 @@ class TestCanonicalContainerImport(BaseApiTest):
             self.assertEqual(rows[0]["plot_id"], "KEEP-CONT")
             self.assertEqual(rows[0]["parent_public_id"], "restore-area")
             self.assertEqual(rows[1]["plot_id"], "OMIT-CONT")
-            self.assertIsNone(rows[1]["parent_map_object_id"])
+            self.assertEqual(rows[1]["parent_public_id"], "restore-area-2")
+        finally:
+            db.return_db(conn)
+
+        without_parent_area = dict(exported)
+        without_parent_area["map_objects"] = [
+            item for item in exported["map_objects"] if item["public_id"] != "restore-area-2"
+        ]
+        response = self._import(without_parent_area, "canonical-container-detach")
+        self.assertEqual(response.status_code, 200, response.text)
+
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                "SELECT parent_map_object_id FROM plots WHERE plot_id = 'OMIT-CONT'",
+            ).fetchone()
+            self.assertIsNotNone(row)
+            assert row is not None
+            self.assertIsNone(row["parent_map_object_id"])
+        finally:
+            db.return_db(conn)
+
+    def test_restore_rejects_archiving_an_assigned_container(self) -> None:
+        self._insert_area_and_container(
+            area_public_id="archive-area",
+            container_plot_id="ARCHIVE-CONT",
+            container_name="Assigned planter",
+        )
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO plants (plt_id, name, latin, category) VALUES (%s, %s, '', 'busker')",
+                ("ARCHIVE-PLANT", "Assigned plant"),
+            )
+            conn.execute(
+                "INSERT INTO plant_ownership "
+                "(plt_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
+                ("ARCHIVE-PLANT", self._owner_id, garden_id),
+            )
+            conn.execute(
+                "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES (%s, %s, 1)",
+                ("ARCHIVE-CONT", "ARCHIVE-PLANT"),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        payload = json.loads(self.client.get("/api/plots/export").content)
+        for plot in payload["plots"]:
+            if plot["plot_id"] == "ARCHIVE-CONT":
+                plot["archived_at_ms"] = db.current_timestamp_ms()
+
+        response = self._import(payload, "archive-assigned-container")
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("plant assignments", response.json()["detail"])
+
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                "SELECT archived_at_ms FROM plots WHERE plot_id = 'ARCHIVE-CONT'",
+            ).fetchone()
+            assignment = conn.execute(
+                "SELECT quantity FROM plot_plants WHERE plot_id = 'ARCHIVE-CONT'",
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertIsNotNone(assignment)
+            assert row is not None
+            self.assertIsNone(row["archived_at_ms"])
         finally:
             db.return_db(conn)
 
@@ -230,6 +303,14 @@ class TestCanonicalContainerImport(BaseApiTest):
                     "grid_row": 1,
                     "grid_col": 1,
                 },
+                {
+                    "plot_id": "V1-INDOOR",
+                    "zone_code": "I",
+                    "zone_name": "Indoors",
+                    "plot_number": 0,
+                    "grid_row": 20,
+                    "grid_col": 20,
+                },
             ],
             "map_objects": [
                 {
@@ -255,13 +336,16 @@ class TestCanonicalContainerImport(BaseApiTest):
         response = self._import(payload, "legacy-unit-import")
         self.assertEqual(response.status_code, 200, response.text)
 
+        repeat = self._import(payload, "legacy-unit-import-repeat")
+        self.assertEqual(repeat.status_code, 200, repeat.text)
+
         conn = db.get_db()
         try:
             row = conn.execute(
                 """
                 SELECT plot_kind, display_name, container_type, parent_map_object_id
                 FROM plots
-                WHERE plot_id = 'legacy-unit'
+                WHERE plot_id = 'CONT-' || md5('legacy-unit')
                 """,
             ).fetchone()
             self.assertIsNotNone(row)
@@ -273,5 +357,83 @@ class TestCanonicalContainerImport(BaseApiTest):
                 (row["parent_map_object_id"],),
             ).fetchone()
             self.assertEqual(parent["public_id"], "legacy-area")
+            count = conn.execute(
+                "SELECT COUNT(*) AS count FROM plots WHERE plot_id = 'CONT-' || md5('legacy-unit')",
+            ).fetchone()
+            self.assertEqual(int(count["count"]), 1)
+            indoor = conn.execute(
+                """
+                SELECT plot_kind, environment, grid_row, grid_col
+                FROM plots
+                WHERE plot_id = 'V1-INDOOR'
+                """,
+            ).fetchone()
+            self.assertIsNotNone(indoor)
+            assert indoor is not None
+            self.assertEqual(indoor["plot_kind"], "indoor")
+            self.assertEqual(indoor["environment"], "indoor")
+            self.assertIsNone(indoor["grid_row"])
+            self.assertIsNone(indoor["grid_col"])
+        finally:
+            db.return_db(conn)
+
+    def test_concurrent_restore_cannot_take_over_a_plot_across_gardens(self) -> None:
+        first_garden_id, second_garden_id, _, _ = self._setup_admin_two_gardens()
+        payload = [
+            {
+                "plot_id": "RESTORE-RACE-PLOT",
+                "zone_code": "A",
+                "zone_name": "Race area",
+                "plot_number": 1,
+                "grid_row": 5,
+                "grid_col": 5,
+                "plot_kind": "ground",
+                "environment": "outdoor",
+            },
+        ]
+        barrier = threading.Barrier(2)
+        actual_lock = garden_main.lock_garden_layout
+
+        def synchronized_lock(conn: object, garden_id: int) -> None:
+            barrier.wait(timeout=5)
+            actual_lock(conn, garden_id)  # type: ignore[arg-type]
+
+        def restore(garden_id: int) -> int:
+            conn = db.get_db()
+            try:
+                try:
+                    return garden_main.restore_snapshot_data(
+                        conn,
+                        payload,
+                        garden_id=garden_id,
+                        owner_user_id=self._owner_id,
+                        schema_version=2,
+                    )
+                except HTTPException as exc:
+                    return exc.status_code
+            finally:
+                db.return_db(conn)
+
+        with patch.object(garden_main, "lock_garden_layout", synchronized_lock):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(
+                    executor.map(restore, (first_garden_id, second_garden_id)),
+                )
+
+        self.assertCountEqual(results, [1, 409])
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                "SELECT garden_id FROM plots WHERE plot_id = 'RESTORE-RACE-PLOT'",
+            ).fetchone()
+            ownership = conn.execute(
+                "SELECT garden_id FROM plot_ownership WHERE plot_id = 'RESTORE-RACE-PLOT'",
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertIsNotNone(ownership)
+            assert row is not None
+            assert ownership is not None
+            self.assertIn(int(row["garden_id"]), {first_garden_id, second_garden_id})
+            self.assertEqual(int(row["garden_id"]), int(ownership["garden_id"]))
         finally:
             db.return_db(conn)

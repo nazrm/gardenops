@@ -114,6 +114,24 @@ class PlotImportItem(StrictBaseModel):
     def validate_plot_id(cls, value: str) -> str:
         return normalize_public_id(value, field_name="plot_id")
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_indoor_zone(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        if str(value.get("zone_code") or "").strip().upper() != "I":
+            return value
+        if "plot_kind" in value:
+            return value
+        normalized = dict(value)
+        normalized.update(
+            plot_kind="indoor",
+            environment="indoor",
+            grid_row=None,
+            grid_col=None,
+        )
+        return normalized
+
     @model_validator(mode="after")
     def validate_grid_position(self) -> PlotImportItem:
         if (self.grid_row is None) != (self.grid_col is None):

@@ -1,5 +1,6 @@
 import json
 import re
+from hashlib import md5
 from typing import Any, Literal, cast
 
 import psycopg
@@ -584,7 +585,11 @@ def _parse_map_object_import(
         for unit in item.units:
             containers.append(
                 ContainerImportItem(
-                    plot_id=unit.public_id,
+                    plot_id=(
+                        f"CONT-{md5(unit.public_id.encode('utf-8')).hexdigest()}"
+                        if unit.public_id
+                        else None
+                    ),
                     display_name=unit.name.strip(),
                     container_type="other" if unit.unit_type == "shelf" else unit.unit_type,
                     environment="covered" if item.object_type == "greenhouse" else "outdoor",
@@ -752,8 +757,21 @@ def replace_map_objects(
         geometry = item.geometry.model_dump()
         _validate_geometry_fits(geometry, rows=grid_rows, cols=grid_cols, label="Map object")
 
-    # Existing canonical containers survive an area replacement. Unparenting
-    # first also makes the operation safe with the v2 foreign key.
+    # Existing canonical containers survive an area replacement. Remember
+    # their public parent so a recreated area can receive them again.
+    existing_container_parents = db.execute(
+        """
+        SELECT p.plot_id, parent.public_id AS parent_public_id
+        FROM plots p
+        JOIN garden_map_objects parent
+          ON parent.id = p.parent_map_object_id
+         AND parent.garden_id = p.garden_id
+        WHERE p.garden_id = %s
+          AND p.plot_kind = 'container'
+          AND p.parent_map_object_id IS NOT NULL
+        """,
+        (garden_id,),
+    ).fetchall()
     db.execute(
         """
         UPDATE plots
@@ -815,6 +833,19 @@ def replace_map_objects(
         imported_area_ids_in_order.append(map_object_id)
         inserted += 1
 
+    for row in existing_container_parents:
+        parent_map_object_id = imported_area_ids.get(str(row["parent_public_id"]))
+        if parent_map_object_id is None:
+            continue
+        db.execute(
+            """
+            UPDATE plots
+            SET parent_map_object_id = %s
+            WHERE garden_id = %s AND plot_id = %s AND plot_kind = 'container'
+            """,
+            (parent_map_object_id, garden_id, str(row["plot_id"])),
+        )
+
     owner_user_id = (
         _container_owner_user_id(
             db,
@@ -845,7 +876,10 @@ def replace_map_objects(
                 owner_user_id=owner_user_id,
                 item=container,
                 parent_map_object_id=parent_map_object_id,
-                allow_existing=isinstance(raw_item, dict) and "containers" in raw_item,
+                allow_existing=(
+                    isinstance(raw_item, dict)
+                    and ("containers" in raw_item or "units" in raw_item)
+                ),
             )
     return inserted
 

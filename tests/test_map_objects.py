@@ -499,7 +499,7 @@ class TestMapObjects(BaseApiTest):
         area = listed.json()["objects"][0]
         self.assertFalse(area["has_internal_layout"])
         self.assertEqual(area["container_count"], 1)
-        self.assertEqual(area["containers"][0]["plot_id"], "legacy-pot")
+        self.assertEqual(area["containers"][0]["plot_id"], "CONT-31a0c0d7979dc5938233e65709d548e7")
 
     def test_import_rejects_map_object_outside_grid(self) -> None:
         export_res = self.client.get("/api/plots/export")
