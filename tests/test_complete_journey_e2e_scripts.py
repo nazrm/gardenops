@@ -3005,6 +3005,20 @@ try {
   if (!String(error.message).includes('assignments_with_cross_garden_ownership')) process.exit(3);
 }
 const expectedAudit = phaseOneAuditExpectedEvents(9);
+const canonicalLifecycleMutations = [
+  [4, 'DELETE', '/api/plants/{created_plant_id}', 200],
+  [8, 'PATCH', '/api/plants/{created_plant_id}', 200],
+  [5, 'PATCH', '/api/plots/COMPLETE-PHASE-ONE-INDOOR/plants/COMPLETE-PHASE-ONE-BASIL', 200],
+  [4, 'POST', '/api/plants', 201],
+];
+for (const [count, method, path, statusCode] of canonicalLifecycleMutations) {
+  const event = expectedAudit.find((candidate) => (
+    candidate.method === method
+      && candidate.path === path
+      && candidate.status_code === statusCode
+  ));
+  if (event?.count !== count) process.exit(19);
+}
 const containerDelete = expectedAudit.find((event) => (
   event.method === 'DELETE'
     && event.path === '/api/gardens/{garden_id}/containers/{plot_id}'
@@ -3037,6 +3051,17 @@ for (const [method, path, statusCode] of prohibitedDirectViewerDenials) {
 }
 const evidence = assertPhaseOneAuditContract(audit, 9);
 if (evidence.unexpected_count !== 0 || evidence.flexible_read_event_types !== 1) process.exit(4);
+for (const [, method, path, statusCode] of canonicalLifecycleMutations) {
+  try {
+    assertPhaseOneAuditContract({ events: [
+      ...audit.events,
+      { count: 1, method, path, status_code: statusCode },
+    ] }, 9);
+    process.exit(22);
+  } catch (error) {
+    if (!String(error.message).includes('count was unexpected')) process.exit(23);
+  }
+}
 try {
   assertPhaseOneAuditContract({ events: [
     ...audit.events,
