@@ -180,6 +180,12 @@ class TestContainerPlotMoves(BaseApiTest):
             "container-editor-pass",
             garden_id=garden_id,
         )
+        editor_plots = editor_client.get("/api/plots", headers=editor_headers)
+        self.assertTrue(
+            next(plot for plot in editor_plots.json() if plot["plot_id"] == "SHARED-C")[
+                "can_assign"
+            ]
+        )
         placed = editor_client.post(
             "/api/plots/SHARED-C/plants/EDITOR-PLANT",
             headers=editor_headers,
@@ -195,6 +201,11 @@ class TestContainerPlotMoves(BaseApiTest):
         plot_list = viewer_client.get("/api/plots", headers=viewer_headers)
         self.assertEqual(plot_list.status_code, 200, plot_list.text)
         self.assertIn("SHARED-C", {plot["plot_id"] for plot in plot_list.json()})
+        self.assertFalse(
+            next(plot for plot in plot_list.json() if plot["plot_id"] == "SHARED-C")[
+                "can_assign"
+            ]
+        )
         visible = viewer_client.get("/api/plots/SHARED-C/plants", headers=viewer_headers)
         self.assertEqual(visible.status_code, 200, visible.text)
         self.assertEqual([p["plt_id"] for p in visible.json()], ["EDITOR-PLANT"])

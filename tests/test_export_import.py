@@ -1159,6 +1159,53 @@ class TestExportImport(BaseApiTest):
             db.return_db(conn)
         self.assertIsNone(leaked)
 
+    def test_import_plants_csv_rejects_archived_plot_assignments(self) -> None:
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO plots (
+                    plot_id, garden_id, zone_code, zone_name, plot_number,
+                    grid_row, grid_col, plot_kind, display_name, container_type,
+                    environment, archived_at_ms
+                )
+                VALUES (
+                    'ARCHIVED-CSV', %s, 'C', 'Containers', 0,
+                    NULL, NULL, 'container', 'Archived CSV pot', 'pot',
+                    'outdoor', 1770000000000
+                )
+                """,
+                (garden_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id)
+                VALUES ('ARCHIVED-CSV', %s, %s)
+                """,
+                (self._owner_id, garden_id),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        csv_text = (
+            "plt_id,name,latin,category,bloom_month,color,hardiness,height_cm,light,link,"
+            "year_planted,deer_resistant,care_watering,care_soil,care_planting,"
+            "care_maintenance,care_notes,plot_assignments\n"
+            "PLT-TEST,Should Roll Back,Testus plantus,frø,juli,hvit,H4,140,sol,,2025,1,,,,,,"
+            '"[{""plot_id"":""ARCHIVED-CSV"",""quantity"":1}]"\n'
+        )
+
+        response = self.client.post(
+            "/api/plants/import-csv",
+            json={"csv_text": csv_text},
+        )
+
+        self.assertEqual(response.status_code, 410, response.text)
+        plant = self.client.get("/api/plants?q=Test Plant").json()
+        self.assertEqual(plant[0]["name"], "Test Plant")
+
     def test_import_plants_csv_rolls_back_on_assignment_error(self) -> None:
         csv_text = (
             "plt_id,name,latin,category,bloom_month,color,hardiness,height_cm,light,link,"

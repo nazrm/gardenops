@@ -394,6 +394,57 @@ class TestPlantFromStock(BaseApiTest):
             "notes": "Atomic planting",
         }
 
+    def test_archived_plot_is_rejected_before_inventory_planting(self) -> None:
+        item_id = self._seed_linked_stock()
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO plots (
+                    plot_id, garden_id, zone_code, zone_name, plot_number,
+                    grid_row, grid_col, plot_kind, display_name, container_type,
+                    environment, archived_at_ms
+                )
+                VALUES (
+                    'ARCHIVED-STOCK', %s, 'C', 'Containers', 0,
+                    NULL, NULL, 'container', 'Archived stock pot', 'pot',
+                    'outdoor', 1770000000000
+                )
+                """,
+                (garden_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id)
+                VALUES ('ARCHIVED-STOCK', %s, %s)
+                """,
+                (self._owner_id, garden_id),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        failed = self.client.post(
+            f"/api/inventory/{item_id}/plant",
+            headers={"X-Offline-Operation-Id": str(uuid4())},
+            json={**self._plant_body(), "plot_id": "ARCHIVED-STOCK"},
+        )
+
+        self.assertEqual(failed.status_code, 410, failed.text)
+        self.assertEqual(self.client.get(f"/api/inventory/{item_id}").json()["quantity"], "1")
+        conn = db.get_db()
+        try:
+            assignment = conn.execute(
+                """
+                SELECT 1 FROM plot_plants
+                WHERE plot_id = 'ARCHIVED-STOCK' AND plt_id = 'PLT-TEST'
+                """,
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertIsNone(assignment)
+
     def test_command_is_atomic_and_identical_replay_is_idempotent(self) -> None:
         item_id = self._seed_linked_stock()
         operation_id = str(uuid4())

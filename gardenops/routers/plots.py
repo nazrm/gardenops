@@ -271,6 +271,87 @@ def _lock_plot_row(
     return row
 
 
+def _lock_assignment_target_rows(
+    db: DbConn,
+    plot_ids: list[str],
+    context: AuthContext,
+    *,
+    allow_missing_custom: bool = False,
+) -> dict[str, object]:
+    """Lock and authorize canonical plot targets in deterministic order.
+
+    CSV restores may retain an unresolved legacy assignment ID; such IDs have
+    no plot row to mutate and are allowed only when no ownership row marks
+    them as foreign.
+    """
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for plot_id in plot_ids:
+        normalized_plot_id = require_public_id(plot_id, field_name="plot_id")
+        if normalized_plot_id not in seen:
+            normalized.append(normalized_plot_id)
+            seen.add(normalized_plot_id)
+    if not normalized:
+        return {}
+
+    placeholders = ",".join("%s" for _ in normalized)
+    rows = db.execute(
+        f"""
+        SELECT p.*, po.owner_user_id, po.garden_id AS ownership_garden_id
+        FROM plots p
+        LEFT JOIN plot_ownership po ON po.plot_id = p.plot_id
+        WHERE p.plot_id IN ({placeholders})
+        ORDER BY p.plot_id
+        FOR UPDATE OF p
+        """,
+        sorted(normalized),
+    ).fetchall()
+    rows_by_plot = {str(row["plot_id"]): row for row in rows}
+    missing = [plot_id for plot_id in sorted(normalized) if plot_id not in rows_by_plot]
+    if missing and allow_missing_custom:
+        missing_placeholders = ",".join("%s" for _ in missing)
+        ownership_rows = db.execute(
+            f"""
+            SELECT plot_id, garden_id
+            FROM plot_ownership
+            WHERE plot_id IN ({missing_placeholders})
+            ORDER BY plot_id
+            FOR UPDATE
+            """,
+            sorted(missing),
+        ).fetchall()
+        active_garden_id = _active_garden_id(context)
+        if any(
+            row["garden_id"] is not None and int(row["garden_id"]) != active_garden_id
+            for row in ownership_rows
+        ):
+            raise HTTPException(status_code=404, detail="Plot not found")
+    for plot_id in sorted(normalized):
+        row = rows_by_plot.get(plot_id)
+        if row is None:
+            if allow_missing_custom:
+                continue
+            raise HTTPException(status_code=404, detail="Plot not found in active garden")
+        try:
+            _authorize_plot_row(row, context)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Plot not found in active garden",
+                ) from exc
+            raise
+    return rows_by_plot
+
+
+def _plot_can_receive_plants(row: object, context: AuthContext) -> bool:
+    try:
+        _authorize_plot_row(row, context)
+    except HTTPException:
+        return False
+    return True
+
+
 def _require_plot_in_garden_or_unowned(
     db: DbConn,
     plot_id: str,
@@ -480,7 +561,8 @@ def list_plots(db: DB, request: Request, exclude_indoor: bool = Query(default=Fa
         where_extra += " AND p.plot_kind <> 'indoor'"
     rows = db.execute(
         """
-        SELECT p.*, COUNT(pown.plt_id) AS plant_count,
+        SELECT p.*, po.owner_user_id, po.garden_id AS ownership_garden_id,
+            COUNT(pown.plt_id) AS plant_count,
             SUM(CASE WHEN pl.category = 'trær'
                 THEN 1 ELSE 0 END) AS _tree_count,
             SUM(CASE WHEN pl.category IN ('busker', 'baerbusker')
@@ -497,7 +579,7 @@ def list_plots(db: DB, request: Request, exclude_indoor: bool = Query(default=Fa
     """
         + where_extra
         + """
-        GROUP BY p.plot_id, po.owner_user_id
+        GROUP BY p.plot_id, po.owner_user_id, po.garden_id
         ORDER BY p.zone_code, p.plot_number
     """,
         params,
@@ -521,9 +603,12 @@ def list_plots(db: DB, request: Request, exclude_indoor: bool = Query(default=Fa
     result = []
     for r in rows:
         d = dict(r)
+        d.pop("owner_user_id", None)
+        d.pop("ownership_garden_id", None)
         d["has_tree"] = bool(d.pop("_tree_count"))
         d["has_bush"] = bool(d.pop("_bush_count"))
         d["categories"] = sorted(cat_map.get(str(r["plot_id"]), set()))
+        d["can_assign"] = _plot_can_receive_plants(r, context)
         result.append(d)
     return result
 
