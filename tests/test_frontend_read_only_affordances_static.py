@@ -38,8 +38,7 @@ def test_assignment_controls_use_plant_and_plot_capabilities() -> None:
     assert "params.canAssign !== false" in bottom_sheet
     assert "const canAssign =" in interactions
     assert (
-        "state.plots.find((plot) => plot.plot_id === plotId)?.can_assign === true"
-        in interactions
+        "state.plots.find((plot) => plot.plot_id === plotId)?.can_assign === true" in interactions
     )
     assert "const assignablePlants = plants.filter" in interactions
     assert "can_assign?: boolean" in interactions
@@ -48,8 +47,7 @@ def test_assignment_controls_use_plant_and_plot_capabilities() -> None:
     assert "if (!sourcePlot?.can_assign || !destinationPlot?.can_assign)" in app
     assert "(plot) => plot.archived_at_ms == null && plot.can_assign" in app
     assert (
-        "if (!plant.can_assign || !sourcePlot?.can_assign || !ensureWriteAccess()) return;"
-        in app
+        "if (!plant.can_assign || !sourcePlot?.can_assign || !ensureWriteAccess()) return;" in app
     )
     assert "if (!plant.can_assign || !ensureWriteAccess()) return;" in app
     assert app.count("if (destinations.length === 0) return;") == 2

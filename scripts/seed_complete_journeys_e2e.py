@@ -1872,20 +1872,14 @@ def _garden_graph(conn, *, garden_id: int) -> dict[str, Any]:
         "plots": [
             {
                 "archived_at_ms": (
-                    int(row["archived_at_ms"])
-                    if row["archived_at_ms"] is not None
-                    else None
+                    int(row["archived_at_ms"]) if row["archived_at_ms"] is not None else None
                 ),
                 "color": str(row["color"]) if row["color"] is not None else None,
                 "container_type": (
-                    str(row["container_type"])
-                    if row["container_type"] is not None
-                    else None
+                    str(row["container_type"]) if row["container_type"] is not None else None
                 ),
                 "display_name": (
-                    str(row["display_name"])
-                    if row["display_name"] is not None
-                    else None
+                    str(row["display_name"]) if row["display_name"] is not None else None
                 ),
                 "environment": str(row["environment"]),
                 "garden_id": int(row["garden_id"]),
@@ -1919,11 +1913,7 @@ def _snapshot_payload_projection(
     return {
         "house": graph["layout"],
         "map_objects": [
-            {
-                key: value
-                for key, value in item.items()
-                if key not in {"units", "containers"}
-            }
+            {key: value for key, value in item.items() if key not in {"units", "containers"}}
             for item in snapshot_map_objects(conn, garden_id)
         ],
         "plots": [

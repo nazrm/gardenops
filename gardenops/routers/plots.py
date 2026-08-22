@@ -553,8 +553,7 @@ def list_plots(db: DB, request: Request, exclude_indoor: bool = Query(default=Fa
         params.append(garden_id)
     else:
         where_extra = (
-            " AND po.garden_id = %s"
-            " AND (po.owner_user_id = %s OR p.plot_kind = 'container')"
+            " AND po.garden_id = %s AND (po.owner_user_id = %s OR p.plot_kind = 'container')"
         )
         params.append(garden_id)
         params.append(context.user_id)
@@ -958,9 +957,7 @@ def move_plant_between_plots(
             """,
             (to_plot_id, plt_id),
         ).fetchone()
-        destination_is_indoor = (
-            str(locked_rows[to_plot_id]["plot_kind"] or "") == "indoor"
-        )
+        destination_is_indoor = str(locked_rows[to_plot_id]["plot_kind"] or "") == "indoor"
         destination_room_label = src["room_label"] if destination_is_indoor else None
         source_is_indoor = str(locked_rows[from_plot_id]["plot_kind"] or "") == "indoor"
 

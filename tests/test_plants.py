@@ -75,9 +75,7 @@ class TestPlants(BaseApiTest):
         self.assertEqual(plants["PLT-002"]["added_at_ms"], 1_800_000_000_456)
 
     def test_list_plants_exposes_assignment_capability(self) -> None:
-        plants = {
-            plant["plt_id"]: plant for plant in self.client.get("/api/plants").json()
-        }
+        plants = {plant["plt_id"]: plant for plant in self.client.get("/api/plants").json()}
         self.assertTrue(plants["PLT-TEST"]["can_assign"])
 
     def test_update_plant(self) -> None:

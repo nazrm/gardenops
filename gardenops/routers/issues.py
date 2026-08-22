@@ -242,10 +242,7 @@ def _serialize_issue(
         "updated_at_ms": int(row["updated_at_ms"]),
         "plant_ids": plant_ids,
         "plot_ids": plot_ids,
-        "plots": plots or [
-            {"plot_id": plot_id, "zone_name": ""}
-            for plot_id in plot_ids
-        ],
+        "plots": plots or [{"plot_id": plot_id, "zone_name": ""} for plot_id in plot_ids],
     }
 
 
@@ -516,9 +513,7 @@ def _load_related_journal_entries(
     ).fetchall():
         plot_map[int(row["entry_id"])].append(str(row["plot_id"]))
 
-    plot_detail_map: dict[int, list[dict[str, object]]] = {
-        entry_id: [] for entry_id in entry_ids
-    }
+    plot_detail_map: dict[int, list[dict[str, object]]] = {entry_id: [] for entry_id in entry_ids}
     for row in db.execute(
         "SELECT jep.entry_id, jep.plot_id, p.zone_name, p.display_name, "
         "p.plot_kind, p.archived_at_ms "
@@ -534,9 +529,7 @@ def _load_related_journal_entries(
                 "display_name": str(row["display_name"]) if row["display_name"] else None,
                 "plot_kind": str(row["plot_kind"]) if row["plot_kind"] else None,
                 "archived_at_ms": (
-                    int(row["archived_at_ms"])
-                    if row["archived_at_ms"] is not None
-                    else None
+                    int(row["archived_at_ms"]) if row["archived_at_ms"] is not None else None
                 ),
             }
         )
@@ -558,7 +551,8 @@ def _load_related_journal_entries(
                 "updated_at_ms": int(row["updated_at_ms"]),
                 "plant_ids": plant_map.get(int(row["id"]), []),
                 "plot_ids": plot_map.get(int(row["id"]), []),
-                "plots": plot_detail_map.get(int(row["id"]), []) or [
+                "plots": plot_detail_map.get(int(row["id"]), [])
+                or [
                     {"plot_id": plot_id, "zone_name": ""}
                     for plot_id in plot_map.get(int(row["id"]), [])
                 ],

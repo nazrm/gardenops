@@ -252,9 +252,7 @@ def _attach_calendar_plot_details(
             "display_name": str(row["display_name"]) if row["display_name"] else None,
             "plot_kind": str(row["plot_kind"]) if row["plot_kind"] else None,
             "archived_at_ms": (
-                int(row["archived_at_ms"])
-                if row["archived_at_ms"] is not None
-                else None
+                int(row["archived_at_ms"]) if row["archived_at_ms"] is not None else None
             ),
         }
         for row in rows

@@ -2233,11 +2233,7 @@ def _area_only_map_objects(
             detail="Schema v2 containers must be represented in plots",
         )
     return [
-        {
-            key: value
-            for key, value in item.items()
-            if key not in {"units", "containers"}
-        }
+        {key: value for key, value in item.items() if key not in {"units", "containers"}}
         for item in map_objects
     ]
 
@@ -2282,13 +2278,9 @@ def _validate_layout_ids(
 ) -> None:
     """Reject identity conflicts before any destructive restore work."""
     incoming_kind_by_id = {
-        str(plot["plot_id"]): str(plot.get("plot_kind") or "ground")
-        for plot in plots
+        str(plot["plot_id"]): str(plot.get("plot_kind") or "ground") for plot in plots
     }
-    incoming_archived_by_id = {
-        str(plot["plot_id"]): plot.get("archived_at_ms")
-        for plot in plots
-    }
+    incoming_archived_by_id = {str(plot["plot_id"]): plot.get("archived_at_ms") for plot in plots}
     if incoming_kind_by_id:
         rows = db.execute(
             """
@@ -2417,11 +2409,7 @@ def snapshot_layout(
         ).fetchall()
     raw_map_objects = snapshot_map_objects(db, garden_id)
     map_objects = [
-        {
-            key: value
-            for key, value in item.items()
-            if key not in {"units", "containers"}
-        }
+        {key: value for key, value in item.items() if key not in {"units", "containers"}}
         for item in raw_map_objects
     ]
     payload = {
@@ -2459,10 +2447,7 @@ def restore_snapshot_data(
         plots=plots,
         map_objects=map_objects,
     )
-    normalized_plots = [
-        PlotImportItem.model_validate(plot).model_dump()
-        for plot in plots
-    ]
+    normalized_plots = [PlotImportItem.model_validate(plot).model_dump() for plot in plots]
 
     seen: set[str] = set()
     seen_cells: set[tuple[int, int]] = set()
@@ -2722,9 +2707,7 @@ def restore_snapshot_data(
                 WHERE garden_id = %s AND plot_id = %s
                 """,
                 (
-                    parent_map_object_ids.get(str(parent_public_id))
-                    if parent_public_id
-                    else None,
+                    parent_map_object_ids.get(str(parent_public_id)) if parent_public_id else None,
                     garden_id,
                     str(plot["plot_id"]),
                 ),

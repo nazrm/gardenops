@@ -877,8 +877,7 @@ def replace_map_objects(
                 item=container,
                 parent_map_object_id=parent_map_object_id,
                 allow_existing=(
-                    isinstance(raw_item, dict)
-                    and ("containers" in raw_item or "units" in raw_item)
+                    isinstance(raw_item, dict) and ("containers" in raw_item or "units" in raw_item)
                 ),
             )
     return inserted
@@ -928,9 +927,7 @@ def _container_response(
     archived = rows[0].get("archived_at_ms") is not None
     return _serialize_container(
         rows[0],
-        can_edit=(role in {"admin", "editor"} and not archived)
-        if role is not None
-        else None,
+        can_edit=(role in {"admin", "editor"} and not archived) if role is not None else None,
         can_archive=(role == "admin" and not archived) if role is not None else None,
     )
 

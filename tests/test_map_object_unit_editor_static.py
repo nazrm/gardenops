@@ -13,10 +13,10 @@ def test_map_panel_uses_intent_level_area_and_container_controls() -> None:
     assert "function buildAreaCreateForm(" in panel
     assert "function buildContainerCreateForm(" in panel
     assert 'summary.textContent = `+ ${t("map.area_add")}`;' in panel
-    assert 'summary.textContent = existing' in panel
+    assert "summary.textContent = existing" in panel
     assert 't("map.container_add_standalone")' in panel
     assert 't("map.edit_layout")' in panel
-    assert "plot_kind !== \"container\"" in panel
+    assert 'plot_kind !== "container"' in panel
     assert "onCreateContainer" in panel
     assert "onOpenContainer" in panel
     assert "map-container-row-main" in panel
@@ -31,7 +31,7 @@ def test_canonical_container_rows_open_existing_plot_details() -> None:
     assert "container.dataset" not in panel
     assert 'open.dataset["containerPlotId"] = container.plot_id;' in panel
     assert "params.onOpenContainer(container.plot_id, open)" in panel
-    assert 'container.can_archive === true' in panel
+    assert "container.can_archive === true" in panel
     assert "archived_at_ms" in panel
 
 

@@ -118,9 +118,7 @@ class TestCanonicalContainerImport(BaseApiTest):
         payload = json.loads(response.content)
 
         self.assertEqual(payload["schema_version"], 2)
-        container = next(
-            plot for plot in payload["plots"] if plot["plot_id"] == "EXPORT-CONT"
-        )
+        container = next(plot for plot in payload["plots"] if plot["plot_id"] == "EXPORT-CONT")
         self.assertEqual(container["plot_kind"], "container")
         self.assertEqual(container["display_name"], "Blue planter")
         self.assertEqual(container["container_type"], "pot")
@@ -141,9 +139,7 @@ class TestCanonicalContainerImport(BaseApiTest):
             container_name="Omitted planter",
         )
         exported = json.loads(self.client.get("/api/plots/export").content)
-        exported["plots"] = [
-            plot for plot in exported["plots"] if plot["plot_id"] != "OMIT-CONT"
-        ]
+        exported["plots"] = [plot for plot in exported["plots"] if plot["plot_id"] != "OMIT-CONT"]
 
         response = self._import(exported, "canonical-container-restore")
         self.assertEqual(response.status_code, 200, response.text)

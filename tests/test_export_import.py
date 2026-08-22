@@ -810,9 +810,7 @@ class TestExportImport(BaseApiTest):
         empty_res = self.client.get(f"/api/gardens/{garden_id}/map-objects")
         self.assertEqual(empty_res.status_code, 200, empty_res.text)
         self.assertEqual(empty_res.json()["objects"], [])
-        detached_res = self.client.get(
-            f"/api/gardens/{garden_id}/containers/{container_id}"
-        )
+        detached_res = self.client.get(f"/api/gardens/{garden_id}/containers/{container_id}")
         self.assertEqual(detached_res.status_code, 200, detached_res.text)
         self.assertIsNone(detached_res.json()["parent_object_public_id"])
 

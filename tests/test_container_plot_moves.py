@@ -202,9 +202,7 @@ class TestContainerPlotMoves(BaseApiTest):
         self.assertEqual(plot_list.status_code, 200, plot_list.text)
         self.assertIn("SHARED-C", {plot["plot_id"] for plot in plot_list.json()})
         self.assertFalse(
-            next(plot for plot in plot_list.json() if plot["plot_id"] == "SHARED-C")[
-                "can_assign"
-            ]
+            next(plot for plot in plot_list.json() if plot["plot_id"] == "SHARED-C")["can_assign"]
         )
         visible = viewer_client.get("/api/plots/SHARED-C/plants", headers=viewer_headers)
         self.assertEqual(visible.status_code, 200, visible.text)

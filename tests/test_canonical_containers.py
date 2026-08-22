@@ -186,9 +186,7 @@ class TestCanonicalContainers(BaseApiTest):
             parent_object_public_id=str(area["public_id"]),
         )
 
-        deleted = self.client.delete(
-            f"/api/gardens/{garden_id}/map-objects/{area['public_id']}"
-        )
+        deleted = self.client.delete(f"/api/gardens/{garden_id}/map-objects/{area['public_id']}")
         self.assertEqual(deleted.status_code, 200, deleted.text)
         self.assertEqual(deleted.json()["unparented_containers"], 1)
 
@@ -220,9 +218,7 @@ class TestCanonicalContainers(BaseApiTest):
         finally:
             db.return_db(conn)
 
-        occupied = self.client.delete(
-            f"/api/gardens/{garden_id}/containers/{container['plot_id']}"
-        )
+        occupied = self.client.delete(f"/api/gardens/{garden_id}/containers/{container['plot_id']}")
         self.assertEqual(occupied.status_code, 409, occupied.text)
         self.assertEqual(occupied.json()["detail"]["plant_quantity"], 2)
 
@@ -235,9 +231,7 @@ class TestCanonicalContainers(BaseApiTest):
             conn.commit()
         finally:
             db.return_db(conn)
-        archived = self.client.delete(
-            f"/api/gardens/{garden_id}/containers/{container['plot_id']}"
-        )
+        archived = self.client.delete(f"/api/gardens/{garden_id}/containers/{container['plot_id']}")
         self.assertEqual(archived.status_code, 200, archived.text)
         self.assertEqual(archived.json()["status"], "archived")
         listed = self.client.get(f"/api/gardens/{garden_id}/map-objects")
