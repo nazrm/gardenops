@@ -12,6 +12,7 @@ export interface DrawerParams {
   mediaPreviewByPlantId?: Map<string, MediaAsset | null>;
   plantAlertsByPlantId?: Map<string, PlantAlertType[]>;
   canWrite?: boolean;
+  canAssign?: boolean;
   onClose: () => void;
   onSearch: (event: Event) => void;
   onRemove: (pltId: string) => void;
@@ -32,6 +33,7 @@ type DrawerPlantSectionParams = Pick<
   | "mediaPreviewByPlantId"
   | "plantAlertsByPlantId"
   | "canWrite"
+  | "canAssign"
   | "onClose"
   | "onRemove"
   | "onEdit"
@@ -126,6 +128,7 @@ function buildDrawerPlantsSection(
             params.mediaPreviewByPlantId?.get(plant.plt_id) ?? null,
           alertTypes: params.plantAlertsByPlantId?.get(plant.plt_id),
           canWrite: params.canWrite,
+          canAssign: params.canAssign,
           ...(params.plotLabel ? { plotLabel: params.plotLabel } : {}),
           ...(params.onMove ? { onMove: params.onMove } : {}),
           onCreateCalendarEvent: params.onCreateCalendarEvent
@@ -240,28 +243,30 @@ export function showDrawer(params: DrawerParams): void {
   let searchInput: HTMLInputElement | null = null;
 
   if (params.canWrite !== false) {
-    searchInput = document.createElement("input");
-    searchInput.type = "text";
-    searchInput.id = "drawer-plant-search";
-    searchInput.className = "plant-search-input";
-    searchInput.placeholder = t("plants.search_placeholder");
-    searchInput.setAttribute("aria-label", t("plants.search_placeholder"));
+    if (params.canAssign !== false) {
+      searchInput = document.createElement("input");
+      searchInput.type = "text";
+      searchInput.id = "drawer-plant-search";
+      searchInput.className = "plant-search-input";
+      searchInput.placeholder = t("plants.search_placeholder");
+      searchInput.setAttribute("aria-label", t("plants.search_placeholder"));
 
-    const searchResults = document.createElement("div");
-    searchResults.id = "drawer-search-results";
-    searchResults.className = "search-results";
+      const searchResults = document.createElement("div");
+      searchResults.id = "drawer-search-results";
+      searchResults.className = "search-results";
 
-    addPlantSection.append(searchInput, searchResults);
+      addPlantSection.append(searchInput, searchResults);
 
-    if (params.onCreatePlant) {
-      const createLink = document.createElement("button");
-      createLink.type = "button";
-      createLink.className = "btn-link create-plant-link";
-      createLink.textContent = t("plants.search_create_manual");
-      createLink.addEventListener("click", () => {
-        params.onCreatePlant!(plotId);
-      });
-      addPlantSection.appendChild(createLink);
+      if (params.onCreatePlant) {
+        const createLink = document.createElement("button");
+        createLink.type = "button";
+        createLink.className = "btn-link create-plant-link";
+        createLink.textContent = t("plants.search_create_manual");
+        createLink.addEventListener("click", () => {
+          params.onCreatePlant!(plotId);
+        });
+        addPlantSection.appendChild(createLink);
+      }
     }
     if (params.onCreateCalendarEvent) {
       const calendarLink = document.createElement("button");
@@ -315,7 +320,10 @@ export function showDrawer(params: DrawerParams): void {
     journalPreview,
     mediaPreview,
   );
-  if (params.canWrite !== false) {
+  if (
+    params.canWrite !== false
+    && (params.canAssign !== false || params.onCreateCalendarEvent)
+  ) {
     drawer.insertBefore(addPlantSection, tasksPreview);
   }
 

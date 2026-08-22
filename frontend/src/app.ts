@@ -1225,11 +1225,11 @@ async function openPlantMovePicker(
   plant: Plant,
   sourcePlotId: string,
 ): Promise<void> {
-  if (!plant.can_assign || !ensureWriteAccess()) return;
+  const sourcePlot = state.plots.find((plot) => plot.plot_id === sourcePlotId);
+  if (!plant.can_assign || !sourcePlot?.can_assign || !ensureWriteAccess()) return;
   const sourcePlants = await getPlotPlants(sourcePlotId);
   const sourcePlant = sourcePlants.find((candidate) => candidate.plt_id === plant.plt_id);
   const sourceQuantity = Math.max(1, sourcePlant?.quantity ?? plant.quantity ?? 1);
-  const sourcePlot = state.plots.find((plot) => plot.plot_id === sourcePlotId);
   const sourceLabel = sourcePlot
     ? plotDisplayLabel(sourcePlot)
     : t("map.unnamed_location");
@@ -6012,6 +6012,12 @@ async function movePlantBetweenPlots(
   pltId: string,
 ): Promise<void> {
   if (!ensureWriteAccess()) return;
+  const sourcePlot = state.plots.find((plot) => plot.plot_id === fromPlotId);
+  const destinationPlot = state.plots.find((plot) => plot.plot_id === toPlotId);
+  if (!sourcePlot?.can_assign || !destinationPlot?.can_assign) {
+    showToast(t("error.forbidden"), "error");
+    return;
+  }
   try {
     await movePlantBetweenPlotsApi(fromPlotId, toPlotId, pltId);
   } catch (err) {
