@@ -3913,45 +3913,47 @@ textarea {
 }
 
 .map-container-marker {
-  position: absolute;
-  z-index: 3;
-  display: inline-flex;
+  position: relative;
+  display: flex;
   align-items: center;
   justify-content: center;
-  flex-direction: column;
-  min-width: 44px;
-  min-height: 44px;
-  max-width: 88px;
-  padding: 5px 7px;
-  transform: translate(-50%, -50%);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 2px;
   pointer-events: auto;
-  border: 2px solid var(--accent);
-  border-radius: var(--r-sm);
-  background: color-mix(in srgb, var(--bg-1) 88%, transparent);
+  touch-action: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 78%, #000 10%);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent-muted) 76%, var(--bg-1));
   color: var(--text-1);
-  font-size: 12px;
+  font-size: clamp(6px, calc(var(--cell) * 0.3), 10px);
   font-weight: 800;
   cursor: pointer;
-  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  user-select: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #fff 32%, transparent);
 }
 
-.map-container-marker-name,
-.map-container-marker-count {
+.map-container-marker-name {
   display: block;
-  max-width: 72px;
+  width: 100%;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.map-container-marker-name {
-  font-size: 11px;
+.map-container-marker--editable {
+  cursor: grab;
 }
 
-.map-container-marker-count {
-  color: var(--text-3);
-  font-size: 9px;
-  font-weight: 700;
+.map-container-marker.dragging {
+  cursor: grabbing;
+  box-shadow:
+    inset 0 0 0 2px var(--accent),
+    var(--shadow-sm);
 }
 
 .map-container-marker:hover,

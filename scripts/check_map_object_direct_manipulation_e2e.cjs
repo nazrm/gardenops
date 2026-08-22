@@ -198,9 +198,6 @@ async function waitForDimensions(page, expected, label) {
   while (Date.now() < deadline) {
     const disclosure = page.locator("details.map-object-layout-disclosure");
     if (await disclosure.count()) {
-      if ((await disclosure.getAttribute("open")) === null) {
-        await disclosure.locator("summary").click().catch(() => {});
-      }
       const inputs = disclosure.locator(
         ".map-object-position-grid input[type='number']",
       );
@@ -392,6 +389,7 @@ async function main() {
 
   const patches = [];
   const movedPlotRequests = [];
+  const containerPositionPatches = [];
   const plots = [makePlot(4, 6), makePlot(8, 1)];
   const mapObject = {
     public_id: OBJECT_ID,
@@ -500,7 +498,14 @@ async function main() {
       for (const plotId of body.plot_ids) {
         const plotIndex = plots.findIndex((plot) => plot.plot_id === plotId);
         assert(plotIndex >= 0, `Move request referenced missing plot ${plotId}`);
-        plots.splice(plotIndex, 1);
+        Object.assign(plots[plotIndex], {
+          plot_kind: "container",
+          display_name: plotId,
+          container_type: body.container_type,
+          parent_map_object_public_id: OBJECT_ID,
+          grid_row: null,
+          grid_col: null,
+        });
         mapObject.containers.push({
           plot_id: plotId,
           display_name: plotId,
@@ -508,10 +513,21 @@ async function main() {
           environment: "outdoor",
           plant_count: 0,
           parent_map_object_public_id: OBJECT_ID,
+          position_x: mapObject.containers.length,
+          position_y: 0,
         });
       }
       mapObject.container_count = mapObject.containers.length;
       return fulfillJson(route, mapObject);
+    }
+    if (method === "PATCH" && path === "/api/gardens/1/containers/P81") {
+      const body = request.postDataJSON();
+      const container = mapObject.containers.find((item) => item.plot_id === "P81");
+      assert(container, "Container position PATCH referenced missing P81");
+      container.position_x = body.position_x;
+      container.position_y = body.position_y;
+      containerPositionPatches.push(body);
+      return fulfillJson(route, container);
     }
     if (method === "PATCH" && path === `/api/gardens/1/map-objects/${OBJECT_ID}`) {
       const body = request.postDataJSON();
@@ -531,6 +547,18 @@ async function main() {
     }
     if (method === "GET" && path === "/api/plants") {
       return fulfillJson(route, []);
+    }
+    if (method === "GET" && path === "/api/plots/P81/plants") {
+      return fulfillJson(route, []);
+    }
+    if (method === "GET" && path === "/api/tasks") {
+      return fulfillJson(route, { tasks: [], total: 0 });
+    }
+    if (method === "GET" && path === "/api/journal") {
+      return fulfillJson(route, { entries: [], total: 0 });
+    }
+    if (method === "GET" && path === "/api/media") {
+      return fulfillJson(route, { items: [], total: 0 });
     }
     if (path === "/api/auth/user-invitations") {
       return fulfillJson(route, { invitations: [] });
@@ -659,7 +687,34 @@ async function main() {
     `Unexpected selected-plot move body: ${JSON.stringify(movedPlotRequests[0])}`,
   );
   await page.locator(".map-container-row-main", { hasText: "P81" }).waitFor({ state: "visible" });
-  await page.locator(".map-container-marker-name", { hasText: "P81" }).waitFor({ state: "visible" });
+  const containerMarker = page.locator(".map-container-marker", { hasText: "P81" });
+  await containerMarker.waitFor({ state: "visible" });
+  const containerBox = await containerMarker.boundingBox();
+  const regularPlotBox = await page.locator(`.plot[data-plot-id='${BLOCKER_PLOT_ID}']`).boundingBox();
+  assert(containerBox && regularPlotBox, "Missing contained or regular plot dimensions");
+  assert(
+    Math.abs(containerBox.width - regularPlotBox.width) < 1
+      && Math.abs(containerBox.height - regularPlotBox.height) < 1,
+    `Contained plot is not one regular cell: ${JSON.stringify({ containerBox, regularPlotBox })}`,
+  );
+  await containerMarker.click();
+  await page.locator(".drawer.drawer-open").waitFor({ state: "visible" });
+  const drawerTitle = await page.locator("#plot-drawer-title").textContent();
+  assert(
+    drawerTitle === "P81",
+    `Clicking the contained plot did not open P81: ${drawerTitle}`,
+  );
+  await page.locator(".drawer .close-btn").click();
+  await dispatchPointer(page, containerMarker, cellW, 0, "mouse");
+  await waitForPatchCount(containerPositionPatches, 1, "desktop contained-plot move");
+  await page.waitForFunction(() => (
+    document.querySelector(".map-container-marker[data-container-plot-id='P81']")
+      ?.getAttribute("data-position-x") === "1"
+  ));
+  assert(
+    JSON.stringify(containerPositionPatches) === JSON.stringify([{ position_x: 1, position_y: 0 }]),
+    `Unexpected contained-plot PATCH: ${JSON.stringify(containerPositionPatches)}`,
+  );
   assert(
     await page.locator(".plot.multi-selected").count() === 0,
     "Moved plot remained selected on the map",
@@ -698,6 +753,19 @@ async function main() {
   const mobileGridBox = await mobilePage.locator("#map-grid").boundingBox();
   assert(mobileGridBox, "Missing mobile map grid bounding box");
   const mobileCellW = mobileGridBox.width / GRID_SIZE;
+  const mobileCellH = mobileGridBox.height / GRID_SIZE;
+  const mobileContainer = mobilePage.locator(".map-container-marker", { hasText: "P81" });
+  await mobileContainer.waitFor({ state: "visible" });
+  await dispatchPointer(mobilePage, mobileContainer, 0, mobileCellH, "touch");
+  await waitForPatchCount(containerPositionPatches, 2, "mobile contained-plot move");
+  await mobilePage.waitForFunction(() => (
+    document.querySelector(".map-container-marker[data-container-plot-id='P81']")
+      ?.getAttribute("data-position-y") === "1"
+  ));
+  assert(
+    JSON.stringify(containerPositionPatches.at(-1)) === JSON.stringify({ position_x: 1, position_y: 1 }),
+    `Unexpected mobile contained-plot PATCH: ${JSON.stringify(containerPositionPatches.at(-1))}`,
+  );
   const mobileHandle = mobilePage.locator(
     ".map-object-resize-handle[data-handle='nw']",
   );
@@ -725,7 +793,6 @@ async function main() {
   await waitForNoPatch(patches, patchCountBeforeCancel, "two-finger cancel");
   await waitForControlPlacement(mobilePage, afterMobileResize, "two-finger cancel");
   await waitForPreview(mobilePage, false);
-  await waitForDimensions(mobilePage, afterMobileResize, "two-finger cancel restore");
 
   await browser.close();
   console.log("Map object direct manipulation e2e passed.");

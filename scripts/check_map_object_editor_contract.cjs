@@ -53,6 +53,9 @@ assertIncludes(mapViewSource, "map-object-resize-handle", "missing object resize
 assertIncludes(mapViewSource, "map-object-preview", "missing object manipulation preview");
 assertIncludes(mapViewSource, "map-object-preview-dimensions", "preview must expose live dimensions");
 assertIncludes(mapViewSource, "map-container-marker", "missing deterministic container markers");
+assertIncludes(mapViewSource, 'marker.style.gridRow', "contained plots must use map grid rows");
+assertIncludes(mapViewSource, 'marker.style.gridColumn', "contained plots must use map grid columns");
+assertIncludes(mapViewSource, "onMapContainerManipulationStart", "missing contained-plot drag callback");
 assertIncludes(mapViewSource, "aria-keyshortcuts", "selected object must expose keyboard editing affordances");
 assertExcludes(mapViewSource, "makeObjectEditButton", "old text-button object controls must be removed");
 assertExcludes(mapViewSource, "map-object-move-handle", "old compass object move controls must be removed");
@@ -72,6 +75,9 @@ assertIncludes(appSource, "mapObjectGeometryRequests", "missing ordered geometry
 assertIncludes(appSource, "map-object-preview--invalid", "missing invalid object preview state");
 assertExcludes(appSource, "selectedPlotBounds", "creation must not use selected plot bounds");
 assertIncludes(appSource, "mapObjectManipulationSession", "missing object manipulation session state");
+assertIncludes(appSource, "containerManipulationSession", "missing contained-plot manipulation state");
+assertIncludes(appSource, "position_x: finalPosition.x", "contained-plot moves must persist x");
+assertIncludes(appSource, "position_y: finalPosition.y", "contained-plot moves must persist y");
 assertIncludes(appSource, "startMapObjectManipulation", "missing object manipulation start flow");
 assertIncludes(appSource, "cancelMapObjectManipulation", "missing object manipulation cancel flow");
 assertIncludes(appSource, "commitMapObjectManipulation", "missing object manipulation commit flow");

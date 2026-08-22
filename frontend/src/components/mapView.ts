@@ -206,6 +206,7 @@ function safePlotColor(value: string | null | undefined): string | null {
 
 export type MapObjectManipulationMode = "move" | "resize";
 export type MapObjectResizeHandle = "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
+export interface MapContainerPosition { x: number; y: number }
 
 interface RenderMapParams {
   grid: HTMLElement;
@@ -246,6 +247,18 @@ interface RenderMapParams {
     event: PointerEvent,
   ) => void;
   onMapObjectKeyEdit?: (object: MapObject, event: KeyboardEvent) => void;
+  onMapContainerManipulationStart?: (
+    container: ContainerSummary,
+    object: MapObject,
+    position: MapContainerPosition,
+    event: PointerEvent,
+  ) => void;
+  onMapContainerKeyEdit?: (
+    container: ContainerSummary,
+    object: MapObject,
+    position: MapContainerPosition,
+    event: KeyboardEvent,
+  ) => void;
 }
 
 function cellData(el: EventTarget | null): { row: number; col: number } | null {
@@ -355,6 +368,12 @@ export function renderMapGrid(params: RenderMapParams): void {
     byContainer,
     onMapObjectClick: params.onMapObjectClick,
     onMapContainerClick: params.onMapContainerClick,
+    ...(params.onMapContainerManipulationStart
+      ? { onMapContainerManipulationStart: params.onMapContainerManipulationStart }
+      : {}),
+    ...(params.onMapContainerKeyEdit
+      ? { onMapContainerKeyEdit: params.onMapContainerKeyEdit }
+      : {}),
   });
 
   renderHouse(
@@ -410,35 +429,39 @@ function renderMapObjects(
     const containers = (object.containers ?? []).filter(
       (container) => container.archived_at_ms == null,
     );
+    grid.appendChild(overlay);
+
     if (object.public_id === selectedMapObjectId && containers.length > 0) {
-      const count = containers.length;
-      const columns = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(count))));
-      const markerRows = Math.ceil(count / columns);
       containers.forEach((container, index) => {
+        const fallbackIndex = Math.min(index, (object.geometry.width * object.geometry.height) - 1);
+        const position = {
+          x: container.position_x ?? fallbackIndex % object.geometry.width,
+          y: container.position_y ?? Math.floor(fallbackIndex / object.geometry.width),
+        };
         const marker = document.createElement("button");
         marker.type = "button";
         marker.className = "map-container-marker";
+        marker.classList.toggle("map-container-marker--editable", editMode);
         marker.dataset["containerPlotId"] = container.plot_id;
         marker.dataset["objectId"] = object.public_id;
-        marker.style.left = `${8 + ((index % columns) * 84) / columns}%`;
-        marker.style.top = `${8 + (Math.floor(index / columns) * 84) / markerRows}%`;
-        marker.style.setProperty("--container-columns", String(columns));
+        marker.dataset["positionX"] = String(position.x);
+        marker.dataset["positionY"] = String(position.y);
+        marker.style.gridRow = String(object.geometry.y + position.y);
+        marker.style.gridColumn = String(object.geometry.x + position.x);
+        marker.style.zIndex = String(14 + object.z_index);
         const markerName = document.createElement("span");
         markerName.className = "map-container-marker-name";
         markerName.textContent = container.display_name;
-        const markerCount = document.createElement("span");
-        markerCount.className = "map-container-marker-count";
-        markerCount.textContent = t("map.plant_count", { count: container.plant_count });
-        marker.append(markerName, markerCount);
-        marker.title = `${container.display_name}, ${markerCount.textContent}`;
-        marker.setAttribute(
-          "aria-label",
-          `${container.display_name}, ${t("map.plant_count", { count: container.plant_count })}`,
-        );
-        overlay.appendChild(marker);
+        marker.appendChild(markerName);
+        const plantCount = t("map.plant_count", { count: container.plant_count });
+        marker.title = `${container.display_name}, ${plantCount}`;
+        marker.setAttribute("aria-label", `${container.display_name}, ${plantCount}`);
+        if (editMode) {
+          marker.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown ArrowLeft ArrowRight");
+        }
+        grid.appendChild(marker);
       });
     }
-    grid.appendChild(overlay);
 
     const label = document.createElement("button");
     label.type = "button";
@@ -710,6 +733,18 @@ interface GridCallbacks {
   byContainer: Map<string, ContainerSummary>;
   onMapObjectClick: ((object: MapObject) => void) | undefined;
   onMapContainerClick?: ((container: ContainerSummary, trigger: HTMLElement) => void) | undefined;
+  onMapContainerManipulationStart?: (
+    container: ContainerSummary,
+    object: MapObject,
+    position: MapContainerPosition,
+    event: PointerEvent,
+  ) => void;
+  onMapContainerKeyEdit?: (
+    container: ContainerSummary,
+    object: MapObject,
+    position: MapContainerPosition,
+    event: KeyboardEvent,
+  ) => void;
 }
 
 function wireGridDelegation(
@@ -754,6 +789,12 @@ function wireGridDelegation(
     const containerMarker = (e.target as HTMLElement).closest<HTMLButtonElement>(".map-container-marker");
     const containerId = containerMarker?.dataset["containerPlotId"];
     if (containerId) {
+      if (containerMarker?.dataset["suppressClick"] === "true") {
+        delete containerMarker.dataset["suppressClick"];
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       const container = state.callbacks.byContainer.get(containerId);
       if (container) {
         e.preventDefault();
@@ -780,12 +821,51 @@ function wireGridDelegation(
     }
   });
 
+  grid.addEventListener("pointerdown", (e) => {
+    if (!state.callbacks.editMode || e.button !== 0) return;
+    const marker = (e.target as HTMLElement).closest<HTMLButtonElement>(".map-container-marker");
+    const containerId = marker?.dataset["containerPlotId"];
+    const objectId = marker?.dataset["objectId"];
+    if (!marker || !containerId || !objectId) return;
+    const container = state.callbacks.byContainer.get(containerId);
+    const object = state.callbacks.byMapObject.get(objectId);
+    const position = {
+      x: Number(marker.dataset["positionX"]),
+      y: Number(marker.dataset["positionY"]),
+    };
+    if (!container || !object || !Number.isInteger(position.x) || !Number.isInteger(position.y)) {
+      return;
+    }
+    e.stopPropagation();
+    state.callbacks.onMapContainerManipulationStart?.(container, object, position, e);
+  });
+
   grid.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" && e.key !== " ") return;
     const containerMarker = (e.target as HTMLElement).closest<HTMLButtonElement>(".map-container-marker");
     const containerId = containerMarker?.dataset["containerPlotId"];
     if (containerId) {
       const container = state.callbacks.byContainer.get(containerId);
+      const objectId = containerMarker?.dataset["objectId"];
+      const object = objectId ? state.callbacks.byMapObject.get(objectId) : undefined;
+      const position = {
+        x: Number(containerMarker?.dataset["positionX"]),
+        y: Number(containerMarker?.dataset["positionY"]),
+      };
+      if (
+        state.callbacks.editMode
+        && object
+        && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)
+        && Number.isInteger(position.x)
+        && Number.isInteger(position.y)
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (container) {
+          state.callbacks.onMapContainerKeyEdit?.(container, object, position, e);
+        }
+        return;
+      }
+      if (e.key !== "Enter" && e.key !== " ") return;
       if (container) {
         e.preventDefault();
         e.stopPropagation();
@@ -793,6 +873,7 @@ function wireGridDelegation(
       }
       return;
     }
+    if (e.key !== "Enter" && e.key !== " ") return;
     const plot = plotAt(e.target);
     if (!plot) return;
     e.preventDefault();

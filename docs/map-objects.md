@@ -18,6 +18,9 @@ surfaces useful without creating a second plant-location system.
 - A container has one stable plot ID and one editable display name. Newly
   created containers receive generated IDs; an existing plot moved into an
   area keeps its current ID, assignments, and linked history.
+- A contained plot has a saved zero-based row and column inside its area. It
+  occupies exactly one normal map cell; active contained plots cannot share a
+  cell or sit outside the area's current bounds.
 - `plot_plants` remains the only current plant-placement table. Moving a plant
   keeps historical records on their original plot ID and changes only current
   placement.
@@ -40,17 +43,21 @@ fields once.
 4. For a new empty location, select an area and choose **Add container**, or
    use **Add standalone container** for a pot that is not in an area.
 5. Choose Pot, Planter, Raised bed, or Other and give it a name. GardenOps
-   places the container automatically and shows its name and plant count.
-6. Use **Place plant** for a plant with no current home. Use **Move** on a
+   places the container in the first free cell inside the area.
+6. Select the area in map edit mode, then drag a contained plot to another free
+   cell. Arrow keys move a focused contained plot one cell at a time. Clicking
+   the plot still opens its normal plot details.
+7. Use **Place plant** for a plant with no current home. Use **Move** on a
    specific current home to choose another ordinary plot or container.
-7. The destination picker is searchable and groups ordinary plots, area
+8. The destination picker is searchable and groups ordinary plots, area
    containers, and standalone containers. A move can transfer part or all
    of a quantity and explains a destination merge before confirmation.
 
 Place and Move work with buttons, touch, and keyboard. Dragging a plant is not
 required. Area moves and resizes preview their dimensions and reject occupied
-cells before saving. Successful changes refresh the source, destination, plant
-details, and map counts and are announced to assistive technology.
+cells before saving. An area cannot be shrunk past one of its contained plots.
+Successful changes refresh the source, destination, plant details, and map
+counts and are announced to assistive technology.
 
 ## Permissions And Lifecycle
 
@@ -72,9 +79,10 @@ online-only.
 
 Layout exports use schema version 2. Areas are exported as map objects, while
 canonical containers are exported once in the plot data with the area's public
-ID. Plant assignments are not duplicated in layout exports. Imports resolve
-areas before container parents, preserve omitted containers, and translate
-schema-version-1 nested units at the import boundary.
+ID and their saved local position. Plant assignments are not duplicated in
+layout exports. Imports resolve areas before container parents, preserve
+omitted containers, and translate schema-version-1 nested units at the import
+boundary.
 
 ## Limits
 
