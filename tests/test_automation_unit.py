@@ -458,8 +458,9 @@ class TestOnFrostAlert(DbTestBase):
             """
             INSERT INTO plots
                 (plot_id, garden_id, zone_code, zone_name, plot_number,
-                 grid_row, grid_col, sub_zone, notes)
-            VALUES ('FPLACE-IN-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+                 grid_row, grid_col, sub_zone, notes, plot_kind, environment)
+            VALUES ('FPLACE-IN-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '',
+                    'indoor', 'indoor')
             """,
             (self.garden_id,),
         )
@@ -555,8 +556,9 @@ class TestWeatherTaskTyping(DbTestBase):
             """
             INSERT INTO plots
                 (plot_id, garden_id, zone_code, zone_name, plot_number,
-                 grid_row, grid_col, sub_zone, notes)
-            VALUES ('WPLACE-IN-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+                 grid_row, grid_col, sub_zone, notes, plot_kind, environment)
+            VALUES ('WPLACE-IN-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '',
+                    'indoor', 'indoor')
             """,
             (self.garden_id,),
         )
