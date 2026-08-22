@@ -301,6 +301,9 @@ export function showDrawer(params: DrawerParams): void {
     ...(params.canWrite !== undefined
       ? { canWrite: params.canWrite }
       : {}),
+    ...(params.canAssign !== undefined
+      ? { canAssign: params.canAssign }
+      : {}),
     onClose,
     onRemove,
     onEdit,

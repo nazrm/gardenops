@@ -32,8 +32,8 @@ def test_assignment_controls_use_plant_and_plot_capabilities() -> None:
     assert "plant.can_assign" in plant_card
     assert "canAssign?: boolean;" in drawer
     assert "canAssign?: boolean;" in bottom_sheet
-    assert "canAssign: params.canAssign" in drawer
-    assert "canAssign: params.canAssign" in bottom_sheet
+    assert drawer.count("canAssign: params.canAssign") == 2
+    assert bottom_sheet.count("canAssign: params.canAssign") == 2
     assert "params.canAssign !== false" in drawer
     assert "params.canAssign !== false" in bottom_sheet
     assert "const canAssign =" in interactions
