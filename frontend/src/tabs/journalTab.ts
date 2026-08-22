@@ -295,10 +295,7 @@ export function openJournalComposer(
     availablePlants: ctx
       .getPlants()
       .map((p) => ({ plt_id: p.plt_id, name: p.name })),
-    availablePlots: ctx
-      .getPlots()
-      .map((p) => p.plot_id)
-      .sort(),
+    availablePlots: ctx.getPlots(),
     editEntry,
     onSubmit: async (data, controls) => {
       try {
@@ -549,10 +546,7 @@ export function openBatchJournalComposer(
       .getPlants()
       .filter((p) => pltIds.includes(p.plt_id))
       .map((p) => ({ plt_id: p.plt_id, name: p.name })),
-    availablePlots: ctx
-      .getPlots()
-      .map((p) => p.plot_id)
-      .sort(),
+    availablePlots: ctx.getPlots(),
     plantIds: pltIds,
     onSubmit: async (data, controls) => {
       try {

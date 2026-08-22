@@ -203,10 +203,7 @@ export function openIssueForm(
       plt_id: p.plt_id,
       name: p.name,
     })),
-    availablePlots: ctx
-      .getPlots()
-      .map((p) => p.plot_id)
-      .sort(),
+    availablePlots: ctx.getPlots(),
     ...(!existingIssue
         ? {
           onDiagnoseFromPhoto: () => {

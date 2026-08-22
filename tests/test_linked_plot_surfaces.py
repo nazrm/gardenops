@@ -66,6 +66,24 @@ class TestLinkedPlotSurfaces(BaseApiTest):
             else:
                 os.environ["AUTH_REQUIRED"] = previous_auth_required
         self.assertEqual(calendar.status_code, 201, calendar.text)
+        previous_auth_required = os.environ.get("AUTH_REQUIRED")
+        os.environ["AUTH_REQUIRED"] = "true"
+        try:
+            subscription = calendar_client.post(
+                "/api/calendar/subscriptions",
+                headers=calendar_headers,
+                json={"label": "Container labels", "preset_key": "essential"},
+            )
+            self.assertEqual(subscription.status_code, 201, subscription.text)
+            feed = self.client.get(subscription.json()["feed_path"])
+            self.assertEqual(feed.status_code, 200, feed.text)
+            self.assertIn("Plots: History planter", feed.text)
+            self.assertNotIn(plot_id, feed.text)
+        finally:
+            if previous_auth_required is None:
+                os.environ.pop("AUTH_REQUIRED", None)
+            else:
+                os.environ["AUTH_REQUIRED"] = previous_auth_required
 
         archived = self.client.delete(
             f"/api/gardens/{garden_id}/containers/{plot_id}",
