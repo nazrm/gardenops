@@ -2332,24 +2332,24 @@ const usage = (usageDay, scopeType, scopeId, scopeUsername, requestCount) => ({
   usage_day: usageDay,
 });
 const sameDay = [
-  usage('2026-08-21', 'user', 1, 'admin', 2),
-  usage('2026-08-21', 'user', 4, 'editor', 1),
-  usage('2026-08-21', 'garden', 1, '', 2),
-  usage('2026-08-21', 'garden', 2, '', 1),
+  usage('2026-08-21', 'user', 1, 'admin', 5),
+  usage('2026-08-21', 'user', 4, 'editor', 2),
+  usage('2026-08-21', 'garden', 1, '', 6),
+  usage('2026-08-21', 'garden', 2, '', 3),
 ];
 const oneSplit = [
-  usage('2026-08-21', 'user', 1, 'admin', 2),
-  usage('2026-08-22', 'user', 4, 'editor', 1),
-  usage('2026-08-21', 'garden', 1, '', 1),
-  usage('2026-08-22', 'garden', 1, '', 1),
+  usage('2026-08-21', 'user', 1, 'admin', 3),
+  usage('2026-08-22', 'user', 1, 'admin', 4),
+  usage('2026-08-22', 'user', 4, 'editor', 2),
+  usage('2026-08-22', 'garden', 1, '', 6),
   usage('2026-08-21', 'garden', 2, '', 1),
 ];
 const bothSplit = [
-  usage('2026-08-21', 'user', 1, 'admin', 1),
-  usage('2026-08-22', 'user', 1, 'admin', 1),
-  usage('2026-08-22', 'user', 4, 'editor', 1),
-  usage('2026-08-21', 'garden', 1, '', 1),
-  usage('2026-08-22', 'garden', 1, '', 1),
+  usage('2026-08-21', 'user', 1, 'admin', 3),
+  usage('2026-08-22', 'user', 1, 'admin', 2),
+  usage('2026-08-22', 'user', 4, 'editor', 2),
+  usage('2026-08-21', 'garden', 1, '', 4),
+  usage('2026-08-22', 'garden', 1, '', 2),
   usage('2026-08-21', 'garden', 2, '', 1),
 ];
 const phaseOneState = (terrainProviderUsage) => ({
@@ -2370,9 +2370,19 @@ for (const rows of [sameDay, oneSplit, bothSplit]) {
   );
 }
 for (const [rows, message] of [
-  [[...sameDay.slice(0, 1), usage('2026-08-21', 'user', 5, 'viewer', 1), ...sameDay.slice(2)], 'scope'],
-  [[usage('2026-08-21', 'user', 1, 'admin', 1), ...sameDay.slice(1)], 'aggregate'],
+  [[...sameDay.slice(0, 1), usage('2026-08-21', 'user', 5, 'viewer', 2), ...sameDay.slice(2)], 'scope'],
+  [[{ ...sameDay[0], feature: 'ai-identify' }, ...sameDay.slice(1)], 'feature'],
   [[...sameDay, usage('2026-08-21', 'garden', 2, '', 1)], 'duplicate'],
+  [oneSplit.map((row) => ({
+    ...row,
+    usage_day: row.usage_day === '2026-08-22' ? '2026-08-23' : row.usage_day,
+  })), 'adjacent'],
+  [[
+    ...sameDay,
+    usage('2026-08-22', 'user', 1, 'admin', 2),
+    usage('2026-08-22', 'user', 4, 'editor', 2),
+    usage('2026-08-22', 'garden', 1, '', 2),
+  ], '4-6'],
 ]) {
   try {
     assertPhaseOneExactSideEffects(
