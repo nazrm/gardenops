@@ -507,6 +507,9 @@ function renderMapObjectInteractionLayer(
   preview.dataset["objectId"] = object.public_id;
   preview.style.setProperty("--map-object-color", object.style.color);
   preview.hidden = true;
+  const dimensions = document.createElement("span");
+  dimensions.className = "map-object-preview-dimensions";
+  preview.appendChild(dimensions);
 
   const surface = document.createElement("div");
   surface.className = "map-object-interaction-surface";

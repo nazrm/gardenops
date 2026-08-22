@@ -4,6 +4,10 @@ const { chromium } = require("../frontend/node_modules/playwright-core");
 
 const BASE_URL = process.env.BASE_URL || "http://127.0.0.1:5173";
 const CHROMIUM_EXECUTABLE = process.env.CHROMIUM_EXECUTABLE || "/usr/bin/chromium-browser";
+const OBJECT_ID = "obj-e2e-patio";
+const GRID_SIZE = 8;
+const CORNER_HANDLES = ["nw", "ne", "se", "sw"];
+const BLOCKER_PLOT_ID = "P46";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -26,6 +30,14 @@ async function waitForPatchCount(patches, count, label) {
   throw new Error(`Expected ${label} to PATCH object geometry; saw ${patches.length}/${count}`);
 }
 
+async function waitForNoPatch(patches, count, label) {
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert(
+    patches.length === count,
+    `Expected ${label} to send no PATCH; saw ${patches.length - count} unexpected PATCH(es)`,
+  );
+}
+
 function makePlot(row, col) {
   return {
     plot_id: `P${row}${col}`,
@@ -38,9 +50,11 @@ function makePlot(row, col) {
     notes: "",
     color: null,
     plant_count: 0,
+    can_assign: true,
     has_tree: false,
     has_bush: false,
     categories: [],
+    plot_kind: "ground",
   };
 }
 
@@ -126,42 +140,246 @@ async function centerOf(locator) {
   };
 }
 
-async function dispatchPointer(page, locator, deltaX, deltaY, pointerType = "touch") {
-  const start = await centerOf(locator);
-  await locator.dispatchEvent("pointerdown", {
-    bubbles: true,
-    cancelable: true,
-    button: 0,
-    buttons: 1,
-    pointerId: 41,
-    pointerType,
-    clientX: start.x,
-    clientY: start.y,
-  });
-  await page.evaluate(({ x, y }) => {
-    window.dispatchEvent(new PointerEvent("pointermove", {
-      bubbles: true,
-      cancelable: true,
-      button: 0,
-      buttons: 1,
-      pointerId: 41,
-      pointerType: "touch",
-      clientX: x,
-      clientY: y,
-    }));
-  }, { x: start.x + deltaX, y: start.y + deltaY });
-  await page.evaluate(({ x, y }) => {
+async function dispatchPointerUp(page, point, pointerType, pointerId) {
+  await page.evaluate(({ x, y, pointerType: type, pointerId: id }) => {
     window.dispatchEvent(new PointerEvent("pointerup", {
       bubbles: true,
       cancelable: true,
       button: 0,
       buttons: 0,
-      pointerId: 41,
-      pointerType: "touch",
+      pointerId: id,
+      pointerType: type,
       clientX: x,
       clientY: y,
     }));
-  }, { x: start.x + deltaX, y: start.y + deltaY });
+  }, { ...point, pointerType, pointerId });
+}
+
+async function dispatchPointer(
+  page,
+  locator,
+  deltaX,
+  deltaY,
+  pointerType = "touch",
+  release = true,
+  pointerId = 41,
+) {
+  const start = await centerOf(locator);
+  const end = { x: start.x + deltaX, y: start.y + deltaY };
+  await locator.dispatchEvent("pointerdown", {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+    buttons: 1,
+    pointerId,
+    pointerType,
+    clientX: start.x,
+    clientY: start.y,
+  });
+  await page.evaluate(({ x, y, pointerType: type, pointerId: id }) => {
+    window.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      buttons: 1,
+      pointerId: id,
+      pointerType: type,
+      clientX: x,
+      clientY: y,
+    }));
+  }, { ...end, pointerType, pointerId });
+  if (release) await dispatchPointerUp(page, end, pointerType, pointerId);
+  return end;
+}
+
+async function waitForDimensions(page, expected, label) {
+  const deadline = Date.now() + 5000;
+  let actual = null;
+  while (Date.now() < deadline) {
+    const disclosure = page.locator("details.map-object-layout-disclosure");
+    if (await disclosure.count()) {
+      if ((await disclosure.getAttribute("open")) === null) {
+        await disclosure.locator("summary").click().catch(() => {});
+      }
+      const inputs = disclosure.locator(
+        ".map-object-position-grid input[type='number']",
+      );
+      if (await inputs.count() === 4) {
+        const values = await inputs.evaluateAll((items) => items.map((item) => Number(item.value)));
+        actual = {
+          y: values[0],
+          x: values[1],
+          width: values[2],
+          height: values[3],
+        };
+        if (sameGeometry(actual, expected)) return;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(
+    `Expected ${label} dimensions ${JSON.stringify(expected)}; saw ${JSON.stringify(actual)}`,
+  );
+}
+
+async function waitForControlPlacement(page, expected, label) {
+  const row = `${expected.y} / ${expected.y + expected.height}`;
+  const column = `${expected.x} / ${expected.x + expected.width}`;
+  try {
+    await page.waitForFunction(({ objectId, expectedRow, expectedColumn }) => {
+      const controls = document.querySelector(
+        `.map-object-direct-controls[data-object-id='${objectId}']`,
+      );
+      return controls?.style.gridRow === expectedRow && controls?.style.gridColumn === expectedColumn;
+    }, { objectId: OBJECT_ID, expectedRow: row, expectedColumn: column }, { timeout: 5000 });
+  } catch (err) {
+    throw new Error(`${label}: ${err.message}`);
+  }
+}
+
+async function waitForPreview(page, visible) {
+  await page.waitForFunction(({ objectId, expectedVisible }) => {
+    const preview = document.querySelector(
+      `.map-object-preview[data-object-id='${objectId}']`,
+    );
+    return Boolean(preview) && preview.hidden === !expectedVisible;
+  }, { objectId: OBJECT_ID, expectedVisible: visible }, { timeout: 5000 });
+}
+
+async function waitForPreviewDimensions(page, expected, label) {
+  try {
+    await page.waitForFunction(({ objectId, width, height }) => {
+      const preview = document.querySelector(
+        `.map-object-preview[data-object-id='${objectId}']`,
+      );
+      const dimensions = preview?.querySelector(".map-object-preview-dimensions")?.textContent || "";
+      return Boolean(preview) && !preview.hidden
+        && dimensions.includes(String(width))
+        && dimensions.includes(String(height));
+    }, { objectId: OBJECT_ID, width: expected.width, height: expected.height }, { timeout: 5000 });
+  } catch (err) {
+    throw new Error(`${label}: ${err.message}`);
+  }
+}
+
+async function readPreviewState(page) {
+  return page.locator(
+    `.map-object-direct-controls[data-object-id='${OBJECT_ID}']`,
+  ).evaluate((controls) => {
+    const nodes = [controls, ...controls.querySelectorAll("*")];
+    const marker = nodes.map((node) => {
+      const className = typeof node.className === "string" ? node.className : "";
+      const attributes = Array.from(node.attributes, (attribute) => `${attribute.name}=${attribute.value}`);
+      return [className, node.textContent || "", ...attributes].join(" ");
+    }).join(" ").toLowerCase();
+    const preview = controls.querySelector(".map-object-preview");
+    return { visible: Boolean(preview) && !preview.hidden, marker };
+  });
+}
+
+async function assertInvalidPreview(page) {
+  await waitForPreview(page, true);
+  const state = await readPreviewState(page);
+  assert(state.visible, "Invalid map-object drop did not show a preview");
+  assert(
+    state.marker.includes("map-object-preview--invalid"),
+    `Invalid map-object preview did not expose invalid state: ${state.marker}`,
+  );
+  assert(
+    await page.locator(`.plot.map-object-conflict[data-plot-id='${BLOCKER_PLOT_ID}']`).count() === 1,
+    "Invalid map-object preview did not mark the blocking plot",
+  );
+}
+
+async function assertUsableTouchTarget(locator, label) {
+  const metrics = await locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const before = getComputedStyle(element, "::before");
+    const px = (value) => Number.parseFloat(value) || 0;
+    const extraWidth = Math.max(0, -px(before.left)) + Math.max(0, -px(before.right));
+    const extraHeight = Math.max(0, -px(before.top)) + Math.max(0, -px(before.bottom));
+    return {
+      width: rect.width + extraWidth,
+      height: rect.height + extraHeight,
+    };
+  });
+  assert(
+    metrics.width >= 44 && metrics.height >= 44,
+    `${label} touch target is too small: ${JSON.stringify(metrics)}`,
+  );
+}
+
+async function dispatchTwoFingerTouchStart(page) {
+  const supported = await page.evaluate(
+    () => typeof Touch !== "undefined" && typeof TouchEvent !== "undefined",
+  );
+  assert(supported, "Browser does not expose TouchEvent for two-finger cancel coverage");
+  await page.evaluate(() => {
+    const first = new Touch({ identifier: 1, target: document.body, clientX: 10, clientY: 10 });
+    const second = new Touch({ identifier: 2, target: document.body, clientX: 30, clientY: 30 });
+    window.dispatchEvent(new TouchEvent("touchstart", {
+      bubbles: true,
+      cancelable: true,
+      touches: [first, second],
+      targetTouches: [first, second],
+      changedTouches: [second],
+    }));
+  });
+}
+
+function attachDiagnostics(page) {
+  page.on("console", (msg) => {
+    if (["error", "warning"].includes(msg.type())) {
+      console.log(`[browser ${msg.type()}] ${msg.text()}`);
+    }
+  });
+  page.on("pageerror", (err) => {
+    console.log(`[browser pageerror] ${err.message}`);
+    if (err.stack) console.log(err.stack);
+  });
+}
+
+async function openMapPage(page) {
+  await page.addInitScript(() => {
+    localStorage.setItem("gardenops-tab", "map");
+    localStorage.setItem("gardenops-sub-mode", "plants");
+  });
+
+  await page.goto(BASE_URL, { waitUntil: "networkidle" });
+  await page.locator("#map-grid").waitFor({ state: "visible", timeout: 15000 });
+  const label = page.locator(".map-object-label", { hasText: "E2E Patio" });
+  await label.waitFor({ state: "visible" });
+
+  const editButton = page.locator("#edit-mode-btn");
+  if (await editButton.count()) {
+    const mobileLayersButton = page.locator("#mobile-map-layers-btn");
+    if (await mobileLayersButton.isVisible()) {
+      await mobileLayersButton.click();
+      await editButton.click();
+      await page.locator("#mobile-map-layers-close-btn").click();
+    } else {
+      await editButton.click();
+    }
+  } else {
+    await page.locator("#top-tab-admin").click();
+    try {
+      await page.locator("#adm-map-open-editor-btn").waitFor({ state: "visible", timeout: 15000 });
+    } catch (err) {
+      const adminText = await page.locator("#admin-view").evaluate((el) => el.textContent || "").catch(() => "");
+      const appText = await page.locator("#app").evaluate((el) => el.textContent || "").catch(() => "");
+      throw new Error(
+        `Admin map editor button did not render. Admin text: ${adminText.slice(0, 600)} App text: ${appText.slice(0, 600)} Original: ${err.message}`,
+      );
+    }
+    await page.locator("#adm-map-open-editor-btn").click();
+  }
+
+  await label.click();
+  const surface = page.locator(
+    `.map-object-interaction-surface[data-object-id='${OBJECT_ID}']`,
+  );
+  await surface.waitFor({ state: "visible", timeout: 15000 });
+  return surface;
 }
 
 async function main() {
@@ -173,36 +391,23 @@ async function main() {
   const page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
 
   const patches = [];
-  const plots = [];
-  for (let row = 1; row <= 8; row += 1) {
-    for (let col = 1; col <= 8; col += 1) {
-      plots.push(makePlot(row, col));
-    }
-  }
+  const plots = [makePlot(4, 6)];
   const mapObject = {
-    public_id: "obj-e2e-patio",
+    public_id: OBJECT_ID,
     object_type: "patio",
     name: "E2E Patio",
     shape_type: "rectangle",
-    geometry: { x: 2, y: 2, width: 3, height: 2 },
+    geometry: { x: 2, y: 2, width: 2, height: 2 },
     style: { color: "#8f9f7d" },
     z_index: 5,
-    has_internal_layout: true,
-    internal_layout: { rows: 2, cols: 3 },
-    units: [],
+    container_count: 0,
+    plant_count: 0,
+    containers: [],
   };
 
-  page.on("console", (msg) => {
-    if (["error", "warning"].includes(msg.type())) {
-      console.log(`[browser ${msg.type()}] ${msg.text()}`);
-    }
-  });
-  page.on("pageerror", (err) => {
-    console.log(`[browser pageerror] ${err.message}`);
-    if (err.stack) console.log(err.stack);
-  });
+  attachDiagnostics(page);
 
-  await page.route("**/api/**", async (route) => {
+  const apiRoute = async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
@@ -264,10 +469,10 @@ async function main() {
     }
     if (method === "GET" && path === "/api/layout-state") {
       return fulfillJson(route, {
-        row: 1,
-        col: 1,
-        width: 2,
-        height: 2,
+        row: 8,
+        col: 8,
+        width: 1,
+        height: 1,
         north_degrees: 0,
         grid_rows: 8,
         grid_cols: 8,
@@ -283,9 +488,9 @@ async function main() {
       });
     }
     if (method === "GET" && path === "/api/gardens/1/map-objects") {
-      return fulfillJson(route, { objects: [mapObject] });
+      return fulfillJson(route, { objects: [mapObject], containers: [] });
     }
-    if (method === "PATCH" && path === "/api/gardens/1/map-objects/obj-e2e-patio") {
+    if (method === "PATCH" && path === `/api/gardens/1/map-objects/${OBJECT_ID}`) {
       const body = request.postDataJSON();
       if (body.geometry) {
         mapObject.geometry = { ...body.geometry };
@@ -339,114 +544,144 @@ async function main() {
     }
 
     return fulfillJson(route, {});
-  });
+  };
+  await page.route("**/api/**", apiRoute);
+  const surface = await openMapPage(page);
 
-  await page.addInitScript(() => {
-    localStorage.setItem("gardenops-tab", "map");
-    localStorage.setItem("gardenops-sub-mode", "plants");
-  });
+  const initialGeometry = { x: 2, y: 2, width: 2, height: 2 };
+  const afterResize = { x: 3, y: 2, width: 3, height: 3 };
+  const afterKeyboardMove = { x: 3, y: 1, width: 3, height: 3 };
+  const afterKeyboardResize = { x: 3, y: 1, width: 3, height: 4 };
 
-  await page.goto(BASE_URL, { waitUntil: "networkidle" });
-  await page.locator("#map-grid").waitFor({ state: "visible", timeout: 15000 });
-  await page.locator(".map-object-label", { hasText: "E2E Patio" }).waitFor({ state: "visible" });
-
-  const editButton = page.locator("#edit-mode-btn");
-  if (await editButton.count()) {
-    await editButton.click();
-  } else {
-    await page.locator("#top-tab-admin").click();
-    try {
-      await page.locator("#adm-map-open-editor-btn").waitFor({ state: "visible", timeout: 15000 });
-    } catch (err) {
-      const adminText = await page.locator("#admin-view").evaluate((el) => el.textContent || "").catch(() => "");
-      const appText = await page.locator("#app").evaluate((el) => el.textContent || "").catch(() => "");
-      throw new Error(
-        `Admin map editor button did not render. Admin text: ${adminText.slice(0, 600)} App text: ${appText.slice(0, 600)} Original: ${err.message}`,
-      );
-    }
-    await page.locator("#adm-map-open-editor-btn").click();
-  }
-
-  await page.locator(".map-object-label", { hasText: "E2E Patio" }).click();
-  const surface = page.locator(".map-object-interaction-surface[data-object-id='obj-e2e-patio']");
-  await surface.waitFor({ state: "visible", timeout: 15000 });
-  await page.locator(".map-object-resize-handle[data-handle='se']").waitFor({ state: "visible" });
-
+  await waitForDimensions(page, initialGeometry, "initial patio");
   const gridBox = await page.locator("#map-grid").boundingBox();
-  assert(gridBox, "Missing map grid bounding box");
-  const cellW = gridBox.width / 8;
-  const cellH = gridBox.height / 8;
+  assert(gridBox, "Missing desktop map grid bounding box");
+  const cellW = gridBox.width / GRID_SIZE;
+  const cellH = gridBox.height / GRID_SIZE;
 
-  await dispatchPointer(page, surface, cellW, cellH, "touch");
-  await waitForPatchCount(patches, 1, "touch move");
+  await dispatchPointer(page, surface, cellW, 0, "mouse");
+  await waitForPatchCount(patches, 1, "desktop body move");
   assert(
-    sameGeometry(patches.at(-1), { x: 3, y: 3, width: 3, height: 2 }),
-    `Unexpected move geometry: ${JSON.stringify(patches.at(-1))}`,
+    sameGeometry(patches.at(-1), { x: 3, y: 2, width: 2, height: 2 }),
+    `Unexpected desktop move geometry: ${JSON.stringify(patches.at(-1))}`,
   );
+  await waitForDimensions(page, { x: 3, y: 2, width: 2, height: 2 }, "moved patio");
 
   const handle = page.locator(".map-object-resize-handle[data-handle='se']");
-  await dispatchPointer(page, handle, cellW, cellH, "touch");
-  await waitForPatchCount(patches, 2, "resize");
+  const resizeEnd = await dispatchPointer(page, handle, cellW, cellH, "mouse", false, 44);
+  await waitForPreviewDimensions(page, { width: 3, height: 3 }, "desktop resize preview");
+  await dispatchPointerUp(page, resizeEnd, "mouse", 44);
+  await waitForPatchCount(patches, 2, "desktop resize");
   assert(
-    sameGeometry(patches.at(-1), { x: 3, y: 3, width: 4, height: 3 }),
-    `Unexpected resize geometry: ${JSON.stringify(patches.at(-1))}`,
+    sameGeometry(patches.at(-1), afterResize),
+    `Unexpected desktop resize geometry: ${JSON.stringify(patches.at(-1))}`,
   );
+  await waitForDimensions(page, afterResize, "resized patio");
 
-  await surface.focus();
-  await page.keyboard.press("ArrowRight");
+  const invalidStart = { ...afterResize };
+  const invalidEnd = await dispatchPointer(
+    page,
+    surface,
+    cellW * 2,
+    cellH * 2,
+    "mouse",
+    false,
+    43,
+  );
+  await assertInvalidPreview(page);
+  await waitForPreviewDimensions(page, { width: 3, height: 3 }, "invalid desktop preview");
+  assert(patches.length === 2, "Invalid desktop drop sent a PATCH during preview");
+  await dispatchPointerUp(page, invalidEnd, "mouse", 43);
+  await waitForNoPatch(patches, 2, "invalid desktop drop");
+  await waitForControlPlacement(page, invalidStart, "invalid desktop drop");
+  await waitForPreview(page, false);
+  await waitForDimensions(page, invalidStart, "restored patio after invalid drop");
+
+  const surfaceSelector = `.map-object-interaction-surface[data-object-id='${OBJECT_ID}']`;
+  await page.locator(surfaceSelector).focus();
+  await page.keyboard.press("ArrowUp");
   await waitForPatchCount(patches, 3, "keyboard move");
   assert(
-    sameGeometry(patches.at(-1), { x: 4, y: 3, width: 4, height: 3 }),
+    sameGeometry(patches.at(-1), afterKeyboardMove),
     `Unexpected keyboard move geometry: ${JSON.stringify(patches.at(-1))}`,
   );
+  await waitForDimensions(page, afterKeyboardMove, "keyboard-moved patio");
 
+  await page.locator(surfaceSelector).focus();
   await page.keyboard.press("Shift+ArrowDown");
   await waitForPatchCount(patches, 4, "keyboard resize");
   assert(
-    sameGeometry(patches.at(-1), { x: 4, y: 3, width: 4, height: 4 }),
+    sameGeometry(patches.at(-1), afterKeyboardResize),
     `Unexpected keyboard resize geometry: ${JSON.stringify(patches.at(-1))}`,
   );
-  await surface.waitFor({ state: "visible", timeout: 5000 });
+  await waitForDimensions(page, afterKeyboardResize, "keyboard-resized patio");
+
+  await page.locator(surfaceSelector).focus();
+  await page.keyboard.press("ArrowRight");
+  await waitForNoPatch(patches, 4, "invalid keyboard move");
+  await waitForDimensions(page, afterKeyboardResize, "keyboard collision restore");
+
+  const mobileContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+  });
+  const mobilePage = await mobileContext.newPage();
+  attachDiagnostics(mobilePage);
+  await mobilePage.route("**/api/**", apiRoute);
+  const mobileSurface = await openMapPage(mobilePage);
+  assert(
+    await mobilePage.evaluate(() => window.matchMedia("(pointer: coarse)").matches),
+    "Mobile context did not expose a coarse pointer",
+  );
+
+  const mobileHandleNames = await mobilePage.locator(
+    ".map-object-resize-handle:visible",
+  ).evaluateAll((items) => items.map((item) => item.dataset.handle).sort());
+  assert(
+    JSON.stringify(mobileHandleNames) === JSON.stringify([...CORNER_HANDLES].sort()),
+    `Coarse-pointer editor exposed unexpected resize handles: ${JSON.stringify(mobileHandleNames)}`,
+  );
+  for (const handleName of CORNER_HANDLES) {
+    const mobileHandle = mobilePage.locator(
+      `.map-object-resize-handle[data-handle='${handleName}']`,
+    );
+    await mobileHandle.waitFor({ state: "visible" });
+    await assertUsableTouchTarget(mobileHandle, `Mobile ${handleName}`);
+  }
+
+  await waitForDimensions(mobilePage, afterKeyboardResize, "mobile patio");
+  const mobileGridBox = await mobilePage.locator("#map-grid").boundingBox();
+  assert(mobileGridBox, "Missing mobile map grid bounding box");
+  const mobileCellW = mobileGridBox.width / GRID_SIZE;
+  const mobileHandle = mobilePage.locator(
+    ".map-object-resize-handle[data-handle='nw']",
+  );
+  await dispatchPointer(mobilePage, mobileHandle, -mobileCellW, 0, "touch");
+  await waitForPatchCount(patches, 5, "mobile touch resize");
+  const afterMobileResize = { x: 2, y: 1, width: 4, height: 4 };
+  assert(
+    sameGeometry(patches.at(-1), afterMobileResize),
+    `Unexpected mobile resize geometry: ${JSON.stringify(patches.at(-1))}`,
+  );
+  await waitForDimensions(mobilePage, afterMobileResize, "mobile resized patio");
 
   const patchCountBeforeCancel = patches.length;
-  await surface.dispatchEvent("pointerdown", {
-    bubbles: true,
-    cancelable: true,
-    button: 0,
-    buttons: 1,
-    pointerId: 42,
-    pointerType: "touch",
-    clientX: (await centerOf(surface)).x,
-    clientY: (await centerOf(surface)).y,
-  });
-  await page.evaluate(() => {
-    if (typeof Touch === "undefined" || typeof TouchEvent === "undefined") return;
-    const first = new Touch({ identifier: 1, target: document.body, clientX: 10, clientY: 10 });
-    const second = new Touch({ identifier: 2, target: document.body, clientX: 30, clientY: 30 });
-    window.dispatchEvent(new TouchEvent("touchstart", {
-      bubbles: true,
-      cancelable: true,
-      touches: [first, second],
-      targetTouches: [first, second],
-      changedTouches: [second],
-    }));
-  });
-  await page.evaluate(() => {
-    window.dispatchEvent(new PointerEvent("pointerup", {
-      bubbles: true,
-      cancelable: true,
-      button: 0,
-      buttons: 0,
-      pointerId: 42,
-      pointerType: "touch",
-      clientX: 1000,
-      clientY: 1000,
-    }));
-  });
-  assert(
-    patches.length === patchCountBeforeCancel,
-    "Expected two-finger touchstart to cancel active object manipulation without PATCH",
+  const cancelEnd = await dispatchPointer(
+    mobilePage,
+    mobileSurface,
+    -mobileCellW,
+    0,
+    "touch",
+    false,
+    42,
   );
+  await dispatchTwoFingerTouchStart(mobilePage);
+  await dispatchPointerUp(mobilePage, cancelEnd, "touch", 42);
+  await waitForNoPatch(patches, patchCountBeforeCancel, "two-finger cancel");
+  await waitForControlPlacement(mobilePage, afterMobileResize, "two-finger cancel");
+  await waitForPreview(mobilePage, false);
+  await waitForDimensions(mobilePage, afterMobileResize, "two-finger cancel restore");
 
   await browser.close();
   console.log("Map object direct manipulation e2e passed.");

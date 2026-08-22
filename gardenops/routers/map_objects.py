@@ -16,6 +16,7 @@ from gardenops.router_helpers import auth_context as _auth_context
 from gardenops.router_helpers import generate_public_id
 from gardenops.router_helpers import is_local_admin_fallback as _is_local_admin_fallback
 from gardenops.security import AuthContext
+from gardenops.services.garden_layout_lock import lock_garden_layout
 
 router = APIRouter()
 
@@ -264,6 +265,111 @@ def _validate_geometry_fits(
         or geometry["y"] + geometry["height"] - 1 > rows
     ):
         raise HTTPException(status_code=400, detail=f"{label} does not fit within the layout")
+
+
+def _geometry_bounds(geometry: dict[str, int]) -> tuple[int, int, int, int]:
+    return (
+        geometry["x"],
+        geometry["y"],
+        geometry["x"] + geometry["width"],
+        geometry["y"] + geometry["height"],
+    )
+
+
+def _rectangles_overlap(
+    first: tuple[int, int, int, int],
+    second: tuple[int, int, int, int],
+) -> bool:
+    return (
+        first[0] < second[2]
+        and second[0] < first[2]
+        and first[1] < second[3]
+        and second[1] < first[3]
+    )
+
+
+def _stored_geometry(row: dict[str, Any]) -> dict[str, int] | None:
+    raw = _loads_dict(row.get("geometry_json"), {})
+    try:
+        return {key: int(raw[key]) for key in ("x", "y", "width", "height")}
+    except KeyError, TypeError, ValueError:
+        return None
+
+
+def _ensure_map_object_geometry_clear(
+    db: DbConn,
+    *,
+    garden_id: int,
+    geometry: dict[str, int],
+    exclude_map_object_id: int | None = None,
+) -> None:
+    candidate_bounds = _geometry_bounds(geometry)
+    plot_rows = db.execute(
+        """
+        SELECT plot_id, grid_row, grid_col
+        FROM plots
+        WHERE garden_id = %s
+          AND COALESCE(plot_kind, 'ground') IN ('ground', 'indoor')
+          AND grid_row IS NOT NULL
+          AND grid_col IS NOT NULL
+          AND archived_at_ms IS NULL
+        ORDER BY plot_id
+        """,
+        (garden_id,),
+    ).fetchall()
+    for plot in plot_rows:
+        plot_bounds = (
+            int(plot["grid_col"]),
+            int(plot["grid_row"]),
+            int(plot["grid_col"]) + 1,
+            int(plot["grid_row"]) + 1,
+        )
+        if _rectangles_overlap(candidate_bounds, plot_bounds):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Map object overlaps plot {plot['plot_id']}",
+            )
+
+    house = db.execute(
+        """
+        SELECT house_row, house_col, house_width, house_height
+        FROM layout_state
+        WHERE garden_id = %s
+        LIMIT 1
+        """,
+        (garden_id,),
+    ).fetchone()
+    if house:
+        house_bounds = (
+            int(house["house_col"]),
+            int(house["house_row"]),
+            int(house["house_col"]) + int(house["house_width"]),
+            int(house["house_row"]) + int(house["house_height"]),
+        )
+        if _rectangles_overlap(candidate_bounds, house_bounds):
+            raise HTTPException(status_code=409, detail="Map object overlaps house")
+
+    object_rows = db.execute(
+        """
+        SELECT id, name, geometry_json
+        FROM garden_map_objects
+        WHERE garden_id = %s
+        ORDER BY z_index, id
+        """,
+        (garden_id,),
+    ).fetchall()
+    for row in object_rows:
+        if exclude_map_object_id is not None and int(row["id"]) == exclude_map_object_id:
+            continue
+        existing_geometry = _stored_geometry(dict(row))
+        if existing_geometry is not None and _rectangles_overlap(
+            candidate_bounds,
+            _geometry_bounds(existing_geometry),
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Map object overlaps area {row['name']}",
+            )
 
 
 def _next_public_id(db: DbConn, *, table: str, prefix: str) -> str:
@@ -1004,6 +1110,7 @@ def create_map_object(
     context = _auth_context(request)
     _require_editor(db, context=context, garden_id=garden_id)
     _enforce_map_object_rate_limit(request, bucket=f"map-object-create:{garden_id}")
+    lock_garden_layout(db, garden_id)
     db.execute("SELECT id FROM gardens WHERE id = %s FOR UPDATE", (garden_id,))
     count_row = db.execute(
         "SELECT COUNT(*) AS c FROM garden_map_objects WHERE garden_id = %s",
@@ -1015,6 +1122,11 @@ def create_map_object(
     grid_rows, grid_cols = _garden_size(db, garden_id)
     geometry = _geometry_dict(body.geometry)
     _validate_geometry_fits(geometry, rows=grid_rows, cols=grid_cols, label="Map object")
+    _ensure_map_object_geometry_clear(
+        db,
+        garden_id=garden_id,
+        geometry=geometry,
+    )
     style = _style_dict(body.style)
     internal_layout = _layout_dict(body.internal_layout)
     now_ms = current_timestamp_ms()
@@ -1075,6 +1187,8 @@ def update_map_object(
 ) -> dict[str, object]:
     context = _auth_context(request)
     _require_editor(db, context=context, garden_id=garden_id)
+    if body.geometry is not None:
+        lock_garden_layout(db, garden_id)
     existing = _object_row_by_public_id(
         db,
         garden_id=garden_id,
@@ -1094,9 +1208,16 @@ def update_map_object(
         updates.append("shape_type = %s")
         params.append(body.shape_type)
     if body.geometry is not None:
-        grid_rows, grid_cols = _garden_size(db, garden_id)
         geometry = _geometry_dict(body.geometry)
-        _validate_geometry_fits(geometry, rows=grid_rows, cols=grid_cols, label="Map object")
+        if _stored_geometry(existing) != geometry:
+            grid_rows, grid_cols = _garden_size(db, garden_id)
+            _validate_geometry_fits(geometry, rows=grid_rows, cols=grid_cols, label="Map object")
+            _ensure_map_object_geometry_clear(
+                db,
+                garden_id=garden_id,
+                geometry=geometry,
+                exclude_map_object_id=int(existing["id"]),
+            )
         updates.append("geometry_json = %s")
         params.append(_dump_json(cast(dict[str, object], geometry)))
     if body.style is not None:

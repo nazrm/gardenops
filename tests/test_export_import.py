@@ -748,7 +748,7 @@ class TestExportImport(BaseApiTest):
                 "object_type": "patio",
                 "name": "Kitchen patio",
                 "shape_type": "rectangle",
-                "geometry": {"x": 1, "y": 1, "width": 4, "height": 3},
+                "geometry": {"x": 18, "y": 1, "width": 4, "height": 3},
                 "style": {"color": "#7d9f7a"},
                 "z_index": 2,
                 "has_internal_layout": True,
