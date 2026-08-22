@@ -76,3 +76,17 @@ def test_atomic_deploy_has_required_safety_gates() -> None:
     assert "X-Forwarded-Host: $health_host" in script
     assert "rollback refused because migration contents differ" in script
     assert "mv -Tf" in script
+
+
+def test_atomic_activate_quiesces_writers_before_migration() -> None:
+    script = DEPLOY.read_text(encoding="utf-8")
+
+    stop = script.index('systemctl stop "$SERVICE"')
+    migration = script.index('"import gardenops.db as db; db.run_migrations()"')
+    switch = script.index('atomic_link "$release" "$CURRENT_LINK"')
+
+    assert stop < migration < switch
+    assert 'systemctl is-active --quiet "$SERVICE"' in script
+    assert "trap restore_quiesced_service EXIT" in script
+    assert 'systemctl start "$SERVICE"' in script
+    assert "restore_service_on_failure=0" in script
