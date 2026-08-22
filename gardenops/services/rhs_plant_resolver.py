@@ -23,6 +23,8 @@ _RHS_DETAILS_API_URL = "https://lwapp-uks-prod-psearch-01.azurewebsites.net/api/
 _RHS_PUBLIC_HOST = "www.rhs.org.uk"
 _RHS_RESPONSE_LIMIT = 1_000_000
 _RHS_RESULT_LIMIT = 10
+_MAX_BOTANICAL_NAME_LENGTH = 200
+_MAX_BOTANICAL_QUERIES = 3
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
 _TRAILING_ANNOTATION_RE = re.compile(r"\s*\([^()]*\)\s*$")
 _HTML_TAG_RE = re.compile(r"<[^>]*>")
@@ -169,11 +171,21 @@ def _identity_match_score(query: str, candidate: str) -> int:
 
 def botanical_queries(latin: str, common_name: str) -> tuple[str, ...]:
     """Build botanical queries while using a common-name cultivar as extra identity data."""
-    latin_variants = [part.strip() for part in re.split(r"\s+/\s+", latin) if part.strip()]
+    if len(latin) > _MAX_BOTANICAL_NAME_LENGTH:
+        return ()
+    latin_variants = [
+        part.strip()
+        for part in re.split(r"\s+/\s+", latin, maxsplit=_MAX_BOTANICAL_QUERIES)[
+            :_MAX_BOTANICAL_QUERIES
+        ]
+        if part.strip()
+    ]
     if not latin_variants:
         return ()
 
-    common_cultivar = _cultivar_text(common_name)
+    common_cultivar = (
+        _cultivar_text(common_name) if len(common_name) <= _MAX_BOTANICAL_NAME_LENGTH else ""
+    )
     common_cultivar_key = normalize_botanical_name(common_cultivar)
     queries: list[str] = []
     for variant in latin_variants:
