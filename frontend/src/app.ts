@@ -1183,9 +1183,14 @@ function plantLocationDestinations(
 
   for (const plot of activePlots) {
     if (plot.plot_kind !== "container" && plot.container_type == null) continue;
-    const parent = plot.parent_map_object_public_id
+    const containerState = state.mapObjectContainers.find(
+      (container) => container.plot_id === plot.plot_id,
+    ) ?? state.mapObjects
+      .flatMap((object) => object.containers ?? [])
+      .find((container) => container.plot_id === plot.plot_id);
+    const parent = containerState?.parent_map_object_public_id
       ? state.mapObjects.find(
-          (object) => object.public_id === plot.parent_map_object_public_id,
+          (object) => object.public_id === containerState.parent_map_object_public_id,
         )
       : null;
     const group = parent

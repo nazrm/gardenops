@@ -129,6 +129,8 @@ export function openPlantLocationPicker(options: PlantLocationPickerOptions): vo
   }
 
   function renderDestinations(): void {
+    const restoreSelectionFocus = document.activeElement instanceof HTMLElement
+      && list.contains(document.activeElement);
     const query = search.value.trim().toLocaleLowerCase();
     const visible = options.destinations.filter((destination) => {
       if (!query) return true;
@@ -195,6 +197,12 @@ export function openPlantLocationPicker(options: PlantLocationPickerOptions): vo
         group.appendChild(button);
       }
       list.appendChild(group);
+    }
+    if (restoreSelectionFocus && selected) {
+      const selectedOption = Array.from(
+        list.querySelectorAll<HTMLButtonElement>('.plant-location-picker-option'),
+      ).find((option) => option.dataset["plotId"] === selected?.plot_id);
+      selectedOption?.focus({ preventScroll: true });
     }
   }
 

@@ -820,7 +820,23 @@ async function selectLocationPickerDestination(page, name) {
   return option;
 }
 
-async function placePlantIntoContainer(page, profile, plant, container, expectedStatus = 201) {
+async function tabToLocationPickerConfirm(page, picker, label) {
+  const confirm = picker.locator(".confirm-yes");
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    if (await confirm.evaluate((element) => document.activeElement === element)) return confirm;
+    await page.keyboard.press("Tab");
+  }
+  throw new Error(`Keyboard Tab did not reach ${label} confirmation`);
+}
+
+async function placePlantIntoContainer(
+  page,
+  profile,
+  plant,
+  container,
+  expectedStatus = 201,
+  expectedGroup = null,
+) {
   await openPlants(page, profile);
   await page.locator("#plants-search").fill(plant.name);
   const row = plantRecord(page, profile, plant.name);
@@ -830,6 +846,12 @@ async function placePlantIntoContainer(page, profile, plant, container, expected
   await place.click();
   const picker = page.locator(".plant-location-picker");
   await visible(picker, "Place location picker");
+  if (expectedGroup) {
+    await visible(
+      picker.locator(".plant-location-picker-group h4").filter({ hasText: expectedGroup }),
+      `Place destination group ${expectedGroup}`,
+    );
+  }
   await selectLocationPickerDestination(page, container.name);
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
@@ -945,7 +967,7 @@ async function exerciseCanonicalContainerDesktop(page, diagnostics, fixture, alp
     { parentObjectId: area.id, type: "planter" },
   );
 
-  await placePlantIntoContainer(page, "desktop", plant, container);
+  await placePlantIntoContainer(page, "desktop", plant, container, 201, area.name);
   const fixturePlant = {
     id: fixture.phase_one.indoor.plant_id,
     name: fixture.phase_one.indoor.plant_name,
@@ -1224,10 +1246,17 @@ async function exerciseCanonicalContainerKeyboard(page, diagnostics, alpha) {
   await search.fill(container.name);
   const option = picker.locator(".plant-location-picker-option").filter({ hasText: container.name }).first();
   await visible(option, "keyboard Place destination");
-  await option.focus();
-  await option.press("Enter");
-  const confirm = picker.locator(".confirm-yes");
-  await confirm.focus();
+  await page.keyboard.press("Tab");
+  await waitFor(
+    async () => await option.evaluate((element) => document.activeElement === element),
+    "keyboard Place destination focus",
+  );
+  await page.keyboard.press("Enter");
+  await waitFor(
+    async () => await option.evaluate((element) => document.activeElement === element),
+    "keyboard Place destination focus after rerender",
+  );
+  const confirm = await tabToLocationPickerConfirm(page, picker, "Place");
   const placeResponsePromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
     && new URL(response.url()).pathname === `/api/plots/${container.id}/plants/${plant.id}`
@@ -1263,11 +1292,19 @@ async function exerciseCanonicalContainerKeyboard(page, diagnostics, alpha) {
   await visible(picker, "keyboard Move picker after focus restoration");
   const destination = picker.locator(".plant-location-picker-option")
     .filter({ hasText: "Indoor growing" }).first();
+  await picker.locator(".plant-location-picker-search").fill("Indoor growing");
   await visible(destination, "keyboard Move destination");
-  await destination.focus();
-  await destination.press("Enter");
-  const moveConfirm = picker.locator(".confirm-yes");
-  await moveConfirm.focus();
+  await page.keyboard.press("Tab");
+  await waitFor(
+    async () => await destination.evaluate((element) => document.activeElement === element),
+    "keyboard Move destination focus",
+  );
+  await page.keyboard.press("Enter");
+  await waitFor(
+    async () => await destination.evaluate((element) => document.activeElement === element),
+    "keyboard Move destination focus after rerender",
+  );
+  const moveConfirm = await tabToLocationPickerConfirm(page, picker, "Move");
   const moveResponsePromise = page.waitForResponse((response) => (
     response.request().method() === "POST"
     && new URL(response.url()).pathname.includes("/move/")
