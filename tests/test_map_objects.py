@@ -530,6 +530,103 @@ class TestMapObjects(BaseApiTest):
         )
         self.assertEqual(readable.status_code, 200, readable.text)
 
+    def test_move_existing_plots_into_area_preserves_ids_plants_and_history(self) -> None:
+        garden_id = self._default_garden()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES (%s, %s, %s)",
+                ("B1", "PLT-TEST", 7),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        patio = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects",
+            json=self._patio_payload(),
+        )
+        self.assertEqual(patio.status_code, 201, patio.text)
+        patio_id = patio.json()["public_id"]
+
+        moved = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects/{patio_id}/containers/from-plots",
+            json={"plot_ids": ["B1", "B2"], "container_type": "planter"},
+        )
+
+        self.assertEqual(moved.status_code, 200, moved.text)
+        self.assertEqual(moved.json()["container_count"], 2)
+        self.assertEqual(moved.json()["plant_count"], 1)
+        self.assertEqual(moved.json()["plant_quantity"], 7)
+        self.assertEqual(
+            [container["plot_id"] for container in moved.json()["containers"]],
+            ["B1", "B2"],
+        )
+        self.assertTrue(
+            all(
+                container["parent_object_public_id"] == patio_id
+                and container["container_type"] == "planter"
+                for container in moved.json()["containers"]
+            )
+        )
+
+        conn = db.get_db()
+        try:
+            rows = conn.execute(
+                """
+                SELECT plot_id, plot_kind, display_name, container_type,
+                       parent_map_object_id, grid_row, grid_col
+                FROM plots
+                WHERE plot_id = ANY(%s)
+                ORDER BY plot_id
+                """,
+                (["B1", "B2"],),
+            ).fetchall()
+            assignment = conn.execute(
+                """
+                SELECT quantity
+                FROM plot_plants
+                WHERE plot_id = %s AND plt_id = %s
+                """,
+                ("B1", "PLT-TEST"),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertEqual([str(row["plot_kind"]) for row in rows], ["container", "container"])
+        self.assertEqual([str(row["display_name"]) for row in rows], ["B1", "B2"])
+        self.assertTrue(all(row["grid_row"] is None and row["grid_col"] is None for row in rows))
+        self.assertEqual(int(assignment["quantity"]), 7)
+
+    def test_move_existing_plots_into_area_is_atomic_when_a_plot_is_missing(self) -> None:
+        garden_id = self._default_garden()
+        patio = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects",
+            json=self._patio_payload(),
+        )
+        self.assertEqual(patio.status_code, 201, patio.text)
+
+        moved = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects/{patio.json()['public_id']}/containers/from-plots",
+            json={"plot_ids": ["B1", "MISSING-PLOT"], "container_type": "planter"},
+        )
+
+        self.assertEqual(moved.status_code, 404, moved.text)
+        conn = db.get_db()
+        try:
+            row = conn.execute(
+                """
+                SELECT plot_kind, parent_map_object_id, grid_row, grid_col
+                FROM plots
+                WHERE plot_id = %s
+                """,
+                ("B1",),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertEqual(str(row["plot_kind"]), "ground")
+        self.assertIsNone(row["parent_map_object_id"])
+        self.assertEqual((int(row["grid_row"]), int(row["grid_col"])), (1, 1))
+
     def test_grid_shrink_rejects_existing_map_object_overflow(self) -> None:
         garden_id = self._default_garden()
         payload = self._patio_payload()

@@ -15,8 +15,9 @@ surfaces useful without creating a second plant-location system.
   and media relationships as an ordinary plot.
 - A container may be inside one area or stand alone. The hierarchy stops at
   area -> container; containers cannot contain other containers.
-- A container has one stable generated plot ID and one editable display name.
-  The ID is an internal reference and is not shown in normal workflows.
+- A container has one stable plot ID and one editable display name. Newly
+  created containers receive generated IDs; an existing plot moved into an
+  area keeps its current ID, assignments, and linked history.
 - `plot_plants` remains the only current plant-placement table. Moving a plant
   keeps historical records on their original plot ID and changes only current
   placement.
@@ -33,13 +34,16 @@ fields once.
    chooses the first available 4 × 3 space, then tries one 2 × 2 space;
    occupied plots, areas, and the house are left available for their existing
    use. Geometry and appearance remain under **Edit layout** when needed.
-3. Select an area and choose **Add container**, or use **Add standalone
-   container** for a pot that is not in an area.
-4. Choose Pot, Planter, Raised bed, or Other and give it a name. GardenOps
-   places the container automatically and shows its plant count.
-5. Use **Place plant** for a plant with no current home. Use **Move** on a
+3. To organize existing plots, select them in map edit mode, select the area,
+   and choose **Move selected plots here**. Choose their container type;
+   GardenOps keeps the plot IDs, plants, quantities, and linked records.
+4. For a new empty location, select an area and choose **Add container**, or
+   use **Add standalone container** for a pot that is not in an area.
+5. Choose Pot, Planter, Raised bed, or Other and give it a name. GardenOps
+   places the container automatically and shows its name and plant count.
+6. Use **Place plant** for a plant with no current home. Use **Move** on a
    specific current home to choose another ordinary plot or container.
-6. The destination picker is searchable and groups ordinary plots, area
+7. The destination picker is searchable and groups ordinary plots, area
    containers, and standalone containers. A move can transfer part or all
    of a quantity and explains a destination merge before confirmation.
 
@@ -51,9 +55,9 @@ details, and map counts and are announced to assistive technology.
 ## Permissions And Lifecycle
 
 Garden members can inspect areas and containers. Editors and administrators can
-create, rename, and reparent containers. Plant assignment and movement still
-respect access to the plant and any ordinary source or destination plot. Only
-administrators archive containers.
+create, rename, reparent, and convert existing plots into containers. Plant
+assignment and movement still respect access to the plant and any ordinary
+source or destination plot. Only administrators archive containers.
 
 Removing an area unparents its containers. It never removes a container, plant,
 assignment, or history. An occupied container cannot be archived. An empty
@@ -61,7 +65,8 @@ container is archived rather than destructively deleting plot-linked history;
 archived containers disappear from active selectors but remain resolvable for
 historical records.
 
-Container creation, reparenting, archiving, and plant movement are online-only.
+Container creation, conversion, reparenting, archiving, and plant movement are
+online-only.
 
 ## Export And Import
 

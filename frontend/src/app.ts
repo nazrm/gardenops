@@ -181,6 +181,7 @@ import {
   importPlantsCsvApi,
   isAuthApiError,
   logoutApi,
+  movePlotsToAreaApi,
   movePlantBetweenPlotsApi,
   removePlantFromPlotApi,
   updatePlotApi,
@@ -3433,7 +3434,7 @@ function renderMapObjectsPanelView(): void {
     selectedObjectId: state.selectedMapObjectId,
     showObjects: state.showMapObjects,
     canWrite: canWriteInGarden,
-    selectedPlotCount: state.selectedPlotIds.size,
+    selectedPlotIds: [...state.selectedPlotIds],
     onToggleObjects: (show) => {
       state.showMapObjects = show;
       renderPlots();
@@ -3444,6 +3445,9 @@ function renderMapObjectsPanelView(): void {
     },
     onUpdateContainer: (plotId, patch) => {
       void updateContainer(plotId, patch);
+    },
+    onMovePlotsToArea: (publicId, plotIds, containerType) => {
+      void movePlotsToArea(publicId, plotIds, containerType);
     },
     onUpdateObject: (publicId, patch) => {
       void updateMapObject(publicId, patch);
@@ -3560,6 +3564,29 @@ async function createContainer(input: {
     const created = await createContainerApi(gardenId, input);
     await refreshMapState({ coherent: true });
     showToast(t("map.container_created", { name: created.display_name }), "success");
+  } catch (err) {
+    showFetchError(err);
+  }
+}
+
+async function movePlotsToArea(
+  publicId: string,
+  plotIds: string[],
+  containerType: ContainerType,
+): Promise<void> {
+  if (!ensureWriteAccess()) return;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
+  const areaName = state.mapObjects.find((object) => object.public_id === publicId)?.name ?? "";
+  try {
+    await movePlotsToAreaApi(gardenId, publicId, {
+      plot_ids: plotIds,
+      container_type: containerType,
+    });
+    state.selectedPlotIds.clear();
+    updateSelectionCount(state);
+    await refreshMapState({ coherent: true });
+    showToast(t("map.plots_moved", { count: plotIds.length, area: areaName }), "success");
   } catch (err) {
     showFetchError(err);
   }

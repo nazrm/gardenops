@@ -121,6 +121,21 @@ class UpdateContainerBody(StrictBaseModel):
         return normalized
 
 
+class MovePlotsToAreaBody(StrictBaseModel):
+    plot_ids: list[str] = Field(min_length=1, max_length=50)
+    container_type: ContainerType
+
+    @field_validator("plot_ids")
+    @classmethod
+    def validate_plot_ids(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(not value or len(value) > 40 for value in normalized):
+            raise ValueError("Plot ids must contain between 1 and 40 characters")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Plot ids must be unique")
+        return normalized
+
+
 class ContainerImportItem(StrictBaseModel):
     plot_id: str | None = Field(default=None, min_length=1, max_length=80)
     display_name: str = Field(min_length=1, max_length=120)
@@ -1328,6 +1343,116 @@ def delete_map_object(
         fields={"garden_id": garden_id, "public_id": object_public_id},
     )
     return {"status": "ok", "unparented_containers": unparented_count}
+
+
+@router.post("/gardens/{garden_id}/map-objects/{object_public_id}/containers/from-plots")
+def move_plots_to_area(
+    garden_id: int,
+    object_public_id: str,
+    body: MovePlotsToAreaBody,
+    db: DB,
+    request: Request,
+) -> dict[str, object]:
+    context = _auth_context(request)
+    _require_editor(db, context=context, garden_id=garden_id)
+    _enforce_map_object_rate_limit(request, bucket=f"container-move:{garden_id}")
+    lock_garden_layout(db, garden_id)
+    parent = _object_row_by_public_id(
+        db,
+        garden_id=garden_id,
+        object_public_id=object_public_id,
+        for_update=True,
+    )
+    if str(parent["object_type"]) not in AREA_TYPES:
+        raise HTTPException(status_code=400, detail="Containers require an area parent")
+
+    rows = db.execute(
+        """
+        SELECT plot_id, plot_kind, archived_at_ms
+        FROM plots
+        WHERE garden_id = %s AND plot_id = ANY(%s)
+        FOR UPDATE
+        """,
+        (garden_id, body.plot_ids),
+    ).fetchall()
+    rows_by_id = {str(row["plot_id"]): row for row in rows}
+    if any(plot_id not in rows_by_id for plot_id in body.plot_ids):
+        raise HTTPException(status_code=404, detail="One or more plots were not found")
+    if any(
+        str(rows_by_id[plot_id]["plot_kind"]) == "container"
+        or rows_by_id[plot_id]["archived_at_ms"] is not None
+        for plot_id in body.plot_ids
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Only active map plots can be moved into an area",
+        )
+
+    environment: ContainerEnvironment = (
+        "covered" if str(parent["object_type"]) == "greenhouse" else "outdoor"
+    )
+    try:
+        moved = db.execute(
+            """
+            UPDATE plots
+            SET plot_kind = 'container',
+                display_name = COALESCE(NULLIF(BTRIM(display_name), ''), plot_id),
+                container_type = %s,
+                parent_map_object_id = %s,
+                environment = %s,
+                grid_row = NULL,
+                grid_col = NULL
+            WHERE garden_id = %s AND plot_id = ANY(%s)
+            RETURNING plot_id
+            """,
+            (
+                body.container_type,
+                int(parent["id"]),
+                environment,
+                garden_id,
+                body.plot_ids,
+            ),
+        ).fetchall()
+        if len(moved) != len(body.plot_ids):
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Not all selected plots could be moved")
+        updated_parent = db.execute(
+            """
+            UPDATE garden_map_objects
+            SET updated_at_ms = %s
+            WHERE id = %s AND garden_id = %s
+            RETURNING *
+            """,
+            (current_timestamp_ms(), int(parent["id"]), garden_id),
+        ).fetchone()
+        db.commit()
+    except psycopg.IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Plots could not be moved into this area",
+        ) from exc
+
+    notify_garden_modified()
+    _audit_map_object_change(
+        request,
+        context,
+        db=db,
+        garden_id=garden_id,
+        event="garden.container.move_from_plots",
+        fields={
+            "garden_id": garden_id,
+            "public_id": object_public_id,
+            "plot_ids": body.plot_ids,
+            "container_type": body.container_type,
+        },
+    )
+    containers = [
+        _serialize_container(container)
+        for container in _canonical_container_rows(db, garden_id=garden_id)
+        if container.get("parent_map_object_id") == int(parent["id"])
+    ]
+    return _serialize_object(dict(updated_parent or parent), containers)
 
 
 @router.get("/gardens/{garden_id}/containers/{plot_id}")

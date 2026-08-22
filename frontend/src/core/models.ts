@@ -861,6 +861,11 @@ export interface ContainerPatch {
   environment?: ContainerEnvironment;
 }
 
+export interface MovePlotsToAreaInput {
+  plot_ids: string[];
+  container_type: ContainerType;
+}
+
 export type AppTab = "map" | "garden" | "activity" | "insights" | "admin";
 
 export interface AppState {

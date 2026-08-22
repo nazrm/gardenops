@@ -391,7 +391,8 @@ async function main() {
   const page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
 
   const patches = [];
-  const plots = [makePlot(4, 6)];
+  const movedPlotRequests = [];
+  const plots = [makePlot(4, 6), makePlot(8, 1)];
   const mapObject = {
     public_id: OBJECT_ID,
     object_type: "patio",
@@ -489,6 +490,28 @@ async function main() {
     }
     if (method === "GET" && path === "/api/gardens/1/map-objects") {
       return fulfillJson(route, { objects: [mapObject], containers: [] });
+    }
+    if (
+      method === "POST"
+      && path === `/api/gardens/1/map-objects/${OBJECT_ID}/containers/from-plots`
+    ) {
+      const body = request.postDataJSON();
+      movedPlotRequests.push(body);
+      for (const plotId of body.plot_ids) {
+        const plotIndex = plots.findIndex((plot) => plot.plot_id === plotId);
+        assert(plotIndex >= 0, `Move request referenced missing plot ${plotId}`);
+        plots.splice(plotIndex, 1);
+        mapObject.containers.push({
+          plot_id: plotId,
+          display_name: plotId,
+          container_type: body.container_type,
+          environment: "outdoor",
+          plant_count: 0,
+          parent_map_object_public_id: OBJECT_ID,
+        });
+      }
+      mapObject.container_count = mapObject.containers.length;
+      return fulfillJson(route, mapObject);
     }
     if (method === "PATCH" && path === `/api/gardens/1/map-objects/${OBJECT_ID}`) {
       const body = request.postDataJSON();
@@ -620,6 +643,27 @@ async function main() {
   await page.keyboard.press("ArrowRight");
   await waitForNoPatch(patches, 4, "invalid keyboard move");
   await waitForDimensions(page, afterKeyboardResize, "keyboard collision restore");
+
+  await page.locator(".plot[data-plot-id='P81']").click();
+  const moveDisclosure = page.locator(".map-object-move-disclosure");
+  await moveDisclosure.locator("summary").click();
+  await moveDisclosure.locator("select").selectOption("planter");
+  await moveDisclosure.locator("button[type='submit']").click();
+  await page.waitForFunction(() => !document.querySelector(".plot[data-plot-id='P81']"));
+  assert(movedPlotRequests.length === 1, "Expected one selected-plot move request");
+  assert(
+    JSON.stringify(movedPlotRequests[0]) === JSON.stringify({
+      plot_ids: ["P81"],
+      container_type: "planter",
+    }),
+    `Unexpected selected-plot move body: ${JSON.stringify(movedPlotRequests[0])}`,
+  );
+  await page.locator(".map-container-row-main", { hasText: "P81" }).waitFor({ state: "visible" });
+  await page.locator(".map-container-marker-name", { hasText: "P81" }).waitFor({ state: "visible" });
+  assert(
+    await page.locator(".plot.multi-selected").count() === 0,
+    "Moved plot remained selected on the map",
+  );
 
   const mobileContext = await browser.newContext({
     viewport: { width: 390, height: 844 },

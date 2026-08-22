@@ -27,6 +27,7 @@ import type {
   MapObject,
   MapObjectInput,
   MapObjectsResponse,
+  MovePlotsToAreaInput,
   MapObjectUnit,
   MapObjectUnitInput,
   NotificationListResponse,
@@ -2023,6 +2024,17 @@ export async function createContainerApi(
   input: ContainerInput,
 ): Promise<ContainerSummary> {
   return apiPost<ContainerSummary>(`/api/gardens/${gardenId}/containers`, input);
+}
+
+export async function movePlotsToAreaApi(
+  gardenId: number,
+  publicId: string,
+  input: MovePlotsToAreaInput,
+): Promise<MapObject> {
+  return apiPost<MapObject>(
+    `/api/gardens/${gardenId}/map-objects/${encodeApiPathSegment(publicId)}/containers/from-plots`,
+    input,
+  );
 }
 
 export async function updateContainerApi(
