@@ -1,4 +1,4 @@
-import type { HarvestEntry, HarvestSummary } from "../core/models";
+import type { HarvestEntry, HarvestSummary, LinkedPlot } from "../core/models";
 import { formatPlotLabel } from "../core/models";
 import { t } from "../core/i18n";
 import { createFieldGroup as _createFieldGroup, createParagraph } from "../core/dom";
@@ -113,12 +113,17 @@ function createHarvestCard(
       });
       tags.appendChild(tag);
     }
-    const plotList = entry.plots ?? entry.plot_ids.map((id: string) => ({ plot_id: id, zone_name: "" }));
+    const plotList: LinkedPlot[] = entry.plots ?? entry.plot_ids.map((id: string) => ({ plot_id: id, zone_name: "" }));
     for (const plot of plotList) {
       const tag = document.createElement("button");
       tag.type = "button";
       tag.className = "journal-tag journal-tag-plot";
-      tag.textContent = formatPlotLabel(plot.plot_id, plot.zone_name);
+      tag.textContent = formatPlotLabel(
+        plot.plot_id,
+        plot.zone_name,
+        null,
+        plot.display_name,
+      );
       tag.addEventListener("click", (e) => {
         e.stopPropagation();
         cbs.onPlotClick(plot.plot_id);

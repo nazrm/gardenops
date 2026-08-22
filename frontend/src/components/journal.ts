@@ -1,4 +1,4 @@
-import type { JournalEntry, JournalEventType } from "../core/models";
+import type { JournalEntry, JournalEventType, LinkedPlot } from "../core/models";
 import { formatPlotLabel } from "../core/models";
 import { t } from "../core/i18n";
 import { createFieldGroup as _createFieldGroup } from "../core/dom";
@@ -148,12 +148,17 @@ function createJournalCard(
     });
     tags.appendChild(chip);
   }
-  const plotList = entry.plots ?? entry.plot_ids.map((id: string) => ({ plot_id: id, zone_name: "" }));
+  const plotList: LinkedPlot[] = entry.plots ?? entry.plot_ids.map((id: string) => ({ plot_id: id, zone_name: "" }));
   for (const plot of plotList) {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "journal-tag journal-tag-plot";
-    chip.textContent = formatPlotLabel(plot.plot_id, plot.zone_name);
+    chip.textContent = formatPlotLabel(
+      plot.plot_id,
+      plot.zone_name,
+      null,
+      plot.display_name,
+    );
     chip.addEventListener("click", (e) => {
       e.stopPropagation();
       cbs.onPlotClick(plot.plot_id);

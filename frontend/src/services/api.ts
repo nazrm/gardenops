@@ -1754,6 +1754,16 @@ export async function getPlots(): Promise<Plot[]> {
   return apiGet<Plot[]>("/api/plots");
 }
 
+export async function getContainerApi(
+  gardenId: number,
+  plotId: string,
+): Promise<ContainerSummary> {
+  return apiGet<ContainerSummary>(
+    `/api/gardens/${gardenId}/containers/${encodeApiPathSegment(plotId)}`,
+    { gardenId },
+  );
+}
+
 export interface HouseLayoutState {
   row: number;
   col: number;

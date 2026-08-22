@@ -1,4 +1,5 @@
-import type { GardenIssue } from "../core/models";
+import type { GardenIssue, LinkedPlot } from "../core/models";
+import { formatPlotLabel } from "../core/models";
 import { t } from "../core/i18n";
 import { createFieldGroup as _createFieldGroup, createParagraph } from "../core/dom";
 import { renderPendingMediaPickerLazy } from "./mediaGalleryLoader";
@@ -193,14 +194,23 @@ function createIssueCard(
       });
       tags.appendChild(tag);
     }
-    for (const plotId of issue.plot_ids) {
+    const plotList: LinkedPlot[] = issue.plots ?? issue.plot_ids.map((plotId) => ({
+      plot_id: plotId,
+      zone_name: "",
+    }));
+    for (const plot of plotList) {
       const tag = document.createElement("button");
       tag.type = "button";
       tag.className = "journal-tag journal-tag-plot";
-      tag.textContent = plotId;
+      tag.textContent = formatPlotLabel(
+        plot.plot_id,
+        plot.zone_name,
+        null,
+        plot.display_name,
+      );
       tag.addEventListener("click", (e) => {
         e.stopPropagation();
-        cbs.onPlotClick(plotId);
+        cbs.onPlotClick(plot.plot_id);
       });
       tags.appendChild(tag);
     }

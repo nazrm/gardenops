@@ -25,6 +25,7 @@ import type {
   CalendarSubscription,
   CalendarViewMode,
   GardenTask,
+  LinkedPlot,
   Plant,
   Plot,
 } from "../core/models";
@@ -1073,7 +1074,8 @@ function canMutateCalendarTaskTarget(target: CalendarTaskActionTarget): boolean 
   return target.gardenId === getActiveGardenContext() && ctx.canWrite();
 }
 
-function plotLabel(plotId: string): string {
+function plotLabel(plotId: string, linkedPlot?: LinkedPlot): string {
+  if (linkedPlot?.display_name?.trim()) return linkedPlot.display_name.trim();
   const plot = ctx.getPlots().find((candidate) => candidate.plot_id === plotId);
   return plot ? `${plot.plot_id} · ${plot.zone_name}` : plotId;
 }
@@ -1432,10 +1434,11 @@ function renderDetail(event?: CalendarEvent): void {
     const list = document.createElement("div");
     list.className = "calendar-detail-tags";
     for (const plotId of event.plot_ids) {
+      const linkedPlot = event.plots?.find((plot) => plot.plot_id === plotId);
       const button = document.createElement("button");
       button.type = "button";
       button.className = "calendar-link-chip";
-      button.textContent = plotLabel(plotId);
+      button.textContent = plotLabel(plotId, linkedPlot);
       button.addEventListener("click", () => {
         ctx.setActiveTab("map");
         void ctx.selectPlot(plotId);

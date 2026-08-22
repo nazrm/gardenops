@@ -170,6 +170,8 @@ def _authorize_plot_row(
     if int(ownership_garden_id) != garden_id:  # type: ignore[arg-type]
         raise HTTPException(status_code=404, detail="Plot not found")
     if _plot_is_archived(row):
+        if read_only and _plot_is_container(row):
+            return
         raise HTTPException(status_code=410, detail="Plot is archived")
     if _plot_is_container(row):
         # Containers are shared garden resources. A viewer can inspect them,

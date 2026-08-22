@@ -205,7 +205,12 @@ def _validate_plot_ids(
 # ── Serialization ─────────────────────────────────────────────────
 
 
-def _serialize_issue(row: dict, plant_ids: list[str], plot_ids: list[str]) -> dict:
+def _serialize_issue(
+    row: dict,
+    plant_ids: list[str],
+    plot_ids: list[str],
+    plots: list[dict[str, object]] | None = None,
+) -> dict:
     metadata_raw = row.get("metadata_json") or "{}"
     try:
         metadata = json.loads(metadata_raw)
@@ -237,6 +242,10 @@ def _serialize_issue(row: dict, plant_ids: list[str], plot_ids: list[str]) -> di
         "updated_at_ms": int(row["updated_at_ms"]),
         "plant_ids": plant_ids,
         "plot_ids": plot_ids,
+        "plots": plots or [
+            {"plot_id": plot_id, "zone_name": ""}
+            for plot_id in plot_ids
+        ],
     }
 
 
@@ -507,6 +516,31 @@ def _load_related_journal_entries(
     ).fetchall():
         plot_map[int(row["entry_id"])].append(str(row["plot_id"]))
 
+    plot_detail_map: dict[int, list[dict[str, object]]] = {
+        entry_id: [] for entry_id in entry_ids
+    }
+    for row in db.execute(
+        "SELECT jep.entry_id, jep.plot_id, p.zone_name, p.display_name, "
+        "p.plot_kind, p.archived_at_ms "
+        "FROM garden_journal_entry_plots jep "
+        "JOIN plots p ON p.plot_id = jep.plot_id "
+        f"WHERE jep.entry_id IN ({placeholders})",
+        entry_ids,
+    ).fetchall():
+        plot_detail_map[int(row["entry_id"])].append(
+            {
+                "plot_id": str(row["plot_id"]),
+                "zone_name": str(row["zone_name"]),
+                "display_name": str(row["display_name"]) if row["display_name"] else None,
+                "plot_kind": str(row["plot_kind"]) if row["plot_kind"] else None,
+                "archived_at_ms": (
+                    int(row["archived_at_ms"])
+                    if row["archived_at_ms"] is not None
+                    else None
+                ),
+            }
+        )
+
     entries: list[dict] = []
     for row in rows:
         entries.append(
@@ -524,6 +558,10 @@ def _load_related_journal_entries(
                 "updated_at_ms": int(row["updated_at_ms"]),
                 "plant_ids": plant_map.get(int(row["id"]), []),
                 "plot_ids": plot_map.get(int(row["id"]), []),
+                "plots": plot_detail_map.get(int(row["id"]), []) or [
+                    {"plot_id": plot_id, "zone_name": ""}
+                    for plot_id in plot_map.get(int(row["id"]), [])
+                ],
             }
         )
     return entries
@@ -576,9 +614,13 @@ def _build_update_summary(
 
 def _load_issue_links(
     db: DbConn, issue_ids: list[int]
-) -> tuple[dict[int, list[str]], dict[int, list[str]]]:
+) -> tuple[
+    dict[int, list[str]],
+    dict[int, list[str]],
+    dict[int, list[dict[str, object]]],
+]:
     if not issue_ids:
-        return {}, {}
+        return {}, {}, {}
     placeholders = ",".join(["%s"] * len(issue_ids))
     plant_map: dict[int, list[str]] = {iid: [] for iid in issue_ids}
     for r in db.execute(
@@ -592,7 +634,27 @@ def _load_issue_links(
         issue_ids,
     ).fetchall():
         plot_map[int(r["issue_id"])].append(str(r["plot_id"]))
-    return plant_map, plot_map
+    plot_detail_map: dict[int, list[dict[str, object]]] = {iid: [] for iid in issue_ids}
+    for r in db.execute(
+        f"SELECT gip.issue_id, gip.plot_id, p.zone_name, p.display_name, "
+        f"p.plot_kind, p.archived_at_ms "
+        f"FROM garden_issue_plots gip "
+        f"JOIN plots p ON p.plot_id = gip.plot_id "
+        f"WHERE gip.issue_id IN ({placeholders})",
+        issue_ids,
+    ).fetchall():
+        plot_detail_map[int(r["issue_id"])].append(
+            {
+                "plot_id": str(r["plot_id"]),
+                "zone_name": str(r["zone_name"]),
+                "display_name": str(r["display_name"]) if r["display_name"] else None,
+                "plot_kind": str(r["plot_kind"]) if r["plot_kind"] else None,
+                "archived_at_ms": (
+                    int(r["archived_at_ms"]) if r["archived_at_ms"] is not None else None
+                ),
+            }
+        )
+    return plant_map, plot_map, plot_detail_map
 
 
 def _set_issue_links(
@@ -777,13 +839,14 @@ def list_issues(
     ).fetchall()
 
     issue_ids = [int(r["id"]) for r in rows]
-    plant_map, plot_map = _load_issue_links(db, issue_ids)
+    plant_map, plot_map, plot_detail_map = _load_issue_links(db, issue_ids)
 
     issues = [
         _serialize_issue(
             dict(r),
             plant_map.get(int(r["id"]), []),
             plot_map.get(int(r["id"]), []),
+            plot_detail_map.get(int(r["id"]), []),
         )
         for r in rows
     ]
@@ -801,7 +864,7 @@ def get_issue_history(
     garden_id = _active_garden_id(context)
     row = _fetch_issue(db, issue_id, garden_id)
     internal_id = int(row["id"])
-    plant_map, plot_map = _load_issue_links(db, [internal_id])
+    plant_map, plot_map, _plot_detail_map = _load_issue_links(db, [internal_id])
     plant_ids = plant_map.get(internal_id, [])
     plot_ids = plot_map.get(internal_id, [])
     return {
@@ -822,11 +885,12 @@ def get_issue(request: Request, db: DB, issue_id: str) -> dict:
     garden_id = _active_garden_id(context)
     row = _fetch_issue(db, issue_id, garden_id)
     internal_id = int(row["id"])
-    plant_map, plot_map = _load_issue_links(db, [internal_id])
+    plant_map, plot_map, plot_detail_map = _load_issue_links(db, [internal_id])
     return _serialize_issue(
         row,
         plant_map.get(internal_id, []),
         plot_map.get(internal_id, []),
+        plot_detail_map.get(internal_id, []),
     )
 
 
@@ -905,7 +969,7 @@ def create_issue(
     issue_public_id = str(row["public_id"])
     _set_issue_links(db, context, issue_id, body.plant_ids, body.plot_ids)
     issue_row = _fetch_issue(db, issue_public_id, garden_id)
-    plant_map, plot_map = _load_issue_links(db, [issue_id])
+    plant_map, plot_map, _plot_detail_map = _load_issue_links(db, [issue_id])
     plant_ids = plant_map.get(issue_id, [])
     plot_ids = plot_map.get(issue_id, [])
     _append_issue_history_event(
@@ -954,7 +1018,9 @@ def update_issue(
     garden_id = _active_garden_id(context)
     previous_row = _fetch_issue(db, issue_id, garden_id)
     internal_id = int(previous_row["id"])
-    previous_plant_map, previous_plot_map = _load_issue_links(db, [internal_id])
+    previous_plant_map, previous_plot_map, _previous_plot_detail_map = _load_issue_links(
+        db, [internal_id]
+    )
     previous_plant_ids = previous_plant_map.get(internal_id, [])
     previous_plot_ids = previous_plot_map.get(internal_id, [])
 
@@ -1028,7 +1094,9 @@ def update_issue(
         _set_issue_links(db, context, internal_id, plant_ids_current, plot_ids_val)
 
     current_row = _fetch_issue(db, issue_id, garden_id)
-    current_plant_map, current_plot_map = _load_issue_links(db, [internal_id])
+    current_plant_map, current_plot_map, _current_plot_detail_map = _load_issue_links(
+        db, [internal_id]
+    )
     current_plant_ids = current_plant_map.get(internal_id, [])
     current_plot_ids = current_plot_map.get(internal_id, [])
     summary = _build_update_summary(
@@ -1130,7 +1198,7 @@ def resolve_issue(
     if not resolved:
         return {"status": "ok"}
     current_row = _fetch_issue(db, issue_id, garden_id)
-    plant_map, plot_map = _load_issue_links(db, [internal_id])
+    plant_map, plot_map, _plot_detail_map = _load_issue_links(db, [internal_id])
     plant_ids = plant_map.get(internal_id, [])
     plot_ids = plot_map.get(internal_id, [])
     _append_issue_history_event(

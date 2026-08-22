@@ -1,7 +1,9 @@
 import type {
   AppState,
+  ContainerSummary,
   GardenTask,
   Plant,
+  Plot,
   TaskListResponse,
 } from "../core/models";
 import { t } from "../core/i18n";
@@ -10,6 +12,7 @@ import {
   deleteMediaAssetApi,
   fetchJournalEntriesApi,
   fetchTasksApi,
+  getContainerApi,
   getActiveGardenContext,
   getApiErrorMessage,
   getPlotPlantAlerts,
@@ -151,6 +154,47 @@ function sortPlantsForPlotPanel(plants: Plant[]): Plant[] {
   );
 }
 
+function historicalContainerPlot(container: ContainerSummary): Plot {
+  return {
+    plot_id: container.plot_id,
+    zone_code: "C",
+    zone_name: "Containers",
+    plot_number: 0,
+    grid_row: null,
+    grid_col: null,
+    sub_zone: "",
+    notes: "",
+    color: null,
+    plant_count: container.plant_count,
+    has_tree: false,
+    has_bush: false,
+    categories: [],
+    plot_kind: "container",
+    display_name: container.display_name,
+    container_type: container.container_type,
+    environment: container.environment,
+    archived_at_ms: container.archived_at_ms ?? null,
+  };
+}
+
+async function resolvePlotForSelection(
+  state: AppState,
+  plotId: string,
+): Promise<{ plot: Plot; historical: boolean } | null> {
+  const activePlot = state.plots.find((candidate) => candidate.plot_id === plotId);
+  if (activePlot) return { plot: activePlot, historical: false };
+
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return null;
+  try {
+    const container = await getContainerApi(gardenId, plotId);
+    if (container.archived_at_ms == null) return null;
+    return { plot: historicalContainerPlot(container), historical: true };
+  } catch {
+    return null;
+  }
+}
+
 function createEmptyMediaPreviewMap(
   plants: Plant[],
 ): Map<string, MediaAsset | null> {
@@ -256,6 +300,7 @@ function getPanelCallbacks(
   state: AppState,
   plotId: string,
   cbs: PlotCallbacks,
+  options: { plotLabel?: string; readOnly?: boolean } = {},
 ): {
   canWrite: boolean;
   plotLabel?: string;
@@ -267,10 +312,11 @@ function getPanelCallbacks(
     prefill: { plant_ids?: string[]; plot_ids?: string[] },
   ) => void;
 } {
-  const canWrite = cbs.canWrite();
+  const canWrite = options.readOnly !== true && cbs.canWrite();
+  const plotLabel = options.plotLabel ?? cbs.getPlotLabel?.(plotId);
   return {
     canWrite,
-    ...(cbs.getPlotLabel ? { plotLabel: cbs.getPlotLabel(plotId) } : {}),
+    ...(plotLabel ? { plotLabel } : {}),
     onClose: () => closePanel(state, cbs),
     onRemove: (pltId) =>
       void removePlant(state, plotId, pltId, cbs),
@@ -1170,10 +1216,11 @@ async function hydrateActivePlotPanel(
   plants: Plant[],
   cbs: PlotCallbacks,
   seq: number,
+  options: { plotLabel?: string; readOnly?: boolean } = {},
 ): Promise<void> {
   const supplemental = await getPlotSupplementalData(plotId, plants);
   if (seq !== plotSelectionSeq || state.selectedPlotId !== plotId) return;
-  const callbacks = getPanelCallbacks(state, plotId, cbs);
+  const callbacks = getPanelCallbacks(state, plotId, cbs, options);
   updateDrawerPlantsSection({
     plotId,
     plants,
@@ -1236,18 +1283,22 @@ export async function selectPlot(
     );
   });
 
+  const resolved = await resolvePlotForSelection(state, plotId);
+  if (!resolved) return;
+  const { plot, historical } = resolved;
   state.selectedPlotId = plotId;
   cbs.onPlotFocusChanged(plotId);
   const seq = ++plotSelectionSeq;
-  const plot = state.plots.find((p) => p.plot_id === plotId);
-  if (!plot) return;
+  const panelOptions = historical
+    ? { readOnly: true, plotLabel: plot.display_name?.trim() || plot.plot_id }
+    : {};
 
   const topPlants = await getPlotPlantsCached(plotId);
   if (seq !== plotSelectionSeq || state.selectedPlotId !== plotId) return;
 
   if (cbs.isMobile()) {
     const supplemental = getCachedPlotSupplementalData(plotId);
-    const panelCallbacks = getPanelCallbacks(state, plotId, cbs);
+    const panelCallbacks = getPanelCallbacks(state, plotId, cbs, panelOptions);
     showBottomSheet({
       plotId,
       plants: topPlants,
@@ -1259,27 +1310,39 @@ export async function selectPlot(
         : {}),
       onSearch: (e) => void handlePlantSearch(state, e, cbs),
       ...panelCallbacks,
-      ...(cbs.canWrite()
+      ...(panelCallbacks.canWrite
         ? {
             onEditPlot: () => cbs.onEditPlot(plotId),
             onDeletePlot: () => void cbs.deletePlot(plotId),
           }
         : {}),
-      ...(cbs.canWrite() && cbs.onCreatePlant
+      ...(panelCallbacks.canWrite && cbs.onCreatePlant
         ? { onCreatePlant: cbs.onCreatePlant }
         : {}),
     });
-    activatePlotTasksPanel(state, plotId, cbs);
-    void hydrateActivePlotPanel(state, plotId, topPlants, cbs, seq);
-    void loadPlotTasksPreview(state, plotId, cbs);
+    if (!historical) activatePlotTasksPanel(state, plotId, cbs);
+    void hydrateActivePlotPanel(state, plotId, topPlants, cbs, seq, panelOptions);
+    if (!historical) void loadPlotTasksPreview(state, plotId, cbs);
     void loadPlotJournalPreview(plotId, cbs);
-    void loadPlotMediaPreview(plotId, cbs);
+    if (!historical) void loadPlotMediaPreview(plotId, cbs);
     return;
   }
 
   const anchor =
     anchorEl ??
     document.querySelector(`[data-plot-id="${plotId}"]`);
+  if (!anchor && historical) {
+    const panelCallbacks = getPanelCallbacks(state, plotId, cbs, panelOptions);
+    showDrawer({
+      plotId,
+      plants: topPlants,
+      onSearch: (e) => void handlePlantSearch(state, e, cbs),
+      ...panelCallbacks,
+    });
+    void hydrateActivePlotPanel(state, plotId, topPlants, cbs, seq, panelOptions);
+    void loadPlotJournalPreview(plotId, cbs);
+    return;
+  }
   if (!anchor) return;
 
   const anchorRect = anchor.getBoundingClientRect();

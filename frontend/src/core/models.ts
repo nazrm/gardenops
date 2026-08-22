@@ -65,12 +65,23 @@ export interface IndoorPlant extends Plant {
   quantity: number;
 }
 
+export interface LinkedPlot {
+  plot_id: string;
+  zone_name: string;
+  display_name?: string | null;
+  plot_kind?: PlotKind | null;
+  archived_at_ms?: number | null;
+}
+
 /** Format a plot label for display. Indoor plots show zone_name + room. */
 export function formatPlotLabel(
   plot_id: string,
   zone_name: string,
   roomLabel?: string | null,
+  displayName?: string | null,
 ): string {
+  const explicitName = displayName?.trim();
+  if (explicitName) return explicitName;
   if (plot_id.startsWith("INDOOR-")) {
     return roomLabel ? `${zone_name} \u2014 ${roomLabel}` : zone_name;
   }
@@ -115,7 +126,7 @@ export interface JournalEntry {
   updated_at_ms: number;
   plant_ids: string[];
   plot_ids: string[];
-  plots?: Array<{ plot_id: string; zone_name: string }>;
+  plots?: LinkedPlot[];
 }
 
 export interface JournalListResponse {
@@ -445,6 +456,7 @@ export interface CalendarEvent {
   target_id: string;
   plant_ids: string[];
   plot_ids: string[];
+  plots?: LinkedPlot[];
   due_on?: string;
   snoozed_until?: string | null;
   updated_at_ms: number;
@@ -543,6 +555,7 @@ export interface GardenIssue {
   updated_at_ms: number;
   plant_ids: string[];
   plot_ids: string[];
+  plots?: LinkedPlot[];
 }
 
 export interface IssueListResponse {
@@ -591,7 +604,7 @@ export interface HarvestEntry {
   updated_at_ms: number;
   plant_ids: string[];
   plot_ids: string[];
-  plots?: Array<{ plot_id: string; zone_name: string }>;
+  plots?: LinkedPlot[];
 }
 
 export interface HarvestListResponse {
