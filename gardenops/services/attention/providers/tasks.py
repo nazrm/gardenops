@@ -277,7 +277,8 @@ class TaskAttentionProvider:
             WHERE gtp.task_id IN ({placeholders})
               AND p.garden_id = %s
               AND p.archived_at_ms IS NULL
-              AND p.environment = 'outdoor'
+            GROUP BY gtp.task_id, gtp.plt_id
+            HAVING BOOL_AND(COALESCE(p.environment = 'outdoor', FALSE))
             """,
             [*task_ids, garden_id],
         ).fetchall()
