@@ -116,7 +116,7 @@ const PHASE_ONE_EXACT_SIDE_EFFECT_TABLES = [
   "provider_daily_usage",
   "shademap_cache",
 ];
-const PHASE_ONE_EXACT_SIDE_EFFECT_ACCOUNTING = {
+const PHASE_ONE_EXACT_FIXED_SIDE_EFFECT_ACCOUNTING = {
   garden_map_object_units: {
     allow_row_delta: true,
     evidence: "phase_one_snapshot_restore_retires_legacy_unit",
@@ -125,15 +125,6 @@ const PHASE_ONE_EXACT_SIDE_EFFECT_ACCOUNTING = {
     expected_identity_removed: 1,
     expected_identity_updated: 0,
     expected_removed: 1,
-  },
-  provider_daily_usage: {
-    allow_row_delta: true,
-    evidence: "phase_one_map_profiles_terrain_provider_misses",
-    expected_added: 5,
-    expected_identity_added: 5,
-    expected_identity_removed: 0,
-    expected_identity_updated: 0,
-    expected_removed: 0,
   },
   shademap_cache: {
     allow_row_delta: true,
@@ -3737,16 +3728,100 @@ function assertWholeTableMutationAccounting(initial, final, allowedTables, accou
   };
 }
 
-function assertPhaseOneExactSideEffects(initial, final) {
+function assertPhaseOneTerrainProviderUsage(initialRows, finalRows, fixture) {
+  assert(Array.isArray(initialRows) && initialRows.length === 0,
+    "Phase 1 terrain provider usage did not start empty");
+  assert(Array.isArray(finalRows), "Phase 1 terrain provider usage is missing");
+  const usageDays = new Set();
+  const identities = new Set();
+  const aggregates = new Map();
+  const userScopeIds = new Map();
+  let totalRequestCount = 0;
+  for (const row of finalRows) {
+    assert(row?.feature === "shademap-terrain-miss",
+      "Phase 1 terrain provider usage contained an unexpected feature");
+    const usageDay = String(row.usage_day || "");
+    const parsedUsageDay = new Date(`${usageDay}T00:00:00.000Z`);
+    assert(/^\d{4}-\d{2}-\d{2}$/.test(usageDay)
+      && Number.isFinite(parsedUsageDay.getTime())
+      && parsedUsageDay.toISOString().slice(0, 10) === usageDay,
+    "Phase 1 terrain provider usage day was invalid");
+    assert(Number.isSafeInteger(row.scope_id) && row.scope_id > 0,
+      "Phase 1 terrain provider usage scope ID was invalid");
+    assert(Number.isSafeInteger(row.request_count) && row.request_count > 0,
+      "Phase 1 terrain provider usage request count was invalid");
+    usageDays.add(usageDay);
+    const identity = `${usageDay}:${row.feature}:${row.scope_type}:${row.scope_id}`;
+    assert(!identities.has(identity), "Phase 1 terrain provider usage contained a duplicate row");
+    identities.add(identity);
+
+    let scopeKey;
+    if (row.scope_type === "user") {
+      assert([fixture.roles.admin, fixture.roles.editor].includes(row.scope_username),
+        "Phase 1 terrain provider usage contained an unexpected user scope");
+      assert(!userScopeIds.has(row.scope_username)
+        || userScopeIds.get(row.scope_username) === row.scope_id,
+      "Phase 1 terrain provider usage user scope ID changed across UTC days");
+      userScopeIds.set(row.scope_username, row.scope_id);
+      scopeKey = `user:${row.scope_username}`;
+    } else {
+      assert(row.scope_type === "garden" && row.scope_username === ""
+        && [fixture.gardens.alpha.id, fixture.gardens.beta.id].includes(row.scope_id),
+      "Phase 1 terrain provider usage contained an unexpected garden scope");
+      scopeKey = `garden:${row.scope_id}`;
+    }
+    aggregates.set(scopeKey, (aggregates.get(scopeKey) || 0) + row.request_count);
+    totalRequestCount += row.request_count;
+  }
+  const sortedUsageDays = [...usageDays].sort();
+  assert(sortedUsageDays.length === 1 || sortedUsageDays.length === 2,
+    "Phase 1 terrain provider usage did not span one or two UTC days");
+  if (sortedUsageDays.length === 2) {
+    assert(new Date(`${sortedUsageDays[1]}T00:00:00.000Z`).getTime()
+      - new Date(`${sortedUsageDays[0]}T00:00:00.000Z`).getTime() === 86_400_000,
+    "Phase 1 terrain provider usage UTC days were not adjacent");
+  }
+  const expectedAggregates = new Map([
+    [`user:${fixture.roles.admin}`, 2],
+    [`user:${fixture.roles.editor}`, 1],
+    [`garden:${fixture.gardens.alpha.id}`, 2],
+    [`garden:${fixture.gardens.beta.id}`, 1],
+  ]);
+  assert(aggregates.size === expectedAggregates.size
+    && [...expectedAggregates].every(([scope, count]) => aggregates.get(scope) === count),
+  "Phase 1 terrain provider usage aggregate was unexpected");
+  assert(totalRequestCount === 6,
+    "Phase 1 terrain provider usage total request count was unexpected");
+  return finalRows.length;
+}
+
+function assertPhaseOneExactSideEffects(initial, final, initialState, finalState, fixture) {
   const tables = new Set(PHASE_ONE_EXACT_SIDE_EFFECT_TABLES);
   const projection = (domainTables) => Object.fromEntries(
     [...tables].map((table) => [table, domainTables[table]]),
   );
+  const providerRowCount = assertPhaseOneTerrainProviderUsage(
+    initialState?.terrain_provider_usage,
+    finalState?.terrain_provider_usage,
+    fixture,
+  );
+  const accounting = {
+    ...PHASE_ONE_EXACT_FIXED_SIDE_EFFECT_ACCOUNTING,
+    provider_daily_usage: {
+      allow_row_delta: true,
+      evidence: "phase_one_map_profiles_terrain_provider_misses",
+      expected_added: providerRowCount,
+      expected_identity_added: providerRowCount,
+      expected_identity_removed: 0,
+      expected_identity_updated: 0,
+      expected_removed: 0,
+    },
+  };
   return assertWholeTableMutationAccounting(
     projection(initial),
     projection(final),
     tables,
-    PHASE_ONE_EXACT_SIDE_EFFECT_ACCOUNTING,
+    accounting,
   );
 }
 
@@ -8786,6 +8861,9 @@ async function main() {
       assertPhaseOneExactSideEffects(
         fixture.database_snapshot.domain_tables,
         phaseOneDatabase.domain_tables,
+        fixture.database_snapshot.phase_one_state,
+        phaseOneDatabase.phase_one_state,
+        fixture,
       );
     }
     const phaseOneChangedDomainTables = phaseOneRan ? [...new Set([

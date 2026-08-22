@@ -555,6 +555,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "lifecycle_audit",
         "restore_import_graphs",
         "stable_domain_projection",
+        "terrain_provider_usage",
         'subscription_tier="pro"',
     ):
         assert marker in seeder_source
@@ -2318,21 +2319,89 @@ const final = {
 };
 assertWholeTableMutationAccounting(initial, final, new Set(tables), accounting);
 const phaseOneInitial = { ...initial, garden_map_object_units: row('c', 1) };
-const phaseOneFinal = {
-  provider_daily_usage: row('a', 5),
+const fixture = {
+  roles: { admin: 'admin', editor: 'editor' },
+  gardens: { alpha: { id: 1 }, beta: { id: 2 } },
+};
+const usage = (usageDay, scopeType, scopeId, scopeUsername, requestCount) => ({
+  feature: 'shademap-terrain-miss',
+  request_count: requestCount,
+  scope_id: scopeId,
+  scope_type: scopeType,
+  scope_username: scopeUsername,
+  usage_day: usageDay,
+});
+const sameDay = [
+  usage('2026-08-21', 'user', 1, 'admin', 2),
+  usage('2026-08-21', 'user', 4, 'editor', 1),
+  usage('2026-08-21', 'garden', 1, '', 2),
+  usage('2026-08-21', 'garden', 2, '', 1),
+];
+const oneSplit = [
+  usage('2026-08-21', 'user', 1, 'admin', 2),
+  usage('2026-08-22', 'user', 4, 'editor', 1),
+  usage('2026-08-21', 'garden', 1, '', 1),
+  usage('2026-08-22', 'garden', 1, '', 1),
+  usage('2026-08-21', 'garden', 2, '', 1),
+];
+const bothSplit = [
+  usage('2026-08-21', 'user', 1, 'admin', 1),
+  usage('2026-08-22', 'user', 1, 'admin', 1),
+  usage('2026-08-22', 'user', 4, 'editor', 1),
+  usage('2026-08-21', 'garden', 1, '', 1),
+  usage('2026-08-22', 'garden', 1, '', 1),
+  usage('2026-08-21', 'garden', 2, '', 1),
+];
+const phaseOneState = (terrainProviderUsage) => ({
+  terrain_provider_usage: terrainProviderUsage,
+});
+const phaseOneFinal = (providerCount) => ({
+  provider_daily_usage: row('a', providerCount),
   shademap_cache: row('b', 3),
   garden_map_object_units: row('c', 0),
-};
-assertPhaseOneExactSideEffects(phaseOneInitial, phaseOneFinal);
+});
+for (const rows of [sameDay, oneSplit, bothSplit]) {
+  assertPhaseOneExactSideEffects(
+    phaseOneInitial,
+    phaseOneFinal(rows.length),
+    phaseOneState([]),
+    phaseOneState(rows),
+    fixture,
+  );
+}
+for (const [rows, message] of [
+  [[...sameDay.slice(0, 1), usage('2026-08-21', 'user', 5, 'viewer', 1), ...sameDay.slice(2)], 'scope'],
+  [[usage('2026-08-21', 'user', 1, 'admin', 1), ...sameDay.slice(1)], 'aggregate'],
+  [[...sameDay, usage('2026-08-21', 'garden', 2, '', 1)], 'duplicate'],
+]) {
+  try {
+    assertPhaseOneExactSideEffects(
+      phaseOneInitial,
+      phaseOneFinal(rows.length),
+      phaseOneState([]),
+      phaseOneState(rows),
+      fixture,
+    );
+    process.exit(3);
+  } catch (error) {
+    if (!String(error.message).includes(message)) process.exit(4);
+  }
+}
 try {
-  assertPhaseOneExactSideEffects(phaseOneInitial, {
-    provider_daily_usage: row('a', 6),
-    shademap_cache: row('b', 3),
-    garden_map_object_units: row('c', 0),
-  });
-  process.exit(3);
+  assertPhaseOneExactSideEffects(
+    phaseOneInitial,
+    {
+      provider_daily_usage: row('a', 5),
+      shademap_cache: row('b', 3),
+      garden_map_object_units: row('c', 0),
+    },
+    phaseOneState([]),
+    phaseOneState(sameDay),
+    fixture,
+  );
+  process.exit(5);
 } catch (error) {
-  if (!String(error.message).includes('expected_added')) process.exit(4);
+  if (!String(error.message).includes('expected_added')) process.exit(6);
 }
 """
     result = subprocess.run(

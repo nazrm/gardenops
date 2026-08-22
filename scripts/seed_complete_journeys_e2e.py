@@ -2368,6 +2368,17 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         """,
         (alpha_id, PHASE_ONE_MAP_UNIT_ID),
     ).fetchone()
+    terrain_provider_usage_rows = conn.execute(
+        """
+        SELECT usage.usage_day, usage.feature, usage.scope_type, usage.scope_id,
+               usage.request_count, users.username AS scope_username
+        FROM provider_daily_usage usage
+        LEFT JOIN auth_users users
+          ON usage.scope_type = 'user' AND users.id = usage.scope_id
+        WHERE usage.feature = 'shademap-terrain-miss'
+        ORDER BY usage.usage_day, usage.scope_type, usage.scope_id
+        """
+    ).fetchall()
     indoor = conn.execute(
         """
         SELECT
@@ -2843,6 +2854,17 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         "temp_map_object_count": int(counts["temp_map_objects"]),
         "temp_plant_count": int(counts["temp_plants"]),
         "temp_saved_view_count": int(counts["temp_views"]),
+        "terrain_provider_usage": [
+            {
+                "feature": str(row["feature"]),
+                "request_count": int(row["request_count"]),
+                "scope_id": int(row["scope_id"]),
+                "scope_type": str(row["scope_type"]),
+                "scope_username": str(row["scope_username"] or ""),
+                "usage_day": str(row["usage_day"]),
+            }
+            for row in terrain_provider_usage_rows
+        ],
     }
 
 
