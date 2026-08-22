@@ -845,7 +845,9 @@ def _reschedule_watering_during_rain(
                 AND p.archived_at_ms IS NULL
                 AND p.environment = 'outdoor'
           )
-          AND NOT EXISTS (
+        -- Rain can cover a watering only when every active placement is
+        -- explicitly rain-exposed outdoor; covered containers stay actionable.
+        AND NOT EXISTS (
               SELECT 1
               FROM garden_task_plants gtp
               JOIN plot_plants pp ON pp.plt_id = gtp.plt_id
@@ -854,7 +856,7 @@ def _reschedule_watering_during_rain(
                 AND gtp.plt_id = split_part(garden_tasks.rule_source, ':', 2)
                 AND p.garden_id = %s
                 AND p.archived_at_ms IS NULL
-                AND p.environment = 'indoor'
+                AND p.environment IS DISTINCT FROM 'outdoor'
           )
         FOR UPDATE SKIP LOCKED
         """,
