@@ -59,9 +59,55 @@ class CanonicalContainerPlotsSchemaTests(unittest.TestCase):
             self.assertFalse(snapshot.column_nullability["plots.plot_kind"])
             self.assertFalse(snapshot.column_nullability["plots.environment"])
             self.assertEqual(snapshot.column_types["plots.parent_map_object_id"], "bigint")
+            self.assertEqual(snapshot.column_types["plots.container_position_x"], "integer")
+            self.assertEqual(snapshot.column_types["plots.container_position_y"], "integer")
+            self.assertIn("ux_plots_active_container_position", snapshot.indexes)
+            self.assertIn("ck_plots_container_position_pair", snapshot.constraints)
             self.assertEqual(snapshot.column_defaults["plots.plot_kind"], "'ground'::text")
             self.assertEqual(snapshot.column_defaults["plots.environment"], "'outdoor'::text")
         finally:
+            db.return_db(conn)
+
+    def test_container_position_coordinates_must_be_a_pair(self) -> None:
+        conn = db.get_db()
+        try:
+            suffix = uuid.uuid4().hex
+            user = conn.execute(
+                """
+                INSERT INTO auth_users (username, password_hash, role)
+                VALUES (%s, 'test-only-hash', 'admin')
+                RETURNING id
+                """,
+                (f"schema-0032-{suffix}",),
+            ).fetchone()
+            assert user is not None
+            garden = conn.execute(
+                """
+                INSERT INTO gardens (slug, name, owner_user_id)
+                VALUES (%s, 'Schema 0032 garden', %s)
+                RETURNING id
+                """,
+                (f"schema-0032-{suffix}", int(user["id"])),
+            ).fetchone()
+            assert garden is not None
+            conn.execute("SAVEPOINT container_position_pair")
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                conn.execute(
+                    """
+                    INSERT INTO plots (
+                        plot_id, garden_id, zone_code, zone_name, plot_number,
+                        plot_kind, display_name, container_type,
+                        container_position_x
+                    )
+                    VALUES (%s, %s, 'C', 'Containers', 0,
+                            'container', 'Position pair', 'pot', 0)
+                    """,
+                    (f"schema0032_pair_{suffix}", int(garden["id"])),
+                )
+            conn.execute("ROLLBACK TO SAVEPOINT container_position_pair")
+            conn.execute("RELEASE SAVEPOINT container_position_pair")
+        finally:
+            conn.rollback()
             db.return_db(conn)
 
     def test_pre_0031_bootstrap_can_stamp_existing_history(self) -> None:
@@ -72,6 +118,8 @@ class CanonicalContainerPlotsSchemaTests(unittest.TestCase):
                 "display_name",
                 "container_type",
                 "parent_map_object_id",
+                "container_position_x",
+                "container_position_y",
                 "environment",
                 "archived_at_ms",
             }:
@@ -80,12 +128,14 @@ class CanonicalContainerPlotsSchemaTests(unittest.TestCase):
                 snapshot.column_types.pop(f"plots.{column}", None)
                 snapshot.column_defaults.pop(f"plots.{column}", None)
         snapshot.indexes.remove("idx_plots_active_containers")
+        snapshot.indexes.remove("ux_plots_active_container_position")
         snapshot.constraints.difference_update(
             {
                 "ck_plots_plot_kind",
                 "ck_plots_environment",
                 "ck_plots_container_subtype",
                 "fk_plots_parent_map_object_garden",
+                "ck_plots_container_position_pair",
             }
         )
 
@@ -95,20 +145,40 @@ class CanonicalContainerPlotsSchemaTests(unittest.TestCase):
         self.assertTrue(diagnostics["can_stamp_migrations"])
         self.assertEqual(diagnostics["stamp_through"], 30)
 
+    def test_pre_0032_bootstrap_can_stamp_existing_history(self) -> None:
+        snapshot = _complete_schema_snapshot()
+        for column in ("container_position_x", "container_position_y"):
+            snapshot.columns["plots"].remove(column)
+            snapshot.column_nullability.pop(f"plots.{column}")
+            snapshot.column_types.pop(f"plots.{column}")
+            snapshot.column_defaults.pop(f"plots.{column}")
+        snapshot.indexes.remove("ux_plots_active_container_position")
+        snapshot.constraints.remove("ck_plots_container_position_pair")
+
+        diagnostics = bootstrap_schema_diagnostics_from_snapshot(snapshot)
+
+        self.assertEqual(diagnostics["mode"], "verified-upgrade-baseline")
+        self.assertTrue(diagnostics["can_stamp_migrations"])
+        self.assertEqual(diagnostics["stamp_through"], 31)
+
     def test_migration_converts_legacy_units_and_is_idempotent(self) -> None:
         conn = db.get_db()
         try:
             # Recreate the pre-0031 surface inside this transaction so the test
             # exercises the actual migration rather than only its final schema.
+            conn.execute("DROP INDEX IF EXISTS public.ux_plots_active_container_position")
             conn.execute("DROP INDEX IF EXISTS public.idx_plots_active_containers")
             conn.execute(
                 """
                 ALTER TABLE public.plots
+                    DROP CONSTRAINT IF EXISTS ck_plots_container_position_pair,
                     DROP CONSTRAINT IF EXISTS fk_plots_parent_map_object_garden,
                     DROP CONSTRAINT IF EXISTS ck_plots_container_subtype,
                     DROP CONSTRAINT IF EXISTS ck_plots_environment,
                     DROP CONSTRAINT IF EXISTS ck_plots_plot_kind,
                     DROP COLUMN IF EXISTS archived_at_ms,
+                    DROP COLUMN IF EXISTS container_position_y,
+                    DROP COLUMN IF EXISTS container_position_x,
                     DROP COLUMN IF EXISTS environment,
                     DROP COLUMN IF EXISTS parent_map_object_id,
                     DROP COLUMN IF EXISTS container_type,

@@ -5,7 +5,7 @@ from typing import Any, Literal, cast
 
 import psycopg
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from gardenops.audit import write_audit_event
 from gardenops.db import DB, DbConn, current_timestamp_ms
@@ -109,6 +109,8 @@ class UpdateContainerBody(StrictBaseModel):
     container_type: ContainerType | None = None
     parent_object_public_id: str | None = Field(default=None, min_length=1, max_length=80)
     environment: ContainerEnvironment | None = None
+    position_x: int | None = Field(default=None, ge=0, le=99)
+    position_y: int | None = Field(default=None, ge=0, le=99)
 
     @field_validator("name")
     @classmethod
@@ -119,6 +121,14 @@ class UpdateContainerBody(StrictBaseModel):
         if not normalized:
             raise ValueError("Container name is required")
         return normalized
+
+    @model_validator(mode="after")
+    def validate_position_pair(self) -> UpdateContainerBody:
+        x_set = "position_x" in self.model_fields_set
+        y_set = "position_y" in self.model_fields_set
+        if x_set != y_set or (x_set and ((self.position_x is None) != (self.position_y is None))):
+            raise ValueError("Container position requires both coordinates")
+        return self
 
 
 class MovePlotsToAreaBody(StrictBaseModel):
@@ -142,6 +152,8 @@ class ContainerImportItem(StrictBaseModel):
     container_type: ContainerType
     environment: ContainerEnvironment = "outdoor"
     parent_object_public_id: str | None = Field(default=None, min_length=1, max_length=80)
+    position_x: int | None = Field(default=None, ge=0, le=99)
+    position_y: int | None = Field(default=None, ge=0, le=99)
     archived_at_ms: int | None = Field(default=None, ge=0)
 
     @field_validator("display_name")
@@ -151,6 +163,14 @@ class ContainerImportItem(StrictBaseModel):
         if not normalized:
             raise ValueError("Container name is required")
         return normalized
+
+    @model_validator(mode="after")
+    def validate_position_pair(self) -> ContainerImportItem:
+        if (self.position_x is None) != (self.position_y is None):
+            raise ValueError("Container position requires both coordinates")
+        if self.parent_object_public_id is None and self.position_x is not None:
+            raise ValueError("Standalone containers cannot have an area position")
+        return self
 
 
 def _remote_host(request: Request) -> str:
@@ -311,6 +331,172 @@ def _stored_geometry(row: dict[str, Any]) -> dict[str, int] | None:
         return None
 
 
+def _occupied_container_positions(
+    db: DbConn,
+    *,
+    garden_id: int,
+    parent_map_object_id: int,
+    exclude_plot_id: str | None = None,
+) -> set[tuple[int, int]]:
+    params: list[object] = [garden_id, parent_map_object_id]
+    exclude_clause = ""
+    if exclude_plot_id is not None:
+        exclude_clause = "AND plot_id <> %s"
+        params.append(exclude_plot_id)
+    rows = db.execute(
+        f"""
+        SELECT container_position_x, container_position_y
+        FROM plots
+        WHERE garden_id = %s
+          AND parent_map_object_id = %s
+          AND plot_kind = 'container'
+          AND archived_at_ms IS NULL
+          AND container_position_x IS NOT NULL
+          AND container_position_y IS NOT NULL
+          {exclude_clause}
+        """,
+        params,
+    ).fetchall()
+    return {(int(row["container_position_x"]), int(row["container_position_y"])) for row in rows}
+
+
+def _validate_container_position(
+    parent: dict[str, Any],
+    *,
+    position_x: int,
+    position_y: int,
+    occupied: set[tuple[int, int]],
+) -> None:
+    geometry = _stored_geometry(parent)
+    if geometry is None:
+        raise HTTPException(status_code=409, detail="Area geometry is invalid")
+    if position_x >= geometry["width"] or position_y >= geometry["height"]:
+        raise HTTPException(status_code=409, detail="Container must stay inside its area")
+    if (position_x, position_y) in occupied:
+        raise HTTPException(status_code=409, detail="That area position is already occupied")
+
+
+def _allocate_container_positions(
+    db: DbConn,
+    *,
+    garden_id: int,
+    parent: dict[str, Any],
+    count: int,
+    exclude_plot_id: str | None = None,
+) -> list[tuple[int, int]]:
+    geometry = _stored_geometry(parent)
+    if geometry is None:
+        raise HTTPException(status_code=409, detail="Area geometry is invalid")
+    occupied = _occupied_container_positions(
+        db,
+        garden_id=garden_id,
+        parent_map_object_id=int(parent["id"]),
+        exclude_plot_id=exclude_plot_id,
+    )
+    available = [
+        (x, y)
+        for y in range(geometry["height"])
+        for x in range(geometry["width"])
+        if (x, y) not in occupied
+    ]
+    if len(available) < count:
+        raise HTTPException(status_code=409, detail="This area has no room for more containers")
+    return available[:count]
+
+
+def _ensure_contained_plots_fit(
+    db: DbConn,
+    *,
+    garden_id: int,
+    parent_map_object_id: int,
+    geometry: dict[str, int],
+) -> None:
+    overflow = db.execute(
+        """
+        SELECT plot_id
+        FROM plots
+        WHERE garden_id = %s
+          AND parent_map_object_id = %s
+          AND plot_kind = 'container'
+          AND archived_at_ms IS NULL
+          AND (
+              container_position_x IS NULL
+              OR container_position_y IS NULL
+              OR container_position_x >= %s
+              OR container_position_y >= %s
+          )
+        LIMIT 1
+        """,
+        (garden_id, parent_map_object_id, geometry["width"], geometry["height"]),
+    ).fetchone()
+    if overflow is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Resize would place a contained plot outside the area",
+        )
+
+
+def restore_container_parent_position(
+    db: DbConn,
+    *,
+    garden_id: int,
+    plot_id: str,
+    parent_map_object_id: int | None,
+    position_x: int | None,
+    position_y: int | None,
+) -> None:
+    if parent_map_object_id is None:
+        db.execute(
+            """
+            UPDATE plots
+            SET parent_map_object_id = NULL,
+                container_position_x = NULL,
+                container_position_y = NULL
+            WHERE garden_id = %s AND plot_id = %s AND plot_kind = 'container'
+            """,
+            (garden_id, plot_id),
+        )
+        return
+    parent_row = db.execute(
+        "SELECT * FROM garden_map_objects WHERE id = %s AND garden_id = %s",
+        (parent_map_object_id, garden_id),
+    ).fetchone()
+    if parent_row is None:
+        raise HTTPException(status_code=400, detail="Container parent not found")
+    parent = dict(parent_row)
+    occupied = _occupied_container_positions(
+        db,
+        garden_id=garden_id,
+        parent_map_object_id=parent_map_object_id,
+        exclude_plot_id=plot_id,
+    )
+    if position_x is None or position_y is None:
+        position_x, position_y = _allocate_container_positions(
+            db,
+            garden_id=garden_id,
+            parent=parent,
+            count=1,
+            exclude_plot_id=plot_id,
+        )[0]
+    else:
+        _validate_container_position(
+            parent,
+            position_x=position_x,
+            position_y=position_y,
+            occupied=occupied,
+        )
+    db.execute(
+        """
+        UPDATE plots
+        SET parent_map_object_id = %s,
+            container_position_x = %s,
+            container_position_y = %s
+        WHERE garden_id = %s AND plot_id = %s AND plot_kind = 'container'
+        """,
+        (parent_map_object_id, position_x, position_y, garden_id, plot_id),
+    )
+
+
 def _ensure_map_object_geometry_clear(
     db: DbConn,
     *,
@@ -462,6 +648,16 @@ def _serialize_container(
         "parent_map_object_public_id": (
             str(parent_public_id) if parent_public_id is not None else None
         ),
+        "position_x": (
+            int(row["container_position_x"])
+            if row.get("container_position_x") is not None
+            else None
+        ),
+        "position_y": (
+            int(row["container_position_y"])
+            if row.get("container_position_y") is not None
+            else None
+        ),
         "parent_object_name": (
             str(row["parent_object_name"]) if row.get("parent_object_name") is not None else None
         ),
@@ -566,6 +762,8 @@ def _export_container(row: dict[str, Any]) -> dict[str, object]:
         "container_type": container["container_type"],
         "environment": container["environment"],
         "parent_object_public_id": container["parent_object_public_id"],
+        "position_x": container["position_x"],
+        "position_y": container["position_y"],
         "archived_at_ms": container["archived_at_ms"],
     }
 
@@ -592,6 +790,8 @@ def _export_object(
                 "container_type": container["container_type"],
                 "environment": container["environment"],
                 "parent_object_public_id": item["public_id"],
+                "position_x": container["position_x"],
+                "position_y": container["position_y"],
                 "archived_at_ms": container["archived_at_ms"],
             }
             for container in containers
@@ -795,6 +995,42 @@ def _insert_or_update_imported_container(
         "SELECT garden_id, plot_kind FROM plots WHERE plot_id = %s FOR UPDATE",
         (plot_id,),
     ).fetchone()
+    position_x: int | None = None
+    position_y: int | None = None
+    if parent_map_object_id is not None:
+        parent_row = db.execute(
+            """
+            SELECT * FROM garden_map_objects
+            WHERE id = %s AND garden_id = %s
+            LIMIT 1
+            """,
+            (parent_map_object_id, garden_id),
+        ).fetchone()
+        if parent_row is None:
+            raise HTTPException(status_code=400, detail="Container parent not found")
+        parent = dict(parent_row)
+        if item.position_x is None or item.position_y is None:
+            position_x, position_y = _allocate_container_positions(
+                db,
+                garden_id=garden_id,
+                parent=parent,
+                count=1,
+                exclude_plot_id=plot_id if existing is not None else None,
+            )[0]
+        else:
+            occupied = _occupied_container_positions(
+                db,
+                garden_id=garden_id,
+                parent_map_object_id=parent_map_object_id,
+                exclude_plot_id=plot_id if existing is not None else None,
+            )
+            _validate_container_position(
+                parent,
+                position_x=item.position_x,
+                position_y=item.position_y,
+                occupied=occupied,
+            )
+            position_x, position_y = item.position_x, item.position_y
     if existing is not None:
         if not allow_existing or int(existing["garden_id"]) != garden_id:
             raise HTTPException(status_code=409, detail=f"Container ID conflict: {plot_id}")
@@ -806,6 +1042,8 @@ def _insert_or_update_imported_container(
             SET display_name = %s,
                 container_type = %s,
                 parent_map_object_id = %s,
+                container_position_x = %s,
+                container_position_y = %s,
                 environment = %s,
                 archived_at_ms = %s
             WHERE plot_id = %s AND garden_id = %s
@@ -814,6 +1052,8 @@ def _insert_or_update_imported_container(
                 item.display_name,
                 item.container_type,
                 parent_map_object_id,
+                position_x,
+                position_y,
                 item.environment,
                 item.archived_at_ms,
                 plot_id,
@@ -827,10 +1067,11 @@ def _insert_or_update_imported_container(
                 plot_id, garden_id, zone_code, zone_name, plot_number,
                 grid_row, grid_col, sub_zone, notes, color,
                 plot_kind, display_name, container_type, parent_map_object_id,
+                container_position_x, container_position_y,
                 environment, archived_at_ms
             )
             VALUES (%s, %s, 'C', 'Containers', 0, NULL, NULL, '', '', NULL,
-                    'container', %s, %s, %s, %s, %s)
+                    'container', %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 plot_id,
@@ -838,6 +1079,8 @@ def _insert_or_update_imported_container(
                 item.display_name,
                 item.container_type,
                 parent_map_object_id,
+                position_x,
+                position_y,
                 item.environment,
                 item.archived_at_ms,
             ),
@@ -882,7 +1125,8 @@ def replace_map_objects(
     # their public parent so a recreated area can receive them again.
     existing_container_parents = db.execute(
         """
-        SELECT p.plot_id, parent.public_id AS parent_public_id
+        SELECT p.plot_id, parent.public_id AS parent_public_id,
+               p.container_position_x, p.container_position_y
         FROM plots p
         JOIN garden_map_objects parent
           ON parent.id = p.parent_map_object_id
@@ -896,7 +1140,9 @@ def replace_map_objects(
     db.execute(
         """
         UPDATE plots
-        SET parent_map_object_id = NULL
+        SET parent_map_object_id = NULL,
+            container_position_x = NULL,
+            container_position_y = NULL
         WHERE garden_id = %s
           AND plot_kind = 'container'
           AND parent_map_object_id IS NOT NULL
@@ -958,13 +1204,53 @@ def replace_map_objects(
         parent_map_object_id = imported_area_ids.get(str(row["parent_public_id"]))
         if parent_map_object_id is None:
             continue
+        parent_row = db.execute(
+            "SELECT * FROM garden_map_objects WHERE id = %s AND garden_id = %s",
+            (parent_map_object_id, garden_id),
+        ).fetchone()
+        assert parent_row is not None
+        parent = dict(parent_row)
+        position_x = (
+            int(row["container_position_x"]) if row["container_position_x"] is not None else None
+        )
+        position_y = (
+            int(row["container_position_y"]) if row["container_position_y"] is not None else None
+        )
+        occupied = _occupied_container_positions(
+            db,
+            garden_id=garden_id,
+            parent_map_object_id=parent_map_object_id,
+        )
+        geometry = _stored_geometry(parent)
+        if (
+            position_x is None
+            or position_y is None
+            or geometry is None
+            or position_x >= geometry["width"]
+            or position_y >= geometry["height"]
+            or (position_x, position_y) in occupied
+        ):
+            position_x, position_y = _allocate_container_positions(
+                db,
+                garden_id=garden_id,
+                parent=parent,
+                count=1,
+            )[0]
         db.execute(
             """
             UPDATE plots
-            SET parent_map_object_id = %s
+            SET parent_map_object_id = %s,
+                container_position_x = %s,
+                container_position_y = %s
             WHERE garden_id = %s AND plot_id = %s AND plot_kind = 'container'
             """,
-            (parent_map_object_id, garden_id, str(row["plot_id"])),
+            (
+                parent_map_object_id,
+                position_x,
+                position_y,
+                garden_id,
+                str(row["plot_id"]),
+            ),
         )
 
     owner_user_id = (
@@ -1233,6 +1519,12 @@ def update_map_object(
                 geometry=geometry,
                 exclude_map_object_id=int(existing["id"]),
             )
+            _ensure_contained_plots_fit(
+                db,
+                garden_id=garden_id,
+                parent_map_object_id=int(existing["id"]),
+                geometry=geometry,
+            )
         updates.append("geometry_json = %s")
         params.append(_dump_json(cast(dict[str, object], geometry)))
     if body.style is not None:
@@ -1314,7 +1606,9 @@ def delete_map_object(
     unparented_rows = db.execute(
         """
         UPDATE plots
-        SET parent_map_object_id = NULL
+        SET parent_map_object_id = NULL,
+            container_position_x = NULL,
+            container_position_y = NULL
         WHERE garden_id = %s AND parent_map_object_id = %s
         RETURNING plot_id
         """,
@@ -1391,31 +1685,49 @@ def move_plots_to_area(
     environment: ContainerEnvironment = (
         "covered" if str(parent["object_type"]) == "greenhouse" else "outdoor"
     )
+    positions = _allocate_container_positions(
+        db,
+        garden_id=garden_id,
+        parent=parent,
+        count=len(body.plot_ids),
+    )
     try:
-        moved = db.execute(
-            """
-            UPDATE plots
-            SET plot_kind = 'container',
-                display_name = COALESCE(NULLIF(BTRIM(display_name), ''), plot_id),
-                container_type = %s,
-                parent_map_object_id = %s,
-                environment = %s,
-                grid_row = NULL,
-                grid_col = NULL
-            WHERE garden_id = %s AND plot_id = ANY(%s)
-            RETURNING plot_id
-            """,
-            (
-                body.container_type,
-                int(parent["id"]),
-                environment,
-                garden_id,
-                body.plot_ids,
-            ),
-        ).fetchall()
-        if len(moved) != len(body.plot_ids):
-            db.rollback()
-            raise HTTPException(status_code=409, detail="Not all selected plots could be moved")
+        for plot_id, (position_x, position_y) in zip(
+            body.plot_ids,
+            positions,
+            strict=True,
+        ):
+            moved = db.execute(
+                """
+                UPDATE plots
+                SET plot_kind = 'container',
+                    display_name = COALESCE(NULLIF(BTRIM(display_name), ''), plot_id),
+                    container_type = %s,
+                    parent_map_object_id = %s,
+                    container_position_x = %s,
+                    container_position_y = %s,
+                    environment = %s,
+                    grid_row = NULL,
+                    grid_col = NULL
+                WHERE garden_id = %s AND plot_id = %s
+                RETURNING plot_id
+                """,
+                (
+                    body.container_type,
+                    int(parent["id"]),
+                    position_x,
+                    position_y,
+                    environment,
+                    garden_id,
+                    plot_id,
+                ),
+            ).fetchone()
+            if moved is None:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail="Not all selected plots could be moved",
+                )
         updated_parent = db.execute(
             """
             UPDATE garden_map_objects
@@ -1486,6 +1798,7 @@ def create_container(
     db.execute("SELECT id FROM gardens WHERE id = %s FOR UPDATE", (garden_id,))
 
     parent_map_object_id: int | None = None
+    parent: dict[str, Any] | None = None
     if body.parent_object_public_id is not None:
         parent = _object_row_by_public_id(
             db,
@@ -1502,6 +1815,16 @@ def create_container(
     else:
         default_environment = "outdoor"
 
+    position_x: int | None = None
+    position_y: int | None = None
+    if parent is not None:
+        position_x, position_y = _allocate_container_positions(
+            db,
+            garden_id=garden_id,
+            parent=parent,
+            count=1,
+        )[0]
+
     plot_id = _next_container_plot_id(db)
     owner_user_id = _container_owner_user_id(
         db,
@@ -1515,10 +1838,11 @@ def create_container(
                 plot_id, garden_id, zone_code, zone_name, plot_number,
                 grid_row, grid_col, sub_zone, notes, color,
                 plot_kind, display_name, container_type, parent_map_object_id,
+                container_position_x, container_position_y,
                 environment, archived_at_ms
             )
             VALUES (%s, %s, 'C', 'Containers', 0, NULL, NULL, '', '', NULL,
-                    'container', %s, %s, %s, %s, NULL)
+                    'container', %s, %s, %s, %s, %s, %s, NULL)
             """,
             (
                 plot_id,
@@ -1526,6 +1850,8 @@ def create_container(
                 body.name,
                 body.container_type,
                 parent_map_object_id,
+                position_x,
+                position_y,
                 body.environment or default_environment,
             ),
         )
@@ -1601,18 +1927,79 @@ def update_container(
         if existing.get("parent_map_object_id") is not None
         else None
     )
+    parent: dict[str, Any] | None = None
     if parent_changed:
         if body.parent_object_public_id is None:
             parent_map_object_id = None
         else:
-            parent_map_object_id = _area_parent_id(
+            parent = _object_row_by_public_id(
                 db,
                 garden_id=garden_id,
                 object_public_id=body.parent_object_public_id,
                 for_update=True,
             )
+            if str(parent["object_type"]) not in AREA_TYPES:
+                raise HTTPException(status_code=400, detail="Containers require an area parent")
+            parent_map_object_id = int(parent["id"])
         updates.append("parent_map_object_id = %s")
         params.append(parent_map_object_id)
+
+    position_changed = "position_x" in body.model_fields_set
+    position_x = (
+        int(existing["container_position_x"])
+        if existing.get("container_position_x") is not None
+        else None
+    )
+    position_y = (
+        int(existing["container_position_y"])
+        if existing.get("container_position_y") is not None
+        else None
+    )
+    if parent_map_object_id is None:
+        if position_changed and (body.position_x is not None or body.position_y is not None):
+            raise HTTPException(
+                status_code=400,
+                detail="Standalone containers have no area position",
+            )
+        if parent_changed:
+            position_x = None
+            position_y = None
+    elif position_changed or parent_changed:
+        if parent is None:
+            parent_row = db.execute(
+                "SELECT * FROM garden_map_objects WHERE id = %s AND garden_id = %s",
+                (parent_map_object_id, garden_id),
+            ).fetchone()
+            if parent_row is None:
+                raise HTTPException(status_code=404, detail="Container parent not found")
+            parent = dict(parent_row)
+        if position_changed:
+            if body.position_x is None or body.position_y is None:
+                raise HTTPException(status_code=400, detail="Contained plots require a position")
+            occupied = _occupied_container_positions(
+                db,
+                garden_id=garden_id,
+                parent_map_object_id=parent_map_object_id,
+                exclude_plot_id=plot_id,
+            )
+            _validate_container_position(
+                parent,
+                position_x=body.position_x,
+                position_y=body.position_y,
+                occupied=occupied,
+            )
+            position_x, position_y = body.position_x, body.position_y
+        else:
+            position_x, position_y = _allocate_container_positions(
+                db,
+                garden_id=garden_id,
+                parent=parent,
+                count=1,
+                exclude_plot_id=plot_id,
+            )[0]
+    if position_changed or parent_changed:
+        updates.extend(["container_position_x = %s", "container_position_y = %s"])
+        params.extend([position_x, position_y])
     if body.environment is not None:
         updates.append("environment = %s")
         params.append(body.environment)
@@ -1621,11 +2008,7 @@ def update_container(
             updates.append("environment = %s")
             params.append("outdoor")
         else:
-            parent = _object_row_by_public_id(
-                db,
-                garden_id=garden_id,
-                object_public_id=body.parent_object_public_id,
-            )
+            assert parent is not None
             updates.append("environment = %s")
             params.append("covered" if parent["object_type"] == "greenhouse" else "outdoor")
 
@@ -1701,7 +2084,10 @@ def archive_container(
     db.execute(
         """
         UPDATE plots
-        SET archived_at_ms = %s, parent_map_object_id = NULL
+        SET archived_at_ms = %s,
+            parent_map_object_id = NULL,
+            container_position_x = NULL,
+            container_position_y = NULL
         WHERE plot_id = %s AND garden_id = %s AND plot_kind = 'container'
         """,
         (archived_at_ms, plot_id, garden_id),

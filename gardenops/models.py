@@ -106,6 +106,8 @@ class PlotImportItem(StrictBaseModel):
         max_length=80,
         pattern=r"^[A-Za-z0-9_-]+$",
     )
+    container_position_x: int | None = Field(default=None, ge=0, le=99)
+    container_position_y: int | None = Field(default=None, ge=0, le=99)
     environment: Literal["outdoor", "covered", "indoor"] = "outdoor"
     archived_at_ms: int | None = Field(default=None, ge=0)
 
@@ -143,10 +145,16 @@ class PlotImportItem(StrictBaseModel):
                 raise ValueError("Container plots require a display_name")
             if self.container_type is None:
                 raise ValueError("Container plots require a container_type")
+            if (self.container_position_x is None) != (self.container_position_y is None):
+                raise ValueError("Container position requires both coordinates")
+            if self.parent_object_public_id is None and self.container_position_x is not None:
+                raise ValueError("Standalone containers cannot have an area position")
         elif self.container_type is not None or self.parent_object_public_id is not None:
             raise ValueError("Only container plots may have container fields")
         elif self.archived_at_ms is not None:
             raise ValueError("Only container plots may be archived")
+        elif self.container_position_x is not None or self.container_position_y is not None:
+            raise ValueError("Only container plots may have an area position")
         return self
 
 
