@@ -535,7 +535,8 @@ def _outdoor_plot_ids_for_plant(db: DbConn, garden_id: int, plt_id: str) -> tupl
         JOIN plots p ON p.plot_id = pp.plot_id
         WHERE pp.plt_id = %s
           AND p.garden_id = %s
-          AND p.grid_row IS NOT NULL
+          AND p.archived_at_ms IS NULL
+          AND p.environment = 'outdoor'
         ORDER BY pp.plot_id
         """,
         (plt_id, garden_id),
@@ -557,7 +558,8 @@ def _outdoor_plot_ids_by_plant(
         FROM plot_plants pp
         JOIN plots p ON p.plot_id = pp.plot_id
         WHERE p.garden_id = %s
-          AND p.grid_row IS NOT NULL
+          AND p.archived_at_ms IS NULL
+          AND p.environment = 'outdoor'
           AND pp.plt_id = ANY(%s)
         ORDER BY pp.plt_id, pp.plot_id
         """,
@@ -583,6 +585,7 @@ def _current_plot_ids_by_plant(
         FROM plot_plants pp
         JOIN plots p ON p.plot_id = pp.plot_id
         WHERE p.garden_id = %s
+          AND p.archived_at_ms IS NULL
           AND pp.plt_id = ANY(%s)
         ORDER BY pp.plt_id, pp.plot_id
         """,

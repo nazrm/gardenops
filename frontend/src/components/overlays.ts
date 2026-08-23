@@ -183,6 +183,7 @@ interface ShowEditPlantDialogParams {
   onDelete: (pltId: string) => void;
   onMediaChanged?: (targets: MediaLinkRef[]) => void;
   onReportIssue?: (pltId: string) => void;
+  onMove?: (sourcePlotId: string) => void;
   onAiUpdate?: (query: string) => Promise<AiPlantData>;
   onObservationChanged?: (pltId: string) => Promise<EditPlantData | null>;
 }
@@ -966,6 +967,7 @@ export function showEditPlantDialog(
     params.plotAssignmentMeanings,
     params.gridRows,
     params.gridCols,
+    params.onMove,
   );
 
   // Load journal history for this plant
@@ -2461,6 +2463,7 @@ function wirePlotAssign(
   plotAssignmentMeanings: PlotAssignmentMeaning[],
   gridRows = GRID_ROWS,
   gridCols = GRID_COLS,
+  onMove?: (sourcePlotId: string) => void,
 ): void {
   const search = dialog.querySelector<HTMLInputElement>(
     "#plot-assign-search",
@@ -2506,6 +2509,17 @@ function wirePlotAssign(
         chip.title = meaningText;
       }
       chip.appendChild(textWrap);
+
+      if (onMove) {
+        const moveBtn = document.createElement("button");
+        moveBtn.type = "button";
+        moveBtn.className = "plot-chip-move";
+        moveBtn.title = t("map.move_plant");
+        moveBtn.setAttribute("aria-label", `${t("map.move_plant")}: ${id}`);
+        moveBtn.textContent = "\u2192";
+        moveBtn.addEventListener("click", () => onMove(id));
+        chip.appendChild(moveBtn);
+      }
 
       const removeBtn = document.createElement("button");
       removeBtn.type = "button";

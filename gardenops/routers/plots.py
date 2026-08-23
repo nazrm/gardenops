@@ -113,12 +113,76 @@ class BatchMoveBody(StrictBaseModel):
     moves: list[BatchMoveItem] = Field(min_length=1)
 
 
+class MovePlantBody(StrictBaseModel):
+    quantity: int | None = Field(default=None, ge=1)
+
+
 def _effective_role(context: AuthContext) -> str:
     return effective_role(context)
 
 
 def _is_owner_or_admin(context: AuthContext, owner_user_id: int | None) -> bool:
     return is_owner_or_admin(context, owner_user_id)
+
+
+def _plot_is_container(row: object) -> bool:
+    return str(row["plot_kind"] or "") == "container"  # type: ignore[index]
+
+
+def _plot_is_archived(row: object) -> bool:
+    return row["archived_at_ms"] is not None  # type: ignore[index]
+
+
+def _plot_row(
+    db: DbConn,
+    plot_id: str,
+    *,
+    for_update: bool = False,
+) -> object | None:
+    lock_clause = " FOR UPDATE OF p" if for_update else ""
+    return db.execute(
+        f"""
+        SELECT p.*, po.owner_user_id, po.garden_id AS ownership_garden_id
+        FROM plots p
+        LEFT JOIN plot_ownership po ON po.plot_id = p.plot_id
+        WHERE p.plot_id = %s
+        {lock_clause}
+        """,
+        (plot_id,),
+    ).fetchone()
+
+
+def _authorize_plot_row(
+    row: object,
+    context: AuthContext,
+    *,
+    read_only: bool = False,
+    allow_unowned: bool = False,
+) -> None:
+    garden_id = _active_garden_id(context)
+    ownership_garden_id = row["ownership_garden_id"]  # type: ignore[index]
+    if ownership_garden_id is None:
+        if allow_unowned:
+            return
+        if _is_local_admin_fallback(context):
+            return
+        raise HTTPException(status_code=404, detail="Plot not found")
+    if int(ownership_garden_id) != garden_id:  # type: ignore[arg-type]
+        raise HTTPException(status_code=404, detail="Plot not found")
+    if _plot_is_archived(row):
+        if read_only and _plot_is_container(row):
+            return
+        raise HTTPException(status_code=410, detail="Plot is archived")
+    if _plot_is_container(row):
+        # Containers are shared garden resources. A viewer can inspect them,
+        # while assignment and lifecycle mutations remain editor/admin work.
+        if read_only or _effective_role(context) in {"admin", "editor"}:
+            return
+        raise HTTPException(status_code=404, detail="Plot not found")
+    if read_only and _effective_role(context) in {"admin", "editor"}:
+        return
+    if not _is_owner_or_admin(context, row["owner_user_id"]):  # type: ignore[index]
+        raise HTTPException(status_code=404, detail="Plot not found")
 
 
 def _owner_user_for_plot_write(db: DbConn, *, garden_id: int, context: AuthContext) -> int:
@@ -184,29 +248,110 @@ def _require_plot_access(
     read_only: bool = False,
 ) -> None:
     plot_id = require_public_id(plot_id, field_name="plot_id")
-    garden_id = _active_garden_id(context)
-    row = db.execute(
-        """
-        SELECT po.owner_user_id, po.garden_id
-        FROM plots p
-        LEFT JOIN plot_ownership po ON po.plot_id = p.plot_id
-        WHERE p.plot_id = %s
-        """,
-        (plot_id,),
-    ).fetchone()
+    row = _plot_row(db, plot_id)
     if not row:
         raise HTTPException(status_code=404, detail="Plot not found")
-    if row["garden_id"] is None:
-        if _is_local_admin_fallback(context):
-            return
+    _authorize_plot_row(row, context, read_only=read_only)
+
+
+def _lock_plot_row(
+    db: DbConn,
+    plot_id: str,
+    context: AuthContext,
+    *,
+    allow_custom: bool = False,
+    allow_unowned: bool = False,
+) -> object | None:
+    """Lock one plot after authorization so assignment and archive cannot race."""
+    normalized_plot_id = require_public_id(plot_id, field_name="plot_id")
+    row = _plot_row(db, normalized_plot_id, for_update=True)
+    if not row:
+        if allow_custom:
+            return None
         raise HTTPException(status_code=404, detail="Plot not found")
-    if int(row["garden_id"]) != garden_id:
-        raise HTTPException(status_code=404, detail="Plot not found")
-    # Editors can read any plot in their garden
-    if read_only and _effective_role(context) in {"admin", "editor"}:
-        return
-    if not _is_owner_or_admin(context, row["owner_user_id"]):
-        raise HTTPException(status_code=404, detail="Plot not found")
+    _authorize_plot_row(row, context, allow_unowned=allow_unowned)
+    return row
+
+
+def _lock_assignment_target_rows(
+    db: DbConn,
+    plot_ids: list[str],
+    context: AuthContext,
+    *,
+    allow_missing_custom: bool = False,
+) -> dict[str, object]:
+    """Lock and authorize canonical plot targets in deterministic order.
+
+    CSV restores may retain an unresolved legacy assignment ID; such IDs have
+    no plot row to mutate and are allowed only when no ownership row marks
+    them as foreign.
+    """
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for plot_id in plot_ids:
+        normalized_plot_id = require_public_id(plot_id, field_name="plot_id")
+        if normalized_plot_id not in seen:
+            normalized.append(normalized_plot_id)
+            seen.add(normalized_plot_id)
+    if not normalized:
+        return {}
+
+    placeholders = ",".join("%s" for _ in normalized)
+    rows = db.execute(
+        f"""
+        SELECT p.*, po.owner_user_id, po.garden_id AS ownership_garden_id
+        FROM plots p
+        LEFT JOIN plot_ownership po ON po.plot_id = p.plot_id
+        WHERE p.plot_id IN ({placeholders})
+        ORDER BY p.plot_id
+        FOR UPDATE OF p
+        """,
+        sorted(normalized),
+    ).fetchall()
+    rows_by_plot = {str(row["plot_id"]): row for row in rows}
+    missing = [plot_id for plot_id in sorted(normalized) if plot_id not in rows_by_plot]
+    if missing and allow_missing_custom:
+        missing_placeholders = ",".join("%s" for _ in missing)
+        ownership_rows = db.execute(
+            f"""
+            SELECT plot_id, garden_id
+            FROM plot_ownership
+            WHERE plot_id IN ({missing_placeholders})
+            ORDER BY plot_id
+            FOR UPDATE
+            """,
+            sorted(missing),
+        ).fetchall()
+        active_garden_id = _active_garden_id(context)
+        if any(
+            row["garden_id"] is not None and int(row["garden_id"]) != active_garden_id
+            for row in ownership_rows
+        ):
+            raise HTTPException(status_code=404, detail="Plot not found")
+    for plot_id in sorted(normalized):
+        row = rows_by_plot.get(plot_id)
+        if row is None:
+            if allow_missing_custom:
+                continue
+            raise HTTPException(status_code=404, detail="Plot not found in active garden")
+        try:
+            _authorize_plot_row(row, context)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Plot not found in active garden",
+                ) from exc
+            raise
+    return rows_by_plot
+
+
+def _plot_can_receive_plants(row: object, context: AuthContext) -> bool:
+    try:
+        _authorize_plot_row(row, context)
+    except HTTPException:
+        return False
+    return True
 
 
 def _require_plot_in_garden_or_unowned(
@@ -219,24 +364,10 @@ def _require_plot_in_garden_or_unowned(
     Reject if the plot exists and belongs to a different garden.
     """
     plot_id = require_public_id(plot_id, field_name="plot_id")
-    garden_id = _active_garden_id(context)
-    row = db.execute(
-        """
-        SELECT po.owner_user_id, po.garden_id
-        FROM plots p
-        LEFT JOIN plot_ownership po ON po.plot_id = p.plot_id
-        WHERE p.plot_id = %s
-        """,
-        (plot_id,),
-    ).fetchone()
+    row = _plot_row(db, plot_id)
     if not row:
         return  # Plot doesn't exist in DB — custom assignment, allowed
-    if row["garden_id"] is None:
-        return  # No ownership record — unowned, allowed
-    if int(row["garden_id"]) != garden_id:
-        raise HTTPException(status_code=404, detail="Plot not found")
-    if not _is_owner_or_admin(context, row["owner_user_id"]):
-        raise HTTPException(status_code=404, detail="Plot not found")
+    _authorize_plot_row(row, context, allow_unowned=True)
 
 
 def _require_plant_access(db: DbConn, plt_id: str, context: AuthContext) -> None:
@@ -272,7 +403,7 @@ def _plot_exists_in_scope(
     garden_id = _active_garden_id(context)
     if _is_local_admin_fallback(context):
         row = db.execute(
-            "SELECT 1 FROM plots WHERE plot_id = %s",
+            "SELECT 1 FROM plots WHERE plot_id = %s AND archived_at_ms IS NULL",
             (plot_id,),
         ).fetchone()
     elif _effective_role(context) in {"admin", "editor"}:
@@ -282,6 +413,7 @@ def _plot_exists_in_scope(
             FROM plots p
             JOIN plot_ownership po ON po.plot_id = p.plot_id
             WHERE p.plot_id = %s AND po.garden_id = %s
+              AND p.archived_at_ms IS NULL
             """,
             (plot_id, garden_id),
         ).fetchone()
@@ -291,7 +423,9 @@ def _plot_exists_in_scope(
             SELECT 1
             FROM plots p
             JOIN plot_ownership po ON po.plot_id = p.plot_id
-            WHERE p.plot_id = %s AND po.garden_id = %s AND po.owner_user_id = %s
+            WHERE p.plot_id = %s AND po.garden_id = %s
+              AND (po.owner_user_id = %s OR p.plot_kind = 'container')
+              AND p.archived_at_ms IS NULL
             """,
             (plot_id, garden_id, context.user_id),
         ).fetchone()
@@ -313,8 +447,10 @@ def _visible_plot_ids_for_plants(
             f"""
             SELECT pp.plt_id, pp.plot_id
             FROM plot_plants pp
+            LEFT JOIN plots p ON p.plot_id = pp.plot_id
             LEFT JOIN plot_ownership po ON po.plot_id = pp.plot_id
             WHERE pp.plt_id IN ({placeholders})
+              AND (p.plot_id IS NULL OR p.archived_at_ms IS NULL)
               AND (po.garden_id = %s OR po.garden_id IS NULL)
             ORDER BY pp.plot_id
             """,
@@ -325,8 +461,10 @@ def _visible_plot_ids_for_plants(
             f"""
             SELECT pp.plt_id, pp.plot_id
             FROM plot_plants pp
+            JOIN plots p ON p.plot_id = pp.plot_id
             JOIN plot_ownership po ON po.plot_id = pp.plot_id
             WHERE pp.plt_id IN ({placeholders})
+              AND p.archived_at_ms IS NULL
               AND po.garden_id = %s
             ORDER BY pp.plot_id
             """,
@@ -337,10 +475,12 @@ def _visible_plot_ids_for_plants(
             f"""
             SELECT pp.plt_id, pp.plot_id
             FROM plot_plants pp
+            JOIN plots p ON p.plot_id = pp.plot_id
             JOIN plot_ownership po ON po.plot_id = pp.plot_id
             WHERE pp.plt_id IN ({placeholders})
+              AND p.archived_at_ms IS NULL
               AND po.garden_id = %s
-              AND po.owner_user_id = %s
+              AND (po.owner_user_id = %s OR p.plot_kind = 'container')
             ORDER BY pp.plot_id
             """,
             [*plt_ids, garden_id, context.user_id],
@@ -362,7 +502,8 @@ def _assert_cell_free(
     if _is_local_admin_fallback(context):
         existing = db.execute(
             "SELECT plot_id FROM plots "
-            "WHERE grid_row = %s AND grid_col = %s AND grid_row IS NOT NULL",
+            "WHERE grid_row = %s AND grid_col = %s"
+            " AND grid_row IS NOT NULL AND archived_at_ms IS NULL",
             (row, col),
         ).fetchone()
     elif _effective_role(context) in {"admin", "editor"}:
@@ -373,6 +514,7 @@ def _assert_cell_free(
             JOIN plot_ownership po ON po.plot_id = p.plot_id
             WHERE p.grid_row = %s AND p.grid_col = %s
               AND po.garden_id = %s AND p.grid_row IS NOT NULL
+              AND p.archived_at_ms IS NULL
             """,
             (row, col, _active_garden_id(context)),
         ).fetchone()
@@ -385,6 +527,7 @@ def _assert_cell_free(
             WHERE p.grid_row = %s AND p.grid_col = %s
               AND po.garden_id = %s AND po.owner_user_id = %s
               AND p.grid_row IS NOT NULL
+              AND p.archived_at_ms IS NULL
             """,
             (row, col, _active_garden_id(context), context.user_id),
         ).fetchone()
@@ -409,14 +552,18 @@ def list_plots(db: DB, request: Request, exclude_indoor: bool = Query(default=Fa
         where_extra = " AND po.garden_id = %s"
         params.append(garden_id)
     else:
-        where_extra = " AND po.garden_id = %s AND po.owner_user_id = %s"
+        where_extra = (
+            " AND po.garden_id = %s AND (po.owner_user_id = %s OR p.plot_kind = 'container')"
+        )
         params.append(garden_id)
         params.append(context.user_id)
+    where_extra += " AND p.archived_at_ms IS NULL"
     if exclude_indoor:
-        where_extra += " AND p.grid_row IS NOT NULL"
+        where_extra += " AND p.plot_kind <> 'indoor'"
     rows = db.execute(
         """
-        SELECT p.*, COUNT(pown.plt_id) AS plant_count,
+        SELECT p.*, po.owner_user_id, po.garden_id AS ownership_garden_id,
+            COUNT(pown.plt_id) AS plant_count,
             SUM(CASE WHEN pl.category = 'trær'
                 THEN 1 ELSE 0 END) AS _tree_count,
             SUM(CASE WHEN pl.category IN ('busker', 'baerbusker')
@@ -433,7 +580,7 @@ def list_plots(db: DB, request: Request, exclude_indoor: bool = Query(default=Fa
     """
         + where_extra
         + """
-        GROUP BY p.plot_id, po.owner_user_id
+        GROUP BY p.plot_id, po.owner_user_id, po.garden_id
         ORDER BY p.zone_code, p.plot_number
     """,
         params,
@@ -457,9 +604,12 @@ def list_plots(db: DB, request: Request, exclude_indoor: bool = Query(default=Fa
     result = []
     for r in rows:
         d = dict(r)
+        d.pop("owner_user_id", None)
+        d.pop("ownership_garden_id", None)
         d["has_tree"] = bool(d.pop("_tree_count"))
         d["has_bush"] = bool(d.pop("_bush_count"))
         d["categories"] = sorted(cat_map.get(str(r["plot_id"]), set()))
+        d["can_assign"] = _plot_can_receive_plants(r, context)
         result.append(d)
     return result
 
@@ -477,7 +627,8 @@ def get_plot_alerts(db: DB, request: Request) -> dict:
         "JOIN garden_tasks t ON t.id = tp.task_id "
         "JOIN plots p ON p.plot_id = tp.plot_id "
         "WHERE t.garden_id = %s AND t.status = 'pending' "
-        "AND t.due_on <= %s AND p.grid_row IS NOT NULL",
+        "AND t.due_on <= %s AND p.archived_at_ms IS NULL "
+        "AND p.environment <> 'indoor'",
         (garden_id, today_iso),
     ).fetchall()
 
@@ -488,7 +639,7 @@ def get_plot_alerts(db: DB, request: Request) -> dict:
         "JOIN plots p ON p.plot_id = ip.plot_id "
         "WHERE i.garden_id = %s "
         "AND i.status IN ('open', 'monitoring', 'treating') "
-        "AND p.grid_row IS NOT NULL",
+        "AND p.archived_at_ms IS NULL AND p.environment <> 'indoor'",
         (garden_id,),
     ).fetchall()
 
@@ -499,7 +650,8 @@ def get_plot_alerts(db: DB, request: Request) -> dict:
         "JOIN plot_plants pp ON pp.plt_id = wap.plt_id "
         "JOIN plots p ON p.plot_id = pp.plot_id "
         "WHERE wa.garden_id = %s AND wa.dismissed = 0 "
-        "AND wa.valid_until >= %s AND p.grid_row IS NOT NULL",
+        "AND wa.valid_until >= %s AND p.archived_at_ms IS NULL "
+        "AND p.environment = 'outdoor'",
         (garden_id, today_iso),
     ).fetchall()
 
@@ -510,7 +662,8 @@ def get_plot_alerts(db: DB, request: Request) -> dict:
         "JOIN garden_tasks t ON t.id = tp.task_id "
         "JOIN plots p ON p.plot_id = tp.plot_id "
         "WHERE t.garden_id = %s AND t.status = 'pending' "
-        "AND t.due_on <= %s AND p.grid_row IS NULL",
+        "AND t.due_on <= %s AND p.archived_at_ms IS NULL "
+        "AND p.environment = 'indoor'",
         (garden_id, today_iso),
     ).fetchall()
 
@@ -521,7 +674,7 @@ def get_plot_alerts(db: DB, request: Request) -> dict:
         "JOIN plots p ON p.plot_id = ip.plot_id "
         "WHERE i.garden_id = %s "
         "AND i.status IN ('open', 'monitoring', 'treating') "
-        "AND p.grid_row IS NULL",
+        "AND p.archived_at_ms IS NULL AND p.environment = 'indoor'",
         (garden_id,),
     ).fetchall()
 
@@ -613,10 +766,15 @@ def list_plot_plants(plot_id: str, db: DB, request: Request) -> list[dict]:
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
     _require_plot_access(db, plot_id, context, read_only=True)
+    plot_row = _plot_row(db, require_public_id(plot_id, field_name="plot_id"))
+    assert plot_row is not None
     if _is_local_admin_fallback(context):
         owner_filter = " AND (pown.garden_id = %s OR pown.garden_id IS NULL)"
         params: list[object] = [plot_id, garden_id]
     elif _effective_role(context) in {"admin", "editor"}:
+        owner_filter = " AND pown.garden_id = %s"
+        params = [plot_id, garden_id]
+    elif _plot_is_container(plot_row):
         owner_filter = " AND pown.garden_id = %s"
         params = [plot_id, garden_id]
     else:
@@ -624,7 +782,8 @@ def list_plot_plants(plot_id: str, db: DB, request: Request) -> list[dict]:
         params = [plot_id, garden_id, context.user_id]
     rows = db.execute(
         f"""
-        SELECT pl.*, pp.quantity, pp.room_label
+        SELECT pl.*, pp.quantity, pp.room_label,
+               pp.seen_growing, pp.seen_growing_date
         FROM plants pl
         LEFT JOIN plant_ownership pown ON pown.plt_id = pl.plt_id
         JOIN plot_plants pp ON pp.plt_id = pl.plt_id
@@ -661,9 +820,19 @@ def add_plant_to_plot(
     _require_plant_access(db, plt_id, context)
     _require_plot_in_garden_or_unowned(db, plot_id, context)
     garden_id = _active_garden_id(context)
-    # Only store room_label for indoor plots (zone_code = 'I')
-    zone = db.execute("SELECT zone_code FROM plots WHERE plot_id = %s", (plot_id,)).fetchone()
-    effective_room_label = body.room_label if zone and zone["zone_code"] == "I" else None
+    plot_row = _lock_plot_row(
+        db,
+        plot_id,
+        context,
+        allow_custom=True,
+        allow_unowned=True,
+    )
+    # Custom assignment IDs have no physical plot and cannot carry room data.
+    effective_room_label = (
+        body.room_label
+        if plot_row is not None and str(plot_row["plot_kind"] or "") == "indoor"
+        else None
+    )
     db.execute(
         """
         INSERT INTO plot_plants (plot_id, plt_id, quantity, room_label)
@@ -700,13 +869,23 @@ def update_plant_quantity(
     context = _auth_context(request)
     _require_plant_access(db, plt_id, context)
     _require_plot_in_garden_or_unowned(db, plot_id, context)
+    plot_row = _lock_plot_row(
+        db,
+        plot_id,
+        context,
+        allow_custom=True,
+        allow_unowned=True,
+    )
     row = db.execute(
         "SELECT 1 FROM plot_plants WHERE plot_id = %s AND plt_id = %s", (plot_id, plt_id)
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Plant not in plot")
-    zone = db.execute("SELECT zone_code FROM plots WHERE plot_id = %s", (plot_id,)).fetchone()
-    effective_room_label = body.room_label if zone and zone["zone_code"] == "I" else None
+    effective_room_label = (
+        body.room_label
+        if plot_row is not None and str(plot_row["plot_kind"] or "") == "indoor"
+        else None
+    )
     db.execute(
         "UPDATE plot_plants SET quantity = %s, room_label = %s WHERE plot_id = %s AND plt_id = %s",
         (body.quantity, effective_room_label, plot_id, plt_id),
@@ -723,43 +902,114 @@ def move_plant_between_plots(
     to_plot_id: str,
     db: DB,
     request: Request,
+    body: MovePlantBody | None = None,
 ) -> dict:
-    """Move a plant assignment atomically between plots."""
+    """Move all or part of a plant assignment atomically between plots."""
     context = _auth_context(request)
+    from_plot_id = require_public_id(from_plot_id, field_name="from_plot_id")
+    to_plot_id = require_public_id(to_plot_id, field_name="to_plot_id")
+    plt_id = require_public_id(plt_id, field_name="plt_id")
     _require_plant_access(db, plt_id, context)
     _require_plot_access(db, from_plot_id, context)
     _require_plot_access(db, to_plot_id, context)
-    if from_plot_id == to_plot_id:
-        return {
-            "status": "ok",
-            "from_plot_id": from_plot_id,
-            "to_plot_id": to_plot_id,
-            "plt_id": plt_id,
-            "quantity": 0,
-        }
 
     try:
+        locked_rows = {
+            plot_id: _lock_plot_row(db, plot_id, context)
+            for plot_id in sorted({from_plot_id, to_plot_id})
+        }
+        if from_plot_id == to_plot_id:
+            db.commit()
+            return {
+                "status": "ok",
+                "from_plot_id": from_plot_id,
+                "to_plot_id": to_plot_id,
+                "plt_id": plt_id,
+                "quantity": 0,
+            }
+
         src = db.execute(
-            "SELECT quantity FROM plot_plants WHERE plot_id = %s AND plt_id = %s",
+            """
+            SELECT quantity, seen_growing, seen_growing_date, room_label
+            FROM plot_plants
+            WHERE plot_id = %s AND plt_id = %s
+            FOR UPDATE
+            """,
             (from_plot_id, plt_id),
         ).fetchone()
         if not src:
             raise HTTPException(status_code=404, detail="Plant not in source plot")
 
-        qty = int(src["quantity"])
-        db.execute(
+        source_quantity = int(src["quantity"])
+        qty = body.quantity if body is not None and body.quantity is not None else source_quantity
+        if qty > source_quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Move quantity cannot exceed source quantity ({source_quantity})",
+            )
+
+        destination = db.execute(
             """
-            INSERT INTO plot_plants (plot_id, plt_id, quantity)
-            VALUES (%s, %s, %s)
-            ON CONFLICT(plot_id, plt_id)
-            DO UPDATE SET quantity = plot_plants.quantity + excluded.quantity
+            SELECT quantity, seen_growing, seen_growing_date, room_label
+            FROM plot_plants
+            WHERE plot_id = %s AND plt_id = %s
+            FOR UPDATE
             """,
-            (to_plot_id, plt_id, qty),
-        )
-        db.execute(
-            "DELETE FROM plot_plants WHERE plot_id = %s AND plt_id = %s",
-            (from_plot_id, plt_id),
-        )
+            (to_plot_id, plt_id),
+        ).fetchone()
+        destination_is_indoor = str(locked_rows[to_plot_id]["plot_kind"] or "") == "indoor"
+        destination_room_label = src["room_label"] if destination_is_indoor else None
+        source_is_indoor = str(locked_rows[from_plot_id]["plot_kind"] or "") == "indoor"
+
+        if qty == source_quantity:
+            db.execute(
+                "DELETE FROM plot_plants WHERE plot_id = %s AND plt_id = %s",
+                (from_plot_id, plt_id),
+            )
+        else:
+            db.execute(
+                """
+                UPDATE plot_plants
+                SET quantity = quantity - %s, room_label = %s
+                WHERE plot_id = %s AND plt_id = %s
+                """,
+                (qty, src["room_label"] if source_is_indoor else None, from_plot_id, plt_id),
+            )
+
+        if destination:
+            # A destination already has its own observations; merging must not
+            # silently overwrite them with the source assignment's metadata.
+            db.execute(
+                """
+                UPDATE plot_plants
+                SET quantity = quantity + %s, room_label = %s
+                WHERE plot_id = %s AND plt_id = %s
+                """,
+                (
+                    qty,
+                    destination["room_label"] if destination_is_indoor else None,
+                    to_plot_id,
+                    plt_id,
+                ),
+            )
+        else:
+            db.execute(
+                """
+                INSERT INTO plot_plants (
+                    plot_id, plt_id, quantity, seen_growing,
+                    seen_growing_date, room_label
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    to_plot_id,
+                    plt_id,
+                    qty,
+                    src["seen_growing"],
+                    src["seen_growing_date"],
+                    destination_room_label,
+                ),
+            )
         db.commit()
     except Exception:
         db.rollback()
@@ -772,6 +1022,7 @@ def move_plant_between_plots(
         "to_plot_id": to_plot_id,
         "plt_id": plt_id,
         "quantity": qty,
+        "remaining_quantity": max(0, source_quantity - qty),
     }
 
 
@@ -781,6 +1032,13 @@ def remove_plant_from_plot(plot_id: str, plt_id: str, db: DB, request: Request) 
     context = _auth_context(request)
     _require_plant_access(db, plt_id, context)
     _require_plot_in_garden_or_unowned(db, plot_id, context)
+    _lock_plot_row(
+        db,
+        plot_id,
+        context,
+        allow_custom=True,
+        allow_unowned=True,
+    )
     row = db.execute(
         "SELECT 1 FROM plot_plants WHERE plot_id = %s AND plt_id = %s", (plot_id, plt_id)
     ).fetchone()
@@ -846,14 +1104,19 @@ def update_plot(plot_id: str, body: UpdatePlotBody, db: DB, request: Request) ->
     """Update one or more fields of an existing plot."""
     context = _auth_context(request)
     _require_plot_access(db, plot_id, context)
-    existing = db.execute("SELECT * FROM plots WHERE plot_id = %s", (plot_id,)).fetchone()
+    existing = _lock_plot_row(db, plot_id, context)
     if not existing:
         raise HTTPException(status_code=404, detail="Plot not found")
+    if _plot_is_container(existing):
+        raise HTTPException(
+            status_code=409,
+            detail="Container plots must be managed through the container endpoints",
+        )
 
     updates = []
     params: list[str | int | None] = []
 
-    is_indoor = existing["grid_row"] is None
+    is_indoor = str(existing["plot_kind"] or "") == "indoor"
     if is_indoor and (body.grid_row is not None or body.grid_col is not None):
         raise HTTPException(status_code=400, detail="Cannot assign grid position to indoor plot")
     if body.zone_code == "I" and existing["zone_code"] != "I":
@@ -952,10 +1215,20 @@ def batch_move_plots(body: BatchMoveBody, db: DB, request: Request) -> dict:
     moving_ids = {m.plot_id for m in body.moves}
     for plot_id in moving_ids:
         _require_plot_access(db, plot_id, context)
+    locked_rows: dict[str, object] = {}
+    for plot_id in sorted(moving_ids):
+        locked = _lock_plot_row(db, plot_id, context)
+        assert locked is not None
+        if _plot_is_container(locked):
+            raise HTTPException(
+                status_code=409,
+                detail="Container plots cannot be moved with the ordinary plot layout route",
+            )
+        locked_rows[plot_id] = locked
 
     if _is_local_admin_fallback(context):
         current_rows = db.execute(
-            "SELECT plot_id, grid_row, grid_col FROM plots",
+            "SELECT plot_id, grid_row, grid_col FROM plots WHERE archived_at_ms IS NULL",
         ).fetchall()
     elif _effective_role(context) in {"admin", "editor"}:
         current_rows = db.execute(
@@ -963,7 +1236,7 @@ def batch_move_plots(body: BatchMoveBody, db: DB, request: Request) -> dict:
             SELECT p.plot_id, p.grid_row, p.grid_col
             FROM plots p
             JOIN plot_ownership po ON po.plot_id = p.plot_id
-            WHERE po.garden_id = %s
+            WHERE po.garden_id = %s AND p.archived_at_ms IS NULL
             """,
             (garden_id,),
         ).fetchall()
@@ -974,6 +1247,7 @@ def batch_move_plots(body: BatchMoveBody, db: DB, request: Request) -> dict:
             FROM plots p
             JOIN plot_ownership po ON po.plot_id = p.plot_id
             WHERE po.garden_id = %s AND po.owner_user_id = %s
+              AND p.archived_at_ms IS NULL
             """,
             (garden_id, context.user_id),
         ).fetchall()
@@ -1043,12 +1317,14 @@ def delete_plot(plot_id: str, db: DB, request: Request) -> None:
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
     _require_plot_access(db, plot_id, context)
-    existing = db.execute(
-        "SELECT plot_id, zone_code FROM plots WHERE plot_id = %s",
-        (plot_id,),
-    ).fetchone()
+    existing = _lock_plot_row(db, plot_id, context)
     if not existing:
         raise HTTPException(status_code=404, detail="Plot not found")
+    if _plot_is_container(existing):
+        raise HTTPException(
+            status_code=409,
+            detail="Container plots must be archived through the container endpoints",
+        )
     if existing["zone_code"] == "I":
         raise HTTPException(status_code=400, detail="Cannot delete the indoor plants collection")
     result = delete_plot_references(db, garden_id=garden_id, plot_id=plot_id)
@@ -1063,6 +1339,12 @@ def get_plot_delete_impact(plot_id: str, db: DB, request: Request) -> dict[str, 
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
     _require_plot_access(db, plot_id, context)
+    existing = _lock_plot_row(db, plot_id, context)
+    if existing and _plot_is_container(existing):
+        raise HTTPException(
+            status_code=409,
+            detail="Container plots use the container lifecycle endpoint",
+        )
     return load_plot_delete_impact(db, garden_id=garden_id, plot_id=plot_id)
 
 

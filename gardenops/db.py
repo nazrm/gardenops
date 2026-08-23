@@ -417,8 +417,9 @@ def ensure_indoor_plot(
     plot_id = f"INDOOR-{garden_id}"
     conn.execute(
         "INSERT INTO plots "
-        "(plot_id, garden_id, zone_code, zone_name, plot_number, grid_row, grid_col) "
-        "VALUES (%s, %s, 'I', 'Innendors', 0, NULL, NULL) "
+        "(plot_id, garden_id, zone_code, zone_name, plot_number, grid_row, grid_col, "
+        "plot_kind, environment) "
+        "VALUES (%s, %s, 'I', 'Innendors', 0, NULL, NULL, 'indoor', 'indoor') "
         "ON CONFLICT DO NOTHING",
         (plot_id, garden_id),
     )

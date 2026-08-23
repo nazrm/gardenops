@@ -627,8 +627,9 @@ BASE_URL=http://127.0.0.1:4173 CHROMIUM_EXECUTABLE=/usr/bin/chromium-browser nod
 ```
 
 The check runs against local built assets, mocks GardenOps API responses in the
-browser, and verifies touch move, touch resize, keyboard move/resize, and
-two-finger touch cancellation without touching live data.
+browser, and verifies touch move, touch resize, keyboard move/resize,
+contained-plot sizing/click/positioning, and two-finger touch cancellation
+without touching live data.
 
 For Attention Today panel changes, run the managed real-backend browser journey
 against a disposable local database named `gardenops_attention_e2e_test` or

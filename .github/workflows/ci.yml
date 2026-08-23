@@ -59,7 +59,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
@@ -75,7 +75,9 @@ jobs:
       - name: Validate Python lock consistency
         if: github.event_name == 'pull_request' && steps.changes.outputs.python == 'true'
         working-directory: /tmp/gardenops-pr-data
-        run: uv lock --check
+        # PR manifests are untrusted. Keep this check static: resolution must not
+        # download artifacts or invoke a dependency's PEP 517 build backend.
+        run: uv lock --check --offline --no-build
       - name: Validate npm lock consistency
         if: github.event_name == 'pull_request' && steps.changes.outputs.npm == 'true'
         run: npm ci --dry-run --ignore-scripts --prefix /tmp/gardenops-pr-data/frontend
@@ -163,7 +165,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6

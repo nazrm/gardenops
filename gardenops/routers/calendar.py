@@ -204,6 +204,71 @@ def _ensure_calendar_plot_ids(
         )
 
 
+def _attach_calendar_plot_details(
+    conn: DB,
+    *,
+    garden_id: int,
+    payload: dict[str, Any],
+) -> None:
+    """Add display metadata without changing the event's stable plot IDs."""
+    events = payload.get("events")
+    if not isinstance(events, list):
+        return
+    plot_ids = sorted(
+        {
+            str(plot_id)
+            for event in events
+            if isinstance(event, dict)
+            for plot_id in (event.get("plot_ids") or [])
+            if str(plot_id).strip()
+        }
+    )
+    if not plot_ids:
+        for event in events:
+            if isinstance(event, dict):
+                event["plots"] = []
+        return
+
+    rows = conn.execute(
+        """
+        SELECT p.plot_id, p.zone_name, p.display_name, p.plot_kind, p.archived_at_ms
+        FROM plots p
+        LEFT JOIN plot_ownership po ON po.plot_id = p.plot_id
+        WHERE p.plot_id = ANY(%s)
+          AND (
+            po.garden_id = %s
+            OR (
+              po.garden_id IS NULL
+              AND %s = (SELECT id FROM gardens WHERE slug = 'default' LIMIT 1)
+            )
+          )
+        """,
+        (plot_ids, garden_id, garden_id),
+    ).fetchall()
+    details_by_id = {
+        str(row["plot_id"]): {
+            "plot_id": str(row["plot_id"]),
+            "zone_name": str(row["zone_name"]),
+            "display_name": str(row["display_name"]) if row["display_name"] else None,
+            "plot_kind": str(row["plot_kind"]) if row["plot_kind"] else None,
+            "archived_at_ms": (
+                int(row["archived_at_ms"]) if row["archived_at_ms"] is not None else None
+            ),
+        }
+        for row in rows
+    }
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event["plots"] = [
+            details_by_id.get(
+                str(plot_id),
+                {"plot_id": str(plot_id), "zone_name": ""},
+            )
+            for plot_id in (event.get("plot_ids") or [])
+        ]
+
+
 def _load_calendar_manual_event(
     conn: DB,
     *,
@@ -244,6 +309,7 @@ def _manual_event_payload(
         selected_plot_ids=[],
         selected_zone_codes=[],
     )
+    _attach_calendar_plot_details(conn, garden_id=garden_id, payload=payload)
     for event in payload["events"]:
         if str(event.get("target_id")) == event_id:
             return event
@@ -419,6 +485,7 @@ def get_calendar_events(
         selected_zone_codes=selected_zone_code_list,
         today=today,
     )
+    _attach_calendar_plot_details(conn, garden_id=garden_id, payload=payload)
     payload.update(
         {
             "selected_preset": preset_key,
@@ -493,6 +560,7 @@ def export_calendar_ics(
         selected_zone_codes=selected_zone_code_list,
         today=today,
     )
+    _attach_calendar_plot_details(conn, garden_id=garden_id, payload=payload)
     ics, etag, last_modified = build_calendar_ics(
         garden_name=_garden_name(conn, garden_id),
         events=payload["events"],
@@ -839,6 +907,7 @@ def get_calendar_subscription_feed(
         selected_plot_ids=[],
         selected_zone_codes=[],
     )
+    _attach_calendar_plot_details(conn, garden_id=int(row["garden_id"]), payload=payload)
     subscription_updated_at_ms = int(row["updated_at_ms"] or row["created_at_ms"] or 0)
     subscription_timestamp = (
         datetime.fromtimestamp(subscription_updated_at_ms / 1000, tz=UTC)

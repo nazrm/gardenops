@@ -65,6 +65,7 @@ from gardenops.incident_controls import is_emergency_read_only  # noqa: E402
 from gardenops.models import (  # noqa: E402
     ImportBody,
     LayoutStateBody,
+    PlotImportItem,
     SnapshotBody,
     StrictBaseModel,
 )
@@ -100,6 +101,7 @@ from gardenops.routers.issues import router as issues_router  # noqa: E402
 from gardenops.routers.journal import router as journal_router  # noqa: E402
 from gardenops.routers.map_objects import (  # noqa: E402
     replace_map_objects,
+    restore_container_parent_position,
     snapshot_map_objects,
 )
 from gardenops.routers.map_objects import (  # noqa: E402
@@ -2147,6 +2149,47 @@ def _ensure_garden_map_objects_fit_grid(
             )
 
 
+def _ensure_garden_house_clear_of_map_objects(
+    db: DbConn,
+    *,
+    garden_id: int,
+    house_row: int,
+    house_col: int,
+    house_width: int,
+    house_height: int,
+) -> None:
+    house_right = house_col + house_width
+    house_bottom = house_row + house_height
+    rows = db.execute(
+        """
+        SELECT name, geometry_json
+        FROM garden_map_objects
+        WHERE garden_id = %s
+        ORDER BY z_index DESC, id DESC
+        """,
+        (garden_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            geometry = json.loads(str(row["geometry_json"] or "{}"))
+            object_left = _coerce_required_int(geometry["x"])
+            object_top = _coerce_required_int(geometry["y"])
+            object_right = object_left + _coerce_required_int(geometry["width"])
+            object_bottom = object_top + _coerce_required_int(geometry["height"])
+        except KeyError, TypeError, ValueError, json.JSONDecodeError:
+            continue
+        if (
+            house_col < object_right
+            and object_left < house_right
+            and house_row < object_bottom
+            and object_top < house_bottom
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"House overlaps area {row['name']}",
+            )
+
+
 def set_layout_state(
     db: DbConn,
     house: Mapping[str, object],
@@ -2196,6 +2239,172 @@ def set_layout_state(
     }
 
 
+def _layout_schema_version(
+    schema_version: int | None,
+    *,
+    plots: list[dict[str, object]],
+    map_objects: list[dict[str, Any]] | None,
+) -> int:
+    if schema_version in {1, 2}:
+        return schema_version
+    if map_objects and any(item.get("units") for item in map_objects):
+        return 1
+    if any(
+        item.get("plot_kind") == "container"
+        or item.get("container_type") is not None
+        or item.get("parent_object_public_id") is not None
+        for item in plots
+    ):
+        return 2
+    return 1
+
+
+def _area_only_map_objects(
+    map_objects: list[dict[str, Any]] | None,
+    *,
+    schema_version: int,
+) -> list[dict[str, Any]] | None:
+    if map_objects is None:
+        return None
+    if schema_version == 1:
+        # The map-object helper owns the v1 unit-to-container translation.
+        return map_objects
+    if any(item.get("units") or item.get("containers") for item in map_objects):
+        raise HTTPException(
+            status_code=400,
+            detail="Schema v2 containers must be represented in plots",
+        )
+    return [
+        {key: value for key, value in item.items() if key not in {"units", "containers"}}
+        for item in map_objects
+    ]
+
+
+def _resolve_parent_map_object_ids(
+    db: DbConn,
+    *,
+    garden_id: int,
+    plots: list[dict[str, object]],
+) -> dict[str, int | None]:
+    requested = {
+        str(plot["parent_object_public_id"])
+        for plot in plots
+        if plot.get("plot_kind") == "container" and plot.get("parent_object_public_id")
+    }
+    if not requested:
+        return {}
+    rows = db.execute(
+        """
+        SELECT public_id, id
+        FROM garden_map_objects
+        WHERE garden_id = %s AND public_id = ANY(%s)
+        """,
+        (garden_id, sorted(requested)),
+    ).fetchall()
+    resolved = {str(row["public_id"]): int(row["id"]) for row in rows}
+    missing = sorted(requested - set(resolved))
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Container parent area not found: {missing[0]}",
+        )
+    return resolved
+
+
+def _validate_layout_ids(
+    db: DbConn,
+    *,
+    garden_id: int,
+    plots: list[dict[str, object]],
+    map_objects: list[dict[str, Any]] | None,
+) -> None:
+    """Reject identity conflicts before any destructive restore work."""
+    incoming_kind_by_id = {
+        str(plot["plot_id"]): str(plot.get("plot_kind") or "ground") for plot in plots
+    }
+    incoming_archived_by_id = {str(plot["plot_id"]): plot.get("archived_at_ms") for plot in plots}
+    if incoming_kind_by_id:
+        rows = db.execute(
+            """
+            SELECT p.plot_id, p.garden_id,
+                   COALESCE(p.plot_kind, 'ground') AS plot_kind,
+                   p.archived_at_ms,
+                   EXISTS (
+                       SELECT 1 FROM plot_plants pp WHERE pp.plot_id = p.plot_id
+                   ) AS has_assignments
+            FROM plots p
+            WHERE p.plot_id = ANY(%s)
+            FOR UPDATE
+            """,
+            (sorted(incoming_kind_by_id),),
+        ).fetchall()
+        for row in rows:
+            plot_id = str(row["plot_id"])
+            existing_garden_id = int(row["garden_id"])
+            plot_kind = str(row["plot_kind"])
+            if existing_garden_id != garden_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Plot ID is already used by another garden: {plot_id}",
+                )
+            incoming_kind = incoming_kind_by_id[plot_id]
+            if incoming_kind != plot_kind:
+                detail = (
+                    f"Container plot ID conflicts with an ordinary plot: {plot_id}"
+                    if "container" in {incoming_kind, plot_kind}
+                    else f"Plot ID conflicts with an existing plot type: {plot_id}"
+                )
+                raise HTTPException(status_code=409, detail=detail)
+            if (
+                incoming_kind == "container"
+                and incoming_archived_by_id[plot_id] is not None
+                and row["archived_at_ms"] is None
+                and bool(row["has_assignments"])
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Cannot archive plot with plant assignments: {plot_id}",
+                )
+
+    if incoming_kind_by_id:
+        ownership_rows = db.execute(
+            """
+            SELECT plot_id, garden_id
+            FROM plot_ownership
+            WHERE plot_id = ANY(%s)
+            FOR UPDATE
+            """,
+            (sorted(incoming_kind_by_id),),
+        ).fetchall()
+        for row in ownership_rows:
+            if int(row["garden_id"]) != garden_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Plot ID {row['plot_id']} is already owned by another garden",
+                )
+
+    if map_objects is None:
+        return
+    object_ids = [str(item.get("public_id")) for item in map_objects if item.get("public_id")]
+    if len(object_ids) != len(set(object_ids)):
+        raise HTTPException(status_code=400, detail="Duplicate map object public_id in import")
+    if object_ids:
+        foreign = db.execute(
+            """
+            SELECT public_id
+            FROM garden_map_objects
+            WHERE public_id = ANY(%s) AND garden_id != %s
+            LIMIT 1
+            """,
+            (sorted(set(object_ids)), garden_id),
+        ).fetchone()
+        if foreign:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Map object ID is already used by another garden: {foreign['public_id']}",
+            )
+
+
 def snapshot_layout(
     db: DbConn,
     garden_id: int,
@@ -2207,9 +2416,16 @@ def snapshot_layout(
             """
             SELECT DISTINCT p.plot_id, p.zone_code, p.zone_name, p.plot_number,
                 p.grid_row, p.grid_col, COALESCE(p.sub_zone, '') AS sub_zone,
-                COALESCE(p.notes, '') AS notes, p.color
+                COALESCE(p.notes, '') AS notes, p.color,
+                COALESCE(p.plot_kind, 'ground') AS plot_kind,
+                p.display_name, p.container_type, p.environment,
+                p.archived_at_ms, parent.public_id AS parent_object_public_id,
+                p.container_position_x, p.container_position_y
             FROM plots p
             LEFT JOIN plot_ownership po ON po.plot_id = p.plot_id
+            LEFT JOIN garden_map_objects parent
+                ON parent.id = p.parent_map_object_id
+                AND parent.garden_id = p.garden_id
             WHERE po.garden_id = %s OR po.garden_id IS NULL
             ORDER BY p.plot_id
             """,
@@ -2220,22 +2436,34 @@ def snapshot_layout(
             """
             SELECT p.plot_id, p.zone_code, p.zone_name, p.plot_number,
                 p.grid_row, p.grid_col, COALESCE(p.sub_zone, '') AS sub_zone,
-                COALESCE(p.notes, '') AS notes, p.color
+                COALESCE(p.notes, '') AS notes, p.color,
+                COALESCE(p.plot_kind, 'ground') AS plot_kind,
+                p.display_name, p.container_type, p.environment,
+                p.archived_at_ms, parent.public_id AS parent_object_public_id,
+                p.container_position_x, p.container_position_y
             FROM plots p
             JOIN plot_ownership po ON po.plot_id = p.plot_id
+            LEFT JOIN garden_map_objects parent
+                ON parent.id = p.parent_map_object_id
+                AND parent.garden_id = p.garden_id
             WHERE po.garden_id = %s
             ORDER BY p.plot_id
             """,
             (garden_id,),
         ).fetchall()
+    raw_map_objects = snapshot_map_objects(db, garden_id)
+    map_objects = [
+        {key: value for key, value in item.items() if key not in {"units", "containers"}}
+        for item in raw_map_objects
+    ]
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "plots": [dict(r) for r in rows],
         "house": get_layout_state(db, garden_id),
         "shademap": get_shademap_state(db, garden_id=garden_id),
         "shademap_calibration": get_shademap_calibration(db, garden_id=garden_id),
         "shademap_obstacles": list_shademap_obstacles(db, garden_id=garden_id),
-        "map_objects": snapshot_map_objects(db, garden_id),
+        "map_objects": map_objects,
     }
     return json.dumps(payload)
 
@@ -2251,15 +2479,23 @@ def restore_snapshot_data(
     shademap_calibration: dict[str, object] | None = None,
     shademap_obstacles: list[dict[str, object]] | None = None,
     map_objects: list[dict[str, Any]] | None = None,
+    schema_version: int | None = None,
     manage_transaction: bool = True,
     media_storage_pairs_out: list[tuple[str, str]] | None = None,
 ) -> int:
     if not plots:
         raise HTTPException(status_code=400, detail="Import must contain at least one plot")
 
+    effective_schema_version = _layout_schema_version(
+        schema_version,
+        plots=plots,
+        map_objects=map_objects,
+    )
+    normalized_plots = [PlotImportItem.model_validate(plot).model_dump() for plot in plots]
+
     seen: set[str] = set()
     seen_cells: set[tuple[int, int]] = set()
-    for p in plots:
+    for p in normalized_plots:
         pid = str(p["plot_id"])
         if pid in seen:
             raise HTTPException(status_code=400, detail=f"Duplicate plot_id in import: {pid}")
@@ -2277,29 +2513,22 @@ def restore_snapshot_data(
                 )
             seen_cells.add(cell)
 
-    if seen:
-        placeholders = ",".join("%s" for _ in seen)
-        foreign = db.execute(
-            f"""
-            SELECT po.plot_id
-            FROM plot_ownership po
-            WHERE po.plot_id IN ({placeholders}) AND po.garden_id != %s
-            LIMIT 1
-            """,
-            [*sorted(seen), garden_id],
-        ).fetchone()
-        if foreign:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Plot ID {foreign['plot_id']} is already owned by another garden",
-            )
-
+    area_map_objects = _area_only_map_objects(
+        map_objects,
+        schema_version=effective_schema_version,
+    )
     if manage_transaction:
         db.commit()
     media_storage_pairs: list[tuple[str, str]] = []
     try:
         db.execute("SET CONSTRAINTS ALL DEFERRED")
         lock_garden_layout(db, garden_id)
+        _validate_layout_ids(
+            db,
+            garden_id=garden_id,
+            plots=normalized_plots,
+            map_objects=area_map_objects,
+        )
         existing_owner_rows = db.execute(
             "SELECT plot_id, owner_user_id FROM plot_ownership WHERE garden_id = %s",
             (garden_id,),
@@ -2308,10 +2537,23 @@ def restore_snapshot_data(
             str(row["plot_id"]): _coerce_required_int(row["owner_user_id"])
             for row in existing_owner_rows
         }
+        existing_container_rows = db.execute(
+            """
+            SELECT plot_id
+            FROM plots
+            WHERE garden_id = %s AND COALESCE(plot_kind, 'ground') = 'container'
+            """,
+            (garden_id,),
+        ).fetchall()
+        existing_container_ids = {str(row["plot_id"]) for row in existing_container_rows}
         target_plot_ids = set(seen)
         existing_plot_ids = set(existing_owner_by_plot_id)
-        removed_plot_ids = sorted(existing_plot_ids - target_plot_ids)
-        retained_plot_ids = sorted(existing_plot_ids & target_plot_ids)
+        removed_plot_ids = sorted(
+            (existing_plot_ids - target_plot_ids) - existing_container_ids,
+        )
+        retained_plot_ids = sorted(
+            (existing_plot_ids & target_plot_ids) - existing_container_ids,
+        )
         if removed_plot_ids:
             replacement_result = delete_plots_for_replacement(
                 db,
@@ -2328,23 +2570,16 @@ def restore_snapshot_data(
                 """,
                 (garden_id, retained_plot_ids),
             )
-        for p in plots:
+        for p in normalized_plots:
             plot_id = str(p["plot_id"])
+            plot_kind = str(p.get("plot_kind") or "ground")
             db.execute(
                 "INSERT INTO plots"
                 " (plot_id,garden_id,zone_code,zone_name,plot_number,"
-                "grid_row,grid_col,sub_zone,notes,color)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
-                " ON CONFLICT (plot_id) DO UPDATE SET"
-                " garden_id=EXCLUDED.garden_id,"
-                " zone_code=EXCLUDED.zone_code,"
-                " zone_name=EXCLUDED.zone_name,"
-                " plot_number=EXCLUDED.plot_number,"
-                " grid_row=EXCLUDED.grid_row,"
-                " grid_col=EXCLUDED.grid_col,"
-                " sub_zone=EXCLUDED.sub_zone,"
-                " notes=EXCLUDED.notes,"
-                " color=EXCLUDED.color",
+                "grid_row,grid_col,sub_zone,notes,color,plot_kind,display_name,"
+                "container_type,parent_map_object_id,environment,archived_at_ms)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                " ON CONFLICT (plot_id) DO NOTHING",
                 (
                     plot_id,
                     garden_id,
@@ -2356,15 +2591,78 @@ def restore_snapshot_data(
                     p.get("sub_zone", ""),
                     p.get("notes", ""),
                     p.get("color"),
+                    plot_kind,
+                    p.get("display_name"),
+                    p.get("container_type") if plot_kind == "container" else None,
+                    None,
+                    p.get("environment", "outdoor"),
+                    p.get("archived_at_ms") if plot_kind == "container" else None,
+                ),
+            )
+            existing = db.execute(
+                """
+                SELECT garden_id, COALESCE(plot_kind, 'ground') AS plot_kind
+                FROM plots
+                WHERE plot_id = %s
+                FOR UPDATE
+                """,
+                (plot_id,),
+            ).fetchone()
+            if existing is None:
+                raise HTTPException(status_code=409, detail=f"Plot ID unavailable: {plot_id}")
+            if int(existing["garden_id"]) != garden_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Plot ID {plot_id} is already owned by another garden",
+                )
+            if str(existing["plot_kind"]) != plot_kind:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Plot ID conflicts with an existing plot type: {plot_id}",
+                )
+            db.execute(
+                """
+                UPDATE plots
+                SET zone_code = %s,
+                    zone_name = %s,
+                    plot_number = %s,
+                    grid_row = %s,
+                    grid_col = %s,
+                    sub_zone = %s,
+                    notes = %s,
+                    color = %s,
+                    display_name = %s,
+                    container_type = %s,
+                    parent_map_object_id = %s,
+                    container_position_x = NULL,
+                    container_position_y = NULL,
+                    environment = %s,
+                    archived_at_ms = %s
+                WHERE plot_id = %s AND garden_id = %s
+                """,
+                (
+                    p["zone_code"],
+                    p["zone_name"],
+                    p["plot_number"],
+                    p["grid_row"],
+                    p["grid_col"],
+                    p.get("sub_zone", ""),
+                    p.get("notes", ""),
+                    p.get("color"),
+                    p.get("display_name"),
+                    p.get("container_type") if plot_kind == "container" else None,
+                    None,
+                    p.get("environment", "outdoor"),
+                    p.get("archived_at_ms") if plot_kind == "container" else None,
+                    plot_id,
+                    garden_id,
                 ),
             )
             db.execute(
                 """
                 INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id)
                 VALUES (%s, %s, %s)
-                ON CONFLICT(plot_id) DO UPDATE SET
-                    owner_user_id = excluded.owner_user_id,
-                    garden_id = excluded.garden_id
+                ON CONFLICT(plot_id) DO NOTHING
                 """,
                 (
                     plot_id,
@@ -2436,9 +2734,36 @@ def restore_snapshot_data(
         replace_map_objects(
             db,
             garden_id=garden_id,
-            map_objects=map_objects,
+            map_objects=area_map_objects,
             created_by_user_id=owner_user_id,
         )
+        parent_map_object_ids = _resolve_parent_map_object_ids(
+            db,
+            garden_id=garden_id,
+            plots=normalized_plots,
+        )
+        for plot in normalized_plots:
+            if plot.get("plot_kind") != "container":
+                continue
+            parent_public_id = plot.get("parent_object_public_id")
+            restore_container_parent_position(
+                db,
+                garden_id=garden_id,
+                plot_id=str(plot["plot_id"]),
+                parent_map_object_id=(
+                    parent_map_object_ids.get(str(parent_public_id)) if parent_public_id else None
+                ),
+                position_x=(
+                    _coerce_required_int(plot["container_position_x"])
+                    if plot.get("container_position_x") is not None
+                    else None
+                ),
+                position_y=(
+                    _coerce_required_int(plot["container_position_y"])
+                    if plot.get("container_position_y") is not None
+                    else None
+                ),
+            )
         db.execute("DELETE FROM plot_elevations WHERE garden_id = %s", (garden_id,))
         db.execute("DELETE FROM plot_elevation_overrides WHERE garden_id = %s", (garden_id,))
         db.execute(
@@ -2456,12 +2781,13 @@ def restore_snapshot_data(
         if manage_transaction:
             db.rollback()
         raise
-    return len(plots)
+    return len(normalized_plots)
 
 
 def parse_layout_payload(
     raw: object,
 ) -> tuple[
+    int,
     list[dict[str, Any]],
     dict[str, Any] | None,
     dict[str, Any] | None,
@@ -2470,11 +2796,11 @@ def parse_layout_payload(
     list[dict[str, Any]] | None,
 ]:
     if isinstance(raw, list):
-        return cast(list[dict[str, Any]], raw), None, None, None, None, None
+        return 1, cast(list[dict[str, Any]], raw), None, None, None, None, None
     if isinstance(raw, dict):
         payload = cast(dict[str, object], raw)
         schema_version = payload.get("schema_version", 1)
-        if schema_version != 1:
+        if schema_version not in {1, 2}:
             raise HTTPException(status_code=400, detail="Unsupported layout schema version")
         plots = payload.get("plots")
         house = payload.get("house")
@@ -2484,6 +2810,7 @@ def parse_layout_payload(
         map_objects = payload.get("map_objects")
         if isinstance(plots, list):
             return (
+                int(schema_version),
                 cast(list[dict[str, Any]], plots),
                 cast(dict[str, Any], house) if isinstance(house, dict) else None,
                 cast(dict[str, Any], shademap) if isinstance(shademap, dict) else None,
@@ -2506,6 +2833,7 @@ def get_layout_state_api(db: DB, request: Request) -> dict[str, int]:
 @app.patch("/api/layout-state")
 def update_layout_state(body: LayoutStateBody, db: DB, request: Request) -> dict[str, int]:
     garden_id = _active_garden_id(request)
+    lock_garden_layout(db, garden_id)
     _ensure_garden_plots_fit_grid(
         db,
         garden_id=garden_id,
@@ -2517,6 +2845,14 @@ def update_layout_state(body: LayoutStateBody, db: DB, request: Request) -> dict
         garden_id=garden_id,
         grid_rows=body.grid_rows,
         grid_cols=body.grid_cols,
+    )
+    _ensure_garden_house_clear_of_map_objects(
+        db,
+        garden_id=garden_id,
+        house_row=body.row,
+        house_col=body.col,
+        house_width=body.width,
+        house_height=body.height,
     )
     updated = set_layout_state(db, body.model_dump(), garden_id=garden_id)
     db.execute(
@@ -2591,6 +2927,7 @@ def restore_snapshot(
     if not row:
         raise HTTPException(404, "Snapshot not found")
     (
+        schema_version,
         plots,
         house,
         shademap,
@@ -2619,6 +2956,7 @@ def restore_snapshot(
             shademap_calibration=shademap_calibration,
             shademap_obstacles=shademap_obstacles,
             map_objects=map_objects,
+            schema_version=schema_version,
             manage_transaction=False,
             media_storage_pairs_out=media_storage_pairs,
         )
@@ -2753,6 +3091,7 @@ def import_plots(body: ImportBody, db: DB, request: Request) -> dict:
             if body.map_objects is not None
             else None
         ),
+        schema_version=body.schema_version,
     )
     notify_garden_modified()
     record_security_event("destructive_admin_actions")

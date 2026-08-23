@@ -975,6 +975,18 @@ def _ical_datetime(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _calendar_plot_label(plot: Any) -> str:
+    if not isinstance(plot, dict):
+        return str(plot)
+    plot_id = str(plot.get("plot_id") or "")
+    display_name = str(plot.get("display_name") or "").strip()
+    if display_name:
+        return display_name
+    if str(plot.get("plot_kind") or "") == "indoor" or plot_id.startswith("INDOOR-"):
+        return str(plot.get("zone_name") or plot_id)
+    return plot_id
+
+
 def _event_description_for_ics(event: dict[str, Any]) -> str:
     lines = [str(event.get("description") or "").strip()]
     if event.get("kind") == "task":
@@ -987,9 +999,13 @@ def _event_description_for_ics(event: dict[str, Any]) -> str:
     plant_ids = event.get("plant_ids") or []
     if plant_ids:
         lines.append("Plants: " + ", ".join(str(value) for value in plant_ids))
-    plot_ids = event.get("plot_ids") or []
-    if plot_ids:
-        lines.append("Plots: " + ", ".join(str(value) for value in plot_ids))
+    plots = event.get("plots")
+    if isinstance(plots, list):
+        plot_labels = [_calendar_plot_label(plot) for plot in plots]
+    else:
+        plot_labels = [str(value) for value in (event.get("plot_ids") or [])]
+    if plot_labels:
+        lines.append("Plots: " + ", ".join(plot_labels))
     return "\n".join(line for line in lines if line)
 
 

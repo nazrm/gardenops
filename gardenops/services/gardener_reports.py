@@ -176,7 +176,7 @@ def _build_scope(
         SELECT pl.zone_code, MIN(pl.zone_name) AS zone_name, COUNT(*) AS plot_count
         FROM plots pl
         JOIN plot_ownership pwo ON pwo.plot_id = pl.plot_id
-        WHERE pwo.garden_id = %s
+        WHERE pwo.garden_id = %s AND pl.plot_kind <> 'container'
         GROUP BY pl.zone_code
         ORDER BY pl.zone_code
         """,
@@ -219,7 +219,8 @@ def _build_scope(
                   ON assigned_po.plt_id = assignments.plt_id
                 WHERE assigned_po.garden_id = %s
             ) pp ON pp.plot_id = pl.plot_id
-            WHERE pwo.garden_id = %s{zone_sql}
+            WHERE pwo.garden_id = %s
+              AND pl.plot_kind <> 'container'{zone_sql}
             GROUP BY pl.plot_id, pl.zone_code, pl.zone_name
             ORDER BY pl.zone_code, pl.plot_id
             """,
@@ -246,7 +247,8 @@ def _build_scope(
                 JOIN plot_plants pp ON pp.plt_id = p.plt_id
                 JOIN plots pl ON pl.plot_id = pp.plot_id
                 JOIN plot_ownership pwo ON pwo.plot_id = pl.plot_id
-                WHERE po.garden_id = %s AND pwo.garden_id = %s AND pl.zone_code = %s
+                WHERE po.garden_id = %s AND pwo.garden_id = %s
+                  AND pl.zone_code = %s AND pl.plot_kind <> 'container'
                 ORDER BY p.name
                 """,
                 (garden_id, garden_id, requested_zone),

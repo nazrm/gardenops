@@ -530,10 +530,10 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     for marker in (
         "PHASE_ONE_INDOOR_PLOT_ID",
         "PHASE_ONE_INDOOR_PLANT_ID",
+        "PHASE_ONE_CANONICAL_CONTAINER_ID",
         "PHASE_ONE_BETA_INDOOR_PLOT_ID",
         "PHASE_ONE_BETA_INDOOR_ROOM_LABEL",
         "PHASE_ONE_VIEWER_GARDENS",
-        "PHASE_ONE_MAP_UNIT_ID",
         "PHASE_ONE_SAVED_VIEW_LABEL",
         "PHASE_ONE_MOBILE_SNAPSHOT_NAME",
         "PHASE_ONE_BROWSER_PLANT_ID",
@@ -555,6 +555,7 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "lifecycle_audit",
         "restore_import_graphs",
         "stable_domain_projection",
+        "terrain_provider_usage",
         'subscription_tier="pro"',
     ):
         assert marker in seeder_source
@@ -566,9 +567,14 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "mutateIndoorPlant",
         "exerciseDiscoverableMobilePlotEdit",
         "createMobileEditorPlot",
-        "exerciseMapObjectEditor",
+        "exerciseCanonicalContainerDesktop",
+        "exerciseCanonicalContainerMobile",
+        "exerciseCanonicalContainerKeyboard",
+        "createCanonicalArea",
+        "createCanonicalContainer",
+        "placePlantIntoContainer",
+        "movePlantFromLocation",
         "exerciseEditorMapObjectWrite",
-        "exerciseMobileMapObject",
         "exerciseSnapshotsAndImport",
         "exerciseMobileMapImport",
         "submitMobileQuickAction",
@@ -595,6 +601,14 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "role_delayed_surfaces",
     ):
         assert marker in journey_source
+    quick_action = _javascript_function_containing(
+        journey_source,
+        "quick action harvest form",
+    )
+    assert "input[name='plot_ids']" not in quick_action
+    assert 'plotPicker.locator(".chip-input__field").fill(alpha.plot_id)' in quick_action
+    assert 'plotPicker.locator(".chip-input__option")' in quick_action
+    assert 'plotPicker.locator(".chip-input__chip")' in quick_action
     assert "waitFor(() => page.locator" not in journey_source
     for substantive_marker in (
         "#onb-garden-name",
@@ -606,12 +620,15 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         ".indoor-room-input",
         ".drawer-edit-plot-btn",
         "#edit-plot-form",
-        ".map-object-type-select",
+        ".map-object-intent-form",
+        ".map-container-row",
+        ".plant-location-picker",
+        ".plant-location-picker-option",
+        ".plant-location-picker-status",
+        "canonical_container_desktop",
+        "canonical_container_mobile",
+        "canonical_container_keyboard_reflow",
         ".map-object-interaction-surface",
-        ".map-object-unit",
-        ".map-object-unit-form",
-        "deleted_units === 1",
-        "Input.dispatchTouchEvent",
         "has no non-interactive browser hit-test point",
         ".snapshot-restore",
         "#import-map-input",
@@ -643,6 +660,13 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     assert journey_source.count("page.evaluate(async") == 0
     assert "const unitUpdate = await issueBrowserRequest" not in journey_source
     assert "route.fulfill" not in journey_source
+    mobile_canonical = journey_source.split("async function exerciseCanonicalContainerMobile", 1)[1]
+    mobile_canonical = mobile_canonical.split(
+        "async function exerciseCanonicalContainerKeyboard", 1
+    )[0]
+    assert 'await openIndoor(page, "mobile")' in mobile_canonical
+    assert "fixture.phase_one.indoor.room_label" in mobile_canonical
+    assert "restored indoor room after canonical mobile move" in mobile_canonical
     delay_start = journey_source.index("async function delayGardenSwitchResponses")
     delay_end = journey_source.index("async function assertGlobalSearch", delay_start)
     delay_source = journey_source[delay_start:delay_end]
@@ -665,6 +689,18 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
     ):
         assert marker in desktop_admin_branch
     assert "runGardenMapPlants" in checker_source
+    assert '"schema_version": 2' in seeder_source
+    lifecycle_contract = checker_source.split("const expectedLifecycleAudit = {", 1)[1].split(
+        "};", 1
+    )[0]
+    for expected in (
+        "assignment_create_count: 6",
+        "assignment_delete_count: 4",
+        "plant_create_count: 3",
+        "plant_delete_count: 3",
+        "plant_update_count: 6",
+    ):
+        assert expected in lifecycle_contract
     assert "fitPersistedHouseSizeToGrid" in app_source
     assert "state.houseSize = fitPersistedHouseSizeToGrid(house);" in app_source
     assert "phaseSelected(1)" in checker_source
@@ -690,8 +726,9 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "assertSourceRevisionStable",
         "safeUtcTimestamp",
         "sourceProvenance",
-        "nested_unit_direct_delete_count",
-        "nested_unit_update_count",
+        "canonical_container_desktop",
+        "canonical_container_mobile",
+        "canonical_container_keyboard_reflow",
         "saved_view_delete_confirmation",
         "indoor_reload_persistence",
         "garden_settings_reload_persistence",
@@ -2228,6 +2265,7 @@ def test_phase_two_accounts_for_deterministic_read_side_effects() -> None:
     oracle = json.loads(ORACLE.read_text(encoding="utf-8"))
 
     assert "const phaseTwoReadSideEffectTables" in checker_source
+    assert checker_source.count("assertPhaseOneExactSideEffects(") == 2
     assert '"auth_passkey_challenges"' in checker_source
     accounting = oracle["phase_two"]["whole_table_mutation_accounting"]
     assert {"provider_daily_usage", "shademap_cache"}.issubset(accounting["phase_two_tables"])
@@ -2242,9 +2280,16 @@ def test_phase_two_accounts_for_deterministic_read_side_effects() -> None:
                 "removed": 0,
                 "updated": 0,
             }
+    assert accounting["exact_counts"]["cumulative_through_phase_two"][
+        "garden_map_object_units"
+    ] == {"added": 0, "removed": 1}
+    assert accounting["exact_identity_counts"]["cumulative_through_phase_two"][
+        "garden_map_object_units"
+    ] == {"added": 0, "removed": 1, "updated": 0}
 
     script = r"""
 const {
+  assertPhaseOneExactSideEffects,
   assertWholeTableMutationAccounting,
   phaseTwoOracle,
 } = require('./scripts/check_complete_journeys_e2e.cjs');
@@ -2260,7 +2305,8 @@ const row = (prefix, count) => ({
     row_digest: String(index + 1).padStart(64, prefix),
   })),
 });
-const oracle = phaseTwoOracle().phase_two.whole_table_mutation_accounting;
+const fullOracle = phaseTwoOracle();
+const oracle = fullOracle.phase_two.whole_table_mutation_accounting;
 const tables = ['provider_daily_usage', 'shademap_cache'];
 const scope = oracle.exact_counts.phase_two_only;
 const identities = oracle.exact_identity_counts.phase_two_only;
@@ -2282,14 +2328,104 @@ const final = {
   shademap_cache: row('b', 3),
 };
 assertWholeTableMutationAccounting(initial, final, new Set(tables), accounting);
+const phaseOneInitial = { ...initial, garden_map_object_units: row('c', 1) };
+const fixture = {
+  roles: { admin: 'admin', editor: 'editor' },
+  gardens: { alpha: { id: 1 }, beta: { id: 2 } },
+};
+const usage = (usageDay, scopeType, scopeId, scopeUsername, requestCount) => ({
+  feature: 'shademap-terrain-miss',
+  request_count: requestCount,
+  scope_id: scopeId,
+  scope_type: scopeType,
+  scope_username: scopeUsername,
+  usage_day: usageDay,
+});
+const sameDay = [
+  usage('2026-08-21', 'user', 1, 'admin', 5),
+  usage('2026-08-21', 'user', 4, 'editor', 2),
+  usage('2026-08-21', 'garden', 1, '', 6),
+  usage('2026-08-21', 'garden', 2, '', 3),
+];
+const oneSplit = [
+  usage('2026-08-21', 'user', 1, 'admin', 3),
+  usage('2026-08-22', 'user', 1, 'admin', 4),
+  usage('2026-08-22', 'user', 4, 'editor', 2),
+  usage('2026-08-22', 'garden', 1, '', 6),
+  usage('2026-08-21', 'garden', 2, '', 1),
+];
+const bothSplit = [
+  usage('2026-08-21', 'user', 1, 'admin', 3),
+  usage('2026-08-22', 'user', 1, 'admin', 2),
+  usage('2026-08-22', 'user', 4, 'editor', 2),
+  usage('2026-08-21', 'garden', 1, '', 4),
+  usage('2026-08-22', 'garden', 1, '', 2),
+  usage('2026-08-21', 'garden', 2, '', 1),
+];
+const phaseOneState = (terrainProviderUsage) => ({
+  terrain_provider_usage: terrainProviderUsage,
+});
+const phaseOneFinal = (providerCount) => ({
+  provider_daily_usage: row('a', providerCount),
+  shademap_cache: row('b', 3),
+  garden_map_object_units: row('c', 0),
+});
+for (const rows of [sameDay, oneSplit, bothSplit]) {
+  assertPhaseOneExactSideEffects(
+    phaseOneInitial,
+    phaseOneFinal(rows.length),
+    phaseOneState([]),
+    phaseOneState(rows),
+    fixture,
+  );
+}
+for (const [rows, message] of [
+  [[
+    ...sameDay.slice(0, 1),
+    usage('2026-08-21', 'user', 5, 'viewer', 2),
+    ...sameDay.slice(2),
+  ], 'scope'],
+  [[{ ...sameDay[0], feature: 'ai-identify' }, ...sameDay.slice(1)], 'feature'],
+  [[...sameDay, usage('2026-08-21', 'garden', 2, '', 1)], 'duplicate'],
+  [oneSplit.map((row) => ({
+    ...row,
+    usage_day: row.usage_day === '2026-08-22' ? '2026-08-23' : row.usage_day,
+  })), 'adjacent'],
+  [[
+    ...sameDay,
+    usage('2026-08-22', 'user', 1, 'admin', 2),
+    usage('2026-08-22', 'user', 4, 'editor', 2),
+    usage('2026-08-22', 'garden', 1, '', 2),
+  ], '4-6'],
+]) {
+  try {
+    assertPhaseOneExactSideEffects(
+      phaseOneInitial,
+      phaseOneFinal(rows.length),
+      phaseOneState([]),
+      phaseOneState(rows),
+      fixture,
+    );
+    process.exit(3);
+  } catch (error) {
+    if (!String(error.message).includes(message)) process.exit(4);
+  }
+}
 try {
-  assertWholeTableMutationAccounting(initial, {
-    provider_daily_usage: row('a', 5),
-    shademap_cache: row('b', 3),
-  }, new Set(tables), accounting);
-  process.exit(3);
+  assertPhaseOneExactSideEffects(
+    phaseOneInitial,
+    {
+      provider_daily_usage: row('a', 5),
+      shademap_cache: row('b', 3),
+      garden_map_object_units: row('c', 0),
+    },
+    phaseOneState([]),
+    phaseOneState(sameDay),
+    fixture,
+  );
+  process.exit(5);
 } catch (error) {
-  if (!String(error.message).includes('expected_added')) process.exit(4);
+  if (!String(error.message).includes('expected_added')) process.exit(6);
 }
 """
     result = subprocess.run(
@@ -2783,6 +2919,7 @@ const profiles = [
   profile('onboarding', 'desktop', { onboarding_validation_recovery_complete: true }),
   profile('onboarding', 'mobile', { onboarding_validation_recovery_complete: true }),
   profile('admin', 'desktop', {
+    canonical_container_desktop: true,
     desktop_admin_mutation_workflows: true,
     indoor_reload_persistence: true,
     import_rejection_render_churn: {
@@ -2815,7 +2952,12 @@ const profiles = [
     role_cross_garden_response_isolation: true,
     saved_view_delete_confirmation: true,
   }),
+  profile('admin', 'desktop-reflow-200', {
+    canonical_container_keyboard_reflow: true,
+    map_first_without_plants: true,
+  }),
   profile('admin', 'mobile', {
+    canonical_container_mobile: true,
     delayed_surfaces: delayedMobile,
     garden_settings_reload_persistence: true,
     indoor_reload_persistence: true,
@@ -2876,8 +3018,35 @@ try {
 } catch (error) {
   if (!String(error.message).includes('assignments_with_cross_garden_ownership')) process.exit(3);
 }
+const expectedAudit = phaseOneAuditExpectedEvents(9);
+const canonicalLifecycleMutations = [
+  [4, 'DELETE', '/api/plants/{created_plant_id}', 200],
+  [8, 'PATCH', '/api/plants/{created_plant_id}', 200],
+  [5, 'PATCH', '/api/plots/COMPLETE-PHASE-ONE-INDOOR/plants/COMPLETE-PHASE-ONE-BASIL', 200],
+  [4, 'POST', '/api/plants', 201],
+];
+for (const [count, method, path, statusCode] of canonicalLifecycleMutations) {
+  const event = expectedAudit.find((candidate) => (
+    candidate.method === method
+      && candidate.path === path
+      && candidate.status_code === statusCode
+  ));
+  if (event?.count !== count) process.exit(19);
+}
+const containerDelete = expectedAudit.find((event) => (
+  event.method === 'DELETE'
+    && event.path === '/api/gardens/{garden_id}/containers/{plot_id}'
+    && event.status_code === 200
+));
+if (containerDelete?.count !== 3) process.exit(19);
 const audit = { events: [
-  ...phaseOneAuditExpectedEvents(8),
+  ...expectedAudit.filter((event) => event !== containerDelete),
+  ...['containe_first', 'containe_second', 'containe_third'].map((plotId) => ({
+    count: 1,
+    method: 'DELETE',
+    path: `/api/gardens/1/containers/${plotId}`,
+    status_code: 200,
+  })),
   { count: 4, method: 'POST', path: '/api/media/summaries', status_code: 200 },
 ] };
 const prohibitedDirectViewerDenials = [
@@ -2887,17 +3056,42 @@ const prohibitedDirectViewerDenials = [
   ['POST', '/api/plots/import', 403],
 ];
 for (const [method, path, statusCode] of prohibitedDirectViewerDenials) {
-  if (phaseOneAuditExpectedEvents(8).some((event) => (
+  if (phaseOneAuditExpectedEvents(9).some((event) => (
     event.count === 1
       && event.method === method
       && event.path === path
       && event.status_code === statusCode
   ))) process.exit(15);
 }
-const evidence = assertPhaseOneAuditContract(audit, 8);
+const evidence = assertPhaseOneAuditContract(audit, 9);
 if (evidence.unexpected_count !== 0 || evidence.flexible_read_event_types !== 1) process.exit(4);
+for (const [, method, path, statusCode] of canonicalLifecycleMutations) {
+  try {
+    assertPhaseOneAuditContract({ events: [
+      ...audit.events,
+      { count: 1, method, path, status_code: statusCode },
+    ] }, 9);
+    process.exit(22);
+  } catch (error) {
+    if (!String(error.message).includes('count was unexpected')) process.exit(23);
+  }
+}
+try {
+  assertPhaseOneAuditContract({ events: [
+    ...audit.events,
+    {
+      count: 1,
+      method: 'DELETE',
+      path: '/api/gardens/1/containers/containe_fourth',
+      status_code: 200,
+    },
+  ] }, 9);
+  process.exit(20);
+} catch (error) {
+  if (!String(error.message).includes('count was unexpected')) process.exit(21);
+}
 const incomplete = structuredClone(profiles);
-incomplete[3].checks.mobile_supported_writes_and_focus_return = false;
+incomplete[4].checks.mobile_supported_writes_and_focus_return = false;
 try {
   assertPhaseOneProfileEvidence(incomplete);
   process.exit(5);
@@ -2905,7 +3099,7 @@ try {
   if (!String(error.message).includes('browser check is missing')) process.exit(6);
 }
 const incompleteRoleIsolation = structuredClone(profiles);
-incompleteRoleIsolation[4].checks.role_cross_garden_response_isolation = false;
+incompleteRoleIsolation[5].checks.role_cross_garden_response_isolation = false;
 try {
   assertPhaseOneProfileEvidence(incompleteRoleIsolation);
   process.exit(9);
@@ -2938,9 +3132,9 @@ try {
 } catch (error) {
   if (!/delayed A\\/B\\/A/i.test(String(error.message))) process.exit(16);
 }
-audit.events.push({ count: 1, method: 'POST', path: '/api/unexpected', status_code: 200 });
+audit.events.push({ count: 1, method: 'POST', path: '/api/issues', status_code: 200 });
 try {
-  assertPhaseOneAuditContract(audit, 8);
+  assertPhaseOneAuditContract(audit, 9);
   process.exit(17);
 } catch (error) {
   if (!String(error.message).includes('Unexpected Phase 1 audit event')) process.exit(18);
@@ -3023,14 +3217,57 @@ const graphs = {
     map_objects: [], plants: [], plots: [],
   },
 };
-assertExactPhaseOneRestoreImportGraphs(graphs, structuredClone(graphs));
+const canonicalFixture = {
+  phase_one: {
+    canonical_container: {
+      garden_id: 1,
+      owner_username: 'admin',
+      plot_id: 'CONT-SEEDED',
+    },
+    map_unit: { public_id: 'mapunit_alpha' },
+  },
+};
+graphs.alpha.plots.push({
+  garden_id: 1,
+  owner_username: 'admin',
+  plot_id: 'CONT-SEEDED',
+  plot_kind: 'container',
+});
+const finalGraphs = structuredClone(graphs);
+finalGraphs.alpha.map_objects[0].units = [];
+for (const [index, [display_name, container_type]] of [
+  ['Phase 1 Blue Planter', 'planter'],
+  ['Phase 1 Keyboard Pot', 'pot'],
+  ['Phase 1 Mobile Pot', 'pot'],
+].entries()) {
+  finalGraphs.alpha.plots.push({
+    archived_at_ms: 1,
+    container_type,
+    display_name,
+    environment: 'outdoor',
+    garden_id: 1,
+    owner_username: 'admin',
+    parent_object_public_id: null,
+    plot_id: `containe_${String(index + 1).repeat(20)}`,
+    plot_kind: 'container',
+  });
+}
+assertExactPhaseOneRestoreImportGraphs(graphs, finalGraphs, canonicalFixture);
 try {
-  const changed = structuredClone(graphs);
+  const changed = structuredClone(finalGraphs);
   changed.alpha.assignments[0].quantity = 2;
-  assertExactPhaseOneRestoreImportGraphs(graphs, changed);
+  assertExactPhaseOneRestoreImportGraphs(graphs, changed, canonicalFixture);
   process.exit(3);
 } catch (error) {
   if (!String(error.message).includes('assignment graph')) process.exit(4);
+}
+try {
+  const changed = structuredClone(finalGraphs);
+  changed.alpha.plots = changed.alpha.plots.filter((plot) => plot.plot_id !== 'CONT-SEEDED');
+  assertExactPhaseOneRestoreImportGraphs(graphs, changed, canonicalFixture);
+  process.exit(7);
+} catch (error) {
+  if (!String(error.message).includes('assignment graph')) process.exit(8);
 }
 try {
   const changedSnapshot = structuredClone(snapshot);
@@ -3078,9 +3315,11 @@ const graph = (name, slug, owner, id) => ({
   map_objects: [],
   plants: [],
   plots: [{
-    color: '', garden_id: id, grid_col: null, grid_row: null, notes: '',
-    owner_username: owner, plot_id: `INDOOR-${id}`, plot_number: 0, sub_zone: '',
-    zone_code: 'I', zone_name: 'Innendors',
+    archived_at_ms: null, color: null, container_type: null, display_name: null,
+    environment: 'indoor', garden_id: id, grid_col: null, grid_row: null, notes: '',
+    owner_username: owner, parent_object_public_id: null, plot_id: `INDOOR-${id}`,
+    plot_kind: 'indoor', plot_number: 0, sub_zone: '', zone_code: 'I',
+    zone_name: 'Innendors',
   }],
 });
 const expectedGraphs = {
@@ -6091,6 +6330,18 @@ const userAudit = auditManifestProjection(auditState('/api/auth/users/42'));
 const gardenMemberAudit = auditManifestProjection(
   auditState('/api/gardens/7/members/42'),
 );
+const containerCollectionAudit = auditManifestProjection(
+  auditState('/api/gardens/7/containers'),
+);
+const containerItemAudit = auditManifestProjection(
+  auditState(`/api/gardens/7/containers/${opaqueRouteId}`),
+);
+const placeholderContainerCollectionAudit = auditManifestProjection(
+  auditState('/api/gardens/{garden_id}/containers'),
+);
+const placeholderContainerItemAudit = auditManifestProjection(
+  auditState(`/api/gardens/{garden_id}/containers/${opaqueRouteId}`),
+);
 const invitationPasskeyOptionsAudit = auditManifestProjection(
   auditState('/api/auth/invitations/passkey/register/options'),
 );
@@ -6113,6 +6364,14 @@ if (userInvitationAudit.events[0].path
 if (userAudit.events[0].path !== '/api/auth/users/{user_id}') process.exit(15);
 if (gardenMemberAudit.events[0].path
     !== '/api/gardens/{garden_id}/members/{user_id}') process.exit(16);
+if (containerCollectionAudit.events[0].path
+    !== '/api/gardens/{garden_id}/containers') process.exit(19);
+if (containerItemAudit.events[0].path
+    !== '/api/gardens/{garden_id}/containers/{plot_id}') process.exit(20);
+if (placeholderContainerCollectionAudit.events[0].path
+    !== '/api/gardens/{garden_id}/containers') process.exit(23);
+if (placeholderContainerItemAudit.events[0].path
+    !== '/api/gardens/{garden_id}/containers/{plot_id}') process.exit(24);
 if (invitationPasskeyOptionsAudit.events[0].path
     !== '/api/auth/invitations/passkey/register/options') process.exit(17);
 if (invitationPasskeyVerifyAudit.events[0].path
@@ -6124,9 +6383,23 @@ if (task.canonical_projection_digests.final_database
 const serialized = JSON.stringify([
   task, attention, assignment, telemetry, passkeyAudit, sessionAudit,
   userInvitationAudit, userAudit, gardenMemberAudit,
+  containerCollectionAudit, containerItemAudit,
+  placeholderContainerCollectionAudit, placeholderContainerItemAudit,
   invitationPasskeyOptionsAudit, invitationPasskeyVerifyAudit,
 ]);
 if (serialized.includes(opaqueRouteId)) process.exit(7);
+for (const path of [
+  '/api/gardens/not-a-number/containers',
+  `/api/gardens/7/containers/${opaqueRouteId}/extra`,
+  `/api/gardens/{garden_id}/containers/${opaqueRouteId}/extra`,
+]) {
+  try {
+    auditManifestProjection(auditState(path));
+    process.exit(21);
+  } catch (error) {
+    if (!String(error.message).includes('event path is invalid')) process.exit(22);
+  }
+}
 """
     result = subprocess.run(
         ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True

@@ -336,6 +336,7 @@ PHASE_ONE_VIEWER_GARDENS = {
 }
 PHASE_ONE_MAP_UNIT_ID = "mapunit_complete_phase_one_alpha_bench"
 PHASE_ONE_MAP_UNIT_NAME = "Complete Phase One Basil Bench"
+PHASE_ONE_CANONICAL_CONTAINER_ID = "CONT-2fb4ad001b29a50d80e91cd3fb24908b"
 PHASE_ONE_SAVED_VIEW_LABEL = "Complete Phase One Basil View"
 PHASE_ONE_MOBILE_SNAPSHOT_NAME = "Complete Phase One Mobile Action Snapshot"
 PHASE_ONE_BROWSER_PLANT_ID = "PLT-001"
@@ -783,10 +784,10 @@ def _seed_phase_one_fixtures(conn, optimization_seed: Any) -> None:
         """
         INSERT INTO plots (
             plot_id, garden_id, zone_code, zone_name, plot_number,
-            grid_row, grid_col, sub_zone, notes, color
+            grid_row, grid_col, sub_zone, notes, color, plot_kind, environment
         )
         VALUES (%s, %s, 'I', 'Indoor growing', 1, NULL, NULL, 'Greenhouse shelf',
-                'Disposable Phase 1 indoor fixture', '#6f91a6')
+                'Disposable Phase 1 indoor fixture', '#6f91a6', 'indoor', 'indoor')
         """,
         (PHASE_ONE_INDOOR_PLOT_ID, alpha_id),
     )
@@ -798,10 +799,10 @@ def _seed_phase_one_fixtures(conn, optimization_seed: Any) -> None:
         """
         INSERT INTO plots (
             plot_id, garden_id, zone_code, zone_name, plot_number,
-            grid_row, grid_col, sub_zone, notes, color
+            grid_row, grid_col, sub_zone, notes, color, plot_kind, environment
         )
         VALUES (%s, %s, 'I', 'Indoor growing', 1, NULL, NULL, %s,
-                'Disposable Phase 1 Beta indoor fixture', '#8796ad')
+                'Disposable Phase 1 Beta indoor fixture', '#8796ad', 'indoor', 'indoor')
         """,
         (PHASE_ONE_BETA_INDOOR_PLOT_ID, beta_id, PHASE_ONE_BETA_INDOOR_ROOM_LABEL),
     )
@@ -874,6 +875,27 @@ def _seed_phase_one_fixtures(conn, optimization_seed: Any) -> None:
             now_ms,
             now_ms,
         ),
+    )
+    conn.execute(
+        """
+        INSERT INTO plots (
+            plot_id, garden_id, zone_code, zone_name, plot_number,
+            grid_row, grid_col, plot_kind, display_name, container_type,
+            parent_map_object_id, environment
+        )
+        VALUES (%s, %s, 'C', 'Containers', 0, NULL, NULL, 'container',
+                %s, 'planter', %s, 'covered')
+        """,
+        (
+            PHASE_ONE_CANONICAL_CONTAINER_ID,
+            alpha_id,
+            PHASE_ONE_MAP_UNIT_NAME,
+            int(map_object["id"]),
+        ),
+    )
+    conn.execute(
+        "INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
+        (PHASE_ONE_CANONICAL_CONTAINER_ID, admin_id, alpha_id),
     )
     conn.execute(
         """
@@ -1508,6 +1530,25 @@ def _phase_one_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
             "name": PHASE_ONE_MAP_UNIT_NAME,
             "public_id": PHASE_ONE_MAP_UNIT_ID,
         },
+        "canonical_container": {
+            "archived_at_ms": None,
+            "color": None,
+            "container_type": "planter",
+            "display_name": PHASE_ONE_MAP_UNIT_NAME,
+            "environment": "covered",
+            "garden_id": alpha_id,
+            "grid_col": None,
+            "grid_row": None,
+            "notes": "",
+            "owner_username": ADMIN_USERNAME,
+            "parent_object_public_id": optimization_seed._GARDEN_SPECS[0]["object_id"],
+            "plot_id": PHASE_ONE_CANONICAL_CONTAINER_ID,
+            "plot_kind": "container",
+            "plot_number": 0,
+            "sub_zone": "",
+            "zone_code": "C",
+            "zone_name": "Containers",
+        },
         "mobile_snapshot": {
             "count": int(snapshot["count"] if snapshot else 0),
             "garden_id": alpha_id,
@@ -1596,12 +1637,21 @@ def _garden_graph(conn, *, garden_id: int) -> dict[str, Any]:
             plot_value.sub_zone,
             plot_value.notes,
             plot_value.color,
+            plot_value.plot_kind,
+            plot_value.display_name,
+            plot_value.container_type,
+            parent.public_id AS parent_object_public_id,
+            plot_value.environment,
+            plot_value.archived_at_ms,
             owner.username AS owner_username
         FROM plots plot_value
         LEFT JOIN plot_ownership ownership
           ON ownership.plot_id = plot_value.plot_id
          AND ownership.garden_id = plot_value.garden_id
         LEFT JOIN auth_users owner ON owner.id = ownership.owner_user_id
+        LEFT JOIN garden_map_objects parent
+          ON parent.id = plot_value.parent_map_object_id
+         AND parent.garden_id = plot_value.garden_id
         WHERE plot_value.garden_id = %s
         ORDER BY plot_value.plot_id
         """,
@@ -1821,7 +1871,17 @@ def _garden_graph(conn, *, garden_id: int) -> dict[str, Any]:
         ],
         "plots": [
             {
-                "color": str(row["color"] or ""),
+                "archived_at_ms": (
+                    int(row["archived_at_ms"]) if row["archived_at_ms"] is not None else None
+                ),
+                "color": str(row["color"]) if row["color"] is not None else None,
+                "container_type": (
+                    str(row["container_type"]) if row["container_type"] is not None else None
+                ),
+                "display_name": (
+                    str(row["display_name"]) if row["display_name"] is not None else None
+                ),
+                "environment": str(row["environment"]),
                 "garden_id": int(row["garden_id"]),
                 "grid_col": int(row["grid_col"]) if row["grid_col"] is not None else None,
                 "grid_row": int(row["grid_row"]) if row["grid_row"] is not None else None,
@@ -1829,7 +1889,13 @@ def _garden_graph(conn, *, garden_id: int) -> dict[str, Any]:
                 "owner_username": (
                     str(row["owner_username"]) if row["owner_username"] is not None else None
                 ),
+                "parent_object_public_id": (
+                    str(row["parent_object_public_id"])
+                    if row["parent_object_public_id"] is not None
+                    else None
+                ),
                 "plot_id": str(row["plot_id"]),
+                "plot_kind": str(row["plot_kind"]),
                 "plot_number": int(row["plot_number"]),
                 "sub_zone": str(row["sub_zone"] or ""),
                 "zone_code": str(row["zone_code"]),
@@ -1846,14 +1912,23 @@ def _snapshot_payload_projection(
     """Build the exact payload shape emitted by the snapshot endpoint."""
     return {
         "house": graph["layout"],
-        "map_objects": snapshot_map_objects(conn, garden_id),
+        "map_objects": [
+            {key: value for key, value in item.items() if key not in {"units", "containers"}}
+            for item in snapshot_map_objects(conn, garden_id)
+        ],
         "plots": [
             {
+                "archived_at_ms": plot["archived_at_ms"],
                 "color": plot["color"],
+                "container_type": plot["container_type"],
+                "display_name": plot["display_name"],
+                "environment": plot["environment"],
                 "grid_col": plot["grid_col"],
                 "grid_row": plot["grid_row"],
                 "notes": plot["notes"],
+                "parent_object_public_id": plot["parent_object_public_id"],
                 "plot_id": plot["plot_id"],
+                "plot_kind": plot["plot_kind"],
                 "plot_number": plot["plot_number"],
                 "sub_zone": plot["sub_zone"],
                 "zone_code": plot["zone_code"],
@@ -1861,7 +1936,7 @@ def _snapshot_payload_projection(
             }
             for plot in graph["plots"]
         ],
-        "schema_version": 1,
+        "schema_version": 2,
         "shademap": get_shademap_state(conn, garden_id=garden_id),
         "shademap_calibration": get_shademap_calibration(conn, garden_id=garden_id),
         "shademap_obstacles": list_shademap_obstacles(conn, garden_id=garden_id),
@@ -2277,12 +2352,23 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
     ).fetchone()
     map_unit = conn.execute(
         """
-        SELECT geometry_json, style_json, name
+        SELECT public_id, geometry_json, style_json, name
         FROM garden_map_object_units
         WHERE garden_id = %s AND public_id = %s
         """,
         (alpha_id, PHASE_ONE_MAP_UNIT_ID),
     ).fetchone()
+    terrain_provider_usage_rows = conn.execute(
+        """
+        SELECT usage.usage_day, usage.feature, usage.scope_type, usage.scope_id,
+               usage.request_count, users.username AS scope_username
+        FROM provider_daily_usage usage
+        LEFT JOIN auth_users users
+          ON usage.scope_type = 'user' AND users.id = usage.scope_id
+        WHERE usage.feature = 'shademap-terrain-miss'
+        ORDER BY usage.usage_day, usage.scope_type, usage.scope_id
+        """
+    ).fetchall()
     indoor = conn.execute(
         """
         SELECT
@@ -2629,6 +2715,7 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             {
                 "geometry": json.loads(str(map_unit["geometry_json"])),
                 "name": str(map_unit["name"]),
+                "public_id": str(map_unit["public_id"]),
                 "style": json.loads(str(map_unit["style_json"])),
             }
             if map_unit
@@ -2757,6 +2844,17 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         "temp_map_object_count": int(counts["temp_map_objects"]),
         "temp_plant_count": int(counts["temp_plants"]),
         "temp_saved_view_count": int(counts["temp_views"]),
+        "terrain_provider_usage": [
+            {
+                "feature": str(row["feature"]),
+                "request_count": int(row["request_count"]),
+                "scope_id": int(row["scope_id"]),
+                "scope_type": str(row["scope_type"]),
+                "scope_username": str(row["scope_username"] or ""),
+                "usage_day": str(row["usage_day"]),
+            }
+            for row in terrain_provider_usage_rows
+        ],
     }
 
 
@@ -4634,10 +4732,10 @@ def _seed_scale_profile_garden(
         """
         INSERT INTO plots (
             plot_id, garden_id, zone_code, zone_name, plot_number,
-            grid_row, grid_col, sub_zone, notes, color
+            grid_row, grid_col, sub_zone, notes, color, plot_kind, environment
         )
         VALUES (%s, %s, 'I', 'Indoor', 0, NULL, NULL, '',
-                'Disposable scale profile indoor fixture', '#6f91a6')
+                'Disposable scale profile indoor fixture', '#6f91a6', 'indoor', 'indoor')
         """,
         (indoor_plot_id, garden_id),
     )
