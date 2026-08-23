@@ -1,7 +1,8 @@
-import type { HarvestEntry, HarvestSummary } from "../core/models";
+import type { HarvestEntry, HarvestSummary, LinkedPlot, Plot } from "../core/models";
 import { formatPlotLabel } from "../core/models";
 import { t } from "../core/i18n";
 import { createFieldGroup as _createFieldGroup, createParagraph } from "../core/dom";
+import { createChipInput } from "./chipInput";
 import { renderPendingMediaPickerLazy } from "./mediaGalleryLoader";
 import { renderEmptyState } from "./emptyState";
 
@@ -11,6 +12,12 @@ const QUALITY_ICONS: Record<string, string> = {
   fair: "\uD83C\uDD97",
   poor: "\u26A0\uFE0F",
 };
+
+type PlotChoice = Pick<Plot, "plot_id" | "zone_name" | "display_name">;
+
+function plotChoiceLabel(plot: PlotChoice): string {
+  return formatPlotLabel(plot.plot_id, plot.zone_name, null, plot.display_name);
+}
 
 const UNIT_LABELS: Record<string, string> = {
   kg: "kg",
@@ -113,12 +120,17 @@ function createHarvestCard(
       });
       tags.appendChild(tag);
     }
-    const plotList = entry.plots ?? entry.plot_ids.map((id: string) => ({ plot_id: id, zone_name: "" }));
+    const plotList: LinkedPlot[] = entry.plots ?? entry.plot_ids.map((id: string) => ({ plot_id: id, zone_name: "" }));
     for (const plot of plotList) {
       const tag = document.createElement("button");
       tag.type = "button";
       tag.className = "journal-tag journal-tag-plot";
-      tag.textContent = formatPlotLabel(plot.plot_id, plot.zone_name);
+      tag.textContent = formatPlotLabel(
+        plot.plot_id,
+        plot.zone_name,
+        null,
+        plot.display_name,
+      );
       tag.addEventListener("click", (e) => {
         e.stopPropagation();
         cbs.onPlotClick(plot.plot_id);
@@ -155,10 +167,11 @@ function createHarvestCard(
 
 export function createHarvestForm(options: {
   entry?: HarvestEntry | undefined;
+  availablePlots?: PlotChoice[];
   onSave: (data: Record<string, unknown>) => Promise<void>;
   onCancel: () => void;
 }): HTMLElement {
-  const { entry, onSave, onCancel } = options;
+  const { entry, availablePlots = [], onSave, onCancel } = options;
   const form = document.createElement("form");
   form.className = "modal-form";
 
@@ -238,15 +251,31 @@ export function createHarvestForm(options: {
   plantGroup.appendChild(plantInput);
   form.appendChild(plantGroup);
 
-  // Plot IDs
-  const plotGroup = createFieldGroup(t("harvest.form_plot_ids"));
-  const plotInput = document.createElement("input");
-  plotInput.type = "text";
-  plotInput.name = "plot_ids";
-  plotInput.placeholder = "B1, B2";
-  plotInput.value = entry?.plot_ids.join(", ") || "";
-  plotGroup.appendChild(plotInput);
-  form.appendChild(plotGroup);
+  // Plot selection
+  const plotChoicesById = new Map<string, PlotChoice>();
+  for (const plot of availablePlots) {
+    plotChoicesById.set(plot.plot_id, plot);
+  }
+  for (const plot of entry?.plots ?? []) {
+    plotChoicesById.set(plot.plot_id, plot);
+  }
+  for (const plotId of entry?.plot_ids ?? []) {
+    if (!plotChoicesById.has(plotId)) {
+      plotChoicesById.set(plotId, { plot_id: plotId, zone_name: "" });
+    }
+  }
+  const plotInput = createChipInput({
+    label: t("harvest.form_plot_ids"),
+    placeholder: t("issues.form_plot_ids_placeholder"),
+    items: [...plotChoicesById.values()].sort((left, right) =>
+      plotChoiceLabel(left).localeCompare(plotChoiceLabel(right), undefined, { sensitivity: "base" }),
+    ),
+    getKey: (plot) => plot.plot_id,
+    getLabel: (plot) => plotChoiceLabel(plot),
+    getSearchText: (plot) => `${plot.plot_id} ${plotChoiceLabel(plot)}`.toLowerCase(),
+    selected: entry?.plot_ids ?? [],
+  });
+  form.appendChild(plotInput.container);
 
   const pendingFiles: File[] = [];
   const mediaGroup = createFieldGroup(t("media.attach_photos_optional"));
@@ -290,10 +319,7 @@ export function createHarvestForm(options: {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
-    const plotIds = plotInput.value
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const plotIds = plotInput.getSelectedKeys();
     const data: Record<string, unknown> = {
       occurred_on: dateInput.value,
       quantity: parseFloat(qtyInput.value) || 0,

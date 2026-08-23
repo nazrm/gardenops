@@ -1,76 +1,91 @@
-# Map Objects And Nested Layouts
+# Areas And Containers
 
-GardenOps supports a layout-only map object layer for garden structures that
-sit above the normal plot grid, such as patios, terraces, and custom surfaces.
-These objects let a garden map show larger surfaces without changing the
-existing plot model.
+GardenOps uses the map to show garden areas and the existing plot model to
+track where plants actually grow. This keeps patios, terraces, and similar
+surfaces useful without creating a second plant-location system.
 
 ## Model
 
-- Existing plots remain the canonical units for plants, care tasks, journal
-  links, issues, harvests, and calendar work.
-- Map objects are top-level visual objects owned by a garden. They have a type,
-  name, rectangle or ellipse shape, grid footprint, color, z-index, and optional
-  internal layout.
-- Nested units live inside one map object. The first supported unit types are
-  pots and planters. They are also layout-only in this slice.
-- Nested units cannot belong to a different garden than their parent object.
+- An **area** is a mapped surface such as a patio, terrace, greenhouse,
+  balcony, or another named area. Areas organize the map and contain zero or
+  more containers, but are not plant assignment targets themselves.
+- A **container** is a pot, planter, raised bed, or other plantable place. A
+  container is a canonical `plots` row, so it uses the same plant quantities,
+  observations, tasks, journals, issues, harvests, calendar links, attention,
+  and media relationships as an ordinary plot.
+- A container may be inside one area or stand alone. The hierarchy stops at
+  area -> container; containers cannot contain other containers.
+- A container has one stable plot ID and one editable display name. Newly
+  created containers receive generated IDs; an existing plot moved into an
+  area keeps its current ID, assignments, and linked history.
+- A contained plot has a saved zero-based row and column inside its area. It
+  occupies exactly one normal map cell; active contained plots cannot share a
+  cell or sit outside the area's current bounds.
+- `plot_plants` remains the only current plant-placement table. Moving a plant
+  keeps historical records on their original plot ID and changes only current
+  placement.
+
+The former `garden_map_object_units` records are legacy layout data. Runtime
+creation and editing no longer use them. Legacy imports translate useful
+units into canonical containers; new layout exports write canonical container
+fields once.
 
 ## User Workflow
 
-From the map layer panel, editors can create a patio, terrace, or custom object
-from the current plot selection. If no plots are selected, GardenOps creates a
-small default object at the top-left of the map.
+1. Open the map's **Areas & containers** panel and choose **Add area**.
+2. Choose the area type, give it a name, and place it on the map. GardenOps
+   chooses the first available 4 × 3 space, then tries one 2 × 2 space;
+   occupied plots, areas, and the house are left available for their existing
+   use. Geometry and appearance remain under **Edit layout** when needed.
+3. To organize existing plots, select them in map edit mode, select the area,
+   and choose **Move selected plots here**. Choose their container type;
+   GardenOps keeps the plot IDs, plants, quantities, and linked records.
+4. For a new empty location, select an area and choose **Add container**, or
+   use **Add standalone container** for a pot that is not in an area.
+5. Choose Pot, Planter, Raised bed, or Other and give it a name. GardenOps
+   places the container in the first free cell inside the area.
+6. Select the area in map edit mode, then drag a contained plot to another free
+   cell. Arrow keys move a focused contained plot one cell at a time. Clicking
+   the plot still opens its normal plot details.
+7. Use **Place plant** for a plant with no current home. Use **Move** on a
+   specific current home to choose another ordinary plot or container.
+8. The destination picker is searchable and groups ordinary plots, area
+   containers, and standalone containers. A move can transfer part or all
+   of a quantity and explains a destination merge before confirmation.
 
-Selecting the object opens editor controls for its name, rectangle or ellipse
-shape, color, row, column, width, height, and optional internal layout. In map
-edit mode, editors can drag a selected object to move it, drag edge or corner
-handles to resize it, or use keyboard controls on the selected object surface:
-arrow keys move by one grid cell, Shift+arrow resizes, and Escape cancels the
-active manipulation or deselects the object. Viewers can see objects and nested
-layouts but cannot create or edit them.
+Place and Move work with buttons, touch, and keyboard. Dragging a plant is not
+required. Area moves and resizes preview their dimensions and reject occupied
+cells before saving. An area cannot be shrunk past one of its contained plots.
+Successful changes refresh the source, destination, plant details, and map
+counts and are announced to assistive technology.
 
-When internal layout is enabled, editors can add pots or planters inside that
-layout. Selecting an existing nested unit opens controls for its name, type,
-shape, color, local row and column, width, and height. Saving keeps the unit
-inside its parent layout; deleting uses a separate labeled action and the normal
-confirmation path. Viewers can select and inspect nested units, but their edit
-and delete controls are disabled. Custom objects may remain layout-only surfaces
-without nested units.
+## Permissions And Lifecycle
 
-Map object labels can be selected directly on the map. Unselected overlays are
-visual only, so ordinary plot clicks still work unless the user clicks the
-object label. When an editor selects an object in map edit mode, only that
-object's direct-manipulation surface and resize handles capture pointer/touch
-input; all other object overlays remain click-through.
+Garden members can inspect areas and containers. Editors and administrators can
+create, rename, reparent, and convert existing plots into containers. Plant
+assignment and movement still respect access to the plant and any ordinary
+source or destination plot. Only administrators archive containers.
 
-Objects with existing nested units must keep their internal layout enabled until
-those units are removed. GardenOps rejects updates that would leave nested units
-attached to a layout-less object.
+Removing an area unparents its containers. It never removes a container, plant,
+assignment, or history. An occupied container cannot be archived. An empty
+container is archived rather than destructively deleting plot-linked history;
+archived containers disappear from active selectors but remain resolvable for
+historical records.
+
+Container creation, conversion, reparenting, archiving, and plant movement are
+online-only.
 
 ## Export And Import
 
-Layout export includes `map_objects` with their nested `units`. Import restores
-the map object layer together with the rest of the layout. If imported public
-ids collide with objects outside the target garden, GardenOps regenerates those
-ids during import instead of linking across gardens.
+Layout exports use schema version 2. Areas are exported as map objects, while
+canonical containers are exported once in the plot data with the area's public
+ID and their saved local position. Plant assignments are not duplicated in
+layout exports. Imports resolve areas before container parents, preserve
+omitted containers, and translate schema-version-1 nested units at the import
+boundary.
 
-When an import or snapshot restore omits the `map_objects` key, GardenOps treats
-that as a legacy payload and preserves existing map objects. An explicit
-`"map_objects": []` clears the map-object layer. Imported map objects must fit
-inside the garden grid, nested units must fit inside their parent internal
-layout, and imports are limited to 200 map objects and 500 nested units total.
+## Limits
 
-For plots already present in the target garden, import and snapshot restore
-retain the existing per-user owner; only newly imported plot IDs receive the
-operation's default owner. Persisted house dimensions are restored as stored,
-including valid layouts smaller than the interactive editor's resize minimum.
-
-## Current Limits
-
-- Nested units do not yet accept plant assignments, tasks, journals, issues, or
-  harvest records.
-- Shrinking the garden grid is blocked while an existing map object would fall
-  outside the new bounds.
-- Non-rectangular grouping beyond rectangle and ellipse remains a future map
-  design problem, not a plot-model rewrite.
+The first canonical container release intentionally does not model recursive
+location trees, soil or capacity, per-container irrigation, offline moves,
+direct planting on a patio or terrace, or a general-purpose location graph.

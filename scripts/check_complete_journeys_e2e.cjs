@@ -111,6 +111,31 @@ function isPhaseTwoReadOnlyProbeMutation(request) {
 }
 const PHASE_TWO_EDITOR_PASSWORD = "CompleteJourneysEditorE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 const PHASE_TWO_VIEWER_PASSWORD = "CompleteJourneysViewerE2E!Passphrase2026"; // push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
+const PHASE_ONE_EXACT_SIDE_EFFECT_TABLES = [
+  "garden_map_object_units",
+  "provider_daily_usage",
+  "shademap_cache",
+];
+const PHASE_ONE_EXACT_FIXED_SIDE_EFFECT_ACCOUNTING = {
+  garden_map_object_units: {
+    allow_row_delta: true,
+    evidence: "phase_one_snapshot_restore_retires_legacy_unit",
+    expected_added: 0,
+    expected_identity_added: 0,
+    expected_identity_removed: 1,
+    expected_identity_updated: 0,
+    expected_removed: 1,
+  },
+  shademap_cache: {
+    allow_row_delta: true,
+    evidence: "phase_one_map_profiles_terrain_cache_misses",
+    expected_added: 3,
+    expected_identity_added: 3,
+    expected_identity_removed: 0,
+    expected_identity_updated: 0,
+    expected_removed: 0,
+  },
+};
 const PHASE_EIGHT_ALLOWED_TABLES = [
   "auth_passkey_challenges",
   "garden_journal_entries",
@@ -1705,35 +1730,36 @@ function runPhaseTwoPreferenceDelivery() {
 
 function phaseOneAuditExpectedEvents(loginCount) {
   return [
-    [10, "DELETE", "/api/gardens/{garden_id}/map-objects/{public_id}", 200],
-    [2, "DELETE", "/api/gardens/{garden_id}/map-objects/{public_id}/units/{public_id}", 200],
-    [3, "DELETE", "/api/plants/{created_plant_id}", 200],
-    [2, "DELETE", "/api/plots/OPT-JOURNEY-A-PLOT/plants/{created_plant_id}", 204],
+    [2, "DELETE", "/api/gardens/{garden_id}/map-objects/{public_id}", 200],
+    [3, "DELETE", "/api/gardens/{garden_id}/containers/{plot_id}", 200],
+    [4, "DELETE", "/api/plants/{created_plant_id}", 200],
+    [3, "DELETE", "/api/plots/OPT-JOURNEY-A-PLOT/plants/{created_plant_id}", 204],
     [1, "DELETE", "/api/plots/P1EDITORASSIGN/plants/{created_plant_id}", 204],
+    [1, "DELETE", "/api/plots/{plot_id}/plants/{created_plant_id}", 204],
     [1, "DELETE", "/api/plots/P1MOBILEPLOTEDITED", 204],
     [3, "DELETE", "/api/saved-views/{saved_view_id}", 200],
     [1, "DELETE", "/api/snapshots/{public_id}", 200],
-    [7, "PATCH", "/api/gardens/{garden_id}/map-objects/{public_id}", 200],
     [1, "PATCH", "/api/gardens/{garden_id}/map-objects/obj_optimization_journeys_a", 200],
-    [2, "PATCH", "/api/gardens/{garden_id}/map-objects/{public_id}/units/{public_id}", 200],
     [4, "PATCH", "/api/gardens/{garden_id}/settings", 200],
     [6, "PATCH", "/api/layout-state", 200],
-    [6, "PATCH", "/api/plants/{created_plant_id}", 200],
+    [8, "PATCH", "/api/plants/{created_plant_id}", 200],
     [1, "PATCH", "/api/plots/P1MOBILEPLOT", 200],
-    [4, "PATCH", "/api/plots/COMPLETE-PHASE-ONE-INDOOR/plants/COMPLETE-PHASE-ONE-BASIL", 200],
+    [5, "PATCH", "/api/plots/COMPLETE-PHASE-ONE-INDOOR/plants/COMPLETE-PHASE-ONE-BASIL", 200],
     [loginCount, "POST", "/api/auth/login", 200],
     [loginCount, "POST", "/api/auth/passkeys/login/options", 200],
     [3, "POST", "/api/auth/passkeys/prompt/dismiss", 200],
     [9, "POST", "/api/auth/reauthenticate", 200],
     [2, "POST", "/api/gardens/{garden_id}/complete-onboarding", 200],
-    [10, "POST", "/api/gardens/{garden_id}/map-objects", 201],
-    [4, "POST", "/api/gardens/{garden_id}/map-objects/{public_id}/units", 201],
+    [2, "POST", "/api/gardens/{garden_id}/map-objects", 201],
+    [3, "POST", "/api/gardens/{garden_id}/containers", 201],
     [2, "POST", "/api/gardens", 201],
     [1, "POST", "/api/harvest", 201],
-    [3, "POST", "/api/plants", 201],
+    [4, "POST", "/api/plants", 201],
     [1, "POST", "/api/plots", 201],
+    [2, "POST", "/api/plots/{plot_id}/plants/{created_plant_id}", 201],
     [4, "POST", "/api/plots/OPT-JOURNEY-A-PLOT/plants/{created_plant_id}", 201],
     [2, "POST", "/api/plots/P1EDITORASSIGN/plants/{created_plant_id}", 201],
+    [6, "POST", "/api/plots/{from_plot_id}/plants/{created_plant_id}/move/{to_plot_id}", 200],
     [2, "POST", "/api/plots/import", 200],
     [1, "POST", "/api/plots/import", 409],
     [3, "POST", "/api/plots/import", 422],
@@ -1756,14 +1782,24 @@ function assertPhaseOneAuditContract(auditState, loginCount) {
   ]);
   const observedByKey = new Map();
   for (const event of auditState.events) {
-    const key = auditEventKey(event);
-    assert(!observedByKey.has(key), `Phase 1 audit event was duplicated: ${key}`);
-    assert(Number.isSafeInteger(event.count) && event.count > 0, `Invalid Phase 1 audit count: ${key}`);
+    assert(Number.isSafeInteger(event?.count) && event.count > 0,
+      "Invalid Phase 1 audit count");
+    assert(["DELETE", "GET", "HEAD", "PATCH", "POST", "PUT"].includes(event?.method),
+      "Invalid Phase 1 audit method");
+    assert(Number.isSafeInteger(event?.status_code)
+      && event.status_code >= 100 && event.status_code <= 599,
+    "Invalid Phase 1 audit status");
+    const normalizedPath = normalizeAuditProjectionPath(event?.path);
+    assert(normalizedPath !== null, "Invalid Phase 1 audit path");
+    const key = auditEventKey({
+      ...event,
+      path: normalizedPath,
+    });
     assert(
       expectedByKey.has(key) || flexibleReadEventKeys.has(key),
       `Unexpected Phase 1 audit event: ${key}`,
     );
-    observedByKey.set(key, event.count);
+    observedByKey.set(key, (observedByKey.get(key) || 0) + event.count);
   }
   for (const [key, expectedCount] of expectedByKey) {
     assert(
@@ -3359,6 +3395,18 @@ function normalizeAuditProjectionPath(value) {
   }
   const parameterizedRoutes = [
     [
+      /^\/api\/gardens\/(?:\d+|\{garden_id\})\/containers$/,
+      () => "/api/gardens/{garden_id}/containers",
+    ],
+    [
+      /^\/api\/gardens\/(?:\d+|\{garden_id\})\/containers\/[^/?#]+$/,
+      () => "/api/gardens/{garden_id}/containers/{plot_id}",
+    ],
+    [
+      /^\/api\/plots\/[^/?#]+\/plants\/[^/?#]+\/move\/[^/?#]+$/,
+      () => "/api/plots/{from_plot_id}/plants/{created_plant_id}/move/{to_plot_id}",
+    ],
+    [
       /^\/api\/attention\/items\/[^/?#]+\/(read|dismiss|snooze|restore)$/,
       (match) => `/api/attention/items/{item_id}/${match[1]}`,
     ],
@@ -3685,6 +3733,100 @@ function assertWholeTableMutationAccounting(initial, final, allowedTables, accou
     changed_tables: changedTables,
     independent_accounting_enforced: true,
   };
+}
+
+function assertPhaseOneTerrainProviderUsage(initialRows, finalRows, fixture) {
+  assert(Array.isArray(initialRows) && initialRows.length === 0,
+    "Phase 1 terrain provider usage did not start empty");
+  assert(Array.isArray(finalRows), "Phase 1 terrain provider usage is missing");
+  const usageDays = new Set();
+  const identities = new Set();
+  const logicalScopes = new Set();
+  const userScopeIds = new Map();
+  for (const row of finalRows) {
+    assert(row?.feature === "shademap-terrain-miss",
+      "Phase 1 terrain provider usage contained an unexpected feature");
+    const usageDay = String(row.usage_day || "");
+    const parsedUsageDay = new Date(`${usageDay}T00:00:00.000Z`);
+    assert(/^\d{4}-\d{2}-\d{2}$/.test(usageDay)
+      && Number.isFinite(parsedUsageDay.getTime())
+      && parsedUsageDay.toISOString().slice(0, 10) === usageDay,
+    "Phase 1 terrain provider usage day was invalid");
+    assert(Number.isSafeInteger(row.scope_id) && row.scope_id > 0,
+      "Phase 1 terrain provider usage scope ID was invalid");
+    assert(Number.isSafeInteger(row.request_count) && row.request_count > 0,
+      "Phase 1 terrain provider usage request count was invalid");
+    usageDays.add(usageDay);
+    const identity = `${usageDay}:${row.feature}:${row.scope_type}:${row.scope_id}`;
+    assert(!identities.has(identity), "Phase 1 terrain provider usage contained a duplicate row");
+    identities.add(identity);
+
+    let scopeKey;
+    if (row.scope_type === "user") {
+      assert([fixture.roles.admin, fixture.roles.editor].includes(row.scope_username),
+        "Phase 1 terrain provider usage contained an unexpected user scope");
+      assert(!userScopeIds.has(row.scope_username)
+        || userScopeIds.get(row.scope_username) === row.scope_id,
+      "Phase 1 terrain provider usage user scope ID changed across UTC days");
+      userScopeIds.set(row.scope_username, row.scope_id);
+      scopeKey = `user:${row.scope_username}`;
+    } else {
+      assert(row.scope_type === "garden" && row.scope_username === ""
+        && [fixture.gardens.alpha.id, fixture.gardens.beta.id].includes(row.scope_id),
+      "Phase 1 terrain provider usage contained an unexpected garden scope");
+      scopeKey = `garden:${row.scope_id}`;
+    }
+    logicalScopes.add(scopeKey);
+  }
+  const sortedUsageDays = [...usageDays].sort();
+  assert(sortedUsageDays.length === 1 || sortedUsageDays.length === 2,
+    "Phase 1 terrain provider usage did not span one or two UTC days");
+  if (sortedUsageDays.length === 2) {
+    assert(new Date(`${sortedUsageDays[1]}T00:00:00.000Z`).getTime()
+      - new Date(`${sortedUsageDays[0]}T00:00:00.000Z`).getTime() === 86_400_000,
+    "Phase 1 terrain provider usage UTC days were not adjacent");
+  }
+  const expectedScopes = [
+    `user:${fixture.roles.admin}`,
+    `user:${fixture.roles.editor}`,
+    `garden:${fixture.gardens.alpha.id}`,
+    `garden:${fixture.gardens.beta.id}`,
+  ].sort();
+  assert(canonicalJson([...logicalScopes].sort()) === canonicalJson(expectedScopes),
+    "Phase 1 terrain provider usage logical scopes were unexpected");
+  assert(finalRows.length >= 4 && finalRows.length <= 6,
+    "Phase 1 terrain provider usage did not contain 4-6 validated identity rows");
+  return finalRows.length;
+}
+
+function assertPhaseOneExactSideEffects(initial, final, initialState, finalState, fixture) {
+  const tables = new Set(PHASE_ONE_EXACT_SIDE_EFFECT_TABLES);
+  const projection = (domainTables) => Object.fromEntries(
+    [...tables].map((table) => [table, domainTables[table]]),
+  );
+  const providerRowCount = assertPhaseOneTerrainProviderUsage(
+    initialState?.terrain_provider_usage,
+    finalState?.terrain_provider_usage,
+    fixture,
+  );
+  const accounting = {
+    ...PHASE_ONE_EXACT_FIXED_SIDE_EFFECT_ACCOUNTING,
+    provider_daily_usage: {
+      allow_row_delta: true,
+      evidence: "phase_one_map_profiles_terrain_provider_misses",
+      expected_added: providerRowCount,
+      expected_identity_added: providerRowCount,
+      expected_identity_removed: 0,
+      expected_identity_updated: 0,
+      expected_removed: 0,
+    },
+  };
+  return assertWholeTableMutationAccounting(
+    projection(initial),
+    projection(final),
+    tables,
+    accounting,
+  );
 }
 
 function phaseThreeExactMutationContract(initialState, fixture, oracle) {
@@ -4153,15 +4295,22 @@ function assertPhaseOneProfileEvidence(profiles) {
       role: "admin",
       checks: [
         "desktop_admin_mutation_workflows",
+        "canonical_container_desktop",
         "indoor_reload_persistence",
         "saved_view_delete_confirmation",
         "role_cross_garden_response_isolation",
       ],
     },
     {
+      profile: "desktop-reflow-200",
+      role: "admin",
+      checks: ["canonical_container_keyboard_reflow"],
+    },
+    {
       profile: "mobile",
       role: "admin",
       checks: [
+        "canonical_container_mobile",
         "garden_settings_reload_persistence",
         "indoor_reload_persistence",
         "mobile_supported_writes_and_focus_return",
@@ -7172,11 +7321,11 @@ function assertExactPhaseOneMobileSnapshot(snapshots, expected) {
   );
   assert(
     canonicalJson(payload) === canonicalJson(expected.payload),
-    "Mobile snapshot payload did not match the final Alpha snapshot projection",
+    "Mobile snapshot payload did not match the Alpha projection at its save boundary",
   );
 }
 
-function assertExactPhaseOneRestoreImportGraphs(initialGraphs, finalGraphs) {
+function assertExactPhaseOneRestoreImportGraphs(initialGraphs, finalGraphs, fixture) {
   const expectedGardens = ["alpha", "beta"];
   assert(initialGraphs && typeof initialGraphs === "object", "Fixture restore/import graph is missing");
   assert(finalGraphs && typeof finalGraphs === "object", "Final restore/import graph is missing");
@@ -7188,9 +7337,56 @@ function assertExactPhaseOneRestoreImportGraphs(initialGraphs, finalGraphs) {
     canonicalJson(Object.keys(finalGraphs).sort()) === canonicalJson(expectedGardens),
     "Final restore/import graph has unexpected gardens",
   );
+  const legacyUnitId = fixture?.phase_one?.map_unit?.public_id;
+  const seededContainerId = fixture?.phase_one?.canonical_container?.plot_id;
+  assert(typeof legacyUnitId === "string" && legacyUnitId, "Legacy unit fixture ID is missing");
+  assert(typeof seededContainerId === "string" && seededContainerId,
+    "Canonical container fixture ID is missing");
+  const expectedInitial = structuredClone(initialGraphs);
+  const expectedFinal = structuredClone(finalGraphs);
+  let retiredLegacyUnits = 0;
+  for (const object of expectedInitial.alpha.map_objects) {
+    object.units = object.units.filter((unit) => {
+      if (unit.public_id !== legacyUnitId) return true;
+      retiredLegacyUnits += 1;
+      return false;
+    });
+  }
+  assert(retiredLegacyUnits === 1, "Fixture did not contain exactly one retired legacy map unit");
+  const expectedHistory = new Map([
+    ["Phase 1 Blue Planter", "planter"],
+    ["Phase 1 Keyboard Pot", "pot"],
+    ["Phase 1 Mobile Pot", "pot"],
+  ]);
+  const retainedHistory = expectedFinal.alpha.plots.filter((plot) => (
+    plot.plot_kind === "container" && plot.plot_id !== seededContainerId
+  ));
+  assert(retainedHistory.length === expectedHistory.size,
+    "Phase 1 did not retain exactly the expected canonical container history");
+  const historyIds = new Set();
+  const historyNames = new Set();
+  for (const plot of retainedHistory) {
+    assert(expectedHistory.get(plot.display_name) === plot.container_type
+      && /^containe_[a-f0-9]{20}$/.test(plot.plot_id)
+      && Number.isSafeInteger(plot.archived_at_ms) && plot.archived_at_ms > 0
+      && plot.environment === "outdoor"
+      && plot.garden_id === fixture.phase_one.canonical_container.garden_id
+      && plot.owner_username === fixture.phase_one.canonical_container.owner_username
+      && plot.parent_object_public_id === null,
+    `Phase 1 retained invalid canonical container history: ${plot.display_name}`);
+    historyIds.add(plot.plot_id);
+    historyNames.add(plot.display_name);
+  }
+  assert(historyIds.size === expectedHistory.size,
+    "Phase 1 canonical container history IDs were not unique");
+  assert(historyNames.size === expectedHistory.size,
+    "Phase 1 canonical container history names were not unique");
+  assert(!expectedFinal.alpha.assignments.some((assignment) => historyIds.has(assignment.plot_id)),
+    "Archived canonical container history retained a plant assignment");
+  expectedFinal.alpha.plots = expectedFinal.alpha.plots.filter((plot) => !historyIds.has(plot.plot_id));
   for (const garden of expectedGardens) {
     assert(
-      canonicalJson(finalGraphs[garden]) === canonicalJson(initialGraphs[garden]),
+      canonicalJson(expectedFinal[garden]) === canonicalJson(expectedInitial[garden]),
       `Restore/import changed the final ${garden} plot, layout, map-object, or assignment graph`,
     );
   }
@@ -7227,13 +7423,19 @@ function assertExactPhaseOneOnboardingGraphs(graphs, expectedByName) {
       `Onboarding layout graph mismatch: ${name}`,
     );
     const expectedPlot = [{
-      color: "",
+      archived_at_ms: null,
+      color: null,
+      container_type: null,
+      display_name: null,
+      environment: "indoor",
       garden_id: garden.id,
       grid_col: null,
       grid_row: null,
       notes: "",
       owner_username: expected.owner_username,
+      parent_object_public_id: null,
       plot_id: `INDOOR-${garden.id}`,
+      plot_kind: "indoor",
       plot_number: 0,
       sub_zone: "",
       zone_code: "I",
@@ -7526,7 +7728,7 @@ function isSafeManifestRequestPath(value) {
     /^\/api\/attention\/(?:preferences|today)$/,
     /^\/api\/calendar\/(?:events|export\.ics|preferences|manual-events(?:\/[^/?]+)?|subscriptions(?:\/[^/?]+)?)$/,
     /^\/api\/dashboard\/badge-counts$/,
-    /^\/api\/gardens(?:\/\d+\/map-objects(?:\/[^/?]+(?:\/units(?:\/[^/?]+)?)?)?)?$/,
+    /^\/api\/gardens(?:\/\d+\/(?:map-objects(?:\/[^/?]+)?|containers(?:\/[^/?]+)?))?$/,
     /^\/api\/journal(?:\/[^/?]+)?$/,
     /^\/api\/inventory(?:\/[^/?]+(?:\/transactions)?)?$/,
     /^\/api\/layout-state$/,
@@ -7534,7 +7736,7 @@ function isSafeManifestRequestPath(value) {
     /^\/api\/notifications(?:\/(?:generate|preferences|read-all|[^/?]+(?:\/(?:dismiss|read))?))?$/,
     /^\/api\/plants(?:\/[^/?]+)?$/,
     /^\/api\/planner\/(?:goal|garden-profile|suggestions)$/,
-    /^\/api\/plots(?:\/(?:alerts|elevations|[^/?]+(?:\/(?:plant-alerts|plants|tasks))?))?$/,
+    /^\/api\/plots(?:\/(?:alerts|elevations|[^/?]+(?:\/(?:plant-alerts|plants(?:\/[^/?]+(?:\/move\/[^/?]+)?)?|tasks))?))?$/,
     /^\/api\/security\/csp-report$/,
     /^\/api\/statistics\/reports$/,
     /^\/api\/external-plants$/,
@@ -8662,8 +8864,18 @@ async function main() {
     ]) : new Set();
     const phaseOneBoundaryDeltaTables = phaseOneRan ? new Set([
       ...phaseOneSemanticDeltaTables,
+      ...PHASE_ONE_EXACT_SIDE_EFFECT_TABLES,
       "auth_passkey_challenges",
     ]) : phaseOneSemanticDeltaTables;
+    if (phaseOneRan) {
+      assertPhaseOneExactSideEffects(
+        fixture.database_snapshot.domain_tables,
+        phaseOneDatabase.domain_tables,
+        fixture.database_snapshot.phase_one_state,
+        phaseOneDatabase.phase_one_state,
+        fixture,
+      );
+    }
     const phaseOneChangedDomainTables = phaseOneRan ? [...new Set([
       ...Object.keys(fixture.database_snapshot.domain_tables),
       ...Object.keys(phaseOneDatabase?.domain_tables || {}),
@@ -9158,7 +9370,7 @@ async function main() {
         garden_journal_entries: 1,
         garden_journal_entry_plants: 1,
         garden_journal_entry_plots: 1,
-        garden_map_object_units: 0,
+        garden_map_object_units: -1,
         garden_map_objects: 0,
         garden_memberships: 4,
         gardens: 3,
@@ -9167,8 +9379,8 @@ async function main() {
         harvest_entry_plots: 1,
         layout_snapshots: 1,
         layout_state: 2,
-        plot_ownership: 2,
-        plots: 2,
+        plot_ownership: 5,
+        plots: 5,
       };
       for (const [table, delta] of Object.entries(expectedCountDeltas)) {
         assert(
@@ -9186,13 +9398,26 @@ async function main() {
         JSON.stringify(finalPhaseOne.alpha_map_object) === JSON.stringify(initialPhaseOne.alpha_map_object),
         "Alpha map object geometry/style was not restored",
       );
-      assert(
-        JSON.stringify(finalPhaseOne.alpha_map_unit) === JSON.stringify(initialPhaseOne.alpha_map_unit),
-        "Alpha nested map unit changed",
-      );
+      assert(initialPhaseOne.alpha_map_unit?.public_id === fixture.phase_one.map_unit.public_id
+        && finalPhaseOne.alpha_map_unit === null,
+        "Snapshot/import did not retire exactly the historical Alpha map unit");
+      assert(initialPhaseOne.alpha_map_unit_count === 1 && finalPhaseOne.alpha_map_unit_count === 0,
+        "Snapshot/import legacy map-unit count was unexpected");
+      const expectedCanonicalContainer = fixture.phase_one.canonical_container;
+      for (const [boundary, graph] of [
+        ["fixture", initialPhaseOne.restore_import_graphs],
+        ["final", finalPhaseOne.restore_import_graphs],
+      ]) {
+        const container = graph.alpha.plots.find(
+          (plot) => plot.plot_id === expectedCanonicalContainer.plot_id,
+        );
+        assert(canonicalJson(container) === canonicalJson(expectedCanonicalContainer),
+          `Phase 1 ${boundary} canonical container projection was not preserved`);
+      }
       assertExactPhaseOneRestoreImportGraphs(
         initialPhaseOne.restore_import_graphs,
         finalPhaseOne.restore_import_graphs,
+        fixture,
       );
       assert(finalPhaseOne.indoor_room_label === initialPhaseOne.indoor_room_label, "Indoor room was not restored");
       const expectedIndoorAssignment = {
@@ -9244,11 +9469,18 @@ async function main() {
         "Mobile snapshot was not persisted",
       );
       assert(initialPhaseOne.mobile_snapshots.length === 0, "Fixture unexpectedly has a mobile snapshot");
+      const expectedMobileSnapshotPayload = structuredClone(finalPhaseOne.alpha_snapshot_payload);
+      const finalMobileContainerCount = expectedMobileSnapshotPayload.plots.length;
+      expectedMobileSnapshotPayload.plots = expectedMobileSnapshotPayload.plots.filter(
+        (plot) => plot.display_name !== "Phase 1 Mobile Pot",
+      );
+      assert(expectedMobileSnapshotPayload.plots.length === finalMobileContainerCount - 1,
+        "Final Alpha projection did not contain exactly one post-snapshot mobile container");
       assertExactPhaseOneMobileSnapshot(finalPhaseOne.mobile_snapshots, {
         garden_id: fixture.phase_one.mobile_snapshot.garden_id,
         garden_owner_username: fixture.phase_one.mobile_snapshot.owner_username,
         name: fixture.phase_one.mobile_snapshot.name,
-        payload: finalPhaseOne.alpha_snapshot_payload,
+        payload: expectedMobileSnapshotPayload,
       });
       assert(
         canonicalJson(initialPhaseOne.quick_action_records) === canonicalJson({
@@ -9257,30 +9489,23 @@ async function main() {
         "Fixture unexpectedly has retained quick-action records",
       );
       assertExactPhaseOneQuickActionRecords(finalPhaseOne.quick_action_records, fixture);
-      assert(
-        initialPhaseOne.alpha_map_unit_count >= 1
-          && finalPhaseOne.alpha_map_unit_count === initialPhaseOne.alpha_map_unit_count,
-        "Parent map-object deletion did not cascade its nested unit",
-      );
       const expectedLifecycleAudit = {
-        assignment_create_count: 4,
-        assignment_delete_count: 2,
-        nested_unit_create_count: 4,
-        nested_unit_direct_delete_count: 2,
-        nested_unit_update_count: 2,
-        plant_create_count: 2,
-        plant_delete_count: 2,
-        plant_update_count: 4,
+        assignment_create_count: 6,
+        assignment_delete_count: 4,
+        ...Object.fromEntries(
+          Object.keys(finalPhaseOne.lifecycle_audit)
+            .filter((key) => key.startsWith("nested_unit_"))
+            .map((key) => [key, 0]),
+        ),
+        plant_create_count: 3,
+        plant_delete_count: 3,
+        plant_update_count: 6,
         saved_view_create_count: 2,
         saved_view_delete_count: 2,
       };
       assert(
         JSON.stringify(finalPhaseOne.lifecycle_audit) === JSON.stringify(expectedLifecycleAudit),
-        `Phase 1 plant, saved-view, or nested-unit lifecycle was unexpected: ${JSON.stringify(finalPhaseOne.lifecycle_audit)}`,
-      );
-      assert(
-        finalPhaseOne.lifecycle_audit.nested_unit_direct_delete_count === 2,
-        "Nested unit direct deletion was not exercised once per administrator device",
+        `Phase 1 plant, saved-view, or canonical-container lifecycle was unexpected: ${JSON.stringify(finalPhaseOne.lifecycle_audit)}`,
       );
       const onboardingGardens = finalPhaseOne.onboarding_gardens.filter(
         (garden) => [
@@ -9424,7 +9649,7 @@ async function main() {
         passkey_challenge_projection: phaseOneChallengeEvidence,
         cross_garden_links_absent: true,
         mobile_snapshot_garden_owned: true,
-        nested_unit_parent_cascade: true,
+        canonical_container_browser_proof: true,
         onboarding_default_context_exact: true,
         onboarding_generated_plot_ownership_and_layout_graph: true,
         onboarding_grid_location_and_ownership: true,
@@ -9676,6 +9901,7 @@ module.exports = {
   assertPhaseOneAuditContract,
   assertPhaseOneChallengeProjection,
   assertPhaseOneProfileEvidence,
+  assertPhaseOneExactSideEffects,
   assertPhaseThreeBoundaryEvidence,
   assertPhaseThreeProviderUsage,
   assertPhaseFourAuditEvents,

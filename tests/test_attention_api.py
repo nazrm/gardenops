@@ -2313,10 +2313,10 @@ class TestAttentionTaskProvider(BaseApiTest):
                 """
                 INSERT INTO plots
                     (plot_id, garden_id, zone_code, zone_name, plot_number,
-                     grid_row, grid_col, sub_zone, notes)
+                     grid_row, grid_col, sub_zone, notes, environment)
                 VALUES
-                    ('OUT1', %s, 'B', 'Bed', 99, 8, 8, '', ''),
-                    ('INDOOR-ATTN', %s, 'I', 'Indoor', 0, NULL, NULL, '', '')
+                    ('OUT1', %s, 'B', 'Bed', 99, 8, 8, '', '', 'outdoor'),
+                    ('INDOOR-ATTN', %s, 'I', 'Indoor', 0, NULL, NULL, '', '', 'indoor')
                 """,
                 (garden_id, garden_id),
             )
@@ -2340,17 +2340,20 @@ class TestAttentionTaskProvider(BaseApiTest):
                 ('task_generated_indoor', %s, 'water', 'Water indoor', '',
                  'pending', 'normal', '2026-07-05', NULL, 'water:RAIN4:2026-07-05',
                  '{}', 1, 1),
+                ('task_generated_mixed', %s, 'water', 'Water mixed', '',
+                 'pending', 'normal', '2026-07-05', NULL, 'water:RAIN6:2026-07-05',
+                 '{}', 1, 1),
                 ('task_generated_snoozed', %s, 'water', 'Water snoozed', '',
                  'snoozed', 'normal', '2026-07-01', '2026-07-05',
                  'water:RAIN5:2026-07-01', '{}', 1, 1)
                 """,
-                (garden_id, garden_id, garden_id, garden_id, garden_id, garden_id),
+                (garden_id, garden_id, garden_id, garden_id, garden_id, garden_id, garden_id),
             )
             task_rows = {
                 str(row["public_id"]): int(row["id"])
                 for row in conn.execute("SELECT id, public_id FROM garden_tasks").fetchall()
             }
-            for plant_id in ("RAIN1", "RAIN2", "RAIN3", "RAIN4", "RAIN5"):
+            for plant_id in ("RAIN1", "RAIN2", "RAIN3", "RAIN4", "RAIN5", "RAIN6"):
                 conn.execute(
                     """
                     INSERT INTO plants
@@ -2371,20 +2374,25 @@ class TestAttentionTaskProvider(BaseApiTest):
                 "task_generated_suppressed",
                 "task_manual_visible",
                 "task_generated_without_outcome",
+                "task_generated_mixed",
             ):
                 conn.execute(
                     "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'OUT1')",
                     (task_rows[public_id],),
                 )
             conn.execute(
-                "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'INDOOR-ATTN')",
-                (task_rows["task_generated_indoor"],),
+                """
+                INSERT INTO garden_task_plots (task_id, plot_id)
+                VALUES (%s, 'INDOOR-ATTN'), (%s, 'INDOOR-ATTN')
+                """,
+                (task_rows["task_generated_indoor"], task_rows["task_generated_mixed"]),
             )
             for public_id, plant_id in (
                 ("task_generated_suppressed", "RAIN1"),
                 ("task_generated_without_outcome", "RAIN2"),
                 ("task_generated_no_plot", "RAIN3"),
                 ("task_generated_indoor", "RAIN4"),
+                ("task_generated_mixed", "RAIN6"),
                 ("task_generated_snoozed", "RAIN5"),
             ):
                 conn.execute(
@@ -2398,10 +2406,16 @@ class TestAttentionTaskProvider(BaseApiTest):
                     ('OUT1', 'RAIN1', 1),
                     ('OUT1', 'RAIN2', 1),
                     ('OUT1', 'RAIN5', 1),
-                    ('INDOOR-ATTN', 'RAIN4', 1)
+                    ('OUT1', 'RAIN6', 1),
+                    ('INDOOR-ATTN', 'RAIN4', 1),
+                    ('INDOOR-ATTN', 'RAIN6', 1)
                 """,
             )
-            for rule in ("water:RAIN1:2026-07-05", "water:RAIN3:2026-07-05"):
+            for rule in (
+                "water:RAIN1:2026-07-05",
+                "water:RAIN3:2026-07-05",
+                "water:RAIN6:2026-07-05",
+            ):
                 upsert_attention_outcome(
                     conn,
                     garden_id=garden_id,
@@ -2479,6 +2493,7 @@ class TestAttentionTaskProvider(BaseApiTest):
         assert "attn:task:task_generated_without_outcome" in item_ids
         assert "attn:task:task_generated_no_plot" in item_ids
         assert "attn:task:task_generated_indoor" in item_ids
+        assert "attn:task:task_generated_mixed" in item_ids
         assert "attn:task:task_generated_snoozed" in item_ids
 
 

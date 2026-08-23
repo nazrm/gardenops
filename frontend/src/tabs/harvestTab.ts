@@ -205,6 +205,7 @@ export function openHarvestForm(
   if (!ctx.ensureWriteAccess()) return;
   const form = createHarvestForm({
     entry: existingEntry,
+    availablePlots: ctx.getPlots(),
     onSave: async (data) => {
       try {
         const mediaFiles = ctx.extractPendingMediaFiles(

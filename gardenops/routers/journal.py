@@ -205,7 +205,11 @@ def _fetch_entry(db: DbConn, entry_id: str, garden_id: int) -> dict:
 
 def _load_links(
     db: DbConn, entry_ids: list[int]
-) -> tuple[dict[int, list[str]], dict[int, list[str]], dict[int, list[dict[str, str]]]]:
+) -> tuple[
+    dict[int, list[str]],
+    dict[int, list[str]],
+    dict[int, list[dict[str, object]]],
+]:
     if not entry_ids:
         return {}, {}, {}
     placeholders = ",".join(["%s"] * len(entry_ids))
@@ -217,9 +221,10 @@ def _load_links(
     ).fetchall():
         plant_map[int(r["entry_id"])].append(str(r["plt_id"]))
     plot_map: dict[int, list[str]] = {eid: [] for eid in entry_ids}
-    plot_detail_map: dict[int, list[dict[str, str]]] = {eid: [] for eid in entry_ids}
+    plot_detail_map: dict[int, list[dict[str, object]]] = {eid: [] for eid in entry_ids}
     for r in db.execute(
-        f"SELECT jep.entry_id, jep.plot_id, p.zone_name "
+        f"SELECT jep.entry_id, jep.plot_id, p.zone_name, p.display_name, "
+        f"p.plot_kind, p.archived_at_ms "
         f"FROM garden_journal_entry_plots jep "
         f"JOIN plots p ON p.plot_id = jep.plot_id "
         f"WHERE jep.entry_id IN ({placeholders})",
@@ -227,7 +232,15 @@ def _load_links(
     ).fetchall():
         plot_map[int(r["entry_id"])].append(str(r["plot_id"]))
         plot_detail_map[int(r["entry_id"])].append(
-            {"plot_id": str(r["plot_id"]), "zone_name": str(r["zone_name"])}
+            {
+                "plot_id": str(r["plot_id"]),
+                "zone_name": str(r["zone_name"]),
+                "display_name": str(r["display_name"]) if r["display_name"] else None,
+                "plot_kind": str(r["plot_kind"]) if r["plot_kind"] else None,
+                "archived_at_ms": (
+                    int(r["archived_at_ms"]) if r["archived_at_ms"] is not None else None
+                ),
+            }
         )
     return plant_map, plot_map, plot_detail_map
 
@@ -236,7 +249,7 @@ def _serialize_entry(
     row: dict,
     plant_ids: list[str],
     plot_ids: list[str],
-    plots: list[dict[str, str]] | None = None,
+    plots: list[dict[str, object]] | None = None,
 ) -> dict:
     metadata_raw = row.get("metadata_json") or "{}"
     try:

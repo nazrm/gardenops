@@ -458,8 +458,9 @@ class TestOnFrostAlert(DbTestBase):
             """
             INSERT INTO plots
                 (plot_id, garden_id, zone_code, zone_name, plot_number,
-                 grid_row, grid_col, sub_zone, notes)
-            VALUES ('FPLACE-IN-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+                 grid_row, grid_col, sub_zone, notes, plot_kind, environment)
+            VALUES ('FPLACE-IN-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '',
+                    'indoor', 'indoor')
             """,
             (self.garden_id,),
         )
@@ -555,8 +556,9 @@ class TestWeatherTaskTyping(DbTestBase):
             """
             INSERT INTO plots
                 (plot_id, garden_id, zone_code, zone_name, plot_number,
-                 grid_row, grid_col, sub_zone, notes)
-            VALUES ('WPLACE-IN-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+                 grid_row, grid_col, sub_zone, notes, plot_kind, environment)
+            VALUES ('WPLACE-IN-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '',
+                    'indoor', 'indoor')
             """,
             (self.garden_id,),
         )
@@ -639,10 +641,10 @@ class TestWeatherTaskTyping(DbTestBase):
             """
             INSERT INTO plots
                 (plot_id, garden_id, zone_code, zone_name, plot_number,
-                 grid_row, grid_col, sub_zone, notes)
+                 grid_row, grid_col, sub_zone, notes, environment)
             VALUES
-                ('RND-OUT-PLOT', %s, 'R', 'Outdoor', 1, 5, 5, '', ''),
-                ('RND-IN-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+                ('RND-OUT-PLOT', %s, 'R', 'Outdoor', 1, 5, 5, '', '', 'outdoor'),
+                ('RND-IN-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '', 'indoor')
             """,
             (self.garden_id, self.garden_id),
         )
@@ -871,10 +873,10 @@ class TestWeatherTaskTyping(DbTestBase):
             """
             INSERT INTO plots
                 (plot_id, garden_id, zone_code, zone_name, plot_number,
-                 grid_row, grid_col, sub_zone, notes)
+                 grid_row, grid_col, sub_zone, notes, environment)
             VALUES
-                ('RG-OUT-PLOT', %s, 'R', 'Outdoor', 1, 4, 4, '', ''),
-                ('RG-INDOOR-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+                ('RG-OUT-PLOT', %s, 'R', 'Outdoor', 1, 4, 4, '', '', 'outdoor'),
+                ('RG-INDOOR-PLOT', %s, 'I', 'Indoor', 1, NULL, NULL, '', '', 'indoor')
             """,
             (self.garden_id, self.garden_id),
         )
@@ -970,11 +972,11 @@ class TestWeatherTaskTyping(DbTestBase):
             """
             INSERT INTO plots
                 (plot_id, garden_id, zone_code, zone_name, plot_number,
-                 grid_row, grid_col, sub_zone, notes)
+                 grid_row, grid_col, sub_zone, notes, environment)
             VALUES
-                ('RS-OUT', %s, 'R', 'Outdoor', 1, 1, 1, '', ''),
-                ('RM-OUT', %s, 'R', 'Outdoor', 2, 1, 2, '', ''),
-                ('RM-IN', %s, 'I', 'Indoor', 1, NULL, NULL, '', '')
+                ('RS-OUT', %s, 'R', 'Outdoor', 1, 1, 1, '', '', 'outdoor'),
+                ('RM-OUT', %s, 'R', 'Outdoor', 2, 1, 2, '', '', 'outdoor'),
+                ('RM-IN', %s, 'I', 'Indoor', 1, NULL, NULL, '', '', 'indoor')
             """,
             (self.garden_id, self.garden_id, self.garden_id),
         )
@@ -1024,6 +1026,80 @@ class TestWeatherTaskTyping(DbTestBase):
         assert by_id["task_rain_snoozed"]["snoozed_until"] is None
         assert str(by_id["task_rain_snoozed"]["status"]) == "expired"
         assert str(by_id["task_rain_mixed"]["due_on"]) == "2026-07-15"
+
+    def test_rain_reschedule_keeps_watering_for_covered_container_placement(self) -> None:
+        self._insert_plant("RCOVER", "Covered container plant", care_watering="Water regularly")
+        self.conn.execute(
+            """
+            INSERT INTO plots (
+                plot_id, garden_id, zone_code, zone_name, plot_number,
+                grid_row, grid_col, sub_zone, notes,
+                plot_kind, display_name, container_type, environment
+            )
+            VALUES
+                ('RCOVER-OUT', %s, 'R', 'Rain bed', 1, 1, 1, '', '',
+                 'ground', NULL, NULL, 'outdoor'),
+                ('RCOVER-POT', %s, 'C', 'Containers', 0, NULL, NULL, '', '',
+                 'container', 'Covered pot', 'pot', 'covered')
+            """,
+            (self.garden_id, self.garden_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO plot_plants (plot_id, plt_id, quantity)
+            VALUES ('RCOVER-OUT', 'RCOVER', 1), ('RCOVER-POT', 'RCOVER', 1)
+            """,
+        )
+        task = self.conn.execute(
+            """
+            INSERT INTO garden_tasks
+                (public_id, garden_id, task_type, title, description, status,
+                 severity, due_on, rule_source, metadata_json,
+                 created_at_ms, updated_at_ms)
+            VALUES ('task_rain_covered_container', %s, 'water',
+                    'Water covered container plant', '', 'pending', 'normal',
+                    '2026-07-15', 'water:RCOVER:2026-07-15', '{}', 1, 1)
+            RETURNING id
+            """,
+            (self.garden_id,),
+        ).fetchone()
+        assert task is not None
+        self.conn.execute(
+            "INSERT INTO garden_task_plants (task_id, plt_id) VALUES (%s, 'RCOVER')",
+            (int(task["id"]),),
+        )
+        alert_id = self._create_alert("rain_surplus", valid_from="2026-07-15")
+
+        on_rain_alert(
+            self.conn,
+            self.garden_id,
+            alert_id,
+            self._owner_id,
+            now_ms=1_783_857_600_000,
+        )
+
+        task_after = self.conn.execute(
+            """
+            SELECT due_on, status
+            FROM garden_tasks
+            WHERE public_id = 'task_rain_covered_container'
+            """,
+        ).fetchone()
+        outcome = self.conn.execute(
+            """
+            SELECT 1
+            FROM attention_outcomes
+            WHERE garden_id = %s
+              AND source_public_id = 'water:RCOVER:2026-07-15'
+              AND outcome_type = 'watering_rescheduled_by_rain'
+            """,
+            (self.garden_id,),
+        ).fetchone()
+
+        assert task_after is not None
+        assert str(task_after["due_on"]) == "2026-07-15"
+        assert str(task_after["status"]) == "pending"
+        assert outcome is None
 
     def test_rain_contraction_restores_rescheduled_watering_as_reassessment(self) -> None:
         self._insert_plant("RSHRINK", "Rain shrink", care_watering="Water regularly")

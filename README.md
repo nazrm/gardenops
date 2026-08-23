@@ -62,10 +62,9 @@ control.
 
 ### Garden Planning
 
-- Editable garden map with plots, zones, plant placement, saved views, and
-  draggable/resizable layout-only objects for patios, terraces, greenhouses,
-  sheds, ponds, paths, beds, and custom surfaces. The responsive map editor is
-  available on desktop and mobile, including optional nested pots/planters.
+- Editable garden map with plots, zones, plant placement, saved views, named
+  areas for patios and terraces, and canonical pots/planters that can contain
+  plants. The responsive map editor is available on desktop and mobile.
 - Versioned map snapshots and JSON import/export preserve indoor or otherwise
   unplaced plots with null coordinates, retained plot ownership, and persisted
   house dimensions while rejecting unsupported schema versions without partial
