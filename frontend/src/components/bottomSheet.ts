@@ -16,14 +16,17 @@ const SNAP_HEIGHTS: Record<SnapState, string> = {
 
 export interface BottomSheetParams {
   plotId: string;
+  plotLabel?: string;
   plants: Plant[];
   mediaPreviewByPlantId?: Map<string, MediaAsset | null>;
   plantAlertsByPlantId?: Map<string, PlantAlertType[]>;
   canWrite?: boolean;
+  canAssign?: boolean;
   onClose: () => void;
   onSearch: (event: Event) => void;
   onRemove: (pltId: string) => void;
   onEdit: (plant: Plant) => void;
+  onMove?: ((plant: Plant, sourcePlotId: string) => void) | undefined;
   onEditPlot?: (() => void) | undefined;
   onDeletePlot?: (() => void) | undefined;
   onCreatePlant?: ((plotId: string) => void) | undefined;
@@ -35,13 +38,16 @@ export interface BottomSheetParams {
 type BottomSheetPlantSectionParams = Pick<
   BottomSheetParams,
   | "plotId"
+  | "plotLabel"
   | "plants"
   | "mediaPreviewByPlantId"
   | "plantAlertsByPlantId"
   | "canWrite"
+  | "canAssign"
   | "onClose"
   | "onRemove"
   | "onEdit"
+  | "onMove"
   | "onCreateCalendarEvent"
 >;
 
@@ -89,6 +95,9 @@ function buildBottomSheetPlantsSection(
             params.mediaPreviewByPlantId?.get(plant.plt_id) ?? null,
           alertTypes: params.plantAlertsByPlantId?.get(plant.plt_id),
           canWrite: params.canWrite,
+          canAssign: params.canAssign,
+          ...(params.plotLabel ? { plotLabel: params.plotLabel } : {}),
+          ...(params.onMove ? { onMove: params.onMove } : {}),
           onCreateCalendarEvent: params.onCreateCalendarEvent
             ? (selectedPlant) =>
                 params.onCreateCalendarEvent?.({
@@ -177,7 +186,7 @@ export function showBottomSheet(params: BottomSheetParams): void {
 
   const title = document.createElement("h2");
   title.id = "plot-bottom-sheet-title";
-  title.textContent = plotId;
+  title.textContent = params.plotLabel ?? plotId;
 
   const closeBtn = document.createElement("button");
   closeBtn.className = "close-btn";
@@ -229,30 +238,32 @@ export function showBottomSheet(params: BottomSheetParams): void {
   let searchInput: HTMLInputElement | null = null;
 
   if (params.canWrite !== false) {
-    searchInput = document.createElement("input");
-    searchInput.type = "text";
-    searchInput.id = "sheet-plant-search";
-    searchInput.className = "plant-search-input";
-    searchInput.placeholder = t("plants.search_placeholder");
-    searchInput.setAttribute("aria-label", t("plants.search_placeholder"));
+    if (params.canAssign !== false) {
+      searchInput = document.createElement("input");
+      searchInput.type = "text";
+      searchInput.id = "sheet-plant-search";
+      searchInput.className = "plant-search-input";
+      searchInput.placeholder = t("plants.search_placeholder");
+      searchInput.setAttribute("aria-label", t("plants.search_placeholder"));
 
-    const searchResults = document.createElement("div");
-    searchResults.id = "sheet-search-results";
-    searchResults.className = "search-results";
+      const searchResults = document.createElement("div");
+      searchResults.id = "sheet-search-results";
+      searchResults.className = "search-results";
 
-    addPlantSection.append(searchInput, searchResults);
+      addPlantSection.append(searchInput, searchResults);
 
-    if (params.onCreatePlant) {
-      const createLink = document.createElement("button");
-      createLink.type = "button";
-      createLink.className = "btn-link create-plant-link";
-      createLink.textContent = t("plants.search_create_manual");
-      createLink.addEventListener("click", () => {
-        dismissBottomSheet(true);
-        onClose();
-        window.requestAnimationFrame(() => params.onCreatePlant?.(plotId));
-      });
-      addPlantSection.appendChild(createLink);
+      if (params.onCreatePlant) {
+        const createLink = document.createElement("button");
+        createLink.type = "button";
+        createLink.className = "btn-link create-plant-link";
+        createLink.textContent = t("plants.search_create_manual");
+        createLink.addEventListener("click", () => {
+          dismissBottomSheet(true);
+          onClose();
+          window.requestAnimationFrame(() => params.onCreatePlant?.(plotId));
+        });
+        addPlantSection.appendChild(createLink);
+      }
     }
     if (params.onCreateCalendarEvent) {
       const calendarLink = document.createElement("button");
@@ -276,6 +287,7 @@ export function showBottomSheet(params: BottomSheetParams): void {
 
   const plantsSection = buildBottomSheetPlantsSection({
     plotId,
+    ...(params.plotLabel ? { plotLabel: params.plotLabel } : {}),
     plants,
     ...(mediaPreviewByPlantId
       ? { mediaPreviewByPlantId }
@@ -286,9 +298,13 @@ export function showBottomSheet(params: BottomSheetParams): void {
     ...(params.canWrite !== undefined
       ? { canWrite: params.canWrite }
       : {}),
+    ...(params.canAssign !== undefined
+      ? { canAssign: params.canAssign }
+      : {}),
     onClose,
     onRemove,
     onEdit,
+    ...(params.onMove ? { onMove: params.onMove } : {}),
     ...(params.onCreateCalendarEvent
       ? { onCreateCalendarEvent: params.onCreateCalendarEvent }
       : {}),
@@ -303,7 +319,10 @@ export function showBottomSheet(params: BottomSheetParams): void {
     journalPreview,
     mediaPreview,
   );
-  if (params.canWrite !== false) {
+  if (
+    params.canWrite !== false
+    && (params.canAssign !== false || params.onCreateCalendarEvent)
+  ) {
     body.insertBefore(addPlantSection, tasksPreview);
   }
   const sheetContent = document.createElement("div");

@@ -858,10 +858,6 @@ function renderLoginFlow(
       if (passkeyAvailable) {
         const options = await beginPasskeyLoginApi(username);
         if (attempt !== passkeyAttempt || usernameInput.value.trim() !== username) return;
-        if (!options.passkey_available) {
-          revealPasswordLogin();
-          return;
-        }
         await startPasskeyLogin(options, username);
         return;
       }

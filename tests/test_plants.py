@@ -74,6 +74,10 @@ class TestPlants(BaseApiTest):
         self.assertEqual(plants["PLT-TEST"]["added_at_ms"], 1_700_000_000_123)
         self.assertEqual(plants["PLT-002"]["added_at_ms"], 1_800_000_000_456)
 
+    def test_list_plants_exposes_assignment_capability(self) -> None:
+        plants = {plant["plt_id"]: plant for plant in self.client.get("/api/plants").json()}
+        self.assertTrue(plants["PLT-TEST"]["can_assign"])
+
     def test_update_plant(self) -> None:
         response = self.client.patch(
             "/api/plants/PLT-TEST",
@@ -1639,6 +1643,39 @@ class TestPlants(BaseApiTest):
             self.assertIn("not found in active garden", response.json()["detail"])
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
+
+    def test_batch_update_rejects_archived_plot_target(self) -> None:
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE plots SET archived_at_ms = 1770000000000 WHERE plot_id = 'B1'",
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        response = self.client.post(
+            "/api/plants/batch-update",
+            json={
+                "plt_ids": ["PLT-TEST"],
+                "updates": {},
+                "plot_ids": ["B1"],
+                "plot_action": "assign",
+            },
+        )
+
+        self.assertEqual(response.status_code, 410, response.text)
+        conn = db.get_db()
+        try:
+            assignment = conn.execute(
+                """
+                SELECT 1 FROM plot_plants
+                WHERE plot_id = 'B1' AND plt_id = 'PLT-TEST'
+                """,
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertIsNone(assignment)
 
     def test_batch_update_rejects_shared_global_plant_mutation(self) -> None:
         os.environ.update(_AUTH_ENV)

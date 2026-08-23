@@ -88,6 +88,16 @@ def test_botanical_queries_uses_common_name_cultivar_without_common_text() -> No
     assert botanical_queries("Lilium 'Blacklist'", "Asiatisk lilje") == ("Lilium 'Blacklist'",)
 
 
+def test_botanical_queries_bounds_untrusted_ai_output() -> None:
+    assert botanical_queries("A / B / C / D / E", "") == ("A", "B", "C")
+    assert botanical_queries("A" * 201, "") == ()
+
+
+def test_botanical_queries_ignores_oversized_common_name_cultivar() -> None:
+    common_name = f"{'A' * 200} 'Injected cultivar'"
+    assert botanical_queries("Rosa canina", common_name) == ("Rosa canina",)
+
+
 def test_resolves_unique_exact_cultivar_and_does_not_query_common_name() -> None:
     hit = _hit(506653, "Lilium 'Blacklist' (Ia/b)")
     client = FakeRhsClient(

@@ -181,13 +181,30 @@ wait_for_health() {
 
 activate_release() {
     local revision=$1
-    local release old_target
+    local release old_target service_was_active=0 restore_service_on_failure=0
     release=$(release_for_revision "$revision")
     [[ -d "$release" ]] || die "release is not prepared: $release"
     preflight_release "$release"
 
+    if systemctl is-active --quiet "$SERVICE"; then
+        service_was_active=1
+    fi
+    restore_service_on_failure=$service_was_active
+    restore_quiesced_service() {
+        local status=$?
+        trap - EXIT
+        if [[ "$restore_service_on_failure" == 1 ]] && ! systemctl start "$SERVICE"; then
+            echo "gardenops deploy: failed to restore service after pre-activation failure" >&2
+            status=1
+        fi
+        exit "$status"
+    }
+    trap restore_quiesced_service EXIT
+    systemctl stop "$SERVICE"
+
     with_release_env "$release" "$release/.venv/bin/python" -c \
         "import gardenops.db as db; db.run_migrations()"
+    restore_service_on_failure=0
     with_release_env "$release" "$release/.venv/bin/python" \
         "$release/scripts/check_backend_integrity.py" --allow-production
 
@@ -197,6 +214,7 @@ activate_release() {
         atomic_link "$old_target" "$PREVIOUS_LINK"
     fi
     atomic_link "$release" "$CURRENT_LINK"
+    trap - EXIT
     if systemctl restart "$SERVICE" && wait_for_health; then
         echo "gardenops deploy: active release $release"
         return

@@ -31,6 +31,9 @@ from gardenops.router_helpers import (
     is_local_admin_fallback as _is_local_admin_fallback,
 )
 from gardenops.router_helpers import (
+    is_owner_or_admin as _is_owner_or_admin,
+)
+from gardenops.router_helpers import (
     parse_metadata as _parse_metadata,
 )
 from gardenops.router_helpers import (
@@ -39,6 +42,7 @@ from gardenops.router_helpers import (
 from gardenops.router_helpers import (
     validate_date as _validate_date,
 )
+from gardenops.routers.plots import _lock_assignment_target_rows
 from gardenops.security import AuthContext
 
 router = APIRouter()
@@ -114,16 +118,19 @@ def _validate_linked_plant(
             "SELECT 1 FROM plants WHERE plt_id = %s",
             (normalized,),
         ).fetchone()
+        if not row:
+            raise HTTPException(404, f"Plant {normalized} not found in active garden")
+        return normalized
     else:
         row = db.execute(
             """
-            SELECT 1
+            SELECT owner_user_id
             FROM plant_ownership
             WHERE garden_id = %s AND plt_id = %s
             """,
             (_active_garden_id(context), normalized),
         ).fetchone()
-    if not row:
+    if not row or not _is_owner_or_admin(context, row["owner_user_id"]):
         raise HTTPException(404, f"Plant {normalized} not found in active garden")
     return normalized
 
@@ -552,24 +559,10 @@ def _validate_planting_plot(
     db: DbConn,
     *,
     context: AuthContext,
-    garden_id: int,
     plot_id: str,
 ) -> str:
-    normalized = plot_id.strip()
-    if _is_local_admin_fallback(context):
-        row = db.execute("SELECT 1 FROM plots WHERE plot_id = %s", (normalized,)).fetchone()
-    else:
-        row = db.execute(
-            """
-            SELECT 1
-            FROM plot_ownership
-            WHERE garden_id = %s AND plot_id = %s
-            """,
-            (garden_id, normalized),
-        ).fetchone()
-    if not row:
-        raise HTTPException(404, "Plot not found in active garden")
-    return normalized
+    locked = _lock_assignment_target_rows(db, [plot_id], context)
+    return next(iter(locked))
 
 
 def _plant_from_stock_response(
@@ -622,7 +615,6 @@ def plant_from_stock(
     plot_id = _validate_planting_plot(
         db,
         context=context,
-        garden_id=garden_id,
         plot_id=body.plot_id,
     )
 

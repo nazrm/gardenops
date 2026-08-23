@@ -35,7 +35,9 @@ def test_mobile_edit_mode_selection_opens_the_write_gated_plot_sheet() -> None:
     mobile_selection = interactions.split("if (cbs.isMobile()) {", 1)[1].split(
         "void hydrateActivePlotPanel", 1
     )[0]
-    assert "...(cbs.canWrite()" in mobile_selection
+    assert "const panelCallbacks = getPanelCallbacks(state, plotId, cbs, {" in mobile_selection
+    assert "...(panelCallbacks.canWrite" in mobile_selection
+    assert "const canWrite = options.readOnly !== true && cbs.canWrite();" in interactions
     assert "onEditPlot: () => cbs.onEditPlot(plotId)," in mobile_selection
     assert "onDeletePlot: () => void cbs.deletePlot(plotId)," in mobile_selection
 

@@ -95,6 +95,8 @@ class TestEnsureIndoorPlot(BaseApiTest):
             self.assertEqual(row["zone_name"], "Innendors")
             self.assertIsNone(row["grid_row"])
             self.assertIsNone(row["grid_col"])
+            self.assertEqual(row["plot_kind"], "indoor")
+            self.assertEqual(row["environment"], "indoor")
         finally:
             db.return_db(conn)
 
@@ -169,6 +171,22 @@ class TestIndoorPlotGuards(BaseApiTest):
                 "plot_number": 99,
                 "grid_row": 1,
                 "grid_col": 1,
+            },
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("reserved", resp.json()["detail"].lower())
+
+    def test_create_zone_rejects_zone_code_I(self) -> None:
+        garden_id = self._get_default_garden_id()
+        resp = self.client.post(
+            f"/api/gardens/{garden_id}/zones",
+            json={
+                "zone_code": "I",
+                "zone_name": "Fake indoor zone",
+                "start_row": 1,
+                "start_col": 1,
+                "end_row": 1,
+                "end_col": 1,
             },
         )
         self.assertEqual(resp.status_code, 400)

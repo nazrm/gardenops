@@ -1,4 +1,4 @@
-import type { JournalEntry, JournalEventType } from "../core/models";
+import type { JournalEntry, JournalEventType, LinkedPlot, Plot } from "../core/models";
 import { formatPlotLabel } from "../core/models";
 import { t } from "../core/i18n";
 import { createFieldGroup as _createFieldGroup } from "../core/dom";
@@ -29,6 +29,12 @@ const JOURNAL_EVENT_TYPES: JournalEventType[] = [
   "died",
   "observed",
 ];
+
+type PlotChoice = Pick<Plot, "plot_id" | "zone_name" | "display_name">;
+
+function plotChoiceLabel(plot: PlotChoice): string {
+  return formatPlotLabel(plot.plot_id, plot.zone_name, null, plot.display_name);
+}
 
 function relativeTime(ms: number): string {
   const now = Date.now();
@@ -148,12 +154,17 @@ function createJournalCard(
     });
     tags.appendChild(chip);
   }
-  const plotList = entry.plots ?? entry.plot_ids.map((id: string) => ({ plot_id: id, zone_name: "" }));
+  const plotList: LinkedPlot[] = entry.plots ?? entry.plot_ids.map((id: string) => ({ plot_id: id, zone_name: "" }));
   for (const plot of plotList) {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "journal-tag journal-tag-plot";
-    chip.textContent = formatPlotLabel(plot.plot_id, plot.zone_name);
+    chip.textContent = formatPlotLabel(
+      plot.plot_id,
+      plot.zone_name,
+      null,
+      plot.display_name,
+    );
     chip.addEventListener("click", (e) => {
       e.stopPropagation();
       cbs.onPlotClick(plot.plot_id);
@@ -214,7 +225,7 @@ export interface JournalComposerOptions {
   plotIds?: string[];
   prefillEventType?: JournalEventType;
   availablePlants: Array<{ plt_id: string; name: string }>;
-  availablePlots: string[];
+  availablePlots: PlotChoice[];
   onSubmit: (data: {
     event_type: JournalEventType;
     occurred_on: string;
@@ -332,6 +343,19 @@ export function createJournalComposerEl(
 
   // Plot selection
   const plotGroup = createFieldGroup(t("journal.field_plots"));
+  const plotChoicesById = new Map<string, PlotChoice>();
+  for (const plot of opts.availablePlots) {
+    plotChoicesById.set(plot.plot_id, plot);
+  }
+  for (const plot of opts.editEntry?.plots ?? []) {
+    plotChoicesById.set(plot.plot_id, plot);
+  }
+  const plotChoices = [...plotChoicesById.values()].sort((left, right) =>
+    plotChoiceLabel(left).localeCompare(plotChoiceLabel(right), undefined, { sensitivity: "base" }),
+  );
+  const plotLabelById = new Map(
+    plotChoices.map((plot) => [plot.plot_id, plotChoiceLabel(plot)]),
+  );
   const selectedPlots = new Set<string>(
     opts.editEntry?.plot_ids ?? opts.plotIds ?? [],
   );
@@ -343,10 +367,10 @@ export function createJournalComposerEl(
   plotDefaultOpt.value = "";
   plotDefaultOpt.textContent = t("journal.add_plot");
   plotSelect.appendChild(plotDefaultOpt);
-  for (const plotId of opts.availablePlots) {
+  for (const plot of plotChoices) {
     const opt = document.createElement("option");
-    opt.value = plotId;
-    opt.textContent = plotId;
+    opt.value = plot.plot_id;
+    opt.textContent = plotChoiceLabel(plot);
     plotSelect.appendChild(opt);
   }
   plotSelect.addEventListener("change", () => {
@@ -361,7 +385,7 @@ export function createJournalComposerEl(
     renderChips(plotChips, selectedPlots, (id) => {
       selectedPlots.delete(id);
       refreshPlotChips();
-    });
+    }, (id) => plotLabelById.get(id) ?? formatPlotLabel(id, ""));
   }
   refreshPlotChips();
 
@@ -460,17 +484,18 @@ function renderChips(
   container: HTMLElement,
   items: Set<string>,
   onRemove: (id: string) => void,
+  getLabel: (id: string) => string = (id) => id,
 ): void {
   container.replaceChildren();
   for (const id of items) {
     const chip = document.createElement("span");
     chip.className = "journal-chip";
-    chip.textContent = id;
+    chip.textContent = getLabel(id);
     const x = document.createElement("button");
     x.type = "button";
     x.className = "journal-chip-remove";
     x.textContent = "\u00d7";
-    x.setAttribute("aria-label", t("journal.remove_chip", { id }));
+    x.setAttribute("aria-label", t("journal.remove_chip", { id: getLabel(id) }));
     x.addEventListener("click", () => onRemove(id));
     chip.appendChild(x);
     container.appendChild(chip);
