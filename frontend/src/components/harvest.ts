@@ -148,7 +148,7 @@ function createHarvestCard(
     const editBtn = document.createElement("button");
     editBtn.type = "button";
     editBtn.className = "harvest-action-btn";
-    editBtn.textContent = t("common.settings");
+    editBtn.textContent = t("common.edit");
     editBtn.addEventListener("click", () => cbs.onEdit(entry));
     actions.appendChild(editBtn);
 

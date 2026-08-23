@@ -183,7 +183,7 @@ export function renderIndoorPlants(
 
   // Header: search + sort (created once, not re-rendered on filter)
   const header = document.createElement("div");
-  header.className = "indoor-header";
+  header.className = "indoor-header data-view-header filter-row";
 
   const searchInput = document.createElement("input");
   searchInput.type = "search";

@@ -614,7 +614,7 @@ export function getAppShellMarkup(): string {
                 </div>
                 <button id="import-csv-btn">${t("plants.import_csv")}</button>
                 <input id="import-csv-input" type="file" accept=".csv,text/csv" hidden />
-                <button id="export-csv-btn">${t("plants.export_csv")}</button>
+                <button id="export-csv-btn">${t("plants.export_editable_csv")}</button>
                 <button id="add-plant-btn" class="btn-primary" data-i18n="plants.add_plant">${t("plants.add_plant")}</button>
               </div>
             </div>
@@ -1181,7 +1181,6 @@ export function getAppShellMarkup(): string {
         <p class="mobile-map-note" data-i18n="map.mobile_note">${t("map.mobile_note")}</p>
       </aside>
 
-      <button id="mobile-fab" class="mobile-fab" type="button" aria-label="${t("quick_actions.title")}" aria-controls="mobile-quick-actions" aria-haspopup="dialog" aria-expanded="false" data-i18n-aria-label="quick_actions.title">+</button>
       <div id="mobile-fab-backdrop" class="mobile-fab-backdrop" aria-hidden="true"></div>
       <aside id="mobile-quick-actions" class="mobile-quick-actions" role="dialog" aria-modal="true" aria-label="${t("quick_actions.title")}" data-i18n-aria-label="quick_actions.title" aria-hidden="true" tabindex="-1" inert>
         <div class="mobile-quick-actions-toolbar">
@@ -1194,6 +1193,7 @@ export function getAppShellMarkup(): string {
       <nav class="mobile-tabbar" aria-label="${t("nav.main_sections")}" data-i18n-aria-label="nav.main_sections">
         <button id="mobile-tab-map" class="mobile-tab-btn active" data-tab="map" type="button" aria-current="page" data-i18n="nav.map">${t("nav.map")}</button>
         <button id="mobile-tab-garden" class="mobile-tab-btn" data-tab="garden" type="button" data-i18n="nav.garden">${t("nav.garden")}</button>
+        <button id="mobile-fab" class="mobile-fab" type="button" aria-label="${t("quick_actions.title")}" aria-controls="mobile-quick-actions" aria-haspopup="dialog" aria-expanded="false" data-i18n-aria-label="quick_actions.title">+</button>
         <button id="mobile-tab-activity" class="mobile-tab-btn" data-tab="activity" type="button" data-i18n="nav.activity">${t("nav.activity")}</button>
         <button id="mobile-tab-insights" class="mobile-tab-btn" data-tab="insights" type="button" data-i18n="nav.insights">${t("nav.insights")}</button>
       </nav>

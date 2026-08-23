@@ -239,7 +239,7 @@ function createIssueCard(
   detailsBtn.textContent = t(
     cbs.canWrite === false
       ? "issues.action_view_details"
-      : "common.settings",
+      : "common.edit",
   );
   detailsBtn.addEventListener("click", () => cbs.onEdit(issue));
   actions.appendChild(detailsBtn);

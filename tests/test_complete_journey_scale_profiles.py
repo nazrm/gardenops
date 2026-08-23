@@ -6,11 +6,13 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
 from gardenops.db import get_db, return_db
+from gardenops.routers.harvest import HarvestQuality
+from gardenops.routers.issues import IssueSeverity
 from scripts import seed_complete_journeys_e2e as seed
 from scripts import seed_optimization_journeys_e2e as optimization_seed
 
@@ -372,6 +374,39 @@ def test_history_heavy_profile_spans_multiple_seasons_for_live_lists(
     assert row is not None
     one_year_ms = 365 * 86_400_000
     assert all(int(row[column]) > one_year_ms for column in row.keys())
+
+
+def test_history_heavy_profile_uses_api_issue_and_harvest_values(
+    scale_profiles: tuple[Any, dict[str, Any]],
+) -> None:
+    conn, projection = scale_profiles
+    slug = projection["profiles"]["history-heavy"]["slugs"][0]
+
+    issue_rows = conn.execute(
+        """
+        SELECT DISTINCT issue.severity
+        FROM garden_issues AS issue
+        JOIN gardens AS garden ON garden.id = issue.garden_id
+        WHERE garden.slug = %s
+        """,
+        (slug,),
+    ).fetchall()
+    harvest_rows = conn.execute(
+        """
+        SELECT DISTINCT harvest.quality
+        FROM harvest_entries AS harvest
+        JOIN gardens AS garden ON garden.id = harvest.garden_id
+        WHERE garden.slug = %s
+        """,
+        (slug,),
+    ).fetchall()
+
+    issue_severities = {str(row["severity"]) for row in issue_rows}
+    harvest_qualities = {str(row["quality"]) for row in harvest_rows}
+    assert issue_severities == {"critical", "normal"}
+    assert issue_severities <= set(get_args(IssueSeverity))
+    assert harvest_qualities == {"excellent", "fair", "good"}
+    assert harvest_qualities <= set(get_args(HarvestQuality))
 
 
 def test_history_heavy_profile_has_a_current_visible_inbox_notification(
