@@ -35,6 +35,7 @@ import {
   renderMapGrid,
   applyPlotIndicators,
   syncSelectedPlots,
+  type MapContainerPosition,
   type MapObjectManipulationMode,
   type MapObjectResizeHandle,
 } from "./components/mapView";
@@ -114,6 +115,7 @@ import type {
   CalendarManualEventDraft,
   CameraState,
   ContainerPatch,
+  ContainerSummary,
   ContainerType,
   GardenIssue,
   GardenTask,
@@ -487,6 +489,21 @@ const mapInteraction = {
     cellHeight: number;
     startGeometry: MapObject["geometry"];
     previewGeometry: MapObject["geometry"];
+    minimumWidth: number;
+    minimumHeight: number;
+  } | null,
+  containerManipulationSession: null as {
+    plotId: string;
+    objectId: string;
+    pointerId: number;
+    sourceElement: HTMLElement | null;
+    startX: number;
+    startY: number;
+    cellWidth: number;
+    cellHeight: number;
+    startPosition: MapContainerPosition;
+    previewPosition: MapContainerPosition;
+    moved: boolean;
   } | null,
   houseMoveSession: null as {
     startX: number;
@@ -2593,7 +2610,6 @@ function setupLayout(): void {
   importCsvBtn?.addEventListener("click", () => importCsvInput?.click());
   importCsvInput?.addEventListener("change", () => void importPlantsCsv());
   exportCsvBtn?.addEventListener("click", exportPlantsCsv);
-
   mobileGridDimsApplyBtn?.addEventListener("click", () => {
     void applyGridDimensions(mobileGridColsInput?.value ?? "", mobileGridRowsInput?.value ?? "");
   });
@@ -3592,16 +3608,25 @@ async function movePlotsToArea(
   }
 }
 
-async function updateContainer(plotId: string, patch: ContainerPatch): Promise<void> {
-  if (!ensureWriteAccess()) return;
+async function updateContainer(
+  plotId: string,
+  patch: ContainerPatch,
+  options: { showSuccessToast?: boolean } = {},
+): Promise<boolean> {
+  if (!ensureWriteAccess()) return false;
   const gardenId = getActiveGardenContext();
-  if (gardenId === null) return;
+  if (gardenId === null) return false;
   try {
     const updated = await updateContainerApi(gardenId, plotId, patch);
     await refreshMapState({ coherent: true });
-    showToast(t("map.container_updated", { name: updated.display_name }), "success");
+    if (options.showSuccessToast !== false) {
+      showToast(t("map.container_updated", { name: updated.display_name }), "success");
+    }
+    return true;
   } catch (err) {
     showFetchError(err);
+    renderPlots();
+    return false;
   }
 }
 
@@ -5618,6 +5643,22 @@ function renderPlots(): void {
           onMapObjectKeyEdit: (object: MapObject, event: KeyboardEvent) => {
             handleMapObjectKeyEdit(object, event);
           },
+          onMapContainerManipulationStart: (
+            container: ContainerSummary,
+            object: MapObject,
+            position: MapContainerPosition,
+            event: PointerEvent,
+          ) => {
+            startContainerManipulation(container, object, position, event);
+          },
+          onMapContainerKeyEdit: (
+            container: ContainerSummary,
+            object: MapObject,
+            position: MapContainerPosition,
+            event: KeyboardEvent,
+          ) => {
+            handleContainerKeyEdit(container, object, position, event);
+          },
         }
       : {}),
     onPlotClick: (plot, event) => {
@@ -5838,6 +5879,8 @@ function resizeMapObjectGeometry(
   handle: MapObjectResizeHandle,
   colDelta: number,
   rowDelta: number,
+  minimumWidth: number,
+  minimumHeight: number,
 ): MapObject["geometry"] {
   let left = start.x;
   let right = start.x + start.width - 1;
@@ -5845,16 +5888,22 @@ function resizeMapObjectGeometry(
   let bottom = start.y + start.height - 1;
 
   if (handle.includes("w")) {
-    left = Math.max(1, Math.min(right, start.x + colDelta));
+    left = Math.max(1, Math.min(right - minimumWidth + 1, start.x + colDelta));
   }
   if (handle.includes("e")) {
-    right = Math.min(state.gridCols, Math.max(left, start.x + start.width - 1 + colDelta));
+    right = Math.min(
+      state.gridCols,
+      Math.max(left + minimumWidth - 1, start.x + start.width - 1 + colDelta),
+    );
   }
   if (handle.includes("n")) {
-    top = Math.max(1, Math.min(bottom, start.y + rowDelta));
+    top = Math.max(1, Math.min(bottom - minimumHeight + 1, start.y + rowDelta));
   }
   if (handle.includes("s")) {
-    bottom = Math.min(state.gridRows, Math.max(top, start.y + start.height - 1 + rowDelta));
+    bottom = Math.min(
+      state.gridRows,
+      Math.max(top + minimumHeight - 1, start.y + start.height - 1 + rowDelta),
+    );
   }
 
   return {
@@ -5871,15 +5920,41 @@ function mapObjectGeometryForDelta(
   handle: MapObjectResizeHandle | null,
   colDelta: number,
   rowDelta: number,
+  minimumWidth: number,
+  minimumHeight: number,
 ): MapObject["geometry"] {
   if (mode === "resize" && handle) {
-    return resizeMapObjectGeometry(start, handle, colDelta, rowDelta);
+    return resizeMapObjectGeometry(
+      start,
+      handle,
+      colDelta,
+      rowDelta,
+      minimumWidth,
+      minimumHeight,
+    );
   }
   return clampMapObjectGeometry({
     ...start,
     x: start.x + colDelta,
     y: start.y + rowDelta,
   });
+}
+
+function mapObjectMinimumDimensions(object: MapObject): { width: number; height: number } {
+  let width = 1;
+  let height = 1;
+  (object.containers ?? []).forEach((container, index) => {
+    if (container.archived_at_ms != null) return;
+    const fallbackIndex = Math.min(
+      index,
+      (object.geometry.width * object.geometry.height) - 1,
+    );
+    const x = container.position_x ?? fallbackIndex % object.geometry.width;
+    const y = container.position_y ?? Math.floor(fallbackIndex / object.geometry.width);
+    width = Math.max(width, x + 1);
+    height = Math.max(height, y + 1);
+  });
+  return { width, height };
 }
 
 function cleanupMapObjectManipulation(resetGeometry?: MapObject["geometry"]): void {
@@ -5916,7 +5991,9 @@ function startMapObjectManipulation(
   const cellHeight = rect.height / Math.max(1, state.gridRows);
   if (cellWidth <= 0 || cellHeight <= 0) return;
 
+  cancelContainerManipulation();
   cancelMapObjectManipulation();
+  const minimumDimensions = mapObjectMinimumDimensions(object);
   const sourceElement = event.currentTarget instanceof HTMLElement
     ? event.currentTarget
     : null;
@@ -5932,6 +6009,8 @@ function startMapObjectManipulation(
     cellHeight,
     startGeometry: { ...object.geometry },
     previewGeometry: { ...object.geometry },
+    minimumWidth: minimumDimensions.width,
+    minimumHeight: minimumDimensions.height,
   };
   try {
     sourceElement?.setPointerCapture(event.pointerId);
@@ -5959,6 +6038,8 @@ function onMapObjectManipulationMove(event: PointerEvent): void {
     session.handle,
     colDelta,
     rowDelta,
+    session.minimumWidth,
+    session.minimumHeight,
   );
   if (sameMapObjectGeometry(session.previewGeometry, nextGeometry)) return;
   session.previewGeometry = nextGeometry;
@@ -5996,7 +6077,206 @@ function onMapObjectManipulationKeydown(event: KeyboardEvent): void {
 function onMapObjectManipulationTouchStart(event: TouchEvent): void {
   if (event.touches.length >= 2) {
     cancelMapObjectManipulation();
+    cancelContainerManipulation();
   }
+}
+
+function sameContainerPosition(
+  first: MapContainerPosition,
+  second: MapContainerPosition,
+): boolean {
+  return first.x === second.x && first.y === second.y;
+}
+
+function containerPositionAvailable(
+  object: MapObject,
+  plotId: string,
+  position: MapContainerPosition,
+): boolean {
+  if (
+    position.x < 0
+    || position.y < 0
+    || position.x >= object.geometry.width
+    || position.y >= object.geometry.height
+  ) {
+    return false;
+  }
+  return !(object.containers ?? []).some((container, index) => {
+    if (container.plot_id === plotId || container.archived_at_ms != null) return false;
+    const fallbackIndex = Math.min(
+      index,
+      (object.geometry.width * object.geometry.height) - 1,
+    );
+    const x = container.position_x ?? fallbackIndex % object.geometry.width;
+    const y = container.position_y ?? Math.floor(fallbackIndex / object.geometry.width);
+    return x === position.x && y === position.y;
+  });
+}
+
+function updateContainerPreview(
+  plotId: string,
+  object: MapObject,
+  position: MapContainerPosition,
+  active: boolean,
+): void {
+  const marker = [...document.querySelectorAll<HTMLElement>(".map-container-marker")]
+    .find((candidate) => candidate.dataset["containerPlotId"] === plotId);
+  if (!marker) return;
+  marker.dataset["positionX"] = String(position.x);
+  marker.dataset["positionY"] = String(position.y);
+  marker.style.gridRow = String(object.geometry.y + position.y);
+  marker.style.gridColumn = String(object.geometry.x + position.x);
+  marker.classList.toggle("dragging", active);
+}
+
+function cleanupContainerManipulation(resetPosition?: MapContainerPosition): void {
+  const session = mapInteraction.containerManipulationSession;
+  if (!session) return;
+  const object = state.mapObjects.find((item) => item.public_id === session.objectId);
+  if (object) {
+    updateContainerPreview(
+      session.plotId,
+      object,
+      resetPosition ?? session.previewPosition,
+      false,
+    );
+  }
+  try {
+    session.sourceElement?.releasePointerCapture(session.pointerId);
+  } catch {
+    // Capture may already be released after pointercancel.
+  }
+  mapInteraction.containerManipulationSession = null;
+  document.body.classList.remove("manipulating-map-container");
+  window.removeEventListener("pointermove", onContainerManipulationMove);
+  window.removeEventListener("pointerup", commitContainerManipulation);
+  window.removeEventListener("pointercancel", cancelContainerManipulation);
+  window.removeEventListener("keydown", onContainerManipulationKeydown);
+  window.removeEventListener("touchstart", onMapObjectManipulationTouchStart);
+}
+
+function startContainerManipulation(
+  container: ContainerSummary,
+  object: MapObject,
+  position: MapContainerPosition,
+  event: PointerEvent,
+): void {
+  if (!state.editMode || !canWriteInGarden) return;
+  const grid = document.getElementById("map-grid");
+  if (!grid) return;
+  const rect = grid.getBoundingClientRect();
+  const cellWidth = rect.width / Math.max(1, state.gridCols);
+  const cellHeight = rect.height / Math.max(1, state.gridRows);
+  if (cellWidth <= 0 || cellHeight <= 0) return;
+
+  cancelMapObjectManipulation();
+  cancelContainerManipulation();
+  const sourceElement = (event.target as HTMLElement | null)
+    ?.closest<HTMLElement>(".map-container-marker") ?? null;
+  mapInteraction.containerManipulationSession = {
+    plotId: container.plot_id,
+    objectId: object.public_id,
+    pointerId: event.pointerId,
+    sourceElement,
+    startX: event.clientX,
+    startY: event.clientY,
+    cellWidth,
+    cellHeight,
+    startPosition: { ...position },
+    previewPosition: { ...position },
+    moved: false,
+  };
+  try {
+    sourceElement?.setPointerCapture(event.pointerId);
+  } catch {
+    // Window-level listeners still keep the interaction intact.
+  }
+  document.body.classList.add("manipulating-map-container");
+  updateContainerPreview(container.plot_id, object, position, true);
+  window.addEventListener("pointermove", onContainerManipulationMove, { passive: false });
+  window.addEventListener("pointerup", commitContainerManipulation);
+  window.addEventListener("pointercancel", cancelContainerManipulation);
+  window.addEventListener("keydown", onContainerManipulationKeydown);
+  window.addEventListener("touchstart", onMapObjectManipulationTouchStart, { passive: true });
+}
+
+function onContainerManipulationMove(event: PointerEvent): void {
+  const session = mapInteraction.containerManipulationSession;
+  if (!session || event.pointerId !== session.pointerId) return;
+  const object = state.mapObjects.find((item) => item.public_id === session.objectId);
+  if (!object) return;
+  event.preventDefault();
+  const nextPosition = {
+    x: Math.max(0, Math.min(
+      object.geometry.width - 1,
+      session.startPosition.x + Math.round((event.clientX - session.startX) / session.cellWidth),
+    )),
+    y: Math.max(0, Math.min(
+      object.geometry.height - 1,
+      session.startPosition.y + Math.round((event.clientY - session.startY) / session.cellHeight),
+    )),
+  };
+  if (
+    sameContainerPosition(session.previewPosition, nextPosition)
+    || !containerPositionAvailable(object, session.plotId, nextPosition)
+  ) {
+    return;
+  }
+  session.previewPosition = nextPosition;
+  session.moved = true;
+  if (session.sourceElement) session.sourceElement.dataset["suppressClick"] = "true";
+  updateContainerPreview(session.plotId, object, nextPosition, true);
+}
+
+function commitContainerManipulation(): void {
+  const session = mapInteraction.containerManipulationSession;
+  if (!session) return;
+  const finalPosition = session.previewPosition;
+  const changed = session.moved && !sameContainerPosition(session.startPosition, finalPosition);
+  cleanupContainerManipulation();
+  if (!changed) return;
+  void updateContainer(
+    session.plotId,
+    { position_x: finalPosition.x, position_y: finalPosition.y },
+    { showSuccessToast: false },
+  );
+}
+
+function cancelContainerManipulation(): void {
+  const session = mapInteraction.containerManipulationSession;
+  if (!session) return;
+  cleanupContainerManipulation(session.startPosition);
+}
+
+function onContainerManipulationKeydown(event: KeyboardEvent): void {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    cancelContainerManipulation();
+  }
+}
+
+function handleContainerKeyEdit(
+  container: ContainerSummary,
+  object: MapObject,
+  position: MapContainerPosition,
+  event: KeyboardEvent,
+): void {
+  if (!state.editMode || !canWriteInGarden) return;
+  const deltaByKey: Partial<Record<string, MapContainerPosition>> = {
+    ArrowUp: { x: 0, y: -1 },
+    ArrowDown: { x: 0, y: 1 },
+    ArrowLeft: { x: -1, y: 0 },
+    ArrowRight: { x: 1, y: 0 },
+  };
+  const delta = deltaByKey[event.key];
+  if (!delta) return;
+  const next = { x: position.x + delta.x, y: position.y + delta.y };
+  if (!containerPositionAvailable(object, container.plot_id, next)) return;
+  void updateContainer(
+    container.plot_id,
+    { position_x: next.x, position_y: next.y },
+    { showSuccessToast: false },
+  );
 }
 
 function handleMapObjectKeyEdit(object: MapObject, event: KeyboardEvent): void {
@@ -6019,6 +6299,9 @@ function handleMapObjectKeyEdit(object: MapObject, event: KeyboardEvent): void {
     if (event.key === "ArrowLeft") next.width -= 1;
     if (event.key === "ArrowDown") next.height += 1;
     if (event.key === "ArrowUp") next.height -= 1;
+    const minimum = mapObjectMinimumDimensions(object);
+    next.width = Math.max(minimum.width, next.width);
+    next.height = Math.max(minimum.height, next.height);
   } else {
     if (event.key === "ArrowRight") next.x += 1;
     if (event.key === "ArrowLeft") next.x -= 1;
@@ -6923,7 +7206,9 @@ function updatePlantCsvActionLabels(): void {
     importCsvBtn.title = importCsvBtn.textContent;
   }
   if (exportCsvBtn) {
-    exportCsvBtn.textContent = ownerScoped ? t("plants.export_my_csv") : t("plants.export_csv");
+    exportCsvBtn.textContent = ownerScoped
+      ? t("plants.export_my_editable_csv")
+      : t("plants.export_editable_csv");
     exportCsvBtn.title = exportCsvBtn.textContent;
   }
 }

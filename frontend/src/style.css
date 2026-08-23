@@ -3913,45 +3913,47 @@ textarea {
 }
 
 .map-container-marker {
-  position: absolute;
-  z-index: 3;
-  display: inline-flex;
+  position: relative;
+  display: flex;
   align-items: center;
   justify-content: center;
-  flex-direction: column;
-  min-width: 44px;
-  min-height: 44px;
-  max-width: 88px;
-  padding: 5px 7px;
-  transform: translate(-50%, -50%);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 2px;
   pointer-events: auto;
-  border: 2px solid var(--accent);
-  border-radius: var(--r-sm);
-  background: color-mix(in srgb, var(--bg-1) 88%, transparent);
+  touch-action: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 78%, #000 10%);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent-muted) 76%, var(--bg-1));
   color: var(--text-1);
-  font-size: 12px;
+  font-size: clamp(6px, calc(var(--cell) * 0.3), 10px);
   font-weight: 800;
   cursor: pointer;
-  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  user-select: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #fff 32%, transparent);
 }
 
-.map-container-marker-name,
-.map-container-marker-count {
+.map-container-marker-name {
   display: block;
-  max-width: 72px;
+  width: 100%;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.map-container-marker-name {
-  font-size: 11px;
+.map-container-marker--editable {
+  cursor: grab;
 }
 
-.map-container-marker-count {
-  color: var(--text-3);
-  font-size: 9px;
-  font-weight: 700;
+.map-container-marker.dragging {
+  cursor: grabbing;
+  box-shadow:
+    inset 0 0 0 2px var(--accent),
+    var(--shadow-sm);
 }
 
 .map-container-marker:hover,
@@ -8364,6 +8366,16 @@ th.sort-desc::after {
   display: flex;
   gap: var(--sp-1);
 }
+@media (max-width: 600px) {
+  .journal-card-footer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .journal-card-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+}
 .journal-action-btn {
   padding: 2px var(--sp-2);
   border: 1px solid var(--bg-3);
@@ -12726,6 +12738,14 @@ td.inventory-qty-zero {
   }
 
   .adm-input { width: 180px; }
+  #adm-garden-settings-form > .adm-form-stack > label:has(> :is(#adm-garden-name, #adm-garden-address)) {
+    display: grid;
+    gap: var(--sp-1);
+    width: min(100%, 36rem);
+  }
+  #adm-garden-settings-form :is(#adm-garden-name, #adm-garden-address) {
+    width: 100%;
+  }
   .adm-input--sm { width: 140px; }
   .adm-input--xs { width: 90px; }
   .adm-select { width: 120px; }
@@ -13904,15 +13924,18 @@ td.inventory-qty-zero {
 }
 
 @media (max-width: 600px) {
+  .mobile-tabbar {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
   .mobile-fab {
     display: flex;
     align-items: center;
     justify-content: center;
-    position: fixed;
-    bottom: calc(60px + env(safe-area-inset-bottom, 0px) + 12px);
-    right: 16px;
-    width: 56px;
-    height: 56px;
+    position: static;
+    justify-self: center;
+    width: 52px;
+    height: 52px;
     border-radius: 50%;
     background: var(--brand);
     color: var(--text-inv);
@@ -13921,15 +13944,11 @@ td.inventory-qty-zero {
     font-weight: 300;
     cursor: pointer;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-    z-index: 500;
     transition: transform 200ms var(--ease), background 200ms var(--ease);
   }
 
   .mobile-fab.mobile-fab--map-active {
-    bottom: calc(136px + env(safe-area-inset-bottom, 0px));
-    left: 16px;
-    right: auto;
-    z-index: 43;
+    box-shadow: 0 0 0 2px rgba(250, 248, 244, 0.18);
   }
 
   body.mobile-map-sheet-open .mobile-fab.mobile-fab--map-active {

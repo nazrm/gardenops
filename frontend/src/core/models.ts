@@ -813,6 +813,8 @@ export interface ContainerSummary {
   environment: ContainerEnvironment;
   plant_count: number;
   parent_map_object_public_id?: string | null;
+  position_x?: number | null;
+  position_y?: number | null;
   can_edit?: boolean;
   can_archive?: boolean;
   archived_at_ms?: number | null;
@@ -859,6 +861,8 @@ export interface ContainerPatch {
   container_type?: ContainerType;
   parent_object_public_id?: string | null;
   environment?: ContainerEnvironment;
+  position_x?: number | null;
+  position_y?: number | null;
 }
 
 export interface MovePlotsToAreaInput {

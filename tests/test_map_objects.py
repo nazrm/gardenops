@@ -569,13 +569,21 @@ class TestMapObjects(BaseApiTest):
                 for container in moved.json()["containers"]
             )
         )
+        self.assertEqual(
+            [
+                (container["position_x"], container["position_y"])
+                for container in moved.json()["containers"]
+            ],
+            [(0, 0), (1, 0)],
+        )
 
         conn = db.get_db()
         try:
             rows = conn.execute(
                 """
                 SELECT plot_id, plot_kind, display_name, container_type,
-                       parent_map_object_id, grid_row, grid_col
+                       parent_map_object_id, grid_row, grid_col,
+                       container_position_x, container_position_y
                 FROM plots
                 WHERE plot_id = ANY(%s)
                 ORDER BY plot_id
@@ -595,7 +603,59 @@ class TestMapObjects(BaseApiTest):
         self.assertEqual([str(row["plot_kind"]) for row in rows], ["container", "container"])
         self.assertEqual([str(row["display_name"]) for row in rows], ["B1", "B2"])
         self.assertTrue(all(row["grid_row"] is None and row["grid_col"] is None for row in rows))
+        self.assertEqual(
+            [(int(row["container_position_x"]), int(row["container_position_y"])) for row in rows],
+            [(0, 0), (1, 0)],
+        )
         self.assertEqual(int(assignment["quantity"]), 7)
+
+    def test_contained_plot_position_rejects_collisions_bounds_and_parent_shrink(self) -> None:
+        garden_id = self._default_garden()
+        patio = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects",
+            json=self._patio_payload(),
+        )
+        self.assertEqual(patio.status_code, 201, patio.text)
+        patio_id = patio.json()["public_id"]
+        moved = self.client.post(
+            f"/api/gardens/{garden_id}/map-objects/{patio_id}/containers/from-plots",
+            json={"plot_ids": ["B1", "B2"], "container_type": "planter"},
+        )
+        self.assertEqual(moved.status_code, 200, moved.text)
+
+        repositioned = self.client.patch(
+            f"/api/gardens/{garden_id}/containers/B1",
+            json={"position_x": 2, "position_y": 1},
+        )
+        self.assertEqual(repositioned.status_code, 200, repositioned.text)
+        self.assertEqual(
+            (repositioned.json()["position_x"], repositioned.json()["position_y"]),
+            (2, 1),
+        )
+
+        collision = self.client.patch(
+            f"/api/gardens/{garden_id}/containers/B2",
+            json={"position_x": 2, "position_y": 1},
+        )
+        self.assertEqual(collision.status_code, 409, collision.text)
+        outside = self.client.patch(
+            f"/api/gardens/{garden_id}/containers/B2",
+            json={"position_x": 4, "position_y": 0},
+        )
+        self.assertEqual(outside.status_code, 409, outside.text)
+
+        shrink = self.client.patch(
+            f"/api/gardens/{garden_id}/map-objects/{patio_id}",
+            json={"geometry": {"x": 18, "y": 1, "width": 2, "height": 1}},
+        )
+        self.assertEqual(shrink.status_code, 409, shrink.text)
+
+        listed = self.client.get(f"/api/gardens/{garden_id}/map-objects")
+        positions = {
+            container["plot_id"]: (container["position_x"], container["position_y"])
+            for container in listed.json()["objects"][0]["containers"]
+        }
+        self.assertEqual(positions, {"B1": (2, 1), "B2": (1, 0)})
 
     def test_move_existing_plots_into_area_is_atomic_when_a_plot_is_missing(self) -> None:
         garden_id = self._default_garden()

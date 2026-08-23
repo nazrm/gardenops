@@ -146,6 +146,8 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "display_name",
         "container_type",
         "parent_map_object_id",
+        "container_position_x",
+        "container_position_y",
         "environment",
         "archived_at_ms",
     ),
@@ -306,6 +308,7 @@ REQUIRED_INDEXES = (
     "ux_plots_garden_grid_cell",
     "idx_plots_garden",
     "idx_plots_active_containers",
+    "ux_plots_active_container_position",
     "idx_garden_map_objects_garden",
     "ux_garden_map_objects_id_garden",
     "idx_garden_map_object_units_object",
@@ -362,6 +365,7 @@ REQUIRED_CONSTRAINTS = (
     "ck_plots_plot_kind",
     "ck_plots_environment",
     "ck_plots_container_subtype",
+    "ck_plots_container_position_pair",
     "fk_plots_parent_map_object_garden",
     "fk_garden_map_objects_garden_id_gardens",
     "fk_garden_map_object_units_garden_id_gardens",
@@ -435,6 +439,8 @@ REQUIRED_COLUMN_NULLABILITY: dict[str, bool] = {
     "plots.display_name": True,
     "plots.container_type": True,
     "plots.parent_map_object_id": True,
+    "plots.container_position_x": True,
+    "plots.container_position_y": True,
     "plots.environment": False,
     "plots.archived_at_ms": True,
 }
@@ -455,6 +461,8 @@ REQUIRED_COLUMN_TYPES: dict[str, str] = {
     "plots.display_name": "text",
     "plots.container_type": "text",
     "plots.parent_map_object_id": "bigint",
+    "plots.container_position_x": "integer",
+    "plots.container_position_y": "integer",
     "plots.environment": "text",
     "plots.archived_at_ms": "bigint",
 }
@@ -475,6 +483,8 @@ REQUIRED_COLUMN_DEFAULTS: dict[str, str | None] = {
     "plots.display_name": None,
     "plots.container_type": None,
     "plots.parent_map_object_id": None,
+    "plots.container_position_x": None,
+    "plots.container_position_y": None,
     "plots.environment": "'outdoor'::text",
     "plots.archived_at_ms": None,
 }
@@ -519,6 +529,15 @@ REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
         "using btree (garden_id, parent_map_object_id, plot_id)",
         "where",
         "plot_kind = 'container'",
+        "archived_at_ms is null",
+    ),
+    "ux_plots_active_container_position": (
+        "unique index",
+        "plots",
+        "garden_id",
+        "parent_map_object_id",
+        "container_position_x",
+        "container_position_y",
         "archived_at_ms is null",
     ),
 }
@@ -572,6 +591,12 @@ REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
         "grid_col",
         "display_name",
         "parent_map_object_id",
+    ),
+    "ck_plots_container_position_pair": (
+        "check",
+        "plot_kind",
+        "container_position_x",
+        "container_position_y",
     ),
     "fk_plots_parent_map_object_garden": (
         "foreign key (parent_map_object_id, garden_id)",
@@ -800,6 +825,12 @@ _MIGRATION_0031_CONSTRAINTS = {
     "ck_plots_container_subtype",
     "fk_plots_parent_map_object_garden",
 }
+_MIGRATION_0032_COLUMNS = {
+    "plots.container_position_x",
+    "plots.container_position_y",
+}
+_MIGRATION_0032_INDEXES = {"ux_plots_active_container_position"}
+_MIGRATION_0032_CONSTRAINTS = {"ck_plots_container_position_pair"}
 _MIGRATION_0022_CONSTRAINTS = {
     constraint
     for constraint in REQUIRED_CONSTRAINTS
@@ -957,6 +988,29 @@ def _migration_0031_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
     )
 
 
+def _is_migration_0032_part(part: Mapping[str, object]) -> bool:
+    obj = str(part.get("object", ""))
+    kind = str(part.get("kind", ""))
+    if obj in _MIGRATION_0032_COLUMNS:
+        return True
+    if kind == "index":
+        return obj in _MIGRATION_0032_INDEXES
+    if kind == "constraint":
+        return obj in _MIGRATION_0032_CONSTRAINTS
+    return False
+
+
+def _migration_0032_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
+    return (
+        not (
+            _MIGRATION_0032_COLUMNS
+            & {f"plots.{column}" for column in snapshot.columns.get("plots", set())}
+        )
+        and not (_MIGRATION_0032_INDEXES & snapshot.indexes)
+        and not (_MIGRATION_0032_CONSTRAINTS & snapshot.constraints)
+    )
+
+
 def bootstrap_schema_diagnostics_from_snapshot(
     snapshot: SchemaSnapshot,
 ) -> dict[str, object]:
@@ -980,6 +1034,7 @@ def bootstrap_schema_diagnostics_from_snapshot(
         missing_plant_ownership_created_at = _migration_0029_schema_is_absent(snapshot)
         missing_plant_external_references = _migration_0030_schema_is_absent(snapshot)
         missing_canonical_container_plots = _migration_0031_schema_is_absent(snapshot)
+        missing_container_positions = _migration_0032_schema_is_absent(snapshot)
         if (
             missing_offline_operations
             or missing_audit_request_id
@@ -989,6 +1044,7 @@ def bootstrap_schema_diagnostics_from_snapshot(
             or missing_plant_ownership_created_at
             or missing_plant_external_references
             or missing_canonical_container_plots
+            or missing_container_positions
         ) and all(
             (missing_offline_operations and _is_migration_0022_part(part))
             or (missing_audit_request_id and _is_migration_0023_part(part))
@@ -999,9 +1055,12 @@ def bootstrap_schema_diagnostics_from_snapshot(
             or (missing_plant_ownership_created_at and _is_migration_0029_part(part))
             or (missing_plant_external_references and _is_migration_0030_part(part))
             or (missing_canonical_container_plots and _is_migration_0031_part(part))
+            or (missing_container_positions and _is_migration_0032_part(part))
             for part in missing
         ):
-            stamp_through = 29
+            stamp_through = 31
+            if missing_container_positions:
+                stamp_through = 31
             if missing_canonical_container_plots:
                 stamp_through = 30
             if missing_plant_external_references:

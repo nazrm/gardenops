@@ -101,6 +101,7 @@ from gardenops.routers.issues import router as issues_router  # noqa: E402
 from gardenops.routers.journal import router as journal_router  # noqa: E402
 from gardenops.routers.map_objects import (  # noqa: E402
     replace_map_objects,
+    restore_container_parent_position,
     snapshot_map_objects,
 )
 from gardenops.routers.map_objects import (  # noqa: E402
@@ -2418,7 +2419,8 @@ def snapshot_layout(
                 COALESCE(p.notes, '') AS notes, p.color,
                 COALESCE(p.plot_kind, 'ground') AS plot_kind,
                 p.display_name, p.container_type, p.environment,
-                p.archived_at_ms, parent.public_id AS parent_object_public_id
+                p.archived_at_ms, parent.public_id AS parent_object_public_id,
+                p.container_position_x, p.container_position_y
             FROM plots p
             LEFT JOIN plot_ownership po ON po.plot_id = p.plot_id
             LEFT JOIN garden_map_objects parent
@@ -2437,7 +2439,8 @@ def snapshot_layout(
                 COALESCE(p.notes, '') AS notes, p.color,
                 COALESCE(p.plot_kind, 'ground') AS plot_kind,
                 p.display_name, p.container_type, p.environment,
-                p.archived_at_ms, parent.public_id AS parent_object_public_id
+                p.archived_at_ms, parent.public_id AS parent_object_public_id,
+                p.container_position_x, p.container_position_y
             FROM plots p
             JOIN plot_ownership po ON po.plot_id = p.plot_id
             LEFT JOIN garden_map_objects parent
@@ -2631,6 +2634,8 @@ def restore_snapshot_data(
                     display_name = %s,
                     container_type = %s,
                     parent_map_object_id = %s,
+                    container_position_x = NULL,
+                    container_position_y = NULL,
                     environment = %s,
                     archived_at_ms = %s
                 WHERE plot_id = %s AND garden_id = %s
@@ -2741,16 +2746,22 @@ def restore_snapshot_data(
             if plot.get("plot_kind") != "container":
                 continue
             parent_public_id = plot.get("parent_object_public_id")
-            db.execute(
-                """
-                UPDATE plots
-                SET parent_map_object_id = %s
-                WHERE garden_id = %s AND plot_id = %s
-                """,
-                (
-                    parent_map_object_ids.get(str(parent_public_id)) if parent_public_id else None,
-                    garden_id,
-                    str(plot["plot_id"]),
+            restore_container_parent_position(
+                db,
+                garden_id=garden_id,
+                plot_id=str(plot["plot_id"]),
+                parent_map_object_id=(
+                    parent_map_object_ids.get(str(parent_public_id)) if parent_public_id else None
+                ),
+                position_x=(
+                    _coerce_required_int(plot["container_position_x"])
+                    if plot.get("container_position_x") is not None
+                    else None
+                ),
+                position_y=(
+                    _coerce_required_int(plot["container_position_y"])
+                    if plot.get("container_position_y") is not None
+                    else None
                 ),
             )
         db.execute("DELETE FROM plot_elevations WHERE garden_id = %s", (garden_id,))

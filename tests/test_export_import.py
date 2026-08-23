@@ -768,6 +768,11 @@ class TestExportImport(BaseApiTest):
         )
         self.assertEqual(pot.status_code, 201, pot.text)
         container_id = pot.json()["plot_id"]
+        positioned = self.client.patch(
+            f"/api/gardens/{garden_id}/containers/{container_id}",
+            json={"position_x": 2, "position_y": 1},
+        )
+        self.assertEqual(positioned.status_code, 200, positioned.text)
 
         export_res = self.client.get("/api/plots/export")
         self.assertEqual(export_res.status_code, 200, export_res.text)
@@ -802,6 +807,13 @@ class TestExportImport(BaseApiTest):
                 "environment": "covered",
                 "archived_at_ms": None,
             },
+        )
+        self.assertEqual(
+            (
+                exported_container["container_position_x"],
+                exported_container["container_position_y"],
+            ),
+            (2, 1),
         )
 
         delete_res = self.client.delete(f"/api/gardens/{garden_id}/map-objects/{patio_id}")
@@ -856,6 +868,13 @@ class TestExportImport(BaseApiTest):
         ):
             with self.subTest(field=f"container.{field}"):
                 self.assertEqual(restored_container[field], exported_container[field])
+        self.assertEqual(
+            (restored_container["position_x"], restored_container["position_y"]),
+            (
+                exported_container["container_position_x"],
+                exported_container["container_position_y"],
+            ),
+        )
 
     def test_export_plants_csv(self) -> None:
         response = self.client.get("/api/plants/export-csv")
