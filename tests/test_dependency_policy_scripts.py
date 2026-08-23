@@ -627,7 +627,10 @@ def test_ci_runs_one_dependency_policy_gate_before_test_jobs():
     assert workflow.count("name: Dependency Policy") == 1
     assert workflow.count("needs: dependency-policy") == 2
     assert "npm ci --ignore-scripts" in workflow
-    assert "working-directory: /tmp/gardenops-pr-data\n        run: uv lock --check" in workflow
+    assert "run: uv lock --check --offline --no-build" in workflow
+    assert (
+        "working-directory: /tmp/gardenops-pr-data\n        run: uv lock --check\n" not in workflow
+    )
     assert "npm ci --dry-run --ignore-scripts --prefix /tmp/gardenops-pr-data/frontend" in workflow
     policy_start = workflow.index("  dependency-policy:")
     policy_end = workflow.index("\n  backend:")

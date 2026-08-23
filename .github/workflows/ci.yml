@@ -75,7 +75,9 @@ jobs:
       - name: Validate Python lock consistency
         if: github.event_name == 'pull_request' && steps.changes.outputs.python == 'true'
         working-directory: /tmp/gardenops-pr-data
-        run: uv lock --check
+        # PR manifests are untrusted. Keep this check static: resolution must not
+        # download artifacts or invoke a dependency's PEP 517 build backend.
+        run: uv lock --check --offline --no-build
       - name: Validate npm lock consistency
         if: github.event_name == 'pull_request' && steps.changes.outputs.npm == 'true'
         run: npm ci --dry-run --ignore-scripts --prefix /tmp/gardenops-pr-data/frontend
