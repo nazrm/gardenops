@@ -1230,8 +1230,8 @@ def _seed_phase_two_fixtures(conn, optimization_seed: Any) -> None:
             ("fertilize_a", "fertilize_b"),
         ),
         ("prune_desktop", "prune", "Prune Phase 2 Desktop Rose", ("prune_desktop",)),
-        ("batch_a", "weed", "Weed Phase 2 Batch Thyme", ("batch_a",)),
-        ("batch_b", "weed", "Weed Phase 2 Batch Sage", ("batch_b",)),
+        ("batch_a", "deadhead", "Deadhead Phase 2 Batch Thyme", ("batch_a",)),
+        ("batch_b", "deadhead", "Deadhead Phase 2 Batch Sage", ("batch_b",)),
         (
             "bloom_mobile",
             "observe_bloom",
@@ -4881,7 +4881,7 @@ def _seed_scale_profile_garden(
             (
                 public_id,
                 garden_id,
-                ("observation", "care", "weather", "harvest")[index % 4],
+                ("observed", "watered", "fertilized", "harvested")[index % 4],
                 _scale_profile_date(profile, index * 2),
                 f"Scale {content_marker} journal {(index % 180) + 1:03d}",
                 json.dumps({"profile": profile, "season": index % 4}, sort_keys=True),

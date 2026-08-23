@@ -190,10 +190,18 @@ function createIssueCard(
     const tags = document.createElement("div");
     tags.className = "issue-card-tags";
     for (const pltId of issue.plant_ids) {
+      const plantName = plantNames?.get(pltId);
+      if (!plantName) {
+        const tag = document.createElement("span");
+        tag.className = "journal-tag journal-tag-plant";
+        tag.textContent = t("issues.linked_plant");
+        tags.appendChild(tag);
+        continue;
+      }
       const tag = document.createElement("button");
       tag.type = "button";
       tag.className = "journal-tag journal-tag-plant";
-      tag.textContent = plantNames?.get(pltId) ?? pltId;
+      tag.textContent = plantName;
       tag.addEventListener("click", (e) => {
         e.stopPropagation();
         cbs.onPlantClick(pltId);

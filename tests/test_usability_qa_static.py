@@ -13,6 +13,7 @@ def _function_body(source: str, start: str, end: str) -> str:
 
 def test_issue_and_harvest_edit_labels_preserve_viewer_behavior() -> None:
     issues = _read("frontend/src/components/issues.ts")
+    issues_tab = _read("frontend/src/tabs/issuesTab.ts")
     harvest = _read("frontend/src/components/harvest.ts")
     issue_card = _function_body(
         issues,
@@ -30,6 +31,17 @@ def test_issue_and_harvest_edit_labels_preserve_viewer_behavior() -> None:
     )
     assert viewer_edit_label in issue_card
     assert 't("common.settings")' not in issue_card
+    assert 'tag.textContent = t("issues.linked_plant");' in issue_card
+    assert "tag.textContent = plantName;" in issue_card
+    assert "plantNames?.get(pltId) ?? pltId" not in issue_card
+    issue_load = _function_body(
+        issues_tab,
+        "export async function loadIssues()",
+        "function renderIssuesView()",
+    )
+    assert issue_load.index("await ctx.ensurePlantsCacheLoaded();") < issue_load.index(
+        "await fetchIssuesApi(params)"
+    )
     assert "if (cbs.canWrite !== false) {" in harvest_card
     assert 'editBtn.textContent = t("common.edit");' in harvest_card
     assert 't("common.settings")' not in harvest_card

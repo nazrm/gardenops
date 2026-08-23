@@ -13,6 +13,7 @@ import pytest
 from gardenops.db import get_db, return_db
 from gardenops.routers.harvest import HarvestQuality
 from gardenops.routers.issues import IssueSeverity
+from gardenops.routers.journal import EventType
 from scripts import seed_complete_journeys_e2e as seed
 from scripts import seed_optimization_journeys_e2e as optimization_seed
 
@@ -376,7 +377,7 @@ def test_history_heavy_profile_spans_multiple_seasons_for_live_lists(
     assert all(int(row[column]) > one_year_ms for column in row.keys())
 
 
-def test_history_heavy_profile_uses_api_issue_and_harvest_values(
+def test_history_heavy_profile_uses_api_enum_values(
     scale_profiles: tuple[Any, dict[str, Any]],
 ) -> None:
     conn, projection = scale_profiles
@@ -400,13 +401,25 @@ def test_history_heavy_profile_uses_api_issue_and_harvest_values(
         """,
         (slug,),
     ).fetchall()
+    journal_rows = conn.execute(
+        """
+        SELECT DISTINCT journal.event_type
+        FROM garden_journal_entries AS journal
+        JOIN gardens AS garden ON garden.id = journal.garden_id
+        WHERE garden.slug = %s
+        """,
+        (slug,),
+    ).fetchall()
 
     issue_severities = {str(row["severity"]) for row in issue_rows}
     harvest_qualities = {str(row["quality"]) for row in harvest_rows}
+    journal_event_types = {str(row["event_type"]) for row in journal_rows}
     assert issue_severities == {"critical", "normal"}
     assert issue_severities <= set(get_args(IssueSeverity))
     assert harvest_qualities == {"excellent", "fair", "good"}
     assert harvest_qualities <= set(get_args(HarvestQuality))
+    assert journal_event_types == {"fertilized", "harvested", "observed", "watered"}
+    assert journal_event_types <= set(get_args(EventType))
 
 
 def test_history_heavy_profile_has_a_current_visible_inbox_notification(
