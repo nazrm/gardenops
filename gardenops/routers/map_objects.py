@@ -15,6 +15,7 @@ from gardenops.rate_limit import enforce_rate_limit, env_int
 from gardenops.router_helpers import auth_context as _auth_context
 from gardenops.router_helpers import generate_public_id
 from gardenops.router_helpers import is_local_admin_fallback as _is_local_admin_fallback
+from gardenops.routers.plots import _authorize_plot_row
 from gardenops.security import AuthContext
 from gardenops.services.garden_layout_lock import lock_garden_layout
 
@@ -1662,16 +1663,20 @@ def move_plots_to_area(
 
     rows = db.execute(
         """
-        SELECT plot_id, plot_kind, archived_at_ms
-        FROM plots
-        WHERE garden_id = %s AND plot_id = ANY(%s)
-        FOR UPDATE
+        SELECT p.plot_id, p.plot_kind, p.archived_at_ms,
+               po.owner_user_id, po.garden_id AS ownership_garden_id
+        FROM plots p
+        LEFT JOIN plot_ownership po ON po.plot_id = p.plot_id
+        WHERE p.garden_id = %s AND p.plot_id = ANY(%s)
+        FOR UPDATE OF p
         """,
         (garden_id, body.plot_ids),
     ).fetchall()
     rows_by_id = {str(row["plot_id"]): row for row in rows}
     if any(plot_id not in rows_by_id for plot_id in body.plot_ids):
         raise HTTPException(status_code=404, detail="One or more plots were not found")
+    for plot_id in body.plot_ids:
+        _authorize_plot_row(rows_by_id[plot_id], context)
     if any(
         str(rows_by_id[plot_id]["plot_kind"]) == "container"
         or rows_by_id[plot_id]["archived_at_ms"] is not None
