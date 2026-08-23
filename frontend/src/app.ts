@@ -2610,7 +2610,6 @@ function setupLayout(): void {
   importCsvBtn?.addEventListener("click", () => importCsvInput?.click());
   importCsvInput?.addEventListener("change", () => void importPlantsCsv());
   exportCsvBtn?.addEventListener("click", exportPlantsCsv);
-
   mobileGridDimsApplyBtn?.addEventListener("click", () => {
     void applyGridDimensions(mobileGridColsInput?.value ?? "", mobileGridRowsInput?.value ?? "");
   });
@@ -7207,7 +7206,9 @@ function updatePlantCsvActionLabels(): void {
     importCsvBtn.title = importCsvBtn.textContent;
   }
   if (exportCsvBtn) {
-    exportCsvBtn.textContent = ownerScoped ? t("plants.export_my_csv") : t("plants.export_csv");
+    exportCsvBtn.textContent = ownerScoped
+      ? t("plants.export_my_editable_csv")
+      : t("plants.export_editable_csv");
     exportCsvBtn.title = exportCsvBtn.textContent;
   }
 }

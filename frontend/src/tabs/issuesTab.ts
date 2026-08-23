@@ -74,6 +74,8 @@ export async function loadIssues(): Promise<void> {
   if (!ctx) return;
   const sequence = ++issuesLoadSequence;
   try {
+    await ctx.ensurePlantsCacheLoaded();
+    if (sequence !== issuesLoadSequence) return;
     const params: Record<string, string | number> = {
       limit: ISSUES_PAGE_SIZE,
       offset: issuesOffset,
