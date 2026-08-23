@@ -700,33 +700,38 @@ class TestMapObjects(BaseApiTest):
         finally:
             db.return_db(conn)
 
-        peer_client, _ = self._create_member_client(
+        peer_client, peer_headers = self._create_member_client(
             username="plot_move_peer",
             role="editor",
             garden_id=garden_id,
         )
-        patio = peer_client.post(
-            f"/api/gardens/{garden_id}/map-objects",
-            json=self._patio_payload(),
-        )
-        self.assertEqual(patio.status_code, 201, patio.text)
-
-        moved = peer_client.post(
-            f"/api/gardens/{garden_id}/map-objects/{patio.json()['public_id']}/containers/from-plots",
-            json={"plot_ids": ["B1"], "container_type": "planter"},
-        )
-
-        self.assertEqual(moved.status_code, 404, moved.text)
-        conn = db.get_db()
         try:
-            row = conn.execute(
-                "SELECT plot_kind, parent_map_object_id FROM plots WHERE plot_id = %s",
-                ("B1",),
-            ).fetchone()
+            patio = peer_client.post(
+                f"/api/gardens/{garden_id}/map-objects",
+                headers=peer_headers,
+                json=self._patio_payload(),
+            )
+            self.assertEqual(patio.status_code, 201, patio.text)
+
+            moved = peer_client.post(
+                f"/api/gardens/{garden_id}/map-objects/{patio.json()['public_id']}/containers/from-plots",
+                headers=peer_headers,
+                json={"plot_ids": ["B1"], "container_type": "planter"},
+            )
+
+            self.assertEqual(moved.status_code, 404, moved.text)
+            conn = db.get_db()
+            try:
+                row = conn.execute(
+                    "SELECT plot_kind, parent_map_object_id FROM plots WHERE plot_id = %s",
+                    ("B1",),
+                ).fetchone()
+            finally:
+                db.return_db(conn)
+            self.assertEqual(str(row["plot_kind"]), "ground")
+            self.assertIsNone(row["parent_map_object_id"])
         finally:
-            db.return_db(conn)
-        self.assertEqual(str(row["plot_kind"]), "ground")
-        self.assertIsNone(row["parent_map_object_id"])
+            os.environ["AUTH_REQUIRED"] = "false"
 
     def test_grid_shrink_rejects_existing_map_object_overflow(self) -> None:
         garden_id = self._default_garden()
