@@ -110,6 +110,28 @@ class TestLidarTerrainValidation(unittest.TestCase):
                 self.assertTrue(np.any(tile.coverage_mask))
                 self.assertTrue(np.all(np.isfinite(tile.elevations)))
 
+    def test_global_terrain_is_exposed_only_to_its_configured_garden(self) -> None:
+        terrain_path = Path(self.temp_dir.name) / "shared-terrain.las"
+        terrain_path.write_bytes(_terrain_bytes())
+        with patch.dict(
+            os.environ,
+            {
+                "SHADEMAP_LOCAL_TERRAIN_PATH": str(terrain_path),
+                "SHADEMAP_LOCAL_TERRAIN_GARDEN_ID": "701",
+            },
+            clear=False,
+        ):
+            self.assertTrue(lidar_terrain.local_terrain_available(701))
+            self.assertFalse(lidar_terrain.local_terrain_available(702))
+
+        with patch.dict(
+            os.environ,
+            {"SHADEMAP_LOCAL_TERRAIN_PATH": str(terrain_path)},
+            clear=False,
+        ):
+            os.environ.pop("SHADEMAP_LOCAL_TERRAIN_GARDEN_ID", None)
+            self.assertFalse(lidar_terrain.local_terrain_available(701))
+
     def test_rejects_wrong_truncated_and_path_filenames_without_persisting(self) -> None:
         valid = _terrain_bytes()
         cases = (

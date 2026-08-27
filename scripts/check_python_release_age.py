@@ -8,6 +8,9 @@ import os
 import re
 import sys
 import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -35,14 +38,83 @@ def _parse_upload_time(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _candidate_upload_times(package_info: dict[str, Any]) -> list[datetime]:
+def _fetch_pypi_release_metadata(name: str, version: str) -> dict[str, Any]:
+    url = (
+        "https://pypi.org/pypi/"
+        f"{urllib.parse.quote(name, safe='')}/{urllib.parse.quote(version, safe='')}/json"
+    )
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json", "User-Agent": "gardenops-dependency-policy"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            data = json.load(response)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        message = f"could not read PyPI metadata for {name}=={version}: {error}"
+        raise RuntimeError(message) from error
+    if not isinstance(data, dict):
+        raise RuntimeError(f"PyPI returned invalid metadata for {name}=={version}")
+    return data
+
+
+def _locked_artifacts(package_info: dict[str, Any]) -> list[tuple[str, str]]:
+    wheels = package_info.get("wheels", [])
+    if not isinstance(wheels, list):
+        raise RuntimeError("locked wheel metadata is invalid")
+    entries: list[object] = [package_info.get("sdist"), *wheels]
+    artifacts: list[tuple[str, str]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("url")
+        digest = entry.get("hash")
+        if not isinstance(url, str) or not isinstance(digest, str):
+            raise RuntimeError("locked artifact is missing its URL or hash")
+        if not digest.startswith("sha256:"):
+            raise RuntimeError("locked artifact does not use a SHA-256 hash")
+        filename = Path(urllib.parse.unquote(urllib.parse.urlparse(url).path)).name
+        if not filename:
+            raise RuntimeError("locked artifact URL has no filename")
+        artifacts.append((filename, digest.removeprefix("sha256:").lower()))
+    if not artifacts:
+        raise RuntimeError("package has no locked artifacts")
+    return artifacts
+
+
+def _candidate_upload_times(
+    name: str,
+    version: str,
+    package_info: dict[str, Any],
+) -> list[datetime]:
+    metadata = _fetch_pypi_release_metadata(name, version)
+    release_files = metadata.get("urls")
+    if not isinstance(release_files, list):
+        raise RuntimeError(f"PyPI returned no artifact list for {name}=={version}")
+    authoritative: dict[tuple[str, str], datetime] = {}
+    for artifact in release_files:
+        if not isinstance(artifact, dict):
+            continue
+        filename = artifact.get("filename")
+        digests = artifact.get("digests")
+        digest = digests.get("sha256") if isinstance(digests, dict) else None
+        uploaded = artifact.get("upload_time_iso_8601")
+        if isinstance(filename, str) and isinstance(digest, str) and isinstance(uploaded, str):
+            try:
+                authoritative[(filename, digest.lower())] = _parse_upload_time(uploaded)
+            except ValueError as error:
+                raise RuntimeError(
+                    f"PyPI returned an invalid upload time for {filename!r}"
+                ) from error
+
     upload_times: list[datetime] = []
-    sdist = package_info.get("sdist")
-    if isinstance(sdist, dict) and isinstance(sdist.get("upload-time"), str):
-        upload_times.append(_parse_upload_time(sdist["upload-time"]))
-    for wheel in package_info.get("wheels", []):
-        if isinstance(wheel, dict) and isinstance(wheel.get("upload-time"), str):
-            upload_times.append(_parse_upload_time(wheel["upload-time"]))
+    for identity in _locked_artifacts(package_info):
+        uploaded = authoritative.get(identity)
+        if uploaded is None:
+            raise RuntimeError(
+                f"locked artifact {identity[0]!r} and its SHA-256 digest do not match PyPI"
+            )
+        upload_times.append(uploaded)
     return upload_times
 
 
@@ -212,9 +284,10 @@ def main(*, base_root: Path | None = None, head_root: Path | None = None) -> Non
         name = _normalize_python_name(str(package_info.get("name", "<unknown>")))
         version = str(package_info.get("version", "<unknown>"))
 
-        upload_times = _candidate_upload_times(package_info)
-        if not upload_times:
-            errors.append(f"{key} has no artifact upload-time metadata in uv.lock")
+        try:
+            upload_times = _candidate_upload_times(name, version, package_info)
+        except RuntimeError as error:
+            errors.append(f"{key}: {error}")
             continue
 
         bypass_advisories = security_bypasses.get(key)

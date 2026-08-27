@@ -25,6 +25,7 @@ from gardenops.security import (
     AuthContext,
     _authenticate_session_token,
     _legacy_pbkdf2_hash_password,
+    authenticate_user_credentials,
     create_session_for_user,
     create_user,
 )
@@ -38,6 +39,100 @@ from tests.base import BaseApiTest, strong_password
 
 
 class TestSecurity(BaseApiTest):
+    def test_login_failure_runs_dummy_verification_for_non_verifiable_accounts(self) -> None:
+        conn = db.get_db()
+        try:
+            create_user(
+                conn,
+                username="passwordless_failure_user",
+                password=None,
+                role="viewer",
+                password_auth_disabled=True,
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch("gardenops.security._consume_dummy_password_verification") as dummy:
+            self.assertIsNone(
+                authenticate_user_credentials("missing_failure_user", "irrelevant-password")
+            )
+            self.assertIsNone(
+                authenticate_user_credentials("passwordless_failure_user", "irrelevant-password")
+            )
+
+        self.assertEqual(dummy.call_count, 2)
+
+    def test_login_failure_balances_supported_password_hash_schemes(self) -> None:
+        self._create_test_user("modern_hash_user", "modernhashpass", "viewer")
+        legacy = self._create_test_user("legacy_hash_user", "legacyhashpass", "viewer")
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE auth_users SET password_hash = %s WHERE id = %s",
+                (_legacy_pbkdf2_hash_password(strong_password("legacyhashpass")), legacy["id"]),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch(
+            "gardenops.security._consume_dummy_legacy_password_verification"
+        ) as legacy_dummy:
+            self.assertIsNone(
+                authenticate_user_credentials("modern_hash_user", "wrong-modern-password")
+            )
+        legacy_dummy.assert_called_once()
+
+        with patch(
+            "gardenops.security._consume_dummy_argon2_password_verification"
+        ) as argon2_dummy:
+            self.assertIsNone(
+                authenticate_user_credentials("legacy_hash_user", "wrong-legacy-password")
+            )
+        argon2_dummy.assert_called_once()
+
+    def test_successful_login_audit_attributes_actor_and_trusted_client_ip(self) -> None:
+        user = self._create_test_user("audited_login_user", "auditedloginpass", "editor")
+        with patch.dict(
+            os.environ,
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+                "TRUST_PROXY_HEADERS": "true",
+            },
+            clear=False,
+        ):
+            response = self.client.post(
+                "/api/auth/login",
+                headers={"x-real-ip": "198.51.100.23"},
+                json={
+                    "username": "audited_login_user",
+                    "password": strong_password("auditedloginpass"),
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        conn = db.get_db()
+        try:
+            audit = conn.execute(
+                """
+                SELECT actor_user_id, actor_username, actor_auth_type, remote_host
+                FROM audit_events
+                WHERE detail LIKE 'auth.login.password %'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertIsNotNone(audit)
+        self.assertEqual(int(audit["actor_user_id"]), int(user["id"]))
+        self.assertEqual(str(audit["actor_username"]), "audited_login_user")
+        self.assertEqual(str(audit["actor_auth_type"]), "session")
+        self.assertEqual(str(audit["remote_host"]), "198.51.100.23")
+
     def test_session_absolute_lifetime_caps_sliding_idle_expiry(self) -> None:
         user = self._create_test_user("absolute_session_user", "absolute-pass", "editor")
         start_ms = 1_800_000_000_000
@@ -792,7 +887,7 @@ class TestSecurity(BaseApiTest):
             self.assertIn("garden_id", me.json())
             self.assertEqual(me.json()["garden_role"], "admin")
 
-    def test_auth_login_applies_stricter_admin_target_limit(self) -> None:
+    def test_auth_login_applies_strict_target_limit_without_role_disclosure(self) -> None:
         conn = db.get_db()
         try:
             create_user(
@@ -844,7 +939,7 @@ class TestSecurity(BaseApiTest):
         self.assertEqual(admin_first.status_code, 401)
         self.assertEqual(admin_second.status_code, 429)
         self.assertEqual(editor_first.status_code, 401)
-        self.assertEqual(editor_second.status_code, 401)
+        self.assertEqual(editor_second.status_code, 429)
 
     def test_auth_login_adaptive_friction_hook_can_be_required(self) -> None:
         conn = db.get_db()
@@ -877,7 +972,7 @@ class TestSecurity(BaseApiTest):
                     "password": strong_password("frictionpass123"),
                 },
             )
-            allowed = self.client.post(
+            forged = self.client.post(
                 "/api/auth/login",
                 json={
                     "username": "friction_login_user",
@@ -887,9 +982,10 @@ class TestSecurity(BaseApiTest):
                 },
             )
 
-        self.assertEqual(blocked.status_code, 403)
-        self.assertEqual(blocked.json()["detail"], "Additional verification required")
-        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(blocked.status_code, 503)
+        self.assertEqual(blocked.json()["detail"], "Additional verification is not configured")
+        self.assertEqual(forged.status_code, 503)
+        self.assertEqual(forged.json()["detail"], "Additional verification is not configured")
 
     def test_session_cookie_auth_me_without_bearer_header(self) -> None:
         with patch.dict(
@@ -3559,6 +3655,7 @@ class TestSecurity(BaseApiTest):
                 json={"code": self._totp_code(secret)},
             )
             self.assertEqual(confirm.status_code, 200)
+            admin_headers = self._session_headers(confirm.json()["csrf_token"])
             recovery_codes = confirm.json()["recovery_codes"]
             self.assertGreaterEqual(len(recovery_codes), 5)
 
@@ -3656,6 +3753,7 @@ class TestSecurity(BaseApiTest):
                 json={"code": self._totp_code(secret)},
             )
             self.assertEqual(confirm.status_code, 200)
+            admin_headers = self._session_headers(confirm.json()["csrf_token"])
             original_recovery_codes = confirm.json()["recovery_codes"]
             self.assertGreaterEqual(len(original_recovery_codes), 5)
 

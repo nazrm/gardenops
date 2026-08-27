@@ -257,10 +257,59 @@ class MigrationGuardTests(unittest.TestCase):
         finally:
             db.return_db(conn)
 
-        self.assertEqual(versions, list(range(1, 33)))
+        self.assertEqual(versions, list(range(1, 34)))
         self.assertEqual(diagnostics["mode"], "verified-baseline")
         self.assertTrue(diagnostics["can_stamp_migrations"])
         self.assertEqual(diagnostics["missing"], [])
+
+    def test_verified_baseline_executes_required_data_migrations(self) -> None:
+        conn = db.get_db()
+        try:
+            self._assert_disposable_database(conn)
+            conn.execute(
+                """
+                INSERT INTO auth_users
+                    (username, password_hash, role, password_auth_disabled)
+                VALUES ('__local_admin__', 'legacy-fixed-hash', 'admin', 0)
+                ON CONFLICT (username) DO UPDATE SET
+                    password_hash = excluded.password_hash,
+                    role = excluded.role,
+                    password_auth_disabled = excluded.password_auth_disabled
+                """
+            )
+            conn.execute("DELETE FROM schema_migrations")
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        try:
+            db.run_migrations()
+            conn = db.get_db()
+            try:
+                fallback = conn.execute(
+                    """
+                    SELECT password_hash, password_auth_disabled
+                    FROM auth_users
+                    WHERE username = '__local_admin__'
+                    """
+                ).fetchone()
+                versions = {
+                    int(row["version"])
+                    for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+                }
+            finally:
+                db.return_db(conn)
+
+            self.assertIsNone(fallback["password_hash"])
+            self.assertEqual(int(fallback["password_auth_disabled"]), 1)
+            self.assertEqual(versions, set(range(1, 34)))
+        finally:
+            conn = db.get_db()
+            try:
+                conn.execute("DELETE FROM auth_users WHERE username = '__local_admin__'")
+                conn.commit()
+            finally:
+                db.return_db(conn)
 
     def test_untracked_pre_0028_database_stamps_then_upgrades_to_current(self) -> None:
         conn = db.get_db()
@@ -288,7 +337,7 @@ class MigrationGuardTests(unittest.TestCase):
             finally:
                 db.return_db(conn)
 
-            self.assertEqual(versions, set(range(1, 33)))
+            self.assertEqual(versions, set(range(1, 34)))
             self.assertEqual(
                 snapshot.column_types["auth_sessions.device_label"],
                 "text",
@@ -730,7 +779,7 @@ class MigrationGuardTests(unittest.TestCase):
         finally:
             db.return_db(conn)
 
-        self.assertEqual(versions, set(range(1, 33)))
+        self.assertEqual(versions, set(range(1, 34)))
         self.assertEqual(table["name"], "offline_create_operations")
         self.assertEqual(index["name"], "ux_weather_alerts_identity")
 
