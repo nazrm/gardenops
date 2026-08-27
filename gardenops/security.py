@@ -45,6 +45,8 @@ _COMMON_WEAK_PASSWORDS = {
 }
 _DEFAULT_GARDEN_SLUG = "default"
 _ARGON2_HASHER: PasswordHasher | None = None
+_DUMMY_PASSWORD_HASH: str | None = None
+_DUMMY_LEGACY_PASSWORD_HASH: str | None = None
 _PASSKEY_USER_HANDLE_BYTES = 32
 
 
@@ -294,6 +296,46 @@ def _legacy_pbkdf2_hash_password(password: str) -> str:
 
 def hash_password(password: str) -> str:
     return _argon2_hasher().hash(password)
+
+
+def _dummy_password_hash() -> str:
+    global _DUMMY_PASSWORD_HASH  # noqa: PLW0603
+    if _DUMMY_PASSWORD_HASH is None:
+        _DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
+    return _DUMMY_PASSWORD_HASH
+
+
+def _dummy_legacy_password_hash() -> str:
+    global _DUMMY_LEGACY_PASSWORD_HASH  # noqa: PLW0603
+    if _DUMMY_LEGACY_PASSWORD_HASH is None:
+        _DUMMY_LEGACY_PASSWORD_HASH = _legacy_pbkdf2_hash_password(secrets.token_urlsafe(32))
+    return _DUMMY_LEGACY_PASSWORD_HASH
+
+
+def _consume_dummy_argon2_password_verification(password: str) -> None:
+    verify_password(password, _dummy_password_hash())
+
+
+def _consume_dummy_legacy_password_verification(password: str) -> None:
+    verify_password(password, _dummy_legacy_password_hash())
+
+
+def _consume_dummy_password_verification(password: str) -> None:
+    """Keep failed-login password work independent of account existence."""
+    _consume_dummy_argon2_password_verification(password)
+    _consume_dummy_legacy_password_verification(password)
+
+
+def _consume_complementary_password_verification(
+    password: str,
+    password_hash: str,
+) -> None:
+    if password_hash.startswith("$argon2id$"):
+        _consume_dummy_legacy_password_verification(password)
+    elif password_needs_rehash(password_hash):
+        _consume_dummy_argon2_password_verification(password)
+    else:
+        _consume_dummy_password_verification(password)
 
 
 def generate_passkey_user_handle() -> str:
@@ -896,12 +938,15 @@ def create_session_for_user(
     mfa_setup_required: bool = False,
     device_label: str = "",
     location_hint: str = "",
+    db: DbConn | None = None,
 ) -> tuple[str, int]:
     token = secrets.token_urlsafe(48)
     token_hash = _hash_token(token)
     now_ms = current_timestamp_ms()
     expires_at_ms = now_ms + min(_session_ttl_ms(), _session_absolute_ttl_ms())
-    conn = get_db()
+    owns_conn = db is None
+    conn = get_db() if owns_conn else db
+    assert conn is not None
     try:
         conn.execute(
             """
@@ -937,9 +982,11 @@ def create_session_for_user(
             "DELETE FROM auth_sessions WHERE expires_at_ms <= %s",
             (now_ms,),
         )
-        conn.commit()
+        if owns_conn:
+            conn.commit()
     finally:
-        return_db(conn)
+        if owns_conn:
+            return_db(conn)
     return token, expires_at_ms
 
 
@@ -956,6 +1003,10 @@ def revoke_session_token(token: str) -> None:
 
 
 def authenticate_user_credentials(username: str, password: str) -> dict[str, Any] | None:
+    # Initialize both supported KDF dummies before account lookup so the first
+    # login has no account-existence-specific setup cost.
+    _dummy_password_hash()
+    _dummy_legacy_password_hash()
     conn = get_db()
     try:
         row = conn.execute(
@@ -975,17 +1026,22 @@ def authenticate_user_credentials(username: str, password: str) -> dict[str, Any
             (username.strip(),),
         ).fetchone()
         if not row:
+            _consume_dummy_password_verification(password)
             return None
         if int(row["is_active"]) != 1:
+            _consume_dummy_password_verification(password)
             return None
         if int(row["password_auth_disabled"]) == 1 or row["password_hash"] is None:
+            _consume_dummy_password_verification(password)
             return None
+        password_hash = str(row["password_hash"])
         if not verify_password_and_upgrade(
             conn,
             user_id=int(row["id"]),
             password=password,
-            password_hash=str(row["password_hash"]),
+            password_hash=password_hash,
         ):
+            _consume_complementary_password_verification(password, password_hash)
             return None
         return {
             "id": int(row["id"]),

@@ -174,11 +174,22 @@ def _uploaded_terrain_path(garden_id: int) -> Path | None:
     return None
 
 
+def _global_terrain_garden_id() -> int | None:
+    raw = os.environ.get("SHADEMAP_LOCAL_TERRAIN_GARDEN_ID", "").strip()
+    try:
+        garden_id = int(raw)
+    except ValueError:
+        return None
+    return garden_id if garden_id > 0 else None
+
+
 def _terrain_source(garden_id: int | None = None) -> tuple[str, Path] | None:
     if garden_id is not None:
         uploaded = _uploaded_terrain_path(garden_id)
         if uploaded is not None:
             return f"uploaded:{garden_id}", uploaded
+        if _global_terrain_garden_id() != garden_id:
+            return None
 
     explicit = os.environ.get("SHADEMAP_LOCAL_TERRAIN_PATH", "").strip()
     if explicit:

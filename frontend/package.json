@@ -36,7 +36,7 @@
     "axe-core": "4.13.0",
     "playwright-core": "1.62.1",
     "typescript": "6.0.3",
-    "vite": "^8.2.1"
+    "vite": "^8.2.2"
   },
   "dependencies": {
     "@fullcalendar/core": "^6.1.21",

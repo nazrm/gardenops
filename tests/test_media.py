@@ -70,6 +70,60 @@ class TestMedia(BaseApiTest):
         self.assertLessEqual(preview_image.size[0], 160)
         self.assertLessEqual(preview_image.size[1], 120)
 
+    @patch.dict(
+        os.environ,
+        {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+        clear=False,
+    )
+    def test_editor_can_read_but_cannot_mutate_peer_owned_media(self) -> None:
+        owner = self._create_test_user("media_owner", "mediaownerpass", role="editor")
+        self._create_test_user("media_peer", "mediapeerpass", role="editor")
+        garden_id = self._get_default_garden_id()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE plant_ownership SET owner_user_id = %s WHERE plt_id = 'PLT-TEST'",
+                (int(owner["id"]),),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        owner_client, owner_headers = self._authenticated_client(
+            "media_owner",
+            "mediaownerpass",
+            garden_id=garden_id,
+        )
+        uploaded = owner_client.post(
+            "/api/media/upload?target_type=plant&target_id=PLT-TEST",
+            content=self._image_bytes(),
+            headers={**owner_headers, "content-type": "image/png"},
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        asset_id = str(uploaded.json()["asset_id"])
+
+        peer_client, peer_headers = self._authenticated_client(
+            "media_peer",
+            "mediapeerpass",
+            garden_id=garden_id,
+        )
+        listed = peer_client.get(
+            "/api/media?target_type=plant&target_id=PLT-TEST",
+            headers=peer_headers,
+        )
+        self.assertEqual(listed.status_code, 200, listed.text)
+        denied_upload = peer_client.post(
+            "/api/media/upload?target_type=plant&target_id=PLT-TEST",
+            content=self._image_bytes(),
+            headers={**peer_headers, "content-type": "image/png"},
+        )
+        self.assertEqual(denied_upload.status_code, 404, denied_upload.text)
+        denied_delete = peer_client.delete(f"/api/media/{asset_id}", headers=peer_headers)
+        self.assertEqual(denied_delete.status_code, 404, denied_delete.text)
+
+        deleted = owner_client.delete(f"/api/media/{asset_id}", headers=owner_headers)
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+
     def test_media_upload_db_failure_removes_staged_files_and_rolls_back(self) -> None:
         prepared_assets: list[PreparedMediaAsset] = []
         from gardenops.routers import media as media_router

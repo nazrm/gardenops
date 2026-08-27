@@ -220,8 +220,9 @@ def _owner_user_for_plot_write(db: DbConn, *, garden_id: int, context: AuthConte
             created = create_user(
                 db,
                 username="__local_admin__",
-                password="local-admin-bootstrap",
+                password=None,
                 role="admin",
+                password_auth_disabled=True,
             )
             fallback_user_id = int(created["id"])
         db.execute(
@@ -368,6 +369,33 @@ def _require_plot_in_garden_or_unowned(
     if not row:
         return  # Plot doesn't exist in DB — custom assignment, allowed
     _authorize_plot_row(row, context, allow_unowned=True)
+
+
+def _require_custom_assignment_unambiguous(
+    db: DbConn,
+    *,
+    plot_id: str,
+    plt_id: str,
+    context: AuthContext,
+) -> None:
+    """Fail closed when a legacy custom assignment cannot be garden-scoped."""
+    if _plot_row(db, plot_id):
+        return
+    garden_id = _active_garden_id(context)
+    foreign = db.execute(
+        """
+        SELECT 1
+        FROM plant_ownership
+        WHERE plt_id = %s AND garden_id <> %s
+        LIMIT 1
+        """,
+        (plt_id, garden_id),
+    ).fetchone()
+    if foreign:
+        raise HTTPException(
+            status_code=409,
+            detail="Create a garden plot before assigning a plant shared between gardens",
+        )
 
 
 def _require_plant_access(db: DbConn, plt_id: str, context: AuthContext) -> None:
@@ -827,6 +855,13 @@ def add_plant_to_plot(
         allow_custom=True,
         allow_unowned=True,
     )
+    if plot_row is None:
+        _require_custom_assignment_unambiguous(
+            db,
+            plot_id=plot_id,
+            plt_id=plt_id,
+            context=context,
+        )
     # Custom assignment IDs have no physical plot and cannot carry room data.
     effective_room_label = (
         body.room_label
@@ -876,6 +911,13 @@ def update_plant_quantity(
         allow_custom=True,
         allow_unowned=True,
     )
+    if plot_row is None:
+        _require_custom_assignment_unambiguous(
+            db,
+            plot_id=plot_id,
+            plt_id=plt_id,
+            context=context,
+        )
     row = db.execute(
         "SELECT 1 FROM plot_plants WHERE plot_id = %s AND plt_id = %s", (plot_id, plt_id)
     ).fetchone()
@@ -1032,13 +1074,20 @@ def remove_plant_from_plot(plot_id: str, plt_id: str, db: DB, request: Request) 
     context = _auth_context(request)
     _require_plant_access(db, plt_id, context)
     _require_plot_in_garden_or_unowned(db, plot_id, context)
-    _lock_plot_row(
+    plot_row = _lock_plot_row(
         db,
         plot_id,
         context,
         allow_custom=True,
         allow_unowned=True,
     )
+    if plot_row is None:
+        _require_custom_assignment_unambiguous(
+            db,
+            plot_id=plot_id,
+            plt_id=plt_id,
+            context=context,
+        )
     row = db.execute(
         "SELECT 1 FROM plot_plants WHERE plot_id = %s AND plt_id = %s", (plot_id, plt_id)
     ).fetchone()
