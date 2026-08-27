@@ -1556,10 +1556,8 @@ function ensureAdminPanelModule(): Promise<AdminPanelModule> {
     .then((mod) => {
       adminPanelModule = mod;
       mod.setAdminCallbacks({
-        onSignOut: () => {
-          updateAuthButton();
-          void refreshGardenContext();
-          refreshDataAfterAuthChange();
+        onSignOut: async () => {
+          await handleAuthButton();
           showToast(t("auth.signed_out"), "success");
         },
         onAuthStateChanged: () => {

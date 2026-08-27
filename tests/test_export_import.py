@@ -1176,6 +1176,67 @@ class TestExportImport(BaseApiTest):
             db.return_db(conn)
         self.assertIsNone(leaked)
 
+    def test_import_cannot_clear_shared_plant_custom_assignment_across_gardens(self) -> None:
+        gid1, gid2, username, password = self._setup_admin_two_gardens()
+        conn = db.get_db()
+        try:
+            user = conn.execute(
+                "SELECT id FROM auth_users WHERE username = %s",
+                (username,),
+            ).fetchone()
+            assert user is not None
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES ('PLT-TEST', %s, %s)
+                ON CONFLICT (plt_id, garden_id) DO NOTHING
+                """,
+                (int(user["id"]), gid2),
+            )
+            conn.execute(
+                """
+                INSERT INTO plot_plants (plot_id, plt_id, quantity)
+                VALUES ('CUSTOM-SHARED', 'PLT-TEST', 2)
+                """,
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        csv_text = (
+            "plt_id,name,latin,category,bloom_month,color,hardiness,height_cm,light,link,"
+            "year_planted,deer_resistant,care_watering,care_soil,care_planting,"
+            "care_maintenance,care_notes,plot_assignments\n"
+            "PLT-TEST,Imported Test,Testus plantus,frø,juli,hvit,H4,140,sol,,2025,1,"
+            ",,,,,[]\n"
+        )
+        with patch.dict(
+            os.environ,
+            {"AUTH_REQUIRED": "true", "AUTH_MODE": "session", "AUTH_API_KEY": ""},
+            clear=False,
+        ):
+            client = self._new_client()
+            _, csrf = self._login_session(username, password, client=client)
+            response = client.post(
+                "/api/plants/import-csv",
+                headers=self._session_headers(csrf, garden_id=gid1),
+                json={"csv_text": csv_text},
+            )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        conn = db.get_db()
+        try:
+            assignment = conn.execute(
+                """
+                SELECT quantity FROM plot_plants
+                WHERE plot_id = 'CUSTOM-SHARED' AND plt_id = 'PLT-TEST'
+                """,
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        self.assertIsNotNone(assignment)
+        self.assertEqual(int(assignment["quantity"]), 2)
+
     def test_import_plants_csv_rejects_archived_plot_assignments(self) -> None:
         garden_id = self._get_default_garden_id()
         conn = db.get_db()
