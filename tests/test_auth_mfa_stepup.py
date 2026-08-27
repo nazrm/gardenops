@@ -108,12 +108,18 @@ class TestAuthMfaStepUp(BaseApiTest):
             client, headers = self._admin_client("passkey_totp_admin")
             start = client.post("/api/auth/mfa/totp/start", headers=headers)
             self.assertEqual(start.status_code, 200, start.text)
+            old_token = client.cookies.get("gardenops_session") or ""
             confirmed = client.post(
                 "/api/auth/mfa/totp/confirm",
                 headers=headers,
                 json={"code": self._totp_code(str(start.json()["secret"]))},
             )
             self.assertEqual(confirmed.status_code, 200, confirmed.text)
+            headers = self._session_headers(confirmed.json()["csrf_token"])
+            self.assertNotEqual(client.cookies.get("gardenops_session"), old_token)
+            stale_client = self._new_client()
+            stale_client.cookies.set("gardenops_session", old_token, path="/")
+            self.assertEqual(stale_client.get("/api/auth/me").status_code, 401)
 
             conn = db.get_db()
             try:

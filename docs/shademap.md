@@ -249,9 +249,15 @@ You can point GardenOps at a local LiDAR `.laz` point-cloud file:
 
 ```bash
 SHADEMAP_LOCAL_TERRAIN_PATH=/path/to/private-terrain.laz
+SHADEMAP_LOCAL_TERRAIN_GARDEN_ID=1
 SHADEMAP_LOCAL_TERRAIN_RESOLUTION_M=1.0
 SHADEMAP_LOCAL_TERRAIN_MAX_POINTS=2000000
 ```
+
+`SHADEMAP_LOCAL_TERRAIN_GARDEN_ID` is required for a configured or
+repository-discovered terrain file to be exposed through garden-scoped APIs.
+Use the database ID of the one garden covered by that file. Per-garden uploads
+are isolated automatically and do not use this setting.
 
 Local terrain files are often large and location-sensitive. Keep them outside
 Git. The public repository intentionally excludes `.laz`/`.las` point clouds,
