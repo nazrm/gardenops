@@ -2,7 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const ts = require(path.resolve(__dirname, "../frontend/node_modules/typescript"));
+const ts = require(path.resolve(__dirname, "../frontend/node_modules/typescript-compiler-api"));
 
 function fail(message) {
   console.error(`Auth gate status flow check failed: ${message}`);

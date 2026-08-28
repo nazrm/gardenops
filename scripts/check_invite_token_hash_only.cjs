@@ -3,7 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const ts = require(path.resolve(__dirname, "../frontend/node_modules/typescript"));
+const ts = require(path.resolve(__dirname, "../frontend/node_modules/typescript-compiler-api"));
 
 function assert(condition, message) {
   if (!condition) {
