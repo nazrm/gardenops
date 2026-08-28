@@ -423,7 +423,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=50.0.0,<51.0.0" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "laspy", extras = ["lazrs"], specifier = ">=2.7.0" },
-    { name = "numpy", specifier = ">=2.5.1" },
+    { name = "numpy", specifier = ">=2.5.2" },
     { name = "openai", specifier = ">=3.3.1" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
