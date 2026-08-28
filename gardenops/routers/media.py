@@ -18,7 +18,7 @@ from gardenops.offline_idempotency import (
     raise_operation_target_gone,
     reserve_operation,
 )
-from gardenops.rate_limit import enforce_rate_limit, env_int
+from gardenops.rate_limit import client_ip, enforce_rate_limit, env_int
 from gardenops.request_body import read_body_limited
 from gardenops.router_helpers import (
     active_garden_id as _active_garden_id,
@@ -94,7 +94,7 @@ def _normalize_action_reason(
 
 
 def _remote_host(request: Request) -> str:
-    return request.client.host if request.client else ""
+    return client_ip(request)
 
 
 def _require_platform_admin(context: AuthContext) -> None:
@@ -113,6 +113,12 @@ def _can_read_owned_target(context: AuthContext, owner_user_id: int | None) -> b
     if _is_local_admin_fallback(context) or _effective_role(context) in {"admin", "editor"}:
         return True
     return _is_owner_or_admin(context, owner_user_id)
+
+
+def _can_mutate_owned_target(context: AuthContext, owner_user_id: int | None) -> bool:
+    if _is_local_admin_fallback(context) or _effective_role(context) == "admin":
+        return True
+    return context.user_id is not None and int(context.user_id) == owner_user_id
 
 
 def _readable_media_link_sql(
@@ -194,6 +200,37 @@ def _media_link_is_readable(
     return True
 
 
+def _media_link_is_mutable(
+    db: DbConn,
+    *,
+    context: AuthContext,
+    garden_id: int,
+    target_type: str,
+    target_id: str,
+) -> bool:
+    if target_type == "plant":
+        row = db.execute(
+            """
+            SELECT owner_user_id
+            FROM plant_ownership
+            WHERE plt_id = %s AND garden_id = %s
+            """,
+            (target_id, garden_id),
+        ).fetchone()
+        return bool(row and _can_mutate_owned_target(context, row["owner_user_id"]))
+    if target_type == "plot":
+        row = db.execute(
+            """
+            SELECT owner_user_id
+            FROM plot_ownership
+            WHERE plot_id = %s AND garden_id = %s
+            """,
+            (target_id, garden_id),
+        ).fetchone()
+        return bool(row and _can_mutate_owned_target(context, row["owner_user_id"]))
+    return True
+
+
 def _filter_readable_target_ids(
     db: DbConn,
     *,
@@ -248,6 +285,7 @@ def _validate_media_target(
     context: AuthContext,
     target_type: TargetType,
     target_id: str,
+    mutate: bool = False,
 ) -> str:
     garden_id = _active_garden_id(context)
     canonical_id = _canonical_target_id(target_type, target_id)
@@ -297,7 +335,8 @@ def _validate_media_target(
             """,
             (canonical_id, garden_id),
         ).fetchone()
-        if row and _can_read_owned_target(context, row["owner_user_id"]):
+        allowed = _can_mutate_owned_target if mutate else _can_read_owned_target
+        if row and allowed(context, row["owner_user_id"]):
             return canonical_id
         if allow_global:
             global_row = db.execute(
@@ -315,7 +354,8 @@ def _validate_media_target(
         """,
         (canonical_id, garden_id),
     ).fetchone()
-    if row and _can_read_owned_target(context, row["owner_user_id"]):
+    allowed = _can_mutate_owned_target if mutate else _can_read_owned_target
+    if row and allowed(context, row["owner_user_id"]):
         return canonical_id
     if allow_global:
         global_row = db.execute(
@@ -408,6 +448,40 @@ def _fetch_asset_row(
     return row
 
 
+def _require_asset_mutation_access(
+    db: DbConn,
+    *,
+    context: AuthContext,
+    garden_id: int,
+    row: dict[str, Any],
+) -> None:
+    if _is_local_admin_fallback(context) or _effective_role(context) == "admin":
+        return
+    if context.user_id is None or row["actor_user_id"] is None:
+        raise HTTPException(status_code=404, detail="Media asset not found")
+    if int(row["actor_user_id"]) != int(context.user_id):
+        raise HTTPException(status_code=404, detail="Media asset not found")
+    links = db.execute(
+        """
+        SELECT target_type, target_id
+        FROM media_links
+        WHERE asset_id = %s
+        """,
+        (row["asset_id"],),
+    ).fetchall()
+    if not all(
+        _media_link_is_mutable(
+            db,
+            context=context,
+            garden_id=garden_id,
+            target_type=str(link["target_type"]),
+            target_id=str(link["target_id"]),
+        )
+        for link in links
+    ):
+        raise HTTPException(status_code=404, detail="Media asset not found")
+
+
 def _media_upload_replay_response(
     db: DbConn,
     *,
@@ -423,6 +497,7 @@ def _media_upload_replay_response(
             context=context,
             target_type=target_type,
             target_id=target_id,
+            mutate=True,
         )
         row = _fetch_asset_row(db, garden_id=garden_id, asset_id=asset_id)
     except HTTPException as exc:
@@ -1172,6 +1247,7 @@ async def upload_media_asset(
         context=context,
         target_type=target_type,
         target_id=canonical_target_id,
+        mutate=True,
     )
     try:
         prepared = prepare_media_asset(
@@ -1254,13 +1330,12 @@ def delete_media_asset(asset_id: str, request: Request, db: DB) -> dict[str, obj
     _require_write(context)
     garden_id = _active_garden_id(context)
     row = _fetch_asset_row(db, garden_id=garden_id, asset_id=asset_id)
-    if not _asset_has_readable_link(
+    _require_asset_mutation_access(
         db,
         context=context,
         garden_id=garden_id,
-        asset_id=asset_id,
-    ):
-        raise HTTPException(status_code=404, detail="Media asset not found")
+        row=row,
+    )
     storage_pairs = [(str(row["storage_key"]), str(row["preview_storage_key"]))]
     enqueue_media_cleanup_jobs(db, storage_pairs)
     db.execute(
@@ -1288,18 +1363,18 @@ def remove_media_link(
     _require_write(context)
     garden_id = _active_garden_id(context)
     row = _fetch_asset_row(db, garden_id=garden_id, asset_id=asset_id)
-    if not _asset_has_readable_link(
+    _require_asset_mutation_access(
         db,
         context=context,
         garden_id=garden_id,
-        asset_id=asset_id,
-    ):
-        raise HTTPException(status_code=404, detail="Media asset not found")
+        row=row,
+    )
     canonical_target_id = _validate_media_target(
         db,
         context=context,
         target_type=target_type,
         target_id=target_id,
+        mutate=True,
     )
     deleted_link = db.execute(
         """
@@ -1355,19 +1430,19 @@ def add_media_link(
     context = _auth_context(request)
     _require_write(context)
     garden_id = _active_garden_id(context)
-    _fetch_asset_row(db, garden_id=garden_id, asset_id=asset_id)
-    if not _asset_has_readable_link(
+    asset_row = _fetch_asset_row(db, garden_id=garden_id, asset_id=asset_id)
+    _require_asset_mutation_access(
         db,
         context=context,
         garden_id=garden_id,
-        asset_id=asset_id,
-    ):
-        raise HTTPException(status_code=404, detail="Media asset not found")
+        row=asset_row,
+    )
     canonical_target_id = _validate_media_target(
         db,
         context=context,
         target_type=body.target_type,
         target_id=body.target_id,
+        mutate=True,
     )
     db.execute(
         """
@@ -1397,6 +1472,7 @@ def set_plant_cover(
         context=context,
         target_type="plant",
         target_id=plt_id,
+        mutate=True,
     )
     _fetch_asset_row(db, garden_id=garden_id, asset_id=body.asset_id)
     _set_plant_cover(

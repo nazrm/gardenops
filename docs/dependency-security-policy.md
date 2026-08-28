@@ -23,6 +23,10 @@ not PR creation or lockfile edit time. The AI SDK tier applies only to the exact
 direct package names; their transitive dependencies and similarly named
 packages use the normal tiers.
 
+For Python, the gate reads publish timestamps from PyPI and requires every
+locked filename and SHA-256 digest to match that authoritative release record.
+Timestamps embedded in `uv.lock` are not accepted as release-age evidence.
+
 Dependabot mirrors these windows where its configuration supports them. The AI
 SDKs are excluded from Dependabot's global pip cooldown so Dependabot can open
 the PR promptly; the `Dependency Policy` check still enforces their one-day

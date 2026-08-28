@@ -13,7 +13,6 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
-MAX_TEXT_BYTES = 512_000
 MAX_FILE_BYTES = 1_500_000
 
 BLOCKED_GLOBS = (
@@ -294,7 +293,7 @@ def secret_pattern_details_for_line(line: str) -> list[str]:
 def find_secret_patterns(data: bytes, path: str, surface: str) -> list[Finding]:
     if not data or is_binary(data):
         return []
-    sample = data[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
+    sample = data.decode("utf-8", errors="ignore")
     return find_secret_patterns_in_lines(
         ((line_no, line) for line_no, line in enumerate(sample.splitlines(), start=1)),
         path,
@@ -364,7 +363,7 @@ def scan_added_secret_patterns(diff_args: list[str], surface: str) -> list[Findi
     if completed.returncode not in {0, 1}:
         stderr = completed.stderr.decode("utf-8", errors="replace").strip()
         raise RuntimeError(f"git {' '.join(diff_args)} failed: {stderr}")
-    text = completed.stdout[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
+    text = completed.stdout.decode("utf-8", errors="ignore")
     findings: list[Finding] = []
     current_path = "<patch>"
     new_line_no = 0
@@ -459,10 +458,23 @@ def commit_paths(commit: str) -> list[str]:
 
 
 def scan_commit_patch(commit: str) -> list[Finding]:
-    data = read_git_blob(f"{commit} --")
+    completed = run_git(
+        ["show", "--format=", "--unified=0", "--no-ext-diff", commit, "--"],
+        check=False,
+    )
+    if completed.returncode != 0:
+        return [
+            Finding(
+                "PATCH_SCAN_FAILED",
+                "<patch>",
+                f"could not inspect commit patch {commit[:12]}",
+                "pre-push",
+            )
+        ]
+    data = completed.stdout
     if not data:
         return []
-    text = data[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
+    text = data.decode("utf-8", errors="ignore")
     findings: list[Finding] = []
     current_path = "<patch>"
     for line_no, line in enumerate(text.splitlines(), start=1):

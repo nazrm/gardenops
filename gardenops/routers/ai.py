@@ -271,7 +271,7 @@ def _care_candidates_for_context(
             """,
             (int(context.garden_id), int(context.garden_id)),
         ).fetchall()
-    elif has_write_access(context):
+    elif effective_role(context) == "admin":
         rows = db.execute(
             f"""
             SELECT {fields}
@@ -287,6 +287,24 @@ def _care_candidates_for_context(
             ORDER BY p.plt_id
             """,
             (int(context.garden_id), int(context.garden_id)),
+        ).fetchall()
+    elif effective_role(context) == "editor" and context.user_id is not None:
+        rows = db.execute(
+            f"""
+            SELECT {fields}
+            FROM plants p
+            JOIN plant_ownership po ON po.plt_id = p.plt_id
+            WHERE po.garden_id = %s
+              AND po.owner_user_id = %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM plant_ownership other_po
+                  WHERE other_po.plt_id = p.plt_id
+                    AND other_po.garden_id <> %s
+              )
+            ORDER BY p.plt_id
+            """,
+            (int(context.garden_id), int(context.user_id), int(context.garden_id)),
         ).fetchall()
     else:
         return []
