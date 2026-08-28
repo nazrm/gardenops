@@ -228,9 +228,7 @@ def test_npm_release_age_rejects_alias_lock_identity_mismatch(tmp_path):
     frontend = tmp_path / "frontend"
     frontend.mkdir()
     (frontend / "package.json").write_text(
-        json.dumps(
-            {"devDependencies": {"compiler-api": "npm:typescript@6.0.3"}}
-        ),
+        json.dumps({"devDependencies": {"compiler-api": "npm:typescript@6.0.3"}}),
         encoding="utf-8",
     )
     (frontend / "package-lock.json").write_text(
