@@ -33,6 +33,25 @@ function packageKey(name, version) {
   return `${name}@${version}`;
 }
 
+function canonicalDependencyName(name, specifier) {
+  if (typeof specifier !== "string" || !specifier.startsWith("npm:")) {
+    return name;
+  }
+  const target = specifier.slice(4);
+  const versionSeparator = target.lastIndexOf("@");
+  const packageName = versionSeparator > 0 ? target.slice(0, versionSeparator) : target;
+  return packageName.includes("/") || !packageName.startsWith("@") ? packageName : name;
+}
+
+function dependencyEntries(packageData) {
+  return [
+    ...Object.entries(packageData.dependencies || {}),
+    ...Object.entries(packageData.devDependencies || {}),
+    ...Object.entries(packageData.optionalDependencies || {}),
+    ...Object.entries(packageData.peerDependencies || {}),
+  ];
+}
+
 function loadSecurityReleaseBypasses() {
   if (
     configuredSecurityBypassPath &&
@@ -165,6 +184,10 @@ async function mapWithConcurrency(items, concurrency, worker) {
 function collectLockedPackages(root = ROOT) {
   const lockPath = path.join(root, "frontend", "package-lock.json");
   const lockData = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+  const packageData = JSON.parse(
+    fs.readFileSync(path.join(root, "frontend", "package.json"), "utf8"),
+  );
+  const directSpecifiers = new Map(dependencyEntries(packageData));
 
   if (![2, 3].includes(lockData.lockfileVersion)) {
     throw new Error(
@@ -191,7 +214,21 @@ function collectLockedPackages(root = ROOT) {
   const packages = new Map();
 
   for (const [packagePath, packageInfo] of dependencyPackages) {
-    const name = packageNameFromLockPath(packagePath);
+    const pathName = packageNameFromLockPath(packagePath);
+    const isDirect = pathName && packagePath === `node_modules/${pathName}`;
+    const declaredSpecifier = isDirect ? directSpecifiers.get(pathName) : undefined;
+    const expectedName = canonicalDependencyName(pathName, declaredSpecifier);
+    const lockName = packageInfo && packageInfo.name;
+    if (
+      typeof lockName === "string" &&
+      lockName.length > 0 &&
+      lockName !== expectedName
+    ) {
+      throw new Error(
+        `${packagePath} lockfile name ${lockName} does not match manifest identity ${expectedName}`,
+      );
+    }
+    const name = expectedName;
     const version = packageInfo && packageInfo.version;
     if (!name || typeof version !== "string") {
       continue;
@@ -208,12 +245,11 @@ function directDependencyNames(root) {
   const packageData = JSON.parse(
     fs.readFileSync(path.join(root, "frontend", "package.json"), "utf8"),
   );
-  return new Set([
-    ...Object.keys(packageData.dependencies || {}),
-    ...Object.keys(packageData.devDependencies || {}),
-    ...Object.keys(packageData.optionalDependencies || {}),
-    ...Object.keys(packageData.peerDependencies || {}),
-  ]);
+  return new Set(
+    dependencyEntries(packageData).map(([name, specifier]) =>
+      canonicalDependencyName(name, specifier),
+    ),
+  );
 }
 
 function packageVersions(packages) {
@@ -352,7 +388,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+  canonicalDependencyName,
+  collectLockedPackages,
   cooldownFor,
+  directDependencyNames,
   loadSecurityReleaseBypasses,
   selectPackagesToCheck,
 };
