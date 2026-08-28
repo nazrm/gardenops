@@ -245,6 +245,7 @@ AttentionUserState = Literal["unread", "read", "dismissed", "snoozed", "preferen
 AttentionDelivery = Literal["panel_only", "inbox", "digest", "interruptive"]
 AttentionProviderKey = Literal["task", "weather", "issue", "calendar", "notification_status"]
 
+
 @dataclass(frozen=True)
 class AttentionAction:
     kind: Literal[
@@ -260,6 +261,7 @@ class AttentionAction:
     target_type: str
     target_id: str
     metadata: dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass(frozen=True)
 class AttentionItem:
@@ -340,7 +342,9 @@ def test_attention_today_date_uses_explicit_frozen_date() -> None:
     assert attention_today_date(now_ms=1783180800000, frozen_date="2026-07-05") == "2026-07-05"
 
 
-def test_attention_today_date_rejects_missing_clock_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_attention_today_date_rejects_missing_clock_in_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("APP_ENV", "test")
     with pytest.raises(RuntimeError, match="frozen_date"):
         attention_today_date(now_ms=1783180800000, frozen_date=None)
@@ -357,7 +361,9 @@ def test_attention_request_clock_reads_explicit_test_env(monkeypatch: pytest.Mon
     assert frozen_date == "2026-07-05"
 
 
-def test_attention_request_clock_rejects_test_env_outside_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_attention_request_clock_rejects_test_env_outside_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("GARDENOPS_ATTENTION_FROZEN_DATE", "2026-07-05")
 
@@ -373,7 +379,9 @@ def test_attention_e2e_database_guard_rejects_non_test_url(monkeypatch: pytest.M
         require_attention_e2e_database("postgresql://localhost/gardenops")
 
 
-def test_attention_e2e_database_guard_rejects_missing_allow_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_attention_e2e_database_guard_rejects_missing_allow_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("AUTH_REQUIRED", "false")
     monkeypatch.delenv("GARDENOPS_ATTENTION_E2E_ALLOW_TRUNCATE", raising=False)
@@ -382,7 +390,9 @@ def test_attention_e2e_database_guard_rejects_missing_allow_flag(monkeypatch: py
         require_attention_e2e_database("postgresql://localhost/gardenops_attention_e2e_test")
 
 
-def test_attention_e2e_database_guard_accepts_named_test_url(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_attention_e2e_database_guard_accepts_named_test_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("AUTH_REQUIRED", "false")
     monkeypatch.setenv("GARDENOPS_ATTENTION_E2E_ALLOW_TRUNCATE", "1")
@@ -439,13 +449,19 @@ def require_attention_e2e_database(database_url: str) -> None:
     if os.environ.get("AUTH_REQUIRED", "").strip().lower() != "false":
         raise RuntimeError("Attention E2E seeding requires AUTH_REQUIRED=false")
     if os.environ.get("GARDENOPS_ATTENTION_E2E_ALLOW_TRUNCATE", "").strip() != "1":
-        raise RuntimeError("Attention E2E seeding requires GARDENOPS_ATTENTION_E2E_ALLOW_TRUNCATE=1")
+        raise RuntimeError(
+            "Attention E2E seeding requires GARDENOPS_ATTENTION_E2E_ALLOW_TRUNCATE=1"
+        )
     parsed = urlsplit(database_url)
     if parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
         raise RuntimeError("Attention E2E database URL must use a local disposable database")
     db_name = parsed.path.rsplit("/", 1)[-1].lower()
-    if db_name != "gardenops_attention_e2e_test" and not db_name.startswith("gardenops_attention_e2e_test_"):
-        raise RuntimeError("Attention E2E database URL must point at a disposable e2e test database")
+    if db_name != "gardenops_attention_e2e_test" and not db_name.startswith(
+        "gardenops_attention_e2e_test_"
+    ):
+        raise RuntimeError(
+            "Attention E2E database URL must point at a disposable e2e test database"
+        )
 ```
 
 Create `gardenops/services/attention/__init__.py`:
@@ -532,7 +548,9 @@ def main() -> None:
     visitor = SeedSafetyVisitor()
     visitor.visit(tree)
     if visitor.setdefault_lines:
-        raise SystemExit(f"seed script must not set default environment values: {visitor.setdefault_lines}")
+        raise SystemExit(
+            f"seed script must not set default environment values: {visitor.setdefault_lines}"
+        )
     if visitor.main_guard_line is None:
         raise SystemExit("seed script must call require_attention_e2e_database")
     before_guard = [line for line in visitor.main_db_touch_lines if line < visitor.main_guard_line]
@@ -637,7 +655,9 @@ class TestAttentionStorageAndGate(BaseApiTest):
 
         self.assertEqual(self.client.get("/api/attention/today").status_code, 403)
         self.assertEqual(self.client.put("/api/attention/preferences", json={}).status_code, 403)
-        self.assertEqual(self.client.post("/api/attention/items/attn:task:demo/read", json={}).status_code, 403)
+        self.assertEqual(
+            self.client.post("/api/attention/items/attn:task:demo/read", json={}).status_code, 403
+        )
 ```
 
 - [ ] **Step 2: Run the focused tests to verify RED**
@@ -659,9 +679,9 @@ Create `migrations/0019_attention_model.sql` using the SQL in the Data Model sec
 In `gardenops/schema_signature.py`, add these tables to `REQUIRED_TABLES`:
 
 ```python
-"user_attention_preferences",
-"user_attention_item_state",
-"attention_outcomes",
+("user_attention_preferences",)
+("user_attention_item_state",)
+("attention_outcomes",)
 ```
 
 Add these `REQUIRED_COLUMNS` entries:
@@ -717,23 +737,23 @@ Add these `REQUIRED_COLUMNS` entries:
 Add these index names to `REQUIRED_INDEXES`:
 
 ```python
-"idx_user_attention_item_state_garden_user",
-"idx_attention_outcomes_garden_expires",
-"idx_attention_outcomes_source",
-"ux_attention_outcomes_source_kind",
+("idx_user_attention_item_state_garden_user",)
+("idx_attention_outcomes_garden_expires",)
+("idx_attention_outcomes_source",)
+("ux_attention_outcomes_source_kind",)
 ```
 
 Add these constraint names to `REQUIRED_CONSTRAINTS`:
 
 ```python
-"ux_user_attention_preferences_user",
-"fk_user_attention_preferences_user",
-"ck_user_attention_preferences_no_action_bool",
-"ux_user_attention_item_state_user_garden_item",
-"fk_user_attention_item_state_user",
-"fk_user_attention_item_state_garden",
-"attention_outcomes_public_id_key",
-"fk_attention_outcomes_garden",
+("ux_user_attention_preferences_user",)
+("fk_user_attention_preferences_user",)
+("ck_user_attention_preferences_no_action_bool",)
+("ux_user_attention_item_state_user_garden_item",)
+("fk_user_attention_item_state_user",)
+("fk_user_attention_item_state_garden",)
+("attention_outcomes_public_id_key",)
+("fk_attention_outcomes_garden",)
 ```
 
 - [ ] **Step 5: Add the feature gate**
@@ -747,7 +767,7 @@ In `gardenops/feature_gates.py`, add:
 to `_FEATURE_TIERS`, and add this route gate before the professional routes:
 
 ```python
-("/api/attention", "attention"),
+(("/api/attention", "attention"),)
 ```
 
 - [ ] **Step 6: Run tests to verify GREEN**
@@ -926,7 +946,9 @@ def stable_group_id(provider: str, group_key: str, child_ids: list[str]) -> str:
 
 def is_generated_watering_task(task_type: str, rule_source: str | None) -> bool:
     value = (rule_source or "").strip()
-    return task_type == "water" and (value.startswith("water:") or value.startswith("auto:dry_water:"))
+    return task_type == "water" and (
+        value.startswith("water:") or value.startswith("auto:dry_water:")
+    )
 
 
 def normalize_severity(value: str | None) -> AttentionSeverity:
@@ -990,8 +1012,14 @@ class TestAttentionTaskProvider(BaseApiTest):
     def _garden_and_user(self) -> tuple[int, int]:
         conn = db.get_db()
         try:
-            garden_id = int(conn.execute("SELECT id FROM gardens WHERE slug = 'default'").fetchone()["id"])
-            user_id = int(conn.execute("SELECT id FROM auth_users WHERE username = 'test_admin'").fetchone()["id"])
+            garden_id = int(
+                conn.execute("SELECT id FROM gardens WHERE slug = 'default'").fetchone()["id"]
+            )
+            user_id = int(
+                conn.execute("SELECT id FROM auth_users WHERE username = 'test_admin'").fetchone()[
+                    "id"
+                ]
+            )
             return garden_id, user_id
         finally:
             db.return_db(conn)
@@ -1021,8 +1049,14 @@ class TestAttentionTaskProvider(BaseApiTest):
                 """,
                 (garden_id, garden_id, garden_id, garden_id, garden_id),
             )
-            due_id = int(conn.execute("SELECT id FROM garden_tasks WHERE public_id = 'task_due'").fetchone()["id"])
-            conn.execute("INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'A1')", (due_id,))
+            due_id = int(
+                conn.execute("SELECT id FROM garden_tasks WHERE public_id = 'task_due'").fetchone()[
+                    "id"
+                ]
+            )
+            conn.execute(
+                "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'A1')", (due_id,)
+            )
             conn.commit()
             items = TaskAttentionProvider(frozen_date="2026-07-05").collect(
                 conn,
@@ -1078,7 +1112,9 @@ class TaskAttentionProvider:
     def __init__(self, *, frozen_date: str | None = None) -> None:
         self.frozen_date = frozen_date
 
-    def collect(self, conn: DbConn, *, garden_id: int, user_id: int, now_ms: int) -> list[AttentionItem]:
+    def collect(
+        self, conn: DbConn, *, garden_id: int, user_id: int, now_ms: int
+    ) -> list[AttentionItem]:
         today = attention_today_date(now_ms=now_ms, frozen_date=self.frozen_date)
         rows = conn.execute(
             """
@@ -1094,9 +1130,14 @@ class TaskAttentionProvider:
             """,
             (garden_id, today, today, now_ms - 86_400_000),
         ).fetchall()
-        return [self._item_from_row(conn, row, garden_id=garden_id, user_id=user_id, today=today) for row in rows]
+        return [
+            self._item_from_row(conn, row, garden_id=garden_id, user_id=user_id, today=today)
+            for row in rows
+        ]
 
-    def _item_from_row(self, conn: DbConn, row: dict, *, garden_id: int, user_id: int, today: str) -> AttentionItem:
+    def _item_from_row(
+        self, conn: DbConn, row: dict, *, garden_id: int, user_id: int, today: str
+    ) -> AttentionItem:
         task_id = int(row["id"])
         public_id = str(row["public_id"])
         plot_ids = tuple(
@@ -1124,12 +1165,16 @@ class TaskAttentionProvider:
             reason = "Skipped"
         primary_action = None
         if task_status in {"pending", "snoozed"}:
-            primary_action = AttentionAction(kind="open_task", label="Open task", target_type="task", target_id=public_id)
+            primary_action = AttentionAction(
+                kind="open_task", label="Open task", target_type="task", target_id=public_id
+            )
         return AttentionItem(
             id=f"attn:task:{public_id}",
             provider="task",
             type=item_type,
-            category="needs_action" if task_status in {"pending", "snoozed"} else "no_action_needed",
+            category="needs_action"
+            if task_status in {"pending", "snoozed"}
+            else "no_action_needed",
             severity=str(row["severity"] or "normal"),
             title=str(row["title"]),
             body=str(row["description"] or ""),
@@ -1184,7 +1229,9 @@ class TestAttentionTodayApi(BaseApiTest):
     def test_today_returns_bounded_sections_and_stable_ids(self) -> None:
         conn = db.get_db()
         try:
-            garden_id = int(conn.execute("SELECT id FROM gardens WHERE slug = 'default'").fetchone()["id"])
+            garden_id = int(
+                conn.execute("SELECT id FROM gardens WHERE slug = 'default'").fetchone()["id"]
+            )
             for idx in range(7):
                 conn.execute(
                     """
@@ -1225,9 +1272,7 @@ class TestAttentionTodayApi(BaseApiTest):
             r = self.client.get("/api/attention/today")
         self.assertEqual(r.status_code, 200)
         providers = {
-            item["provider"]
-            for section in r.json()["sections"]
-            for item in section["items"]
+            item["provider"] for section in r.json()["sections"] for item in section["items"]
         }
         self.assertLessEqual(providers, {"task"})
 ```
@@ -1270,7 +1315,9 @@ class AttentionService:
         force_degraded_provider: str | None = None,
     ) -> dict[str, Any]:
         preferences = load_attention_preferences(conn, user_id=user_id)
-        user_states = load_user_attention_states(conn, garden_id=garden_id, user_id=user_id, now_ms=now_ms)
+        user_states = load_user_attention_states(
+            conn, garden_id=garden_id, user_id=user_id, now_ms=now_ms
+        )
         items: list[AttentionItem] = []
         degraded: list[dict[str, str]] = []
         for provider_index, provider in enumerate(self.providers):
@@ -1279,7 +1326,9 @@ class AttentionService:
             try:
                 if force_degraded_provider == provider.key:
                     raise RuntimeError("forced test degradation")
-                items.extend(provider.collect(conn, garden_id=garden_id, user_id=user_id, now_ms=now_ms))
+                items.extend(
+                    provider.collect(conn, garden_id=garden_id, user_id=user_id, now_ms=now_ms)
+                )
                 conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             except Exception:
                 conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
@@ -1369,6 +1418,7 @@ In `gardenops/main.py`, import and include:
 
 ```python
 from gardenops.routers.attention import router as attention_router
+
 app.include_router(attention_router, prefix="/api")
 ```
 
@@ -1586,7 +1636,9 @@ def main() -> None:
             password="AttentionE2E!Passphrase1234567890",  # push-sanitizer: allow SECRET_ASSIGNMENT test-only E2E user password
             role="admin",
         )
-        garden_id = int(conn.execute("SELECT id FROM gardens WHERE slug = 'default'").fetchone()["id"])
+        garden_id = int(
+            conn.execute("SELECT id FROM gardens WHERE slug = 'default'").fetchone()["id"]
+        )
         user_id = int(user["id"])
         conn.execute(
             "INSERT INTO garden_memberships (garden_id, user_id, role, created_at_ms, updated_at_ms) "
@@ -1608,8 +1660,14 @@ def main() -> None:
             """,
             (garden_id,),
         )
-        task_id = int(conn.execute("SELECT id FROM garden_tasks WHERE public_id = 'task_basil_water'").fetchone()["id"])
-        conn.execute("INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'A1')", (task_id,))
+        task_id = int(
+            conn.execute(
+                "SELECT id FROM garden_tasks WHERE public_id = 'task_basil_water'"
+            ).fetchone()["id"]
+        )
+        conn.execute(
+            "INSERT INTO garden_task_plots (task_id, plot_id) VALUES (%s, 'A1')", (task_id,)
+        )
         conn.commit()
     finally:
         db.return_db(conn)
@@ -1804,7 +1862,9 @@ RAIN_COVERS_WATERING_MM = 10.0
 
 def is_generated_watering_task(task_type: str, rule_source: str | None) -> bool:
     value = (rule_source or "").strip()
-    return task_type == "water" and (value.startswith("water:") or value.startswith("auto:dry_water:"))
+    return task_type == "water" and (
+        value.startswith("water:") or value.startswith("auto:dry_water:")
+    )
 ```
 
 Update `TaskAttentionProvider` so generated outdoor watering is omitted from active Attention only when there is already a matching persisted `watering_covered_by_rain` or `watering_rescheduled_by_rain` outcome. Keep manual, generated indoor, covered/ambiguous, and no-plot watering active unless domain automation has already written a matching outcome. Do not write `attention_outcomes` from `TaskAttentionProvider`.
@@ -1820,7 +1880,9 @@ class TestAttentionProviderDegradation(BaseApiTest):
     def test_provider_failure_returns_degraded_provider(self) -> None:
         r = self.client.get("/api/attention/today?force_degraded_provider=weather")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["degraded_providers"], [{"provider": "weather", "status": "degraded"}])
+        self.assertEqual(
+            r.json()["degraded_providers"], [{"provider": "weather", "status": "degraded"}]
+        )
 
     def test_sql_provider_failure_does_not_abort_later_provider(self) -> None:
         from gardenops.services.attention import AttentionService, TaskAttentionProvider
@@ -1834,8 +1896,14 @@ class TestAttentionProviderDegradation(BaseApiTest):
 
         conn = db.get_db()
         try:
-            garden_id = int(conn.execute("SELECT id FROM gardens WHERE slug = 'default'").fetchone()["id"])
-            user_id = int(conn.execute("SELECT id FROM auth_users WHERE username = 'test_admin'").fetchone()["id"])
+            garden_id = int(
+                conn.execute("SELECT id FROM gardens WHERE slug = 'default'").fetchone()["id"]
+            )
+            user_id = int(
+                conn.execute("SELECT id FROM auth_users WHERE username = 'test_admin'").fetchone()[
+                    "id"
+                ]
+            )
             body = AttentionService(
                 providers=[
                     BrokenSqlProvider(),
@@ -1845,7 +1913,9 @@ class TestAttentionProviderDegradation(BaseApiTest):
         finally:
             db.return_db(conn)
 
-        self.assertEqual(body["degraded_providers"], [{"provider": "weather", "status": "degraded"}])
+        self.assertEqual(
+            body["degraded_providers"], [{"provider": "weather", "status": "degraded"}]
+        )
         self.assertIn("sections", body)
 ```
 
@@ -1931,11 +2001,11 @@ Create `gardenops/services/attention/providers/notifications.py`. It may select 
 Update `AttentionService` provider order:
 
 ```python
-TaskAttentionProvider(frozen_date=frozen_date),
-WeatherAttentionProvider(frozen_date=frozen_date),
-IssueAttentionProvider(frozen_date=frozen_date),
-CalendarAttentionProvider(frozen_date=frozen_date),
-NotificationStatusAttentionProvider(),
+(TaskAttentionProvider(frozen_date=frozen_date),)
+(WeatherAttentionProvider(frozen_date=frozen_date),)
+(IssueAttentionProvider(frozen_date=frozen_date),)
+(CalendarAttentionProvider(frozen_date=frozen_date),)
+(NotificationStatusAttentionProvider(),)
 ```
 
 - [ ] **Step 7: Run provider tests to verify GREEN**
