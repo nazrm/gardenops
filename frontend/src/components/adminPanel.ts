@@ -7,7 +7,6 @@ import { getApiErrorMessage } from "../services/api";
 import { featuresLostOnDowngrade, isFeatureEnabled } from "../core/featureGates";
 import { confirmDialog, promptDialog, promptPasswordDialog } from "./dialogCore";
 import { showToast } from "./toast";
-import { clearOfflineQueue } from "../services/offlineQueue";
 import type {
   AdminSystemHealth,
   AuditEvent,
@@ -59,8 +58,6 @@ import {
   getAdminSystemHealthApi,
   getUserInvitationsApi,
   issueUserResetTokenApi,
-  logoutApi,
-  clearStoredAuthToken,
   regenerateAuthMfaRecoveryCodesApi,
   reauthenticateApi,
   restartUserOnboardingApi,
@@ -212,7 +209,7 @@ const state: AdminState = {
   missingPlantCoversTotal: 0,
 };
 
-let onSignOut: (() => void) | null = null;
+let onSignOut: (() => Promise<void>) | null = null;
 let onAuthStateChanged: (() => void) | null = null;
 let onGardenStateChanged: (() => Promise<void>) | null = null;
 let onRestartOnboarding: (() => Promise<void>) | null = null;
@@ -226,7 +223,7 @@ const gardenSettingsBaselines = new Map<number, GardenSettings>();
 const gardenSettingsDrafts = new Map<number, GardenSettingsDraft>();
 
 export function setAdminCallbacks(cbs: {
-  onSignOut: () => void;
+  onSignOut: () => Promise<void>;
   onAuthStateChanged: () => void;
   onGardenStateChanged: () => Promise<void>;
   onRestartOnboarding: () => Promise<void>;
@@ -3379,13 +3376,7 @@ function wireSection(): void {
     void loadSystem().then(repaint);
   });
   container.querySelector("#adm-sign-out")?.addEventListener("click", async () => {
-    try {
-      await logoutApi();
-    } catch { /* clear local state anyway */ }
-    await clearOfflineQueue().catch(() => undefined);
-    clearStoredAuthToken();
-    resetAdminPanelSensitiveState();
-    onSignOut?.();
+    await onSignOut?.();
   });
   container.querySelector("#adm-ero-toggle")?.addEventListener("click", async () => {
     const next = !state.emergencyReadOnly.enabled;

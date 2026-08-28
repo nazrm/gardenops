@@ -687,6 +687,52 @@ class TestMapObjects(BaseApiTest):
         self.assertIsNone(row["parent_map_object_id"])
         self.assertEqual((int(row["grid_row"]), int(row["grid_col"])), (1, 1))
 
+    def test_move_existing_plot_into_area_requires_plot_ownership(self) -> None:
+        garden_id = self._default_garden()
+        owner = self._create_test_user("plot_move_owner", "plot-move-owner-pass", "editor")
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE plot_ownership SET owner_user_id = %s WHERE plot_id = %s",
+                (int(owner["id"]), "B1"),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        peer_client, peer_headers = self._create_member_client(
+            username="plot_move_peer",
+            role="editor",
+            garden_id=garden_id,
+        )
+        try:
+            patio = peer_client.post(
+                f"/api/gardens/{garden_id}/map-objects",
+                headers=peer_headers,
+                json=self._patio_payload(),
+            )
+            self.assertEqual(patio.status_code, 201, patio.text)
+
+            moved = peer_client.post(
+                f"/api/gardens/{garden_id}/map-objects/{patio.json()['public_id']}/containers/from-plots",
+                headers=peer_headers,
+                json={"plot_ids": ["B1"], "container_type": "planter"},
+            )
+
+            self.assertEqual(moved.status_code, 404, moved.text)
+            conn = db.get_db()
+            try:
+                row = conn.execute(
+                    "SELECT plot_kind, parent_map_object_id FROM plots WHERE plot_id = %s",
+                    ("B1",),
+                ).fetchone()
+            finally:
+                db.return_db(conn)
+            self.assertEqual(str(row["plot_kind"]), "ground")
+            self.assertIsNone(row["parent_map_object_id"])
+        finally:
+            os.environ["AUTH_REQUIRED"] = "false"
+
     def test_grid_shrink_rejects_existing_map_object_overflow(self) -> None:
         garden_id = self._default_garden()
         payload = self._patio_payload()

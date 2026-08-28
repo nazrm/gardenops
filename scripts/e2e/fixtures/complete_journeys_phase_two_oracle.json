@@ -122,8 +122,8 @@
         {"id": "COMPLETE-P2-VIEWER", "name": "Phase 2 Viewer Lavender"}
       ],
       "due_task_notifications": [
-        {"task_id": "tsk_complete_p2_batch_a", "task_title": "Weed Phase 2 Batch Thyme", "plants": ["Phase 2 Batch Thyme"]},
-        {"task_id": "tsk_complete_p2_batch_b", "task_title": "Weed Phase 2 Batch Sage", "plants": ["Phase 2 Batch Sage"]},
+        {"task_id": "tsk_complete_p2_batch_a", "task_title": "Deadhead Phase 2 Batch Thyme", "plants": ["Phase 2 Batch Thyme"]},
+        {"task_id": "tsk_complete_p2_batch_b", "task_title": "Deadhead Phase 2 Batch Sage", "plants": ["Phase 2 Batch Sage"]},
         {"task_id": "tsk_complete_p2_bloom_desktop", "task_title": "Observe bloom: Phase 2 Desktop Astrantia", "plants": ["Phase 2 Desktop Astrantia"]},
         {"task_id": "tsk_complete_p2_bloom_mobile", "task_title": "Observe bloom: Phase 2 Mobile Campanula", "plants": ["Phase 2 Mobile Campanula"]},
         {"task_id": "tsk_complete_p2_editor_offline", "task_title": "Deadhead Phase 2 Offline Parsley", "plants": ["Phase 2 Offline Parsley"]},

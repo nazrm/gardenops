@@ -216,7 +216,7 @@ export function renderCareMobileCards(
 
         const label = document.createElement("span");
         label.className = "mobile-data-label";
-        label.textContent = field.label;
+        label.textContent = t(field.label);
 
         const value = document.createElement("p");
         value.textContent = previewText((plant[field.key] as string) || "");

@@ -196,6 +196,9 @@ def executemany(
 # ---------------------------------------------------------------------------
 
 
+_BASELINE_REQUIRED_DATA_MIGRATIONS = {33}
+
+
 def run_migrations() -> None:
     """Run pending SQL migrations from the migrations/ directory."""
     conn = cast(
@@ -225,7 +228,11 @@ def run_migrations() -> None:
                 if diagnostics["mode"] in {"verified-baseline", "verified-upgrade-baseline"}:
                     all_versions = [int(f.stem.split("_")[0]) for f in all_sql_files]
                     stamp_through = int(diagnostics.get("stamp_through", max(all_versions)))
-                    stamped_versions = [ver for ver in all_versions if ver <= stamp_through]
+                    stamped_versions = [
+                        ver
+                        for ver in all_versions
+                        if ver <= stamp_through and ver not in _BASELINE_REQUIRED_DATA_MIGRATIONS
+                    ]
                     for ver in stamped_versions:
                         conn.execute(
                             "INSERT INTO schema_migrations (version)"
@@ -241,7 +248,7 @@ def run_migrations() -> None:
                         len(stamped_versions),
                         stamp_through,
                     )
-                    if stamp_through == max(all_versions):
+                    if all(version in applied for version in all_versions):
                         return
             for sql_file in all_sql_files:
                 version = int(sql_file.stem.split("_")[0])
