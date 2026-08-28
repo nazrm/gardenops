@@ -168,6 +168,106 @@ console.log(JSON.stringify(selected));
     assert json.loads(result.stdout) == [{"name": "promoted", "version": "1.0.0"}]
 
 
+def test_npm_release_age_resolves_alias_to_canonical_package(tmp_path):
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text(
+        json.dumps(
+            {
+                "devDependencies": {
+                    "typescript": "7.0.2",
+                    "typescript-compiler-api": "npm:typescript@6.0.3",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (frontend / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {},
+                    "node_modules/typescript": {"version": "7.0.2"},
+                    "node_modules/typescript-compiler-api": {
+                        "name": "typescript",
+                        "version": "6.0.3",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    script = ROOT / "scripts" / "check_npm_release_age.cjs"
+    source = f"""
+const policy = require({json.dumps(str(script))});
+const root = {json.dumps(str(tmp_path))};
+console.log(JSON.stringify({{
+  packages: policy.collectLockedPackages(root),
+  direct: [...policy.directDependencyNames(root)].sort(),
+}}));
+"""
+
+    result = subprocess.run(
+        ["node", "-e", source],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "packages": [
+            {"name": "typescript", "version": "6.0.3"},
+            {"name": "typescript", "version": "7.0.2"},
+        ],
+        "direct": ["typescript"],
+    }
+
+
+def test_npm_release_age_rejects_alias_lock_identity_mismatch(tmp_path):
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text(
+        json.dumps(
+            {"devDependencies": {"compiler-api": "npm:typescript@6.0.3"}}
+        ),
+        encoding="utf-8",
+    )
+    (frontend / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {},
+                    "node_modules/compiler-api": {
+                        "name": "different-package",
+                        "version": "6.0.3",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    script = ROOT / "scripts" / "check_npm_release_age.cjs"
+
+    result = subprocess.run(
+        [
+            "node",
+            "-e",
+            f"require({json.dumps(str(script))}).collectLockedPackages({json.dumps(str(tmp_path))})",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert (
+        "lockfile name different-package does not match manifest identity typescript"
+        in result.stderr
+    )
+
+
 def write_uv_lock(root: Path, package_name: str = "fresh-package", version: str = "2.0.0") -> None:
     (root / "pyproject.toml").write_text(
         f'[project]\nname = "fixture"\nversion = "0.1.0"\ndependencies = ["{package_name}"]\n',
