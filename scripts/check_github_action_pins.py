@@ -13,8 +13,10 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import yaml
+from yaml.nodes import MappingNode, ScalarNode, SequenceNode
+
 ROOT = Path(__file__).resolve().parents[1]
-USES_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*['\"]?([^'\"\s#]+)")
 PINNED_ACTION_RE = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ACTION_COOLDOWN_DAYS = 7
 APPROVED_ACTIONS = {
@@ -24,6 +26,10 @@ APPROVED_ACTIONS = {
     "actions/upload-artifact",
     "astral-sh/setup-uv",
 }
+
+
+class WorkflowPolicyError(RuntimeError):
+    pass
 
 
 def _workflow_files(root: Path) -> list[Path]:
@@ -36,16 +42,44 @@ def _workflow_files(root: Path) -> list[Path]:
 def _workflow_actions(root: Path) -> dict[str, list[tuple[Path, int]]]:
     actions: dict[str, list[tuple[Path, int]]] = {}
     for path in _workflow_files(root):
-        for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            match = USES_RE.match(raw)
-            if match:
-                actions.setdefault(match.group(1).strip(), []).append((path, lineno))
+        try:
+            document = yaml.compose(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as error:
+            message = f"{path.relative_to(root)} is invalid YAML: {error}"
+            raise WorkflowPolicyError(message) from error
+        if document is None:
+            continue
+        pending = [document]
+        visited: set[int] = set()
+        while pending:
+            node = pending.pop()
+            if id(node) in visited:
+                continue
+            visited.add(id(node))
+            if isinstance(node, MappingNode):
+                for key_node, value_node in node.value:
+                    if isinstance(key_node, ScalarNode) and key_node.value == "uses":
+                        if not isinstance(value_node, ScalarNode):
+                            raise WorkflowPolicyError(
+                                f"{path.relative_to(root)}:{key_node.start_mark.line + 1} "
+                                "uses must be a scalar action reference"
+                            )
+                        actions.setdefault(value_node.value.strip(), []).append(
+                            (path, key_node.start_mark.line + 1)
+                        )
+                    pending.extend((key_node, value_node))
+            elif isinstance(node, SequenceNode):
+                pending.extend(node.value)
     return actions
 
 
 def check_workflows(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
-    for target, locations in _workflow_actions(root).items():
+    try:
+        actions = _workflow_actions(root)
+    except WorkflowPolicyError as error:
+        return [str(error)]
+    for target, locations in actions.items():
         for path, lineno in locations:
             rel = path.relative_to(root)
             if not PINNED_ACTION_RE.fullmatch(target):

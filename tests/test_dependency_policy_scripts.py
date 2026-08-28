@@ -168,6 +168,104 @@ console.log(JSON.stringify(selected));
     assert json.loads(result.stdout) == [{"name": "promoted", "version": "1.0.0"}]
 
 
+def test_npm_release_age_resolves_alias_to_canonical_package(tmp_path):
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text(
+        json.dumps(
+            {
+                "devDependencies": {
+                    "typescript": "7.0.2",
+                    "typescript-compiler-api": "npm:typescript@6.0.3",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (frontend / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {},
+                    "node_modules/typescript": {"version": "7.0.2"},
+                    "node_modules/typescript-compiler-api": {
+                        "name": "typescript",
+                        "version": "6.0.3",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    script = ROOT / "scripts" / "check_npm_release_age.cjs"
+    source = f"""
+const policy = require({json.dumps(str(script))});
+const root = {json.dumps(str(tmp_path))};
+console.log(JSON.stringify({{
+  packages: policy.collectLockedPackages(root),
+  direct: [...policy.directDependencyNames(root)].sort(),
+}}));
+"""
+
+    result = subprocess.run(
+        ["node", "-e", source],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "packages": [
+            {"name": "typescript", "version": "6.0.3"},
+            {"name": "typescript", "version": "7.0.2"},
+        ],
+        "direct": ["typescript"],
+    }
+
+
+def test_npm_release_age_rejects_alias_lock_identity_mismatch(tmp_path):
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text(
+        json.dumps({"devDependencies": {"compiler-api": "npm:typescript@6.0.3"}}),
+        encoding="utf-8",
+    )
+    (frontend / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {},
+                    "node_modules/compiler-api": {
+                        "name": "different-package",
+                        "version": "6.0.3",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    script = ROOT / "scripts" / "check_npm_release_age.cjs"
+
+    result = subprocess.run(
+        [
+            "node",
+            "-e",
+            f"require({json.dumps(str(script))}).collectLockedPackages({json.dumps(str(tmp_path))})",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert (
+        "lockfile name different-package does not match manifest identity typescript"
+        in result.stderr
+    )
+
+
 def write_uv_lock(root: Path, package_name: str = "fresh-package", version: str = "2.0.0") -> None:
     (root / "pyproject.toml").write_text(
         f'[project]\nname = "fixture"\nversion = "0.1.0"\ndependencies = ["{package_name}"]\n',
@@ -181,9 +279,25 @@ name = "{package_name}"
 version = "{version}"
 """.lstrip()
             + 'sdist = { url = "https://files.pythonhosted.org/packages/fresh.tar.gz", '
-            + 'upload-time = "2999-01-01T00:00:00Z" }\n'
+            + 'hash = "sha256:abc", upload-time = "2000-01-01T00:00:00Z" }\n'
         ),
         encoding="utf-8",
+    )
+
+
+def stub_fresh_pypi_metadata(module, monkeypatch, *, sha256: str = "abc") -> None:
+    monkeypatch.setattr(
+        module,
+        "_fetch_pypi_release_metadata",
+        lambda _name, _version: {
+            "urls": [
+                {
+                    "filename": "fresh.tar.gz",
+                    "digests": {"sha256": sha256},
+                    "upload_time_iso_8601": "2999-01-01T00:00:00Z",
+                }
+            ]
+        },
     )
 
 
@@ -241,6 +355,7 @@ def test_dependency_source_check_accepts_hashed_pypi_artifacts(tmp_path, monkeyp
 def test_python_release_age_allows_generated_security_bypass(tmp_path, monkeypatch, capsys):
     module = load_python_release_age_module()
     write_uv_lock(tmp_path)
+    stub_fresh_pypi_metadata(module, monkeypatch)
     evidence_path = tmp_path / "security-release-bypass.json"
     evidence_path.write_text(
         json.dumps(
@@ -273,6 +388,7 @@ def test_python_release_age_allows_generated_security_bypass(tmp_path, monkeypat
 def test_python_release_age_rejects_unrelated_security_bypass(tmp_path, monkeypatch, capsys):
     module = load_python_release_age_module()
     write_uv_lock(tmp_path)
+    stub_fresh_pypi_metadata(module, monkeypatch)
     evidence_path = tmp_path / "security-release-bypass.json"
     evidence_path.write_text(
         json.dumps(
@@ -312,6 +428,7 @@ def test_python_release_age_applies_one_day_ai_sdk_cooldown(
 ):
     module = load_python_release_age_module()
     write_uv_lock(tmp_path, package_name=package_name)
+    stub_fresh_pypi_metadata(module, monkeypatch)
     monkeypatch.setattr(module, "ROOT", tmp_path)
     monkeypatch.delenv("GARDENOPS_SECURITY_RELEASE_BYPASS", raising=False)
 
@@ -330,6 +447,7 @@ def test_python_release_age_does_not_exempt_similarly_named_packages(
 ):
     module = load_python_release_age_module()
     write_uv_lock(tmp_path, package_name="openai-agents")
+    stub_fresh_pypi_metadata(module, monkeypatch)
     monkeypatch.setattr(module, "ROOT", tmp_path)
     monkeypatch.delenv("GARDENOPS_SECURITY_RELEASE_BYPASS", raising=False)
 
@@ -349,6 +467,7 @@ def test_python_release_age_ignores_unchanged_locked_packages(tmp_path, monkeypa
     head_root.mkdir()
     write_uv_lock(base_root)
     write_uv_lock(head_root)
+    stub_fresh_pypi_metadata(module, monkeypatch)
     monkeypatch.setattr(module, "ROOT", tmp_path)
 
     module.main(base_root=base_root, head_root=head_root)
@@ -370,12 +489,30 @@ def test_python_release_age_checks_transitive_package_promoted_to_direct(
         '[project]\nname = "fixture"\nversion = "0.1.0"\ndependencies = []\n',
         encoding="utf-8",
     )
+    stub_fresh_pypi_metadata(module, monkeypatch)
     monkeypatch.setattr(module, "ROOT", tmp_path)
 
     with pytest.raises(SystemExit):
         module.main(base_root=base_root, head_root=head_root)
 
     assert "14-day cooldown window (new direct dependency)" in capsys.readouterr().err
+
+
+def test_python_release_age_rejects_lock_artifact_not_confirmed_by_pypi(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    module = load_python_release_age_module()
+    write_uv_lock(tmp_path)
+    stub_fresh_pypi_metadata(module, monkeypatch, sha256="different")
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.delenv("GARDENOPS_SECURITY_RELEASE_BYPASS", raising=False)
+
+    with pytest.raises(SystemExit):
+        module.main()
+
+    assert "do not match PyPI" in capsys.readouterr().err
 
 
 def test_python_release_age_assigns_long_cooldown_to_new_direct_dependency():
@@ -551,6 +688,33 @@ def test_github_action_pin_check_rejects_local_actions(tmp_path):
     errors = module.check_workflows(tmp_path)
 
     assert any("./.github/actions/local" in error for error in errors)
+
+
+def test_github_action_pin_check_parses_quoted_and_flow_style_uses(tmp_path):
+    module = load_github_action_pins_module()
+    workflow_dir = tmp_path / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "ci.yml").write_text(
+        'jobs:\n  test:\n    steps:\n      - "uses": "actions/checkout@v4"\n'
+        "      - { uses: actions/setup-node@v4 }\n",
+        encoding="utf-8",
+    )
+
+    errors = module.check_workflows(tmp_path)
+
+    assert any("actions/checkout@v4" in error for error in errors)
+    assert any("actions/setup-node@v4" in error for error in errors)
+
+
+def test_github_action_pin_check_fails_closed_on_invalid_yaml(tmp_path):
+    module = load_github_action_pins_module()
+    workflow_dir = tmp_path / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "ci.yml").write_text("jobs: [unterminated\n", encoding="utf-8")
+
+    errors = module.check_workflows(tmp_path)
+
+    assert any("invalid YAML" in error for error in errors)
 
 
 def test_python_advisory_delta_rejects_only_new_advisories():

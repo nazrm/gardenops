@@ -559,7 +559,9 @@ def test_grouped_fertilize_partial_completion_keeps_only_remaining_plants(self) 
     self.assertEqual(task["plant_ids"], ["PLT-002"])
 
     done_journal = self.client.get("/api/journal?event_type=fertilized&plant_id=PLT-TEST").json()
-    remaining_journal = self.client.get("/api/journal?event_type=fertilized&plant_id=PLT-002").json()
+    remaining_journal = self.client.get(
+        "/api/journal?event_type=fertilized&plant_id=PLT-002"
+    ).json()
     self.assertEqual(done_journal["total"], 1)
     self.assertEqual(remaining_journal["total"], 0)
 
@@ -636,10 +638,7 @@ def test_partial_completion_refreshes_task_notification_plant_names(self) -> Non
     finally:
         db.return_db(conn)
     self.assertGreaterEqual(len(rows), 1)
-    joined = " ".join(
-        f"{row['title']} {json.dumps(row['metadata_json'])}"
-        for row in rows
-    )
+    joined = " ".join(f"{row['title']} {json.dumps(row['metadata_json'])}" for row in rows)
     self.assertNotIn("Test Plant", joined)
     self.assertIn("Rose", joined)
 ```
@@ -1494,9 +1493,33 @@ def seed(conn) -> None:
         )
     now_ms = 1_783_180_800_000
     task_rows = [
-        ("tsk_e2e_bloom", "observe_bloom", "Observe bloom: Bloom E2E", "2026-07-05", None, None, ["BLOOM-E2E"]),
-        ("tsk_e2e_fertilize", "fertilize", "Fertilize 2 plants", "2026-07-05", None, None, ["FERT-A-E2E", "FERT-B-E2E"]),
-        ("tsk_e2e_prune", "prune", "Prune 2 plants", "2026-07-05", "2026-07-05", "2026-07-06", ["PRUNE-A-E2E", "PRUNE-B-E2E"]),
+        (
+            "tsk_e2e_bloom",
+            "observe_bloom",
+            "Observe bloom: Bloom E2E",
+            "2026-07-05",
+            None,
+            None,
+            ["BLOOM-E2E"],
+        ),
+        (
+            "tsk_e2e_fertilize",
+            "fertilize",
+            "Fertilize 2 plants",
+            "2026-07-05",
+            None,
+            None,
+            ["FERT-A-E2E", "FERT-B-E2E"],
+        ),
+        (
+            "tsk_e2e_prune",
+            "prune",
+            "Prune 2 plants",
+            "2026-07-05",
+            "2026-07-05",
+            "2026-07-06",
+            ["PRUNE-A-E2E", "PRUNE-B-E2E"],
+        ),
     ]
     for public_id, task_type, title, due_on, window_start, window_end, plant_ids in task_rows:
         task_id = int(
@@ -1510,7 +1533,18 @@ def seed(conn) -> None:
                         %s, %s, %s, '{}', %s, %s, %s)
                 RETURNING id
                 """,
-                (public_id, garden_id, task_type, title, due_on, window_start, window_end, user_id, now_ms, now_ms),
+                (
+                    public_id,
+                    garden_id,
+                    task_type,
+                    title,
+                    due_on,
+                    window_start,
+                    window_end,
+                    user_id,
+                    now_ms,
+                    now_ms,
+                ),
             ).fetchone()["id"]
         )
         for plant_id in plant_ids:
@@ -1540,7 +1574,12 @@ def snapshot(conn) -> None:
         ORDER BY je.id
         """
     ).fetchall()
-    print(json.dumps({"tasks": [dict(row) for row in rows], "journal": [dict(row) for row in journal]}, default=str))
+    print(
+        json.dumps(
+            {"tasks": [dict(row) for row in rows], "journal": [dict(row) for row in journal]},
+            default=str,
+        )
+    )
 
 
 def main() -> None:

@@ -35,7 +35,10 @@ from gardenops.router_helpers import (
     validate_date as _validate_date,
 )
 from gardenops.routers.media import collect_media_cleanup_for_target
-from gardenops.routers.plots import _lock_assignment_target_rows
+from gardenops.routers.plots import (
+    _lock_assignment_target_rows,
+    _require_custom_assignment_unambiguous,
+)
 from gardenops.security import (
     AuthContext,
     has_write_access,
@@ -1008,7 +1011,7 @@ def import_plants_csv(body: ImportPlantsCsvBody, db: DB, request: Request) -> di
             updated += 1 if exists else 0
             row_count += 1
         if has_assignments_column and imported_assignments:
-            _lock_assignment_target_rows(
+            assignment_rows = _lock_assignment_target_rows(
                 db,
                 [
                     str(assignment["plot_id"])
@@ -1018,6 +1021,34 @@ def import_plants_csv(body: ImportPlantsCsvBody, db: DB, request: Request) -> di
                 context,
                 allow_missing_custom=True,
             )
+            for plt_id, assignments in imported_assignments.items():
+                for assignment in assignments:
+                    plot_id = str(assignment["plot_id"])
+                    if plot_id not in assignment_rows:
+                        _require_custom_assignment_unambiguous(
+                            db,
+                            plot_id=plot_id,
+                            plt_id=plt_id,
+                            context=context,
+                        )
+                existing_custom_rows = db.execute(
+                    """
+                    SELECT pp.plot_id
+                    FROM plot_plants pp
+                    WHERE pp.plt_id = %s
+                      AND NOT EXISTS (
+                          SELECT 1 FROM plots p WHERE p.plot_id = pp.plot_id
+                      )
+                    """,
+                    (plt_id,),
+                ).fetchall()
+                for existing in existing_custom_rows:
+                    _require_custom_assignment_unambiguous(
+                        db,
+                        plot_id=str(existing["plot_id"]),
+                        plt_id=plt_id,
+                        context=context,
+                    )
             db.execute("SET CONSTRAINTS ALL DEFERRED")
             for plt_id, assignments in imported_assignments.items():
                 db.execute(
