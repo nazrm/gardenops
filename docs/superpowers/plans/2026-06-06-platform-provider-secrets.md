@@ -79,7 +79,7 @@ SHADEMAP_API_KEY = "shademap_api_key"
 Use a narrow set of managed setting names:
 
 ```python
-AI_PROVIDER = "ai_provider"                  # disabled | openai | anthropic
+AI_PROVIDER = "ai_provider"  # disabled | openai | anthropic
 OPENAI_MODEL = "openai_model"
 OPENAI_FAST_MODEL = "openai_fast_model"
 ANTHROPIC_MODEL = "anthropic_model"

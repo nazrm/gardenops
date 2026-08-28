@@ -1036,6 +1036,13 @@ class TestPlants(BaseApiTest):
                 """,
                 (garden_id, int(user["id"])),
             )
+            conn.execute(
+                """
+                UPDATE plant_ownership SET owner_user_id = %s
+                WHERE garden_id = %s AND plt_id = 'PLT-TEST'
+                """,
+                (int(user["id"]), garden_id),
+            )
             conn.execute("UPDATE plants SET care_notes = 'documented' WHERE plt_id = 'PLT-002'")
             conn.commit()
         finally:
@@ -1069,6 +1076,54 @@ class TestPlants(BaseApiTest):
         self.assertEqual(response.json()["updated_plant_ids"], ["PLT-TEST"])
 
     @patch.dict(os.environ, _AUTH_ENV, clear=False)
+    def test_generate_missing_care_does_not_mutate_peer_owned_plants(self) -> None:
+        garden_id = self._get_default_garden_id()
+        editor = self._create_test_user("care_owner_editor", "careownerpass", role="editor")
+        peer = self._create_test_user("care_peer_editor", "carepeerpass", role="editor")
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE plant_ownership SET owner_user_id = %s WHERE plt_id = 'PLT-TEST'",
+                (int(editor["id"]),),
+            )
+            conn.execute(
+                "UPDATE plant_ownership SET owner_user_id = %s WHERE plt_id = 'PLT-002'",
+                (int(peer["id"]),),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        client, headers = self._authenticated_client(
+            "care_owner_editor",
+            "careownerpass",
+            garden_id=garden_id,
+        )
+        with (
+            patch("gardenops.routers.ai.require_ai_provider_configured", return_value="test"),
+            patch(
+                "gardenops.routers.ai.generate_care_batch_with_ai",
+                return_value={
+                    "PLT-TEST": {
+                        "care_watering": "Owner instruction",
+                        "care_soil": "",
+                        "care_planting": "",
+                        "care_maintenance": "",
+                        "care_notes": "",
+                    }
+                },
+            ),
+        ):
+            response = client.post(
+                "/api/ai/generate-missing-care",
+                headers=headers,
+                json={"regenerate": True},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["updated_plant_ids"], ["PLT-TEST"])
+
+    @patch.dict(os.environ, _AUTH_ENV, clear=False)
     def test_generate_missing_care_viewer_is_denied(self) -> None:
         self._create_test_user("care_viewer", "careviewerpass", role="viewer")
         client, headers = self._authenticated_client("care_viewer", "careviewerpass")
@@ -1086,9 +1141,13 @@ class TestPlants(BaseApiTest):
     @patch.dict(os.environ, _AUTH_ENV, clear=False)
     def test_regenerate_care_pages_forward_without_repeating_plants(self) -> None:
         garden_id = self._get_default_garden_id()
-        self._create_test_user("care_pager", "carepagerpass", role="editor")
+        pager = self._create_test_user("care_pager", "carepagerpass", role="editor")
         conn = db.get_db()
         try:
+            conn.execute(
+                "UPDATE plant_ownership SET owner_user_id = %s WHERE garden_id = %s",
+                (int(pager["id"]), garden_id),
+            )
             conn.execute(
                 """
                 UPDATE plants
@@ -1110,7 +1169,7 @@ class TestPlants(BaseApiTest):
                     INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
                     VALUES (%s, %s, %s)
                     """,
-                    (plt_id, self._owner_id, garden_id),
+                    (plt_id, int(pager["id"]), garden_id),
                 )
             conn.commit()
         finally:
@@ -1163,9 +1222,17 @@ class TestPlants(BaseApiTest):
     @patch.dict(os.environ, _AUTH_ENV, clear=False)
     def test_missing_care_no_progress_stops_after_one_bounded_page(self) -> None:
         garden_id = self._get_default_garden_id()
-        self._create_test_user("care_no_progress", "carenoprogresspass", role="editor")
+        editor = self._create_test_user(
+            "care_no_progress",
+            "carenoprogresspass",
+            role="editor",
+        )
         conn = db.get_db()
         try:
+            conn.execute(
+                "UPDATE plant_ownership SET owner_user_id = %s WHERE garden_id = %s",
+                (int(editor["id"]), garden_id),
+            )
             for index in range(5):
                 plt_id = f"PLT-NOPROGRESS-{index}"
                 conn.execute(
@@ -1177,7 +1244,7 @@ class TestPlants(BaseApiTest):
                     INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
                     VALUES (%s, %s, %s)
                     """,
-                    (plt_id, self._owner_id, garden_id),
+                    (plt_id, int(editor["id"]), garden_id),
                 )
             conn.commit()
         finally:

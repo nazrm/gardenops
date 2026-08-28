@@ -566,6 +566,37 @@ class TestPlots(BaseApiTest):
         plant_after_remove = next(p for p in after_remove.json() if p["plt_id"] == "PLT-TEST")
         self.assertNotIn("K1", plant_after_remove["plot_ids"])
 
+    def test_custom_assignment_rejects_plant_shared_with_another_garden(self) -> None:
+        conn = db.get_db()
+        try:
+            owner = conn.execute("SELECT id FROM auth_users ORDER BY id LIMIT 1").fetchone()
+            foreign_garden = conn.execute(
+                """
+                INSERT INTO gardens (slug, name, owner_user_id)
+                VALUES ('custom-assignment-foreign', 'Foreign', %s)
+                RETURNING id
+                """,
+                (int(owner["id"]),),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id)
+                VALUES ('PLT-TEST', %s, %s)
+                """,
+                (int(owner["id"]), int(foreign_garden["id"])),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        response = self.client.post(
+            "/api/plots/CUSTOM-SHARED/plants/PLT-TEST",
+            json={"quantity": 1},
+        )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("Create a garden plot", response.json()["detail"])
+
     def test_batch_move_plots(self) -> None:
         response = self.client.post(
             "/api/plots/batch-move",

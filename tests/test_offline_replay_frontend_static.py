@@ -7,6 +7,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class OfflineReplayFrontendStaticTests(unittest.TestCase):
+    def test_admin_sign_out_uses_the_central_fail_closed_queue_clear_flow(self) -> None:
+        panel = (ROOT / "frontend/src/components/adminPanel.ts").read_text(encoding="utf-8")
+        app = (ROOT / "frontend/src/app.ts").read_text(encoding="utf-8")
+
+        handler = panel.split('container.querySelector("#adm-sign-out")', 1)[1].split(
+            "container.querySelector", 1
+        )[0]
+        self.assertIn("await onSignOut?.()", handler)
+        self.assertNotIn("catch(() => undefined)", handler)
+        self.assertIn("onSignOut: async () =>", app)
+        self.assertIn("await handleAuthButton()", app)
+
     def test_replay_error_classifier_separates_terminal_and_retryable_statuses(self) -> None:
         source = (ROOT / "frontend/src/services/offlineQueue.ts").read_text(encoding="utf-8")
 

@@ -33,7 +33,13 @@ from gardenops.incident_controls import (
 from gardenops.models import StrictBaseModel
 from gardenops.platform_secrets import ConfigurationError
 from gardenops.provider_settings import get_shademap_api_key
-from gardenops.rate_limit import enforce_key_rate_limit, enforce_rate_limit, env_int, env_nonneg_int
+from gardenops.rate_limit import (
+    client_ip,
+    enforce_key_rate_limit,
+    enforce_rate_limit,
+    env_int,
+    env_nonneg_int,
+)
 from gardenops.security import (
     AUTH_ROLES,
     AuthContext,
@@ -285,7 +291,7 @@ def _require_admin_context(request: Request):
 
 
 def _remote_host(request: Request) -> str:
-    return request.client.host if request.client and request.client.host else "unknown"
+    return client_ip(request)
 
 
 def _session_device_label(request: Request) -> str:
@@ -389,6 +395,27 @@ def _set_session_cookies(response: Response, *, token: str, expires_at_ms: int) 
     )
 
 
+def _session_token_hash(token: str) -> str:
+    return sha256(token.encode("utf-8")).hexdigest()
+
+
+def _login_audit_context(
+    *,
+    user_id: int,
+    username: str,
+    role: str,
+    token: str,
+) -> AuthContext:
+    return AuthContext(
+        user_id=user_id,
+        username=username,
+        role=cast(Literal["viewer", "editor", "admin"], role),
+        auth_type="session",
+        session_token_hash=_session_token_hash(token),
+        session_via_cookie=True,
+    )
+
+
 def _adaptive_friction_mode() -> str:
     raw = os.environ.get("AUTH_ADAPTIVE_FRICTION_MODE", "").strip().lower()
     if raw in {"1", "true", "yes", "on", "require", "required", "enforce"}:
@@ -420,15 +447,20 @@ def _enforce_adaptive_friction(
 
     metric_suffix = flow.replace("-", "_")
     has_friction = bool(friction_provider.strip() and friction_token.strip())
-    if has_friction:
-        record_security_event(f"adaptive_friction_present_{metric_suffix}")
+    record_security_event(
+        f"adaptive_friction_{'present' if has_friction else 'missing'}_{metric_suffix}"
+    )
+    if mode == "observe":
         return
 
-    record_security_event(f"adaptive_friction_missing_{metric_suffix}")
-    if mode == "require":
-        record_security_event("adaptive_friction_required_blocks")
-        record_security_event(f"adaptive_friction_required_blocks_{metric_suffix}")
-        raise HTTPException(status_code=403, detail="Additional verification required")
+    # Presence-only client fields are not proof. Required mode remains fail-closed
+    # until GardenOps has a server-verifiable challenge provider.
+    record_security_event("adaptive_friction_required_blocks")
+    record_security_event(f"adaptive_friction_required_blocks_{metric_suffix}")
+    raise HTTPException(
+        status_code=503,
+        detail="Additional verification is not configured",
+    )
 
 
 def _load_login_candidate(db: DbConn, username: str) -> dict[str, Any] | None:
@@ -1412,21 +1444,20 @@ def auth_login(
         default_limit=8,
         scope_label="Username",
     )
-    if login_candidate and str(login_candidate["role"]) == "admin":
-        _enforce_optional_key_rate_limit(
-            bucket="auth-login-admin-username",
-            key=username_rate_key,
-            env_name="AUTH_LOGIN_ADMIN_USERNAME_RATE_LIMIT",
-            default_limit=4,
-            scope_label="Admin account",
-        )
-        _enforce_optional_key_rate_limit(
-            bucket="auth-login-admin-host",
-            key=_hashed_rate_limit_key("host", _remote_host(request), casefold=False),
-            env_name="AUTH_LOGIN_ADMIN_HOST_RATE_LIMIT",
-            default_limit=10,
-            scope_label="Admin host",
-        )
+    _enforce_optional_key_rate_limit(
+        bucket="auth-login-strict-username",
+        key=username_rate_key,
+        env_name="AUTH_LOGIN_ADMIN_USERNAME_RATE_LIMIT",
+        default_limit=4,
+        scope_label="Login",
+    )
+    _enforce_optional_key_rate_limit(
+        bucket="auth-login-strict-host",
+        key=_hashed_rate_limit_key("host", _remote_host(request), casefold=False),
+        env_name="AUTH_LOGIN_ADMIN_HOST_RATE_LIMIT",
+        default_limit=10,
+        scope_label="Login",
+    )
     _enforce_adaptive_friction(
         flow="login",
         friction_provider=body.friction_provider,
@@ -1484,20 +1515,36 @@ def auth_login(
     mfa_enforced = _admin_mfa_enforced_for_role(role, mfa_enabled=mfa_enabled)
     strong_factor_enrolled = mfa_enabled or _user_has_passkey(db, user_id)
     session_requires_setup = mfa_enforced and not strong_factor_enrolled
-    if second_factor_method:
-        db.commit()
     token, expires_at_ms = create_session_for_user(
         user_id,
         mfa_authenticated=bool(second_factor_method),
         mfa_setup_required=session_requires_setup,
         device_label=_session_device_label(request),
         location_hint=_session_location_hint(request),
+        db=db,
     )
     db.execute(
         "UPDATE auth_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
         (user_id,),
     )
-    db.commit()
+    audit_context = _login_audit_context(
+        user_id=user_id,
+        username=str(user["username"]),
+        role=role,
+        token=token,
+    )
+    _commit_required_lifecycle_event(
+        request,
+        auth_context=audit_context,
+        status_code=200,
+        detail=_lifecycle_detail(
+            "auth.login.password",
+            user_id=user_id,
+            mfa_method=second_factor_method or None,
+        ),
+        db=db,
+    )
+    _set_session_cookies(response, token=token, expires_at_ms=expires_at_ms)
     logger.info(
         "Login successful: user=%r role=%s ip=%s mfa_setup_required=%s mfa_method=%s",
         user["username"],
@@ -1505,27 +1552,6 @@ def auth_login(
         remote,
         session_requires_setup,
         second_factor_method or "none",
-    )
-    ttl_seconds = max(1, int((expires_at_ms - int(time.time() * 1000)) / 1000))
-    cookie_kwargs: SessionCookieKwargs = {
-        "max_age": ttl_seconds,
-        "secure": session_cookie_secure(),
-        "samesite": cast(SameSiteValue, session_cookie_samesite()),
-        "path": session_cookie_path(),
-        "domain": session_cookie_domain(),
-    }
-    response.set_cookie(
-        key=session_cookie_name(),
-        value=token,
-        httponly=True,
-        **cookie_kwargs,
-    )
-    csrf_token = csrf_token_for_session_token(token)
-    response.set_cookie(
-        key=csrf_cookie_name(),
-        value=csrf_token,
-        httponly=False,
-        **cookie_kwargs,
     )
     status = "ok"
     if bool(user.get("must_change_password")):
@@ -1971,12 +1997,29 @@ def auth_passkey_login_verify(
         mfa_setup_required=False,
         device_label=_session_device_label(request),
         location_hint=_session_location_hint(request),
+        db=db,
     )
     db.execute(
         "UPDATE auth_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
         (user_id,),
     )
-    db.commit()
+    audit_context = _login_audit_context(
+        user_id=user_id,
+        username=str(row["username"]),
+        role=str(row["role"]),
+        token=token,
+    )
+    _commit_required_lifecycle_event(
+        request,
+        auth_context=audit_context,
+        status_code=200,
+        detail=_lifecycle_detail(
+            "auth.login.passkey",
+            user_id=user_id,
+            mfa_method="passkey",
+        ),
+        db=db,
+    )
     _set_session_cookies(response, token=token, expires_at_ms=expires_at_ms)
     remote = _remote_host(request)
     logger.info(
@@ -2456,11 +2499,13 @@ def auth_mfa_totp_start(request: Request, db: DB) -> dict[str, object]:
 def auth_mfa_totp_confirm(
     body: ConfirmTotpEnrollmentBody,
     request: Request,
+    response: Response,
     db: DB,
 ) -> dict[str, object]:
     context = _require_recent_session_context(request, allow_mfa_setup=True)
-    if not context.session_token_hash:
+    if context.user_id is None or not context.session_token_hash:
         raise HTTPException(status_code=400, detail="Session auth user is required")
+    user_id = int(context.user_id)
     if context.role != "admin":
         raise HTTPException(
             status_code=403,
@@ -2469,51 +2514,56 @@ def auth_mfa_totp_confirm(
     try:
         recovery_codes = confirm_totp_enrollment(
             db,
-            user_id=context.user_id,
+            user_id=user_id,
             code=body.code,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     now_ms = current_timestamp_ms()
-    _revoke_sessions_for_user(
+    revoked = _revoke_sessions_for_user(
         db,
-        user_id=context.user_id,
-        except_token_hash=context.session_token_hash,
+        user_id=user_id,
     )
-    db.execute(
-        """
-        UPDATE auth_sessions
-        SET
-            mfa_authenticated_at_ms = %s,
-            mfa_setup_required = 0,
-            reauthenticated_at_ms = %s
-        WHERE token_hash = %s
-        """,
-        (now_ms, now_ms, context.session_token_hash),
+    new_token, new_expires_at_ms = create_session_for_user(
+        user_id,
+        mfa_authenticated=True,
+        mfa_setup_required=False,
+        device_label=_session_device_label(request),
+        location_hint=_session_location_hint(request),
+        db=db,
     )
-    request.state.auth_context = replace(
+    new_context = replace(
         context,
+        session_token_hash=_session_token_hash(new_token),
         mfa_enabled=True,
         mfa_authenticated_at_ms=now_ms,
         mfa_setup_required=False,
         reauthenticated_at_ms=now_ms,
     )
+    request.state.auth_context = new_context
     _commit_required_lifecycle_event(
         request,
-        auth_context=context,
+        auth_context=new_context,
         status_code=200,
         detail=_lifecycle_detail(
             "auth.mfa.totp.confirm",
-            user_id=context.user_id,
+            user_id=user_id,
+            revoked_sessions=revoked,
         ),
         db=db,
+    )
+    _set_session_cookies(
+        response,
+        token=new_token,
+        expires_at_ms=new_expires_at_ms,
     )
     return {
         "status": "ok",
         "recovery_codes": recovery_codes,
+        "csrf_token": csrf_token_for_session_token(new_token),
         "mfa": _current_user_mfa_settings(
             db,
-            user_id=context.user_id,
+            user_id=user_id,
             role=context.role,
         ),
     }
@@ -3437,6 +3487,7 @@ def auth_reauthenticate(
 def auth_change_password(
     body: ChangePasswordBody,
     request: Request,
+    response: Response,
     db: DB,
 ) -> dict[str, object]:
     _require_user_lifecycle_enabled()
@@ -3446,7 +3497,7 @@ def auth_change_password(
         bucket="auth-change-password",
         env_name="AUTH_CHANGE_PASSWORD_RATE_LIMIT",
     )
-    if context.user_id is None:
+    if context.user_id is None or not context.session_token_hash:
         raise HTTPException(status_code=400, detail="Session auth user is required")
 
     user_row = db.execute(
@@ -3485,26 +3536,25 @@ def auth_change_password(
     revoked = _revoke_sessions_for_user(
         db,
         user_id=int(user_row["id"]),
-        except_token_hash=context.session_token_hash,
     )
-    if context.session_token_hash:
-        db.execute(
-            """
-            UPDATE auth_sessions
-            SET reauthenticated_at_ms = %s
-            WHERE token_hash = %s
-            """,
-            (now_ms, context.session_token_hash),
-        )
-    db.commit()
-    request.state.auth_context = replace(
+    new_token, new_expires_at_ms = create_session_for_user(
+        int(user_row["id"]),
+        mfa_authenticated=context.mfa_authenticated_at_ms is not None,
+        mfa_setup_required=context.mfa_setup_required,
+        device_label=_session_device_label(request),
+        location_hint=_session_location_hint(request),
+        db=db,
+    )
+    new_context = replace(
         context,
+        session_token_hash=_session_token_hash(new_token),
         must_change_password=False,
         reauthenticated_at_ms=now_ms,
     )
-    _audit_user_lifecycle_event(
+    request.state.auth_context = new_context
+    _commit_required_lifecycle_event(
         request,
-        auth_context=context,
+        auth_context=new_context,
         status_code=200,
         detail=_lifecycle_detail(
             "auth.user.change-password",
@@ -3513,7 +3563,16 @@ def auth_change_password(
         ),
         db=db,
     )
-    return {"status": "ok", "revoked_sessions": revoked}
+    _set_session_cookies(
+        response,
+        token=new_token,
+        expires_at_ms=new_expires_at_ms,
+    )
+    return {
+        "status": "ok",
+        "revoked_sessions": revoked,
+        "csrf_token": csrf_token_for_session_token(new_token),
+    }
 
 
 @router.post("/auth/users/{user_id}/issue-reset")

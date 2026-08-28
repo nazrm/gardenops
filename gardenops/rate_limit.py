@@ -107,7 +107,7 @@ def _trust_proxy_headers() -> bool:
     }
 
 
-def _client_ip(request: Request) -> str:
+def client_ip(request: Request) -> str:
     """Extract client IP, respecting X-Forwarded-For when proxy headers are trusted."""
     if _trust_proxy_headers():
         real_ip = request.headers.get("x-real-ip", "").strip()
@@ -124,7 +124,7 @@ def _identity_key(request: Request) -> str:
     auth_context = getattr(request.state, "auth_context", None)
     if auth_context is not None and auth_context.user_id is not None:
         return f"user:{int(auth_context.user_id)}"
-    host = _client_ip(request)
+    host = client_ip(request)
     return f"host:{host}"
 
 
