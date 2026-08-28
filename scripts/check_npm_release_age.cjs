@@ -184,10 +184,6 @@ async function mapWithConcurrency(items, concurrency, worker) {
 function collectLockedPackages(root = ROOT) {
   const lockPath = path.join(root, "frontend", "package-lock.json");
   const lockData = JSON.parse(fs.readFileSync(lockPath, "utf8"));
-  const packageData = JSON.parse(
-    fs.readFileSync(path.join(root, "frontend", "package.json"), "utf8"),
-  );
-  const directSpecifiers = new Map(dependencyEntries(packageData));
 
   if (![2, 3].includes(lockData.lockfileVersion)) {
     throw new Error(
@@ -211,6 +207,10 @@ function collectLockedPackages(root = ROOT) {
     throw new Error("frontend/package-lock.json does not contain npm dependency package entries");
   }
 
+  const packageData = JSON.parse(
+    fs.readFileSync(path.join(root, "frontend", "package.json"), "utf8"),
+  );
+  const directSpecifiers = new Map(dependencyEntries(packageData));
   const packages = new Map();
 
   for (const [packagePath, packageInfo] of dependencyPackages) {
