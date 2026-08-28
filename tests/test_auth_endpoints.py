@@ -394,6 +394,8 @@ class TestAuthChangePassword(BaseApiTest):
                 "pw_user",
                 "oldpassword",
             )
+            old_token = client.cookies.get("gardenops_session") or ""
+            self.assertTrue(old_token)
             resp = client.post(
                 "/api/auth/change-password",
                 headers=headers,
@@ -404,6 +406,12 @@ class TestAuthChangePassword(BaseApiTest):
             )
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.json()["status"], "ok")
+            self.assertNotEqual(client.cookies.get("gardenops_session"), old_token)
+            self.assertEqual(client.get("/api/auth/me").status_code, 200)
+
+            stale_client = self._new_client()
+            stale_client.cookies.set("gardenops_session", old_token, path="/")
+            self.assertEqual(stale_client.get("/api/auth/me").status_code, 401)
         finally:
             os.environ["AUTH_REQUIRED"] = "false"
 

@@ -76,7 +76,12 @@ from gardenops.observability import (  # noqa: E402
     normalize_request_id,
     reset_request_context,
 )
-from gardenops.rate_limit import enforce_rate_limit, ensure_backend_ready, env_int  # noqa: E402
+from gardenops.rate_limit import (  # noqa: E402
+    client_ip,
+    enforce_rate_limit,
+    ensure_backend_ready,
+    env_int,
+)
 from gardenops.redaction import redact_external_log_text, redact_sensitive_text  # noqa: E402
 from gardenops.request_body import read_and_cache_body_limited, read_body_limited  # noqa: E402
 from gardenops.router_helpers import generate_public_id as _generate_public_id  # noqa: E402
@@ -1440,7 +1445,7 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         "/api/client-errors",
     }
     auth_context = None
-    remote_host = request.client.host if request.client else ""
+    remote_host = client_ip(request)
 
     def _audit_mutation(status_code: int, detail: str = "") -> None:
         if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
@@ -1993,8 +1998,9 @@ def _owner_user_for_garden(
             created = create_user(
                 db,
                 username="__local_admin__",
-                password="local-admin-bootstrap",
+                password=None,
                 role="admin",
+                password_auth_disabled=True,
             )
             fallback_user_id = _coerce_required_int(created["id"])
         db.execute(
@@ -2965,7 +2971,7 @@ def restore_snapshot(
             method=request.method,
             path=request.url.path,
             status_code=200,
-            remote_host=request.client.host if request.client else "",
+            remote_host=client_ip(request),
             detail=json.dumps(
                 {
                     "event": "layout.snapshot.restore",
@@ -3011,7 +3017,7 @@ def delete_snapshot(snapshot_id: str, db: DB, request: Request) -> dict:
             method=request.method,
             path=request.url.path,
             status_code=200,
-            remote_host=request.client.host if request.client else "",
+            remote_host=client_ip(request),
             detail=json.dumps(
                 {
                     "event": "layout.snapshot.delete",
@@ -3101,7 +3107,7 @@ def import_plots(body: ImportBody, db: DB, request: Request) -> dict:
         method=request.method,
         path=request.url.path,
         status_code=200,
-        remote_host=request.client.host if request.client else "",
+        remote_host=client_ip(request),
         detail=(
             "app.plots.import "
             + json.dumps(

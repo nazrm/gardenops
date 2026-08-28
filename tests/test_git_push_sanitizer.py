@@ -1,7 +1,9 @@
 import importlib.util
+import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -147,6 +149,49 @@ api_key = "{synthetic_openai_key}"  # push-sanitizer: allow SECRET_ASSIGNMENT
         text = "secret" * 6000
 
         self.assertEqual(self._finding_details(text), [])
+
+    def test_commit_patch_scan_uses_explicit_git_show_arguments(self) -> None:
+        synthetic_value = "ZP6i7Pz4_" + "aN3KqQpt" + "9VxLm2s" + "R0bYfE8c"
+        output = (
+            "diff --git a/example.py b/example.py\n"
+            "+++ b/example.py\n"
+            "@@ -0,0 +1 @@\n"
+            f'+API_KEY = "{synthetic_value}"\n'
+        ).encode()
+        completed = subprocess.CompletedProcess([], 0, stdout=output, stderr=b"")
+
+        with patch.object(self.sanitizer, "run_git", return_value=completed) as run_git:
+            findings = self.sanitizer.scan_commit_patch("a" * 40)
+
+        run_git.assert_called_once_with(
+            ["show", "--format=", "--unified=0", "--no-ext-diff", "a" * 40, "--"],
+            check=False,
+        )
+        self.assertTrue(any(finding.path == "example.py" for finding in findings))
+
+    def test_commit_patch_scan_fails_closed_when_git_show_fails(self) -> None:
+        completed = subprocess.CompletedProcess([], 128, stdout=b"", stderr=b"bad revision")
+
+        with patch.object(self.sanitizer, "run_git", return_value=completed):
+            findings = self.sanitizer.scan_commit_patch("bad")
+
+        self.assertEqual([finding.code for finding in findings], ["PATCH_SCAN_FAILED"])
+
+    def test_commit_patch_scan_does_not_truncate_large_text_patches(self) -> None:
+        synthetic_value = "ZP6i7Pz4_" + "aN3KqQpt" + "9VxLm2s" + "R0bYfE8c"
+        output = (
+            "diff --git a/example.py b/example.py\n"
+            "+++ b/example.py\n"
+            "@@ -0,0 +1,2 @@\n"
+            f"+{'x' * 520_000}\n"
+            f'+API_KEY = "{synthetic_value}"\n'
+        ).encode()
+        completed = subprocess.CompletedProcess([], 0, stdout=output, stderr=b"")
+
+        with patch.object(self.sanitizer, "run_git", return_value=completed):
+            findings = self.sanitizer.scan_commit_patch("a" * 40)
+
+        self.assertTrue(any(finding.path == "example.py" for finding in findings))
 
 
 if __name__ == "__main__":
