@@ -444,7 +444,7 @@ audit = [
     { name = "requests", specifier = "<2.35.0" },
 ]
 lint = [
-    { name = "ruff", specifier = ">=0.15.22,<0.16.0" },
+    { name = "ruff", specifier = ">=0.16.2,<0.17.0" },
     { name = "ty", specifier = ">=0.0.73,<0.0.74" },
 ]
 test = [
