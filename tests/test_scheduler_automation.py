@@ -230,7 +230,9 @@ class TestMonthlyTaskGen(DbTestBase):
             """,
             (self.garden_id, self._owner_id),
         )
-        now_ms = db.current_timestamp_ms()
+        # Keep preference and automation timestamps in the same simulated month.
+        july_ms = 1784116800000
+        now_ms = july_ms
         self.conn.execute(
             """
             INSERT INTO user_notification_preferences
@@ -257,7 +259,6 @@ class TestMonthlyTaskGen(DbTestBase):
         )
         self.conn.commit()
 
-        july_ms = 1784116800000
         result = _auto_generate_monthly_tasks(
             self.conn,
             self.garden_id,
