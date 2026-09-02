@@ -1,6 +1,7 @@
 """Tests for scheduler-integrated automation: weather checks and task gen."""
 
 import unittest
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import gardenops.db as db
@@ -12,6 +13,14 @@ from gardenops.services.notification_service import (
     run_notification_maintenance_once,
 )
 from tests.base import DbTestBase
+
+
+def _upcoming_july_ms() -> int:
+    now = datetime.fromtimestamp(db.current_timestamp_ms() / 1000, UTC)
+    july = datetime(now.year, 7, 15, 12, tzinfo=UTC)
+    if july < now:
+        july = july.replace(year=july.year + 1)
+    return int(july.timestamp() * 1000)
 
 
 class TestWeatherCheckCooldown(DbTestBase):
@@ -197,9 +206,7 @@ class TestMonthlyTaskGen(DbTestBase):
             "Thirsty Rose",
             care_watering="regular",
         )
-        # Use a July timestamp so the water rule fires
-        # 2026-07-15 12:00:00 UTC
-        july_ms = 1784116800000
+        july_ms = _upcoming_july_ms()
         result1 = _auto_generate_monthly_tasks(
             self.conn,
             self.garden_id,
@@ -257,7 +264,7 @@ class TestMonthlyTaskGen(DbTestBase):
         )
         self.conn.commit()
 
-        july_ms = 1784116800000
+        july_ms = _upcoming_july_ms()
         result = _auto_generate_monthly_tasks(
             self.conn,
             self.garden_id,
