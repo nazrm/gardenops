@@ -7,7 +7,12 @@ from unittest.mock import patch
 import gardenops.db as db
 from gardenops.db import current_timestamp_ms
 from gardenops.security import AuthContext
-from gardenops.services.assistant import apply_request
+from gardenops.services.assistant import analyze_matrix_capture, apply_request, process_text
+from gardenops.services.assistant_models import (
+    AssistantIntent,
+    CaptureAnalysis,
+    CapturePlantCandidate,
+)
 from gardenops.services.integration_config import AssistantBinding
 from tests.base import BaseApiTest
 
@@ -291,5 +296,188 @@ class TestAssistantActions(BaseApiTest):
             ).fetchone()
             self.assertEqual(request["state"], "proposal")
             self.assertIsNone(journal)
+        finally:
+            db.return_db(conn)
+
+    def test_photo_can_create_a_fully_enriched_plant_in_a_selected_plot(self) -> None:
+        integration_env = {
+            "MCP_ENABLED": "true",
+            "MCP_BEARER_TOKEN": CAPTURE_TOKEN,
+            "MATRIX_ROOM_ID": "!garden:example.org",
+            "MATRIX_ALLOWED_SENDER": "@owner:example.org",
+            "MATRIX_GARDENOPS_USERNAME": "test_admin",
+            "MATRIX_GARDEN_SLUG": "default",
+        }
+        with patch.dict(os.environ, integration_env, clear=False):
+            captured = self.client.post(
+                "/api/integrations/matrix/captures",
+                content=self._image_bytes(),
+                headers={
+                    "Authorization": f"Bearer {CAPTURE_TOKEN}",
+                    "Content-Type": "image/png",
+                    "X-Matrix-Room-Id": "!garden:example.org",
+                    "X-Matrix-Event-Id": "$new-plant-photo",
+                    "X-Matrix-Sender": "@owner:example.org",
+                },
+            )
+        self.assertEqual(captured.status_code, 201, captured.text)
+        capture_id = str(captured.json()["capture_asset_id"])
+        analysis = CaptureAnalysis(
+            plant_candidates=[
+                CapturePlantCandidate(
+                    name="Blacklist lily",
+                    latin="Lilium 'Blacklist'",
+                    confidence=0.96,
+                    source="test",
+                )
+            ]
+        )
+        intent = AssistantIntent(
+            intent="plant_create",
+            confidence=0.98,
+            destination_plot_query="B1",
+        )
+        enriched = {
+            "name": "Svart lilje 'Blacklist'",
+            "latin": "Lilium 'Blacklist'",
+            "category": "løk",
+            "bloom_month": "juli-august",
+            "color": "mørk burgunder",
+            "hardiness": "H6",
+            "height_cm": 100,
+            "light": "sol",
+            "link": "https://www.rhs.org.uk/plants/example/blacklist",
+            "deer_resistant": True,
+            "care_watering": "Water during dry periods.",
+            "care_soil": "Use freely draining soil.",
+            "care_planting": "Plant bulbs deeply.",
+            "care_maintenance": "Remove faded flowers.",
+            "care_notes": "Protect young shoots.",
+            "year_planted": None,
+        }
+        conn = db.get_db()
+        try:
+            with (
+                patch("gardenops.services.assistant.analyze_capture", return_value=analysis),
+                patch("gardenops.services.assistant._interpret", return_value=intent),
+                patch("gardenops.services.assistant._enrich_new_plant", return_value=enriched),
+            ):
+                proposal = analyze_matrix_capture(
+                    conn,
+                    self._binding(),
+                    source_room_id="!garden:example.org",
+                    source_event_id="$new-plant-photo",
+                    source_sender_id="@owner:example.org",
+                    capture_asset_id=capture_id,
+                    caption="Add this to B1",
+                    occurred_on="2026-09-02",
+                )
+                conn.commit()
+            self.assertEqual(proposal.state, "proposal")
+            self.assertEqual(proposal.proposal.kind, "plant_create")
+            applied = apply_request(
+                conn,
+                self._binding(),
+                request_id=proposal.request_id,
+                source_event_id="$save-new-plant",
+            )
+            conn.commit()
+            plant_id = applied.records[0].id
+            row = conn.execute(
+                """
+                SELECT p.*, pp.plot_id, pp.quantity
+                FROM plants p JOIN plot_plants pp ON pp.plt_id = p.plt_id
+                WHERE p.plt_id = %s
+                """,
+                (plant_id,),
+            ).fetchone()
+            self.assertEqual(row["latin"], "Lilium 'Blacklist'")
+            self.assertEqual(row["care_watering"], "Water during dry periods.")
+            self.assertEqual(row["plot_id"], "B1")
+            self.assertEqual(int(row["quantity"]), 1)
+            links = conn.execute(
+                "SELECT target_type FROM media_links WHERE asset_id = %s",
+                (capture_id,),
+            ).fetchall()
+            self.assertEqual({str(link["target_type"]) for link in links}, {"plant"})
+        finally:
+            db.return_db(conn)
+
+    def test_move_and_delete_plant_proposals_apply_existing_domain_behavior(self) -> None:
+        assigned = self.client.post("/api/plots/B1/plants/PLT-002", json={"quantity": 2})
+        self.assertIn(assigned.status_code, {200, 201}, assigned.text)
+        move_intent = AssistantIntent(
+            intent="plant_move",
+            confidence=0.99,
+            plant_query="Rosa canina",
+            source_plot_query="B1",
+            destination_plot_query="B2",
+        )
+        conn = db.get_db()
+        try:
+            with patch("gardenops.services.assistant._interpret", return_value=move_intent):
+                move = process_text(
+                    conn,
+                    self._binding(),
+                    source_room_id="!garden:example.org",
+                    source_event_id="$move-plant",
+                    source_sender_id="@owner:example.org",
+                    text="Move the rose from B1 to B2",
+                    occurred_on="2026-09-02",
+                )
+                conn.commit()
+            self.assertEqual(move.state, "proposal")
+            self.assertEqual(move.proposal.kind, "plant_move")
+            moved = apply_request(
+                conn,
+                self._binding(),
+                request_id=move.request_id,
+                source_event_id="$save-move",
+            )
+            conn.commit()
+            self.assertEqual(moved.state, "applied")
+            assignments = conn.execute(
+                "SELECT plot_id, quantity FROM plot_plants WHERE plt_id = 'PLT-002'"
+            ).fetchall()
+            self.assertEqual(
+                [(str(row["plot_id"]), int(row["quantity"])) for row in assignments],
+                [("B2", 2)],
+            )
+        finally:
+            db.return_db(conn)
+
+        conn = db.get_db()
+        try:
+            delete_intent = AssistantIntent(
+                intent="plant_delete",
+                confidence=0.99,
+                plant_query="Rosa canina",
+            )
+            with patch("gardenops.services.assistant._interpret", return_value=delete_intent):
+                delete = process_text(
+                    conn,
+                    self._binding(),
+                    source_room_id="!garden:example.org",
+                    source_event_id="$delete-plant",
+                    source_sender_id="@owner:example.org",
+                    text="Delete the rose from GardenOps",
+                    occurred_on="2026-09-02",
+                )
+                conn.commit()
+            self.assertEqual(delete.state, "proposal")
+            self.assertEqual(delete.proposal.kind, "plant_delete")
+            self.assertIn("cannot be undone", delete.proposal.summary)
+            result = apply_request(
+                conn,
+                self._binding(),
+                request_id=delete.request_id,
+                source_event_id="$save-delete",
+            )
+            conn.commit()
+            self.assertEqual(result.state, "applied")
+            self.assertTrue(result.message.startswith("Deleted:"))
+            self.assertIsNone(
+                conn.execute("SELECT 1 FROM plants WHERE plt_id = 'PLT-002'").fetchone()
+            )
         finally:
             db.return_db(conn)

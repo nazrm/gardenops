@@ -12,6 +12,7 @@ from gardenops.db import DbConn, current_timestamp_ms, executemany
 from gardenops.router_helpers import generate_public_id
 from gardenops.security import AuthContext
 from gardenops.services.automation import on_harvest_logged, on_issue_created
+from gardenops.services.media_store import collect_orphaned_media_storage_keys
 from gardenops.services.notification_service import (
     clear_task_notifications,
     create_issue_created_notifications,
@@ -58,7 +59,7 @@ IssueSeverity = Literal["low", "normal", "high", "critical"]
 
 @dataclass(frozen=True)
 class CommandResult:
-    primary_type: Literal["journal_entry", "harvest_entry", "issue", "task"]
+    primary_type: Literal["journal_entry", "harvest_entry", "issue", "task", "plant"]
     primary_id: str
     records: tuple[tuple[str, str], ...] = field(default_factory=tuple)
     journal_entry_ids: tuple[str, ...] = field(default_factory=tuple)
@@ -161,6 +162,241 @@ def _validate_plot_ids(db: DbConn, context: AuthContext, plot_ids: list[str]) ->
             detail=f"Plots not found in active garden: {', '.join(missing[:5])}",
         )
     return normalized
+
+
+def create_plant_command(
+    db: DbConn,
+    context: AuthContext,
+    *,
+    name: str,
+    latin: str,
+    category: str,
+    bloom_month: str,
+    color: str,
+    hardiness: str,
+    height_cm: int | None,
+    light: str,
+    link: str,
+    deer_resistant: bool,
+    care_watering: str,
+    care_soil: str,
+    care_planting: str,
+    care_maintenance: str,
+    care_notes: str,
+    plot_id: str,
+    quantity: int = 1,
+    year_planted: str | None = None,
+    plant_id: str | None = None,
+) -> CommandResult:
+    garden_id = _garden_id(context)
+    valid_plot = _validate_plot_ids(db, context, [plot_id])[0]
+    if quantity < 1:
+        raise HTTPException(status_code=422, detail="Plant quantity must be at least 1")
+    public_id = plant_id or generate_public_id("plt")
+    if db.execute("SELECT 1 FROM plants WHERE plt_id = %s", (public_id,)).fetchone():
+        raise HTTPException(status_code=409, detail="Plant ID already exists")
+    owner_id = context.user_id
+    if owner_id is None:
+        owner = db.execute(
+            """
+            SELECT user_id FROM garden_memberships
+            WHERE garden_id = %s AND role = 'admin'
+            ORDER BY user_id LIMIT 1
+            """,
+            (garden_id,),
+        ).fetchone()
+        owner_id = int(owner["user_id"]) if owner else None
+    if owner_id is None:
+        raise HTTPException(status_code=409, detail="Garden has no plant owner")
+    db.execute(
+        """
+        INSERT INTO plants (
+            plt_id, name, latin, category, bloom_month, color, hardiness,
+            height_cm, light, link, year_planted, deer_resistant,
+            care_watering, care_soil, care_planting, care_maintenance, care_notes
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            public_id,
+            name.strip(),
+            latin.strip(),
+            category.strip(),
+            bloom_month.strip(),
+            color.strip(),
+            hardiness.strip(),
+            None if height_cm is None or height_cm < 0 else min(height_cm, 4000),
+            light.strip(),
+            link.strip(),
+            year_planted,
+            int(deer_resistant),
+            care_watering.strip(),
+            care_soil.strip(),
+            care_planting.strip(),
+            care_maintenance.strip(),
+            care_notes.strip(),
+        ),
+    )
+    db.execute(
+        "INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
+        (public_id, owner_id, garden_id),
+    )
+    db.execute(
+        "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES (%s, %s, %s)",
+        (valid_plot, public_id, quantity),
+    )
+    return CommandResult(
+        primary_type="plant",
+        primary_id=public_id,
+        records=(("plant", public_id),),
+    )
+
+
+def assign_plant_command(
+    db: DbConn,
+    context: AuthContext,
+    *,
+    plant_id: str,
+    plot_id: str,
+    quantity: int = 1,
+) -> CommandResult:
+    valid_plant = _validate_plant_ids(db, context, [plant_id])[0]
+    valid_plot = _validate_plot_ids(db, context, [plot_id])[0]
+    if quantity < 1:
+        raise HTTPException(status_code=422, detail="Plant quantity must be at least 1")
+    db.execute(
+        """
+        INSERT INTO plot_plants (plot_id, plt_id, quantity)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (plot_id, plt_id) DO UPDATE
+            SET quantity = GREATEST(plot_plants.quantity, excluded.quantity)
+        """,
+        (valid_plot, valid_plant, quantity),
+    )
+    return CommandResult(
+        primary_type="plant",
+        primary_id=valid_plant,
+        records=(("plant", valid_plant),),
+    )
+
+
+def move_plant_command(
+    db: DbConn,
+    context: AuthContext,
+    *,
+    plant_id: str,
+    from_plot_id: str,
+    to_plot_id: str,
+    quantity: int | None = None,
+) -> CommandResult:
+    valid_plant = _validate_plant_ids(db, context, [plant_id])[0]
+    valid_plots = _validate_plot_ids(db, context, [from_plot_id, to_plot_id])
+    source_plot, destination_plot = valid_plots
+    if source_plot == destination_plot:
+        raise HTTPException(status_code=422, detail="Source and destination plots must differ")
+    plot_rows = db.execute(
+        "SELECT plot_id, plot_kind FROM plots WHERE plot_id = ANY(%s) ORDER BY plot_id FOR UPDATE",
+        (sorted(valid_plots),),
+    ).fetchall()
+    plot_kinds = {str(row["plot_id"]): str(row["plot_kind"] or "") for row in plot_rows}
+    source = db.execute(
+        """
+        SELECT quantity, seen_growing, seen_growing_date, room_label
+        FROM plot_plants WHERE plot_id = %s AND plt_id = %s FOR UPDATE
+        """,
+        (source_plot, valid_plant),
+    ).fetchone()
+    if not source:
+        raise HTTPException(status_code=404, detail="Plant not found in the source plot")
+    source_quantity = int(source["quantity"])
+    moved_quantity = source_quantity if quantity is None else quantity
+    if moved_quantity < 1 or moved_quantity > source_quantity:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Move quantity must be between 1 and {source_quantity}",
+        )
+    destination = db.execute(
+        "SELECT quantity FROM plot_plants WHERE plot_id = %s AND plt_id = %s FOR UPDATE",
+        (destination_plot, valid_plant),
+    ).fetchone()
+    destination_room_label = (
+        source["room_label"] if plot_kinds.get(destination_plot) == "indoor" else None
+    )
+    if moved_quantity == source_quantity:
+        db.execute(
+            "DELETE FROM plot_plants WHERE plot_id = %s AND plt_id = %s",
+            (source_plot, valid_plant),
+        )
+    else:
+        db.execute(
+            "UPDATE plot_plants SET quantity = quantity - %s WHERE plot_id = %s AND plt_id = %s",
+            (moved_quantity, source_plot, valid_plant),
+        )
+    if destination:
+        db.execute(
+            "UPDATE plot_plants SET quantity = quantity + %s WHERE plot_id = %s AND plt_id = %s",
+            (moved_quantity, destination_plot, valid_plant),
+        )
+    else:
+        db.execute(
+            """
+            INSERT INTO plot_plants (
+                plot_id, plt_id, quantity, seen_growing, seen_growing_date, room_label
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                destination_plot,
+                valid_plant,
+                moved_quantity,
+                source["seen_growing"],
+                source["seen_growing_date"],
+                destination_room_label,
+            ),
+        )
+    return CommandResult(
+        primary_type="plant",
+        primary_id=valid_plant,
+        records=(("plant", valid_plant),),
+    )
+
+
+def delete_plant_command(
+    db: DbConn,
+    context: AuthContext,
+    *,
+    plant_id: str,
+) -> CommandResult:
+    garden_id = _garden_id(context)
+    valid_plant = _validate_plant_ids(db, context, [plant_id])[0]
+    collect_orphaned_media_storage_keys(
+        db,
+        garden_id=garden_id,
+        target_type="plant",
+        target_id=valid_plant,
+    )
+    db.execute(
+        """
+        DELETE FROM plot_plants
+        WHERE plt_id = %s AND plot_id IN (
+            SELECT plot_id FROM plot_ownership WHERE garden_id = %s
+        )
+        """,
+        (valid_plant, garden_id),
+    )
+    db.execute(
+        "DELETE FROM plant_ownership WHERE plt_id = %s AND garden_id = %s",
+        (valid_plant, garden_id),
+    )
+    remaining = db.execute(
+        "SELECT 1 FROM plant_ownership WHERE plt_id = %s", (valid_plant,)
+    ).fetchone()
+    if not remaining:
+        db.execute("DELETE FROM plot_plants WHERE plt_id = %s", (valid_plant,))
+        db.execute("DELETE FROM plants WHERE plt_id = %s", (valid_plant,))
+    return CommandResult(
+        primary_type="plant",
+        primary_id=valid_plant,
+        records=(("plant", valid_plant),),
+    )
 
 
 def create_journal_entry_command(

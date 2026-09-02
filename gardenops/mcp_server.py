@@ -12,6 +12,7 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from gardenops.db import DbConn, get_db, return_db
+from gardenops.events import notify_garden_modified
 from gardenops.router_helpers import generate_public_id
 from gardenops.services.assistant import (
     analyze_matrix_capture,
@@ -82,6 +83,8 @@ def _error_result(message: str, *, retryable: bool = False) -> AssistantResult:
 
 def _run_tool(
     operation: Callable[[DbConn, AssistantBinding], AssistantResult],
+    *,
+    notify_on_success: bool = False,
 ) -> AssistantResult:
     if not mcp_enabled():
         return _error_result("MCP integration is disabled")
@@ -92,6 +95,8 @@ def _run_tool(
         db.commit()
         result = operation(db, binding)
         db.commit()
+        if notify_on_success:
+            notify_garden_modified()
         return AssistantResult.model_validate(result)
     except HTTPException as exc:
         db.rollback()
@@ -108,8 +113,14 @@ def _run_tool(
 
 async def _run_tool_async(
     operation: Callable[[DbConn, AssistantBinding], AssistantResult],
+    *,
+    notify_on_success: bool = False,
 ) -> AssistantResult:
-    return await asyncio.to_thread(_run_tool, operation)
+    return await asyncio.to_thread(
+        _run_tool,
+        operation,
+        notify_on_success=notify_on_success,
+    )
 
 
 def create_mcp_runtime() -> MCPRuntime | None:
@@ -195,7 +206,8 @@ def create_mcp_runtime() -> MCPRuntime | None:
                 db,
                 binding,
                 **data.model_dump(),
-            )
+            ),
+            notify_on_success=True,
         )
 
     @server.tool(structured_output=True)

@@ -207,7 +207,8 @@ class MatrixBot:
         if command.kind == "help":
             await self._send(
                 "Ask a garden question or describe an observation, harvest, issue, or completed "
-                "task. Reply with a choice number, `edit ...`, `save`, or `cancel`."
+                "task. You can also add, move, or remove a plant. Reply with a choice number, "
+                "`edit ...`, `save`, or `cancel`."
             )
             return
         if command.kind == "status" and not command.reference and not reply_request:

@@ -12,6 +12,9 @@ AssistantIntentKind = Literal[
     "harvest",
     "issue",
     "task_completion",
+    "plant_create",
+    "plant_move",
+    "plant_delete",
     "unknown",
 ]
 AssistantEventType = Literal[
@@ -40,6 +43,8 @@ class AssistantIntent(StrictBaseModel):
     confidence: float = Field(ge=0, le=1)
     plant_query: str = Field(default="", max_length=200)
     plot_query: str = Field(default="", max_length=200)
+    source_plot_query: str = Field(default="", max_length=200)
+    destination_plot_query: str = Field(default="", max_length=200)
     occurred_on: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     event_type: AssistantEventType | None = None
     title: str = Field(default="", max_length=200)
@@ -84,13 +89,22 @@ class AssistantChoice(StrictBaseModel):
 
 
 class AssistantProposal(StrictBaseModel):
-    kind: Literal["journal", "harvest", "issue", "task_completion"]
+    kind: Literal[
+        "journal",
+        "harvest",
+        "issue",
+        "task_completion",
+        "plant_create",
+        "plant_assign",
+        "plant_move",
+        "plant_delete",
+    ]
     summary: str = Field(min_length=1, max_length=500)
     fields: dict = Field(default_factory=dict)
 
 
 class AssistantRecord(StrictBaseModel):
-    type: Literal["journal_entry", "harvest_entry", "issue", "task"]
+    type: Literal["journal_entry", "harvest_entry", "issue", "task", "plant"]
     id: str = Field(min_length=1, max_length=120)
     label: str = Field(default="", max_length=200)
 

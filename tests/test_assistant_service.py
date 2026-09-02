@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
 
 from gardenops.security import AuthContext
 from gardenops.services.assistant import (
+    _enrich_new_plant,
     apply_request,
     cancel_request,
     expire_and_cleanup_requests,
@@ -88,6 +90,51 @@ class TestAssistantService(DbTestBase):
         self.assertEqual(exact.plant_id, "PLT-ROSE")
         self.assertEqual(sentence.plant_id, "PLT-ROSE")
         self.assertEqual(ambiguous.status, "ambiguous_plant")
+
+    def test_new_plant_enrichment_combines_lookup_care_and_verified_rhs_link(self) -> None:
+        lookup = {
+            "name": "Svart lilje 'Blacklist'",
+            "latin": "Lilium 'Blacklist'",
+            "category": "løk",
+            "bloom_month": "juli-august",
+            "color": "mørk burgunder",
+            "hardiness": "H6",
+            "height_cm": 100,
+            "light": "sol",
+            "link": "",
+            "deer_resistant": True,
+        }
+        care = {
+            "new-plant": {
+                "care_watering": "Water during dry periods.",
+                "care_soil": "Use freely draining soil.",
+                "care_planting": "Plant bulbs deeply.",
+                "care_maintenance": "Remove faded flowers.",
+                "care_notes": "Protect young shoots.",
+            }
+        }
+        with (
+            patch("gardenops.services.assistant.lookup_plant_with_ai", return_value=lookup),
+            patch("gardenops.services.assistant.generate_care_batch_with_ai", return_value=care),
+            patch(
+                "gardenops.services.assistant.resolve_rhs_reference",
+                return_value=SimpleNamespace(
+                    verified=True,
+                    canonical_url="https://www.rhs.org.uk/plants/example/blacklist",
+                ),
+            ),
+        ):
+            enriched = _enrich_new_plant(
+                self.conn,
+                self._binding(),
+                identity_query="Lilium 'Blacklist' Blacklist lily",
+            )
+
+        self.assertEqual(enriched["latin"], "Lilium 'Blacklist'")
+        self.assertEqual(enriched["care_watering"], "Water during dry periods.")
+        self.assertTrue(enriched["deer_resistant"])
+        self.assertEqual(enriched["link"], "https://www.rhs.org.uk/plants/example/blacklist")
+        self.assertIsNone(enriched["year_planted"])
 
     def test_resolution_does_not_expose_a_plot_from_another_garden(self) -> None:
         self._insert_plant("PLT-SHARED", "Shared rose", "Rosa canina")

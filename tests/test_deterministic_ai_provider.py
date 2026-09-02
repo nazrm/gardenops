@@ -72,6 +72,7 @@ def test_deterministic_mode_returns_stable_local_fixtures_without_vendor_access(
         "height_cm": 45,
         "light": "sol",
         "link": "",
+        "deer_resistant": False,
     }
 
     care = ai_provider.generate_care_batch_with_ai(

@@ -160,6 +160,15 @@ one of its messages. Proposals require an explicit `save`; use `cancel`, a
 numbered reply, or `edit <text>` as prompted. The worker ignores history during
 its initial synchronization.
 
+The assistant can also add, move, and remove plants. For a new plant, send a
+clear photo or botanical/common name and the destination plot. GardenOps uses
+the configured AI provider to fill botanical, horticultural, and care fields,
+and stores an RHS link only when the exact identity is verified. Location,
+quantity, and planting history remain user-provided. Existing matching plants
+are assigned to the selected plot instead of creating a duplicate. Moving and
+removing a plant are shown as proposals and require an explicit `save`; removal
+clearly states that it cannot be undone.
+
 For a local protocol smoke test, list the tools with MCP Inspector:
 
 ```bash
