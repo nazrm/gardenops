@@ -49,7 +49,7 @@ from gardenops.models import (
     StrictBaseModel,
 )
 from gardenops.observability import observability_extra
-from gardenops.provider_settings import get_shademap_api_key
+from gardenops.provider_settings import get_shademap_api_key, shademap_enabled
 from gardenops.rate_limit import (
     acquire_concurrency_slot,
     enforce_layered_rate_limit,
@@ -78,9 +78,16 @@ from gardenops.services.lidar_terrain import (
     terrain_path_for_signature,
 )
 
-router = APIRouter()
-asset_router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _require_shademap_enabled() -> None:
+    if not shademap_enabled():
+        raise HTTPException(status_code=404, detail="ShadeMap is disabled")
+
+
+router = APIRouter(dependencies=[Depends(_require_shademap_enabled)])
+asset_router = APIRouter(dependencies=[Depends(_require_shademap_enabled)])
 
 
 DEFAULT_LATITUDE: Final[float] = 51.50095
@@ -90,6 +97,7 @@ DEFAULT_LABEL: Final[str] = "House"
 DEFAULT_SHARE_URL: Final[str] = (
     "https://shademap.app/@51.50095,-0.12451,16.18754z,0t,0b,0p,0m,RGVtbyBIb3VzZQ!51.50095!-0.12448"
 )
+DEFAULT_BASEMAP_URL_TEMPLATE: Final[str] = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
 DEFAULT_TERRAIN_URL_TEMPLATE: Final[str] = (
     "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
 )
@@ -566,6 +574,7 @@ def _request_validated_bytes(
     timeout: float = 20.0,
 ) -> tuple[bytes, str]:
     """Request an already-validated upstream URL."""
+    _require_shademap_enabled()
     request_headers = {
         "User-Agent": app_user_agent("shademap-client"),
         **(headers or {}),
@@ -2287,6 +2296,7 @@ def get_shademap_config(db: DB, request: FastAPIRequest) -> dict[str, object]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "api_key": api_key,
+        "basemap_url_template": DEFAULT_BASEMAP_URL_TEMPLATE,
         "latitude": latitude,
         "longitude": longitude,
         "zoom": max(FEATURES_MIN_ZOOM, _read_int("SHADEMAP_ZOOM", DEFAULT_ZOOM)),

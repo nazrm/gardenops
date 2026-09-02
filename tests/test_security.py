@@ -1053,6 +1053,47 @@ class TestSecurity(BaseApiTest):
             self.assertEqual(entitled.status_code, 200)
             self.assertTrue(entitled.json()["shademap_available"])
 
+    def test_auth_me_hides_shademap_when_globally_disabled(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+                "SHADEMAP_ENABLED": "false",
+                "SHADEMAP_PUBLIC_API_KEY": "must-not-be-returned",
+            },
+            clear=False,
+        ):
+            _, csrf = self._login_session("test_admin", strong_password("testadminpass"))
+            conn = db.get_db()
+            try:
+                conn.execute(
+                    "UPDATE auth_users SET subscription_tier = 'enthusiast' "
+                    "WHERE username = 'test_admin'",
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            response = self.client.get("/api/auth/me", headers=self._session_headers(csrf))
+            csp_policy = main_module._csp_policy()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["shademap_available"])
+        self.assertNotIn("must-not-be-returned", response.text)
+        for provider_host in ("shademap.app", "overpass-api.de", "s3.amazonaws.com"):
+            self.assertNotIn(provider_host, csp_policy)
+
+    def test_invalid_shademap_enabled_value_fails_runtime_validation(self) -> None:
+        with patch.dict(
+            os.environ,
+            {**self._valid_production_runtime_env(), "SHADEMAP_ENABLED": "maybe"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "SHADEMAP_ENABLED must be true or false"):
+                _validate_runtime_security_config()
+
     def test_cookie_session_mutation_requires_valid_csrf_token(self) -> None:
         with patch.dict(
             os.environ,

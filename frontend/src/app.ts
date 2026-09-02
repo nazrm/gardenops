@@ -104,6 +104,7 @@ import {
   UNDO_STACK_LIMIT,
 } from "./core/constants";
 import { appName, appSlug } from "./core/branding";
+import { shadeMapBrowserEnabled } from "./core/runtimeFeatures";
 import { queryButton, queryInput, querySelect } from "./core/dom";
 import { getLocale, localizeRoot, setLocale, subscribeLocaleChange, t } from "./core/i18n";
 import type {
@@ -3928,7 +3929,7 @@ function resetShadeMapPanelLoadState(): void {
 
 async function ensureShadeMapPanelLoaded(): Promise<void> {
   const gardenId = getActiveGardenContext();
-  if (!(authProfile?.shademap_available ?? false) || gardenId === null) {
+  if (!shadeMapBrowserEnabled || !(authProfile?.shademap_available ?? false) || gardenId === null) {
     return;
   }
   const panel = await ensureShadePanelController();
@@ -7553,7 +7554,7 @@ async function refreshGardenContext(options?: {
 }
 
 function updateShadeMapAvailabilityUi(): void {
-  const available = authProfile?.shademap_available ?? false;
+  const available = shadeMapBrowserEnabled && (authProfile?.shademap_available ?? false);
   const shadePanelEl = document.getElementById("shade-panel");
   if (shadePanelEl) shadePanelEl.hidden = !available;
   const mobileShadeBtn = queryButton("mobile-map-shade-btn");

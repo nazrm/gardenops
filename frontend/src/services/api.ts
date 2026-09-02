@@ -1801,6 +1801,7 @@ export type ShadeMapFeature = Record<string, unknown>;
 
 export interface ShadeMapConfig {
   api_key: string;
+  basemap_url_template: string;
   latitude: number;
   longitude: number;
   zoom: number;

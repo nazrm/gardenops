@@ -61,6 +61,33 @@ def _complete_journey_fixture_env(artifact_dir: Path) -> dict[str, str]:
 
 
 class TestShademap(BaseApiTest):
+    def test_shademap_disabled_blocks_routes_and_network_before_provider_resolution(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SHADEMAP_ENABLED": "false",
+                    "SHADEMAP": "must-not-be-read",
+                    "SHADEMAP_PUBLIC_API_KEY": "must-not-be-returned",
+                    "SHADEMAP_RUNTIME_SCRIPT_URL": "https://shademap.app/runtime.js",
+                },
+                clear=False,
+            ),
+            patch("gardenops.routers.shademap.build_opener") as opener,
+        ):
+            config = self.client.get("/api/shademap/config")
+            features = self.client.get("/api/shademap/features", params=_FEATURE_BOUNDS)
+            runtime = self.client.get("/shademap/runtime.js")
+            with self.assertRaisesRegex(HTTPException, "ShadeMap is disabled"):
+                shademap_router._request_validated_bytes("https://shademap.app/runtime.js")
+
+        for response in (config, features, runtime):
+            self.assertEqual(response.status_code, 404)
+            self.assertEqual(response.json(), {"detail": "ShadeMap is disabled"})
+            self.assertNotIn("must-not", response.text)
+            self.assertNotIn("shademap.app", response.text)
+        opener.assert_not_called()
+
     def test_shademap_state_round_trip(self) -> None:
         initial = self.client.get("/api/shademap/state")
         self.assertEqual(initial.status_code, 200)
@@ -314,6 +341,10 @@ class TestShademap(BaseApiTest):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["api_key"], "shade-public-key")
+        self.assertEqual(
+            payload["basemap_url_template"],
+            "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        )
         self.assertEqual(payload["latitude"], 51.6)
         self.assertEqual(payload["longitude"], -0.2)
         self.assertEqual(payload["zoom"], 18)
@@ -2019,13 +2050,32 @@ class TestShademap(BaseApiTest):
         self.assertIn('"gardenops:shade-render-state"', source)
         self.assertIn("contextEpoch !== this.gardenContextEpoch", source)
         self.assertIn('root.dataset["writeAccess"]', source)
-        self.assertIn("DEFAULT_BASEMAP_TILE_URL", source)
+        self.assertIn("basemap_url_template", source)
         self.assertIn("VITE_SHADEMAP_BASEMAP_URL", source)
         self.assertIn("loadShadeMapRuntime", source)
         self.assertIn("runtime_script_url", source)
         self.assertIn('"/shademap/runtime.js"', source)
         self.assertIn("trustedShadeMapRuntimeScriptUrl", source)
         self.assertIn('createPolicy("gardenops-shademap-script"', source)
+
+    def test_shademap_browser_disable_prevents_panel_and_basemap_initialization(self) -> None:
+        root = Path(__file__).parents[1]
+        runtime_source = (root / "frontend" / "src" / "core" / "runtimeFeatures.ts").read_text(
+            encoding="utf-8",
+        )
+        app_source = (root / "frontend" / "src" / "app.ts").read_text(encoding="utf-8")
+        panel_source = (root / "frontend" / "src" / "components" / "shadePanel.ts").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('import.meta.env["VITE_SHADEMAP_ENABLED"]', runtime_source)
+        self.assertIn("!shadeMapBrowserEnabled ||", app_source)
+        self.assertIn(
+            "shadeMapBrowserEnabled && (authProfile?.shademap_available ?? false)",
+            app_source,
+        )
+        self.assertIn("config.basemap_url_template", panel_source)
+        self.assertIn("if (shadeMapBrowserEnabled && basemapTileUrl)", panel_source)
 
     def test_shade_token_retry_and_mobile_sheet_recovery_contracts(self) -> None:
         root = Path(__file__).parents[1]
