@@ -126,6 +126,53 @@ controls: `AI_TASK_DESCRIPTION_DAILY_BUDGET_USER` defaults to `60`,
 `AI_TASK_DESCRIPTION_DAILY_BUDGET_GARDEN` defaults to `180`, and
 `AI_TASK_DESCRIPTION_CONCURRENCY_LIMIT` defaults to `1`.
 
+## Matrix Assistant
+
+The optional Matrix integration is deliberately server-configured. It binds one
+exact room and sender to one GardenOps user/garden membership; there is no
+browser settings screen. Install the optional runtime dependencies with:
+
+```bash
+uv sync --locked --extra matrix
+```
+
+Set the `MCP_*` values in the API's host-owned environment file. Put only the
+required `MCP_*` and `MATRIX_*` values listed in `.env.example` in the Matrix
+worker's dedicated `/etc/gardenops-matrix.env`; do not expose database or AI
+provider credentials to that process. Generate the shared MCP token with a
+cryptographic password generator. The configured GardenOps user must be active,
+have editor or admin access to the configured garden, and have the AI feature
+available.
+
+For encrypted rooms, install the host `libolm` package, keep
+`MATRIX_STORE_PATH` persistent and writable only by the service account, then
+verify the supplied bot device manually in Element. The worker intentionally
+does not manage login, SSO, cross-signing, key backup, or room membership.
+
+Run the worker separately after the API is healthy:
+
+```bash
+.venv/bin/python -m gardenops.matrix_bot
+```
+
+In `mention` mode, start a request with `!garden`, mention the bot, or reply to
+one of its messages. Proposals require an explicit `save`; use `cancel`, a
+numbered reply, or `edit <text>` as prompted. The worker ignores history during
+its initial synchronization.
+
+For a local protocol smoke test, list the tools with MCP Inspector:
+
+```bash
+npx -y @modelcontextprotocol/inspector --cli http://127.0.0.1:8000/mcp \
+  --transport http --method tools/list \
+  --header "Authorization: Bearer $MCP_BEARER_TOKEN"
+```
+
+A `401` means the token is absent/wrong; a `403` before MCP
+initialization usually means the Host or Origin is not loopback-safe. Startup
+errors for binding values name the missing or invalid variable without printing
+its value.
+
 Generate `APP_SECRETS_ENCRYPTION_KEY` with:
 
 ```bash

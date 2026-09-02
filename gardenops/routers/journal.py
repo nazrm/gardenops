@@ -41,6 +41,7 @@ from gardenops.router_helpers import (
 )
 from gardenops.routers.media import collect_media_cleanup_for_target
 from gardenops.security import AuthContext
+from gardenops.services.domain_commands import create_journal_entry_command
 from gardenops.services.media_store import drain_media_cleanup_jobs_best_effort
 from gardenops.services.observation_updates import (
     mark_seen_growing_from_observation,
@@ -508,14 +509,7 @@ def create_journal_entry(
             garden_id=garden_id,
             target_id=prepared_operation.replay_target_id,
         )
-    _validate_date(body.occurred_on)
-    valid_plant_ids = _validate_plant_ids(db, context, body.plant_ids)
-    valid_plot_ids = _validate_plot_ids(db, context, body.plot_ids)
-    if body.event_type == "bloomed":
-        _require_observation_plant_access(db, context, valid_plant_ids)
-
     now_ms = current_timestamp_ms()
-    metadata_str = json.dumps(body.metadata, sort_keys=True, separators=(",", ":"))
     entry_public_id = _generate_public_id("jrn")
     if prepared_operation.operation is not None:
         reservation = reserve_operation(
@@ -532,41 +526,22 @@ def create_journal_entry(
                 target_id=reservation.result_id,
             )
 
-    row = db.execute(
-        """
-        INSERT INTO garden_journal_entries
-            (public_id, garden_id, event_type, occurred_on, title, notes,
-             metadata_json, actor_user_id, created_at_ms, updated_at_ms)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, public_id
-        """,
-        (
-            entry_public_id,
-            garden_id,
-            body.event_type,
-            body.occurred_on,
-            body.title,
-            body.notes,
-            metadata_str,
-            context.user_id,
-            now_ms,
-            now_ms,
-        ),
-    ).fetchone()
-    assert row is not None
-    entry_id = int(row["id"])
-    entry_public_id = str(row["public_id"])
-    _set_links(db, context, entry_id, valid_plant_ids, valid_plot_ids)
-    _apply_bloom_side_effects(
+    result = create_journal_entry_command(
         db,
         context=context,
-        garden_id=garden_id,
         event_type=body.event_type,
         occurred_on=body.occurred_on,
-        plant_ids=valid_plant_ids,
-        plot_ids=valid_plot_ids,
+        title=body.title,
+        notes=body.notes,
+        metadata=body.metadata,
+        plant_ids=body.plant_ids,
+        plot_ids=body.plot_ids,
+        public_id=entry_public_id,
+        now_ms=now_ms,
+        mark_seen_growing=mark_seen_growing_from_observation,
     )
     db.commit()
-    return {"status": "ok", "id": entry_public_id}
+    return {"status": "ok", "id": result.primary_id}
 
 
 @router.patch("/journal/{entry_id}")

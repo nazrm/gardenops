@@ -204,6 +204,7 @@ class TestMonthlyTaskGen(DbTestBase):
             self.conn,
             self.garden_id,
             july_ms,
+            frozen_date="2026-07-15",
         )
         assert result1.get("tasks_created", 0) > 0
         assert result1.get("tasks_skipped") is not True
@@ -212,6 +213,7 @@ class TestMonthlyTaskGen(DbTestBase):
             self.conn,
             self.garden_id,
             july_ms + 1000,
+            frozen_date="2026-07-15",
         )
         assert result2.get("tasks_skipped") is True
 
@@ -262,6 +264,7 @@ class TestMonthlyTaskGen(DbTestBase):
             self.conn,
             self.garden_id,
             july_ms,
+            frozen_date="2026-07-15",
         )
         assert result.get("tasks_created", 0) > 0
         assert result.get("notifications_created", 0) >= 1
