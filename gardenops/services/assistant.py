@@ -300,7 +300,8 @@ def _plot_choices(
     rows = db.execute(
         """
         SELECT p.plot_id, COALESCE(p.display_name, '') AS display_name,
-               COALESCE(p.zone_name, '') AS zone_name
+               COALESCE(p.zone_name, '') AS zone_name, po.owner_user_id,
+               p.plot_kind, p.archived_at_ms
         FROM plots p
         JOIN plot_ownership po ON po.plot_id = p.plot_id AND po.garden_id = p.garden_id
         WHERE p.garden_id = %s
@@ -309,13 +310,34 @@ def _plot_choices(
         """,
         (binding.garden_id,),
     ).fetchall()
+    local_admin = (
+        binding.context.auth_type == "none"
+        and binding.context.user_id is None
+        and binding.context.role == "admin"
+    )
+    role = binding.context.garden_role or binding.context.role
+    accessible_rows = [
+        row
+        for row in rows
+        if row["archived_at_ms"] is None
+        and (
+            local_admin
+            or role == "admin"
+            or (role == "editor" and str(row["plot_kind"] or "") == "container")
+            or (
+                binding.context.user_id is not None
+                and row["owner_user_id"] is not None
+                and int(row["owner_user_id"]) == int(binding.context.user_id)
+            )
+        )
+    ]
     all_choices = [
         AssistantChoice(
             value=str(row["plot_id"]),
             label=str(row["display_name"] or row["zone_name"] or row["plot_id"]),
             description=str(row["plot_id"]),
         )
-        for row in rows
+        for row in accessible_rows
     ]
     normalized = normalize_botanical_name(query)
     matches = [
@@ -392,7 +414,7 @@ def _enrich_new_plant(
 
 def _assignment_quantity(intent: AssistantIntent) -> int:
     if intent.quantity is None:
-        return 1
+        raise HTTPException(status_code=422, detail="Plant quantity is required")
     quantity = int(intent.quantity)
     if quantity < 1 or quantity != intent.quantity:
         raise HTTPException(status_code=422, detail="Plant quantity must be a whole number")
@@ -549,18 +571,22 @@ def _advance_plant_create(
             source_event_id=source_event_id,
         )
 
+    cached_plot_id = str(payload.get("destination_plot_id") or "")
+    requested_plot_id = selected_plot_id or cached_plot_id
     preferred_plot = intent.destination_plot_query or intent.plot_query
     plot_id, plot_label, plot_choices = _plot_choices(
         db,
         binding,
-        query=selected_plot_id or preferred_plot,
+        query=requested_plot_id or preferred_plot,
     )
-    if selected_plot_id:
-        plot_id = selected_plot_id
-        plot_label = next(
-            (choice.label for choice in plot_choices if choice.value == selected_plot_id),
-            selected_plot_id,
+    if requested_plot_id:
+        requested_choice = next(
+            (choice for choice in plot_choices if choice.value == requested_plot_id),
+            None,
         )
+        if requested_choice is not None:
+            plot_id = requested_choice.value
+            plot_label = requested_choice.label
     if not plot_id:
         return _needs_input(
             db,
@@ -577,6 +603,17 @@ def _advance_plant_create(
             source_event_id=source_event_id,
         )
 
+    if intent.quantity is None:
+        payload["destination_plot_id"] = plot_id
+        return _needs_input(
+            db,
+            request_id=request_id,
+            request_kind="plant_create",
+            payload=payload,
+            message="How many should I place there?",
+            continuation_kind="plant_quantity",
+            source_event_id=source_event_id,
+        )
     quantity = _assignment_quantity(intent)
     if existing.status in {"resolved", "ambiguous_location"} and existing.plant_id:
         fields = {
@@ -590,7 +627,7 @@ def _advance_plant_create(
             request_id=request_id,
             kind="plant_assign",
             summary=(
-                f"Place {quantity} {existing.plant_name} in {plot_label}. "
+                f"Set {existing.plant_name} to quantity {quantity} in {plot_label}. "
                 "This plant already exists in GardenOps."
             ),
             fields=fields,
@@ -924,12 +961,17 @@ def _advance_to_result(
             "to_plot_id": destination_id,
             "quantity": _assignment_quantity(intent) if intent.quantity is not None else None,
         }
+        move_description = (
+            f"Move all {target.plant_name}"
+            if fields["quantity"] is None
+            else f"Move {fields['quantity']} {target.plant_name}"
+        )
         return _proposal_result(
             db,
             request_id=request_id,
             kind="plant_move",
             summary=(
-                f"Move {target.plant_name} from {target.plot_label or target.plot_id} "
+                f"{move_description} from {target.plot_label or target.plot_id} "
                 f"to {destination_label}."
             ),
             fields=fields,
@@ -1373,13 +1415,37 @@ def continue_request(
     if text.strip().casefold() in {"save", "cancel"}:
         raise HTTPException(status_code=409, detail="Use the explicit save or cancel command")
 
-    if state == "needs_input" and text.strip().isdigit():
+    continuation_kind = str(payload.get("continuation_kind") or "")
+    if state == "needs_input" and continuation_kind == "plant_quantity" and text.strip().isdigit():
+        quantity = int(text.strip())
+        if quantity < 1:
+            raise HTTPException(status_code=422, detail="Plant quantity must be at least 1")
+        intent = AssistantIntent.model_validate(payload["intent"]).model_copy(
+            update={"quantity": quantity}
+        )
+        return _advance_to_result(
+            db,
+            binding,
+            request_id=request_id,
+            intent=intent,
+            input_text=original_text,
+            occurred_on=occurred_on,
+            capture_asset_id=str(row.get("capture_asset_id") or ""),
+            image_analysis=(
+                CaptureAnalysis.model_validate(payload["capture_analysis"])
+                if payload.get("capture_analysis")
+                else None
+            ),
+            payload=payload,
+            source_event_id=source_event_id,
+        )
+
+    if state == "needs_input" and text.strip().isdigit() and payload.get("choices"):
         choices = [AssistantChoice.model_validate(choice) for choice in payload.get("choices", [])]
         index = int(text.strip()) - 1
         if index < 0 or index >= len(choices):
             raise HTTPException(status_code=422, detail="Choice number is out of range")
         intent = AssistantIntent.model_validate(payload["intent"])
-        continuation_kind = str(payload.get("continuation_kind") or "")
         selected_target = None
         selected_task = ""
         selected_identity = ""
@@ -1427,6 +1493,13 @@ def continue_request(
     combined = f"{original_text}\nUser clarification or edit: {edit_text}"[:2000]
     try:
         intent = _interpret(db, binding, text=combined, occurred_on=occurred_on)
+        if intent.intent == "plant_create" and intent.plant_query.strip():
+            cached_identity = str(payload.get("new_plant_identity_query") or "")
+            if normalize_botanical_name(intent.plant_query) != normalize_botanical_name(
+                cached_identity
+            ):
+                payload.pop("new_plant_identity_query", None)
+                payload.pop("new_plant_fields", None)
         return _advance_to_result(
             db,
             binding,
@@ -1657,6 +1730,8 @@ def apply_request(
                 "DELETE FROM media_links WHERE asset_id = %s AND target_type = 'matrix_capture'",
                 (capture_id,),
             )
+        elif proposal.kind == "plant_delete":
+            _remove_temporary_capture(db, capture_asset_id=capture_id)
     records = _records_from_command(command)
     detail = json.dumps(
         {

@@ -197,7 +197,8 @@ The proven core workflow is extended with four explicit, approval-gated plant
 actions:
 
 - create a new plant from a photo or name and assign it to a selected plot;
-- assign an existing catalog plant to another plot without duplicating it;
+- assign an existing catalog plant to another plot without duplicating it,
+  setting the stated quantity as the total in that plot;
 - move all or part of a planted quantity between owned plots;
 - permanently delete a plant after a proposal clearly states that the action
   cannot be undone.

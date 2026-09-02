@@ -96,6 +96,7 @@ def _validate_plant_ids(
     plant_ids: list[str],
     *,
     observation: bool = False,
+    mutation: bool = False,
 ) -> list[str]:
     normalized = _dedupe(plant_ids)
     if not normalized:
@@ -121,7 +122,11 @@ def _validate_plant_ids(
             status_code=404,
             detail=f"Plants not found in active garden: {', '.join(missing[:5])}",
         )
-    if observation and not _is_local_admin(context) and _effective_role(context) != "admin":
+    if (
+        (observation or mutation)
+        and not _is_local_admin(context)
+        and _effective_role(context) != "admin"
+    ):
         denied = [
             plant_id
             for plant_id in normalized
@@ -137,7 +142,13 @@ def _validate_plant_ids(
     return normalized
 
 
-def _validate_plot_ids(db: DbConn, context: AuthContext, plot_ids: list[str]) -> list[str]:
+def _validate_plot_ids(
+    db: DbConn,
+    context: AuthContext,
+    plot_ids: list[str],
+    *,
+    mutation: bool = False,
+) -> list[str]:
     normalized = _dedupe(plot_ids)
     if not normalized:
         return []
@@ -145,22 +156,57 @@ def _validate_plot_ids(db: DbConn, context: AuthContext, plot_ids: list[str]) ->
     garden_id = _garden_id(context)
     if _is_local_admin(context):
         rows = db.execute(
-            f"SELECT plot_id FROM plots WHERE plot_id IN ({placeholders})",  # noqa: S608
+            f"SELECT plot_id, NULL::bigint AS owner_user_id, plot_kind, archived_at_ms "
+            f"FROM plots WHERE plot_id IN ({placeholders})",  # noqa: S608
             normalized,
+        ).fetchall()
+    elif mutation:
+        rows = db.execute(
+            f"SELECT p.plot_id, po.owner_user_id, p.plot_kind, p.archived_at_ms "
+            f"FROM plots p JOIN plot_ownership po ON po.plot_id = p.plot_id "
+            f"WHERE po.garden_id = %s AND p.plot_id IN ({placeholders})",  # noqa: S608
+            [garden_id, *normalized],
         ).fetchall()
     else:
         rows = db.execute(
-            f"SELECT plot_id FROM plot_ownership "
+            f"SELECT plot_id, NULL::bigint AS owner_user_id, ''::text AS plot_kind, "
+            f"NULL::bigint AS archived_at_ms FROM plot_ownership "
             f"WHERE garden_id = %s AND plot_id IN ({placeholders})",  # noqa: S608
             [garden_id, *normalized],
         ).fetchall()
-    found = {str(row["plot_id"]) for row in rows}
+    by_id = {str(row["plot_id"]): row for row in rows}
+    found = set(by_id)
     missing = [plot_id for plot_id in normalized if plot_id not in found]
     if missing:
         raise HTTPException(
             status_code=404,
             detail=f"Plots not found in active garden: {', '.join(missing[:5])}",
         )
+    if mutation:
+        archived = [
+            plot_id for plot_id in normalized if by_id[plot_id]["archived_at_ms"] is not None
+        ]
+        if archived:
+            raise HTTPException(status_code=410, detail="Plot is archived")
+        if not _is_local_admin(context) and _effective_role(context) != "admin":
+            denied = [
+                plot_id
+                for plot_id in normalized
+                if not (
+                    str(by_id[plot_id]["plot_kind"] or "") == "container"
+                    and _effective_role(context) == "editor"
+                )
+                and (
+                    context.user_id is None
+                    or by_id[plot_id]["owner_user_id"] is None
+                    or int(by_id[plot_id]["owner_user_id"]) != int(context.user_id)
+                )
+            ]
+            if denied:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Plots not found in active garden: {', '.join(denied[:5])}",
+                )
     return normalized
 
 
@@ -189,7 +235,7 @@ def create_plant_command(
     plant_id: str | None = None,
 ) -> CommandResult:
     garden_id = _garden_id(context)
-    valid_plot = _validate_plot_ids(db, context, [plot_id])[0]
+    valid_plot = _validate_plot_ids(db, context, [plot_id], mutation=True)[0]
     if quantity < 1:
         raise HTTPException(status_code=422, detail="Plant quantity must be at least 1")
     public_id = plant_id or generate_public_id("plt")
@@ -259,8 +305,8 @@ def assign_plant_command(
     plot_id: str,
     quantity: int = 1,
 ) -> CommandResult:
-    valid_plant = _validate_plant_ids(db, context, [plant_id])[0]
-    valid_plot = _validate_plot_ids(db, context, [plot_id])[0]
+    valid_plant = _validate_plant_ids(db, context, [plant_id], mutation=True)[0]
+    valid_plot = _validate_plot_ids(db, context, [plot_id], mutation=True)[0]
     if quantity < 1:
         raise HTTPException(status_code=422, detail="Plant quantity must be at least 1")
     db.execute(
@@ -268,7 +314,7 @@ def assign_plant_command(
         INSERT INTO plot_plants (plot_id, plt_id, quantity)
         VALUES (%s, %s, %s)
         ON CONFLICT (plot_id, plt_id) DO UPDATE
-            SET quantity = GREATEST(plot_plants.quantity, excluded.quantity)
+            SET quantity = excluded.quantity
         """,
         (valid_plot, valid_plant, quantity),
     )
@@ -288,8 +334,13 @@ def move_plant_command(
     to_plot_id: str,
     quantity: int | None = None,
 ) -> CommandResult:
-    valid_plant = _validate_plant_ids(db, context, [plant_id])[0]
-    valid_plots = _validate_plot_ids(db, context, [from_plot_id, to_plot_id])
+    valid_plant = _validate_plant_ids(db, context, [plant_id], mutation=True)[0]
+    valid_plots = _validate_plot_ids(
+        db,
+        context,
+        [from_plot_id, to_plot_id],
+        mutation=True,
+    )
     source_plot, destination_plot = valid_plots
     if source_plot == destination_plot:
         raise HTTPException(status_code=422, detail="Source and destination plots must differ")
@@ -366,7 +417,13 @@ def delete_plant_command(
     plant_id: str,
 ) -> CommandResult:
     garden_id = _garden_id(context)
-    valid_plant = _validate_plant_ids(db, context, [plant_id])[0]
+    valid_plant = _validate_plant_ids(db, context, [plant_id], mutation=True)[0]
+    locked = db.execute(
+        "SELECT 1 FROM plants WHERE plt_id = %s FOR UPDATE",
+        (valid_plant,),
+    ).fetchone()
+    if not locked:
+        raise HTTPException(status_code=404, detail="Plant not found in active garden")
     collect_orphaned_media_storage_keys(
         db,
         garden_id=garden_id,

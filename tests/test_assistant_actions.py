@@ -4,15 +4,23 @@ import json
 import os
 from unittest.mock import patch
 
+from fastapi import HTTPException
+
 import gardenops.db as db
 from gardenops.db import current_timestamp_ms
 from gardenops.security import AuthContext
-from gardenops.services.assistant import analyze_matrix_capture, apply_request, process_text
+from gardenops.services.assistant import (
+    analyze_matrix_capture,
+    apply_request,
+    continue_request,
+    process_text,
+)
 from gardenops.services.assistant_models import (
     AssistantIntent,
     CaptureAnalysis,
     CapturePlantCandidate,
 )
+from gardenops.services.domain_commands import assign_plant_command
 from gardenops.services.integration_config import AssistantBinding
 from tests.base import BaseApiTest
 
@@ -332,7 +340,7 @@ class TestAssistantActions(BaseApiTest):
                 )
             ]
         )
-        intent = AssistantIntent(
+        intent_without_quantity = AssistantIntent(
             intent="plant_create",
             confidence=0.98,
             destination_plot_query="B1",
@@ -359,10 +367,13 @@ class TestAssistantActions(BaseApiTest):
         try:
             with (
                 patch("gardenops.services.assistant.analyze_capture", return_value=analysis),
-                patch("gardenops.services.assistant._interpret", return_value=intent),
+                patch(
+                    "gardenops.services.assistant._interpret",
+                    return_value=intent_without_quantity,
+                ),
                 patch("gardenops.services.assistant._enrich_new_plant", return_value=enriched),
             ):
-                proposal = analyze_matrix_capture(
+                needs_quantity = analyze_matrix_capture(
                     conn,
                     self._binding(),
                     source_room_id="!garden:example.org",
@@ -371,6 +382,15 @@ class TestAssistantActions(BaseApiTest):
                     capture_asset_id=capture_id,
                     caption="Add this to B1",
                     occurred_on="2026-09-02",
+                )
+                self.assertEqual(needs_quantity.state, "needs_input")
+                self.assertIn("How many", needs_quantity.message)
+                proposal = continue_request(
+                    conn,
+                    self._binding(),
+                    request_id=needs_quantity.request_id,
+                    source_event_id="$new-plant-quantity",
+                    text="1",
                 )
                 conn.commit()
             self.assertEqual(proposal.state, "proposal")
@@ -428,6 +448,7 @@ class TestAssistantActions(BaseApiTest):
                 conn.commit()
             self.assertEqual(move.state, "proposal")
             self.assertEqual(move.proposal.kind, "plant_move")
+            self.assertIn("Move all", move.proposal.summary)
             moved = apply_request(
                 conn,
                 self._binding(),
@@ -445,6 +466,29 @@ class TestAssistantActions(BaseApiTest):
             )
         finally:
             db.return_db(conn)
+
+        integration_env = {
+            "MCP_ENABLED": "true",
+            "MCP_BEARER_TOKEN": CAPTURE_TOKEN,
+            "MATRIX_ROOM_ID": "!garden:example.org",
+            "MATRIX_ALLOWED_SENDER": "@owner:example.org",
+            "MATRIX_GARDENOPS_USERNAME": "test_admin",
+            "MATRIX_GARDEN_SLUG": "default",
+        }
+        with patch.dict(os.environ, integration_env, clear=False):
+            captured = self.client.post(
+                "/api/integrations/matrix/captures",
+                content=self._image_bytes(),
+                headers={
+                    "Authorization": f"Bearer {CAPTURE_TOKEN}",
+                    "Content-Type": "image/png",
+                    "X-Matrix-Room-Id": "!garden:example.org",
+                    "X-Matrix-Event-Id": "$delete-plant-photo",
+                    "X-Matrix-Sender": "@owner:example.org",
+                },
+            )
+        self.assertEqual(captured.status_code, 201, captured.text)
+        delete_capture_id = str(captured.json()["capture_asset_id"])
 
         conn = db.get_db()
         try:
@@ -464,6 +508,11 @@ class TestAssistantActions(BaseApiTest):
                     occurred_on="2026-09-02",
                 )
                 conn.commit()
+            conn.execute(
+                "UPDATE assistant_requests SET capture_asset_id = %s WHERE public_id = %s",
+                (delete_capture_id, delete.request_id),
+            )
+            conn.commit()
             self.assertEqual(delete.state, "proposal")
             self.assertEqual(delete.proposal.kind, "plant_delete")
             self.assertIn("cannot be undone", delete.proposal.summary)
@@ -479,5 +528,115 @@ class TestAssistantActions(BaseApiTest):
             self.assertIsNone(
                 conn.execute("SELECT 1 FROM plants WHERE plt_id = 'PLT-002'").fetchone()
             )
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM media_assets WHERE asset_id = %s", (delete_capture_id,)
+                ).fetchone()
+            )
         finally:
+            db.return_db(conn)
+
+    def test_plant_assignment_uses_exact_quantity_and_write_ownership_rules(self) -> None:
+        conn = db.get_db()
+        try:
+            assign_plant_command(
+                conn,
+                self._binding().context,
+                plant_id="PLT-002",
+                plot_id="B1",
+                quantity=5,
+            )
+            assign_plant_command(
+                conn,
+                self._binding().context,
+                plant_id="PLT-002",
+                plot_id="B1",
+                quantity=2,
+            )
+            quantity = conn.execute(
+                "SELECT quantity FROM plot_plants WHERE plot_id = 'B1' AND plt_id = 'PLT-002'"
+            ).fetchone()
+            self.assertEqual(int(quantity["quantity"]), 2)
+
+            peer_context = AuthContext(
+                user_id=self._owner_id + 1000,
+                username="peer_editor",
+                role="editor",
+                auth_type="session",
+                garden_id=self._get_default_garden_id(),
+                garden_role="editor",
+                subscription_tier="pro",
+            )
+            with self.assertRaises(HTTPException) as peer_error:
+                assign_plant_command(
+                    conn,
+                    peer_context,
+                    plant_id="PLT-002",
+                    plot_id="B1",
+                    quantity=1,
+                )
+            self.assertEqual(peer_error.exception.status_code, 404)
+
+            conn.execute(
+                "UPDATE plots SET archived_at_ms = %s WHERE plot_id = 'B2'",
+                (current_timestamp_ms(),),
+            )
+            with self.assertRaises(HTTPException) as archived_error:
+                assign_plant_command(
+                    conn,
+                    self._binding().context,
+                    plant_id="PLT-002",
+                    plot_id="B2",
+                    quantity=1,
+                )
+            self.assertEqual(archived_error.exception.status_code, 410)
+        finally:
+            conn.rollback()
+            db.return_db(conn)
+
+    def test_editing_new_plant_identity_refreshes_cached_enrichment(self) -> None:
+        first_intent = AssistantIntent(
+            intent="plant_create",
+            confidence=0.98,
+            plant_query="Lilium old",
+            destination_plot_query="B1",
+            quantity=1,
+        )
+        corrected_intent = first_intent.model_copy(update={"plant_query": "Tulipa corrected"})
+        conn = db.get_db()
+        try:
+            with (
+                patch(
+                    "gardenops.services.assistant._interpret",
+                    side_effect=[first_intent, corrected_intent],
+                ),
+                patch(
+                    "gardenops.services.assistant._enrich_new_plant",
+                    side_effect=[
+                        {"name": "Old lily", "latin": "Lilium old"},
+                        {"name": "Corrected tulip", "latin": "Tulipa corrected"},
+                    ],
+                ) as enrich,
+            ):
+                proposal = process_text(
+                    conn,
+                    self._binding(),
+                    source_room_id="!garden:example.org",
+                    source_event_id="$new-plant-before-edit",
+                    source_sender_id="@owner:example.org",
+                    text="Add Lilium old to B1, quantity 1",
+                    occurred_on="2026-09-02",
+                )
+                edited = continue_request(
+                    conn,
+                    self._binding(),
+                    request_id=proposal.request_id,
+                    source_event_id="$new-plant-identity-edit",
+                    text="Actually, it is Tulipa corrected",
+                )
+            self.assertEqual(edited.state, "proposal")
+            self.assertEqual(edited.proposal.fields["latin"], "Tulipa corrected")
+            self.assertEqual(enrich.call_count, 2)
+        finally:
+            conn.rollback()
             db.return_db(conn)
