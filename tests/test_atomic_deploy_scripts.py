@@ -15,6 +15,7 @@ def _release_fixture(tmp_path: Path) -> Path:
     (release / "gardenops").mkdir(parents=True)
     (release / "gardenops" / "__init__.py").write_text("", encoding="utf-8")
     (release / "gardenops" / "main.py").write_text("app = object()\n", encoding="utf-8")
+    (release / "nio.py").write_text("# release preflight fixture\n", encoding="utf-8")
     (release / "migrations").mkdir()
     (release / "migrations" / "001.sql").write_text("SELECT 1;\n", encoding="utf-8")
     dist = release / "frontend" / "dist"
@@ -76,6 +77,10 @@ def test_atomic_deploy_has_required_safety_gates() -> None:
     assert "X-Forwarded-Host: $health_host" in script
     assert "rollback refused because migration contents differ" in script
     assert "mv -Tf" in script
+    assert "--extra matrix" in script
+    assert "MATRIX_SERVICE=${GARDENOPS_MATRIX_SERVICE:-gardenops-matrix.service}" in script
+    assert 'systemctl restart "$MATRIX_SERVICE"' in script
+    assert 'systemctl is-active --quiet "$MATRIX_SERVICE"' in script
 
 
 def test_atomic_activate_quiesces_writers_before_migration() -> None:

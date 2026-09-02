@@ -42,6 +42,7 @@ REQUIRED_TABLES = (
     "media_assets",
     "media_links",
     "media_cleanup_jobs",
+    "assistant_requests",
     "shademap_state",
     "shademap_obstacles",
     "user_attention_preferences",
@@ -239,6 +240,27 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "created_at_ms",
         "last_attempt_at_ms",
     ),
+    "assistant_requests": (
+        "public_id",
+        "garden_id",
+        "actor_user_id",
+        "source_channel",
+        "source_room_id",
+        "source_event_id",
+        "source_sender_id",
+        "request_kind",
+        "state",
+        "input_text",
+        "capture_asset_id",
+        "payload_json",
+        "result_json",
+        "error_detail",
+        "created_at_ms",
+        "updated_at_ms",
+        "expires_at_ms",
+        "applied_at_ms",
+        "last_source_event_id",
+    ),
     "shademap_state": ("id", "garden_id", "selected_plot_id"),
     "shademap_obstacles": ("id", "garden_id", "linked_plot_id"),
     "user_attention_preferences": (
@@ -323,6 +345,8 @@ REQUIRED_INDEXES = (
     "idx_garden_calendar_event_plots_plot",
     "idx_media_links_target",
     "idx_media_cleanup_jobs_created",
+    "idx_assistant_requests_state_expiry",
+    "idx_assistant_requests_garden_created",
     "idx_shademap_state_garden",
     "idx_shademap_obstacles_garden",
     "idx_user_attention_item_state_garden_user",
@@ -414,6 +438,14 @@ REQUIRED_CONSTRAINTS = (
     "ck_offline_create_operations_request_fingerprint",
     "ck_offline_create_operations_expiry",
     "fk_offline_create_operations_garden",
+    "assistant_requests_pkey",
+    "ux_assistant_requests_source_event",
+    "fk_assistant_requests_garden",
+    "fk_assistant_requests_actor",
+    "fk_assistant_requests_capture",
+    "ck_assistant_requests_source_channel",
+    "ck_assistant_requests_kind",
+    "ck_assistant_requests_state",
 )
 
 REQUIRED_COLUMN_NULLABILITY: dict[str, bool] = {
@@ -465,6 +497,10 @@ REQUIRED_COLUMN_TYPES: dict[str, str] = {
     "plots.container_position_y": "integer",
     "plots.environment": "text",
     "plots.archived_at_ms": "bigint",
+    "assistant_requests.public_id": "text",
+    "assistant_requests.garden_id": "bigint",
+    "assistant_requests.actor_user_id": "bigint",
+    "assistant_requests.expires_at_ms": "bigint",
 }
 
 REQUIRED_COLUMN_DEFAULTS: dict[str, str | None] = {
@@ -487,6 +523,12 @@ REQUIRED_COLUMN_DEFAULTS: dict[str, str | None] = {
     "plots.container_position_y": None,
     "plots.environment": "'outdoor'::text",
     "plots.archived_at_ms": None,
+    "assistant_requests.source_channel": "'matrix'::text",
+    "assistant_requests.input_text": "''::text",
+    "assistant_requests.payload_json": "'{}'::text",
+    "assistant_requests.result_json": "'{}'::text",
+    "assistant_requests.error_detail": "''::text",
+    "assistant_requests.last_source_event_id": "''::text",
 }
 
 REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
@@ -539,6 +581,14 @@ REQUIRED_INDEX_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
         "container_position_x",
         "container_position_y",
         "archived_at_ms is null",
+    ),
+    "idx_assistant_requests_state_expiry": (
+        "assistant_requests",
+        "using btree (state, expires_at_ms)",
+    ),
+    "idx_assistant_requests_garden_created": (
+        "assistant_requests",
+        "using btree (garden_id, created_at_ms)",
     ),
 }
 
@@ -603,6 +653,32 @@ REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
         "references garden_map_objects(id, garden_id)",
         "on delete set null",
         "deferrable",
+    ),
+    "ck_assistant_requests_source_channel": (
+        "check",
+        "source_channel = 'matrix'",
+    ),
+    "ck_assistant_requests_kind": (
+        "check",
+        "request_kind",
+        "question",
+        "journal",
+        "harvest",
+        "issue",
+        "task_completion",
+        "unknown",
+    ),
+    "ck_assistant_requests_state": (
+        "check",
+        "state",
+        "processing",
+        "needs_input",
+        "proposal",
+        "answered",
+        "applied",
+        "cancelled",
+        "expired",
+        "failed",
     ),
 }
 
@@ -831,6 +907,21 @@ _MIGRATION_0032_COLUMNS = {
 }
 _MIGRATION_0032_INDEXES = {"ux_plots_active_container_position"}
 _MIGRATION_0032_CONSTRAINTS = {"ck_plots_container_position_pair"}
+_MIGRATION_0034_TABLE = "assistant_requests"
+_MIGRATION_0034_INDEXES = {
+    "idx_assistant_requests_state_expiry",
+    "idx_assistant_requests_garden_created",
+}
+_MIGRATION_0034_CONSTRAINTS = {
+    "assistant_requests_pkey",
+    "ux_assistant_requests_source_event",
+    "fk_assistant_requests_garden",
+    "fk_assistant_requests_actor",
+    "fk_assistant_requests_capture",
+    "ck_assistant_requests_source_channel",
+    "ck_assistant_requests_kind",
+    "ck_assistant_requests_state",
+}
 _MIGRATION_0022_CONSTRAINTS = {
     constraint
     for constraint in REQUIRED_CONSTRAINTS
@@ -1011,6 +1102,29 @@ def _migration_0032_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
     )
 
 
+def _is_migration_0034_part(part: Mapping[str, object]) -> bool:
+    kind = str(part.get("kind", ""))
+    obj = str(part.get("object", ""))
+    if kind == "table":
+        return obj == _MIGRATION_0034_TABLE
+    if kind in {"column", "column-type", "column-default", "column-nullability"}:
+        return obj.startswith(f"{_MIGRATION_0034_TABLE}.")
+    if kind in {"index", "index-definition"}:
+        return obj in _MIGRATION_0034_INDEXES
+    if kind in {"constraint", "constraint-definition"}:
+        return obj in _MIGRATION_0034_CONSTRAINTS
+    return False
+
+
+def _migration_0034_schema_is_absent(snapshot: SchemaSnapshot) -> bool:
+    return (
+        _MIGRATION_0034_TABLE not in snapshot.tables
+        and _MIGRATION_0034_TABLE not in snapshot.columns
+        and not (_MIGRATION_0034_INDEXES & snapshot.indexes)
+        and not (_MIGRATION_0034_CONSTRAINTS & snapshot.constraints)
+    )
+
+
 def bootstrap_schema_diagnostics_from_snapshot(
     snapshot: SchemaSnapshot,
 ) -> dict[str, object]:
@@ -1035,6 +1149,7 @@ def bootstrap_schema_diagnostics_from_snapshot(
         missing_plant_external_references = _migration_0030_schema_is_absent(snapshot)
         missing_canonical_container_plots = _migration_0031_schema_is_absent(snapshot)
         missing_container_positions = _migration_0032_schema_is_absent(snapshot)
+        missing_matrix_mcp_assistant = _migration_0034_schema_is_absent(snapshot)
         if (
             missing_offline_operations
             or missing_audit_request_id
@@ -1045,6 +1160,7 @@ def bootstrap_schema_diagnostics_from_snapshot(
             or missing_plant_external_references
             or missing_canonical_container_plots
             or missing_container_positions
+            or missing_matrix_mcp_assistant
         ) and all(
             (missing_offline_operations and _is_migration_0022_part(part))
             or (missing_audit_request_id and _is_migration_0023_part(part))
@@ -1056,9 +1172,10 @@ def bootstrap_schema_diagnostics_from_snapshot(
             or (missing_plant_external_references and _is_migration_0030_part(part))
             or (missing_canonical_container_plots and _is_migration_0031_part(part))
             or (missing_container_positions and _is_migration_0032_part(part))
+            or (missing_matrix_mcp_assistant and _is_migration_0034_part(part))
             for part in missing
         ):
-            stamp_through = 31
+            stamp_through = 33
             if missing_container_positions:
                 stamp_through = 31
             if missing_canonical_container_plots:

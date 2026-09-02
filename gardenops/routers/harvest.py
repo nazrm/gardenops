@@ -45,7 +45,8 @@ from gardenops.router_helpers import (
 )
 from gardenops.routers.media import collect_media_cleanup_for_target
 from gardenops.security import AuthContext
-from gardenops.services.automation import on_harvest_logged, reconcile_harvest_rollups
+from gardenops.services.automation import reconcile_harvest_rollups
+from gardenops.services.domain_commands import create_harvest_entry_command
 from gardenops.services.media_store import drain_media_cleanup_jobs_best_effort
 from gardenops.sql_dates import month_number_sql
 
@@ -705,8 +706,6 @@ def create_harvest_entry(
             garden_id=garden_id,
             target_id=prepared_operation.replay_target_id,
         )
-    _validate_date(body.occurred_on)
-
     now_ms = current_timestamp_ms()
     entry_public_id = _generate_public_id("hrv")
     if prepared_operation.operation is not None:
@@ -724,56 +723,25 @@ def create_harvest_entry(
                 target_id=reservation.result_id,
             )
 
-    row = db.execute(
-        """
-        INSERT INTO harvest_entries
-            (public_id, garden_id, occurred_on, quantity, unit, quality, notes,
-             metadata_json, actor_user_id, created_at_ms, updated_at_ms)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        RETURNING id, public_id
-        """,
-        (
-            entry_public_id,
-            garden_id,
-            body.occurred_on,
-            body.quantity,
-            body.unit,
-            body.quality,
-            body.notes,
-            "{}",
-            context.user_id,
-            now_ms,
-            now_ms,
-        ),
-    ).fetchone()
-    assert row is not None
-    entry_id = int(row["id"])
-    entry_public_id = str(row["public_id"])
-    _set_harvest_links(db, context, entry_id, body.plant_ids, body.plot_ids)
-    _, journal_entry_public_id = _upsert_linked_journal_entry(
+    result = create_harvest_entry_command(
         db,
-        context=context,
-        garden_id=garden_id,
-        harvest_entry_id=entry_public_id,
-        journal_entry_id=None,
+        context,
         occurred_on=body.occurred_on,
         quantity=body.quantity,
         unit=body.unit,
+        quality=body.quality,
         notes=body.notes,
         plant_ids=body.plant_ids,
         plot_ids=body.plot_ids,
+        public_id=entry_public_id,
+        now_ms=now_ms,
     )
-    db.execute(
-        "UPDATE harvest_entries SET metadata_json = %s, updated_at_ms = %s WHERE id = %s",
-        (
-            _dump_metadata({"journal_entry_id": journal_entry_public_id}),
-            current_timestamp_ms(),
-            entry_id,
-        ),
-    )
-    on_harvest_logged(db, garden_id, entry_id)
     db.commit()
-    return {"status": "ok", "id": entry_public_id, "journal_entry_id": journal_entry_public_id}
+    return {
+        "status": "ok",
+        "id": result.primary_id,
+        "journal_entry_id": result.journal_entry_ids[0],
+    }
 
 
 @router.patch("/harvest/{entry_id}")

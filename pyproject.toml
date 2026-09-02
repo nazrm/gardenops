@@ -24,6 +24,12 @@ dependencies = [
     "psycopg-pool>=3.3.1",
     "webauthn==3.0.0",
     "cbor2==6.1.4",
+    "mcp==2.0.0",
+]
+
+[project.optional-dependencies]
+matrix = [
+    "matrix-nio[e2e]>=0.25,<1",
 ]
 
 [dependency-groups]
@@ -41,6 +47,9 @@ audit = [
     "msgpack>=1.2.1",
     "requests<2.35.0",
 ]
+
+[tool.uv]
+constraint-dependencies = ["cachetools<7.1.8"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

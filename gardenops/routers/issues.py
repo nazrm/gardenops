@@ -46,15 +46,14 @@ from gardenops.router_helpers import (
 from gardenops.routers.media import collect_media_cleanup_for_target
 from gardenops.security import AuthContext
 from gardenops.services.automation import (
-    on_issue_created,
     retire_deleted_issue_followup_task,
     sync_issue_followup_task,
 )
+from gardenops.services.domain_commands import create_issue_command
 from gardenops.services.media_store import drain_media_cleanup_jobs_best_effort
 from gardenops.services.notification_service import (
     clear_issue_notifications,
     clear_task_notifications,
-    create_issue_created_notifications,
 )
 
 router = APIRouter()
@@ -912,9 +911,6 @@ def create_issue(
             target_id=prepared_operation.replay_target_id,
         )
 
-    if body.follow_up_on:
-        _validate_date(body.follow_up_on)
-
     now_ms = current_timestamp_ms()
     issue_public_id = _generate_public_id("iss")
     if prepared_operation.operation is not None:
@@ -932,72 +928,23 @@ def create_issue(
                 target_id=reservation.result_id,
             )
 
-    row = db.execute(
-        """
-        INSERT INTO garden_issues
-            (public_id, garden_id, issue_type, title, description, severity, status,
-             suspected_cause, treatment_plan, follow_up_on,
-             metadata_json, created_by_user_id,
-             created_at_ms, updated_at_ms)
-        VALUES (%s, %s, %s, %s, %s, %s, 'open', %s, %s, %s, %s, %s, %s, %s)
-        RETURNING id, public_id
-        """,
-        (
-            issue_public_id,
-            garden_id,
-            body.issue_type,
-            body.title,
-            body.description,
-            body.severity,
-            body.suspected_cause,
-            body.treatment_plan,
-            body.follow_up_on,
-            _dump_metadata({}),
-            context.user_id,
-            now_ms,
-            now_ms,
-        ),
-    ).fetchone()
-    assert row is not None
-    issue_id = int(row["id"])
-    issue_public_id = str(row["public_id"])
-    _set_issue_links(db, context, issue_id, body.plant_ids, body.plot_ids)
-    issue_row = _fetch_issue(db, issue_public_id, garden_id)
-    plant_map, plot_map, _plot_detail_map = _load_issue_links(db, [issue_id])
-    plant_ids = plant_map.get(issue_id, [])
-    plot_ids = plot_map.get(issue_id, [])
-    _append_issue_history_event(
+    result = create_issue_command(
         db,
-        issue_row,
-        kind="created",
-        actor_user_id=context.user_id,
-        actor_username=context.username,
-        at_ms=now_ms,
-        summary="Issue reported",
-    )
-    _create_issue_journal_entry(
-        db,
-        garden_id=garden_id,
-        issue_row=issue_row,
-        actor_user_id=context.user_id,
-        plant_ids=plant_ids,
-        plot_ids=plot_ids,
-        kind="created",
-        summary="Issue reported",
-        at_ms=now_ms,
-    )
-    on_issue_created(db, garden_id, issue_id, context.user_id)
-    create_issue_created_notifications(
-        db,
-        garden_id=garden_id,
-        issue_public_id=issue_public_id,
-        title=str(issue_row.get("title") or "Issue reported"),
-        body=str(issue_row.get("description") or ""),
-        severity=str(issue_row.get("severity") or "normal"),
-        actor_user_id=context.user_id,
+        context,
+        issue_type=body.issue_type,
+        title=body.title,
+        description=body.description,
+        severity=body.severity,
+        suspected_cause=body.suspected_cause,
+        treatment_plan=body.treatment_plan,
+        follow_up_on=body.follow_up_on,
+        plant_ids=body.plant_ids,
+        plot_ids=body.plot_ids,
+        public_id=issue_public_id,
+        now_ms=now_ms,
     )
     db.commit()
-    return {"status": "ok", "id": issue_public_id}
+    return {"status": "ok", "id": result.primary_id}
 
 
 @router.patch("/issues/{issue_id}")

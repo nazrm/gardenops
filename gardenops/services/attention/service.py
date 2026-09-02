@@ -689,7 +689,7 @@ class AttentionService:
                 savepoint_created = True
                 if provider.key == "task":
                     collected.extend(
-                        provider.collect(
+                        cast(Any, provider).collect(
                             conn,
                             garden_id=garden_id,
                             user_id=provider_user_id,

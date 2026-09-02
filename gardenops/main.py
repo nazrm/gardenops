@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from contextlib import asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -31,6 +31,8 @@ from pydantic import Field  # noqa: E402
 from starlette.middleware.gzip import GZipMiddleware  # noqa: E402
 from starlette.middleware.trustedhost import TrustedHostMiddleware  # noqa: E402
 from starlette.responses import JSONResponse  # noqa: E402
+from starlette.routing import Route  # noqa: E402
+from starlette.types import Receive, Scope, Send  # noqa: E402
 
 from gardenops.audit import (  # noqa: E402
     enqueue_audit_event_telemetry,
@@ -62,6 +64,7 @@ from gardenops.db import (  # noqa: E402
 from gardenops.events import notify_garden_modified  # noqa: E402
 from gardenops.feature_gates import feature_allowed, feature_for_route  # noqa: E402
 from gardenops.incident_controls import is_emergency_read_only  # noqa: E402
+from gardenops.mcp_server import create_mcp_runtime  # noqa: E402
 from gardenops.models import (  # noqa: E402
     ImportBody,
     LayoutStateBody,
@@ -101,6 +104,7 @@ from gardenops.routers.external import router as external_router  # noqa: E402
 from gardenops.routers.gardens import router as gardens_router  # noqa: E402
 from gardenops.routers.harvest import router as harvest_router  # noqa: E402
 from gardenops.routers.health import router as health_router  # noqa: E402
+from gardenops.routers.integrations import router as integrations_router  # noqa: E402
 from gardenops.routers.inventory import router as inventory_router  # noqa: E402
 from gardenops.routers.issues import router as issues_router  # noqa: E402
 from gardenops.routers.journal import router as journal_router  # noqa: E402
@@ -170,8 +174,16 @@ from gardenops.security_telemetry import (  # noqa: E402
     start_security_telemetry_exporter,
     stop_security_telemetry_exporter,
 )
+from gardenops.services.assistant import expire_and_cleanup_requests  # noqa: E402
 from gardenops.services.garden_layout_lock import lock_garden_layout  # noqa: E402
-from gardenops.services.media_store import drain_media_cleanup_jobs_best_effort  # noqa: E402
+from gardenops.services.integration_config import (  # noqa: E402
+    resolve_assistant_binding,
+    validate_integration_config,
+)
+from gardenops.services.media_store import (  # noqa: E402
+    drain_media_cleanup_jobs,
+    drain_media_cleanup_jobs_best_effort,
+)
 from gardenops.services.notification_service import (  # noqa: E402
     acquire_notification_scheduler_lease,
     notification_scheduler_enabled,
@@ -187,6 +199,8 @@ DIST = ROOT / "frontend" / "dist"
 FRONTEND_PACKAGE_JSON = ROOT / "frontend" / "package.json"
 LOGS_DIR = Path(os.environ.get("GARDENOPS_LOGS_DIR", "") or ROOT / "logs")
 logger = logging.getLogger(__name__)
+MCP_RUNTIME = create_mcp_runtime()
+_LOCAL_INTEGRATION_PATHS = frozenset({"/mcp", "/api/integrations/matrix/captures"})
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -231,6 +245,22 @@ _TAILLOG_SKIP_FIELDS = frozenset(
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
         return None
+
+
+class PathAwareCORSMiddleware(CORSMiddleware):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("path") == "/mcp":
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
+class PathAwareTrustedHostMiddleware(TrustedHostMiddleware):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("path") in _LOCAL_INTEGRATION_PATHS:
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
 
 
 class TaillightLogHandler(logging.Handler):
@@ -836,6 +866,7 @@ def _api_docs_enabled() -> bool:
 
 
 def _validate_runtime_security_config() -> None:
+    validate_integration_config()
     _validate_shared_rate_limit_backend()
     strict_cookie_mode = _is_internet_exposed() or _is_production()
     if strict_cookie_mode:
@@ -1048,8 +1079,15 @@ def _max_body_bytes_for_path(path: str) -> int:
         return env_int("MAX_IMPORT_BODY_BYTES", 8 * 1024 * 1024)
     if path == "/api/media/upload":
         return env_int("MEDIA_MAX_UPLOAD_BYTES", 6 * 1024 * 1024)
-    if path in {"/api/ai/identify-plant", "/api/ai/diagnose-plant"}:
-        return env_int("MAX_AI_PHOTO_BODY_BYTES", 5 * 1024 * 1024)
+    if path in {
+        "/api/ai/identify-plant",
+        "/api/ai/diagnose-plant",
+        "/api/integrations/matrix/captures",
+    }:
+        return min(
+            env_int("MAX_AI_PHOTO_BODY_BYTES", 5 * 1024 * 1024),
+            env_int("MEDIA_MAX_UPLOAD_BYTES", 6 * 1024 * 1024),
+        )
     return env_int("MAX_API_BODY_BYTES", 1 * 1024 * 1024)
 
 
@@ -1262,6 +1300,31 @@ async def _notification_scheduler_loop() -> None:
         await asyncio.sleep(poll_seconds)
 
 
+def _run_assistant_maintenance_once() -> int:
+    conn = get_db()
+    try:
+        removed = expire_and_cleanup_requests(conn)
+        conn.commit()
+        drain_media_cleanup_jobs(conn)
+        return removed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        return_db(conn)
+
+
+async def _assistant_maintenance_loop() -> None:
+    while True:
+        await asyncio.sleep(24 * 60 * 60)
+        try:
+            removed = await asyncio.to_thread(_run_assistant_maintenance_once)
+            if removed:
+                logger.info("Assistant maintenance removed %s temporary captures", removed)
+        except Exception:
+            logger.exception("Assistant maintenance failed")
+
+
 def _startup_integrity_check() -> None:
     """Verify database integrity before accepting requests."""
     conn = get_db()
@@ -1307,11 +1370,19 @@ async def lifespan(_: FastAPI):
     _validate_runtime_security_config()
     ensure_backend_ready()
     init_db()
+    if MCP_RUNTIME is not None:
+        binding_db = get_db()
+        try:
+            resolve_assistant_binding(binding_db)
+            binding_db.rollback()
+        finally:
+            return_db(binding_db)
     _startup_integrity_check()
     ensure_bootstrap_user_from_env()
     warn_csrf_secret_not_configured()
     start_security_telemetry_exporter()
     scheduler_task: asyncio.Task[None] | None = None
+    assistant_maintenance_task: asyncio.Task[None] | None = None
 
     from gardenops.routers.shademap import _load_grid_from_db, _save_grid_to_db
     from gardenops.services.lidar_terrain import set_grid_cache_callbacks
@@ -1322,13 +1393,26 @@ async def lifespan(_: FastAPI):
             _notification_scheduler_loop(),
             name="notification-scheduler",
         )
+    if MCP_RUNTIME is not None:
+        await asyncio.to_thread(_run_assistant_maintenance_once)
+        assistant_maintenance_task = asyncio.create_task(
+            _assistant_maintenance_loop(),
+            name="assistant-maintenance",
+        )
     try:
-        yield
+        async with AsyncExitStack() as stack:
+            if MCP_RUNTIME is not None:
+                await stack.enter_async_context(MCP_RUNTIME.server.session_manager.run())
+            yield
     finally:
         if scheduler_task is not None:
             scheduler_task.cancel()
             with suppress(asyncio.CancelledError):
                 await scheduler_task
+        if assistant_maintenance_task is not None:
+            assistant_maintenance_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await assistant_maintenance_task
         stop_security_telemetry_exporter()
         close_pool()
         # Flush Taillight log handler on shutdown
@@ -1347,7 +1431,7 @@ app = FastAPI(
 )
 
 app.add_middleware(
-    CORSMiddleware,
+    PathAwareCORSMiddleware,
     allow_origins=_cors_allow_origins(),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -1362,7 +1446,7 @@ app.add_middleware(
         "x-request-id",
     ],
 )
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts())
+app.add_middleware(PathAwareTrustedHostMiddleware, allowed_hosts=_allowed_hosts())
 
 app.include_router(shademap_router, prefix="/api")
 app.include_router(shademap_asset_router)
@@ -1378,6 +1462,7 @@ app.include_router(journal_router, prefix="/api")
 app.include_router(media_router, prefix="/api")
 app.include_router(statistics_router, prefix="/api")
 app.include_router(inventory_router, prefix="/api")
+app.include_router(integrations_router, prefix="/api")
 app.include_router(calendar_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
 app.include_router(attention_router, prefix="/api")
@@ -1393,9 +1478,21 @@ app.include_router(workflows_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
 app.include_router(calendar_feed_router)
 
+if MCP_RUNTIME is not None:
+    app.routes.append(
+        Route(
+            "/mcp",
+            endpoint=MCP_RUNTIME.app,
+            methods=["GET", "POST", "DELETE"],
+            name="mcp",
+        )
+    )
+
 
 @app.middleware("http")
 async def edge_origin_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
+    if request.url.path in _LOCAL_INTEGRATION_PATHS:
+        return await call_next(request)
     detail = _edge_proxy_violation_detail(request)
     if detail is not None:
         record_security_event("edge_origin_rejections")
@@ -1429,6 +1526,7 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         "/api/admin/system/health",
         "/api/security/csp-report",
         "/api/client-errors",
+        "/api/integrations/matrix/captures",
     }
     csrf_exempt_mutation_paths = {
         "/api/auth/bootstrap",
@@ -1443,6 +1541,7 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         "/api/auth/check-hibp",
         "/api/security/csp-report",
         "/api/client-errors",
+        "/api/integrations/matrix/captures",
     }
     auth_context = None
     remote_host = client_ip(request)

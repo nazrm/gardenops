@@ -1205,6 +1205,26 @@ class TestTasks(BaseApiTest):
                 self.assertNotIn("Test Plant", remaining["metadata"]["description_no"])
                 self.assertEqual(remaining["metadata"]["plant_count"], 1)
 
+                metadata_with_stale_targets = dict(remaining["metadata"])
+                metadata_with_stale_targets["completion_capture_original_plant_ids"].append(
+                    "PLT-DELETED"
+                )
+                metadata_with_stale_targets["completion_capture_original_plot_ids"].append(
+                    "PLOT-DELETED"
+                )
+                conn = db.get_db()
+                try:
+                    conn.execute(
+                        "UPDATE garden_tasks SET metadata_json = %s WHERE public_id = %s",
+                        (
+                            json.dumps(metadata_with_stale_targets, separators=(",", ":")),
+                            task_id,
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    db.return_db(conn)
+
                 final = self.client.post(
                     f"/api/tasks/{task_id}/action",
                     json={"action": "complete"},
