@@ -191,6 +191,25 @@ Do not implement these in the MVP:
 
 These may be added after the core workflow has proved useful.
 
+### 4.1 Implemented plant-management extension
+
+The proven core workflow is extended with four explicit, approval-gated plant
+actions:
+
+- create a new plant from a photo or name and assign it to a selected plot;
+- assign an existing catalog plant to another plot without duplicating it,
+  setting the stated quantity as the total in that plot;
+- move all or part of a planted quantity between owned plots;
+- permanently delete a plant after a proposal clearly states that the action
+  cannot be undone.
+
+New plants use the configured AI provider to populate botanical, display, and
+care fields, and reuse the existing exact RHS-link resolver. An unverified RHS
+match is left blank. User-owned facts such as planting location, planting year,
+quantity, and observations are never invented by AI. Every mutation still
+requires an explicit `save`, uses the existing GardenOps domain behavior, and
+is protected by the existing request idempotency and audit path.
+
 ## 5. Runtime architecture
 
 ```text

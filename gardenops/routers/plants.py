@@ -1164,6 +1164,12 @@ def delete_plant(plt_id: str, db: DB, request: Request) -> dict:
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
     _require_plant_access(db, plt_id, context)
+    locked = db.execute(
+        "SELECT 1 FROM plants WHERE plt_id = %s FOR UPDATE",
+        (plt_id,),
+    ).fetchone()
+    if not locked:
+        raise HTTPException(status_code=404, detail=f"Plant {plt_id} not found")
     media_storage_pairs = collect_media_cleanup_for_target(
         db,
         garden_id=garden_id,

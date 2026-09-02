@@ -666,6 +666,10 @@ REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
         "harvest",
         "issue",
         "task_completion",
+        "plant_create",
+        "plant_assign",
+        "plant_move",
+        "plant_delete",
         "unknown",
     ),
     "ck_assistant_requests_state": (

@@ -21,7 +21,9 @@ from gardenops.services.ai_provider import (
     AIProviderRateLimited,
     AIProviderTimeout,
     diagnose_plant_with_ai,
+    generate_care_batch_with_ai,
     interpret_garden_message_with_ai,
+    lookup_plant_with_ai,
 )
 from gardenops.services.assistant_models import (
     AssistantChoice,
@@ -42,11 +44,15 @@ from gardenops.services.capture_analysis import (
 )
 from gardenops.services.domain_commands import (
     CommandResult,
+    assign_plant_command,
     complete_task_command,
     create_harvest_entry_command,
     create_issue_command,
     create_journal_entry_command,
+    create_plant_command,
+    delete_plant_command,
     link_existing_media_command,
+    move_plant_command,
 )
 from gardenops.services.garden_qa import answer_garden_question, build_garden_context
 from gardenops.services.integration_config import (
@@ -54,6 +60,10 @@ from gardenops.services.integration_config import (
     assert_source_binding,
 )
 from gardenops.services.media_store import enqueue_media_cleanup_jobs
+from gardenops.services.rhs_plant_resolver import (
+    normalize_botanical_name,
+    resolve_rhs_reference,
+)
 
 _ACTIVE_STATES = frozenset({"processing", "needs_input", "proposal"})
 
@@ -268,13 +278,147 @@ def _target_for_intent(
             db,
             binding.context,
             plant_query=query,
-            plot_query=intent.plot_query or input_text,
+            plot_query=(
+                intent.source_plot_query or intent.plot_query or input_text
+                if intent.intent == "plant_move"
+                else intent.plot_query or input_text
+            ),
             taxonomy_refs=taxonomy_refs,
         )
         if result.status != "not_found":
             return result
         best_not_found = result
     return best_not_found
+
+
+def _plot_choices(
+    db: DbConn,
+    binding: AssistantBinding,
+    *,
+    query: str,
+) -> tuple[str, str, list[AssistantChoice]]:
+    rows = db.execute(
+        """
+        SELECT p.plot_id, COALESCE(p.display_name, '') AS display_name,
+               COALESCE(p.zone_name, '') AS zone_name, po.owner_user_id,
+               p.plot_kind, p.archived_at_ms
+        FROM plots p
+        JOIN plot_ownership po ON po.plot_id = p.plot_id AND po.garden_id = p.garden_id
+        WHERE p.garden_id = %s
+        ORDER BY p.zone_name, p.plot_number, p.plot_id
+        LIMIT 500
+        """,
+        (binding.garden_id,),
+    ).fetchall()
+    local_admin = (
+        binding.context.auth_type == "none"
+        and binding.context.user_id is None
+        and binding.context.role == "admin"
+    )
+    role = binding.context.garden_role or binding.context.role
+    accessible_rows = [
+        row
+        for row in rows
+        if row["archived_at_ms"] is None
+        and (
+            local_admin
+            or role == "admin"
+            or (role == "editor" and str(row["plot_kind"] or "") == "container")
+            or (
+                binding.context.user_id is not None
+                and row["owner_user_id"] is not None
+                and int(row["owner_user_id"]) == int(binding.context.user_id)
+            )
+        )
+    ]
+    all_choices = [
+        AssistantChoice(
+            value=str(row["plot_id"]),
+            label=str(row["display_name"] or row["zone_name"] or row["plot_id"]),
+            description=str(row["plot_id"]),
+        )
+        for row in accessible_rows
+    ]
+    normalized = normalize_botanical_name(query)
+    matches = [
+        choice
+        for choice in all_choices
+        if normalized
+        and normalized
+        in {
+            normalize_botanical_name(choice.value),
+            normalize_botanical_name(choice.label),
+        }
+    ]
+    if len(matches) == 1:
+        return matches[0].value, matches[0].label, all_choices[:20]
+    return "", "", all_choices[:20]
+
+
+def _reserve_ai_feature(db: DbConn, binding: AssistantBinding, feature: str) -> None:
+    limits = provider_limit_profile(feature)
+    reserve_daily_provider_budget(
+        db,
+        feature=feature,
+        user_id=binding.user_id,
+        garden_id=binding.garden_id,
+        user_limit=int(limits["user_limit"]),
+        garden_limit=int(limits["garden_limit"]),
+    )
+
+
+def _enrich_new_plant(
+    db: DbConn,
+    binding: AssistantBinding,
+    *,
+    identity_query: str,
+) -> dict[str, Any]:
+    lookup_limits = provider_limit_profile("ai-plant-lookup")
+    with acquire_concurrency_slot(
+        bucket="ai-plant-lookup",
+        limit=int(lookup_limits["concurrency_limit"]),
+    ):
+        _reserve_ai_feature(db, binding, "ai-plant-lookup")
+        fields = lookup_plant_with_ai(identity_query)
+    care_limits = provider_limit_profile("ai-care-instructions")
+    care_input = {**fields, "plt_id": "new-plant"}
+    with acquire_concurrency_slot(
+        bucket="ai-care-instructions",
+        limit=int(care_limits["concurrency_limit"]),
+    ):
+        _reserve_ai_feature(db, binding, "ai-care-instructions")
+        care = generate_care_batch_with_ai([care_input]).get("new-plant", {})
+    resolution = resolve_rhs_reference(
+        latin=str(fields.get("latin") or ""),
+        common_name=str(fields.get("name") or ""),
+    )
+    return {
+        "name": str(fields.get("name") or identity_query)[:200],
+        "latin": str(fields.get("latin") or "")[:200],
+        "category": str(fields.get("category") or "stauder")[:40],
+        "bloom_month": str(fields.get("bloom_month") or "")[:120],
+        "color": str(fields.get("color") or "")[:120],
+        "hardiness": str(fields.get("hardiness") or "")[:40],
+        "height_cm": fields.get("height_cm"),
+        "light": str(fields.get("light") or "")[:120],
+        "link": resolution.canonical_url if resolution.verified else "",
+        "deer_resistant": bool(fields.get("deer_resistant", False)),
+        "care_watering": str(care.get("care_watering") or ""),
+        "care_soil": str(care.get("care_soil") or ""),
+        "care_planting": str(care.get("care_planting") or ""),
+        "care_maintenance": str(care.get("care_maintenance") or ""),
+        "care_notes": str(care.get("care_notes") or ""),
+        "year_planted": None,
+    }
+
+
+def _assignment_quantity(intent: AssistantIntent) -> int:
+    if intent.quantity is None:
+        raise HTTPException(status_code=422, detail="Plant quantity is required")
+    quantity = int(intent.quantity)
+    if quantity < 1 or quantity != intent.quantity:
+        raise HTTPException(status_code=422, detail="Plant quantity must be a whole number")
+    return quantity
 
 
 def _needs_input(
@@ -312,7 +456,16 @@ def _proposal_result(
     db: DbConn,
     *,
     request_id: str,
-    kind: Literal["journal", "harvest", "issue", "task_completion"],
+    kind: Literal[
+        "journal",
+        "harvest",
+        "issue",
+        "task_completion",
+        "plant_create",
+        "plant_assign",
+        "plant_move",
+        "plant_delete",
+    ],
     summary: str,
     fields: dict[str, Any],
     payload: dict[str, Any],
@@ -336,6 +489,169 @@ def _proposal_result(
         db_state="proposal",
         request_kind=kind,
         result=result,
+        payload=payload,
+        source_event_id=source_event_id,
+    )
+
+
+def _advance_plant_create(
+    db: DbConn,
+    binding: AssistantBinding,
+    *,
+    request_id: str,
+    intent: AssistantIntent,
+    input_text: str,
+    image_analysis: CaptureAnalysis | None,
+    payload: dict[str, Any],
+    selected_identity_query: str,
+    selected_plot_id: str,
+    source_event_id: str,
+) -> AssistantResult:
+    candidate_queries: list[str] = []
+    if intent.plant_query.strip():
+        candidate_queries.append(intent.plant_query.strip())
+    if image_analysis is not None:
+        candidate_queries.extend(
+            " ".join(part for part in (candidate.latin, candidate.name) if part).strip()
+            for candidate in image_analysis.plant_candidates
+        )
+    candidate_queries = list(dict.fromkeys(query for query in candidate_queries if query))
+    identity_query = (
+        selected_identity_query
+        or str(payload.get("new_plant_identity_query") or "")
+        or (candidate_queries[0] if candidate_queries else "")
+    )
+    if not identity_query:
+        return _needs_input(
+            db,
+            request_id=request_id,
+            request_kind="plant_create",
+            payload=payload,
+            message="What plant should I add?",
+            continuation_kind="reinterpret",
+            source_event_id=source_event_id,
+        )
+    payload["new_plant_identity_query"] = identity_query
+    if (
+        not selected_identity_query
+        and image_analysis is not None
+        and image_analysis.requires_clarification
+        and len(candidate_queries) > 1
+    ):
+        choices = [AssistantChoice(value=query, label=query) for query in candidate_queries[:5]]
+        return _needs_input(
+            db,
+            request_id=request_id,
+            request_kind="plant_create",
+            payload=payload,
+            message="Which plant should I add?\n"
+            + "\n".join(f"{index}. {choice.label}" for index, choice in enumerate(choices, 1)),
+            choices=choices,
+            continuation_kind="new_plant_choice",
+            source_event_id=source_event_id,
+        )
+
+    existing = resolve_garden_target(
+        db,
+        binding.context,
+        plant_query=identity_query,
+    )
+    if existing.status == "ambiguous_plant":
+        return _needs_input(
+            db,
+            request_id=request_id,
+            request_kind="plant_create",
+            payload=payload,
+            message="This may already be in the garden. Which plant did you mean?\n"
+            + "\n".join(
+                f"{index}. {choice.label}" for index, choice in enumerate(existing.choices, 1)
+            ),
+            choices=existing.choices,
+            continuation_kind="existing_plant_choice",
+            source_event_id=source_event_id,
+        )
+
+    cached_plot_id = str(payload.get("destination_plot_id") or "")
+    requested_plot_id = selected_plot_id or cached_plot_id
+    preferred_plot = intent.destination_plot_query or intent.plot_query
+    plot_id, plot_label, plot_choices = _plot_choices(
+        db,
+        binding,
+        query=requested_plot_id or preferred_plot,
+    )
+    if requested_plot_id:
+        requested_choice = next(
+            (choice for choice in plot_choices if choice.value == requested_plot_id),
+            None,
+        )
+        if requested_choice is not None:
+            plot_id = requested_choice.value
+            plot_label = requested_choice.label
+    if not plot_id:
+        return _needs_input(
+            db,
+            request_id=request_id,
+            request_kind="plant_create",
+            payload=payload,
+            message="Where should I place this plant?\n"
+            + "\n".join(
+                f"{index}. {choice.label} ({choice.value})"
+                for index, choice in enumerate(plot_choices, 1)
+            ),
+            choices=plot_choices,
+            continuation_kind="plant_plot_choice",
+            source_event_id=source_event_id,
+        )
+
+    if intent.quantity is None:
+        payload["destination_plot_id"] = plot_id
+        return _needs_input(
+            db,
+            request_id=request_id,
+            request_kind="plant_create",
+            payload=payload,
+            message="How many should I place there?",
+            continuation_kind="plant_quantity",
+            source_event_id=source_event_id,
+        )
+    quantity = _assignment_quantity(intent)
+    if existing.status in {"resolved", "ambiguous_location"} and existing.plant_id:
+        fields = {
+            "schema_version": 1,
+            "plant_id": existing.plant_id,
+            "plot_id": plot_id,
+            "quantity": quantity,
+        }
+        return _proposal_result(
+            db,
+            request_id=request_id,
+            kind="plant_assign",
+            summary=(
+                f"Set {existing.plant_name} to quantity {quantity} in {plot_label}. "
+                "This plant already exists in GardenOps."
+            ),
+            fields=fields,
+            payload=payload,
+            source_event_id=source_event_id,
+        )
+
+    enriched = _json_object(payload.get("new_plant_fields"))
+    if not enriched:
+        enriched = _enrich_new_plant(db, binding, identity_query=identity_query)
+        payload["new_plant_fields"] = enriched
+    fields = {
+        "schema_version": 1,
+        **enriched,
+        "plot_id": plot_id,
+        "quantity": quantity,
+    }
+    identity = enriched.get("latin") or enriched.get("name") or identity_query
+    return _proposal_result(
+        db,
+        request_id=request_id,
+        kind="plant_create",
+        summary=f"Create {identity} and place {quantity} in {plot_label}.",
+        fields=fields,
         payload=payload,
         source_event_id=source_event_id,
     )
@@ -451,6 +767,8 @@ def _advance_to_result(
     payload: dict[str, Any] | None = None,
     selected_target: tuple[str, str] | None = None,
     selected_task_id: str = "",
+    selected_identity_query: str = "",
+    selected_plot_id: str = "",
     source_event_id: str = "",
 ) -> AssistantResult:
     payload = dict(payload or {})
@@ -499,6 +817,20 @@ def _advance_to_result(
             source_event_id=source_event_id,
         )
 
+    if intent.intent == "plant_create":
+        return _advance_plant_create(
+            db,
+            binding,
+            request_id=request_id,
+            intent=intent,
+            input_text=input_text,
+            image_analysis=image_analysis,
+            payload=payload,
+            selected_identity_query=selected_identity_query,
+            selected_plot_id=selected_plot_id,
+            source_event_id=source_event_id,
+        )
+
     target = _target_for_intent(
         db,
         binding,
@@ -516,7 +848,9 @@ def _advance_to_result(
         )
         if selected.status == "resolved":
             target = selected
-    if target.status in {"ambiguous_plant", "ambiguous_location"}:
+    if target.status in {"ambiguous_plant", "ambiguous_location"} and not (
+        intent.intent == "plant_delete" and target.status == "ambiguous_location"
+    ):
         prompt = (
             "Which plant did you mean?"
             if target.status == "ambiguous_plant"
@@ -555,6 +889,96 @@ def _advance_to_result(
     }
 
     occurred = intent.occurred_on or occurred_on
+    if intent.intent == "plant_delete":
+        return _proposal_result(
+            db,
+            request_id=request_id,
+            kind="plant_delete",
+            summary=(
+                f"Permanently remove {target.plant_name} from this garden, including all of its "
+                "plot assignments and plant media. This cannot be undone."
+            ),
+            fields={"schema_version": 1, "plant_id": target.plant_id},
+            payload=payload,
+            source_event_id=source_event_id,
+        )
+
+    if intent.intent == "plant_move":
+        if not target.plot_id:
+            return _needs_input(
+                db,
+                request_id=request_id,
+                request_kind="plant_move",
+                payload=payload,
+                message="Which current plot should I move the plant from?",
+                continuation_kind="reinterpret",
+                source_event_id=source_event_id,
+            )
+        destination_query = intent.destination_plot_query
+        destination_id, destination_label, choices = _plot_choices(
+            db,
+            binding,
+            query=selected_plot_id or destination_query,
+        )
+        if selected_plot_id:
+            destination_id = selected_plot_id
+            destination_label = next(
+                (choice.label for choice in choices if choice.value == selected_plot_id),
+                selected_plot_id,
+            )
+        if not destination_id:
+            return _needs_input(
+                db,
+                request_id=request_id,
+                request_kind="plant_move",
+                payload=payload,
+                message="Which plot should I move it to?\n"
+                + "\n".join(
+                    f"{index}. {choice.label} ({choice.value})"
+                    for index, choice in enumerate(choices, 1)
+                ),
+                choices=choices,
+                continuation_kind="plant_plot_choice",
+                source_event_id=source_event_id,
+            )
+        if destination_id == target.plot_id:
+            return _needs_input(
+                db,
+                request_id=request_id,
+                request_kind="plant_move",
+                payload=payload,
+                message=(
+                    "That plant is already in the selected plot. Which different plot should I use?"
+                ),
+                choices=[choice for choice in choices if choice.value != target.plot_id],
+                continuation_kind="plant_plot_choice",
+                source_event_id=source_event_id,
+            )
+        fields = {
+            "schema_version": 1,
+            "plant_id": target.plant_id,
+            "from_plot_id": target.plot_id,
+            "to_plot_id": destination_id,
+            "quantity": _assignment_quantity(intent) if intent.quantity is not None else None,
+        }
+        move_description = (
+            f"Move all {target.plant_name}"
+            if fields["quantity"] is None
+            else f"Move {fields['quantity']} {target.plant_name}"
+        )
+        return _proposal_result(
+            db,
+            request_id=request_id,
+            kind="plant_move",
+            summary=(
+                f"{move_description} from {target.plot_label or target.plot_id} "
+                f"to {destination_label}."
+            ),
+            fields=fields,
+            payload=payload,
+            source_event_id=source_event_id,
+        )
+
     if intent.intent == "journal":
         if intent.event_type is None:
             return _needs_input(
@@ -991,19 +1415,57 @@ def continue_request(
     if text.strip().casefold() in {"save", "cancel"}:
         raise HTTPException(status_code=409, detail="Use the explicit save or cancel command")
 
-    if state == "needs_input" and text.strip().isdigit():
+    continuation_kind = str(payload.get("continuation_kind") or "")
+    if state == "needs_input" and continuation_kind == "plant_quantity" and text.strip().isdigit():
+        quantity = int(text.strip())
+        if quantity < 1:
+            raise HTTPException(status_code=422, detail="Plant quantity must be at least 1")
+        intent = AssistantIntent.model_validate(payload["intent"]).model_copy(
+            update={"quantity": quantity}
+        )
+        return _advance_to_result(
+            db,
+            binding,
+            request_id=request_id,
+            intent=intent,
+            input_text=original_text,
+            occurred_on=occurred_on,
+            capture_asset_id=str(row.get("capture_asset_id") or ""),
+            image_analysis=(
+                CaptureAnalysis.model_validate(payload["capture_analysis"])
+                if payload.get("capture_analysis")
+                else None
+            ),
+            payload=payload,
+            source_event_id=source_event_id,
+        )
+
+    if state == "needs_input" and text.strip().isdigit() and payload.get("choices"):
         choices = [AssistantChoice.model_validate(choice) for choice in payload.get("choices", [])]
         index = int(text.strip()) - 1
         if index < 0 or index >= len(choices):
             raise HTTPException(status_code=422, detail="Choice number is out of range")
         intent = AssistantIntent.model_validate(payload["intent"])
-        continuation_kind = str(payload.get("continuation_kind") or "")
         selected_target = None
         selected_task = ""
+        selected_identity = ""
+        selected_plot = ""
         if continuation_kind == "target_choice":
             selected_target = target_from_choice(choices[index].value)
         elif continuation_kind == "task_choice":
             selected_task = choices[index].value
+        elif continuation_kind == "new_plant_choice":
+            selected_identity = choices[index].value
+        elif continuation_kind == "existing_plant_choice":
+            selected_identity = target_from_choice(choices[index].value)[0]
+        elif continuation_kind == "plant_plot_choice":
+            selected_plot = choices[index].value
+            if intent.intent == "plant_move":
+                resolved = _json_object(payload.get("resolved_target"))
+                plant_id = str(resolved.get("plant_id") or "")
+                plot_id = str(resolved.get("plot_id") or "")
+                if plant_id and plot_id:
+                    selected_target = (plant_id, plot_id)
         else:
             raise HTTPException(status_code=422, detail="This request does not accept a choice")
         return _advance_to_result(
@@ -1022,6 +1484,8 @@ def continue_request(
             payload=payload,
             selected_target=selected_target,
             selected_task_id=selected_task,
+            selected_identity_query=selected_identity,
+            selected_plot_id=selected_plot,
             source_event_id=source_event_id,
         )
 
@@ -1029,6 +1493,13 @@ def continue_request(
     combined = f"{original_text}\nUser clarification or edit: {edit_text}"[:2000]
     try:
         intent = _interpret(db, binding, text=combined, occurred_on=occurred_on)
+        if intent.intent == "plant_create" and intent.plant_query.strip():
+            cached_identity = str(payload.get("new_plant_identity_query") or "")
+            if normalize_botanical_name(intent.plant_query) != normalize_botanical_name(
+                cached_identity
+            ):
+                payload.pop("new_plant_identity_query", None)
+                payload.pop("new_plant_fields", None)
         return _advance_to_result(
             db,
             binding,
@@ -1073,6 +1544,7 @@ def _records_from_command(command: CommandResult) -> list[AssistantRecord]:
         "harvest_entry": "Harvest entry",
         "issue": "Garden issue",
         "task": "Garden task",
+        "plant": "Plant",
     }
     return [
         AssistantRecord(type=cast(Any, record_type), id=record_id, label=labels[record_type])
@@ -1133,6 +1605,56 @@ def _apply_command(
             plant_ids=plant_ids,
             plot_ids=[str(value) for value in fields.get("plot_ids") or []],
         )
+    elif proposal.kind == "plant_create":
+        command = create_plant_command(
+            db,
+            binding.context,
+            name=str(fields["name"]),
+            latin=str(fields.get("latin") or ""),
+            category=str(fields.get("category") or "stauder"),
+            bloom_month=str(fields.get("bloom_month") or ""),
+            color=str(fields.get("color") or ""),
+            hardiness=str(fields.get("hardiness") or ""),
+            height_cm=(int(fields["height_cm"]) if fields.get("height_cm") is not None else None),
+            light=str(fields.get("light") or ""),
+            link=str(fields.get("link") or ""),
+            deer_resistant=bool(fields.get("deer_resistant", False)),
+            care_watering=str(fields.get("care_watering") or ""),
+            care_soil=str(fields.get("care_soil") or ""),
+            care_planting=str(fields.get("care_planting") or ""),
+            care_maintenance=str(fields.get("care_maintenance") or ""),
+            care_notes=str(fields.get("care_notes") or ""),
+            year_planted=fields.get("year_planted"),
+            plot_id=str(fields["plot_id"]),
+            quantity=int(fields.get("quantity") or 1),
+        )
+        plant_ids = [command.primary_id]
+    elif proposal.kind == "plant_assign":
+        command = assign_plant_command(
+            db,
+            binding.context,
+            plant_id=str(fields["plant_id"]),
+            plot_id=str(fields["plot_id"]),
+            quantity=int(fields.get("quantity") or 1),
+        )
+        plant_ids = [command.primary_id]
+    elif proposal.kind == "plant_move":
+        command = move_plant_command(
+            db,
+            binding.context,
+            plant_id=str(fields["plant_id"]),
+            from_plot_id=str(fields["from_plot_id"]),
+            to_plot_id=str(fields["to_plot_id"]),
+            quantity=(int(fields["quantity"]) if fields.get("quantity") is not None else None),
+        )
+        plant_ids = [command.primary_id]
+    elif proposal.kind == "plant_delete":
+        command = delete_plant_command(
+            db,
+            binding.context,
+            plant_id=str(fields["plant_id"]),
+        )
+        plant_ids = []
     else:
         plant_ids = [str(value) for value in fields.get("completed_plant_ids") or []]
         command = complete_task_command(
@@ -1208,6 +1730,8 @@ def apply_request(
                 "DELETE FROM media_links WHERE asset_id = %s AND target_type = 'matrix_capture'",
                 (capture_id,),
             )
+        elif proposal.kind == "plant_delete":
+            _remove_temporary_capture(db, capture_asset_id=capture_id)
     records = _records_from_command(command)
     detail = json.dumps(
         {
@@ -1232,7 +1756,8 @@ def apply_request(
         state="applied",
         request_id=request_id,
         reference=_reference(request_id),
-        message="Saved: " + ", ".join(f"{record.type} {record.id}" for record in records),
+        message=("Deleted: " if proposal.kind == "plant_delete" else "Saved: ")
+        + ", ".join(f"{record.type} {record.id}" for record in records),
         proposal=proposal,
         records=records,
     )

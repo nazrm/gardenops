@@ -20,7 +20,7 @@ TOKEN = "matrix-mcp-test-token-0123456789abcdef"  # push-sanitizer: allow SECRET
 class TestMCPAssistant(unittest.TestCase):
     def test_sync_tool_work_does_not_block_event_loop(self) -> None:
         async def exercise() -> None:
-            def slow_operation(_operation):  # type: ignore[no-untyped-def]
+            def slow_operation(_operation, **_kwargs):  # type: ignore[no-untyped-def]
                 time.sleep(0.1)
                 return "done"
 
