@@ -45,6 +45,7 @@ from gardenops.router_helpers import (
 )
 from gardenops.security import AuthContext
 from gardenops.services.ai_provider import is_ai_provider_configured
+from gardenops.services.domain_commands import complete_task_command
 from gardenops.services.generated_task_lifecycle import (
     GENERATED_WATERING_RULE_SOURCE_PATTERNS,
     stale_generated_watering_sql,
@@ -1649,15 +1650,29 @@ def task_action(
     internal_task_id = int(row["id"])
     _require_current_task_revision(row, body.expected_updated_at_ms)
 
-    _apply_task_action(
-        db,
-        context,
-        internal_task_id,
-        body,
-        now_ms,
-        action_on,
-        task_row=row,
-    )
+    if body.action == "complete":
+        complete_task_command(
+            db,
+            context,
+            task_public_id=task_id,
+            expected_updated_at_ms=body.expected_updated_at_ms,
+            completed_plant_ids=body.completed_plant_ids,
+            completion_outcome=body.completion_outcome,
+            notes=body.notes,
+            occurred_on=action_on,
+            now_ms=now_ms,
+            locked_task_row=row,
+        )
+    else:
+        _apply_task_action(
+            db,
+            context,
+            internal_task_id,
+            body,
+            now_ms,
+            action_on,
+            task_row=row,
+        )
     updated = db.execute(
         "SELECT updated_at_ms FROM garden_tasks WHERE id = %s",
         (internal_task_id,),
@@ -1714,15 +1729,29 @@ def batch_task_action(
         task_row = task_rows.get(task_id)
         if task_row is None:
             raise HTTPException(status_code=404, detail="Task not found")
-        _apply_task_action(
-            db,
-            context,
-            task_id,
-            action_body,
-            now_ms,
-            action_on,
-            task_row=task_row,
-        )
+        if body.action == "complete":
+            complete_task_command(
+                db,
+                context,
+                task_public_id=str(task_row["public_id"]),
+                expected_updated_at_ms=expected_revisions[str(task_row["public_id"])],
+                completed_plant_ids=body.completed_plant_ids,
+                completion_outcome=body.completion_outcome,
+                notes=body.notes,
+                occurred_on=action_on,
+                now_ms=now_ms,
+                locked_task_row=task_row,
+            )
+        else:
+            _apply_task_action(
+                db,
+                context,
+                task_id,
+                action_body,
+                now_ms,
+                action_on,
+                task_row=task_row,
+            )
 
     db.commit()
     return {"status": "ok", "updated": len(task_ids)}

@@ -257,7 +257,7 @@ class MigrationGuardTests(unittest.TestCase):
         finally:
             db.return_db(conn)
 
-        self.assertEqual(versions, list(range(1, 34)))
+        self.assertEqual(versions, list(range(1, 35)))
         self.assertEqual(diagnostics["mode"], "verified-baseline")
         self.assertTrue(diagnostics["can_stamp_migrations"])
         self.assertEqual(diagnostics["missing"], [])
@@ -302,7 +302,7 @@ class MigrationGuardTests(unittest.TestCase):
 
             self.assertIsNone(fallback["password_hash"])
             self.assertEqual(int(fallback["password_auth_disabled"]), 1)
-            self.assertEqual(versions, set(range(1, 34)))
+            self.assertEqual(versions, set(range(1, 35)))
         finally:
             conn = db.get_db()
             try:
@@ -337,7 +337,7 @@ class MigrationGuardTests(unittest.TestCase):
             finally:
                 db.return_db(conn)
 
-            self.assertEqual(versions, set(range(1, 34)))
+            self.assertEqual(versions, set(range(1, 35)))
             self.assertEqual(
                 snapshot.column_types["auth_sessions.device_label"],
                 "text",
@@ -779,7 +779,7 @@ class MigrationGuardTests(unittest.TestCase):
         finally:
             db.return_db(conn)
 
-        self.assertEqual(versions, set(range(1, 34)))
+        self.assertEqual(versions, set(range(1, 35)))
         self.assertEqual(table["name"], "offline_create_operations")
         self.assertEqual(index["name"], "ux_weather_alerts_identity")
 

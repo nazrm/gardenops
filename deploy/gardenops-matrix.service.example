@@ -1,0 +1,38 @@
+[Unit]
+Description=GardenOps Matrix assistant
+After=network-online.target gardenops.service
+Wants=network-online.target
+Requires=gardenops.service
+
+[Service]
+Type=simple
+User=gardenops
+Group=gardenops
+WorkingDirectory=/srv/gardenops/current
+EnvironmentFile=/etc/gardenops.env
+ExecStart=/srv/gardenops/current/.venv/bin/python -m gardenops.matrix_bot
+Restart=always
+RestartSec=5
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/opt/gardenops/matrix
+
+[Install]
+WantedBy=multi-user.target

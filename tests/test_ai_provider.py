@@ -20,11 +20,13 @@ from gardenops.services.ai_provider import (
     AIProviderNotConfigured,
     AIProviderRateLimited,
     AIProviderTimeout,
+    analyze_garden_capture_with_ai,
     chat_with_ai,
     configured_provider,
     diagnose_plant_with_ai,
     generate_task_descriptions_with_ai,
     identify_plant_with_ai,
+    interpret_garden_message_with_ai,
 )
 
 _EXPECTED_HEAD = subprocess.check_output(
@@ -115,6 +117,25 @@ class TestAIProviderConfig(unittest.TestCase):
 
 
 class TestAIProviderAdapter(unittest.TestCase):
+    def test_deterministic_provider_supports_assistant_intent_and_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(
+                os.environ,
+                {
+                    **_complete_journey_fixture_env(Path(tmp)),
+                    "GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER": "1",
+                },
+                clear=False,
+            ):
+                intent = interpret_garden_message_with_ai(
+                    "The rose bloomed today", "Garden context", "2026-09-02"
+                )
+                capture = analyze_garden_capture_with_ai(b"test-image", "The rose is flowering")
+        self.assertEqual(intent.intent, "journal")
+        self.assertEqual(intent.event_type, "bloomed")
+        self.assertEqual(capture.event_candidate.value, "bloomed")
+        self.assertEqual(capture.plant_candidates[0].source, "deterministic")
+
     def test_openai_client_uses_loopback_fixture_only_when_opted_in(self) -> None:
         mocked_client = MagicMock()
         with tempfile.TemporaryDirectory() as tmp:

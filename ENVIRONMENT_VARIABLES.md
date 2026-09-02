@@ -88,6 +88,40 @@ Generate a storage key with:
 | `PLANTNET_API_KEY` | Optional plant-identification provider. | `change-me` |
 | `WEATHER_API_KEY` | Optional weather provider key. | `change-me` |
 
+## Private Matrix Assistant
+
+The Matrix worker is optional and binds one exact Matrix room and sender to one
+active GardenOps user and garden. The MCP endpoint is loopback-only and requires
+a separate random bearer token of at least 32 characters.
+
+| Variable | Purpose | Example |
+|---|---|---|
+| `MCP_ENABLED` | Mount the private MCP endpoint. | `false` |
+| `MCP_BEARER_TOKEN` | Static MCP and capture-upload secret, minimum 32 random characters. | _(empty)_ |
+| `MCP_URL` | Loopback Streamable HTTP endpoint used by the worker. | `http://127.0.0.1:8000/mcp` |
+| `MATRIX_ENABLED` | Permit the dedicated Matrix worker to start. | `false` |
+| `MATRIX_HOMESERVER_URL` | Matrix homeserver base URL. | `https://matrix.example.com` |
+| `MATRIX_USER_ID` | Exact Matrix user ID for the bot. | `@gardenops:example.com` |
+| `MATRIX_ACCESS_TOKEN` | Access token provisioned for the bot device. | _(empty)_ |
+| `MATRIX_DEVICE_ID` | Persistent bot device ID. | `GARDENOPS01` |
+| `MATRIX_STORE_PATH` | Persistent matrix-nio sync and encryption store. | `/opt/gardenops/matrix` |
+| `MATRIX_E2EE` | Enable encrypted-room support. | `true` |
+| `MATRIX_ROOM_ID` | Exact allowed room ID, not an alias. | `!room:example.com` |
+| `MATRIX_ALLOWED_SENDER` | Exact Matrix user ID allowed to issue requests. | `@owner:example.com` |
+| `MATRIX_GARDENOPS_USERNAME` | Existing active GardenOps username. | `owner` |
+| `MATRIX_GARDEN_SLUG` | Existing garden slug where actions apply. | `home` |
+| `MATRIX_TRIGGER_MODE` | Process `mention` triggers or `all` accepted messages. | `mention` |
+| `MATRIX_TIMEZONE` | Timezone used to derive observation dates. | `Europe/Oslo` |
+| `MATRIX_CAPTURE_TTL_DAYS` | Pending request and temporary capture lifetime, 1-30 days. | `7` |
+| `MATRIX_SYNC_TIMEOUT_MS` | Matrix long-poll timeout, 1000-120000 ms. | `30000` |
+| `MATRIX_MAX_PENDING_EVENTS` | Sequential worker queue bound, 1-100. | `20` |
+| `MATRIX_CAPTURE_RATE_LIMIT` | Maximum internal capture uploads accepted per minute. | `12` |
+| `LOG_LEVEL` | Matrix worker log level. | `INFO` |
+
+`MATRIX_ENABLED=true` requires MCP, all Matrix credentials and binding values,
+an editor/admin garden membership, and AI entitlement. Secrets are never
+returned by status responses.
+
 ## ShadeMap Integration
 
 ShadeMap is a paid third-party service. GardenOps does not provide ShadeMap API

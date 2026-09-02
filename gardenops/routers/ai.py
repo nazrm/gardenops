@@ -15,7 +15,6 @@ from gardenops.branding import app_user_agent
 from gardenops.db import DB, DbConn
 from gardenops.models import StrictBaseModel
 from gardenops.observability import observability_extra
-from gardenops.provider_settings import get_plantnet_api_key
 from gardenops.rate_limit import (
     acquire_concurrency_slot,
     enforce_layered_rate_limit,
@@ -43,10 +42,12 @@ from gardenops.services.ai_provider import (
     diagnose_plant_with_ai,
     generate_care_batch_with_ai,
     identify_plant_with_ai,
-    is_ai_provider_configured,
     lookup_plant_with_ai,
     require_ai_provider_configured,
 )
+from gardenops.services.garden_qa import answer_garden_question
+from gardenops.services.garden_qa import build_garden_context as build_garden_context_core
+from gardenops.services.plant_identification import identify_image_candidates
 from gardenops.services.rhs_plant_resolver import (
     normalize_botanical_name,
     resolve_rhs_reference,
@@ -592,195 +593,7 @@ def _context_cache_key(context: AuthContext) -> str:
 
 def build_garden_context(db: DbConn, context: AuthContext) -> str:
     """Build a summary of the garden for the AI system prompt."""
-    garden_id = context.garden_id
-    role = effective_role(context)
-    if garden_id is not None and (role in {"admin", "editor"} or _is_local_admin_fallback(context)):
-        plots = db.execute(
-            """
-            SELECT p.plot_id, p.zone_code, p.zone_name, p.grid_row, p.grid_col,
-                p.sub_zone
-            FROM plots p
-            JOIN plot_ownership po ON po.plot_id = p.plot_id
-            WHERE po.garden_id = %s
-            ORDER BY p.zone_code, p.plot_number
-            """,
-            (garden_id,),
-        ).fetchall()
-        plant_rows = db.execute(
-            """
-            SELECT p.plt_id, p.name, p.latin, p.category,
-                p.bloom_month, p.color, p.hardiness, p.height_cm,
-                p.light, p.year_planted,
-                pp.plot_id AS asgn_plot_id, pp.quantity AS asgn_quantity,
-                p2.name AS asgn_plant_name
-            FROM plants p
-            JOIN plant_ownership po ON po.plt_id = p.plt_id
-            LEFT JOIN (
-                SELECT pp.plt_id, pp.plot_id, pp.quantity, ppo.garden_id
-                FROM plot_plants pp
-                JOIN plot_ownership ppo ON ppo.plot_id = pp.plot_id
-            ) pp ON pp.plt_id = p.plt_id AND pp.garden_id = po.garden_id
-            LEFT JOIN plants p2 ON pp.plt_id = p2.plt_id
-            WHERE po.garden_id = %s
-            ORDER BY p.name, pp.plot_id
-            """,
-            (garden_id,),
-        ).fetchall()
-        seen_plants: set[str] = set()
-        plants: list[dict[str, Any]] = []
-        assignments: list[dict] = []
-        for row in plant_rows:
-            plt_id = row["plt_id"]
-            if plt_id not in seen_plants:
-                seen_plants.add(plt_id)
-                plants.append(row)
-            asgn_plot = row["asgn_plot_id"]
-            if asgn_plot is not None:
-                assignments.append(
-                    {
-                        "plot_id": asgn_plot,
-                        "plt_id": plt_id,
-                        "quantity": row["asgn_quantity"],
-                        "name": row["asgn_plant_name"] or "",
-                    }
-                )
-    elif context.user_id is not None and garden_id is not None:
-        plots = db.execute(
-            """
-            SELECT p.plot_id, p.zone_code, p.zone_name, p.grid_row, p.grid_col,
-                p.sub_zone
-            FROM plots p
-            JOIN plot_ownership po ON po.plot_id = p.plot_id
-            WHERE po.garden_id = %s AND po.owner_user_id = %s
-            ORDER BY p.zone_code, p.plot_number
-            """,
-            (garden_id, context.user_id),
-        ).fetchall()
-        plant_rows = db.execute(
-            """
-            SELECT p.plt_id, p.name, p.latin, p.category,
-                p.bloom_month, p.color, p.hardiness, p.height_cm,
-                p.light, p.year_planted,
-                pp.plot_id AS asgn_plot_id, pp.quantity AS asgn_quantity,
-                p2.name AS asgn_plant_name
-            FROM plants p
-            JOIN plant_ownership po ON po.plt_id = p.plt_id
-            LEFT JOIN (
-                SELECT pp.plt_id, pp.plot_id, pp.quantity, ppo.garden_id, ppo.owner_user_id
-                FROM plot_plants pp
-                JOIN plot_ownership ppo ON ppo.plot_id = pp.plot_id
-            ) pp ON pp.plt_id = p.plt_id
-                AND pp.garden_id = po.garden_id
-                AND pp.owner_user_id = po.owner_user_id
-            LEFT JOIN plants p2 ON pp.plt_id = p2.plt_id
-            WHERE po.garden_id = %s AND po.owner_user_id = %s
-            ORDER BY p.name, pp.plot_id
-            """,
-            (garden_id, context.user_id),
-        ).fetchall()
-        seen_plants = set()
-        plants: list[dict[str, Any]] = []
-        assignments: list[dict] = []
-        for row in plant_rows:
-            plt_id = row["plt_id"]
-            if plt_id not in seen_plants:
-                seen_plants.add(plt_id)
-                plants.append(row)
-            asgn_plot = row["asgn_plot_id"]
-            if asgn_plot is not None:
-                assignments.append(
-                    {
-                        "plot_id": asgn_plot,
-                        "plt_id": plt_id,
-                        "quantity": row["asgn_quantity"],
-                        "name": row["asgn_plant_name"] or "",
-                    }
-                )
-    else:
-        plots = []
-        plants = []
-        assignments = []
-
-    zones: dict[str, list[str]] = {}
-    for row in plots:
-        code = row["zone_code"]
-        if code not in zones:
-            zones[code] = []
-        zones[code].append(row["plot_id"])
-
-    lines = [
-        "Garden: 22.5m × 30m property, 22 cols × 30 rows grid.",
-        f"Total: {len(plots)} plots, {len(plants)} plants, {len(assignments)} plantings.",
-        "",
-        "Zones:",
-    ]
-    for code, plot_ids in sorted(zones.items()):
-        name = ""
-        for row in plots:
-            if row["zone_code"] == code:
-                name = row["zone_name"]
-                break
-        lines.append(f"  {code} ({name}): {len(plot_ids)} plots")
-
-    lines.append("")
-    lines.append("Plants:")
-    for p in plants:
-        parts = [p["name"]]
-        if p["latin"]:
-            parts.append(f"({p['latin']})")
-        details = []
-        if p["category"]:
-            details.append(p["category"])
-        if p["bloom_month"]:
-            details.append(f"bloom: {p['bloom_month']}")
-        if p["color"]:
-            details.append(f"color: {p['color']}")
-        if p["hardiness"]:
-            details.append(f"hardiness: {p['hardiness']}")
-        if p["height_cm"]:
-            details.append(f"{p['height_cm']}cm")
-        if p["light"]:
-            details.append(f"light: {p['light']}")
-        if p["year_planted"]:
-            details.append(f"planted: {p['year_planted']}")
-        if details:
-            parts.append("— " + ", ".join(details))
-        lines.append(f"  {' '.join(parts)}")
-
-    plot_plants: dict[str, list[str]] = {}
-    for a in assignments:
-        pid = a["plot_id"]
-        if pid not in plot_plants:
-            plot_plants[pid] = []
-        qty = a["quantity"]
-        name = a["name"]
-        plot_plants[pid].append(
-            f"{name} (×{qty})" if qty > 1 else name,
-        )
-
-    lines.append("")
-    lines.append("Plot assignments:")
-    for pid in sorted(plot_plants.keys()):
-        lines.append(f"  {pid}: {', '.join(plot_plants[pid])}")
-
-    return "\n".join(lines)
-
-
-CHAT_SYSTEM_TEMPLATE = (
-    "You are a plant expert with 40 years of hands-on gardening "
-    "experience in Norway. You know every zone, plot, and plant in "
-    "the user's garden.\n\n"
-    "Rules:\n"
-    "- Always reply in English.\n"
-    "- Always factor in the Norwegian climate: short growing season, "
-    "long winters, frost dates, light conditions per season.\n"
-    "- When suggesting plants, provide at least 3 alternatives with "
-    "a brief note on why each suits the spot.\n"
-    "- Be concise. No filler. Get to the point with clear reasoning.\n"
-    "- Reference actual plot IDs, zone names, and plant names from "
-    "the garden data.\n\n"
-    "GARDEN DATA:\n{context}"
-)
+    return build_garden_context_core(db, context)
 
 
 def get_cached_context(db: DbConn, context: AuthContext) -> str:
@@ -820,9 +633,7 @@ def garden_chat(body: ChatRequest, db: DB, request: Request) -> dict:
         raise HTTPException(503, exc.detail) from exc
 
     auth_context = resolve_request_auth_context(request)
-    limits = provider_limit_profile("ai-garden-chat")
     context = get_cached_context(db, auth_context)
-    system = CHAT_SYSTEM_TEMPLATE.format(context=context)
     context_chars = len(context)
     max_output_tokens = _ai_chat_max_output_tokens()
     provider_timeout_seconds = _ai_chat_provider_timeout_seconds()
@@ -832,25 +643,16 @@ def garden_chat(body: ChatRequest, db: DB, request: Request) -> dict:
 
     started = time.perf_counter()
     try:
-        with acquire_concurrency_slot(
-            bucket="ai-garden-chat",
-            limit=int(limits["concurrency_limit"]),
-        ):
-            reserve_daily_provider_budget(
-                db,
-                feature="ai-garden-chat",
-                user_id=auth_context.user_id,
-                garden_id=auth_context.garden_id,
-                user_limit=int(limits["user_limit"]),
-                garden_limit=int(limits["garden_limit"]),
-            )
-            reply = chat_with_ai(
-                system,
-                messages,
-                use_fast_model=provider == "openai",
-                max_tokens=max_output_tokens,
-                timeout_seconds=provider_timeout_seconds,
-            )
+        reply = answer_garden_question(
+            db,
+            auth_context,
+            message=body.message,
+            history=[{"role": m.role, "content": m.content} for m in body.history],
+            garden_context=context,
+            max_tokens=max_output_tokens,
+            timeout_seconds=provider_timeout_seconds,
+            chat_callable=chat_with_ai,
+        )
     except AIProviderNotConfigured as exc:
         raise HTTPException(503, exc.detail) from exc
     except AIProviderRateLimited as exc:
@@ -987,7 +789,6 @@ async def identify_plant(
     """Identify a plant from a photo using PlantNet + configured AI fallback."""
     from gardenops.services.plantnet import (
         ALLOWED_ORGANS,
-        PlantNetError,
         preprocess_image_for_identification,
     )
     from gardenops.services.plantnet import identify as plantnet_identify
@@ -1005,7 +806,6 @@ async def identify_plant(
     )
 
     auth_context = resolve_request_auth_context(request)
-    limits = provider_limit_profile("ai-identify")
 
     # Validate organ
     if organ not in ALLOWED_ORGANS:
@@ -1026,139 +826,29 @@ async def identify_plant(
         max_bytes=max_photo_bytes,
     )
 
-    # Check API keys
-    plantnet_api_key = get_plantnet_api_key(db) or ""
-    if not plantnet_api_key and not is_ai_provider_configured():
-        raise HTTPException(503, "No identification API configured")
-
-    candidates: list[dict[str, Any]] = []
-    plantnet_remaining: int | None = None
-    provider_warnings: list[str] = []
-    confidence_threshold = float(
-        os.environ.get("PLANTNET_CONFIDENCE_THRESHOLD", "0.40"),
+    identification = identify_image_candidates(
+        db,
+        auth_context,
+        image_bytes=image_bytes,
+        organ=organ,
+        plantnet_call=plantnet_identify,
+        ai_call=identify_plant_with_ai,
+        reserve_budget=reserve_daily_provider_budget,
+        acquire_slot=acquire_concurrency_slot,
     )
-
-    # Try PlantNet first
-    if plantnet_api_key:
-        timeout = float(os.environ.get("PLANTNET_API_TIMEOUT_SECONDS", "8"))
-        try:
-            with acquire_concurrency_slot(
-                bucket="ai-identify",
-                limit=int(limits["concurrency_limit"]),
-            ):
-                reserve_daily_provider_budget(
-                    db,
-                    feature="ai-identify",
-                    user_id=auth_context.user_id,
-                    garden_id=auth_context.garden_id,
-                    user_limit=int(limits["user_limit"]),
-                    garden_limit=int(limits["garden_limit"]),
-                )
-                result = plantnet_identify(
-                    image_bytes,
-                    organ,
-                    plantnet_api_key,
-                    timeout_seconds=timeout,
-                )
-            plantnet_remaining = result.remaining_requests
-            for c in result.candidates:
-                candidates.append(
-                    {
-                        "name": c.common_names[0] if c.common_names else c.latin,
-                        "latin": c.latin,
-                        "scientific_name": c.scientific_name,
-                        "family": c.family,
-                        "confidence": round(c.score, 3),
-                        "source": "plantnet",
-                        "gbif_id": c.gbif_id,
-                    },
-                )
-        except PlantNetError as exc:
-            _log.warning(
-                "PlantNet failed (status=%d): %s",
-                exc.status_code,
-                exc.detail,
-                extra=observability_extra(
-                    error_kind="upstream_failure",
-                    upstream="plantnet",
-                    feature_area="ai-identify",
-                    garden_id=auth_context.garden_id,
-                    user_id=auth_context.user_id,
-                ),
-            )
-            record_security_event("ai_provider_failures")
-            record_security_event("ai_provider_failures_identify_plantnet")
-            provider_warnings.append("plantnet_unavailable")
-
-    # Configured AI enrichment/fallback
-    needs_ai_fallback = not candidates or (
-        candidates and candidates[0]["confidence"] < confidence_threshold
-    )
-    if needs_ai_fallback:
-        try:
-            require_ai_provider_configured()
-            with acquire_concurrency_slot(
-                bucket="ai-identify",
-                limit=int(limits["concurrency_limit"]),
-            ):
-                reserve_daily_provider_budget(
-                    db,
-                    feature="ai-identify",
-                    user_id=auth_context.user_id,
-                    garden_id=auth_context.garden_id,
-                    user_limit=int(limits["user_limit"]),
-                    garden_limit=int(limits["garden_limit"]),
-                )
-                ai_candidates = identify_plant_with_ai(image_bytes, organ)
-            existing_latins = {c["latin"].lower() for c in candidates}
-            for cc in ai_candidates:
-                if cc["latin"].lower() not in existing_latins:
-                    candidates.append(cc)
-        except AIProviderNotConfigured as exc:
-            if not candidates:
-                raise HTTPException(503, exc.detail) from exc
-            provider_warnings.append("ai_enrichment_not_configured")
-        except AIProviderTimeout as exc:
-            _log_provider_failure(
-                "AI identify fallback timed out",
-                upstream=exc.provider,
-                feature_area="ai-identify",
-                error_kind="upstream_timeout",
-                garden_id=auth_context.garden_id,
-                user_id=auth_context.user_id,
-            )
-            record_security_event("ai_provider_failures")
-            record_security_event("ai_provider_failures_identify_ai")
-            if not candidates:
-                raise HTTPException(504, "Identification service timed out") from exc
-            provider_warnings.append("ai_enrichment_timed_out")
-        except AIProviderError as exc:
-            _log_provider_failure(
-                "AI identify fallback failed",
-                upstream=exc.provider,
-                feature_area="ai-identify",
-                garden_id=auth_context.garden_id,
-                user_id=auth_context.user_id,
-            )
-            record_security_event("ai_provider_failures")
-            record_security_event("ai_provider_failures_identify_ai")
-            if not candidates:
-                raise HTTPException(502, "Identification service unavailable") from exc
-            provider_warnings.append("ai_enrichment_unavailable")
-        except HTTPException:
-            if not candidates:
-                raise
-            provider_warnings.append("ai_enrichment_budget_or_capacity_unavailable")
-
-    if not candidates:
-        raise HTTPException(502, "Identification service unavailable")
-
-    candidates.sort(key=lambda c: c["confidence"], reverse=True)
+    candidates = identification.candidates
+    provider_warnings = identification.warnings
+    if "plantnet_unavailable" in provider_warnings:
+        record_security_event("ai_provider_failures")
+        record_security_event("ai_provider_failures_identify_plantnet")
+    if any(warning.startswith("ai_enrichment_") for warning in provider_warnings):
+        record_security_event("ai_provider_failures")
+        record_security_event("ai_provider_failures_identify_ai")
     return {
         "status": "partial" if provider_warnings else "success",
         "candidates": candidates[:5],
         "attribution": _identify_attribution(candidates[:5]),
-        "plantnet_remaining": plantnet_remaining,
+        "plantnet_remaining": identification.plantnet_remaining,
         "warnings": provider_warnings,
         "advisory": True,
         "durable_mutation_performed": False,

@@ -8,6 +8,7 @@ deploying, and contributing to GardenOps.
 | Local install | [installation.md](installation.md) |
 | Environment and providers | [configuration.md](configuration.md) |
 | AI provider plan | [ai-provider-plan.md](ai-provider-plan.md) |
+| Matrix/MCP assistant MVP specification | [matrix-mcp-mvp-spec.md](matrix-mcp-mvp-spec.md) |
 | Dependency security policy | [dependency-security-policy.md](dependency-security-policy.md) |
 | Map objects and nested layouts | [map-objects.md](map-objects.md) |
 | ShadeMap sun/shade integration | [shademap.md](shademap.md) |
