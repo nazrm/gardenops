@@ -8,6 +8,7 @@ CURRENT_LINK="$RELEASE_ROOT/current"
 PREVIOUS_LINK="$RELEASE_ROOT/previous"
 ENV_FILE=${GARDENOPS_ENV_FILE:-/etc/gardenops.env}
 SERVICE=${GARDENOPS_SERVICE:-gardenops.service}
+MATRIX_SERVICE=${GARDENOPS_MATRIX_SERVICE:-gardenops-matrix.service}
 SERVICE_USER=${GARDENOPS_SERVICE_USER:-gardenops}
 SERVICE_GROUP=${GARDENOPS_SERVICE_GROUP:-gardenops}
 BUILD_USER=${GARDENOPS_BUILD_USER:-ole}
@@ -137,7 +138,7 @@ prepare_release() {
     git -C "$CONTROL_REPO" archive "$sha" | tar -x -C "$build_dir"
     chown -R "$BUILD_USER:$SERVICE_GROUP" "$build_dir"
     as_build_user bash -c \
-        'set -euo pipefail; umask 0027; cd "$1"; UV_CACHE_DIR=/tmp/gardenops-uv-cache "$2" sync --locked --no-dev' \
+        'set -euo pipefail; umask 0027; cd "$1"; UV_CACHE_DIR=/tmp/gardenops-uv-cache "$2" sync --locked --no-dev --extra matrix' \
         bash "$build_dir" "$UV"
     as_build_user bash -c \
         'set -euo pipefail; umask 0027; cd "$1/frontend"; "$2" ci; "$2" run build' \
@@ -179,9 +180,23 @@ wait_for_health() {
     return 1
 }
 
+matrix_service_managed() {
+    systemctl cat "$MATRIX_SERVICE" >/dev/null 2>&1 \
+        && { systemctl is-enabled --quiet "$MATRIX_SERVICE" \
+            || systemctl is-active --quiet "$MATRIX_SERVICE"; }
+}
+
+restart_matrix_if_managed() {
+    local managed=$1
+    [[ "$managed" == 1 ]] || return 0
+    systemctl restart "$MATRIX_SERVICE" \
+        && systemctl is-active --quiet "$MATRIX_SERVICE"
+}
+
 activate_release() {
     local revision=$1
-    local release old_target service_was_active=0 restore_service_on_failure=0
+    local release old_target service_was_active=0 matrix_managed=0 matrix_was_active=0
+    local restore_service_on_failure=0 restore_matrix_on_failure=0
     release=$(release_for_revision "$revision")
     [[ -d "$release" ]] || die "release is not prepared: $release"
     preflight_release "$release"
@@ -189,7 +204,14 @@ activate_release() {
     if systemctl is-active --quiet "$SERVICE"; then
         service_was_active=1
     fi
+    if matrix_service_managed; then
+        matrix_managed=1
+    fi
+    if systemctl is-active --quiet "$MATRIX_SERVICE"; then
+        matrix_was_active=1
+    fi
     restore_service_on_failure=$service_was_active
+    restore_matrix_on_failure=$matrix_was_active
     restore_quiesced_service() {
         local status=$?
         trap - EXIT
@@ -197,14 +219,23 @@ activate_release() {
             echo "gardenops deploy: failed to restore service after pre-activation failure" >&2
             status=1
         fi
+        if [[ "$restore_matrix_on_failure" == 1 ]] \
+            && ! systemctl start "$MATRIX_SERVICE"; then
+            echo "gardenops deploy: failed to restore Matrix worker after pre-activation failure" >&2
+            status=1
+        fi
         exit "$status"
     }
     trap restore_quiesced_service EXIT
+    if [[ "$matrix_was_active" == 1 ]]; then
+        systemctl stop "$MATRIX_SERVICE"
+    fi
     systemctl stop "$SERVICE"
 
     with_release_env "$release" "$release/.venv/bin/python" -c \
         "import gardenops.db as db; db.run_migrations()"
     restore_service_on_failure=0
+    restore_matrix_on_failure=0
     with_release_env "$release" "$release/.venv/bin/python" \
         "$release/scripts/check_backend_integrity.py" --allow-production
 
@@ -215,7 +246,8 @@ activate_release() {
     fi
     atomic_link "$release" "$CURRENT_LINK"
     trap - EXIT
-    if systemctl restart "$SERVICE" && wait_for_health; then
+    if systemctl restart "$SERVICE" && wait_for_health \
+        && restart_matrix_if_managed "$matrix_managed"; then
         echo "gardenops deploy: active release $release"
         return
     fi
@@ -225,7 +257,9 @@ activate_release() {
         echo "gardenops deploy: activation failed; restoring $old_target" >&2
         atomic_link "$old_target" "$CURRENT_LINK"
         systemctl restart "$SERVICE"
-        wait_for_health || die "activation and automatic rollback both failed"
+        wait_for_health \
+            && restart_matrix_if_managed "$matrix_managed" \
+            || die "activation and automatic rollback both failed"
     fi
     die "activation failed; automatic rollback was unavailable or unsafe"
 }
@@ -233,17 +267,21 @@ activate_release() {
 rollback_release() {
     [[ -L "$CURRENT_LINK" ]] || die "current release link does not exist"
     [[ -L "$PREVIOUS_LINK" ]] || die "previous release link does not exist"
-    local current previous
+    local current previous matrix_managed=0
     current=$(readlink -f "$CURRENT_LINK")
     previous=$(readlink -f "$PREVIOUS_LINK")
     [[ -d "$previous" ]] || die "previous release is missing: $previous"
     [[ $(migration_digest "$current") == $(migration_digest "$previous") ]] \
         || die "rollback refused because migration contents differ"
     preflight_release "$previous"
+    if matrix_service_managed; then
+        matrix_managed=1
+    fi
     atomic_link "$previous" "$CURRENT_LINK"
     atomic_link "$current" "$PREVIOUS_LINK"
     systemctl restart "$SERVICE"
     wait_for_health || die "rollback health check failed"
+    restart_matrix_if_managed "$matrix_managed" || die "rollback Matrix worker check failed"
     echo "gardenops deploy: rolled back to $previous"
 }
 

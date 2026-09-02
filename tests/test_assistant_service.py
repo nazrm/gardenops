@@ -89,6 +89,46 @@ class TestAssistantService(DbTestBase):
         self.assertEqual(sentence.plant_id, "PLT-ROSE")
         self.assertEqual(ambiguous.status, "ambiguous_plant")
 
+    def test_resolution_does_not_expose_a_plot_from_another_garden(self) -> None:
+        self._insert_plant("PLT-SHARED", "Shared rose", "Rosa canina")
+        other_garden_id = int(
+            self.conn.execute(
+                "INSERT INTO gardens (slug, name) VALUES (%s, %s) RETURNING id",
+                ("other", "Other garden"),
+            ).fetchone()["id"]
+        )
+        self.conn.execute(
+            """
+            INSERT INTO plots (
+                plot_id, zone_code, zone_name, plot_number, grid_row, grid_col,
+                sub_zone, notes, color, garden_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            ("FOREIGN", "F", "Foreign", 1, 1, 1, "", "", None, other_garden_id),
+        )
+        self.conn.execute(
+            "INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
+            ("FOREIGN", self._owner_id, other_garden_id),
+        )
+        self.conn.execute(
+            "INSERT INTO plant_ownership (plt_id, owner_user_id, garden_id) VALUES (%s, %s, %s)",
+            ("PLT-SHARED", self._owner_id, other_garden_id),
+        )
+        self.conn.execute(
+            "INSERT INTO plot_plants (plot_id, plt_id, quantity) VALUES (%s, %s, %s)",
+            ("FOREIGN", "PLT-SHARED", 1),
+        )
+
+        resolved = resolve_garden_target(
+            self.conn,
+            self._binding().context,
+            plant_query="Rosa canina",
+        )
+
+        self.assertEqual(resolved.status, "resolved")
+        self.assertEqual(resolved.plant_id, "PLT-SHARED")
+        self.assertEqual(resolved.plot_id, "")
+
     def test_expiry_state_overrides_stored_proposal(self) -> None:
         self._insert_plant("PLT-ROSE", "Dog rose", "Rosa canina")
         intent = AssistantIntent(

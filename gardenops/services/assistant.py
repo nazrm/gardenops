@@ -1315,6 +1315,7 @@ def cancel_request(
 
 def expire_and_cleanup_requests(db: DbConn, *, now_ms: int | None = None) -> int:
     timestamp = current_timestamp_ms() if now_ms is None else now_ms
+    capture_cutoff = timestamp - _request_ttl_ms()
     db.execute(
         """
         UPDATE assistant_requests
@@ -1325,14 +1326,23 @@ def expire_and_cleanup_requests(db: DbConn, *, now_ms: int | None = None) -> int
     )
     rows = db.execute(
         """
-        SELECT public_id, capture_asset_id
+        SELECT capture_asset_id
         FROM assistant_requests
         WHERE state IN ('expired', 'cancelled', 'failed') AND capture_asset_id IS NOT NULL
         FOR UPDATE
         """
     ).fetchall()
-    for row in rows:
-        capture_id = str(row["capture_asset_id"] or "")
-        if capture_id:
-            _remove_temporary_capture(db, capture_asset_id=capture_id)
-    return len(rows)
+    orphan_rows = db.execute(
+        """
+        SELECT a.asset_id AS capture_asset_id
+        FROM media_assets a
+        JOIN media_links ml ON ml.asset_id = a.asset_id
+        WHERE ml.target_type = 'matrix_capture' AND a.created_at_ms <= %s
+        FOR UPDATE OF a
+        """,
+        (capture_cutoff,),
+    ).fetchall()
+    capture_ids = {str(row["capture_asset_id"] or "") for row in [*rows, *orphan_rows]} - {""}
+    for capture_id in capture_ids:
+        _remove_temporary_capture(db, capture_asset_id=capture_id)
+    return len(capture_ids)

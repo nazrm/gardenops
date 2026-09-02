@@ -58,7 +58,7 @@ PY
 (
     cd "$release"
     PYTHONDONTWRITEBYTECODE=1 "$release/.venv/bin/python" -c \
-        "from gardenops.main import app; assert app is not None"
+        "from gardenops.main import app; import nio; assert app is not None and nio is not None"
 )
 
 echo "release preflight: OK ($release)"

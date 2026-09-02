@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import signal
+import unicodedata
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -17,15 +18,12 @@ import httpx2
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
-from gardenops.db import get_db, return_db
 from gardenops.rate_limit import env_int
-from gardenops.services.assistant import expire_and_cleanup_requests
 from gardenops.services.assistant_models import AssistantResult
 from gardenops.services.integration_config import (
     MatrixRuntimeConfig,
     matrix_enabled,
     matrix_runtime_config,
-    resolve_assistant_binding,
 )
 from gardenops.services.media_store import media_upload_max_bytes
 
@@ -173,10 +171,7 @@ class MatrixBot:
             return
         if str(getattr(event, "sender", "")) == self.config.user_id or is_edit_event(event):
             return
-        try:
-            self.queue.put_nowait(QueuedEvent(room=room, event=event))
-        except asyncio.QueueFull:
-            logger.warning("Matrix event queue is full; event was not processed")
+        await self.queue.put(QueuedEvent(room=room, event=event))
 
     async def consume(self) -> None:
         while True:
@@ -334,7 +329,9 @@ class MatrixBot:
             self.config.room_id,
             "m.room.message",
             {"msgtype": "m.text", "body": body},
-            ignore_unverified_devices=False,
+            # The worker has no interactive device-verification flow. The room and
+            # sender allowlists remain the authorization boundary for this MVP.
+            ignore_unverified_devices=True,
         )
         return str(getattr(response, "event_id", "") or "")
 
@@ -387,33 +384,22 @@ class MatrixBot:
                     "X-Matrix-Room-Id": self.config.room_id,
                     "X-Matrix-Event-Id": event_id,
                     "X-Matrix-Sender": self.config.allowed_sender,
-                    "X-Original-Filename": filename[:255],
+                    "X-Original-Filename": _ascii_filename(filename),
                 },
             )
         response.raise_for_status()
         return str(response.json()["capture_asset_id"])
 
 
-def run_maintenance() -> None:
-    db = get_db()
-    try:
-        resolve_assistant_binding(db)
-        expire_and_cleanup_requests(db)
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        return_db(db)
+def _ascii_filename(filename: str) -> str:
+    name = Path(filename).name.replace("\r", "").replace("\n", "")
+    normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", normalized).strip(".-")
+    return (cleaned or "matrix-image")[:255]
 
 
-async def _maintenance_loop() -> None:
-    while True:
-        await asyncio.sleep(24 * 60 * 60)
-        try:
-            await asyncio.to_thread(run_maintenance)
-        except Exception:
-            logger.exception("Matrix assistant maintenance failed")
+def _restore_matrix_login(matrix: Any, config: MatrixRuntimeConfig) -> None:
+    matrix.restore_login(config.user_id, config.device_id, config.access_token)
 
 
 async def _verify_mcp(client: Client) -> None:
@@ -462,7 +448,7 @@ async def run() -> None:
         config.store_path,
         matrix_config,
     )
-    matrix.access_token = config.access_token
+    _restore_matrix_login(matrix, config)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -474,7 +460,7 @@ async def run() -> None:
         http_client = await stack.enter_async_context(
             httpx2.AsyncClient(
                 headers={"Authorization": f"Bearer {config.mcp_token}"},
-                timeout=30,
+                timeout=90,
                 follow_redirects=False,
             )
         )
@@ -485,8 +471,6 @@ async def run() -> None:
         )
         mcp_client = await stack.enter_async_context(Client(transport))
         await _verify_mcp(mcp_client)
-        await asyncio.to_thread(run_maintenance)
-
         initial = await matrix.sync(timeout=0, full_state=True)
         if isinstance(initial, SyncError):
             raise RuntimeError("Initial Matrix sync failed")
@@ -494,7 +478,6 @@ async def run() -> None:
         for event_type in (RoomMessageText, RoomMessageImage, RoomEncryptedImage):
             matrix.add_event_callback(bot.on_event, event_type)
         consumer = asyncio.create_task(bot.consume(), name="matrix-event-consumer")
-        maintenance = asyncio.create_task(_maintenance_loop(), name="matrix-assistant-maintenance")
         sync_task = asyncio.create_task(
             matrix.sync_forever(timeout=config.sync_timeout_ms),
             name="matrix-sync",
@@ -510,11 +493,16 @@ async def run() -> None:
             matrix.stop_sync_forever()
             stop_task.cancel()
             sync_task.cancel()
-            consumer.cancel()
-            maintenance.cancel()
-            for task in (stop_task, sync_task, consumer, maintenance):
+            for task in (stop_task, sync_task):
                 with suppress(asyncio.CancelledError):
                     await task
+            try:
+                await asyncio.wait_for(bot.queue.join(), timeout=75)
+            except TimeoutError:
+                logger.warning("Timed out draining the Matrix event queue during shutdown")
+            consumer.cancel()
+            with suppress(asyncio.CancelledError):
+                await consumer
 
 
 def main() -> None:

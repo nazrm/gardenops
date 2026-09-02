@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 import unittest
 from unittest.mock import patch
 
@@ -11,12 +12,26 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from gardenops.mcp_server import StaticBearerMiddleware, create_mcp_runtime
+from gardenops.mcp_server import StaticBearerMiddleware, _run_tool_async, create_mcp_runtime
 
 TOKEN = "matrix-mcp-test-token-0123456789abcdef"  # push-sanitizer: allow SECRET_ASSIGNMENT
 
 
 class TestMCPAssistant(unittest.TestCase):
+    def test_sync_tool_work_does_not_block_event_loop(self) -> None:
+        async def exercise() -> None:
+            def slow_operation(_operation):  # type: ignore[no-untyped-def]
+                time.sleep(0.1)
+                return "done"
+
+            with patch("gardenops.mcp_server._run_tool", side_effect=slow_operation):
+                task = asyncio.create_task(_run_tool_async(lambda _db, _binding: None))  # type: ignore[arg-type]
+                await asyncio.sleep(0.01)
+                self.assertFalse(task.done())
+                self.assertEqual(await task, "done")
+
+        asyncio.run(exercise())
+
     def test_disabled_runtime_is_not_created(self) -> None:
         with patch.dict(os.environ, {"MCP_ENABLED": "false"}, clear=False):
             self.assertIsNone(create_mcp_runtime())

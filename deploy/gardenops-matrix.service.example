@@ -9,10 +9,11 @@ Type=simple
 User=gardenops
 Group=gardenops
 WorkingDirectory=/srv/gardenops/current
-EnvironmentFile=/etc/gardenops.env
+EnvironmentFile=/etc/gardenops-matrix.env
 ExecStart=/srv/gardenops/current/.venv/bin/python -m gardenops.matrix_bot
 Restart=always
 RestartSec=5
+TimeoutStopSec=90
 UMask=0077
 
 NoNewPrivileges=true

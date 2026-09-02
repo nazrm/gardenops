@@ -510,14 +510,52 @@ def _restore_original_task_links(db: DbConn, *, task_id: int, task_row: dict[str
     raw_plants = metadata.get("completion_capture_original_plant_ids")
     raw_plots = metadata.get("completion_capture_original_plot_ids")
     if isinstance(raw_plants, list):
-        plant_ids = _dedupe([str(value) for value in raw_plants])
+        requested_ids = _dedupe([str(value).strip() for value in raw_plants if str(value).strip()])
+        rows = (
+            db.execute(
+                """
+            SELECT DISTINCT p.plt_id
+            FROM plants p
+            JOIN plant_ownership po ON po.plt_id = p.plt_id
+            WHERE po.garden_id = %s AND p.plt_id = ANY(%s)
+            """,
+                (int(task_row["garden_id"]), requested_ids),
+            ).fetchall()
+            if requested_ids
+            else []
+        )
+        existing_ids = {str(row["plt_id"]) for row in rows}
+        plant_ids = [plant_id for plant_id in requested_ids if plant_id in existing_ids]
         if plant_ids:
             update_task_plant_links(db, task_id=task_id, remaining_plant_ids=plant_ids)
     if isinstance(raw_plots, list):
+        requested_plot_ids = _dedupe(
+            [str(value).strip() for value in raw_plots if str(value).strip()]
+        )
+        rows = (
+            db.execute(
+                """
+            SELECT p.plot_id
+            FROM plots p
+            JOIN plot_ownership po ON po.plot_id = p.plot_id
+            WHERE p.garden_id = %s AND po.garden_id = %s AND p.plot_id = ANY(%s)
+            """,
+                (
+                    int(task_row["garden_id"]),
+                    int(task_row["garden_id"]),
+                    requested_plot_ids,
+                ),
+            ).fetchall()
+            if requested_plot_ids
+            else []
+        )
+        existing_plot_ids = {str(row["plot_id"]) for row in rows}
         update_task_plot_links(
             db,
             task_id=task_id,
-            remaining_plot_ids=_dedupe([str(value) for value in raw_plots]),
+            remaining_plot_ids=[
+                plot_id for plot_id in requested_plot_ids if plot_id in existing_plot_ids
+            ],
         )
 
 

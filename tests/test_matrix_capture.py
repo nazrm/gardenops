@@ -4,6 +4,7 @@ import os
 from unittest.mock import patch
 
 import gardenops.db as db
+from gardenops.services.assistant import expire_and_cleanup_requests
 from tests.base import BaseApiTest
 
 TOKEN = "matrix-capture-test-token-0123456789abcdef"  # push-sanitizer: allow SECRET_ASSIGNMENT
@@ -101,3 +102,28 @@ class TestMatrixCapture(BaseApiTest):
                 headers=self._headers(**{"X-Matrix-Event-Id": "$too-large"}),
             )
         self.assertEqual(response.status_code, 413)
+
+    def test_aged_capture_without_assistant_request_is_cleaned_up(self) -> None:
+        with patch.dict(os.environ, ENV, clear=False):
+            response = self.client.post(
+                "/api/integrations/matrix/captures",
+                content=self._image_bytes(size=(80, 60)),
+                headers=self._headers(**{"X-Matrix-Event-Id": "$orphan"}),
+            )
+        self.assertEqual(response.status_code, 201, response.text)
+        asset_id = response.json()["capture_asset_id"]
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE media_assets SET created_at_ms = 1 WHERE asset_id = %s",
+                (asset_id,),
+            )
+            expire_and_cleanup_requests(conn, now_ms=10 * 24 * 60 * 60 * 1000)
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM media_assets WHERE asset_id = %s", (asset_id,)
+                ).fetchone()
+            )
+            conn.rollback()
+        finally:
+            db.return_db(conn)

@@ -51,15 +51,17 @@ def _rows_for_garden(db: DbConn, context: AuthContext) -> list[dict]:
     rows = db.execute(
         """
         SELECT p.plt_id, p.name, COALESCE(p.latin, '') AS latin,
-               pp.plot_id, COALESCE(pl.display_name, '') AS display_name,
+               pl.plot_id, COALESCE(pl.display_name, '') AS display_name,
                COALESCE(pl.zone_name, '') AS zone_name
         FROM plants p
         JOIN plant_ownership po
           ON po.plt_id = p.plt_id AND po.garden_id = %s
         LEFT JOIN plot_plants pp ON pp.plt_id = p.plt_id
+        LEFT JOIN plot_ownership plo
+          ON plo.plot_id = pp.plot_id AND plo.garden_id = po.garden_id
         LEFT JOIN plots pl
-          ON pl.plot_id = pp.plot_id AND pl.garden_id = po.garden_id
-        ORDER BY p.name, p.plt_id, pp.plot_id
+          ON pl.plot_id = plo.plot_id AND pl.garden_id = po.garden_id
+        ORDER BY p.name, p.plt_id, pl.plot_id
         """,
         (int(context.garden_id),),
     ).fetchall()

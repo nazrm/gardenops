@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -105,6 +106,12 @@ def _run_tool(
         return_db(db)
 
 
+async def _run_tool_async(
+    operation: Callable[[DbConn, AssistantBinding], AssistantResult],
+) -> AssistantResult:
+    return await asyncio.to_thread(_run_tool, operation)
+
+
 def create_mcp_runtime() -> MCPRuntime | None:
     if not mcp_enabled():
         return None
@@ -122,7 +129,7 @@ def create_mcp_runtime() -> MCPRuntime | None:
         occurred_on: str,
     ) -> AssistantResult:
         data = ProcessTextInput.model_validate(locals())
-        return _run_tool(
+        return await _run_tool_async(
             lambda db, binding: process_text(
                 db,
                 binding,
@@ -141,7 +148,7 @@ def create_mcp_runtime() -> MCPRuntime | None:
     ) -> AssistantResult:
         data = AnalyzeCaptureInput.model_validate(locals())
         values = data.model_dump()
-        return _run_tool(
+        return await _run_tool_async(
             lambda db, binding: analyze_matrix_capture(
                 db,
                 binding,
@@ -156,7 +163,7 @@ def create_mcp_runtime() -> MCPRuntime | None:
         text: str,
     ) -> AssistantResult:
         data = ContinueInput.model_validate(locals())
-        return _run_tool(
+        return await _run_tool_async(
             lambda db, binding: continue_request(
                 db,
                 binding,
@@ -167,7 +174,7 @@ def create_mcp_runtime() -> MCPRuntime | None:
     @server.tool(structured_output=True)
     async def assistant_get(request_id: str) -> AssistantResult:
         data = RequestEventInput(request_id=request_id)
-        return _run_tool(
+        return await _run_tool_async(
             lambda db, binding: get_request(
                 db,
                 binding,
@@ -183,7 +190,7 @@ def create_mcp_runtime() -> MCPRuntime | None:
         data = RequestEventInput.model_validate(locals())
         if not data.source_event_id:
             return _error_result("source_event_id is required")
-        return _run_tool(
+        return await _run_tool_async(
             lambda db, binding: apply_request(
                 db,
                 binding,
@@ -199,7 +206,7 @@ def create_mcp_runtime() -> MCPRuntime | None:
         data = RequestEventInput.model_validate(locals())
         if not data.source_event_id:
             return _error_result("source_event_id is required")
-        return _run_tool(
+        return await _run_tool_async(
             lambda db, binding: cancel_request(
                 db,
                 binding,

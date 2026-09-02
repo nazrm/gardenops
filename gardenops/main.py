@@ -174,12 +174,16 @@ from gardenops.security_telemetry import (  # noqa: E402
     start_security_telemetry_exporter,
     stop_security_telemetry_exporter,
 )
+from gardenops.services.assistant import expire_and_cleanup_requests  # noqa: E402
 from gardenops.services.garden_layout_lock import lock_garden_layout  # noqa: E402
 from gardenops.services.integration_config import (  # noqa: E402
     resolve_assistant_binding,
     validate_integration_config,
 )
-from gardenops.services.media_store import drain_media_cleanup_jobs_best_effort  # noqa: E402
+from gardenops.services.media_store import (  # noqa: E402
+    drain_media_cleanup_jobs,
+    drain_media_cleanup_jobs_best_effort,
+)
 from gardenops.services.notification_service import (  # noqa: E402
     acquire_notification_scheduler_lease,
     notification_scheduler_enabled,
@@ -1296,6 +1300,31 @@ async def _notification_scheduler_loop() -> None:
         await asyncio.sleep(poll_seconds)
 
 
+def _run_assistant_maintenance_once() -> int:
+    conn = get_db()
+    try:
+        removed = expire_and_cleanup_requests(conn)
+        conn.commit()
+        drain_media_cleanup_jobs(conn)
+        return removed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        return_db(conn)
+
+
+async def _assistant_maintenance_loop() -> None:
+    while True:
+        await asyncio.sleep(24 * 60 * 60)
+        try:
+            removed = await asyncio.to_thread(_run_assistant_maintenance_once)
+            if removed:
+                logger.info("Assistant maintenance removed %s temporary captures", removed)
+        except Exception:
+            logger.exception("Assistant maintenance failed")
+
+
 def _startup_integrity_check() -> None:
     """Verify database integrity before accepting requests."""
     conn = get_db()
@@ -1353,6 +1382,7 @@ async def lifespan(_: FastAPI):
     warn_csrf_secret_not_configured()
     start_security_telemetry_exporter()
     scheduler_task: asyncio.Task[None] | None = None
+    assistant_maintenance_task: asyncio.Task[None] | None = None
 
     from gardenops.routers.shademap import _load_grid_from_db, _save_grid_to_db
     from gardenops.services.lidar_terrain import set_grid_cache_callbacks
@@ -1362,6 +1392,12 @@ async def lifespan(_: FastAPI):
         scheduler_task = asyncio.create_task(
             _notification_scheduler_loop(),
             name="notification-scheduler",
+        )
+    if MCP_RUNTIME is not None:
+        await asyncio.to_thread(_run_assistant_maintenance_once)
+        assistant_maintenance_task = asyncio.create_task(
+            _assistant_maintenance_loop(),
+            name="assistant-maintenance",
         )
     try:
         async with AsyncExitStack() as stack:
@@ -1373,6 +1409,10 @@ async def lifespan(_: FastAPI):
             scheduler_task.cancel()
             with suppress(asyncio.CancelledError):
                 await scheduler_task
+        if assistant_maintenance_task is not None:
+            assistant_maintenance_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await assistant_maintenance_task
         stop_security_telemetry_exporter()
         close_pool()
         # Flush Taillight log handler on shutdown

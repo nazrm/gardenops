@@ -136,10 +136,13 @@ browser settings screen. Install the optional runtime dependencies with:
 uv sync --locked --extra matrix
 ```
 
-Set the `MCP_*` and `MATRIX_*` values listed in `.env.example`. Generate the MCP
-token with a cryptographic password generator and keep it only in the host-owned
-environment file. The configured GardenOps user must be active, have editor or
-admin access to the configured garden, and have the AI feature available.
+Set the `MCP_*` values in the API's host-owned environment file. Put only the
+required `MCP_*` and `MATRIX_*` values listed in `.env.example` in the Matrix
+worker's dedicated `/etc/gardenops-matrix.env`; do not expose database or AI
+provider credentials to that process. Generate the shared MCP token with a
+cryptographic password generator. The configured GardenOps user must be active,
+have editor or admin access to the configured garden, and have the AI feature
+available.
 
 For encrypted rooms, install the host `libolm` package, keep
 `MATRIX_STORE_PATH` persistent and writable only by the service account, then

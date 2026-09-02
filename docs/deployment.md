@@ -65,9 +65,11 @@ Review and adapt them for your host paths, service user, Python environment,
 TLS termination, proxy topology, upload size, log retention, and backup policy.
 
 Install the Matrix service only when the integration is enabled. It uses the
-same host-owned environment file and release as the API, but runs as a separate
-process so Matrix reconnects cannot affect browser traffic. Create its private
-store directory for the `gardenops` service account before starting it. The
+same release as the API but a dedicated `/etc/gardenops-matrix.env` containing
+only Matrix and MCP settings. Do not give the worker database or AI provider
+credentials. It runs as a separate process so Matrix reconnects cannot affect
+browser traffic. Create its private store directory for the `gardenops` service
+account before starting it. The
 production nginx example explicitly returns `404` for `/mcp`; both MCP and the
 capture upload are called directly over loopback by the worker.
 
@@ -78,8 +80,9 @@ Enable it in this order:
 2. Invite the bot to the configured room. If E2EE is enabled, install `libolm`,
    create the persistent `MATRIX_STORE_PATH`, and verify that device in Element.
 3. Install the locked Matrix dependencies with `uv sync --locked --extra matrix`.
-4. Generate the MCP token and set the exact room ID, allowed sender, active
-   GardenOps username, and garden slug in the host-owned environment file.
+4. Generate the MCP token. Put it in both host-owned environment files, and set
+   the exact room ID, allowed sender, active GardenOps username, and garden slug
+   only in `/etc/gardenops-matrix.env`.
 5. Apply migrations and restart the GardenOps API before starting the worker.
 6. Use the MCP Inspector command in [configuration.md](configuration.md) to
    confirm that the six assistant tools are available only over loopback.

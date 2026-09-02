@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 from gardenops.matrix_bot import (
     MatrixBot,
+    _ascii_filename,
+    _restore_matrix_login,
     extract_reference,
     is_triggered,
     parse_command,
@@ -32,9 +34,11 @@ class FakeMatrix:
     def __init__(self) -> None:
         self.sent: list[str] = []
         self.referenced_event = None
+        self.send_kwargs: list[dict] = []
 
-    async def room_send(self, _room_id, _event_type, content, **_kwargs):  # type: ignore[no-untyped-def]
+    async def room_send(self, _room_id, _event_type, content, **kwargs):  # type: ignore[no-untyped-def]
         self.sent.append(str(content["body"]))
+        self.send_kwargs.append(kwargs)
         return SimpleNamespace(event_id=f"$bot-{len(self.sent)}")
 
     async def room_get_event(self, _room_id, _event_id):  # type: ignore[no-untyped-def]
@@ -148,12 +152,32 @@ class TestMatrixBot(unittest.TestCase):
             wrong_sender = Event("!garden status")
             wrong_sender.sender = "@other:example.org"
             await bot.on_event(Room(), wrong_sender)
-            overflow = Event("!garden another")
-            overflow.sender = "@owner:example.org"
-            await bot.on_event(Room(), overflow)
+            blocked = Event("!garden another")
+            blocked.sender = "@owner:example.org"
+            pending = asyncio.create_task(bot.on_event(Room(), blocked))
+            await asyncio.sleep(0)
+            self.assertFalse(pending.done())
+            bot.queue.get_nowait()
+            bot.queue.task_done()
+            await pending
 
         asyncio.run(enqueue())
         self.assertEqual(bot.queue.qsize(), 1)
+
+    def test_login_send_and_filename_support_e2ee_and_unicode(self) -> None:
+        matrix = FakeMatrix()
+        matrix.restore_login = unittest.mock.Mock()  # type: ignore[attr-defined]
+        config = self._config()
+
+        _restore_matrix_login(matrix, config)
+        asyncio.run(MatrixBot(config, matrix, FakeMCP())._send("Ready"))
+
+        matrix.restore_login.assert_called_once_with(  # type: ignore[attr-defined]
+            config.user_id, config.device_id, config.access_token
+        )
+        self.assertTrue(matrix.send_kwargs[0]["ignore_unverified_devices"])
+        self.assertEqual(_ascii_filename("påskelilje.jpg"), "paskelilje.jpg")
+        self.assertNotIn("\n", _ascii_filename("bad\nheader.png"))
 
     def test_explicit_save_reference_routes_without_a_mention(self) -> None:
         matrix = FakeMatrix()
