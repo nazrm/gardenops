@@ -56,6 +56,8 @@ def shademap_enabled() -> bool:
     """Return whether ShadeMap routes and browser availability are enabled."""
 
     raw = os.environ.get("SHADEMAP_ENABLED", "true").strip().lower()
+    if not raw:
+        return True
     if raw in _TRUE_VALUES:
         return True
     if raw in _FALSE_VALUES:

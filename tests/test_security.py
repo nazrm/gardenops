@@ -1088,6 +1088,13 @@ class TestSecurity(BaseApiTest):
     def test_invalid_shademap_enabled_value_fails_runtime_validation(self) -> None:
         with patch.dict(
             os.environ,
+            {**self._valid_production_runtime_env(), "SHADEMAP_ENABLED": ""},
+            clear=False,
+        ):
+            _validate_runtime_security_config()
+
+        with patch.dict(
+            os.environ,
             {**self._valid_production_runtime_env(), "SHADEMAP_ENABLED": "maybe"},
             clear=False,
         ):
