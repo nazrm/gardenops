@@ -26,6 +26,11 @@ _FORMAT_TO_MIME = {
     "PNG": "image/png",
     "WEBP": "image/webp",
 }
+_FORMAT_COMPATIBILITY = {
+    "JPEG": frozenset({"JPEG", "MPO"}),
+    "PNG": frozenset({"PNG"}),
+    "WEBP": frozenset({"WEBP"}),
+}
 _log = logging.getLogger(__name__)
 
 
@@ -235,7 +240,7 @@ def prepare_media_asset(
                 detail="Failed to decode uploaded image",
             ) from exc
 
-        if actual_format != expected_format:
+        if actual_format not in _FORMAT_COMPATIBILITY[expected_format]:
             raise HTTPException(
                 status_code=415,
                 detail="Image content does not match declared content type",
