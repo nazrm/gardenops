@@ -1065,7 +1065,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
     shade_panel_source = (ROOT / "frontend" / "src" / "components" / "shadePanel.ts").read_text(
         encoding="utf-8",
     )
-    assert "DEFAULT_BASEMAP_TILE_URL" in shade_panel_source
+    assert "config.basemap_url_template" in shade_panel_source
     assert "VITE_SHADEMAP_BASEMAP_URL" in shade_panel_source
     for endpoint in (
         "**/api/inventory*",

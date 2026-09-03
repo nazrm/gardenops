@@ -211,10 +211,17 @@ SHADEMAP_PUBLIC_API_KEY=change-me
 SHADEMAP_TILE_SIGNING_SECRET=<generate-a-unique-random-secret>
 ```
 
-Leave ShadeMap keys unset to disable the integration. Server-side ShadeMap keys
-are platform-admin-only and are no longer stored per user. Do not set only the
-tile signing secret and assume the provider integration is active; GardenOps
-still needs valid ShadeMap access.
+For a hard-disabled deployment, set `SHADEMAP_ENABLED=false`. This hides the
+panel and rejects all ShadeMap API, runtime-script, feature, and terrain routes
+before any provider URL or key is resolved. Set `VITE_SHADEMAP_ENABLED=false`
+when building that deployment as defense in depth so the browser cannot
+initialize the panel or its external basemap even if the server is later
+misconfigured. Leaving keys unset alone keeps provider access unavailable, but
+is not the hard-disable contract.
+
+Server-side ShadeMap keys are platform-admin-only and are no longer stored per
+user. Do not set only the tile signing secret and assume the provider
+integration is active; GardenOps still needs valid ShadeMap access.
 
 Set `SHADEMAP_SHARE_URL`, `SHADEMAP_LAT`, `SHADEMAP_LNG`, and `SHADEMAP_ZOOM`
 to your own garden area. Do not publish exact private coordinates unless that is

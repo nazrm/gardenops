@@ -59,6 +59,7 @@ not secrets.
 |---|---|---|
 | `VITE_APP_NAME` | Public product name shown by the frontend. | `GardenOps` |
 | `VITE_APP_SLUG` | Public slug used by the frontend for generated labels and filenames. | `gardenops` |
+| `VITE_SHADEMAP_ENABLED` | Optional build-time defense-in-depth switch. Set to `false` to prevent the browser bundle from initializing the ShadeMap panel or external basemap even if a server is misconfigured. Runtime deployments must also set `SHADEMAP_ENABLED=false`. | `true` |
 | `VITE_SHADEMAP_BASEMAP_URL` | Optional browser-safe XYZ basemap template for the ShadeMap panel. Leave unset to use the production default. | `https://tiles.example.com/{z}/{x}/{y}.png` |
 
 ## Optional Providers
@@ -132,6 +133,7 @@ terrain setup, and production cautions.
 
 | Variable | Purpose | Example |
 |---|---|---|
+| `SHADEMAP_ENABLED` | Global runtime gate. Defaults to `true` for compatibility. Set to `false` to hide ShadeMap from authenticated clients and return `404` from every ShadeMap API and asset route before provider or terrain resolution. | `false` |
 | `SHADEMAP` | Server-side ShadeMap API key, checked first. Required to enable the ShadeMap panel. Leave unset to disable the integration. | `change-me` |
 | `SHADEMAP_API_KEY` | Alternative server-side ShadeMap API key. | `change-me` |
 | `SHADEMAP_KEY` | Alternative server-side ShadeMap API key. | `change-me` |

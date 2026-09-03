@@ -1053,6 +1053,54 @@ class TestSecurity(BaseApiTest):
             self.assertEqual(entitled.status_code, 200)
             self.assertTrue(entitled.json()["shademap_available"])
 
+    def test_auth_me_hides_shademap_when_globally_disabled(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+                "SHADEMAP_ENABLED": "false",
+                "SHADEMAP_PUBLIC_API_KEY": "must-not-be-returned",
+            },
+            clear=False,
+        ):
+            _, csrf = self._login_session("test_admin", strong_password("testadminpass"))
+            conn = db.get_db()
+            try:
+                conn.execute(
+                    "UPDATE auth_users SET subscription_tier = 'enthusiast' "
+                    "WHERE username = 'test_admin'",
+                )
+                conn.commit()
+            finally:
+                db.return_db(conn)
+
+            response = self.client.get("/api/auth/me", headers=self._session_headers(csrf))
+            csp_policy = main_module._csp_policy()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["shademap_available"])
+        self.assertNotIn("must-not-be-returned", response.text)
+        for provider_host in ("shademap.app", "overpass-api.de", "s3.amazonaws.com"):
+            self.assertNotIn(provider_host, csp_policy)
+
+    def test_invalid_shademap_enabled_value_fails_runtime_validation(self) -> None:
+        with patch.dict(
+            os.environ,
+            {**self._valid_production_runtime_env(), "SHADEMAP_ENABLED": ""},
+            clear=False,
+        ):
+            _validate_runtime_security_config()
+
+        with patch.dict(
+            os.environ,
+            {**self._valid_production_runtime_env(), "SHADEMAP_ENABLED": "maybe"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "SHADEMAP_ENABLED must be true or false"):
+                _validate_runtime_security_config()
+
     def test_cookie_session_mutation_requires_valid_csrf_token(self) -> None:
         with patch.dict(
             os.environ,
@@ -1677,6 +1725,62 @@ class TestSecurity(BaseApiTest):
 
             allowed = client.get("/api/plots", headers=headers)
             self.assertEqual(allowed.status_code, 200)
+
+    def test_admin_can_change_forced_password_before_mfa_setup(self) -> None:
+        conn = db.get_db()
+        try:
+            create_user(
+                conn,
+                username="forced_pw_admin",
+                password=strong_password("old-forced-admin-password"),
+                role="admin",
+                must_change_password=True,
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            os.environ,
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+                "AUTH_PASSWORD_MIN_LENGTH": "12",
+                "AUTH_ADMIN_MFA_REQUIRED": "true",
+            },
+            clear=False,
+        ):
+            client = self._new_client()
+            login = client.post(
+                "/api/auth/login",
+                json={
+                    "username": "forced_pw_admin",
+                    "password": strong_password("old-forced-admin-password"),
+                },
+            )
+            self.assertEqual(login.status_code, 200)
+            self.assertTrue(login.json()["user"]["must_change_password"])
+            csrf = client.cookies.get("gardenops_csrf", "")
+            me_before = client.get("/api/auth/me")
+            self.assertEqual(me_before.status_code, 200)
+            self.assertTrue(me_before.json()["must_change_password"])
+            self.assertTrue(me_before.json()["mfa_setup_required"])
+
+            changed = client.post(
+                "/api/auth/change-password",
+                headers=self._session_headers(csrf),
+                json={
+                    "current_password": strong_password("old-forced-admin-password"),
+                    "new_password": strong_password("new-forced-admin-password"),
+                },
+            )
+            self.assertEqual(changed.status_code, 200)
+
+            me_after = client.get("/api/auth/me")
+            self.assertEqual(me_after.status_code, 200)
+            self.assertFalse(me_after.json()["must_change_password"])
+            self.assertTrue(me_after.json()["mfa_setup_required"])
 
     def test_admin_setting_must_change_password_revokes_existing_sessions(self) -> None:
         conn = db.get_db()

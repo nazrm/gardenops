@@ -79,6 +79,7 @@ from gardenops.observability import (  # noqa: E402
     normalize_request_id,
     reset_request_context,
 )
+from gardenops.provider_settings import shademap_enabled  # noqa: E402
 from gardenops.rate_limit import (  # noqa: E402
     client_ip,
     enforce_rate_limit,
@@ -867,6 +868,7 @@ def _api_docs_enabled() -> bool:
 
 def _validate_runtime_security_config() -> None:
     validate_integration_config()
+    shademap_enabled()
     _validate_shared_rate_limit_backend()
     strict_cookie_mode = _is_internet_exposed() or _is_production()
     if strict_cookie_mode:
@@ -1157,6 +1159,7 @@ def _admin_mfa_setup_path_allowed(path: str) -> bool:
         "/api/auth/me",
         "/api/auth/me/settings",
         "/api/auth/logout",
+        "/api/auth/change-password",
         "/api/auth/passkeys",
         "/api/auth/reauthenticate",
         "/api/auth/passkeys/register/options",
@@ -1237,12 +1240,19 @@ def _csp_policy() -> str:
     connect_src = [
         "'self'",
         "https://api.anthropic.com",
-        "https://shademap.app",
-        "https://overpass-api.de",
-        "https://overpass.kumi.systems",
-        "https://overpass.private.coffee",
-        "https://s3.amazonaws.com",
     ]
+    image_src = ["'self'", "data:", "blob:"]
+    if shademap_enabled():
+        connect_src.extend(
+            [
+                "https://shademap.app",
+                "https://overpass-api.de",
+                "https://overpass.kumi.systems",
+                "https://overpass.private.coffee",
+                "https://s3.amazonaws.com",
+            ],
+        )
+        image_src.extend(["https://*.amazonaws.com", "https://*.shademap.app"])
     report_uri = _csp_report_uri()
     directives = [
         "default-src 'self'",
@@ -1250,7 +1260,7 @@ def _csp_policy() -> str:
         "require-trusted-types-for 'script'",
         "trusted-types gardenops-html gardenops-shademap-script default",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-        "img-src 'self' data: blob: https://*.amazonaws.com https://*.shademap.app",
+        f"img-src {' '.join(image_src)}",
         f"connect-src {' '.join(connect_src)}",
         "font-src 'self' data: https://fonts.gstatic.com",
         "object-src 'none'",

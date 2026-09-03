@@ -36,6 +36,8 @@ OPENAI_FAST_MODEL_SETTING = "openai_fast_model"
 ANTHROPIC_MODEL_SETTING = "anthropic_model"
 
 SUPPORTED_AI_PROVIDERS: frozenset[str] = frozenset({"disabled", "openai", "anthropic"})
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 
 OPENAI_API_KEY_ENVS = ("OPENAI_API_KEY",)
 ANTHROPIC_API_KEY_ENVS = ("ANTHROPIC_API_KEY",)
@@ -48,6 +50,19 @@ SECRET_ENV_NAMES: dict[str, tuple[str, ...]] = {
     PLANTNET_API_KEY: PLANTNET_API_KEY_ENVS,
     SHADEMAP_API_KEY: SHADEMAP_API_KEY_ENVS,
 }
+
+
+def shademap_enabled() -> bool:
+    """Return whether ShadeMap routes and browser availability are enabled."""
+
+    raw = os.environ.get("SHADEMAP_ENABLED", "true").strip().lower()
+    if not raw:
+        return True
+    if raw in _TRUE_VALUES:
+        return True
+    if raw in _FALSE_VALUES:
+        return False
+    raise ConfigurationError("SHADEMAP_ENABLED must be true or false")
 
 
 @dataclass(frozen=True)

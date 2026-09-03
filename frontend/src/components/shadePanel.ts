@@ -16,6 +16,7 @@ import type {
   SunWindow,
 } from "../services/api";
 import { sanitizeUrl } from "../core/sanitize";
+import { shadeMapBrowserEnabled } from "../core/runtimeFeatures";
 import { queryInput, querySelect, queryButton } from "../core/dom";
 import {
   buildShadeMapTerrainUrl,
@@ -310,9 +311,7 @@ const PLOT_SAMPLE_OFFSETS: ReadonlyArray<{ x: number; y: number }> = [
 const CENTER_SAMPLE_WEIGHT = 2;
 const SUN_CLASSIFY_MIN_PERCENT = 60;
 const SUNLIGHT_SNAPSHOT_DEBOUNCE_MS = 120;
-const DEFAULT_BASEMAP_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
-const BASEMAP_TILE_URL = import.meta.env["VITE_SHADEMAP_BASEMAP_URL"]?.trim()
-  || DEFAULT_BASEMAP_TILE_URL;
+const BUILD_BASEMAP_TILE_URL = import.meta.env["VITE_SHADEMAP_BASEMAP_URL"]?.trim() || null;
 const TARGET_MARKER_STYLE = {
   radius: 7,
   weight: 3,
@@ -970,10 +969,13 @@ export class ShadePanelController {
         zoomControl: true,
         attributionControl: true,
       });
-      L.tileLayer(BASEMAP_TILE_URL, {
-        maxZoom: 20,
-        attribution: "&copy; OpenStreetMap contributors",
-      }).addTo(this.map);
+      const basemapTileUrl = BUILD_BASEMAP_TILE_URL || config.basemap_url_template;
+      if (shadeMapBrowserEnabled && basemapTileUrl) {
+        L.tileLayer(basemapTileUrl, {
+          maxZoom: 20,
+          attribution: "&copy; OpenStreetMap contributors",
+        }).addTo(this.map);
+      }
 
       this.houseMarker = L.circleMarker([houseCenter.latitude, houseCenter.longitude], {
         radius: 8,

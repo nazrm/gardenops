@@ -32,7 +32,7 @@ from gardenops.incident_controls import (
 )
 from gardenops.models import StrictBaseModel
 from gardenops.platform_secrets import ConfigurationError
-from gardenops.provider_settings import get_shademap_api_key
+from gardenops.provider_settings import get_shademap_api_key, shademap_enabled
 from gardenops.rate_limit import (
     client_ip,
     enforce_key_rate_limit,
@@ -2225,13 +2225,22 @@ def auth_me(request: Request, response: Response, db: DB) -> dict[str, object]:
             )
     try:
         server_shademap_key = get_shademap_api_key(db) or ""
+        server_shademap_enabled = shademap_enabled()
     except ConfigurationError:
         server_shademap_key = ""
-    shademap_available = feature_allowed(context.subscription_tier, "shade_map") and bool(
-        server_shademap_key
-        or os.environ.get("SHADEMAP_PUBLIC_API_KEY", "").strip()
-        or os.environ.get("SHADEMAP_PUBLIC_KEY", "").strip()
-        or os.environ.get("SHADEMAP_CLIENT_KEY", "").strip()
+        server_shademap_enabled = False
+    shademap_available = (
+        server_shademap_enabled
+        and feature_allowed(
+            context.subscription_tier,
+            "shade_map",
+        )
+        and bool(
+            server_shademap_key
+            or os.environ.get("SHADEMAP_PUBLIC_API_KEY", "").strip()
+            or os.environ.get("SHADEMAP_PUBLIC_KEY", "").strip()
+            or os.environ.get("SHADEMAP_CLIENT_KEY", "").strip()
+        )
     )
     language = "en"
     if context.user_id is not None:
