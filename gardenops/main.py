@@ -1159,6 +1159,7 @@ def _admin_mfa_setup_path_allowed(path: str) -> bool:
         "/api/auth/me",
         "/api/auth/me/settings",
         "/api/auth/logout",
+        "/api/auth/change-password",
         "/api/auth/passkeys",
         "/api/auth/reauthenticate",
         "/api/auth/passkeys/register/options",

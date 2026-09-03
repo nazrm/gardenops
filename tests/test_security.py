@@ -1719,6 +1719,62 @@ class TestSecurity(BaseApiTest):
             allowed = client.get("/api/plots", headers=headers)
             self.assertEqual(allowed.status_code, 200)
 
+    def test_admin_can_change_forced_password_before_mfa_setup(self) -> None:
+        conn = db.get_db()
+        try:
+            create_user(
+                conn,
+                username="forced_pw_admin",
+                password=strong_password("old-forced-admin-password"),
+                role="admin",
+                must_change_password=True,
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+
+        with patch.dict(
+            os.environ,
+            {
+                "AUTH_REQUIRED": "true",
+                "AUTH_MODE": "session",
+                "AUTH_API_KEY": "",
+                "AUTH_PASSWORD_MIN_LENGTH": "12",
+                "AUTH_ADMIN_MFA_REQUIRED": "true",
+            },
+            clear=False,
+        ):
+            client = self._new_client()
+            login = client.post(
+                "/api/auth/login",
+                json={
+                    "username": "forced_pw_admin",
+                    "password": strong_password("old-forced-admin-password"),
+                },
+            )
+            self.assertEqual(login.status_code, 200)
+            self.assertTrue(login.json()["user"]["must_change_password"])
+            csrf = client.cookies.get("gardenops_csrf", "")
+            me_before = client.get("/api/auth/me")
+            self.assertEqual(me_before.status_code, 200)
+            self.assertTrue(me_before.json()["must_change_password"])
+            self.assertTrue(me_before.json()["mfa_setup_required"])
+
+            changed = client.post(
+                "/api/auth/change-password",
+                headers=self._session_headers(csrf),
+                json={
+                    "current_password": strong_password("old-forced-admin-password"),
+                    "new_password": strong_password("new-forced-admin-password"),
+                },
+            )
+            self.assertEqual(changed.status_code, 200)
+
+            me_after = client.get("/api/auth/me")
+            self.assertEqual(me_after.status_code, 200)
+            self.assertFalse(me_after.json()["must_change_password"])
+            self.assertTrue(me_after.json()["mfa_setup_required"])
+
     def test_admin_setting_must_change_password_revokes_existing_sessions(self) -> None:
         conn = db.get_db()
         try:
