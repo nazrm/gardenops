@@ -251,6 +251,49 @@ class TestAgentMcpBridge(unittest.TestCase):
             with self.assertRaisesRegex(PermissionError, "configured Matrix media"):
                 _read_staged_image(config, outside_path)
 
+    def test_identification_recovers_unique_mistyped_generated_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            message_dir = Path(directory, "openclaw-staged-message")
+            message_dir.mkdir()
+            actual = message_dir / ("input-plant-photo---36e0d9e4-2150-4c93-81cd-9e157c283dc3.jpg")
+            actual.write_bytes(b"\xff\xd8\xfftest-image")
+            mistyped = message_dir / (
+                "input-plant-photo---36e0d9e4-2150-4c91-89ff-1e5b6ca08974.jpg"
+            )
+            config = AgentBridgeConfig(
+                "http://127.0.0.1:8000/",
+                TOKEN,
+                media_root=Path(directory),
+            )
+
+            payload, content_type = _read_staged_image(config, str(mistyped))
+
+            self.assertEqual(payload, b"\xff\xd8\xfftest-image")
+            self.assertEqual(content_type, "image/jpeg")
+
+    def test_identification_does_not_guess_ambiguous_staged_images(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            message_dir = Path(directory, "openclaw-staged-message")
+            message_dir.mkdir()
+            for generated_id in (
+                "36e0d9e4-2150-4c93-81cd-9e157c283dc3",
+                "4ca42b72-fbe8-4997-8876-b0f0c037812b",
+            ):
+                (message_dir / f"input-plant-photo---{generated_id}.jpg").write_bytes(
+                    b"\xff\xd8\xfftest-image"
+                )
+            mistyped = message_dir / (
+                "input-plant-photo---36e0d9e4-2150-4c91-89ff-1e5b6ca08974.jpg"
+            )
+            config = AgentBridgeConfig(
+                "http://127.0.0.1:8000/",
+                TOKEN,
+                media_root=Path(directory),
+            )
+
+            with self.assertRaises(FileNotFoundError):
+                _read_staged_image(config, str(mistyped))
+
     def test_identification_posts_raw_image_to_gardenops(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             image_path = os.path.join(directory, "plant.png")

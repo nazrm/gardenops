@@ -232,9 +232,11 @@ per-agent deny rules.
 
 The media root must be the inbound staging directory for the allowed Matrix
 agent; paths outside it, symlinks, non-images, empty files, and images above 5
-MiB are rejected before any provider call. The token is accepted only from
-loopback and only for the allowlisted everyday
-GardenOps API surface. Authentication, user and membership administration,
+MiB are rejected before any provider call. If an agent mistypes only OpenClaw's
+generated UUID suffix, the bridge accepts a unique same-name image in that
+message's staging directory; zero or multiple matches fail closed. The token is
+accepted only from loopback and only for the allowlisted everyday GardenOps API
+surface. Authentication, user and membership administration,
 garden creation/deletion, imports, backup restore, calendar subscription
 tokens, and internal maintenance endpoints remain unavailable. The configured
 `MATRIX_GARDENOPS_USERNAME` and `MATRIX_GARDEN_SLUG` are re-resolved on every

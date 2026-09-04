@@ -184,10 +184,41 @@ def _read_staged_image(config: AgentBridgeConfig, image_path: str) -> tuple[byte
     if any(part in {".", ".."} for part in relative.parts):
         raise PermissionError("image_path must be inside the configured Matrix media directory")
     cursor = root
-    for part in relative.parts:
+    for part in relative.parts[:-1]:
         cursor = cursor / part
         if stat.S_ISLNK(os.lstat(cursor).st_mode):
             raise PermissionError("image_path may not contain symbolic links")
+
+    if not requested.exists():
+        name_prefix, separator, generated_suffix = requested.name.rpartition("---")
+        generated_id, extension = os.path.splitext(generated_suffix)
+        try:
+            UUID(generated_id)
+        except ValueError:
+            separator = ""
+        if separator and name_prefix.startswith("input-"):
+            candidates: list[Path] = []
+            for entry in os.scandir(requested.parent):
+                candidate_prefix, candidate_separator, candidate_suffix = entry.name.rpartition(
+                    "---"
+                )
+                candidate_id, candidate_extension = os.path.splitext(candidate_suffix)
+                if (
+                    candidate_separator
+                    and candidate_prefix == name_prefix
+                    and candidate_extension.lower() == extension.lower()
+                    and entry.is_file(follow_symlinks=False)
+                ):
+                    try:
+                        UUID(candidate_id)
+                    except ValueError:
+                        continue
+                    candidates.append(Path(entry.path))
+            if len(candidates) == 1:
+                requested = candidates[0]
+
+    if stat.S_ISLNK(os.lstat(requested).st_mode):
+        raise PermissionError("image_path may not contain symbolic links")
     resolved = requested.resolve(strict=True)
     if not resolved.is_relative_to(root):
         raise PermissionError("image_path must be inside the configured Matrix media directory")
