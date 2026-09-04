@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from gardenops.audit import write_required_audit_event
 from gardenops.db import DbConn, current_timestamp_ms
+from gardenops.incident_controls import get_emergency_read_only_status
 from gardenops.rate_limit import (
     acquire_concurrency_slot,
     provider_limit_profile,
@@ -1711,6 +1712,11 @@ def apply_request(
         )
     payload = _json_object(row["payload_json"])
     proposal = AssistantProposal.model_validate(payload.get("proposal"))
+    if get_emergency_read_only_status(db)["enabled"]:
+        raise HTTPException(
+            status_code=503,
+            detail="Emergency read-only mode is active",
+        )
     command, plant_ids = _apply_command(db, binding, proposal=proposal)
     capture_id = str(row.get("capture_asset_id") or "")
     if capture_id:
