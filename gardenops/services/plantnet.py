@@ -25,10 +25,10 @@ ALLOWED_ORGANS = frozenset(
 )
 
 _ALLOWED_IMAGE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp"})
-_IMAGE_FORMAT_BY_MIME = {
-    "image/jpeg": "JPEG",
-    "image/png": "PNG",
-    "image/webp": "WEBP",
+_IMAGE_FORMATS_BY_MIME = {
+    "image/jpeg": frozenset({"JPEG", "MPO"}),
+    "image/png": frozenset({"PNG"}),
+    "image/webp": frozenset({"WEBP"}),
 }
 
 _PREPROCESS_MAX_DIMENSION_DEFAULT = 1280
@@ -294,7 +294,7 @@ def preprocess_image_for_identification(
                 detail="Failed to decode uploaded image",
             ) from exc
 
-        if actual_format != _IMAGE_FORMAT_BY_MIME[mime_type]:
+        if actual_format not in _IMAGE_FORMATS_BY_MIME[mime_type]:
             raise HTTPException(
                 status_code=415,
                 detail="Image content does not match declared content type",
