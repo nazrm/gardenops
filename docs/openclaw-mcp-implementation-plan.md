@@ -12,10 +12,12 @@ on a separate disabled agent-v1 MCP runtime
 The current deployment does not execute the multi-phase native-plugin roadmap
 below. To deliver broad useful coverage without duplicating GardenOps, it uses:
 
-1. `gardenops.agent_mcp_stdio`, containing only `garden_capabilities`,
-   `garden_read`, and `garden_write`;
+1. `gardenops.agent_mcp_stdio`, containing `garden_capabilities`,
+   `garden_identify_plant`, `garden_read`, and `garden_write`;
 2. the existing MCP bearer in a private file, never inline in OpenClaw config;
-3. loopback calls into the existing GardenOps REST/domain implementation;
+3. loopback calls into the existing GardenOps REST/domain implementation,
+   including the PlantNet-first identification endpoint for images staged under
+   the configured Matrix media root;
 4. a server-side method/path allowlist plus fixed user/garden membership
    resolution for every request;
 5. OpenClaw per-agent policy exposing the tools to `matrix-lads` and denying

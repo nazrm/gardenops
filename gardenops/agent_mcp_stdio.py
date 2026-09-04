@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ from gardenops.agent_api_policy import (
 
 _MAX_RESPONSE_BYTES = 1_048_576
 _MAX_REQUEST_BYTES = 262_144
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -43,6 +45,7 @@ class AgentBridgeConfig:
     base_url: str
     token: str
     timeout_seconds: float = 45.0
+    media_root: Path | None = None
 
 
 def _load_token(path_value: str) -> str:
@@ -78,7 +81,15 @@ def load_config() -> AgentBridgeConfig:
     token_file = os.environ.get("GARDENOPS_MCP_TOKEN_FILE", "").strip()
     if not token_file:
         raise RuntimeError("GARDENOPS_MCP_TOKEN_FILE must be configured")
-    return AgentBridgeConfig(base_url=raw_url.rstrip("/") + "/", token=_load_token(token_file))
+    media_root_value = os.environ.get("GARDENOPS_MCP_MEDIA_ROOT", "").strip()
+    media_root = Path(media_root_value).resolve(strict=True) if media_root_value else None
+    if media_root is not None and not media_root.is_dir():
+        raise RuntimeError("GARDENOPS_MCP_MEDIA_ROOT must be a directory")
+    return AgentBridgeConfig(
+        base_url=raw_url.rstrip("/") + "/",
+        token=_load_token(token_file),
+        media_root=media_root,
+    )
 
 
 def _validate_path(method: str, value: str) -> str:
@@ -157,6 +168,96 @@ def request_api(
     }
 
 
+def _read_staged_image(config: AgentBridgeConfig, image_path: str) -> tuple[bytes, str]:
+    if config.media_root is None:
+        raise RuntimeError("GARDENOPS_MCP_MEDIA_ROOT must be configured")
+    requested = Path(image_path)
+    if not requested.is_absolute():
+        raise ValueError("image_path must be absolute")
+    root = config.media_root.resolve(strict=True)
+    try:
+        relative = requested.relative_to(root)
+    except ValueError as exc:
+        raise PermissionError(
+            "image_path must be inside the configured Matrix media directory"
+        ) from exc
+    if any(part in {".", ".."} for part in relative.parts):
+        raise PermissionError("image_path must be inside the configured Matrix media directory")
+    cursor = root
+    for part in relative.parts:
+        cursor = cursor / part
+        if stat.S_ISLNK(os.lstat(cursor).st_mode):
+            raise PermissionError("image_path may not contain symbolic links")
+    resolved = requested.resolve(strict=True)
+    if not resolved.is_relative_to(root):
+        raise PermissionError("image_path must be inside the configured Matrix media directory")
+
+    descriptor = os.open(resolved, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            raise ValueError("image_path must reference a regular file")
+        if details.st_size <= 0 or details.st_size > _MAX_IMAGE_BYTES:
+            raise ValueError("image must contain 1 byte to 5 MiB")
+        chunks: list[bytes] = []
+        remaining = _MAX_IMAGE_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+    finally:
+        os.close(descriptor)
+    if len(payload) != details.st_size:
+        raise RuntimeError("image changed while it was being read")
+
+    if payload.startswith(b"\xff\xd8\xff"):
+        content_type = "image/jpeg"
+    elif payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        content_type = "image/png"
+    elif len(payload) >= 12 and payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
+        content_type = "image/webp"
+    else:
+        raise ValueError("image must be JPEG, PNG, or WebP")
+    return payload, content_type
+
+
+def request_plant_identification(
+    config: AgentBridgeConfig,
+    *,
+    image_path: str,
+    organ: str,
+) -> dict[str, Any]:
+    payload, content_type = _read_staged_image(config, image_path)
+    path = "/api/ai/identify-plant?" + urllib.parse.urlencode({"organ": organ})
+    _validate_path("POST", path)
+    request_id = str(uuid4())
+    request = urllib.request.Request(
+        urljoin(config.base_url, path.lstrip("/")),
+        data=payload,
+        headers={
+            "accept": "application/json",
+            "authorization": f"Bearer {config.token}",
+            "content-type": content_type,
+            "user-agent": "gardenops-openclaw-mcp/1.0",
+            "x-request-id": request_id,
+        },
+        method="POST",
+    )
+    try:
+        with _URL_OPENER.open(request, timeout=config.timeout_seconds) as response:
+            result = _decode_response(response)
+    except urllib.error.HTTPError as exc:
+        result = _decode_response(exc)
+    return {
+        "ok": 200 <= int(result["status_code"]) < 300,
+        "request_id": request_id,
+        **result,
+    }
+
+
 def _operation_id(value: str) -> str:
     if not value:
         return str(uuid4())
@@ -172,6 +273,7 @@ def _annotations(
     read_only: bool,
     destructive: bool,
     idempotent: bool,
+    open_world: bool = False,
 ) -> ToolAnnotations:
     return ToolAnnotations.model_validate(
         {
@@ -179,7 +281,7 @@ def _annotations(
             "readOnlyHint": read_only,
             "destructiveHint": destructive,
             "idempotentHint": idempotent,
-            "openWorldHint": False,
+            "openWorldHint": open_world,
         }
     )
 
@@ -211,6 +313,7 @@ def create_server(config: AgentBridgeConfig) -> MCPServer[Any]:
             "schema_version": 1,
             "read_tool": "garden_read",
             "write_tool": "garden_write",
+            "identify_tool": "garden_identify_plant",
             "api_families": [
                 "dashboard and attention",
                 "plants, plots, placements, map objects, and containers",
@@ -310,6 +413,27 @@ def create_server(config: AgentBridgeConfig) -> MCPServer[Any]:
     async def garden_read(path: str) -> dict[str, Any]:
         """GET one allowlisted GardenOps API path, including a bounded query string."""
         return request_api(config, method="GET", path=path)
+
+    @server.tool(
+        structured_output=True,
+        annotations=_annotations(
+            "Identify a plant with GardenOps PlantNet",
+            read_only=False,
+            destructive=False,
+            idempotent=False,
+            open_world=True,
+        ),
+    )
+    async def garden_identify_plant(
+        image_path: str,
+        organ: Literal["auto", "leaf", "flower", "fruit", "bark", "habit", "other"] = "auto",
+    ) -> dict[str, Any]:
+        """Identify one staged Matrix image with GardenOps, using PlantNet first."""
+        return request_plant_identification(
+            config,
+            image_path=image_path,
+            organ=organ,
+        )
 
     @server.tool(
         structured_output=True,

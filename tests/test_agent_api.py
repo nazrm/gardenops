@@ -5,6 +5,7 @@ import io
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -19,8 +20,10 @@ from gardenops.agent_mcp_stdio import (
     _build_url_opener,
     _load_token,
     _NoRedirectHandler,
+    _read_staged_image,
     create_server,
     request_api,
+    request_plant_identification,
 )
 from gardenops.security import AuthContext
 from gardenops.services.integration_config import AssistantBinding, agent_api_auth_context
@@ -71,6 +74,7 @@ class TestAgentApiPolicy(unittest.TestCase):
     def test_allows_normal_garden_reads_and_writes(self) -> None:
         self.assertTrue(agent_api_request_allowed("GET", "/api/gardens"))
         self.assertTrue(agent_api_request_allowed("GET", "/api/plants/search"))
+        self.assertTrue(agent_api_request_allowed("POST", "/api/ai/identify-plant"))
         self.assertTrue(agent_api_request_allowed("GET", "/api/dashboard/today"))
         self.assertTrue(agent_api_request_allowed("POST", "/api/tasks/task_123/action"))
         self.assertTrue(agent_api_request_allowed("PATCH", "/api/plants/plt_123"))
@@ -225,7 +229,64 @@ class TestAgentMcpBridge(unittest.TestCase):
         with self.assertRaises(ValueError):
             request_api(config, method="GET", path="https://example.test/api/plants")
 
-    def test_mcp_surface_is_three_strictly_purposed_tools(self) -> None:
+    def test_identification_reads_only_supported_images_inside_media_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = os.path.join(directory, "media")
+            os.mkdir(root)
+            image_path = os.path.join(root, "plant.jpg")
+            with open(image_path, "wb") as handle:
+                handle.write(b"\xff\xd8\xfftest-image")
+            config = AgentBridgeConfig(
+                "http://127.0.0.1:8000/",
+                TOKEN,
+                media_root=Path(root),
+            )
+            payload, content_type = _read_staged_image(config, image_path)
+            self.assertEqual(payload, b"\xff\xd8\xfftest-image")
+            self.assertEqual(content_type, "image/jpeg")
+
+            outside_path = os.path.join(directory, "outside.jpg")
+            with open(outside_path, "wb") as handle:
+                handle.write(b"\xff\xd8\xffoutside")
+            with self.assertRaisesRegex(PermissionError, "configured Matrix media"):
+                _read_staged_image(config, outside_path)
+
+    def test_identification_posts_raw_image_to_gardenops(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = os.path.join(directory, "plant.png")
+            with open(image_path, "wb") as handle:
+                handle.write(b"\x89PNG\r\n\x1a\nimage")
+            config = AgentBridgeConfig(
+                "http://127.0.0.1:8000/",
+                TOKEN,
+                media_root=Path(directory),
+            )
+            captured: dict[str, object] = {}
+
+            def fake_open(request, timeout):  # type: ignore[no-untyped-def]
+                captured["url"] = request.full_url
+                captured["authorization"] = request.headers["Authorization"]
+                captured["content_type"] = request.headers["Content-type"]
+                captured["body"] = request.data
+                captured["timeout"] = timeout
+                return _Response(b'{"candidates":[]}')
+
+            with patch("gardenops.agent_mcp_stdio._URL_OPENER.open", side_effect=fake_open):
+                result = request_plant_identification(
+                    config,
+                    image_path=image_path,
+                    organ="flower",
+                )
+            self.assertTrue(result["ok"])
+            self.assertEqual(
+                captured["url"],
+                "http://127.0.0.1:8000/api/ai/identify-plant?organ=flower",
+            )
+            self.assertEqual(captured["authorization"], f"Bearer {TOKEN}")
+            self.assertEqual(captured["content_type"], "image/png")
+            self.assertEqual(captured["body"], b"\x89PNG\r\n\x1a\nimage")
+
+    def test_mcp_surface_is_four_strictly_purposed_tools(self) -> None:
         async def inspect_tools() -> None:
             from mcp import Client
 
@@ -234,15 +295,24 @@ class TestAgentMcpBridge(unittest.TestCase):
                 tools = await client.list_tools()
             self.assertEqual(
                 {tool.name for tool in tools.tools},
-                {"garden_capabilities", "garden_read", "garden_write"},
+                {
+                    "garden_capabilities",
+                    "garden_identify_plant",
+                    "garden_read",
+                    "garden_write",
+                },
             )
             annotations = {tool.name: tool.annotations for tool in tools.tools}
             read_annotations = annotations["garden_read"]
             write_annotations = annotations["garden_write"]
+            identify_annotations = annotations["garden_identify_plant"]
             assert read_annotations is not None
             assert write_annotations is not None
+            assert identify_annotations is not None
             self.assertTrue(read_annotations.read_only_hint)
             self.assertTrue(write_annotations.destructive_hint)
+            self.assertTrue(identify_annotations.open_world_hint)
+            self.assertFalse(identify_annotations.destructive_hint)
 
         asyncio.run(inspect_tools())
 
@@ -340,6 +410,19 @@ class TestAgentApiEndToEnd(BaseApiTest):
                 headers={"authorization": "Bearer wrong-token"},
             )
             self.assertEqual(rejected.status_code, 403, rejected.text)
+
+    def test_agent_token_can_reach_plant_identification_without_writing(self) -> None:
+        with patch.dict(os.environ, self._agent_env()):
+            response = self.client.post(
+                "/api/ai/identify-plant?organ=flower",
+                headers={
+                    "authorization": f"Bearer {TOKEN}",
+                    "content-type": "image/jpeg",
+                },
+                content=b"not-an-image",
+            )
+        self.assertEqual(response.status_code, 415, response.text)
+        self.assertIn("image", response.json()["detail"].lower())
 
 
 if __name__ == "__main__":

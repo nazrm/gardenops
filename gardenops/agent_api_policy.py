@@ -18,6 +18,7 @@ def _route(template: str) -> re.Pattern[str]:
 _ROUTES: Final = tuple(
     (frozenset(methods), _route(path))
     for methods, path in (
+        (("POST",), "/api/ai/identify-plant"),
         (("GET",), "/api/external-plants"),
         (("GET",), "/api/gardens"),
         (("GET",), "/api/attention/today"),

@@ -188,8 +188,11 @@ its value.
 ### OpenClaw/LadsBot MCP
 
 The same fixed Matrix binding can be exposed to an existing OpenClaw agent
-without running a second GardenOps Matrix bot. The stdio bridge provides three
-tools: `garden_capabilities`, `garden_read`, and `garden_write`. It calls the
+without running a second GardenOps Matrix bot. The stdio bridge provides four
+tools: `garden_capabilities`, `garden_identify_plant`, `garden_read`, and
+`garden_write`. Plant identification accepts only JPEG, PNG, or WebP files
+inside the configured staged-media directory and calls the existing GardenOps
+PlantNet-first identification endpoint. The bridge calls the
 existing GardenOps API over loopback, so normal validation, authorization,
 domain behavior, idempotency support, audit, and side effects remain
 authoritative in GardenOps.
@@ -204,10 +207,16 @@ OpenClaw MCP server similar to:
   "cwd": "/srv/gardenops/current",
   "env": {
     "GARDENOPS_API_URL": "http://127.0.0.1:8000",
-    "GARDENOPS_MCP_TOKEN_FILE": "/path/to/private/gardenops-mcp-token"
+    "GARDENOPS_MCP_TOKEN_FILE": "/path/to/private/gardenops-mcp-token",
+    "GARDENOPS_MCP_MEDIA_ROOT": "/path/to/matrix-agent/workspace/media/inbound"
   },
   "toolFilter": {
-    "include": ["garden_capabilities", "garden_read", "garden_write"]
+    "include": [
+      "garden_capabilities",
+      "garden_identify_plant",
+      "garden_read",
+      "garden_write"
+    ]
   },
   "codex": {
     "agents": ["matrix-lads"],
@@ -221,7 +230,10 @@ For embedded OpenClaw runs, add `gardenops__*` to every other agent's existing
 restricts projection into Codex app-server runs; it does not replace the
 per-agent deny rules.
 
-The token is accepted only from loopback and only for the allowlisted everyday
+The media root must be the inbound staging directory for the allowed Matrix
+agent; paths outside it, symlinks, non-images, empty files, and images above 5
+MiB are rejected before any provider call. The token is accepted only from
+loopback and only for the allowlisted everyday
 GardenOps API surface. Authentication, user and membership administration,
 garden creation/deletion, imports, backup restore, calendar subscription
 tokens, and internal maintenance endpoints remain unavailable. The configured
