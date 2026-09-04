@@ -1164,6 +1164,83 @@ class TestPasskeyRegistration(PasskeyApiTest):
             "Platform-admin MFA or passkey authentication is required",
         )
 
+    def test_forced_admin_password_change_does_not_unlock_after_passkey_setup(self) -> None:
+        os.environ["AUTH_ADMIN_MFA_REQUIRED"] = "true"
+        user = self._create_test_user(
+            "forced_password_passkey_admin",
+            "old-forced-pass",
+            "admin",
+        )
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE auth_users SET must_change_password = 1 WHERE id = %s",
+                (user["id"],),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        admin_client, headers = self._authenticated_client(
+            "forced_password_passkey_admin",
+            "old-forced-pass",
+        )
+        changed = admin_client.post(
+            "/api/auth/change-password",
+            headers=headers,
+            json={
+                "current_password": strong_password("old-forced-pass"),
+                "new_password": strong_password("new-forced-pass"),
+            },
+        )
+        self.assertEqual(changed.status_code, 200, changed.text)
+
+        options = admin_client.post(
+            "/api/auth/passkeys/register/options",
+            headers=headers,
+            json={
+                "nickname": "Laptop",
+                "current_password": strong_password("new-forced-pass"),
+            },
+        )
+        self.assertEqual(options.status_code, 200, options.text)
+        credential_id = b"forced-password-admin-credential"
+        with patch(
+            "gardenops.passkeys.verify_registration_credential",
+            return_value=VerifiedPasskeyRegistration(
+                credential_id=credential_id,
+                credential_public_key=b"public-key",
+                sign_count=1,
+                credential_device_type="multi_device",
+                credential_backed_up=True,
+            ),
+        ):
+            verified = admin_client.post(
+                "/api/auth/passkeys/register/verify",
+                headers=headers,
+                json={
+                    "challenge_token": options.json()["challenge_token"],
+                    "nickname": "Laptop",
+                    "credential": _fake_registration_credential(credential_id),
+                },
+            )
+        self.assertEqual(verified.status_code, 201, verified.text)
+
+        me = admin_client.get("/api/auth/me")
+        self.assertEqual(me.status_code, 200, me.text)
+        self.assertFalse(me.json()["mfa_setup_required"])
+        self.assertFalse(me.json()["mfa_authenticated"])
+
+        destructive = admin_client.post(
+            "/api/auth/revoke-all-sessions",
+            headers=headers,
+            json={"action_reason": "password-change-must-not-step-up"},
+        )
+        self.assertEqual(destructive.status_code, 403, destructive.text)
+        self.assertEqual(
+            destructive.json()["detail"],
+            "Platform-admin MFA or passkey authentication is required",
+        )
+
     def test_register_options_returns_required_user_verified_resident_key_options(self) -> None:
         self._create_test_user("options_passkey_user", "options-pass", "editor")
         client, headers = self._authenticated_client("options_passkey_user", "options-pass")
