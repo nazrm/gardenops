@@ -1,6 +1,6 @@
 # GardenOps Agent MCP Implementation Plan
 
-**Status:** roadmap retained; lean single-owner implementation selected
+**Status:** roadmap retained; unauthenticated-source bridge disabled
 
 **Specification:** `docs/openclaw-mcp-spec.md`
 
@@ -9,8 +9,13 @@ on a separate disabled agent-v1 MCP runtime
 
 ## 0. Current implementation decision
 
-The current deployment does not execute the multi-phase native-plugin roadmap
-below. To deliver broad useful coverage without duplicating GardenOps, it uses:
+The former lean stdio bridge is disabled. Its shared bearer and fixed account
+binding could authenticate the local process, but could not prove which Matrix
+room and sender caused an OpenClaw tool invocation. The bridge and its REST
+authorization path now fail closed until immutable connector-authenticated
+source provenance is supplied and checked on every request.
+
+The retained implementation consisted of:
 
 1. `gardenops.agent_mcp_stdio`, containing `garden_capabilities`,
    `garden_identify_plant`, `garden_read`, and `garden_write`;
