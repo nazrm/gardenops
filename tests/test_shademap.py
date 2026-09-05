@@ -61,6 +61,14 @@ def _complete_journey_fixture_env(artifact_dir: Path) -> dict[str, str]:
 
 
 class TestShademap(BaseApiTest):
+    def test_shademap_basemap_policy_is_scoped_to_enabled_feature(self) -> None:
+        from gardenops.main import _csp_policy
+
+        with patch.dict(os.environ, {"SHADEMAP_ENABLED": "true"}):
+            self.assertIn("https://*.tile.openstreetmap.org", _csp_policy())
+        with patch.dict(os.environ, {"SHADEMAP_ENABLED": "false"}):
+            self.assertNotIn("https://*.tile.openstreetmap.org", _csp_policy())
+
     def test_shademap_disabled_blocks_routes_and_network_before_provider_resolution(self) -> None:
         with (
             patch.dict(
