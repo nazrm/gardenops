@@ -1,6 +1,7 @@
 """Tests for scheduler-integrated automation: weather checks and task gen."""
 
 import unittest
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import gardenops.db as db
@@ -12,6 +13,12 @@ from gardenops.services.notification_service import (
     run_notification_maintenance_once,
 )
 from tests.base import DbTestBase
+
+
+def _current_month_context() -> tuple[int, int]:
+    now = datetime.fromtimestamp(db.current_timestamp_ms() / 1000, UTC)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return now.month, int(month_start.timestamp() * 1000)
 
 
 class TestWeatherCheckCooldown(DbTestBase):
@@ -192,18 +199,17 @@ class TestMonthlyTaskGen(DbTestBase):
         self.assertEqual(int(stale_open["count"]), 0)
 
     def test_monthly_task_gen_runs_once_per_month(self) -> None:
+        month, month_ms = _current_month_context()
         self._insert_plant(
             "WP1",
             "Thirsty Rose",
             care_watering="regular",
+            bloom_month=str(month),
         )
-        # Use a July timestamp so the water rule fires
-        # 2026-07-15 12:00:00 UTC
-        july_ms = 1784116800000
         result1 = _auto_generate_monthly_tasks(
             self.conn,
             self.garden_id,
-            july_ms,
+            month_ms,
             frozen_date="2026-07-15",
         )
         assert result1.get("tasks_created", 0) > 0
@@ -212,16 +218,18 @@ class TestMonthlyTaskGen(DbTestBase):
         result2 = _auto_generate_monthly_tasks(
             self.conn,
             self.garden_id,
-            july_ms + 1000,
+            month_ms + 1000,
             frozen_date="2026-07-15",
         )
         assert result2.get("tasks_skipped") is True
 
     def test_monthly_task_gen_creates_notification(self) -> None:
+        month, month_ms = _current_month_context()
         self._insert_plant(
             "WP2",
             "Water Me",
             care_watering="regular",
+            bloom_month=str(month),
         )
         # Ensure garden membership exists
         self.conn.execute(
@@ -259,11 +267,10 @@ class TestMonthlyTaskGen(DbTestBase):
         )
         self.conn.commit()
 
-        july_ms = 1784116800000
         result = _auto_generate_monthly_tasks(
             self.conn,
             self.garden_id,
-            july_ms,
+            month_ms,
             frozen_date="2026-07-15",
         )
         assert result.get("tasks_created", 0) > 0
