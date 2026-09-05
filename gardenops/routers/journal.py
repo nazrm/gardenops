@@ -246,13 +246,10 @@ def _load_links(
     return plant_map, plot_map, plot_detail_map
 
 
-def _serialize_entry(
-    row: dict,
-    plant_ids: list[str],
-    plot_ids: list[str],
-    plots: list[dict[str, object]] | None = None,
-) -> dict:
+def _entry_metadata(row: dict) -> dict:
     metadata_raw = row.get("metadata_json") or "{}"
+    if isinstance(metadata_raw, dict):
+        return dict(metadata_raw)
     try:
         metadata = json.loads(metadata_raw)
     except (
@@ -260,6 +257,16 @@ def _serialize_entry(
         TypeError,
     ):
         metadata = {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _serialize_entry(
+    row: dict,
+    plant_ids: list[str],
+    plot_ids: list[str],
+    plots: list[dict[str, object]] | None = None,
+) -> dict:
+    metadata = _entry_metadata(row)
     return {
         "id": str(row["public_id"]),
         "garden_id": int(row["garden_id"]),
@@ -316,6 +323,7 @@ def _apply_bloom_side_effects(
     occurred_on: str,
     plant_ids: list[str],
     plot_ids: list[str],
+    infer_single_plot: bool = True,
 ) -> None:
     if event_type != "bloomed" or not plant_ids:
         return
@@ -326,6 +334,7 @@ def _apply_bloom_side_effects(
         plant_ids=plant_ids,
         seen_date=occurred_on,
         plot_ids=plot_ids,
+        infer_single_plot=infer_single_plot,
     )
 
 
@@ -559,6 +568,8 @@ def update_journal_entry(
     previous_plant_map, previous_plot_map, _ = _load_links(db, [internal_id])
     previous_plant_ids = previous_plant_map.get(internal_id, [])
     previous_plot_ids = previous_plot_map.get(internal_id, [])
+    previous_metadata = _entry_metadata(existing_row)
+    previous_infer_single_plot = previous_metadata.get("observation_scope") != "explicit"
 
     updates = body.model_dump(exclude_unset=True)
     if not updates:
@@ -574,8 +585,12 @@ def update_journal_entry(
             set_clauses.append(f"{field} = %s")
             params.append(updates[field])
     if "metadata" in updates:
+        metadata = dict(updates["metadata"] or {})
+        # Older editors replace metadata without knowing the observation scope.
+        if "observation_scope" not in metadata and "observation_scope" in previous_metadata:
+            metadata["observation_scope"] = previous_metadata["observation_scope"]
         set_clauses.append("metadata_json = %s")
-        params.append(json.dumps(updates["metadata"], sort_keys=True, separators=(",", ":")))
+        params.append(json.dumps(metadata, sort_keys=True, separators=(",", ":")))
 
     set_clauses.append("updated_at_ms = %s")
     params.append(current_timestamp_ms())
@@ -607,8 +622,14 @@ def update_journal_entry(
         plant_ids_current = [str(r["plt_id"]) for r in existing_plants]
         _set_links(db, context, internal_id, plant_ids_current, plot_ids_val)
 
-    if any(field in updates for field in ("event_type", "occurred_on", "plant_ids", "plot_ids")):
+    if any(
+        field in updates
+        for field in ("event_type", "occurred_on", "plant_ids", "plot_ids", "metadata")
+    ):
         current_row = _fetch_entry(db, entry_id, garden_id)
+        current_infer_single_plot = (
+            _entry_metadata(current_row).get("observation_scope") != "explicit"
+        )
         current_plant_map, current_plot_map, _ = _load_links(db, [internal_id])
         current_plant_ids = current_plant_map.get(internal_id, [])
         current_plot_ids = current_plot_map.get(internal_id, [])
@@ -619,6 +640,7 @@ def update_journal_entry(
             or previous_occurred_on != str(current_row["occurred_on"])
             or set(previous_plant_ids) != set(current_plant_ids)
             or set(previous_plot_ids) != set(current_plot_ids)
+            or previous_infer_single_plot != current_infer_single_plot
         )
         if changed and previous_event_type == "bloomed":
             reconcile_seen_growing_after_bloom_change(
@@ -627,6 +649,7 @@ def update_journal_entry(
                 previous_plant_ids=previous_plant_ids,
                 previous_plot_ids=previous_plot_ids,
                 previous_seen_date=previous_occurred_on,
+                infer_single_plot=previous_infer_single_plot,
             )
         if changed:
             _apply_bloom_side_effects(
@@ -637,6 +660,7 @@ def update_journal_entry(
                 occurred_on=str(current_row["occurred_on"]),
                 plant_ids=current_plant_ids,
                 plot_ids=current_plot_ids,
+                infer_single_plot=current_infer_single_plot,
             )
 
     db.commit()
@@ -668,6 +692,7 @@ def delete_journal_entry(request: Request, db: DB, entry_id: str) -> dict:
             previous_plant_ids=previous_plant_ids,
             previous_plot_ids=previous_plot_ids,
             previous_seen_date=str(existing_row["occurred_on"]),
+            infer_single_plot=_entry_metadata(existing_row).get("observation_scope") != "explicit",
         )
     db.commit()
     drain_media_cleanup_jobs_best_effort(db, storage_pairs=media_storage_pairs)

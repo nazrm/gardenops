@@ -260,6 +260,8 @@ export function renderTaskQuickComplete(
   onBack: () => void,
   dataState: QuickActionDataState = "live",
 ): void {
+  const previousQuery = container.querySelector<HTMLInputElement>(".quick-action-task-search")?.value;
+  const previousScroll = container.scrollTop;
   container.replaceChildren();
 
   const header = document.createElement("div");
@@ -290,6 +292,18 @@ export function renderTaskQuickComplete(
   }
 
   appendTaskPicker(container, tasks, onComplete);
+  restoreTaskPicker(container, previousQuery, previousScroll);
+}
+
+function restoreTaskPicker(container: HTMLElement, query: string | undefined, scrollTop: number): void {
+  if (query === undefined) return;
+  const search = container.querySelector<HTMLInputElement>(".quick-action-task-search");
+  if (search) {
+    search.value = query;
+    search.dispatchEvent(new Event("input"));
+    search.focus({ preventScroll: true });
+  }
+  container.scrollTop = scrollTop;
 }
 
 export function renderTaskQuickSnooze(
@@ -300,6 +314,8 @@ export function renderTaskQuickSnooze(
   onBack: () => void,
   dataState: QuickActionDataState = "live",
 ): void {
+  const previousQuery = container.querySelector<HTMLInputElement>(".quick-action-task-search")?.value;
+  const previousScroll = container.scrollTop;
   container.replaceChildren();
 
   const header = document.createElement("div");
@@ -333,4 +349,5 @@ export function renderTaskQuickSnooze(
     label: t("tasks.snooze_change_date") as string,
     onSelect: onSnoozeDate,
   });
+  restoreTaskPicker(container, previousQuery, previousScroll);
 }

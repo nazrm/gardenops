@@ -1,5 +1,8 @@
 import "./core/trustedTypes"; // Must stay first — documents that no permissive default policy is installed
 import "./style.css";
+import { showPlantSummary, closePlantSummary } from "./components/plantSummary";
+import { clearJournalDrafts } from "./services/journalDraft";
+import { setOfflineQueueIdentity } from "./services/offlineQueue";
 import type { CameraController } from "./components/camera";
 import { initCamera } from "./components/camera";
 import { clearPlantsMobileCards, clearPlantsTableBody, filterPlants, renderPlantsMobileCards, renderPlantsTableBody, renderPlantsTableHead, sortPlants, syncPlantsSelectionState } from "./components/dataTables";
@@ -189,7 +192,7 @@ import {
   removePlantFromPlotApi,
   updatePlotApi,
   reauthenticateApi,
-  setActiveGardenContext,
+  setActiveGardenContext as setApiGardenContext,
   setOnAuthExpired,
   updateAuthMeSettingsApi,
   updateMapObjectApi,
@@ -206,6 +209,7 @@ import {
   uploadMediaApi,
   fetchSeasonalSummary,
   fetchIssueApi,
+  fetchJournalEntryApi,
   fetchPlotAlertsApi,
   dismissPasskeyPromptApi,
   finishPasskeyReauthenticationApi,
@@ -441,6 +445,7 @@ function loadSubMode(): SubMode {
 
 let activeTab: AppTab = loadActiveTab();
 let subMode: SubMode = loadSubMode();
+let experienceGeneration = 0;
 const MAP_LAYERS_COLLAPSED_STORAGE_KEY = "gardenops-map-layers-collapsed";
 
 function normalizeNavigation(tab: AppTab, mode: SubMode): { tab: AppTab; subMode: SubMode } {
@@ -1112,7 +1117,6 @@ function setMobileMapSheetOpen(sheetId: MobileMapSheetId | null): void {
   } else if (previouslyOpen) {
     restoreMobileMapSheetFocus();
   }
-  requestAnimationFrame(() => cameraCtrl?.fitAll());
 }
 
 function setMapLayersCollapsed(collapsed: boolean, persist = true): void {
@@ -1297,7 +1301,10 @@ async function openPlantMovePicker(
 function openPlantPlacePicker(plant: Plant): void {
   if (!plant.can_assign || !ensureWriteAccess()) return;
   const destinations = plantLocationDestinations(plant);
-  if (destinations.length === 0) return;
+  if (destinations.length === 0) {
+    showToast(t("experience.no_eligible_location"), "error");
+    return;
+  }
   openPlantLocationPicker({
     mode: "place",
     plant,
@@ -1311,11 +1318,59 @@ function openPlantPlacePicker(plant: Plant): void {
 }
 
 function openContainerLocation(plotId: string, trigger: HTMLElement): void {
-  if (isMobile()) {
-    void selectPlot(state, plotId, plotCbs, trigger);
-    return;
-  }
-  void openDrawerForPlot(state, plotId, plotCbs);
+  void openLocation(plotId, trigger).catch(showFetchError);
+}
+
+async function openLocation(plotId: string, trigger?: HTMLElement): Promise<void> {
+  setActiveTab("map");
+  const container = state.mapObjectContainers.find((item) => item.plot_id === plotId)
+    ?? state.mapObjects.flatMap((area) => area.containers).find((item) => item.plot_id === plotId);
+  if (container?.parent_map_object_public_id) selectMapObject(container.parent_map_object_public_id);
+  await selectPlot(state, plotId, plotCbs, trigger);
+}
+
+function suspendMapDetails(): void {
+  dismissPopover();
+  dismissDrawer();
+  dismissBottomSheet();
+  setMobileMapSheetOpen(null);
+}
+
+function openPlantSummary(plant: Plant, plotId?: string): void {
+  const originGarden = getActiveGardenContext();
+  const originFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  suspendMapDetails();
+  showPlantSummary({
+    plant, plots: state.plots, canWrite: canWriteInGarden,
+    getLocationLabel: (id) => plotCbs.getPlotLabel?.(id) ?? id,
+    onLocation: (id) => void openLocation(id).catch(showFetchError),
+    onHistory: (onReturn) => void openPlantHistory(plant.plt_id, onReturn),
+    onEdit: () => openEditPlantDialog(plant),
+    onPlace: () => openPlantPlacePicker(plant),
+    onRecord: () => void openJournalComposer({ plantIds: [plant.plt_id], plotIds: plotId ? [plotId] : [] }).catch(showFetchError),
+    onReportIssue: () => void openContextualIssue({ plantIds: [plant.plt_id], plotIds: plotId ? [plotId] : [] }).catch(showFetchError),
+    onClose: () => {
+      if (originGarden !== getActiveGardenContext()) return;
+      if (originFocus?.isConnected) originFocus.focus();
+      else focusMapLocation(plotId);
+    },
+  });
+}
+
+async function openPlantHistory(plantId: string, onReturn?: () => void): Promise<void> {
+  const gardenId = getActiveGardenContext();
+  const generation = experienceGeneration;
+  const originTab = activeTab;
+  const originMode = subMode;
+  suspendMapDetails();
+  const mod = await ensureJournalTabInitialized();
+  if (gardenId !== getActiveGardenContext() || generation !== experienceGeneration) return;
+  mod.openJournalHistory({ plantId }, () => {
+    if (gardenId !== getActiveGardenContext() || generation !== experienceGeneration) return;
+    if (isPrimaryContentTab(originTab)) setSubMode(originMode);
+    else setActiveTab(originTab);
+    onReturn?.();
+  });
 }
 
 const plotCbs: PlotCallbacks = {
@@ -1325,12 +1380,24 @@ const plotCbs: PlotCallbacks = {
   canWrite: () => canWriteInGarden,
   deletePlot,
   onEditPlant: (plant) => openEditPlantDialog(plant),
+  onInspectPlant: openPlantSummary,
+  onViewPlantHistory: (plantId) => void openPlantHistory(plantId),
+  onRecordObservation: (plotId) => {
+    suspendMapDetails();
+    void openJournalComposer({ plotIds: [plotId] }).catch(showFetchError);
+  },
+  onReportIssue: (plotId) => {
+    suspendMapDetails();
+    void openContextualIssue({ plotIds: [plotId] }).catch(showFetchError);
+  },
   onMovePlant: (plant, sourcePlotId) => {
     void openPlantMovePicker(plant, sourcePlotId).catch(showFetchError);
   },
   getPlotLabel: (plotId) => {
     const plot = state.plots.find((candidate) => candidate.plot_id === plotId);
-    return plot ? plotDisplayLabel(plot) : t("map.unnamed_location");
+    const container = state.mapObjectContainers.find((item) => item.plot_id === plotId)
+      ?? state.mapObjects.flatMap((area) => area.containers).find((item) => item.plot_id === plotId);
+    return plot ? plotDisplayLabel(plot) : container?.display_name || plotId;
   },
   onEditPlot: (plotId) => openEditPlotDialog(plotId),
   onPlantAssignmentsChanged: async (pltIds) => {
@@ -1350,11 +1417,14 @@ const plotCbs: PlotCallbacks = {
     shadePanel?.setSelectedPlot(plotId);
   },
   onViewJournal: (plotId) => {
-    navigateToSubMode("journal");
-    void ensureJournalTabInitialized().then(async (journalTab) => {
-      journalTab.resetJournalFilters();
-      journalTab.setJournalOffset(0);
-      await journalTab.loadJournalEntries({ plot_id: plotId });
+    const gardenId = getActiveGardenContext();
+    const generation = experienceGeneration;
+    suspendMapDetails();
+    void ensureJournalTabInitialized().then((journalTab) => {
+      if (gardenId !== getActiveGardenContext() || generation !== experienceGeneration) return;
+      journalTab.openJournalHistory({ plotId, label: plotCbs.getPlotLabel?.(plotId) ?? plotId }, () => {
+        void openLocation(plotId).catch(showFetchError);
+      });
     });
   },
   onMediaTargetsChanged: (targets) => {
@@ -1487,13 +1557,22 @@ const appContext: AppContext = {
   clearPlantSelection,
   downloadJsonFile,
   confirmDialog,
-  selectPlot: (plotId) => selectPlot(state, plotId, plotCbs),
+  selectPlot: (plotId) => openLocation(plotId),
+  openPlantSummary,
+  openPlantHistory,
+  openStockPlanting: async (item, plotId, onSaved, modalParent) => {
+    const gardenId = getActiveGardenContext();
+    const generation = experienceGeneration;
+    const mod = await ensureInventoryTabInitialized();
+    if (gardenId !== getActiveGardenContext() || generation !== experienceGeneration || !modalParent.isConnected) return;
+    mod.openStockPlanting(item, plotId, onSaved, modalParent);
+  },
   focusPlantsInPlantsView,
   openMapForPlots,
   openBatchJournalForPlants,
   openTaskForm: (task) => openTaskForm(task),
   openHarvestForm: (entry) => openHarvestForm(entry),
-  openJournalComposer: () => openJournalComposer(),
+  openJournalComposer: (prefill) => openJournalComposer(prefill),
   openIssueForm: (issue) => openIssueForm(issue),
   openCalendarEventComposer: (prefill) => openCalendarEventComposer(prefill),
   loadTasks: () => loadTasksTab(),
@@ -1688,9 +1767,21 @@ function renderJournalView(): void {
   journalTabModule?.renderJournalView();
 }
 
-async function openJournalComposer(): Promise<void> {
+async function openJournalComposer(prefill: { plantIds?: string[]; plotIds?: string[] } = {}): Promise<void> {
+  const gardenId = getActiveGardenContext();
+  const generation = experienceGeneration;
+  const focus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const origin = focus?.closest(".modal");
   const mod = await ensureJournalTabInitialized();
-  mod.openJournalComposer();
+  if (gardenId !== getActiveGardenContext() || generation !== experienceGeneration || (origin && !origin.isConnected)) return;
+  await mod.openJournalComposer(undefined, {
+    ...prefill,
+    onClose: () => {
+      if (gardenId !== getActiveGardenContext()) return;
+      if (focus?.isConnected && focus !== document.body) focus.focus();
+      else focusMapLocation(prefill.plotIds?.[0]);
+    },
+  });
 }
 
 async function openBatchJournalComposer(pltIds: string[], onClose: () => void): Promise<void> {
@@ -1860,6 +1951,34 @@ async function openHarvestForm(existingEntry?: HarvestEntry): Promise<void> {
 async function openIssueForm(existingIssue?: GardenIssue): Promise<void> {
   const mod = await ensureIssuesTabInitialized();
   mod.openIssueForm(existingIssue);
+}
+
+async function openContextualIssue(prefill: { plantIds?: string[]; plotIds?: string[] }): Promise<void> {
+  const gardenId = getActiveGardenContext();
+  const generation = experienceGeneration;
+  const focus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const origin = focus?.closest(".modal");
+  const mod = await ensureIssuesTabInitialized();
+  if (gardenId !== getActiveGardenContext() || generation !== experienceGeneration || (origin && !origin.isConnected)) return;
+  await ensurePlantsCacheLoaded();
+  if (gardenId !== getActiveGardenContext() || generation !== experienceGeneration || (origin && !origin.isConnected)) return;
+  mod.openIssueForm(undefined, {
+    ...prefill,
+    onClose: () => {
+      if (gardenId !== getActiveGardenContext()) return;
+      if (focus?.isConnected && focus !== document.body) focus.focus();
+      else focusMapLocation(prefill.plotIds?.[0]);
+    },
+  });
+}
+
+function focusMapLocation(plotId?: string): void {
+  if (activeTab !== "map") return;
+  const marker = [...document.querySelectorAll<HTMLElement>("[data-plot-id], [data-container-plot-id]")]
+    .find((el) => el.dataset["plotId"] === plotId || el.dataset["containerPlotId"] === plotId);
+  const target = marker ?? document.getElementById("map-viewport");
+  if (target && !target.hasAttribute("tabindex")) target.tabIndex = -1;
+  target?.focus({ preventScroll: true });
 }
 
 const attachIssueHistorySection: AttachIssueHistorySectionFn = (
@@ -2223,10 +2342,9 @@ function openMapForPlots(plotIds: string[]): void {
   setActiveTab("map");
   renderPlots();
   if (plotIds.length > 0) {
-    const firstExisting = plotIds.find((plotId) => state.plots.some((plot) => plot.plot_id === plotId));
-    if (firstExisting) {
-      void selectPlot(state, firstExisting, plotCbs);
-    }
+    void openLocation(plotIds[0]!).catch(showFetchError);
+  } else {
+    showToast(t("experience.no_current_location"), "error");
   }
 }
 
@@ -2630,7 +2748,11 @@ function setupLayout(): void {
   });
 
   document.querySelectorAll<HTMLInputElement>(".global-search-input").forEach((input) => {
-    input.addEventListener("input", () => handleGlobalSearch(state, renderPlots, input, () => setActiveTab("map")));
+    input.addEventListener("input", () => handleGlobalSearch(state, renderPlots, input, undefined, {
+      onPlant: (plant) => openPlantSummary(plant),
+      onLocation: (plotId) => void openLocation(plotId).catch(showFetchError),
+      onArea: (areaId) => { setActiveTab("map"); selectMapObject(areaId); showSelectedAreaDetails(); },
+    }));
     input.addEventListener("keydown", (e) => handleSearchKeydown(state, e, renderPlots, input));
   });
   initThemeFeature();
@@ -3150,10 +3272,14 @@ function applyNavigationState(opts: { triggerLoads?: boolean } = {}): void {
   }
 }
 
+const rememberedSubModes = new Map<AppTab, SubMode>();
+
 function setActiveTab(tab: AppTab): void {
+  if (isPrimaryContentTab(activeTab)) rememberedSubModes.set(activeTab, subMode);
   activeTab = tab;
-  if (isPrimaryContentTab(tab) && parentTabForSubMode(subMode) !== tab) {
-    subMode = defaultSubModeForTab(tab);
+  if (isPrimaryContentTab(tab)) {
+    const remembered = rememberedSubModes.get(tab);
+    subMode = remembered && isSubModeEnabled(remembered) ? remembered : defaultSubModeForTab(tab);
   }
   applyNavigationState();
 }
@@ -3162,8 +3288,10 @@ function setSubMode(
   mode: SubMode,
   opts: { triggerLoads?: boolean } = {},
 ): void {
+  if (isPrimaryContentTab(activeTab)) rememberedSubModes.set(activeTab, subMode);
   activeTab = parentTabForSubMode(mode);
   subMode = mode;
+  rememberedSubModes.set(activeTab, mode);
   applyNavigationState(opts);
   const scrollContainer = activeTab === "insights"
     ? document.getElementById(SUB_MODE_META[subMode].rootViewId ?? "")
@@ -3183,6 +3311,16 @@ function navigateToSubMode(
 // ── Data fetching ──────────────────────────────────────────
 function isCurrentGardenRequest(gardenId: number | null): boolean {
   return getActiveGardenContext() === gardenId;
+}
+
+function setActiveGardenContext(gardenId: number | null): void {
+  experienceGeneration += 1;
+  if (getActiveGardenContext() !== gardenId) {
+    rememberedSubModes.clear();
+    closePlantSummary();
+  }
+  setApiGardenContext(gardenId);
+  setOfflineQueueIdentity(authProfile?.username ?? null);
 }
 
 interface MapFetchOptions {
@@ -3441,6 +3579,7 @@ function firstMapObjectPlacement(): MapObject["geometry"] | null {
 }
 
 function renderMapObjectsPanelView(): void {
+  renderSelectedAreaDetailsAction();
   renderMapObjectsPanel({
     container: document.getElementById("map-objects-panel"),
     objects: state.mapObjects,
@@ -4461,9 +4600,9 @@ function renderPlantsTable(): void {
     plotAssignmentMeanings: authProfile?.plot_assignment_meanings ?? [],
     mediaPreviewByPlantId: plantMediaPreviewById,
     onOpenPlot: (plotId: string) => {
-      setActiveTab("map");
-      void selectPlot(state, plotId, plotCbs);
+      void openLocation(plotId).catch(showFetchError);
     },
+    onInspect: (plant: Plant) => openPlantSummary(plant),
     onEdit: (plant: Plant) => openEditPlantDialog(plant),
     onPlace: (plant: Plant) => openPlantPlacePicker(plant),
     onToggleSelect: (pltId: string) => togglePlantSelection(pltId),
@@ -5561,6 +5700,29 @@ function selectMapObject(publicId: string | null): void {
     return;
   }
   renderMapObjectsPanelView();
+}
+
+function showSelectedAreaDetails(): void {
+  setMapLayersCollapsed(false, false);
+  const layers = document.getElementById("map-layers-panel");
+  if (layers) layers.hidden = false;
+  if (isMobile()) setMobileMapSheetOpen("map-layers-panel");
+  const detail = document.querySelector<HTMLElement>("#map-objects-panel .map-object-detail");
+  detail?.scrollIntoView({ block: "nearest" });
+  detail?.focus({ preventScroll: true });
+}
+
+function renderSelectedAreaDetailsAction(): void {
+  document.getElementById("selected-area-details")?.remove();
+  const area = state.mapObjects.find((item) => item.public_id === state.selectedMapObjectId);
+  if (!area) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "selected-area-details";
+  button.className = "selected-area-details";
+  button.textContent = t("experience.area_details", { name: area.name || area.public_id });
+  button.addEventListener("click", showSelectedAreaDetails);
+  document.getElementById("map-status-slot")?.append(button);
 }
 
 function selectPlotRangeInPlace(endPlotId: string): void {
@@ -6754,28 +6916,10 @@ function openEditPlantDialog(plant: Plant): void {
       return refreshed.get(pltId) ?? null;
     },
     onDelete: (pltId) => void handleDeletePlant(pltId),
+    onViewHistory: () => void openPlantHistory(plant.plt_id, () => openEditPlantDialog(plant)),
+    onRecordObservation: () => void openJournalComposer({ plantIds: [plant.plt_id], plotIds: [] }).catch(showFetchError),
     onReportIssue: (pltId) => {
-      const p = state.plantsCache.find((pl) => pl.plt_id === pltId);
-      const pName = p ? p.name : pltId;
-      const plotIds = p?.plot_ids ?? [];
-      showDiagnosePlantModalLazy(pltId, plotIds, pName, {
-        onIssueCreated: (issueId) => {
-          navigateToSubMode("issues");
-          void loadIssues();
-          void fetchIssueApi(issueId).then(
-            (issue) => {
-              showToast(t("diagnose.issue_created"), "success");
-              void import("./tabs/issuesTab").then((mod) =>
-                mod.openIssueForm(issue),
-              );
-            },
-            () => {
-              showToast(t("diagnose.issue_created"), "success");
-            },
-          );
-        },
-        onClose: () => {},
-      });
+      void openContextualIssue({ plantIds: [pltId], plotIds: [] }).catch(showFetchError);
     },
   });
 }
@@ -7457,6 +7601,8 @@ async function refreshGardenContext(options?: {
   ) return;
 
   authProfile = me;
+  experienceGeneration += 1;
+  setOfflineQueueIdentity(me.username);
   setFeatureGates(me.subscription_tier ?? "home", me.allowed_features ?? []);
   applyFeatureGateUi();
   showSecurityWarnings(me);
@@ -7654,6 +7800,9 @@ function resetMapLayoutForGardenSwitch(): void {
 }
 
 function clearGardenScopedStateForSwitch(): void {
+  setOfflineQueueIdentity(authProfile?.username ?? null);
+  rememberedSubModes.clear();
+  closePlantSummary();
   mapRefreshVersion += 1;
   weatherCacheRequestVersion += 1;
   weatherMutationRefreshVersion += 1;
@@ -7758,6 +7907,7 @@ function refreshDataAfterAuthChange(): void {
 }
 
 async function showAuthGateFromCurrentStatus(): Promise<void> {
+  await requireOfflineQueueClear();
   try {
     const status = await getAuthStatusApi();
     releaseOfflineClearRecoveryGate();
@@ -7812,9 +7962,17 @@ async function requireOfflineQueueClear(
   initialAttempt: Promise<void> | null = null,
 ): Promise<void> {
   document.getElementById("app")?.setAttribute("inert", "");
+  experienceGeneration += 1;
+  setOfflineQueueIdentity(null);
+  resetGlobalSearchForGardenSwitch();
+  rememberedSubModes.clear();
+  closePlantSummary();
+  journalTabModule?.resetJournalForGardenSwitch();
+  issuesTabModule?.resetIssuesForGardenSwitch();
   let attempt = initialAttempt;
   while (true) {
     try {
+      clearJournalDrafts();
       await (attempt ?? clearOfflineQueue());
       return;
     } catch {
@@ -7908,6 +8066,7 @@ function isInInput(): boolean {
 }
 
 window.addEventListener("keydown", (e) => {
+  if (document.querySelector(".modal[aria-modal='true']")) return;
   if (gardenSwitchPending) {
     e.preventDefault();
     return;
@@ -7999,39 +8158,47 @@ async function bootstrapApp(): Promise<void> {
   setOnAuthExpired(handleAuthExpired);
 
   // Always check authentication before showing any UI.
-  // If /api/auth/me fails for any reason, show the login gate.
+  // A transport failure does not establish that the previous session expired.
   let bootstrapRequired = false;
   let passkeysEnabled = false;
   let initialMe: AuthUserProfile | null = null;
   let clearOfflineBeforeAuthGate = false;
   let authGateRequired = false;
-  try {
-    initialMe = takePrimedAuthProfile();
-    if (!initialMe) {
-      initialMe = await getAuthMeApi();
-    }
-    setFeatureGates(initialMe.subscription_tier ?? "home", initialMe.allowed_features ?? []);
-    clearPrimedInviteToken();
-    if (initialMe.language && initialMe.language !== getLocale()) {
-      setLocale(initialMe.language);
-    }
-    if (initialMe.must_change_password) {
-      await showForcedPasswordChangeGate(initialMe.username);
-      initialMe = await getAuthMeApi();
-      setFeatureGates(initialMe.subscription_tier ?? "home", initialMe.allowed_features ?? []);
-    }
-  } catch (err) {
-    authGateRequired = true;
-    clearOfflineBeforeAuthGate = isAuthApiError(err);
-    if (err instanceof ApiError && err.status === 503) {
-      showSecurityWarningBanner(err.message);
-    }
+  while (true) {
     try {
-      const status = await getAuthStatusApi();
-      bootstrapRequired = status.bootstrap_required;
-      passkeysEnabled = status.passkeys_enabled;
-    } catch {
-      // can't reach status either — gate will show the real error on submit
+      initialMe = takePrimedAuthProfile();
+      if (!initialMe) {
+        initialMe = await getAuthMeApi();
+      }
+      setFeatureGates(initialMe.subscription_tier ?? "home", initialMe.allowed_features ?? []);
+      clearPrimedInviteToken();
+      if (initialMe.language && initialMe.language !== getLocale()) {
+        setLocale(initialMe.language);
+      }
+      if (initialMe.must_change_password) {
+        await showForcedPasswordChangeGate(initialMe.username);
+        initialMe = await getAuthMeApi();
+        setFeatureGates(initialMe.subscription_tier ?? "home", initialMe.allowed_features ?? []);
+      }
+      break;
+    } catch (err) {
+      if (!isAuthApiError(err)) {
+        if (err instanceof ApiError && err.status === 503) {
+          showSecurityWarningBanner(err.message);
+        }
+        await waitForBootstrapAuthRetry(getApiErrorMessage(err));
+        continue;
+      }
+      authGateRequired = true;
+      clearOfflineBeforeAuthGate = isAuthApiError(err);
+      try {
+        const status = await getAuthStatusApi();
+        bootstrapRequired = status.bootstrap_required;
+        passkeysEnabled = status.passkeys_enabled;
+      } catch {
+        // Authentication was rejected; status failure must not bypass cleanup.
+      }
+      break;
     }
   }
 
@@ -8050,6 +8217,28 @@ async function bootstrapApp(): Promise<void> {
   }, {
     canManageDrafts: () => canWriteInGarden,
     onSyncComplete: refreshAfterOfflineSync,
+    onJournalEntrySaved: async (_entryId, gardenId) => {
+      if (gardenId !== getActiveGardenContext()) return;
+      try {
+        await Promise.all([loadJournalEntries(), fetchPlots()]);
+      } catch (error) {
+        if (gardenId === getActiveGardenContext()) showFetchError(error);
+      }
+    },
+    onOpenSavedJournalEntry: async (entryId, gardenId) => {
+      if (gardenId !== getActiveGardenContext()) {
+        showToast(t("experience.location_unavailable"), "error");
+        return;
+      }
+      const identity = authProfile?.username;
+      const entry = await fetchJournalEntryApi(String(entryId));
+      if (gardenId !== getActiveGardenContext() || identity !== authProfile?.username) return;
+      const journal = await ensureJournalTabInitialized();
+      if (gardenId !== getActiveGardenContext() || identity !== authProfile?.username) return;
+      suspendMapDetails();
+      if (canWriteInGarden) await journal.openJournalComposer(entry);
+      else journal.openJournalHistory(entry.plant_ids[0] ? { plantId: entry.plant_ids[0] } : {});
+    },
   });
   await refreshGardenContext({ profile: initialMe });
   if (isAdminMfaSetupRequired()) {
@@ -8087,6 +8276,36 @@ async function bootstrapApp(): Promise<void> {
   if (activeTab === "map" && shouldLoadShadeMapPanelNow()) {
     await ensureShadeMapPanelLoaded();
   }
+}
+
+function waitForBootstrapAuthRetry(message: string): Promise<void> {
+  setOfflineQueueIdentity(null);
+  return new Promise((resolve) => {
+    const app = document.getElementById("app");
+    app?.setAttribute("inert", "");
+    document.body.classList.add("auth-gate-active");
+    const gate = document.createElement("div");
+    gate.className = "auth-gate";
+    gate.id = "auth-verification-retry";
+    const card = document.createElement("div");
+    card.className = "auth-gate-card";
+    const error = document.createElement("p");
+    error.setAttribute("role", "alert");
+    error.textContent = message;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = t("common.retry");
+    retry.addEventListener("click", () => {
+      gate.remove();
+      app?.removeAttribute("inert");
+      document.body.classList.remove("auth-gate-active");
+      resolve();
+    }, { once: true });
+    card.append(error, retry);
+    gate.append(card);
+    document.body.prepend(gate);
+    retry.focus();
+  });
 }
 
 async function checkOnboardingNeeded(): Promise<boolean> {

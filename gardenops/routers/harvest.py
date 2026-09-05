@@ -48,7 +48,6 @@ from gardenops.security import AuthContext
 from gardenops.services.automation import reconcile_harvest_rollups
 from gardenops.services.domain_commands import create_harvest_entry_command
 from gardenops.services.media_store import drain_media_cleanup_jobs_best_effort
-from gardenops.sql_dates import month_number_sql
 
 router = APIRouter()
 
@@ -424,7 +423,7 @@ def _delete_linked_journal_entry(
 def harvest_summary(
     request: Request,
     db: DB,
-    year: int | None = Query(default=None),
+    year: int | None = Query(default=None, ge=1, le=9999),
     quality: str | None = Query(default=None),
     date_from: str | None = Query(default=None),
     date_to: str | None = Query(default=None),
@@ -432,15 +431,12 @@ def harvest_summary(
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
     target_year = year if year is not None else date.today().year
-    month_expr = month_number_sql("occurred_on")
-
     conditions = ["garden_id = %s"]
     params: list[object] = [garden_id]
-    year_start = f"{target_year}-01-01"
-    year_end = f"{target_year}-12-31"
-    conditions.append("occurred_on >= %s")
-    conditions.append("occurred_on <= %s")
-    params.extend([year_start, year_end])
+    explicit_dates = bool(date_from or date_to)
+    if not explicit_dates:
+        date_from = f"{target_year:04d}-01-01"
+        date_to = f"{target_year:04d}-12-31"
     if quality:
         conditions.append("quality = %s")
         params.append(quality)
@@ -453,6 +449,15 @@ def harvest_summary(
         conditions.append("occurred_on <= %s")
         params.append(date_to)
     where = " AND ".join(conditions)
+    # A quantity linked to several plants or places cannot be allocated to one.
+    shared_expr = """(
+        (SELECT COUNT(*) FROM harvest_entry_plants WHERE entry_id = he.id) > 1
+        OR (SELECT COUNT(*) FROM harvest_entry_plots WHERE entry_id = he.id) > 1
+    )"""
+    shared_sums = f"""
+        SUM(CASE WHEN {shared_expr} THEN he.quantity ELSE 0 END) AS shared_qty,
+        COUNT(*) FILTER (WHERE {shared_expr}) AS shared_entries
+    """
 
     total_row = db.execute(
         f"""
@@ -469,13 +474,13 @@ def harvest_summary(
         f"""
         SELECT hep.plt_id, p.name, he.unit,
                SUM(he.quantity) AS total_qty,
-               COUNT(*) AS entries
+               COUNT(*) AS entries, {shared_sums}
         FROM harvest_entries he
         JOIN harvest_entry_plants hep ON hep.entry_id = he.id
         LEFT JOIN plants p ON p.plt_id = hep.plt_id
         WHERE {where.replace("garden_id", "he.garden_id", 1)}
         GROUP BY hep.plt_id, p.name, he.unit
-        ORDER BY total_qty DESC
+        ORDER BY p.name, hep.plt_id, he.unit
         """,
         params,
     ).fetchall()
@@ -486,6 +491,8 @@ def harvest_summary(
             "total_qty": float(r["total_qty"]),
             "unit": str(r["unit"]),
             "entries": int(r["entries"]),
+            "shared_qty": float(r["shared_qty"]),
+            "shared_entries": int(r["shared_entries"]),
         }
         for r in by_plant_rows
     ]
@@ -493,23 +500,47 @@ def harvest_summary(
     # By month
     by_month_rows = db.execute(
         f"""
-        SELECT {month_expr} AS month,
-               SUM(quantity) AS total_qty,
-               COUNT(*) AS entries
-        FROM harvest_entries
-        WHERE {where}
-        GROUP BY month
-        ORDER BY month
+        SELECT SUBSTRING(he.occurred_on::text, 1, 7) AS month, he.unit,
+               SUM(he.quantity) AS total_qty,
+               COUNT(*) AS entries, {shared_sums}
+        FROM harvest_entries he
+        WHERE {where.replace("garden_id", "he.garden_id", 1)}
+        GROUP BY month, he.unit
+        ORDER BY month, he.unit
         """,
         params,
     ).fetchall()
     by_month = [
         {
-            "month": int(r["month"]),
+            "month": str(r["month"]),
+            "unit": str(r["unit"]),
             "total_qty": float(r["total_qty"]),
             "entries": int(r["entries"]),
+            "shared_qty": float(r["shared_qty"]),
+            "shared_entries": int(r["shared_entries"]),
         }
         for r in by_month_rows
+    ]
+
+    unit_rows = db.execute(
+        f"""
+        SELECT he.unit, SUM(he.quantity) AS total_qty,
+               COUNT(*) AS entries, {shared_sums}
+        FROM harvest_entries he
+        WHERE {where.replace("garden_id", "he.garden_id", 1)}
+        GROUP BY he.unit ORDER BY he.unit
+        """,
+        params,
+    ).fetchall()
+    by_unit = [
+        {
+            "unit": str(r["unit"]),
+            "total_qty": float(r["total_qty"]),
+            "entries": int(r["entries"]),
+            "shared_qty": float(r["shared_qty"]),
+            "shared_entries": int(r["shared_entries"]),
+        }
+        for r in unit_rows
     ]
 
     # By quality
@@ -527,8 +558,11 @@ def harvest_summary(
         by_quality[str(r["quality"])] = int(r["c"])
 
     return {
-        "year": target_year,
+        "year": None if explicit_dates else target_year,
+        "date_from": date_from,
+        "date_to": date_to,
         "total_entries": total_entries,
+        "by_unit": by_unit,
         "by_plant": by_plant,
         "by_month": by_month,
         "by_quality": by_quality,

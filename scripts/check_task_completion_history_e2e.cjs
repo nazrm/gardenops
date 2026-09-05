@@ -245,6 +245,10 @@ async function main() {
     });
     await waitVisible(notSeenButton, "negative bloom outcome");
     await notSeenButton.click();
+    const seasonConfirmation = bloomOutcomeDialog.locator(".task-season-closure input");
+    await waitVisible(seasonConfirmation, "explicit season closure confirmation");
+    await seasonConfirmation.check();
+    await notSeenButton.click();
     await waitHidden(bloomOutcomeDialog, "bloom outcome dialog after submit");
     await waitHidden(bloomNotSeenCard, "completed bloom not-seen task card");
 

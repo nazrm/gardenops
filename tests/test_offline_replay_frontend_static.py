@@ -26,7 +26,7 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
             "export function transitionDraftAfterReplayError", 1
         )[0]
         self.assertIn("TERMINAL_REPLAY_STATUSES.has(status)", classifier)
-        self.assertIn("new Set([400, 403, 409, 410, 413, 422])", source)
+        self.assertIn("new Set([400, 403, 404, 409, 410, 413, 422])", source)
         self.assertIn("status === 408", source)
         self.assertIn("status === 425", source)
         self.assertIn("status === 429", source)
@@ -91,7 +91,7 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertGreaterEqual(feature.count("operationId: draft.operation_id"), 7)
         self.assertIn("uploadOfflineAttachments", feature)
         self.assertIn("operationId: operationIds[index]!", feature)
-        self.assertEqual(feature.count("operationIds: attachmentOperationIds"), 2)
+        self.assertEqual(feature.count("operationIds: [operationIds[index]!],"), 2)
         self.assertIn("uploadOptions.operationId = options.operationIds[i]!", app)
         self.assertIn("OFFLINE_OPERATION_ID_HEADER", api)
         self.assertIn("mergedHeaders.set(OFFLINE_OPERATION_ID_HEADER, options.operationId)", api)
@@ -256,10 +256,14 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         clear = queue.split("async function runOfflineQueueClear", 1)[1].split(
             "export function classifyReplayError", 1
         )[0]
-        self.assertIn('db!.transaction(STORE_NAME, "readwrite")', clear)
-        self.assertIn("transaction.oncomplete = () => resolve()", clear)
-        self.assertIn("transaction.onerror", clear)
-        self.assertIn("transaction.onabort", clear)
+        self.assertIn("await deleteQueueRows((draft) => !isQuarantinedDraft(draft))", clear)
+        deletion = queue.split("function deleteQueueRows", 1)[1].split(
+            "export async function retryDraft", 1
+        )[0]
+        self.assertIn('db!.transaction(STORE_NAME, "readwrite")', deletion)
+        self.assertIn("transaction.oncomplete = () => resolve()", deletion)
+        self.assertIn("transaction.onerror", deletion)
+        self.assertIn("transaction.onabort", deletion)
         self.assertIn("const syncToDrain = activeSync", clear)
         self.assertIn("async function requireOfflineQueueClear", app)
         self.assertIn("await waitForOfflineClearRetry()", app)
@@ -267,9 +271,110 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn('document.getElementById("app")?.setAttribute("inert", "")', app)
         self.assertIn("await requireOfflineQueueClear();\n    await completeSignedOutState();", app)
         self.assertIn("clearOfflineBeforeAuthGate = isAuthApiError(err)", app)
+        self.assertNotIn("clearOfflineBeforeAuthGate = true", app)
         self.assertIn("if (clearOfflineBeforeAuthGate) await requireOfflineQueueClear()", app)
+        cleanup = app.split("async function requireOfflineQueueClear", 1)[1].split(
+            "async function completeSignedOutState", 1
+        )[0]
+        self.assertIn("setOfflineQueueIdentity(null)", cleanup)
+        self.assertIn("clearJournalDrafts()", cleanup)
+        self.assertLess(cleanup.index("clearJournalDrafts()"), cleanup.index("await (attempt"))
+        self.assertIn("await waitForOfflineClearRetry()", cleanup)
+        login = app.split("async function showAuthGateFromCurrentStatus", 1)[1].split(
+            "function releaseOfflineClearRecoveryGate", 1
+        )[0]
+        self.assertLess(
+            login.index("await requireOfflineQueueClear()"), login.index("await showAuthGate(")
+        )
 
-    def test_conflict_and_gone_retry_explicitly_mint_new_operation_identities(self) -> None:
+    def test_ownerless_work_is_count_only_and_discard_requires_confirmation(self) -> None:
+        queue = (ROOT / "frontend/src/services/offlineQueue.ts").read_text(encoding="utf-8")
+        feature = (ROOT / "frontend/src/features/offlineFeature.ts").read_text(encoding="utf-8")
+        indicator = (ROOT / "frontend/src/components/offlineIndicator.ts").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("quarantinedCount: rows.filter(isQuarantinedDraft).length", queue)
+        self.assertIn("+ snapshot.failedDrafts.length + snapshot.quarantinedCount", queue)
+        self.assertIn("const allDrafts = rows.filter(ownsDraft)", queue)
+        discard = feature.split("onDiscardQuarantined: () =>", 1)[1].split("onDiscard:", 1)[0]
+        self.assertLess(
+            discard.index("await confirmDialog("), discard.index("if (!confirmed) return")
+        )
+        self.assertLess(
+            discard.index("if (!confirmed) return"),
+            discard.index("await discardQuarantinedDrafts()"),
+        )
+        self.assertIn("assertOfflineQueueContext(context)", discard)
+        self.assertIn("failedDrafts.length > 0 || quarantinedCount > 0", indicator)
+        self.assertIn('t("offline.quarantined_notice")', indicator)
+        self.assertIn('t("offline.quarantined_count", { count: quarantinedCount })', indicator)
+
+    def test_unverified_bootstrap_preserves_private_work_and_blocks_login(self) -> None:
+        app = (ROOT / "frontend/src/app.ts").read_text(encoding="utf-8")
+        bootstrap = app.split("async function bootstrapApp", 1)[1].split(
+            "function waitForBootstrapAuthRetry", 1
+        )[0]
+        transient = bootstrap.split("if (!isAuthApiError(err)) {", 1)[1].split(
+            "authGateRequired = true", 1
+        )[0]
+        self.assertIn("await waitForBootstrapAuthRetry(getApiErrorMessage(err))", transient)
+        self.assertIn("continue;", transient)
+        self.assertNotIn("requireOfflineQueueClear", transient)
+        self.assertNotIn("showAuthGate(", transient)
+        retry = app.split("function waitForBootstrapAuthRetry", 1)[1].split(
+            "async function checkOnboardingNeeded", 1
+        )[0]
+        self.assertIn("setOfflineQueueIdentity(null)", retry)
+        self.assertIn('setAttribute("inert", "")', retry)
+        self.assertNotIn("clearJournalDrafts", retry)
+        self.assertNotIn("clearOfflineQueue", retry)
+        self.assertNotIn("showAuthGate(", retry)
+
+    def test_queue_identity_and_saved_journal_recovery_are_wired_by_app(self) -> None:
+        app = (ROOT / "frontend/src/app.ts").read_text(encoding="utf-8")
+        garden_transition = app.split("function setActiveGardenContext", 1)[1].split(
+            "interface MapFetchOptions", 1
+        )[0]
+        self.assertIn("setApiGardenContext(gardenId)", garden_transition)
+        self.assertIn("setOfflineQueueIdentity(authProfile?.username ?? null)", garden_transition)
+        self.assertIn("setOfflineQueueIdentity(me.username)", app)
+        self.assertIn("onJournalEntrySaved:", app)
+        self.assertIn("onOpenSavedJournalEntry:", app)
+        self.assertIn("await fetchJournalEntryApi(String(entryId))", app)
+        self.assertIn("await journal.openJournalComposer(entry)", app)
+
+    def test_actual_entrypoint_preserves_unverified_work_and_cleans_before_login(self) -> None:
+        entry = (ROOT / "frontend/src/main.ts").read_text(encoding="utf-8")
+        self.assertIn('from "./services/authApi"', entry)
+        self.assertNotIn('from "./services/api"', entry)
+        authentication = entry.split("async function resolveInitialAuthentication", 1)[1].split(
+            "async function clearPrivateWorkBeforeLogin", 1
+        )[0]
+        self.assertIn(
+            "err instanceof ApiError && (err.status === 401 || err.status === 403)", authentication
+        )
+        self.assertIn("await waitForInitialAuthRetry(getApiErrorMessage(err))", authentication)
+        self.assertLess(
+            authentication.index("await clearPrivateWorkBeforeLogin()"),
+            authentication.index("await showAuthGate("),
+        )
+        cleanup = entry.split("async function clearPrivateWorkBeforeLogin", 1)[1].split(
+            "function waitForInitialAuthRetry", 1
+        )[0]
+        self.assertIn("queue.setOfflineQueueIdentity(null)", cleanup)
+        self.assertIn("drafts.clearJournalDrafts()", cleanup)
+        self.assertIn("await queue.clearOfflineQueue()", cleanup)
+        self.assertIn("await waitForInitialAuthRetry(getApiErrorMessage(err))", cleanup)
+        self.assertLess(cleanup.index("await queue.clearOfflineQueue()"), cleanup.index("return;"))
+        retry = entry.split("function waitForInitialAuthRetry", 1)[1].split(
+            "async function bootstrapEntry", 1
+        )[0]
+        self.assertIn('setAttribute("inert", "")', retry)
+        self.assertNotIn("clearOfflineQueue", retry)
+        self.assertNotIn("clearJournalDrafts", retry)
+        self.assertNotIn("showAuthGate(", retry)
+
+    def test_only_nonjournal_conflict_recovery_can_mint_new_operation_identities(self) -> None:
         queue = (ROOT / "frontend/src/services/offlineQueue.ts").read_text(encoding="utf-8")
         indicator = (ROOT / "frontend/src/components/offlineIndicator.ts").read_text(
             encoding="utf-8"
@@ -291,6 +396,9 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn('t("offline.retry_as_new")', indicator)
         self.assertIn("draft.last_status === 409 || draft.last_status === 410", indicator)
         self.assertIn("canRetryDrafts && canRetryFailedDraft(draft)", indicator)
+        journal_retry = queue.split('if (draft.type === "journal") {', 1)[1].split("}", 1)[0]
+        for status in (404, 409, 410):
+            self.assertIn(f"draft.last_status !== {status}", journal_retry)
 
     def test_downgraded_viewers_can_discard_failed_drafts_without_retrying_writes(self) -> None:
         feature = (ROOT / "frontend/src/features/offlineFeature.ts").read_text(encoding="utf-8")

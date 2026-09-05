@@ -5,6 +5,7 @@ import { createFieldGroup as _createFieldGroup, createParagraph } from "../core/
 import { renderPendingMediaPickerLazy } from "./mediaGalleryLoader";
 import { createChipInput } from "./chipInput";
 import { renderEmptyState } from "./emptyState";
+import type { DiagnosisCandidate } from "../services/api";
 
 const ISSUE_TYPE_ICONS: Record<string, string> = {
   pest: "\uD83D\uDC1B",
@@ -288,9 +289,12 @@ export function createIssueForm(options: {
   readOnly?: boolean | undefined;
   availablePlants?: Array<{ plt_id: string; name: string }>;
   availablePlots?: PlotChoice[];
+  plantIds?: string[];
+  plotIds?: string[];
   onSave: (data: Record<string, unknown>) => Promise<void>;
   onCancel: () => void;
-  onDiagnoseFromPhoto?: () => void;
+  onDiagnoseFromPhoto?: (context: { plantIds: string[]; plotIds: string[]; symptoms: string },
+    apply: (diagnosis: DiagnosisCandidate, photo: File) => void) => void;
 }): HTMLElement {
   const {
     issue,
@@ -314,15 +318,28 @@ export function createIssueForm(options: {
     diagBtn.className = "btn-secondary";
     diagBtn.style.marginBottom = "var(--sp-2)";
     diagBtn.style.width = "100%";
-    diagBtn.textContent = t("diagnose.title");
+    diagBtn.textContent = t("issues.diagnose_optional");
     const cb = options.onDiagnoseFromPhoto;
-    diagBtn.addEventListener("click", () => cb());
+    diagBtn.addEventListener("click", () => cb({
+      plantIds: plantChipInput.getSelectedKeys(), plotIds: plotChipInput.getSelectedKeys(),
+      symptoms: descArea.value,
+    }, (diagnosis, photo) => {
+      if (!typeTouched) typeSelect.value = diagnosis.issue_type;
+      if (!titleInput.value.trim()) titleInput.value = diagnosis.likely_cause;
+      if (!descArea.value.trim()) descArea.value = diagnosis.description;
+      if (!causeArea.value.trim()) causeArea.value = diagnosis.likely_cause;
+      if (!treatArea.value.trim()) treatArea.value = diagnosis.suggested_treatment;
+      pendingFiles.push(photo);
+      renderMedia();
+    }));
     form.appendChild(diagBtn);
   }
 
   // Issue type
   const typeGroup = createFieldGroup(t("issues.form_type"));
   const typeSelect = document.createElement("select");
+  let typeTouched = false;
+  typeSelect.addEventListener("change", () => { typeTouched = true; });
   typeSelect.name = "issue_type";
   const types = ["pest", "disease", "fungal", "nutrient", "environmental", "damage", "other"];
   for (const tp of types) {
@@ -407,7 +424,7 @@ export function createIssueForm(options: {
     getKey: (p) => p.plt_id,
     getLabel: (p) => `${p.name} (${p.plt_id})`,
     getSearchText: (p) => `${p.plt_id} ${p.name}`.toLowerCase(),
-    selected: issue?.plant_ids ?? [],
+    selected: issue?.plant_ids ?? options.plantIds ?? [],
   });
   form.appendChild(plantChipInput.container);
 
@@ -435,7 +452,7 @@ export function createIssueForm(options: {
     getLabel: (plot) => plotChoiceLabel(plot),
     getSearchText: (plot) =>
       `${plot.plot_id} ${plotChoiceLabel(plot)}`.toLowerCase(),
-    selected: issue?.plot_ids ?? [],
+    selected: issue?.plot_ids ?? options.plotIds ?? [],
   });
   form.appendChild(plotChipInput.container);
 
@@ -488,8 +505,10 @@ export function createIssueForm(options: {
       });
   }
 
+  let saving = false;
   form.addEventListener("submit", (e) => {
     e.preventDefault();
+    if (readOnly || saving) return;
     const data: Record<string, unknown> = {
       issue_type: typeSelect.value,
       title: titleInput.value,
@@ -502,7 +521,19 @@ export function createIssueForm(options: {
       plot_ids: plotChipInput.getSelectedKeys(),
       media_files: [...pendingFiles],
     };
-    void onSave(data);
+    saving = true;
+    saveBtn.disabled = true;
+    form.inert = true;
+    void onSave(data).finally(() => { saving = false; saveBtn.disabled = false; form.inert = false; });
+  });
+
+  form.querySelectorAll(".modal-field-group, .chip-input-group").forEach((group, index) => {
+    const input = group.querySelector("input, select, textarea");
+    const label = group.querySelector("label");
+    if (input && label) {
+      input.id ||= `issue-${crypto.randomUUID()}-${index}`;
+      label.htmlFor = input.id;
+    }
   });
 
   return form;

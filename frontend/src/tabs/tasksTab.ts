@@ -965,6 +965,10 @@ function completeTask(task: GardenTask): void {
       const { action: _action, ...extra } = body;
       return handleTaskAction(task, "complete", extra);
     },
+    {
+      plotNames: new Map(ctx.getPlots().map((plot) => [plot.plot_id, plot.display_name || plot.plot_id])),
+      onHistory: (plantId) => void ctx.openPlantHistory(plantId),
+    },
   );
 }
 

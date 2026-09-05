@@ -27,6 +27,7 @@ import {
   getApiErrorMessage,
 } from "../services/api";
 import { loadJournalEntries } from "../tabs/journalTab";
+import { createModal } from "../components/dialogCore";
 
 let ctx: AppContext;
 
@@ -34,7 +35,9 @@ let inventoryItems: InventoryItem[] = [];
 let inventoryTotal = 0;
 let inventoryOffset = 0;
 let inventoryRequestGeneration = 0;
+let inventoryContextGeneration = 0;
 const inventoryPendingActions = new Set<string>();
+const stockModalClosers = new Set<() => void>();
 const INVENTORY_PAGE_SIZE = 50;
 const inventoryDesktopLayoutQuery = window.matchMedia("(min-width: 961px)");
 let inventoryViewLoaded = false;
@@ -60,6 +63,8 @@ function isCurrentInventoryGarden(gardenId: number): boolean {
 }
 
 export function resetInventoryForGardenSwitch(): void {
+  inventoryContextGeneration += 1;
+  for (const close of stockModalClosers) close();
   inventoryRequestGeneration += 1;
   inventoryItems = [];
   inventoryTotal = 0;
@@ -360,19 +365,40 @@ function openInventoryItemForm(
   document.body.appendChild(modal);
 }
 
+export function openStockPlanting(
+  item: InventoryItem,
+  plotId: string,
+  onSaved: () => void,
+  modalParent: HTMLElement,
+): void {
+  openStockModal(item, "plant", { plotId, onSaved, modalParent });
+}
+
 function openStockModal(
   item: InventoryItem,
   mode: "add" | "consume" | "plant",
+  options?: { plotId: string; onSaved: () => void; modalParent: HTMLElement },
 ): void {
   if (!ctx.ensureWriteAccess()) return;
   const gardenId = getActiveGardenContext();
   if (gardenId === null || item.garden_id !== gardenId) return;
-  const modal = document.createElement("div");
-  modal.className = "modal inventory-modal";
-  modal.setAttribute("role", "dialog");
-  modal.setAttribute("aria-modal", "true");
-  const content = document.createElement("div");
-  content.className = "modal-content";
+  const authProfile = ctx.getAuthProfile();
+  const contextGeneration = inventoryContextGeneration;
+  const isCurrent = () => isCurrentInventoryGarden(gardenId)
+    && ctx.getAuthProfile() === authProfile
+    && contextGeneration === inventoryContextGeneration;
+  const { dialog: modal, close: closeModal } = createModal(
+    t(mode === "add" ? "inventory.modal_add_stock" : mode === "plant"
+      ? "inventory.modal_plant_stock" : "inventory.modal_use_stock", { label: item.label }),
+    '<div class="modal-content"></div>',
+    {
+      modalParent: options?.modalParent,
+      onClose: () => stockModalClosers.delete(closeModal),
+    },
+  );
+  modal.classList.add("inventory-modal");
+  stockModalClosers.add(closeModal);
+  const content = modal.querySelector<HTMLElement>(".modal-content")!;
 
   const heading = document.createElement("h2");
   heading.textContent =
@@ -389,18 +415,6 @@ function openStockModal(
           });
   content.appendChild(heading);
 
-  function closeModal(): void {
-    document.removeEventListener("keydown", onEscape);
-    modal.remove();
-  }
-  function onEscape(e: KeyboardEvent): void {
-    if (e.key === "Escape") closeModal();
-  }
-  document.addEventListener("keydown", onEscape);
-  modal.addEventListener("click", (e) => {
-    if (e.target === modal) closeModal();
-  });
-
   const plots = ctx
     .getPlots()
     .map((p) => ({
@@ -415,7 +429,7 @@ function openStockModal(
     plots,
     onSubmit: async (data) => {
       const actionKey = `transaction:${item.id}`;
-      if (inventoryPendingActions.has(actionKey) || !isCurrentInventoryGarden(gardenId)) return;
+      if (inventoryPendingActions.has(actionKey) || !isCurrent() || !modal.isConnected) return;
       inventoryPendingActions.add(actionKey);
       try {
         if (mode === "plant") {
@@ -495,7 +509,7 @@ function openStockModal(
           );
         }
 
-        if (!isCurrentInventoryGarden(gardenId)) return;
+        if (!isCurrent()) return;
         ctx.showToast(
           mode === "add"
             ? t("inventory.stock_added")
@@ -504,23 +518,31 @@ function openStockModal(
               : t("inventory.stock_used"),
         );
         closeModal();
+        if (mode === "plant") options?.onSaved();
         await loadInventoryItems();
-        if (data.create_journal)
+        if (!isCurrent()) return;
+        if (mode === "plant") {
+          await ctx.fetchPlots();
+          if (!isCurrent()) return;
+          ctx.renderPlots();
+        }
+        if (data.create_journal || mode === "plant")
           void loadJournalEntries();
       } catch (err) {
-        if (isCurrentInventoryGarden(gardenId)) {
+        if (isCurrent()) {
           ctx.showToast(getApiErrorMessage(err), "error");
         }
       } finally {
-        inventoryPendingActions.delete(actionKey);
+        if (contextGeneration === inventoryContextGeneration) inventoryPendingActions.delete(actionKey);
       }
     },
     onCancel: closeModal,
   });
 
+  const destination = form.querySelector<HTMLSelectElement>("#inv-tx-plot");
+  if (destination && options) destination.value = options.plotId;
   content.appendChild(form);
-  modal.appendChild(content);
-  document.body.appendChild(modal);
+  form.querySelector<HTMLInputElement>("input")?.focus();
 }
 
 async function openTransactionHistory(

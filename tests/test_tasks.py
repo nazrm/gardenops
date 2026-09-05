@@ -1611,7 +1611,7 @@ class TestTasks(BaseApiTest):
         self.assertEqual(response.status_code, 422)
         self.assertIn("observe_bloom", response.text)
 
-    def test_observe_bloom_policy_snooze_records_not_yet_evidence(self) -> None:
+    def test_observe_bloom_policy_snooze_does_not_record_observation(self) -> None:
         response = self.client.post(
             "/api/tasks",
             json={
@@ -1639,9 +1639,8 @@ class TestTasks(BaseApiTest):
         self.assertEqual(response.status_code, 200, response.text)
 
         task = self.client.get(f"/api/tasks/{task_id}").json()
-        events = task["metadata"]["bloom_observation"]["not_yet_events"]
-        self.assertEqual(events[0]["new_snooze_date"], "2026-06-08")
-        self.assertEqual(events[0]["source"], "task_snooze_policy")
+        self.assertNotIn("bloom_observation", task["metadata"])
+        self.assertEqual(task["snoozed_until"], "2026-06-08")
 
     def test_observe_bloom_not_seen_this_season_records_observed_without_presence_change(
         self,
@@ -1721,7 +1720,7 @@ class TestTasks(BaseApiTest):
 
         response = self.client.post(
             f"/api/tasks/{task_id}/action",
-            json={"action": "complete", "completion_outcome": "done"},
+            json={"action": "complete", "completion_outcome": "done", "observed_plot_ids": ["B1"]},
         )
         self.assertEqual(response.status_code, 200)
 
@@ -1780,7 +1779,7 @@ class TestTasks(BaseApiTest):
 
         journal = self.client.get("/api/journal?event_type=bloomed&plant_id=PLT-002").json()
         self.assertEqual(journal["total"], 1)
-        self.assertEqual(journal["entries"][0]["plot_ids"], ["B2"])
+        self.assertEqual(journal["entries"][0]["plot_ids"], [])
 
     def test_observe_bloom_completion_updates_only_task_selected_assignment(self) -> None:
         create = self.client.post(
@@ -1810,7 +1809,7 @@ class TestTasks(BaseApiTest):
 
         completed = self.client.post(
             f"/api/tasks/{task_id}/action",
-            json={"action": "complete", "completion_outcome": "done"},
+            json={"action": "complete", "completion_outcome": "done", "observed_plot_ids": ["B1"]},
         )
         self.assertEqual(completed.status_code, 200, completed.text)
 
@@ -1824,7 +1823,7 @@ class TestTasks(BaseApiTest):
         self.assertTrue(assignments["B1"]["seen_growing"])
         self.assertIsNone(assignments["B2"]["seen_growing"])
 
-    def test_observe_bloom_completion_without_plot_context_marks_single_assignment_seen_growing(
+    def test_observe_bloom_completion_without_plot_context_does_not_infer_assignment(
         self,
     ) -> None:
         assign = self.client.post("/api/plots/B2/plants/PLT-002", json={"quantity": 1})
@@ -1851,8 +1850,8 @@ class TestTasks(BaseApiTest):
         assignments = self.client.get("/api/plants/PLT-002/assignments").json()
         self.assertEqual(len(assignments), 1)
         self.assertEqual(assignments[0]["plot_id"], "B2")
-        self.assertTrue(assignments[0]["seen_growing"])
-        self.assertEqual(assignments[0]["seen_growing_date"], date.today().isoformat())
+        self.assertIsNone(assignments[0]["seen_growing"])
+        self.assertIsNone(assignments[0]["seen_growing_date"])
         plants = {plant["plt_id"]: plant for plant in self.client.get("/api/plants?q=Rose").json()}
         self.assertTrue(plants["PLT-002"]["seen_growing"])
         self.assertEqual(plants["PLT-002"]["seen_growing_date"], date.today().isoformat())

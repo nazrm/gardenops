@@ -1,6 +1,6 @@
 import type { AppContext } from "../core/appContext";
 import { queryInput, querySelect } from "../core/dom";
-import type { JournalEntry } from "../core/models";
+import type { JournalEntry, JournalEventType } from "../core/models";
 import type { MediaAsset } from "../services/api";
 import { t } from "../core/i18n";
 import {
@@ -8,15 +8,14 @@ import {
   journalEventLabel,
   renderJournalList,
 } from "../components/journal";
-import { trapFocus } from "../components/dialogCore";
+import { createModal, type ModalOptions } from "../components/dialogCore";
 import { buildPlantNameMap } from "../core/plantNames";
 import { renderMediaGallery } from "../components/mediaGallery";
 import {
   fetchJournalEntriesApi,
-  createJournalEntryApi,
   updateJournalEntryApi,
   deleteJournalEntryApi,
-  batchJournalEntryApi,
+  getActiveGardenContext,
   uploadMediaApi,
   addMediaLinkApi,
   removeMediaLinkApi,
@@ -26,9 +25,15 @@ import {
   getApiErrorMessage,
 } from "../services/api";
 import {
-  isOnline,
   enqueueDraft,
+  captureOfflineQueueContext,
+  assertOfflineQueueContext,
 } from "../services/offlineQueue";
+import { syncOfflineDraftsNow } from "../features/offlineFeature";
+import {
+  journalDraftKey, readJournalDraft, writeJournalDraft, discardJournalDraft,
+  validateJournalDraft, getJournalDraftGeneration, type JournalDraft,
+} from "../services/journalDraft";
 
 let ctx: AppContext;
 
@@ -36,6 +41,31 @@ let journalEntries: JournalEntry[] = [];
 let journalTotal = 0;
 let journalOffset = 0;
 let journalLoadSequence = 0;
+let gardenGeneration = 0;
+const openComposers = new Set<() => void>();
+export interface JournalHistoryScope { plantId?: string; plotId?: string; label?: string }
+export interface JournalComposerOpenOptions extends ModalOptions {
+  plantIds?: string[];
+  plotIds?: string[];
+  prefillEventType?: JournalEventType;
+  onSaved?: () => void;
+}
+let historyScope: JournalHistoryScope = {};
+let historyReturn: (() => void) | undefined;
+let journalLoadError: string | null = null;
+
+export function openJournalHistory(scope: JournalHistoryScope, onReturn?: () => void): void {
+  historyScope = { ...scope };
+  historyReturn = onReturn;
+  journalOffset = 0;
+  journalEntries = [];
+  journalTotal = 0;
+  journalLoadError = null;
+  resetJournalFilters();
+  ctx.navigateToSubMode("journal", { triggerLoads: false });
+  renderJournalView();
+  void loadJournalEntries();
+}
 const JOURNAL_PAGE_SIZE = 50;
 const MEDIA_SUMMARY_BATCH_SIZE = 80;
 const journalMediaPreviewById = new Map<
@@ -58,6 +88,11 @@ export function setJournalOffset(
 }
 
 export function resetJournalForGardenSwitch(): void {
+  gardenGeneration += 1;
+  for (const close of openComposers) close();
+  historyScope = {};
+  historyReturn = undefined;
+  journalLoadError = null;
   journalLoadSequence += 1;
   journalMediaPreviewSeq += 1;
   journalEntries = [];
@@ -146,6 +181,12 @@ export async function loadJournalEntries(
   extra?: Record<string, string | number>,
 ): Promise<void> {
   if (!ctx) return;
+  if (extra?.["plant_id"] || extra?.["plot_id"]) {
+    historyScope = {
+      ...(extra["plant_id"] ? { plantId: String(extra["plant_id"]) } : {}),
+      ...(extra["plot_id"] ? { plotId: String(extra["plot_id"]) } : {}),
+    };
+  }
   const sequence = ++journalLoadSequence;
   try {
     const params: Record<string, string | number> = {
@@ -158,6 +199,8 @@ export async function loadJournalEntries(
       if (value) params[key] = value;
     }
     if (extra) Object.assign(params, extra);
+    if (historyScope.plantId) params["plant_id"] = historyScope.plantId;
+    if (historyScope.plotId) params["plot_id"] = historyScope.plotId;
     const result = await fetchJournalEntriesApi(params);
     if (sequence !== journalLoadSequence) return;
     if (result.total > 0 && result.entries.length === 0 && journalOffset > 0) {
@@ -170,10 +213,12 @@ export async function loadJournalEntries(
     }
     journalEntries = result.entries;
     journalTotal = result.total;
+    journalLoadError = null;
     renderJournalView();
   } catch (err) {
     if (sequence !== journalLoadSequence) return;
-    ctx.showToast(getApiErrorMessage(err), "error");
+    journalLoadError = getApiErrorMessage(err);
+    renderJournalView();
   }
 }
 
@@ -182,6 +227,52 @@ export function renderJournalView(): void {
     "journal-list",
   );
   if (!container) return;
+  let scopeBar = document.getElementById("journal-history-scope");
+  if (!scopeBar) {
+    scopeBar = document.createElement("div");
+    scopeBar.id = "journal-history-scope";
+    scopeBar.className = "button-row";
+    container.before(scopeBar);
+  }
+  scopeBar.replaceChildren();
+  if (historyScope.plantId || historyScope.plotId) {
+    const label = document.createElement("span");
+    label.textContent = historyScope.label || [
+      ctx.getPlants().find((p) => p.plt_id === historyScope.plantId)?.name || historyScope.plantId,
+      historyScope.plotId,
+    ].filter(Boolean).join(" / ");
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.textContent = t("journal.clear_scope");
+    clear.addEventListener("click", () => {
+      historyScope = {};
+      journalOffset = 0;
+      renderJournalView();
+      void loadJournalEntries();
+    });
+    scopeBar.append(label, clear);
+  }
+  if (historyReturn) {
+    const back = document.createElement("button");
+    back.type = "button";
+    back.textContent = t("journal.return_to_origin");
+    back.addEventListener("click", () => historyReturn?.());
+    scopeBar.appendChild(back);
+  }
+  if (journalLoadError) {
+    const error = document.createElement("p");
+    error.setAttribute("role", "alert");
+    error.textContent = journalLoadError;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = t("common.retry");
+    retry.addEventListener("click", () => void loadJournalEntries());
+    container.replaceChildren(error, retry);
+    document.getElementById("journal-pagination")?.replaceChildren();
+    const summary = document.getElementById("journal-summary");
+    if (summary) summary.textContent = "";
+    return;
+  }
   const summary = document.getElementById(
     "journal-summary",
   );
@@ -197,7 +288,7 @@ export function renderJournalView(): void {
   renderJournalList(container, journalEntries, {
     mediaPreviewByEntryId: journalMediaPreviewById,
     onEdit: (entry) =>
-      openJournalComposer(undefined, entry),
+      void openJournalComposer(entry),
     onDelete: (entry) => void deleteJournalEntry(entry),
     onEmptyAction: ctx.canWrite() ? () => openJournalComposer() : undefined,
     onPlantClick: (pltId) => {
@@ -261,52 +352,105 @@ function renderJournalPagination(): void {
   container.append(prev, info, next);
 }
 
-export function openJournalComposer(
-  _event?: Event,
+export async function openJournalComposer(
   editEntry?: JournalEntry,
-): void {
+  options: JournalComposerOpenOptions = {},
+): Promise<void> {
   if (!ctx.ensureWriteAccess()) return;
-  const modal = document.createElement("div");
-  modal.className = "modal";
-  modal.setAttribute("role", "dialog");
-  modal.setAttribute("aria-modal", "true");
-  modal.setAttribute(
-    "aria-label",
-    editEntry
-      ? t("journal.edit_entry_aria")
-      : t("journal.new_entry_aria"),
-  );
-
-  const content = document.createElement("div");
-  content.className = "modal-content";
-
-  let releaseFocusTrap: (() => void) | null = null;
-  const closeModal = () => {
-    releaseFocusTrap?.();
-    modal.remove();
-    window.removeEventListener("keydown", onEscape);
+  const modalParent = options.modalParent ?? (document.activeElement instanceof HTMLElement
+    ? document.activeElement.closest<HTMLElement>(".modal") : null);
+  const gardenId = getActiveGardenContext();
+  const identity = ctx.getAuthProfile()?.username ?? "";
+  const generation = gardenGeneration;
+  const draftGeneration = getJournalDraftGeneration();
+  const queueContext = captureOfflineQueueContext();
+  const contextCurrent = () => {
+    try { assertOfflineQueueContext(queueContext); } catch { return false; }
+    return generation === gardenGeneration
+    && draftGeneration === getJournalDraftGeneration()
+    && gardenId === getActiveGardenContext()
+    && identity === (ctx.getAuthProfile()?.username ?? "");
   };
-  const onEscape = (e: KeyboardEvent) => {
-    if (e.key === "Escape") closeModal();
-  };
-  window.addEventListener("keydown", onEscape);
+  try { await ctx.ensurePlantsCacheLoaded(); } catch (err) {
+    if (contextCurrent()) ctx.showToast(getApiErrorMessage(err), "error");
+    return;
+  }
+  if (!contextCurrent() || (modalParent && !modalParent.isConnected) || !ctx.ensureWriteAccess()) return;
+  const key = journalDraftKey(identity, gardenId);
+  let draft: JournalDraft | null = null;
+  let storageError = false;
+  if (!editEntry) {
+    try { draft = readJournalDraft(key); } catch { storageError = true; }
+    if (draft) {
+      const choice = await chooseJournalDraft(modalParent);
+      if (!contextCurrent() || (modalParent && !modalParent.isConnected) || choice === "cancel") return;
+      if (choice === "discard") {
+        try { discardJournalDraft(key, draft.id); draft = null; } catch {
+          ctx.showToast(t("journal.draft_storage_error"), "error");
+          return;
+        }
+      }
+    }
+  }
+  let missingIds: string[] = [];
+  if (draft) {
+    const restored = validateJournalDraft(draft,
+      new Set(ctx.getPlants().map((p) => p.plt_id)), new Set(ctx.getPlots().map((p) => p.plot_id)));
+    draft = restored.draft;
+    missingIds = restored.missingIds;
+  }
+  const draftId = draft?.id ?? crypto.randomUUID();
+  let closed = false;
+  const { dialog: modal, close: closeModal } = createModal(
+    t(editEntry ? "journal.edit_entry_aria" : "journal.new_entry_aria"),
+    '<div class="modal-content"></div>', {
+      modalParent,
+      onClose: () => {
+        closed = true;
+        openComposers.delete(closeModal);
+        if (contextCurrent()) options.onClose?.();
+      },
+    });
+  openComposers.add(closeModal);
+  const current = () => !closed && modal.isConnected && contextCurrent();
+  const content = modal.querySelector<HTMLElement>(".modal-content")!;
+  const notice = document.createElement("p");
+  notice.setAttribute("role", "status");
+  const hints = [
+    ...(missingIds.length ? [t("journal.draft_missing_links", { ids: missingIds.join(", ") })] : []),
+    ...(draft?.photo_count ? [t("journal.draft_reselect_photos", { count: draft.photo_count })] : []),
+  ];
+  notice.textContent = storageError ? t("journal.draft_storage_error") : hints.join(" ");
+  content.appendChild(notice);
 
+  // Keep upload acknowledgements for this editor, including partially linked assets.
+  const mediaProgress = new WeakMap<File, JournalMediaFileProgress>();
   const el = createJournalComposerEl({
     availablePlants: ctx
       .getPlants()
       .map((p) => ({ plt_id: p.plt_id, name: p.name })),
     availablePlots: ctx.getPlots(),
     editEntry,
+    ...(options.plantIds ? { plantIds: options.plantIds } : {}),
+    ...(options.plotIds ? { plotIds: options.plotIds } : {}),
+    ...(options.prefillEventType ? { prefillEventType: options.prefillEventType } : {}),
+    initialDraft: draft ?? undefined,
+    onDraftChange: editEntry ? undefined : (fields) => {
+      if (!current()) return;
+      try { writeJournalDraft(key, { ...fields, id: draftId }); }
+      catch { notice.textContent = t("journal.draft_storage_error"); }
+    },
     onSubmit: async (data, controls) => {
+      if (!current() || !ctx.ensureWriteAccess()) return;
       try {
         const { media_files, ...entryPayload } = data;
-        let savedEntryId: string | null = editEntry?.id ?? null;
+        const savedEntryId: string | null = editEntry?.id ?? null;
         if (editEntry) {
           await updateJournalEntryApi(
             editEntry.id,
             entryPayload,
           );
-        } else if (!isOnline()) {
+        } else {
           const draftPayload: Record<string, unknown> = {
             ...entryPayload,
           };
@@ -314,18 +458,24 @@ export function openJournalComposer(
             draftPayload["media_files"] = media_files;
           }
           await enqueueDraft("journal", draftPayload);
+          if (!contextCurrent()) return;
+          try { discardJournalDraft(key, draftId); }
+          catch { ctx.showToast(t("journal.draft_storage_error"), "error"); }
           ctx.showToast(
             t("offline.draft_saved"),
             "success",
           );
           void ctx.refreshOfflineIndicator();
           closeModal();
+          options.onSaved?.();
+          void syncOfflineDraftsNow().then(() => {
+            if (contextCurrent()) void loadJournalEntries();
+          }).catch((err: unknown) => {
+            if (contextCurrent()) ctx.showToast(getApiErrorMessage(err), "error");
+          });
           return;
-        } else {
-          const created =
-            await createJournalEntryApi(entryPayload);
-          savedEntryId = created.id;
         }
+        if (!current()) return;
         if (savedEntryId) {
           try {
             await uploadJournalMediaFiles(
@@ -334,20 +484,23 @@ export function openJournalComposer(
               {
                 plantIds: entryPayload.plant_ids,
                 plotIds: entryPayload.plot_ids,
+                gardenId,
+                isCurrent: current,
+                fileProgress: mediaProgress,
                 setUploadProgress:
                   controls.setUploadProgress,
               },
             );
           } catch {
+            if (!current()) return;
             ctx.showToast(
               t("media.journal_upload_partial"),
               "error",
             );
-            closeModal();
-            void loadJournalEntries();
             return;
           }
         }
+        if (!current()) return;
         ctx.showToast(
           t(
             editEntry
@@ -359,15 +512,27 @@ export function openJournalComposer(
           journalOffset = 0;
         }
         closeModal();
+        options.onSaved?.();
         void loadJournalEntries();
       } catch (err) {
-        ctx.showToast(getApiErrorMessage(err), "error");
+        if (current()) ctx.showToast(getApiErrorMessage(err), "error");
       }
     },
     onCancel: closeModal,
   });
 
   content.appendChild(el);
+  if (!editEntry) {
+    const discard = document.createElement("button");
+    discard.type = "button";
+    discard.textContent = t("journal.discard_draft");
+    discard.addEventListener("click", () => {
+      if (!current()) return;
+      try { discardJournalDraft(key, draftId); closeModal(); }
+      catch { notice.textContent = t("journal.draft_storage_error"); }
+    });
+    content.appendChild(discard);
+  }
   if (editEntry) {
     const mediaSection = document.createElement("section");
     mediaSection.className = "journal-existing-media";
@@ -382,6 +547,7 @@ export function openJournalComposer(
 
     let existingAssets: MediaAsset[] = [];
     const renderExistingAssets = () => {
+      if (!current()) return;
       renderMediaGallery(mediaContainer, {
         assets: existingAssets,
         emptyText: t("media.journal_empty"),
@@ -397,13 +563,14 @@ export function openJournalComposer(
               }),
               t("common.remove"),
             );
-            if (!confirmed) return;
+            if (!confirmed || !current()) return;
             try {
               await removeMediaLinkApi({
                 assetId: asset.asset_id,
                 targetType: "journal_entry",
                 targetId: editEntry.id,
               });
+              if (!current()) return;
               existingAssets = existingAssets.filter(
                 (item) =>
                   item.asset_id !== asset.asset_id,
@@ -432,9 +599,10 @@ export function openJournalComposer(
               }),
               t("media.delete_everywhere"),
             );
-            if (!confirmed) return;
+            if (!confirmed || !current()) return;
             try {
               await deleteMediaAssetApi(asset.asset_id);
+              if (!current()) return;
               existingAssets = existingAssets.filter(
                 (item) =>
                   item.asset_id !== asset.asset_id,
@@ -482,6 +650,7 @@ export function openJournalComposer(
           target_id: String(editEntry.id),
           limit: 12,
         });
+        if (!current()) return;
         existingAssets = result.items;
         renderExistingAssets();
       } catch {
@@ -489,15 +658,34 @@ export function openJournalComposer(
       }
     })();
   }
-  modal.appendChild(content);
-  document.body.appendChild(modal);
-  releaseFocusTrap = trapFocus(modal);
+  el.querySelector<HTMLElement>("input, select, textarea")?.focus();
+}
+
+function chooseJournalDraft(modalParent?: HTMLElement | null): Promise<"resume" | "discard" | "cancel"> {
+  return new Promise((resolve) => {
+    const { dialog, close } = createModal(t("journal.draft_found"), '<div class="modal-content"></div>', {
+      modalParent, onClose: () => { openComposers.delete(close); resolve("cancel"); },
+    });
+    openComposers.add(close);
+    const content = dialog.querySelector(".modal-content")!;
+    const text = document.createElement("p");
+    text.textContent = t("journal.draft_found");
+    content.appendChild(text);
+    for (const choice of ["resume", "discard", "cancel"] as const) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = t(choice === "cancel" ? "common.cancel" : `journal.${choice}_draft`);
+      button.addEventListener("click", () => { resolve(choice); close(); });
+      content.appendChild(button);
+    }
+  });
 }
 
 async function deleteJournalEntry(
   entry: JournalEntry,
 ): Promise<void> {
   if (!ctx.ensureWriteAccess()) return;
+  const context = captureOfflineQueueContext();
   const ok = await ctx.confirmDialog(
     t("journal.delete_confirm", {
       event: journalEventLabel(entry.event_type),
@@ -507,7 +695,9 @@ async function deleteJournalEntry(
   );
   if (!ok) return;
   try {
+    assertOfflineQueueContext(context);
     await deleteJournalEntryApi(entry.id);
+    assertOfflineQueueContext(context);
     journalMediaPreviewById.delete(String(entry.id));
     ctx.showToast(t("journal.entry_deleted"));
     void loadJournalEntries();
@@ -520,81 +710,17 @@ export function openBatchJournalComposer(
   pltIds: string[],
   clearPlantSelection: () => void,
 ): void {
-  const modal = document.createElement("div");
-  modal.className = "modal";
-  modal.setAttribute("role", "dialog");
-  modal.setAttribute("aria-modal", "true");
-  modal.setAttribute(
-    "aria-label",
-    t("plants.batch_journal_aria"),
-  );
-
-  const content = document.createElement("div");
-  content.className = "modal-content";
-
-  const closeModal = () => {
-    modal.remove();
-    window.removeEventListener("keydown", onEscape);
-  };
-  const onEscape = (e: KeyboardEvent) => {
-    if (e.key === "Escape") closeModal();
-  };
-  window.addEventListener("keydown", onEscape);
-
-  const el = createJournalComposerEl({
-    availablePlants: ctx
-      .getPlants()
-      .filter((p) => pltIds.includes(p.plt_id))
-      .map((p) => ({ plt_id: p.plt_id, name: p.name })),
-    availablePlots: ctx.getPlots(),
+  void openJournalComposer(undefined, {
     plantIds: pltIds,
-    onSubmit: async (data, controls) => {
-      try {
-        const created = await batchJournalEntryApi({
-          plt_ids: pltIds,
-          event_type: data.event_type,
-          occurred_on: data.occurred_on,
-          title: data.title,
-          notes: data.notes,
-          plot_ids: data.plot_ids,
-        });
-        try {
-          await uploadJournalMediaFiles(
-            created.id,
-            data.media_files,
-            {
-              plantIds: pltIds,
-              plotIds: data.plot_ids,
-              setUploadProgress:
-                controls.setUploadProgress,
-            },
-          );
-        } catch {
-          closeModal();
-          clearPlantSelection();
-          ctx.showToast(
-            t("media.journal_upload_partial"),
-            "error",
-          );
-          return;
-        }
-        closeModal();
-        clearPlantSelection();
-        ctx.showToast(
-          t("plants.batch_journal_success", {
-            count: pltIds.length,
-          }),
-        );
-      } catch (err) {
-        ctx.showToast(getApiErrorMessage(err), "error");
-      }
-    },
-    onCancel: closeModal,
+    onSaved: clearPlantSelection,
   });
+}
 
-  content.appendChild(el);
-  modal.appendChild(content);
-  document.body.appendChild(modal);
+interface JournalMediaFileProgress {
+  operationId: string;
+  assetId?: string;
+  linkedPlants: Set<string>;
+  linkedPlots: Set<string>;
 }
 
 export async function uploadJournalMediaFiles(
@@ -605,15 +731,28 @@ export async function uploadJournalMediaFiles(
     plotIds?: string[];
     setUploadProgress?: (pct: number | null) => void;
     gardenId?: number | null;
+    isCurrent?: () => boolean;
+    fileProgress?: WeakMap<File, JournalMediaFileProgress>;
   } = {},
 ): Promise<void> {
   if (files.length === 0) return;
+  const fileProgress = options.fileProgress ?? new WeakMap<File, JournalMediaFileProgress>();
+  const ensureCurrent = () => {
+    if (options.isCurrent && !options.isCurrent()) throw new Error("Journal editor context changed");
+  };
   for (let i = 0; i < files.length; i += 1) {
+    ensureCurrent();
     const file = files[i]!;
+    let progress = fileProgress.get(file);
+    if (!progress) {
+      progress = { operationId: crypto.randomUUID(), linkedPlants: new Set(), linkedPlots: new Set() };
+      fileProgress.set(file, progress);
+    }
     const uploadOptions: Parameters<typeof uploadMediaApi>[0] = {
       targetType: "journal_entry",
       targetId: entryId,
       file,
+      operationId: progress.operationId,
       onProgress: (pct) => {
         if (!options.setUploadProgress) return;
         const overall = Math.round(
@@ -625,10 +764,15 @@ export async function uploadJournalMediaFiles(
     if (options.gardenId !== undefined) {
       uploadOptions.gardenId = options.gardenId;
     }
-    const uploaded = await uploadMediaApi(uploadOptions);
+    if (!progress.assetId) {
+      const uploaded = await uploadMediaApi(uploadOptions);
+      progress.assetId = uploaded.asset_id;
+    }
     for (const plantId of options.plantIds ?? []) {
+      ensureCurrent();
+      if (progress.linkedPlants.has(plantId)) continue;
       const linkOptions: Parameters<typeof addMediaLinkApi>[0] = {
-        assetId: uploaded.asset_id,
+        assetId: progress.assetId,
         targetType: "plant",
         targetId: plantId,
       };
@@ -636,10 +780,13 @@ export async function uploadJournalMediaFiles(
         linkOptions.gardenId = options.gardenId;
       }
       await addMediaLinkApi(linkOptions);
+      progress.linkedPlants.add(plantId);
     }
     for (const plotId of options.plotIds ?? []) {
+      ensureCurrent();
+      if (progress.linkedPlots.has(plotId)) continue;
       const linkOptions: Parameters<typeof addMediaLinkApi>[0] = {
-        assetId: uploaded.asset_id,
+        assetId: progress.assetId,
         targetType: "plot",
         targetId: plotId,
       };
@@ -647,9 +794,13 @@ export async function uploadJournalMediaFiles(
         linkOptions.gardenId = options.gardenId;
       }
       await addMediaLinkApi(linkOptions);
+      progress.linkedPlots.add(plotId);
     }
+    ensureCurrent();
+    options.setUploadProgress?.(Math.round(((i + 1) / files.length) * 100));
   }
   options.setUploadProgress?.(null);
+  ensureCurrent();
   await refreshJournalMediaPreviews([entryId]);
   await ctx.refreshPlantMediaPreviews(
     options.plantIds ?? [],

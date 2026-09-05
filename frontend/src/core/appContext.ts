@@ -8,7 +8,7 @@ import type {
   Plant,
   Plot,
 } from "./models";
-import type { AuthUserProfile, GardenSummary, MediaAsset } from "../services/api";
+import type { AuthUserProfile, GardenSummary, InventoryItem, MediaAsset } from "../services/api";
 import type { PlotCallbacks } from "../components/plotInteractions";
 import type { ToastOptions } from "../components/toast";
 
@@ -135,13 +135,16 @@ export interface AppContext {
     confirmLabel: string,
   ): Promise<boolean>;
   selectPlot(plotId: string): Promise<void>;
+  openPlantSummary(plant: Plant, plotId?: string): void;
+  openStockPlanting(item: InventoryItem, plotId: string, onSaved: () => void, modalParent: HTMLElement): Promise<void>;
+  openPlantHistory(plantId: string, onReturn?: () => void): Promise<void>;
 
   focusPlantsInPlantsView(pltIds: string[]): void;
   openMapForPlots(plotIds: string[]): void;
   openBatchJournalForPlants(pltIds: string[]): void;
   openTaskForm(task?: GardenTask): Promise<void>;
   openHarvestForm(entry?: HarvestEntry): Promise<void>;
-  openJournalComposer(): Promise<void>;
+  openJournalComposer(prefill?: { plantIds?: string[]; plotIds?: string[] }): Promise<void>;
   openIssueForm(issue?: GardenIssue): Promise<void>;
   openCalendarEventComposer(
     prefill?: CalendarManualEventDraft,

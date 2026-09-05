@@ -464,6 +464,7 @@ function buildSelectedArea(
   if (!selected) return null;
   const panel = document.createElement("section");
   panel.className = "map-object-detail";
+  panel.tabIndex = -1;
   const heading = document.createElement("div");
   heading.className = "map-object-detail-heading";
   const name = document.createElement("strong");
@@ -480,7 +481,7 @@ function buildSelectedArea(
     buildMoveSelectedPlotsForm(params, selected),
     buildContainerCreateForm(params, selected.public_id),
   );
-  panel.append(heading, actions);
+  panel.append(heading);
 
   const childContainers = containers.filter(
     (container) => container.parent_map_object_public_id === selected.public_id,
@@ -500,6 +501,7 @@ function buildSelectedArea(
     childContainers.forEach((container) => list.appendChild(buildContainerRow(container, params)));
   }
   panel.appendChild(list);
+  panel.appendChild(actions);
 
   const layout = document.createElement("details");
   layout.className = "map-object-disclosure map-object-layout-disclosure";
