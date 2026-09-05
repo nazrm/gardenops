@@ -23,6 +23,14 @@ def _make_jpeg(width: int = 100, height: int = 100) -> bytes:
     return buf.getvalue()
 
 
+def _make_mpo(width: int = 100, height: int = 100) -> bytes:
+    buf = BytesIO()
+    primary = Image.new("RGB", (width, height), (0, 128, 0))
+    auxiliary = Image.new("RGB", (width, height), (0, 96, 0))
+    primary.save(buf, format="MPO", save_all=True, append_images=[auxiliary])
+    return buf.getvalue()
+
+
 def _make_png(width: int = 100, height: int = 100) -> bytes:
     buf = BytesIO()
     Image.new("RGBA", (width, height), (0, 128, 0, 255)).save(buf, format="PNG")
@@ -87,6 +95,13 @@ class TestPreprocessImage(unittest.TestCase):
         with Image.open(BytesIO(result)) as img:
             self.assertEqual(img.format, "JPEG")
             self.assertLessEqual(max(img.size), 1280)
+
+    def test_mpo_declared_as_jpeg_uses_primary_image(self) -> None:
+        raw = _make_mpo(200, 200)
+        result, mime = preprocess_image_for_identification(raw, "image/jpeg")
+        self.assertEqual(mime, "image/jpeg")
+        with Image.open(BytesIO(result)) as image:
+            self.assertEqual(image.format, "JPEG")
 
     def test_valid_png_converts_to_jpeg(self) -> None:
         raw = _make_png()
