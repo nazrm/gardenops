@@ -209,7 +209,7 @@ class TestMonthlyTaskGen(DbTestBase):
         result1 = _auto_generate_monthly_tasks(
             self.conn,
             self.garden_id,
-            july_ms,
+            month_ms,
             frozen_date="2026-07-15",
         )
         assert result1.get("tasks_created", 0) > 0
@@ -218,7 +218,7 @@ class TestMonthlyTaskGen(DbTestBase):
         result2 = _auto_generate_monthly_tasks(
             self.conn,
             self.garden_id,
-            july_ms + 1000,
+            month_ms + 1000,
             frozen_date="2026-07-15",
         )
         assert result2.get("tasks_skipped") is True
@@ -270,7 +270,7 @@ class TestMonthlyTaskGen(DbTestBase):
         result = _auto_generate_monthly_tasks(
             self.conn,
             self.garden_id,
-            july_ms,
+            month_ms,
             frozen_date="2026-07-15",
         )
         assert result.get("tasks_created", 0) > 0
