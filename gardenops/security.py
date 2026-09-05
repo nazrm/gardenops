@@ -29,7 +29,7 @@ from gardenops.db import (
 _logger = logging.getLogger(__name__)
 
 Role = Literal["viewer", "editor", "admin"]
-AuthType = Literal["none", "session", "api_key"]
+AuthType = Literal["none", "session", "api_key", "agent"]
 AUTH_ROLES: tuple[Role, ...] = ("viewer", "editor", "admin")
 
 _LEGACY_PASSWORD_SCHEME = "pbkdf2_sha256"

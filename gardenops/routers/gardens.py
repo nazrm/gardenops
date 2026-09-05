@@ -815,6 +815,33 @@ def _serialize_invitation(row: dict[str, Any], *, now_ms: int) -> dict[str, obje
 @router.get("/gardens")
 def list_gardens(request: Request, db: DB) -> list[dict[str, object]]:
     context = _auth_context(request)
+    if context.auth_type == "agent":
+        row = db.execute(
+            """
+            SELECT id, slug, name, created_at, onboarding_complete, owner_user_id
+            FROM gardens
+            WHERE id = %s
+            """,
+            (context.garden_id,),
+        ).fetchone()
+        if not row:
+            return []
+        return [
+            {
+                "id": int(row["id"]),
+                "slug": str(row["slug"]),
+                "name": str(row["name"]),
+                "created_at": str(row["created_at"]),
+                "role": str(context.garden_role),
+                "active": True,
+                "onboarding_complete": bool(row["onboarding_complete"]),
+                "owned_by_current_user": (
+                    context.user_id is not None
+                    and row["owner_user_id"] is not None
+                    and int(row["owner_user_id"]) == int(context.user_id)
+                ),
+            }
+        ]
     if _is_local_admin_fallback(context):
         rows = db.execute(
             """

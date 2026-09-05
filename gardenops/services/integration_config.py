@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hmac
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
+from fastapi import HTTPException, Request
+
+from gardenops.agent_api_policy import agent_api_path_garden_id, agent_api_request_allowed
 from gardenops.db import DbConn
 from gardenops.feature_gates import feature_allowed
-from gardenops.security import AuthContext, has_write_access
+from gardenops.security import AuthContext, has_write_access, is_loopback_client
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
@@ -53,6 +56,57 @@ def mcp_bearer_token() -> str:
 def integration_token_matches(provided: str) -> bool:
     configured = mcp_bearer_token()
     return bool(configured and provided and hmac.compare_digest(provided, configured))
+
+
+def agent_api_token_matches_request(request: Request) -> bool:
+    authorization = request.headers.get("authorization", "").strip()
+    scheme, separator, token = authorization.partition(" ")
+    return bool(
+        mcp_enabled()
+        and separator
+        and scheme.casefold() == "bearer"
+        and integration_token_matches(token)
+    )
+
+
+def agent_api_request_is_local(request: Request) -> bool:
+    """Return whether a request qualifies for the narrow local agent transport path."""
+    return bool(
+        agent_api_token_matches_request(request)
+        and is_loopback_client(request)
+        and agent_api_request_allowed(request.method, request.url.path)
+    )
+
+
+def agent_api_auth_context(db: DbConn, request: Request) -> AuthContext | None:
+    """Resolve the fixed MCP principal for an allowlisted loopback API request."""
+    if not agent_api_token_matches_request(request):
+        return None
+    if not is_loopback_client(request):
+        raise HTTPException(status_code=403, detail="GardenOps agent API is loopback-only")
+    if not agent_api_request_allowed(request.method, request.url.path):
+        raise HTTPException(status_code=403, detail="GardenOps agent API path is not allowed")
+    binding = resolve_assistant_binding(db)
+    path_parts = request.url.path.split("/")
+    if len(path_parts) > 3 and path_parts[1:3] == ["api", "gardens"]:
+        if path_parts[3] != str(binding.garden_id):
+            raise HTTPException(
+                status_code=403,
+                detail="GardenOps agent URL garden override is not allowed",
+            )
+    path_garden_id = agent_api_path_garden_id(request.url.path)
+    if path_garden_id is not None and path_garden_id != binding.garden_id:
+        raise HTTPException(
+            status_code=403,
+            detail="GardenOps agent URL garden override is not allowed",
+        )
+    requested_garden = request.headers.get("x-garden-id", "").strip()
+    if requested_garden and requested_garden != str(binding.garden_id):
+        raise HTTPException(
+            status_code=403,
+            detail="GardenOps agent garden override is not allowed",
+        )
+    return replace(binding.context, auth_type="agent")
 
 
 def _require_secret(name: str, *, min_length: int = 1) -> str:

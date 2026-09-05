@@ -170,6 +170,14 @@ class TestPrepareMediaAsset(unittest.TestCase):
         img.save(buf, format="JPEG")
         return buf.getvalue()
 
+    @staticmethod
+    def _make_mpo(width: int = 40, height: int = 24) -> bytes:
+        buf = io.BytesIO()
+        primary = Image.new("RGB", (width, height), (80, 140, 90))
+        secondary = Image.new("RGB", (width, height), (90, 80, 140))
+        primary.save(buf, format="MPO", save_all=True, append_images=[secondary])
+        return buf.getvalue()
+
     def test_valid_png(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict("os.environ", {"MEDIA_STORAGE_DIR": tmp}):
@@ -193,6 +201,19 @@ class TestPrepareMediaAsset(unittest.TestCase):
                     original_filename="test.jpg",
                 )
                 assert asset.mime_type == "image/jpeg"
+
+    def test_jpeg_declared_mpo_is_normalized_to_jpeg(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict("os.environ", {"MEDIA_STORAGE_DIR": tmp}):
+                asset = prepare_media_asset(
+                    payload=self._make_mpo(),
+                    declared_content_type="image/jpeg",
+                    original_filename="phone-camera.jpeg",
+                )
+                assert asset.mime_type == "image/jpeg"
+                with Image.open(io.BytesIO(asset.original_bytes)) as normalized:
+                    assert normalized.format == "JPEG"
+                    assert getattr(normalized, "n_frames", 1) == 1
 
     def test_empty_payload_rejected(self) -> None:
         with self.assertRaises(HTTPException) as ctx:
