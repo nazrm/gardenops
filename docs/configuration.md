@@ -185,6 +185,69 @@ initialization usually means the Host or Origin is not loopback-safe. Startup
 errors for binding values name the missing or invalid variable without printing
 its value.
 
+### OpenClaw/LadsBot MCP
+
+The same fixed Matrix binding can be exposed to an existing OpenClaw agent
+without running a second GardenOps Matrix bot. The stdio bridge provides four
+tools: `garden_capabilities`, `garden_identify_plant`, `garden_read`, and
+`garden_write`. Plant identification accepts only JPEG, PNG, or WebP files
+inside the configured staged-media directory and calls the existing GardenOps
+PlantNet-first identification endpoint. The bridge calls the
+existing GardenOps API over loopback, so normal validation, authorization,
+domain behavior, idempotency support, audit, and side effects remain
+authoritative in GardenOps.
+
+Create a mode-0600 file containing the existing `MCP_BEARER_TOKEN`, then add an
+OpenClaw MCP server similar to:
+
+```json
+{
+  "command": "/srv/gardenops/current/.venv/bin/python",
+  "args": ["-m", "gardenops.agent_mcp_stdio"],
+  "cwd": "/srv/gardenops/current",
+  "env": {
+    "GARDENOPS_API_URL": "http://127.0.0.1:8000",
+    "GARDENOPS_MCP_TOKEN_FILE": "/path/to/private/gardenops-mcp-token",
+    "GARDENOPS_MCP_MEDIA_ROOT": "/path/to/matrix-agent/workspace/media/inbound"
+  },
+  "toolFilter": {
+    "include": [
+      "garden_capabilities",
+      "garden_identify_plant",
+      "garden_read",
+      "garden_write"
+    ]
+  },
+  "codex": {
+    "agents": ["matrix-lads"],
+    "defaultToolsApprovalMode": "approve"
+  }
+}
+```
+
+For embedded OpenClaw runs, add `gardenops__*` to every other agent's existing
+`agents.entries.<id>.tools.deny` list. The `codex.agents` field independently
+restricts projection into Codex app-server runs; it does not replace the
+per-agent deny rules.
+
+The media root must be the inbound staging directory for the allowed Matrix
+agent; paths outside it, symlinks, non-images, empty files, and images above 5
+MiB are rejected before any provider call. If an agent mistypes only OpenClaw's
+generated UUID suffix, the bridge accepts a unique same-name image in that
+message's staging directory; zero or multiple matches fail closed. The token is
+accepted only from loopback and only for the allowlisted everyday GardenOps API
+surface. Authentication, user and membership administration,
+garden creation/deletion, imports, backup restore, calendar subscription
+tokens, and internal maintenance endpoints remain unavailable. The configured
+`MATRIX_GARDENOPS_USERNAME` and `MATRIX_GARDEN_SLUG` are re-resolved on every
+request, and `x-garden-id` cannot switch this principal to another garden.
+
+Use OpenClaw's per-agent tool policy to expose the resulting `gardenops__*`
+tools to LadsBot and deny them for other agents. Keep the legacy GardenOps
+Matrix worker stopped after cutover to avoid two bots responding in the same
+room. A gateway reload is sufficient when the installed OpenClaw version can
+reload MCP configuration; otherwise use the guarded restart procedure.
+
 Generate `APP_SECRETS_ENCRYPTION_KEY` with:
 
 ```bash

@@ -98,7 +98,10 @@ a separate random bearer token of at least 32 characters.
 | Variable | Purpose | Example |
 |---|---|---|
 | `MCP_ENABLED` | Mount the private MCP endpoint. | `false` |
-| `MCP_BEARER_TOKEN` | Static MCP and capture-upload secret, minimum 32 random characters. | _(empty)_ |
+| `MCP_BEARER_TOKEN` | Static MCP, capture-upload, and loopback OpenClaw bridge secret, minimum 32 random characters. The bridge is additionally constrained to its allowlisted API surface and fixed Matrix user/garden binding. | _(empty)_ |
+| `GARDENOPS_API_URL` | Loopback GardenOps origin used by the optional OpenClaw stdio bridge. | `http://127.0.0.1:8000` |
+| `GARDENOPS_MCP_TOKEN_FILE` | Mode-0600 file containing `MCP_BEARER_TOKEN` for the optional OpenClaw stdio bridge. | _(empty)_ |
+| `GARDENOPS_MCP_MEDIA_ROOT` | Inbound Matrix media directory whose staged JPEG, PNG, and WebP files the optional OpenClaw stdio bridge may send to GardenOps plant identification. | _(empty)_ |
 | `MCP_URL` | Loopback Streamable HTTP endpoint used by the worker. | `http://127.0.0.1:8000/mcp` |
 | `MATRIX_ENABLED` | Permit the dedicated Matrix worker to start. | `false` |
 | `MATRIX_HOMESERVER_URL` | Matrix homeserver base URL. | `https://matrix.example.com` |
