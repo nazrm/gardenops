@@ -71,6 +71,7 @@ try {
   await page.waitForFunction(() => document.querySelector("#calendar-range-label")?.textContent?.toLowerCase().includes("oktober"));
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => { document.querySelector("#calendar-root").hidden = true; });
+  await page.locator("#calendar-root").waitFor({ state: "hidden" });
   await page.evaluate(() => { document.querySelector("#calendar-root").hidden = false; });
   await event.first().waitFor({ state: "visible" });
   assert.ok(queries.some(query => query.start === "2026-09-28" && query.end === "2026-11-09"), "Month boundaries remain local dates across DST");

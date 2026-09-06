@@ -16212,6 +16212,11 @@ td.inventory-qty-zero {
   min-height: 44rem;
 }
 
+/* Override the v7 skeleton's important display utility when data is unavailable. */
+.calendar-root[hidden] {
+  display: none !important;
+}
+
 .calendar-event-shell {
   display: flex;
   align-items: center;
