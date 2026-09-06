@@ -3548,7 +3548,7 @@ def auth_change_password(
     )
     new_token, new_expires_at_ms = create_session_for_user(
         int(user_row["id"]),
-        mfa_authenticated=context.mfa_authenticated_at_ms is not None,
+        mfa_authenticated=int(context.mfa_authenticated_at_ms or 0) > 0,
         mfa_setup_required=context.mfa_setup_required,
         device_label=_session_device_label(request),
         location_hint=_session_location_hint(request),
