@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 import gardenops.db as db
 from gardenops.db import current_timestamp_ms
+from gardenops.incident_controls import set_emergency_read_only
 from gardenops.security import AuthContext
 from gardenops.services.assistant import (
     analyze_matrix_capture,
@@ -99,6 +100,39 @@ class TestAssistantActions(BaseApiTest):
             conn.commit()
             return result
         finally:
+            db.return_db(conn)
+
+    def test_emergency_read_only_prevents_applying_existing_plant_delete(self) -> None:
+        request_id = self._proposal(
+            "plant_delete",
+            {"schema_version": 1, "plant_id": "PLT-002"},
+        )
+        conn = db.get_db()
+        try:
+            set_emergency_read_only(True, conn=conn)
+            with self.assertRaises(HTTPException) as raised:
+                apply_request(
+                    conn,
+                    self._binding(),
+                    request_id=request_id,
+                    source_event_id="$save-delete-read-only",
+                )
+
+            self.assertEqual(raised.exception.status_code, 503)
+            self.assertEqual(
+                raised.exception.detail,
+                "Emergency read-only mode is active",
+            )
+            self.assertIsNotNone(
+                conn.execute("SELECT 1 FROM plants WHERE plt_id = 'PLT-002'").fetchone()
+            )
+            state = conn.execute(
+                "SELECT state FROM assistant_requests WHERE public_id = %s",
+                (request_id,),
+            ).fetchone()
+            self.assertEqual(str(state["state"]), "proposal")
+        finally:
+            conn.rollback()
             db.return_db(conn)
 
     def test_journal_apply_is_atomic_and_idempotent(self) -> None:

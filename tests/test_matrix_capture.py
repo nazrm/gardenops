@@ -64,6 +64,12 @@ class TestMatrixCapture(BaseApiTest):
         finally:
             db.return_db(conn)
 
+        listed = self.client.get("/api/media")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertNotIn(asset_id, {item["asset_id"] for item in listed.json()["items"]})
+        self.assertEqual(self.client.get(f"/api/media/{asset_id}").status_code, 404)
+        self.assertEqual(self.client.get(f"/api/media/{asset_id}/preview").status_code, 404)
+
     def test_wrong_token_room_or_sender_is_rejected(self) -> None:
         payload = self._image_bytes()
         with patch.dict(os.environ, ENV, clear=False):

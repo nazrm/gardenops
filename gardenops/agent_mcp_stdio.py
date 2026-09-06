@@ -8,17 +8,13 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urljoin, urlsplit
 from uuid import UUID, uuid4
 
 from mcp.server import MCPServer
-from mcp.types import ToolAnnotations
 
-from gardenops.agent_api_policy import (
-    agent_api_confirmation_required,
-    agent_api_request_allowed,
-)
+from gardenops.agent_api_policy import agent_api_request_allowed
 
 _MAX_RESPONSE_BYTES = 1_048_576
 _MAX_REQUEST_BYTES = 262_144
@@ -289,219 +285,12 @@ def request_plant_identification(
     }
 
 
-def _operation_id(value: str) -> str:
-    if not value:
-        return str(uuid4())
-    try:
-        return str(UUID(value))
-    except ValueError as exc:
-        raise ValueError("operation_id must be a UUID") from exc
-
-
-def _annotations(
-    title: str,
-    *,
-    read_only: bool,
-    destructive: bool,
-    idempotent: bool,
-    open_world: bool = False,
-) -> ToolAnnotations:
-    return ToolAnnotations.model_validate(
-        {
-            "title": title,
-            "readOnlyHint": read_only,
-            "destructiveHint": destructive,
-            "idempotentHint": idempotent,
-            "openWorldHint": open_world,
-        }
-    )
-
-
 def create_server(config: AgentBridgeConfig) -> MCPServer[Any]:
-    server: MCPServer[Any] = MCPServer(
-        name="GardenOps",
-        version="1.0.0",
-        instructions=(
-            "Use GardenOps as the source of truth. Read before writing. Use public IDs and current "
-            "updated_at_ms revisions returned by reads. Never invent IDs. Only write when the user "
-            "has clearly requested the change; deletes and bulk changes require explicit "
-            "confirmation."
-        ),
+    del config
+    raise RuntimeError(
+        "GardenOps OpenClaw MCP bridge is disabled until the connector provides "
+        "authenticated source provenance"
     )
-
-    @server.tool(
-        structured_output=True,
-        annotations=_annotations(
-            "GardenOps capabilities",
-            read_only=True,
-            destructive=False,
-            idempotent=True,
-        ),
-    )
-    async def garden_capabilities() -> dict[str, Any]:
-        """Return the supported GardenOps API families and safe operating rules."""
-        return {
-            "schema_version": 1,
-            "read_tool": "garden_read",
-            "write_tool": "garden_write",
-            "identify_tool": "garden_identify_plant",
-            "api_families": [
-                "dashboard and attention",
-                "plants, plots, placements, map objects, and containers",
-                "tasks and workflows",
-                "journal and harvest",
-                "issues",
-                "inventory and procurement",
-                "calendar and weather",
-                "notifications and saved views",
-                "planner, reports, and non-backup exports",
-            ],
-            "common_reads": [
-                "GET /api/dashboard/today",
-                "GET /api/attention/today",
-                "GET /api/plants?limit=100",
-                "GET /api/plants/search?q=<name>",
-                "GET /api/plots",
-                "GET /api/tasks?view=week&limit=100",
-                "GET /api/journal?limit=50",
-                "GET /api/harvest?limit=50",
-                "GET /api/issues?limit=50",
-                "GET /api/inventory",
-                "GET /api/procurement",
-                "GET /api/calendar/events",
-                "GET /api/weather/summary",
-            ],
-            "common_writes": [
-                {
-                    "method": "POST",
-                    "path": "/api/journal",
-                    "body": {
-                        "event_type": "observed",
-                        "occurred_on": "YYYY-MM-DD",
-                        "title": "...",
-                        "notes": "...",
-                        "plant_ids": [],
-                        "plot_ids": [],
-                    },
-                },
-                {
-                    "method": "POST",
-                    "path": "/api/tasks/<task_id>/action",
-                    "body": {
-                        "action": "complete|snooze|reschedule|reopen",
-                        "expected_updated_at_ms": 0,
-                    },
-                },
-                {
-                    "method": "POST",
-                    "path": "/api/harvest",
-                    "body": {
-                        "occurred_on": "YYYY-MM-DD",
-                        "quantity": 1,
-                        "unit": "kg",
-                        "plant_ids": [],
-                        "plot_ids": [],
-                    },
-                },
-                {
-                    "method": "POST",
-                    "path": "/api/issues",
-                    "body": {
-                        "issue_type": "disease",
-                        "title": "...",
-                        "description": "...",
-                        "severity": "normal",
-                        "plant_ids": [],
-                        "plot_ids": [],
-                    },
-                },
-                {
-                    "method": "POST",
-                    "path": "/api/plots/<plot_id>/plants/<plant_id>",
-                    "body": {"quantity": 1},
-                },
-            ],
-            "rules": [
-                "Call garden_read first to resolve public IDs and revisions.",
-                "Use garden_write only for an explicit user-requested change.",
-                "Set confirmed=true only after explicit confirmation for delete or bulk changes.",
-                "On HTTP 409, reread instead of blindly retrying.",
-                "Reuse operation_id only when retrying the exact same lost request.",
-                "Authentication, users, memberships, admin operations, imports, backup restore, "
-                "calendar feed tokens, and maintenance jobs are unavailable.",
-            ],
-        }
-
-    @server.tool(
-        structured_output=True,
-        annotations=_annotations(
-            "Read GardenOps",
-            read_only=True,
-            destructive=False,
-            idempotent=True,
-        ),
-    )
-    async def garden_read(path: str) -> dict[str, Any]:
-        """GET one allowlisted GardenOps API path, including a bounded query string."""
-        return request_api(config, method="GET", path=path)
-
-    @server.tool(
-        structured_output=True,
-        annotations=_annotations(
-            "Identify a plant with GardenOps PlantNet",
-            read_only=False,
-            destructive=False,
-            idempotent=False,
-            open_world=True,
-        ),
-    )
-    async def garden_identify_plant(
-        image_path: str,
-        organ: Literal["auto", "leaf", "flower", "fruit", "bark", "habit", "other"] = "auto",
-    ) -> dict[str, Any]:
-        """Identify one staged Matrix image with GardenOps, using PlantNet first."""
-        return request_plant_identification(
-            config,
-            image_path=image_path,
-            organ=organ,
-        )
-
-    @server.tool(
-        structured_output=True,
-        annotations=_annotations(
-            "Change GardenOps",
-            read_only=False,
-            destructive=True,
-            idempotent=False,
-        ),
-    )
-    async def garden_write(
-        method: Literal["POST", "PUT", "PATCH", "DELETE"],
-        path: str,
-        body: dict[str, Any] | list[Any] | None = None,
-        confirmed: bool = False,
-        operation_id: str = "",
-    ) -> dict[str, Any]:
-        """Call one allowlisted GardenOps mutation; confirm deletes and bulk actions explicitly."""
-        parsed_path = urlsplit(path).path
-        requires_confirmation = agent_api_confirmation_required(method, parsed_path)
-        if requires_confirmation and not confirmed:
-            return {
-                "ok": False,
-                "status_code": 409,
-                "data": {"detail": "Explicit confirmation is required for delete and bulk actions"},
-            }
-        resolved_operation_id = _operation_id(operation_id)
-        result = request_api(
-            config,
-            method=method,
-            path=path,
-            body=body,
-            operation_id=resolved_operation_id,
-        )
-        return {"operation_id": resolved_operation_id, **result}
-
-    return server
 
 
 def main() -> None:

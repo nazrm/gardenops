@@ -1,6 +1,6 @@
 # GardenOps Agent MCP Specification
 
-**Status:** ambitious hardening roadmap; lean production profile implemented below
+**Status:** hardening roadmap; lean bridge disabled pending source attestation
 
 **Primary client:** the existing OpenClaw `matrix-lads` agent (LadsBot)
 
@@ -8,10 +8,14 @@
 
 **Primary interaction:** ordinary messages and attachments in the agent's Matrix room
 
-## 0. Lean production profile
+## 0. Disabled lean profile
 
-The implementation selected for the current single-user deployment deliberately
-uses a smaller trust boundary than the full roadmap in this document:
+The prior single-user stdio profile is disabled because agent identity and a
+shared bearer do not authenticate the Matrix event that caused a tool call.
+GardenOps rejects its REST authorization path and the bridge refuses to start
+until the connector can provide immutable, authenticated room and sender
+provenance. The items below describe the retired profile, not an available
+deployment option:
 
 - OpenClaw's existing `matrix-lads` agent is the trusted conversational
   principal. The closed Matrix room is implicit; no `!garden` prefix is needed.

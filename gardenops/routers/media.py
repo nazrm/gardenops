@@ -141,26 +141,29 @@ def _readable_media_link_sql(
     return (
         f"""
         (
-            {link_alias}.target_type NOT IN ('plant', 'plot')
-            OR %s = 1
-            OR (
-                {link_alias}.target_type = 'plant'
-                AND EXISTS (
-                    SELECT 1
-                    FROM plant_ownership po
-                    WHERE po.plt_id = {link_alias}.target_id
-                      AND po.garden_id = %s
-                      AND (%s = 1 OR po.owner_user_id = %s)
+            {link_alias}.target_type != 'matrix_capture'
+            AND (
+                {link_alias}.target_type NOT IN ('plant', 'plot')
+                OR %s = 1
+                OR (
+                    {link_alias}.target_type = 'plant'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM plant_ownership po
+                        WHERE po.plt_id = {link_alias}.target_id
+                          AND po.garden_id = %s
+                          AND (%s = 1 OR po.owner_user_id = %s)
+                    )
                 )
-            )
-            OR (
-                {link_alias}.target_type = 'plot'
-                AND EXISTS (
-                    SELECT 1
-                    FROM plot_ownership plo
-                    WHERE plo.plot_id = {link_alias}.target_id
-                      AND plo.garden_id = %s
-                      AND (%s = 1 OR plo.owner_user_id = %s)
+                OR (
+                    {link_alias}.target_type = 'plot'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM plot_ownership plo
+                        WHERE plo.plot_id = {link_alias}.target_id
+                          AND plo.garden_id = %s
+                          AND (%s = 1 OR plo.owner_user_id = %s)
+                    )
                 )
             )
         )
@@ -177,6 +180,8 @@ def _media_link_is_readable(
     target_type: str,
     target_id: str,
 ) -> bool:
+    if target_type == "matrix_capture":
+        return False
     if target_type == "plant":
         row = db.execute(
             """
