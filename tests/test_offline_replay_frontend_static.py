@@ -404,7 +404,7 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn("normalizedParams", task_cache)
         self.assertIn("filterCompleteBaseSnapshot", task_cache)
         self.assertIn(
-            'normalizedParams(entry.params).some(([key]) => '
+            "normalizedParams(entry.params).some(([key]) => "
             '!["view", "limit", "offset"].includes(key))',
             task_cache,
         )
