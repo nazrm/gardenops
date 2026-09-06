@@ -1194,6 +1194,11 @@ class TestPasskeyRegistration(PasskeyApiTest):
         )
         self.assertEqual(changed.status_code, 200, changed.text)
 
+        # Password rotation replaces both the session and its CSRF token.
+        csrf = admin_client.cookies.get("gardenops_csrf") or ""
+        self.assertTrue(csrf)
+        headers = self._session_headers(csrf)
+
         options = admin_client.post(
             "/api/auth/passkeys/register/options",
             headers=headers,
