@@ -45,6 +45,11 @@ output/
 media_uploads/
 .gardenops/
 
+# Host-specific operational probes and handoffs (not public project artifacts)
+docs/primary-workflow-probe.md
+scripts/probe_primary_workflow.py
+scripts/test_probe_primary_workflow.py
+
 # Tool caches
 .codex/
 .agents/
