@@ -5,8 +5,8 @@ const https = require("node:https");
 const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "..");
-const ROUTINE_COOLDOWN_DAYS = 3;
-const MAJOR_OR_NEW_DIRECT_COOLDOWN_DAYS = 14;
+const ROUTINE_COOLDOWN_DAYS = 7;
+const MAJOR_OR_NEW_DIRECT_COOLDOWN_DAYS = 7;
 const REGISTRY_URL = "https://registry.npmjs.org";
 const TRUSTED_NPM_BYPASS_SOURCE = "npm audit base/head diff";
 const configuredSecurityBypassPath = process.env.GARDENOPS_SECURITY_RELEASE_BYPASS || "";

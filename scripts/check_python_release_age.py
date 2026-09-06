@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-ROUTINE_COOLDOWN_DAYS = 3
-MAJOR_OR_NEW_DIRECT_COOLDOWN_DAYS = 14
-AI_SDK_COOLDOWN_DAYS = 1
+ROUTINE_COOLDOWN_DAYS = 7
+MAJOR_OR_NEW_DIRECT_COOLDOWN_DAYS = 7
+AI_SDK_COOLDOWN_DAYS = 7
 TRUSTED_PYTHON_BYPASS_SOURCE = "pip-audit base/head diff"
 REDUCED_COOLDOWN_PACKAGES = {"anthropic", "openai"}
 REQUIREMENT_NAME_RE = re.compile(r"^\s*([A-Za-z0-9_.-]+)")
