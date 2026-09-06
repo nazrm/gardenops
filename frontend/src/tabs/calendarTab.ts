@@ -1,10 +1,14 @@
-import { Calendar, type EventContentArg, type EventMountArg } from "@fullcalendar/core";
-import dayGridPlugin from "@fullcalendar/daygrid";
-import interactionPlugin from "@fullcalendar/interaction";
-import listPlugin from "@fullcalendar/list";
-import timeGridPlugin from "@fullcalendar/timegrid";
-import enGbLocale from "@fullcalendar/core/locales/en-gb";
-import nbLocale from "@fullcalendar/core/locales/nb";
+import { Calendar, type EventDisplayInfo, type MountInfo } from "fullcalendar";
+import dayGridPlugin from "fullcalendar/daygrid";
+import interactionPlugin from "fullcalendar/interaction";
+import listPlugin from "fullcalendar/list";
+import timeGridPlugin from "fullcalendar/timegrid";
+import enGbLocale from "fullcalendar/locales/en-gb";
+import nbLocale from "fullcalendar/locales/nb";
+import themePlugin from "fullcalendar/themes/classic";
+import "fullcalendar/skeleton.css";
+import "fullcalendar/themes/classic/theme.css";
+import "fullcalendar/themes/classic/palette.css";
 
 import { createChipInput, type ChipInputResult } from "../components/chipInput";
 import { confirmDialog, createModal, promptDialog } from "../components/dialogCore";
@@ -577,7 +581,7 @@ function buildAgendaEventNode(event: CalendarEvent): HTMLElement {
   return wrapper;
 }
 
-function renderCalendarEventContent(arg: EventContentArg): { domNodes: Node[] } | { text: string } {
+function renderCalendarEventContent(arg: EventDisplayInfo): { domNodes: Node[] } | { text: string } {
   const event = currentEventsById.get(arg.event.id);
   if (!event) return { text: arg.event.title };
   if (inferViewMode(arg.view.type) === "agenda") {
@@ -586,7 +590,7 @@ function renderCalendarEventContent(arg: EventContentArg): { domNodes: Node[] } 
   return { domNodes: [buildGridEventNode(event)] };
 }
 
-function handleCalendarEventMount(arg: EventMountArg): void {
+function handleCalendarEventMount(arg: MountInfo<EventDisplayInfo>): void {
   const event = currentEventsById.get(arg.event.id);
   if (!event) return;
   arg.el.dataset["calendarRenderedEvent"] = "true";
@@ -1927,12 +1931,24 @@ function ensureCalendarInstance(): Calendar {
     return left.title.localeCompare(right.title);
   }) as unknown as string;
   calendar = new Calendar(root, {
-    plugins: [dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin],
+    plugins: [themePlugin, dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin],
     initialView: fullCalendarView(currentViewMode),
     locale: currentLocaleObject(),
     locales: [enGbLocale, nbLocale],
     firstDay: 1,
     headerToolbar: false,
+    viewClass: "garden-calendar-view",
+    tableClass: "garden-calendar-table",
+    dayHeaderClass: "garden-calendar-day-header",
+    dayHeaderInnerClass: "garden-calendar-day-heading",
+    dayCellInnerClass: "garden-calendar-day-cell",
+    dayCellTopInnerClass: "garden-calendar-day-number",
+    slotHeaderInnerClass: "garden-calendar-slot-label",
+    listDayHeaderClass: "garden-calendar-list-heading",
+    eventClass: (arg) => inferViewMode(arg.view.type) === "agenda"
+      ? "garden-calendar-list-event" : "garden-calendar-grid-event",
+    eventInnerClass: "garden-calendar-event-inner",
+    eventTimeClass: "garden-calendar-event-time",
     height: "auto",
     dayMaxEventRows: window.matchMedia("(max-width: 760px)").matches ? 3 : 4,
     eventMaxStack: window.matchMedia("(max-width: 760px)").matches ? 2 : 3,
@@ -2020,14 +2036,14 @@ function ensureCalendarInstance(): Calendar {
             start: event.start_on,
             end: event.end_on,
             allDay: event.all_day,
-            classNames: [
+            className: [
               "calendar-event",
               `calendar-kind-${event.kind}`,
               `calendar-source-${event.source_key.replaceAll("_", "-")}`,
               `calendar-status-${event.status.replaceAll("_", "-")}`,
               event.window_state ? `calendar-window-state-${event.window_state}` : "",
               event.window_start_on && event.window_end_on ? "calendar-has-window" : "",
-            ],
+            ].filter(Boolean).join(" "),
             extendedProps: {
               sourceKey: event.source_key,
               status: event.status,
@@ -2075,7 +2091,7 @@ async function changeView(mode: CalendarViewMode): Promise<void> {
   } else if (instance.view.type !== targetView) {
     instance.changeView(targetView);
   }
-  instance.updateSize();
+  // v7 observes container size changes, including previously hidden tabs.
   await persistPreferences();
 }
 
@@ -2260,7 +2276,7 @@ export async function loadCalendar(): Promise<void> {
     } else {
       instance.refetchEvents();
     }
-    instance.updateSize();
+    // v7 observes container size changes, including previously hidden tabs.
     exportButton?.setAttribute("data-calendar-export-ready", "true");
     await refreshCalendarTaskActions(false);
     if (!offline) await refreshSubscriptions(request);
