@@ -28,6 +28,10 @@ explicit confirmed discard. Sync older work before upgrading where possible;
 the app cannot safely infer its owner. Authentication network failures preserve
 local work behind a retry screen rather than treating the failure as sign-out.
 Editing a saved entry also retains photo upload/link progress on ordinary retry.
+Issue photo retries likewise retain upload IDs and skip confirmed files. Draft
+restoration waits for confirmed plant data: a failed fetch leaves the draft
+unchanged and asks you to open the form again. New journal saves arriving during
+an active sync request a follow-up pass instead of remaining silently queued.
 
 History is available even when no observations exist. Its plant/place scope
 survives filters and pagination; Clear scope removes it and Return restores

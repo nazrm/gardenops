@@ -250,6 +250,30 @@ const sources = Object.fromEntries(['services/offlineQueue', 'features/offlineFe
       check(q.getSavedJournalEntryId((await q.getAllDrafts())[0]) === 88, 'confirmed parent lost on identity switch');
       passed.push('in-flight parent result retained but no next request after identity switch');
       await reset();
+      online = true;
+      const sent = [];
+      let releaseFirst;
+      let firstStarted;
+      const started = new Promise(resolve => { firstStarted = resolve; });
+      api.createJournalEntryApi = async payload => {
+        sent.push(payload.title);
+        if (payload.title === 'first') {
+          firstStarted();
+          await new Promise(resolve => { releaseFirst = resolve; });
+        }
+        return { id: payload.title };
+      };
+      await q.enqueueDraft('journal', { title: 'first' });
+      const firstSync = f.syncOfflineDraftsNow();
+      await started;
+      await q.enqueueDraft('journal', { title: 'second' });
+      const secondSync = f.syncOfflineDraftsNow();
+      releaseFirst();
+      await Promise.all([firstSync, secondSync]);
+      check(sent.join(',') === 'first,second', 'second online save never reached the API');
+      check((await q.getAllDrafts()).length === 0, 'online save remains pending after requested follow-up');
+      passed.push('save during active sync requests a follow-up pass and both entries sync exactly once');
+      await reset();
       return passed;
     }, sources);
     results.forEach(result => console.log(`PASS ${result}`));

@@ -58,6 +58,7 @@ let mediaHelpers: OfflineMediaHelpers;
 let onSyncComplete: ((result: SyncResult) => Promise<void> | void) | null = null;
 let canManageDrafts: (() => boolean) | null = null;
 let syncInFlight: Promise<void> | null = null;
+let syncRequested = false;
 let onOpenSavedJournalEntry: OfflineFeatureOptions["onOpenSavedJournalEntry"];
 let onJournalEntrySaved: OfflineFeatureOptions["onJournalEntrySaved"];
 
@@ -482,34 +483,39 @@ function updateToastRecoveryClearance(
 }
 
 export async function syncOfflineDraftsNow(): Promise<void> {
-  if (syncInFlight) return syncInFlight;
+  if (syncInFlight) {
+    syncRequested = true;
+    return syncInFlight;
+  }
   const sync = (async () => {
     const context = captureOfflineQueueContext();
-    if (!isOnline() || !canRetryOfflineDrafts()) {
-      await refreshOfflineIndicator();
-      return;
-    }
-    try {
-      const result = await syncAllDrafts(
-        getOfflineSyncCallbacks(),
-      );
-      assertOfflineQueueContext(context);
-      if (result.synced > 0 && result.remaining === 0) {
-        showToast(
-          t("offline.sync_complete"),
-          "success",
+    do {
+      syncRequested = false;
+      if (!isOnline() || !canRetryOfflineDrafts()) {
+        await refreshOfflineIndicator();
+        return;
+      }
+      try {
+        assertOfflineQueueContext(context);
+        const result = await syncAllDrafts(
+          getOfflineSyncCallbacks(),
         );
-      } else if (result.failed > 0) {
+        assertOfflineQueueContext(context);
+        if (result.synced > 0 && result.remaining === 0 && !syncRequested) {
+          showToast(t("offline.sync_complete"), "success");
+        } else if (result.failed > 0) {
+          showToast(t("offline.sync_failed"), "error");
+        }
+        if (result.synced > 0) {
+          await onSyncComplete?.(result);
+        }
+      } catch {
         showToast(t("offline.sync_failed"), "error");
+        break;
+      } finally {
+        await refreshOfflineIndicator();
       }
-      if (result.synced > 0) {
-        await onSyncComplete?.(result);
-      }
-    } catch {
-      showToast(t("offline.sync_failed"), "error");
-    } finally {
-      await refreshOfflineIndicator();
-    }
+    } while (syncRequested);
   })();
   syncInFlight = sync;
   try {

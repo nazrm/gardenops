@@ -225,6 +225,7 @@ export function openIssueForm(
   issueDialogs.add(closeOverlay);
   const current = () => !closed && overlay.isConnected && contextCurrent();
   let savedIssueId: string | null = existingIssue?.id ?? null;
+  const photoProgress = new WeakMap<File, { operationId: string; uploaded: boolean }>();
   const exposeSavedIssue = async (issueId: string) => {
     try {
       const saved = await fetchIssueApi(issueId);
@@ -294,12 +295,20 @@ export function openIssueForm(
         if (!current()) return;
         if (savedIssueId) {
           try {
-            await ctx.uploadTargetMediaFiles(
-              "issue",
-              savedIssueId,
-              mediaFiles,
-              { gardenId },
-            );
+            for (const file of mediaFiles) {
+              if (!current()) return;
+              let progress = photoProgress.get(file);
+              if (!progress) {
+                progress = { operationId: crypto.randomUUID(), uploaded: false };
+                photoProgress.set(file, progress);
+              }
+              if (progress.uploaded) continue;
+              await ctx.uploadTargetMediaFiles(
+                "issue", savedIssueId, [file],
+                { gardenId, operationIds: [progress.operationId] },
+              );
+              progress.uploaded = true;
+            }
           } catch {
             if (!current()) return;
             ctx.showToast(

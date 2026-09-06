@@ -1,6 +1,7 @@
 // Focused browser/component checks with synthetic HTTP responses, not a backend E2E.
 const assert = require("node:assert/strict");
 const path = require("node:path");
+const fs = require("node:fs");
 const { chromium } = require("../frontend/node_modules/playwright-core");
 
 async function main() {
@@ -136,6 +137,40 @@ async function main() {
     assert.equal(await page.locator('[role="dialog"]').count(), 0);
     console.log("PASS stacked Escape closes only top and garden reset closes stale composer");
 
+    const cacheHook = fs.readFileSync(path.resolve(__dirname, "../frontend/src/app.ts"), "utf8")
+      .match(/ensurePlantsCacheLoaded: (async \(requireReady = false\) => \{[\s\S]*?\n  \}),/)[1];
+    const originalDraft = await page.evaluate(async (hook) => {
+      const drafts = await import("/src/services/journalDraft.ts");
+      drafts.clearJournalDrafts();
+      const key = drafts.journalDraftKey("seed-user", 1);
+      const draft = { id: "fetch-failure", title: "Keep links", notes: "Keep context", event_type: "observed",
+        occurred_on: "2026-09-01", plant_ids: ["P1"], plot_ids: ["A"], photo_count: 0 };
+      drafts.writeJournalDraft(key, draft);
+      window.realGetPlants = window.captureContext.getPlants;
+      window.captureContext.getPlants = () => [];
+      // Exercise the actual app-context hook after its underlying loader swallowed a failure.
+      window.captureContext.ensurePlantsCacheLoaded = new Function("ensurePlantsCacheLoaded", "plantsCacheLoaded", "t",
+        `return (${hook});`)(async () => {}, false, (key) => key);
+      await window.captureJournal.openJournalComposer();
+      return drafts.readJournalDraft(key);
+    }, cacheHook);
+    assert.equal(await page.locator('[role="dialog"]').count(), 0);
+    assert.deepEqual(originalDraft.plant_ids, ["P1"]);
+    await page.evaluate((hook) => {
+      window.captureContext.getPlants = window.realGetPlants;
+      window.captureContext.ensurePlantsCacheLoaded = new Function("ensurePlantsCacheLoaded", "plantsCacheLoaded", "t",
+        `return (${hook});`)(async () => {}, true, (key) => key);
+      void window.captureJournal.openJournalComposer();
+    }, cacheHook);
+    await page.getByRole("button", { name: /^Resume draft$/i }).click();
+    await page.locator('[name="title"]').fill("Recovered after retry");
+    assert.deepEqual(await page.evaluate(async () => {
+      const d = await import("/src/services/journalDraft.ts");
+      return d.readJournalDraft(d.journalDraftKey("seed-user", 1)).plant_ids;
+    }), ["P1"]);
+    await page.locator(".journal-btn-cancel").click();
+    console.log("PASS failed plant cache load preserves draft links; successful retry restores and edits them");
+
     await page.evaluate(() => {
       document.body.innerHTML = '<select id="journal-filter-type"><option value=""></option><option value="observed">Observed</option></select><input id="journal-filter-search"><div id="journal-summary"></div><div id="journal-list"></div><div id="journal-pagination"></div>';
       window.captureJournal.initJournalTab(window.captureContext);
@@ -180,6 +215,36 @@ async function main() {
     await page.evaluate(() => window.captureIssues.resetIssuesForGardenSwitch());
     assert.equal(await page.locator('[role="dialog"]').count(), 0);
     console.log("PASS issue prefills, diagnosis cancellation preserves form, mobile fit and stale close");
+
+    await page.evaluate(() => {
+      window.issueUploads = [];
+      window.issueFailedOnce = false;
+      window.captureContext.uploadTargetMediaFiles = async (_type, _id, files, options) => {
+        for (const [index, file] of files.entries()) {
+          window.issueUploads.push({ name: file.name, operationId: options.operationIds?.[index] });
+          if (file.name === "second.png" && !window.issueFailedOnce) {
+            window.issueFailedOnce = true;
+            throw new Error("Synthetic partial upload");
+          }
+        }
+      };
+      window.captureIssues.openIssueForm(undefined, { plantIds: ["P1"], plotIds: ["A"] });
+    });
+    await page.locator('[name="title"]').fill("Issue photo retry");
+    await page.locator('input[type="file"]').setInputFiles(["first.png", "second.png"].map((name) => ({
+      name, mimeType: "image/png", buffer: Buffer.from("synthetic image"),
+    })));
+    await page.locator('.modal-form button[type="submit"]').click();
+    await page.getByRole("button", { name: /View saved issue/i }).waitFor();
+    await page.locator('.modal-form button[type="submit"]').click();
+    await page.waitForFunction(() => document.querySelector(".plant-journal-history"));
+    const issueUploads = await page.evaluate(() => window.issueUploads);
+    assert.deepEqual(issueUploads.map((row) => row.name), ["first.png", "second.png", "second.png"]);
+    assert(issueUploads.every((row) => row.operationId));
+    assert.equal(issueUploads[1].operationId, issueUploads[2].operationId);
+    assert.notEqual(issueUploads[0].operationId, issueUploads[1].operationId);
+    await page.evaluate(() => window.captureIssues.resetIssuesForGardenSwitch());
+    console.log("PASS issue photo retry skips confirmed files and reuses the failed file operation ID");
 
     // A saved parent opened from recovery uses the same existing-entry editor.
     for (const failure of ["upload", "link"]) {

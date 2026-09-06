@@ -73,7 +73,7 @@ export interface AppContext {
 
   fetchPlots(): Promise<void>;
   fetchMapObjects(): Promise<void>;
-  ensurePlantsCacheLoaded(): Promise<void>;
+  ensurePlantsCacheLoaded(requireReady?: boolean): Promise<void>;
   ensurePlantsLoaded(): Promise<void>;
   getPlantsCacheRevision(): number;
   setPlantsCache(plants: Plant[]): void;

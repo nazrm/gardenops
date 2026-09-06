@@ -377,3 +377,20 @@ final test waits for loaded Journal data and then succeeds with one click, with
 the draft unchanged across reload. Its earlier handler-versus-context-guard cause
 was not conclusively reproduced; no forced clicks or repeated-click workaround
 were used to claim success. The auth-disabled warning banner remained visible.
+
+## PR 187 Follow-up Review Fixes
+
+The subsequent independent review reproduced three recovery gaps. Fixed on
+2026-09-06 without changing backend contracts or adding dependencies:
+
+- Require confirmed plant-cache readiness before validating restored draft IDs.
+  The actual app-context readiness hook is exercised with a swallowed loader
+  failure; reopening after successful loading preserves the original links.
+- Issue editors retain per-file upload operation IDs and confirmations. A failed
+  second photo retries with the same ID without uploading the first photo again.
+- A sync request arriving during a running pass schedules another pass under the
+  same verified context. Two overlapping journal saves both reach the API once.
+
+Focused Chromium capture and queue suites now include these regressions. The
+frontend production build and its bundled contract checks passed again. This
+incremental validation does not claim another full connected-backend journey.

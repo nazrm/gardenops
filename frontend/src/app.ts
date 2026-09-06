@@ -1531,7 +1531,10 @@ const appContext: AppContext = {
   renderDataExportBars: () => renderDataExportBars(),
   fetchPlots: () => fetchPlots(),
   fetchMapObjects: () => fetchMapObjects(),
-  ensurePlantsCacheLoaded: () => ensurePlantsCacheLoaded(),
+  ensurePlantsCacheLoaded: async (requireReady = false) => {
+    await ensurePlantsCacheLoaded();
+    if (requireReady && !plantsCacheLoaded) throw new Error(t("journal.plants_unavailable"));
+  },
   ensurePlantsLoaded: () => ensurePlantsLoaded(),
   getPlantsCacheRevision: () => plantsCacheRevision,
   setPlantsCache: (plants) => setPlantsCache(plants),

@@ -371,7 +371,7 @@ export async function openJournalComposer(
     && gardenId === getActiveGardenContext()
     && identity === (ctx.getAuthProfile()?.username ?? "");
   };
-  try { await ctx.ensurePlantsCacheLoaded(); } catch (err) {
+  try { await ctx.ensurePlantsCacheLoaded(true); } catch (err) {
     if (contextCurrent()) ctx.showToast(getApiErrorMessage(err), "error");
     return;
   }
