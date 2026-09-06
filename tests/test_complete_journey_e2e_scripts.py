@@ -6407,14 +6407,19 @@ for (const path of [
     assert result.returncode == 0, result.stderr
 
 
-def test_chromium_evidence_resolves_and_hashes_the_elf_payload() -> None:
+def test_chromium_evidence_resolves_and_hashes_the_elf_payload(tmp_path: Path) -> None:
+    launcher = tmp_path / "chromium"
+    launcher.symlink_to(Path("/proc/self/exe"))
     script = """
+const fs = require('node:fs');
 const {
   isElfExecutable,
   resolveChromiumExecutable,
 } = require('./scripts/check_complete_journeys_e2e.cjs');
-const resolved = resolveChromiumExecutable('/usr/bin/chromium');
-if (resolved === '/usr/bin/chromium') process.exit(3);
+// Resolve a known ELF symlink without depending on a system browser installation.
+const launcher = process.argv[1];
+const resolved = resolveChromiumExecutable(launcher);
+if (resolved !== fs.realpathSync.native(process.execPath)) process.exit(3);
 if (!isElfExecutable(resolved)) process.exit(4);
 const source = require('node:fs').readFileSync('./scripts/check_complete_journeys_e2e.cjs', 'utf8');
 if (!source.includes('executablePath: CHROMIUM_EXECUTABLE')) process.exit(5);
@@ -6422,6 +6427,10 @@ if (!source.includes('chromium_launcher: fileBinding')) process.exit(6);
 if (!source.includes('chromium_executable: resolvedExecutableBinding')) process.exit(7);
 """
     result = subprocess.run(
-        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+        ["node", "-e", script, str(launcher)],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
     )
     assert result.returncode == 0, result.stderr
