@@ -5,32 +5,29 @@ as supply-chain dependencies. Pull requests have one mandatory `Dependency
 Policy` check. Backend and frontend CI wait for that check before installing the
 pull request's dependency graph.
 
-## Release-Age Tiers
+## Seven-Day Release Gate
 
 Release age is evaluated only for package versions or Action refs added by the
 pull request. Existing locked versions are not re-gated on every change.
 
 | Change | Minimum age |
 | --- | ---: |
-| `anthropic` or `openai` direct Python SDK update | 1 day |
-| Routine patch, minor, or transitive package update | 3 days |
+| `anthropic` or `openai` direct Python SDK update | 7 days |
+| Routine patch, minor, or transitive package update | 7 days |
 | GitHub Action commit | 7 days |
-| New direct dependency | 14 days |
-| Direct dependency major update | 14 days |
+| New direct dependency | 7 days |
+| Direct dependency major update | 7 days |
 
 Age is measured from the package artifact publish time or Action commit time,
-not PR creation or lockfile edit time. The AI SDK tier applies only to the exact
-direct package names; their transitive dependencies and similarly named
-packages use the normal tiers.
+not PR creation or lockfile edit time. The same seven-day minimum applies to
+direct packages, AI SDKs, transitive dependencies, and major updates.
 
 For Python, the gate reads publish timestamps from PyPI and requires every
 locked filename and SHA-256 digest to match that authoritative release record.
 Timestamps embedded in `uv.lock` are not accepted as release-age evidence.
 
-Dependabot mirrors these windows where its configuration supports them. The AI
-SDKs are excluded from Dependabot's global pip cooldown so Dependabot can open
-the PR promptly; the `Dependency Policy` check still enforces their one-day
-minimum.
+Dependabot mirrors the seven-day window for every ecosystem and update type,
+without package exclusions. CI remains the authoritative release-age check.
 
 ## Pull Request Gate
 

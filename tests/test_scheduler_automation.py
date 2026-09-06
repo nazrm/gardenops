@@ -218,6 +218,7 @@ class TestMonthlyTaskGen(DbTestBase):
         assert result2.get("tasks_skipped") is True
 
     def test_monthly_task_gen_creates_notification(self) -> None:
+        july_ms = 1784116800000
         self._insert_plant(
             "WP2",
             "Water Me",
@@ -232,7 +233,8 @@ class TestMonthlyTaskGen(DbTestBase):
             """,
             (self.garden_id, self._owner_id),
         )
-        now_ms = db.current_timestamp_ms()
+        # Preferences must exist at the simulated generation time, not wall-clock time.
+        now_ms = july_ms
         self.conn.execute(
             """
             INSERT INTO user_notification_preferences
@@ -259,7 +261,6 @@ class TestMonthlyTaskGen(DbTestBase):
         )
         self.conn.commit()
 
-        july_ms = 1784116800000
         result = _auto_generate_monthly_tasks(
             self.conn,
             self.garden_id,
