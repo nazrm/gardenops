@@ -403,7 +403,11 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn("renderTasksView(options.focusTaskId, request);", fetch_error)
         self.assertIn("normalizedParams", task_cache)
         self.assertIn("filterCompleteBaseSnapshot", task_cache)
-        self.assertIn('entry.params["task_type"] || entry.params["status"]', task_cache)
+        self.assertIn(
+            'normalizedParams(entry.params).some(([key]) => '
+            '!["view", "limit", "offset"].includes(key))',
+            task_cache,
+        )
         self.assertIn("calendarPreferencesCache.get(gardenId)", calendar)
         self.assertIn("calendarEventsCache.get(", calendar)
         self.assertIn('setCalendarDataState("unavailable")', calendar)
