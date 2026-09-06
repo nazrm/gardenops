@@ -296,6 +296,41 @@ class TestMedia(BaseApiTest):
         self.assertEqual(body["bytes"], int(row["bytes"]))
         self.assertGreater(int(row["preview_bytes"]), 0)
 
+    def test_native_image_urls_keep_nondefault_garden_scope(self) -> None:
+        conn = db.get_db()
+        try:
+            garden_id = conn.execute(
+                "INSERT INTO gardens (slug, name) VALUES (%s, %s) RETURNING id",
+                ("native-image-garden", "Image Garden"),
+            ).fetchone()["id"]
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        headers = {"x-garden-id": str(garden_id)}
+        entry = self.client.post(
+            "/api/journal",
+            json={"event_type": "observed", "occurred_on": "2026-07-04"},
+            headers=headers,
+        )
+        self.assertEqual(entry.status_code, 201, entry.text)
+        uploaded = self.client.post(
+            f"/api/media/upload?target_type=journal_entry&target_id={entry.json()['id']}",
+            content=self._image_bytes(fmt="PNG"),
+            headers={**headers, "content-type": "image/png", "x-upload-filename": "native.png"},
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        asset = uploaded.json()
+        listed = self.client.get(
+            f"/api/media?target_type=journal_entry&target_id={entry.json()['id']}", headers=headers
+        ).json()["items"][0]
+        for field in ("preview_url", "original_url"):
+            self.assertEqual(listed[field], asset[field])
+            self.assertIn(f"garden_id={garden_id}", asset[field])
+            response = self.client.get(asset[field])
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertGreater(Image.open(io.BytesIO(response.content)).width, 0)
+        self.assertEqual(self.client.get(f"/api/media/{asset['asset_id']}").status_code, 404)
+
     def test_media_fetch_blocks_cross_garden_access(self) -> None:
         payload = self._image_bytes(fmt="PNG")
         uploaded = self.client.post(

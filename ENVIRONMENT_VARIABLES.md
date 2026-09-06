@@ -11,6 +11,12 @@ instance. Values shown here are placeholders; do not commit real local env files
 | `GARDENOPS_TEST_POSTGRES_URL` | PostgreSQL connection string for tests. | `postgresql://gardenops:change-me@127.0.0.1:5432/gardenops_test` |
 | `APP_ENV` | Runtime environment: `development`, `test`, or `production`. | `development` |
 
+## Observation Dates
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `GARDENOPS_TIMEZONE` | IANA timezone for task occurrence defaults, future-date validation, observation years, and Matrix dates. Invalid timezone names are rejected. | `MATRIX_TIMEZONE`, otherwise `Europe/Oslo` |
+
 ## Authentication
 
 | Variable | Purpose | Example |
@@ -115,7 +121,7 @@ a separate random bearer token of at least 32 characters.
 | `MATRIX_GARDENOPS_USERNAME` | Existing active GardenOps username. | `owner` |
 | `MATRIX_GARDEN_SLUG` | Existing garden slug where actions apply. | `home` |
 | `MATRIX_TRIGGER_MODE` | Process `mention` triggers or `all` accepted messages. | `mention` |
-| `MATRIX_TIMEZONE` | Timezone used to derive observation dates. | `Europe/Oslo` |
+| `MATRIX_TIMEZONE` | Legacy observation timezone fallback when `GARDENOPS_TIMEZONE` is unset. | `Europe/Oslo` |
 | `MATRIX_CAPTURE_TTL_DAYS` | Pending request and temporary capture lifetime, 1-30 days. | `7` |
 | `MATRIX_SYNC_TIMEOUT_MS` | Matrix long-poll timeout, 1000-120000 ms. | `30000` |
 | `MATRIX_MAX_PENDING_EVENTS` | Sequential worker queue bound, 1-100. | `20` |

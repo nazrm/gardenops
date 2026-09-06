@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date
 from typing import Any, Literal, cast
 
@@ -61,6 +62,7 @@ from gardenops.services.integration_config import (
     assert_source_binding,
 )
 from gardenops.services.media_store import enqueue_media_cleanup_jobs
+from gardenops.services.observation_clock import observation_today, resolve_observation_date
 from gardenops.services.rhs_plant_resolver import (
     normalize_botanical_name,
     resolve_rhs_reference,
@@ -1136,20 +1138,76 @@ def _advance_to_result(
         )
     task = tasks[0]
     task_type = str(task["task_type"])
-    normalized_input = " ".join(input_text.casefold().split())
-    completion_outcome = (
-        "not_seen_blooming_this_season"
-        if task_type == "observe_bloom"
-        and any(
-            phrase in normalized_input
-            for phrase in (
-                "did not bloom",
-                "didn't bloom",
-                "has not bloomed",
-                "no bloom",
-                "not seen blooming",
+    occurred = resolve_observation_date(occurred)
+    # Earlier observations provide context, but the latest edit determines the action.
+    closure_text = input_text.rsplit("User clarification or edit:", 1)[-1].strip()
+    normalized_input = " ".join(closure_text.casefold().replace("\u2019", "'").split())
+    explicit_closure = bool(
+        re.match(
+            r"^(?:please\s+)?close\s+(?:the\s+)?(?:bloom\s+)?season\b",
+            closure_text,
+            flags=re.IGNORECASE,
+        )
+    )
+    negative_or_uncertain = bool(
+        re.search(
+            r"\b(?:not|no|never|\w+n't|unsure|maybe|perhaps|if|whether|close|"
+            r"will|would|should|could|might|hope|expect|stopped)\b|\?",
+            normalized_input,
+        )
+    )
+    explicit_closure = explicit_closure and not re.search(
+        r"\b(?:not|no|never|\w+n't|unsure|maybe|perhaps|if|whether)\b|\?",
+        normalized_input,
+    )
+    deferral = bool(re.search(r"\b(?:defer|snooze|postpone|wait|later)\b", normalized_input))
+    if task_type == "observe_bloom" and deferral and not explicit_closure:
+        result = AssistantResult(
+            state="answer",
+            request_id=request_id,
+            reference=_reference(request_id),
+            message=(
+                "No bloom observation saved. The check remains open and its due date "
+                "has not changed. You can snooze it from the Tasks view."
+            ),
+        )
+        return _save_result(
+            db,
+            request_id=request_id,
+            db_state="answered",
+            request_kind="task_completion",
+            result=result,
+            payload=payload,
+            source_event_id=source_event_id,
+        )
+    affirmative_bloom = (
+        bool(
+            re.search(
+                r"\b(?:bloomed|(?:is|are|was|were)\s+(?:now\s+)?(?:blooming|in bloom)|"
+                r"(?:saw|seen|observed)\b[^.!?]*\b(?:blooms?|flowers|blooming))\b",
+                normalized_input,
             )
         )
+        and not negative_or_uncertain
+    )
+    if task_type == "observe_bloom" and not explicit_closure and not affirmative_bloom:
+        return _needs_input(
+            db,
+            request_id=request_id,
+            request_kind="task_completion",
+            payload=payload,
+            message=(
+                "No bloom observation saved. Did you observe flowers, want to defer the check, "
+                "or explicitly "
+                "close the bloom season? Closing records not seen blooming for the chosen "
+                "year and prevents new bloom checks for this plant in that year."
+            ),
+            continuation_kind="reinterpret",
+            source_event_id=source_event_id,
+        )
+    completion_outcome = (
+        "not_seen_blooming_this_season"
+        if task_type == "observe_bloom" and explicit_closure
         else "done"
     )
     fields = {
@@ -1159,16 +1217,32 @@ def _advance_to_result(
         "completed_plant_ids": [target.plant_id]
         if task_type in {"observe_bloom", "prune", "fertilize"}
         else None,
-        "selected_plot_ids": [target.plot_id] if target.plot_id else [],
         "completion_outcome": completion_outcome,
         "notes": intent.notes or input_text,
         "occurred_on": occurred,
     }
+    if task_type == "observe_bloom":
+        fields["observed_plot_ids"] = [target.plot_id] if target.plot_id else []
+    scope = (
+        f" in {target.plot_label or target.plot_id}"
+        if target.plot_id
+        else " (plant only; no place claimed)"
+    )
+    summary = (
+        f"Complete {task_type.replace('_', ' ')} for {target.plant_name}{scope} on {occurred}."
+    )
+    if completion_outcome == "not_seen_blooming_this_season":
+        year = date.fromisoformat(occurred).year
+        summary = (
+            f"Record {target.plant_name} as not seen blooming in {year}{scope}, dated {occurred}. "
+            f"Close its bloom season: no new bloom checks for this plant in {year}. "
+            "Existing checks are not all cancelled."
+        )
     return _proposal_result(
         db,
         request_id=request_id,
         kind="task_completion",
-        summary=f"Complete task '{task['title'] or task_type}' for {target.plant_name}.",
+        summary=summary,
         fields=fields,
         payload=payload,
         source_event_id=source_event_id,
@@ -1412,7 +1486,7 @@ def continue_request(
         raise HTTPException(status_code=409, detail=f"Cannot continue a request in state {state}")
     payload = _json_object(row["payload_json"])
     original_text = str(payload.get("input_text") or row.get("input_text") or "")
-    occurred_on = str(payload.get("occurred_on") or date.today().isoformat())
+    occurred_on = str(payload.get("occurred_on") or observation_today().isoformat())
     if text.strip().casefold() in {"save", "cancel"}:
         raise HTTPException(status_code=409, detail="Use the explicit save or cancel command")
 
@@ -1491,7 +1565,7 @@ def continue_request(
         )
 
     edit_text = text.strip()
-    combined = f"{original_text}\nUser clarification or edit: {edit_text}"[:2000]
+    combined = f"{original_text}\nUser clarification or edit: {edit_text}"[-2000:]
     try:
         intent = _interpret(db, binding, text=combined, occurred_on=occurred_on)
         if intent.intent == "plant_create" and intent.plant_query.strip():
@@ -1658,6 +1732,16 @@ def _apply_command(
         plant_ids = []
     else:
         plant_ids = [str(value) for value in fields.get("completed_plant_ids") or []]
+        task = db.execute(
+            "SELECT task_type FROM garden_tasks WHERE public_id = %s AND garden_id = %s",
+            (fields["task_id"], binding.garden_id),
+        ).fetchone()
+        scope = None
+        if task and task["task_type"] == "observe_bloom":
+            scope = [
+                str(value)
+                for value in fields.get("observed_plot_ids", fields.get("selected_plot_ids")) or []
+            ]
         command = complete_task_command(
             db,
             binding.context,
@@ -1666,10 +1750,99 @@ def _apply_command(
             completed_plant_ids=plant_ids or None,
             completion_outcome=fields.get("completion_outcome"),
             notes=str(fields.get("notes") or ""),
-            occurred_on=str(fields.get("occurred_on") or date.today().isoformat()),
-            selected_plot_ids=[str(value) for value in fields.get("selected_plot_ids") or []],
+            occurred_on=fields.get("occurred_on"),
+            observed_plot_ids=scope,
         )
     return command, plant_ids
+
+
+def _receipt_names(db: DbConn, *, plant_ids: list[str], plot_ids: list[str]) -> str:
+    plants = (
+        db.execute(
+            "SELECT plt_id, name FROM plants WHERE plt_id = ANY(%s) ORDER BY plt_id",
+            (plant_ids,),
+        ).fetchall()
+        if plant_ids
+        else []
+    )
+    plots = (
+        db.execute(
+            "SELECT plot_id, display_name FROM plots WHERE plot_id = ANY(%s) ORDER BY plot_id",
+            (plot_ids,),
+        ).fetchall()
+        if plot_ids
+        else []
+    )
+    names = ", ".join(str(row["name"] or row["plt_id"]) for row in plants) or "plant record"
+    places = ", ".join(
+        f"{row['display_name']} ({row['plot_id']})" if row["display_name"] else str(row["plot_id"])
+        for row in plots
+    )
+    return names + (f" in {places}" if places else " (plant only; no place claimed)")
+
+
+def _saved_receipt(
+    db: DbConn, *, proposal: AssistantProposal, command: CommandResult, deleted_name: str
+) -> str:
+    """Read confirmed effects once; the enclosing result persists this immutable receipt."""
+    fields = proposal.fields
+    if proposal.kind == "plant_delete":
+        return f"Deleted: {deleted_name} from this garden."
+    if proposal.kind in {"plant_create", "plant_assign", "plant_move"}:
+        plot_id = str(fields.get("to_plot_id") or fields.get("plot_id") or "")
+        target = _receipt_names(db, plant_ids=[command.primary_id], plot_ids=[plot_id])
+        quantity = fields.get("quantity", 1 if proposal.kind != "plant_move" else None)
+        action = {"plant_create": "created", "plant_assign": "assigned", "plant_move": "moved"}[
+            proposal.kind
+        ]
+        amount = f"{quantity} " if quantity is not None else "all "
+        source = f" from {fields['from_plot_id']}" if proposal.kind == "plant_move" else ""
+        return f"Saved: {action} {amount}{target}{source}."
+    lines = []
+    # Command-returned journal IDs exclude unselected targets and pre-existing captures.
+    for journal_id in command.journal_entry_ids:
+        entry = db.execute(
+            "SELECT id, event_type, occurred_on FROM garden_journal_entries WHERE public_id = %s",
+            (journal_id,),
+        ).fetchone()
+        if entry is None:
+            raise RuntimeError("Confirmed assistant journal entry is missing")
+        plants = db.execute(
+            "SELECT plt_id FROM garden_journal_entry_plants WHERE entry_id = %s ORDER BY plt_id",
+            (entry["id"],),
+        ).fetchall()
+        plots = db.execute(
+            "SELECT plot_id FROM garden_journal_entry_plots WHERE entry_id = %s ORDER BY plot_id",
+            (entry["id"],),
+        ).fetchall()
+        target = _receipt_names(
+            db,
+            plant_ids=[str(row["plt_id"]) for row in plants],
+            plot_ids=[str(row["plot_id"]) for row in plots],
+        )
+        action = str(entry["event_type"]).replace("_", " ")
+        if proposal.kind == "harvest":
+            harvest = db.execute(
+                "SELECT quantity, unit FROM harvest_entries WHERE public_id = %s",
+                (command.primary_id,),
+            ).fetchone()
+            action = f"harvested {float(harvest['quantity']):g} {harvest['unit']} from"
+        elif proposal.kind == "issue":
+            issue = db.execute(
+                "SELECT title FROM garden_issues WHERE public_id = %s",
+                (command.primary_id,),
+            ).fetchone()
+            action = f"reported issue '{issue['title']}' for"
+        elif fields.get("completion_outcome") == "not_seen_blooming_this_season":
+            action = f"not seen blooming in {str(entry['occurred_on'])[:4]}:"
+        lines.append(f"{action} {target} on {entry['occurred_on']}")
+    if lines:
+        return "Saved: " + "; ".join(lines) + "."
+    task = db.execute(
+        "SELECT title, status FROM garden_tasks WHERE public_id = %s",
+        (command.primary_id,),
+    ).fetchone()
+    return f"Task '{task['title']}': {task['status']}. No new observation recorded."
 
 
 def apply_request(
@@ -1717,7 +1890,15 @@ def apply_request(
             status_code=503,
             detail="Emergency read-only mode is active",
         )
+    deleted_name = ""
+    if proposal.kind == "plant_delete":
+        deleted = db.execute(
+            "SELECT name FROM plants WHERE plt_id = %s",
+            (proposal.fields["plant_id"],),
+        ).fetchone()
+        deleted_name = str(deleted["name"] or proposal.fields["plant_id"]) if deleted else "Plant"
     command, plant_ids = _apply_command(db, binding, proposal=proposal)
+    receipt = _saved_receipt(db, proposal=proposal, command=command, deleted_name=deleted_name)
     capture_id = str(row.get("capture_asset_id") or "")
     if capture_id:
         targets: list[tuple[Any, str]] = []
@@ -1762,8 +1943,7 @@ def apply_request(
         state="applied",
         request_id=request_id,
         reference=_reference(request_id),
-        message=("Deleted: " if proposal.kind == "plant_delete" else "Saved: ")
-        + ", ".join(f"{record.type} {record.id}" for record in records),
+        message=receipt + f"\nReference: {_reference(request_id)}",
         proposal=proposal,
         records=records,
     )

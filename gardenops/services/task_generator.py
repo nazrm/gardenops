@@ -19,6 +19,7 @@ from gardenops.services.ai_provider import (
     is_ai_provider_configured,
 )
 from gardenops.services.plant_traits import harvest_offset_months
+from gardenops.services.task_completion import parse_task_metadata
 from gardenops.services.task_windows import (
     derive_recommended_window_strings,
     weekly_watering_recurrence_deadline,
@@ -173,6 +174,20 @@ def _generated_description_metadata(
     if extra:
         metadata.update(extra)
     return json.dumps(metadata)
+
+
+def _bloom_timing_description(timing: dict[str, Any]) -> tuple[str, str]:
+    months = ", ".join(str(month) for month in timing["effective_months"])
+    if timing["source"] == "local_observations":
+        return (
+            f" Timing: recorded local bloom in month(s) {months}.",
+            f" Tidspunkt: lokal blomstring registrert i m\u00e5ned(er) {months}.",
+        )
+    return (
+        f" Timing: catalog bloom month(s) {months}; no local bloom recorded.",
+        f" Tidspunkt: katalogens blomstringsm\u00e5ned(er) {months};"
+        " ingen lokal blomstring registrert.",
+    )
 
 
 def _plant_context_from_row(plant: DbRow | Mapping[str, object]) -> dict[str, str]:
@@ -1738,6 +1753,15 @@ def generate_tasks(
                     "bloom_observe",
                     target_month,
                 )
+                timing = {
+                    "source": "local_observations" if local_months else "catalog",
+                    "observed_months": sorted(local_months or []),
+                    "catalog_months": sorted(_bloom_months(bloom_raw)),
+                    "effective_months": sorted(bloom_months),
+                }
+                timing_en, timing_no = _bloom_timing_description(timing)
+                desc_en += timing_en
+                desc_no += timing_no
                 task_id = _create_task(
                     db,
                     garden_id,
@@ -1749,7 +1773,9 @@ def generate_tasks(
                     actor_user_id,
                     now_ms,
                     description=desc_en,
-                    metadata_json=_generated_description_metadata(desc_no),
+                    metadata_json=_generated_description_metadata(
+                        desc_no, {"bloom_timing": timing}
+                    ),
                     plot_ids=current_plot_ids_by_plant.get(plt_id, ()),
                 )
                 created_specs.append(
@@ -1757,6 +1783,7 @@ def generate_tasks(
                         "task_key": str(task_id),
                         "task_id": task_id,
                         "task_type": "observe_bloom",
+                        "bloom_timing": timing,
                         "due_on": due_on,
                         "plant": plant_ctx,
                         "fallback_en": desc_en,
@@ -2027,6 +2054,13 @@ def generate_tasks(
         if override is None:
             continue
         desc_en, desc_no = override
+        extra_metadata = {}
+        if timing := spec.get("bloom_timing"):
+            # The provider cannot replace the recorded provenance with inferred timing.
+            timing_en, timing_no = _bloom_timing_description(timing)
+            desc_en += timing_en
+            desc_no += timing_no
+            extra_metadata["bloom_timing"] = timing
         db.execute(
             """
             UPDATE garden_tasks
@@ -2037,7 +2071,7 @@ def generate_tasks(
             """,
             (
                 desc_en,
-                _generated_description_metadata(desc_no),
+                _generated_description_metadata(desc_no, extra_metadata),
                 now_ms,
                 spec["task_id"],
             ),
@@ -2477,4 +2511,12 @@ def infer_task_description(
     date_str = parts[2]
     month = _parse_month_from_date(date_str)
     plant = plant_context(plt_id)
-    return _infer_descriptions_for_rule(plant, rule_type, month)
+    desc_en, desc_no = _infer_descriptions_for_rule(plant, rule_type, month)
+    if rule_type == "bloom_observe":
+        metadata = parse_task_metadata(task_row)
+        timing = metadata.get("bloom_timing")
+        if isinstance(timing, dict) and "effective_months" in timing and "source" in timing:
+            timing_en, timing_no = _bloom_timing_description(timing)
+            desc_en += timing_en
+            desc_no += timing_no
+    return desc_en, desc_no

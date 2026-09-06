@@ -8,6 +8,7 @@ import {
   renderPendingMediaPickerLazy,
 } from "./mediaGalleryLoader";
 import { renderEmptyState } from "./emptyState";
+import type { JournalDraftFields } from "../services/journalDraft";
 
 import {
   formatJournalDate,
@@ -221,6 +222,8 @@ function createJournalCard(
 }
 
 export interface JournalComposerOptions {
+  initialDraft?: JournalDraftFields | undefined;
+  onDraftChange?: ((draft: JournalDraftFields) => void) | undefined;
   plantIds?: string[];
   plotIds?: string[];
   prefillEventType?: JournalEventType;
@@ -266,7 +269,7 @@ export function createJournalComposerEl(
     opt.textContent = `${JOURNAL_EVENT_ICONS[value]} ${journalEventLabel(value)}`;
     typeSelect.appendChild(opt);
   }
-  typeSelect.value = opts.editEntry?.event_type ?? opts.prefillEventType ?? "observed";
+  typeSelect.value = opts.editEntry?.event_type ?? opts.initialDraft?.event_type ?? opts.prefillEventType ?? "observed";
   typeGroup.appendChild(typeSelect);
   form.appendChild(typeGroup);
 
@@ -276,7 +279,9 @@ export function createJournalComposerEl(
   dateInput.type = "date";
   dateInput.name = "occurred_on";
   dateInput.required = true;
-  dateInput.value = opts.editEntry?.occurred_on ?? new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  dateInput.value = opts.editEntry?.occurred_on ?? opts.initialDraft?.occurred_on ?? today;
   dateGroup.appendChild(dateInput);
   form.appendChild(dateGroup);
 
@@ -287,7 +292,7 @@ export function createJournalComposerEl(
   titleInput.name = "title";
   titleInput.maxLength = 200;
   titleInput.placeholder = t("journal.title_placeholder");
-  titleInput.value = opts.editEntry?.title ?? "";
+  titleInput.value = opts.editEntry?.title ?? opts.initialDraft?.title ?? "";
   titleGroup.appendChild(titleInput);
   form.appendChild(titleGroup);
 
@@ -298,14 +303,14 @@ export function createJournalComposerEl(
   notesArea.maxLength = 4000;
   notesArea.rows = 3;
   notesArea.placeholder = t("journal.notes_placeholder");
-  notesArea.value = opts.editEntry?.notes ?? "";
+  notesArea.value = opts.editEntry?.notes ?? opts.initialDraft?.notes ?? "";
   notesGroup.appendChild(notesArea);
   form.appendChild(notesGroup);
 
   // Plant selection
   const plantGroup = createFieldGroup(t("journal.field_plants"));
   const selectedPlants = new Set<string>(
-    opts.editEntry?.plant_ids ?? opts.plantIds ?? [],
+    opts.editEntry?.plant_ids ?? opts.initialDraft?.plant_ids ?? opts.plantIds ?? [],
   );
   const plantChips = document.createElement("div");
   plantChips.className = "journal-chip-list";
@@ -324,20 +329,19 @@ export function createJournalComposerEl(
   plantSelect.addEventListener("change", () => {
     if (plantSelect.value) {
       selectedPlants.add(plantSelect.value);
-      renderChips(plantChips, selectedPlants, (id) => {
-        selectedPlants.delete(id);
-        renderChips(plantChips, selectedPlants, () => {});
-      });
+      refreshPlantChips();
       plantSelect.value = "";
     }
   });
-  renderChips(plantChips, selectedPlants, (id) => {
-    selectedPlants.delete(id);
-    renderChips(plantChips, selectedPlants, (id2) => {
-      selectedPlants.delete(id2);
-      renderChips(plantChips, selectedPlants, () => {});
-    });
-  });
+  const plantNames = new Map(opts.availablePlants.map((p) => [p.plt_id, p.name]));
+  function refreshPlantChips(): void {
+    renderChips(plantChips, selectedPlants, (id) => {
+      selectedPlants.delete(id);
+      refreshPlantChips();
+      notifyDraftChange();
+    }, (id) => plantNames.get(id) ?? id);
+  }
+  refreshPlantChips();
   plantGroup.append(plantChips, plantSelect);
   form.appendChild(plantGroup);
 
@@ -357,7 +361,7 @@ export function createJournalComposerEl(
     plotChoices.map((plot) => [plot.plot_id, plotChoiceLabel(plot)]),
   );
   const selectedPlots = new Set<string>(
-    opts.editEntry?.plot_ids ?? opts.plotIds ?? [],
+    opts.editEntry?.plot_ids ?? opts.initialDraft?.plot_ids ?? opts.plotIds ?? [],
   );
   const plotChips = document.createElement("div");
   plotChips.className = "journal-chip-list";
@@ -385,6 +389,7 @@ export function createJournalComposerEl(
     renderChips(plotChips, selectedPlots, (id) => {
       selectedPlots.delete(id);
       refreshPlotChips();
+      notifyDraftChange();
     }, (id) => plotLabelById.get(id) ?? formatPlotLabel(id, ""));
   }
   refreshPlotChips();
@@ -403,14 +408,18 @@ export function createJournalComposerEl(
       uploadProgressPct,
       onFilesSelected: (files) => {
         pendingFiles = pendingFiles.concat(files);
+        photoHint = 0;
+        notifyDraftChange();
         rerenderPendingMedia();
       },
       onRemoveFile: (index) => {
         pendingFiles = pendingFiles.filter((_, candidate) => candidate !== index);
+        notifyDraftChange();
         rerenderPendingMedia();
       },
     });
   };
+  let photoHint = opts.initialDraft?.photo_count ?? 0;
   rerenderPendingMedia();
   mediaGroup.appendChild(mediaPicker);
   form.appendChild(mediaGroup);
@@ -440,6 +449,9 @@ export function createJournalComposerEl(
     notesArea.disabled = value;
     plantSelect.disabled = value;
     plotSelect.disabled = value;
+    plantChips.inert = value;
+    plotChips.inert = value;
+    mediaPicker.inert = value;
   };
   const setUploadProgress = (pct: number | null) => {
     uploadProgressPct = pct;
@@ -472,6 +484,25 @@ export function createJournalComposerEl(
 
   btnRow.append(cancelBtn, submitBtn);
   form.appendChild(btnRow);
+
+  function notifyDraftChange(): void {
+    opts.onDraftChange?.({
+      event_type: typeSelect.value as JournalEventType,
+      occurred_on: dateInput.value, title: titleInput.value, notes: notesArea.value,
+      plant_ids: [...selectedPlants], plot_ids: [...selectedPlots],
+      photo_count: pendingFiles.length + photoHint,
+    });
+  }
+  form.addEventListener("input", notifyDraftChange);
+  form.addEventListener("change", notifyDraftChange);
+  form.querySelectorAll(".journal-field-group").forEach((group, index) => {
+    const input = group.querySelector("input, select, textarea");
+    const label = group.querySelector("label");
+    if (input && label) {
+      input.id = `journal-${crypto.randomUUID()}-${index}`;
+      label.htmlFor = input.id;
+    }
+  });
 
   return form;
 }

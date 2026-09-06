@@ -124,7 +124,7 @@ function createSuggestionCard(
   const inspectBtn = document.createElement("button");
   inspectBtn.type = "button";
   inspectBtn.className = "planner-goal-btn";
-  inspectBtn.textContent = t("planner.check_fit");
+  inspectBtn.textContent = t("planner.inspect_candidate");
   inspectBtn.addEventListener("click", () => cbs.onInspectCandidate(plotId, suggestion));
 
   actions.append(previewBtn, inspectBtn);

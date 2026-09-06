@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 import httpx2
 from mcp import Client
@@ -26,6 +26,7 @@ from gardenops.services.integration_config import (
     matrix_runtime_config,
 )
 from gardenops.services.media_store import media_upload_max_bytes
+from gardenops.services.observation_clock import observation_timezone
 
 logger = logging.getLogger(__name__)
 _REFERENCE_RE = re.compile(r"\bGO-[A-Z0-9]{6}\b", re.IGNORECASE)
@@ -305,10 +306,7 @@ class MatrixBot:
 
     def _occurred_on(self, event: Any) -> str:
         timestamp = int(getattr(event, "server_timestamp", 0) or 0)
-        try:
-            timezone = ZoneInfo(self.config.timezone)
-        except ZoneInfoNotFoundError:
-            timezone = UTC
+        timezone = ZoneInfo(observation_timezone())
         instant = datetime.fromtimestamp(timestamp / 1000, UTC) if timestamp else datetime.now(UTC)
         return instant.astimezone(timezone).date().isoformat()
 
@@ -423,10 +421,7 @@ async def run() -> None:
     if not matrix_enabled():
         raise RuntimeError("MATRIX_ENABLED must be true to run the Matrix worker")
     config = matrix_runtime_config()
-    try:
-        ZoneInfo(config.timezone)
-    except ZoneInfoNotFoundError as exc:
-        raise RuntimeError("MATRIX_TIMEZONE is not a valid timezone") from exc
+    observation_timezone()
     Path(config.store_path).mkdir(parents=True, exist_ok=True)
 
     from nio import (

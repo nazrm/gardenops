@@ -91,6 +91,10 @@ export interface PlotCallbacks {
   canWrite: () => boolean;
   deletePlot: (plotId: string) => Promise<void>;
   onEditPlant: (plant: Plant) => void;
+  onInspectPlant?: (plant: Plant, plotId: string) => void;
+  onViewPlantHistory?: (plantId: string) => void;
+  onRecordObservation?: (plotId: string) => void;
+  onReportIssue?: (plotId: string) => void;
   onMovePlant?: ((plant: Plant, sourcePlotId: string) => void) | undefined;
   getPlotLabel?: ((plotId: string) => string) | undefined;
   onEditPlot: (plotId: string) => void;
@@ -189,8 +193,7 @@ async function resolvePlotForSelection(
   if (gardenId === null) return null;
   try {
     const container = await getContainerApi(gardenId, plotId);
-    if (container.archived_at_ms == null) return null;
-    return { plot: historicalContainerPlot(container), historical: true };
+    return { plot: historicalContainerPlot(container), historical: container.archived_at_ms != null };
   } catch {
     return null;
   }
@@ -915,7 +918,11 @@ async function completeTaskInline(
         cbs,
         completionBody,
       ),
-      { modalParent },
+      {
+        modalParent,
+        plotNames: new Map(state.plots.map((plot) => [plot.plot_id, cbs.getPlotLabel?.(plot.plot_id) ?? plot.plot_id])),
+        onHistory: (plantId) => cbs.onViewPlantHistory?.(plantId),
+      },
     );
     return false;
   }
@@ -1230,6 +1237,7 @@ async function hydrateActivePlotPanel(
   seq: number,
   options: { plotLabel?: string; readOnly?: boolean } = {},
 ): Promise<void> {
+  wirePlotExperience(plants, plotId, cbs, options.readOnly);
   const supplemental = await getPlotSupplementalData(plotId, plants);
   if (seq !== plotSelectionSeq || state.selectedPlotId !== plotId) return;
   const callbacks = getPanelCallbacks(state, plotId, cbs, { ...options, plants });
@@ -1246,6 +1254,40 @@ async function hydrateActivePlotPanel(
     mediaPreviewByPlantId: supplemental.mediaPreviewByPlantId,
     plantAlertsByPlantId: supplemental.plantAlertsByPlantId,
     ...callbacks,
+  });
+  wirePlotExperience(plants, plotId, cbs, options.readOnly);
+}
+
+function wirePlotExperience(plants: Plant[], plotId: string, cbs: PlotCallbacks, readOnly = false): void {
+  document.querySelectorAll<HTMLElement>(".drawer, .bottom-sheet").forEach((panel) => {
+    panel.querySelectorAll<HTMLElement>(".plant-card").forEach((card) => {
+      const plant = plants.find((item) => item.plt_id === card.dataset["pltId"]);
+      const title = card.querySelector(".plant-header > strong");
+      if (!plant || !title || !cbs.onInspectPlant) return;
+      const name = document.createElement("button");
+      name.type = "button";
+      name.className = "plant-summary-link";
+      name.textContent = plant.name;
+      name.addEventListener("click", () => cbs.onInspectPlant?.(plant, plotId));
+      title.replaceWith(name);
+    });
+    if (panel.querySelector(".plot-capture-actions") || readOnly || !cbs.canWrite()) return;
+    const actions = document.createElement("div");
+    actions.className = "button-row plot-capture-actions";
+    for (const [key, action] of [
+      ["experience.record_observation", cbs.onRecordObservation],
+      ["experience.report_issue", cbs.onReportIssue],
+    ] as const) {
+      if (!action) continue;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = t(key);
+      button.addEventListener("click", () => action(plotId));
+      actions.append(button);
+    }
+    const body = panel.querySelector(".sheet-body");
+    if (body) body.prepend(actions);
+    else panel.querySelector(".drawer-header")?.after(actions);
   });
 }
 
@@ -1282,6 +1324,8 @@ export async function selectPlot(
   cbs: PlotCallbacks,
   anchorEl?: HTMLElement,
 ): Promise<void> {
+  const seq = ++plotSelectionSeq;
+  const gardenId = getActiveGardenContext();
   deactivatePlotTasksPanel();
   cancelPendingPlantSearch();
   dismissPopover();
@@ -1296,11 +1340,14 @@ export async function selectPlot(
   });
 
   const resolved = await resolvePlotForSelection(state, plotId);
-  if (!resolved) return;
+  if (seq !== plotSelectionSeq || gardenId !== getActiveGardenContext()) return;
+  if (!resolved) {
+    showToast(t("experience.location_unavailable"), "error");
+    return;
+  }
   const { plot, historical } = resolved;
   state.selectedPlotId = plotId;
   cbs.onPlotFocusChanged(plotId);
-  const seq = ++plotSelectionSeq;
   const panelOptions = historical
     ? { readOnly: true, plotLabel: plot.display_name?.trim() || plot.plot_id }
     : {};
@@ -1346,7 +1393,7 @@ export async function selectPlot(
   const anchor =
     anchorEl ??
     document.querySelector(`[data-plot-id="${plotId}"]`);
-  if (!anchor && historical) {
+  if (!anchor || plot.plot_kind === "container") {
     const panelCallbacks = getPanelCallbacks(state, plotId, cbs, {
       ...panelOptions,
       plants: topPlants,
@@ -1359,6 +1406,11 @@ export async function selectPlot(
     });
     void hydrateActivePlotPanel(state, plotId, topPlants, cbs, seq, panelOptions);
     void loadPlotJournalPreview(plotId, cbs);
+    if (!historical) {
+      activatePlotTasksPanel(state, plotId, cbs);
+      void loadPlotTasksPreview(state, plotId, cbs);
+      void loadPlotMediaPreview(plotId, cbs);
+    }
     return;
   }
   if (!anchor) return;
@@ -1378,6 +1430,9 @@ export async function selectPlot(
     anchorRect,
     viewportRect,
     onViewDetails: () => void openDrawerForPlot(state, plotId, cbs),
+    onInspectPlant: (plant) => cbs.onInspectPlant?.(plant, plotId),
+    onRecord: cbs.canWrite() ? () => cbs.onRecordObservation?.(plotId) : undefined,
+    onReportIssue: cbs.canWrite() ? () => cbs.onReportIssue?.(plotId) : undefined,
     onEdit: cbs.canWrite() ? () => cbs.onEditPlot(plotId) : undefined,
     onDismiss: () => {
       state.selectedPlotId = null;

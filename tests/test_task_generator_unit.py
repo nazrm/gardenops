@@ -86,6 +86,13 @@ class TestGenerateTasksBloomObservation(DbTestBase):
         ).fetchone()
         assert task is not None
         assert task["task_type"] == "observe_bloom"
+        assert json.loads(task["metadata_json"])["bloom_timing"] == {
+            "source": "catalog",
+            "observed_months": [],
+            "catalog_months": [6],
+            "effective_months": [6],
+        }
+        assert "Timing: catalog bloom" in task["description"]
 
     def test_no_bloom_task_wrong_month(self) -> None:
         self._insert_plant("BL2", "Bloomer", bloom_month="juni")
@@ -126,6 +133,13 @@ class TestGenerateTasksBloomObservation(DbTestBase):
             "SELECT * FROM garden_tasks WHERE rule_source = 'bloom_observe:BL-LOCAL:2026-07'",
         ).fetchone()
         assert july_task is not None
+        assert json.loads(july_task["metadata_json"])["bloom_timing"] == {
+            "source": "local_observations",
+            "observed_months": [7],
+            "catalog_months": [6],
+            "effective_months": [7],
+        }
+        assert "Timing: recorded local bloom" in july_task["description"]
 
 
 class TestGenerateTasksPruning(DbTestBase):

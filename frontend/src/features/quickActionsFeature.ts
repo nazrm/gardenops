@@ -136,8 +136,8 @@ function getQuickActionCallbacks(): QuickActionCallbacks {
       void showTaskQuickComplete(),
     onLogJournal: () => {
       closeQuickActionSheet(false);
-      ctx.navigateToSubMode("journal");
-      void ctx.openJournalComposer();
+      const plotId = ctx.state.selectedPlotId;
+      void ctx.openJournalComposer(plotId ? { plotIds: [plotId] } : {});
     },
     onReportIssue: () => {
       closeQuickActionSheet(false);
@@ -211,20 +211,22 @@ function setQuickActionBackgroundInert(
   inertBackgroundElements = [];
 }
 
-function focusQuickActionSheet(preferContent = false): void {
+function focusQuickActionSheet(preferContent = false, restoreSearch = false): void {
   window.requestAnimationFrame(() => {
     if (!quickActionSheetOpen) return;
     const sheet = quickActionSheet();
     if (!sheet) return;
     const content = quickActionContent();
+    if (!restoreSearch && preferContent && content?.contains(document.activeElement)) return;
     const contentTarget = preferContent
       ? content?.querySelector<HTMLElement>(
         "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
       )
       : null;
     const closeButton = document.getElementById("mobile-quick-actions-close-btn");
-    const target = contentTarget ?? closeButton ?? sheet;
-    if (target instanceof HTMLElement) target.focus();
+    const search = restoreSearch ? content?.querySelector<HTMLInputElement>(".quick-action-task-search") : null;
+    const target = search ?? contentTarget ?? closeButton ?? sheet;
+    if (target instanceof HTMLElement) target.focus({ preventScroll: true });
   });
 }
 
@@ -450,7 +452,15 @@ async function renderTaskQuickCompleteView(): Promise<void> {
             task,
             plantNames,
             (body) => completeQuickTask(task, body),
-            { modalParent: quickActionSheet() },
+            {
+              modalParent: quickActionSheet(),
+              onClose: () => focusQuickActionSheet(true, true),
+              plotNames: new Map(ctx.getPlots().map((plot) => [plot.plot_id, plot.display_name || plot.plot_id])),
+              onHistory: (plantId) => {
+                closeQuickActionSheet(false);
+                void ctx.openPlantHistory(plantId);
+              },
+            },
           );
           return;
         }

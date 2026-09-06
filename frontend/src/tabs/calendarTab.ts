@@ -970,6 +970,8 @@ function calendarTaskForCompletion(event: CalendarEvent) {
   return {
     task_type: event.source_key as GardenTask["task_type"],
     plant_ids: event.plant_ids,
+    plot_ids: event.plot_ids,
+    ...(event.observation_timezone ? { observation_timezone: event.observation_timezone } : {}),
     title: event.title,
   };
 }
@@ -1638,7 +1640,10 @@ function completeCalendarTask(event: CalendarEvent): void {
     }
   }
   const plantNames = new Map(ctx.getPlants().map((plant) => [plant.plt_id, plant.name]));
-  openTaskCompletionDialog(task, plantNames, (body) => runTaskAction(event, body));
+  openTaskCompletionDialog(task, plantNames, (body) => runTaskAction(event, body), {
+    plotNames: new Map(ctx.getPlots().map((plot) => [plot.plot_id, plot.display_name || plot.plot_id])),
+    onHistory: (plantId) => void ctx.openPlantHistory(plantId),
+  });
 }
 
 async function snoozeCalendarTask(event: CalendarEvent): Promise<void> {

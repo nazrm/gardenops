@@ -12,10 +12,16 @@ import {
   onOfflineQueueChange,
   getOfflineQueueSnapshot,
   removeDraft,
+  discardQuarantinedDrafts,
   retryDraft,
   syncAllDrafts,
   isOnline,
   deserializeFiles,
+  assertOfflineReplayContext,
+  captureOfflineQueueContext,
+  assertOfflineQueueContext,
+  getSavedJournalEntryId,
+  saveOfflineDraftProgress,
 } from "../services/offlineQueue";
 import {
   createJournalEntryApi,
@@ -52,6 +58,9 @@ let mediaHelpers: OfflineMediaHelpers;
 let onSyncComplete: ((result: SyncResult) => Promise<void> | void) | null = null;
 let canManageDrafts: (() => boolean) | null = null;
 let syncInFlight: Promise<void> | null = null;
+let syncRequested = false;
+let onOpenSavedJournalEntry: OfflineFeatureOptions["onOpenSavedJournalEntry"];
+let onJournalEntrySaved: OfflineFeatureOptions["onJournalEntrySaved"];
 
 function canRetryOfflineDrafts(): boolean {
   return canManageDrafts?.() ?? true;
@@ -60,6 +69,8 @@ function canRetryOfflineDrafts(): boolean {
 export interface OfflineFeatureOptions {
   canManageDrafts?: () => boolean;
   onSyncComplete?: (result: SyncResult) => Promise<void> | void;
+  onOpenSavedJournalEntry?: (entryId: string | number, gardenId: number | null) => Promise<void> | void;
+  onJournalEntrySaved?: (entryId: string | number, gardenId: number | null) => Promise<void> | void;
 }
 
 export function initOfflineFeature(
@@ -69,21 +80,24 @@ export function initOfflineFeature(
   mediaHelpers = helpers;
   onSyncComplete = options.onSyncComplete ?? null;
   canManageDrafts = options.canManageDrafts ?? null;
+  onOpenSavedJournalEntry = options.onOpenSavedJournalEntry;
+  onJournalEntrySaved = options.onJournalEntrySaved;
   initOfflineIndicator();
 }
 
-function restoreSerializedMedia(
+export function restoreSerializedMedia(
   payload: Record<string, unknown>,
 ): SerializedFile[] {
   if (Array.isArray(payload["_serialized_media"])) {
     const serializedMedia = payload["_serialized_media"] as SerializedFile[];
-    payload["media_files"] = deserializeFiles(
-      serializedMedia,
-    );
-    delete payload["_serialized_media"];
     return serializedMedia;
   }
   return [];
+}
+
+function replayPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const { _serialized_media, _confirmed_journal_entry_id, _completed_media_ids, ...data } = payload;
+  return { ...data, media_files: deserializeFiles(restoreSerializedMedia(payload)) };
 }
 
 function getDraftGardenId(draft: OfflineDraft): number | null {
@@ -133,6 +147,14 @@ function taskActionBody(
   if (typeof payload["notes"] === "string") {
     body.notes = payload["notes"];
   }
+  if (typeof payload["occurred_on"] === "string") {
+    body.occurred_on = payload["occurred_on"];
+  }
+  if (Array.isArray(payload["observed_plot_ids"])) {
+    body.observed_plot_ids = payload["observed_plot_ids"].filter(
+      (plotId): plotId is string => typeof plotId === "string",
+    );
+  }
   if (Array.isArray(payload["completed_plant_ids"])) {
     body.completed_plant_ids = payload["completed_plant_ids"].filter(
       (plantId): plantId is string => typeof plantId === "string",
@@ -154,11 +176,15 @@ async function uploadOfflineAttachments(
   operationIds: string[],
   gardenId: number | null,
   linkedTargets: Array<{ targetType: "plant" | "plot"; targetId: string }> = [],
+  draft?: OfflineDraft,
 ): Promise<void> {
   if (files.length !== operationIds.length) {
     throw new Error("Offline attachment replay IDs do not match selected files");
   }
   for (let index = 0; index < files.length; index += 1) {
+    if (draft) assertOfflineReplayContext(draft);
+    const completed = (draft?.payload["_completed_media_ids"] as string[] | undefined) ?? [];
+    if (completed.includes(operationIds[index]!)) continue;
     const uploaded = await uploadMediaApi({
       targetType,
       targetId,
@@ -167,6 +193,7 @@ async function uploadOfflineAttachments(
       operationId: operationIds[index]!,
     });
     for (const linkedTarget of linkedTargets) {
+      if (draft) assertOfflineReplayContext(draft);
       await addMediaLinkApi({
         assetId: uploaded.asset_id,
         targetType: linkedTarget.targetType,
@@ -174,30 +201,41 @@ async function uploadOfflineAttachments(
         gardenId,
       });
     }
+    if (draft?.type === "journal") {
+      await saveOfflineDraftProgress(draft, {
+        _completed_media_ids: [...completed, operationIds[index]!],
+      });
+    }
   }
 }
 
-function getOfflineSyncCallbacks(): SyncCallbacks {
+export function getOfflineSyncCallbacks(): SyncCallbacks {
   return {
     journal: async (payload, draft) => {
       const gardenId = getDraftGardenId(draft);
       const serializedMedia = restoreSerializedMedia(payload);
       const mediaFiles =
         mediaHelpers.extractPendingMediaFiles(
-          payload,
+          replayPayload(payload),
         );
-      const created = await createJournalEntryApi(
-        mediaHelpers.withoutPendingMediaFiles(
-          payload,
-        ) as Parameters<
-          typeof createJournalEntryApi
-        >[0],
-        { gardenId, operationId: draft.operation_id },
-      );
+      let entryId = getSavedJournalEntryId(draft);
+      if (entryId === null) {
+        assertOfflineReplayContext(draft);
+        const created = await createJournalEntryApi(
+          mediaHelpers.withoutPendingMediaFiles(
+            replayPayload(payload),
+          ) as Parameters<typeof createJournalEntryApi>[0],
+          { gardenId, operationId: draft.operation_id },
+        );
+        entryId = created.id;
+        await saveOfflineDraftProgress(draft, { _confirmed_journal_entry_id: entryId });
+        assertOfflineReplayContext(draft);
+        await onJournalEntrySaved?.(entryId, gardenId);
+      }
       if (mediaFiles.length > 0) {
         await uploadOfflineAttachments(
           "journal_entry",
-          created.id,
+          entryId,
           mediaFiles,
           attachmentOperationIds(serializedMedia, mediaFiles),
           gardenId,
@@ -209,6 +247,7 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
               (targetId) => ({ targetType: "plot" as const, targetId }),
             ),
           ],
+          draft,
         );
       }
     },
@@ -249,11 +288,11 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
       const serializedMedia = restoreSerializedMedia(payload);
       const mediaFiles =
         mediaHelpers.extractPendingMediaFiles(
-          payload,
+          replayPayload(payload),
         );
       const created = await createIssueApi(
         mediaHelpers.withoutPendingMediaFiles(
-          payload,
+          replayPayload(payload),
         ) as Parameters<typeof createIssueApi>[0],
         { gardenId, operationId: draft.operation_id },
       );
@@ -263,6 +302,8 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
         mediaFiles,
         attachmentOperationIds(serializedMedia, mediaFiles),
         gardenId,
+        [],
+        draft,
       );
     },
     harvest_create: async (payload, draft) => {
@@ -270,11 +311,11 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
       const serializedMedia = restoreSerializedMedia(payload);
       const mediaFiles =
         mediaHelpers.extractPendingMediaFiles(
-          payload,
+          replayPayload(payload),
         );
       const created = await createHarvestApi(
         mediaHelpers.withoutPendingMediaFiles(
-          payload,
+          replayPayload(payload),
         ) as Parameters<typeof createHarvestApi>[0],
         { gardenId, operationId: draft.operation_id },
       );
@@ -284,6 +325,8 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
         mediaFiles,
         attachmentOperationIds(serializedMedia, mediaFiles),
         gardenId,
+        [],
+        draft,
       );
     },
     plant_media_upload: async (payload, draft) => {
@@ -291,7 +334,7 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
       const serializedMedia = restoreSerializedMedia(payload);
       const mediaFiles =
         mediaHelpers.extractPendingMediaFiles(
-          payload,
+          replayPayload(payload),
         );
       const targetId = String(
         payload["target_id"] ?? "",
@@ -300,22 +343,26 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
         throw new Error(
           "Missing plant media target",
         );
-      await mediaHelpers.uploadTargetMediaFiles(
-        "plant",
-        targetId,
-        mediaFiles,
-        {
-          gardenId,
-          operationIds: attachmentOperationIds(serializedMedia, mediaFiles),
-        },
-      );
+      const operationIds = attachmentOperationIds(serializedMedia, mediaFiles);
+      for (let index = 0; index < mediaFiles.length; index += 1) {
+        assertOfflineReplayContext(draft);
+        await mediaHelpers.uploadTargetMediaFiles(
+          "plant",
+          targetId,
+          [mediaFiles[index]!],
+          {
+            gardenId,
+            operationIds: [operationIds[index]!],
+          },
+        );
+      }
     },
     plot_media_upload: async (payload, draft) => {
       const gardenId = getDraftGardenId(draft);
       const serializedMedia = restoreSerializedMedia(payload);
       const mediaFiles =
         mediaHelpers.extractPendingMediaFiles(
-          payload,
+          replayPayload(payload),
         );
       const targetId = String(
         payload["target_id"] ?? "",
@@ -324,29 +371,41 @@ function getOfflineSyncCallbacks(): SyncCallbacks {
         throw new Error(
           "Missing plot media target",
         );
-      await mediaHelpers.uploadTargetMediaFiles(
-        "plot",
-        targetId,
-        mediaFiles,
-        {
-          gardenId,
-          operationIds: attachmentOperationIds(serializedMedia, mediaFiles),
-        },
-      );
+      const operationIds = attachmentOperationIds(serializedMedia, mediaFiles);
+      for (let index = 0; index < mediaFiles.length; index += 1) {
+        assertOfflineReplayContext(draft);
+        await mediaHelpers.uploadTargetMediaFiles(
+          "plot",
+          targetId,
+          [mediaFiles[index]!],
+          {
+            gardenId,
+            operationIds: [operationIds[index]!],
+          },
+        );
+      }
     },
   };
 }
 
 export async function refreshOfflineIndicator(): Promise<void> {
+  const context = captureOfflineQueueContext();
   const wrapper = document.getElementById(
     "offline-indicator",
   );
   if (!wrapper) return;
   const snapshot = await getOfflineQueueSnapshot();
+  try { assertOfflineQueueContext(context); } catch {
+    wrapper.replaceChildren();
+    wrapper.hidden = true;
+    updateToastRecoveryClearance(wrapper, false);
+    return;
+  }
   renderOfflineIndicator(
     wrapper,
     {
       failedDrafts: snapshot.failedDrafts,
+      quarantinedCount: snapshot.quarantinedCount,
       canDiscardDrafts: true,
       canRetryDrafts: canRetryOfflineDrafts(),
       online: isOnline(),
@@ -354,17 +413,41 @@ export async function refreshOfflineIndicator(): Promise<void> {
       syncingCount: snapshot.syncingCount,
     },
     {
-      onDiscard: (draft) => {
+      onDiscardQuarantined: () => {
         void (async () => {
+          assertOfflineQueueContext(context);
           const confirmed = await confirmDialog(
-            t("offline.discard_confirm"),
-            t("offline.discard"),
+            t("offline.discard_quarantined_confirm"),
+            t("offline.discard_quarantined"),
           );
           if (!confirmed) return;
+          assertOfflineQueueContext(context);
+          await discardQuarantinedDrafts();
+          await refreshOfflineIndicator();
+        })().catch(() => showToast(t("offline.sync_failed"), "error"));
+      },
+      onDiscard: (draft) => {
+        void (async () => {
+          const context = captureOfflineQueueContext();
+          const savedEntryId = getSavedJournalEntryId(draft);
+          const confirmed = await confirmDialog(
+            t(savedEntryId === null ? "offline.discard_confirm" : "offline.discard_attachments_confirm"),
+            t(savedEntryId === null ? "offline.discard" : "offline.discard_attachments"),
+          );
+          if (!confirmed) return;
+          assertOfflineQueueContext(context);
           await removeDraft(draft.id);
           await refreshOfflineIndicator();
-        })();
+        })().catch(() => showToast(t("offline.sync_failed"), "error"));
       },
+      onOpenSavedRecord: onOpenSavedJournalEntry ? (draft) => {
+        try { assertOfflineQueueContext(context); } catch { return; }
+        const entryId = getSavedJournalEntryId(draft);
+        if (entryId !== null) {
+          void Promise.resolve(onOpenSavedJournalEntry?.(entryId, getDraftGardenId(draft)))
+            .catch(() => showToast(t("offline.sync_failed"), "error"));
+        }
+      } : undefined,
       onRetry: (draft) => {
         void (async () => {
           if (!canRetryOfflineDrafts()) {
@@ -377,12 +460,12 @@ export async function refreshOfflineIndicator(): Promise<void> {
           } else {
             await refreshOfflineIndicator();
           }
-        })();
+        })().catch(() => showToast(t("offline.sync_failed"), "error"));
       },
       onSyncNow: () => void syncOfflineDraftsNow(),
     },
   );
-  updateToastRecoveryClearance(wrapper, snapshot.failedDrafts.length > 0);
+  updateToastRecoveryClearance(wrapper, snapshot.failedDrafts.length > 0 || snapshot.quarantinedCount > 0);
 }
 
 function updateToastRecoveryClearance(
@@ -400,32 +483,39 @@ function updateToastRecoveryClearance(
 }
 
 export async function syncOfflineDraftsNow(): Promise<void> {
-  if (syncInFlight) return syncInFlight;
+  if (syncInFlight) {
+    syncRequested = true;
+    return syncInFlight;
+  }
   const sync = (async () => {
-    if (!isOnline() || !canRetryOfflineDrafts()) {
-      await refreshOfflineIndicator();
-      return;
-    }
-    try {
-      const result = await syncAllDrafts(
-        getOfflineSyncCallbacks(),
-      );
-      if (result.synced > 0 && result.remaining === 0) {
-        showToast(
-          t("offline.sync_complete"),
-          "success",
+    const context = captureOfflineQueueContext();
+    do {
+      syncRequested = false;
+      if (!isOnline() || !canRetryOfflineDrafts()) {
+        await refreshOfflineIndicator();
+        return;
+      }
+      try {
+        assertOfflineQueueContext(context);
+        const result = await syncAllDrafts(
+          getOfflineSyncCallbacks(),
         );
-      } else if (result.failed > 0) {
+        assertOfflineQueueContext(context);
+        if (result.synced > 0 && result.remaining === 0 && !syncRequested) {
+          showToast(t("offline.sync_complete"), "success");
+        } else if (result.failed > 0) {
+          showToast(t("offline.sync_failed"), "error");
+        }
+        if (result.synced > 0) {
+          await onSyncComplete?.(result);
+        }
+      } catch {
         showToast(t("offline.sync_failed"), "error");
+        break;
+      } finally {
+        await refreshOfflineIndicator();
       }
-      if (result.synced > 0) {
-        await onSyncComplete?.(result);
-      }
-    } catch {
-      showToast(t("offline.sync_failed"), "error");
-    } finally {
-      await refreshOfflineIndicator();
-    }
+    } while (syncRequested);
   })();
   syncInFlight = sync;
   try {
