@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 
+from gardenops.services.observation_clock import observation_today
+
 
 def observation_year(raw_date: str | None) -> int | None:
     if raw_date is None:
@@ -20,5 +22,5 @@ def is_current_observation_year(
     year = observation_year(raw_date)
     if year is None:
         return False
-    current_year = (today or date.today()).year
+    current_year = (today or observation_today()).year
     return year == current_year

@@ -79,6 +79,8 @@ export interface TaskActionRequest {
   notes?: string;
   completed_plant_ids?: string[];
   completion_outcome?: "done" | "not_seen_blooming_this_season";
+  occurred_on?: string;
+  observed_plot_ids?: string[];
 }
 
 export type RevisionedTaskActionRequest = TaskActionRequest & {
@@ -2612,6 +2614,7 @@ export interface JournalFilterParams {
 
 export async function fetchJournalEntriesApi(
   params?: JournalFilterParams,
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<JournalListResponse> {
   const qs = new URLSearchParams();
   if (params) {
@@ -2622,6 +2625,7 @@ export async function fetchJournalEntriesApi(
   const query = qs.toString();
   return apiGet<JournalListResponse>(
     `/api/journal${query ? `?${query}` : ""}`,
+    options,
   );
 }
 
@@ -3818,13 +3822,14 @@ export async function deleteCalendarManualEventApi(
 
 export async function fetchHarvestApi(
   params: Record<string, string | number>,
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<HarvestListResponse> {
   const query = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v !== "" && v !== undefined) query.set(k, String(v));
   }
   const qs = query.toString();
-  return apiGet<HarvestListResponse>(`/api/harvest${qs ? `?${qs}` : ""}`);
+  return apiGet<HarvestListResponse>(`/api/harvest${qs ? `?${qs}` : ""}`, options);
 }
 
 export async function createHarvestApi(body: {
@@ -3856,11 +3861,12 @@ export async function deleteHarvestApi(id: string): Promise<{ status: string }> 
 
 export async function fetchHarvestSummaryApi(
   params?: Record<string, string | number>,
+  options?: Pick<ApiRequestOptions, "gardenId">,
 ): Promise<HarvestSummary> {
   const qs = params ? new URLSearchParams(
     Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
   ).toString() : "";
-  return apiGet<HarvestSummary>(`/api/harvest/summary${qs ? `?${qs}` : ""}`);
+  return apiGet<HarvestSummary>(`/api/harvest/summary${qs ? `?${qs}` : ""}`, options);
 }
 
 // ── Procurement API ──

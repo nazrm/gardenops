@@ -8,7 +8,7 @@ const MAX_RETRIES = 5;
 const MAX_TRANSIENT_ATTEMPTS_PER_SYNC = 2;
 const TRANSIENT_RETRY_DELAY_MS = 300;
 const QUEUE_CHANGED_EVENT = "gardenops:offline-queue-changed";
-const TERMINAL_REPLAY_STATUSES = new Set([400, 403, 409, 410, 413, 422]);
+const TERMINAL_REPLAY_STATUSES = new Set([400, 403, 404, 409, 410, 413, 422]);
 
 export const TASK_ACTION_DRAFT_TYPES = [
   "task_complete",
@@ -110,6 +110,7 @@ export interface SyncResult {
 }
 
 export interface OfflineQueueSnapshot {
+  quarantinedCount: number;
   failedDrafts: OfflineDraft[];
   pendingCount: number;
   syncingCount: number;
@@ -121,6 +122,69 @@ export type ReplayErrorDisposition = "terminal" | "retryable";
 let db: IDBDatabase | null = null;
 let activeSync: Promise<SyncResult> | null = null;
 let activeClear: Promise<void> | null = null;
+let queueIdentity: string | null = null;
+let sessionGeneration = 0;
+const enqueueTransactions = new Set<IDBTransaction>();
+type QueueContext = { identity: string | null; gardenId: number | null; generation: number };
+type OwnedDraft = OfflineDraft & { owner_id?: string };
+const replayContexts = new WeakMap<OfflineDraft, QueueContext>();
+
+/** Call on authentication and garden transitions, before starting any queue work. */
+export function setOfflineQueueIdentity(identity: string | number | null): void {
+  queueIdentity = identity === null ? null : String(identity);
+  sessionGeneration += 1;
+  for (const transaction of enqueueTransactions) {
+    try { transaction.abort(); } catch { /* Already completed. */ }
+  }
+  emitQueueChanged();
+}
+
+export function captureOfflineQueueContext(): QueueContext {
+  return { identity: queueIdentity, gardenId: getActiveGardenContext(), generation: sessionGeneration };
+}
+
+export function assertOfflineQueueContext(context: QueueContext): void {
+  if (!context.identity || activeClear || context.identity !== queueIdentity
+    || context.gardenId !== getActiveGardenContext() || context.generation !== sessionGeneration) {
+    throw new Error("Offline queue identity or garden changed");
+  }
+}
+
+function ownsDraft(draft: OfflineDraft): boolean {
+  // Legacy ownerless rows cannot safely be assigned to the next signed-in user.
+  return queueIdentity !== null && (draft as OwnedDraft).owner_id === queueIdentity;
+}
+
+function isQuarantinedDraft(draft: OfflineDraft): boolean {
+  const owner = (draft as OwnedDraft).owner_id;
+  return typeof owner !== "string" || owner.length === 0;
+}
+
+export function assertOfflineReplayContext(draft: OfflineDraft): void {
+  const context = replayContexts.get(draft);
+  if (!context || !ownsDraft(draft)) throw new Error("Offline queue owner changed");
+  assertOfflineQueueContext(context);
+}
+
+export function getSavedJournalEntryId(draft: OfflineDraft): string | number | null {
+  const id = draft.payload["_confirmed_journal_entry_id"];
+  return draft.type === "journal" && (typeof id === "string" || typeof id === "number") ? id : null;
+}
+
+/** Persist confirmed progress before another network request; never recreate a removed draft. */
+export async function saveOfflineDraftProgress(
+  draft: OfflineDraft,
+  progress: Record<string, unknown>,
+): Promise<void> {
+  Object.assign(draft.payload, progress);
+  const store = getStore("readwrite");
+  const existing = await wrap(store.get(draft.id)) as OfflineDraft | undefined;
+  if (!existing || (existing as OwnedDraft).owner_id !== (draft as OwnedDraft).owner_id) {
+    throw new Error("Offline draft no longer exists");
+  }
+  await wrap(store.put({ ...existing, payload: { ...existing.payload, ...progress } }), true);
+  emitQueueChanged();
+}
 
 function generateOperationId(): string {
   const cryptoApi = globalThis.crypto;
@@ -158,8 +222,11 @@ function renewOperationIdentity(draft: OfflineDraft): OfflineDraft {
 }
 
 export function canRetryFailedDraft(draft: OfflineDraft): boolean {
+  if (draft.type === "journal") {
+    return draft.last_status !== 404 && draft.last_status !== 409 && draft.last_status !== 410;
+  }
   if (draft.last_status !== 409 && draft.last_status !== 410) return true;
-  if (["journal", "issue_create", "harvest_create"].includes(draft.type)) return true;
+  if (["issue_create", "harvest_create"].includes(draft.type)) return true;
   return draft.last_status === 409
     && (draft.type === "plant_media_upload" || draft.type === "plot_media_upload");
 }
@@ -264,11 +331,16 @@ function getStore(mode: IDBTransactionMode): IDBObjectStore {
   return tx.objectStore(STORE_NAME);
 }
 
-function wrap<T>(request: IDBRequest<T>): Promise<T> {
+function wrap<T>(request: IDBRequest<T>, committed = false): Promise<T> {
   return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => { if (!committed) resolve(request.result); };
     request.onerror = () =>
       reject(new Error(`IDB request failed: ${request.error?.message}`));
+    if (committed) {
+      request.transaction!.oncomplete = () => resolve(request.result);
+      request.transaction!.onerror = () => reject(new Error("IDB transaction failed"));
+      request.transaction!.onabort = () => reject(new Error("IDB transaction was aborted"));
+    }
   });
 }
 
@@ -341,12 +413,14 @@ function replacePendingTaskSnoozeDraft(
 function createDraft(
   type: string,
   payload: Record<string, unknown>,
-): Omit<OfflineDraft, "id"> {
+  context: QueueContext,
+): Omit<OwnedDraft, "id"> {
   return {
     type,
     payload,
     operation_id: generateOperationId(),
-    garden_id: getActiveGardenContext(),
+    garden_id: context.gardenId,
+    owner_id: context.identity!,
     created_at_ms: Date.now(),
     status: "pending",
     retry_count: 0,
@@ -372,7 +446,9 @@ export async function enqueueTaskActionBatch(
   inputs: readonly TaskActionDraftInput[],
 ): Promise<number[]> {
   if (inputs.length === 0) return [];
-  const drafts = inputs.map(({ type, payload }) => createDraft(type, { ...payload }));
+  const context = captureOfflineQueueContext();
+  assertOfflineQueueContext(context);
+  const drafts = inputs.map(({ type, payload }) => createDraft(type, { ...payload }, context));
   const requestedByTask = new Map<string, Omit<OfflineDraft, "id">>();
   for (const draft of drafts) {
     const taskId = taskIdForPayload(draft.payload);
@@ -390,8 +466,10 @@ export async function enqueueTaskActionBatch(
   }
 
   if (!db) await initOfflineQueue();
+  assertOfflineQueueContext(context);
   return new Promise<number[]>((resolve, reject) => {
     const transaction = db!.transaction(STORE_NAME, "readwrite");
+    enqueueTransactions.add(transaction);
     const store = transaction.objectStore(STORE_NAME);
     const existingRequest = store.getAll();
     const ids: number[] = [];
@@ -400,6 +478,7 @@ export async function enqueueTaskActionBatch(
     let settled = false;
 
     const rejectOnce = (error: Error): void => {
+      enqueueTransactions.delete(transaction);
       if (settled) return;
       settled = true;
       reject(error);
@@ -409,6 +488,11 @@ export async function enqueueTaskActionBatch(
       failure = new Error(`IDB request failed: ${existingRequest.error?.message}`);
     };
     existingRequest.onsuccess = () => {
+      try { assertOfflineQueueContext(context); } catch (error) {
+        failure = error as Error;
+        transaction.abort();
+        return;
+      }
       const existingDrafts = (existingRequest.result as OfflineDraft[]).filter(
         (draft) => draft.status === "pending"
           || draft.status === "syncing"
@@ -417,7 +501,7 @@ export async function enqueueTaskActionBatch(
       for (const requested of drafts) {
         const taskId = taskIdForPayload(requested.payload);
         const existing = existingDrafts.find((candidate) => (
-          candidate.garden_id === requested.garden_id
+          ownsDraft(candidate) && candidate.garden_id === requested.garden_id
           && isTaskActionDraftType(candidate.type)
           && taskIdForPayload(candidate.payload) === taskId
         ));
@@ -443,6 +527,11 @@ export async function enqueueTaskActionBatch(
         const correction = snoozeCorrections.get(taskIdForPayload(draft.payload));
         const writeRequest = correction ? store.put(correction) : store.add(draft);
         writeRequest.onsuccess = () => {
+          try { assertOfflineQueueContext(context); } catch (error) {
+            failure = error as Error;
+            transaction.abort();
+            return;
+          }
           ids.push(writeRequest.result as number);
         };
         writeRequest.onerror = () => {
@@ -451,6 +540,7 @@ export async function enqueueTaskActionBatch(
       }
     };
     transaction.oncomplete = () => {
+      enqueueTransactions.delete(transaction);
       if (settled) return;
       settled = true;
       emitQueueChanged();
@@ -473,36 +563,50 @@ export async function enqueueDraft(
     const ids = await enqueueTaskActionBatch([{ type, payload }]);
     return ids[0]!;
   }
-  const draft = createDraft(type, await serializeDraftFiles(payload));
+  const context = captureOfflineQueueContext();
+  assertOfflineQueueContext(context);
+  const draft = createDraft(type, { ...payload }, context);
+  draft.payload = await serializeDraftFiles(draft.payload);
+  if (!db) await initOfflineQueue();
+  assertOfflineQueueContext(context);
   const store = getStore("readwrite");
-  const id = await wrap(store.add(draft));
+  const transaction = store.transaction;
+  enqueueTransactions.add(transaction);
+  let id: IDBValidKey;
+  try {
+    const request = store.add(draft);
+    request.addEventListener("success", () => {
+      try { assertOfflineQueueContext(context); } catch { transaction.abort(); }
+    });
+    id = await wrap(request, true);
+  } finally {
+    enqueueTransactions.delete(transaction);
+  }
   emitQueueChanged();
   return id as number;
 }
 
 export async function getAllDrafts(): Promise<OfflineDraft[]> {
   const store = getStore("readonly");
-  return await wrap(store.getAll()) as OfflineDraft[];
+  return (await wrap(store.getAll()) as OfflineDraft[]).filter(ownsDraft);
 }
 
 export async function getPendingDrafts(): Promise<OfflineDraft[]> {
   const store = getStore("readonly");
   const index = store.index("status");
   const all = await wrap(index.getAll("pending"));
-  return all as OfflineDraft[];
+  return (all as OfflineDraft[]).filter(ownsDraft);
 }
 
 export async function getPendingCount(): Promise<number> {
-  const store = getStore("readonly");
-  const index = store.index("status");
-  const count = await wrap(index.count("pending"));
-  return count;
+  return (await getPendingDrafts()).length;
 }
 
 export async function getOfflineQueueSnapshot(
   gardenId?: number | null,
 ): Promise<OfflineQueueSnapshot> {
-  const allDrafts = await getAllDrafts();
+  const rows = await wrap(getStore("readonly").getAll()) as OfflineDraft[];
+  const allDrafts = rows.filter(ownsDraft);
   const scopedDrafts = gardenId === undefined
     ? allDrafts
     : allDrafts.filter((draft) => draft.garden_id === gardenId);
@@ -531,6 +635,8 @@ export async function getOfflineQueueSnapshot(
     });
   }
   return {
+    // Device-wide count only: legacy ownership and garden access are unverified.
+    quarantinedCount: rows.filter(isQuarantinedDraft).length,
     failedDrafts,
     pendingCount: scopedDrafts.filter((draft) => draft.status === "pending").length,
     syncingCount: scopedDrafts.filter((draft) => draft.status === "syncing").length,
@@ -546,8 +652,42 @@ export async function getTaskActionStates(
 
 export async function removeDraft(id: number): Promise<void> {
   const store = getStore("readwrite");
-  await wrap(store.delete(id));
+  const existing = await wrap(store.get(id));
+  if (!existing || !ownsDraft(existing as OfflineDraft)) return;
+  await wrap(store.delete(id), true);
   emitQueueChanged();
+}
+
+/** Only call after explicit confirmation; never return legacy contents to the UI. */
+export async function discardQuarantinedDrafts(): Promise<void> {
+  const context = captureOfflineQueueContext();
+  assertOfflineQueueContext(context);
+  await deleteQueueRows(isQuarantinedDraft, context);
+  emitQueueChanged();
+}
+
+function deleteQueueRows(
+  shouldDelete: (draft: OfflineDraft) => boolean,
+  context?: QueueContext,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const transaction = db!.transaction(STORE_NAME, "readwrite");
+    const request = transaction.objectStore(STORE_NAME).openCursor();
+    request.onsuccess = () => {
+      try {
+        if (context) assertOfflineQueueContext(context);
+        const cursor = request.result;
+        if (!cursor) return;
+        if (shouldDelete(cursor.value as OfflineDraft)) cursor.delete();
+        cursor.continue();
+      } catch {
+        transaction.abort();
+      }
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(new Error("IDB transaction failed"));
+    transaction.onabort = () => reject(new Error("IDB transaction was aborted"));
+  });
 }
 
 export async function retryDraft(id: number): Promise<boolean> {
@@ -555,6 +695,7 @@ export async function retryDraft(id: number): Promise<boolean> {
   const existing = await wrap(store.get(id));
   if (!existing) return false;
   let draft = existing as OfflineDraft;
+  if (!ownsDraft(draft)) return false;
   if (draft.status !== "failed") return false;
   if (!canRetryFailedDraft(draft)) return false;
   if (draft.last_status === 409 || draft.last_status === 410) {
@@ -564,7 +705,7 @@ export async function retryDraft(id: number): Promise<boolean> {
   draft.retry_count = 0;
   draft.last_error = "";
   draft.last_status = null;
-  await wrap(store.put(draft));
+  await wrap(store.put(draft), true);
   emitQueueChanged();
   return true;
 }
@@ -573,24 +714,13 @@ async function runOfflineQueueClear(): Promise<void> {
   if (!db) await initOfflineQueue();
   const syncToDrain = activeSync;
   if (syncToDrain) await syncToDrain.catch(() => undefined);
-  await new Promise<void>((resolve, reject) => {
-    const transaction = db!.transaction(STORE_NAME, "readwrite");
-    const request = transaction.objectStore(STORE_NAME).clear();
-    request.onerror = () => {
-      reject(new Error(`IDB request failed: ${request.error?.message}`));
-    };
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => {
-      reject(new Error(`IDB transaction failed: ${transaction.error?.message}`));
-    };
-    transaction.onabort = () => {
-      reject(new Error("IDB transaction was aborted"));
-    };
-  });
+  // Authentication cleanup removes private owned work, not unverified legacy work.
+  await deleteQueueRows((draft) => !isQuarantinedDraft(draft));
   emitQueueChanged();
 }
 
 export async function clearOfflineQueue(): Promise<void> {
+  setOfflineQueueIdentity(null);
   if (activeClear) return activeClear;
   const clear = runOfflineQueueClear();
   activeClear = clear;
@@ -637,7 +767,7 @@ async function recordReplayFailure(
   const existing = await wrap(store.get(id));
   if (!existing) return;
   const draft = transitionDraftAfterReplayError(existing as OfflineDraft, error);
-  await wrap(store.put(draft));
+  await wrap(store.put(draft), true);
   emitQueueChanged();
 }
 
@@ -646,9 +776,10 @@ async function markSyncing(id: number): Promise<OfflineDraft | null> {
   const existing = await wrap(store.get(id));
   if (!existing) return null;
   const draft = existing as OfflineDraft;
+  if (!ownsDraft(draft)) return null;
   if (draft.status !== "pending") return null;
   draft.status = "syncing";
-  await wrap(store.put(draft));
+  await wrap(store.put(draft), true);
   emitQueueChanged();
   return draft;
 }
@@ -674,11 +805,15 @@ async function syncDraft(
   draft: OfflineDraft,
   handler: (payload: Record<string, unknown>, draft: OfflineDraft) => Promise<void>,
 ): Promise<{ synced: boolean; error?: unknown }> {
+  const context = captureOfflineQueueContext();
+  assertOfflineQueueContext(context);
   const syncingDraft = await markSyncing(draft.id);
   if (!syncingDraft) return { synced: false };
+  replayContexts.set(syncingDraft, context);
 
   for (let attempt = 1; attempt <= MAX_TRANSIENT_ATTEMPTS_PER_SYNC; attempt += 1) {
     try {
+      assertOfflineReplayContext(syncingDraft);
       await handler(syncingDraft.payload, syncingDraft);
       await removeDraft(syncingDraft.id);
       return { synced: true };
@@ -700,12 +835,15 @@ async function syncDraft(
 async function runSyncAllDrafts(
   callbacks: SyncCallbacks,
 ): Promise<SyncResult> {
+  const context = captureOfflineQueueContext();
   const drafts = await getPendingDrafts();
   let synced = 0;
   const syncedTypes = new Set<string>();
   let failed = 0;
 
   for (const draft of drafts) {
+    if (activeClear || !ownsDraft(draft)) break;
+    try { assertOfflineQueueContext(context); } catch { break; }
     const handler = callbacks[draft.type as keyof SyncCallbacks];
     if (!handler) {
       await recordReplayFailure(
@@ -725,7 +863,9 @@ async function runSyncAllDrafts(
     }
   }
 
-  const remaining = (await getAllDrafts()).length;
+  const snapshot = await getOfflineQueueSnapshot();
+  const remaining = snapshot.pendingCount + snapshot.syncingCount
+    + snapshot.failedDrafts.length + snapshot.quarantinedCount;
   return { synced, syncedTypes: [...syncedTypes].sort(), failed, remaining };
 }
 

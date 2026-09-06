@@ -80,6 +80,14 @@ For first login, set `AUTH_BOOTSTRAP_USERNAME` and
 `AUTH_BOOTSTRAP_PASSWORD`, start the app, create the admin user, then remove or
 rotate those bootstrap values.
 
+## Garden Observation Dates
+
+Set `GARDENOPS_TIMEZONE` to the garden's IANA timezone, for example
+`Europe/Oslo`. If unset, the observation clock uses `MATRIX_TIMEZONE`, then
+`Europe/Oslo`. Invalid timezone names fail explicitly. Task completion dates and
+seasonal observation classification use this clock; recorded occurrence dates
+remain distinct from the timestamps showing when changes were saved.
+
 ## Passkeys And Invitations
 
 Passkeys require `AUTH_PASSKEY_RP_ID` and `AUTH_PASSKEY_ORIGINS` to match the

@@ -18,6 +18,7 @@ from gardenops.services.notification_service import (
     create_issue_created_notifications,
     refresh_task_notifications_for_task,
 )
+from gardenops.services.observation_clock import resolve_observation_date
 from gardenops.services.observation_updates import mark_seen_growing_from_observation
 from gardenops.services.task_completion import (
     CompletionOutcome,
@@ -861,13 +862,14 @@ def complete_task_command(
     completed_plant_ids: list[str] | None,
     completion_outcome: CompletionOutcome | None,
     notes: str | None,
-    occurred_on: str,
+    occurred_on: str | None = None,
+    observed_plot_ids: list[str] | None = None,
     selected_plot_ids: list[str] | None = None,
     now_ms: int | None = None,
     locked_task_row: dict[str, Any] | None = None,
 ) -> CommandResult:
     garden_id = _garden_id(context)
-    action_on = _validate_date(occurred_on)
+    action_on = resolve_observation_date(occurred_on, now_ms=now_ms)
     task_row = locked_task_row
     if task_row is None:
         row = db.execute(
@@ -894,8 +896,11 @@ def complete_task_command(
         )
     task_type = str(task_row.get("task_type") or "")
     linked_plants = _task_linked_plant_ids(db, int(task_row["id"]))
-    if selected_plot_ids is not None:
-        _validate_plot_ids(db, context, selected_plot_ids)
+    if observed_plot_ids is not None and selected_plot_ids is not None:
+        raise HTTPException(status_code=422, detail="Use observed_plot_ids only")
+    requested_plots = observed_plot_ids if observed_plot_ids is not None else selected_plot_ids
+    if requested_plots is not None:
+        requested_plots = _validate_plot_ids(db, context, requested_plots)
     validate_completion_capture_plant_links(
         task_type=task_type,
         linked_plant_ids=linked_plants,
@@ -927,6 +932,26 @@ def complete_task_command(
     )
     if task_type == "observe_bloom":
         _validate_plant_ids(db, context, selected_plants, observation=True)
+    if requested_plots is not None:
+        if task_type != "observe_bloom":
+            raise HTTPException(status_code=422, detail="observed_plot_ids requires observe_bloom")
+        placements = db.execute(
+            """
+            SELECT pp.plot_id
+            FROM plot_plants pp JOIN plots p ON p.plot_id = pp.plot_id
+            WHERE p.garden_id = %s AND pp.plt_id = ANY(%s)
+              AND p.archived_at_ms IS NULL
+            GROUP BY pp.plot_id
+            HAVING COUNT(DISTINCT pp.plt_id) = %s
+            """,
+            (garden_id, selected_plants, len(selected_plants)),
+        ).fetchall()
+        allowed_plots = {str(row["plot_id"]) for row in placements}
+        if any(plot_id not in allowed_plots for plot_id in requested_plots):
+            raise HTTPException(
+                status_code=422,
+                detail="observed_plot_ids must be current placements of every completed plant",
+            )
     if current_status == "completed":
         return CommandResult(primary_type="task", primary_id=task_public_id)
     internal_id = int(task_row["id"])
@@ -951,6 +976,8 @@ def complete_task_command(
             garden_id=garden_id,
             plant_ids=remaining_plants,
         )
+    if task_type == "observe_bloom":
+        selected_plots = requested_plots or []
     timestamp = current_timestamp_ms() if now_ms is None else now_ms
     journal_id, metadata = record_completion_journal_entry(
         db,

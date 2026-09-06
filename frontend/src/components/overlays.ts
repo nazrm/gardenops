@@ -32,53 +32,13 @@ import { renderInventorySourceSummary } from "./inventory";
 import { renderIssueHistoryPreview } from "./issues";
 import { renderPlotJournalPreviewLazy } from "./journalPreviewLoader";
 import { showToast } from "./toast";
+import { createModal as createStackedModal } from "./dialogCore";
 
 export function createModal(ariaLabel: string, innerMarkup: string): {
   dialog: HTMLDivElement;
   close: () => void;
 } {
-  const dialog = document.createElement("div");
-  dialog.className = "modal";
-  dialog.setAttribute("role", "dialog");
-  dialog.setAttribute("aria-modal", "true");
-  dialog.setAttribute("aria-label", ariaLabel);
-  setReviewedDynamicHtml(dialog, innerMarkup);
-  document.body.appendChild(dialog);
-
-  const releaseFocusTrap = trapFocus(dialog);
-
-  const onEscape = (e: KeyboardEvent) => {
-    if (e.key === "Escape") close();
-  };
-  const close = () => {
-    releaseFocusTrap();
-    dialog.remove();
-    window.removeEventListener("keydown", onEscape);
-  };
-  window.addEventListener("keydown", onEscape);
-
-  // Add a close button to the top-right of the modal content
-  const closeBtn = document.createElement("button");
-  closeBtn.type = "button";
-  closeBtn.className = "close-btn modal-close-btn";
-  closeBtn.setAttribute("aria-label", ariaLabel ? `Close ${ariaLabel}` : "Close");
-  closeBtn.textContent = "\u00d7";
-  closeBtn.addEventListener("click", close);
-  const content = dialog.querySelector(".modal-content");
-  if (content) {
-    content.insertBefore(closeBtn, content.firstChild);
-  } else {
-    dialog.insertBefore(closeBtn, dialog.firstChild);
-  }
-
-  const firstFocusable = dialog.querySelector<HTMLElement>(
-    'input, select, textarea, ' +
-    'button:not(.modal-close-btn), [href], ' +
-    '[tabindex]:not([tabindex="-1"])',
-  );
-  firstFocusable?.focus();
-
-  return { dialog, close };
+  return createStackedModal(ariaLabel, innerMarkup);
 }
 
 interface ShowDeleteMenuParams {
@@ -183,6 +143,8 @@ interface ShowEditPlantDialogParams {
   onDelete: (pltId: string) => void;
   onMediaChanged?: (targets: MediaLinkRef[]) => void;
   onReportIssue?: (pltId: string) => void;
+  onViewHistory?: () => void;
+  onRecordObservation?: () => void;
   onMove?: (sourcePlotId: string) => void;
   onAiUpdate?: (query: string) => Promise<AiPlantData>;
   onObservationChanged?: (pltId: string) => Promise<EditPlantData | null>;
@@ -910,7 +872,6 @@ export function showEditPlantDialog(
   if (params.onReportIssue) {
     const cb = params.onReportIssue;
     reportIssueBtn?.addEventListener("click", () => {
-      closeDialog();
       cb(plant.plt_id);
     });
   } else {
@@ -973,14 +934,32 @@ export function showEditPlantDialog(
   // Load journal history for this plant
   const journalPreviewEl = dialog.querySelector<HTMLElement>("#plant-journal-preview");
   if (journalPreviewEl) {
+    const viewHistory = () => {
+      closeDialog();
+      params.onViewHistory?.();
+    };
+    if (params.onViewHistory) {
+      const history = document.createElement("button");
+      history.type = "button";
+      history.textContent = t("experience.history");
+      history.addEventListener("click", viewHistory);
+      journalPreviewEl.before(history);
+    }
+    if (params.onRecordObservation) {
+      const record = document.createElement("button");
+      record.type = "button";
+      record.textContent = t("experience.record_observation");
+      record.addEventListener("click", () => params.onRecordObservation?.());
+      journalPreviewEl.before(record);
+    }
     void fetchJournalEntriesApi({ plant_id: plant.plt_id, limit: 5, offset: 0 }).then(
       (result) => {
-        renderPlotJournalPreviewLazy(journalPreviewEl, result.entries, () => {
-          // "View all" is a no-op in this context — the full journal is on the Plants tab
-        });
+        if (!dialog.isConnected) return;
+        renderPlotJournalPreviewLazy(journalPreviewEl, result.entries, viewHistory);
       },
       () => {
-        // Silently ignore errors — journal preview is non-critical
+        if (!dialog.isConnected) return;
+        journalPreviewEl.textContent = t("experience.history_error");
       },
     );
   }

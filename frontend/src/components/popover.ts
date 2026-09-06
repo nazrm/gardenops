@@ -1,6 +1,5 @@
 import type { Plant } from "../core/models";
 import { t } from "../core/i18n";
-import { sanitizeUrl } from "../core/sanitize";
 
 export interface PopoverParams {
   plotId: string;
@@ -10,6 +9,9 @@ export interface PopoverParams {
   anchorRect: DOMRect;
   viewportRect: DOMRect;
   onViewDetails: () => void;
+  onInspectPlant?: (plant: Plant) => void;
+  onRecord?: (() => void) | undefined;
+  onReportIssue?: (() => void) | undefined;
   onEdit?: (() => void) | undefined;
   onDismiss: () => void;
 }
@@ -51,19 +53,12 @@ export function showPopover(params: PopoverParams): void {
   if (plants.length > 0) {
     plants.forEach((plant) => {
       const item = document.createElement("li");
-      const safeLink = sanitizeUrl(plant.link ?? "");
-      if (safeLink) {
-        const link = document.createElement("a");
-        link.className = "popover-plant-link";
-        link.href = safeLink;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-        link.textContent = plant.name;
-        link.setAttribute("aria-label", t("plants.open_plant_link", { name: plant.name }));
-        item.appendChild(link);
-      } else {
-        item.textContent = plant.name;
-      }
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "plant-summary-link popover-plant-link";
+      link.textContent = plant.name;
+      link.addEventListener("click", () => params.onInspectPlant?.(plant));
+      item.appendChild(link);
       plantList.appendChild(item);
     });
   } else {
@@ -87,6 +82,17 @@ export function showPopover(params: PopoverParams): void {
   });
 
   actions.append(detailsBtn);
+  for (const [key, action] of [
+    ["experience.record_observation", params.onRecord],
+    ["experience.report_issue", params.onReportIssue],
+  ] as const) {
+    if (!action) continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = t(key);
+    button.addEventListener("click", action);
+    actions.append(button);
+  }
   if (onEdit) {
     const editBtn = document.createElement("button");
     editBtn.className = "popover-edit-btn";

@@ -8,6 +8,7 @@ import type { StatisticsActions } from "../services/api";
 import { t } from "../core/i18n";
 import { renderStatistics } from "../components/statistics";
 import { renderPlannerDashboard } from "../components/planner";
+import { closeCandidateInspections, openCandidateInspection } from "../components/candidateInspection";
 import { renderGardenerReports } from "../components/reports";
 import {
   getApiErrorMessage,
@@ -17,7 +18,6 @@ import {
   fetchPlannerSuggestionsApi,
   fetchGardenProfileApi,
   fetchGardenerReportsApi,
-  fetchCompanionCheckApi,
   fetchTodayDashboardApi,
   fetchAvailableWorkflowsApi,
   fetchPlannerGoalApi,
@@ -37,6 +37,7 @@ import {
 import {
   loadHarvest,
   setHarvestOffset,
+  setHarvestYear,
   openHarvestSummaryPanel,
 } from "../tabs/harvestTab";
 type StatsMode = "today" | "overview" | "reports" | "planner";
@@ -130,6 +131,7 @@ export function getStatisticsCallbacks(): StatisticsCallbacks {
 }
 
 export function resetStatisticsState(): void {
+  closeCandidateInspections();
   statisticsRequestGeneration.overview += 1;
   statisticsRequestGeneration.today += 1;
   statisticsRequestGeneration.reports += 1;
@@ -336,47 +338,8 @@ async function loadPlanner(
           );
         },
         onInspectCandidate: (plotId, suggestion) => {
-          void (async () => {
-            try {
-              const fit =
-                await fetchCompanionCheckApi({
-                  plot_id: plotId,
-                  plt_id: suggestion.plt_id,
-                }, { gardenId: request.gardenId });
-              if (!isCurrentStatisticsRequest(request)) return;
-              const companionCopy = fit.companions
-                .map((item) => item.description)
-                .join(" · ");
-              const conflictCopy = fit.conflicts
-                .map((item) => item.description)
-                .join(" · ");
-              const parts: string[] = [];
-              if (companionCopy)
-                parts.push(
-                  `${t("planner.fit_good")}: ${companionCopy}`,
-                );
-              if (conflictCopy)
-                parts.push(
-                  `${t("planner.fit_conflict")}: ${conflictCopy}`,
-                );
-              if (parts.length === 0)
-                parts.push(t("planner.fit_none"));
-              ctx.showAppStatus(
-                `${suggestion.name} · ${parts.join(" | ")}`,
-                t("planner.preview_on_map"),
-                () =>
-                  cbs.onPreviewCandidate(
-                    plotId,
-                    suggestion,
-                  ),
-              );
-            } catch (err) {
-              ctx.showToast(
-                getApiErrorMessage(err),
-                "error",
-              );
-            }
-          })();
+          if (!isCurrentStatisticsRequest(request)) return;
+          openCandidateInspection(ctx, plotId, suggestion, () => void loadPlanner());
         },
       };
       const wfCbs: WorkflowCallbacks = {
@@ -534,11 +497,8 @@ const gardenerReportsCallbacks: GardenerReportsCallbacks =
       setHarvestOffset(0);
       ctx.navigateToSubMode("harvest");
       const qualityFilter = querySelect("harvest-filter-quality");
-      const fromFilter = queryInput("harvest-filter-from");
-      const toFilter = queryInput("harvest-filter-to");
       if (qualityFilter) qualityFilter.value = "";
-      if (fromFilter) fromFilter.value = "";
-      if (toFilter) toFilter.value = "";
+      setHarvestYear(new Date().getFullYear());
       void (async () => {
         await loadHarvest();
         try {

@@ -113,35 +113,6 @@ def restore_completion_capture_original_presentation(
     return title, description, metadata
 
 
-def append_bloom_not_yet_event(
-    *,
-    task_row: dict[str, Any],
-    snooze_until: str,
-    actor_user_id: int | None,
-    now_ms: int,
-) -> dict[str, Any]:
-    metadata = parse_task_metadata(task_row)
-    bloom_raw = metadata.setdefault("bloom_observation", {})
-    if not isinstance(bloom_raw, dict):
-        bloom_raw = {}
-        metadata["bloom_observation"] = bloom_raw
-    events_raw = bloom_raw.setdefault("not_yet_events", [])
-    if not isinstance(events_raw, list):
-        events_raw = []
-        bloom_raw["not_yet_events"] = events_raw
-    previous_action_date = str(task_row.get("snoozed_until") or task_row.get("due_on") or "")
-    events_raw.append(
-        {
-            "action_at_ms": now_ms,
-            "previous_action_date": previous_action_date,
-            "new_snooze_date": snooze_until,
-            "actor_user_id": actor_user_id,
-            "source": "task_snooze_policy",
-        }
-    )
-    return metadata
-
-
 def completion_capture_key(
     *,
     task_public_id: str,
@@ -424,10 +395,11 @@ def record_completion_journal_entry(
         "outcome": outcome,
         "selected_plant_ids": selected_plant_ids,
         "selected_plot_ids": selected_plot_ids,
+        "observation_scope": "explicit",
     }
     title = ""
     if outcome == "not_seen_blooming_this_season":
-        title = "Not seen blooming this season"
+        title = f"Not seen blooming in {occurred_on[:4]}"
     row = db.execute(
         """
         INSERT INTO garden_journal_entries
@@ -469,6 +441,7 @@ def record_completion_journal_entry(
             plant_ids=selected_plant_ids,
             seen_date=occurred_on,
             plot_ids=selected_plot_ids,
+            infer_single_plot=False,
         )
     completion_records[key] = entry_public_id
     if task_type == "observe_bloom" and outcome == "done":

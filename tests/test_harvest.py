@@ -246,10 +246,10 @@ class TestHarvestApi(BaseApiTest):
 
         # by_month: June has 2, July has 1
         months = {m["month"]: m for m in summary["by_month"]}
-        self.assertEqual(months[6]["entries"], 2)
-        self.assertAlmostEqual(months[6]["total_qty"], 3.5)
-        self.assertEqual(months[7]["entries"], 1)
-        self.assertAlmostEqual(months[7]["total_qty"], 3.0)
+        self.assertEqual(months["2026-06"]["entries"], 2)
+        self.assertAlmostEqual(months["2026-06"]["total_qty"], 3.5)
+        self.assertEqual(months["2026-07"]["entries"], 1)
+        self.assertAlmostEqual(months["2026-07"]["total_qty"], 3.0)
 
         # by_plant: PLT-TEST should have 3.5 kg total
         plant_entry = next(
@@ -299,7 +299,125 @@ class TestHarvestApi(BaseApiTest):
             summary["by_quality"],
             {"excellent": 1, "good": 0, "fair": 0, "poor": 0},
         )
-        self.assertEqual(summary["by_month"], [{"month": 6, "entries": 1, "total_qty": 2.0}])
+        self.assertEqual(
+            summary["by_month"],
+            [
+                {
+                    "month": "2026-06",
+                    "unit": "kg",
+                    "entries": 1,
+                    "total_qty": 2.0,
+                    "shared_qty": 0.0,
+                    "shared_entries": 0,
+                }
+            ],
+        )
+
+    def test_summary_explicit_dates_override_year_and_include_boundaries(self) -> None:
+        for occurred_on, unit, quality in [
+            ("2024-12-30", "kg", "good"),
+            ("2024-12-31", "kg", "good"),
+            ("2025-01-01", "kg", "good"),
+            ("2025-12-31", "bunches", "good"),
+            ("2025-12-31", "kg", "poor"),
+            ("2026-01-01", "kg", "good"),
+        ]:
+            response = self.client.post(
+                "/api/harvest",
+                json={
+                    "occurred_on": occurred_on,
+                    "unit": unit,
+                    "quantity": 2,
+                    "quality": quality,
+                },
+            )
+            self.assertEqual(response.status_code, 201, response.text)
+        filters = "date_from=2024-12-31&date_to=2025-12-31&quality=good"
+        listed = self.client.get(f"/api/harvest?{filters}").json()
+        response = self.client.get(f"/api/harvest/summary?year=2026&{filters}")
+        self.assertEqual(response.status_code, 200, response.text)
+        summary = response.json()
+        self.assertEqual(summary["total_entries"], listed["total"])
+        self.assertEqual(summary["total_entries"], 3)
+        self.assertIsNone(summary["year"])
+        self.assertEqual(summary["date_from"], "2024-12-31")
+        self.assertEqual(summary["date_to"], "2025-12-31")
+        self.assertEqual(
+            [(m["month"], m["unit"]) for m in summary["by_month"]],
+            [("2024-12", "kg"), ("2025-01", "kg"), ("2025-12", "bunches")],
+        )
+        self.assertEqual(
+            [(m["unit"], m["total_qty"]) for m in summary["by_unit"]],
+            [("bunches", 2), ("kg", 4)],
+        )
+
+    def test_summary_one_sided_dates_do_not_apply_implicit_year(self) -> None:
+        for occurred_on in ["2024-08-01", "2025-08-01", "2026-08-01"]:
+            response = self.client.post(
+                "/api/harvest",
+                json={
+                    "occurred_on": occurred_on,
+                    "unit": "kg",
+                    "quantity": 1,
+                },
+            )
+            self.assertEqual(response.status_code, 201, response.text)
+        for filters in ["date_to=2025-08-01", "date_from=2025-08-01"]:
+            response = self.client.get(f"/api/harvest/summary?year=2030&{filters}")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["total_entries"], 2)
+        summary = self.client.get("/api/harvest/summary?year=2024").json()
+        self.assertEqual(summary["total_entries"], 1)
+        self.assertEqual(summary["date_from"], "2024-01-01")
+        self.assertEqual(summary["date_to"], "2024-12-31")
+
+    def test_summary_shared_attribution_and_monthly_units(self) -> None:
+        for quantity, unit, plants, plots in [
+            (3, "kg", ["PLT-TEST", "PLT-002"], ["B1"]),
+            (2, "kg", ["PLT-TEST"], ["B1", "B2"]),
+            (1, "kg", ["PLT-TEST"], ["B1"]),
+            (4, "bunches", [], []),
+        ]:
+            response = self.client.post(
+                "/api/harvest",
+                json={
+                    "occurred_on": "2025-08-01",
+                    "quantity": quantity,
+                    "unit": unit,
+                    "plant_ids": plants,
+                    "plot_ids": plots,
+                },
+            )
+            self.assertEqual(response.status_code, 201, response.text)
+        summary = self.client.get("/api/harvest/summary?year=2025").json()
+        self.assertEqual(summary["total_entries"], 4)
+        units = {row["unit"]: row for row in summary["by_unit"]}
+        self.assertEqual(
+            units["kg"],
+            {
+                "unit": "kg",
+                "total_qty": 6,
+                "entries": 3,
+                "shared_qty": 5,
+                "shared_entries": 2,
+            },
+        )
+        self.assertEqual(units["bunches"]["total_qty"], 4)
+        self.assertEqual(units["bunches"]["shared_entries"], 0)
+        plants = {row["plt_id"]: row for row in summary["by_plant"]}
+        self.assertEqual(plants["PLT-TEST"]["total_qty"], 6)
+        self.assertEqual(plants["PLT-TEST"]["shared_qty"], 5)
+        self.assertEqual(plants["PLT-002"]["shared_qty"], 3)
+        self.assertEqual(len(summary["by_month"]), 2)
+        self.assertEqual(
+            [row["unit"] for row in summary["by_month"]],
+            ["bunches", "kg"],
+        )
+
+    def test_summary_rejects_invalid_dates_and_years(self) -> None:
+        for query in ["date_from=2025-02-30", "date_to=bad", "year=0", "year=10000"]:
+            response = self.client.get(f"/api/harvest/summary?{query}")
+            self.assertIn(response.status_code, (400, 422), response.text)
 
     def test_harvest_auth_viewer_denied(self) -> None:
         """Viewer role gets 403 on write operations."""

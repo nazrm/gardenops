@@ -37,7 +37,13 @@ def test_plot_task_dialogs_keep_panel_parent_and_restore_focus_after_refresh() -
     assert '".drawer, .bottom-sheet"' in source
     assert "openTaskCompletionDialog(" in source
     assert "(completionBody) => completeTaskInline(" in source
-    assert "{ modalParent }," in source
+    completion = source.split("openTaskCompletionDialog(", 1)[1].split("return false;", 1)[0]
+    assert "modalParent," in completion
+    assert "plotNames: new Map(state.plots.map" in completion
+    assert "[plot.plot_id, cbs.getPlotLabel?.(plot.plot_id) ?? plot.plot_id]" in completion
+    assert "onHistory: (plantId) => cbs.onViewPlantHistory?.(plantId)" in completion
+    app = (ROOT / "frontend/src/app.ts").read_text(encoding="utf-8")
+    assert "onViewPlantHistory: (plantId) => void openPlantHistory(plantId)" in app
     assert source.count("modalParent,") >= 2
     assert "function restorePlotTaskPreviewFocus(" in source
     assert 'section.querySelector<HTMLElement>(".drawer-section-header")' in source

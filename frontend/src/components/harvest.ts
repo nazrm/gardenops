@@ -96,6 +96,11 @@ function createHarvestCard(
 
   header.append(icon, qty, unit, qualityChip, dateEl);
   card.appendChild(header);
+  if (entry.plant_ids.length > 1 || entry.plot_ids.length > 1) {
+    const shared = document.createElement("p");
+    shared.textContent = t("harvest.shared_entry");
+    card.appendChild(shared);
+  }
 
   // Notes
   if (entry.notes) {
@@ -346,61 +351,57 @@ export function renderHarvestSummary(container: HTMLElement, summary: HarvestSum
   totalRow.className = "harvest-summary-row";
   const totalLabel = document.createElement("span");
   totalLabel.className = "harvest-summary-label";
-  totalLabel.textContent = `${summary.year}`;
+  totalLabel.textContent = summary.year !== null ? String(summary.year)
+    : `${summary.date_from ?? t("harvest.all_dates")} - ${summary.date_to ?? t("harvest.all_dates")}`;
   const totalVal = document.createElement("span");
   totalVal.className = "harvest-summary-value";
-  totalVal.textContent = `${summary.total_entries} ${summary.total_entries === 1 ? "entry" : "entries"}`;
+  totalVal.textContent = t("harvest.summary_count", { count: summary.total_entries });
   totalRow.append(totalLabel, totalVal);
   totalSection.appendChild(totalRow);
   container.appendChild(totalSection);
 
-  // Top producers
-  if (summary.by_plant.length > 0) {
-    const plantSection = createSummarySection(t("harvest.summary_top"));
-    const maxQty = Math.max(...summary.by_plant.map((p) => p.total_qty));
-    for (const plant of summary.by_plant.slice(0, 10)) {
-      const row = document.createElement("div");
-      row.className = "harvest-summary-row";
-      const label = document.createElement("span");
-      label.className = "harvest-summary-label";
-      label.textContent = plant.name;
-      const bar = document.createElement("div");
-      bar.className = "harvest-summary-bar";
-      const fill = document.createElement("div");
-      fill.className = "harvest-summary-bar-fill";
-      fill.style.width = `${maxQty > 0 ? (plant.total_qty / maxQty) * 100 : 0}%`;
-      bar.appendChild(fill);
-      const val = document.createElement("span");
-      val.className = "harvest-summary-value";
-      val.textContent = `${plant.total_qty} ${plant.unit}`;
-      row.append(label, bar, val);
-      plantSection.appendChild(row);
+  function quantityRow(labelText: string, value: {
+    total_qty: number; unit: string; shared_qty: number; shared_entries: number;
+  }): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "harvest-summary-row";
+    const label = document.createElement("span");
+    label.className = "harvest-summary-label";
+    label.textContent = labelText;
+    const amount = document.createElement("span");
+    amount.className = "harvest-summary-value";
+    amount.textContent = `${value.total_qty} ${value.unit}`;
+    if (value.shared_entries > 0) {
+      const shared = document.createElement("small");
+      shared.textContent = t("harvest.shared_quantity", {
+        quantity: value.shared_qty, unit: value.unit, count: value.shared_entries,
+      });
+      amount.append(document.createElement("br"), shared);
     }
+    row.append(label, amount);
+    return row;
+  }
+
+  if (summary.by_unit.length > 0) {
+    const units = createSummarySection(t("harvest.summary_units"));
+    for (const unit of summary.by_unit) units.appendChild(quantityRow(unit.unit, unit));
+    container.appendChild(units);
+  }
+
+  if (summary.by_plant.length > 0) {
+    const plantSection = createSummarySection(t("harvest.summary_plants"));
+    const attribution = document.createElement("p");
+    attribution.textContent = t("harvest.attribution_note");
+    plantSection.appendChild(attribution);
+    for (const plant of summary.by_plant) plantSection.appendChild(quantityRow(plant.name, plant));
     container.appendChild(plantSection);
   }
 
   // Monthly
   if (summary.by_month.length > 0) {
     const monthSection = createSummarySection(t("harvest.summary_monthly"));
-    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    const maxMonthQty = Math.max(...summary.by_month.map((m) => m.total_qty));
     for (const month of summary.by_month) {
-      const row = document.createElement("div");
-      row.className = "harvest-summary-row";
-      const label = document.createElement("span");
-      label.className = "harvest-summary-label";
-      label.textContent = monthNames[month.month - 1] || String(month.month);
-      const bar = document.createElement("div");
-      bar.className = "harvest-summary-bar";
-      const fill = document.createElement("div");
-      fill.className = "harvest-summary-bar-fill";
-      fill.style.width = `${maxMonthQty > 0 ? (month.total_qty / maxMonthQty) * 100 : 0}%`;
-      bar.appendChild(fill);
-      const val = document.createElement("span");
-      val.className = "harvest-summary-value";
-      val.textContent = `${month.total_qty} (${month.entries})`;
-      row.append(label, bar, val);
-      monthSection.appendChild(row);
+      monthSection.appendChild(quantityRow(month.month, month));
     }
     container.appendChild(monthSection);
   }

@@ -4393,7 +4393,24 @@ body.moving-house .house-placeholder {
 
 .popover-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--sp-1);
+}
+
+.plant-summary-link {
+  border: 0;
+  background: transparent;
+  color: var(--brand);
+  padding: 2px 0;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.popover-actions > button {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .popover-details-btn {
@@ -16481,3 +16498,45 @@ td.inventory-qty-zero {
     text-align: left;
   }
 }
+/* Compact completion fields share the existing dialog layout. */
+.task-occurrence-date,
+.task-observed-locations label,
+.task-season-closure {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-block: 0.6rem;
+}
+.task-observed-locations {
+  min-width: 0;
+  margin-block: 0.75rem;
+  padding: 0.5rem;
+}
+.task-observed-locations input[type="checkbox"],
+.task-season-closure input[type="checkbox"] {
+  flex: 0 0 auto;
+}
+.task-season-closure[hidden] { display: none; }
+.task-completion-dialog .button-row { flex-wrap: wrap; }
+.plant-summary,
+.candidate-inspection {
+  width: min(38rem, 100%);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.plant-summary .button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.plant-summary h3,
+.candidate-inspection h2 { font-size: 1.25rem; }
+.plant-summary h4,
+.candidate-inspection h3 { font-size: 1rem; }
+.candidate-stock-row {
+  padding-block: 0.6rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.candidate-inspection details { margin-block: 1rem; }
+.harvest-summary-value { overflow-wrap: anywhere; }

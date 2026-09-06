@@ -155,6 +155,7 @@ export type TaskSeverity = "low" | "normal" | "high";
 
 export interface GardenTask {
   id: string;
+  observation_timezone?: string;
   garden_id: number;
   task_type: TaskType;
   title: string;
@@ -444,6 +445,7 @@ export interface CalendarCapabilities {
 
 export interface CalendarEvent {
   id: string;
+  observation_timezone?: string;
   kind: "task" | "weather_alert" | "manual_event";
   source_key: CalendarSourceKey;
   title: string;
@@ -615,11 +617,22 @@ export interface HarvestListResponse {
 }
 
 export interface HarvestSummary {
-  year: number;
+  year: number | null;
+  date_from: string | null;
+  date_to: string | null;
   total_entries: number;
-  by_plant: Array<{ plt_id: string; name: string; total_qty: number; unit: string; entries: number }>;
-  by_month: Array<{ month: number; total_qty: number; entries: number }>;
+  by_unit: Array<HarvestQuantitySummary>;
+  by_plant: Array<HarvestQuantitySummary & { plt_id: string; name: string }>;
+  by_month: Array<HarvestQuantitySummary & { month: string }>;
   by_quality: { excellent: number; good: number; fair: number; poor: number };
+}
+
+export interface HarvestQuantitySummary {
+  total_qty: number;
+  unit: string;
+  entries: number;
+  shared_qty: number;
+  shared_entries: number;
 }
 
 export type SavedViewType =

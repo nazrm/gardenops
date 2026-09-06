@@ -176,6 +176,11 @@ class TestAssistantActions(BaseApiTest):
         repeated = self._apply(request_id)
         self.assertEqual(first.state, "applied")
         self.assertEqual(repeated.records, first.records)
+        self.assertEqual(repeated.message, first.message)
+        self.assertIn("observed", first.message)
+        self.assertIn("2026-09-02", first.message)
+        self.assertIn(first.reference, first.message)
+        self.assertNotIn("journal_entry", first.message)
         conn = db.get_db()
         try:
             count = conn.execute("SELECT COUNT(*) AS count FROM garden_journal_entries").fetchone()
@@ -253,8 +258,12 @@ class TestAssistantActions(BaseApiTest):
                 "occurred_on": "2026-09-02",
             },
         )
-        self.assertEqual(self._apply(harvest).state, "applied")
-        self.assertEqual(self._apply(issue).state, "applied")
+        harvested = self._apply(harvest)
+        self.assertEqual(harvested.state, "applied")
+        self.assertIn("harvested 3 kg", harvested.message)
+        reported = self._apply(issue)
+        self.assertEqual(reported.state, "applied")
+        self.assertIn("Aphids", reported.message)
         self.assertEqual(self._apply(task).state, "applied")
         conn = db.get_db()
         try:
@@ -559,6 +568,8 @@ class TestAssistantActions(BaseApiTest):
             conn.commit()
             self.assertEqual(result.state, "applied")
             self.assertTrue(result.message.startswith("Deleted:"))
+            self.assertIn("rose", result.message.casefold())
+            self.assertEqual(self._apply(delete.request_id).message, result.message)
             self.assertIsNone(
                 conn.execute("SELECT 1 FROM plants WHERE plt_id = 'PLT-002'").fetchone()
             )
@@ -568,6 +579,294 @@ class TestAssistantActions(BaseApiTest):
                 ).fetchone()
             )
         finally:
+            db.return_db(conn)
+
+    def test_partial_receipt_uses_confirmed_links_and_survives_renaming(self) -> None:
+        created = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "prune",
+                "title": "Prune selected plants",
+                "due_on": "2026-09-02",
+                "plant_ids": ["PLT-TEST", "PLT-002"],
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        conn = db.get_db()
+        try:
+            task = conn.execute(
+                "SELECT updated_at_ms FROM garden_tasks WHERE public_id = %s",
+                (created.json()["id"],),
+            ).fetchone()
+            names = {
+                str(row["plt_id"]): str(row["name"])
+                for row in conn.execute(
+                    "SELECT plt_id, name FROM plants WHERE plt_id IN ('PLT-TEST', 'PLT-002')"
+                ).fetchall()
+            }
+        finally:
+            db.return_db(conn)
+        request_id = self._proposal(
+            "task_completion",
+            {
+                "task_id": created.json()["id"],
+                "expected_updated_at_ms": int(task["updated_at_ms"]),
+                "completed_plant_ids": ["PLT-002"],
+                "completion_outcome": "done",
+                "occurred_on": "2026-09-02",
+            },
+        )
+        with patch(
+            "gardenops.services.assistant._interpret", side_effect=AssertionError("AI called")
+        ):
+            result = self._apply(request_id)
+            self.assertIn(names["PLT-002"], result.message)
+            self.assertNotIn(names["PLT-TEST"], result.message)
+            self.assertIn("2026-09-02", result.message)
+            conn = db.get_db()
+            try:
+                conn.execute("UPDATE plants SET name = 'Renamed' WHERE plt_id = 'PLT-002'")
+                conn.commit()
+            finally:
+                db.return_db(conn)
+            self.assertEqual(self._apply(request_id).message, result.message)
+
+    def test_bloom_receipt_records_only_explicit_placement(self) -> None:
+        for plot_id in ("B1", "B2"):
+            assigned = self.client.post(
+                f"/api/plots/{plot_id}/plants/PLT-002", json={"quantity": 1}
+            )
+            self.assertIn(assigned.status_code, {200, 201}, assigned.text)
+        created = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "observe_bloom",
+                "title": "Observe rose",
+                "due_on": "2026-09-02",
+                "plant_ids": ["PLT-002"],
+                "plot_ids": ["B1", "B2"],
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        conn = db.get_db()
+        try:
+            task = conn.execute(
+                "SELECT updated_at_ms FROM garden_tasks WHERE public_id = %s",
+                (created.json()["id"],),
+            ).fetchone()
+        finally:
+            db.return_db(conn)
+        request_id = self._proposal(
+            "task_completion",
+            {
+                "task_id": created.json()["id"],
+                "expected_updated_at_ms": int(task["updated_at_ms"]),
+                "completed_plant_ids": ["PLT-002"],
+                "completion_outcome": "done",
+                "occurred_on": "2026-09-02",
+                "observed_plot_ids": ["B1"],
+            },
+        )
+        result = self._apply(request_id)
+        self.assertIn("B1", result.message)
+        self.assertNotIn("B2", result.message)
+        self.assertIn("2026-09-02", result.message)
+        conn = db.get_db()
+        try:
+            journal_id = next(
+                record.id for record in result.records if record.type == "journal_entry"
+            )
+            plots = conn.execute(
+                "SELECT p.plot_id FROM garden_journal_entry_plots p "
+                "JOIN garden_journal_entries e ON e.id = p.entry_id WHERE e.public_id = %s",
+                (journal_id,),
+            ).fetchall()
+            self.assertEqual([str(row["plot_id"]) for row in plots], ["B1"])
+        finally:
+            db.return_db(conn)
+
+    def test_negative_bloom_requires_explicit_closure_and_discloses_scope(self) -> None:
+        created = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "observe_bloom",
+                "title": "Observe rose bloom",
+                "due_on": "2026-09-02",
+                "plant_ids": ["PLT-002"],
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        intent = AssistantIntent(
+            intent="task_completion", confidence=0.99, plant_query="Rosa canina", task_query="bloom"
+        )
+        conn = db.get_db()
+        try:
+            with patch("gardenops.services.assistant._interpret", return_value=intent):
+                for index, text in enumerate(
+                    (
+                        "The rose has not bloomed yet",
+                        "The rose isn't blooming yet",
+                        "The rose is not in bloom",
+                        "No bloom on the rose",
+                        "Do not close the bloom season for the rose",
+                        "Close the rose bloom season? Not yet",
+                    )
+                ):
+                    result = process_text(
+                        conn,
+                        self._binding(),
+                        source_room_id="!garden:example.org",
+                        source_event_id=f"$negative-{index}",
+                        source_sender_id="@owner:example.org",
+                        text=text,
+                        occurred_on="2026-09-02",
+                    )
+                    self.assertEqual(result.state, "needs_input")
+                proposal = process_text(
+                    conn,
+                    self._binding(),
+                    source_room_id="!garden:example.org",
+                    source_event_id="$explicit-season",
+                    source_sender_id="@owner:example.org",
+                    text="Close the bloom season for the rose",
+                    occurred_on="2025-09-02",
+                )
+                self.assertEqual(proposal.state, "proposal")
+                self.assertEqual(proposal.proposal.fields["observed_plot_ids"], [])
+                self.assertIn("2025-09-02", proposal.message)
+                self.assertIn("no new bloom checks", proposal.message)
+                self.assertIn("plant only", proposal.message)
+                saved = apply_request(
+                    conn,
+                    self._binding(),
+                    request_id=proposal.request_id,
+                    source_event_id="$save-explicit-season",
+                )
+                self.assertIn("not seen blooming in 2025", saved.message)
+                self.assertIn("plant only", saved.message)
+        finally:
+            conn.rollback()
+            db.return_db(conn)
+
+    def test_bloom_intent_uses_latest_edit_and_requires_observation(self) -> None:
+        created = self.client.post(
+            "/api/tasks",
+            json={
+                "task_type": "observe_bloom",
+                "title": "Observe rose bloom",
+                "due_on": "2026-09-02",
+                "plant_ids": ["PLT-002"],
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        intent = AssistantIntent(
+            intent="task_completion", confidence=0.99, plant_query="Rosa canina", task_query="bloom"
+        )
+        cases = (
+            ("The rose isn't blooming yet", None, "needs_input"),
+            ("The rose isn\u2019t blooming yet", None, "needs_input"),
+            ("The rose is not in bloom", None, "needs_input"),
+            ("Complete the rose check", None, "needs_input"),
+            ("Complete the blooming task", None, "needs_input"),
+            ("The rose will be blooming next week", None, "needs_input"),
+            ("Is the rose blooming?", None, "needs_input"),
+            ("Defer it for a week", None, "answer"),
+            ("The rose isn't blooming yet", "Defer it for a week", "answer"),
+            ("The rose isn't blooming yet", "It is still not in bloom", "needs_input"),
+            ("The rose is blooming", "The rose isn't blooming yet", "needs_input"),
+            ("The rose is blooming", "Defer it for a week", "answer"),
+            ("The rose isn't blooming yet", "Actually, the rose is blooming", "proposal"),
+            ("The rose isn't blooming yet", "I saw it in bloom today", "proposal"),
+            ("The rose has bloomed", None, "proposal"),
+            ("The rose isn't blooming yet", "Close the bloom season for the rose", "proposal"),
+        )
+        conn = db.get_db()
+        try:
+            for index, (initial, clarification, expected_state) in enumerate(cases):
+                with self.subTest(initial=initial, clarification=clarification):
+                    before_task = dict(
+                        conn.execute(
+                            "SELECT * FROM garden_tasks WHERE public_id = %s",
+                            (created.json()["id"],),
+                        ).fetchone()
+                    )
+                    before_journal = conn.execute(
+                        "SELECT count(*) AS n FROM garden_journal_entries"
+                    ).fetchone()["n"]
+                    with patch(
+                        "gardenops.services.assistant._interpret", return_value=intent
+                    ) as interpret:
+                        result = process_text(
+                            conn,
+                            self._binding(),
+                            source_room_id="!garden:example.org",
+                            source_event_id=f"$bloom-intent-{index}",
+                            source_sender_id="@owner:example.org",
+                            text=initial,
+                            occurred_on="2026-09-02",
+                        )
+                        if clarification:
+                            result = continue_request(
+                                conn,
+                                self._binding(),
+                                request_id=result.request_id,
+                                source_event_id=f"$bloom-edit-{index}",
+                                text=clarification,
+                            )
+                        self.assertEqual(interpret.call_count, 2 if clarification else 1)
+                    self.assertEqual(result.state, expected_state)
+                    self.assertEqual(
+                        dict(
+                            conn.execute(
+                                "SELECT * FROM garden_tasks WHERE public_id = %s",
+                                (created.json()["id"],),
+                            ).fetchone()
+                        ),
+                        before_task,
+                    )
+                    self.assertEqual(
+                        conn.execute("SELECT count(*) AS n FROM garden_journal_entries").fetchone()[
+                            "n"
+                        ],
+                        before_journal,
+                    )
+                    if expected_state != "proposal":
+                        self.assertFalse(result.proposal)
+                        self.assertFalse(result.records)
+                        if expected_state == "answer":
+                            self.assertIn("due date has not changed", result.message)
+                            self.assertIn("Tasks view", result.message)
+                        with self.assertRaises(HTTPException):
+                            apply_request(
+                                conn,
+                                self._binding(),
+                                request_id=result.request_id,
+                                source_event_id=f"$invalid-save-{index}",
+                            )
+                    else:
+                        closure = bool(clarification and clarification.startswith("Close"))
+                        self.assertEqual(
+                            result.proposal.fields["completion_outcome"],
+                            "not_seen_blooming_this_season" if closure else "done",
+                        )
+                        if closure:
+                            self.assertIn("no new bloom checks", result.message)
+                            self.assertIn("Existing checks are not all cancelled", result.message)
+                        saved = apply_request(
+                            conn,
+                            self._binding(),
+                            request_id=result.request_id,
+                            source_event_id=f"$bloom-save-{index}",
+                        )
+                        self.assertEqual(saved.state, "applied")
+                        self.assertIn(
+                            "not seen blooming in 2026" if closure else "bloomed", saved.message
+                        )
+                        self.assertIn("2026-09-02", saved.message)
+                        self.assertIn("plant only", saved.message)
+                    conn.rollback()
+        finally:
+            conn.rollback()
             db.return_db(conn)
 
     def test_plant_assignment_uses_exact_quantity_and_write_ownership_rules(self) -> None:

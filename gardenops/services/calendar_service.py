@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from gardenops.branding import app_name, app_slug
 from gardenops.db import DbConn
 from gardenops.router_helpers import validate_date
+from gardenops.services.observation_clock import observation_timezone
 from gardenops.services.task_windows import (
     RECOMMENDED_WINDOW_RULES,
     window_state_for_range,
@@ -622,6 +623,7 @@ def _serialize_task_event(
     return {
         "id": f"task:{row['public_id']}",
         "kind": "task",
+        "observation_timezone": observation_timezone(),
         "source_key": source_key,
         "title": str(row["title"]),
         "description": str(row["description"] or ""),

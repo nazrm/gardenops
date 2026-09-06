@@ -1,14 +1,17 @@
 import { t } from "../core/i18n";
 import type { OfflineDraft } from "../core/models";
-import { canRetryFailedDraft } from "../services/offlineQueue";
+import { canRetryFailedDraft, getSavedJournalEntryId } from "../services/offlineQueue";
 
 export interface OfflineIndicatorCallbacks {
+  onDiscardQuarantined?: () => void;
   onDiscard: (draft: OfflineDraft) => void;
   onRetry: (draft: OfflineDraft) => void;
   onSyncNow: () => void;
+  onOpenSavedRecord?: ((draft: OfflineDraft) => void) | undefined;
 }
 
 export interface OfflineIndicatorState {
+  quarantinedCount?: number;
   canDiscardDrafts?: boolean;
   canRetryDrafts?: boolean;
   failedDrafts: OfflineDraft[];
@@ -76,13 +79,14 @@ function failedDraftLabel(draft: OfflineDraft): string {
 }
 
 function retryLabel(draft: OfflineDraft): string {
+  if (draft.type === "journal") return t("offline.retry");
   return draft.last_status === 409 || draft.last_status === 410
     ? t("offline.retry_as_new")
     : t("offline.retry");
 }
 
 interface RecoveryFocus {
-  action: "discard" | "retry" | null;
+  action: "discard" | "retry" | "saved" | null;
   draftId: string;
 }
 
@@ -95,7 +99,7 @@ function captureRecoveryFocus(container: HTMLElement): RecoveryFocus | null {
       ? "retry"
       : active.classList.contains("offline-discard-btn")
         ? "discard"
-        : null,
+        : active.classList.contains("offline-saved-btn") ? "saved" : null,
     draftId: row?.dataset["draftId"] ?? "",
   };
 }
@@ -137,7 +141,9 @@ export function renderOfflineIndicator(
     online,
     pendingCount,
     syncingCount,
+    quarantinedCount = 0,
   } = state;
+  const hasRecoveryWork = failedDrafts.length > 0 || quarantinedCount > 0;
   const previousFailedIds = new Set(
     (container.dataset["failedDraftIds"] ?? "").split(",").filter(Boolean),
   );
@@ -146,17 +152,17 @@ export function renderOfflineIndicator(
   container.dataset["failedDraftIds"] = failedIds.join(",");
   container.replaceChildren();
 
-  if (online && pendingCount === 0 && syncingCount === 0 && failedDrafts.length === 0) {
+  if (online && pendingCount === 0 && syncingCount === 0 && !hasRecoveryWork) {
     container.hidden = true;
     restoreRecoveryFocus(container, recoveryFocus);
     return;
   }
 
   container.hidden = false;
-  const badge = document.createElement(failedDrafts.length > 0 ? "button" : "span");
+  const badge = document.createElement(hasRecoveryWork ? "button" : "span");
   badge.className = "offline-indicator";
 
-  if (failedDrafts.length > 0) {
+  if (hasRecoveryWork) {
     badge.classList.add("offline-indicator--failed");
     badge.classList.add("offline-indicator-toggle");
     (badge as HTMLButtonElement).type = "button";
@@ -195,7 +201,14 @@ export function renderOfflineIndicator(
     badge.appendChild(count);
   }
 
-  if (callbacks && canRetryDrafts && failedDrafts.length === 0
+  if (quarantinedCount > 0) {
+    const count = document.createElement("span");
+    count.className = "offline-indicator-count";
+    count.textContent = ` ${t("offline.quarantined_count", { count: quarantinedCount })}`;
+    badge.appendChild(count);
+  }
+
+  if (callbacks && canRetryDrafts && !hasRecoveryWork
     && online && pendingCount > 0 && syncingCount === 0) {
     const btn = document.createElement("button");
     btn.className = "offline-sync-btn";
@@ -222,7 +235,7 @@ export function renderOfflineIndicator(
     });
   }
 
-  if (failedDrafts.length === 0) {
+  if (!hasRecoveryWork) {
     restoreRecoveryFocus(container, recoveryFocus);
     return;
   }
@@ -240,6 +253,24 @@ export function renderOfflineIndicator(
   const title = document.createElement("strong");
   title.textContent = t("offline.failed_work");
   failures.appendChild(title);
+  if (quarantinedCount > 0) {
+    const row = document.createElement("div");
+    row.className = "offline-failure-row";
+    row.dataset["draftId"] = "quarantined";
+    const notice = document.createElement("span");
+    notice.className = "offline-failure-label";
+    notice.textContent = t("offline.quarantined_notice");
+    row.appendChild(notice);
+    if (canDiscardDrafts && callbacks?.onDiscardQuarantined) {
+      const discard = document.createElement("button");
+      discard.type = "button";
+      discard.className = "offline-discard-btn offline-quarantine-discard-btn";
+      discard.textContent = t("offline.discard_quarantined");
+      discard.addEventListener("click", callbacks.onDiscardQuarantined);
+      row.appendChild(discard);
+    }
+    failures.appendChild(row);
+  }
   for (const draft of failedDrafts) {
     const row = document.createElement("div");
     row.className = "offline-failure-row";
@@ -252,10 +283,25 @@ export function renderOfflineIndicator(
     error.className = "offline-failure-error";
     error.textContent = draft.last_error || t("offline.failed_unknown");
     copy.append(label, error);
+    const savedEntryId = getSavedJournalEntryId(draft);
+    if (savedEntryId !== null) {
+      const saved = document.createElement("span");
+      saved.className = "offline-failure-label";
+      saved.textContent = t("offline.journal_saved_attachments_pending", { id: String(savedEntryId) });
+      copy.appendChild(saved);
+    }
     row.appendChild(copy);
     if (callbacks && (canRetryDrafts || canDiscardDrafts)) {
       const actions = document.createElement("div");
       actions.className = "offline-failure-actions";
+      if (savedEntryId !== null && callbacks.onOpenSavedRecord) {
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "offline-saved-btn";
+        open.textContent = t("offline.open_saved_entry");
+        open.addEventListener("click", () => callbacks.onOpenSavedRecord?.(draft));
+        actions.appendChild(open);
+      }
       if (canRetryDrafts && canRetryFailedDraft(draft)) {
         const retry = document.createElement("button");
         retry.type = "button";
@@ -268,7 +314,7 @@ export function renderOfflineIndicator(
         const discard = document.createElement("button");
         discard.type = "button";
         discard.className = "offline-discard-btn";
-        discard.textContent = t("offline.discard");
+        discard.textContent = t(savedEntryId === null ? "offline.discard" : "offline.discard_attachments");
         discard.addEventListener("click", () => callbacks.onDiscard(draft));
         actions.appendChild(discard);
       }

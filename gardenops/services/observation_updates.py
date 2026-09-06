@@ -41,6 +41,7 @@ def mark_seen_growing_from_observation(
     plant_ids: list[str],
     seen_date: str,
     plot_ids: list[str] | None = None,
+    infer_single_plot: bool = True,
 ) -> None:
     normalized_plant_ids = _dedupe(plant_ids)
     if not normalized_plant_ids:
@@ -92,7 +93,7 @@ def mark_seen_growing_from_observation(
             """,
             [*normalized_plant_ids, *normalized_plot_ids, garden_id],
         ).fetchall()
-    else:
+    elif infer_single_plot:
         rows = db.execute(
             f"""
             SELECT pp.plot_id, pp.plt_id, pp.seen_growing_date
@@ -174,6 +175,8 @@ def _latest_assignment_bloom_date(
                   WHERE eplot.entry_id = e.id AND eplot.plot_id = %s
               )
               OR (
+                  COALESCE(e.metadata_json::jsonb ->> 'observation_scope', '') <> 'explicit'
+                  AND
                   NOT EXISTS (
                       SELECT 1
                       FROM garden_journal_entry_plots eplot
@@ -202,6 +205,7 @@ def reconcile_seen_growing_after_bloom_change(
     previous_plant_ids: list[str],
     previous_plot_ids: list[str],
     previous_seen_date: str,
+    infer_single_plot: bool = True,
 ) -> None:
     """Reconcile state that can be attributed to a changed bloom observation.
 
@@ -253,7 +257,7 @@ def reconcile_seen_growing_after_bloom_change(
             """,
             [*plant_ids, *plot_ids, garden_id],
         ).fetchall()
-    else:
+    elif infer_single_plot:
         rows = db.execute(
             f"""
             SELECT pp.plot_id, pp.plt_id, pp.seen_growing_date

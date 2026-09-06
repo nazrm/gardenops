@@ -18,6 +18,9 @@ export GARDENOPS_ATTENTION_FROZEN_DATE=2026-07-05
 export GARDENOPS_LOGS_DIR="${GARDENOPS_LOGS_DIR:-/tmp/gardenops-task-history-e2e-logs}"
 export DATABASE_URL="$GARDENOPS_TASK_HISTORY_E2E_TEST_URL"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/gardenops-uv-cache}"
+if [[ "${GARDENOPS_EXPERIENCE_E2E:-0}" == "1" ]]; then
+  export MEDIA_STORAGE_DIR="${GARDENOPS_LOGS_DIR}/experience-media"
+fi
 
 BACKEND_PORT="${GARDENOPS_TASK_HISTORY_E2E_BACKEND_PORT:-8000}"
 FRONTEND_PORT="${GARDENOPS_TASK_HISTORY_E2E_FRONTEND_PORT:-5173}"
@@ -80,6 +83,7 @@ run_db_command() {
       GARDENOPS_ATTENTION_FROZEN_NOW_MS="$GARDENOPS_ATTENTION_FROZEN_NOW_MS" \
       GARDENOPS_ATTENTION_FROZEN_DATE="$GARDENOPS_ATTENTION_FROZEN_DATE" \
       GARDENOPS_LOGS_DIR="$GARDENOPS_LOGS_DIR" \
+      MEDIA_STORAGE_DIR="${MEDIA_STORAGE_DIR:-}" \
       DATABASE_URL="$DATABASE_URL" \
       UV_CACHE_DIR="${GARDENOPS_TASK_HISTORY_E2E_POSTGRES_UV_CACHE_DIR:-/tmp/gardenops-uv-cache-postgres}" \
       "$@"
@@ -106,3 +110,8 @@ wait_for_url "http://127.0.0.1:${BACKEND_PORT}/api/health" "FastAPI health" "$BA
 wait_for_url "http://127.0.0.1:${FRONTEND_PORT}/" "Vite" "$FRONTEND_PID"
 
 BASE_URL="http://127.0.0.1:${FRONTEND_PORT}" node scripts/check_task_completion_history_e2e.cjs
+
+# Opt in after integration is ready; reuse this runner's disposable seeded garden.
+if [[ "${GARDENOPS_EXPERIENCE_E2E:-0}" == "1" ]]; then
+  BASE_URL="http://127.0.0.1:${FRONTEND_PORT}" node scripts/check_garden_experience_e2e.cjs
+fi
