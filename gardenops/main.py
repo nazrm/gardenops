@@ -1257,7 +1257,13 @@ def _csp_policy() -> str:
                 "https://s3.amazonaws.com",
             ],
         )
-        image_src.extend(["https://*.amazonaws.com", "https://*.shademap.app"])
+        image_src.extend(
+            [
+                "https://*.amazonaws.com",
+                "https://*.shademap.app",
+                "https://*.tile.openstreetmap.org",
+            ]
+        )
     report_uri = _csp_report_uri()
     directives = [
         "default-src 'self'",

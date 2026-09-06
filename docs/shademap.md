@@ -92,7 +92,22 @@ describe your site.
 HMAC secret used to sign expiring same-origin terrain tile URLs. Use a unique
 random value per deployment and keep it private.
 
-`SHADEMAP_RUNTIME_SCRIPT_URL` is required for rendered shade output. It must be
+For self-hosting, download the licensed Leaflet UMD distribution to a persistent,
+administrator-owned file outside the repository and set
+`SHADEMAP_RUNTIME_SCRIPT_PATH=/absolute/path/leaflet-shadow-simulator-0.67.0.js`.
+The pinned distribution is
+`https://unpkg.com/leaflet-shadow-simulator@0.67.0/dist/leaflet-shadow-simulator.umd.min.js`.
+Preserve its copyright notice and comply with your ShadeMap license. GardenOps
+serves this file only through the authenticated `/shademap/runtime.js` route;
+the browser does not fetch the runtime from a CDN. The local path takes
+precedence over the URL and fails closed if unreadable or over 5 MiB. The SDK
+still contacts ShadeMap for authorization using the browser-safe key. Local
+hosting is not offline operation. The vendor file is not committed or published.
+Verify a downloaded runtime before enabling it with
+`node scripts/check_shademap_runtime.cjs /absolute/path/to/runtime.js`.
+Set `CHROMIUM_EXECUTABLE` if Chromium is not in Playwright's default location.
+
+Alternatively, `SHADEMAP_RUNTIME_SCRIPT_URL` provides rendered shade output. It must be
 a licensed, self-contained classic JavaScript runtime hosted at an allowlisted
 HTTPS ShadeMap endpoint. GardenOps validates and fetches that URL server-side,
 then serves it only to authenticated browser sessions as

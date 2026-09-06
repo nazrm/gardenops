@@ -9,6 +9,7 @@ import {
   deleteHarvestApi,
   fetchHarvestSummaryApi,
   getApiErrorMessage,
+  getActiveGardenContext,
 } from "../services/api";
 import {
   renderHarvestList,
@@ -17,7 +18,6 @@ import {
 } from "../components/harvest";
 import { buildPlantNameMap } from "../core/plantNames";
 import { confirmDialog } from "../components/dialogCore";
-import { selectPlot } from "../components/plotInteractions";
 
 let ctx: AppContext;
 
@@ -25,6 +25,8 @@ let harvestItems: HarvestEntry[] = [];
 let harvestTotal = 0;
 let harvestOffset = 0;
 let harvestLoadSequence = 0;
+let harvestSummarySequence = 0;
+let selectedHarvestYear = new Date().getFullYear();
 const HARVEST_PAGE_SIZE = 50;
 
 export function setHarvestOffset(offset: number): void {
@@ -33,6 +35,9 @@ export function setHarvestOffset(offset: number): void {
 
 export function resetHarvestForGardenSwitch(): void {
   harvestLoadSequence += 1;
+  harvestSummarySequence += 1;
+  selectedHarvestYear = new Date().getFullYear();
+  setHarvestYear(selectedHarvestYear);
   harvestItems = [];
   harvestTotal = 0;
   harvestOffset = 0;
@@ -46,6 +51,29 @@ export function resetHarvestForGardenSwitch(): void {
 
 export function initHarvestTab(appCtx: AppContext): void {
   ctx = appCtx;
+  const dateFrom = queryInput("harvest-filter-from");
+  if (dateFrom && !document.getElementById("harvest-filter-year")) {
+    const label = document.createElement("label");
+    label.htmlFor = "harvest-filter-year";
+    label.textContent = t("harvest.year");
+    const year = document.createElement("input");
+    year.id = "harvest-filter-year";
+    year.className = "input-sm";
+    year.type = "number";
+    year.min = "1";
+    year.max = "9999";
+    year.step = "1";
+    year.placeholder = t("harvest.custom_range");
+    year.addEventListener("change", () => {
+      if (!year.value || !year.reportValidity()) return;
+      setHarvestYear(Number(year.value));
+      harvestOffset = 0;
+      void loadHarvest();
+    });
+    label.appendChild(year);
+    dateFrom.before(label);
+  }
+  setHarvestYear(selectedHarvestYear);
 
   const addButton = document.getElementById("harvest-add-btn");
   if (addButton) {
@@ -64,6 +92,7 @@ export function initHarvestTab(appCtx: AppContext): void {
     .getElementById("harvest-filter-quality")
     ?.addEventListener("change", () => {
       harvestOffset = 0;
+      syncHarvestYear();
       void loadHarvest();
     });
   document
@@ -76,6 +105,7 @@ export function initHarvestTab(appCtx: AppContext): void {
     .getElementById("harvest-filter-to")
     ?.addEventListener("change", () => {
       harvestOffset = 0;
+      syncHarvestYear();
       void loadHarvest();
     });
 }
@@ -83,18 +113,17 @@ export function initHarvestTab(appCtx: AppContext): void {
 export async function loadHarvest(): Promise<void> {
   if (!ctx) return;
   const sequence = ++harvestLoadSequence;
+  const gardenId = getActiveGardenContext();
+  if (gardenId === null) return;
+  const panel = document.getElementById("harvest-summary-panel");
+  if (panel && !panel.hidden) panel.textContent = t("common.loading");
   try {
     const params: Record<string, string | number> = {
+      ...readHarvestSummaryFilters(),
       limit: HARVEST_PAGE_SIZE,
       offset: harvestOffset,
     };
-    const qualityFilter = querySelect("harvest-filter-quality")?.value;
-    if (qualityFilter) params["quality"] = qualityFilter;
-    const dateFrom = queryInput("harvest-filter-from")?.value;
-    if (dateFrom) params["date_from"] = dateFrom;
-    const dateTo = queryInput("harvest-filter-to")?.value;
-    if (dateTo) params["date_to"] = dateTo;
-    const result = await fetchHarvestApi(params);
+    const result = await fetchHarvestApi(params, { gardenId });
     if (sequence !== harvestLoadSequence) return;
     if (result.total > 0 && result.entries.length === 0 && harvestOffset > 0) {
       harvestOffset = Math.max(
@@ -110,11 +139,34 @@ export async function loadHarvest(): Promise<void> {
     void refreshHarvestSummaryIfOpen();
   } catch (err) {
     if (sequence !== harvestLoadSequence) return;
+    if (panel && !panel.hidden) panel.textContent = getApiErrorMessage(err);
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
 
+export function setHarvestYear(year: number): void {
+  selectedHarvestYear = year;
+  const from = queryInput("harvest-filter-from");
+  const to = queryInput("harvest-filter-to");
+  if (from) from.value = `${String(year).padStart(4, "0")}-01-01`;
+  if (to) to.value = `${String(year).padStart(4, "0")}-12-31`;
+  syncHarvestYear();
+}
+
+function syncHarvestYear(): void {
+  const input = queryInput("harvest-filter-year");
+  if (!input) return;
+  const from = queryInput("harvest-filter-from")?.value ?? "";
+  const to = queryInput("harvest-filter-to")?.value ?? "";
+  const year = from.slice(0, 4);
+  input.value = from === `${year}-01-01` && to === `${year}-12-31` ? String(Number(year)) : "";
+}
+
 function readHarvestSummaryFilters(): Record<string, string> {
+  if (!queryInput("harvest-filter-from")?.value && !queryInput("harvest-filter-to")?.value) {
+    setHarvestYear(selectedHarvestYear);
+  }
+  syncHarvestYear();
   const params: Record<string, string> = {};
   const quality = querySelect("harvest-filter-quality")?.value || "";
   const dateFrom = queryInput("harvest-filter-from")?.value || "";
@@ -147,11 +199,7 @@ function renderHarvestView(): void {
     },
     onPlotClick: (plotId) => {
       ctx.setActiveTab("map");
-      void selectPlot(
-        ctx.state,
-        plotId,
-        ctx.getPlotCallbacks(),
-      );
+      void ctx.selectPlot(plotId);
     },
     canWrite: ctx.canWrite(),
   }, plantNames);
@@ -317,56 +365,44 @@ async function handleDeleteHarvest(
 }
 
 function showHarvestSummary(): Promise<void> {
-  return (async () => {
-    const sequence = harvestLoadSequence;
-    const panel = document.getElementById(
-      "harvest-summary-panel",
-    );
-    if (!panel) return;
-    if (!panel.hidden) {
-      panel.hidden = true;
-      return;
-    }
-    try {
-      const summary = await fetchHarvestSummaryApi(
-        readHarvestSummaryFilters(),
-      );
-      if (sequence !== harvestLoadSequence) return;
-      renderHarvestSummary(panel, summary);
-      panel.hidden = false;
-    } catch (err) {
-      ctx.showToast(getApiErrorMessage(err), "error");
-    }
-  })();
+  const panel = document.getElementById("harvest-summary-panel");
+  if (!panel) return Promise.resolve();
+  if (!panel.hidden) {
+    harvestSummarySequence += 1;
+    panel.hidden = true;
+    return Promise.resolve();
+  }
+  return openHarvestSummaryPanel();
 }
 
 async function refreshHarvestSummaryIfOpen(): Promise<void> {
   const sequence = harvestLoadSequence;
+  const summarySequence = ++harvestSummarySequence;
+  const gardenId = getActiveGardenContext();
   const panel = document.getElementById(
     "harvest-summary-panel",
   );
-  if (!(panel instanceof HTMLElement) || panel.hidden) return;
+  if (!(panel instanceof HTMLElement) || panel.hidden || gardenId === null) return;
+  panel.textContent = t("common.loading");
   try {
     const summary = await fetchHarvestSummaryApi(
       readHarvestSummaryFilters(),
+      { gardenId },
     );
-    if (sequence !== harvestLoadSequence) return;
+    if (sequence !== harvestLoadSequence || summarySequence !== harvestSummarySequence || gardenId !== getActiveGardenContext()) return;
     renderHarvestSummary(panel, summary);
   } catch (err) {
+    if (sequence !== harvestLoadSequence || summarySequence !== harvestSummarySequence || gardenId !== getActiveGardenContext()) return;
+    panel.textContent = getApiErrorMessage(err);
     ctx.showToast(getApiErrorMessage(err), "error");
   }
 }
 
 export async function openHarvestSummaryPanel(): Promise<void> {
-  const sequence = harvestLoadSequence;
   const panel = document.getElementById(
     "harvest-summary-panel",
   );
   if (!panel) return;
-  const summary = await fetchHarvestSummaryApi(
-    readHarvestSummaryFilters(),
-  );
-  if (sequence !== harvestLoadSequence) return;
-  renderHarvestSummary(panel, summary);
   panel.hidden = false;
+  await refreshHarvestSummaryIfOpen();
 }

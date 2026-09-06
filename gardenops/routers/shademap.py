@@ -2287,7 +2287,9 @@ def get_shademap_config(db: DB, request: FastAPIRequest) -> dict[str, object]:
         raise HTTPException(status_code=503, detail="SHADEMAP public API key not configured")
     garden_id = _active_garden_id(request)
     provider_state, sdk_cache_status = _ensure_sdk_ready(db, garden_id, request)
-    runtime_script_url = _runtime_script_upstream_url()
+    runtime_script_url = (
+        os.environ.get("SHADEMAP_RUNTIME_SCRIPT_PATH", "").strip() or _runtime_script_upstream_url()
+    )
     latitude, longitude = _garden_coordinates(db, garden_id)
     terrain_max_zoom = 18 if local_terrain_available(garden_id) else TERRAIN_MAX_ZOOM
     try:
@@ -2332,6 +2334,25 @@ def get_shademap_runtime_script(request: FastAPIRequest, db: DB) -> Response:
         garden_limit=env_nonneg_int("SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_GARDEN", 40),
         global_limit=env_nonneg_int("SHADEMAP_RUNTIME_SCRIPT_RATE_LIMIT_GLOBAL", 200),
     )
+    local_path = os.environ.get("SHADEMAP_RUNTIME_SCRIPT_PATH", "").strip()
+    if local_path:
+        try:
+            path = Path(local_path)
+            if not path.is_absolute():
+                raise ValueError("Runtime path must be absolute")
+            with path.open("rb") as runtime_file:
+                payload = runtime_file.read(UPSTREAM_MAX_BYTES + 1)
+            if not payload or len(payload) > UPSTREAM_MAX_BYTES:
+                raise ValueError("Invalid runtime size")
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503, detail="Local ShadeMap runtime unavailable"
+            ) from exc
+        return Response(
+            content=payload,
+            media_type="application/javascript",
+            headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
+        )
     upstream_url = _runtime_script_upstream_url()
     if upstream_url is None:
         raise HTTPException(status_code=404, detail="ShadeMap runtime script is not configured")

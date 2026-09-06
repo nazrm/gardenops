@@ -51,7 +51,28 @@ def test_assignment_controls_use_plant_and_plot_capabilities() -> None:
         "if (!plant.can_assign || !sourcePlot?.can_assign || !ensureWriteAccess()) return;" in app
     )
     assert "if (!plant.can_assign || !ensureWriteAccess()) return;" in app
-    assert app.count("if (destinations.length === 0) return;") == 2
+    move_picker = app.split("async function openPlantMovePicker", 1)[1].split(
+        "function openPlantPlacePicker", 1
+    )[0]
+    assert "if (destinations.length === 0) return;" in move_picker
+
+
+def test_place_picker_explains_unavailable_destinations_before_opening() -> None:
+    app = _read("frontend/src/app.ts")
+    place_picker = app.split("function openPlantPlacePicker", 1)[1].split(
+        "function openContainerLocation", 1
+    )[0]
+    permission_guard = "if (!plant.can_assign || !ensureWriteAccess()) return;"
+    empty_guard = "if (destinations.length === 0) {"
+    unavailable = place_picker.split(empty_guard, 1)[1].split("}", 1)[0]
+
+    assert 'showToast(t("experience.no_eligible_location"), "error");' in unavailable
+    assert "return;" in unavailable
+    assert unavailable.index("showToast(") < unavailable.index("return;")
+    assert place_picker.index(permission_guard) < place_picker.index(empty_guard)
+    assert place_picker.index(empty_guard) < place_picker.index("openPlantLocationPicker({")
+    assert 'mode: "place"' in place_picker
+    assert "destinations," in place_picker
 
 
 def test_app_passes_active_garden_write_access_and_clears_stale_selection() -> None:

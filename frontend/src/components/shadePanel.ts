@@ -170,7 +170,7 @@ class ShadeMap {
     return this;
   }
 
-  async setSunExposure(_enabled: boolean): Promise<this> {
+  async setSunExposure(_enabled: boolean, _options?: { startDate: Date; endDate: Date }): Promise<this> {
     this.scheduleIdle();
     return this;
   }
@@ -268,11 +268,21 @@ async function loadShadeMapRuntime(runtimeScriptUrl: string | null): Promise<voi
   }
 
   shadeMapRuntimeScriptUrl = runtimeScriptUrl;
+  // The self-hosted Leaflet UMD distribution consumes the application's Leaflet
+  // instance and exports ShadeMap. Keep the existing custom-runtime contract.
+  (globalThis as typeof globalThis & { L?: typeof L }).L = L;
   shadeMapRuntimeScriptPromise = new Promise<void>((resolve, reject) => {
     const script = document.createElement("script");
     script.async = true;
     script.src = trustedShadeMapRuntimeScriptUrl(runtimeScriptUrl);
     script.onload = () => {
+      const globals = globalThis as typeof globalThis & {
+        ShadeMap?: unknown;
+        GardenOpsShadeMap?: unknown;
+      };
+      if (!globals.GardenOpsShadeMap && typeof globals.ShadeMap === "function") {
+        globals.GardenOpsShadeMap = globals.ShadeMap;
+      }
       if (externalShadeMapRuntime()) {
         resolve();
       } else {
@@ -1725,7 +1735,11 @@ export class ShadePanelController {
     let applyError: unknown = null;
     try {
       shadeLayer.setDate(this.currentDate);
-      await shadeLayer.setSunExposure(this.activeMode === "sun-hours");
+      const startDate = new Date(this.currentDate);
+      startDate.setHours(0, 0, 0, 0);
+      const endDate = new Date(startDate);
+      endDate.setDate(endDate.getDate() + 1);
+      await shadeLayer.setSunExposure(this.activeMode === "sun-hours", { startDate, endDate });
     } catch (error) {
       applyError = error;
     } finally {

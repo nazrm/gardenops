@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import io
 import os
 import tempfile
@@ -121,7 +120,7 @@ class TestAgentApiPolicy(unittest.TestCase):
             with self.subTest(method=method, path=path):
                 self.assertFalse(agent_api_request_allowed(method, path))
 
-    def test_agent_auth_requires_exact_token_loopback_and_allowlisted_path(self) -> None:
+    def test_agent_auth_requires_authenticated_source_provenance(self) -> None:
         db = MagicMock()
         request = SimpleNamespace(
             method="GET",
@@ -139,11 +138,8 @@ class TestAgentApiPolicy(unittest.TestCase):
                 return_value=_binding(),
             ),
         ):
-            context = agent_api_auth_context(db, cast(Any, request))
-        assert context is not None
-        self.assertEqual(context.auth_type, "agent")
-        self.assertEqual(context.user_id, 7)
-        self.assertEqual(context.garden_id, 11)
+            with self.assertRaisesRegex(Exception, "authenticated source provenance"):
+                agent_api_auth_context(db, cast(Any, request))
 
         with patch.dict(
             os.environ,
@@ -329,35 +325,9 @@ class TestAgentMcpBridge(unittest.TestCase):
             self.assertEqual(captured["content_type"], "image/png")
             self.assertEqual(captured["body"], b"\x89PNG\r\n\x1a\nimage")
 
-    def test_mcp_surface_is_four_strictly_purposed_tools(self) -> None:
-        async def inspect_tools() -> None:
-            from mcp import Client
-
-            server = create_server(AgentBridgeConfig("http://127.0.0.1:8000/", TOKEN))
-            async with Client(server) as client:
-                tools = await client.list_tools()
-            self.assertEqual(
-                {tool.name for tool in tools.tools},
-                {
-                    "garden_capabilities",
-                    "garden_identify_plant",
-                    "garden_read",
-                    "garden_write",
-                },
-            )
-            annotations = {tool.name: tool.annotations for tool in tools.tools}
-            read_annotations = annotations["garden_read"]
-            write_annotations = annotations["garden_write"]
-            identify_annotations = annotations["garden_identify_plant"]
-            assert read_annotations is not None
-            assert write_annotations is not None
-            assert identify_annotations is not None
-            self.assertTrue(read_annotations.read_only_hint)
-            self.assertTrue(write_annotations.destructive_hint)
-            self.assertTrue(identify_annotations.open_world_hint)
-            self.assertFalse(identify_annotations.destructive_hint)
-
-        asyncio.run(inspect_tools())
+    def test_mcp_surface_fails_closed_without_source_provenance(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "authenticated source provenance"):
+            create_server(AgentBridgeConfig("http://127.0.0.1:8000/", TOKEN))
 
 
 class TestAgentApiEndToEnd(BaseApiTest):
@@ -373,12 +343,11 @@ class TestAgentApiEndToEnd(BaseApiTest):
             "MATRIX_GARDEN_SLUG": "default",
         }
 
-    def test_agent_token_reads_and_writes_as_the_bound_user_and_garden(self) -> None:
+    def test_agent_token_cannot_read_or_write_without_source_provenance(self) -> None:
         headers = {"authorization": f"Bearer {TOKEN}"}
         with patch.dict(os.environ, self._agent_env()):
             plants = self.client.get("/api/plants?limit=10", headers=headers)
-            self.assertEqual(plants.status_code, 200, plants.text)
-            self.assertEqual(len(plants.json()), 2)
+            self.assertEqual(plants.status_code, 403, plants.text)
 
             created = self.client.post(
                 "/api/journal",
@@ -395,13 +364,7 @@ class TestAgentApiEndToEnd(BaseApiTest):
                     "plot_ids": [],
                 },
             )
-            self.assertEqual(created.status_code, 201, created.text)
-            entry_id = created.json()["id"]
-
-            detail = self.client.get(f"/api/journal/{entry_id}", headers=headers)
-            self.assertEqual(detail.status_code, 200, detail.text)
-            self.assertEqual(detail.json()["title"], "Agent observation")
-            self.assertEqual(detail.json()["actor_user_id"], self._owner_id)
+            self.assertEqual(created.status_code, 403, created.text)
 
     def test_agent_token_cannot_reach_platform_or_cross_garden_routes(self) -> None:
         headers = {"authorization": f"Bearer {TOKEN}"}
@@ -414,9 +377,7 @@ class TestAgentApiEndToEnd(BaseApiTest):
             )
             self.assertEqual(cross_garden.status_code, 403)
             gardens = self.client.get("/api/gardens", headers=headers)
-            self.assertEqual(gardens.status_code, 200, gardens.text)
-            self.assertEqual(len(gardens.json()), 1)
-            self.assertEqual(gardens.json()[0]["id"], self._get_default_garden_id())
+            self.assertEqual(gardens.status_code, 403, gardens.text)
             create_garden = self.client.post(
                 "/api/gardens",
                 headers=headers,
@@ -446,7 +407,7 @@ class TestAgentApiEndToEnd(BaseApiTest):
                 "/api/plants?limit=10",
                 headers={"authorization": f"Bearer {TOKEN}"},
             )
-            self.assertEqual(accepted.status_code, 200, accepted.text)
+            self.assertEqual(accepted.status_code, 403, accepted.text)
 
             rejected = self.client.get(
                 "/api/plants?limit=10",
@@ -464,8 +425,8 @@ class TestAgentApiEndToEnd(BaseApiTest):
                 },
                 content=b"not-an-image",
             )
-        self.assertEqual(response.status_code, 415, response.text)
-        self.assertIn("image", response.json()["detail"].lower())
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertIn("source provenance", response.json()["detail"].lower())
 
 
 if __name__ == "__main__":

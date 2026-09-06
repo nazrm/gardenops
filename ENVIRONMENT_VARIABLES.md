@@ -11,6 +11,12 @@ instance. Values shown here are placeholders; do not commit real local env files
 | `GARDENOPS_TEST_POSTGRES_URL` | PostgreSQL connection string for tests. | `postgresql://gardenops:change-me@127.0.0.1:5432/gardenops_test` |
 | `APP_ENV` | Runtime environment: `development`, `test`, or `production`. | `development` |
 
+## Observation Dates
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `GARDENOPS_TIMEZONE` | IANA timezone for task occurrence defaults, future-date validation, observation years, and Matrix dates. Invalid timezone names are rejected. | `MATRIX_TIMEZONE`, otherwise `Europe/Oslo` |
+
 ## Authentication
 
 | Variable | Purpose | Example |
@@ -98,10 +104,10 @@ a separate random bearer token of at least 32 characters.
 | Variable | Purpose | Example |
 |---|---|---|
 | `MCP_ENABLED` | Mount the private MCP endpoint. | `false` |
-| `MCP_BEARER_TOKEN` | Static MCP, capture-upload, and loopback OpenClaw bridge secret, minimum 32 random characters. The bridge is additionally constrained to its allowlisted API surface and fixed Matrix user/garden binding. | _(empty)_ |
-| `GARDENOPS_API_URL` | Loopback GardenOps origin used by the optional OpenClaw stdio bridge. | `http://127.0.0.1:8000` |
-| `GARDENOPS_MCP_TOKEN_FILE` | Mode-0600 file containing `MCP_BEARER_TOKEN` for the optional OpenClaw stdio bridge. | _(empty)_ |
-| `GARDENOPS_MCP_MEDIA_ROOT` | Inbound Matrix media directory whose staged JPEG, PNG, and WebP files the optional OpenClaw stdio bridge may send to GardenOps plant identification. | _(empty)_ |
+| `MCP_BEARER_TOKEN` | Static MCP and capture-upload secret, minimum 32 random characters. It does not authorize the disabled OpenClaw REST bridge. | _(empty)_ |
+| `GARDENOPS_API_URL` | Reserved for a future source-attested OpenClaw bridge; the current bridge fails closed. | `http://127.0.0.1:8000` |
+| `GARDENOPS_MCP_TOKEN_FILE` | Reserved mode-0600 token file for a future source-attested OpenClaw bridge. | _(empty)_ |
+| `GARDENOPS_MCP_MEDIA_ROOT` | Reserved inbound media root for a future source-attested OpenClaw bridge. | _(empty)_ |
 | `MCP_URL` | Loopback Streamable HTTP endpoint used by the worker. | `http://127.0.0.1:8000/mcp` |
 | `MATRIX_ENABLED` | Permit the dedicated Matrix worker to start. | `false` |
 | `MATRIX_HOMESERVER_URL` | Matrix homeserver base URL. | `https://matrix.example.com` |
@@ -115,7 +121,7 @@ a separate random bearer token of at least 32 characters.
 | `MATRIX_GARDENOPS_USERNAME` | Existing active GardenOps username. | `owner` |
 | `MATRIX_GARDEN_SLUG` | Existing garden slug where actions apply. | `home` |
 | `MATRIX_TRIGGER_MODE` | Process `mention` triggers or `all` accepted messages. | `mention` |
-| `MATRIX_TIMEZONE` | Timezone used to derive observation dates. | `Europe/Oslo` |
+| `MATRIX_TIMEZONE` | Legacy observation timezone fallback when `GARDENOPS_TIMEZONE` is unset. | `Europe/Oslo` |
 | `MATRIX_CAPTURE_TTL_DAYS` | Pending request and temporary capture lifetime, 1-30 days. | `7` |
 | `MATRIX_SYNC_TIMEOUT_MS` | Matrix long-poll timeout, 1000-120000 ms. | `30000` |
 | `MATRIX_MAX_PENDING_EVENTS` | Sequential worker queue bound, 1-100. | `20` |

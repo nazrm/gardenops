@@ -153,6 +153,34 @@ The guard detects `innerHTML`/`outerHTML` dot and bracket assignment,
 
 ## Targeted Frontend E2E Checks
 
+For contextual capture, draft recovery, scoped history and task completion,
+run the connected garden-experience check with the existing task-history fixture:
+
+```bash
+.venv/bin/python scripts/run_fast_postgres_tests.py \
+  --command-database gardenops_task_history_e2e_test --command -- \
+  env GARDENOPS_EXPERIENCE_E2E=1 bash scripts/run_task_completion_history_e2e.sh
+```
+
+The runner starts and cleans up disposable PostgreSQL, FastAPI and Vite. The
+additional checker drives desktop/mobile Chromium against real routes and keeps
+its screenshots and report under ignored `research/experience-e2e/`. The report
+explicitly identifies uncovered scenarios; it is not a substitute for all-role
+or provider testing. Set `CHROMIUM_EXECUTABLE` to an installed Chromium path
+where the default is unavailable. PostgreSQL server binaries must be on PATH.
+
+For isolated browser storage, capture-form and initial-auth regressions:
+
+```bash
+node tests/offline_queue_runtime.cjs
+node tests/journal_capture_frontend.cjs
+node tests/auth_entry_frontend.cjs
+node tests/task_completion_frontend.cjs
+```
+
+These use Chromium and synthetic responses/storage, without an application
+database. They complement, rather than replace, the real-backend journey.
+
 For broad shell, navigation, responsive-layout, or cross-feature changes, run
 the authenticated navigation/read map against a disposable database:
 

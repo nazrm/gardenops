@@ -61,6 +61,14 @@ def _complete_journey_fixture_env(artifact_dir: Path) -> dict[str, str]:
 
 
 class TestShademap(BaseApiTest):
+    def test_shademap_basemap_policy_is_scoped_to_enabled_feature(self) -> None:
+        from gardenops.main import _csp_policy
+
+        with patch.dict(os.environ, {"SHADEMAP_ENABLED": "true"}):
+            self.assertIn("https://*.tile.openstreetmap.org", _csp_policy())
+        with patch.dict(os.environ, {"SHADEMAP_ENABLED": "false"}):
+            self.assertNotIn("https://*.tile.openstreetmap.org", _csp_policy())
+
     def test_shademap_disabled_blocks_routes_and_network_before_provider_resolution(self) -> None:
         with (
             patch.dict(
@@ -665,6 +673,26 @@ class TestShademap(BaseApiTest):
                 timeout=15.0,
             )
             production_request.assert_not_called()
+
+    def test_shademap_local_runtime_is_served_without_upstream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "runtime.js"
+            runtime.write_bytes(b"/* vendor copyright */ window.ShadeMap = function () {};")
+            with (
+                patch.dict(os.environ, {"SHADEMAP_RUNTIME_SCRIPT_PATH": str(runtime)}),
+                patch.object(shademap_router, "_request_bytes") as upstream,
+            ):
+                response = self.client.get("/shademap/runtime.js")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.content, runtime.read_bytes())
+                self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+                runtime.unlink()
+                self.assertEqual(self.client.get("/shademap/runtime.js").status_code, 503)
+                upstream.assert_not_called()
+
+    def test_shademap_local_runtime_rejects_relative_path(self) -> None:
+        with patch.dict(os.environ, {"SHADEMAP_RUNTIME_SCRIPT_PATH": "runtime.js"}):
+            self.assertEqual(self.client.get("/shademap/runtime.js").status_code, 503)
 
     def test_shademap_runtime_script_is_authenticated_and_proxy_served(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2044,7 +2072,9 @@ class TestShademap(BaseApiTest):
 
         self.assertIn('select.id = "shade-mode-select"', source)
         self.assertIn("mode: this.activeMode", source)
-        self.assertIn('setSunExposure(this.activeMode === "sun-hours")', source)
+        self.assertIn(
+            'setSunExposure(this.activeMode === "sun-hours", { startDate, endDate })', source
+        )
         self.assertIn('root.dataset["renderRevision"]', source)
         self.assertIn('root.dataset["canvasWidth"]', source)
         self.assertIn('"gardenops:shade-render-state"', source)

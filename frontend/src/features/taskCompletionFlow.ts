@@ -1,14 +1,24 @@
 import type { GardenTask, TaskType } from "../core/models";
 import { t } from "../core/i18n";
 import { createModal } from "../components/dialogCore";
+import { showToast } from "../components/toast";
 import type { TaskActionRequest } from "../services/api";
+import { getPlantPlots } from "../services/api";
+import { assertOfflineQueueContext, captureOfflineQueueContext, isOnline } from "../services/offlineQueue";
 
-type CompletionTask = Pick<GardenTask, "task_type" | "plant_ids">;
+type CompletionTask = Pick<GardenTask, "task_type" | "plant_ids"> &
+  Partial<Pick<GardenTask, "plot_ids" | "observation_timezone">>;
 type TaskActionLabelTask = Pick<GardenTask, "task_type" | "title">;
 
 interface TaskCompletionDialogOptions {
   modalParent?: HTMLElement | null | undefined;
+  plotNames?: Map<string, string>;
+  onHistory?: (plantId: string) => void;
+  onClose?: () => void;
 }
+
+const confirmedPlacements = new Map<string, string[]>();
+let placementsContext: ReturnType<typeof captureOfflineQueueContext> | null = null;
 
 const CAPTURE_TASK_TYPES = new Set<TaskType>([
   "observe_bloom",
@@ -21,7 +31,7 @@ export function needsCompletionSelection(task: CompletionTask): boolean {
 }
 
 export function needsCompletionDialog(task: CompletionTask): boolean {
-  return task.task_type === "observe_bloom" || needsCompletionSelection(task);
+  return CAPTURE_TASK_TYPES.has(task.task_type);
 }
 
 export function canQueueDefaultCompletionOffline(task: CompletionTask): boolean {
@@ -29,7 +39,7 @@ export function canQueueDefaultCompletionOffline(task: CompletionTask): boolean 
 }
 
 export function canQueueCompletionOffline(task: CompletionTask): boolean {
-  return canQueueDefaultCompletionOffline(task) || task.task_type === "observe_bloom";
+  return canQueueDefaultCompletionOffline(task) || CAPTURE_TASK_TYPES.has(task.task_type);
 }
 
 export function taskCompletionActionLabel(task: CompletionTask): string {
@@ -77,7 +87,7 @@ export function openTaskCompletionDialog(
         <button type="button" class="confirm-no"></button>
       </div>
     </div>
-  `, { modalParent: options.modalParent });
+  `, { modalParent: options.modalParent, onClose: options.onClose });
   dialog.querySelector("h3")!.textContent = String(t("tasks.complete_select_plants_title"));
   const list = dialog.querySelector<HTMLElement>(".task-completion-list")!;
   const feedback = dialog.querySelector<HTMLElement>(".task-completion-feedback")!;
@@ -86,6 +96,112 @@ export function openTaskCompletionDialog(
   const clear = dialog.querySelector<HTMLButtonElement>(".task-completion-clear")!;
   const cancel = dialog.querySelector<HTMLButtonElement>(".confirm-no")!;
   const notSeen = dialog.querySelector<HTMLButtonElement>(".task-completion-not-seen")!;
+  const dateLabel = document.createElement("label");
+  dateLabel.className = "task-occurrence-date";
+  dateLabel.textContent = String(t("tasks.occurred_on"));
+  const dateInput = document.createElement("input");
+  dateInput.type = "date";
+  dateInput.required = true;
+  const todayParts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: task.observation_timezone || "Europe/Oslo",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(new Date());
+  const part = (type: string): string => todayParts.find((p) => p.type === type)?.value ?? "";
+  dateInput.value = `${part("year")}-${part("month")}-${part("day")}`;
+  dateInput.max = dateInput.value;
+  dateLabel.appendChild(dateInput);
+  list.before(dateLabel);
+  const observedPlots = new Set<string>();
+  const locationCheckboxes: HTMLInputElement[] = [];
+  const assignmentContext = captureOfflineQueueContext();
+  const assignmentCurrent = (): boolean => {
+    try { assertOfflineQueueContext(assignmentContext); return dialog.isConnected; }
+    catch { return false; }
+  };
+  try {
+    if (!placementsContext) throw new Error("No placement cache");
+    assertOfflineQueueContext(placementsContext);
+  } catch { confirmedPlacements.clear(); }
+  placementsContext = assignmentContext;
+  let locationsLoading = false;
+  let renderLocations = (): void => {};
+  let loadLocations = async (): Promise<void> => {};
+  if (task.task_type === "observe_bloom") {
+    const locations = document.createElement("fieldset");
+    locations.className = "task-observed-locations";
+    const legend = document.createElement("legend");
+    legend.textContent = String(t("tasks.observed_locations"));
+    const hint = document.createElement("p");
+    hint.className = "text-muted";
+    hint.textContent = String(t("tasks.observed_locations_hint"));
+    const choices = document.createElement("div");
+    const notice = document.createElement("p");
+    notice.setAttribute("role", "status");
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = String(t("common.retry"));
+    retry.hidden = true;
+    retry.addEventListener("click", () => void loadLocations());
+    locations.append(legend, hint, choices, notice, retry);
+    renderLocations = () => {
+      const ids = [...selected];
+      const common = ids.length ? (confirmedPlacements.get(ids[0]!) ?? [])
+        .filter((plotId) => ids.every((id) => confirmedPlacements.get(id)?.includes(plotId))) : [];
+      observedPlots.clear();
+      locationCheckboxes.length = 0;
+      choices.replaceChildren();
+      for (const plotId of common) {
+        const label = document.createElement("label");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = plotId;
+        checkbox.checked = common.length === 1;
+        if (checkbox.checked) observedPlots.add(plotId);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) observedPlots.add(plotId);
+          else observedPlots.delete(plotId);
+        });
+        label.append(checkbox, document.createTextNode(options.plotNames?.get(plotId) ?? plotId));
+        locationCheckboxes.push(checkbox);
+        choices.appendChild(label);
+      }
+    };
+    loadLocations = async () => {
+      if (!assignmentCurrent() || locationsLoading) return;
+      retry.hidden = true;
+      if (!isOnline()) {
+        notice.textContent = String(t("tasks.locations_cached"));
+        renderLocations();
+        return;
+      }
+      locationsLoading = true;
+      notice.textContent = String(t("common.loading"));
+      syncState();
+      try {
+        const placements = await Promise.all((task.plant_ids ?? []).map(async (id) =>
+          [id, await getPlantPlots(id, { gardenId: assignmentContext.gardenId })] as const));
+        if (!assignmentCurrent()) return;
+        for (const [id, plots] of placements) confirmedPlacements.set(id, plots);
+        notice.textContent = "";
+      } catch {
+        if (!assignmentCurrent()) return;
+        notice.textContent = String(t("tasks.locations_unavailable"));
+        retry.hidden = false;
+      } finally {
+        locationsLoading = false;
+        if (assignmentCurrent()) { renderLocations(); syncState(); }
+      }
+    };
+    list.after(locations);
+  }
+  const closureLabel = document.createElement("label");
+  closureLabel.className = "task-season-closure";
+  closureLabel.hidden = true;
+  const closureConfirmed = document.createElement("input");
+  closureConfirmed.type = "checkbox";
+  const closureText = document.createElement("span");
+  closureLabel.append(closureConfirmed, closureText);
+  feedback.before(closureLabel);
   const checkboxes: HTMLInputElement[] = [];
   let submitting = false;
   let submitError = "";
@@ -97,11 +213,14 @@ export function openTaskCompletionDialog(
     }
     const selectionRequired = needsCompletionSelection(task);
     const selectionMissing = selectionRequired && selected.size === 0;
-    confirm.disabled = submitting || selectionMissing;
-    notSeen.disabled = submitting || selectionMissing;
+    confirm.disabled = submitting || selectionMissing || locationsLoading;
+    notSeen.disabled = submitting || selectionMissing || locationsLoading;
     selectAll.disabled = submitting;
     clear.disabled = submitting;
     cancel.disabled = submitting;
+    dateInput.disabled = submitting;
+    closureConfirmed.disabled = submitting;
+    for (const checkbox of locationCheckboxes) checkbox.disabled = submitting;
     dialog.toggleAttribute("aria-busy", submitting);
     feedback.textContent = selectionMissing
       ? String(t("tasks.complete_select_one"))
@@ -112,7 +231,8 @@ export function openTaskCompletionDialog(
     body: TaskActionRequest,
     submitButton: HTMLButtonElement,
   ): Promise<void> => {
-    if (submitting) return;
+    if (submitting || locationsLoading) return;
+    if (!dateInput.reportValidity()) return;
     if (needsCompletionSelection(task) && selected.size === 0) {
       syncState();
       (checkboxes[0] ?? confirm).focus();
@@ -122,12 +242,26 @@ export function openTaskCompletionDialog(
     submitError = "";
     syncState();
     try {
+      body = {
+        ...body,
+        occurred_on: dateInput.value,
+        ...(task.task_type === "observe_bloom"
+          ? { observed_plot_ids: body.completion_outcome === "done" ? [...observedPlots] : [] }
+          : {}),
+      };
       const result = await onConfirm(body);
       if (result === false) {
         submitError = String(t("tasks.dialog_submit_failed"));
         return;
       }
       close();
+      const plantId = body.completed_plant_ids?.[0];
+      if (body.completion_outcome === "not_seen_blooming_this_season" && plantId && options.onHistory) {
+        showToast(String(t("tasks.season_closed", { year: dateInput.value.slice(0, 4) })), "success", {
+          durationMs: 10000,
+          actions: [{ label: String(t("tasks.view_history")), onClick: () => options.onHistory?.(plantId) }],
+        });
+      }
     } catch {
       submitError = String(t("tasks.dialog_submit_failed"));
     } finally {
@@ -148,6 +282,8 @@ export function openTaskCompletionDialog(
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) selected.add(plantId);
       else selected.delete(plantId);
+      renderLocations();
+      closureConfirmed.checked = false;
       submitError = "";
       syncState();
     });
@@ -159,6 +295,8 @@ export function openTaskCompletionDialog(
   selectAll.textContent = String(t("common.select_all"));
   selectAll.addEventListener("click", () => {
     for (const checkbox of checkboxes) selected.add(checkbox.value);
+    renderLocations();
+    closureConfirmed.checked = false;
     submitError = "";
     syncState();
     confirm.focus();
@@ -167,6 +305,8 @@ export function openTaskCompletionDialog(
   clear.textContent = String(t("common.clear"));
   clear.addEventListener("click", () => {
     selected.clear();
+    renderLocations();
+    closureConfirmed.checked = false;
     submitError = "";
     syncState();
     checkboxes[0]?.focus();
@@ -177,6 +317,12 @@ export function openTaskCompletionDialog(
   if (task.task_type === "observe_bloom") {
     notSeen.textContent = String(t("tasks.action_not_seen_blooming"));
     notSeen.addEventListener("click", () => {
+      closureText.textContent = String(t("tasks.close_season_confirm", { year: dateInput.value.slice(0, 4) }));
+      if (closureLabel.hidden || !closureConfirmed.checked) {
+        closureLabel.hidden = false;
+        closureConfirmed.focus();
+        return;
+      }
       const completed_plant_ids = [...selected];
       void submit({
         action: "complete",
@@ -200,6 +346,11 @@ export function openTaskCompletionDialog(
       completion_outcome: "done",
     }, confirm);
   });
+  dateInput.addEventListener("change", () => {
+    closureConfirmed.checked = false;
+    closureText.textContent = String(t("tasks.close_season_confirm", { year: dateInput.value.slice(0, 4) }));
+  });
   syncState();
+  void loadLocations();
   (checkboxes[0] ?? confirm).focus();
 }

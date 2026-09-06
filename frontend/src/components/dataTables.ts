@@ -144,6 +144,7 @@ export function filterPlants(
 }
 
 interface PlantsTableCallbacks {
+  onInspect?: (plant: Plant) => void;
   canWrite: boolean;
   onOpenPlot: (plotId: string) => void;
   onPlace?: (plant: Plant) => void;
@@ -281,6 +282,7 @@ function appendCellContent(
   plotLabels?: ReadonlyMap<string, string>,
   onPlace?: (plant: Plant) => void,
   mediaPreviewByPlantId?: ReadonlyMap<string, MediaAsset | null>,
+  onInspect?: (plant: Plant) => void,
 ): void {
   switch (key) {
     case "name": {
@@ -306,7 +308,12 @@ function appendCellContent(
         emojiSpan.textContent = emoji;
         nameLine.append(emojiSpan, document.createTextNode(" "));
       }
-      nameLine.append(document.createTextNode(plant.name));
+      const inspect = document.createElement("button");
+      inspect.type = "button";
+      inspect.className = "plant-summary-link";
+      inspect.textContent = plant.name;
+      inspect.addEventListener("click", () => onInspect?.(plant));
+      nameLine.append(inspect);
       textWrap.appendChild(nameLine);
       const badge = createPresenceBadge(plant);
       if (badge) textWrap.appendChild(badge);
@@ -574,6 +581,7 @@ export function renderPlantsTableBody(
         plotLabels,
         canWrite ? onPlace : undefined,
         mediaPreviewByPlantId,
+        callbacks.onInspect,
       );
       row.appendChild(cell);
     });
@@ -669,7 +677,12 @@ export function renderPlantsMobileCards(
 
     const title = document.createElement("h3");
     title.className = "mobile-data-title";
-    title.textContent = plant.name;
+    const inspect = document.createElement("button");
+    inspect.type = "button";
+    inspect.className = "plant-summary-link";
+    inspect.textContent = plant.name;
+    inspect.addEventListener("click", () => callbacks.onInspect?.(plant));
+    title.append(inspect);
 
     const subtitle = document.createElement("p");
     subtitle.className = "mobile-data-subtitle";

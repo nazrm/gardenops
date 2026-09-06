@@ -11,13 +11,19 @@ import {
   resolveIssueApi,
   deleteIssueApi,
   getApiErrorMessage,
+  getActiveGardenContext,
+  diagnosePlantApi,
+  validateAiPhotoUpload,
+  AI_PHOTO_UPLOAD_ACCEPT,
+  type DiagnosisCandidate,
 } from "../services/api";
 import { renderIssueList, createIssueForm } from "../components/issues";
 import { buildPlantNameMap } from "../core/plantNames";
 import { renderPlotJournalPreview } from "../components/journalPreview";
-import { confirmDialog, trapFocus } from "../components/dialogCore";
+import { confirmDialog, createModal, type ModalOptions } from "../components/dialogCore";
 import { selectPlot } from "../components/plotInteractions";
-import { showDiagnosePlantModal } from "../components/diagnosePlant";
+import { getJournalDraftGeneration } from "../services/journalDraft";
+import { captureOfflineQueueContext, assertOfflineQueueContext } from "../services/offlineQueue";
 
 let ctx: AppContext;
 
@@ -26,12 +32,21 @@ let issuesTotal = 0;
 let issuesOffset = 0;
 let issuesLoadSequence = 0;
 const ISSUES_PAGE_SIZE = 50;
+let gardenGeneration = 0;
+const issueDialogs = new Set<() => void>();
+export interface IssueFormOpenOptions extends ModalOptions {
+  plantIds?: string[];
+  plotIds?: string[];
+  onSaved?: (issue: GardenIssue) => void;
+}
 
 export function setIssuesOffset(offset: number): void {
   issuesOffset = offset;
 }
 
 export function resetIssuesForGardenSwitch(): void {
+  gardenGeneration += 1;
+  for (const close of issueDialogs) close();
   issuesLoadSequence += 1;
   issueItems = [];
   issuesTotal = 0;
@@ -182,20 +197,46 @@ function renderIssuesPagination(): void {
 
 export function openIssueForm(
   existingIssue?: GardenIssue,
+  options: IssueFormOpenOptions = {},
 ): void {
   const readOnly = Boolean(existingIssue) && !ctx.canWrite();
   if (!existingIssue && !ctx.ensureWriteAccess()) return;
-  const overlay = document.createElement("div");
-  overlay.className = "modal";
-  overlay.setAttribute("role", "dialog");
-  overlay.setAttribute("aria-modal", "true");
-
-  let releaseFocusTrap: (() => void) | null = null;
-  const onEscape = (e: KeyboardEvent) => { if (e.key === "Escape") closeOverlay(); };
-  const closeOverlay = () => {
-    releaseFocusTrap?.();
-    window.removeEventListener("keydown", onEscape);
-    overlay.remove();
+  const gardenId = getActiveGardenContext();
+  const identity = ctx.getAuthProfile()?.username;
+  const generation = gardenGeneration;
+  const authGeneration = getJournalDraftGeneration();
+  const queueContext = captureOfflineQueueContext();
+  const contextCurrent = () => {
+    try { assertOfflineQueueContext(queueContext); } catch { return false; }
+    return generation === gardenGeneration
+    && authGeneration === getJournalDraftGeneration()
+    && gardenId === getActiveGardenContext() && identity === ctx.getAuthProfile()?.username;
+  };
+  let closed = false;
+  const { dialog: overlay, close: closeOverlay } = createModal(t("issues.form_title"),
+    '<div class="modal-content"></div>', {
+      modalParent: options.modalParent,
+      onClose: () => {
+        closed = true;
+        issueDialogs.delete(closeOverlay);
+        if (contextCurrent()) options.onClose?.();
+      },
+    });
+  issueDialogs.add(closeOverlay);
+  const current = () => !closed && overlay.isConnected && contextCurrent();
+  let savedIssueId: string | null = existingIssue?.id ?? null;
+  const photoProgress = new WeakMap<File, { operationId: string; uploaded: boolean }>();
+  const exposeSavedIssue = async (issueId: string) => {
+    try {
+      const saved = await fetchIssueApi(issueId);
+      if (!current()) return;
+      closeOverlay();
+      if (options.onSaved) options.onSaved(saved);
+      else openIssueForm(saved, { modalParent: options.modalParent });
+      void loadIssues();
+    } catch (err) {
+      if (current()) ctx.showToast(getApiErrorMessage(err), "error");
+    }
   };
 
   const form = createIssueForm({
@@ -206,26 +247,18 @@ export function openIssueForm(
       name: p.name,
     })),
     availablePlots: ctx.getPlots(),
+    ...(options.plantIds ? { plantIds: options.plantIds } : {}),
+    ...(options.plotIds ? { plotIds: options.plotIds } : {}),
     ...(!existingIssue
         ? {
-          onDiagnoseFromPhoto: () => {
-            closeOverlay();
-            showDiagnosePlantModal("", [], "", {
-              onIssueCreated: (issueId) => {
-                ctx.showToast(t("diagnose.issue_created"), "success");
-                ctx.navigateToSubMode("issues");
-                void loadIssues();
-                void fetchIssueApi(issueId).then(
-                  (createdIssue) => openIssueForm(createdIssue),
-                  () => {},
-                );
-              },
-              onClose: () => {},
-            });
+          onDiagnoseFromPhoto: (context: { plantIds: string[]; plotIds: string[]; symptoms: string },
+            apply: (diagnosis: DiagnosisCandidate, photo: File) => void) => {
+            if (current()) openIssueDiagnosis(context, apply, current);
           },
         }
       : {}),
     onSave: async (data) => {
+      if (!current() || !ctx.ensureWriteAccess()) return;
       try {
         const mediaFiles = ctx.extractPendingMediaFiles(
           data as Record<string, unknown>,
@@ -233,10 +266,9 @@ export function openIssueForm(
         const issuePayload = ctx.withoutPendingMediaFiles(
           data as Record<string, unknown>,
         );
-        let savedIssueId: string | null = existingIssue?.id ?? null;
-        if (existingIssue) {
+        if (savedIssueId) {
           await updateIssueApi(
-            existingIssue.id,
+            savedIssueId,
             issuePayload,
           );
         } else if (!ctx.isOnline()) {
@@ -244,6 +276,7 @@ export function openIssueForm(
             "issue_create",
             data as Record<string, unknown>,
           );
+          if (!current()) return;
           ctx.showToast(
             t("offline.draft_saved"),
             "success",
@@ -259,23 +292,39 @@ export function openIssueForm(
           );
           savedIssueId = created.id;
         }
+        if (!current()) return;
         if (savedIssueId) {
           try {
-            await ctx.uploadTargetMediaFiles(
-              "issue",
-              savedIssueId,
-              mediaFiles,
-            );
+            for (const file of mediaFiles) {
+              if (!current()) return;
+              let progress = photoProgress.get(file);
+              if (!progress) {
+                progress = { operationId: crypto.randomUUID(), uploaded: false };
+                photoProgress.set(file, progress);
+              }
+              if (progress.uploaded) continue;
+              await ctx.uploadTargetMediaFiles(
+                "issue", savedIssueId, [file],
+                { gardenId, operationIds: [progress.operationId] },
+              );
+              progress.uploaded = true;
+            }
           } catch {
+            if (!current()) return;
             ctx.showToast(
               t("media.issue_upload_partial"),
               "error",
             );
-            closeOverlay();
-            void loadIssues();
+            const view = document.createElement("button");
+            view.type = "button";
+            view.textContent = t("issues.view_saved_issue");
+            const issueId = savedIssueId;
+            view.addEventListener("click", () => void exposeSavedIssue(issueId));
+            form.appendChild(view);
             return;
           }
         }
+        if (!current()) return;
         ctx.showToast(
           t(
             existingIssue
@@ -287,10 +336,10 @@ export function openIssueForm(
         if (!existingIssue) {
           issuesOffset = 0;
         }
-        closeOverlay();
-        void loadIssues();
+        if (!existingIssue && savedIssueId) await exposeSavedIssue(savedIssueId);
+        else { closeOverlay(); void loadIssues(); }
       } catch (err) {
-        ctx.showToast(getApiErrorMessage(err), "error");
+        if (current()) ctx.showToast(getApiErrorMessage(err), "error");
       }
     },
     onCancel: () => closeOverlay(),
@@ -298,8 +347,7 @@ export function openIssueForm(
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) closeOverlay();
   });
-  const dialog = document.createElement("div");
-  dialog.className = "modal-content";
+  const dialog = overlay.querySelector<HTMLElement>(".modal-content")!;
   dialog.appendChild(form);
   if (existingIssue) {
     ctx.attachReadonlyMediaSection(dialog, {
@@ -309,10 +357,74 @@ export function openIssueForm(
     });
     attachIssueHistorySection(dialog, existingIssue.id);
   }
-  overlay.appendChild(dialog);
-  document.body.appendChild(overlay);
-  window.addEventListener("keydown", onEscape);
-  releaseFocusTrap = trapFocus(overlay);
+  form.querySelector<HTMLElement>("input, select, textarea")?.focus();
+}
+
+function openIssueDiagnosis(
+  context: { plantIds: string[]; plotIds: string[]; symptoms: string },
+  apply: (diagnosis: DiagnosisCandidate, photo: File) => void,
+  parentCurrent: () => boolean,
+): void {
+  let closed = false;
+  const { dialog, close } = createModal(t("issues.diagnose_optional"), '<div class="modal-content"></div>', {
+    onClose: () => { closed = true; issueDialogs.delete(close); },
+  });
+  issueDialogs.add(close);
+  const current = () => !closed && parentCurrent();
+  const content = dialog.querySelector(".modal-content")!;
+  const label = document.createElement("label");
+  label.textContent = t("diagnose.select_photo");
+  const photo = document.createElement("input");
+  photo.type = "file";
+  photo.accept = AI_PHOTO_UPLOAD_ACCEPT;
+  photo.id = `issue-diagnosis-${crypto.randomUUID()}`;
+  label.htmlFor = photo.id;
+  const diagnose = document.createElement("button");
+  diagnose.type = "button";
+  diagnose.textContent = t("diagnose.button");
+  const results = document.createElement("div");
+  results.setAttribute("role", "status");
+  diagnose.addEventListener("click", () => {
+    const file = photo.files?.[0];
+    if (!file || !current()) return;
+    const invalid = validateAiPhotoUpload(file);
+    if (invalid) {
+      results.textContent = t(invalid === "too_large" ? "photo_upload.error_too_large" : "photo_upload.error_unsupported_type");
+      return;
+    }
+    diagnose.disabled = true;
+    results.textContent = t("diagnose.loading");
+    void diagnosePlantApi({
+      image: file,
+      ...(context.plantIds.length === 1 ? { pltId: context.plantIds[0]! } : {}),
+      ...(context.plotIds.length === 1 ? { plotId: context.plotIds[0]! } : {}),
+      ...(context.symptoms ? { symptoms: context.symptoms.slice(0, 500) } : {}),
+    }).then((result) => {
+      if (!current()) return;
+      results.replaceChildren();
+      const disclaimer = document.createElement("p");
+      disclaimer.textContent = result.disclaimer || t("diagnose.disclaimer");
+      results.appendChild(disclaimer);
+      if (!result.diagnoses.length) results.append(t("diagnose.no_issues"));
+      for (const diagnosis of result.diagnoses) {
+        const description = document.createElement("p");
+        description.textContent = `${diagnosis.likely_cause}: ${diagnosis.description}`;
+        const use = document.createElement("button");
+        use.type = "button";
+        use.textContent = t("issues.use_diagnosis");
+        use.addEventListener("click", () => {
+          if (!current()) return;
+          apply(diagnosis, file);
+          close();
+        });
+        results.append(description, use);
+      }
+    }).catch((err: unknown) => {
+      if (current()) results.textContent = getApiErrorMessage(err);
+    }).finally(() => { if (current()) diagnose.disabled = false; });
+  });
+  content.append(label, photo, diagnose, results);
+  photo.focus();
 }
 
 function issueHistoryEventLabel(
@@ -329,6 +441,9 @@ export function attachIssueHistorySection(
   dialog: HTMLElement,
   issueId: string,
 ): void {
+  const generation = gardenGeneration;
+  const gardenId = getActiveGardenContext();
+  const current = () => dialog.isConnected && generation === gardenGeneration && gardenId === getActiveGardenContext();
   const section = document.createElement("section");
   section.className = "plant-journal-history";
   const heading = document.createElement("label");
@@ -348,6 +463,7 @@ export function attachIssueHistorySection(
 
   void fetchIssueHistoryApi(issueId).then(
     (result) => {
+      if (!current()) return;
       container.replaceChildren();
       if (
         result.issue_events.length === 0 &&
@@ -414,6 +530,7 @@ export function attachIssueHistorySection(
       }
     },
     () => {
+      if (!current()) return;
       const failed = document.createElement("p");
       failed.className = "journal-empty-hint";
       failed.textContent = t(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -67,6 +68,20 @@ class FakeMCP:
 
 
 class TestMatrixBot(unittest.TestCase):
+    def test_occurrence_timezone_uses_shared_fallback_and_rejects_invalid_zone(self) -> None:
+        bot = object.__new__(MatrixBot)
+        event = SimpleNamespace(server_timestamp=1788561000000)
+        with patch.dict(os.environ, {"GARDENOPS_TIMEZONE": "", "MATRIX_TIMEZONE": "UTC"}):
+            utc_day = bot._occurred_on(event)
+        with patch.dict(
+            os.environ, {"GARDENOPS_TIMEZONE": "Pacific/Kiritimati", "MATRIX_TIMEZONE": "UTC"}
+        ):
+            local_day = bot._occurred_on(event)
+        self.assertNotEqual(utc_day, local_day)
+        with patch.dict(os.environ, {"GARDENOPS_TIMEZONE": "Invalid/Zone"}):
+            with self.assertRaises(RuntimeError):
+                bot._occurred_on(event)
+
     @staticmethod
     def _config() -> MatrixRuntimeConfig:
         return MatrixRuntimeConfig(

@@ -416,11 +416,11 @@ def test_python_release_age_rejects_unrelated_security_bypass(tmp_path, monkeypa
 
     error_output = capsys.readouterr().err
     assert "fresh-package==2.0.0" in error_output
-    assert "14-day cooldown window (new direct dependency)" in error_output
+    assert "7-day cooldown window (new direct dependency)" in error_output
 
 
 @pytest.mark.parametrize("package_name", ["anthropic", "openai"])
-def test_python_release_age_applies_one_day_ai_sdk_cooldown(
+def test_python_release_age_applies_seven_day_ai_sdk_cooldown(
     tmp_path,
     monkeypatch,
     capsys,
@@ -437,7 +437,7 @@ def test_python_release_age_applies_one_day_ai_sdk_cooldown(
 
     error_output = capsys.readouterr().err
     assert f"{package_name}==2.0.0" in error_output
-    assert "1-day cooldown window (AI SDK)" in error_output
+    assert "7-day cooldown window (AI SDK)" in error_output
 
 
 def test_python_release_age_does_not_exempt_similarly_named_packages(
@@ -456,7 +456,7 @@ def test_python_release_age_does_not_exempt_similarly_named_packages(
 
     error_output = capsys.readouterr().err
     assert "openai-agents==2.0.0" in error_output
-    assert "14-day cooldown window (new direct dependency)" in error_output
+    assert "7-day cooldown window (new direct dependency)" in error_output
 
 
 def test_python_release_age_ignores_unchanged_locked_packages(tmp_path, monkeypatch, capsys):
@@ -495,7 +495,7 @@ def test_python_release_age_checks_transitive_package_promoted_to_direct(
     with pytest.raises(SystemExit):
         module.main(base_root=base_root, head_root=head_root)
 
-    assert "14-day cooldown window (new direct dependency)" in capsys.readouterr().err
+    assert "7-day cooldown window (new direct dependency)" in capsys.readouterr().err
 
 
 def test_python_release_age_rejects_lock_artifact_not_confirmed_by_pypi(
@@ -515,7 +515,7 @@ def test_python_release_age_rejects_lock_artifact_not_confirmed_by_pypi(
     assert "do not match PyPI" in capsys.readouterr().err
 
 
-def test_python_release_age_assigns_long_cooldown_to_new_direct_dependency():
+def test_python_release_age_assigns_seven_day_cooldown_to_new_direct_dependency():
     module = load_python_release_age_module()
 
     assert module._cooldown_days(
@@ -524,10 +524,10 @@ def test_python_release_age_assigns_long_cooldown_to_new_direct_dependency():
         base_versions={},
         base_direct=set(),
         head_direct={"new-package"},
-    ) == (14, "new direct dependency")
+    ) == (7, "new direct dependency")
 
 
-def test_python_release_age_assigns_long_cooldown_to_direct_major_update():
+def test_python_release_age_assigns_seven_day_cooldown_to_direct_major_update():
     module = load_python_release_age_module()
 
     assert module._cooldown_days(
@@ -536,7 +536,7 @@ def test_python_release_age_assigns_long_cooldown_to_direct_major_update():
         base_versions={"existing-package": {"1.9.0"}},
         base_direct={"existing-package"},
         head_direct={"existing-package"},
-    ) == (14, "major direct update")
+    ) == (7, "major direct update")
 
 
 def test_python_release_age_does_not_reduce_transitive_ai_sdk_cooldown():
@@ -548,16 +548,15 @@ def test_python_release_age_does_not_reduce_transitive_ai_sdk_cooldown():
         base_versions={"openai": {"1.0.0"}},
         base_direct=set(),
         head_direct=set(),
-    ) == (3, "routine update")
+    ) == (7, "routine update")
 
 
-def test_dependabot_cooldown_exempts_only_approved_ai_sdks():
+def test_dependabot_cooldown_is_seven_days_for_every_ecosystem():
     config = yaml.safe_load((ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
-    pip_config = next(
-        update for update in config["updates"] if update["package-ecosystem"] == "pip"
-    )
-
-    assert pip_config["cooldown"]["exclude"] == ["anthropic", "openai"]
+    for update in config["updates"]:
+        cooldown = update["cooldown"]
+        assert "exclude" not in cooldown
+        assert set(cooldown.values()) == {7}
 
 
 def test_python_release_age_rejects_forged_bypass_without_trusted_source(

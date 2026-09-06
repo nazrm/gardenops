@@ -803,6 +803,7 @@ def _serialize_asset_payload(
     is_cover: bool = False,
 ) -> dict[str, object]:
     asset_id = str(row["asset_id"])
+    garden_query = f"?garden_id={int(row['garden_id'])}"
     return {
         "asset_id": asset_id,
         "mime_type": str(row["mime_type"]),
@@ -812,8 +813,8 @@ def _serialize_asset_payload(
         "created_at_ms": int(row["created_at_ms"]),
         "actor_user_id": int(row["actor_user_id"]) if row["actor_user_id"] is not None else None,
         "original_filename": str(row["original_filename"] or ""),
-        "preview_url": f"/api/media/{asset_id}/preview",
-        "original_url": f"/api/media/{asset_id}",
+        "preview_url": f"/api/media/{asset_id}/preview{garden_query}",
+        "original_url": f"/api/media/{asset_id}{garden_query}",
         "is_cover": bool(is_cover),
         "targets": [
             {
@@ -1008,6 +1009,7 @@ def list_media_summaries(
     placeholders = ",".join(["%s"] * len(canonical_ids))
     asset_columns = """
         a.asset_id,
+        a.garden_id,
         a.mime_type,
         a.bytes,
         a.width,
