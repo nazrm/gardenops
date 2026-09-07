@@ -45,7 +45,7 @@ lint = [
 audit = [
     "pip==26.2.1",
     "pip-audit==2.10.1",
-    "msgpack>=1.2.1",
+    "msgpack>=1.2.2",
     "requests<2.35.0",
 ]
 
