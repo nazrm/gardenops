@@ -28,7 +28,8 @@ jobs:
           cp pyproject.toml uv.lock /tmp/gardenops-pr-data/
           cp frontend/package.json frontend/package-lock.json /tmp/gardenops-pr-data/frontend/
           cp -R .github/workflows /tmp/gardenops-pr-data/.github/workflows
-          git fetch origin "$BASE_REF" --depth=1
+          # Preserve ancestry for the three-dot diff if main advances during this run.
+          git fetch origin "$BASE_REF"
           git worktree prune
           git worktree add --detach /tmp/gardenops-policy "origin/$BASE_REF"
       - name: Classify dependency policy changes

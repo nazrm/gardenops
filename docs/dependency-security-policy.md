@@ -44,6 +44,8 @@ installing packages from the pull request:
 
 Policy scripts execute from a detached base-branch checkout. PR manifests,
 lockfiles, and workflow files are copied into that checkout as untrusted data.
+The base-branch refresh retains full Git history so dependency comparisons still
+have a merge base when another PR merges while CI is starting.
 Do not run a policy helper from the PR branch or install the PR dependency graph
 inside the policy job.
 
