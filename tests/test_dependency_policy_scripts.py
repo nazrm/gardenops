@@ -798,6 +798,8 @@ def test_ci_runs_one_dependency_policy_gate_before_test_jobs():
     policy_start = workflow.index("  dependency-policy:")
     policy_end = workflow.index("\n  backend:")
     policy_job = workflow[policy_start:policy_end]
+    assert 'git fetch origin "$BASE_REF"\n' in policy_job
+    assert "--depth" not in policy_job
     assert policy_job.index("Validate dependency sources and GitHub Actions") < policy_job.index(
         "actions/setup-python@"
     )

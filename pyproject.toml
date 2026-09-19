@@ -13,9 +13,9 @@ dependencies = [
     "fastapi==0.141.1",
     "laspy[lazrs]>=2.7.0",
     "numpy>=2.5.2",
-    "openai>=3.3.1",
+    "openai>=3.8.0",
     "pillow>=12.3.0",
-    "psycopg[binary]>=3.3.4",
+    "psycopg[binary]>=3.3.5",
     "pyproj>=3.7.2",
     "PyYAML>=6.0.3",
     "python-dotenv>=1.2.3",
@@ -24,7 +24,7 @@ dependencies = [
     "psycopg-pool>=3.3.1",
     "webauthn==3.0.0",
     "cbor2==6.1.4",
-    "mcp==2.0.0",
+    "mcp==2.1.1",
 ]
 
 [project.optional-dependencies]
@@ -40,12 +40,12 @@ test = [
 ]
 lint = [
     "ruff>=0.16.5,<0.17.0",
-    "ty>=0.0.75,<0.0.76",
+    "ty>=0.0.78,<0.0.79",
 ]
 audit = [
     "pip==26.2.1",
     "pip-audit==2.10.1",
-    "msgpack>=1.2.1",
+    "msgpack>=1.2.2",
     "requests<2.35.0",
 ]
 

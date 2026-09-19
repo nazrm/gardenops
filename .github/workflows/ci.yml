@@ -28,7 +28,8 @@ jobs:
           cp pyproject.toml uv.lock /tmp/gardenops-pr-data/
           cp frontend/package.json frontend/package-lock.json /tmp/gardenops-pr-data/frontend/
           cp -R .github/workflows /tmp/gardenops-pr-data/.github/workflows
-          git fetch origin "$BASE_REF" --depth=1
+          # Preserve ancestry for the three-dot diff if main advances during this run.
+          git fetch origin "$BASE_REF"
           git worktree prune
           git worktree add --detach /tmp/gardenops-policy "origin/$BASE_REF"
       - name: Classify dependency policy changes
@@ -59,7 +60,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
@@ -165,7 +166,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version-file: .python-version
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
