@@ -19,12 +19,12 @@ dependencies = [
     "pyproj>=3.7.2",
     "PyYAML>=6.0.3",
     "python-dotenv>=1.2.3",
-    "uvicorn[standard]==0.52.4",
+    "uvicorn[standard]==0.53.0",
     "redis>=8.1.0",
     "psycopg-pool>=3.3.1",
     "webauthn==3.0.0",
     "cbor2==6.1.4",
-    "mcp==2.1.1",
+    "mcp==2.2.0",
 ]
 
 [project.optional-dependencies]
