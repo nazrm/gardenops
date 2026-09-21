@@ -29,7 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 matrix = [
-    "matrix-nio[e2e]>=0.25,<1",
+    "matrix-nio[e2e]>=0.26.0,<1",
 ]
 
 [dependency-groups]
