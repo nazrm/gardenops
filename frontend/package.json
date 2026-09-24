@@ -41,7 +41,7 @@
   },
   "dependencies": {
     "fullcalendar": "7.1.0",
-    "temporal-polyfill": "1.0.4",
+    "temporal-polyfill": "1.0.5",
     "leaflet": "^1.9.4"
   }
 }
