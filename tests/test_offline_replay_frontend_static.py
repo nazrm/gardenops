@@ -269,7 +269,11 @@ class OfflineReplayFrontendStaticTests(unittest.TestCase):
         self.assertIn("await waitForOfflineClearRetry()", app)
         self.assertIn('gate.setAttribute("role", "alertdialog")', app)
         self.assertIn('document.getElementById("app")?.setAttribute("inert", "")', app)
-        self.assertIn("await requireOfflineQueueClear();\n    await completeSignedOutState();", app)
+        self.assertIn(
+            'await requireOfflineQueueClear();\n    showToast(t("auth.signed_out"), "success");'
+            "\n    await completeSignedOutState();",
+            app,
+        )
         self.assertIn("clearOfflineBeforeAuthGate = isAuthApiError(err)", app)
         self.assertNotIn("clearOfflineBeforeAuthGate = true", app)
         self.assertIn("if (clearOfflineBeforeAuthGate) await requireOfflineQueueClear()", app)
