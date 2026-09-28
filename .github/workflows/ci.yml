@@ -173,13 +173,13 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: uv lock --check
-      - run: uv sync --frozen --group test --group lint
+      - run: uv sync --frozen --group test --group lint --extra matrix
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run python scripts/check_env_docs.py
       - run: uv run python -c "import gardenops.db as db; db.run_migrations()"
       - run: uv run python scripts/check_backend_integrity.py --format text
-      - run: uv run pytest tests/ -q --tb=short
+      - run: uv run --extra matrix pytest tests/ -q --tb=short
 
   frontend:
     name: Frontend

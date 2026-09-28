@@ -340,8 +340,42 @@ class MatrixBot:
         max_bytes = _capture_max_bytes()
         if declared_size > max_bytes:
             raise ValueError("Image exceeds GardenOps upload size limit")
-        response = await self.matrix.download(str(getattr(event, "url", "")))
-        payload = bytes(getattr(response, "body", b""))
+        from nio import Api
+
+        media = urlsplit(str(getattr(event, "url", "")))
+        if (
+            media.scheme != "mxc"
+            or not media.netloc
+            or not media.path.strip("/")
+            or media.query
+            or media.fragment
+        ):
+            raise ValueError("Invalid Matrix media URI")
+        _, path = Api.download(media.netloc, media.path.lstrip("/"))
+        # The SDK path builder includes a query token; use only header authentication.
+        url = self.config.homeserver_url.rstrip("/") + urlsplit(path).path + "?allow_remote=true"
+        buffer = bytearray()
+        async with asyncio.timeout(30):
+            async with httpx2.AsyncClient(timeout=30, follow_redirects=False) as client:
+                async with client.stream(
+                    "GET",
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {self.config.access_token}",
+                        "Accept-Encoding": "identity",
+                    },
+                ) as response:
+                    response.raise_for_status()
+                    if response.headers.get("content-encoding", "identity") != "identity":
+                        raise ValueError("Encoded Matrix media is not supported")
+                    if int(response.headers.get("content-length", "0")) > max_bytes:
+                        raise ValueError("Image exceeds GardenOps upload size limit")
+                    async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                        if len(buffer) + len(chunk) > max_bytes:
+                            raise ValueError("Image exceeds GardenOps upload size limit")
+                        buffer.extend(chunk)
+                    content_type = response.headers.get("content-type", "")
+        payload = bytes(buffer)
         if event.__class__.__name__ == "RoomEncryptedImage":
             from nio.crypto.attachments import decrypt_attachment
 
@@ -356,7 +390,7 @@ class MatrixBot:
         mime_type = str(
             getattr(event, "mimetype", "")
             or info.get("mimetype")
-            or getattr(response, "content_type", "")
+            or content_type
             or "application/octet-stream"
         )
         return payload, mime_type, str(getattr(event, "body", "") or "matrix-image")

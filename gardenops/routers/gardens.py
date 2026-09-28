@@ -13,6 +13,7 @@ import psycopg
 from fastapi import APIRouter, HTTPException, Query, Request
 from psycopg import sql
 from pydantic import Field
+from starlette.concurrency import run_in_threadpool
 
 from gardenops.audit import (
     enqueue_audit_event_telemetry,
@@ -25,7 +26,7 @@ from gardenops.db import DB, DbConn, current_timestamp_ms, ensure_indoor_plot
 from gardenops.events import notify_garden_modified
 from gardenops.feature_gates import feature_allowed
 from gardenops.models import LayoutExportBody, LayoutStateBody, StrictBaseModel
-from gardenops.rate_limit import enforce_rate_limit, env_int
+from gardenops.rate_limit import acquire_concurrency_slot, enforce_rate_limit, env_int
 from gardenops.request_body import read_body_limited
 from gardenops.router_helpers import auth_context as _auth_context
 from gardenops.router_helpers import is_local_admin_fallback as _is_local_admin_fallback
@@ -1557,6 +1558,23 @@ async def upload_garden_lidar(
             raise HTTPException(status_code=400, detail="Invalid Content-Length header") from None
     payload = await read_body_limited(request, max_bytes)
     filename = request.headers.get("x-upload-filename", "").strip()
+
+    def store_upload() -> dict[str, object]:
+        # Preparation and its file/transaction cleanup stay on the same worker.
+        with acquire_concurrency_slot(bucket="garden-lidar-processing", limit=1):
+            return _store_garden_lidar(garden_id, request, db, context, payload, filename)
+
+    return await run_in_threadpool(store_upload)
+
+
+def _store_garden_lidar(
+    garden_id: int,
+    request: Request,
+    db: DbConn,
+    context: AuthContext,
+    payload: bytes,
+    filename: str,
+) -> dict[str, object]:
     try:
         prepared = prepare_uploaded_terrain(garden_id, payload, filename)
     except ValueError as exc:

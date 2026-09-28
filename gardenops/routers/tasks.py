@@ -1614,10 +1614,10 @@ def refresh_descriptions(
     from gardenops.services.task_generator import (
         _bloom_timing_description,
         _empty_plant_context,
-        _uses_ai_task_description,
         generate_task_description_overrides,
         infer_task_description,
         prefetch_task_description_contexts,
+        task_description_batch_count,
     )
 
     rows = db.execute(
@@ -1689,10 +1689,8 @@ def refresh_descriptions(
             }
         )
 
-    uses_ai_descriptions = is_ai_provider_configured() and any(
-        _uses_ai_task_description(spec) for spec in task_specs
-    )
-    if uses_ai_descriptions:
+    ai_batches = task_description_batch_count(task_specs) if is_ai_provider_configured() else 0
+    if ai_batches:
         limits = provider_limit_profile("ai-task-descriptions")
         reserve_daily_provider_budget(
             db,
@@ -1701,6 +1699,7 @@ def refresh_descriptions(
             garden_id=context.garden_id,
             user_limit=int(limits["user_limit"]),
             garden_limit=int(limits["garden_limit"]),
+            request_count=ai_batches,
         )
         with acquire_concurrency_slot(
             bucket="ai-task-descriptions",

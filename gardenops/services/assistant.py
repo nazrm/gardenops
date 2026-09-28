@@ -1268,7 +1268,8 @@ def _new_request(
         (room_id, event_id),
     ).fetchone()
     if existing:
-        return str(existing["public_id"]), _result_from_row(dict(existing))
+        request_id = str(existing["public_id"])
+        return request_id, get_request(db, binding, request_id=request_id)
     request_id = generate_public_id("asst")
     now_ms = current_timestamp_ms()
     db.execute(

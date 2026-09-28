@@ -604,7 +604,7 @@ class TestPendingEmailDigestConcurrency(DbTestBase):
 
         def reset_eligible_recipient() -> None:
             self.conn.execute(
-                "UPDATE auth_users SET subscription_tier = 'pro' WHERE id = %s",
+                "UPDATE auth_users SET subscription_tier = 'pro', is_active = 1 WHERE id = %s",
                 (user_id,),
             )
             self.conn.execute(
@@ -666,6 +666,11 @@ class TestPendingEmailDigestConcurrency(DbTestBase):
 
         invalidations = (
             (
+                "account deactivation",
+                "UPDATE auth_users SET is_active = 0 WHERE id = %s",
+                (user_id,),
+            ),
+            (
                 "membership",
                 "DELETE FROM garden_memberships WHERE garden_id = %s AND user_id = %s",
                 (self.garden_id, user_id),
@@ -711,6 +716,28 @@ class TestPendingEmailDigestConcurrency(DbTestBase):
         )
         self.assertEqual(int(result["emailed_users"]), 1)
         self.assertEqual(sent, ["after@example.test"])
+
+        self.conn.execute("UPDATE auth_users SET is_active = 0 WHERE id = %s", (user_id,))
+        self.conn.execute(
+            "UPDATE notification_events SET emailed_at_ms = NULL WHERE user_id = %s",
+            (user_id,),
+        )
+        self.conn.commit()
+        sent.clear()
+        inactive = deliver_pending_email_digests(
+            self.conn,
+            self.garden_id,
+            email_sender=lambda recipient, _subject, _body: sent.append(recipient),
+            now_ms=now,
+        )
+        self.assertEqual(inactive["processed_users"], 0)
+        self.assertEqual(sent, [])
+        self.assertIsNone(
+            self.conn.execute(
+                "SELECT emailed_at_ms FROM notification_events WHERE user_id = %s LIMIT 1",
+                (user_id,),
+            ).fetchone()["emailed_at_ms"]
+        )
 
 
 class TestRainTaskNotificationLifecycle(DbTestBase):

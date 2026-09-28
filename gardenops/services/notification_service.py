@@ -1259,7 +1259,9 @@ def create_task_due_notifications_in_transaction(
         """
 
     members = db.execute(
-        "SELECT user_id FROM garden_memberships WHERE garden_id = %s",
+        "SELECT gm.user_id FROM garden_memberships gm "
+        "JOIN auth_users u ON u.id = gm.user_id "
+        "WHERE gm.garden_id = %s AND u.is_active = 1",
         (garden_id,),
     ).fetchall()
     member_ids = [int(row["user_id"]) for row in members]
@@ -2031,7 +2033,9 @@ def create_garden_member_notifications(
     now_ms: int | None = None,
 ) -> dict[str, int]:
     members = db.execute(
-        "SELECT user_id FROM garden_memberships WHERE garden_id = %s",
+        "SELECT gm.user_id FROM garden_memberships gm "
+        "JOIN auth_users u ON u.id = gm.user_id "
+        "WHERE gm.garden_id = %s AND u.is_active = 1",
         (garden_id,),
     ).fetchall()
     member_ids = [int(row["user_id"]) for row in members]
@@ -2775,7 +2779,9 @@ def create_weather_alert_notifications(
         alert_metadata = _parse_weather_lifecycle_metadata(alert_row["metadata_json"])
         rearm_from_reappearance = bool(alert_metadata.get("notification_rearm_pending"))
         members = db.execute(
-            "SELECT user_id FROM garden_memberships WHERE garden_id = %s",
+            "SELECT gm.user_id FROM garden_memberships gm "
+            "JOIN auth_users u ON u.id = gm.user_id "
+            "WHERE gm.garden_id = %s AND u.is_active = 1",
             (garden_id,),
         ).fetchall()
         member_ids = [int(member["user_id"]) for member in members]
@@ -3240,6 +3246,7 @@ def _load_locked_digest_recipient(
         JOIN auth_users u ON u.id = p.user_id
         WHERE gm.garden_id = %s
           AND p.user_id = %s
+          AND u.is_active = 1
         FOR UPDATE OF p, gm, u
         """,
         (garden_id, user_id),
@@ -3301,6 +3308,7 @@ def deliver_pending_email_digests(
         JOIN auth_users u ON u.id = p.user_id
         WHERE gm.garden_id = %s
           AND u.subscription_tier = 'pro'
+          AND u.is_active = 1
           AND p.email_enabled = 1
           AND TRIM(p.email_address) != ''
           AND p.digest_frequency IN ('daily', 'weekly')

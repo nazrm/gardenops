@@ -57,6 +57,23 @@ class _Reader:
 
 
 class TestLidarTerrainValidation(unittest.TestCase):
+    def test_extreme_single_axis_is_rejected_before_allocation(self) -> None:
+        for maximum in ((3_999_999, 0, 1), (0, 3_999_999, 1)):
+            with self.subTest(maximum=maximum), self.assertRaisesRegex(ValueError, "dimensions"):
+                lidar_terrain._terrain_grid_dimensions(
+                    _Reader((0, 0, 0), maximum),
+                    resolution_m=1,
+                )
+
+    def test_finite_grid_and_completed_rows_skip_column_interpolation(self) -> None:
+        grid = np.array([[1, np.nan, 3]], dtype=np.float32)
+        with patch.object(np, "interp", wraps=np.interp) as interpolate:
+            result = lidar_terrain._fill_nan_grid(grid)
+            np.testing.assert_allclose(result, [[1, 2, 3]])
+            self.assertEqual(interpolate.call_count, 1)
+            np.testing.assert_allclose(lidar_terrain._fill_nan_grid(result), result)
+            self.assertEqual(interpolate.call_count, 1)
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.env = patch.dict(

@@ -6,6 +6,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx2
+
 from gardenops.matrix_bot import (
     MatrixBot,
     _ascii_filename,
@@ -68,6 +70,115 @@ class FakeMCP:
 
 
 class TestMatrixBot(unittest.TestCase):
+    def test_media_download_is_bounded_and_homeserver_authenticated(self) -> None:
+        async def check() -> None:
+            bot = MatrixBot(self._config(), FakeMatrix(), FakeMCP())
+            event = SimpleNamespace(
+                url="mxc://remote.example/media-id",
+                source={"content": {}},
+                body="photo",
+            )
+            requests = []
+
+            class Chunks(httpx2.AsyncByteStream):
+                read_count = 0
+
+                async def __aiter__(self):
+                    for chunk in (b"x" * 65536, b"y" * 65536, b"never-read"):
+                        self.read_count += 1
+                        yield chunk
+
+            stream = Chunks()
+
+            def respond(request):
+                requests.append(request)
+                return httpx2.Response(200, stream=stream)
+
+            client_type = httpx2.AsyncClient
+            with (
+                patch("gardenops.matrix_bot._capture_max_bytes", return_value=65536),
+                patch(
+                    "gardenops.matrix_bot.httpx2.AsyncClient",
+                    side_effect=lambda **kw: client_type(
+                        transport=httpx2.MockTransport(respond),
+                        **kw,
+                    ),
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "size limit"):
+                    await bot._download_image(event)
+            self.assertEqual(stream.read_count, 2)
+            self.assertEqual(str(requests[0].url.host), "matrix.example.org")
+            self.assertEqual(requests[0].headers["authorization"], "Bearer secret")
+            self.assertNotIn("access_token", requests[0].url.params)
+
+            for status, headers, payload in (
+                (200, {"content-type": "image/png"}, b"image"),
+                (302, {"location": "https://elsewhere.example/private"}, b""),
+                (200, {"content-length": "99999999"}, b"image"),
+            ):
+                calls = []
+
+                def response(request):
+                    calls.append(request)
+                    return httpx2.Response(status, headers=headers, content=payload)
+
+                with patch(
+                    "gardenops.matrix_bot.httpx2.AsyncClient",
+                    side_effect=lambda **kw: client_type(
+                        transport=httpx2.MockTransport(response),
+                        **kw,
+                    ),
+                ):
+                    if status == 200 and "content-length" not in headers:
+                        self.assertEqual(
+                            await bot._download_image(event), (b"image", "image/png", "photo")
+                        )
+                    else:
+                        with self.assertRaises((ValueError, httpx2.HTTPStatusError)):
+                            await bot._download_image(event)
+                    self.assertEqual(len(calls), 1)
+
+        asyncio.run(check())
+
+    def test_encrypted_media_is_checked_before_decryption(self) -> None:
+        from nio.crypto.attachments import encrypt_attachment
+
+        async def check() -> None:
+            payload, info = encrypt_attachment(b"test-image")
+            event = type(
+                "RoomEncryptedImage",
+                (),
+                {
+                    "url": "mxc://remote.example/encrypted",
+                    "source": {"content": {}},
+                    "key": info["key"],
+                    "hashes": info["hashes"],
+                    "iv": info["iv"],
+                    "mimetype": "image/png",
+                    "body": "encrypted-image",
+                },
+            )()
+            bot = MatrixBot(self._config(), FakeMatrix(), FakeMCP())
+            client_type = httpx2.AsyncClient
+            with patch(
+                "gardenops.matrix_bot.httpx2.AsyncClient",
+                side_effect=lambda **kw: client_type(
+                    transport=httpx2.MockTransport(lambda _: httpx2.Response(200, content=payload)),
+                    **kw,
+                ),
+            ):
+                self.assertEqual((await bot._download_image(event))[0], b"test-image")
+                with (
+                    patch("gardenops.matrix_bot._capture_max_bytes", return_value=2),
+                    patch("nio.crypto.attachments.decrypt_attachment") as decrypt,
+                    self.assertRaises(ValueError),
+                ):
+                    await bot._download_image(event)
+                decrypt.assert_not_called()
+
+        asyncio.run(check())
+
     def test_occurrence_timezone_uses_shared_fallback_and_rejects_invalid_zone(self) -> None:
         bot = object.__new__(MatrixBot)
         event = SimpleNamespace(server_timestamp=1788561000000)

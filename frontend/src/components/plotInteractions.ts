@@ -259,6 +259,21 @@ export function invalidatePlotPanelCache(plotId: string): void {
   plotSupplementalCache.delete(plotId);
 }
 
+export function resetPlotPanelsForContextChange(): void {
+  plotSelectionSeq += 1;
+  plotMediaSeq += 1;
+  deactivatePlotTasksPanel();
+  cancelPendingPlantSearch();
+  const ids = new Set([
+    ...plotPlantsCache.keys(), ...plotPlantsRequests.keys(),
+    ...plotSupplementalCache.keys(), ...plotSupplementalRequests.keys(),
+  ]);
+  ids.forEach(invalidatePlotPanelCache);
+  dismissDrawer();
+  dismissBottomSheet();
+  dismissPopover();
+}
+
 function getPlotTasksPreviewContainer(): HTMLElement | null {
   return getDrawerTasksPreview() ?? getSheetTasksPreview();
 }
@@ -1086,18 +1101,22 @@ async function loadPlotJournalPreview(
   plotId: string,
   cbs: PlotCallbacks,
 ): Promise<void> {
+  const container = getDrawerJournalPreview() ?? getSheetJournalPreview();
+  if (!container) return;
+  const generation = plotSelectionSeq;
+  const gardenId = getActiveGardenContext();
+  const isCurrent = () => generation === plotSelectionSeq
+    && gardenId === getActiveGardenContext() && container.isConnected;
   try {
     const result = await fetchJournalEntriesApi({
       plot_id: plotId,
       limit: 5,
       offset: 0,
     });
-    const container =
-      getDrawerJournalPreview() ?? getSheetJournalPreview();
-    if (!container) return;
+    if (!isCurrent()) return;
     renderPlotJournalPreviewLazy(container, result.entries, () => {
       cbs.onViewJournal(plotId);
-    });
+    }, isCurrent);
   } catch {
     // Silently ignore — preview is non-critical
   }

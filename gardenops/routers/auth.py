@@ -3533,7 +3533,6 @@ def auth_change_password(
         )
 
     validate_password_policy(body.new_password, username=str(user_row["username"]))
-    now_ms = current_timestamp_ms()
     db.execute(
         """
         UPDATE auth_users
@@ -3550,6 +3549,8 @@ def auth_change_password(
         int(user_row["id"]),
         mfa_authenticated=int(context.mfa_authenticated_at_ms or 0) > 0,
         mfa_setup_required=context.mfa_setup_required,
+        reauthenticated_at_ms=int(context.reauthenticated_at_ms or 0),
+        mfa_authenticated_at_ms=int(context.mfa_authenticated_at_ms or 0),
         device_label=_session_device_label(request),
         location_hint=_session_location_hint(request),
         db=db,
@@ -3558,7 +3559,6 @@ def auth_change_password(
         context,
         session_token_hash=_session_token_hash(new_token),
         must_change_password=False,
-        reauthenticated_at_ms=now_ms,
     )
     request.state.auth_context = new_context
     _commit_required_lifecycle_event(

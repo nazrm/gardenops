@@ -12,6 +12,59 @@ AUTH_MFA_ENV = {
 
 
 class TestAuthMfaStepUp(BaseApiTest):
+    def test_password_change_preserves_mfa_and_stepup_proof_age(self) -> None:
+        from gardenops.db import current_timestamp_ms
+
+        with patch.dict("os.environ", AUTH_MFA_ENV, clear=False):
+            for label, proof in (("stale", 1), ("fresh", current_timestamp_ms() - 1000)):
+                with self.subTest(label=label):
+                    client, headers = self._admin_client(f"password_rotate_{label}")
+                    start = client.post("/api/auth/mfa/totp/start", headers=headers)
+                    confirmed = client.post(
+                        "/api/auth/mfa/totp/confirm",
+                        headers=headers,
+                        json={"code": self._totp_code(start.json()["secret"])},
+                    )
+                    self.assertEqual(confirmed.status_code, 200, confirmed.text)
+                    headers = self._session_headers(confirmed.json()["csrf_token"])
+                    conn = db.get_db()
+                    try:
+                        conn.execute(
+                            "UPDATE auth_sessions SET reauthenticated_at_ms = %s, "
+                            "mfa_authenticated_at_ms = %s",
+                            (proof, proof),
+                        )
+                        conn.commit()
+                    finally:
+                        db.return_db(conn)
+                    changed = client.post(
+                        "/api/auth/change-password",
+                        headers=headers,
+                        json={
+                            "current_password": self._strong("adminpass"),
+                            "new_password": self._strong("replacement-password"),
+                        },
+                    )
+                    self.assertEqual(changed.status_code, 200, changed.text)
+                    conn = db.get_db()
+                    try:
+                        row = conn.execute(
+                            "SELECT s.reauthenticated_at_ms, s.mfa_authenticated_at_ms "
+                            "FROM auth_sessions s JOIN auth_users u ON u.id = s.user_id "
+                            "WHERE u.username = %s",
+                            (f"password_rotate_{label}",),
+                        ).fetchone()
+                        self.assertEqual(row["reauthenticated_at_ms"], proof)
+                        self.assertEqual(row["mfa_authenticated_at_ms"], proof)
+                    finally:
+                        db.return_db(conn)
+                    protected = client.post(
+                        "/api/auth/mfa/recovery-codes/regenerate",
+                        headers=self._session_headers(changed.json()["csrf_token"]),
+                        json={"action_reason": "security-regression"},
+                    )
+                    self.assertEqual(protected.status_code, 403 if label == "stale" else 200)
+
     def _admin_client(self, username: str):
         self._create_test_user(username, "adminpass", role="admin")
         client = self._new_client()

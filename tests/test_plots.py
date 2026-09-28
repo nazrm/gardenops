@@ -16,6 +16,54 @@ from tests.base import BaseApiTest, strong_password
 
 
 class TestPlots(BaseApiTest):
+    def test_frost_alerts_do_not_expand_shared_plants_into_other_gardens(self) -> None:
+        garden_id = self._get_default_garden_id()
+        created = self.client.post(
+            "/api/plants",
+            json={"plt_id": "PLT-001", "name": "Shared rose", "category": "busker"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        conn = db.get_db()
+        try:
+            other_id = conn.execute(
+                "INSERT INTO gardens (name, slug) "
+                "VALUES ('Foreign', 'foreign-alerts') RETURNING id",
+            ).fetchone()["id"]
+            conn.execute(
+                "INSERT INTO plots "
+                "(plot_id, zone_code, zone_name, plot_number, grid_row, grid_col, garden_id) "
+                "VALUES ('FOREIGN-ALERT', 'F', 'Foreign', 1, 1, 1, %s)",
+                (other_id,),
+            )
+            conn.execute(
+                "INSERT INTO plot_plants (plot_id, plt_id, quantity) "
+                "VALUES ('FOREIGN-ALERT', 'PLT-001', 1), ('B1', 'PLT-001', 1) "
+                "ON CONFLICT DO NOTHING",
+            )
+            alert = conn.execute(
+                "INSERT INTO weather_alerts "
+                "(garden_id, alert_type, severity, title, description, "
+                "valid_from, valid_until, created_at_ms) "
+                "VALUES (%s, 'frost_warning', 'normal', 'Frost', '', %s, %s, %s) RETURNING id",
+                (
+                    garden_id,
+                    date.today().isoformat(),
+                    date.today().isoformat(),
+                    db.current_timestamp_ms(),
+                ),
+            ).fetchone()["id"]
+            conn.execute(
+                "INSERT INTO weather_alert_plants (alert_id, plt_id) VALUES (%s, 'PLT-001')",
+                (alert,),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        result = self.client.get("/api/plots/alerts")
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertIn("B1", result.json()["frost_plots"])
+        self.assertNotIn("FOREIGN-ALERT", result.json()["frost_plots"])
+
     def _insert_plot_reference_matrix(self, plot_id: str) -> int:
         garden_id = self._get_default_garden_id()
         now_ms = db.current_timestamp_ms()

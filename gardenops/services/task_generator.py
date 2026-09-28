@@ -144,6 +144,7 @@ _NO_MONTHS: dict[int, str] = {
 }
 
 _TASK_DESCRIPTION_BATCH_SIZE = 12
+_MAX_AI_DESCRIPTION_TASKS = 120
 _AI_TASK_DESCRIPTION_TYPES = {"prune"}
 _WORK_ORDER_SOURCE_PREFIX = "work_order"
 _WORK_ORDER_GROUP_TYPES = {"prune", "fertilize"}
@@ -326,6 +327,16 @@ def _uses_ai_task_description(spec: dict[str, Any]) -> bool:
     return task_type in _AI_TASK_DESCRIPTION_TYPES
 
 
+def _ai_description_specs(task_specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [spec for spec in task_specs if _uses_ai_task_description(spec)][
+        :_MAX_AI_DESCRIPTION_TASKS
+    ]
+
+
+def task_description_batch_count(task_specs: list[dict[str, Any]]) -> int:
+    return len(_chunk_task_specs(_ai_description_specs(task_specs)))
+
+
 def _normalize_generated_description(value: object, fallback: str) -> str:
     if not isinstance(value, str):
         return fallback
@@ -340,7 +351,7 @@ def generate_task_description_overrides(
     *,
     preferred_locale: str = "en",
 ) -> dict[str, tuple[str, str]]:
-    eligible_specs = [spec for spec in task_specs if _uses_ai_task_description(spec)]
+    eligible_specs = _ai_description_specs(task_specs)
     if not eligible_specs or not is_ai_provider_configured():
         return {}
 

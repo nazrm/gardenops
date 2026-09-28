@@ -6,6 +6,23 @@ import { renderMarkdownInto } from "../core/sanitize";
 import { createAnalysisStartersElement } from "../components/layout";
 
 let chatHistory: ChatMessage[] = [];
+let conversationGeneration = 0;
+
+export function resetAnalysisForContextChange(): void {
+  conversationGeneration += 1;
+  chatHistory = [];
+  const input = queryInput("analysis-input");
+  if (input) {
+    input.value = "";
+    input.disabled = false;
+  }
+  const sendBtn = queryButton("analysis-send-btn");
+  if (sendBtn) {
+    sendBtn.disabled = false;
+    sendBtn.removeAttribute("aria-busy");
+  }
+  renderAnalysisStarters();
+}
 
 export function initAnalysisTab(): void {
   wireAnalysisChat();
@@ -56,8 +73,7 @@ function wireAnalysisChat(): void {
   });
 
   clearChatBtn?.addEventListener("click", () => {
-    chatHistory = [];
-    renderAnalysisStarters();
+    resetAnalysisForContextChange();
     input?.focus();
   });
 
@@ -85,6 +101,7 @@ async function sendAnalysisMessage(
   const input = queryInput("analysis-input");
   const sendBtn = queryButton("analysis-send-btn");
   if (!messages) return;
+  const generation = conversationGeneration;
 
   const starters = document.getElementById(
     "analysis-starters",
@@ -120,6 +137,7 @@ async function sendAnalysisMessage(
       text,
       chatHistory.slice(0, -1),
     );
+    if (generation !== conversationGeneration) return;
     chatHistory.push({
       role: "assistant",
       content: reply,
@@ -131,6 +149,7 @@ async function sendAnalysisMessage(
     renderMarkdownInto(aiBubble, reply);
     messages.appendChild(aiBubble);
   } catch (err) {
+    if (generation !== conversationGeneration) return;
     loading.remove();
     chatHistory.pop();
 
@@ -141,15 +160,17 @@ async function sendAnalysisMessage(
     errBubble.textContent = getApiErrorMessage(err);
     messages.appendChild(errBubble);
   } finally {
-    if (sendBtn) {
-      sendBtn.disabled = false;
-      sendBtn.removeAttribute("aria-busy");
+    if (generation === conversationGeneration) {
+      if (sendBtn) {
+        sendBtn.disabled = false;
+        sendBtn.removeAttribute("aria-busy");
+      }
+      if (input) {
+        input.disabled = false;
+        input.focus();
+      }
+      updateAnalysisClearButtonState();
+      messages.scrollTop = messages.scrollHeight;
     }
-    if (input) {
-      input.disabled = false;
-      input.focus();
-    }
-    updateAnalysisClearButtonState();
-    messages.scrollTop = messages.scrollHeight;
   }
 }

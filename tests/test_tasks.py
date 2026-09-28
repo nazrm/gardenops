@@ -12,6 +12,50 @@ from tests.base import BaseApiTest, strong_password
 
 
 class TestTasks(BaseApiTest):
+    def test_description_refresh_reserves_each_provider_batch(self) -> None:
+        from fastapi import HTTPException
+
+        from gardenops.services.task_generator import task_description_batch_count
+
+        for count, expected in ((0, 0), (1, 1), (12, 1), (13, 2), (25, 3), (121, 10)):
+            self.assertEqual(
+                task_description_batch_count([{"task_type": "prune"}] * count),
+                expected,
+            )
+        conn = db.get_db()
+        try:
+            garden_id = self._get_default_garden_id()
+            now = current_timestamp_ms()
+            for index in range(13):
+                conn.execute(
+                    "INSERT INTO garden_tasks "
+                    "(garden_id, task_type, title, status, severity, due_on, rule_source, "
+                    "metadata_json, created_at_ms, updated_at_ms) "
+                    "VALUES (%s, 'prune', 'Prune rose', 'pending', 'normal', '2026-09-28', "
+                    "%s, '{}', %s, %s)",
+                    (garden_id, f"seasonal_prune:PLT-002:2026-09:{index}", now, now),
+                )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        with (
+            patch("gardenops.routers.tasks.is_ai_provider_configured", return_value=True),
+            patch("gardenops.routers.tasks.reserve_daily_provider_budget") as reserve,
+            patch(
+                "gardenops.services.task_generator.generate_task_description_overrides",
+                return_value={},
+            ) as generate,
+        ):
+            result = self.client.post("/api/tasks/refresh-descriptions", json={"force_all": True})
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertEqual(reserve.call_args.kwargs["request_count"], 2)
+            self.assertEqual(generate.call_count, 1)
+            generate.reset_mock()
+            reserve.side_effect = HTTPException(429, "Provider budget exhausted")
+            rejected = self.client.post("/api/tasks/refresh-descriptions", json={"force_all": True})
+            self.assertEqual(rejected.status_code, 429, rejected.text)
+            generate.assert_not_called()
+
     def test_generated_task_list_removes_stale_sow_for_seed_category_without_instructions(
         self,
     ) -> None:

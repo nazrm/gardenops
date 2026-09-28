@@ -9,6 +9,8 @@ from fastapi import HTTPException
 from gardenops.security import AuthContext
 from gardenops.services.assistant import (
     _enrich_new_plant,
+    _new_request,
+    analyze_matrix_capture,
     apply_request,
     cancel_request,
     expire_and_cleanup_requests,
@@ -22,6 +24,54 @@ from tests.base import DbTestBase
 
 
 class TestAssistantService(DbTestBase):
+    def test_replay_revalidates_binding_for_text_and_capture(self) -> None:
+        binding = self._binding()
+        request_id, _ = _new_request(
+            self.conn,
+            binding,
+            room_id=binding.room_id,
+            event_id="$rebind",
+            sender_id=binding.sender_id,
+            input_text="Private garden question",
+        )
+        for changed in (
+            replace(binding, garden_id=binding.garden_id + 1000),
+            replace(binding, user_id=binding.user_id + 1000),
+            replace(binding, sender_id="@replacement:example.org"),
+        ):
+            common = {
+                "source_room_id": changed.room_id,
+                "source_event_id": "$rebind",
+                "source_sender_id": changed.sender_id,
+                "occurred_on": "2026-09-28",
+            }
+            with (
+                patch("gardenops.services.assistant._interpret") as interpret,
+                patch("gardenops.services.assistant.analyze_capture") as analyze,
+            ):
+                with self.assertRaises(HTTPException):
+                    process_text(self.conn, changed, text="Replay", **common)
+                with self.assertRaises(HTTPException):
+                    analyze_matrix_capture(
+                        self.conn,
+                        changed,
+                        capture_asset_id="unused",
+                        caption="Replay",
+                        **common,
+                    )
+                interpret.assert_not_called()
+                analyze.assert_not_called()
+        same_id, result = _new_request(
+            self.conn,
+            binding,
+            room_id=binding.room_id,
+            event_id="$rebind",
+            sender_id=binding.sender_id,
+            input_text="Retry",
+        )
+        self.assertEqual(same_id, request_id)
+        self.assertIsNotNone(result)
+
     def _binding(self) -> AssistantBinding:
         context = AuthContext(
             user_id=self._owner_id,

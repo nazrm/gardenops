@@ -286,6 +286,9 @@ terrain source.
 Uploaded LAS/LAZ terrain is checked for CRS metadata, grid size, byte size, and
 point count before storage and processing. Lower
 `SHADEMAP_LOCAL_TERRAIN_MAX_POINTS` if your host has limited CPU or memory.
+Each grid axis is limited to 4096 cells, independently of the total-cell budget.
+Uploads are processed outside the API event loop, with one shared processing
+slot; a busy processor returns a retryable 429 response.
 GardenOps validates an upload before replacing the active terrain source, then
 commits the source change and cache invalidation together. A failed upload or
 database update leaves the previous active terrain usable. Removing uploaded

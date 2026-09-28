@@ -936,6 +936,8 @@ def create_session_for_user(
     *,
     mfa_authenticated: bool = False,
     mfa_setup_required: bool = False,
+    reauthenticated_at_ms: int | None = None,
+    mfa_authenticated_at_ms: int | None = None,
     device_label: str = "",
     location_hint: str = "",
     db: DbConn | None = None,
@@ -971,8 +973,10 @@ def create_session_for_user(
                 expires_at_ms,
                 now_ms,
                 now_ms,
-                now_ms,
-                now_ms if mfa_authenticated else 0,
+                now_ms if reauthenticated_at_ms is None else reauthenticated_at_ms,
+                (now_ms if mfa_authenticated else 0)
+                if mfa_authenticated_at_ms is None
+                else mfa_authenticated_at_ms,
                 int(bool(mfa_setup_required)),
                 device_label.strip()[:120],
                 location_hint.strip()[:80],
