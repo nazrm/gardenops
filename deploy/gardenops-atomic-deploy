@@ -147,14 +147,24 @@ prepare_release() {
 
     ln -s "$PERSISTENT_ROOT/logs" "$build_dir/logs"
     ln -s "$PERSISTENT_ROOT/media_uploads" "$build_dir/media_uploads"
-    printf '%s\n' "$sha" > "$build_dir/RELEASE_COMMIT"
-    chown -R "root:$SERVICE_GROUP" "$build_dir"
+    chown -hR "root:$SERVICE_GROUP" "$build_dir"
     chmod -R u=rwX,g=rX,o= "$build_dir"
+    write_release_metadata "$build_dir/RELEASE_COMMIT" "$sha"
 
     preflight_release "$release"
-    install -o root -g "$SERVICE_GROUP" -m 0640 /dev/null "$build_dir/RELEASE_READY"
+    write_release_metadata "$build_dir/RELEASE_READY" ""
     trap - EXIT
     echo "$release"
+}
+
+write_release_metadata() {
+    local destination=$1 value=$2 temporary
+    # Never open a build-controlled entry as root, even if it appears regular.
+    temporary=$(mktemp "$RELEASE_ROOT/.metadata.XXXXXXXX")
+    printf '%s\n' "$value" > "$temporary"
+    chown "root:$SERVICE_GROUP" "$temporary"
+    chmod 0640 "$temporary"
+    mv -Tf -- "$temporary" "$destination"
 }
 
 wait_for_health() {

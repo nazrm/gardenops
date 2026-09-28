@@ -8,6 +8,7 @@ import numpy as np
 from pyproj import CRS
 
 import gardenops.db as db
+from gardenops.rate_limit import acquire_concurrency_slot
 from gardenops.services import lidar_terrain
 from tests.base import BaseApiTest
 
@@ -195,6 +196,13 @@ class TestGardenSettings(BaseApiTest):
                 db.return_db(conn)
 
             payload = _valid_laz_bytes()
+            with acquire_concurrency_slot(bucket="garden-lidar-processing", limit=1):
+                busy = client.post(
+                    f"/api/gardens/{garden_id}/lidar",
+                    headers={**headers, "x-upload-filename": "terrain.laz"},
+                    content=payload,
+                )
+                self.assertEqual(busy.status_code, 429, busy.text)
             upload = client.post(
                 f"/api/gardens/{garden_id}/lidar",
                 headers={

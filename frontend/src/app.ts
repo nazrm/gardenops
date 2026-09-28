@@ -57,6 +57,7 @@ import { dismissPopover } from "./components/popover";
 import type { ShadePanelController } from "./components/shadePanel";
 import {
   invalidatePlotPanelCache,
+  resetPlotPanelsForContextChange,
   openDrawerForPlot,
   selectPlot,
 } from "./components/plotInteractions";
@@ -70,7 +71,7 @@ import {
 import { showToast } from "./components/toast";
 import { dismissBottomSheet } from "./components/bottomSheet";
 import { dismissDrawer } from "./components/drawer";
-import { initAnalysisTab, renderAnalysisStarters } from "./tabs/analysisTab";
+import { initAnalysisTab, renderAnalysisStarters, resetAnalysisForContextChange } from "./tabs/analysisTab";
 import { initThemeFeature, updateThemeIcon } from "./features/themeFeature";
 import {
   initSnapshotsFeature,
@@ -1641,7 +1642,6 @@ function ensureAdminPanelModule(): Promise<AdminPanelModule> {
       mod.setAdminCallbacks({
         onSignOut: async () => {
           await handleAuthButton();
-          showToast(t("auth.signed_out"), "success");
         },
         onAuthStateChanged: () => {
           void refreshGardenContext().then(() => {
@@ -2799,6 +2799,7 @@ function setupLayout(): void {
       try {
         const garden = await createGardenApi(name.trim());
         setActiveGardenContext(garden.id);
+        clearGardenScopedStateForSwitch();
         await refreshGardenContext();
         const needsOnboarding = await checkOnboardingNeeded();
         if (!needsOnboarding) {
@@ -7803,6 +7804,8 @@ function resetMapLayoutForGardenSwitch(): void {
 }
 
 function clearGardenScopedStateForSwitch(): void {
+  resetAnalysisForContextChange();
+  resetPlotPanelsForContextChange();
   setOfflineQueueIdentity(authProfile?.username ?? null);
   rememberedSubModes.clear();
   closePlantSummary();
@@ -7964,6 +7967,9 @@ function waitForOfflineClearRetry(): Promise<void> {
 async function requireOfflineQueueClear(
   initialAttempt: Promise<void> | null = null,
 ): Promise<void> {
+  resetAnalysisForContextChange();
+  resetPlotPanelsForContextChange();
+  inventoryTabModule?.resetInventoryForGardenSwitch();
   document.getElementById("app")?.setAttribute("inert", "");
   experienceGeneration += 1;
   setOfflineQueueIdentity(null);
@@ -8005,12 +8011,16 @@ async function handleAuthButton(): Promise<void> {
     try {
       await logoutApi();
     } catch {
-      // clear local state even if backend token is already invalid
+      showAppStatus(t("auth.sign_out_failed"), t("auth.sign_out"), () => {
+        void handleAuthButton();
+      });
+      return;
     }
     clearStoredAuthToken();
     authProfile = null;
     setActiveGardenContext(null);
     await requireOfflineQueueClear();
+    showToast(t("auth.signed_out"), "success");
     await completeSignedOutState();
   } else {
     // Not signed in — use the login gate

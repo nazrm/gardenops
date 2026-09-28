@@ -712,6 +712,17 @@ seeding does not dominate runtime.
 
 ## Pull Request Expectations
 
+Focused security lifecycle browser checks use synthetic API responses only:
+
+```bash
+CHROMIUM_PATH=/usr/bin/chromium node scripts/test_security_browser.mjs
+```
+
+They exercise identity cleanup, delayed private replies, plot-journal previews,
+and failed/successful logout. They do not connect to a live GardenOps backend.
+Backend CI installs the optional Matrix extra to exercise authenticated media
+downloads and encrypted-attachment handling as well as the core application.
+
 - Keep changes scoped.
 - Include tests for behavior changes.
 - Require the always-present `Dependency Policy`, `Backend`, and `Frontend`

@@ -134,7 +134,18 @@ controls: `AI_TASK_DESCRIPTION_DAILY_BUDGET_USER` defaults to `60`,
 `AI_TASK_DESCRIPTION_DAILY_BUDGET_GARDEN` defaults to `180`, and
 `AI_TASK_DESCRIPTION_CONCURRENCY_LIMIT` defaults to `1`.
 
+## Task Processing
+
+Task-description refreshes charge the AI budget for each batch of up to 12
+eligible tasks, with at most 120 AI-described tasks per refresh. Other tasks
+retain deterministic care descriptions. Deactivated accounts are excluded from
+notification generation and email delivery, including the final pre-send check.
+
 ## Matrix Assistant
+
+Image downloads use the configured homeserver with a 30-second total timeout
+and enforce the capture byte limit while streaming, before decrypting. Redirects
+are rejected so the Matrix access token is never forwarded to another server.
 
 The optional Matrix integration is deliberately server-configured. It binds one
 exact room and sender to one GardenOps user/garden membership; there is no

@@ -467,6 +467,8 @@ def _reader_point_count(reader: laspy.LasReader) -> int | None:
 
 def _fill_nan_grid(grid: np.ndarray) -> np.ndarray:
     result = np.array(grid, copy=True, dtype=np.float32)
+    if np.isfinite(result).all():
+        return result
     global_mean = float(np.nanmean(result)) if np.isfinite(np.nanmean(result)) else 0.0
 
     for row_index in range(result.shape[0]):
@@ -481,6 +483,9 @@ def _fill_nan_grid(grid: np.ndarray) -> np.ndarray:
             np.flatnonzero(mask),
             row[mask],
         )
+
+    if np.isfinite(result).all():
+        return result
 
     for col_index in range(result.shape[1]):
         col = result[:, col_index]
@@ -515,6 +520,8 @@ def _terrain_grid_dimensions(
     rows = int(math.ceil((max_y - min_y) / resolution_m)) + 1
     if rows < 1 or cols < 1:
         raise ValueError("LiDAR bounds are invalid")
+    if max(rows, cols) > 4096:
+        raise ValueError("LiDAR bounds are too large: grid dimensions exceed 4096 per axis")
     max_cells = _max_terrain_grid_cells()
     if rows * cols > max_cells:
         raise ValueError(

@@ -886,7 +886,12 @@ function renderLoginFlow(
       result.status === "password_change_required"
       || result.user.must_change_password
     ) {
-      await logoutApi().catch(() => undefined);
+      try {
+        await logoutApi();
+      } catch {
+        form.appendChild(createAuthGateError(t("auth.sign_out_failed")));
+        return;
+      }
       clearStoredAuthToken();
       form.appendChild(createAuthGateError(t("auth.passkey_password_change_required")));
       revealPasswordLogin();

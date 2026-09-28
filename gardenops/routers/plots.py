@@ -678,6 +678,7 @@ def get_plot_alerts(db: DB, request: Request) -> dict:
         "JOIN plot_plants pp ON pp.plt_id = wap.plt_id "
         "JOIN plots p ON p.plot_id = pp.plot_id "
         "WHERE wa.garden_id = %s AND wa.dismissed = 0 "
+        "AND p.garden_id = wa.garden_id "
         "AND wa.valid_until >= %s AND p.archived_at_ms IS NULL "
         "AND p.environment = 'outdoor'",
         (garden_id, today_iso),

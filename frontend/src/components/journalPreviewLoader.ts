@@ -17,9 +17,11 @@ export function renderPlotJournalPreviewLazy(
   container: HTMLElement,
   entries: JournalEntry[],
   onViewAll: () => void,
+  isCurrent: () => boolean = () => container.isConnected,
 ): void {
   void loadJournalPreviewModule()
     .then((mod) => {
+      if (!isCurrent()) return;
       mod.renderPlotJournalPreview(
         container,
         entries,

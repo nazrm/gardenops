@@ -1216,7 +1216,7 @@ export async function changePasswordApi(
 }
 
 export async function logoutApi(): Promise<void> {
-  await apiPost("/api/auth/logout", {});
+  await apiPost("/api/auth/logout", {}, { suppressAuthExpiry: true });
 }
 
 export async function getAuthMeApi(): Promise<AuthUserProfile> {

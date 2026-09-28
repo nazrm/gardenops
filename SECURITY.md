@@ -21,6 +21,9 @@ password authentication is available.
 First passkey enrollment does not itself unlock protected administrator actions.
 The clients immediately authenticate with the newly bound passkey before
 resuming protected application reads.
+Password changes rotate sessions without renewing the original MFA or step-up
+approval timestamps. Failed sign-out requests are shown as failures, not as a
+confirmed logout; retry before leaving a shared browser.
 Enrolled editors and viewers also advertise passkey step-up capability so
 passwordless users can safely manage backup credentials without a password.
 

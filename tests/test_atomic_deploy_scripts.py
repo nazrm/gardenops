@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -8,6 +9,40 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PREFLIGHT = ROOT / "deploy" / "gardenops-release-preflight"
 DEPLOY = ROOT / "deploy" / "gardenops-atomic-deploy"
+
+
+def test_release_metadata_replaces_symlinks_without_touching_targets(tmp_path: Path) -> None:
+    script = DEPLOY.read_text(encoding="utf-8")
+    function = re.search(r"write_release_metadata\(\) \{.*?\n\}", script, re.S)
+    assert function is not None
+    victim = tmp_path / "unrelated"
+    victim.write_text("unchanged", encoding="utf-8")
+    release = tmp_path / "release"
+    release.mkdir()
+    for name in ("RELEASE_COMMIT", "RELEASE_READY"):
+        target = release / name
+        target.symlink_to(victim)
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "set -euo pipefail\nchown() { :; }\n"
+                + function.group()
+                + '\nwrite_release_metadata "$1" "$2"',
+                "bash",
+                str(target),
+                "commit",
+            ],
+            env={**os.environ, "RELEASE_ROOT": str(tmp_path), "SERVICE_GROUP": "unused"},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert victim.read_text(encoding="utf-8") == "unchanged"
+        assert not target.is_symlink()
+        assert target.read_text(encoding="utf-8") == "commit\n"
+    assert not list(tmp_path.glob(".metadata.*"))
 
 
 def _release_fixture(tmp_path: Path) -> Path:
