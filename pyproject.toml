@@ -10,7 +10,7 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "anthropic>=1.6.0",
     "cryptography>=50.0.1,<51.0.0",
-    "fastapi==0.141.1",
+    "fastapi==0.142.2",
     "laspy[lazrs]>=2.7.0",
     "numpy>=2.5.3",
     "openai>=3.8.0",
@@ -19,11 +19,11 @@ dependencies = [
     "pyproj>=3.7.2",
     "PyYAML>=6.0.3",
     "python-dotenv>=1.2.3",
-    "uvicorn[standard]==0.53.0",
+    "uvicorn[standard]==0.54.0",
     "redis>=8.1.0",
     "psycopg-pool>=3.3.1",
-    "webauthn==3.0.0",
-    "cbor2==6.1.4",
+    "webauthn==3.0.1",
+    "cbor2==6.1.5",
     "mcp==2.2.0",
 ]
 
