@@ -178,9 +178,6 @@ from gardenops.security_telemetry import (  # noqa: E402
 from gardenops.services.assistant import expire_and_cleanup_requests  # noqa: E402
 from gardenops.services.garden_layout_lock import lock_garden_layout  # noqa: E402
 from gardenops.services.integration_config import (  # noqa: E402
-    agent_api_auth_context,
-    agent_api_request_is_local,
-    agent_api_token_matches_request,
     resolve_assistant_binding,
     validate_integration_config,
 )
@@ -204,7 +201,7 @@ FRONTEND_PACKAGE_JSON = ROOT / "frontend" / "package.json"
 LOGS_DIR = Path(os.environ.get("GARDENOPS_LOGS_DIR", "") or ROOT / "logs")
 logger = logging.getLogger(__name__)
 MCP_RUNTIME = create_mcp_runtime()
-_LOCAL_INTEGRATION_PATHS = frozenset({"/mcp", "/api/integrations/matrix/captures"})
+_LOCAL_INTEGRATION_PATHS = frozenset({"/mcp", "/api/integrations/mcp/captures"})
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -262,8 +259,7 @@ class PathAwareCORSMiddleware(CORSMiddleware):
 class PathAwareTrustedHostMiddleware(TrustedHostMiddleware):
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
-            request = Request(scope)
-            if scope.get("path") in _LOCAL_INTEGRATION_PATHS or agent_api_request_is_local(request):
+            if scope.get("path") in _LOCAL_INTEGRATION_PATHS:
                 await self.app(scope, receive, send)
                 return
         await super().__call__(scope, receive, send)
@@ -1089,7 +1085,7 @@ def _max_body_bytes_for_path(path: str) -> int:
     if path in {
         "/api/ai/identify-plant",
         "/api/ai/diagnose-plant",
-        "/api/integrations/matrix/captures",
+        "/api/integrations/mcp/captures",
     }:
         return min(
             env_int("MAX_AI_PHOTO_BODY_BYTES", 5 * 1024 * 1024),
@@ -1512,7 +1508,7 @@ if MCP_RUNTIME is not None:
 
 @app.middleware("http")
 async def edge_origin_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
-    if request.url.path in _LOCAL_INTEGRATION_PATHS or agent_api_request_is_local(request):
+    if request.url.path in _LOCAL_INTEGRATION_PATHS:
         return await call_next(request)
     detail = _edge_proxy_violation_detail(request)
     if detail is not None:
@@ -1524,6 +1520,9 @@ async def edge_origin_guard(request: Request, call_next):  # type: ignore[no-unt
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
     path = request.url.path
+    if path in _LOCAL_INTEGRATION_PATHS:
+        # These endpoints enforce their own direct-loopback and bearer checks.
+        return await call_next(request)
     protected = (
         path.startswith("/api")
         or path.startswith("/shademap/terrain/")
@@ -1547,7 +1546,6 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         "/api/admin/system/health",
         "/api/security/csp-report",
         "/api/client-errors",
-        "/api/integrations/matrix/captures",
     }
     csrf_exempt_mutation_paths = {
         "/api/auth/bootstrap",
@@ -1562,7 +1560,6 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         "/api/auth/check-hibp",
         "/api/security/csp-report",
         "/api/client-errors",
-        "/api/integrations/matrix/captures",
     }
     auth_context = None
     remote_host = client_ip(request)
@@ -1589,12 +1586,11 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
         # Let CORS middleware answer browser preflight checks.
         if request.method == "OPTIONS":
             return await call_next(request)
-        local_agent_request = agent_api_request_is_local(request)
-        edge_detail = None if local_agent_request else _edge_proxy_violation_detail(request)
+        edge_detail = _edge_proxy_violation_detail(request)
         if edge_detail is not None:
             record_security_event("edge_origin_rejections")
             return JSONResponse(status_code=403, content={"detail": edge_detail})
-        if _is_production() and not local_agent_request:
+        if _is_production():
             if _forwarding_headers_present(request) and not _trust_proxy_headers():
                 return JSONResponse(
                     status_code=400,
@@ -1616,12 +1612,7 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
             try:
                 conn: DbConn | None = None
                 try:
-                    if agent_api_token_matches_request(request):
-                        conn = get_db()
-                        auth_context = agent_api_auth_context(conn, request)
-                        assert auth_context is not None
-                        conn.commit()
-                    elif (
+                    if (
                         session_auth_enabled()
                         and request.cookies.get(
                             session_cookie_name(),
@@ -1639,8 +1630,7 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
                     ):
                         if conn is None:
                             conn = get_db()
-                        if auth_context.auth_type != "agent":
-                            auth_context = resolve_garden_context(conn, request, auth_context)
+                        auth_context = resolve_garden_context(conn, request, auth_context)
                         conn.commit()
                 finally:
                     if conn is not None:

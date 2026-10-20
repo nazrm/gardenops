@@ -11,7 +11,7 @@ from gardenops.db import current_timestamp_ms
 from gardenops.incident_controls import set_emergency_read_only
 from gardenops.security import AuthContext
 from gardenops.services.assistant import (
-    analyze_matrix_capture,
+    analyze_mcp_capture,
     apply_request,
     continue_request,
     process_text,
@@ -33,8 +33,8 @@ CAPTURE_TOKEN = (  # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable 
 class TestAssistantActions(BaseApiTest):
     def _binding(self) -> AssistantBinding:
         return AssistantBinding(
-            room_id="!garden:example.org",
-            sender_id="@owner:example.org",
+            client_id="local-assistant",
+            actor_id="owner",
             username="test_admin",
             garden_slug="default",
             user_id=self._owner_id,
@@ -60,20 +60,20 @@ class TestAssistantActions(BaseApiTest):
                 """
                 INSERT INTO assistant_requests
                     (public_id, garden_id, actor_user_id, source_channel,
-                     source_room_id, source_event_id, source_sender_id,
+                     source_client_id, source_event_id, source_actor_id,
                      request_kind, state, input_text, capture_asset_id,
                      payload_json, result_json,
                      created_at_ms, updated_at_ms, expires_at_ms, last_source_event_id)
-                VALUES (%s, %s, %s, 'matrix', %s, %s, %s, %s, 'proposal', '',
+                VALUES (%s, %s, %s, 'mcp', %s, %s, %s, %s, 'proposal', '',
                         %s, %s, '{}', %s, %s, %s, %s)
                 """,
                 (
                     request_id,
                     self._get_default_garden_id(),
                     self._owner_id,
-                    "!garden:example.org",
+                    "local-assistant",
                     f"${request_id}",
-                    "@owner:example.org",
+                    "owner",
                     kind,
                     capture_asset_id or None,
                     json.dumps({"schema_version": 1, "proposal": proposal}),
@@ -139,21 +139,21 @@ class TestAssistantActions(BaseApiTest):
         integration_env = {
             "MCP_ENABLED": "true",
             "MCP_BEARER_TOKEN": CAPTURE_TOKEN,
-            "MATRIX_ROOM_ID": "!garden:example.org",
-            "MATRIX_ALLOWED_SENDER": "@owner:example.org",
-            "MATRIX_GARDENOPS_USERNAME": "test_admin",
-            "MATRIX_GARDEN_SLUG": "default",
+            "MCP_CLIENT_ID": "local-assistant",
+            "MCP_ACTOR_ID": "owner",
+            "MCP_USERNAME": "test_admin",
+            "MCP_GARDEN_SLUG": "default",
         }
         with patch.dict(os.environ, integration_env, clear=False):
             captured = self.client.post(
-                "/api/integrations/matrix/captures",
+                "/api/integrations/mcp/captures",
                 content=self._image_bytes(),
                 headers={
                     "Authorization": f"Bearer {CAPTURE_TOKEN}",
                     "Content-Type": "image/png",
-                    "X-Matrix-Room-Id": "!garden:example.org",
-                    "X-Matrix-Event-Id": "$journal-photo",
-                    "X-Matrix-Sender": "@owner:example.org",
+                    "X-MCP-Client-Id": "local-assistant",
+                    "X-MCP-Event-Id": "$journal-photo",
+                    "X-MCP-Actor": "owner",
                 },
             )
         self.assertEqual(captured.status_code, 201, captured.text)
@@ -293,7 +293,7 @@ class TestAssistantActions(BaseApiTest):
                 "event_type": "bloomed",
                 "occurred_on": "2026-09-02",
                 "title": "First bloom",
-                "notes": "Seen from Matrix",
+                "notes": "Seen through MCP",
                 "plant_ids": ["PLT-002"],
                 "plot_ids": [],
                 "metadata": {},
@@ -354,21 +354,21 @@ class TestAssistantActions(BaseApiTest):
         integration_env = {
             "MCP_ENABLED": "true",
             "MCP_BEARER_TOKEN": CAPTURE_TOKEN,
-            "MATRIX_ROOM_ID": "!garden:example.org",
-            "MATRIX_ALLOWED_SENDER": "@owner:example.org",
-            "MATRIX_GARDENOPS_USERNAME": "test_admin",
-            "MATRIX_GARDEN_SLUG": "default",
+            "MCP_CLIENT_ID": "local-assistant",
+            "MCP_ACTOR_ID": "owner",
+            "MCP_USERNAME": "test_admin",
+            "MCP_GARDEN_SLUG": "default",
         }
         with patch.dict(os.environ, integration_env, clear=False):
             captured = self.client.post(
-                "/api/integrations/matrix/captures",
+                "/api/integrations/mcp/captures",
                 content=self._image_bytes(),
                 headers={
                     "Authorization": f"Bearer {CAPTURE_TOKEN}",
                     "Content-Type": "image/png",
-                    "X-Matrix-Room-Id": "!garden:example.org",
-                    "X-Matrix-Event-Id": "$new-plant-photo",
-                    "X-Matrix-Sender": "@owner:example.org",
+                    "X-MCP-Client-Id": "local-assistant",
+                    "X-MCP-Event-Id": "$new-plant-photo",
+                    "X-MCP-Actor": "owner",
                 },
             )
         self.assertEqual(captured.status_code, 201, captured.text)
@@ -416,12 +416,12 @@ class TestAssistantActions(BaseApiTest):
                 ),
                 patch("gardenops.services.assistant._enrich_new_plant", return_value=enriched),
             ):
-                needs_quantity = analyze_matrix_capture(
+                needs_quantity = analyze_mcp_capture(
                     conn,
                     self._binding(),
-                    source_room_id="!garden:example.org",
+                    source_client_id="local-assistant",
                     source_event_id="$new-plant-photo",
-                    source_sender_id="@owner:example.org",
+                    source_actor_id="owner",
                     capture_asset_id=capture_id,
                     caption="Add this to B1",
                     occurred_on="2026-09-02",
@@ -482,9 +482,9 @@ class TestAssistantActions(BaseApiTest):
                 move = process_text(
                     conn,
                     self._binding(),
-                    source_room_id="!garden:example.org",
+                    source_client_id="local-assistant",
                     source_event_id="$move-plant",
-                    source_sender_id="@owner:example.org",
+                    source_actor_id="owner",
                     text="Move the rose from B1 to B2",
                     occurred_on="2026-09-02",
                 )
@@ -513,21 +513,21 @@ class TestAssistantActions(BaseApiTest):
         integration_env = {
             "MCP_ENABLED": "true",
             "MCP_BEARER_TOKEN": CAPTURE_TOKEN,
-            "MATRIX_ROOM_ID": "!garden:example.org",
-            "MATRIX_ALLOWED_SENDER": "@owner:example.org",
-            "MATRIX_GARDENOPS_USERNAME": "test_admin",
-            "MATRIX_GARDEN_SLUG": "default",
+            "MCP_CLIENT_ID": "local-assistant",
+            "MCP_ACTOR_ID": "owner",
+            "MCP_USERNAME": "test_admin",
+            "MCP_GARDEN_SLUG": "default",
         }
         with patch.dict(os.environ, integration_env, clear=False):
             captured = self.client.post(
-                "/api/integrations/matrix/captures",
+                "/api/integrations/mcp/captures",
                 content=self._image_bytes(),
                 headers={
                     "Authorization": f"Bearer {CAPTURE_TOKEN}",
                     "Content-Type": "image/png",
-                    "X-Matrix-Room-Id": "!garden:example.org",
-                    "X-Matrix-Event-Id": "$delete-plant-photo",
-                    "X-Matrix-Sender": "@owner:example.org",
+                    "X-MCP-Client-Id": "local-assistant",
+                    "X-MCP-Event-Id": "$delete-plant-photo",
+                    "X-MCP-Actor": "owner",
                 },
             )
         self.assertEqual(captured.status_code, 201, captured.text)
@@ -544,9 +544,9 @@ class TestAssistantActions(BaseApiTest):
                 delete = process_text(
                     conn,
                     self._binding(),
-                    source_room_id="!garden:example.org",
+                    source_client_id="local-assistant",
                     source_event_id="$delete-plant",
-                    source_sender_id="@owner:example.org",
+                    source_actor_id="owner",
                     text="Delete the rose from GardenOps",
                     occurred_on="2026-09-02",
                 )
@@ -715,9 +715,9 @@ class TestAssistantActions(BaseApiTest):
                     result = process_text(
                         conn,
                         self._binding(),
-                        source_room_id="!garden:example.org",
+                        source_client_id="local-assistant",
                         source_event_id=f"$negative-{index}",
-                        source_sender_id="@owner:example.org",
+                        source_actor_id="owner",
                         text=text,
                         occurred_on="2026-09-02",
                     )
@@ -725,9 +725,9 @@ class TestAssistantActions(BaseApiTest):
                 proposal = process_text(
                     conn,
                     self._binding(),
-                    source_room_id="!garden:example.org",
+                    source_client_id="local-assistant",
                     source_event_id="$explicit-season",
-                    source_sender_id="@owner:example.org",
+                    source_actor_id="owner",
                     text="Close the bloom season for the rose",
                     occurred_on="2025-09-02",
                 )
@@ -799,9 +799,9 @@ class TestAssistantActions(BaseApiTest):
                         result = process_text(
                             conn,
                             self._binding(),
-                            source_room_id="!garden:example.org",
+                            source_client_id="local-assistant",
                             source_event_id=f"$bloom-intent-{index}",
-                            source_sender_id="@owner:example.org",
+                            source_actor_id="owner",
                             text=initial,
                             occurred_on="2026-09-02",
                         )
@@ -954,9 +954,9 @@ class TestAssistantActions(BaseApiTest):
                 proposal = process_text(
                     conn,
                     self._binding(),
-                    source_room_id="!garden:example.org",
+                    source_client_id="local-assistant",
                     source_event_id="$new-plant-before-edit",
-                    source_sender_id="@owner:example.org",
+                    source_actor_id="owner",
                     text="Add Lilium old to B1, quantity 1",
                     occurred_on="2026-09-02",
                 )

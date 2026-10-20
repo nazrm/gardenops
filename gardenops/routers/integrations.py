@@ -17,6 +17,7 @@ from gardenops.services.integration_config import (
     assert_source_binding,
     integration_token_matches,
     mcp_enabled,
+    require_local_mcp_request,
     resolve_assistant_binding,
 )
 from gardenops.services.media_store import (
@@ -29,13 +30,14 @@ from gardenops.services.media_store import (
 router = APIRouter()
 
 
-class MatrixCaptureResponse(StrictBaseModel):
+class MCPCaptureResponse(StrictBaseModel):
     capture_asset_id: str
 
 
 def _integration_token(request: Request) -> str:
     if not mcp_enabled():
         raise HTTPException(status_code=404, detail="Not found")
+    require_local_mcp_request(request)
     authorization = request.headers.get("authorization", "").strip()
     scheme, separator, token = authorization.partition(" ")
     if not separator or scheme.casefold() != "bearer" or not integration_token_matches(token):
@@ -53,42 +55,44 @@ def _required_header(request: Request, name: str) -> str:
 
 
 @router.post(
-    "/integrations/matrix/captures",
-    response_model=MatrixCaptureResponse,
+    "/integrations/mcp/captures",
+    response_model=MCPCaptureResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def upload_matrix_capture(request: Request, db: DB) -> MatrixCaptureResponse:
+async def upload_mcp_capture(request: Request, db: DB) -> MCPCaptureResponse:
     _integration_token(request)
-    room_id = _required_header(request, "x-matrix-room-id")
-    event_id = _required_header(request, "x-matrix-event-id")
-    sender_id = _required_header(request, "x-matrix-sender")
+    client_id = _required_header(request, "x-mcp-client-id")
+    event_id = _required_header(request, "x-mcp-event-id")
+    actor_id = _required_header(request, "x-mcp-actor")
     binding = resolve_assistant_binding(db)
     try:
-        assert_source_binding(binding, room_id=room_id, sender_id=sender_id)
+        assert_source_binding(binding, client_id=client_id, actor_id=actor_id)
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail="Matrix source is not authorized") from exc
+        raise HTTPException(status_code=403, detail="MCP client is not authorized") from exc
 
     enforce_rate_limit(
         request,
-        bucket="matrix_capture_uploads",
-        limit=env_int("MATRIX_CAPTURE_RATE_LIMIT", 12),
+        bucket="mcp_capture_uploads",
+        limit=env_int("MCP_CAPTURE_RATE_LIMIT", 12),
         window_seconds=60,
     )
-    db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"{room_id}|{event_id}",))
+    db.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"{client_id}|{event_id}",)
+    )
     existing = db.execute(
         """
         SELECT a.asset_id
         FROM media_links l
         JOIN media_assets a ON a.asset_id = l.asset_id
         WHERE a.garden_id = %s
-          AND l.target_type = 'matrix_capture'
+          AND l.target_type = 'mcp_capture'
           AND l.target_id = %s
         LIMIT 1
         """,
         (binding.garden_id, event_id),
     ).fetchone()
     if existing:
-        return MatrixCaptureResponse(capture_asset_id=str(existing["asset_id"]))
+        return MCPCaptureResponse(capture_asset_id=str(existing["asset_id"]))
 
     max_bytes = min(
         media_upload_max_bytes(),
@@ -115,7 +119,7 @@ async def upload_matrix_capture(request: Request, db: DB) -> MatrixCaptureRespon
             garden_id=binding.garden_id,
             prepared=prepared,
             actor_user_id=binding.user_id,
-            target_type=cast(TargetType, cast(Any, "matrix_capture")),
+            target_type=cast(TargetType, cast(Any, "mcp_capture")),
             target_id=event_id,
         )
         db.commit()
@@ -123,4 +127,4 @@ async def upload_matrix_capture(request: Request, db: DB) -> MatrixCaptureRespon
         unlink_storage_keys(prepared.storage_key, prepared.preview_storage_key)
         db.rollback()
         raise
-    return MatrixCaptureResponse(capture_asset_id=prepared.asset_id)
+    return MCPCaptureResponse(capture_asset_id=prepared.asset_id)

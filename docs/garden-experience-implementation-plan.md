@@ -37,7 +37,7 @@ Research artifacts remain ignored; this plan and behavior documentation are trac
 | T1 | Bloom observation placement selection | Task truth |
 | T2 | Observation-language labels and filters | Task UI |
 | T3 | Distinguish deferral from season closure | Task truth/UI |
-| M1 | Human-readable Matrix save receipts | Assistant |
+| M1 | Human-readable MCP save receipts | Assistant |
 
 ## Journey 1: Find, Inspect, And Record In The Garden
 
@@ -177,7 +177,7 @@ by unit, never kg plus bunches; show plant/unit rows rather than mixed-unit bars
 Shared-entry quantities must be labeled as shared, not duplicated into a claimed
 garden yield. No best-performer claim or zero-yield inference from absent logs.
 
-## Journey 5: Matrix Confirmation
+## Journey 5: MCP Confirmation
 
 After explicit save succeeds, render a deterministic receipt naming the action,
 plant(s), actual placement(s), quantity/unit/date where relevant. Derive it from
@@ -222,7 +222,7 @@ one focused experience journey script is acceptable, no new test framework.
 | Capture/history | Prefills; manual issue; unsent draft restore/discard; scope survives pagination; photo failure/retry without duplicate entry | Implemented; ten capture-browser and ten queue-runtime scenarios passed; connected mobile saves and photo rendering passed. |
 | Task truth | Backdate; invalid/future date; allowed/forbidden plot scope; untouched unobserved plot; grouped partial; stale/offline replay; closure meaning; provenance | Implemented; full backend suite, focused task-browser current-place/group/offline/focus checks and connected mobile partial pruning passed. |
 | Planning/harvest | Linked stock with units; prefilled atomic planting; bounded historical context; past/cross-year totals; mixed units and shared entries | Implemented; harvest/backend tests and connected first-use stock prefill/cancel/save passed. |
-| Matrix | Readable success/delete/partial receipts; deterministic replay and no extra provider call | Implemented; focused assistant/Matrix tests and final full suite passed; no live Matrix/provider call claimed. |
+| MCP | Readable success/delete/partial receipts; deterministic replay and no extra provider call | Implemented; focused assistant/MCP tests and final full suite passed; no live MCP/provider call claimed. |
 | Integrated | Frontend build; focused Python tests; lint/static checks; browser screenshot and console inspection; Astra Ultra final review | Final Ultra review completed; findings fixed. Build, all four backend shards, lint/static checks and 23 connected browser checks passed. |
 
 Review findings, exact checks and failures are recorded below as they occur.
@@ -272,11 +272,11 @@ contracts supersede looser wording above; all 21 deliverables remain in scope.
   Explicit dates and empty scope remain fingerprinted. Never resolve today before
   fingerprinting. Add one old-operation replay regression.
 - Introduce one small observation clock helper: `GARDENOPS_TIMEZONE`, falling back
-  to existing `MATRIX_TIMEZONE`, then `Europe/Oslo`. Invalid zones fail explicitly.
+  to `Europe/Oslo`. Invalid zones fail explicitly.
   Use it for task date defaults/validation and seasonal observation classification;
   retain test frozen-clock support. Task responses expose `observation_timezone`
   so the dialog computes today with Intl in that zone, including offline use.
-  Matrix uses the same configured fallback. Chosen occurrence dates never change
+  MCP uses the same configured fallback. Chosen occurrence dates never change
   on replay; closure year derives from occurrence date, not task due date.
 - Assistant ambiguous not-yet phrases cannot silently propose season closure.
   Explicit closure proposals disclose outcome/year/scope before save. Receipts
@@ -337,7 +337,7 @@ were addressed directly without another architecture or testing framework:
 1. Ownerless legacy queue rows: show a generic count and explicit confirmed
    discard, never expose or replay content under guessed ownership. Preserve
    these rows through account cleanup. Ten queue-runtime scenarios passed.
-2. Matrix deferral mistaken for bloom: require affirmative observation wording,
+2. MCP deferral mistaken for bloom: require affirmative observation wording,
    distinguish latest clarification, and return unchanged-task guidance for
    deferral. Negated/questioned closure cannot close a season. Full suite passed.
 3. Stale task-place links: fetch current plant assignments when opening bloom
@@ -366,7 +366,7 @@ Console/API audits passed and all test servers were stopped. Generated reports,
 record IDs and screenshots remain ignored under `research/experience-e2e/`.
 
 The connected runner intentionally uses an unauthenticated synthetic admin garden,
-not production. Viewer authorization, Matrix/provider traffic, container/area
+not production. Viewer authorization, MCP/provider traffic, container/area
 destinations and broader planner variants were not exercised there. Partial
 photo failure, identity isolation, quota failure and current-placement choices
 have separate focused browser/backend proof. The stock journey checks existing

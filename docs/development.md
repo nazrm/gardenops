@@ -720,8 +720,8 @@ CHROMIUM_PATH=/usr/bin/chromium node scripts/test_security_browser.mjs
 
 They exercise identity cleanup, delayed private replies, plot-journal previews,
 and failed/successful logout. They do not connect to a live GardenOps backend.
-Backend CI installs the optional Matrix extra to exercise authenticated media
-downloads and encrypted-attachment handling as well as the core application.
+Backend CI exercises the MCP assistant and private capture uploads alongside
+the core application using the standard locked dependencies.
 
 - Keep changes scoped.
 - Include tests for behavior changes.

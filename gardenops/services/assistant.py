@@ -73,7 +73,7 @@ _ACTIVE_STATES = frozenset({"processing", "needs_input", "proposal"})
 
 def _request_ttl_ms() -> int:
     try:
-        days = int(os.environ.get("MATRIX_CAPTURE_TTL_DAYS", "7"))
+        days = int(os.environ.get("MCP_CAPTURE_TTL_DAYS", "7"))
     except ValueError:
         days = 7
     return max(1, min(days, 30)) * 24 * 60 * 60 * 1000
@@ -110,7 +110,7 @@ def _resolve_request_id(
         SELECT public_id
         FROM assistant_requests
         WHERE garden_id = %s AND actor_user_id = %s
-          AND source_room_id = %s AND source_sender_id = %s
+          AND source_client_id = %s AND source_actor_id = %s
           AND public_id LIKE %s ESCAPE '\\'
         ORDER BY created_at_ms DESC
         LIMIT 2
@@ -118,8 +118,8 @@ def _resolve_request_id(
         (
             binding.garden_id,
             binding.user_id,
-            binding.room_id,
-            binding.sender_id,
+            binding.client_id,
+            binding.actor_id,
             f"asst\\_{token}%",
         ),
     ).fetchall()
@@ -1002,8 +1002,8 @@ def _advance_to_result(
             "plant_ids": [target.plant_id],
             "plot_ids": [target.plot_id] if target.plot_id else [],
             "metadata": {
-                "source": "matrix_assistant",
-                "matrix_event_id": payload.get("source_event_id", ""),
+                "source": "mcp_assistant",
+                "source_event_id": payload.get("source_event_id", ""),
             },
         }
         return _proposal_result(
@@ -1253,19 +1253,19 @@ def _new_request(
     db: DbConn,
     binding: AssistantBinding,
     *,
-    room_id: str,
+    client_id: str,
     event_id: str,
-    sender_id: str,
+    actor_id: str,
     input_text: str,
     capture_asset_id: str = "",
 ) -> tuple[str, AssistantResult | None]:
-    assert_source_binding(binding, room_id=room_id, sender_id=sender_id)
+    assert_source_binding(binding, client_id=client_id, actor_id=actor_id)
     existing = db.execute(
         """
         SELECT * FROM assistant_requests
-        WHERE source_channel = 'matrix' AND source_room_id = %s AND source_event_id = %s
+        WHERE source_channel = 'mcp' AND source_client_id = %s AND source_event_id = %s
         """,
-        (room_id, event_id),
+        (client_id, event_id),
     ).fetchone()
     if existing:
         request_id = str(existing["public_id"])
@@ -1275,20 +1275,20 @@ def _new_request(
     db.execute(
         """
         INSERT INTO assistant_requests
-            (public_id, garden_id, actor_user_id, source_channel, source_room_id,
-             source_event_id, source_sender_id, request_kind, state, input_text,
+            (public_id, garden_id, actor_user_id, source_channel, source_client_id,
+             source_event_id, source_actor_id, request_kind, state, input_text,
              capture_asset_id, payload_json, result_json, created_at_ms, updated_at_ms,
              expires_at_ms, last_source_event_id)
-        VALUES (%s, %s, %s, 'matrix', %s, %s, %s, 'unknown', 'processing',
+        VALUES (%s, %s, %s, 'mcp', %s, %s, %s, 'unknown', 'processing',
                 %s, %s, '{}', '{}', %s, %s, %s, %s)
         """,
         (
             request_id,
             binding.garden_id,
             binding.user_id,
-            room_id,
+            client_id,
             event_id,
-            sender_id,
+            actor_id,
             input_text,
             capture_asset_id or None,
             now_ms,
@@ -1304,18 +1304,18 @@ def process_text(
     db: DbConn,
     binding: AssistantBinding,
     *,
-    source_room_id: str,
+    source_client_id: str,
     source_event_id: str,
-    source_sender_id: str,
+    source_actor_id: str,
     text: str,
     occurred_on: str,
 ) -> AssistantResult:
     request_id, existing = _new_request(
         db,
         binding,
-        room_id=source_room_id,
+        client_id=source_client_id,
         event_id=source_event_id,
-        sender_id=source_sender_id,
+        actor_id=source_actor_id,
         input_text=text,
     )
     if existing is not None:
@@ -1352,13 +1352,13 @@ def process_text(
         )
 
 
-def analyze_matrix_capture(
+def analyze_mcp_capture(
     db: DbConn,
     binding: AssistantBinding,
     *,
-    source_room_id: str,
+    source_client_id: str,
     source_event_id: str,
-    source_sender_id: str,
+    source_actor_id: str,
     capture_asset_id: str,
     caption: str,
     occurred_on: str,
@@ -1366,9 +1366,9 @@ def analyze_matrix_capture(
     request_id, existing = _new_request(
         db,
         binding,
-        room_id=source_room_id,
+        client_id=source_client_id,
         event_id=source_event_id,
-        sender_id=source_sender_id,
+        actor_id=source_actor_id,
         input_text=caption,
         capture_asset_id=capture_asset_id,
     )
@@ -1452,8 +1452,8 @@ def get_request(db: DbConn, binding: AssistantBinding, *, request_id: str) -> As
     if not row or int(row["actor_user_id"]) != binding.user_id:
         raise HTTPException(status_code=404, detail="Assistant request not found")
     if (
-        str(row["source_room_id"]) != binding.room_id
-        or str(row["source_sender_id"]) != binding.sender_id
+        str(row["source_client_id"]) != binding.client_id
+        or str(row["source_actor_id"]) != binding.actor_id
     ):
         raise HTTPException(status_code=403, detail="Assistant request source is not authorized")
     return _result_from_row(dict(row))
@@ -1476,8 +1476,8 @@ def continue_request(
         raise HTTPException(status_code=404, detail="Assistant request not found")
     row = dict(row_raw)
     if (
-        str(row["source_room_id"]) != binding.room_id
-        or str(row["source_sender_id"]) != binding.sender_id
+        str(row["source_client_id"]) != binding.client_id
+        or str(row["source_actor_id"]) != binding.actor_id
     ):
         raise HTTPException(status_code=403, detail="Assistant request source is not authorized")
     if str(row.get("last_source_event_id") or "") == source_event_id:
@@ -1862,8 +1862,8 @@ def apply_request(
         raise HTTPException(status_code=404, detail="Assistant request not found")
     row = dict(row_raw)
     if (
-        str(row["source_room_id"]) != binding.room_id
-        or str(row["source_sender_id"]) != binding.sender_id
+        str(row["source_client_id"]) != binding.client_id
+        or str(row["source_actor_id"]) != binding.actor_id
     ):
         raise HTTPException(status_code=403, detail="Assistant request source is not authorized")
     if str(row["state"]) == "applied":
@@ -1915,7 +1915,7 @@ def apply_request(
                 targets=targets,
             )
             db.execute(
-                "DELETE FROM media_links WHERE asset_id = %s AND target_type = 'matrix_capture'",
+                "DELETE FROM media_links WHERE asset_id = %s AND target_type = 'mcp_capture'",
                 (capture_id,),
             )
         elif proposal.kind == "plant_delete":
@@ -1924,7 +1924,7 @@ def apply_request(
     detail = json.dumps(
         {
             "assistant_request_id": request_id,
-            "matrix_event_id": source_event_id,
+            "source_event_id": source_event_id,
             "records": [record.model_dump(mode="json") for record in records],
         },
         sort_keys=True,
@@ -1966,7 +1966,7 @@ def _remove_temporary_capture(db: DbConn, *, capture_asset_id: str) -> None:
         (capture_asset_id,),
     ).fetchone()
     db.execute(
-        "DELETE FROM media_links WHERE asset_id = %s AND target_type = 'matrix_capture'",
+        "DELETE FROM media_links WHERE asset_id = %s AND target_type = 'mcp_capture'",
         (capture_asset_id,),
     )
     remaining = db.execute(
@@ -1994,8 +1994,8 @@ def cancel_request(
         raise HTTPException(status_code=404, detail="Assistant request not found")
     row = dict(row_raw)
     if (
-        str(row["source_room_id"]) != binding.room_id
-        or str(row["source_sender_id"]) != binding.sender_id
+        str(row["source_client_id"]) != binding.client_id
+        or str(row["source_actor_id"]) != binding.actor_id
     ):
         raise HTTPException(status_code=403, detail="Assistant request source is not authorized")
     if str(row["state"]) == "cancelled":
@@ -2049,7 +2049,7 @@ def expire_and_cleanup_requests(db: DbConn, *, now_ms: int | None = None) -> int
         SELECT a.asset_id AS capture_asset_id
         FROM media_assets a
         JOIN media_links ml ON ml.asset_id = a.asset_id
-        WHERE ml.target_type = 'matrix_capture' AND a.created_at_ms <= %s
+        WHERE ml.target_type = 'mcp_capture' AND a.created_at_ms <= %s
         FOR UPDATE OF a
         """,
         (capture_cutoff,),

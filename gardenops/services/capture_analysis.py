@@ -43,13 +43,13 @@ def _capture_bytes(db: DbConn, *, garden_id: int, asset_id: str) -> bytes:
         FROM media_assets a
         JOIN media_links l ON l.asset_id = a.asset_id
         WHERE a.asset_id = %s AND a.garden_id = %s
-          AND l.target_type = 'matrix_capture'
+          AND l.target_type = 'mcp_capture'
         LIMIT 1
         """,
         (asset_id, garden_id),
     ).fetchone()
     if not row:
-        raise HTTPException(status_code=404, detail="Matrix capture not found")
+        raise HTTPException(status_code=404, detail="MCP capture not found")
     max_bytes = min(
         media_upload_max_bytes(),
         env_int("MAX_AI_PHOTO_BODY_BYTES", 5 * 1024 * 1024),
@@ -59,7 +59,7 @@ def _capture_bytes(db: DbConn, *, garden_id: int, asset_id: str) -> bytes:
     try:
         payload = resolve_storage_key(str(row["storage_key"])).read_bytes()
     except OSError as exc:
-        raise HTTPException(status_code=404, detail="Matrix capture file not found") from exc
+        raise HTTPException(status_code=404, detail="MCP capture file not found") from exc
     if len(payload) > max_bytes:
         raise HTTPException(status_code=413, detail="Image exceeds analysis size limit")
     return payload

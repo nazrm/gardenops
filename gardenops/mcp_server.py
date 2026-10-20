@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from mcp.server import MCPServer
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -15,7 +15,7 @@ from gardenops.db import DbConn, get_db, return_db
 from gardenops.events import notify_garden_modified
 from gardenops.router_helpers import generate_public_id
 from gardenops.services.assistant import (
-    analyze_matrix_capture,
+    analyze_mcp_capture,
     apply_request,
     cancel_request,
     continue_request,
@@ -34,6 +34,7 @@ from gardenops.services.integration_config import (
     AssistantBinding,
     integration_token_matches,
     mcp_enabled,
+    require_local_mcp_request,
     resolve_assistant_binding,
 )
 
@@ -45,6 +46,12 @@ class StaticBearerMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
+            return
+        try:
+            require_local_mcp_request(Request(scope))
+        except HTTPException as exc:
+            response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+            await response(scope, receive, send)
             return
         headers = {
             key.decode("latin-1").casefold(): value.decode("latin-1")
@@ -128,14 +135,14 @@ def create_mcp_runtime() -> MCPRuntime | None:
         return None
     server: MCPServer[Any] = MCPServer(
         name="GardenOps Assistant",
-        instructions="Private, proposal-first garden assistant for one configured Matrix room.",
+        instructions="Private, proposal-first garden assistant for one configured MCP client.",
     )
 
     @server.tool(structured_output=True)
     async def assistant_process_text(
-        source_room_id: str,
+        source_client_id: str,
         source_event_id: str,
-        source_sender_id: str,
+        source_actor_id: str,
         text: str,
         occurred_on: str,
     ) -> AssistantResult:
@@ -150,9 +157,9 @@ def create_mcp_runtime() -> MCPRuntime | None:
 
     @server.tool(structured_output=True)
     async def assistant_analyze_capture(
-        source_room_id: str,
+        source_client_id: str,
         source_event_id: str,
-        source_sender_id: str,
+        source_actor_id: str,
         capture_asset_id: str,
         caption: str,
         occurred_on: str,
@@ -160,7 +167,7 @@ def create_mcp_runtime() -> MCPRuntime | None:
         data = AnalyzeCaptureInput.model_validate(locals())
         values = data.model_dump()
         return await _run_tool_async(
-            lambda db, binding: analyze_matrix_capture(
+            lambda db, binding: analyze_mcp_capture(
                 db,
                 binding,
                 **values,

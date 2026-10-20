@@ -69,7 +69,7 @@ history means no record, not that the plant failed or succeeded.
 Harvest list and summary use the same year or custom date bounds and quality
 filter. Quantities remain separate by unit. Shared-entry quantities are marked
 as shared; plant-attributed rows must not be added together as garden yield.
-Matrix save receipts name the confirmed plants, places and recorded dates or
+MCP save receipts name the confirmed plants, places and recorded dates or
 quantities, with a reference for retry tracking.
 An ambiguous bloom message asks for clarification. A request to defer does not
 record bloom or change the due date; its response directs you to snooze in Tasks.

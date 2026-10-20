@@ -13,8 +13,11 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from gardenops.mcp_server import StaticBearerMiddleware, _run_tool_async, create_mcp_runtime
+from gardenops.services.assistant_models import AssistantIntent
+from gardenops.services.integration_config import validate_integration_config
+from tests.base import BaseApiTest
 
-TOKEN = "matrix-mcp-test-token-0123456789abcdef"  # push-sanitizer: allow SECRET_ASSIGNMENT
+TOKEN = "mcp-test-token-0123456789abcdef0123"  # push-sanitizer: allow SECRET_ASSIGNMENT
 
 
 class TestMCPAssistant(unittest.TestCase):
@@ -88,6 +91,66 @@ class TestMCPAssistant(unittest.TestCase):
             self.assertTrue(all(tool.output_schema for tool in tools.tools))
 
         asyncio.run(inspect_tools())
+
+
+class TestMCPWorkflow(BaseApiTest):
+    def test_client_runs_without_transport_settings_and_replays_safely(self) -> None:
+        async def exercise() -> None:
+            runtime = create_mcp_runtime()
+            assert runtime is not None
+            args = {
+                "source_client_id": "local-assistant",
+                "source_actor_id": "owner",
+                "source_event_id": "question-1",
+                "text": "What is growing?",
+                "occurred_on": "2026-10-20",
+            }
+            async with Client(runtime.server) as client:
+                first = await client.call_tool("assistant_process_text", args)
+                self.assertFalse(first.is_error)
+                result = first.structured_content
+                assert result is not None
+                self.assertEqual(result["state"], "answer")
+                self.assertEqual(result["message"], "Your garden answer")
+                repeated = await client.call_tool("assistant_process_text", args)
+                self.assertEqual(repeated.structured_content, result)
+                fetched = await client.call_tool(
+                    "assistant_get", {"request_id": result["request_id"]}
+                )
+                self.assertEqual(fetched.structured_content, result)
+                rejected = await client.call_tool(
+                    "assistant_process_text", {**args, "source_client_id": "other-client"}
+                )
+                assert rejected.structured_content is not None
+                self.assertEqual(rejected.structured_content["state"], "error")
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MCP_ENABLED": "true",
+                    "MCP_BEARER_TOKEN": TOKEN,
+                    "MCP_CLIENT_ID": "local-assistant",
+                    "MCP_ACTOR_ID": "owner",
+                    "MCP_USERNAME": "test_admin",
+                    "MCP_GARDEN_SLUG": "default",
+                },
+            ),
+            patch(
+                "gardenops.services.assistant._interpret",
+                return_value=AssistantIntent(
+                    intent="question",
+                    confidence=1,
+                ),
+            ),
+            patch(
+                "gardenops.services.assistant.answer_garden_question",
+                return_value="Your garden answer",
+            ) as answer,
+        ):
+            validate_integration_config()
+            asyncio.run(exercise())
+            answer.assert_called_once()
 
 
 if __name__ == "__main__":

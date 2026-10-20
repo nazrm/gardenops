@@ -128,17 +128,17 @@ class AssistantResult(StrictBaseModel):
 
 
 class ProcessTextInput(StrictBaseModel):
-    source_room_id: str = Field(min_length=1, max_length=255)
+    source_client_id: str = Field(min_length=1, max_length=255)
     source_event_id: str = Field(min_length=1, max_length=255)
-    source_sender_id: str = Field(min_length=1, max_length=255)
+    source_actor_id: str = Field(min_length=1, max_length=255)
     text: str = Field(min_length=1, max_length=2000)
     occurred_on: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
 class AnalyzeCaptureInput(StrictBaseModel):
-    source_room_id: str = Field(min_length=1, max_length=255)
+    source_client_id: str = Field(min_length=1, max_length=255)
     source_event_id: str = Field(min_length=1, max_length=255)
-    source_sender_id: str = Field(min_length=1, max_length=255)
+    source_actor_id: str = Field(min_length=1, max_length=255)
     capture_asset_id: str = Field(min_length=1, max_length=120)
     caption: str = Field(default="", max_length=2000)
     occurred_on: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
