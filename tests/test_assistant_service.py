@@ -10,7 +10,7 @@ from gardenops.security import AuthContext
 from gardenops.services.assistant import (
     _enrich_new_plant,
     _new_request,
-    analyze_matrix_capture,
+    analyze_mcp_capture,
     apply_request,
     cancel_request,
     expire_and_cleanup_requests,
@@ -29,20 +29,20 @@ class TestAssistantService(DbTestBase):
         request_id, _ = _new_request(
             self.conn,
             binding,
-            room_id=binding.room_id,
+            client_id=binding.client_id,
             event_id="$rebind",
-            sender_id=binding.sender_id,
+            actor_id=binding.actor_id,
             input_text="Private garden question",
         )
         for changed in (
             replace(binding, garden_id=binding.garden_id + 1000),
             replace(binding, user_id=binding.user_id + 1000),
-            replace(binding, sender_id="@replacement:example.org"),
+            replace(binding, actor_id="replacement"),
         ):
             common = {
-                "source_room_id": changed.room_id,
+                "source_client_id": changed.client_id,
                 "source_event_id": "$rebind",
-                "source_sender_id": changed.sender_id,
+                "source_actor_id": changed.actor_id,
                 "occurred_on": "2026-09-28",
             }
             with (
@@ -52,7 +52,7 @@ class TestAssistantService(DbTestBase):
                 with self.assertRaises(HTTPException):
                     process_text(self.conn, changed, text="Replay", **common)
                 with self.assertRaises(HTTPException):
-                    analyze_matrix_capture(
+                    analyze_mcp_capture(
                         self.conn,
                         changed,
                         capture_asset_id="unused",
@@ -64,9 +64,9 @@ class TestAssistantService(DbTestBase):
         same_id, result = _new_request(
             self.conn,
             binding,
-            room_id=binding.room_id,
+            client_id=binding.client_id,
             event_id="$rebind",
-            sender_id=binding.sender_id,
+            actor_id=binding.actor_id,
             input_text="Retry",
         )
         self.assertEqual(same_id, request_id)
@@ -83,8 +83,8 @@ class TestAssistantService(DbTestBase):
             subscription_tier="pro",
         )
         return AssistantBinding(
-            room_id="!garden:example.org",
-            sender_id="@owner:example.org",
+            client_id="local-assistant",
+            actor_id="owner",
             username="dbtest_admin",
             garden_slug="default",
             user_id=self._owner_id,
@@ -106,18 +106,18 @@ class TestAssistantService(DbTestBase):
             first = process_text(
                 self.conn,
                 self._binding(),
-                source_room_id="!garden:example.org",
+                source_client_id="local-assistant",
                 source_event_id="$event-1",
-                source_sender_id="@owner:example.org",
+                source_actor_id="owner",
                 text="The dog rose bloomed",
                 occurred_on="2026-09-02",
             )
             repeated = process_text(
                 self.conn,
                 self._binding(),
-                source_room_id="!garden:example.org",
+                source_client_id="local-assistant",
                 source_event_id="$event-1",
-                source_sender_id="@owner:example.org",
+                source_actor_id="owner",
                 text="The dog rose bloomed",
                 occurred_on="2026-09-02",
             )
@@ -238,9 +238,9 @@ class TestAssistantService(DbTestBase):
             result = process_text(
                 self.conn,
                 self._binding(),
-                source_room_id="!garden:example.org",
+                source_client_id="local-assistant",
                 source_event_id="$expired",
-                source_sender_id="@owner:example.org",
+                source_actor_id="owner",
                 text="Observed the rose",
                 occurred_on="2026-09-02",
             )
@@ -265,9 +265,9 @@ class TestAssistantService(DbTestBase):
             proposal = process_text(
                 self.conn,
                 self._binding(),
-                source_room_id="!garden:example.org",
+                source_client_id="local-assistant",
                 source_event_id="$cancelled",
-                source_sender_id="@owner:example.org",
+                source_actor_id="owner",
                 text="Observed the rose",
                 occurred_on="2026-09-02",
             )
@@ -306,13 +306,13 @@ class TestAssistantService(DbTestBase):
             proposal = process_text(
                 self.conn,
                 self._binding(),
-                source_room_id="!garden:example.org",
+                source_client_id="local-assistant",
                 source_event_id="$cross-room",
-                source_sender_id="@owner:example.org",
+                source_actor_id="owner",
                 text="Observed the rose",
                 occurred_on="2026-09-02",
             )
-        wrong_room = replace(self._binding(), room_id="!other:example.org")
+        wrong_room = replace(self._binding(), client_id="!other:example.org")
         with self.assertRaises(HTTPException) as raised:
             apply_request(
                 self.conn,

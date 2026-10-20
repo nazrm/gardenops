@@ -8,11 +8,7 @@ from fastapi import HTTPException
 
 
 def observation_timezone() -> str:
-    name = (
-        os.environ.get("GARDENOPS_TIMEZONE", "").strip()
-        or os.environ.get("MATRIX_TIMEZONE", "").strip()
-        or "Europe/Oslo"
-    )
+    name = os.environ.get("GARDENOPS_TIMEZONE", "").strip() or "Europe/Oslo"
     try:
         ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError) as exc:

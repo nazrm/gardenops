@@ -245,9 +245,9 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "garden_id",
         "actor_user_id",
         "source_channel",
-        "source_room_id",
+        "source_client_id",
         "source_event_id",
-        "source_sender_id",
+        "source_actor_id",
         "request_kind",
         "state",
         "input_text",
@@ -523,7 +523,7 @@ REQUIRED_COLUMN_DEFAULTS: dict[str, str | None] = {
     "plots.container_position_y": None,
     "plots.environment": "'outdoor'::text",
     "plots.archived_at_ms": None,
-    "assistant_requests.source_channel": "'matrix'::text",
+    "assistant_requests.source_channel": "'mcp'::text",
     "assistant_requests.input_text": "''::text",
     "assistant_requests.payload_json": "'{}'::text",
     "assistant_requests.result_json": "'{}'::text",
@@ -656,7 +656,7 @@ REQUIRED_CONSTRAINT_DEFINITION_FRAGMENTS: dict[str, tuple[str, ...]] = {
     ),
     "ck_assistant_requests_source_channel": (
         "check",
-        "source_channel = 'matrix'",
+        "source_channel = 'mcp'",
     ),
     "ck_assistant_requests_kind": (
         "check",
@@ -1153,7 +1153,7 @@ def bootstrap_schema_diagnostics_from_snapshot(
         missing_plant_external_references = _migration_0030_schema_is_absent(snapshot)
         missing_canonical_container_plots = _migration_0031_schema_is_absent(snapshot)
         missing_container_positions = _migration_0032_schema_is_absent(snapshot)
-        missing_matrix_mcp_assistant = _migration_0034_schema_is_absent(snapshot)
+        missing_mcp_assistant = _migration_0034_schema_is_absent(snapshot)
         if (
             missing_offline_operations
             or missing_audit_request_id
@@ -1164,7 +1164,7 @@ def bootstrap_schema_diagnostics_from_snapshot(
             or missing_plant_external_references
             or missing_canonical_container_plots
             or missing_container_positions
-            or missing_matrix_mcp_assistant
+            or missing_mcp_assistant
         ) and all(
             (missing_offline_operations and _is_migration_0022_part(part))
             or (missing_audit_request_id and _is_migration_0023_part(part))
@@ -1176,7 +1176,7 @@ def bootstrap_schema_diagnostics_from_snapshot(
             or (missing_plant_external_references and _is_migration_0030_part(part))
             or (missing_canonical_container_plots and _is_migration_0031_part(part))
             or (missing_container_positions and _is_migration_0032_part(part))
-            or (missing_matrix_mcp_assistant and _is_migration_0034_part(part))
+            or (missing_mcp_assistant and _is_migration_0034_part(part))
             for part in missing
         ):
             stamp_through = 33

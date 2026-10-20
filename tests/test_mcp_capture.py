@@ -3,29 +3,68 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
+from starlette.testclient import TestClient
+
 import gardenops.db as db
+from gardenops.main import app
 from gardenops.services.assistant import expire_and_cleanup_requests
 from tests.base import BaseApiTest
 
-TOKEN = "matrix-capture-test-token-0123456789abcdef"  # push-sanitizer: allow SECRET_ASSIGNMENT
+TOKEN = "mcp-capture-test-token-0123456789abcdef"  # push-sanitizer: allow SECRET_ASSIGNMENT
 ENV = {
     "MCP_ENABLED": "true",
     "MCP_BEARER_TOKEN": TOKEN,
-    "MATRIX_ROOM_ID": "!garden:example.org",
-    "MATRIX_ALLOWED_SENDER": "@owner:example.org",
-    "MATRIX_GARDENOPS_USERNAME": "test_admin",
-    "MATRIX_GARDEN_SLUG": "default",
+    "MCP_CLIENT_ID": "local-assistant",
+    "MCP_ACTOR_ID": "owner",
+    "MCP_USERNAME": "test_admin",
+    "MCP_GARDEN_SLUG": "default",
 }
 
 
-class TestMatrixCapture(BaseApiTest):
+class TestMCPCapture(BaseApiTest):
+    def test_capture_works_directly_when_browser_traffic_requires_a_proxy(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {**ENV, "INTERNET_EXPOSED": "true", "TRUST_PROXY_HEADERS": "true"},
+            ),
+            patch("gardenops.routers.integrations.enforce_rate_limit"),
+        ):
+            response = self.client.post(
+                "/api/integrations/mcp/captures",
+                content=self._image_bytes(),
+                headers=self._headers(),
+            )
+        self.assertEqual(response.status_code, 201, response.text)
+
+    def test_mcp_credentials_do_not_authorize_ordinary_rest_requests(self) -> None:
+        with patch.dict(os.environ, {**ENV, "AUTH_REQUIRED": "true", "AUTH_MODE": "session"}):
+            response = self.client.get("/api/plants", headers=self._headers())
+        self.assertEqual(response.status_code, 401, response.text)
+
+    def test_capture_rejects_remote_and_forwarded_connections(self) -> None:
+        with patch.dict(os.environ, ENV):
+            with TestClient(app, client=("203.0.113.10", 12345)) as remote:
+                response = remote.post(
+                    "/api/integrations/mcp/captures",
+                    content=self._image_bytes(),
+                    headers=self._headers(),
+                )
+                self.assertEqual(response.status_code, 403, response.text)
+            response = self.client.post(
+                "/api/integrations/mcp/captures",
+                content=self._image_bytes(),
+                headers=self._headers(**{"X-Forwarded-For": "127.0.0.1"}),
+            )
+            self.assertEqual(response.status_code, 403, response.text)
+
     def _headers(self, **updates: str) -> dict[str, str]:
         headers = {
             "Authorization": f"Bearer {TOKEN}",
             "Content-Type": "image/png",
-            "X-Matrix-Room-Id": ENV["MATRIX_ROOM_ID"],
-            "X-Matrix-Event-Id": "$capture-1",
-            "X-Matrix-Sender": ENV["MATRIX_ALLOWED_SENDER"],
+            "X-MCP-Client-Id": ENV["MCP_CLIENT_ID"],
+            "X-MCP-Event-Id": "$capture-1",
+            "X-MCP-Actor": ENV["MCP_ACTOR_ID"],
             "X-Original-Filename": "flower.png",
         }
         headers.update(updates)
@@ -35,12 +74,12 @@ class TestMatrixCapture(BaseApiTest):
         payload = self._image_bytes(size=(80, 60))
         with patch.dict(os.environ, ENV, clear=False):
             first = self.client.post(
-                "/api/integrations/matrix/captures",
+                "/api/integrations/mcp/captures",
                 content=payload,
                 headers=self._headers(),
             )
             repeated = self.client.post(
-                "/api/integrations/matrix/captures",
+                "/api/integrations/mcp/captures",
                 content=payload,
                 headers=self._headers(),
             )
@@ -59,7 +98,7 @@ class TestMatrixCapture(BaseApiTest):
             ).fetchone()
             self.assertEqual(
                 dict(row),
-                {"target_type": "matrix_capture", "target_id": "$capture-1"},
+                {"target_type": "mcp_capture", "target_id": "$capture-1"},
             )
         finally:
             db.return_db(conn)
@@ -70,12 +109,12 @@ class TestMatrixCapture(BaseApiTest):
         self.assertEqual(self.client.get(f"/api/media/{asset_id}").status_code, 404)
         self.assertEqual(self.client.get(f"/api/media/{asset_id}/preview").status_code, 404)
 
-    def test_wrong_token_room_or_sender_is_rejected(self) -> None:
+    def test_wrong_token_client_or_actor_is_rejected(self) -> None:
         payload = self._image_bytes()
         with patch.dict(os.environ, ENV, clear=False):
             self.assertEqual(
                 self.client.post(
-                    "/api/integrations/matrix/captures",
+                    "/api/integrations/mcp/captures",
                     content=payload,
                     headers=self._headers(Authorization="Bearer wrong"),
                 ).status_code,
@@ -83,16 +122,16 @@ class TestMatrixCapture(BaseApiTest):
             )
             self.assertEqual(
                 self.client.post(
-                    "/api/integrations/matrix/captures",
+                    "/api/integrations/mcp/captures",
                     content=payload,
-                    headers=self._headers(**{"X-Matrix-Sender": "@other:example.org"}),
+                    headers=self._headers(**{"X-MCP-Actor": "other-actor"}),
                 ).status_code,
                 403,
             )
 
-    def test_public_media_api_does_not_accept_matrix_capture_target(self) -> None:
+    def test_public_media_api_does_not_accept_mcp_capture_target(self) -> None:
         response = self.client.post(
-            "/api/media/upload?target_type=matrix_capture&target_id=$event",
+            "/api/media/upload?target_type=mcp_capture&target_id=$event",
             content=self._image_bytes(),
             headers={"Content-Type": "image/png"},
         )
@@ -103,18 +142,18 @@ class TestMatrixCapture(BaseApiTest):
         limited_env = {**ENV, "MAX_AI_PHOTO_BODY_BYTES": str(len(payload) - 1)}
         with patch.dict(os.environ, limited_env, clear=False):
             response = self.client.post(
-                "/api/integrations/matrix/captures",
+                "/api/integrations/mcp/captures",
                 content=payload,
-                headers=self._headers(**{"X-Matrix-Event-Id": "$too-large"}),
+                headers=self._headers(**{"X-MCP-Event-Id": "$too-large"}),
             )
         self.assertEqual(response.status_code, 413)
 
     def test_aged_capture_without_assistant_request_is_cleaned_up(self) -> None:
         with patch.dict(os.environ, ENV, clear=False):
             response = self.client.post(
-                "/api/integrations/matrix/captures",
+                "/api/integrations/mcp/captures",
                 content=self._image_bytes(size=(80, 60)),
-                headers=self._headers(**{"X-Matrix-Event-Id": "$orphan"}),
+                headers=self._headers(**{"X-MCP-Event-Id": "$orphan"}),
             )
         self.assertEqual(response.status_code, 201, response.text)
         asset_id = response.json()["capture_asset_id"]

@@ -414,10 +414,7 @@ class TestTaskObservationTruth(BaseApiTest):
 
 def test_observation_timezone_fallback_and_invalid_configuration(monkeypatch):
     monkeypatch.delenv("GARDENOPS_TIMEZONE", raising=False)
-    monkeypatch.delenv("MATRIX_TIMEZONE", raising=False)
     assert observation_timezone() == "Europe/Oslo"
-    monkeypatch.setenv("MATRIX_TIMEZONE", "America/New_York")
-    assert observation_timezone() == "America/New_York"
     monkeypatch.setenv("GARDENOPS_TIMEZONE", "Pacific/Auckland")
     assert observation_timezone() == "Pacific/Auckland"
     monkeypatch.setenv("GARDENOPS_TIMEZONE", "Invalid/Zone")

@@ -141,7 +141,7 @@ def _readable_media_link_sql(
     return (
         f"""
         (
-            {link_alias}.target_type != 'matrix_capture'
+            {link_alias}.target_type != 'mcp_capture'
             AND (
                 {link_alias}.target_type NOT IN ('plant', 'plot')
                 OR %s = 1
@@ -180,7 +180,7 @@ def _media_link_is_readable(
     target_type: str,
     target_id: str,
 ) -> bool:
-    if target_type == "matrix_capture":
+    if target_type == "mcp_capture":
         return False
     if target_type == "plant":
         row = db.execute(

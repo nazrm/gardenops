@@ -55,7 +55,6 @@ Add provider keys only for integrations you intend to enable.
 The `deploy/` directory contains example files:
 
 - `gardenops.service.example`
-- `gardenops-matrix.service.example`
 - `gardenops-atomic-release.conf.example`
 - `gardenops-atomic-deploy`
 - `gardenops-release-preflight`
@@ -64,37 +63,21 @@ The `deploy/` directory contains example files:
 Review and adapt them for your host paths, service user, Python environment,
 TLS termination, proxy topology, upload size, log retention, and backup policy.
 
-Install the Matrix service only when the integration is enabled. It uses the
-same release as the API but a dedicated `/etc/gardenops-matrix.env` containing
-only Matrix and MCP settings. Do not give the worker database or AI provider
-credentials. It runs as a separate process so Matrix reconnects cannot affect
-browser traffic. Create its private store directory for the `gardenops` service
-account before starting it. The
-production nginx example explicitly returns `404` for `/mcp`; both MCP and the
-capture upload are called directly over loopback by the worker.
+MCP runs in the API process and requires no additional service or optional
+dependencies. Configure the private client, actor, active username, and garden
+binding described in [configuration.md](configuration.md#mcp-assistant).
+The production nginx example returns `404` for both `/mcp` and the private
+capture-upload endpoint; clients connect directly over loopback.
 
-Enable it in this order:
-
-1. Create a dedicated Matrix bot account and obtain its access token and device
-   ID without writing either value to the repository.
-2. Invite the bot to the configured room. If E2EE is enabled, install `libolm`,
-   create the persistent `MATRIX_STORE_PATH`, and verify that device in Element.
-3. Install the locked Matrix dependencies with `uv sync --locked --extra matrix`.
-4. Generate the MCP token. Put it in both host-owned environment files, and set
-   the exact room ID, allowed sender, active GardenOps username, and garden slug
-   only in `/etc/gardenops-matrix.env`.
-5. Apply migrations and restart the GardenOps API before starting the worker.
-6. Use the MCP Inspector command in [configuration.md](configuration.md) to
-   confirm that the six assistant tools are available only over loopback.
-7. Install and start `gardenops-matrix.service`, then confirm `!garden status`
-   reports that GardenOps is ready.
-8. Test one disposable observation through proposal and explicit `save`, then
-   remove that record manually if it should not remain in the garden history.
-
-For failures, check the API and Matrix service journals separately. A startup
-binding error means the configured user, garden membership, room, or sender is
-invalid; `401` indicates an MCP token mismatch; and encrypted media failures
-usually indicate an unverified device or an unwritable persistent Matrix store.
+When upgrading from a release with a separate assistant worker, stop and disable
+that obsolete service before activation and remove its dedicated credentials and
+private runtime store according to your retention policy. Install the updated
+deployment wrapper so it manages only the API. Configure the new `MCP_*` values
+explicitly if MCP is enabled. Migration 0036 preserves recorded garden data and
+request history, expires old pending proposals, renames source columns, and keeps
+temporary captures private under the new target type. Existing applied migrations
+are retained unchanged so deployed database histories remain valid.
+Set `GARDENOPS_TIMEZONE` explicitly when a non-default observation zone is needed.
 
 ## Atomic Releases
 
