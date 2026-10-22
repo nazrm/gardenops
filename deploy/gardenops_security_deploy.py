@@ -30,9 +30,19 @@ POLICY_PATHS = {".github/dependabot.yml"}
 
 
 def command(argv, timeout=60):
-    return subprocess.run(
-        argv, check=True, text=True, capture_output=True, timeout=timeout
-    ).stdout.strip()
+    try:
+        return subprocess.run(
+            argv, check=True, text=True, capture_output=True, timeout=timeout
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        details = []
+        for name in ("stdout", "stderr"):
+            value = getattr(exc, name, None) or ""
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="replace")
+            if value:
+                details.append(f"{name}: {value[-8000:]}")
+        raise RuntimeError(f"{exc}\n" + "\n".join(details)) from exc
 
 
 def github(path):

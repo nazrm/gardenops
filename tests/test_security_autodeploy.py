@@ -14,6 +14,30 @@ NEW = "b" * 40
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_failed_command_preserves_diagnostic_output(self):
+        with self.assertRaises(RuntimeError) as failure:
+            deploy.command(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; print('build context'); "
+                    "print('activation failed', file=sys.stderr); sys.exit(7)",
+                ]
+            )
+        self.assertIn("build context", str(failure.exception))
+        self.assertIn("activation failed", str(failure.exception))
+        self.assertIn("7", str(failure.exception))
+
+    def test_timed_out_command_preserves_partial_diagnostics(self):
+        error = subprocess.TimeoutExpired(
+            ["deployer"], 1, output=b"activation started", stderr=b"health pending"
+        )
+        with patch.object(deploy.subprocess, "run", side_effect=error):
+            with self.assertRaises(RuntimeError) as failure:
+                deploy.command(["deployer"], timeout=1)
+        self.assertIn("activation started", str(failure.exception))
+        self.assertIn("health pending", str(failure.exception))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

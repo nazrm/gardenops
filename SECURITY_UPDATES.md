@@ -51,6 +51,8 @@ fix, require `last.json` phase `deployed`, the target SHA and healthy live app.
 The service is serialized; systemd kills its whole process group on timeout.
 GitHub outages, rate limits, CI failures and revision drift fail visibly in the
 service journal. `OnFailure` emits an error to the host's existing syslog lane.
+Failed and timed-out commands include bounded captured output in the service
+journal so the atomic deployer's diagnostic is retained for inspection.
 External alert delivery must be checked on that host; syslog alone is not a
 promise of a phone/push notification. No automatic blind activation retry:
 `activating` or `failed` receipts block further attempts until inspected. Check
