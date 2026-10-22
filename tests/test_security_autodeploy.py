@@ -14,6 +14,41 @@ NEW = "b" * 40
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_root_git_uses_checkout_owner(self):
+        args = ["git", "-C", "/control", "fetch", "origin", "main"]
+        with (
+            patch.object(deploy.os, "geteuid", return_value=0),
+            patch.object(deploy.Path, "stat", return_value=MagicMock(st_uid=1001)),
+            patch.object(deploy.pwd, "getpwuid", return_value=MagicMock(pw_name="maintainer")),
+            patch.object(deploy.subprocess, "run", return_value=MagicMock(stdout="ok")) as run,
+        ):
+            self.assertEqual(deploy.command(args), "ok")
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/sbin/runuser", "-u", "maintainer", "--", *args],
+        )
+
+    def test_nonroot_git_keeps_current_user(self):
+        args = ["git", "-C", "/control", "diff", "--name-only", OLD, NEW]
+        with (
+            patch.object(deploy.os, "geteuid", return_value=1001),
+            patch.object(deploy.Path, "stat") as stat,
+            patch.object(deploy.subprocess, "run", return_value=MagicMock(stdout="")) as run,
+        ):
+            deploy.command(args)
+        stat.assert_not_called()
+        self.assertEqual(run.call_args.args[0], args)
+
+    def test_root_owned_git_needs_no_user_switch(self):
+        args = ["git", "-C", "/control", "rev-parse", "origin/main"]
+        with (
+            patch.object(deploy.os, "geteuid", return_value=0),
+            patch.object(deploy.Path, "stat", return_value=MagicMock(st_uid=0)),
+            patch.object(deploy.subprocess, "run", return_value=MagicMock(stdout=NEW)) as run,
+        ):
+            self.assertEqual(deploy.command(args), NEW)
+        self.assertEqual(run.call_args.args[0], args)
+
     def test_failed_command_preserves_diagnostic_output(self):
         with self.assertRaises(RuntimeError) as failure:
             deploy.command(

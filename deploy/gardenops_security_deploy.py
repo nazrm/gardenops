@@ -11,6 +11,7 @@ import argparse
 import fcntl
 import json
 import os
+import pwd
 import re
 import subprocess
 import tempfile
@@ -30,6 +31,10 @@ POLICY_PATHS = {".github/dependabot.yml"}
 
 
 def command(argv, timeout=60):
+    if len(argv) > 3 and argv[:2] == ["git", "-C"] and os.geteuid() == 0:
+        owner = Path(argv[2]).stat().st_uid
+        if owner != 0:
+            argv = ["/usr/sbin/runuser", "-u", pwd.getpwuid(owner).pw_name, "--", *argv]
     try:
         return subprocess.run(
             argv, check=True, text=True, capture_output=True, timeout=timeout

@@ -41,6 +41,12 @@ manual release cannot be overwritten. Manifest script/build-source changes are
 normal releases, not dependency-only updates. Public health must be HTTPS,
 non-redirecting JSON with `status: ok`.
 
+Repository operations run as the control checkout's filesystem owner, even when
+the service runs as root. This preserves Git ownership checks, that user's fetch
+credentials and writable repository metadata. Do not disable ownership checks
+with a wildcard `safe.directory` exception. Test a real fetch under the installed
+service environment; an already-current no-op does not exercise repository access.
+
 Run the helper without `--apply` first. Verify its selected commit and CI run.
 Then run `systemctl daemon-reload` and
 `systemctl enable --now gardenops-security-deploy.timer`. Verify the unit schedule
