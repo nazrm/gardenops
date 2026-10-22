@@ -2145,6 +2145,7 @@ function openCareForPlantsLazy(pltIds: string[]): void {
 type ShadePanelModule = typeof import("./components/shadePanel");
 
 function ensureShadePanelController(): Promise<ShadePanelController> {
+  if (!shadeMapBrowserEnabled) return Promise.reject(new Error("ShadeMap is disabled"));
   if (shadePanel) {
     return Promise.resolve(shadePanel);
   }

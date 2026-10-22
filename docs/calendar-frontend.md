@@ -1,17 +1,17 @@
 # Calendar frontend
 
-The vanilla calendar uses `fullcalendar` 7.0.2 and its daygrid, timegrid,
-list, interaction, locale and classic-theme entrypoints. Do not update
-`@fullcalendar/core` independently or restore the separate v6 plugin packages.
-The core is now transitive; `temporal-polyfill` is an explicit peer dependency.
-All packages remain subject to the seven-day release-age policy.
+The date-only calendar is implemented in `gardenCalendar.ts`, without a calendar
+framework or date polyfill. Month, week, and grouped agenda views use local date
+arithmetic and `Intl` formatting. Month grids have six Monday-first weeks; week
+views show all-day events rather than an unused hourly time grid. Events retain
+their exclusive end-date contract, source/status styles, filters, details, task
+actions, manual event editing, feeds, preferences, and offline cache behavior.
 
-The classic theme and skeleton CSS are bundled locally. GardenOps adds stable
-`garden-calendar-*` classes through the public v7 hooks, rather than targeting
-upstream generated class names. Container resizing is observed by v7; the old
-`updateSize()` call is no longer available. Event source/status classes use the
-v7 string-valued `className` input. Local date strings and exclusive range ends
-remain the server contract.
+Dates support arrow keys and Home/End navigation. Events are native buttons.
+Busy days expose additional events in a keyboard-accessible expandable row.
+The renderer owns only presentation; `calendarTab.ts` continues to own data
+loading, garden isolation, permissions, and mutations. Do not add a general
+recurrence, timezone, or scheduling engine to this component.
 
 After `npm ci --ignore-scripts` in `frontend`, run `npm run build` there.
 Run the focused browser regression from the repository root:

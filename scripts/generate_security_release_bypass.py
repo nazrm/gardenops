@@ -93,6 +93,7 @@ def _export_python_requirements(project_dir: Path, output_path: Path) -> None:
             "export",
             "--frozen",
             "--all-groups",
+            "--all-extras",
             "--format",
             "requirements.txt",
             "--no-emit-project",

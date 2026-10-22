@@ -112,7 +112,7 @@ verify_locked_dependencies() {
   : > "$npm_userconfig"
   chmod 600 "$npm_userconfig"
   command -v uv >/dev/null 2>&1 || die "uv is required to verify the locked Python environment"
-  uv sync --locked --all-groups --check --no-config > "$LOG_DIR/uv-lock-verify.log" 2>&1 \
+  uv sync --locked --all-groups --check --no-config --extra terrain > "$LOG_DIR/uv-lock-verify.log" 2>&1 \
     || die "locked Python dependency verification failed"
   "$ROOT_DIR/.venv/bin/python" -m pip check > "$LOG_DIR/python-pip-check.log" 2>&1 \
     || die "installed Python dependency verification failed"
@@ -167,6 +167,7 @@ vite_environment() {
     GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_DIST_DIR="$VITE_DIST_DIR" \
     GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
     GARDENOPS_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
+    VITE_SHADEMAP_ENABLED=true \
     VITE_SHADEMAP_BASEMAP_URL="$VITE_SHADEMAP_BASEMAP_URL" \
     "$@"
 }

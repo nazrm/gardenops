@@ -17,12 +17,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-import numpy as np
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi import Request as FastAPIRequest
@@ -79,6 +78,9 @@ from gardenops.services.lidar_terrain import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 def _require_shademap_enabled() -> None:
@@ -990,6 +992,8 @@ def _apply_elevation_overrides(
     garden_id: int,
 ) -> np.ndarray:
     """Stamp elevation overrides onto a terrain tile array."""
+    import numpy as np
+
     overrides = db.execute(
         "SELECT plot_id, elevation_m FROM plot_elevation_overrides WHERE garden_id = %s",
         (garden_id,),
@@ -1111,6 +1115,8 @@ def _apply_house_to_terrain(
     Bypasses the SDK building rasterizer by encoding the house
     directly into terrain elevation, ensuring shadows are cast.
     """
+    import numpy as np
+
     ctx = _load_geo_context(db, garden_id)
     if not ctx:
         return elevations
@@ -1585,6 +1591,8 @@ def _fit_similarity_transform(
     reference_latitude: float,
     reference_longitude: float,
 ) -> dict[str, float] | None:
+    import numpy as np
+
     if grid_points.shape != world_points.shape or grid_points.shape[0] < 2:
         return None
 
@@ -1617,6 +1625,8 @@ def _fit_similarity_transform(
 
 
 def _house_grid_corner_points(layout: dict[str, Any]) -> np.ndarray:
+    import numpy as np
+
     house_row = float(layout["house_row"])
     house_col = float(layout["house_col"])
     house_width = float(layout["house_width"])
@@ -1637,6 +1647,8 @@ def _house_grid_corner_points(layout: dict[str, Any]) -> np.ndarray:
 
 
 def _calibration_transform(db: DbConn, garden_id: int) -> dict[str, float] | None:
+    import numpy as np
+
     row = _read_shademap_calibration_row(db, garden_id)
     if not row or not bool(row["enabled"]):
         return None
@@ -2633,6 +2645,8 @@ def get_shademap_terrain_tile(
 ) -> Response:
     context = _auth_context(request)
     garden_id = _active_garden_id(request)
+    import numpy as np
+
     record_security_event("shademap_terrain_requests_total")
     enforce_layered_rate_limit(
         request,
@@ -2942,6 +2956,8 @@ def _compute_and_cache_elevations(
     garden_id: int,
 ) -> dict[str, float]:
     """Sample elevations via LiDAR, store in DB, return results."""
+    import numpy as np
+
     if not layout:
         return {}
 

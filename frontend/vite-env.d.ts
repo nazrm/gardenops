@@ -8,3 +8,4 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+declare const __SHADEMAP_BROWSER_ENABLED__: boolean;

@@ -290,7 +290,7 @@ class TaskActionParityFrontendStaticTests(unittest.TestCase):
             tasks.index("void loadTasks();", tasks.index("retireSuccessfulTaskActions([taskId]);")),
         )
         self.assertIn("function retireSuccessfulCalendarTaskAction", calendar)
-        self.assertIn("calendar?.getEventById(eventId)?.remove();", calendar)
+        self.assertIn("calendar?.removeEvent(eventId);", calendar)
         self.assertIn("clearUnavailableCalendarEvents();", calendar)
         self.assertIn("successCallback([]);", calendar)
         self.assertIn("function retireQuickTaskControls", quick)

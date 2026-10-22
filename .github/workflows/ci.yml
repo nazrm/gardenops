@@ -173,7 +173,7 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: uv lock --check
-      - run: uv sync --frozen --group test --group lint
+      - run: uv sync --frozen --extra terrain --group test --group lint
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run python scripts/check_env_docs.py

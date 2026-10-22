@@ -11,12 +11,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-import laspy
-import numpy as np
 from PIL import Image
-from pyproj import CRS, Transformer
+
+if TYPE_CHECKING:
+    import laspy
+    import numpy as np
+    from pyproj import Transformer
 
 ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 GROUND_CLASSIFICATION: Final[int] = 2
@@ -35,6 +37,8 @@ class LocalTerrainTile:
 
     @property
     def fully_covered(self) -> bool:
+        import numpy as np
+
         return bool(np.all(self.coverage_mask))
 
 
@@ -90,6 +94,8 @@ def set_grid_cache_callbacks(
 
 def serialize_dataset(ds: LocalTerrainDataset) -> dict:
     """Convert a LocalTerrainDataset to a dict suitable for DB storage."""
+    import numpy as np
+
     target_crs = ds.transformer_from_wgs84.target_crs
     assert target_crs is not None
     return {
@@ -111,6 +117,9 @@ def restore_dataset(
     signature: str,
 ) -> LocalTerrainDataset:
     """Rebuild a LocalTerrainDataset from a DB cache row."""
+    import numpy as np
+    from pyproj import CRS, Transformer
+
     grid = np.frombuffer(
         data["grid_blob"],
         dtype=np.float32,
@@ -466,6 +475,8 @@ def _reader_point_count(reader: laspy.LasReader) -> int | None:
 
 
 def _fill_nan_grid(grid: np.ndarray) -> np.ndarray:
+    import numpy as np
+
     result = np.array(grid, copy=True, dtype=np.float32)
     if np.isfinite(result).all():
         return result
@@ -536,6 +547,8 @@ def _accumulate_average_grid(
     *,
     resolution_m: float,
 ) -> tuple[np.ndarray, float, float, float, float]:
+    import numpy as np
+
     rows, cols, min_x, max_x, min_y, max_y = _terrain_grid_dimensions(
         reader,
         resolution_m=resolution_m,
@@ -595,6 +608,9 @@ def _accumulate_average_grid(
 
 
 def _build_dataset(path: Path, signature: str) -> LocalTerrainDataset:
+    import laspy
+    from pyproj import CRS, Transformer
+
     resolution_m = _resolution_meters()
     with laspy.open(path) as reader:
         crs = reader.header.parse_crs()
@@ -657,10 +673,14 @@ def _tile_lon(x: np.ndarray, z: int) -> np.ndarray:
 
 
 def _tile_lat(y: np.ndarray, z: int) -> np.ndarray:
+    import numpy as np
+
     return np.degrees(np.arctan(np.sinh(np.pi * (1.0 - (2.0 * y) / (2**z)))))
 
 
 def _tile_bounds(z: int, x: int, y: int) -> tuple[float, float, float, float]:
+    import numpy as np
+
     west = _tile_lon(np.array([x], dtype=np.float64), z)[0]
     east = _tile_lon(np.array([x + 1], dtype=np.float64), z)[0]
     north = _tile_lat(np.array([y], dtype=np.float64), z)[0]
@@ -691,6 +711,8 @@ def _sample_bilinear(
     proj_x: np.ndarray,
     proj_y: np.ndarray,
 ) -> LocalTerrainTile:
+    import numpy as np
+
     col_f = (proj_x - dataset.min_x) / dataset.resolution_m
     row_f = (dataset.max_y - proj_y) / dataset.resolution_m
 
@@ -740,6 +762,8 @@ def sample_elevations_wgs84(
 
     Returns array of elevations in meters; NaN for out-of-coverage.
     """
+    import numpy as np
+
     dataset = _dataset(garden_id)
     if dataset is None:
         return np.full(len(latitudes), np.nan, dtype=np.float32)
@@ -760,6 +784,8 @@ def sample_local_terrain_tile(
     y: int,
     garden_id: int | None = None,
 ) -> LocalTerrainTile | None:
+    import numpy as np
+
     dataset = _dataset(garden_id)
     if dataset is None:
         return None
@@ -776,12 +802,16 @@ def sample_local_terrain_tile(
 
 
 def decode_terrarium_png(payload: bytes) -> np.ndarray:
+    import numpy as np
+
     with Image.open(BytesIO(payload)) as image:
         rgba = np.asarray(image.convert("RGBA"), dtype=np.float32)
     return (rgba[..., 0] * 256.0 + rgba[..., 1] + rgba[..., 2] / 256.0) - 32768.0
 
 
 def encode_terrarium_png(elevations: np.ndarray) -> bytes:
+    import numpy as np
+
     value = np.asarray(elevations, dtype=np.float32) + 32768.0
     value = np.clip(value, 0.0, 65535.996)
     red = np.floor(value / 256.0)
