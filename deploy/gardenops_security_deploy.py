@@ -206,7 +206,9 @@ def run(config, *, apply=False, api=github, execute=command, current=installed, 
         raise ValueError("Default branch changed during fetch")
     execute(["git", "-C", repo, "merge-base", "--is-ancestor", before, target])
     require_reviewed_merges(
-        execute(["git", "-C", repo, "rev-list", "--first-parent", before + ".." + target]).splitlines(),
+        execute(
+            ["git", "-C", repo, "rev-list", "--first-parent", before + ".." + target]
+        ).splitlines(),
         api,
     )
     paths = execute(["git", "-C", repo, "diff", "--name-only", before, target]).splitlines()
