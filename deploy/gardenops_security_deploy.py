@@ -14,6 +14,8 @@ import os
 import re
 import subprocess
 import tempfile
+import tomllib
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -77,6 +79,26 @@ def require_dependency_change(paths):
         raise ValueError("No dependency update to deploy")
 
 
+def require_manifest_compatibility(path, before, after):
+    """Only dependency constraints may change inside executable manifests."""
+    if path.endswith("package.json"):
+        old, new = json.loads(before), json.loads(after)
+        for key in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
+            old.pop(key, None)
+            new.pop(key, None)
+    elif path == "pyproject.toml":
+        old, new = tomllib.loads(before), tomllib.loads(after)
+        for value in (old, new):
+            project = value.get("project", {})
+            project.pop("dependencies", None)
+            project.pop("optional-dependencies", None)
+            value.pop("dependency-groups", None)
+    else:
+        return
+    if old != new:
+        raise ValueError("Manifest changes executable/source policy; use normal release")
+
+
 def save(path, value):
     path = Path(path)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -108,6 +130,19 @@ def installed(config):
     return current.name
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError("Public health redirected; refusing acceptance")
+
+
+def public_health(url):
+    if urllib.parse.urlsplit(url).scheme != "https":
+        raise ValueError("Public health requires HTTPS")
+    with urllib.request.build_opener(NoRedirect).open(url, timeout=15) as response:
+        if response.status != 200 or json.load(response).get("status") != "ok":
+            raise ValueError("Public health is not healthy GardenOps JSON")
+
+
 def verify(config, sha):
     if installed(config) != sha:
         raise ValueError("Installed revision mismatch")
@@ -117,9 +152,7 @@ def verify(config, sha):
     cwd = Path("/proc", pid, "cwd").resolve(strict=True)
     if cwd != (Path(config["release_root"]) / "releases" / sha).resolve(strict=True):
         raise ValueError("Running process does not use the installed release")
-    with urllib.request.urlopen(config["health_url"], timeout=15) as response:
-        if response.status != 200:
-            raise ValueError("Public health check failed")
+    public_health(config["health_url"])
 
 
 def run(config, *, apply=False, api=github, execute=command, current=installed, health=verify):
@@ -142,6 +175,13 @@ def run(config, *, apply=False, api=github, execute=command, current=installed, 
     execute(["git", "-C", repo, "merge-base", "--is-ancestor", before, target])
     paths = execute(["git", "-C", repo, "diff", "--name-only", before, target]).splitlines()
     require_dependency_change(paths)
+    for path in paths:
+        if path in {"pyproject.toml", "frontend/package.json"}:
+            require_manifest_compatibility(
+                path,
+                execute(["git", "-C", repo, "show", before + ":" + path]),
+                execute(["git", "-C", repo, "show", target + ":" + path]),
+            )
     result = {
         "phase": "ready",
         "previous": before,
@@ -151,13 +191,16 @@ def run(config, *, apply=False, api=github, execute=command, current=installed, 
     }
     if not apply:
         return result
+    binding = execute([config["deployer"], "binding"]).splitlines()
+    if binding != [repo, config["release_root"], config["service"]]:
+        raise ValueError("Atomic deployer binding differs from poller configuration")
     execute([config["deployer"], "prepare", target], 1800)
     if current(config) != before or target_head(api) != target:
         raise ValueError("Release or main moved during preparation; no activation")
     require_ci(target, api)
     save(receipt, {**result, "phase": "activating"})
     try:
-        execute([config["deployer"], "activate", target], 300)
+        execute([config["deployer"], "activate-if-current", target, before], 300)
         health(config, target)
     except BaseException:
         save(receipt, {**result, "phase": "failed"})

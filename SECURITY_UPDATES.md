@@ -33,6 +33,14 @@ root:root 0755, and the three unit files into `/etc/systemd/system` root:root
 No new GitHub deployment secret is needed: metadata is read from this public
 repository; Git fetch uses the server's existing repository access.
 
+Install the matching updated `gardenops-atomic-deploy` too: the poller requires
+its `binding` and `activate-if-current REVISION PREVIOUS` commands. Binding must
+match the configured repository, release root and service. The expected previous
+revision is checked while holding the canonical deployment lock, so a concurrent
+manual release cannot be overwritten. Manifest script/build-source changes are
+normal releases, not dependency-only updates. Public health must be HTTPS,
+non-redirecting JSON with `status: ok`.
+
 Run the helper without `--apply` first. Verify its selected commit and CI run.
 Then run `systemctl daemon-reload` and
 `systemctl enable --now gardenops-security-deploy.timer`. Verify the unit schedule

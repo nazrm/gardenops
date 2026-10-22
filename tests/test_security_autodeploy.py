@@ -1,8 +1,10 @@
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy"))
 import gardenops_security_deploy as deploy
@@ -19,6 +21,8 @@ class DeploymentTests(unittest.TestCase):
             "state_dir": self.tmp.name,
             "control_repo": "/control",
             "deployer": "/deployer",
+            "release_root": "/releases",
+            "service": "gardenops.service",
         }
         self.commands = []
         self.head = NEW
@@ -45,11 +49,14 @@ class DeploymentTests(unittest.TestCase):
 
     def command(self, args, timeout=60):
         self.commands.append(args)
+        if "binding" in args:
+            return "/control\n/releases\ngardenops.service"
         if "rev-parse" in args:
             return self.head
         if "diff" in args:
             return self.paths
-        if "activate" in args:
+        if "activate-if-current" in args:
+            self.assertEqual(args[-1], OLD)
             self.live = NEW
         return ""
 
@@ -66,7 +73,7 @@ class DeploymentTests(unittest.TestCase):
     def test_success_and_idempotence(self):
         self.assertEqual(self.run_deploy()["phase"], "deployed")
         self.assertEqual(self.run_deploy()["phase"], "current")
-        self.assertEqual(sum("activate" in c for c in self.commands), 1)
+        self.assertEqual(sum("activate-if-current" in c for c in self.commands), 1)
         self.assertEqual(
             json.loads((Path(self.tmp.name) / "last.json").read_text())["phase"], "deployed"
         )
@@ -101,11 +108,11 @@ class DeploymentTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             self.run_deploy(command=command)
-        self.assertFalse(any("activate" in c for c in self.commands))
+        self.assertFalse(any("activate-if-current" in c for c in self.commands))
 
     def test_unknown_activation_is_not_retried(self):
         def command(args, timeout=60):
-            if "activate" in args:
+            if "activate-if-current" in args:
                 raise TimeoutError("uncertain")
             return self.command(args, timeout)
 
@@ -135,6 +142,97 @@ class DeploymentTests(unittest.TestCase):
     def test_wrong_sha_ci_rejected(self):
         with self.assertRaises(ValueError):
             deploy.require_ci(OLD, self.api)
+
+    def test_manifest_scripts_cannot_change(self):
+        with self.assertRaisesRegex(ValueError, "policy"):
+            deploy.require_manifest_compatibility(
+                "frontend/package.json",
+                '{"scripts":{"build":"safe"}}',
+                '{"scripts":{"build":"other"}}',
+            )
+        deploy.require_manifest_compatibility(
+            "frontend/package.json", '{"dependencies":{"a":"1"}}', '{"dependencies":{"a":"2"}}'
+        )
+
+    def test_python_source_policy_cannot_change(self):
+        with self.assertRaisesRegex(ValueError, "policy"):
+            deploy.require_manifest_compatibility(
+                "pyproject.toml", '[tool.uv.sources]\na="old"', '[tool.uv.sources]\na="new"'
+            )
+
+    def test_wrong_deployer_binding_blocks_prepare(self):
+        def command(args, timeout=60):
+            return "/wrong" if "binding" in args else self.command(args, timeout)
+
+        with self.assertRaisesRegex(ValueError, "binding"):
+            self.run_deploy(command=command)
+        self.assertFalse(any("prepare" in c for c in self.commands))
+
+    def test_changed_previous_at_activation_is_not_retried(self):
+        def command(args, timeout=60):
+            if "activate-if-current" in args:
+                raise ValueError("current release changed")
+            return self.command(args, timeout)
+
+        with self.assertRaisesRegex(ValueError, "changed"):
+            self.run_deploy(command=command)
+        self.assertEqual(
+            json.loads((Path(self.tmp.name) / "last.json").read_text())["phase"], "failed"
+        )
+
+    def test_health_redirect_and_plaintext_rejected(self):
+        with self.assertRaises(ValueError):
+            deploy.NoRedirect().redirect_request(None, None, 302, "", {}, "https://elsewhere")
+        with self.assertRaises(ValueError):
+            deploy.public_health("http://localhost/health")
+
+    def test_health_requires_actual_healthy_json(self):
+        response = MagicMock()
+        response.status = 200
+        response.__enter__.return_value = response
+        opener = MagicMock()
+        opener.open.return_value = response
+        with patch.object(deploy.urllib.request, "build_opener", return_value=opener):
+            response.read.return_value = b'{"status":"corrupt"}'
+            with self.assertRaises(ValueError):
+                deploy.public_health("https://example.invalid/api/health")
+            response.read.return_value = b'{"status":"ok"}'
+            deploy.public_health("https://example.invalid/api/health")
+
+    def test_real_shell_compare_runs_under_lock_before_activation(self):
+        script = (Path(deploy.__file__).parent / "gardenops-atomic-deploy").read_text()
+        main = script[script.index("main() {") : script.rindex('main "$@"')]
+        root = Path(self.tmp.name)
+        releases = root / "releases"
+        (releases / OLD).mkdir(parents=True)
+        (root / "current").symlink_to(releases / OLD)
+        setup = """set -euo pipefail
+require_root() { :; }
+open_deploy_lock() { locked=yes; }
+die() { echo "$*" >&2; exit 1; }
+activate_release() { test "$locked" = yes; echo ACTIVATED; }
+ENV_FILE=/dev/null
+RELEASES_DIR="$1/./releases"
+CURRENT_LINK="$1/current"
+shift
+"""
+        for expected, succeeds in [(OLD, True), (NEW, False)]:
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    setup + main + '\nmain "$@"',
+                    "bash",
+                    str(root),
+                    "activate-if-current",
+                    NEW,
+                    expected,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+            self.assertEqual("ACTIVATED" in result.stdout, succeeds)
 
     def test_no_downgrade(self):
         def command(args, timeout=60):
