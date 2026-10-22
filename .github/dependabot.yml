@@ -1,79 +1,86 @@
 version: 2
 updates:
-  - package-ecosystem: "pip"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "05:00"
-      timezone: "Europe/Oslo"
-    labels:
-      - "dependencies"
-      - "python"
-    commit-message:
-      prefix: "deps"
-      include: "scope"
-    groups:
-      backend-patch-minor:
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
-    cooldown:
-      default-days: 7
-      semver-major-days: 7
-      semver-minor-days: 7
-      semver-patch-days: 7
-
-  - package-ecosystem: "npm"
-    directory: "/frontend"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "05:15"
-      timezone: "Europe/Oslo"
-    labels:
-      - "dependencies"
-      - "frontend"
-    commit-message:
-      prefix: "deps"
-      include: "scope"
-    groups:
-      frontend-patch-minor:
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
-    cooldown:
-      default-days: 7
-      semver-major-days: 7
-      semver-minor-days: 7
-      semver-patch-days: 7
-
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "05:30"
-      timezone: "Europe/Oslo"
-    labels:
-      - "dependencies"
-      - "ci"
-    commit-message:
-      prefix: "deps"
-      include: "scope"
-    groups:
-      github-actions-patch-minor:
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
-    cooldown:
-      default-days: 7
-      semver-major-days: 7
-      semver-minor-days: 7
-      semver-patch-days: 7
+- package-ecosystem: pip
+  directory: /
+  schedule:
+    interval: cron
+    cronjob: 17 6 * * *
+    timezone: Europe/Oslo
+  labels:
+  - dependencies
+  - python
+  commit-message:
+    prefix: deps
+    include: scope
+  groups:
+    backend-patch-minor:
+      patterns:
+      - '*'
+      update-types:
+      - minor
+      - patch
+    security-fixes:
+      applies-to: security-updates
+      patterns:
+      - '*'
+  cooldown:
+    default-days: 7
+    semver-major-days: 7
+    semver-minor-days: 7
+    semver-patch-days: 7
+  open-pull-requests-limit: 0
+- package-ecosystem: npm
+  directory: /frontend
+  schedule:
+    interval: cron
+    cronjob: 17 6 * * *
+    timezone: Europe/Oslo
+  labels:
+  - dependencies
+  - frontend
+  commit-message:
+    prefix: deps
+    include: scope
+  groups:
+    frontend-patch-minor:
+      patterns:
+      - '*'
+      update-types:
+      - minor
+      - patch
+    security-fixes:
+      applies-to: security-updates
+      patterns:
+      - '*'
+  cooldown:
+    default-days: 7
+    semver-major-days: 7
+    semver-minor-days: 7
+    semver-patch-days: 7
+  open-pull-requests-limit: 0
+- package-ecosystem: github-actions
+  directory: /
+  schedule:
+    interval: cron
+    cronjob: 17 6 * * *
+    timezone: Europe/Oslo
+  labels:
+  - dependencies
+  - ci
+  commit-message:
+    prefix: deps
+    include: scope
+  groups:
+    github-actions-patch-minor:
+      patterns:
+      - '*'
+      update-types:
+      - minor
+      - patch
+    security-fixes:
+      applies-to: security-updates
+      patterns:
+      - '*'
+  cooldown:
+    default-days: 7
+  open-pull-requests-limit: 0

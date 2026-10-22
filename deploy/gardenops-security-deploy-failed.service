@@ -1,0 +1,6 @@
+[Unit]
+Description=Record failed GardenOps security deployment for operator attention
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/logger -p daemon.err -t gardenops-security-deploy "Security deployment failed or needs inspection. See journalctl -u gardenops-security-deploy and /var/lib/gardenops-security-deploy/last.json. Do not blindly retry an activation."

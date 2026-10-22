@@ -1,0 +1,11 @@
+[Unit]
+Description=Check merged GardenOps dependency fixes for deployment
+
+[Timer]
+OnCalendar=*-*-* *:0/15:00
+RandomizedDelaySec=30
+Persistent=true
+Unit=gardenops-security-deploy.service
+
+[Install]
+WantedBy=timers.target

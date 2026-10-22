@@ -25,6 +25,8 @@ usage: gardenops-atomic-deploy COMMAND [REVISION]
 Commands:
   prepare [REVISION]   Build and validate an immutable release (default: origin/main)
   activate REVISION    Migrate, validate, and switch to a prepared release
+  activate-if-current REVISION PREVIOUS  Activate only if current still matches PREVIOUS
+  binding             Print control repository, release root and service
   deploy [REVISION]    Prepare and activate a release (default: origin/main)
   rollback             Switch to the previous release when migrations are identical
 EOF
@@ -265,6 +267,15 @@ main() {
 
     local command=${1:-}
     case "$command" in
+        binding)
+            printf '%s\n' "$CONTROL_REPO" "$RELEASE_ROOT" "$SERVICE"
+            ;;
+        activate-if-current)
+            [[ $# -eq 3 && "$3" =~ ^[0-9a-f]{40}$ ]] || die "expected previous SHA required"
+            [[ $(readlink -f "$CURRENT_LINK") == $(readlink -f "$RELEASES_DIR/$3") ]] \
+                || die "current release changed; refusing activation"
+            activate_release "$2"
+            ;;
         prepare)
             prepare_release "${2:-origin/main}"
             ;;
