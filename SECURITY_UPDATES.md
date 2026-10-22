@@ -1,10 +1,11 @@
 # Dependency updates and deployment
 
-Dependabot checks all three ecosystems at 06:17 and 18:17 Europe/Oslo every day.
-Security alerts additionally trigger fix PRs independently of that schedule.
-Security-fix PRs are grouped separately. Existing trusted sources, release-age
-policies and security release-age exceptions continue to apply. GitHub schedules
-are best effort, not an exact-time SLA. Existing GardenOps CI tests each PR.
+The central pinned Renovate job runs at 06:17 and 18:17 Europe/Oslo every day
+and opens real security-fix PRs. Dependabot retains dependency alert coverage;
+its version PRs are disabled to avoid a second updater. GitHub's live validator
+rejects Dependabot cron intervals below 24 hours, so it cannot own this cadence.
+Existing trusted sources, release-age policies and security release-age exceptions
+continue to apply in CI. Existing GardenOps CI tests each PR.
 
 Merge a passing PR to main. The optional host deployment timer checks every
 15 minutes for a merged dependency update. It requires successful **push CI on
