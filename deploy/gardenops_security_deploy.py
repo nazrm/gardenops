@@ -190,13 +190,20 @@ def verify(config, sha):
 
 
 def run(config, *, apply=False, api=github, execute=command, current=installed, health=verify):
-    target = target_head(api)
     before = current(config)
     receipt = Path(config["state_dir"]) / "last.json"
     old = json.loads(receipt.read_text()) if receipt.exists() else {}
     # A restart/crash must never silently retry or certify an unknown activation.
     if old.get("phase") in {"activating", "failed"}:
         raise ValueError("Previous activation requires inspection: " + str(receipt))
+    maintenance = config.get("pause_for_service")
+    if maintenance:
+        if not re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", maintenance):
+            raise ValueError("Invalid maintenance service name")
+        state = execute(["systemctl", "show", maintenance, "--property=ActiveState", "--value"])
+        if state in {"active", "activating", "deactivating", "reloading"}:
+            return {"phase": "deferred", "reason": "maintenance active", "revision": before}
+    target = target_head(api)
     if target == before:
         health(config, target)
         return {"phase": "current", "revision": target}
@@ -214,6 +221,13 @@ def run(config, *, apply=False, api=github, execute=command, current=installed, 
         api,
     )
     paths = execute(["git", "-C", repo, "diff", "--name-only", before, target]).splitlines()
+    # A protected maintenance merge has a new SHA but the already-tested tree.
+    # Verify the real running revision without rebuilding or changing its receipt.
+    if not paths:
+        if current(config) != before or target_head(api) != target:
+            raise ValueError("Release or main moved during identical-tree verification")
+        health(config, before)
+        return {"phase": "current", "revision": before, "main_revision": target}
     require_dependency_change(paths)
     for path in paths:
         if path in {"pyproject.toml", "frontend/package.json"}:

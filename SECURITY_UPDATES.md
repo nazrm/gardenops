@@ -14,6 +14,9 @@ the exact current main SHA**, ancestry from the installed revision, and a diff
 limited to Python/npm manifests and locks plus Dependabot configuration.
 Application, migration or unrelated configuration changes use normal deployment.
 They are reported as requiring that deployment rather than silently bundled.
+When an approved maintenance merge has exactly the same source tree as the
+installed commit, the poller verifies CI, merge authorization and the actual
+running release, then reports current without rebuilding or rewriting receipts.
 
 The existing atomic deployer prepares the release, migrates/checks integrity,
 activates it and retains the previous release. This poller rechecks main and
@@ -25,7 +28,24 @@ changes source constraints, starts dormant apps, or creates database copies.
 
 First deploy current main through the normal release process. Use the already
 installed atomic deployer and a dedicated clean control repository that can
-fetch origin/main. Confirm its host-specific settings match the example JSON.
+fetch origin/main. The poller and atomic deployer run as root: use a dedicated
+root-owned bare clone, not a developer-owned working checkout. For example,
+create `/var/lib/gardenops-security-deploy` with mode 0700 and run these as root:
+
+```sh
+git clone --bare https://github.com/nazrm/gardenops.git /var/lib/gardenops-security-deploy/repository.git
+git -C /var/lib/gardenops-security-deploy/repository.git config remote.origin.fetch '+refs/heads/main:refs/remotes/origin/main'
+git -C /var/lib/gardenops-security-deploy/repository.git fetch origin main
+```
+
+The explicit fetch mapping maintains `origin/main` in the bare repository.
+A bare clone avoids checkout hooks and leaves the developer's files alone. Do not disable Git's
+ownership checks globally. Confirm its host-specific settings match the example JSON.
+The service's `GARDENOPS_CONTROL_REPO` must match the JSON `control_repo`.
+On a host with the daily maintenance worker, set `pause_for_service` to
+`host-app-updates.service`; otherwise leave it null. Active maintenance defers
+the poller without fetching, deploying or raising a failure. Existing failed or
+uncertain activation receipts still require inspection even while deferred.
 Copy the Python helper to `/usr/local/lib/gardenops-security-deploy.py` as
 root:root 0755, and the three unit files into `/etc/systemd/system` root:root
 0644. Copy/adapt the example to `/etc/gardenops-security-deploy.json`, root:root

@@ -117,6 +117,62 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.run_deploy(False)["phase"], "ready")
         self.assertFalse(any(c[0] == "/deployer" for c in self.commands))
 
+    def test_daily_maintenance_defers_without_fetching_or_deploying(self):
+        self.config["pause_for_service"] = "host-app-updates.service"
+        for state in ["active", "activating", "deactivating", "reloading"]:
+            with self.subTest(state=state):
+                self.commands.clear()
+
+                def command(args, timeout=60):
+                    self.commands.append(args)
+                    return state
+
+                with patch.object(deploy, "target_head", side_effect=AssertionError("fetched")):
+                    self.assertEqual(self.run_deploy(command=command)["phase"], "deferred")
+                self.assertEqual(len(self.commands), 1)
+                self.assertEqual(self.commands[0][0], "systemctl")
+
+    def test_finished_daily_maintenance_does_not_block_deployment(self):
+        self.config["pause_for_service"] = "host-app-updates.service"
+        self.assertEqual(self.run_deploy()["phase"], "deployed")
+
+    def test_identical_merge_tree_keeps_running_revision_and_receipt(self):
+        self.paths = ""
+        result = self.run_deploy()
+        self.assertEqual(result, {"phase": "current", "revision": OLD, "main_revision": NEW})
+        self.assertEqual(self.health_calls, [OLD])
+        self.assertFalse(any(c[0] == "/deployer" for c in self.commands))
+        self.assertFalse((Path(self.tmp.name) / "last.json").exists())
+
+    def test_identical_tree_still_requires_ci_and_merge_authorization(self):
+        self.paths = ""
+        self.ci = "failure"
+        with self.assertRaises(ValueError):
+            self.run_deploy()
+        self.ci = "success"
+        with patch.object(deploy, "require_reviewed_merges", side_effect=ValueError("unreviewed")):
+            with self.assertRaisesRegex(ValueError, "unreviewed"):
+                self.run_deploy()
+        self.assertEqual(self.health_calls, [])
+
+    def test_identical_tree_still_requires_health_and_stable_revision(self):
+        self.paths = ""
+
+        def unhealthy(c, s):
+            raise ValueError("unhealthy")
+
+        with self.assertRaisesRegex(ValueError, "unhealthy"):
+            self.run_deploy(health=unhealthy)
+
+        def command(args, timeout=60):
+            result = self.command(args, timeout)
+            if "diff" in args:
+                self.live = "c" * 40
+            return result
+
+        with self.assertRaisesRegex(ValueError, "moved"):
+            self.run_deploy(command=command)
+
     def test_direct_push_or_unmerged_pr_is_not_authorization(self):
         with self.assertRaisesRegex(ValueError, "merged-PR"):
             deploy.require_reviewed_merges([NEW], lambda path: [])
