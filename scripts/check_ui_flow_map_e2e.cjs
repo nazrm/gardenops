@@ -550,7 +550,7 @@ async function openPrimaryTab(page, tab, mobile) {
   }
   const selector = mobile ? `#mobile-tab-${tab}` : `#top-tab-${tab}`;
   await page.locator(selector).click();
-  const selectedSelector = mobile ? selector : `#top-tab-${tab}[aria-selected='true']`;
+  const selectedSelector = `${selector}[aria-current='page']`;
   await visible(page.locator(selectedSelector), `${tab} selected tab`);
 }
 
@@ -614,7 +614,7 @@ async function captureNotificationPanel(page, manifest, viewportName, mobile) {
   }
   await trigger.click();
   await captureStep(page, manifest, {
-    expectedText: ["Inbox", "Log", "No notifications"],
+    expectedText: ["Inbox", "Log", "Heavy rain may cover watering"],
     id: "notifications",
     label: "Notification inbox",
     rootSelector: "#notification-panel",
@@ -942,7 +942,7 @@ async function runRoleAccessCheck(browser, manifest, options) {
     const adminEntryVisible = await adminEntry.isVisible();
     let privilegedSections = 0;
     if (adminEntryVisible) {
-      await openPrimaryTab(page, "admin", false);
+      await openPrimaryTab(page, "admin", mobile);
       await visible(page.locator("#admin-view"), `${role} settings view`);
       privilegedSections = await page.locator(
         ".adm-nav-btn[data-section='users'],"

@@ -24,3 +24,9 @@ Keep the project current:
   passed unless they ran in the current work.
 - Deploy only from the current `main` branch after the normal build,
   migration, integrity, health, and log checks pass.
+
+The owner authorized daily dependency maintenance on 22 October 2026. Those
+updates run in a separate maintenance checkout, pass the documented tests,
+deploy from `maintenance/daily-updates`, and open/update their PR after live
+verification. This is the authorized exception to the normal main-only rule.
+Do not automatically introduce new database migrations or merge the PR.

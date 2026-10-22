@@ -1,5 +1,16 @@
 # Deployment
 
+## Daily Dependency Maintenance
+
+The managed host checks dependencies daily in a separate checkout. Tested
+updates are deployed from `maintenance/daily-updates` using the atomic wrapper,
+then published as a PR against `main`. This maintenance exception was explicitly
+authorized by the owner on 22 October 2026; ordinary releases still use `main`.
+The job preserves migration digests, takes verified backups, uses disposable
+databases for tests, checks live health and journals, and stops on failed checks.
+New database migrations require a supervised deployment. The runtime versions
+used for builds are recorded in `.node-version` and `.python-version`.
+
 GardenOps can run as a standard FastAPI service behind nginx with PostgreSQL.
 Redis is required for production, internet-exposed, or multi-instance rate
 limiting.
