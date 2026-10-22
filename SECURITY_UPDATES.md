@@ -2,7 +2,8 @@
 
 The central pinned Renovate job runs at 06:17 and 18:17 Europe/Oslo every day
 and opens real security-fix PRs. Dependabot retains dependency alert coverage;
-its version PRs are disabled to avoid a second updater. GitHub's live validator
+its routine version PRs are disabled. Native security PRs remain enabled alongside
+Renovate; check for overlapping PRs before merging. GitHub's live validator
 rejects Dependabot cron intervals below 24 hours, so it cannot own this cadence.
 Existing trusted sources, release-age policies and security release-age exceptions
 continue to apply in CI. Existing GardenOps CI tests each PR.
