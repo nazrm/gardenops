@@ -904,13 +904,14 @@ def seed_calendar_inventory_procurement(conn, *, garden_id: int, owner_user_id: 
     conn.execute(
         """
         INSERT INTO inventory_transactions (
-            item_id, delta, reason, source_name, cost_minor, occurred_on,
+            item_id, garden_id, delta, reason, source_name, cost_minor, occurred_on,
             storage_location, notes, actor_user_id, created_at_ms
         )
-        VALUES (%s, 2, 'purchased', 'Nordic Seeds', 8900, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, 2, 'purchased', 'Nordic Seeds', 8900, %s, %s, %s, %s, %s)
         """,
         (
             item_id,
+            garden_id,
             _fixture_date(),
             "Seed cabinet",
             "Two packets received for the fall crop.",
