@@ -10,6 +10,10 @@ The job preserves migration digests, takes verified backups, uses disposable
 databases for tests, checks live health and journals, and stops on failed checks.
 New database migrations require a supervised deployment. The runtime versions
 used for builds are recorded in `.node-version` and `.python-version`.
+Before deployment, run the trusted dependency-policy checks described in
+`dependency-security-policy.md`. Routine updates must satisfy the seven-day
+release gate; a newer security fix requires generated base/head audit evidence.
+Required GitHub checks must pass before an explicitly authorized PR merge.
 
 GardenOps can run as a standard FastAPI service behind nginx with PostgreSQL.
 Redis is required for production, internet-exposed, or multi-instance rate
