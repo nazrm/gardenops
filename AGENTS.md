@@ -29,7 +29,10 @@ The owner authorized daily dependency maintenance on 22 October 2026. Those
 updates run in a separate maintenance checkout, pass the documented tests,
 deploy from `maintenance/daily-updates`, and open/update their PR after live
 verification. This is the authorized exception to the normal main-only rule.
-Do not automatically introduce new database migrations or merge the PR.
+Do not automatically introduce new database migrations. On 22 October 2026 the
+owner also authorized automatic daily PR merges after all checks pass. Publish
+the tested deployment and let the host's independent protected-CI merge guard
+perform that merge; never bypass it or weaken branch protection.
 Before deploying a dependency update, run the trusted base-branch dependency
 source, advisory-delta and release-age checks against the candidate lockfiles.
 Keep routine updates outside the seven-day cooldown; only generated evidence
