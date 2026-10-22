@@ -1,0 +1,8 @@
+{
+  "control_repo": "/opt/gardenops",
+  "release_root": "/srv/gardenops",
+  "deployer": "/usr/local/sbin/gardenops-atomic-deploy",
+  "service": "gardenops.service",
+  "health_url": "https://REPLACE-WITH-ACTUAL-GARDENOPS-HOST/api/health",
+  "state_dir": "/var/lib/gardenops-security-deploy"
+}
