@@ -61,9 +61,12 @@ class DeploymentTests(unittest.TestCase):
         if path.endswith("/pulls"):
             return [{"number": 1}]
         if path == "pulls/1":
-            return {"merged": True, "merge_commit_sha": NEW,
-                    "merged_by": {"login": "nazrm"},
-                    "base": {"ref": "main", "repo": {"full_name": "nazrm/gardenops"}}}
+            return {
+                "merged": True,
+                "merge_commit_sha": NEW,
+                "merged_by": {"login": "nazrm"},
+                "base": {"ref": "main", "repo": {"full_name": "nazrm/gardenops"}},
+            }
         return {
             "workflow_runs": [
                 {
@@ -117,14 +120,19 @@ class DeploymentTests(unittest.TestCase):
     def test_direct_push_or_unmerged_pr_is_not_authorization(self):
         with self.assertRaisesRegex(ValueError, "merged-PR"):
             deploy.require_reviewed_merges([NEW], lambda path: [])
-        for field, value in [("merged", False), ("merge_commit_sha", OLD),
-                             ("merged_by", {"login": "renovate[bot]"}),
-                             ("base", {"ref": "other"})]:
+        for field, value in [
+            ("merged", False),
+            ("merge_commit_sha", OLD),
+            ("merged_by", {"login": "renovate[bot]"}),
+            ("base", {"ref": "other"}),
+        ]:
+
             def api(path):
                 result = self.api(path)
                 if path == "pulls/1":
                     result[field] = value
                 return result
+
             with self.assertRaisesRegex(ValueError, "merged-PR"):
                 deploy.require_reviewed_merges([NEW], api)
 

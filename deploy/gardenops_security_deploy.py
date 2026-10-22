@@ -100,11 +100,13 @@ def require_reviewed_merges(revisions, api=github):
         accepted = False
         for summary in matches:
             pull = api("pulls/" + str(int(summary["number"])))
-            if (pull.get("merged") is True
+            if (
+                pull.get("merged") is True
                 and pull.get("merge_commit_sha") == revision
                 and pull.get("merged_by", {}).get("login") == "nazrm"
                 and pull.get("base", {}).get("ref") == "main"
-                and pull.get("base", {}).get("repo", {}).get("full_name") == "nazrm/gardenops"):
+                and pull.get("base", {}).get("repo", {}).get("full_name") == "nazrm/gardenops"
+            ):
                 accepted = True
                 break
         if not accepted:
