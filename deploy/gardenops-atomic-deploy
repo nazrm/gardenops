@@ -17,6 +17,7 @@ DEFAULT_LOCK_DIR=/run/gardenops
 LOCK_FILE=${GARDENOPS_DEPLOY_LOCK:-$DEFAULT_LOCK_DIR/deploy.lock}
 UV=${GARDENOPS_UV:-/usr/local/bin/uv}
 NPM=${GARDENOPS_NPM:-/usr/local/bin/npm}
+TERRAIN_PROFILE=${GARDENOPS_TERRAIN_PROFILE:-core}
 
 usage() {
     cat <<'EOF'
@@ -122,9 +123,17 @@ atomic_link() {
 prepare_release() {
     local revision=${1:-origin/main}
     local sha release build_dir
+    local -a terrain_args=()
+    case "$TERRAIN_PROFILE" in
+        core) ;;
+        enabled) terrain_args=(--extra terrain) ;;
+        *) die "GARDENOPS_TERRAIN_PROFILE must be core or enabled" ;;
+    esac
     sha=$(resolve_revision "$revision")
     release="$RELEASES_DIR/$sha"
     if [[ -f "$release/RELEASE_READY" ]]; then
+        [[ -f "$release/RELEASE_PROFILE" && $(cat "$release/RELEASE_PROFILE") == "$TERRAIN_PROFILE" ]] \
+            || die "prepared release has a different or unknown terrain profile; refusing reuse"
         preflight_release "$release"
         echo "$release"
         return
@@ -139,11 +148,11 @@ prepare_release() {
     git -C "$CONTROL_REPO" archive "$sha" | tar -x -C "$build_dir"
     chown -R "$BUILD_USER:$SERVICE_GROUP" "$build_dir"
     as_build_user bash -c \
-        'set -euo pipefail; umask 0027; cd "$1"; UV_CACHE_DIR=/tmp/gardenops-uv-cache "$2" sync --locked --no-dev' \
-        bash "$build_dir" "$UV"
+        'set -euo pipefail; umask 0027; cd "$1"; uv=$2; shift 2; UV_CACHE_DIR=/tmp/gardenops-uv-cache "$uv" sync --locked --no-dev "$@"' \
+        bash "$build_dir" "$UV" "${terrain_args[@]}"
     as_build_user bash -c \
-        'set -euo pipefail; umask 0027; cd "$1/frontend"; "$2" ci; "$2" run build' \
-        bash "$build_dir" "$NPM"
+        'set -euo pipefail; umask 0027; cd "$1/frontend"; "$2" ci --ignore-scripts; VITE_SHADEMAP_ENABLED="$3" "$2" run build' \
+        bash "$build_dir" "$NPM" "$([[ "$TERRAIN_PROFILE" == enabled ]] && echo true || echo false)"
     rm -rf -- "$build_dir/frontend/node_modules"
 
     ln -s "$PERSISTENT_ROOT/logs" "$build_dir/logs"
@@ -151,6 +160,7 @@ prepare_release() {
     chown -hR "root:$SERVICE_GROUP" "$build_dir"
     chmod -R u=rwX,g=rX,o= "$build_dir"
     write_release_metadata "$build_dir/RELEASE_COMMIT" "$sha"
+    write_release_metadata "$build_dir/RELEASE_PROFILE" "$TERRAIN_PROFILE"
 
     preflight_release "$release"
     write_release_metadata "$build_dir/RELEASE_READY" ""

@@ -1,14 +1,4 @@
-import { Calendar, type EventDisplayInfo, type MountInfo } from "fullcalendar";
-import dayGridPlugin from "fullcalendar/daygrid";
-import interactionPlugin from "fullcalendar/interaction";
-import listPlugin from "fullcalendar/list";
-import timeGridPlugin from "fullcalendar/timegrid";
-import enGbLocale from "fullcalendar/locales/en-gb";
-import nbLocale from "fullcalendar/locales/nb";
-import themePlugin from "fullcalendar/themes/classic";
-import "fullcalendar/skeleton.css";
-import "fullcalendar/themes/classic/theme.css";
-import "fullcalendar/themes/classic/palette.css";
+import { GardenCalendar, type CalendarEventDisplay, type CalendarEventMount } from "../components/gardenCalendar";
 
 import { createChipInput, type ChipInputResult } from "../components/chipInput";
 import { confirmDialog, createModal, promptDialog } from "../components/dialogCore";
@@ -82,7 +72,7 @@ import { syncOfflineDraftsNow } from "../features/offlineFeature";
 import { getCachedTodayTasks } from "../services/taskCache";
 
 let ctx: AppContext;
-let calendar: Calendar | null = null;
+let calendar: GardenCalendar | null = null;
 let calendarRendered = false;
 let currentEventsById = new Map<string, CalendarEvent>();
 let availableSources: CalendarSourceDefinition[] = [];
@@ -175,7 +165,7 @@ function retireSuccessfulCalendarTaskAction(taskId: string): void {
   for (const [eventId, event] of currentEventsById) {
     if (event.kind !== "task" || event.target_id !== taskId) continue;
     currentEventsById.delete(eventId);
-    calendar?.getEventById(eventId)?.remove();
+    calendar?.removeEvent(eventId);
     if (selectedEventId === eventId) selectedEventId = null;
     removed += 1;
   }
@@ -282,29 +272,11 @@ function nextAnimationFrame(): Promise<void> {
 }
 
 function currentLocaleObject() {
-  return getLocale() === "no" ? nbLocale : enGbLocale;
+  return getLocale() === "no" ? "nb-NO" : "en-GB";
 }
 
 function defaultResponsiveView(): CalendarViewMode {
   return window.matchMedia("(max-width: 760px)").matches ? "agenda" : "month";
-}
-
-function fullCalendarView(mode: CalendarViewMode): string {
-  switch (mode) {
-    case "week":
-      return "timeGridWeek";
-    case "agenda":
-      return "listMonth";
-    case "month":
-    default:
-      return "dayGridMonth";
-  }
-}
-
-function inferViewMode(type: string): CalendarViewMode {
-  if (type === "timeGridWeek") return "week";
-  if (type === "listMonth" || type === "listWeek") return "agenda";
-  return "month";
 }
 
 function presetSourceKeys(presetKey: CalendarPresetKey): CalendarSourceKey[] {
@@ -581,16 +553,16 @@ function buildAgendaEventNode(event: CalendarEvent): HTMLElement {
   return wrapper;
 }
 
-function renderCalendarEventContent(arg: EventDisplayInfo): { domNodes: Node[] } | { text: string } {
+function renderCalendarEventContent(arg: CalendarEventDisplay): { domNodes: Node[] } | { text: string } {
   const event = currentEventsById.get(arg.event.id);
   if (!event) return { text: arg.event.title };
-  if (inferViewMode(arg.view.type) === "agenda") {
+  if (arg.view.type === "agenda") {
     return { domNodes: [buildAgendaEventNode(event)] };
   }
   return { domNodes: [buildGridEventNode(event)] };
 }
 
-function handleCalendarEventMount(arg: MountInfo<EventDisplayInfo>): void {
+function handleCalendarEventMount(arg: CalendarEventMount): void {
   const event = currentEventsById.get(arg.event.id);
   if (!event) return;
   arg.el.dataset["calendarRenderedEvent"] = "true";
@@ -669,6 +641,7 @@ function syncViewButtons(): void {
   document
     .querySelectorAll<HTMLButtonElement>("[data-calendar-view]")
     .forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset["calendarView"] === currentViewMode));
       button.classList.toggle(
         "active",
         button.dataset["calendarView"] === currentViewMode,
@@ -1915,7 +1888,7 @@ function exportCalendar(): void {
   );
 }
 
-function ensureCalendarInstance(): Calendar {
+function ensureCalendarInstance(): GardenCalendar {
   const root = document.getElementById("calendar-root");
   if (!(root instanceof HTMLElement)) {
     throw new Error("Missing calendar root");
@@ -1929,34 +1902,14 @@ function ensureCalendarInstance(): Calendar {
       if (diff !== 0) return diff;
     }
     return left.title.localeCompare(right.title);
-  }) as unknown as string;
-  calendar = new Calendar(root, {
-    plugins: [themePlugin, dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin],
-    initialView: fullCalendarView(currentViewMode),
+  });
+  calendar = new GardenCalendar(root, {
+    initialView: currentViewMode,
     locale: currentLocaleObject(),
-    locales: [enGbLocale, nbLocale],
-    firstDay: 1,
-    headerToolbar: false,
-    viewClass: "garden-calendar-view",
-    tableClass: "garden-calendar-table",
-    dayHeaderClass: "garden-calendar-day-header",
-    dayHeaderInnerClass: "garden-calendar-day-heading",
-    dayCellInnerClass: "garden-calendar-day-cell",
-    dayCellTopInnerClass: "garden-calendar-day-number",
-    slotHeaderInnerClass: "garden-calendar-slot-label",
-    listDayHeaderClass: "garden-calendar-list-heading",
-    eventClass: (arg) => inferViewMode(arg.view.type) === "agenda"
-      ? "garden-calendar-list-event" : "garden-calendar-grid-event",
-    eventInnerClass: "garden-calendar-event-inner",
-    eventTimeClass: "garden-calendar-event-time",
-    height: "auto",
-    dayMaxEventRows: window.matchMedia("(max-width: 760px)").matches ? 3 : 4,
-    eventMaxStack: window.matchMedia("(max-width: 760px)").matches ? 2 : 3,
-    displayEventTime: false,
     eventOrder: eventOrderComparator,
     eventContent: renderCalendarEventContent,
     eventDidMount: handleCalendarEventMount,
-    events: async (fetchInfo, successCallback, failureCallback) => {
+    events: async (fetchInfo, successCallback) => {
       const request = createCalendarEventsRequest();
       if (!isCurrentCalendarEventsRequest(request)) {
         successCallback([]);
@@ -2035,7 +1988,6 @@ function ensureCalendarInstance(): Calendar {
             title: event.title,
             start: event.start_on,
             end: event.end_on,
-            allDay: event.all_day,
             className: [
               "calendar-event",
               `calendar-kind-${event.kind}`,
@@ -2044,11 +1996,6 @@ function ensureCalendarInstance(): Calendar {
               event.window_state ? `calendar-window-state-${event.window_state}` : "",
               event.window_start_on && event.window_end_on ? "calendar-has-window" : "",
             ].filter(Boolean).join(" "),
-            extendedProps: {
-              sourceKey: event.source_key,
-              status: event.status,
-              windowState: event.window_state || "",
-            },
           })),
         );
       } catch (err) {
@@ -2062,7 +2009,7 @@ function ensureCalendarInstance(): Calendar {
       }
     },
     datesSet: (arg) => {
-      currentViewMode = inferViewMode(arg.view.type);
+      currentViewMode = arg.view.type;
       syncViewButtons();
       renderRangeLabel(arg.view.title);
     },
@@ -2084,14 +2031,13 @@ async function changeView(mode: CalendarViewMode): Promise<void> {
   const instance = ensureCalendarInstance();
   await nextAnimationFrame();
   if (!isCurrentCalendarRequest(request)) return;
-  const targetView = fullCalendarView(mode);
+  const targetView = mode;
   if (!calendarRendered) {
     instance.render();
     calendarRendered = true;
   } else if (instance.view.type !== targetView) {
     instance.changeView(targetView);
   }
-  // v7 observes container size changes, including previously hidden tabs.
   await persistPreferences();
 }
 
@@ -2135,8 +2081,7 @@ export function applyCalendarSavedView(filters: Record<string, unknown>): void {
   renderFilterState();
   renderSourceFilters();
   if (calendar) {
-    calendar.changeView(fullCalendarView(currentViewMode));
-    calendar.refetchEvents();
+    calendar.changeView(currentViewMode);
   }
   void persistPreferences();
 }
@@ -2153,7 +2098,7 @@ export function refreshCalendarLocalization(): void {
   updateSummary(currentSummaryCount);
   renderDetail(selectedEventId ? currentEventsById.get(selectedEventId) : undefined);
   if (calendar) {
-    calendar.setOption("locale", currentLocaleObject());
+    calendar.setLocale(currentLocaleObject());
   }
 }
 
@@ -2267,7 +2212,7 @@ export async function loadCalendar(): Promise<void> {
     const instance = ensureCalendarInstance();
     await nextAnimationFrame();
     if (!isCurrentCalendarRequest(request)) return;
-    const targetView = fullCalendarView(currentViewMode);
+    const targetView = currentViewMode;
     if (!calendarRendered) {
       instance.render();
       calendarRendered = true;
@@ -2276,7 +2221,6 @@ export async function loadCalendar(): Promise<void> {
     } else {
       instance.refetchEvents();
     }
-    // v7 observes container size changes, including previously hidden tabs.
     exportButton?.setAttribute("data-calendar-export-ready", "true");
     await refreshCalendarTaskActions(false);
     if (!offline) await refreshSubscriptions(request);

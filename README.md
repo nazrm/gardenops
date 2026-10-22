@@ -170,7 +170,7 @@ git clone <repository-url> gardenops
 cd gardenops
 uv python install 3.14
 uv venv --python 3.14
-uv sync --frozen --group test --group lint
+uv sync --frozen --extra terrain --group test --group lint
 cd frontend && npm ci && cd ..
 cp .env.example .env
 cp .env.test.example .env.test.local
@@ -209,7 +209,7 @@ without committing secrets or generated artifacts.
 
 Tasks:
 1. Verify or install Python 3.14, uv, Node.js 24, npm, and PostgreSQL 16+.
-2. Install dependencies with `uv sync --frozen --group test --group lint` and
+2. Install dependencies with `uv sync --frozen --extra terrain --group test --group lint` and
    `npm ci` in `frontend/`.
 3. Create local PostgreSQL databases named `gardenops` and `gardenops_test`
    owned by a local `gardenops` role, or ask me before changing system

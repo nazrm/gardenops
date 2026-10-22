@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from importlib.util import find_spec
 from typing import Literal
 
 from gardenops.db import DbConn, get_db, return_db
@@ -55,10 +56,12 @@ SECRET_ENV_NAMES: dict[str, tuple[str, ...]] = {
 def shademap_enabled() -> bool:
     """Return whether ShadeMap routes and browser availability are enabled."""
 
-    raw = os.environ.get("SHADEMAP_ENABLED", "true").strip().lower()
+    raw = os.environ.get("SHADEMAP_ENABLED", "").strip().lower()
     if not raw:
-        return True
+        return all(find_spec(name) is not None for name in ("numpy", "laspy", "pyproj"))
     if raw in _TRUE_VALUES:
+        if not all(find_spec(name) is not None for name in ("numpy", "laspy", "pyproj")):
+            raise ConfigurationError("ShadeMap requires installation with --extra terrain")
         return True
     if raw in _FALSE_VALUES:
         return False

@@ -1,5 +1,29 @@
 # Deployment
 
+## Dependency Profiles
+
+The default atomic release is the core profile: `uv sync --locked --no-dev`,
+plain Uvicorn, and `VITE_SHADEMAP_ENABLED=false`. Development YAML/dotenv tooling
+and scientific terrain packages are not installed in that Python environment.
+Configuration comes from the service environment, not an implicit `.env` read.
+
+To include ShadeMap, install with `uv sync --frozen --no-dev --extra terrain`,
+build the frontend with `VITE_SHADEMAP_ENABLED=true`, and enable `SHADEMAP_ENABLED`
+in the service configuration. For the atomic deployer set
+`GARDENOPS_TERRAIN_PROFILE=enabled` consistently on every prepare/deploy invocation
+(including any deployment adapter's service environment). The matching canonical
+deployer must be installed before preparing these releases. Core and enabled
+profiles preserve the same database/media; switching profiles does not delete
+terrain files or garden export data. An explicitly enabled backend without its
+extra fails configuration validation rather than silently pretending it works.
+
+Leaflet is an optional npm dependency for enabled builds. Core builds alias the
+disabled controller before module resolution, so Leaflet can be absent and no
+ShadeMap/Leaflet browser code is shipped. npm may still install this optional
+build package by default; it remains in the lock and under the same release gate.
+Never omit all npm optional packages indiscriminately: native compiler/bundler
+bindings also use that metadata. Neither profile ships `node_modules`.
+
 ## Daily Dependency Maintenance
 
 The managed host checks dependencies daily in a separate checkout. Tested

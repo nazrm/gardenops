@@ -1,5 +1,3 @@
-const FALSE_VALUES = new Set(["0", "false", "no", "off"]);
-
-export const shadeMapBrowserEnabled = !FALSE_VALUES.has(
-  import.meta.env["VITE_SHADEMAP_ENABLED"]?.trim().toLowerCase() ?? "true",
-);
+export const shadeMapBrowserEnabled = typeof __SHADEMAP_BROWSER_ENABLED__ !== "undefined"
+  ? __SHADEMAP_BROWSER_ENABLED__
+  : ["1", "true", "yes", "on"].includes(import.meta.env["VITE_SHADEMAP_ENABLED"] ?? "false");

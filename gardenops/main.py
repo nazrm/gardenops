@@ -19,10 +19,6 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
 from fastapi import Body, FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import Response  # noqa: E402

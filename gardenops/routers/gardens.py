@@ -26,6 +26,7 @@ from gardenops.db import DB, DbConn, current_timestamp_ms, ensure_indoor_plot
 from gardenops.events import notify_garden_modified
 from gardenops.feature_gates import feature_allowed
 from gardenops.models import LayoutExportBody, LayoutStateBody, StrictBaseModel
+from gardenops.provider_settings import shademap_enabled
 from gardenops.rate_limit import acquire_concurrency_slot, enforce_rate_limit, env_int
 from gardenops.request_body import read_body_limited
 from gardenops.router_helpers import auth_context as _auth_context
@@ -1515,6 +1516,8 @@ async def upload_garden_lidar(
 ) -> dict[str, object]:
     context = _auth_context(request)
     _require_membership_editor(db, context=context, garden_id=garden_id)
+    if not shademap_enabled():
+        raise HTTPException(status_code=404, detail="ShadeMap is disabled")
     enforce_rate_limit(
         request,
         bucket="garden-lidar-upload",

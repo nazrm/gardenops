@@ -4,13 +4,13 @@ This guide covers the normal development loop and PR checks.
 
 ## Local Loop
 
-Run the backend:
+Install development/test dependencies (including the optional terrain feature
+for the complete test suite), then run the backend. Configuration must be loaded
+by the launcher; importing the application no longer reads `.env` implicitly:
 
 ```bash
-set -a
-. ./.env
-set +a
-.venv/bin/python -m uvicorn gardenops.main:app --host 127.0.0.1 --port 8000
+uv sync --frozen --extra terrain --group test --group lint
+uv run --env-file .env uvicorn gardenops.main:app --host 127.0.0.1 --port 8000
 ```
 
 Run the frontend dev server in another shell:

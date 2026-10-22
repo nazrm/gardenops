@@ -16212,7 +16212,6 @@ td.inventory-qty-zero {
   min-height: 44rem;
 }
 
-/* Override the v7 skeleton's important display utility when data is unavailable. */
 .calendar-root[hidden] {
   display: none !important;
 }
@@ -16258,20 +16257,14 @@ td.inventory-qty-zero {
 }
 
 .calendar-root {
-  --fc-classic-border: rgba(29, 48, 34, 0.1);
-  --fc-classic-background: transparent;
-  --fc-classic-muted: color-mix(in srgb, var(--bg-2) 80%, transparent);
-  --fc-classic-today: rgba(104, 160, 92, 0.14);
-  --fc-classic-faint: color-mix(in srgb, var(--bg-2) 88%, transparent);
-  --fc-classic-event: #437a4d;
-  --fc-classic-event-contrast: #fff;
+  --calendar-border: rgba(29, 48, 34, 0.15);
   color: var(--text-1);
 }
 
 .calendar-root .garden-calendar-table td,
 .calendar-root .garden-calendar-table th,
 .calendar-root .garden-calendar-view {
-  border-color: var(--fc-classic-border);
+  border: 1px solid var(--calendar-border);
 }
 
 .calendar-root .garden-calendar-table,
@@ -16279,6 +16272,55 @@ td.inventory-qty-zero {
   border-radius: var(--r-md);
   overflow: hidden;
   background: color-mix(in srgb, var(--bg-1) 96%, white 4%);
+}
+
+.calendar-root .garden-calendar-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.calendar-root .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.calendar-root .garden-calendar-table td {
+  vertical-align: top;
+  height: 8rem;
+  padding: 2px;
+}
+
+.calendar-root .calendar-other-month .garden-calendar-day-number {
+  opacity: 0.55;
+}
+
+.calendar-root .calendar-day-today {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.calendar-root .garden-calendar-day-number {
+  display: block;
+  min-width: 28px;
+  min-height: 28px;
+  margin-bottom: 4px;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+}
+
+.calendar-root .garden-calendar-day-number[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.calendar-root summary {
+  padding: 6px 2px;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .calendar-root .garden-calendar-day-header {
@@ -16290,7 +16332,7 @@ td.inventory-qty-zero {
   color: var(--text-2);
   font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -16310,19 +16352,35 @@ td.inventory-qty-zero {
 }
 
 .calendar-root .garden-calendar-grid-event {
-  margin: 2px 4px 0;
-  border-radius: 0.8rem;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: 2px 0 0;
+  border-radius: 4px;
   padding: 0.08rem 0.25rem;
-  border-width: 1px;
-  box-shadow: 0 6px 16px rgba(29, 48, 34, 0.08);
+  border: 1px solid var(--calendar-border);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-1));
+  color: var(--text-1);
+  text-align: left;
+  font-size: 12px;
 }
 
 .calendar-root .garden-calendar-grid-event .garden-calendar-event-inner,
 .calendar-root .garden-calendar-list-event .garden-calendar-event-inner {
+  display: block;
   padding: 0.1rem 0.18rem;
 }
 
 .calendar-root .garden-calendar-list-event {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-bottom: 1px solid var(--calendar-border);
+  border-radius: 0;
+  text-align: left;
+  color: var(--text-1);
+  background: transparent;
   cursor: pointer;
 }
 
@@ -16333,16 +16391,6 @@ td.inventory-qty-zero {
 
 .calendar-root .garden-calendar-list-event .garden-calendar-event-inner {
   white-space: normal;
-}
-
-.calendar-root .calendar-source-weather-alert {
-  --fc-classic-event: #b85d2b;
-  --fc-classic-event-contrast: #7f3d1a;
-}
-
-.calendar-root .calendar-source-garden-event {
-  --fc-classic-event: #456f8a;
-  --fc-classic-event-contrast: #27465c;
 }
 
 .calendar-root .garden-calendar-grid-event.calendar-source-weather-alert {
