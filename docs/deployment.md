@@ -14,6 +14,10 @@ Before deployment, run the trusted dependency-policy checks described in
 `dependency-security-policy.md`. Routine updates must satisfy the seven-day
 release gate; a newer security fix requires generated base/head audit evidence.
 Required GitHub checks must pass before an explicitly authorized PR merge.
+The owner also authorized automatic daily maintenance merges on 22 October
+2026. After PR publication, the host merge guard waits for all checks on the
+exact deployed SHA and merges only an up-to-date protected maintenance branch.
+Changes to CI or maintenance policy stop for supervised review.
 
 GardenOps can run as a standard FastAPI service behind nginx with PostgreSQL.
 Redis is required for production, internet-exposed, or multi-instance rate
