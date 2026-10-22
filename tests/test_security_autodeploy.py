@@ -58,6 +58,12 @@ class DeploymentTests(unittest.TestCase):
     def api(self, path):
         if path == "commits/main":
             return {"sha": self.head}
+        if path.endswith("/pulls"):
+            return [{"number": 1}]
+        if path == "pulls/1":
+            return {"merged": True, "merge_commit_sha": NEW,
+                    "merged_by": {"login": "nazrm"},
+                    "base": {"ref": "main", "repo": {"full_name": "nazrm/gardenops"}}}
         return {
             "workflow_runs": [
                 {
@@ -79,6 +85,8 @@ class DeploymentTests(unittest.TestCase):
             return self.head
         if "diff" in args:
             return self.paths
+        if "rev-list" in args:
+            return NEW
         if "activate-if-current" in args:
             self.assertEqual(args[-1], OLD)
             self.live = NEW
@@ -105,6 +113,24 @@ class DeploymentTests(unittest.TestCase):
     def test_plan_never_deploys(self):
         self.assertEqual(self.run_deploy(False)["phase"], "ready")
         self.assertFalse(any(c[0] == "/deployer" for c in self.commands))
+
+    def test_direct_push_or_unmerged_pr_is_not_authorization(self):
+        with self.assertRaisesRegex(ValueError, "merged-PR"):
+            deploy.require_reviewed_merges([NEW], lambda path: [])
+        for field, value in [("merged", False), ("merge_commit_sha", OLD),
+                             ("merged_by", {"login": "renovate[bot]"}),
+                             ("base", {"ref": "other"})]:
+            def api(path):
+                result = self.api(path)
+                if path == "pulls/1":
+                    result[field] = value
+                return result
+            with self.assertRaisesRegex(ValueError, "merged-PR"):
+                deploy.require_reviewed_merges([NEW], api)
+
+    def test_entire_release_range_requires_merge_review(self):
+        with self.assertRaisesRegex(ValueError, "merged-PR"):
+            deploy.require_reviewed_merges([OLD, NEW], self.api)
 
     def test_failed_ci_blocks(self):
         self.ci = "failure"

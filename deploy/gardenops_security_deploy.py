@@ -89,6 +89,28 @@ def require_dependency_change(paths):
         raise ValueError("No dependency update to deploy")
 
 
+def require_reviewed_merges(revisions, api=github):
+    """Only Ole's actual merges authorize unattended deployment, not direct pushes."""
+    if not revisions or len(revisions) > 20:
+        raise ValueError("Release range needs manual merge review")
+    for revision in revisions:
+        if not SHA.fullmatch(revision):
+            raise ValueError("Invalid release range revision")
+        matches = api("commits/" + revision + "/pulls")
+        accepted = False
+        for summary in matches:
+            pull = api("pulls/" + str(int(summary["number"])))
+            if (pull.get("merged") is True
+                and pull.get("merge_commit_sha") == revision
+                and pull.get("merged_by", {}).get("login") == "nazrm"
+                and pull.get("base", {}).get("ref") == "main"
+                and pull.get("base", {}).get("repo", {}).get("full_name") == "nazrm/gardenops"):
+                accepted = True
+                break
+        if not accepted:
+            raise ValueError("Revision lacks Ole's merged-PR authorization: " + revision)
+
+
 def require_manifest_compatibility(path, before, after):
     """Only dependency constraints may change inside executable manifests."""
     if path.endswith("package.json"):
@@ -183,6 +205,10 @@ def run(config, *, apply=False, api=github, execute=command, current=installed, 
     if fetched != target:
         raise ValueError("Default branch changed during fetch")
     execute(["git", "-C", repo, "merge-base", "--is-ancestor", before, target])
+    require_reviewed_merges(
+        execute(["git", "-C", repo, "rev-list", "--first-parent", before + ".." + target]).splitlines(),
+        api,
+    )
     paths = execute(["git", "-C", repo, "diff", "--name-only", before, target]).splitlines()
     require_dependency_change(paths)
     for path in paths:
