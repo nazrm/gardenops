@@ -70,19 +70,19 @@ def _plantnet_result_low_confidence() -> PlantNetResult:
     )
 
 
-_CLAUDE_IDENTIFY_RESPONSE = [
+_OPENAI_IDENTIFY_RESPONSE = [
     {
         "name": "Nyperose",
         "latin": "Rosa canina",
         "scientific_name": "Rosa canina",
         "family": "Rosaceae",
         "confidence": 0.8,
-        "source": "anthropic",
+        "source": "openai",
         "gbif_id": "",
     },
 ]
 
-_CLAUDE_DIAGNOSE_RESPONSE = [
+_OPENAI_DIAGNOSE_RESPONSE = [
     {
         "issue_type": "fungal",
         "likely_cause": "Powdery mildew",
@@ -95,16 +95,16 @@ _CLAUDE_DIAGNOSE_RESPONSE = [
 ]
 
 _IDENTIFY_ENV = {
-    "AI_PROVIDER": "anthropic",
+    "AI_PROVIDER": "openai",
     "PLANTNET_API_KEY": "test-plantnet-key",
-    "ANTHROPIC_API_KEY": "test-anthropic-key",
+    "OPENAI_API_KEY": "test-openai-key",
     "PLANTNET_CONFIDENCE_THRESHOLD": "0.40",
     "PLANTNET_API_TIMEOUT_SECONDS": "2",
 }
 
 _DIAGNOSE_ENV = {
-    "AI_PROVIDER": "anthropic",
-    "ANTHROPIC_API_KEY": "test-anthropic-key",
+    "AI_PROVIDER": "openai",
+    "OPENAI_API_KEY": "test-openai-key",
 }
 
 
@@ -114,7 +114,6 @@ class TestIdentifyPlant(BaseApiTest):
         {
             "AI_PROVIDER": "",
             "PLANTNET_API_KEY": "",
-            "ANTHROPIC_API_KEY": "",
             "OPENAI_API_KEY": "",
         },
     )
@@ -203,10 +202,10 @@ class TestIdentifyPlant(BaseApiTest):
     def test_plantnet_success(
         self,
         mock_pn: MagicMock,
-        mock_claude: MagicMock,
+        mock_openai: MagicMock,
     ) -> None:
         mock_pn.return_value = _plantnet_result()
-        mock_claude.return_value = []
+        mock_openai.return_value = []
 
         with patch.dict(os.environ, _IDENTIFY_ENV):
             img = _make_jpeg()
@@ -232,12 +231,12 @@ class TestIdentifyPlant(BaseApiTest):
     def test_plantnet_timeout_falls_back_to_configured_provider(
         self,
         mock_pn: MagicMock,
-        mock_claude: MagicMock,
+        mock_openai: MagicMock,
     ) -> None:
         from gardenops.services.plantnet import PlantNetError
 
         mock_pn.side_effect = PlantNetError(0, "timeout")
-        mock_claude.return_value = _CLAUDE_IDENTIFY_RESPONSE
+        mock_openai.return_value = _OPENAI_IDENTIFY_RESPONSE
 
         with patch.dict(os.environ, _IDENTIFY_ENV):
             img = _make_jpeg()
@@ -249,7 +248,7 @@ class TestIdentifyPlant(BaseApiTest):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(len(data["candidates"]), 1)
-        self.assertEqual(data["candidates"][0]["source"], "anthropic")
+        self.assertEqual(data["candidates"][0]["source"], "openai")
 
     @patch("gardenops.routers.ai.identify_plant_with_ai")
     @patch("gardenops.services.plantnet.identify")
@@ -297,14 +296,14 @@ class TestIdentifyPlant(BaseApiTest):
     def test_both_fail_returns_502(
         self,
         mock_pn: MagicMock,
-        mock_claude: MagicMock,
+        mock_openai: MagicMock,
     ) -> None:
         from gardenops.services.plantnet import PlantNetError
 
         mock_pn.side_effect = PlantNetError(0, "timeout")
         from gardenops.services.ai_provider import AIProviderError
 
-        mock_claude.side_effect = AIProviderError("provider down", provider="anthropic")
+        mock_openai.side_effect = AIProviderError("provider down", provider="openai")
 
         with patch.dict(os.environ, _IDENTIFY_ENV):
             img = _make_jpeg()
@@ -320,17 +319,17 @@ class TestIdentifyPlant(BaseApiTest):
     def test_low_confidence_triggers_configured_provider_enrichment(
         self,
         mock_pn: MagicMock,
-        mock_claude: MagicMock,
+        mock_openai: MagicMock,
     ) -> None:
         mock_pn.return_value = _plantnet_result_low_confidence()
-        mock_claude.return_value = [
+        mock_openai.return_value = [
             {
                 "name": "Hundekjeks",
                 "latin": "Anthriscus sylvestris",
                 "scientific_name": "Anthriscus sylvestris",
                 "family": "Apiaceae",
                 "confidence": 0.6,
-                "source": "anthropic",
+                "source": "openai",
                 "gbif_id": "",
             },
         ]
@@ -346,7 +345,7 @@ class TestIdentifyPlant(BaseApiTest):
         data = resp.json()
         sources = {c["source"] for c in data["candidates"]}
         self.assertIn("plantnet", sources)
-        self.assertIn("anthropic", sources)
+        self.assertIn("openai", sources)
 
     @patch("gardenops.routers.ai.reserve_daily_provider_budget")
     @patch("gardenops.routers.ai.identify_plant_with_ai")
@@ -358,7 +357,7 @@ class TestIdentifyPlant(BaseApiTest):
         mock_reserve: MagicMock,
     ) -> None:
         mock_pn.return_value = _plantnet_result_low_confidence()
-        mock_ai.return_value = _CLAUDE_IDENTIFY_RESPONSE
+        mock_ai.return_value = _OPENAI_IDENTIFY_RESPONSE
 
         with patch.dict(os.environ, _IDENTIFY_ENV):
             resp = self.client.post(
@@ -388,7 +387,6 @@ class TestIdentifyPlant(BaseApiTest):
             {
                 "AI_PROVIDER": "disabled",
                 "PLANTNET_API_KEY": "test-plantnet-key",
-                "ANTHROPIC_API_KEY": "",
                 "OPENAI_API_KEY": "",
             },
         ):
@@ -409,17 +407,17 @@ class TestIdentifyPlant(BaseApiTest):
     def test_duplicate_latin_deduplication(
         self,
         mock_pn: MagicMock,
-        mock_claude: MagicMock,
+        mock_openai: MagicMock,
     ) -> None:
         mock_pn.return_value = _plantnet_result_low_confidence()
-        mock_claude.return_value = [
+        mock_openai.return_value = [
             {
                 "name": "Løvetann",
                 "latin": "Taraxacum officinale",
                 "scientific_name": "Taraxacum officinale",
                 "family": "Asteraceae",
                 "confidence": 0.7,
-                "source": "anthropic",
+                "source": "openai",
                 "gbif_id": "",
             },
         ]
@@ -441,10 +439,10 @@ class TestIdentifyPlant(BaseApiTest):
         with (
             patch.dict(os.environ, _IDENTIFY_ENV),
             patch("gardenops.services.plantnet.identify") as mock_pn,
-            patch("gardenops.routers.ai.identify_plant_with_ai") as mock_claude,
+            patch("gardenops.routers.ai.identify_plant_with_ai") as mock_openai,
         ):
             mock_pn.return_value = _plantnet_result()
-            mock_claude.return_value = []
+            mock_openai.return_value = []
             img = _make_jpeg()
             resp = self.client.post(
                 "/api/ai/identify-plant",
@@ -466,7 +464,6 @@ class TestIdentifyPlant(BaseApiTest):
             os.environ,
             {
                 "AI_PROVIDER": "",
-                "ANTHROPIC_API_KEY": "",
                 "OPENAI_API_KEY": "",
                 "PLANTNET_API_KEY": "test-plantnet-key",
                 "PLANTNET_CONFIDENCE_THRESHOLD": "0.40",
@@ -490,14 +487,14 @@ class TestIdentifyPlant(BaseApiTest):
         mock_ai: MagicMock,
         mock_reserve: MagicMock,
     ) -> None:
-        mock_ai.return_value = _CLAUDE_IDENTIFY_RESPONSE
+        mock_ai.return_value = _OPENAI_IDENTIFY_RESPONSE
 
         with (
             patch.dict(
                 os.environ,
                 {
-                    "AI_PROVIDER": "anthropic",
-                    "ANTHROPIC_API_KEY": "test-anthropic-key",
+                    "AI_PROVIDER": "openai",
+                    "OPENAI_API_KEY": "test-openai-key",
                     "PLANTNET_API_KEY": "",
                     "AI_IDENTIFY_CONCURRENCY_LIMIT": "1",
                 },
@@ -518,7 +515,7 @@ class TestIdentifyPlant(BaseApiTest):
 
 
 class TestDiagnosePlant(BaseApiTest):
-    @patch.dict(os.environ, {"AI_PROVIDER": "", "ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": ""})
+    @patch.dict(os.environ, {"AI_PROVIDER": "", "OPENAI_API_KEY": ""})
     def test_no_api_key_returns_503(self) -> None:
         img = _make_jpeg()
         resp = self.client.post(
@@ -539,7 +536,7 @@ class TestDiagnosePlant(BaseApiTest):
 
     @patch("gardenops.routers.ai.diagnose_plant_with_ai")
     def test_diagnosis_success_with_context(self, mock_diagnose: MagicMock) -> None:
-        mock_diagnose.return_value = _CLAUDE_DIAGNOSE_RESPONSE
+        mock_diagnose.return_value = _OPENAI_DIAGNOSE_RESPONSE
 
         with patch.dict(os.environ, _DIAGNOSE_ENV):
             img = _make_jpeg()
@@ -566,7 +563,7 @@ class TestDiagnosePlant(BaseApiTest):
     ) -> None:
         from gardenops.services.ai_provider import AIProviderTimeout
 
-        mock_diagnose.side_effect = AIProviderTimeout(provider="anthropic")
+        mock_diagnose.side_effect = AIProviderTimeout(provider="openai")
         with patch.dict(os.environ, _DIAGNOSE_ENV):
             resp = self.client.post(
                 "/api/ai/diagnose-plant",
@@ -582,7 +579,7 @@ class TestDiagnosePlant(BaseApiTest):
         self,
         mock_diagnose: MagicMock,
     ) -> None:
-        mock_diagnose.return_value = _CLAUDE_DIAGNOSE_RESPONSE
+        mock_diagnose.return_value = _OPENAI_DIAGNOSE_RESPONSE
         secret_note = "private mildew diary detail"
         create = self.client.post(
             "/api/journal",
@@ -616,7 +613,7 @@ class TestDiagnosePlant(BaseApiTest):
 
     @patch("gardenops.routers.ai.diagnose_plant_with_ai")
     def test_diagnosis_success_no_context(self, mock_diagnose: MagicMock) -> None:
-        mock_diagnose.return_value = _CLAUDE_DIAGNOSE_RESPONSE
+        mock_diagnose.return_value = _OPENAI_DIAGNOSE_RESPONSE
 
         with patch.dict(os.environ, _DIAGNOSE_ENV):
             img = _make_jpeg()
@@ -684,7 +681,7 @@ class TestDiagnosePlant(BaseApiTest):
     def test_diagnosis_provider_failure_returns_502(self, mock_diagnose: MagicMock) -> None:
         from gardenops.services.ai_provider import AIProviderError
 
-        mock_diagnose.side_effect = AIProviderError("provider down", provider="anthropic")
+        mock_diagnose.side_effect = AIProviderError("provider down", provider="openai")
 
         with patch.dict(os.environ, _DIAGNOSE_ENV):
             img = _make_jpeg()
@@ -758,7 +755,6 @@ class TestLLMProviderDisabled(BaseApiTest):
     def test_llm_backed_routes_return_503_when_ai_provider_is_unset(self) -> None:
         env = {
             "AI_PROVIDER": "",
-            "ANTHROPIC_API_KEY": "test-anthropic-key",
             "OPENAI_API_KEY": "test-openai-key",
         }
         with patch.dict(os.environ, env):

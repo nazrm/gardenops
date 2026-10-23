@@ -1244,32 +1244,27 @@ export type ProviderSecretStatus = {
 
 export type ProviderSecretKey =
   | "openai_api_key"
-  | "anthropic_api_key"
   | "plantnet_api_key"
   | "shademap_api_key";
 
 export interface ProviderSettings {
-  ai_provider: "disabled" | "openai" | "anthropic";
+  ai_provider: "disabled" | "openai";
   models: {
     openai_model: string;
     openai_fast_model: string;
-    anthropic_model: string;
   };
   secrets: Record<ProviderSecretKey, ProviderSecretStatus>;
   secrets_encryption_configured: boolean;
 }
 
 export interface ProviderSettingsUpdate {
-  ai_provider?: "disabled" | "openai" | "anthropic";
+  ai_provider?: "disabled" | "openai";
   openai_model?: string;
   openai_fast_model?: string;
-  anthropic_model?: string;
   openai_api_key?: string;
-  anthropic_api_key?: string;
   plantnet_api_key?: string;
   shademap_api_key?: string;
   clear_openai_api_key?: boolean;
-  clear_anthropic_api_key?: boolean;
   clear_plantnet_api_key?: boolean;
   clear_shademap_api_key?: boolean;
   action_reason: string;
@@ -4114,7 +4109,7 @@ export interface PlantCandidate {
   scientific_name: string;
   family: string;
   confidence: number;
-  source: "plantnet" | "claude";
+  source: "plantnet" | "openai" | "deterministic";
   gbif_id: string;
 }
 

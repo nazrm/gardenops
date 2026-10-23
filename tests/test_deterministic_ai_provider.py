@@ -15,17 +15,15 @@ def _explode(*args: object, **kwargs: object) -> None:
 
 
 def _runtime_config(
-    provider: Literal["disabled", "openai", "anthropic"],
+    provider: Literal["disabled", "openai"],
     *,
     openai_api_key: str | None = None,
 ) -> AiRuntimeConfig:
     return AiRuntimeConfig(
         provider=provider,
         openai_api_key=openai_api_key,
-        anthropic_api_key=None,
         openai_model="openai-test-model",
         openai_fast_model="openai-fast-test-model",
-        anthropic_model="anthropic-test-model",
     )
 
 
@@ -35,16 +33,12 @@ def deterministic_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(ai_provider._DETERMINISTIC_AI_PROVIDER_ENV, "1")
     monkeypatch.setenv("AI_PROVIDER", "bogus")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     for name in (
         "get_ai_runtime_config",
         "_provider_api_key",
-        "Anthropic",
         "OpenAI",
-        "_anthropic_client",
         "_openai_client",
-        "_anthropic_tool_call",
         "_openai_structured_call",
         "_openai_text_call",
     ):
@@ -57,7 +51,6 @@ def test_deterministic_mode_returns_stable_local_fixtures_without_vendor_access(
     assert ai_provider.configured_provider() == "deterministic"
     assert ai_provider.require_ai_provider_configured() == "deterministic"
     assert ai_provider.is_ai_provider_configured() is True
-    assert ai_provider.anthropic_model() == "gardenops-deterministic-e2e"
     assert ai_provider.openai_model() == "gardenops-deterministic-e2e"
     assert ai_provider.openai_fast_model() == "gardenops-deterministic-e2e"
 

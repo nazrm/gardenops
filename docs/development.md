@@ -720,8 +720,8 @@ CHROMIUM_PATH=/usr/bin/chromium node scripts/test_security_browser.mjs
 
 They exercise identity cleanup, delayed private replies, plot-journal previews,
 and failed/successful logout. They do not connect to a live GardenOps backend.
-Backend CI exercises the MCP assistant and private capture uploads alongside
-the core application using the standard locked dependencies.
+Backend CI exercises the OpenAI adapter, deterministic provider fixture and
+browser-workflow contracts using locked dependencies. Tests never need paid calls.
 
 - Keep changes scoped.
 - Include tests for behavior changes.

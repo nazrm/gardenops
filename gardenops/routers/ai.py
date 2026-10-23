@@ -757,7 +757,6 @@ def garden_chat(body: ChatRequest, db: DB, request: Request) -> dict:
 
 _IDENTIFY_SOURCE_LABELS = {
     "plantnet": "Pl@ntNet (https://plantnet.org)",
-    "anthropic": "Anthropic",
     "openai": "OpenAI",
 }
 

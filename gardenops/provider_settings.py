@@ -10,7 +10,6 @@ from typing import Literal
 
 from gardenops.db import DbConn, get_db, return_db
 from gardenops.platform_secrets import (
-    ANTHROPIC_API_KEY,
     OPENAI_API_KEY,
     PLANTNET_API_KEY,
     SHADEMAP_API_KEY,
@@ -23,31 +22,27 @@ from gardenops.platform_secrets import (
     set_database_secret,
 )
 from gardenops.services.ai_provider_defaults import (
-    DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_OPENAI_FAST_MODEL,
     DEFAULT_OPENAI_MODEL,
 )
 
-AiProviderSetting = Literal["disabled", "openai", "anthropic"]
+AiProviderSetting = Literal["disabled", "openai"]
 SecretSource = Literal["db", "env", "none"]
 
 AI_PROVIDER_SETTING = "ai_provider"
 OPENAI_MODEL_SETTING = "openai_model"
 OPENAI_FAST_MODEL_SETTING = "openai_fast_model"
-ANTHROPIC_MODEL_SETTING = "anthropic_model"
 
-SUPPORTED_AI_PROVIDERS: frozenset[str] = frozenset({"disabled", "openai", "anthropic"})
+SUPPORTED_AI_PROVIDERS: frozenset[str] = frozenset({"disabled", "openai"})
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 
 OPENAI_API_KEY_ENVS = ("OPENAI_API_KEY",)
-ANTHROPIC_API_KEY_ENVS = ("ANTHROPIC_API_KEY",)
 PLANTNET_API_KEY_ENVS = ("PLANTNET_API_KEY",)
 SHADEMAP_API_KEY_ENVS = ("SHADEMAP", "SHADEMAP_API_KEY", "SHADEMAP_KEY")
 
 SECRET_ENV_NAMES: dict[str, tuple[str, ...]] = {
     OPENAI_API_KEY: OPENAI_API_KEY_ENVS,
-    ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_ENVS,
     PLANTNET_API_KEY: PLANTNET_API_KEY_ENVS,
     SHADEMAP_API_KEY: SHADEMAP_API_KEY_ENVS,
 }
@@ -72,10 +67,8 @@ def shademap_enabled() -> bool:
 class AiRuntimeConfig:
     provider: AiProviderSetting
     openai_api_key: str | None
-    anthropic_api_key: str | None
     openai_model: str
     openai_fast_model: str
-    anthropic_model: str
 
 
 @dataclass(frozen=True)
@@ -176,11 +169,9 @@ def _env_ai_runtime_config() -> AiRuntimeConfig:
     return AiRuntimeConfig(
         provider=_env_selected_provider(),
         openai_api_key=_env_value(OPENAI_API_KEY_ENVS) or None,
-        anthropic_api_key=_env_value(ANTHROPIC_API_KEY_ENVS) or None,
         openai_model=os.environ.get("OPENAI_MODEL", "").strip() or DEFAULT_OPENAI_MODEL,
         openai_fast_model=os.environ.get("OPENAI_FAST_MODEL", "").strip()
         or DEFAULT_OPENAI_FAST_MODEL,
-        anthropic_model=os.environ.get("ANTHROPIC_MODEL", "").strip() or DEFAULT_ANTHROPIC_MODEL,
     )
 
 
@@ -188,20 +179,12 @@ def get_ai_runtime_config(conn: DbConn | None = None) -> AiRuntimeConfig:
     def load(active_conn: DbConn) -> AiRuntimeConfig:
         provider = _selected_provider(active_conn)
         openai_api_key: str | None = None
-        anthropic_api_key: str | None = None
         if provider == "openai":
             openai_api_key = _secret_value(active_conn, OPENAI_API_KEY, OPENAI_API_KEY_ENVS)
-        elif provider == "anthropic":
-            anthropic_api_key = _secret_value(
-                active_conn,
-                ANTHROPIC_API_KEY,
-                ANTHROPIC_API_KEY_ENVS,
-            )
 
         return AiRuntimeConfig(
             provider=provider,
             openai_api_key=openai_api_key,
-            anthropic_api_key=anthropic_api_key,
             openai_model=_resolved_setting(
                 active_conn,
                 OPENAI_MODEL_SETTING,
@@ -213,12 +196,6 @@ def get_ai_runtime_config(conn: DbConn | None = None) -> AiRuntimeConfig:
                 OPENAI_FAST_MODEL_SETTING,
                 env_name="OPENAI_FAST_MODEL",
                 default=DEFAULT_OPENAI_FAST_MODEL,
-            ),
-            anthropic_model=_resolved_setting(
-                active_conn,
-                ANTHROPIC_MODEL_SETTING,
-                env_name="ANTHROPIC_MODEL",
-                default=DEFAULT_ANTHROPIC_MODEL,
             ),
         )
 
@@ -305,12 +282,6 @@ def get_provider_settings_summary(conn: DbConn) -> dict[str, object]:
                 env_name="OPENAI_FAST_MODEL",
                 default=DEFAULT_OPENAI_FAST_MODEL,
             ),
-            "anthropic_model": _resolved_setting(
-                conn,
-                ANTHROPIC_MODEL_SETTING,
-                env_name="ANTHROPIC_MODEL",
-                default=DEFAULT_ANTHROPIC_MODEL,
-            ),
         },
         "secrets": {
             key: _secret_status_dict(metadata, usernames)
@@ -371,13 +342,6 @@ def apply_provider_settings_update(
         value=settings.get(OPENAI_FAST_MODEL_SETTING),
         changed=changed_settings,
     )
-    _apply_optional_setting(
-        conn,
-        key=ANTHROPIC_MODEL_SETTING,
-        value=settings.get(ANTHROPIC_MODEL_SETTING),
-        changed=changed_settings,
-    )
-
     for key, value in secret_values.items():
         if value is None:
             continue

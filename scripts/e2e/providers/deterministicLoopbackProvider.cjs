@@ -23,7 +23,7 @@ const SCENARIOS = new Set([
 ]);
 const SHADEMAP_SDK_LOAD_PATH = "/shademap/sdk/load";
 const SHADEMAP_RUNTIME_SCRIPT_PATH = "/shademap/runtime.js";
-const PROVIDER_PATHS = new Set(["/v1/responses", "/v1/messages", SHADEMAP_SDK_LOAD_PATH]);
+const PROVIDER_PATHS = new Set(["/v1/responses", SHADEMAP_SDK_LOAD_PATH]);
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
 // This is served as a real script through the GardenOps runtime proxy. It is a
@@ -456,34 +456,7 @@ function openAiResponse(requestPayload, { partial = false } = {}) {
   };
 }
 
-function anthropicResponse({ partial = false } = {}) {
-  return {
-    id: partial ? "msg_fixture_partial" : "msg_fixture_success",
-    type: "message",
-    role: "assistant",
-    model: "gardenops-loopback-fixture",
-    content: [
-      {
-        type: "text",
-        text: partial
-          ? "Fixture response is intentionally partial."
-          : "Fixture response completed.",
-      },
-    ],
-    stop_reason: partial ? "max_tokens" : "end_turn",
-    stop_sequence: null,
-    usage: { input_tokens: 0, output_tokens: 1 },
-  };
-}
-
 function providerError(pathname, statusCode, type, message, headers = {}) {
-  if (pathname === "/v1/messages") {
-    return {
-      statusCode,
-      headers,
-      payload: { type: "error", error: { type, message } },
-    };
-  }
   return {
     statusCode,
     headers,
@@ -538,9 +511,7 @@ function respond(pathname, response, requestPayload) {
   json(
     response,
     200,
-    pathname === "/v1/messages"
-      ? anthropicResponse({ partial })
-      : openAiResponse(requestPayload, { partial }),
+    openAiResponse(requestPayload, { partial }),
   );
 }
 
@@ -640,13 +611,12 @@ server.listen({ host: HOST, port: options.port }, () => {
     port: address.port,
     scenario: options.scenario,
     openai_base_url: `${rootUrl}/v1`,
-    anthropic_base_url: rootUrl,
+    fixture_base_url: rootUrl,
     shademap_sdk_load_url: `${rootUrl}${SHADEMAP_SDK_LOAD_PATH}`,
     state_url: `${rootUrl}/__fixture__/state`,
     control_url: `${rootUrl}/__fixture__/scenario`,
     env: {
       OPENAI_BASE_URL: `${rootUrl}/v1`,
-      ANTHROPIC_BASE_URL: rootUrl,
       GARDENOPS_E2E_LOOPBACK_PROVIDER: "1",
       GARDENOPS_E2E_PROVIDER_URL: `${rootUrl}/v1`,
       GARDENOPS_PROVIDER_FIXTURE_STATE_URL: `${rootUrl}/__fixture__/state`,

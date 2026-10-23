@@ -1424,7 +1424,6 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         "database_secrets": [],
         "database_settings": [
             {"key": "ai_provider", "value": "openai"},
-            {"key": "anthropic_model", "value": "claude-sonnet-4-6"},
             {"key": "openai_fast_model", "value": "gpt-5.4-mini"},
             {"key": "openai_model", "value": "gpt-5.5"},
         ],

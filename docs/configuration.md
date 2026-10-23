@@ -106,19 +106,19 @@ account has one active recovery path.
 ## Optional Providers
 
 Provider keys are optional. Leave them unset to disable the associated feature.
-Platform admins can also set OpenAI, Anthropic, PlantNet, and server-side
+Platform admins can also set OpenAI, PlantNet, and server-side
 ShadeMap keys from the admin UI. Admin-managed keys are encrypted in
 `app_secrets` and require `APP_SECRETS_ENCRYPTION_KEY`; environment variables
 remain fallback values.
 
 | Area | Common variables |
 |---|---|
-| AI assistant features | `AI_PROVIDER`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
+| AI assistant features | `AI_PROVIDER`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
 | Plant identification | `PLANTNET_API_KEY` |
 | Weather | `WEATHER_API_KEY` |
 | ShadeMap | `SHADEMAP`, `SHADEMAP_PUBLIC_API_KEY`, `SHADEMAP_TILE_SIGNING_SECRET` |
 
-`AI_PROVIDER` accepts `disabled`, `anthropic`, or `openai`. Leave it unset or
+`AI_PROVIDER` accepts `disabled` or `openai`. Leave it unset or
 set it explicitly to `disabled` to disable LLM-backed AI features. Plant
 identification still tries PlantNet first when `PLANTNET_API_KEY` is configured;
 the configured AI provider is used only as fallback for identification, and
@@ -141,56 +141,9 @@ eligible tasks, with at most 120 AI-described tasks per refresh. Other tasks
 retain deterministic care descriptions. Deactivated accounts are excluded from
 notification generation and email delivery, including the final pre-send check.
 
-## MCP Assistant
-
-MCP is the supported interface for external assistants. It runs in the API
-process at `/mcp`, accepts only direct loopback requests, and requires a separate
-random bearer token of at least 32 characters. Keep it blocked at the public proxy.
-
-Set `MCP_ENABLED`, `MCP_BEARER_TOKEN`, `MCP_CLIENT_ID`, `MCP_ACTOR_ID`,
-`MCP_USERNAME`, and `MCP_GARDEN_SLUG` in the API's host-owned environment file.
-Client and actor IDs are opaque identifiers for the trusted local MCP client;
-they must match the source fields supplied to the assistant tools and capture
-upload headers. The configured GardenOps user must be active, have editor or
-admin access to the garden, and have the AI entitlement. These credentials grant
-that local client the configured user's assistant access; never distribute them
-to untrusted clients. They do not authenticate ordinary REST API requests.
-
-The six tools process text, analyze captures, continue, get, apply, and cancel
-requests. Mutations require an explicit `assistant_apply` after reviewing the
-proposal. Reuse source event IDs on retries to retain idempotency.
-
-Upload bounded JPEG, PNG, or WebP bytes to the loopback-only
-`POST /api/integrations/mcp/captures` endpoint with the bearer token and headers
-`X-MCP-Client-Id`, `X-MCP-Actor`, `X-MCP-Event-Id`, `Content-Type`, and optionally
-`X-Original-Filename`. Pass its `capture_asset_id` to `assistant_analyze_capture`.
-Temporary captures are private and expire with pending requests according to
-`MCP_CAPTURE_TTL_DAYS`; uploads use `MCP_CAPTURE_RATE_LIMIT`.
-
-The assistant can also add, move, and remove plants. For a new plant, send a
-clear photo or botanical/common name and the destination plot. GardenOps uses
-the configured AI provider to fill botanical, horticultural, and care fields,
-and stores an RHS link only when the exact identity is verified. Location,
-quantity, and planting history remain user-provided; the assistant asks for a
-quantity when it is omitted. Existing matching plants are assigned to the
-selected plot instead of creating a duplicate, and the stated quantity becomes
-the total quantity in that plot. Moving and removing a plant are shown as
-proposals and require an explicit `assistant_apply`; movement proposals state whether all
-or a specific quantity will move, and removal clearly states that it cannot be
-undone.
-
-For a local protocol smoke test, list the tools with MCP Inspector:
-
-```bash
-npx -y @modelcontextprotocol/inspector --cli http://127.0.0.1:8000/mcp \
-  --transport http --method tools/list \
-  --header "Authorization: Bearer $MCP_BEARER_TOKEN"
-```
-
-A `401` means the token is absent/wrong; a `403` before MCP
-initialization usually means the Host or Origin is not loopback-safe. Startup
-errors for binding values name the missing or invalid variable without printing
-its value.
+Unsupported stored provider selections are disabled, not automatically switched
+to a paid provider. Select OpenAI explicitly and configure its key in the admin
+UI to re-enable AI features. Existing database migrations remain unchanged.
 
 Generate `APP_SECRETS_ENCRYPTION_KEY` with:
 

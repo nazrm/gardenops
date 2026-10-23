@@ -12,14 +12,12 @@ from cryptography.fernet import Fernet, InvalidToken
 from gardenops.db import DbConn
 
 OPENAI_API_KEY = "openai_api_key"
-ANTHROPIC_API_KEY = "anthropic_api_key"
 PLANTNET_API_KEY = "plantnet_api_key"
 SHADEMAP_API_KEY = "shademap_api_key"
 
 MANAGED_SECRET_KEYS = frozenset(
     {
         OPENAI_API_KEY,
-        ANTHROPIC_API_KEY,
         PLANTNET_API_KEY,
         SHADEMAP_API_KEY,
     },

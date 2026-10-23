@@ -10,7 +10,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import anthropic
 import httpx
 import openai
 
@@ -20,13 +19,11 @@ from gardenops.services.ai_provider import (
     AIProviderNotConfigured,
     AIProviderRateLimited,
     AIProviderTimeout,
-    analyze_garden_capture_with_ai,
     chat_with_ai,
     configured_provider,
     diagnose_plant_with_ai,
     generate_task_descriptions_with_ai,
     identify_plant_with_ai,
-    interpret_garden_message_with_ai,
 )
 
 _EXPECTED_HEAD = subprocess.check_output(
@@ -117,25 +114,6 @@ class TestAIProviderConfig(unittest.TestCase):
 
 
 class TestAIProviderAdapter(unittest.TestCase):
-    def test_deterministic_provider_supports_assistant_intent_and_capture(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(
-                os.environ,
-                {
-                    **_complete_journey_fixture_env(Path(tmp)),
-                    "GARDENOPS_E2E_DETERMINISTIC_AI_PROVIDER": "1",
-                },
-                clear=False,
-            ):
-                intent = interpret_garden_message_with_ai(
-                    "The rose bloomed today", "Garden context", "2026-09-02"
-                )
-                capture = analyze_garden_capture_with_ai(b"test-image", "The rose is flowering")
-        self.assertEqual(intent.intent, "journal")
-        self.assertEqual(intent.event_type, "bloomed")
-        self.assertEqual(capture.event_candidate.value, "bloomed")
-        self.assertEqual(capture.plant_candidates[0].source, "deterministic")
-
     def test_openai_client_uses_loopback_fixture_only_when_opted_in(self) -> None:
         mocked_client = MagicMock()
         with tempfile.TemporaryDirectory() as tmp:
@@ -150,53 +128,6 @@ class TestAIProviderAdapter(unittest.TestCase):
                 self.assertIs(ai_provider._openai_client("test-key"), mocked_client)
 
         self.assertEqual(ctor.call_args.kwargs["base_url"], "http://127.0.0.1:19451/v1")
-
-    def test_anthropic_identify_uses_configured_model_and_source(self) -> None:
-        response_block = type(
-            "ToolBlock",
-            (),
-            {
-                "type": "tool_use",
-                "name": "plant_candidates",
-                "input": {
-                    "candidates": [
-                        {
-                            "name": "Nyperose",
-                            "latin": "Rosa canina",
-                            "family": "Rosaceae",
-                            "confidence": 0.8,
-                            "reasoning": "Visible rose leaves.",
-                        }
-                    ]
-                },
-            },
-        )()
-        mocked_client = MagicMock()
-        mocked_client.messages.create.return_value = type(
-            "AnthropicResponse",
-            (),
-            {"content": [response_block]},
-        )()
-
-        with (
-            patch.dict(
-                os.environ,
-                {
-                    "AI_PROVIDER": "anthropic",
-                    "ANTHROPIC_API_KEY": "test-key",
-                    "ANTHROPIC_MODEL": "claude-test-model",
-                },
-                clear=False,
-            ),
-            patch("gardenops.services.ai_provider.Anthropic", return_value=mocked_client),
-        ):
-            candidates = identify_plant_with_ai(b"fake-jpeg", "leaf")
-
-        self.assertEqual(candidates[0]["source"], "anthropic")
-        self.assertEqual(candidates[0]["latin"], "Rosa canina")
-        self.assertEqual(
-            mocked_client.messages.create.call_args.kwargs["model"], "claude-test-model"
-        )
 
     def test_openai_identify_uses_responses_api_and_source(self) -> None:
         mocked_client = MagicMock()
@@ -399,27 +330,6 @@ class TestAIProviderAdapter(unittest.TestCase):
             with self.assertRaises(AIProviderRateLimited):
                 chat_with_ai("You are concise.", [{"role": "user", "content": "Tip?"}])
 
-    def test_anthropic_chat_rate_limit_is_classified(self) -> None:
-        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-        response = httpx.Response(429, request=request)
-        mocked_client = MagicMock()
-        mocked_client.messages.create.side_effect = anthropic.RateLimitError(
-            "Fixture quota exhausted.",
-            response=response,
-            body={"error": {"type": "rate_limit_error"}},
-        )
-
-        with (
-            patch.dict(
-                os.environ,
-                {"AI_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "test-key"},
-                clear=False,
-            ),
-            patch("gardenops.services.ai_provider.Anthropic", return_value=mocked_client),
-        ):
-            with self.assertRaises(AIProviderRateLimited):
-                chat_with_ai("You are concise.", [{"role": "user", "content": "Tip?"}])
-
     def test_openai_chat_blank_response_is_malformed(self) -> None:
         mocked_client = MagicMock()
         mocked_client.responses.create.return_value = type(
@@ -455,40 +365,21 @@ class TestAIProviderAdapter(unittest.TestCase):
             with self.assertRaises(AIProviderTimeout):
                 identify_plant_with_ai(b"fake-jpeg", "leaf")
 
-    def test_anthropic_diagnose_timeout_is_classified(self) -> None:
-        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    def test_openai_diagnose_timeout_is_classified(self) -> None:
+        request = httpx.Request("POST", "https://api.openai.com/v1/responses")
         mocked_client = MagicMock()
-        mocked_client.messages.create.side_effect = anthropic.APITimeoutError(request)
+        mocked_client.responses.create.side_effect = openai.APITimeoutError(request)
 
         with (
             patch.dict(
                 os.environ,
-                {"AI_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "test-key"},
+                {"AI_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"},
                 clear=False,
             ),
-            patch("gardenops.services.ai_provider.Anthropic", return_value=mocked_client),
+            patch("gardenops.services.ai_provider.OpenAI", return_value=mocked_client),
         ):
             with self.assertRaises(AIProviderTimeout):
                 diagnose_plant_with_ai(b"fake-jpeg", "Diagnose this plant.")
-
-    def test_anthropic_chat_timeout_raises_timeout_error(self) -> None:
-        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-        mocked_client = MagicMock()
-        mocked_client.messages.create.side_effect = anthropic.APITimeoutError(request)
-
-        with (
-            patch.dict(
-                os.environ,
-                {
-                    "AI_PROVIDER": "anthropic",
-                    "ANTHROPIC_API_KEY": "test-key",
-                },
-                clear=False,
-            ),
-            patch("gardenops.services.ai_provider.Anthropic", return_value=mocked_client),
-        ):
-            with self.assertRaises(AIProviderTimeout):
-                chat_with_ai("You are concise.", [{"role": "user", "content": "Tip?"}])
 
     def test_openai_task_descriptions_use_configured_provider(self) -> None:
         mocked_client = MagicMock()

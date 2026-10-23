@@ -4479,7 +4479,6 @@ def _phase_seven_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         (
             [
                 "ai_provider",
-                "anthropic_model",
                 "openai_fast_model",
                 "openai_model",
             ],
@@ -4494,7 +4493,6 @@ def _phase_seven_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         """,
         (
             [
-                "anthropic_api_key",
                 "openai_api_key",
                 "plantnet_api_key",
                 "shademap_api_key",

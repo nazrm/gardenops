@@ -7,8 +7,7 @@ deploying, and contributing to GardenOps.
 |---|---|
 | Local install | [installation.md](installation.md) |
 | Environment and providers | [configuration.md](configuration.md) |
-| AI provider plan | [ai-provider-plan.md](ai-provider-plan.md) |
-| MCP assistant setup and tools | [configuration.md#mcp-assistant](configuration.md#mcp-assistant) |
+| AI provider integration | [ai-provider-plan.md](ai-provider-plan.md) |
 | Dependency security policy | [dependency-security-policy.md](dependency-security-policy.md) |
 | Map objects and nested layouts | [map-objects.md](map-objects.md) |
 | Contextual recording, history and planning | [garden-experience.md](garden-experience.md) |

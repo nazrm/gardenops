@@ -97,12 +97,12 @@ class PlatformSecretsTests(unittest.TestCase):
         plaintext = "metadata secret value ABCD"
 
         with patch.dict("os.environ", {"APP_SECRETS_ENCRYPTION_KEY": fernet_key}, clear=False):
-            set_metadata = set_database_secret(conn, "anthropic_api_key", plaintext)
-            lookup_metadata = database_secret_metadata(conn, "anthropic_api_key")
+            set_metadata = set_database_secret(conn, "plantnet_api_key", plaintext)
+            lookup_metadata = database_secret_metadata(conn, "plantnet_api_key")
 
         self.assertEqual(set_metadata, lookup_metadata)
         self.assertIsInstance(lookup_metadata, SecretMetadata)
-        self.assertEqual(lookup_metadata.key, "anthropic_api_key")
+        self.assertEqual(lookup_metadata.key, "plantnet_api_key")
         self.assertTrue(lookup_metadata.configured)
         self.assertEqual(lookup_metadata.last4, "ABCD")
         self.assertNotIn(plaintext, repr(lookup_metadata))

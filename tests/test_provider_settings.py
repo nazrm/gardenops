@@ -6,15 +6,17 @@ from collections.abc import Sequence
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
+from pydantic import ValidationError
 
 from gardenops.platform_secrets import ConfigurationError
 from gardenops.provider_settings import (
     AI_PROVIDER_SETTING,
-    ANTHROPIC_MODEL_SETTING,
+    OPENAI_MODEL_SETTING,
     apply_provider_settings_update,
     get_ai_runtime_config,
     get_provider_settings_summary,
 )
+from gardenops.routers.provider_settings import ProviderSettingsUpdateBody
 from tests.base import BaseApiTest
 
 
@@ -87,7 +89,28 @@ class _FakeConn:
 
 
 class ProviderSettingsTests(unittest.TestCase):
-    def test_update_stores_openai_and_anthropic_keys_without_plaintext_summary(self) -> None:
+    def test_retired_provider_stays_disabled_even_with_openai_env(self) -> None:
+        conn = _FakeConn()
+        conn.app_settings[AI_PROVIDER_SETTING] = "anthropic"
+        with patch.dict(os.environ, {"AI_PROVIDER": "openai", "OPENAI_API_KEY": "fixture"}):
+            config = get_ai_runtime_config(conn)
+            summary = get_provider_settings_summary(conn)
+        self.assertEqual(config.provider, "disabled")
+        self.assertIsNone(config.openai_api_key)
+        self.assertNotIn("anthropic_api_key", summary["secrets"])
+        self.assertNotIn("anthropic_model", summary["models"])
+
+    def test_retired_provider_update_fields_are_rejected(self) -> None:
+        for payload in (
+            {"ai_provider": "anthropic"},
+            {"anthropic_api_key": "fixture"},
+            {"anthropic_model": "fixture"},
+            {"clear_anthropic_api_key": True},
+        ):
+            with self.subTest(payload=payload), self.assertRaises(ValidationError):
+                ProviderSettingsUpdateBody.model_validate(payload)
+
+    def test_update_stores_openai_and_plantnet_keys_without_plaintext_summary(self) -> None:
         conn = _FakeConn()
         fernet_key = Fernet.generate_key().decode()
 
@@ -95,32 +118,32 @@ class ProviderSettingsTests(unittest.TestCase):
             summary, changes = apply_provider_settings_update(
                 conn,
                 settings={
-                    AI_PROVIDER_SETTING: "anthropic",
-                    ANTHROPIC_MODEL_SETTING: "claude-test",
+                    AI_PROVIDER_SETTING: "openai",
+                    OPENAI_MODEL_SETTING: "openai-test",
                 },
                 secret_values={
                     "openai_api_key": "openai secret 1234",
-                    "anthropic_api_key": "anthropic secret 5678",
+                    "plantnet_api_key": "plantnet secret 5678",
                 },
                 clear_secret_keys=(),
                 actor_user_id=7,
             )
 
-        self.assertEqual(conn.app_settings[AI_PROVIDER_SETTING], "anthropic")
-        self.assertEqual(conn.app_settings[ANTHROPIC_MODEL_SETTING], "claude-test")
-        self.assertEqual(changes.set_secrets, ("openai_api_key", "anthropic_api_key"))
+        self.assertEqual(conn.app_settings[AI_PROVIDER_SETTING], "openai")
+        self.assertEqual(conn.app_settings[OPENAI_MODEL_SETTING], "openai-test")
+        self.assertEqual(changes.set_secrets, ("openai_api_key", "plantnet_api_key"))
         secrets = summary["secrets"]
         assert isinstance(secrets, dict)
         openai = secrets["openai_api_key"]
-        anthropic = secrets["anthropic_api_key"]
+        plantnet = secrets["plantnet_api_key"]
         assert isinstance(openai, dict)
-        assert isinstance(anthropic, dict)
+        assert isinstance(plantnet, dict)
         self.assertEqual(openai["source"], "db")
         self.assertEqual(openai["last4"], "1234")
         self.assertEqual(openai["updated_by_username"], "platform-admin")
-        self.assertEqual(anthropic["last4"], "5678")
+        self.assertEqual(plantnet["last4"], "5678")
         self.assertNotIn("openai secret", repr(summary))
-        self.assertNotIn("anthropic secret", repr(summary))
+        self.assertNotIn("plantnet secret", repr(summary))
 
     def test_runtime_config_prefers_database_secret_over_env(self) -> None:
         conn = _FakeConn()
@@ -199,7 +222,6 @@ class ProviderSettingsTests(unittest.TestCase):
 
         self.assertEqual(config.provider, "disabled")
         self.assertIsNone(config.openai_api_key)
-        self.assertIsNone(config.anthropic_api_key)
 
     def test_update_rejects_empty_secret_value(self) -> None:
         conn = _FakeConn()
@@ -221,7 +243,6 @@ class ProviderSettingsTests(unittest.TestCase):
         environment = {
             "APP_SECRETS_ENCRYPTION_KEY": fernet_key,
             "OPENAI_API_KEY": "",
-            "ANTHROPIC_API_KEY": "",
             "PLANTNET_API_KEY": "",
             "SHADEMAP": "",
             "SHADEMAP_API_KEY": "",
@@ -272,16 +293,16 @@ class ProviderSettingsTests(unittest.TestCase):
     def test_summary_reports_env_fallback_without_plaintext(self) -> None:
         conn = _FakeConn()
 
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "env-ant-key-9999"}, clear=False):
+        with patch.dict("os.environ", {"PLANTNET_API_KEY": "env-plantnet-key-9999"}, clear=False):
             summary = get_provider_settings_summary(conn)
 
         secrets = summary["secrets"]
         assert isinstance(secrets, dict)
-        anthropic = secrets["anthropic_api_key"]
-        assert isinstance(anthropic, dict)
-        self.assertEqual(anthropic["source"], "env")
-        self.assertEqual(anthropic["last4"], "9999")
-        self.assertNotIn("env-ant-key", repr(summary))
+        plantnet = secrets["plantnet_api_key"]
+        assert isinstance(plantnet, dict)
+        self.assertEqual(plantnet["source"], "env")
+        self.assertEqual(plantnet["last4"], "9999")
+        self.assertNotIn("env-plantnet-key", repr(summary))
 
 
 class ProviderSettingsAuthorizationTests(BaseApiTest):

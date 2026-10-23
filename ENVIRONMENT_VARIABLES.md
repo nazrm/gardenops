@@ -70,7 +70,7 @@ not secrets.
 
 ## Optional Providers
 
-Platform admins can manage OpenAI, Anthropic, PlantNet, and server-side
+Platform admins can manage OpenAI, PlantNet, and server-side
 ShadeMap keys from the admin UI when `APP_SECRETS_ENCRYPTION_KEY` is
 configured. The environment variables below remain supported as deploy-time
 fallbacks.
@@ -83,9 +83,7 @@ Generate a storage key with:
 
 | Variable | Purpose | Example |
 |---|---|---|
-| `AI_PROVIDER` | Configured LLM provider for AI features. Use `anthropic` or `openai`; leave unset to disable LLM-backed AI features. | unset |
-| `ANTHROPIC_API_KEY` | Anthropic key used when `AI_PROVIDER=anthropic`. Leave unset to disable Anthropic-backed AI. | `change-me` |
-| `ANTHROPIC_MODEL` | Anthropic model for configured AI features. | `claude-sonnet-4-6` |
+| `AI_PROVIDER` | Configured LLM provider for AI features. Use `openai` or `disabled`; leave unset to disable LLM-backed AI features. | unset |
 | `OPENAI_API_KEY` | OpenAI key used when `AI_PROVIDER=openai`. Leave unset to disable OpenAI-backed AI. | `change-me` |
 | `OPENAI_MODEL` | OpenAI model for configured AI features. | `gpt-5.5` |
 | `OPENAI_FAST_MODEL` | Optional lower-cost OpenAI model reserved for future fast-path AI tasks. | `gpt-5.4-mini` |
@@ -94,25 +92,6 @@ Generate a storage key with:
 | `AI_TASK_DESCRIPTION_CONCURRENCY_LIMIT` | Optional concurrency limit for AI-generated task descriptions. | `1` |
 | `PLANTNET_API_KEY` | Optional plant-identification provider. | `change-me` |
 | `WEATHER_API_KEY` | Optional weather provider key. | `change-me` |
-
-## Private MCP Assistant
-
-The optional loopback-only MCP endpoint binds a trusted local client to one
-active GardenOps user and garden. Use MCP for future external interfaces.
-
-| Variable | Purpose | Example |
-|---|---|---|
-| `MCP_ENABLED` | Mount the private MCP endpoint. | `false` |
-| `MCP_BEARER_TOKEN` | MCP and capture-upload secret, minimum 32 random characters. | _(empty)_ |
-| `MCP_CLIENT_ID` | Exact opaque client identifier supplied with requests. | `local-assistant` |
-| `MCP_ACTOR_ID` | Exact opaque actor identifier supplied with requests. | `owner` |
-| `MCP_USERNAME` | Existing active GardenOps username. | `owner` |
-| `MCP_GARDEN_SLUG` | Existing garden slug where actions apply. | `home` |
-| `MCP_CAPTURE_TTL_DAYS` | Pending request and temporary capture lifetime, 1-30 days. | `7` |
-| `MCP_CAPTURE_RATE_LIMIT` | Maximum private capture uploads accepted per minute. | `12` |
-
-Enabling MCP requires all binding values, an editor/admin garden membership,
-and AI entitlement. Keep the bearer token in host-owned configuration only.
 
 ## ShadeMap Integration
 
@@ -172,7 +151,6 @@ environment variable read by the public app.
 | `REDIS_URL` | Fallback Redis URL when `RATE_LIMIT_REDIS_URL` is not set. | `redis://127.0.0.1:6379/0` |
 | `PROVIDER_CONCURRENCY_LEASE_TTL_SECONDS` | Redis-backed provider concurrency lease lifetime; keep above the expected provider request timeout. | `120` |
 | `AI_<SETTING>` | AI feature rate limits, quotas, concurrency limits, care-batch settings, garden-chat provider timeout/output tuning, and rich-context opt-in. | `AI_CHAT_PROVIDER_TIMEOUT_SECONDS=60` |
-| `ANTHROPIC_API_<SETTING>` | Anthropic provider timeout and retry settings. | `ANTHROPIC_API_TIMEOUT_SECONDS=25` |
 | `OPENAI_API_<SETTING>` | OpenAI provider timeout and retry settings. | `OPENAI_API_TIMEOUT_SECONDS=25` |
 | `PLANTNET_<SETTING>` | PlantNet provider timeout and confidence-threshold settings. | `PLANTNET_CONFIDENCE_THRESHOLD=0.40` |
 | `PLANT_COVER_IMPORT_<SETTING>` | External plant-cover import timeout, redirect, and page-size limits. | `PLANT_COVER_IMPORT_TIMEOUT_SECONDS=8` |

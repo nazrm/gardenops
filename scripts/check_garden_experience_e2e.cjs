@@ -23,7 +23,7 @@ const report = {
   steps: [], screenshots: [], records: [],
   notCovered: [
     "Viewer authorization (runner deliberately uses AUTH_REQUIRED=false admin)",
-    "Area/container destinations, harvest/MCP, and planner variants beyond first-use stocked planting",
+    "Area/container destinations, harvest, and planner variants beyond first-use stocked planting",
     "Partial photo-upload failure, stale task replay, multi-placement bloom scope",
     "Cross-identity/garden draft isolation and quota exhaustion",
   ],
