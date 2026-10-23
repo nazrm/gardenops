@@ -70,8 +70,9 @@ jobs:
       - name: Validate policy on main
         if: github.event_name != 'pull_request'
         run: |
-          python scripts/check_github_action_pins.py
-          python scripts/check_dependency_sources.py
+          uv sync --frozen --group audit --no-install-project
+          .venv/bin/python scripts/check_github_action_pins.py
+          .venv/bin/python scripts/check_dependency_sources.py
           uv lock --check
           npm ci --dry-run --ignore-scripts --prefix frontend
       - name: Validate Python lock consistency
